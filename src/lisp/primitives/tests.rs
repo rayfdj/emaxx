@@ -25621,6 +25621,214 @@ fn interactive_recenter_uses_the_live_shrunken_window_height() {
     );
 }
 
+/// LINES lines whose 9-character "<nickNN> " prefix takes, by line
+/// number, the property PREFIX gives (as an IRC buffer hides its nicks),
+/// followed by "message number N", or by a 100-character wrapping run
+/// for the lines LONG picks.
+fn insert_prefixed_lines(
+    interp: &mut Interpreter,
+    env: &mut crate::lisp::types::Env,
+    lines: usize,
+    prefix: impl Fn(usize) -> (&'static str, &'static str, Value),
+    long: impl Fn(usize) -> bool,
+) {
+    for i in 0..lines {
+        let start = interp.buffer.borrow().point() as i64;
+        call(
+            interp,
+            "insert",
+            &[Value::String(format!("<nick{i:02}> ").into())],
+            env,
+        )
+        .expect("insert the prefix");
+        let end = interp.buffer.borrow().point() as i64;
+        let (holder, name, value) = prefix(i);
+        let (start, end) = (Value::Integer(start), Value::Integer(end));
+        if holder == "overlay" {
+            let overlay = call(interp, "make-overlay", &[start, end], env).expect("make-overlay");
+            call(
+                interp,
+                "overlay-put",
+                &[overlay, Value::symbol(name), value],
+                env,
+            )
+            .expect("overlay-put");
+        } else {
+            call(
+                interp,
+                "put-text-property",
+                &[start, end, Value::symbol(name), value],
+                env,
+            )
+            .expect("put-text-property");
+        }
+        let text = if long(i) {
+            format!("{} long {i}\n", "w".repeat(100))
+        } else {
+            format!("message number {i}\n")
+        };
+        call(interp, "insert", &[Value::String(text.into())], env).expect("insert the text");
+    }
+}
+
+#[test]
+fn interactive_vertical_motion_and_recenter_reseat_past_what_a_line_start_hides() {
+    // GNU 30.2 in a terminal: move_it_by_lines' backward search reseats at
+    // the line start it reaches, past invisible text and an empty display
+    // string there (handle_stop), but not past a display string that
+    // shows; moving to the start of point's own screen line does not
+    // reseat.
+    let mut interp = Interpreter::new();
+    let mut env = crate::lisp::types::Env::new();
+    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    insert_prefixed_lines(
+        &mut interp,
+        &mut env,
+        40,
+        |i| match i % 3 {
+            0 => ("text", "display", Value::String("".into())),
+            1 => ("text", "invisible", Value::T),
+            _ => ("text", "display", Value::String("X".into())),
+        },
+        |_| false,
+    );
+    let motion =
+        |interp: &mut Interpreter, env: &mut crate::lisp::types::Env, from: i64, n: i64| {
+            call(interp, "goto-char", &[Value::Integer(from)], env).expect("goto-char");
+            let moved = call(interp, "vertical-motion", &[Value::Integer(n)], env)
+                .expect("vertical-motion");
+            (moved, interp.buffer.borrow().point() as i64)
+        };
+    // Line 31 (invisible prefix) ends at 854, line 32 ("X") at 881, line
+    // 33 ("") at 908; lines 30, 31 and 32 begin at 801, 828 and 855.
+    assert_eq!(
+        motion(&mut interp, &mut env, 854, -1),
+        (Value::Integer(-1), 810)
+    );
+    assert_eq!(
+        motion(&mut interp, &mut env, 854, 0),
+        (Value::Integer(0), 828)
+    );
+    assert_eq!(
+        motion(&mut interp, &mut env, 881, -1),
+        (Value::Integer(-1), 837)
+    );
+    assert_eq!(
+        motion(&mut interp, &mut env, 908, -1),
+        (Value::Integer(-1), 855)
+    );
+    // From a line start a display string covers, vertical-motion steps
+    // back before the string, one line less to go: 504 rather than 513
+    // (scroll-down's first step from line 20 in GNU).
+    assert_eq!(
+        motion(&mut interp, &mut env, 531, -1),
+        (Value::Integer(-1), 504)
+    );
+    assert_eq!(
+        motion(&mut interp, &mut env, 504, -1),
+        (Value::Integer(-1), 486)
+    );
+
+    set_interactive_window_metrics(Some(InteractiveWindowMetrics {
+        text_height: 31,
+        window_end: interp.buffer.borrow().point_max(),
+    }));
+    let recentered =
+        |interp: &mut Interpreter, env: &mut crate::lisp::types::Env, at: i64, n: i64| {
+            call(interp, "goto-char", &[Value::Integer(at)], env).expect("goto-char");
+            call(interp, "recenter", &[Value::Integer(n)], env).expect("recenter");
+            call(interp, "window-start", &[], env).expect("window-start")
+        };
+    let starts = [
+        recentered(&mut interp, &mut env, 854, 1),
+        recentered(&mut interp, &mut env, 881, 1),
+        recentered(&mut interp, &mut env, 827, 0),
+        recentered(&mut interp, &mut env, 908, 2),
+        recentered(&mut interp, &mut env, 935, 1),
+        recentered(&mut interp, &mut env, 804, 2),
+    ];
+    set_interactive_window_metrics(None);
+    assert_eq!(
+        starts,
+        [
+            Value::Integer(810),
+            Value::Integer(837),
+            Value::Integer(801),
+            Value::Integer(837),
+            Value::Integer(891),
+            Value::Integer(756),
+        ]
+    );
+}
+
+#[test]
+fn interactive_vertical_motion_walks_a_display_string_spanning_two_lines() {
+    // A 9-character prefix displayed as "AB\nCD" at 1178 (line 17 of 30
+    // lines, every fourth one also wrapping): the screen line "CD..."
+    // begins inside the string, where the iterator moves on to 1187 after
+    // it; from inside the covered text, point's screen line is the
+    // string's first.  GNU 30.2's values.
+    let mut interp = Interpreter::new();
+    let mut env = crate::lisp::types::Env::new();
+    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    insert_prefixed_lines(
+        &mut interp,
+        &mut env,
+        30,
+        |i| match i % 6 {
+            0 => ("text", "display", Value::String("".into())),
+            1 => ("text", "invisible", Value::T),
+            2 => ("text", "display", Value::String("X".into())),
+            3 => ("overlay", "display", Value::String("".into())),
+            4 => ("overlay", "invisible", Value::T),
+            _ => ("text", "display", Value::String("AB\nCD".into())),
+        },
+        |i| matches!(i % 4, 1 | 2),
+    );
+    let mut results = Vec::new();
+    for (from, n) in [
+        (1178, -1),
+        (1178, 1),
+        (1181, -1),
+        (1181, -2),
+        (1181, 0),
+        (1181, 1),
+        (1187, -1),
+        (1187, -2),
+        (1187, 0),
+        (1187, 1),
+        (1264, -2),
+    ] {
+        call(&mut interp, "goto-char", &[Value::Integer(from)], &mut env).expect("goto-char");
+        let moved = call(
+            &mut interp,
+            "vertical-motion",
+            &[Value::Integer(n)],
+            &mut env,
+        )
+        .expect("vertical-motion")
+        .as_integer()
+        .expect("lines moved");
+        results.push((from, n, moved, interp.buffer.borrow().point()));
+    }
+    assert_eq!(
+        results,
+        [
+            (1178, -1, -1, 1151),
+            (1178, 1, 1, 1187),
+            (1181, -1, -1, 1160),
+            (1181, -2, -2, 1133),
+            (1181, 0, 0, 1178),
+            (1181, 1, 1, 1187),
+            (1187, -1, -1, 1178),
+            (1187, -2, -2, 1160),
+            (1187, 0, 0, 1187),
+            (1187, 1, 1, 1264),
+            (1264, -2, -2, 1178),
+        ]
+    );
+}
+
 #[test]
 fn interactive_vertical_motion_honors_the_cons_goal_column() {
     let mut interp = Interpreter::new();

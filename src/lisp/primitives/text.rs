@@ -337,7 +337,8 @@ pub(crate) fn character_width(interp: &Interpreter, c: u32, env: &Env) -> usize 
 }
 
 /// window.c buffer_display_table: the buffer's `buffer-display-table'
-/// when it is a display table, else `standard-display-table' when that is.
+/// when it is a display table, else `standard-display-table' when that is
+/// (DISP_TABLE_P: purpose `display-table' and its six extra slots).
 pub(crate) fn buffer_display_table(
     interp: &Interpreter,
     env: &Env,
@@ -345,7 +346,11 @@ pub(crate) fn buffer_display_table(
     ["buffer-display-table", "standard-display-table"]
         .into_iter()
         .find_map(|name| match interp.lookup_var(name, env)?.kind() {
-            Kind::CharTable(table) if table.has_purpose("display-table") => Some(table),
+            Kind::CharTable(table)
+                if table.has_purpose("display-table") && table.extra_count() == 6 =>
+            {
+                Some(table)
+            }
             _ => None,
         })
 }

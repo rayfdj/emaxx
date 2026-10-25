@@ -1028,56 +1028,46 @@ define_dispatch!(
                 indent_to(interp, target, minimum, env).map(Value::Integer)
             }
             "move-to-column" => {
-                need_args(name, args, 1)?;
-                let target = args[0].as_integer()?.max(0) as usize;
-                let force = args.get(1).cloned().unwrap_or(Value::Nil);
-                let saved = interp.buffer.borrow().point();
-                interp.buffer.borrow_mut().beginning_of_line();
-                let start = interp.buffer.borrow().point();
-                interp.buffer.borrow_mut().goto_char(saved);
-                let mut pos = start;
-                let mut current_col = 0;
-                let mut previous_col = 0;
-                while pos < interp.buffer.borrow().point_max() {
-                    if current_col >= target {
-                        break;
-                    }
-                    let Some(ch) = interp.buffer.borrow().char_at(pos) else {
-                        break;
-                    };
-                    if ch == '\n' {
-                        break;
-                    }
-                    previous_col = current_col;
-                    current_col = column_after(interp, env, current_col, pos, ch);
-                    pos += 1;
-                }
-                interp.buffer.borrow_mut().goto_char(pos);
-                // indent.c: a tab that overshot becomes spaces up to the goal,
-                // the tab deleted and the rest of its width indented, point
-                // at the goal.
+                // indent.c Fmove_to_column: scan_for_column to the goal.
+                need_arg_range(name, args, 1, 2)?;
+                let goal = match args[0].kind() {
+                    Kind::Integer(goal) if goal >= 0 => goal as usize,
+                    _ => return Err(LispError::WrongTypeArgument("wholenump".into(), args[0])),
+                };
+                let force = args.get(1).copied().unwrap_or(Value::Nil);
+                let point = interp.buffer.borrow().point();
+                let start = line_beginning_at(interp, point);
+                let zv = interp.buffer.borrow().point_max();
+                let scan = scan_for_column(interp, env, start, zv, Some(goal));
+                let mut col = scan.col;
+                interp.buffer.borrow_mut().goto_char(scan.pos);
+                // If a tab made us overshoot, change it to spaces and scan
+                // through it again.
                 if !force.is_nil()
-                    && current_col > target
-                    && pos > start
-                    && interp.buffer.borrow().char_at(pos - 1) == Some('\t')
-                    && previous_col < target
+                    && col > goal
+                    && interp.buffer.borrow().char_at(scan.prev_pos) == Some('\t')
+                    && scan.prev_col < goal
+                    && scan.prev_pos < scan.pos
                 {
-                    interp.buffer.borrow_mut().goto_char(pos - 1);
-                    let spaces = " ".repeat(target - previous_col);
+                    // Insert spaces in front of the tab first, so a marker
+                    // at the end of the tab gets adjusted.
+                    interp.buffer.borrow_mut().goto_char(scan.prev_pos);
+                    let spaces = " ".repeat(goal - scan.prev_col);
                     insert_text_with_hooks(interp, &spaces, &[], &[], true, false, env)?;
+                    // Now delete the tab, and indent to COL.
                     let point = interp.buffer.borrow().point();
                     delete_region_with_hooks(interp, point, point + 1, env)?;
-                    let goal = interp.buffer.borrow().point();
-                    indent_to(interp, current_col as i64, 0, env)?;
-                    interp.buffer.borrow_mut().goto_char(goal);
-                    current_col = target;
+                    let goal_pt = interp.buffer.borrow().point();
+                    indent_to(interp, col as i64, 0, env)?;
+                    interp.buffer.borrow_mut().goto_char(goal_pt);
+                    col = goal;
                 }
-                // A line that ends short is filled out with spaces.
-                if current_col < target && matches!(force.kind(), Kind::T) {
-                    current_col = target;
-                    indent_to(interp, target as i64, 0, env)?;
+                // If the line ends prematurely, add space to the end.
+                if col < goal && matches!(force.kind(), Kind::T) {
+                    col = goal;
+                    indent_to(interp, goal as i64, 0, env)?;
                 }
-                Ok(Value::Integer(current_col as i64))
+                Ok(Value::Integer(col as i64))
             }
             "line-number-at-pos" => {
                 need_arg_range(name, args, 0, 2)?;
@@ -1688,6 +1678,18 @@ pub(crate) fn screen_row_starts(
     }
 }
 
+/// The screen line among a display line's row STARTS where an iterator
+/// at buffer position POS is: the first beginning at POS (a display
+/// string spanning screen lines begins several rows at its position, and
+/// an iterator delivering the string from its start is on the first),
+/// else the last beginning before POS.
+pub(crate) fn row_index_of(starts: &[usize], pos: usize) -> usize {
+    starts
+        .iter()
+        .position(|&start| start == pos)
+        .unwrap_or_else(|| starts.iter().rposition(|&start| start < pos).unwrap_or(0))
+}
+
 pub(crate) fn visual_segment_starts(
     interp: &mut Interpreter,
     env: &mut Env,
@@ -2226,15 +2228,28 @@ pub(crate) fn visual_vertical_motion(
     n: i64,
     goal_col: Option<usize>,
 ) -> Result<i64, LispError> {
+    if interactive_motion(interp, env) {
+        // The display iterator's walk, then move_it_in_display_line to
+        // the goal X on the screen line it reached (line-move-visual's
+        // temporary-goal-column contract).
+        let (mut target, moved) =
+            crate::lisp::primitives::move_it::vertical_motion(interp, env, window_id, n);
+        if let Some(goal) = goal_col.filter(|&goal| goal > 0) {
+            let (bol, eol) = visual_line_bounds(interp, target);
+            let starts = screen_row_starts(interp, env, window_id, bol, eol);
+            let index = row_index_of(&starts, target);
+            target = interactive_screen_line(interp, env, window_id, bol)
+                .position_at_column(index, goal);
+        }
+        interp.buffer.borrow_mut().goto_char(target);
+        return Ok(moved);
+    }
     let point_min = interp.buffer.borrow().point_min();
     let point_max = interp.buffer.borrow().point_max();
     let point = interp.buffer.borrow().point();
     let (mut bol, mut eol) = visual_line_bounds(interp, point);
     let mut starts = screen_row_starts(interp, env, window_id, bol, eol);
-    let mut index = starts
-        .iter()
-        .rposition(|&start| start <= point)
-        .unwrap_or(0);
+    let mut index = row_index_of(&starts, point);
     let mut moved = 0i64;
     let mut exhausted_forward = false;
     while moved < n {
@@ -2268,21 +2283,13 @@ pub(crate) fn visual_vertical_motion(
             break;
         }
     }
-    // GNU's batch path ignores a cons LINES's goal column: point lands at
-    // the start of the target screen line (or buffer end on overshoot).
-    // An interactive session has a real window, where GNU moves to the
-    // goal column within the target screen line (line-move-visual's
-    // temporary-goal-column contract).
+    // GNU's batch path (vmotion) ignores a cons LINES's goal column:
+    // point lands at the start of the target screen line (or buffer end
+    // on overshoot).
     let target = if exhausted_forward {
         point_max
     } else {
-        let mut target = starts[index];
-        if let Some(goal) = goal_col.filter(|&goal| goal > 0 && interactive_motion(interp, env)) {
-            // move_it_in_display_line to the goal X on the target row.
-            target = interactive_screen_line(interp, env, window_id, bol)
-                .position_at_column(index, goal);
-        }
-        target
+        starts[index]
     };
     interp.buffer.borrow_mut().goto_char(target);
     Ok(moved)

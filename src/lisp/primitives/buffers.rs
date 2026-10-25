@@ -1231,69 +1231,296 @@ pub(crate) fn byte_to_position(interp: &Interpreter, byte: usize) -> Option<usiz
     buffer_byte_to_position(&interp.buffer.borrow(), byte)
 }
 
-pub(crate) fn column_at(interp: &Interpreter, env: &Env, line_start: usize, pos: usize) -> usize {
-    let mut col = 0usize;
-    for p in line_start..pos {
-        match interp.buffer.borrow().char_at(p) {
-            Some(ch) => col = column_after(interp, env, col, p, ch),
-            None => break,
-        }
+/// find_newline backward from POS to BEGV: the beginning of POS's line.
+pub(crate) fn line_beginning_at(interp: &Interpreter, pos: usize) -> usize {
+    let buffer = interp.buffer.borrow();
+    let begv = buffer.point_min();
+    let mut at = pos.clamp(begv, buffer.point_max());
+    while at > begv && buffer.char_at(at - 1) != Some('\n') {
+        at -= 1;
     }
-    col
+    at
 }
 
-pub(crate) fn column_after(
+/// The columns from LINE_START, the beginning of a line, to POS
+/// (indent.c current_column_1).
+pub(crate) fn column_at(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    line_start: usize,
+    pos: usize,
+) -> usize {
+    scan_for_column(interp, env, line_start, pos, None).col
+}
+
+/// What indent.c scan_for_column leaves.
+pub(crate) struct ColumnScan {
+    /// The column reached.
+    pub(crate) col: usize,
+    /// Where the scan stopped: END, the line's end, or the first position
+    /// at GOAL's column.
+    pub(crate) pos: usize,
+    /// The position and column before the last character or display
+    /// replacement scanned.
+    pub(crate) prev_pos: usize,
+    pub(crate) prev_col: usize,
+}
+
+/// indent.c scan_for_column from LINE_START, the beginning of a line:
+/// forward to END or the line's end, or until GOAL columns are reached
+/// once invisible text there is skipped (text whose invisibility shows
+/// an ellipsis still counts).  A `display' string counts its
+/// `string-width' and a (space ...) spec its width for the text it
+/// covers (check_display_width); a display table's glyph vector counts
+/// its glyphs.
+pub(crate) fn scan_for_column(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    line_start: usize,
+    end: usize,
+    goal: Option<usize>,
+) -> ColumnScan {
+    let goal = goal.unwrap_or(usize::MAX);
+    // SANE_TAB_WIDTH.
+    let tab_width = interp
+        .lookup_var("tab-width", env)
+        .and_then(|value| value.integer_value())
+        .filter(|width| (1..=1000).contains(width))
+        .unwrap_or(8) as usize;
+    let ctl_arrow = interp
+        .lookup_var("ctl-arrow", env)
+        .is_some_and(|value| value.is_truthy());
+    let selective_display = interp
+        .lookup_var("selective-display", env)
+        .is_some_and(|value| matches!(value.kind(), Kind::T));
+    let multibyte = interp.buffer.borrow().is_multibyte();
+    let display_table = buffer_display_table(interp, env);
+    let spec = {
+        let buffer = interp.buffer.borrow();
+        resolve_buffer_invisibility(interp, &buffer, interp.current_buffer_id())
+    };
+    let end = end.min(interp.buffer.borrow().point_max());
+    let tab = |col: usize| (col + tab_width) / tab_width * tab_width;
+    let mut col = 0usize;
+    let mut prev_col = 0usize;
+    let mut scan = line_start;
+    let mut prev_pos = scan;
+    'scan: while scan < end {
+        // skip_invisible with no window: invisible text, not the text an
+        // ellipsis stands for.
+        while scan < end && invisible_class_at(&interp.buffer.borrow(), &spec, scan) == 1 {
+            scan += 1;
+        }
+        if scan >= end {
+            break;
+        }
+        // The goal, tested after the invisible text, so point goes before
+        // the character the cursor will appear on.
+        if col >= goal {
+            break;
+        }
+        prev_col = col;
+        prev_pos = scan;
+        if let Some((width, display_end)) = check_display_width(interp, env, scan, col) {
+            col += width;
+            if display_end > scan {
+                scan = display_end;
+                continue;
+            }
+        }
+        let Some(ch) = interp.buffer.borrow().char_at(scan) else {
+            break;
+        };
+        let glyphs = display_table
+            .filter(|_| !(multibyte && ch > '\u{7f}'))
+            .and_then(|table| interp.char_table_get(table, ch as u32))
+            .filter(|entry| matches!(entry.kind(), Kind::Vector(_)));
+        if let Some(glyphs) = glyphs {
+            for glyph in vector_items(&glyphs).unwrap_or_default() {
+                let code = match glyph.kind() {
+                    Kind::Integer(code) => Some(code & 0x3F_FFFF),
+                    _ => glyph
+                        .cons_values()
+                        .and_then(|(code, _)| code.integer_value()),
+                };
+                match code
+                    .and_then(|code| char::from_u32(code as u32))
+                    .unwrap_or(' ')
+                {
+                    '\n' => break 'scan,
+                    '\r' if selective_display => break 'scan,
+                    '\t' => col = tab(col),
+                    _ => col += 1,
+                }
+            }
+        } else {
+            match ch {
+                '\n' => break,
+                '\r' if selective_display => break,
+                '\t' => col = tab(col),
+                _ if multibyte && ch > '\u{7f}' => {
+                    col += multibyte_char_width(interp, env, ch, display_table);
+                }
+                _ if ctl_arrow && (ch < ' ' || ch == '\u{7f}') => col += 2,
+                _ if !(' '..'\u{7f}').contains(&ch) => col += 4,
+                _ => col += 1,
+            }
+        }
+        scan += 1;
+    }
+    ColumnScan {
+        col,
+        pos: scan,
+        prev_pos,
+        prev_col,
+    }
+}
+
+/// MULTIBYTE_BYTES_WIDTH: a display table's glyph count for CH, else
+/// its `char-width-table' width (buffer.h sanitize_char_width).
+fn multibyte_char_width(
     interp: &Interpreter,
     env: &Env,
-    current_col: usize,
-    pos: usize,
     ch: char,
+    display_table: Option<crate::lisp::types::CharTableRef>,
 ) -> usize {
-    if char_is_invisible(interp, pos, env) {
-        current_col
-    } else if ch == '\t' {
-        let tab_width = interp
-            .lookup_var("tab-width", env)
-            .and_then(|value| value.integer_value())
-            .unwrap_or(8)
-            .max(1) as usize;
-        (current_col / tab_width + 1) * tab_width
-    } else if (' '..='~').contains(&ch) {
-        current_col + 1
-    } else if ch == '\n' {
-        current_col
+    if let Some(entry) = display_table
+        .and_then(|table| interp.char_table_get(table, ch as u32))
+        .filter(|entry| matches!(entry.kind(), Kind::Vector(_)))
+    {
+        return vector_items(&entry)
+            .map_or(0, |items| items.len())
+            .min(1000);
+    }
+    let width = interp
+        .lookup_var("char-width-table", env)
+        .and_then(|value| match value.kind() {
+            Kind::CharTable(table) => interp.char_table_get(table, ch as u32),
+            _ => None,
+        })
+        .and_then(|value| value.integer_value())
+        .unwrap_or(0);
+    if (0..=1000).contains(&width) {
+        width as usize
     } else {
-        // indent.c:scan_for_column and buffer.h:CHARACTER_WIDTH use
-        // ctl-arrow for ASCII controls, four columns for unibyte high
-        // bytes, and the live char-width-table for multibyte characters.
-        let width = if ch <= '\u{7f}' {
-            if interp
-                .lookup_var("ctl-arrow", env)
-                .is_some_and(|value| value.is_truthy())
+        1000
+    }
+}
+
+/// indent.c check_display_width: the columns a `display' property at POS
+/// takes -- a (space ...) spec's :width, :relative-width or :align-to, a
+/// string's `string-width' -- and the end of the text it covers (its
+/// overlay's end, or its text property's range).
+fn check_display_width(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    pos: usize,
+    col: usize,
+) -> Option<(usize, usize)> {
+    let (value, overlay) = get_char_property_and_overlay(
+        interp,
+        &Value::Integer(pos as i64),
+        crate::lisp::types::PropertyName::new(Value::symbol("display")),
+        Value::Nil,
+    )
+    .ok()?;
+    if value.is_nil() {
+        return None;
+    }
+    const INT_MAX: i64 = i32::MAX as i64;
+    let plist_get = |plist: Value, key: &str| -> Value {
+        let mut tail = plist;
+        while let Some((name, rest)) = tail.cons_values() {
+            let Some((item, next)) = rest.cons_values() else {
+                break;
+            };
+            if name.symbol_str() == Some(key) {
+                return item;
+            }
+            tail = next;
+        }
+        Value::Nil
+    };
+    let ranged = |value: Value, low: i64, high: i64| {
+        value.integer_value().filter(|n| (low..=high).contains(n))
+    };
+    let float = |value: Value| match value.kind() {
+        Kind::Float(f) => Some(f.get()),
+        _ => None,
+    };
+    let mut plist = Value::Nil;
+    let width = match value.cons_values() {
+        Some((head, tail)) if head.symbol_str() == Some("space") => {
+            plist = tail;
+            let col = col as i64;
+            let align_to_max = col.saturating_add(INT_MAX);
+            let relative = plist_get(plist, ":relative-width");
+            if let Some(width) = ranged(plist_get(plist, ":width"), 0, INT_MAX)
+                .or_else(|| ranged(relative, 0, INT_MAX))
             {
-                2
+                width
+            } else if let Some(f) = float(relative).filter(|f| (0.0..=INT_MAX as f64).contains(f)) {
+                (f + 0.5) as i64
             } else {
-                4
+                let align = plist_get(plist, ":align-to");
+                if let Some(to) = ranged(align, col, align_to_max) {
+                    to - col
+                } else if let Some(f) =
+                    float(align).filter(|f| col as f64 <= *f && *f <= align_to_max as f64)
+                {
+                    (f + 0.5) as i64 - col
+                } else {
+                    -1
+                }
             }
-        } else if !interp.buffer.borrow().is_multibyte() {
-            4
-        } else {
-            let width = interp
-                .lookup_var("char-width-table", env)
-                .and_then(|value| match value.kind() {
-                    Kind::CharTable(table) => interp.char_table_get(table, ch as u32),
-                    _ => None,
-                })
-                .and_then(|value| value.integer_value())
-                .unwrap_or(0);
-            // buffer.h:sanitize_char_width caps invalid numeric widths.
-            if (0..=1000).contains(&width) {
-                width as usize
+        }
+        _ if value.is_string() => super::dispatch::call(interp, "string-width", &[value], env)
+            .ok()
+            .and_then(|width| width.integer_value())
+            .unwrap_or(-1),
+        _ => -1,
+    };
+    if width < 0 {
+        return None;
+    }
+    let end = match overlay {
+        Some(overlay) => overlay.end(),
+        None => text_property_range_end(&interp.buffer.borrow(), pos, "display"),
+    };
+    let mut width = width as usize;
+    if !plist_get(plist, ":relative-width").is_nil() && interp.buffer.borrow().is_multibyte() {
+        // The column width of the character at POS, when above one.
+        if let Some(ch) = interp.buffer.borrow().char_at(pos) {
+            let char_width = if ch > '\u{7f}' {
+                let table = buffer_display_table(interp, env);
+                multibyte_char_width(interp, env, ch, table)
             } else {
-                1000
-            }
-        };
-        current_col + width
+                1
+            };
+            width *= char_width;
+        }
+    }
+    Some((width, end))
+}
+
+/// get_property_and_range's end: past the text property intervals from
+/// POS on whose PROP is EQ to POS's.
+fn text_property_range_end(buffer: &crate::buffer::Buffer, pos: usize, prop: &str) -> usize {
+    let zv = buffer.point_max();
+    let initial = buffer.text_property_at(pos, prop).map(|value| value.word());
+    let mut at = pos;
+    loop {
+        let (_, interval_end) = buffer.text_property_interval_around(at);
+        let next = interval_end.max(at + 1);
+        if next >= zv
+            || buffer
+                .text_property_at(next, prop)
+                .map(|value| value.word())
+                != initial
+        {
+            return next.min(zv);
+        }
+        at = next;
     }
 }
 

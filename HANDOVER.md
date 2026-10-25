@@ -6047,14 +6047,87 @@ setup_process_coding_systems's check now refuses). A 13-form
   top margin at the last adjust_frame_glyphs, so after a `menu-bar-mode'
   toggle and window commands in one command GNU draws the window one row
   off (its menu bar over the first text row, the echo area twice) until
-  the next resize; Emaxx draws from the windows' pixel edges. And the
-  move_it_by_lines reseat skip found in round 80 is still open.
+  the next resize; Emaxx draws from the windows' pixel edges. (The
+  move_it_by_lines reseat skip found in round 80 is round 82's.)
   Local validation: the full gate, 3,215 passed across its ten groups
   with the documented local skips (eval_03, 326, includes the new
   bar-lines and margin tests), and 89 GNU test files (every ERC scenario
   file, edebug, kmacro, keyboard, minibuffer, simple, xdisp, scroll,
   xt-mouse, isearch, repeat, term, python, so-long and others; 1,785
   tests) as GNU.
+- **Round 82: the display iterator's motion between screen lines on a
+  live display (xdisp.c move_it_by_lines, indent.c Fvertical_motion),
+  and indent.c's column scan.** (1) src/lisp/primitives/move_it.rs
+  ports what the iterator does that the terminal's screen-line layouts
+  do not show by themselves: reseat's handle_stop at a position (a
+  replacing `display' spec first: an empty string is popped at once,
+  past the text the property covers, while a string that shows, a
+  stretch or an image stops there; then invisible text, skipped with the
+  properties after it handled anew unless an ellipsis shows); where
+  move_it_to (MOVE_TO_POS) stops for a position (at a screen line it
+  begins there from the buffer, which move_it_to checks before
+  handle_stop runs, else past the display replacement or invisible text
+  over it); back_to_previous_visible_line_start;
+  move_it_vertically_backward (IT, 0), whose start of a screen line that
+  begins inside a multi-line display string is the buffer text after the
+  string; and move_it_by_lines (forward to ZV when the lines run out and
+  past a display string a line begins inside; backward -DVPOS buffer
+  lines within -DVPOS full screen lines, reseated there, forward again
+  when continuation lines took it too far, back to the reseated start
+  when that moved nowhere, and the pass without the limit). Interactive
+  `vertical-motion' is Fvertical_motion over them (start_display's reseat
+  at point, the scan from the reseated start of point's line, the stop
+  before a display string at point, the overshoot backtracking, one line
+  less from a line start a display string covers, the forward cases), so
+  `scroll-up' and `scroll-down' (window_scroll_line_based),
+  `move-to-window-line' and `line-move-visual' follow it; `recenter' with
+  a non-negative ARG is move_it_by_lines (IT, 0) then (IT, -ARG); and
+  compute_window_start_on_continuation_line starts from the reseated
+  line start, so a start reseated past a prefix stays. (recenter 1) and
+  (vertical-motion -1) now land past a 9-character invisible or
+  empty-display prefix at a line start, the round 80 finding, while
+  (vertical-motion 0), (recenter 0), a negative ARG and a display string
+  that shows keep the line start, and `scroll-down' from a line start a
+  display string covers lands on the previous line's start. A position's
+  screen line among a display line's row starts is the first beginning
+  at it (a multi-line display string begins several rows at its
+  position) else the last beginning before it (row_index_of, also for
+  `posn-at-point''s walk). (2) indent.c scan_for_column is ported for
+  `current-column', `move-to-column' and `indent-to': invisible text is
+  skipped, though not text an ellipsis stands for, before the goal is
+  tested (so (move-to-column 0) on a line beginning with invisible text
+  goes past it); check_display_width counts a `display' string's
+  `string-width' and a (space ...) spec's :width, :relative-width or
+  :align-to over the text the property or its overlay covers (a float
+  :width is ignored, as GNU's `||' leaves it); a display table's glyph
+  vectors count their glyphs; `selective-display' t ends the line at a
+  CR; and Fmove_to_column converts an overshooting tab from the scan's
+  previous position. Emaxx counted the raw characters under a display
+  string, so `previous-line' from text after a display string set the
+  wrong goal column. buffer_display_table also wants DISP_TABLE_P's six
+  extra slots now, for `string-width' and the mode line too. (3) An
+  invisibility spec list holding t hides text whose `invisible' is t
+  (invisibility_atom_eq never matched t). tmux probes of GNU 30.2 (40
+  lines whose prefixes are in turn an empty display string, invisible
+  and "X": `recenter' 0 to 5 and -1 to -3 from line ends, line starts and
+  inside a prefix, `vertical-motion' -1 and 0, `scroll-down' twice from
+  line 20, `set-window-start' with and without NOFORCE; 30 lines adding
+  overlay prefixes, wrapping lines and a prefix displayed as "AB\nCD":
+  `vertical-motion' -3 to 2 from line ends, starts and middles,
+  `recenter' 1 to 3, a cons goal column, `previous-line',
+  `scroll-down', `move-to-window-line' and motion from inside the
+  two-line string) give GNU's values and screens; batch probes of the
+  columns of tabs, controls with and without `ctl-arrow', wide
+  characters, display strings, space specs, ellipses, a CR under
+  `selective-display', display tables and `move-to-column' FORCE give
+  GNU's. An instrumented copy of GNU's build (fprintf in Fvertical_motion
+  and move_it_by_lines) settled the multi-line display string case:
+  move_it_to stops at a line start that is its target before the string
+  there is pushed.
+  Local validation: the full gate, 3,219 passed across its ten groups
+  with the documented local skips (eval_04, 255, includes the column
+  test; primitives, 753, the two motion tests), and the same 89 GNU test
+  files (1,785 tests) as GNU.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -6755,6 +6828,9 @@ frozen passed on its first attempt (run 40199438907); PR #106 merged
 rounds 77 to 79 into main (`4fc869e`).
 **On `0a98371`** (round 80): full Rust gate passed (run 40213825220),
 frozen passed on its first attempt (run 40213827546).
+**On `1d47612`** (round 81): full Rust gate passed (run 40221555021),
+frozen passed on its first attempt (run 40221557268); PR #107 merged
+rounds 80 and 81 into main (`e5a16c0`).
 
 **Findings recorded, not fixed:**
 - `features`, `values` and `top-level` are special variables in Emaxx

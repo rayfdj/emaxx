@@ -6585,7 +6585,7 @@ define_dispatch!(
                 let walk_starts = super::buffer_edit::screen_row_starts(
                     interp, env, window_id, walk_bol, walk_eol,
                 );
-                let mut walk_seg = walk_starts.iter().rposition(|&s| s <= start).unwrap_or(0);
+                let mut walk_seg = super::buffer_edit::row_index_of(&walk_starts, start);
                 while y < metrics.text_height {
                     if walk_bol == bol {
                         y += seg_index.saturating_sub(walk_seg);

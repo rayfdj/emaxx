@@ -22,7 +22,9 @@ pub(crate) use misc::set_internal_symbol;
 mod misc_keymaps;
 mod numeric;
 
-pub(crate) use buffer_edit::{screen_row_starts, visual_line_bounds, visual_vertical_motion};
+pub(crate) use buffer_edit::{
+    row_index_of, screen_row_starts, visual_line_bounds, visual_vertical_motion,
+};
 #[cfg(test)]
 pub(crate) use display::echo_area_message_with_spans;
 #[cfg(test)]

@@ -138,6 +138,7 @@ mod invisibility;
 mod keymap;
 mod keys;
 mod loading;
+pub(crate) mod move_it;
 mod numeric_time;
 pub(crate) mod pdumper;
 pub(crate) mod print;
