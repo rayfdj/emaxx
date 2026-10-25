@@ -746,27 +746,8 @@ impl Interpreter {
         self.selected_frame_id.borrow().width.max(1)
     }
 
-    pub fn set_frame_width(&mut self, width: i64) {
-        let width = width.max(1);
-        {
-            let mut frame = self.selected_frame_id.borrow_mut();
-            frame.width = width;
-        }
-        self.resize_frame_window_records();
-    }
-
     pub fn frame_height(&self) -> i64 {
         self.selected_frame_id.borrow().height.max(1)
-    }
-
-    pub fn set_frame_height(&mut self, height: i64) {
-        let text_height = height.max(1);
-        {
-            let mut frame = self.selected_frame_id.borrow_mut();
-            frame.text_height = text_height;
-            frame.height = text_height.saturating_add(1);
-        }
-        self.resize_frame_window_records();
     }
 
     /// Adopt the live terminal's display capabilities: color count and
@@ -822,189 +803,41 @@ impl Interpreter {
         .ok()
     }
 
-    /// Adopt the terminal's real geometry: a tty frame's height counts
-    /// every screen row (GNU's FRAME_TOTAL_LINES), so the root window
-    /// keeps rows − 1 lines above the one-line minibuffer.  Batch frames
-    /// keep their dumb 80×25 shape; only the terminal frontend calls this.
+    /// dispnew.c:init_display_interactive: the initial frame moves onto
+    /// the terminal, change_frame_size giving it the terminal's size at
+    /// once (the bars of make_initial_frame above its windows).  Only the
+    /// terminal frontend calls this; batch frames keep their dumb 80x25.
     pub fn set_tty_frame_size(&mut self, width: i64, height: i64) {
-        let width = width.max(1);
-        let height = height.max(2);
-        // GNU's tty frame reserves FRAME_MENU_BAR_LINES above the window
-        // tree (frame.c adjust_frame_size); the `menu-bar-lines' frame
-        // parameter is menu-bar-mode's channel for that count.
-        // A tty menu bar is at most one screen line (GNU's tty frames
-        // force menu_bar_lines to 0 or 1 regardless of the parameter).
-        let menu_bar_lines = self
-            .frame_parameter_override("menu-bar-lines")
-            .and_then(|value| value.integer_value())
-            .unwrap_or(1)
-            .clamp(0, 1)
-            .min(height - 2);
-        self.selected_frame_id.borrow_mut().tty_sized = true;
-        {
-            let mut frame = self.selected_frame_id.borrow_mut();
-            frame.width = width;
-            frame.height = height;
-            frame.text_height = height - menu_bar_lines;
-            frame.parameter_width = width;
-            frame.parameter_height = height;
+        let frame = self.selected_frame_id;
+        frame.borrow_mut().tty_sized = true;
+        let mut env = crate::lisp::types::Env::new();
+        let _ = primitives::change_frame_size(self, frame, width, height, false, false, &mut env);
+    }
+
+    /// dispnew.c:handle_window_change_signal: the terminal's size changed;
+    /// each frame on it takes the new size at the next
+    /// do_pending_window_change.
+    pub(crate) fn tty_window_change(&mut self, width: i64, height: i64) {
+        let terminal = self.selected_terminal_id();
+        let frames: Vec<_> = self
+            .frame_states
+            .iter()
+            .copied()
+            .filter(|frame| {
+                frame.is_live()
+                    && frame.borrow().tty_sized
+                    && frame.borrow().terminal.map(|terminal| terminal.id) == Some(terminal)
+            })
+            .collect();
+        let mut env = crate::lisp::types::Env::new();
+        for frame in frames {
+            let _ =
+                primitives::change_frame_size(self, frame, width, height, false, true, &mut env);
         }
-        self.resize_frame_window_records();
     }
 
     pub(crate) fn frame_text_height(&self) -> i64 {
         self.selected_frame_id.borrow().text_height.max(1)
-    }
-
-    fn window_record_geometry(&self, id: u64) -> (i64, i64, i64, i64) {
-        let integer_slot = |slot: usize, fallback: i64| {
-            self.find_record(id)
-                .and_then(|record| record.slots.get(slot))
-                .and_then(|value| value.integer_value())
-                .unwrap_or(fallback)
-        };
-        (
-            integer_slot(primitives::WINDOW_PIXEL_WIDTH_SLOT, self.frame_width()),
-            integer_slot(primitives::WINDOW_PIXEL_HEIGHT_SLOT, self.frame_height()),
-            integer_slot(primitives::WINDOW_PIXEL_LEFT_SLOT, 0),
-            integer_slot(primitives::WINDOW_PIXEL_TOP_SLOT, 0),
-        )
-    }
-
-    fn set_window_record_geometry(&mut self, id: u64, geometry: (i64, i64, i64, i64)) {
-        let Some(record) = self.find_record_mut(id) else {
-            return;
-        };
-        if record.slots.len() <= primitives::WINDOW_PIXEL_TOP_SLOT {
-            record
-                .slots
-                .resize(primitives::WINDOW_PIXEL_TOP_SLOT + 1, Value::Nil);
-        }
-        for (slot, value) in [
-            (primitives::WINDOW_PIXEL_WIDTH_SLOT, geometry.0),
-            (primitives::WINDOW_PIXEL_HEIGHT_SLOT, geometry.1),
-            (primitives::WINDOW_PIXEL_LEFT_SLOT, geometry.2),
-            (primitives::WINDOW_PIXEL_TOP_SLOT, geometry.3),
-        ] {
-            record.slots[slot] = Value::Integer(value);
-        }
-    }
-
-    fn window_record_link(&self, id: u64, slot: usize) -> Option<u64> {
-        match self
-            .find_record(id)
-            .and_then(|record| record.slots.get(slot))
-            .map(|v| v.kind())
-        {
-            Some(Kind::Record(link)) => Some(link.id),
-            _ => None,
-        }
-    }
-
-    fn resize_window_record_tree(&mut self, id: u64, geometry: (i64, i64, i64, i64)) {
-        let old_geometry = self.window_record_geometry(id);
-        let kind = self
-            .find_record(id)
-            .and_then(|record| record.slots.get(primitives::WINDOW_KIND_SLOT))
-            .cloned()
-            .unwrap_or(Value::Nil);
-        let horizontal = matches!(
-            kind.kind(),
-            Kind::Symbol(ref kind) if kind == primitives::INTERNAL_HORIZONTAL_WINDOW_KIND
-        );
-        let vertical = matches!(
-            kind.kind(),
-            Kind::Symbol(ref kind) if kind == primitives::INTERNAL_VERTICAL_WINDOW_KIND
-        );
-        let mut children = Vec::new();
-        let mut child = self.window_record_link(id, primitives::WINDOW_FIRST_CHILD_SLOT);
-        while let Some(child_id) = child {
-            if children.contains(&child_id) {
-                break;
-            }
-            children.push(child_id);
-            child = self.window_record_link(child_id, primitives::WINDOW_NEXT_SIBLING_SLOT);
-        }
-
-        self.set_window_record_geometry(id, geometry);
-        if children.is_empty() || (!horizontal && !vertical) {
-            return;
-        }
-
-        let old_total = if horizontal {
-            old_geometry.0
-        } else {
-            old_geometry.1
-        }
-        .max(1);
-        let new_total = if horizontal { geometry.0 } else { geometry.1 }.max(0);
-        let mut old_offset = 0;
-        for (index, child_id) in children.iter().enumerate() {
-            let child_geometry = self.window_record_geometry(*child_id);
-            let old_size = if horizontal {
-                child_geometry.0
-            } else {
-                child_geometry.1
-            }
-            .max(0);
-            let new_start = new_total.saturating_mul(old_offset) / old_total;
-            old_offset = old_offset.saturating_add(old_size);
-            let new_end = if index + 1 == children.len() {
-                new_total
-            } else {
-                new_total.saturating_mul(old_offset) / old_total
-            };
-            let child_new_geometry = if horizontal {
-                (
-                    new_end.saturating_sub(new_start),
-                    geometry.1,
-                    geometry.2.saturating_add(new_start),
-                    geometry.3,
-                )
-            } else {
-                (
-                    geometry.0,
-                    new_end.saturating_sub(new_start),
-                    geometry.2,
-                    geometry.3.saturating_add(new_start),
-                )
-            };
-            self.resize_window_record_tree(*child_id, child_new_geometry);
-        }
-    }
-
-    fn resize_frame_window_records(&mut self) {
-        self.resize_frame_window_records_for(self.selected_frame_id);
-    }
-
-    pub(crate) fn resize_frame_window_records_for(&mut self, id: crate::lisp::types::FrameRef) {
-        let frame = id.borrow();
-        let (width, total_height, text_height, root, minibuffer) = (
-            frame.width,
-            frame.height,
-            frame.text_height,
-            frame.root_window_id(),
-            frame.minibuffer_window_id(),
-        );
-        drop(frame);
-        let top_margin = total_height.saturating_sub(text_height);
-        let root_height = text_height.saturating_sub(1).max(1);
-        if self.find_record(root).is_some() {
-            self.resize_window_record_tree(root, (width, root_height, 0, top_margin));
-        }
-        if self.find_record(minibuffer).is_some() {
-            let minibuffer_id = minibuffer;
-            let old_minibuffer = self.window_record_geometry(minibuffer_id);
-            self.set_window_record_geometry(
-                minibuffer_id,
-                (
-                    width,
-                    old_minibuffer.1,
-                    old_minibuffer.2,
-                    top_margin.saturating_add(root_height),
-                ),
-            );
-        }
     }
 
     pub(crate) fn frame_parameter_override(&self, name: &str) -> Option<Value> {
@@ -1272,9 +1105,18 @@ impl Interpreter {
         self.note_selected_frame(snapshot.frame_id);
         self.set_selected_window_id(snapshot.selected_window_id);
         // GNU records frame dimensions for configuration equality, but
-        // `set-window-configuration' does not rewind a frame resize.  Restore
-        // the saved tree into the frame's current geometry instead.
-        self.resize_frame_window_records();
+        // `set-window-configuration' does not rewind a frame resize:
+        // adjust_frame_size (f, -1, -1, 4, ...) fits the restored tree to
+        // the frame's current size.
+        let _ = primitives::adjust_frame_size(
+            self,
+            snapshot.frame_id,
+            -1,
+            -1,
+            4,
+            false,
+            &mut crate::lisp::types::Env::new(),
+        );
         if self.frame_is_live(snapshot.selected_frame_id) {
             self.note_selected_frame(snapshot.selected_frame_id);
             let selected_window = self.selected_frame_id.borrow().selected_window_id();
@@ -2331,9 +2173,10 @@ impl Interpreter {
 /// settings, and each saved window in save_window_save's order (the
 /// frame's window tree depth first, then the minibuffer window as the
 /// root's next sibling) as whether it is the current window, its buffer
-/// (nil for an internal window), pixel edges, display table and its
-/// parent's and previous sibling's indices among the saved windows.
-type SavedWindow = (bool, [Value; 6], Option<usize>, Option<usize>);
+/// (nil for an internal window), pixel and character edges, display
+/// table, margins and its parent's and previous sibling's indices among
+/// the saved windows.
+type SavedWindow = (bool, [Value; 12], Option<usize>, Option<usize>);
 
 fn saved_windows(
     snapshot: &WindowConfigurationSnapshot,
@@ -2390,6 +2233,15 @@ fn saved_windows(
         .map(|&id| {
             let slots = slots_of(id).unwrap_or_default();
             let slot = |index| slots.get(index).copied().unwrap_or(Value::Nil);
+            // A record from before the character geometry slots reads its
+            // pixel geometry (primitives::window_char_geometry).
+            let char_slot = |index, pixel| {
+                slots
+                    .get(index)
+                    .copied()
+                    .filter(|value: &Value| !value.is_nil())
+                    .unwrap_or_else(|| slot(pixel))
+            };
             let prev = if Some(id) == minibuffer.map(|(id, _)| *id) {
                 Some(0)
             } else {
@@ -2403,7 +2255,25 @@ fn saved_windows(
                     slot(primitives::WINDOW_PIXEL_TOP_SLOT),
                     slot(primitives::WINDOW_PIXEL_HEIGHT_SLOT),
                     slot(primitives::WINDOW_PIXEL_WIDTH_SLOT),
+                    char_slot(
+                        primitives::WINDOW_LEFT_COL_SLOT,
+                        primitives::WINDOW_PIXEL_LEFT_SLOT,
+                    ),
+                    char_slot(
+                        primitives::WINDOW_TOP_LINE_SLOT,
+                        primitives::WINDOW_PIXEL_TOP_SLOT,
+                    ),
+                    char_slot(
+                        primitives::WINDOW_TOTAL_COLS_SLOT,
+                        primitives::WINDOW_PIXEL_WIDTH_SLOT,
+                    ),
+                    char_slot(
+                        primitives::WINDOW_TOTAL_LINES_SLOT,
+                        primitives::WINDOW_PIXEL_HEIGHT_SLOT,
+                    ),
                     slot(primitives::WINDOW_DISPLAY_TABLE_SLOT),
+                    slot(primitives::WINDOW_LEFT_MARGIN_COLS_SLOT),
+                    slot(primitives::WINDOW_RIGHT_MARGIN_COLS_SLOT),
                 ],
                 index_of(slots.get(primitives::WINDOW_PARENT_SLOT)),
                 prev,
@@ -2419,50 +2289,6 @@ fn saved_windows(
         ),
         windows,
     )
-}
-
-impl Interpreter {
-    /// frame.c:change_frame_size propagates a text terminal's dimensions to
-    /// every frame displayed on that device, preserving each window tree.
-    pub(crate) fn resize_terminal_frames(
-        &mut self,
-        id: crate::lisp::types::FrameRef,
-        width: i64,
-        height: i64,
-    ) {
-        let terminal = id.borrow().terminal.expect("live frame terminal").id;
-        let ids: Vec<_> = self
-            .frame_states
-            .iter()
-            .filter(|frame| {
-                frame.is_live()
-                    && frame.borrow().terminal.expect("live frame terminal").id == terminal
-            })
-            .copied()
-            .collect();
-        for id in ids {
-            let mut frame = id.borrow_mut();
-            let margin: i64 = ["menu-bar-lines", "tab-bar-lines"]
-                .iter()
-                .map(|name| {
-                    frame
-                        .parameter_overrides
-                        .iter()
-                        .find(|(key, _)| key == name)
-                        .and_then(|(_, value)| value.integer_value())
-                        .unwrap_or(0)
-                        .clamp(0, 1)
-                })
-                .sum();
-            frame.width = width.max(2);
-            frame.height = height.max(margin + 2);
-            frame.text_height = frame.height - margin;
-            frame.parameter_width = frame.width;
-            frame.parameter_height = frame.height;
-            drop(frame);
-            self.resize_frame_window_records_for(id);
-        }
-    }
 }
 
 impl Interpreter {

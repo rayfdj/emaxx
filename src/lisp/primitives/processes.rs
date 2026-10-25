@@ -3519,6 +3519,11 @@ pub(crate) fn wait_pumping_processes(
     loop {
         let mut progressed = pump_external_process_output_for(interp, env, only_process_id)?;
         progressed |= pump_connection_processes_for(interp, env, only_process_id)?;
+        // process.c after its select: "If we woke up due to SIGWINCH,
+        // actually change size now" -- do_pending_window_change applies
+        // the frame sizes change_frame_size queued (a `menu-bar-lines'
+        // change, the batch frame's initial menu bar line).
+        crate::lisp::primitives::do_pending_window_change(interp, env)?;
         // Output delivered since the previous pass: the grace below is
         // measured from the latest output, so a wait returns once output
         // has been quiet for one READ_OUTPUT_DELAY_INCREMENT.

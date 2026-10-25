@@ -6331,7 +6331,7 @@ fn window_configuration_restore_keeps_the_current_frame_size_like_gnu() {
     let expected = r#"(11 10 1 9 10 nil)"#;
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
 
-    let mut interp = Interpreter::new();
+    let mut interp = crate::test_support::initialized_gnu_window_lisp_interpreter();
     let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
@@ -9336,7 +9336,7 @@ fn process_send_string_and_region_route_output_to_the_process_buffer() {
     // with the marked GNU-library integration class.  Share that class's
     // explicit permit; unrelated primitive tests remain parallel.
     let _permit = crate::test_support::acquire_exclusive_host_test_permit();
-    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    let mut interp = crate::test_support::initialized_gnu_window_lisp_interpreter();
     let mut env = crate::lisp::types::Env::new();
     let (buffer_id, _) = interp.create_buffer("*process-output*");
     let buffer = interp
@@ -9533,7 +9533,7 @@ fn process_connection_probe_with_default(
 ) -> String {
     // The probe's `ignore' sentinel is subr.el Lisp; run on the early
     // GNU-Lisp runtime rather than the file-less host.
-    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    let mut interp = crate::test_support::initialized_gnu_window_lisp_interpreter();
     let mut env = crate::lisp::types::Env::new();
     interp.set_variable("process-connection-type", default_connection_type, &mut env);
     let (buffer_id, _) = interp.create_buffer(&format!("*{name}*"));
@@ -9648,7 +9648,7 @@ fn make_process_accepts_nil_coding_like_emacs() {
 #[cfg(unix)]
 #[test]
 fn process_send_eof_uses_the_pty_eof_character_and_drains_final_output() {
-    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    let mut interp = crate::test_support::initialized_gnu_window_lisp_interpreter();
     let mut env = crate::lisp::types::Env::new();
     let (buffer_id, _) = interp.create_buffer("*pty-eof*");
     let buffer = interp
@@ -9711,7 +9711,7 @@ fn process_send_eof_uses_the_pty_eof_character_and_drains_final_output() {
 #[cfg(unix)]
 #[test]
 fn process_send_eof_keeps_a_split_input_pty_alive_until_the_child_reads_eof() {
-    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    let mut interp = crate::test_support::initialized_gnu_window_lisp_interpreter();
     let mut env = crate::lisp::types::Env::new();
     let (buffer_id, _) = interp.create_buffer("*split-pty-eof*");
     let buffer = interp
@@ -9885,7 +9885,7 @@ fn explicit_process_filter_uses_and_restores_the_callers_current_buffer() {
                              (eq (process-buffer process) process-buffer)))"#;
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), "(t t t)");
 
-    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    let mut interp = crate::test_support::initialized_gnu_window_lisp_interpreter();
     let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
@@ -10048,7 +10048,7 @@ fn run_with_timer_callbacks_fire_on_accept_process_output() {
 #[test]
 fn accept_process_output_honors_seconds_with_no_millis_argument() {
     let _permit = crate::test_support::acquire_exclusive_host_test_permit();
-    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    let mut interp = crate::test_support::initialized_gnu_window_lisp_interpreter();
     let mut env = crate::lisp::types::Env::new();
     let buffer = Value::Buffer(interp.buffer);
     let process = call_via_lisp(
@@ -10118,7 +10118,7 @@ fn accept_process_output_honors_seconds_with_no_millis_argument() {
 
 #[test]
 fn accept_process_output_without_timeout_waits_for_requested_process() {
-    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    let mut interp = crate::test_support::initialized_gnu_window_lisp_interpreter();
     let mut env = crate::lisp::types::Env::new();
     let buffer = Value::Buffer(interp.buffer);
     let process = call_via_lisp(
@@ -10158,7 +10158,7 @@ fn accept_process_output_without_timeout_waits_for_requested_process() {
 
 #[test]
 fn accept_process_output_ignores_distractor_output_until_target_delivers() {
-    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    let mut interp = crate::test_support::initialized_gnu_window_lisp_interpreter();
     let mut env = crate::lisp::types::Env::new();
     let target_buffer = call_via_lisp(
         &mut interp,
@@ -10631,7 +10631,7 @@ fn localhost_family_fallback_opens_without_polluting_the_process_buffer() {
 
 #[test]
 fn make_network_process_nowait_opens_on_the_next_event_pump() {
-    let mut interp = Interpreter::new();
+    let mut interp = crate::test_support::initialized_gnu_window_lisp_interpreter();
     let mut env = crate::lisp::types::Env::new();
     let server = call(
         &mut interp,
@@ -13628,7 +13628,7 @@ fn native_gnutls_session_encrypts_process_io_and_closes_the_same_transport() {
             (delete-process process)
             (kill-buffer buffer)))"#
     );
-    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    let mut interp = crate::test_support::initialized_gnu_window_lisp_interpreter();
     let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(&program)
         .read()
@@ -20537,7 +20537,7 @@ fn process_filters_can_observe_that_read_event_is_waiting_for_user_input() {
     // assertion below covers process.c's documented read_kbd contract.
     assert_upstream_primitive_contract("(prin1 (waiting-for-user-input-p))", "nil");
 
-    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    let mut interp = crate::test_support::initialized_gnu_window_lisp_interpreter();
     let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
@@ -23390,7 +23390,7 @@ fn native_serial_process_pumps_and_sends_bytes_over_a_real_pty() {
     master
         .set_timeout(Duration::from_secs(1))
         .expect("set serial test PTY timeout");
-    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    let mut interp = crate::test_support::initialized_gnu_window_lisp_interpreter();
     let mut env = crate::lisp::types::Env::new();
     let filter_form = Reader::new("(lambda (_process text) (setq emaxx-test-serial-input text))")
         .read()
@@ -23670,7 +23670,7 @@ fn native_udp_event_pump_preserves_datagrams_and_updates_the_reply_peer() {
     let expected = "(t t t t)";
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
 
-    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    let mut interp = crate::test_support::initialized_gnu_window_lisp_interpreter();
     let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
@@ -23990,7 +23990,7 @@ fn native_system_process_inventory_matches_oracle_availability() {
 #[test]
 fn process_filter_t_holds_os_output_until_the_default_filter_is_restored() {
     let _permit = crate::test_support::acquire_exclusive_host_test_permit();
-    let mut interp = Interpreter::new();
+    let mut interp = crate::test_support::initialized_gnu_window_lisp_interpreter();
     let mut env = crate::lisp::types::Env::new();
     let (buffer_id, _) = interp.create_buffer(" *held-process-output*");
     let buffer = interp
@@ -25596,7 +25596,7 @@ fn interactive_recenter_uses_the_live_shrunken_window_height() {
     )
     .expect("stage the minibuffer-shrunken height");
     assert!(
-        crate::lisp::primitives::apply_staged_root_window_height(&mut interp)
+        crate::lisp::primitives::apply_staged_root_window_height(&mut interp, -8)
             .expect("apply the live height"),
         "the staged root height is committed as grow_mini_window does"
     );
@@ -26409,7 +26409,7 @@ fn window_edges_from_natives(
 
 #[test]
 fn tty_frame_size_shapes_the_root_and_minibuffer_windows() {
-    let mut interp = Interpreter::new();
+    let mut interp = crate::test_support::initialized_gnu_window_lisp_interpreter();
     let mut env = crate::lisp::types::Env::new();
     interp.set_tty_frame_size(80, 24);
     let root_edges = window_edges_from_natives(&mut interp, &mut env, &[]);
@@ -26426,7 +26426,7 @@ fn tty_frame_size_shapes_the_root_and_minibuffer_windows() {
 
 #[test]
 fn window_render_layout_reports_split_geometry_in_tree_order() {
-    let mut interp = Interpreter::new();
+    let mut interp = crate::test_support::initialized_gnu_window_lisp_interpreter();
     let mut env = crate::lisp::types::Env::new();
     interp.set_tty_frame_size(80, 24);
     interp.buffer.borrow_mut().insert("alpha\nbeta\ngamma\n");
@@ -26466,7 +26466,7 @@ fn window_render_layout_reports_split_geometry_in_tree_order() {
 
 #[test]
 fn window_cycling_follows_tree_order_from_the_selected_window() {
-    let mut interp = Interpreter::new();
+    let mut interp = crate::test_support::initialized_gnu_window_lisp_interpreter();
     let mut env = crate::lisp::types::Env::new();
     interp.set_tty_frame_size(80, 24);
     interp.buffer.borrow_mut().insert("alpha\nbeta\n");
@@ -26512,7 +26512,7 @@ fn window_cycling_follows_tree_order_from_the_selected_window() {
 
 #[test]
 fn window_mode_lines_render_in_each_windows_own_context() {
-    let mut interp = Interpreter::new();
+    let mut interp = crate::test_support::initialized_gnu_window_lisp_interpreter();
     let mut env = crate::lisp::types::Env::new();
     interp.set_tty_frame_size(80, 24);
     interp
@@ -26877,7 +26877,7 @@ fn tmm_nested_menu_keeps_the_completions_window_at_its_first_line() {
 
 #[test]
 fn minibuffer_reads_select_the_minibuffer_window_and_restore_the_entry_window() {
-    let mut interp = Interpreter::new();
+    let mut interp = crate::test_support::initialized_gnu_window_lisp_interpreter();
     let mut env = crate::lisp::types::Env::new();
     interp.set_variable("noninteractive", Value::Nil, &mut env);
     interp.set_tty_frame_size(80, 24);
@@ -27989,7 +27989,7 @@ fn make_temp_file_internal_reports_a_failed_creation_as_a_file_error() {
 /// used to run to its deadline after the exit.
 #[test]
 fn accept_process_output_with_a_timeout_returns_once_the_process_has_exited() {
-    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    let mut interp = crate::test_support::initialized_gnu_window_lisp_interpreter();
     let mut env = crate::lisp::types::Env::new();
     let buffer = Value::Buffer(interp.buffer);
     let process = call_via_lisp(

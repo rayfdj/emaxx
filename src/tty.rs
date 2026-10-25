@@ -374,6 +374,10 @@ struct TtyState {
     /// row.
     echo_rows: usize,
     painted_size: (usize, usize),
+    /// The terminal's size when last read: a change is GNU's
+    /// SIGWINCH (handle_window_change_signal), none yet its
+    /// init_display_interactive.
+    terminal_size: Option<(usize, usize)>,
     /// Resolved face attributes, valid while the interpreter's face
     /// generation is unchanged (GNU's face_change flag).
     face_cache: std::collections::HashMap<String, CellAttrs>,
@@ -433,6 +437,7 @@ impl TtyState {
             echo_rows: 1,
             echo_max_rows: 6,
             painted_size: (0, 0),
+            terminal_size: None,
             face_cache: std::collections::HashMap::new(),
             face_cache_generation: 0,
             minibuffer_owns_echo: false,
@@ -4207,14 +4212,29 @@ fn redraw_with_echo_policy(
     let (cols, rows) = crate::lisp::eval::terminal::output_size()?;
     let cols = cols.max(10) as usize;
     let rows = rows.max(4) as usize;
-    // The interpreter's window tree carries the frame geometry: keep it
-    // agreeing with the terminal so splits compute GNU's tty sizes.
-    if interpreter.frame_width() != cols as i64 || interpreter.frame_height() != rows as i64 {
-        interpreter.set_tty_frame_size(cols as i64, rows as i64);
+    // The frame takes the terminal's size when the session starts on it
+    // (init_display_interactive), and at the next redisplay after the
+    // terminal changes size (handle_window_change_signal's delayed
+    // change_frame_size); redisplay_internal first applies what is
+    // pending, `menu-bar-lines' changes included.
+    match state.terminal_size {
+        None => interpreter.set_tty_frame_size(cols as i64, rows as i64),
+        Some(size) if size != (cols, rows) => {
+            interpreter.tty_window_change(cols as i64, rows as i64)
+        }
+        Some(_) => {}
     }
+    state.terminal_size = Some((cols, rows));
+    let _ = crate::lisp::primitives::do_pending_window_change(interpreter, env);
+    // The frame's size as it stands: set-frame-size can make it smaller
+    // than the terminal, whose remaining rows and columns stay as they
+    // were.
+    let cols = cols.min(interpreter.frame_width().max(10) as usize);
+    let rows = rows.min(interpreter.frame_height().max(4) as usize);
     run_pre_redisplay_function(interpreter, env);
-    // Rows above the window tree belong to the frame's menu bar.
-    let menu_lines = ((rows as i64) - interpreter.frame_text_height()).clamp(0, 1) as usize;
+    // Rows above the window tree belong to the frame's menu and tab bars.
+    let menu_lines = crate::lisp::primitives::frame_top_margin(interpreter.selected_frame_id)
+        .clamp(0, rows as i64 - 2) as usize;
     // The mini window's height comes first: a tall message shrinks the
     // window tree above it (GNU's resize_mini_window, grow-only policy).
     let max_mini = max_mini_window_rows(interpreter, rows);
@@ -4285,9 +4305,10 @@ fn redraw_with_echo_policy(
             "window--resize-root-window-vertically",
             &[root, Value::Integer(delta), Value::T],
         )?;
-        if recovered.as_integer().unwrap_or(0) != 0 {
-            crate::lisp::primitives::apply_staged_root_window_height(interpreter)?;
-        }
+        crate::lisp::primitives::apply_staged_root_window_height(
+            interpreter,
+            recovered.as_integer().unwrap_or(0),
+        )?;
         Ok(())
     })(interpreter, env);
     // xdisp.c:redisplay_internal runs the window change functions once
@@ -5854,6 +5875,12 @@ fn redraw_with_echo_policy(
     encode_terminal_cells(interpreter, &mut frame);
     let mut out = terminal_output();
     queue!(out, cursor::Hide)?;
+    if full_repaint {
+        // xdisp.c:clear_garbaged_frames: a resized frame is redrawn from a
+        // cleared terminal (redraw_frame's clear_frame), so rows a smaller
+        // frame no longer covers do not keep the old paint.
+        queue!(out, terminal::Clear(terminal::ClearType::All))?;
+    }
     for (row, rendered) in frame.into_iter().enumerate() {
         if state.painted_rows[row] != rendered {
             paint_row(&mut out, row, &rendered)?;
@@ -6856,7 +6883,9 @@ mod tests {
     fn tty_lisp_readers_preserve_mouse_events_and_keyboard_order() {
         use crate::lisp::primitives::{set_tty_event_poller, set_tty_event_reader};
         for mode in ["blocking", "polling", "timed"] {
-            let mut interpreter = Interpreter::new();
+            // The terminal frame's size comes from adjust_frame_size, which
+            // calls window.el's owners.
+            let mut interpreter = crate::test_support::initialized_gnu_window_lisp_interpreter();
             let mut env = Env::new();
             interpreter.set_variable("noninteractive", Value::Nil, &mut env);
             interpreter.set_tty_frame_size(80, 24);

@@ -225,6 +225,28 @@ pub(crate) fn initialized_gnu_early_lisp_interpreter() -> Interpreter {
     interpreter
 }
 
+/// The early-Lisp runtime carried on through loadup.el's owners up to
+/// window.el, for tests whose subject waits (wait_reading_process_output
+/// applies the initial frame's queued menu-bar resize) or resizes a frame:
+/// adjust_frame_size calls window.el's `frame-windows-min-size',
+/// `window--resize-root-window' and `window--pixel-to-total', which every
+/// running GNU Emacs has preloaded.
+pub(crate) fn initialized_gnu_window_lisp_interpreter() -> Interpreter {
+    initialized_gnu_early_lisp_interpreter_with(&[
+        "keymap",
+        "version",
+        "widget",
+        "custom",
+        "emacs-lisp/map-ynp",
+        "international/mule",
+        "international/mule-conf",
+        "env",
+        "format",
+        "bindings",
+        "window",
+    ])
+}
+
 /// comp.el's `comp--final' compiles in a child editor started as
 /// `invocation-name -no-comp-spawn -Q --batch -l TEMP', and data.c's
 /// `fset' of a primitive asks comp-run.el to compile a trampoline the same

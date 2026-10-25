@@ -384,10 +384,6 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
     ),
     ("handler_generation", "the running signal dispatch"),
     ("handler_search_memo", "the running signal dispatch"),
-    (
-        "window_margins",
-        "window state re-created with the initial frame",
-    ),
     ("face_change_count", "carried in the remembered scalars"),
     ("special_variables", "carried in the remembered scalars"),
     ("pdumper_loaded", "set by the load itself"),

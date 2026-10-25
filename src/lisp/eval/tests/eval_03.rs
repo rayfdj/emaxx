@@ -6243,10 +6243,10 @@ fn window_configuration_equality_ignores_view_position_but_compares_layout() {
     assert_eq!(
         eval_str_with_upstream_batch_feature(
             "window",
-            // GNU 30.2 --batch answers each step alike (a comparison
-            // against a configuration saved before a split is left out:
-            // GNU's batch frame moves its windows' top_line to the menu
-            // bar line on the first resize, which Emaxx does not model).
+            // GNU 30.2 --batch answers each step alike, the batch frame's
+            // root moving to top_line 1 (below its menu bar line) at the
+            // first window-resize-apply-total, so the configuration after
+            // a split and delete differs from the one before.
             r#"(let (r (cur #'current-window-configuration))
                  (insert "one\ntwo\nthree\n")
                  (let ((before (funcall cur)))
@@ -6268,6 +6268,7 @@ fn window_configuration_equality_ignores_view_position_but_compares_layout() {
                    (let ((split (funcall cur)))
                      (push (window-configuration-equal-p before split) r)
                      (delete-window (next-window))
+                     (push (window-configuration-equal-p before (funcall cur)) r)
                      (split-window)
                      (push (window-configuration-equal-p split (funcall cur)) r)
                      (other-window 1)
@@ -6293,6 +6294,7 @@ fn window_configuration_equality_ignores_view_position_but_compares_layout() {
             Value::Nil,
             Value::Nil,
             Value::T,
+            Value::Nil,
             Value::Nil,
             Value::T,
             Value::Nil,
@@ -7821,6 +7823,105 @@ fn split_window_gives_the_new_window_the_buffers_point_and_start() {
             .read()
             .unwrap()
             .unwrap()
+    );
+}
+
+#[test]
+fn batch_frame_bar_lines_resize_at_the_next_pending_window_change() {
+    // frame.c make_initial_frame's set_menu_bar_lines (f, 1) queues a
+    // change_frame_size that do_pending_window_change applies only when
+    // wait_reading_process_output waits (sleep-for): till then the root's
+    // pixel_top stays 0 while window-resize-apply-total puts its
+    // top_line below the menu bar.  A `menu-bar-lines' parameter goes the
+    // same way (any fixnum; 0 for others), frame-height reports a queued
+    // size, and set-frame-height resizes at once.  GNU 30.2 --batch gives
+    // these values.
+    assert_eq!(
+        eval_str_with_upstream_batch_feature(
+            "window",
+            r#"(let (r)
+                 (push (list (window-pixel-edges) (window-edges) (frame-height)
+                             (frame-text-lines) (frame-total-lines))
+                       r)
+                 (sleep-for 0.01)
+                 (push (list (window-pixel-edges) (window-edges) (frame-height)
+                             (frame-text-lines) (window-edges (minibuffer-window)))
+                       r)
+                 (split-window)
+                 (push (list (window-edges) (window-edges (next-window))) r)
+                 (set-frame-parameter nil 'menu-bar-lines 3)
+                 (push (list (frame-parameter nil 'menu-bar-lines) (frame-height)
+                             (window-pixel-edges))
+                       r)
+                 (sleep-for 0.01)
+                 (push (list (frame-height) (window-pixel-edges)
+                             (window-edges (next-window)))
+                       r)
+                 (set-frame-parameter nil 'menu-bar-lines 'foo)
+                 (push (frame-parameter nil 'menu-bar-lines) r)
+                 (sleep-for 0.01)
+                 (set-frame-height nil 20)
+                 (push (list (frame-height) (frame-total-lines) (window-edges)
+                             (window-edges (next-window))
+                             (window-edges (minibuffer-window)))
+                       r)
+                 (nreverse r))"#
+        ),
+        crate::lisp::reader::Reader::new(
+            "(((0 0 80 24) (0 0 80 24) 25 25 25) \
+              ((0 1 80 24) (0 1 80 24) 24 24 (0 24 80 25)) \
+              ((0 1 80 13) (0 13 80 24)) (3 25 (0 1 80 13)) \
+              (22 (0 3 80 14) (0 14 80 24)) 0 \
+              (20 20 (0 0 80 10) (0 10 80 19) (0 19 80 20)))"
+        )
+        .read()
+        .unwrap()
+        .unwrap()
+    );
+}
+
+#[test]
+fn window_margins_are_window_state_set_as_set_window_margins_does() {
+    // window.c set_window_margins: extract_dimension's range check, no
+    // change (nil) when the margins stay or would leave under two text
+    // columns; the margins are saved and restored with a window
+    // configuration and compared by window-configuration-equal-p.  GNU
+    // 30.2 --batch gives these values.
+    assert_eq!(
+        eval_str_with_upstream_batch_feature(
+            "window",
+            r#"(let (r)
+                 (push (set-window-margins nil 2 3) r)
+                 (push (set-window-margins nil 2 3) r)
+                 (push (window-margins) r)
+                 (push (condition-case e (set-window-margins nil -1) (error e)) r)
+                 (push (condition-case e (set-window-margins nil 'a) (error e)) r)
+                 (push (set-window-margins nil 40 39) r)
+                 (push (set-window-margins nil 40 38) r)
+                 (let ((c (current-window-configuration)))
+                   (push (set-window-margins nil 1) r)
+                   (push (window-configuration-equal-p c (current-window-configuration)) r)
+                   (set-window-configuration c)
+                   (push (window-margins) r))
+                 (push (set-window-margins nil nil nil) r)
+                 (push (window-margins) r)
+                 (setq left-margin-width 3)
+                 (set-window-buffer nil (current-buffer))
+                 (push (window-margins) r)
+                 (split-window)
+                 (push (condition-case e (set-window-margins (frame-root-window) 1)
+                         (error (car e)))
+                       r)
+                 (nreverse r))"#
+        ),
+        crate::lisp::reader::Reader::new(
+            "(t nil (2 . 3) (args-out-of-range -1 0 2147483647) \
+              (wrong-type-argument integerp a) nil t t nil (40 . 38) t (nil) (3) \
+              wrong-type-argument)"
+        )
+        .read()
+        .unwrap()
+        .unwrap()
     );
 }
 

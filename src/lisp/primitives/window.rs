@@ -91,6 +91,102 @@ pub(crate) const WINDOW_END_POS_SLOT: usize = 37;
 pub(crate) const WINDOW_FORCE_START_SLOT: usize = 38;
 pub(crate) const WINDOW_OPTIONAL_NEW_START_SLOT: usize = 39;
 pub(crate) const WINDOW_START_AT_LINE_BEG_SLOT: usize = 40;
+/// window.h's left_col, top_line, total_cols and total_lines: the
+/// window's edges and sizes in frame columns and lines.  window.c keeps
+/// them apart from the pixel geometry and assigns them on its own
+/// schedule (window_resize_apply, window-resize-apply-total,
+/// resize_frame_windows), so the two can differ: a batch frame's root
+/// keeps pixel_top 0 while window-resize-apply-total puts its top_line
+/// below the menu bar.  A text frame's character cell is one pixel.
+pub(crate) const WINDOW_LEFT_COL_SLOT: usize = 41;
+pub(crate) const WINDOW_TOP_LINE_SLOT: usize = 42;
+pub(crate) const WINDOW_TOTAL_COLS_SLOT: usize = 43;
+pub(crate) const WINDOW_TOTAL_LINES_SLOT: usize = 44;
+/// window.h's left_margin_cols and right_margin_cols (nil for none,
+/// GNU's 0).
+pub(crate) const WINDOW_LEFT_MARGIN_COLS_SLOT: usize = 45;
+pub(crate) const WINDOW_RIGHT_MARGIN_COLS_SLOT: usize = 46;
+const WINDOW_SLOT_COUNT: usize = 47;
+
+/// WINDOW_ID's character geometry as (total_cols, total_lines, left_col,
+/// top_line), in window_geometry's order.  A record from before these
+/// slots existed reads its pixel geometry, which it then still equals.
+pub(crate) fn window_char_geometry(interp: &Interpreter, window_id: u64) -> (i64, i64, i64, i64) {
+    let record = interp.find_record(window_id);
+    let slot = |slot: usize, fallback: usize| {
+        record
+            .and_then(|record| {
+                record
+                    .slots
+                    .get(slot)
+                    .filter(|value| !value.is_nil())
+                    .or_else(|| record.slots.get(fallback))
+            })
+            .and_then(Value::integer_value)
+            .unwrap_or(0)
+    };
+    (
+        slot(WINDOW_TOTAL_COLS_SLOT, WINDOW_PIXEL_WIDTH_SLOT),
+        slot(WINDOW_TOTAL_LINES_SLOT, WINDOW_PIXEL_HEIGHT_SLOT),
+        slot(WINDOW_LEFT_COL_SLOT, WINDOW_PIXEL_LEFT_SLOT),
+        slot(WINDOW_TOP_LINE_SLOT, WINDOW_PIXEL_TOP_SLOT),
+    )
+}
+
+/// Store one of WINDOW_ID's character-geometry slots (above).
+pub(crate) fn set_window_char_slot(
+    interp: &mut Interpreter,
+    window_id: u64,
+    slot: usize,
+    value: i64,
+) {
+    if let Some(record) = interp.find_record_mut(window_id) {
+        if record.slots.len() <= slot {
+            record.slots.resize(slot + 1, Value::Nil);
+        }
+        record.slots[slot] = Value::Integer(value);
+    }
+}
+
+/// WINDOW_ID's left_margin_cols and right_margin_cols (None for 0).
+pub(crate) fn window_margin_cols(
+    interp: &Interpreter,
+    window_id: u64,
+) -> (Option<i64>, Option<i64>) {
+    let record = interp.find_record(window_id);
+    let slot = |slot: usize| {
+        record
+            .and_then(|record| record.slots.get(slot))
+            .and_then(Value::integer_value)
+            .filter(|cols| *cols != 0)
+    };
+    (
+        slot(WINDOW_LEFT_MARGIN_COLS_SLOT),
+        slot(WINDOW_RIGHT_MARGIN_COLS_SLOT),
+    )
+}
+
+pub(crate) fn set_window_margin_cols(
+    interp: &mut Interpreter,
+    window_id: u64,
+    left: Option<i64>,
+    right: Option<i64>,
+) {
+    if let Some(record) = interp.find_record_mut(window_id) {
+        if record.slots.len() <= WINDOW_RIGHT_MARGIN_COLS_SLOT {
+            record
+                .slots
+                .resize(WINDOW_RIGHT_MARGIN_COLS_SLOT + 1, Value::Nil);
+        }
+        let value = |cols: Option<i64>| {
+            cols.filter(|cols| *cols != 0)
+                .map(Value::Integer)
+                .unwrap_or(Value::Nil)
+        };
+        record.slots[WINDOW_LEFT_MARGIN_COLS_SLOT] = value(left);
+        record.slots[WINDOW_RIGHT_MARGIN_COLS_SLOT] = value(right);
+    }
+}
 
 /// One of WINDOW_ID's redisplay flags (the slots above).
 pub(crate) fn window_flag(interp: &Interpreter, window_id: u64, slot: usize) -> bool {
@@ -120,7 +216,7 @@ pub(crate) fn window_record_slots(
     geometry: (i64, i64, i64, i64),
 ) -> Vec<Value> {
     let (width, height, left, top) = geometry;
-    vec![
+    let mut slots = vec![
         buffer_id
             .map(|id| Value::Integer(id as i64))
             .unwrap_or(Value::Nil),
@@ -153,7 +249,17 @@ pub(crate) fn window_record_slots(
         Value::Nil,
         Value::Nil,
         Value::Integer(start as i64),
-    ]
+    ];
+    slots.resize(WINDOW_SLOT_COUNT, Value::Nil);
+    for (slot, value) in [
+        (WINDOW_TOTAL_COLS_SLOT, width),
+        (WINDOW_TOTAL_LINES_SLOT, height),
+        (WINDOW_LEFT_COL_SLOT, left),
+        (WINDOW_TOP_LINE_SLOT, top),
+    ] {
+        slots[slot] = Value::Integer(value);
+    }
+    slots
 }
 
 pub(crate) fn current_window_start(interp: &Interpreter) -> usize {

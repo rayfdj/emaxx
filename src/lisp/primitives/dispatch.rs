@@ -29,11 +29,12 @@ pub(crate) use display::echo_area_message_with_spans;
 pub(crate) use display::render_mode_line_glass;
 pub(crate) use display::{
     EchoSpans, LineNumberLayout, LineNumberMode, ModeLineCells, TtyFaceAttrs, WindowRenderInfo,
-    apply_staged_root_window_height, live_ordinary_window_ids, render_window_header_line,
-    render_window_mode_line, render_window_tab_line, resolve_tty_face_attrs,
-    run_window_change_functions, store_window_hscroll_state, string_face_spans, window_face_spans,
-    window_hscroll_state, window_line_number_layout, window_render_layout,
-    window_text_area_columns, window_total_columns,
+    adjust_frame_size, apply_staged_root_window_height, change_frame_size,
+    do_pending_window_change, frame_top_margin, live_ordinary_window_ids,
+    render_window_header_line, render_window_mode_line, render_window_tab_line,
+    resolve_tty_face_attrs, run_window_change_functions, store_window_hscroll_state,
+    string_face_spans, window_face_spans, window_hscroll_state, window_line_number_layout,
+    window_render_layout, window_text_area_columns, window_total_columns,
 };
 pub(crate) use display::{
     clear_message, echo_area_message, echo_area_message_tick, echo_area_print,

@@ -5972,6 +5972,89 @@ setup_process_coding_systems's check now refuses). A 13-form
   scenario file, edebug, kmacro, keyboard, minibuffer, simple, xdisp,
   scroll, isearch, repeat, term, python, so-long and others; 1,782
   tests) as GNU.
+- **Round 81: window character geometry, a text frame's size and its
+  menu and tab bars, as window.c, frame.c and dispnew.c keep them.**
+  (1) A window keeps left_col, top_line, total_cols and total_lines in
+  slots of their own, apart from its pixel geometry, set where window.c
+  sets them: window_resize_apply (the total from the new pixel size,
+  each child's column or line from the edge), split-window-internal (the
+  orthogonal ones copied from the old window; the new window's
+  `window-new-total' from the parent's total, not its pixel size, and
+  the new parent's from the old window's), replace_window,
+  delete-other-windows-internal (the root's top line or left column),
+  resize_mini_window_apply (now ported:
+  `resize-mini-window-internal' checks the staged root and mini heights
+  against their current sum and applies them through window_resize_apply
+  on the root, and grow_mini_window's commit gives the mini window the
+  lines the root gave up), resize_frame_windows, and
+  `window-resize-apply-total', which was a no-op: it now puts the root at
+  column 0 below the bars (FRAME_TOP_MARGIN), applies every window's
+  `window-new-total' and places the mini window below the root.
+  `window-top-line', `window-left-column', `window-total-height' and
+  `window-total-width' read them (with ROUND `floor' or `ceiling' the
+  pixel size), so `window-edges' answers GNU's (0 1 80 13) and (0 13 80
+  25) after a batch `split-window' whose pixel edges stay (0 0 80 12)
+  and (0 12 80 24). (2) A window's margins are window state
+  (left_margin_cols and right_margin_cols slots) instead of a table
+  beside the windows, so a window configuration saves and restores them;
+  set_window_margins is ported (a dimension out of 0..INT_MAX signals
+  args-out-of-range, a non-integer wrong-type-argument; nil when the
+  margins stay or would leave under two text columns, t otherwise; the
+  window must be live), for `set-window-margins' and set-window-buffer's
+  reset from `left-margin-width' and `right-margin-width'.
+  compare_window_configurations also compares the character geometry and
+  the margins. (3) A text frame keeps frame.h's menu_bar_lines,
+  tab_bar_lines, text_lines and native size, and new_width, new_height
+  and new_size_p for a size change_frame_size has queued.
+  set_menu_bar_lines and set_tab_bar_lines take any fixnum (0 for other
+  values; Emaxx clamped them to 1 and ignored them in batch) and queue
+  the frame's native size; do_pending_window_change applies what is
+  queued, after each wait in wait_reading_process_output (`sleep-for',
+  `accept-process-output', batch `sit-for') and at the start of every
+  redisplay; change_frame_size and adjust_frame_size are ported for a
+  text frame (the minimum sizes from `frame-windows-min-size', or the
+  frame's `min-width' and `min-height', at least the bars, a mode line,
+  a text line and the echo area on a terminal; INHIBIT 1 for the
+  set-frame-size family, 4 for set-window-configuration's fit, 5 for a
+  terminal's size), and resize_frame_windows resizes the window tree
+  below the bars through `window--resize-root-window' and
+  `window--pixel-to-total', the mini window back to one line. So the
+  batch frame's initial menu-bar line (make_initial_frame's
+  set_menu_bar_lines (f, 1)) moves its root to pixel row 1 at the first
+  wait, as in GNU; `frame-parameters' reports `height' and `width' from a
+  queued size and the bar lines from the frame; `set-frame-height' on a
+  terminal frame makes it smaller than the terminal, as GNU does, where
+  the frontend used to resize it back to the terminal at the next
+  redisplay. (4) The terminal frontend gives the frame the terminal's
+  size when it starts (init_display_interactive's immediate
+  change_frame_size) and queues a new size only when the terminal itself
+  changes size (handle_window_change_signal), paints the frame's own
+  size, clears the terminal before a full repaint (clear_garbaged_frames'
+  redraw_frame) and puts the menu and tab bars on the frame's top-margin
+  rows. tmux probes of GNU 30.2 (`menu-bar-mode' off and on with and
+  without a redisplay between, `menu-bar-lines' 3, a split, deletions,
+  side-by-side windows, `set-frame-height' 20 on a 34-row terminal) and
+  batch probes (the queued menu bar line before and after `sleep-for',
+  splits and deletions on both sides of it, `menu-bar-lines' 3, 'foo
+  and `tab-bar-lines' 2, `set-frame-height', margins, the
+  window-configuration sequence of round 80) give GNU's values and
+  screens. Tests that wait or resize a frame now run on loadup's owners
+  up to window.el (test_support's initialized_gnu_window_lisp_interpreter):
+  adjust_frame_size calls window.el's functions, as every running GNU
+  has them preloaded; GNU itself signals (void-function
+  frame-windows-min-size) at such a wait when that function is unbound.
+  Not covered: GNU's terminal frame matrices take their origin from the
+  top margin at the last adjust_frame_glyphs, so after a `menu-bar-mode'
+  toggle and window commands in one command GNU draws the window one row
+  off (its menu bar over the first text row, the echo area twice) until
+  the next resize; Emaxx draws from the windows' pixel edges. And the
+  move_it_by_lines reseat skip found in round 80 is still open.
+  Local validation: the full gate, 3,215 passed across its ten groups
+  with the documented local skips (eval_03, 326, includes the new
+  bar-lines and margin tests), and 89 GNU test files (every ERC scenario
+  file, edebug, kmacro, keyboard, minibuffer, simple, xdisp, scroll,
+  xt-mouse, isearch, repeat, term, python, so-long and others; 1,785
+  tests) as GNU.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -6670,6 +6753,8 @@ oracle flake (7,669 passed, 1 unexpected), and its rerun passed (run
 **On `d5e95f9`** (round 79): full Rust gate passed (run 40199436854),
 frozen passed on its first attempt (run 40199438907); PR #106 merged
 rounds 77 to 79 into main (`4fc869e`).
+**On `0a98371`** (round 80): full Rust gate passed (run 40213825220),
+frozen passed on its first attempt (run 40213827546).
 
 **Findings recorded, not fixed:**
 - `features`, `values` and `top-level` are special variables in Emaxx
