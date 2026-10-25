@@ -407,9 +407,32 @@ impl crate::lisp::reader::ReadContext for LispReadContext<'_> {
     fn build(&mut self, form: ReaderForm) -> Result<Value, LispError> {
         self.interp.build_read_object(form, self.env)
     }
+
+    fn load_file_name(&mut self) -> Value {
+        self.interp.read_load_file_name(self.env)
+    }
+
+    fn force_doc_strings(&mut self) -> bool {
+        self.interp.read_force_doc_strings(self.env)
+    }
+
+    fn doc_string(&mut self, reference: Value) -> Result<Value, LispError> {
+        crate::lisp::primitives::unibyte_doc_string(self.interp, &reference, self.env)
+    }
 }
 
 impl Interpreter {
+    /// Vload_file_name as the reader reads `#$'.
+    pub(crate) fn read_load_file_name(&self, env: &Env) -> Value {
+        self.lookup_var("load-file-name", env).unwrap_or(Value::Nil)
+    }
+
+    /// load_force_doc_strings as the reader tests it.
+    pub(crate) fn read_force_doc_strings(&self, env: &Env) -> bool {
+        self.lookup_var("load-force-doc-strings", env)
+            .is_some_and(|value| value.is_truthy())
+    }
+
     /// read0's construction of a literal whose syntax just closed, its
     /// fields already the objects they read as: a record (RE_record), a
     /// closure (bytecode_from_rev_list), a bool vector, a hash table

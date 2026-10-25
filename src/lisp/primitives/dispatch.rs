@@ -19,6 +19,7 @@ mod gui_actions;
 mod lists;
 pub(super) mod misc;
 pub(crate) use misc::set_internal_symbol;
+pub(crate) use misc::unibyte_doc_string;
 mod misc_keymaps;
 mod numeric;
 

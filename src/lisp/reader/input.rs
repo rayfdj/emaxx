@@ -7,7 +7,8 @@ use crate::lisp::types::{LispError, Value};
 
 /// One exclusive borrow owns calls and symbol interning. A callback may
 /// evaluate Lisp, collect, redefine the stream, or change the active obarray.
-pub(crate) trait ReaderStream {
+/// The stream is also the read's context (the objects it builds, `#$').
+pub(crate) trait ReaderStream: super::ReadContext {
     fn read_character(&mut self) -> Result<Option<i64>, LispError>;
     fn unread_character(&mut self, character: i64) -> Result<(), LispError>;
     fn intern_symbol(&mut self, name: &str, shorthand: bool) -> Result<Value, LispError>;
@@ -118,6 +119,10 @@ pub(super) enum Input<'a> {
     Encoded {
         bytes: &'a [u8],
         multibyte: bool,
+        /// Bytes that need not be well formed, taken as lread.c
+        /// readchar's read_multibyte takes a file's: a byte that begins no
+        /// whole character is the raw byte (BYTE8_TO_CHAR).
+        lenient: bool,
     },
     Function(FunctionInput<'a>),
     /// A buffer's text read in place, as lread.c's readchar reads it from
@@ -259,16 +264,38 @@ impl<'a> Input<'a> {
         &self,
         position: usize,
     ) -> Result<Option<(u32, usize)>, LispError> {
-        let Self::Encoded { bytes, multibyte } = self else {
+        let Self::Encoded {
+            bytes,
+            multibyte,
+            lenient,
+        } = self
+        else {
             return Ok(None);
         };
         let Some(&byte) = bytes.get(position) else {
             return Ok(None);
         };
-        if *multibyte {
+        if *lenient {
+            Ok(Some(read_multibyte(&bytes[position..])))
+        } else if *multibyte {
             crate::lisp::types::string_data::decode_character(&bytes[position..]).map(Some)
         } else {
             Ok(Some((u32::from(byte), 1)))
         }
     }
+}
+
+/// lread.c readchar's read_multibyte over a file's bytes: an ASCII byte,
+/// the character a lead byte and its BYTES_BY_CHAR_HEAD - 1 trailing
+/// codes spell, or else the lead byte as a raw byte (BYTE8_TO_CHAR), the
+/// bytes after it read again.  A lead STRING_CHAR cannot decode (a
+/// trailing code, or one spelling a code past MAX_CHAR) is taken as a raw
+/// byte too.
+fn read_multibyte(bytes: &[u8]) -> (u32, usize) {
+    let lead = bytes[0];
+    if lead < 0x80 {
+        return (u32::from(lead), 1);
+    }
+    crate::lisp::types::string_data::decode_character(bytes)
+        .unwrap_or((0x3F_FF00 + u32::from(lead), 1))
 }

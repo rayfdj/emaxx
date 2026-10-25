@@ -8884,3 +8884,70 @@ fn read_builds_literal_objects_as_their_syntax_closes() {
         )
     );
 }
+
+#[test]
+fn load_reads_a_compiled_file_as_gnu_readchar_reads_it() {
+    // lread.c Fload's direct read of a compiled file: `#@N' skips N bytes,
+    // `#$' is `load-file-name', (#$ . POS) stays a lazy doc reference
+    // unless `load-force-doc-strings' (then the unibyte string skipped),
+    // `#@00' ends the file, and a byte that begins no whole character is
+    // a raw byte.  The values are GNU 30.2's.
+    let result = eval_str_with_upstream_batch(
+        r##"(progn
+             (defvar emaxx-lazy-out nil)
+             (let* ((header ";ELC\x1e\0\0\0\n;;; Compiled\n;;; in Emacs version 30.2\n;;; with all optimizations.\n\n\n\n")
+                    (doc (+ (length header) 5))
+                    (lazy (make-temp-file "emaxx-lazy-" nil ".elc"))
+                    (raw (make-temp-file "emaxx-raw-" nil ".elc"))
+                    (coding-system-for-write 'no-conversion)
+                    results)
+               (unwind-protect
+                   (progn
+                     (with-temp-file lazy
+                       (set-buffer-multibyte nil)
+                       (insert header "#@27 My little\ndoc string\nhere\x1f\n"
+                               (format "(defalias 'emaxx-lazy-fun #[0 \"\\300\\207\" [ok] 1 (#$ . %d)])\n" doc)
+                               (format "(setq emaxx-lazy-out (list (eq #$ load-file-name) '(#$ . %d)))\n" doc)
+                               "#@00 rest ignored (\n"))
+                     (with-temp-file raw
+                       (set-buffer-multibyte nil)
+                       (insert header
+                               "(setq emaxx-lazy-out (list \"\xc0\x01\xc2\xff\" \"h\xc3\xa9\" \"\xf6\xa0\x87\x8a\" ?\xc3\xa9 (symbol-name 'a\xc3\x9b)))\n"))
+                     (load lazy nil t)
+                     (push (list (equal (aref (symbol-function 'emaxx-lazy-fun) 4) (cons lazy doc))
+                                 (car emaxx-lazy-out)
+                                 (equal (nth 1 emaxx-lazy-out) (cons lazy doc))
+                                 (documentation 'emaxx-lazy-fun))
+                           results)
+                     (let ((load-force-doc-strings t))
+                       (load lazy nil t))
+                     (push (list (aref (symbol-function 'emaxx-lazy-fun) 4)
+                                 (multibyte-string-p (aref (symbol-function 'emaxx-lazy-fun) 4))
+                                 (nth 1 emaxx-lazy-out))
+                           results)
+                     (load raw nil t)
+                     (push (mapcar (lambda (s)
+                                     (if (stringp s)
+                                         (list (multibyte-string-p s) (string-to-list s))
+                                       s))
+                                   emaxx-lazy-out)
+                           results)
+                     (push (list (let ((load-file-name "x")) (read "(#$ . 5)"))
+                                 (with-temp-buffer
+                                   (insert "#@5 abc\x1f(z)")
+                                   (goto-char (point-min))
+                                   (read (current-buffer)))
+                                 (read "[a [b] c]"))
+                           results)
+                     (prin1-to-string (nreverse results)))
+                 (delete-file lazy)
+                 (delete-file raw))))"##,
+    );
+    assert_string_value(
+        result,
+        "((t t t \"My little\ndoc string\nhere\") \
+         (\"My little\ndoc string\nhere\" nil \"My little\ndoc string\nhere\") \
+         ((nil (192 1 194 255)) (t (104 233)) (t (1704394)) 233 (t (97 219))) \
+         ((\"x\" . 5) (z) [a [b] c]))",
+    );
+}

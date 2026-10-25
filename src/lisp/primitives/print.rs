@@ -1055,6 +1055,28 @@ impl CallableReader<'_> {
     }
 }
 
+impl crate::lisp::reader::ReadContext for CallableReader<'_> {
+    fn intern(&mut self, name: &str) -> Result<Value, LispError> {
+        crate::lisp::reader::ReaderStream::intern_symbol(self, name, false)
+    }
+
+    fn build(&mut self, form: crate::lisp::types::ReaderForm) -> Result<Value, LispError> {
+        self.interp.build_read_object(form, self.env)
+    }
+
+    fn load_file_name(&mut self) -> Value {
+        self.interp.read_load_file_name(self.env)
+    }
+
+    fn force_doc_strings(&mut self) -> bool {
+        self.interp.read_force_doc_strings(self.env)
+    }
+
+    fn doc_string(&mut self, reference: Value) -> Result<Value, LispError> {
+        crate::lisp::primitives::unibyte_doc_string(self.interp, &reference, self.env)
+    }
+}
+
 impl crate::lisp::reader::ReaderStream for CallableReader<'_> {
     fn read_character(&mut self) -> Result<Option<i64>, LispError> {
         match self.call(&[])?.kind() {

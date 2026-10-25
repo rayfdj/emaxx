@@ -100,6 +100,64 @@ enum AtomSyntax {
 pub(crate) trait ReadContext {
     fn intern(&mut self, name: &str) -> Result<Value, LispError>;
     fn build(&mut self, form: ReaderForm) -> Result<Value, LispError>;
+    /// Vload_file_name, the value `#$' reads as.
+    fn load_file_name(&mut self) -> Value;
+    /// load_force_doc_strings.
+    fn force_doc_strings(&mut self) -> bool;
+    /// get_lazy_string's fallback, doc.c get_doc_string (REFERENCE, true):
+    /// the unibyte text the (FILE . POSITION) REFERENCE names in its file.
+    fn doc_string(&mut self, reference: Value) -> Result<Value, LispError>;
+}
+
+/// One of lread.c's saved_strings: the bytes `#@' skipped in a file while
+/// `load-force-doc-strings' was set, and the file position they start at.
+struct SavedString {
+    position: usize,
+    bytes: Vec<u8>,
+}
+
+thread_local! {
+    /// lread.c saved_strings: the last two, the most recent first.
+    static SAVED_STRINGS: std::cell::RefCell<[Option<SavedString>; 2]> =
+        const { std::cell::RefCell::new([None, None]) };
+}
+
+/// skip_lazy_string's record of a skipped doc string.
+fn save_lazy_string(position: usize, bytes: Vec<u8>) {
+    SAVED_STRINGS.with_borrow_mut(|saved| {
+        saved.swap(0, 1);
+        saved[0] = Some(SavedString { position, bytes });
+    });
+}
+
+/// get_lazy_string from the saved strings: the text at file POSITION up to
+/// its ^_, the ^A quoting undone; None when no saved string holds it.
+fn saved_lazy_string(position: usize) -> Option<Vec<u8>> {
+    SAVED_STRINGS.with_borrow(|saved| {
+        let saved = saved.iter().flatten().find(|saved| {
+            position >= saved.position && position - saved.position < saved.bytes.len()
+        })?;
+        let mut bytes = saved.bytes[position - saved.position..].iter().copied();
+        let mut text = Vec::new();
+        while let Some(byte) = bytes.next().filter(|byte| *byte != 0o37) {
+            text.push(if byte == 1 {
+                match bytes.next() {
+                    Some(b'0') => 0,
+                    Some(b'_') => 0o37,
+                    Some(other) => other,
+                    None => break,
+                }
+            } else {
+                byte
+            });
+        }
+        Some(text)
+    })
+}
+
+/// Fload's end: the strings saved while it read are freed.
+pub(crate) fn forget_saved_lazy_strings() {
+    SAVED_STRINGS.with_borrow_mut(|saved| *saved = [None, None]);
 }
 
 fn circular_read_label_form(value: &Value) -> Option<(u32, Value)> {
@@ -294,6 +352,9 @@ pub struct Reader<'a> {
     /// read0's read_objects_map keys: the `#N=' labels read so far, so a
     /// `#N#' naming no earlier label is invalid syntax where it is read.
     defined_labels: HashSet<u32>,
+    /// FROM_FILE_P: the bytes of a file `load' reads directly, where `#@'
+    /// skips by byte count and lazily loaded code is read at once.
+    from_file: bool,
 }
 
 impl<'a> Reader<'a> {
@@ -322,6 +383,7 @@ impl<'a> Reader<'a> {
             position_base: 0,
             position_cursor_byte: 0,
             position_cursor_char: 0,
+            from_file: false,
         }
     }
 
@@ -351,7 +413,43 @@ impl<'a> Reader<'a> {
         symbol_shorthands: Vec<(String, String)>,
     ) -> Self {
         let mut reader = Self::with_symbol_shorthands("", symbol_shorthands);
-        reader.input = Input::Encoded { bytes, multibyte };
+        reader.input = Input::Encoded {
+            bytes,
+            multibyte,
+            lenient: false,
+        };
+        reader.slice = bytes;
+        reader
+    }
+
+    /// Fload's direct read of a file (readevalloop on Qget_file_char): its
+    /// BYTES from byte START, each character as readchar's read_multibyte
+    /// takes it.
+    pub(crate) fn from_file(
+        bytes: &'a [u8],
+        start: usize,
+        symbol_shorthands: Vec<(String, String)>,
+    ) -> Self {
+        let mut reader = Self::from_text_bytes(bytes, symbol_shorthands);
+        reader.pos = start;
+        reader.position_cursor_byte = start;
+        reader.from_file = true;
+        reader
+    }
+
+    /// Text in Emacs's internal representation that need not be well
+    /// formed, read as decode-coding-string's `utf-8-emacs' would hold it:
+    /// a byte that begins no whole character is a raw byte.
+    pub(crate) fn from_text_bytes(
+        bytes: &'a [u8],
+        symbol_shorthands: Vec<(String, String)>,
+    ) -> Self {
+        let mut reader = Self::with_symbol_shorthands("", symbol_shorthands);
+        reader.input = Input::Encoded {
+            bytes,
+            multibyte: true,
+            lenient: true,
+        };
         reader.slice = bytes;
         reader
     }
@@ -412,6 +510,79 @@ impl<'a> Reader<'a> {
         self
     }
 
+    /// The Lisp world the reader asks: the context it was given, else a
+    /// function stream's.
+    fn read_context(&mut self) -> Option<&mut dyn ReadContext> {
+        if let Some(context) = self.context.as_deref_mut() {
+            return Some(context);
+        }
+        match &mut self.input {
+            Input::Function(input) => Some(&mut *input.stream),
+            _ => None,
+        }
+    }
+
+    /// read0's `#$': the value of `load-file-name'.
+    fn load_file_name(&mut self) -> Value {
+        self.read_context()
+            .map_or(Value::Nil, |context| context.load_file_name())
+    }
+
+    /// lread.c get_lazy_string: the unibyte string the (FILE . POSITION)
+    /// REFERENCE names, from the doc strings `#@' saved in this load,
+    /// else read from FILE.
+    fn get_lazy_string(&mut self, reference: Value) -> Result<Value, LispError> {
+        let position = reference
+            .cons_values()
+            .and_then(|(_, position)| position.integer_value())
+            .map_or(0, i64::unsigned_abs);
+        if let Some(text) = usize::try_from(position).ok().and_then(saved_lazy_string) {
+            return Ok(Value::StringObject(StringObjectRef::from_unibyte(text)));
+        }
+        match self.read_context() {
+            Some(context) => context.doc_string(reference),
+            None => Ok(Value::Nil),
+        }
+    }
+
+    /// bytecode_from_rev_list's reading of lazily loaded byte-code (the
+    /// `byte-compile-dynamic' of Emacs before 30) from a file: its code
+    /// slot a (FILE . POSITION) reference is read now, and code whose
+    /// constants slot is nil is the printed (BYTECODE . CONSTANTS) of
+    /// that string, decoded as `utf-8-emacs'.
+    fn read_lazy_closure_slots(&mut self, slots: &mut [Value]) -> Result<(), LispError> {
+        if slots[1]
+            .cons_values()
+            .is_some_and(|(_, position)| matches!(position.kind(), Kind::Integer(_)))
+        {
+            slots[1] = self.get_lazy_string(slots[1])?;
+        }
+        let Some(constants) = slots.get(2) else {
+            return Ok(());
+        };
+        if !constants.is_nil() {
+            return Ok(());
+        }
+        let Kind::StringObject(code) = slots[1].kind() else {
+            return Ok(());
+        };
+        let bytes = code.borrow().bytes().to_vec();
+        let shorthands = self.symbol_shorthands.clone();
+        let pair = {
+            let mut reader = Reader::from_text_bytes(&bytes, shorthands);
+            if let Some(context) = self.read_context() {
+                reader = reader.with_read_context(context);
+            }
+            reader.read()?
+        };
+        let Some((code, constants)) = pair.and_then(|pair| pair.cons_values()) else {
+            return Err(LispError::ReadError("Invalid byte-code object".into()));
+        };
+        slots[1] = code;
+        slots[2] = constants;
+        Ok(())
+    }
+
     fn resolve_symbol(&mut self, name: &str) -> Result<Value, LispError> {
         if let Input::Function(input) = &mut self.input {
             return input.stream.intern_symbol(name, false);
@@ -427,7 +598,7 @@ impl<'a> Reader<'a> {
     /// without a context, the placeholder waits for the interpreter.
     fn literal_object(&mut self, form: ReaderForm) -> Result<Value, LispError> {
         if self.defined_labels.is_empty()
-            && let Some(context) = self.context.as_mut()
+            && let Some(context) = self.read_context()
         {
             return context.build(form);
         }
@@ -713,17 +884,29 @@ impl<'a> Reader<'a> {
             }
         }
 
-        // Build the list from the end
+        // read0's RE_list_dot hack: (#$ . FIXNUM) is the doc string it
+        // names at once when `load-force-doc-strings' is set.
+        let lazy_head = (items.len() == 1
+            && !items[0].is_nil()
+            && dotted_end.is_some_and(|end| matches!(end.kind(), Kind::Integer(_))))
+        .then(|| items[0]);
         let mut result = dotted_end.unwrap_or(Value::Nil);
         for item in items.into_iter().rev() {
             result = Value::cons(item, result);
+        }
+        if let Some(head) = lazy_head
+            && self.read_context().is_some_and(|context| {
+                context.force_doc_strings() && context.load_file_name().eq_value(head)
+            })
+        {
+            result = self.get_lazy_string(result)?;
         }
         Ok(Some(result))
     }
 
     fn read_vector(&mut self) -> Result<Option<Value>, LispError> {
         self.advance()?; // consume '['
-        let mut items = vec![Value::symbol("vector-literal")];
+        let mut items = Vec::new();
         loop {
             self.skip_whitespace_and_comments()?;
             match self.peek()? {
@@ -738,7 +921,7 @@ impl<'a> Reader<'a> {
                 }
             }
         }
-        Ok(Some(Value::list(items)))
+        Ok(Some(Value::vector(items)))
     }
 
     fn read_string(&mut self) -> Result<Option<Value>, LispError> {
@@ -1309,11 +1492,12 @@ impl<'a> Reader<'a> {
                 Err(LispError::ReadError("#<".into()))
             }
             Some(b'@') => {
-                // lread.c skip_lazy_string off a file: #@00 skips to the
-                // end and reads as nil; #@NUMBER skips the dynamic string
-                // or byte-code that follows, which always ends in \037.
+                // lread.c skip_lazy_string: #@00 skips to the end and reads
+                // as nil; #@NUMBER skips the NUMBER bytes after the digits
+                // (a dynamic doc string or byte-code), the first of them
+                // the character just read, and reads on.
                 self.advance()?;
-                let mut nskip: i64 = 0;
+                let mut nskip: usize = 0;
                 let mut digits = 0;
                 loop {
                     match self.peek_code()? {
@@ -1321,25 +1505,49 @@ impl<'a> Reader<'a> {
                             self.read_code()?;
                             nskip = nskip
                                 .checked_mul(10)
-                                .and_then(|n| n.checked_add(c - 0x30))
+                                .and_then(|n| n.checked_add((c - 0x30) as usize))
                                 .ok_or_else(|| LispError::ReadError("#@".into()))?;
                             digits += 1;
                             if digits == 2 && nskip == 0 {
-                                while self.read_code()?.is_some() {}
+                                // skip_dyn_eof.
+                                if self.from_file {
+                                    self.pos = self.slice.len();
+                                } else {
+                                    while self.read_code()?.is_some() {}
+                                }
                                 return Ok(Some(Value::Nil));
                             }
                         }
                         _ => {
                             if nskip > 0 {
                                 self.read_code()?;
+                                nskip -= 1;
                             }
                             break;
                         }
                     }
                 }
-                while let Some(c) = self.read_code()? {
-                    if c == 0o37 {
-                        break;
+                if self.from_file {
+                    // skip_dyn_bytes from a file; with
+                    // `load-force-doc-strings' the bytes are saved for
+                    // get_lazy_string.
+                    let start = self.pos.min(self.slice.len());
+                    let end = start.saturating_add(nskip).min(self.slice.len());
+                    if self
+                        .read_context()
+                        .is_some_and(|context| context.force_doc_strings())
+                    {
+                        save_lazy_string(start, self.slice[start..end].to_vec());
+                    }
+                    self.pos = end;
+                } else {
+                    // Not a file: the bytes cannot be counted in this
+                    // representation, but the string skipped always ends
+                    // in \037.
+                    while let Some(c) = self.read_code()? {
+                        if c == 0o37 {
+                            break;
+                        }
                     }
                 }
                 self.read()
@@ -1432,7 +1640,10 @@ impl<'a> Reader<'a> {
                     Ok(fields)
                 })();
                 self.locate_symbols = saved_locate;
-                let fields = fields?;
+                let mut fields = fields?;
+                if self.from_file && fields.len() >= 2 {
+                    self.read_lazy_closure_slots(&mut fields)?;
+                }
                 // GNU uses the same `#[...]' syntax for both kinds of
                 // closure pseudovector.  Byte-compiled functions have a
                 // string in the code slot and at least four fields, while an
@@ -1673,11 +1884,10 @@ impl<'a> Reader<'a> {
                     self.literal_object(ReaderForm::Record { slots }).map(Some)
                 }
             }
-            // `#$' outside the `.elc' rewrite (lisp::preprocess_lazy_doc_source)
-            // reads on as the symbol it spells.
+            // `#$': the reference to the file being loaded.
             Some(b'$') => {
-                self.retreat_ascii(b'#');
-                self.read_atom()
+                self.advance()?;
+                Ok(Some(self.load_file_name()))
             }
             // read0's default: INVALID_SYNTAX_WITH_BUFFER, `#' and the
             // character after it.

@@ -1202,12 +1202,7 @@ pub(crate) mod tests {
     /// Parse an oracle fixture into named byte-code objects
     /// ((defalias 'NAME #[...]) pairs), shared with the VM tests.
     pub(crate) fn named_objects(elc: &str) -> std::collections::HashMap<String, ByteCodeObject> {
-        let source = super::super::preprocess_lazy_doc_source(
-            std::path::Path::new("fixture-oracle-30.2.elc"),
-            elc,
-            false,
-        );
-        let forms = super::super::reader::Reader::new(&source)
+        let forms = super::super::reader::Reader::from_file(elc.as_bytes(), 0, Vec::new())
             .read_all()
             .unwrap();
         let mut objects = std::collections::HashMap::new();
@@ -1284,14 +1279,9 @@ pub(crate) mod tests {
             classify_elc_header(ORACLE_ELC.as_bytes()),
             ElcKind::GnuVersioned
         );
-        // Same preprocessing the loader applies before reading `.elc`
-        // text: `#@N` lazy docs and `#$` current-file references.
-        let source = super::super::preprocess_lazy_doc_source(
-            std::path::Path::new("fixture-oracle-30.2.elc"),
-            ORACLE_ELC,
-            false,
-        );
-        let forms = super::super::reader::Reader::new(&source)
+        // Read as the loader reads a compiled file: `#@N` lazy docs
+        // skipped by byte count, `#$` the file being loaded.
+        let forms = super::super::reader::Reader::from_file(ORACLE_ELC.as_bytes(), 0, Vec::new())
             .read_all()
             .unwrap();
         let mut slot_lists = Vec::new();

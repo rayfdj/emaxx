@@ -1709,6 +1709,18 @@ fn decode_doc_string(
     position: i64,
     dynamic: bool,
 ) -> Result<Option<String>, LispError> {
+    Ok(decode_doc_bytes(bytes, position, dynamic)?
+        .map(|decoded| String::from_utf8_lossy(&decoded).into_owned()))
+}
+
+/// get_doc_string's checks and ^A unquoting of the doc string at POSITION
+/// in BYTES, a block read from its file: its bytes, or None where GNU
+/// answers nil.
+fn decode_doc_bytes(
+    bytes: &[u8],
+    position: i64,
+    dynamic: bool,
+) -> Result<Option<Vec<u8>>, LispError> {
     let Some(position) = position
         .checked_abs()
         .and_then(|value| usize::try_from(value).ok())
@@ -1796,7 +1808,7 @@ fn decode_doc_string(
         });
         cursor += 2;
     }
-    Ok(Some(String::from_utf8_lossy(&decoded).into_owned()))
+    Ok(Some(decoded))
 }
 
 fn doc_reference_parts(
@@ -1845,16 +1857,42 @@ fn resolve_doc_reference(
     value: &Value,
     env: &Env,
 ) -> Result<Option<Value>, LispError> {
+    get_doc_string(interp, value, env, false)
+}
+
+/// doc.c get_doc_string (FILEPOS, true), lread.c get_lazy_string's
+/// fallback: the unibyte doc string or byte-code a reference names, nil
+/// where GNU answers nil.
+pub(crate) fn unibyte_doc_string(
+    interp: &Interpreter,
+    value: &Value,
+    env: &Env,
+) -> Result<Value, LispError> {
+    Ok(get_doc_string(interp, value, env, true)?.unwrap_or(Value::Nil))
+}
+
+/// doc.c get_doc_string: the doc string an integer DOC position or a
+/// (FILE . POS) reference names, unibyte when UNIBYTE.
+fn get_doc_string(
+    interp: &Interpreter,
+    value: &Value,
+    env: &Env,
+    unibyte: bool,
+) -> Result<Option<Value>, LispError> {
     let Some((path, position)) = doc_reference_parts(interp, value, env)? else {
         return Ok(None);
     };
     match read_doc_string_block(&path, position.unsigned_abs()) {
-        Ok((bytes, offset)) => Ok(decode_doc_string(
-            &bytes,
-            offset as i64,
-            !matches!(value.kind(), Kind::Integer(_)),
-        )?
-        .map(|value| Value::String(value.into()))),
+        Ok((bytes, offset)) => {
+            let dynamic = !matches!(value.kind(), Kind::Integer(_));
+            Ok(if unibyte {
+                decode_doc_bytes(&bytes, offset as i64, dynamic)?
+                    .map(|decoded| Value::StringObject(StringObjectRef::from_unibyte(decoded)))
+            } else {
+                decode_doc_string(&bytes, offset as i64, dynamic)?
+                    .map(|value| Value::String(value.into()))
+            })
+        }
         Err(error) if matches!(error.kind(), std::io::ErrorKind::NotFound) => {
             let filename = path
                 .file_name()

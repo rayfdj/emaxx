@@ -6205,6 +6205,60 @@ setup_process_coding_systems's check now refuses). A 13-form
   documented local skips, and the new eval_05 test of the literals read
   builds (its values are GNU 30.2's) on its own; clippy `-D warnings',
   rustfmt and `git diff --check' pass.
+- **Round 85: `load' reads a compiled file's bytes directly, as lread.c
+  readevalloop on Qget_file_char does.** Emaxx decoded each `.elc' into
+  a Rust string first (decode_utf8_emacs_source, re-spelling raw bytes and
+  characters past Unicode as `\x' escapes) and then rewrote it twice
+  (preprocess_lazy_doc_source cut the `#@' doc strings out,
+  rewrite_lazy_doc_refs replaced `#$' and (#$ . N) with the file name
+  as a literal); the three passes and their 426 lines are gone. (1) A file
+  named `.elc' or starting with `;ELC' is read from its bytes, each
+  character as readchar's read_multibyte takes it: a lead byte and its
+  trailing codes, else the lead byte as a raw byte (BYTE8_TO_CHAR), so a
+  string of raw byte-code octets reads unibyte and one of characters past
+  Unicode multibyte, as GNU's do. `utf-8-emacs' source that is not UTF-8
+  reads the same way. (2) skip_lazy_string: from a file `#@N' skips N
+  bytes after the digits, the character just read among them (not up to
+  the next ^_, which a doc string can hold), with `load-force-doc-strings'
+  saving them as lread.c's two saved_strings, freed when the load ends;
+  `#@00' ends the input; elsewhere (a buffer, a string) the skip still
+  runs to the ^_. (3) `#$' reads as the value of `load-file-name' in any
+  read (it read as the symbol `#$' outside a load), so a compiled
+  function's (#$ . N) doc reference holds the load's file name object.
+  (4) read0's RE_list_dot hack: with `load-force-doc-strings' a (#$ . N)
+  whose car is `load-file-name' reads as get_lazy_string's unibyte
+  string, from the saved strings or else the file (doc.c get_doc_string
+  (VAL, true)); the old rewrite made it a multibyte literal.
+  bytecode_from_rev_list's reading of lazily loaded byte-code from a file
+  (the `byte-compile-dynamic' of Emacs before 30) is ported too: a
+  (FILE . N) code slot is read at once, and code with nil constants is
+  the printed (BYTECODE . CONSTANTS) read from it. (5) Fload of a compiled
+  file binds no `read-symbol-shorthands' and scans no file-local
+  variables; its `lexical-binding' comes from the head lines. (6) A
+  function stream's reader (`read' with a function) builds literal
+  objects as it reads too: the stream is the read's context. (7) The
+  reader makes a vector literal a vector directly, not a list headed by
+  `vector-literal' that `Value::list' turned into one. Loading the 13
+  `.elc' files took 479.8M instructions and now 425.0M (GNU 390.9M; the
+  loads themselves, without startup, 186M against GNU's 218M), and their
+  wall time is within noise of GNU's (0.033 to 0.051 s against 0.037 to
+  0.040). A probe writing compiled files with lazy doc strings, `#$',
+  `#@00', raw bytes, a character past Unicode and a two-byte symbol
+  character, loaded with and without `load-force-doc-strings', and `#$'
+  and `#@' read from a string and a buffer, gives GNU 30.2's values (an
+  eval_05 test holds them).
+  Finding recorded, not fixed: `Value::list' still turns any list whose
+  first element is the symbol `vector-literal' into a vector, and
+  `Value::to_vec' of a vector still prepends that symbol; 63 sites rely on
+  the pair, and each `Value::list' call compares a leading symbol's name.
+  A list a Lisp program builds with that symbol first through a primitive
+  that uses `Value::list' would come back a vector.
+  Local validation: the full gate, 3,225 passed across its ten groups
+  with the documented local skips (eval_05, 363, includes the new test);
+  clippy `-D warnings', rustfmt and `git diff --check' pass. survey84
+  (round 84's build): 514 of the 515 files give GNU's `Ran' line and exit
+  code; network-stream-tests differs only in GNU's own skip count, which
+  moves between runs (5, 4 or 3 skipped) while Emaxx's stays 3.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
