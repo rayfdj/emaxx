@@ -1150,14 +1150,7 @@ fn execute_command_binding_inner(
     // exit-minibuffer must not run the minibuffer's post-command hooks a
     // second time after its initial pre-input boundary.
     if result.is_ok() {
-        let buffer_id = interp.current_buffer_id();
-        crate::lisp::primitives::safe_run_named_hooks(
-            interp,
-            "post-command-hook",
-            env,
-            Some(buffer_id),
-        )
-        .unwrap_or(());
+        run_post_command_hooks(interp, env);
         // After post-command-hook GNU deactivates the mark when the command
         // asked for it (keyboard.c calls the real `deactivate-mark' so its
         // hook runs).  Buffer-modifying primitives are insdel.c's trigger
@@ -2220,5 +2213,66 @@ pub(crate) fn tty_menu_pane_from_keymap(
         title: title.to_string(),
         items,
         width,
+    }
+}
+
+/// keyboard.c command_loop_1 after a command (and on entry):
+/// `post-command-hook', then `delayed-warnings-hook' when warnings wait
+/// in `delayed-warnings-list'.
+pub(crate) fn run_post_command_hooks(interp: &mut Interpreter, env: &mut Env) {
+    let buffer_id = interp.current_buffer_id();
+    crate::lisp::primitives::safe_run_named_hooks(
+        interp,
+        "post-command-hook",
+        env,
+        Some(buffer_id),
+    )
+    .unwrap_or(());
+    if interp
+        .lookup_var("delayed-warnings-list", env)
+        .is_some_and(|value| value.is_truthy())
+    {
+        let buffer_id = interp.current_buffer_id();
+        crate::lisp::primitives::safe_run_named_hooks(
+            interp,
+            "delayed-warnings-hook",
+            env,
+            Some(buffer_id),
+        )
+        .unwrap_or(());
+    }
+}
+
+/// keyboard.c command_loop_1's entry, each time a command loop starts
+/// (the top level, a keyboard macro's iteration, a recursive edit, or
+/// after an error threw to top level): the post-command hooks, so they
+/// run after commands that exited nonlocally, then `last-command' and
+/// its companions from the command that ran last.
+pub(crate) fn command_loop_entry(interp: &mut Interpreter, env: &mut Env) {
+    run_post_command_hooks(interp, env);
+    let this_command = interp.lookup_var("this-command", env).unwrap_or(Value::Nil);
+    let real_this_command = interp
+        .lookup_var("real-this-command", env)
+        .unwrap_or(Value::Nil);
+    interp.set_variable("last-command", this_command, env);
+    interp.set_variable("real-last-command", real_this_command, env);
+    let last_event_is_cons = interp
+        .lookup_var("last-command-event", env)
+        .is_some_and(|event| event.cons_values().is_some());
+    if !last_event_is_cons {
+        interp.set_variable("last-repeatable-command", real_this_command, env);
+    }
+}
+
+/// keyboard.c command_loop_1 before read_key_sequence: no command is
+/// running while the next key sequence is read.
+pub(crate) fn clear_this_command(interp: &mut Interpreter, env: &mut Env) {
+    for name in [
+        "this-command",
+        "real-this-command",
+        "this-original-command",
+        "this-command-keys-shift-translated",
+    ] {
+        interp.set_variable(name, Value::Nil, env);
     }
 }

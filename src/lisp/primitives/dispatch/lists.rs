@@ -104,6 +104,9 @@ fn execute_kbd_macro(
             // signal_or_quit does.
             let handler_start =
                 interp.push_condition_case_handler(vec![Value::Symbol("minibuffer-quit".into())]);
+            // command_loop_2 enters command_loop_1 afresh for each
+            // iteration.
+            crate::lisp::primitives::command_loop_entry(interp, env);
             let iteration = match run_kbd_macro_events(interp, env).map_err(LispError::into_kind) {
                 // GNU's outermost command loop catches `top-level`, terminating
                 // the keyboard macro without propagating an error.
@@ -242,12 +245,7 @@ fn finish_kbd_macro_command_cycle(
         .lookup_var("current-prefix-arg", env)
         .unwrap_or(Value::Nil);
     interp.set_variable("last-prefix-arg", current_prefix, env);
-    safe_run_named_hooks(
-        interp,
-        "post-command-hook",
-        env,
-        Some(interp.current_buffer_id()),
-    )?;
+    crate::lisp::primitives::run_post_command_hooks(interp, env);
     let final_this_command = interp
         .lookup_var("this-command", env)
         .filter(|value| !value.is_nil())
@@ -509,6 +507,9 @@ fn run_kbd_macro_events(interp: &mut Interpreter, env: &mut Env) -> Result<(), L
             .is_some_and(|value| value.is_truthy())
         {
             return Ok(());
+        }
+        if reader.is_none() {
+            crate::lisp::primitives::clear_this_command(interp, env);
         }
         let event = next_kbd_command_event(interp, env)?;
         let Some(event) = event else {

@@ -2713,11 +2713,23 @@ pub(crate) struct FrameState {
     pub(crate) old_selected_window: Option<crate::lisp::types::RecordRef>,
     pub(crate) tty_sized: bool,
     pub(crate) id: u64,
+    /// frame.h's text_cols, total_cols and pixel_width, one value on a
+    /// text frame (no border, fringe or scroll bar; a one-pixel cell).
     pub(crate) width: i64,
+    /// frame.h's pixel_height and total_lines: every line, the menu and
+    /// tab bars included.
     pub(crate) height: i64,
+    /// frame.h's text_lines (FRAME_LINES): the lines below the bars.
     pub(crate) text_height: i64,
-    pub(crate) parameter_width: i64,
-    pub(crate) parameter_height: i64,
+    /// frame.h's menu_bar_lines and tab_bar_lines (FRAME_TOP_MARGIN).
+    pub(crate) menu_bar_lines: i64,
+    pub(crate) tab_bar_lines: i64,
+    /// frame.h's new_width, new_height and new_size_p: a native size
+    /// change_frame_size queued for do_pending_window_change (-1 for
+    /// none).
+    pub(crate) new_width: i64,
+    pub(crate) new_height: i64,
+    pub(crate) new_size_p: bool,
     pub(crate) parameter_overrides: Vec<(String, Value)>,
     pub(crate) focus_frame_id: Option<crate::lisp::types::FrameRef>,
     pub(crate) left: i64,
@@ -4079,8 +4091,11 @@ impl Interpreter {
                 width: 0,
                 height: 0,
                 text_height: 0,
-                parameter_width: 0,
-                parameter_height: 0,
+                menu_bar_lines: 0,
+                tab_bar_lines: 0,
+                new_width: -1,
+                new_height: -1,
+                new_size_p: false,
                 parameter_overrides: Vec::new(),
                 focus_frame_id: None,
                 left: 0,
@@ -5306,6 +5321,16 @@ pub struct InterpreterState {
     /// unset until the first completed window-change cycle.
     /// Monotonic selection stamp used by `window-use-time'.
     window_select_count: i64,
+    /// xdisp.c's windows_or_buffers_changed: something since the last
+    /// redisplay (a window other than the selected one marked for
+    /// redisplay, a frame or window-tree change) makes the next one
+    /// consider every window's start afresh.  The initial frame starts
+    /// garbaged.
+    pub(crate) windows_or_buffers_changed: bool,
+    /// buffer.h's last_window_start of each buffer: the start its last
+    /// window had when the window stopped showing it (unshow_buffer), where
+    /// set_window_buffer starts the next window to show it.  Absent is 1.
+    pub(crate) buffer_last_window_start: HashMap<u64, usize>,
     /// frame.c's live frame list. A frame owns its state and graph; deleting
     /// it removes this root, while escaped Lisp references retain the object.
     pub(crate) frame_states: Vec<crate::lisp::types::FrameRef>,
@@ -5643,7 +5668,6 @@ pub struct InterpreterState {
     /// that exchange it: while it holds, the stack has only lost entries.
     handler_generation: u64,
     handler_search_memo: Option<HandlerSearch>,
-    window_margins: Vec<(u64, Option<i64>, Option<i64>)>,
     /// Live terminal color count published by the tty frontend; batch
     /// sessions keep GNU's dumb-terminal zero.
     /// True once a live tty published its frame size; the layout then
@@ -5813,11 +5837,17 @@ impl Interpreter {
                 old_selected_window: None,
                 tty_sized: false,
                 id: 1,
+                // frame.c:make_frame's 80x25, then make_initial_frame's
+                // set_menu_bar_lines (f, 1): the menu bar's line, its
+                // change_frame_size delayed until do_pending_window_change.
                 width: 80,
                 height: 25,
                 text_height: 25,
-                parameter_width: 80,
-                parameter_height: 25,
+                menu_bar_lines: 1,
+                tab_bar_lines: 0,
+                new_width: 80,
+                new_height: 25,
+                new_size_p: true,
                 parameter_overrides: Vec::new(),
                 focus_frame_id: None,
                 left: 0,
@@ -6121,6 +6151,8 @@ impl Interpreter {
             window_cursor_visibility: HashMap::new(),
             old_selected_window_id: 0,
             window_select_count: 1,
+            windows_or_buffers_changed: true,
+            buffer_last_window_start: HashMap::new(),
             frame_states: vec![initial_frame],
             next_frame_id: 2,
             selected_frame_id: initial_frame,
@@ -6353,7 +6385,6 @@ impl Interpreter {
             suspend_condition_case_count: 0,
             handler_generation: 0,
             handler_search_memo: None,
-            window_margins: Vec::new(),
             face_change_count: 0,
         };
         let mut interp = Interpreter {

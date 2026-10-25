@@ -1462,7 +1462,8 @@ fn selected_window_is_a_record_and_tracks_window_start() {
             &mut env,
         )
         .expect("set-window-start"),
-        Value::T
+        // window.c Fset_window_start returns POS.
+        Value::Integer(2)
     );
     assert_eq!(
         call(&mut interp, "window-start", &[window], &mut env).expect("window-start"),
@@ -1477,7 +1478,7 @@ fn selected_window_is_a_record_and_tracks_window_start() {
             &mut env,
         )
         .expect("set-window-start with selected window default"),
-        Value::T
+        Value::Integer(3)
     );
     assert_eq!(
         call(&mut interp, "window-start", &[], &mut env).expect("selected window-start"),

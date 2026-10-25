@@ -605,8 +605,11 @@ fn native_dired_host_data_and_comparators_keep_their_direct_call_contracts() {
 #[cfg(unix)]
 #[test]
 fn kill_process_is_a_native_command_and_accepts_a_process_name() {
+    // The wait runs do_pending_window_change: window.el's owners resize
+    // the initial frame as in every running GNU Emacs.
     assert_eq!(
-        eval_str(
+        eval_str_with(
+            &mut crate::test_support::initialized_gnu_window_lisp_interpreter(),
             "(let* ((process
                      (make-process
                       :name \"native-kill-process\"

@@ -3,7 +3,12 @@ use crate::lisp::primitives::processes::wait_pumping_processes;
 use crate::lisp::types::Kind;
 use crate::lisp::types::LispErrorKind;
 
+mod frame_size;
 mod mode_line;
+pub(crate) use frame_size::{
+    adjust_frame_size, change_frame_size, do_pending_window_change, frame_top_margin,
+    set_menu_bar_lines, set_tab_bar_lines,
+};
 pub(crate) use mode_line::ModeLineCells;
 
 // The live echo-area line of an interactive session.  GNU keeps this in
@@ -1315,7 +1320,7 @@ fn frame_window_tree_leaf_ids(
     leaves
 }
 
-fn live_ordinary_window_ids(interp: &Interpreter) -> Vec<u64> {
+pub(crate) fn live_ordinary_window_ids(interp: &Interpreter) -> Vec<u64> {
     let from_tree: Vec<u64> = window_tree_leaf_ids(interp)
         .into_iter()
         .filter(|id| is_live_ordinary_window(interp, *id))
@@ -1336,6 +1341,7 @@ fn live_ordinary_window_ids(interp: &Interpreter) -> Vec<u64> {
 /// buffer, and display anchors.  Geometry counts total lines and columns
 /// — the mode line is the rect's last row, and a window not flush with
 /// the frame's right edge spends its last column on the vertical border.
+#[derive(Clone, Copy)]
 pub(crate) struct WindowRenderInfo {
     pub(crate) window_id: u64,
     pub(crate) buffer_id: u64,
@@ -1343,7 +1349,8 @@ pub(crate) struct WindowRenderInfo {
     pub(crate) top: usize,
     pub(crate) width: usize,
     pub(crate) height: usize,
-    /// The window's display start (the window-start slot, clamped).
+    /// The window's start marker (outside a later narrowing until
+    /// redisplay moves it).
     pub(crate) start: usize,
     /// The window's own point: the live buffer point for the selected
     /// window, the saved window-point slot otherwise.
@@ -1363,15 +1370,7 @@ pub(crate) fn window_render_layout(interp: &Interpreter) -> Vec<WindowRenderInfo
             let (width, height, left, top) = window_geometry(interp, window_id);
             let (point_min, point_max) = buffer_point_bounds(interp, buffer_id);
             let clamp = |value: i64| value.clamp(point_min as i64, point_max as i64) as usize;
-            let start = if selected {
-                interp.selected_window_start()
-            } else {
-                clamp(
-                    window_slot_value(interp, window_id, WINDOW_START_SLOT)
-                        .as_integer()
-                        .unwrap_or(point_min as i64),
-                )
-            };
+            let start = window_start_marker(interp, window_id, buffer_id);
             let live_point = if buffer_id == interp.current_buffer_id() {
                 interp.buffer.borrow().point()
             } else {
@@ -2106,7 +2105,7 @@ fn live_window_id_or_selected(
         .cloned()
         .unwrap_or_else(|| interp.selected_window_value());
     let window_id = window_record_id_from_value(interp, &window)
-        .ok_or_else(|| LispError::TypeError("window-live-p".into(), window.type_name()))?;
+        .ok_or_else(|| LispError::WrongTypeArgument("window-live-p".into(), window))?;
     let kind = window_slot_value(interp, window_id, WINDOW_KIND_SLOT);
     if matches!(
         kind.kind(),
@@ -2119,10 +2118,7 @@ fn live_window_id_or_selected(
             )
     ) || window_buffer_id(interp, &window).is_none()
     {
-        return Err(LispError::TypeError(
-            "window-live-p".into(),
-            window.type_name(),
-        ));
+        return Err(LispError::WrongTypeArgument("window-live-p".into(), window));
     }
     Ok(window_id)
 }
@@ -2135,6 +2131,9 @@ fn select_window_value(
     let window_id = live_window_id_or_selected(interp, Some(window))?;
     let previous_window_id = interp.selected_window_id();
     if window_id != previous_window_id {
+        // select_window marks both windows for redisplay, the newly
+        // selected one while it is still another window.
+        interp.redisplay_other_windows();
         let previous_buffer_id = interp.selected_window_buffer_id();
         let previous_point = if previous_buffer_id == interp.current_buffer_id() {
             interp.buffer.borrow().point()
@@ -2314,8 +2313,9 @@ fn window_resize_check(interp: &Interpreter, id: u64, horflag: bool) -> bool {
 }
 
 /// window.c:window_resize_apply: commit W's staged new pixel size (and
-/// a numeric new normal size) in HORFLAG's dimension, then place its
-/// children from W's edge, advancing the edge across an iso-combination.
+/// a numeric new normal size) in HORFLAG's dimension, its total size
+/// from that, then place its children (pixel edge and column or line)
+/// from W's edge, advancing the edge across an iso-combination.
 fn window_resize_apply(interp: &mut Interpreter, id: u64, horflag: bool) -> Result<(), LispError> {
     let new_pixel = window_new_pixel(interp, id);
     let (mut width, mut height, left, top) = window_geometry(interp, id);
@@ -2325,6 +2325,16 @@ fn window_resize_apply(interp: &mut Interpreter, id: u64, horflag: bool) -> Resu
         height = new_pixel;
     }
     set_window_geometry(interp, id, (width, height, left, top))?;
+    set_window_char_slot(
+        interp,
+        id,
+        if horflag {
+            WINDOW_TOTAL_COLS_SLOT
+        } else {
+            WINDOW_TOTAL_LINES_SLOT
+        },
+        new_pixel,
+    );
     let new_normal = window_slot_value(interp, id, WINDOW_NEW_NORMAL_SLOT);
     if matches!(new_normal.kind(), Kind::Integer(_) | Kind::Float(_)) {
         let slot = if horflag {
@@ -2347,6 +2357,16 @@ fn window_resize_apply(interp: &mut Interpreter, id: u64, horflag: bool) -> Resu
             (child_width, child_height, child_left, edge)
         };
         set_window_geometry(interp, child_id, placed)?;
+        set_window_char_slot(
+            interp,
+            child_id,
+            if horflag {
+                WINDOW_LEFT_COL_SLOT
+            } else {
+                WINDOW_TOP_LINE_SLOT
+            },
+            edge,
+        );
         window_resize_apply(interp, child_id, horflag)?;
         if horizontal == horflag {
             edge += window_pixel_size(interp, child_id, horflag);
@@ -2357,16 +2377,54 @@ fn window_resize_apply(interp: &mut Interpreter, id: u64, horflag: bool) -> Resu
 }
 
 /// window.c:grow_mini_window's commit: once `window--resize-root-window-
-/// vertically' has staged the root's new height, apply it when the staged
-/// sizes add up (resize_mini_window_apply runs window_resize_apply on the
-/// root whatever its current height).
-pub(crate) fn apply_staged_root_window_height(interp: &mut Interpreter) -> Result<bool, LispError> {
-    let root = interp.selected_frame_id.borrow().root_window_id();
-    if !window_resize_check(interp, root, false) {
+/// vertically' has staged the root's new height, recovering GROW pixels
+/// for the root, the mini window takes -GROW when the staged sizes add
+/// up (resize_mini_window_apply runs window_resize_apply on the root
+/// whatever its current height).
+pub(crate) fn apply_staged_root_window_height(
+    interp: &mut Interpreter,
+    grow: i64,
+) -> Result<bool, LispError> {
+    let frame = interp.selected_frame_id;
+    let root = frame.borrow().root_window_id();
+    if grow == 0 || !window_resize_check(interp, root, false) {
         return Ok(false);
     }
-    window_resize_apply(interp, root, false)?;
+    let mini = frame.borrow().minibuffer_window_id();
+    resize_mini_window_apply(interp, frame, mini, -grow)?;
     Ok(true)
+}
+
+/// window.c:resize_mini_window_apply: mini window W grows by DELTA
+/// pixels, the root window tree takes its staged heights and W stays
+/// right below it.
+fn resize_mini_window_apply(
+    interp: &mut Interpreter,
+    frame: crate::lisp::types::FrameRef,
+    mini: u64,
+    delta: i64,
+) -> Result<(), LispError> {
+    let root = frame.borrow().root_window_id();
+    let (width, height, left, top) = window_geometry(interp, mini);
+    set_window_geometry(interp, mini, (width, height + delta, left, top))?;
+    set_window_char_slot(interp, mini, WINDOW_TOTAL_LINES_SLOT, height + delta);
+    window_resize_apply(interp, root, false)?;
+    let (_, root_height, _, root_top) = window_geometry(interp, root);
+    let (_, root_lines, _, root_top_line) = window_char_geometry(interp, root);
+    set_window_geometry(
+        interp,
+        mini,
+        (width, height + delta, left, root_top + root_height),
+    )?;
+    set_window_char_slot(
+        interp,
+        mini,
+        WINDOW_TOP_LINE_SLOT,
+        root_top_line + root_lines,
+    );
+    // fset_redisplay (f).
+    interp.redisplay_other_windows();
+    Ok(())
 }
 
 /// window.c:replace_window: NEW takes OLD's place among its siblings and
@@ -2386,6 +2444,15 @@ fn replace_window(
     }
     if setflag {
         set_window_geometry(interp, new, window_geometry(interp, old))?;
+        let (total_cols, total_lines, left_col, top_line) = window_char_geometry(interp, old);
+        for (slot, value) in [
+            (WINDOW_LEFT_COL_SLOT, left_col),
+            (WINDOW_TOP_LINE_SLOT, top_line),
+            (WINDOW_TOTAL_COLS_SLOT, total_cols),
+            (WINDOW_TOTAL_LINES_SLOT, total_lines),
+        ] {
+            set_window_char_slot(interp, new, slot, value);
+        }
         for slot in [WINDOW_NORMAL_WIDTH_SLOT, WINDOW_NORMAL_HEIGHT_SLOT] {
             let normal = window_slot_value(interp, old, slot);
             set_window_slot_value(interp, new, slot, normal)?;
@@ -2561,7 +2628,7 @@ fn split_window_tree(
     pixel_size: &Value,
     side: &Value,
     normal_size: &Value,
-    env: &Env,
+    env: &mut Env,
 ) -> Result<Value, LispError> {
     let horflag = matches!(side.kind(), Kind::T)
         || matches!(side.kind(), Kind::Symbol(side) if matches!(side.as_str(), "left" | "right"));
@@ -2649,8 +2716,10 @@ fn split_window_tree(
             set_window_slot_value(interp, parent, WINDOW_COMBINATION_LIMIT_SLOT, Value::T)?;
         }
         let size = window_pixel_size(interp, old_id, horflag);
+        let (old_cols, old_lines, _, _) = window_char_geometry(interp, old_id);
+        let total = if horflag { old_cols } else { old_lines };
         set_window_slot_value(interp, parent, WINDOW_NEW_PIXEL_SLOT, Value::Integer(size))?;
-        set_window_slot_value(interp, parent, WINDOW_NEW_TOTAL_SLOT, Value::Integer(size))?;
+        set_window_slot_value(interp, parent, WINDOW_NEW_TOTAL_SLOT, Value::Integer(total))?;
         set_window_slot_value(interp, parent, WINDOW_NEW_NORMAL_SLOT, new_normal)?;
         parent
     } else {
@@ -2681,6 +2750,21 @@ fn split_window_tree(
     };
     let new_id = new_id.id;
     set_window_slot_value(interp, new_id, WINDOW_FRAME_SLOT, Value::Frame(frame))?;
+    let (old_cols, old_lines, old_left_col, old_top_line) = window_char_geometry(interp, old_id);
+    let orthogonal = if horflag {
+        [
+            (WINDOW_TOP_LINE_SLOT, old_top_line),
+            (WINDOW_TOTAL_LINES_SLOT, old_lines),
+        ]
+    } else {
+        [
+            (WINDOW_LEFT_COL_SLOT, old_left_col),
+            (WINDOW_TOTAL_COLS_SLOT, old_cols),
+        ]
+    };
+    for (slot, value) in orthogonal {
+        set_window_char_slot(interp, new_id, slot, value);
+    }
     let old_parent = window_link(interp, old_id, WINDOW_PARENT_SLOT);
     set_window_link(interp, new_id, WINDOW_PARENT_SLOT, old_parent)?;
     if before {
@@ -2717,15 +2801,97 @@ fn split_window_tree(
         }
         child = window_link(interp, child_id, WINDOW_NEXT_SIBLING_SLOT);
     }
+    let (parent_cols, parent_lines, _, _) = window_char_geometry(interp, parent);
     set_window_slot_value(
         interp,
         new_id,
         WINDOW_NEW_TOTAL_SLOT,
-        Value::Integer(window_pixel_size(interp, parent, horflag) - sum),
+        Value::Integer(if horflag { parent_cols } else { parent_lines } - sum),
     )?;
     set_window_slot_value(interp, new_id, WINDOW_NEW_NORMAL_SLOT, *normal_size)?;
     window_resize_apply(interp, parent, horflag)?;
+    // NEW takes REFERENCE's margins (fringes and scroll bars have no
+    // terminal width); set_window_buffer (new, r->contents, true, true)
+    // keeps them, and NEW, having had no buffer, takes the buffer's
+    // last_window_start and point.
+    let (left_margin, right_margin) = interp.window_margins(reference);
+    interp.set_window_margins(new_id, left_margin, right_margin);
+    interp.show_buffer_in_window(new_id, reference_buffer, false);
+    set_window_buffer_hooks(interp, new_id, reference_buffer, env)?;
     Ok(interp.record_value(new_id))
+}
+
+/// window.c:set_window_margins: WINDOW's margins become LEFT_WIDTH and
+/// RIGHT_WIDTH columns (nil for none), unless that changes nothing or
+/// would leave the window under MIN_SAFE_WINDOW_WIDTH columns; true when
+/// the margins changed (apply_window_adjustment then redisplays it).
+fn set_window_margins(
+    interp: &mut Interpreter,
+    window_id: u64,
+    left_width: Value,
+    right_width: Value,
+) -> Result<bool, LispError> {
+    // extract_dimension: check_integer_range (dimension, 0, INT_MAX).
+    let extract = |dimension: Value| -> Result<i64, LispError> {
+        if dimension.is_nil() {
+            return Ok(0);
+        }
+        let Kind::Integer(cols) = dimension.kind() else {
+            return Err(LispError::WrongTypeArgument("integerp".into(), dimension));
+        };
+        if !(0..=i64::from(i32::MAX)).contains(&cols) {
+            return Err(LispError::SignalValue(Value::list([
+                Value::symbol("args-out-of-range"),
+                dimension,
+                Value::Integer(0),
+                Value::Integer(i64::from(i32::MAX)),
+            ])));
+        }
+        Ok(cols)
+    };
+    let left = extract(left_width)?;
+    let right = extract(right_width)?;
+    let (old_left, old_right) = interp.window_margins(window_id);
+    if old_left.unwrap_or(0) == left && old_right.unwrap_or(0) == right {
+        return Ok(false);
+    }
+    // A text window has no fringes or scroll bars; MIN_SAFE_WINDOW_WIDTH
+    // is two columns.
+    if window_geometry(interp, window_id).0 - (left + right) < 2 {
+        return Ok(false);
+    }
+    interp.set_window_margins(window_id, Some(left), Some(right));
+    interp.wset_redisplay(window_id);
+    Ok(true)
+}
+
+/// set_window_buffer's run_hooks_p: `window-scroll-functions' see the
+/// window's new start with BUFFER current.
+fn set_window_buffer_hooks(
+    interp: &mut Interpreter,
+    window_id: u64,
+    buffer_id: u64,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    let hooks = hook_values(interp, "window-scroll-functions", env, Some(buffer_id));
+    if hooks.is_empty() {
+        return Ok(());
+    }
+    let window = interp.record_value(window_id);
+    let start = Value::Integer(window_start_marker(interp, window_id, buffer_id) as i64);
+    let original_buffer = interp.current_buffer_id();
+    interp.set_current_buffer_id(buffer_id)?;
+    let mut result = Ok(());
+    for hook in hooks {
+        if let Err(error) = call_function_value(interp, &hook, &[window, start], env) {
+            result = Err(error);
+            break;
+        }
+    }
+    if interp.has_buffer_id(original_buffer) {
+        interp.set_current_buffer_id(original_buffer)?;
+    }
+    result
 }
 
 /// window.c:Fdelete_window_internal.  `delete-window' has staged the new
@@ -2860,6 +3026,18 @@ fn delete_other_windows_from_tree(
     }
 
     let live = window_combination(interp, window_id).is_none();
+    // A live WINDOW's start and top line, for keeping the text at its
+    // start where it was on the frame.
+    let frame_top = window_geometry(interp, frame.borrow().root_window_id()).3;
+    let start_and_top = live.then(|| {
+        let buffer_id = window_buffer_id(interp, &interp.record_value(window_id))
+            .unwrap_or(interp.current_buffer_id());
+        (
+            buffer_id,
+            window_start_marker(interp, window_id, buffer_id),
+            window_geometry(interp, window_id).3 - frame_top,
+        )
+    });
     let mut swindow = window_id;
     if live {
         if window_id != frame.borrow().selected_window_id() {
@@ -2891,12 +3069,15 @@ fn delete_other_windows_from_tree(
     let mut resize_failed = false;
     if !live {
         let (root_width, root_height, root_left, root_top) = window_geometry(interp, root_id);
+        let (_, _, root_left_col, root_top_line) = window_char_geometry(interp, root_id);
         for horflag in [false, true] {
             let (width, height, left, top) = window_geometry(interp, window_id);
             let delta = if horflag {
+                set_window_char_slot(interp, window_id, WINDOW_LEFT_COL_SLOT, root_left_col);
                 set_window_geometry(interp, window_id, (width, height, root_left, top))?;
                 root_width - width
             } else {
+                set_window_char_slot(interp, window_id, WINDOW_TOP_LINE_SLOT, root_top_line);
                 set_window_geometry(interp, window_id, (width, height, left, root_top))?;
                 root_height - height
             };
@@ -2948,6 +3129,36 @@ fn delete_other_windows_from_tree(
     }
     replace_window(interp, root_id, window_id, true)?;
     clear_deleted_window(interp, root_id)?;
+    if let Some((buffer_id, startpos, top)) = start_and_top {
+        let new_top = window_geometry(interp, window_id).3
+            - window_geometry(interp, frame.borrow().root_window_id()).3;
+        let (point_min, point_max) = buffer_point_bounds(interp, buffer_id);
+        if new_top != top && startpos >= point_min && startpos <= point_max {
+            let saved = interp.current_buffer_id();
+            interp.set_current_buffer_id(buffer_id)?;
+            let (start, _) = crate::lisp::primitives::window::move_screen_lines_in(
+                interp,
+                env,
+                window_id,
+                startpos,
+                -(top as isize),
+            );
+            let at_line_beg = {
+                let buffer = interp.buffer.borrow();
+                start <= buffer.point_min() || buffer.char_at(start - 1) == Some('\n')
+            };
+            interp.set_current_buffer_id(saved)?;
+            set_window_start_marker(interp, window_id, start);
+            set_window_flag(
+                interp,
+                window_id,
+                WINDOW_START_AT_LINE_BEG_SLOT,
+                at_line_beg,
+            );
+            // So that redisplay runs the window-scroll-functions.
+            set_window_flag(interp, window_id, WINDOW_OPTIONAL_NEW_START_SLOT, true);
+        }
+    }
     Ok(Value::Nil)
 }
 
@@ -3578,6 +3789,10 @@ fn set_window_hscroll_value(
     requested: i64,
 ) -> Result<Value, LispError> {
     let hscroll = requested.max(0);
+    if window_slot_value(interp, window_id, WINDOW_HSCROLL_SLOT).integer_value() != Some(hscroll) {
+        // set_window_hscroll: a changed hscroll redisplays the window.
+        interp.wset_redisplay(window_id);
+    }
     set_window_slot_value(
         interp,
         window_id,
@@ -4521,18 +4736,40 @@ define_dispatch!(
             }
             "window-end" => {
                 need_arg_range(name, args, 0, 2)?;
-                // GNU accepts an UPDATE flag here.  Emaxx computes the current
-                // headless extent eagerly, so accepting it requires no extra
-                // invalidation step.
+                let window_id = live_window_id_or_selected(interp, args.first())?;
                 let buffer_id = window_buffer_id_or_selected(interp, args.first())?;
-                let (point_min, point_max) = buffer_point_bounds(interp, buffer_id);
-                // A batch session's dumb frame shows the whole buffer (GNU
-                // answers ZV); an interactive frontend publishes the real
-                // displayed extent.
-                let end = interactive_window_metrics()
-                    .map(|metrics| metrics.window_end.clamp(point_min, point_max))
-                    .unwrap_or(point_max);
-                Ok(Value::Integer(end as i64))
+                let z = buffer_z(interp, buffer_id);
+                // xdisp.c Fwindow_end: UPDATE on a real frame displays the
+                // window's body from its start; otherwise the answer is Z
+                // less the end the last redisplay recorded (none before
+                // one, so a batch session answers Z).
+                if args.get(1).is_some_and(Value::is_truthy)
+                    && interactive_window_metrics().is_some()
+                    && !interp
+                        .lookup_var_key(cached_symbol!("noninteractive"), env)
+                        .is_some_and(|value| value.is_truthy())
+                {
+                    let (point_min, point_max) = buffer_point_bounds(interp, buffer_id);
+                    let start = window_start_marker(interp, window_id, buffer_id)
+                        .clamp(point_min, point_max);
+                    let height = (window_geometry(interp, window_id).1
+                        - window_non_body_height(interp, buffer_id, env))
+                    .max(1) as isize;
+                    let saved = interp.current_buffer_id();
+                    interp.set_current_buffer_id(buffer_id)?;
+                    let (row, shortage) = crate::lisp::primitives::window::move_screen_lines_in(
+                        interp, env, window_id, start, height,
+                    );
+                    interp.set_current_buffer_id(saved)?;
+                    // Fewer rows than the window holds: move_it_past_eol
+                    // takes the end past the last line, to ZV.
+                    let end = if shortage > 0 { point_max } else { row };
+                    return Ok(Value::Integer(end as i64));
+                }
+                let end_pos = window_slot_value(interp, window_id, WINDOW_END_POS_SLOT)
+                    .integer_value()
+                    .unwrap_or(0);
+                Ok(Value::Integer(z as i64 - end_pos))
             }
             "window-point" => {
                 need_arg_range(name, args, 0, 1)?;
@@ -4670,31 +4907,18 @@ define_dispatch!(
             }
             "set-window-margins" => {
                 need_arg_range(name, args, 2, 3)?;
-                let window_id = if args.first().is_none_or(|value| value.is_nil()) {
-                    interp.selected_window_id()
-                } else {
-                    crate::lisp::primitives::window::window_record_id_from_value(interp, &args[0])
-                        .ok_or_else(|| LispError::WrongTypeArgument("windowp".into(), args[0]))?
-                };
-                let margin = |value: Option<&Value>| -> Result<Option<i64>, LispError> {
-                    match value.map(|v| v.kind()) {
-                        None | Some(Kind::Nil) => Ok(None),
-                        Some(value) => Ok(Some(value.value().as_integer()?.max(0))),
-                    }
-                };
-                let left = margin(args.get(1))?;
-                let right = margin(args.get(2))?;
-                interp.set_window_margins(window_id, left, right);
-                Ok(Value::T)
+                let window_id = live_window_id_or_selected(interp, args.first())?;
+                let changed = set_window_margins(
+                    interp,
+                    window_id,
+                    args.get(1).copied().unwrap_or(Value::Nil),
+                    args.get(2).copied().unwrap_or(Value::Nil),
+                )?;
+                Ok(if changed { Value::T } else { Value::Nil })
             }
             "window-margins" => {
                 need_arg_range(name, args, 0, 1)?;
-                let window_id = if args.first().is_none_or(|value| value.is_nil()) {
-                    interp.selected_window_id()
-                } else {
-                    crate::lisp::primitives::window::window_record_id_from_value(interp, &args[0])
-                        .ok_or_else(|| LispError::WrongTypeArgument("windowp".into(), args[0]))?
-                };
+                let window_id = live_window_id_or_selected(interp, args.first())?;
                 let (left, right) = interp.window_margins(window_id);
                 let to_value =
                     |margin: Option<i64>| margin.map(Value::Integer).unwrap_or(Value::Nil);
@@ -4824,17 +5048,23 @@ define_dispatch!(
                 }
                 Ok(Value::T)
             }
-            "window-total-width" => {
+            "window-total-width" | "window-total-height" => {
+                // window.c:Fwindow_total_width, Fwindow_total_height: the
+                // total size, or with ROUND `floor' or `ceiling' the pixel
+                // size in units (a text frame's unit is one pixel).
                 need_arg_range(name, args, 0, 2)?;
                 let window = args.first().cloned().unwrap_or(Value::Nil);
                 let window_id = window_id_or_selected(interp, &window)?;
-                Ok(Value::Integer(window_geometry(interp, window_id).0))
-            }
-            "window-total-height" => {
-                need_arg_range(name, args, 0, 2)?;
-                let window = args.first().cloned().unwrap_or(Value::Nil);
-                let window_id = window_id_or_selected(interp, &window)?;
-                Ok(Value::Integer(window_geometry(interp, window_id).1))
+                let horizontal = name == "window-total-width";
+                let pixel_rounded = args.get(1).is_some_and(|round| {
+                    matches!(round.kind(), Kind::Symbol(ref round) if round == "floor" || round == "ceiling")
+                });
+                Ok(Value::Integer(if pixel_rounded {
+                    window_pixel_size(interp, window_id, horizontal)
+                } else {
+                    let (cols, lines, _, _) = window_char_geometry(interp, window_id);
+                    if horizontal { cols } else { lines }
+                }))
             }
             "window-use-time" => {
                 need_arg_range(name, args, 0, 1)?;
@@ -4907,12 +5137,17 @@ define_dispatch!(
                 need_arg_range(name, args, 0, 1)?;
                 let window = args.first().cloned().unwrap_or(Value::Nil);
                 let window_id = window_id_or_selected(interp, &window)?;
-                let geometry = window_geometry(interp, window_id);
+                let (_, _, left, top) = if matches!(name, "window-pixel-left" | "window-pixel-top")
+                {
+                    window_geometry(interp, window_id)
+                } else {
+                    window_char_geometry(interp, window_id)
+                };
                 Ok(Value::Integer(
                     if matches!(name, "window-pixel-left" | "window-left-column") {
-                        geometry.2
+                        left
                     } else {
-                        geometry.3
+                        top
                     },
                 ))
             }
@@ -5000,6 +5235,8 @@ define_dispatch!(
                 )
             }
             "window-resize-apply" => {
+                // fset_redisplay: the frame's window tree changes.
+                interp.redisplay_other_windows();
                 need_arg_range(name, args, 0, 2)?;
                 if let Some(frame) = args.first().filter(|frame| !frame.is_nil())
                     && !matches!(frame.kind(), Kind::Frame(id) if interp.frame_is_live(id))
@@ -5027,6 +5264,12 @@ define_dispatch!(
                 {
                     return Err(LispError::WrongTypeArgument("framep".into(), *frame));
                 }
+                let frame = super::frames::decode_live_frame(interp, args.first(), true)?;
+                frame_size::window_resize_apply_total_for_frame(
+                    interp,
+                    frame,
+                    args.get(1).is_some_and(Value::is_truthy),
+                );
                 Ok(Value::T)
             }
             "window-mode-line-height" | "window-header-line-height" | "window-tab-line-height" => {
@@ -5070,55 +5313,104 @@ define_dispatch!(
             }
             "move-to-window-line" => {
                 need_arg_range(name, args, 1, 1)?;
+                // window.c Fmove_to_window_line.
+                let window_id = interp.selected_window_id();
+                if interp.selected_window_buffer_id() != interp.current_buffer_id() {
+                    return Err(LispError::Signal(
+                        "move-to-window-line called from unrelated buffer".into(),
+                    ));
+                }
                 let height = selected_command_text_height(interp, env);
-                let line = resolve_window_line(args.first(), height / 2, height)?;
-                let window_start = current_window_start(interp);
-                let (target, shortage) = move_lines_from(interp, window_start, line);
-                interp.buffer.borrow_mut().goto_char(target);
-                let actual = if shortage > 0 {
-                    line - shortage
-                } else if shortage < 0 {
-                    line + shortage.abs()
-                } else {
-                    line
+                let (point_min, point_max) = {
+                    let buffer = interp.buffer.borrow();
+                    (buffer.point_min(), buffer.point_max())
                 };
-                Ok(Value::Integer(actual as i64))
+                let start = current_window_start(interp);
+                if start < point_min || start > point_max {
+                    visual_vertical_motion(interp, env, window_id, -((height / 2) as i64), None)?;
+                    let (start, bolp) = {
+                        let buffer = interp.buffer.borrow();
+                        let pt = buffer.point();
+                        (
+                            pt,
+                            pt <= buffer.point_min() || buffer.char_at(pt - 1) == Some('\n'),
+                        )
+                    };
+                    interp.set_selected_window_start(start);
+                    set_window_flag(interp, window_id, WINDOW_START_AT_LINE_BEG_SLOT, bolp);
+                    set_window_flag(interp, window_id, WINDOW_FORCE_START_SLOT, true);
+                } else {
+                    interp.buffer.borrow_mut().goto_char(start);
+                }
+                // displayed_window_lines: the window's rows, a window the
+                // text does not fill counting one row fewer.
+                let from = interp.buffer.borrow().point();
+                let (_, shortage) = crate::lisp::primitives::window::move_screen_lines_in(
+                    interp,
+                    env,
+                    window_id,
+                    from,
+                    height as isize,
+                );
+                let lines = if shortage > 1 {
+                    height as i64 - 1
+                } else {
+                    height as i64
+                };
+                let target = match args[0].kind() {
+                    Kind::Nil => lines / 2,
+                    _ => {
+                        let iarg = prefix_numeric_value(&args[0])?.as_integer()?;
+                        if iarg < 0 { iarg + lines } else { iarg }
+                    }
+                };
+                let moved = visual_vertical_motion(interp, env, window_id, target, None)?;
+                Ok(Value::Integer(moved))
             }
             "recenter" => {
                 need_arg_range(name, args, 0, 2)?;
-                // A raw C-u (cons) centers, GNU's Frecenter convention.
-                let arg = args
-                    .first()
-                    .filter(|value| !matches!(value.kind(), Kind::Cons(_)));
                 let height = selected_command_text_height(interp, env);
-                let line = resolve_window_line(arg, height / 2, height)?;
-                // Walk back whole screen lines: wrapped lines occupy one
-                // row per continuation, exactly as the display counts.
-                let point = interp.buffer.borrow().point();
-                let (new_start, _) = move_screen_lines(interp, env, point, -line);
-                set_current_window_start(interp, new_start);
+                let interactive = !interp
+                    .lookup_var_key(cached_symbol!("noninteractive"), env)
+                    .is_some_and(|value| value.is_truthy());
+                crate::lisp::primitives::window::recenter_selected_window(
+                    interp,
+                    env,
+                    args.first().copied().unwrap_or(Value::Nil),
+                    args.get(1).is_some_and(Value::is_truthy),
+                    height,
+                    interactive,
+                )?;
                 Ok(Value::Nil)
             }
             "scroll-up" | "scroll-down" => {
                 need_arg_range(name, args, 0, 1)?;
-                let sign: isize = if name == "scroll-up" { 1 } else { -1 };
-                match args.first().map(|v| v.kind()) {
-                    // nil scrolls a near-full screen.
-                    None | Some(Kind::Nil) => {
-                        let height = selected_command_text_height(interp, env);
-                        scroll_selected_window(interp, env, None, sign, height)?
-                    }
-                    // `-' scrolls a near-full screen the other way.
-                    Some(Kind::Symbol(minus)) if minus == "-" => {
-                        let height = selected_command_text_height(interp, env);
-                        scroll_selected_window(interp, env, None, -sign, height)?
-                    }
-                    Some(value) => {
-                        let lines = prefix_numeric_value(&value.value())?.as_integer()? as isize;
-                        let height = selected_command_text_height(interp, env);
-                        scroll_selected_window(interp, env, Some(sign * lines), sign, height)?
-                    }
-                }
+                // window.c scroll_command on the selected window.
+                let direction: i64 = if name == "scroll-up" { 1 } else { -1 };
+                let (n, whole) = match args.first().map(|v| v.kind()) {
+                    None | Some(Kind::Nil) => (direction, true),
+                    Some(Kind::Symbol(minus)) if minus == "-" => (-direction, true),
+                    Some(value) => (
+                        prefix_numeric_value(&value.value())?.as_integer()? * direction,
+                        false,
+                    ),
+                };
+                let height = selected_command_text_height(interp, env);
+                let window_id = interp.selected_window_id();
+                let total_lines = window_geometry(interp, window_id).1;
+                let hscroll = window_slot_value(interp, window_id, WINDOW_HSCROLL_SLOT)
+                    .as_integer()
+                    .unwrap_or(0);
+                crate::lisp::primitives::window::window_scroll(
+                    interp,
+                    env,
+                    n,
+                    whole,
+                    false,
+                    height,
+                    total_lines,
+                    hscroll,
+                )?;
                 Ok(Value::Nil)
             }
             "window-text-pixel-size" => {
@@ -5164,60 +5456,48 @@ define_dispatch!(
                 Ok(Value::cons(Value::Integer(width), Value::Integer(height)))
             }
             "buffer-text-pixel-size" => {
-                // (buffer-text-pixel-size &optional WINDOW FROM TO X-LIMIT).
-                // Without a graphical frame there is no font, so report the
-                // widest line's character count as the pixel width and the line
-                // count as the pixel height (one nominal unit per character).
-                // Like GNU, honor `display' replacements: a string spec
-                // substitutes for the covered text and a margin spec removes it
-                // from the line flow entirely.
-                let point_min = interp.buffer.borrow().point_min();
-                let point_max = interp.buffer.borrow().point_max();
-                let mut effective = String::new();
-                let mut pos = point_min;
-                while pos < point_max {
-                    let display = interp.buffer.borrow().text_property_at(pos, "display");
-                    if let Some(display_value) = display.filter(|value| !value.is_nil()) {
-                        let mut end = pos;
-                        while end < point_max
-                            && interp.buffer.borrow().text_property_at(end, "display") == display
+                // (buffer-text-pixel-size &optional BUFFER-OR-NAME WINDOW
+                // X-LIMIT Y-LIMIT).  Without a graphical frame there is no
+                // font, so report the widest line's character count as the
+                // pixel width and the line count as the pixel height (one
+                // nominal unit per character).  Like GNU, honor `display'
+                // replacements: a string spec substitutes for the covered
+                // text and a margin spec removes it from the line flow.
+                need_arg_range(name, args, 0, 4)?;
+                let window_id = live_window_id_or_selected(interp, args.get(1))?;
+                let buffer_id = match args.first().filter(|value| !value.is_nil()) {
+                    Some(buffer) => interp.resolve_buffer_id(buffer)?,
+                    None => interp.current_buffer_id(),
+                };
+                let saved_buffer = interp.current_buffer_id();
+                interp.set_current_buffer_id(buffer_id)?;
+                let size = buffer_text_size(interp);
+                interp.set_current_buffer_id(saved_buffer)?;
+                // unwind_with_echo_area_buffer: WINDOW's points and start
+                // come back through set_marker_restricted_both, inside its
+                // buffer's accessible region (ERC's fill-wrap measures in a
+                // narrowed buffer and so moves the start to BEGV).
+                if let Some(window_buffer) =
+                    window_buffer_id(interp, &interp.record_value(window_id))
+                {
+                    let (point_min, point_max) = buffer_point_bounds(interp, window_buffer);
+                    let start = window_start_marker(interp, window_id, window_buffer);
+                    set_window_start_marker(interp, window_id, start.clamp(point_min, point_max));
+                    for slot in [WINDOW_POINT_SLOT, WINDOW_OLD_POINT_SLOT] {
+                        if let Some(point) =
+                            window_slot_value(interp, window_id, slot).integer_value()
                         {
-                            end += 1;
-                        }
-                        if let Some(replacement) = string_like(&display_value) {
-                            effective.push_str(&replacement.text);
-                            pos = end;
-                            continue;
-                        }
-                        let in_margin = display_value.to_vec().is_ok_and(|items| {
-                            items.first().is_some_and(|head| {
-                                head.to_vec().is_ok_and(|spec| {
-                                    matches!(spec.first().map(|v| v.kind()),
-                                    Some(Kind::Symbol(kind)) if kind == "margin")
-                                })
-                            })
-                        });
-                        if in_margin {
-                            pos = end;
-                            continue;
+                            let clamped = (point.max(1) as usize).clamp(point_min, point_max);
+                            set_window_slot_value(
+                                interp,
+                                window_id,
+                                slot,
+                                Value::Integer(clamped as i64),
+                            )?;
                         }
                     }
-                    match interp.buffer.borrow().char_at(pos) {
-                        Some(ch) => effective.push(ch),
-                        None => break,
-                    }
-                    pos += 1;
                 }
-                let width = effective
-                    .lines()
-                    .map(|line| line.chars().count())
-                    .max()
-                    .unwrap_or(0);
-                let height = effective.lines().count().max(1);
-                Ok(Value::cons(
-                    Value::Integer(width as i64),
-                    Value::Integer(height as i64),
-                ))
+                Ok(size)
             }
             "get-display-property" => {
                 need_args(name, args, 2)?;
@@ -5618,6 +5898,7 @@ define_dispatch!(
             }
             "set-window-configuration" => {
                 need_arg_range(name, args, 1, 3)?;
+                interp.redisplay_other_windows();
                 let selected = interp.selected_frame_id;
                 let restored = interp.apply_window_configuration_value(&args[0])?;
                 if args.get(1).is_some_and(Value::is_truthy) && interp.frame_is_live(selected) {
@@ -5659,9 +5940,11 @@ define_dispatch!(
             "force-window-update" => {
                 need_arg_range(name, args, 0, 1)?;
                 let Some(object) = args.first().filter(|value| !value.is_nil()) else {
+                    interp.redisplay_other_windows();
                     return Ok(Value::T);
                 };
-                if live_window_id_or_selected(interp, Some(object)).is_ok() {
+                if let Ok(window_id) = live_window_id_or_selected(interp, Some(object)) {
+                    interp.wset_redisplay(window_id);
                     return Ok(Value::T);
                 }
                 let buffer_id = match object.kind() {
@@ -5669,20 +5952,25 @@ define_dispatch!(
                     _ => string_like(object)
                         .and_then(|string| interp.find_buffer(&string.text).map(|(id, _)| id)),
                 };
-                Ok(
-                    if buffer_id.is_some_and(|buffer_id| {
+                let showing: Vec<u64> = buffer_id
+                    .map(|buffer_id| {
                         live_ordinary_window_ids(interp)
                             .into_iter()
-                            .any(|window_id| {
-                                window_buffer_id(interp, &interp.record_value(window_id))
+                            .filter(|window_id| {
+                                window_buffer_id(interp, &interp.record_value(*window_id))
                                     == Some(buffer_id)
                             })
-                    }) {
-                        Value::T
-                    } else {
-                        Value::Nil
-                    },
-                )
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                for window_id in &showing {
+                    interp.wset_redisplay(*window_id);
+                }
+                Ok(if showing.is_empty() {
+                    Value::Nil
+                } else {
+                    Value::T
+                })
             }
             "run-window-configuration-change-hook" => {
                 need_arg_range(name, args, 0, 1)?;
@@ -5766,47 +6054,28 @@ define_dispatch!(
             "resize-mini-window-internal" => {
                 need_args(name, args, 1)?;
                 let window_id = live_window_id_or_selected(interp, Some(&args[0]))?;
-                if interp.minibuffer_window_id() != window_id {
+                let frame = interp
+                    .window_frame_id(window_id)
+                    .expect("window stores its owning frame");
+                if frame.borrow().minibuffer_window_id() != window_id {
                     return Err(LispError::Signal("Not a valid minibuffer window".into()));
                 }
-                let root_id = window_record_id_from_value(interp, &frame_root_window_value(interp))
-                    .ok_or_else(|| LispError::Signal("Cannot resize mini window".into()))?;
-                let root_geometry = window_geometry(interp, root_id);
-                let mini_geometry = window_geometry(interp, window_id);
-                let root_requested = window_slot_value(interp, root_id, WINDOW_NEW_PIXEL_SLOT)
-                    .as_integer()
-                    .unwrap_or(0);
-                let mini_requested = window_slot_value(interp, window_id, WINDOW_NEW_PIXEL_SLOT)
-                    .as_integer()
-                    .unwrap_or(0);
-                let old_height = root_geometry.1 + mini_geometry.1;
-                if root_requested <= 0
-                    || mini_requested <= 0
-                    || root_requested.saturating_add(mini_requested) != old_height
+                // window.c:Fresize_mini_window_internal: the staged root
+                // and mini heights must add up to their current sum.
+                let root_id = frame.borrow().root_window_id();
+                let old_height =
+                    window_geometry(interp, root_id).1 + window_geometry(interp, window_id).1;
+                let new_pixel = window_new_pixel(interp, window_id);
+                let delta = new_pixel - window_geometry(interp, window_id).1;
+                if window_resize_check(interp, root_id, false)
+                    && new_pixel > 0
+                    && old_height == window_new_pixel(interp, root_id) + new_pixel
                 {
-                    return Err(LispError::Signal("Cannot resize mini window".into()));
+                    resize_mini_window_apply(interp, frame, window_id, delta)?;
+                    Ok(Value::T)
+                } else {
+                    Err(LispError::Signal("Cannot resize mini window".into()))
                 }
-                set_window_geometry(
-                    interp,
-                    root_id,
-                    (
-                        root_geometry.0,
-                        root_requested,
-                        root_geometry.2,
-                        root_geometry.3,
-                    ),
-                )?;
-                set_window_geometry(
-                    interp,
-                    window_id,
-                    (
-                        mini_geometry.0,
-                        mini_requested,
-                        mini_geometry.2,
-                        root_geometry.3 + root_requested,
-                    ),
-                )?;
-                Ok(Value::T)
             }
             "window-buffer" => {
                 need_arg_range(name, args, 0, 1)?;
@@ -5892,53 +6161,10 @@ define_dispatch!(
                         )?;
                     }
                 }
-                if window_id == interp.selected_window_id() {
-                    interp.set_selected_window_buffer_id(buffer_id);
-                } else {
-                    let Some(record) = interp.find_record_mut(window_id) else {
-                        return Err(LispError::WrongTypeArgument("windowp".into(), window));
-                    };
-                    if record.slots.len() == WINDOW_BUFFER_SLOT {
-                        record.slots.resize(WINDOW_BUFFER_SLOT + 1, Value::Nil);
-                    }
-                    record.slots[WINDOW_BUFFER_SLOT] = Value::Integer(buffer_id as i64);
-                }
-                if changes_buffer {
-                    let point = interp
-                        .get_buffer_by_id(buffer_id)
-                        .map(|buffer| buffer.point())
-                        .unwrap_or(1);
-                    set_window_slot_value(
-                        interp,
-                        window_id,
-                        WINDOW_POINT_SLOT,
-                        Value::Integer(point as i64),
-                    )?;
-                    set_window_slot_value(
-                        interp,
-                        window_id,
-                        WINDOW_OLD_POINT_SLOT,
-                        Value::Integer(point as i64),
-                    )?;
-                    set_window_slot_value(
-                        interp,
-                        window_id,
-                        WINDOW_HSCROLL_SLOT,
-                        Value::Integer(0),
-                    )?;
-                    set_window_slot_value(
-                        interp,
-                        window_id,
-                        WINDOW_MIN_HSCROLL_SLOT,
-                        Value::Integer(0),
-                    )?;
-                    set_window_slot_value(
-                        interp,
-                        window_id,
-                        WINDOW_SUSPEND_AUTO_HSCROLL_SLOT,
-                        Value::Nil,
-                    )?;
-                }
+                // window.c Fset_window_buffer: unshow_buffer, then
+                // set_window_buffer.
+                interp.unshow_window_buffer(window_id);
+                interp.show_buffer_in_window(window_id, buffer_id, keep_margins && !changes_buffer);
                 if !keep_margins {
                     // GNU resets margins from the displayed buffer by
                     // default, including on a same-buffer refresh.  A true
@@ -5947,15 +6173,15 @@ define_dispatch!(
                     let margin_width = |name: &str| {
                         interp
                             .buffer_local_value(buffer_id, name)
-                            .and_then(|value| value.integer_value())
-                            .filter(|width| *width > 0)
+                            .unwrap_or(Value::Nil)
                     };
-                    interp.set_window_margins(
-                        window_id,
+                    let (left, right) = (
                         margin_width("left-margin-width"),
                         margin_width("right-margin-width"),
                     );
+                    set_window_margins(interp, window_id, left, right)?;
                 }
+                set_window_buffer_hooks(interp, window_id, buffer_id, env)?;
                 Ok(Value::Nil)
             }
             "window-list" => {
@@ -6259,14 +6485,20 @@ define_dispatch!(
                     .map_or(Value::Nil, |id| interp.record_value(id)))
             }
             "split-window-internal" => {
+                // fset_redisplay: the frame's window tree changes.
+                interp.redisplay_other_windows();
                 need_args(name, args, 4)?;
                 split_window_tree(interp, &args[0], &args[1], &args[2], &args[3], env)
             }
             "delete-window-internal" => {
+                // fset_redisplay: the frame's window tree changes.
+                interp.redisplay_other_windows();
                 need_args(name, args, 1)?;
                 delete_window_from_tree(interp, &args[0])
             }
             "delete-other-windows-internal" => {
+                // fset_redisplay: the frame's window tree changes.
+                interp.redisplay_other_windows();
                 need_arg_range(name, args, 0, 2)?;
                 let window = args.first().cloned().unwrap_or(Value::Nil);
                 let root = args.get(1).cloned().unwrap_or(Value::Nil);
@@ -6549,32 +6781,50 @@ define_dispatch!(
                 }
             }
             "set-window-start" => {
-                need_arg_range(name, args, 2, 4)?;
+                need_arg_range(name, args, 2, 3)?;
+                live_window_id_or_selected(interp, args.first().filter(|w| !w.is_nil()))?;
                 let start = position_from_value(interp, &args[1])?;
-                set_window_start_value(interp, &args[0], start)?;
-                Ok(Value::T)
+                let noforce = args.get(2).is_some_and(Value::is_truthy);
+                set_window_start_value(interp, &args[0], start, noforce)?;
+                Ok(args[1])
             }
             "set-window-point" => {
                 need_args(name, args, 2)?;
-                let window_id = window_id_or_selected(interp, &args[0])?;
+                let window_id =
+                    live_window_id_or_selected(interp, args.first().filter(|w| !w.is_nil()))?;
                 let pos = position_from_value(interp, &args[1])?;
-                // GNU: setting the selected window's point moves point in the
-                // window's buffer (emaxx has no separate window points).
+                let buffer_id = window_buffer_id(interp, &interp.record_value(window_id))
+                    .unwrap_or_else(|| interp.current_buffer_id());
+                // window.c Fset_window_point: the selected window's point is
+                // its buffer's point (Fgoto_char there); another window's is
+                // its own marker, clamped to the accessible region.
                 if window_id == interp.selected_window_id() {
-                    let buffer_id = window_buffer_id(interp, &interp.record_value(window_id))
-                        .unwrap_or_else(|| interp.current_buffer_id());
-                    if buffer_id == interp.current_buffer_id() {
-                        interp.buffer.borrow_mut().goto_char(pos);
+                    let point = if buffer_id == interp.current_buffer_id() {
+                        let mut buffer = interp.buffer.borrow_mut();
+                        buffer.goto_char(pos);
+                        buffer.point()
                     } else if let Some(mut buffer) = interp.get_buffer_by_id_mut(buffer_id) {
                         buffer.goto_char(pos);
-                    }
+                        buffer.point()
+                    } else {
+                        pos
+                    };
+                    set_window_slot_value(
+                        interp,
+                        window_id,
+                        WINDOW_POINT_SLOT,
+                        Value::Integer(point as i64),
+                    )?;
+                } else {
+                    let (point_min, point_max) = buffer_point_bounds(interp, buffer_id);
+                    set_window_slot_value(
+                        interp,
+                        window_id,
+                        WINDOW_POINT_SLOT,
+                        Value::Integer(pos.clamp(point_min, point_max) as i64),
+                    )?;
+                    interp.wset_redisplay(window_id);
                 }
-                set_window_slot_value(
-                    interp,
-                    window_id,
-                    WINDOW_POINT_SLOT,
-                    Value::Integer(pos as i64),
-                )?;
                 Ok(args[1])
             }
             "set-window-vscroll" => {
@@ -6816,6 +7066,56 @@ fn text_char_description(
         make_string(desc)
     };
     result.map_err(|error| string_storage_error(interp, env, error))
+}
+
+/// Fbuffer_text_pixel_size's measurement of the current buffer's
+/// accessible text on a terminal: the widest line's columns by the line
+/// count.
+fn buffer_text_size(interp: &Interpreter) -> Value {
+    let point_min = interp.buffer.borrow().point_min();
+    let point_max = interp.buffer.borrow().point_max();
+    let mut effective = String::new();
+    let mut pos = point_min;
+    while pos < point_max {
+        let display = interp.buffer.borrow().text_property_at(pos, "display");
+        if let Some(display_value) = display.filter(|value| !value.is_nil()) {
+            let mut end = pos;
+            while end < point_max
+                && interp.buffer.borrow().text_property_at(end, "display") == display
+            {
+                end += 1;
+            }
+            if let Some(replacement) = string_like(&display_value) {
+                effective.push_str(&replacement.text);
+                pos = end;
+                continue;
+            }
+            let in_margin = display_value.to_vec().is_ok_and(|items| {
+                items.first().is_some_and(|head| {
+                    head.to_vec().is_ok_and(|spec| {
+                        matches!(spec.first().map(|v| v.kind()),
+                        Some(Kind::Symbol(kind)) if kind == "margin")
+                    })
+                })
+            });
+            if in_margin {
+                pos = end;
+                continue;
+            }
+        }
+        match interp.buffer.borrow().char_at(pos) {
+            Some(ch) => effective.push(ch),
+            None => break,
+        }
+        pos += 1;
+    }
+    let width = effective
+        .lines()
+        .map(|line| line.chars().count())
+        .max()
+        .unwrap_or(0);
+    let height = effective.lines().count().max(1);
+    Value::cons(Value::Integer(width as i64), Value::Integer(height as i64))
 }
 
 #[cfg(test)]

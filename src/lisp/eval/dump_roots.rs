@@ -230,6 +230,14 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
         "window state re-created with the initial frame",
     ),
     (
+        "windows_or_buffers_changed",
+        "xdisp.c redisplay state: the new process's initial frame starts garbaged",
+    ),
+    (
+        "buffer_last_window_start",
+        "buffer display state of the dumping session's windows, which the new process re-creates",
+    ),
+    (
         "next_frame_id",
         "a process-local allocation counter, not frame identity: frame.c resets live frames at startup; install_dead_frame assigns each nilled image frame a fresh id and advances this counter",
     ),
@@ -376,10 +384,6 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
     ),
     ("handler_generation", "the running signal dispatch"),
     ("handler_search_memo", "the running signal dispatch"),
-    (
-        "window_margins",
-        "window state re-created with the initial frame",
-    ),
     ("face_change_count", "carried in the remembered scalars"),
     ("special_variables", "carried in the remembered scalars"),
     ("pdumper_loaded", "set by the load itself"),

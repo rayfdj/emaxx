@@ -1021,6 +1021,16 @@ fn configure_batch_source_provenance(interpreter: &mut Interpreter) -> Result<()
 /// demote signals to messages, and remove the failing function by identity.
 /// Throws and process termination still leave the hook.
 pub(crate) fn safe_run_hooks(interpreter: &mut Interpreter, hook: &str) -> Result<(), LispError> {
+    safe_run_hooks_with_args(interpreter, hook, &[])
+}
+
+/// keyboard.c:safe_run_hooks_2 and the like: `safe_run_hooks' calling
+/// each function with ARGS.
+pub(crate) fn safe_run_hooks_with_args(
+    interpreter: &mut Interpreter,
+    hook: &str,
+    args: &[Value],
+) -> Result<(), LispError> {
     let mut env = crate::lisp::types::Env::new();
     let binding = interpreter.bind_special_dynamic("inhibit-quit", Value::T, &mut env)?;
     let result = {
@@ -1028,7 +1038,7 @@ pub(crate) fn safe_run_hooks(interpreter: &mut Interpreter, hook: &str) -> Resul
         // value cell of the Lisp run-hooks symbol. This constructor has
         // already installed the primitive definitions before calling us.
         let value = interpreter.lookup_var(hook, &env).unwrap_or(Value::Nil);
-        run_safe_hook_value(interpreter, hook, value, false, &mut env)
+        run_safe_hook_value(interpreter, hook, value, false, args, &mut env)
     };
     let restored = interpreter.restore_special_dynamic(binding, &mut env);
     result.and(restored)
@@ -1039,6 +1049,7 @@ fn run_safe_hook_value(
     hook: &str,
     value: Value,
     global: bool,
+    args: &[Value],
     env: &mut Env,
 ) -> Result<(), LispError> {
     if value.is_nil() || matches!(value.kind(), Kind::Unbound) {
@@ -1048,7 +1059,7 @@ fn run_safe_hook_value(
         || lisp::primitives::call(interpreter, "functionp", std::slice::from_ref(&value), env)?
             .is_truthy();
     if function {
-        return call_safe_hook_function(interpreter, hook, &value, env);
+        return call_safe_hook_function(interpreter, hook, &value, args, env);
     }
     // Follow the original cons cells, including mutations made by a callback.
     // A local t reads the global value at that point, after earlier callbacks.
@@ -1059,10 +1070,10 @@ fn run_safe_hook_value(
             if matches!(function.kind(), Kind::T) {
                 if !global {
                     let default = interpreter.default_value(hook).unwrap_or(Value::Nil);
-                    run_safe_hook_value(interpreter, hook, default, true, env)?;
+                    run_safe_hook_value(interpreter, hook, default, true, args, env)?;
                 }
             } else {
-                call_safe_hook_function(interpreter, hook, &function, env)?;
+                call_safe_hook_function(interpreter, hook, &function, args, env)?;
             }
             Ok::<_, LispError>(())
         })?;
@@ -1075,6 +1086,7 @@ fn call_safe_hook_function(
     interpreter: &mut Interpreter,
     hook: &str,
     function: &Value,
+    args: &[Value],
     env: &mut Env,
 ) -> Result<(), LispError> {
     interpreter.with_lisp_stack_roots(function, |interpreter| {
@@ -1082,7 +1094,7 @@ fn call_safe_hook_function(
         // outer handler-bind handlers must not observe a handled signal.
         let handlers = interpreter.push_condition_case_handler(vec![Value::T]);
         let depth = env.len();
-        let result = interpreter.call_function_value(*function, None, &[], env);
+        let result = interpreter.call_function_value(*function, None, args, env);
         interpreter.pop_handler_bindings(handlers);
         env.truncate(depth);
         let error = match result.map_err(LispError::into_kind) {

@@ -53,18 +53,14 @@ fn default_frame_parameters(
             .iter()
             .map(|(id, _)| interp.buffer_value(*id).expect("live buffer object")),
     );
-    vec![
-        ("tab-bar-lines".into(), Value::Integer(0)),
-        ("menu-bar-lines".into(), Value::Integer(1)),
+    let mut parameters = computed_frame_parameters(&frame);
+    parameters.extend([
         ("buried-buffer-list".into(), Value::Nil),
         ("buffer-list".into(), buffers),
         ("unsplittable".into(), Value::Nil),
         ("modeline".into(), Value::T),
-        ("width".into(), Value::Integer(frame.parameter_width.max(1))),
-        (
-            "height".into(),
-            Value::Integer(frame.parameter_height.max(1)),
-        ),
+    ]);
+    parameters.extend([
         ("name".into(), id.name.get()),
         ("font".into(), Value::string("tty")),
         ("background-color".into(), Value::string("unspecified-bg")),
@@ -73,10 +69,37 @@ fn default_frame_parameters(
         ("scroll-bar-background".into(), Value::Nil),
         ("scroll-bar-foreground".into(), Value::Nil),
         ("minibuffer".into(), Value::T),
+    ]);
+    parameters
+}
+
+/// The parameters Fframe_parameters stores over the frame's alist from
+/// the frame itself: a text frame's bar lines, and its size in lines
+/// and columns (a size change_frame_size has queued, as GNU reports
+/// f->new_height and f->new_width).
+fn computed_frame_parameters(frame: &crate::lisp::eval::FrameState) -> Vec<(String, Value)> {
+    let height = if frame.new_size_p && frame.new_height >= 0 {
+        frame.new_height
+    } else {
+        frame.text_height
+    };
+    let width = if frame.new_size_p && frame.new_width >= 0 {
+        frame.new_width
+    } else {
+        frame.width
+    };
+    vec![
+        ("tab-bar-lines".into(), Value::Integer(frame.tab_bar_lines)),
+        (
+            "menu-bar-lines".into(),
+            Value::Integer(frame.menu_bar_lines),
+        ),
+        ("width".into(), Value::Integer(width)),
+        ("height".into(), Value::Integer(height)),
     ]
 }
 
-fn frame_parameter_value(
+pub(super) fn frame_parameter_value(
     interp: &Interpreter,
     id: crate::lisp::types::FrameRef,
     parameter: &str,
@@ -85,11 +108,17 @@ fn frame_parameter_value(
         return id.name.get();
     }
     let frame = id.borrow();
-    frame
-        .parameter_overrides
-        .iter()
+    computed_frame_parameters(&frame)
+        .into_iter()
         .find(|(name, _)| name == parameter)
-        .map(|(_, value)| *value)
+        .map(|(_, value)| value)
+        .or_else(|| {
+            frame
+                .parameter_overrides
+                .iter()
+                .find(|(name, _)| name == parameter)
+                .map(|(_, value)| *value)
+        })
         .or_else(|| {
             default_frame_parameters(interp, id)
                 .into_iter()
@@ -142,7 +171,6 @@ fn store_frame_parameter(
             let _ = interp.eval(form, &mut crate::lisp::types::Env::new());
         }
     }
-    let menu_bar_lines_changed = matches!(parameter.as_str(), "menu-bar-lines" | "tab-bar-lines");
     let mut frame = id.borrow_mut();
     if parameter == "name" {
         id.name.set(value);
@@ -154,35 +182,30 @@ fn store_frame_parameter(
     {
         *current = value;
     } else {
-        frame.parameter_overrides.insert(0, (parameter, value));
+        frame
+            .parameter_overrides
+            .insert(0, (parameter.clone(), value));
     }
-    if menu_bar_lines_changed && frame.tty_sized {
-        let menu = frame
-            .parameter_overrides
-            .iter()
-            .find(|(key, _)| key == "menu-bar-lines")
-            .and_then(|(_, value)| value.integer_value())
-            .unwrap_or(0)
-            .clamp(0, 1);
-        let tab = frame
-            .parameter_overrides
-            .iter()
-            .find(|(key, _)| key == "tab-bar-lines")
-            .and_then(|(_, value)| value.integer_value())
-            .unwrap_or(0)
-            .clamp(0, 1);
-        frame.text_height = frame.height - menu - tab;
-        drop(frame);
-        interp.resize_frame_window_records_for(id);
+    drop(frame);
+    // frame.c:store_frame_param's tail for a frame that is not a window
+    // system's: the bar lines go through set_menu_bar_lines and
+    // set_tab_bar_lines.
+    match parameter.as_str() {
+        "menu-bar-lines" => super::display::set_menu_bar_lines(interp, id, value),
+        "tab-bar-lines" => super::display::set_tab_bar_lines(interp, id, value),
+        _ => {}
     }
 }
 
 fn frame_parameters_value(interp: &Interpreter, id: crate::lisp::types::FrameRef) -> Value {
     let frame = id.borrow();
+    let computed = computed_frame_parameters(&frame);
     let mut parameters = frame.parameter_overrides.clone();
     for (name, value) in &mut parameters {
         if name == "name" {
             *value = id.name.get();
+        } else if let Some((_, computed)) = computed.iter().find(|(key, _)| key == name) {
+            *value = *computed;
         }
     }
     parameters.extend(
@@ -391,25 +414,21 @@ define_dispatch!(
                 Ok(Value::Integer(0))
             }
             "set-frame-width" | "set-frame-height" => {
+                // frame.c:Fset_frame_width, Fset_frame_height: the text
+                // size changes in one dimension at once (INHIBIT 1).
                 need_arg_range(name, args, 2, 4)?;
                 let id = decode_live_frame(interp, args.first(), true)?;
                 let size = check_frame_size(&args[1])?;
-                if id.borrow().tty_sized {
+                let pretend = args.get(2).is_some_and(Value::is_truthy);
+                let (width, height) = {
                     let frame = id.borrow();
-                    let (width, height) = if name == "set-frame-width" {
-                        (size, frame.height)
+                    if name == "set-frame-width" {
+                        (size, frame.text_height)
                     } else {
                         (frame.width, size)
-                    };
-                    drop(frame);
-                    interp.resize_terminal_frames(id, width, height);
-                } else if id == interp.selected_frame_id {
-                    if name == "set-frame-width" {
-                        interp.set_frame_width(size);
-                    } else {
-                        interp.set_frame_height(size);
                     }
-                }
+                };
+                super::display::adjust_frame_size(interp, id, width, height, 1, pretend, env)?;
                 Ok(Value::Nil)
             }
             "set-frame-size" => {
@@ -417,12 +436,7 @@ define_dispatch!(
                 let id = decode_live_frame(interp, args.first(), true)?;
                 let width = check_frame_size(&args[1])?;
                 let height = check_frame_size(&args[2])?;
-                if id.borrow().tty_sized {
-                    interp.resize_terminal_frames(id, width, height);
-                } else if id == interp.selected_frame_id {
-                    interp.set_frame_width(width);
-                    interp.set_frame_height(height);
-                }
+                super::display::adjust_frame_size(interp, id, width, height, 1, false, env)?;
                 Ok(Value::Nil)
             }
             "frame-position" => {

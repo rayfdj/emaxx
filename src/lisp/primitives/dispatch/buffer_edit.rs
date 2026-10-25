@@ -714,6 +714,11 @@ define_dispatch!(
                 if enabled == interp.buffer.borrow().is_multibyte() {
                     return Ok(args[0]);
                 }
+                // A buffer shown in a window makes redisplay consider the
+                // other windows.
+                if interp.buffer_window_count(interp.current_buffer_id()) > 0 {
+                    interp.redisplay_other_windows();
+                }
                 if interp.buffer.borrow().restriction()
                     != (
                         1,
@@ -2214,7 +2219,7 @@ fn line_number_display_width_value(
 }
 
 /// GNU `vertical-motion': move by screen lines, honoring continuation.
-fn visual_vertical_motion(
+pub(crate) fn visual_vertical_motion(
     interp: &mut Interpreter,
     env: &mut Env,
     window_id: u64,

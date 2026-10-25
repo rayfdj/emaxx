@@ -235,38 +235,6 @@ fn signal_condition(condition: &str) -> LispError {
     LispError::SignalValue(Value::list([Value::Symbol(condition.into())]))
 }
 
-fn beginning_of_line_at(interp: &mut Interpreter, pos: usize) -> usize {
-    let saved = interp.buffer.borrow().point();
-    interp.buffer.borrow_mut().goto_char(pos);
-    let start = interp.buffer.borrow_mut().beginning_of_line();
-    interp.buffer.borrow_mut().goto_char(saved);
-    start
-}
-
-fn move_lines_from(interp: &mut Interpreter, start: usize, count: isize) -> (usize, isize) {
-    let saved = interp.buffer.borrow().point();
-    interp.buffer.borrow_mut().goto_char(start);
-    interp.buffer.borrow_mut().beginning_of_line();
-    let shortage = interp.buffer.borrow_mut().forward_line(count);
-    let target = interp.buffer.borrow().point();
-    interp.buffer.borrow_mut().goto_char(saved);
-    (target, shortage)
-}
-
-fn line_distance(interp: &Interpreter, start: usize, target: usize) -> usize {
-    if target <= start {
-        return 0;
-    }
-    interp
-        .buffer
-        .borrow()
-        .buffer_substring(start, target)
-        .unwrap_or_default()
-        .chars()
-        .filter(|ch| *ch == '\n')
-        .count()
-}
-
 pub(crate) fn wrong_type_argument(predicate: &str, value: Value) -> LispError {
     LispError::SignalValue(Value::list([
         Value::Symbol("wrong-type-argument".into()),
@@ -288,6 +256,7 @@ pub(crate) use dispatch::echo_area_message;
 pub(crate) use dispatch::echo_area_message_with_spans;
 #[cfg(test)]
 pub(crate) use dispatch::has_dispatch_handler;
+pub(crate) use dispatch::live_ordinary_window_ids;
 pub(crate) use dispatch::mark_thread_local_roots;
 pub(crate) use dispatch::name_facts;
 pub(crate) use dispatch::native_elisp_load;
@@ -301,7 +270,8 @@ pub(crate) use dispatch::{
 };
 pub(crate) use dispatch::{
     LineNumberLayout, LineNumberMode, ModeLineCells, TtyFaceAttrs, WindowRenderInfo,
-    apply_staged_root_window_height, render_window_header_line, render_window_mode_line,
+    adjust_frame_size, apply_staged_root_window_height, change_frame_size,
+    do_pending_window_change, frame_top_margin, render_window_header_line, render_window_mode_line,
     render_window_tab_line, resolve_tty_face_attrs, run_window_change_functions,
     store_window_hscroll_state, window_face_spans, window_hscroll_state, window_line_number_layout,
     window_render_layout, window_text_area_columns, window_total_columns,

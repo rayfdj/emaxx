@@ -3341,24 +3341,11 @@ impl Interpreter {
     }
 
     pub fn set_window_margins(&mut self, window_id: u64, left: Option<i64>, right: Option<i64>) {
-        if let Some(entry) = self
-            .window_margins
-            .iter_mut()
-            .find(|(id, _, _)| *id == window_id)
-        {
-            entry.1 = left;
-            entry.2 = right;
-        } else {
-            self.window_margins.push((window_id, left, right));
-        }
+        crate::lisp::primitives::set_window_margin_cols(self, window_id, left, right);
     }
 
     pub fn window_margins(&self, window_id: u64) -> (Option<i64>, Option<i64>) {
-        self.window_margins
-            .iter()
-            .find(|(id, _, _)| *id == window_id)
-            .map(|(_, left, right)| (*left, *right))
-            .unwrap_or((None, None))
+        crate::lisp::primitives::window_margin_cols(self, window_id)
     }
 
     pub fn push_handler_bindings(&mut self, bindings: &[(Vec<String>, Value)]) -> usize {
