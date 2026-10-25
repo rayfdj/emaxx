@@ -477,6 +477,7 @@ define_dispatch!(
                     args.get(2),
                     args.get(3),
                     args.get(4),
+                    env,
                 )
             }
             // hex-util.el (native for speed; the feature is compat-preloaded).

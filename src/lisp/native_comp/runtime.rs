@@ -13620,7 +13620,7 @@ mod tests {
                 let characters = bytes.len();
                 Value::StringObject(
                     StringObjectRef::from_storage_kind(
-                        bytes,
+                        &bytes,
                         characters,
                         multibyte,
                         crate::lisp::alloc::StringAllocation::Pure,

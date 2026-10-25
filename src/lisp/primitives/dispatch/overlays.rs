@@ -61,50 +61,6 @@ fn overlay_range(
     Ok(clamp_overlay_range(&buffer.borrow(), beg, end))
 }
 
-pub(super) fn next_overlay_change_position(
-    buffer: &crate::buffer::Buffer,
-    position: usize,
-) -> usize {
-    let mut next = buffer.point_max();
-    let mut iter =
-        buffer
-            .overlays
-            .intersecting(position as isize, next as isize, Traversal::Ascending);
-    while let Some(overlay) = iter.next() {
-        let (beg, end) = overlay.bounds();
-        if beg > position as isize {
-            next = beg as usize;
-            break;
-        }
-        if beg < end && end < next as isize {
-            next = end as usize;
-            iter.narrow(position as isize, next as isize);
-        }
-    }
-    next
-}
-
-pub(super) fn previous_overlay_change_position(
-    buffer: &crate::buffer::Buffer,
-    position: usize,
-) -> usize {
-    let mut previous = buffer.point_min();
-    let mut iter =
-        buffer
-            .overlays
-            .intersecting(previous as isize, position as isize, Traversal::Descending);
-    while let Some(overlay) = iter.next() {
-        let (beg, end) = overlay.bounds();
-        previous = if end < position as isize {
-            end as usize
-        } else {
-            previous.max(beg as usize)
-        };
-        iter.narrow(previous as isize, position as isize);
-    }
-    previous
-}
-
 /// buffer.c:overlays_in supplies both public overlap queries. Enumeration
 /// comes from the tree; there is no creation-ID ordering or separate cache.
 fn overlays_in_range(

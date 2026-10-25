@@ -332,6 +332,18 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
         "print_number_index",
         "print.c's print_number_index is per print",
     ),
+    (
+        "print_globals",
+        "print.c's print_depth, being_printed and new_backquote_output are per print",
+    ),
+    (
+        "window_sequence_number",
+        "window.c's PDUMPER_IGNORE (sequence_number)",
+    ),
+    (
+        "window_sequence_numbers",
+        "window.c's PDUMPER_IGNORE (sequence_number)",
+    ),
     ("lossage_size", "carried in the remembered scalars"),
     ("interactive_call_depth", "the running command"),
     ("next_lisp_face_id", "carried in the remembered scalars"),

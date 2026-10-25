@@ -5237,6 +5237,235 @@ setup_process_coding_systems's check now refuses). A 13-form
   uses unicode-bidi's levels, which agree with GNU on textsec's and
   bidi's cases; (4) `ring_bell` ignores `visible-bell`; (5) round 68's
   item (1).
+- **Round 71: textprop.c's lookups, scans and changes, editfns.c's
+  fields.** validate_interval_range is ported: the object nil the current
+  buffer or CHECK_STRING_OR_BUFFER, each bound CHECK_FIXNUM_COERCE_MARKER
+  (fix_position: a bignum the most positive or negative fixnum), the same
+  position twice nothing for a primitive over a range, then the bounds in
+  BEGV..ZV or 0..length, else `(args-out-of-range BEGIN END)` as given;
+  no text and (soft) no intervals are GNU's NULL. Over it, as textprop.c
+  writes them: `text-properties-at` and `get-text-property` (the
+  interval's plist, nil at the object's very end, so narrowing does not
+  hide ZV's properties), `next-property-change` and
+  `previous-property-change` (intervals_equal over the interval walk,
+  LIMIT t the next interval's start), get_char_property_and_overlay
+  (`get-char-property`, `get-char-property-and-overlay`: fix_position, a
+  live window's buffer with only its overlays, `(args-out-of-range POS)`
+  outside BEGV..ZV), `get-pos-property` (overlays by their ends' advance
+  types, else text_property_stickiness: `text-property-default-nonsticky`,
+  `rear-nonsticky` before, `front-sticky` after), `next-char-property-
+  change` and `previous-char-property-change` (bounded by
+  Fnext_overlay_change), and the single-char-property scans, which now
+  step from char-property change to change with OBJECT's buffer current
+  instead of testing every character. `add-text-properties`,
+  `put-text-property`, `set-text-properties`, `remove-text-properties`,
+  `remove-list-of-text-properties` and `add-face-text-property` follow
+  their GNU control flow: validate_plist (an odd list "Odd length text
+  property list", a non-list that property with nil), the range checks,
+  nil without intervals to remove from, `set-text-properties` t whenever
+  there is something to set, and a buffer OBJECT current for the whole
+  change, its hooks included (bug 36190; before, only
+  prepare_to_modify_buffer ran there). `add-face-text-property` is
+  add_properties' prepend or append per interval: an interval whose face
+  is FACE already unchanged, a list face (not an anonymous one) taking
+  FACE at its head or, copied, at its end, a single value (nil too)
+  becoming a list of the two, in one walk over the range's intervals (a
+  face over 2,000 intervals took 0.213 s, now 0.080 s; GNU 0.024 s; the
+  single-char-property scans over them now beat GNU's time). Foverlay_get is lookup_char_property: a nil
+  value is no value (a higher overlay's explicit nil no longer hides a
+  lower one's), and `char-property-alias-alist` applies to overlays.
+  editfns.c's find_field, `field-beginning`, `field-end`, `field-string`,
+  `field-string-no-properties`, `delete-field` and `constrain-to-field`
+  are ported (fields from overlays too; ONLY-IN-LINE and
+  INHIBIT-CAPTURE-PROPERTY), and `line-beginning-position`,
+  `line-end-position`, `beginning-of-line` and `end-of-line` constrain
+  through it as GNU's do (`end-of-line` ignored fields before).
+  `insert-buffer-substring` checks its range (`(args-out-of-range START
+  END)`) and runs update_buffer_properties, as do `buffer-substring` and
+  `buffer-string` (`buffer-access-fontify-functions`); `secure-hash` reads
+  its object through extract_data_from_object as `md5` does (its range
+  checked, a multibyte buffer encoded); `buffer-hash` hashes the whole
+  buffer, narrowing aside; an overlay prints as print.c's `#<overlay from
+  S to E in NAME>` or `#<overlay in no buffer>`. Also fixed: a `#N=` label
+  inside a string's property list was left as a reader placeholder (its
+  materialization never looked into strings), which failed six
+  erc-fill-tests. The six `secure-hash`, `buffer-hash` and gnutls digest
+  tests that hash a unibyte string run under the batch runtime now: GNU
+  encodes it as `raw-text`, which mule-conf.el defines and the early-Lisp
+  test environment lacks. Probes: the 98 region-validation cases of round 70 and
+  64 property, field, overlay and hash cases give GNU's output. The GNU textprop,
+  editfns, buffer, fns, print, lread, simple, text-property-search,
+  comint, faces, font-lock, jit-lock, button, shr, erc, erc-fill,
+  erc-stamp, eshell, em-prompt, em-hist, minibuffer, isearch, fill,
+  subr-x, minibuf, help, elisp-mode, subr, undo, hi-lock, ert-x, python,
+  casefiddle, xdisp, wid-edit, pp, diff-mode, cperl-mode, ses, eww, term,
+  css-mode and package test files give GNU's results (help-fns-tests
+  fails two tests under this checkout's GNU, for its source layout, and
+  none under Emaxx). Still open: (1) intervals: a string's or buffer's
+  adjacent spans with EQ plists are one span, so `object-intervals` shows
+  fewer intervals than GNU where GNU keeps them apart; (2) deletions do
+  not run update_buffer_properties (del_range_2 makes the deleted text a
+  string with properties); (3) round 70's items (2) to (5).
+- **Round 72: print.c's print, print_preprocess and print_object.** The
+  printer walked an object by host recursion, each level returning its
+  text for the level above to copy, so printing N nested levels cost
+  O(N^2) (`print-deeply-nested`'s shape at 16,000 levels took 1.63 s,
+  GNU 0.009 s) and 100,000 levels overflowed the stack (GNU prints
+  400,000). It is now print.c's: one output, print_object's explicit
+  stack (PE_list with Brent's tortoise, PE_rbrac, PE_vector, PE_hash),
+  print_depth, being_printed and new_backquote_output as the shared
+  printer state, and the C recursion only where print.c recurses
+  (backquote and comma, string intervals, hash-table test and weakness,
+  symbol-with-pos, native compilation units). 16,000 levels print in
+  0.013 s, 400,000 in 0.54 s (GNU 0.55 s), release builds; ASCII
+  characters skip the multibyte decode and encode, fixnums and symbol
+  names go to the output without host strings, a result's character
+  count is its length when it is ASCII, and the escape variables are read
+  once a print and again after `print-unreadable-function' runs, so a flat
+  150,000-element list prints in 0.020 s (GNU 0.036 s; 0.052 s before)
+  and with `print-circle' in 0.175 s (GNU 0.155 s; 0.223 s). `print-circle` labels are
+  `print-number-table`'s, as print.c keeps them: print_preprocess fills
+  the table (t, then the negated next `print_number_index`), print()
+  drops the entries seen once, print_object reads and writes the table by
+  Fgethash/Fputhash (a string value printed in place), and the table is
+  left in the variable after the print; before, a private count table
+  stood in for it, so a print left `print-number-table` nil, continuous
+  numbering did not number the table itself, and labels were looked up
+  by a scan of all entries. `print-level` applies before `print-quoted`'s
+  shorthands (`'b` at a too-deep level is `...`), backquote and comma
+  print their operand one level deeper, string interval positions and
+  plists print through print_object (`print-length` limits the plist, not
+  the intervals; `print-integers-as-characters` applies), a sub
+  char-table's slots count from SUB_CHAR_TABLE_OFFSET under
+  `print-length`, and a list's cycle detection runs under `print-circle`
+  too. `print-unreadable-function` runs for every unreadable object
+  (windows, frames, processes, threads, symbols with positions, ...) but
+  not closures, with ESCAPEFLAG as its second argument and itself bound to
+  nil, any non-nil value handling the object; before, it ran only for
+  closures, subrs, buffers, markers and overlays, with t, and recursed on
+  itself. Windows print as `#<window N on BUFFER>` with window.c's
+  sequence numbers (they printed their record slots),
+  window configurations as `#<window-configuration>`, a marker that
+  advances and has no buffer as GNU writes it, an empty-named gensym as
+  `#:`, and a symbol of a private obarray with `#:` under
+  `print-gensym`. keyboard.c's cmd_error sets `print-level` and
+  `print-length` to 10 around the batch error report and
+  `command-error-function`. Probes: 100 printer cases (circle, continuous
+  numbering, gensyms, `print--preprocess`, hash tables, char tables,
+  records, closures, strings with properties, print-level/length,
+  quoting, unreadable objects) give GNU's output; print-tests,
+  cl-print-tests, lread-tests, pp-tests, fns-tests, data-tests,
+  subr-tests, bytecomp-tests and editfns-tests give GNU's results; the
+  local gate passes (3,160 tests, the as-root and image exceptions below
+  skipped; `subprocess_exit_is_event_driven_and_notifies_newest_process_first_once`
+  failed once under a parallel release build, its child exiting before
+  the first `process-live-p`, and passes alone). Still open: fonts,
+  tree-sitter objects and sqlite handles still print as their record
+  slots, not as print_vectorlike_unreadable writes them. Note on the CI
+  timings: the frozen run builds the gate profile (debug assertions,
+  overflow checks, thin LTO), which puts nearly every file at 2.0 to 2.3
+  times GNU; release-build comparisons are made locally.
+- **Round 73: the image loader's tables, string data and heap blocks as
+  pdumper.c and alloc.c keep them.** Startup (`-Q --batch --eval '(princ
+  "x")'`, release) took 0.12 s against GNU's 0.05 s: 399M instructions
+  (GNU 166M) and 17,747 minor page faults (GNU 5,642), at about 2.2 us a
+  fault in this container, so the faults alone were some 26 ms. Where they
+  came from: (1) the loader's dense tables, 5.5 MB of relocation kinds
+  written in full, an 11 MB object index and 4.6 MB of `Option<Value>`;
+  (2) a copy of every string's data, through a temporary vector per
+  string; (3) heap blocks from glibc's aligned malloc, which writes its
+  chunk header in the page before each block, so a 4 KB symbol, string or
+  vector block took two pages; (4) the 22 MB image itself was cheap
+  (file pages, 16 a fault). Now: the object-start and relocation tables
+  are read where the image maps them, as pdumper.c reads its tables; the
+  early relocations are walked in order alongside the fields being read
+  (dump_do_all_dump_reloc_for_phase applies them in order), runs of
+  fields read in one pass, with a rank index (a bit per word, counts per
+  64 words) only for a read out of order; each relocation entry names its
+  target's object number (`RELOC_ENTRY_LEN` 12: the writer resolves it
+  from the sorted object starts), so a field naming an object is one index
+  into the object vector, whose slots the kernel zeroes. A dumped string's
+  data stays in the image, as GNU's stays in the mapped dump: the writer
+  lays each cold string out as the sdata entry the loaded string keeps
+  (owner word, bytes, NUL, padding to `string_data_size`), the image is
+  mapped private and writable and never unmapped (pdumper.c maps every
+  section read-write and keeps the dump), and the string's header points
+  at its entry, which no block lists, so compaction never moves it and
+  retiring or resizing it within its slop writes the entry like any other
+  (a page copied on write); ASCII text is counted without decoding. Heap
+  blocks (cons, float, symbol, string, vector) come from an arena of 4 MB
+  anonymous mappings carved in address order, released blocks kept on
+  their size's free list as `free` keeps a chunk; symbol and string blocks
+  are their cells (21 symbols, 1,344 bytes; 85 strings) at cache-line
+  alignment instead of a rounded, page-aligned 4 KB. A copied subr record
+  is resolved once per record through a name index of the subr table (the
+  linear search cost 4,700 instructions a reference). `install_image`
+  finds a symbol's record by the symbol's identity and installs its
+  function cell, plist and watchers on that symbol: by name, an uninterned
+  symbol's cells went to the interned symbol of its name, or were skipped
+  when a same-named record had been installed. Native-subr records start
+  without names (two allocations each before), and the unit file name is
+  built only for an error. Result: 0.07 to 0.08 s, 8,545 faults, 298M
+  instructions, RSS 90 MB to 75 MB. What remains of the 0.02 to 0.03 s:
+  rebuilding the 285,638 objects (phase 2 about 17 ms, mostly symbols,
+  conses and sub char-tables), `Interpreter::new` (20M instructions:
+  temacs's syms_of_* work, which the image then replaces; GNU skips it
+  when a dump loads), native-code relocation as GNU does it (dlopen of 87
+  units, dlsym of 5,901 functions), and the record registry indexed by id
+  (record ids reach 190,000 for 800 records, 1.5 MB of slots). Probes:
+  `aset` on a dumped string in place and across a width change, then
+  collections, give GNU's results; fns, data, alloc, print, subr, lread,
+  editfns, casefiddle, chartab and cl-lib tests give GNU's results; the
+  pdumper tests and the local gate pass (3,202 tests, the as-root and
+  image exceptions below skipped).
+- **Round 74: the image's tables read at a fixed stride, image names as
+  C strings, a process that loads an image skips what the image defines.**
+  Startup (`-Q --batch --eval `(princ "x")'`) was 298M instructions (GNU
+  166M) and 0.076 s median against GNU's 0.056 s. Phases measured with
+  per-phase counters (callgrind dumps at each boundary): the table reads
+  28.5M, `Interpreter::new` 20.3M, building the image`s strings 31.3M,
+  its symbols, cons placeholders and vectors 45.6M, relocating fields
+  64M, native code 27M. Changes: (1) `ImageTable` is typed by its entry
+  length (`[[u8; 12]]` relocations, `[[u8; 8]]` object starts), so an
+  entry's word is one bounds check at a constant offset, not a multiply
+  by a run-time stride behind an assertion; the order check is one
+  branch-free pass with the failure located after; the rank index (a bit
+  a word, counts a block) is gone, a read past the cursor searching
+  outward from it in doubling steps; (2) a cons's two fields and a symbol
+  record's three are read by a const-length `field_array`, inlined, with
+  `immediate_value` inline and its error cold; (3) a dumped string is
+  made by `allocate_restored_string` (alloc.c`s allocate_string for a
+  header complete at birth, no initializer or construction guard), its
+  four header words read at once; (4) the 5,901 native subrs' names are
+  written as dump_cold_native_subr writes them: NUL-terminated bytes in
+  the cold section, the record's two words raw dump pointers to them
+  (they were two Lisp strings each, 11,802 objects), and the loaded
+  `Lisp_Subr` points at them (`set_image_names`, never freed), as a
+  dumped subr's `symbol_name` and `native_c_name` point into the dump; a
+  first version pointed at the old name strings' data, which a collection
+  of those unreferenced strings retires (the entry's first bytes take the
+  size), and the image round-trip tests caught the garbled name;
+  RELOC_NATIVE_SUBR's dlsym takes that C string and calls Fgethash and
+  Fputhash directly instead of by name;
+  (5) char-table and sub-char-table slots are stored at once with one
+  store count, and the 177,573 cons placeholders are made at once
+  (`allocate_nil_conses`: Fcons of nil and nil from the newest block's
+  untouched cells, a run at a time, allocation bits set a word at a
+  time); (6) the record registry is a `BTreeMap` by id (ids reach
+  190,000 for 800 records: the vector was 1.5 MB, zeroed); (7) emacs.c
+  runs syms_of_* only `if (!initialized)`: `Interpreter::for_image`
+  leaves out the oracle's printed C defaults read through the reader,
+  the mark-all-globals-special pass, the DEFSUBR loop and the DEFSYM
+  interning, all of which an image's symbols carry whole (value, flags,
+  function cell, plist); a process whose image does not load starts again
+  from `Interpreter::new`. A dump of all 18,003 symbols (flags, boundp,
+  fboundp, function type, plist length, value) is identical between the
+  two constructors in one binary except the allocation counters (2
+  conses, 2 strings) and timing values. Result: 221M instructions
+  (`Interpreter` construction 7.8M, tables 5.2M, native 24.4M), 0.068 s
+  median against GNU's 0.057 s (40 interleaved runs), 7,438 page faults
+  (GNU 5,614), RSS 72 MB (GNU 55 MB). The local gate passes (3,202
+  tests).
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -5874,8 +6103,18 @@ primitives group (run 40123867987; the groups after it did not run):
 round 68's `buffer-local-variables` read the `text-conversion-style` slot
 through the symbol, which `makunbound` had made plain; fixed in round 69.
 Frozen passed on its first attempt (run 40123869891). **On `13dfb41`**
-(round 69): the full Rust gate and frozen runs are dispatched with it;
-their results go in the next round's record. Run
+(round 69): full Rust gate passed (run 40133162719), frozen passed on its
+first attempt (run 40133164494). **On `896ba25`** (round 70): full Rust
+gate passed (run 40134441249), frozen passed on its first attempt (run
+40134442777); PR #103 merged rounds 61 to 70 into main (`7b960e7`).
+**On `e3bc9ef`** (round 71): full Rust gate passed (run 40139903681),
+frozen passed on its first attempt (run 40139905885).
+**On `cae8d39`** (round 72): full Rust gate passed (run 40146208215),
+frozen passed on its first attempt (run 40146209717).
+**On `caa70a2`** (round 73): full Rust gate passed (run 40154530346),
+frozen passed on its first attempt (run 40154532135).
+**On round 74's commit**: the full Rust gate and frozen runs are
+dispatched with it; their results go in the next round's record. Run
 the local gate with CI's `LANG=C LC_ALL=C`: the oracle tests start GNU
 with the inherited environment and their answers were recorded under that
 locale. With none set here, `char_charset_family_follows_charset_c` and

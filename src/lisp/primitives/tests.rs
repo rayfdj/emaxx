@@ -13026,7 +13026,10 @@ fn native_gnutls_digest_catalog_and_hashing_use_rustcrypto() {
     );
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
 
-    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    // fns.c:extract_data_from_object encodes a unibyte string as `raw-text',
+    // which mule-conf.el defines: GNU's batch image, not its early Lisp.
+    let mut interp = Interpreter::new();
+    crate::test_support::replace_with_gnu_batch_runtime(&mut interp);
     let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
@@ -13178,7 +13181,10 @@ fn native_gnutls_formats_x509_certificates_with_the_host_library() {
     );
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
 
-    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    // fns.c:extract_data_from_object encodes a unibyte string as `raw-text',
+    // which mule-conf.el defines: GNU's batch image, not its early Lisp.
+    let mut interp = Interpreter::new();
+    crate::test_support::replace_with_gnu_batch_runtime(&mut interp);
     let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(&program)
         .read()
@@ -13239,7 +13245,10 @@ fn native_gnutls_mac_uses_the_host_crypto_and_zeroizes_keys() {
     );
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
 
-    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    // fns.c:extract_data_from_object encodes a unibyte string as `raw-text',
+    // which mule-conf.el defines: GNU's batch image, not its early Lisp.
+    let mut interp = Interpreter::new();
+    crate::test_support::replace_with_gnu_batch_runtime(&mut interp);
     let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
@@ -13350,7 +13359,10 @@ fn native_gnutls_symmetric_crypto_round_trips_block_and_aead_ciphers() {
     );
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
 
-    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    // fns.c:extract_data_from_object encodes a unibyte string as `raw-text',
+    // which mule-conf.el defines: GNU's batch image, not its early Lisp.
+    let mut interp = Interpreter::new();
+    crate::test_support::replace_with_gnu_batch_runtime(&mut interp);
     let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()

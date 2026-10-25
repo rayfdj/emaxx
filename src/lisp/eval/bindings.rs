@@ -1227,10 +1227,6 @@ impl Interpreter {
         handled.is_ok()
     }
 
-    pub fn remove_all_function_bindings(&mut self, name: &str) {
-        self.set_function_binding(name, None);
-    }
-
     /// GNU keeps macro-ness and callable identity in the same function
     /// cell. Rebinding changes that payload without changing the obarray.
     pub fn set_function_binding(&mut self, name: &str, function: Option<Value>) {

@@ -24,6 +24,7 @@ use std::collections::BTreeMap;
 use std::ptr::NonNull;
 use std::sync::Mutex;
 
+mod arena;
 pub(crate) mod counters;
 mod finalizers;
 mod strings;
@@ -34,8 +35,9 @@ pub use strings::StringObjectRef;
 #[cfg(test)]
 pub(crate) use strings::string_data_census;
 pub(crate) use strings::{
-    CodeState, PendingStringData, StringAllocation, allocate_string, borrowed_string_roots,
-    code_changes, live_string_object_census, retire_string_data, string_data_size, sweep_strings,
+    CodeState, PendingStringData, STRING_DATA_ALIGNMENT, STRING_DATA_PREFIX, StringAllocation,
+    allocate_restored_string, allocate_string, borrowed_string_roots, code_changes,
+    live_string_object_census, retire_string_data, string_data_size, sweep_strings,
 };
 pub(crate) mod vectors;
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
@@ -68,11 +70,13 @@ pub(crate) const FLOATS_PER_BLOCK: usize = ((C_BLOCK_BYTES - 8) * 8) / (8 * 8 + 
 /// `SYMBOL_BLOCK_SIZE': (1020 - sizeof (struct symbol_block *)) /
 /// sizeof (struct Lisp_Symbol), a 48-byte symbol.
 pub(crate) const SYMBOLS_PER_BLOCK: usize = (1020 - 8) / 48;
-const BLOCK_ALIGN: usize = 4096;
+/// The alignment of a symbol or string block, which the registry finds by
+/// its start (alloc.c mallocs them): a cache line.
+const BLOCK_ALIGN: usize = 64;
 
-/// The bytes of a block of KIND: its cells, rounded up to the alignment.
+/// The bytes of a block of KIND: its cells.
 fn block_bytes(kind: BlockKind) -> usize {
-    let cells = match kind {
+    match kind {
         BlockKind::Cons => std::mem::size_of::<ConsBlock>(),
         BlockKind::Float => std::mem::size_of::<FloatBlock>(),
         BlockKind::Symbol => SYMBOLS_PER_BLOCK * symbols::SYMBOL_CELL_SIZE,
@@ -80,8 +84,7 @@ fn block_bytes(kind: BlockKind) -> usize {
         BlockKind::VectorBlock | BlockKind::LargeVector => {
             unreachable!("vector storage is allocated by its own module")
         }
-    };
-    cells.div_ceil(BLOCK_ALIGN) * BLOCK_ALIGN
+    }
 }
 
 fn block_alignment(kind: BlockKind) -> usize {
@@ -1420,6 +1423,30 @@ impl ConsMark<'_> {
         marked.set(marked.get() | mask);
     }
 
+    /// `allocate' for this cell and the COUNT - 1 after it in its block,
+    /// a bitmap word at a time.
+    fn allocate_run(&self, count: usize, epoch: u32) {
+        debug_assert!(self.index() + count <= CELLS_PER_BLOCK);
+        if self.block.epoch.get() != epoch {
+            self.clear_marks(epoch);
+        }
+        let bits = usize::BITS as usize;
+        let mut slot = self.slot;
+        let end = self.slot + count;
+        while slot < end {
+            let word = slot / bits - CONS_FIRST_WORD;
+            let first = slot % bits;
+            let last = (end - (slot - first)).min(bits);
+            let mask = (usize::MAX >> (bits - (last - first))) << first;
+            debug_assert!(self.block.serial_given[word].get() & mask == 0);
+            let allocated = &self.block.allocated[word];
+            allocated.set(allocated.get() | mask);
+            let marked = &self.block.marked[word];
+            marked.set(marked.get() | mask);
+            slot += last - first;
+        }
+    }
+
     /// A block's first mark of a collection: the marks of the last one
     /// are stale.
     #[cold]
@@ -1625,6 +1652,49 @@ pub(crate) fn allocate_cons(cell: ConsCell) -> ConsRef {
     unsafe { fill_cons(slot, cell) }
 }
 
+/// Fcons (Qnil, Qnil) COUNT times, each cell handed to EACH in allocation
+/// order: pdumper's cons placeholders.  Cells come as Fcons takes them,
+/// the free list's first; a run of the newest block's untouched cells is
+/// written and counted at once, its allocation bits set a word at a time.
+pub(crate) fn allocate_nil_conses(mut count: usize, mut each: impl FnMut(ConsRef)) {
+    let nil = || ConsCell {
+        car: std::cell::Cell::new(Value::Nil),
+        cdr: std::cell::Cell::new(Value::Nil),
+    };
+    while count > 0 {
+        let next = BUMP_NEXT.load(Ordering::Relaxed);
+        let available = BUMP_END.load(Ordering::Relaxed).saturating_sub(next) / CELL_SIZE;
+        if !FREE_LIST.load(Ordering::Relaxed).is_null() || available == 0 {
+            each(
+                Value::cons(Value::Nil, Value::Nil)
+                    .cons_ref()
+                    .expect("a cons"),
+            );
+            count -= 1;
+            continue;
+        }
+        let run = available.min(count);
+        crate::lisp::native_comp::note_lisp_allocation(run * CELL_SIZE);
+        let first = next as *mut ConsCell;
+        BUMP_NEXT.store(next + run * CELL_SIZE, Ordering::Relaxed);
+        LIVE_CONSES.store(LIVE_CONSES.load(Ordering::Relaxed) + run, Ordering::Relaxed);
+        counters::tally(&counters::CONS_CELLS_CONSED, run as i64);
+        // SAFETY: the RUN cells from FIRST are the newest block's bump
+        // region, never allocated: each is written before its handle is
+        // made, and their bits are this block's.
+        unsafe {
+            for index in 0..run {
+                std::ptr::write(first.add(index), nil());
+            }
+            cons_mark(first).allocate_run(run, super::types::current_mark_epoch());
+            for index in 0..run {
+                each(ConsRef(NonNull::new_unchecked(first.add(index))));
+            }
+        }
+        count -= run;
+    }
+}
+
 /// Fcons's `cons_block_index == CONS_BLOCK_SIZE' arm.  Out of line, and
 /// reached by a tail call, so the allocation path needs no frame.
 #[cold]
@@ -1665,19 +1735,14 @@ unsafe fn fill_cons(slot: *mut ConsCell, cell: ConsCell) -> ConsRef {
 /// (the sweep found nothing live in it).
 fn release_block(start: usize, kind: BlockKind) {
     unregister_block(start);
-    let layout = std::alloc::Layout::from_size_align(block_bytes(kind), block_alignment(kind))
-        .expect("block layout");
-    // SAFETY: a block `new_block' allocated with this layout, unregistered
+    // SAFETY: a block `new_block' allocated of this kind, unregistered
     // above; every cell is free (nothing reaches it).
-    unsafe { std::alloc::dealloc(start as *mut u8, layout) };
+    unsafe { arena::release_block(start as *mut u8, block_bytes(kind), block_alignment(kind)) };
 }
 
 /// alloc.c's `lisp_align_malloc' of a block of KIND: every cell free.
 fn new_block(kind: BlockKind) -> usize {
-    let layout = std::alloc::Layout::from_size_align(block_bytes(kind), block_alignment(kind))
-        .expect("block layout");
-    // SAFETY: a non-zero layout.
-    let block = unsafe { std::alloc::alloc(layout) };
+    let block = arena::allocate_block(block_bytes(kind), block_alignment(kind));
     assert!(!block.is_null(), "out of memory for a block");
     let start = block as usize;
     match kind {

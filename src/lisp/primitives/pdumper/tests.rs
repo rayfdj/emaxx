@@ -2114,8 +2114,8 @@ fn voided_builtin_cells_and_saved_subrs_survive_image_cloning_and_restoration() 
     let saved = source
         .raw_function_binding("identity", &crate::lisp::types::Env::new())
         .expect("defsubr installs identity");
-    source.remove_all_function_bindings("identity");
-    source.remove_all_function_bindings("if");
+    source.set_function_binding("identity", None);
+    source.set_function_binding("if", None);
     check(&mut source.deep_clone_image(), saved);
 
     let graph = Value::vector([Value::symbol("identity"), Value::symbol("if"), saved]);

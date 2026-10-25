@@ -1755,7 +1755,21 @@ impl Interpreter {
             slots.resize(primitives::WINDOW_FRAME_SLOT + 1, Value::Nil);
             slots[primitives::WINDOW_FRAME_SLOT] = self.selected_frame_value();
         }
-        self.create_record_with_kind(Value::symbol(type_name), slots, kind)
+        let record = self.create_record_with_kind(Value::symbol(type_name), slots, kind);
+        // window.c:make_window and copy_window: `++sequence_number'.
+        if kind == RecordKind::Window
+            && let Kind::Record(id) = record.kind()
+        {
+            self.window_sequence_number += 1;
+            let number = self.window_sequence_number;
+            self.window_sequence_numbers.insert(id.id, number);
+        }
+        record
+    }
+
+    /// The window's `sequence_number', as print.c prints it.
+    pub(crate) fn window_sequence_number(&self, id: u64) -> Option<i64> {
+        self.window_sequence_numbers.get(&id).copied()
     }
 
     /// alloc.c:Fmake_closure.  Both the ordinary primitive dispatcher and
@@ -1806,7 +1820,6 @@ impl Interpreter {
         }
         let id = self.alloc_record_id();
         let indexed_type = type_tag.symbol_str().map(str::to_owned);
-        let index = self.record_index_for(id);
         // alloc.c's allocate_record: the object in a vector block; the
         // registry names it by id for the side tables.
         let record = RecordRef::allocate(RecordState {
@@ -1816,7 +1829,7 @@ impl Interpreter {
             slots,
             kind,
         });
-        self.records[index] = Some(record);
+        self.records.insert(id, record);
         if let Some(type_name) = indexed_type {
             self.record_ids_by_type_index
                 .entry(type_name)
@@ -1897,8 +1910,7 @@ impl Interpreter {
         filter: impl Fn(&RecordState) -> bool,
     ) -> Vec<RecordRef> {
         self.records
-            .iter()
-            .flatten()
+            .values()
             .copied()
             .filter(|record| record.kind == kind && filter(record))
             .collect()

@@ -461,10 +461,7 @@ pub(super) fn abandon_allocation_frontier() {
 
 /// alloc.c's `allocate_vector_block'.
 fn allocate_vector_block() -> usize {
-    let layout = std::alloc::Layout::from_size_align(VECTOR_BLOCK_SIZE, VECTOR_BLOCK_SIZE)
-        .expect("vector block layout");
-    // SAFETY: a non-zero layout.
-    let block = unsafe { std::alloc::alloc(layout) };
+    let block = super::arena::allocate_block(VECTOR_BLOCK_SIZE, VECTOR_BLOCK_SIZE);
     assert!(!block.is_null(), "out of memory for a vector block");
     let start = block as usize;
     // SAFETY: metadata is outside the region carved into Lisp vectors and
@@ -481,10 +478,8 @@ fn allocate_vector_block() -> usize {
 
 fn release_vector_block(start: usize) {
     unregister_block(start);
-    let layout = std::alloc::Layout::from_size_align(VECTOR_BLOCK_SIZE, VECTOR_BLOCK_SIZE)
-        .expect("vector block layout");
     // SAFETY: a block `allocate_vector_block' made, with nothing live.
-    unsafe { std::alloc::dealloc(start as *mut u8, layout) };
+    unsafe { super::arena::release_block(start as *mut u8, VECTOR_BLOCK_SIZE, VECTOR_BLOCK_SIZE) };
 }
 
 /// alloc.c's `allocate_vector_from_block'.

@@ -166,6 +166,16 @@ impl CharTableRef {
         note_char_table_store();
     }
 
+    /// Every slot at once, from VALUES, which has one for each.
+    pub(crate) fn set_slots(&self, values: &[Value]) {
+        let cells = self.cells();
+        assert_eq!(cells.len(), values.len(), "a value for each slot");
+        for (cell, &value) in cells.iter().zip(values) {
+            cell.set(value);
+        }
+        note_char_table_store();
+    }
+
     #[inline]
     pub(crate) fn default(&self) -> Value {
         self.slot(DEFAULT)
@@ -546,6 +556,16 @@ impl SubCharTableRef {
     #[inline]
     pub(crate) fn set_slot(&self, index: usize, value: Value) {
         self.cells()[index].set(value);
+        note_char_table_store();
+    }
+
+    /// Every slot at once, from VALUES, which has one for each.
+    pub(crate) fn set_slots(&self, values: &[Value]) {
+        let cells = self.cells();
+        assert_eq!(cells.len(), values.len(), "a value for each slot");
+        for (cell, &value) in cells.iter().zip(values) {
+            cell.set(value);
+        }
         note_char_table_store();
     }
 

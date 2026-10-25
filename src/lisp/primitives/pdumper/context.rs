@@ -207,6 +207,13 @@ enum ColdOp {
     Bignum(Value),
     /// COLD_OP_BUFFER: a buffer's text.
     Buffer(Value),
+    /// COLD_OP_NATIVE_SUBR: a native subr's `symbol_name' and
+    /// `native_c_name', the record's words at NAMES that point at them.
+    NativeSubr {
+        names: u32,
+        name: String,
+        c_name: String,
+    },
 }
 
 enum EmacsRelocPayload {
@@ -460,7 +467,9 @@ pub(crate) struct DumpContext {
     fixups: Vec<Fixup>,
     copied_queue: Vec<Value>,
     cold_queue: Vec<ColdOp>,
-    dump_relocs: [Vec<(u32, DumpRelocKind)>; RELOC_NUM_PHASES],
+    /// Each relocation's offset and kind, with the target's offset for a
+    /// word naming an object of the dump.
+    dump_relocs: [Vec<(u32, DumpRelocKind, Option<u32>)>; RELOC_NUM_PHASES],
     object_starts: Vec<(u32, DumpType)>,
     emacs_relocs: Vec<EmacsReloc>,
     bignum_data: HashMap<ObjectKey, (u32, i64)>,
@@ -760,9 +769,9 @@ impl DumpContext {
 
     /// dump_reloc_dump_to_dump_ptr_raw / dump_reloc_dump_to_dump_lv /
     /// dump_reloc_dump_to_emacs_lv (early phase).
-    fn push_dump_reloc(&mut self, offset: u32, kind: DumpRelocKind) {
+    fn push_dump_reloc(&mut self, offset: u32, kind: DumpRelocKind, target: Option<u32>) {
         if self.flags.dump_object_contents {
-            self.dump_relocs[EARLY_RELOCS].push((offset, kind));
+            self.dump_relocs[EARLY_RELOCS].push((offset, kind, target));
         }
     }
 
@@ -1295,7 +1304,7 @@ impl DumpContext {
                 offset: start + 8,
                 value: *object,
             });
-            self.push_dump_reloc(offset, DumpRelocKind::Bignum);
+            self.push_dump_reloc(offset, DumpRelocKind::Bignum, None);
         }
         Ok(offset)
     }
@@ -1402,7 +1411,7 @@ impl DumpContext {
         }
         let offset = self.object_finish(&words)?;
         if self.flags.dump_object_contents {
-            self.dump_relocs[LATE_RELOCS].push((offset, DumpRelocKind::NativeCompUnit));
+            self.dump_relocs[LATE_RELOCS].push((offset, DumpRelocKind::NativeCompUnit, None));
         }
         Ok(offset)
     }
@@ -1451,25 +1460,20 @@ impl DumpContext {
         for (index, slot) in slots.iter().enumerate() {
             self.field_lv(start, &mut words, index + 4, slot, WEIGHT_STRONG);
         }
+        // dump_subr's `dump_field_fixup_later' of both names, which
+        // dump_cold_native_subr writes as C strings.
         let name_index = slots.len() + 4;
-        self.field_lv(
-            start,
-            &mut words,
-            name_index,
-            &Value::string(name),
-            WEIGHT_STRONG,
-        );
-        self.field_lv(
-            start,
-            &mut words,
-            name_index + 1,
-            &Value::string(c_name),
-            WEIGHT_STRONG,
-        );
+        words[name_index] = FIXUP_PLACEHOLDER;
+        words[name_index + 1] = FIXUP_PLACEHOLDER;
         let offset = self.object_finish(&words)?;
         if self.flags.dump_object_contents {
-            self.dump_relocs[VERY_LATE_RELOCS].push((offset, DumpRelocKind::NativeSubr));
+            self.dump_relocs[VERY_LATE_RELOCS].push((offset, DumpRelocKind::NativeSubr, None));
         }
+        self.remember_cold_op(ColdOp::NativeSubr {
+            names: offset + (name_index * 8) as u32,
+            name: name.to_owned(),
+            c_name: c_name.to_owned(),
+        });
         Ok(offset)
     }
 
@@ -2088,6 +2092,11 @@ impl DumpContext {
                 }
                 ColdOp::Bignum(object) => self.dump_cold_bignum(&object)?,
                 ColdOp::Buffer(object) => self.dump_cold_buffer(interp, &object)?,
+                ColdOp::NativeSubr {
+                    names,
+                    name,
+                    c_name,
+                } => self.dump_cold_native_subr(names, &name, &c_name)?,
             }
         }
         self.flags = old_flags;
@@ -2129,6 +2138,11 @@ impl DumpContext {
 
     /// dump_cold_string: the bytes in GNU's internal representation plus
     /// the terminating NUL, and the fixup that points the record at them.
+    /// They are written as the sdata entry the loaded string keeps them
+    /// in: an aligned owner word before them (no owner yet) and the
+    /// padding after, so the loaded string's data stays in the image as
+    /// GNU's stays in the mapped dump, and retiring or resizing it within
+    /// its slop works as for any entry.
     fn dump_cold_string(&mut self, object: &Value) -> Result<(), DumpError> {
         let Some(ObjectState::Dumped(string_offset)) = self.recall_object(object) else {
             panic!("cold string was dumped");
@@ -2137,9 +2151,34 @@ impl DumpContext {
         if bytes.len() > DUMP_OFF_MAX - 1 {
             return Err(LispError::Signal("string too large".into()).into());
         }
+        self.align_output(crate::lisp::alloc::STRING_DATA_ALIGNMENT)?;
+        let entry = self.offset;
+        self.write(&[0; crate::lisp::alloc::STRING_DATA_PREFIX])?;
         self.remember_fixup_ptr_raw(string_offset + 24, self.offset);
         self.write(&bytes)?;
-        self.write(&[0])
+        self.write(&[0])?;
+        let end = entry + crate::lisp::alloc::string_data_size(bytes.len()) as u32;
+        let padding = (end - self.offset) as usize;
+        self.write(&[0; 2 * crate::lisp::alloc::STRING_DATA_ALIGNMENT][..padding])
+    }
+
+    /// dump_cold_native_subr: each name with its NUL, and the fixup that
+    /// points the record's word at it.
+    fn dump_cold_native_subr(
+        &mut self,
+        names: u32,
+        name: &str,
+        c_name: &str,
+    ) -> Result<(), DumpError> {
+        for (index, text) in [name, c_name].into_iter().enumerate() {
+            if text.as_bytes().contains(&0) {
+                return Err(LispError::Signal("NUL in a native function's name".into()).into());
+            }
+            self.remember_fixup_ptr_raw(names + 8 * index as u32, self.offset);
+            self.write(text.as_bytes())?;
+            self.write(&[0])?;
+        }
+        Ok(())
     }
 
     /// dump_cold_bignum: the limbs, least significant first.
@@ -2186,17 +2225,17 @@ impl DumpContext {
                         panic!("fixup target was dumped");
                     };
                     let kind = self.dump_type_of(&value);
-                    let reloc = if self.in_emacs_image(&value) {
-                        DumpRelocKind::DumpToEmacsLv(kind)
+                    let (reloc, object) = if self.in_emacs_image(&value) {
+                        (DumpRelocKind::DumpToEmacsLv(kind), None)
                     } else {
-                        DumpRelocKind::DumpToDumpLv(kind)
+                        (DumpRelocKind::DumpToDumpLv(kind), Some(target))
                     };
                     self.write_word(u64::from(target))?;
-                    self.push_dump_reloc(offset, reloc);
+                    self.push_dump_reloc(offset, reloc, object);
                 }
                 Fixup::PtrDumpRaw { target, .. } => {
                     self.write_word(u64::from(target))?;
-                    self.push_dump_reloc(offset, DumpRelocKind::DumpToDumpPtrRaw);
+                    self.push_dump_reloc(offset, DumpRelocKind::DumpToDumpPtrRaw, None);
                 }
                 Fixup::BignumData { value, .. } => {
                     let (data_offset, sign_limbs) = self
@@ -2218,13 +2257,24 @@ impl DumpContext {
     /// drain_reloc_list for the dump relocations of PHASE.
     pub(crate) fn emit_dump_relocs(&mut self, phase: usize) -> Result<(), DumpError> {
         let mut relocs = std::mem::take(&mut self.dump_relocs[phase]);
-        relocs.sort_by_key(|(offset, _)| *offset);
+        relocs.sort_by_key(|(offset, _, _)| *offset);
+        // The object starts in the order `emit_object_starts' writes them:
+        // an object's number is its place there.
+        self.object_starts.sort_by_key(|(offset, _)| *offset);
         self.align_output(8)?;
         let locator_offset = self.offset;
-        for (offset, kind) in &relocs {
+        for (offset, kind, target) in &relocs {
             assert!(*offset > 0 && *offset < self.end_heap);
+            let number = target.map_or(NO_OBJECT, |target| {
+                self.object_starts
+                    .binary_search_by_key(&target, |(start, _)| *start)
+                    .map_or(NO_OBJECT, |number| {
+                        u32::try_from(number).expect("object count fits a word")
+                    })
+            });
             self.write(&offset.to_le_bytes())?;
             self.write(&kind.to_u32().to_le_bytes())?;
+            self.write(&number.to_le_bytes())?;
             if *offset < self.header.discardable_start {
                 self.number_hot_relocations += 1;
             } else {

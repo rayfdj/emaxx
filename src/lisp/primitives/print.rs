@@ -1,37 +1,62 @@
+mod object;
 mod output;
+pub(crate) use object::PrintGlobals;
 pub(crate) use output::PrintOutput;
 
 use super::*;
 use crate::lisp::types::Kind;
 use crate::lisp::types::LispErrorKind;
 
+/// print.c's DEFVAR_BOOLs a string literal is escaped by.
+#[derive(Clone, Copy)]
+pub(crate) struct StringEscapes {
+    multibyte: bool,
+    newlines: bool,
+    control: bool,
+    nonascii: bool,
+}
+
+impl StringEscapes {
+    /// The variables' dynamic values, as C reads them: no lexical binding
+    /// of a special variable to search for.
+    pub(crate) fn current(interp: &Interpreter) -> Self {
+        let enabled = |key| {
+            interp
+                .symbol_value_key(key)
+                .is_some_and(|value| value.is_truthy())
+        };
+        Self {
+            multibyte: enabled(cached_symbol!("print-escape-multibyte")),
+            newlines: enabled(cached_symbol!("print-escape-newlines")),
+            control: enabled(cached_symbol!("print-escape-control-characters")),
+            nonascii: enabled(cached_symbol!("print-escape-nonascii")),
+        }
+    }
+}
+
 pub(crate) fn render_prin1_string(
-    interp: &Interpreter,
+    escapes: StringEscapes,
     state: &crate::lisp::types::SharedStringState,
-) -> PrintOutput {
-    // print.c reads its DEFVAR_BOOLs: the variables' dynamic values, no
-    // lexical binding of a special variable to search for.
-    let enabled = |key| {
-        interp
-            .symbol_value_key(key)
-            .is_some_and(|value| value.is_truthy())
-    };
-    let escape_multibyte = enabled(cached_symbol!("print-escape-multibyte"));
-    let escape_newlines = enabled(cached_symbol!("print-escape-newlines"));
-    let escape_control = enabled(cached_symbol!("print-escape-control-characters"));
-    let escape_nonascii = enabled(cached_symbol!("print-escape-nonascii"));
+    rendered: &mut PrintOutput,
+) {
+    let StringEscapes {
+        multibyte: escape_multibyte,
+        newlines: escape_newlines,
+        control: escape_control,
+        nonascii: escape_nonascii,
+    } = escapes;
     let multibyte = state.is_multibyte();
-    let mut rendered = PrintOutput::with_capacity(state.bytes().len() + 2);
     rendered.push('"');
     let mut offset = 0;
     let mut need_nonhex = false;
     while offset < state.bytes().len() {
         // print.c:fetch_string_char_advance, before any escaping decision.
-        let (code, width) = if multibyte {
+        let byte = state.bytes()[offset];
+        let (code, width) = if multibyte && byte >= 0x80 {
             crate::lisp::types::string_data::decode_character(&state.bytes()[offset..])
                 .expect("stored string character")
         } else {
-            (u32::from(state.bytes()[offset]), 1)
+            (u32::from(byte), 1)
         };
         offset += width;
         let raw = if multibyte && (0x3fff80..=0x3fffff).contains(&code) {
@@ -80,17 +105,6 @@ pub(crate) fn render_prin1_string(
         }
     }
     rendered.push('"');
-    rendered
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(crate) enum PrintRefKey {
-    Cons(usize),
-    Vector(usize),
-    Lambda(usize),
-    Record(u64),
-    StringObject(usize),
-    Symbol(String),
 }
 
 #[derive(Clone, Copy, Default)]
@@ -125,11 +139,12 @@ fn render_princ_string(
     let mut rendered = PrintOutput::with_capacity(state.bytes().len());
     let mut offset = 0;
     while offset < state.bytes().len() {
-        let (code, width) = if state.is_multibyte() {
+        let byte = state.bytes()[offset];
+        let (code, width) = if state.is_multibyte() && byte >= 0x80 {
             crate::lisp::types::string_data::decode_character(&state.bytes()[offset..])
                 .expect("stored string character")
         } else {
-            (u32::from(state.bytes()[offset]), 1)
+            (u32::from(byte), 1)
         };
         offset += width;
         let raw = if (0x3fff80..=0x3fffff).contains(&code) {
@@ -152,74 +167,6 @@ fn render_princ_string(
         }
     }
     rendered
-}
-
-#[derive(Clone)]
-pub(crate) struct PrintContext {
-    options: PrintOptions,
-    counts: HashMap<PrintRefKey, usize>,
-    labels: HashMap<PrintRefKey, PrintLabel>,
-    next_label: usize,
-    /// print.c's `being_printed': the objects whose printing is under
-    /// way, outermost first, each with its print depth.  Nesting pushes
-    /// and pops it; a lookup scans it from the outermost, as print.c does.
-    active: Vec<(PrintRefKey, usize)>,
-    number_table: Option<Value>,
-    /// print.c's `new_backquote_output': the backquote nesting the comma
-    /// shorthand `,X' is printed within; outside one, `(\, X)' is a list.
-    backquote_output: usize,
-}
-
-#[derive(Clone)]
-struct PrintLabel {
-    number: usize,
-    printed: bool,
-    object: Value,
-}
-
-impl PrintContext {
-    fn new(interp: &Interpreter, value: &Value, options: PrintOptions) -> Result<Self, LispError> {
-        let number_table = interp
-            .symbol_value_key(cached_symbol!("print-number-table"))
-            .filter(|value| json::is_hash_table(interp, value));
-        let mut labels = if options.circle && options.continuous_numbering {
-            parse_print_number_table(interp, number_table.as_ref(), options)
-        } else {
-            HashMap::new()
-        };
-        // print.c's `print_number_index' is independent of the public hash
-        // table.  In particular, `print--preprocess' can advance the counter
-        // in a temporary dynamic binding before a nested printer reuses it.
-        let mut next_label = if options.continuous_numbering {
-            interp.print_number_index.saturating_add(1)
-        } else {
-            1
-        };
-        let mut counts = HashMap::new();
-        if options.circle {
-            if options.continuous_numbering {
-                collect_print_counts(interp, value, options, &mut counts)?;
-            } else {
-                collect_print_sharing(
-                    interp,
-                    value,
-                    options,
-                    &mut counts,
-                    &mut labels,
-                    &mut next_label,
-                )?;
-            }
-        }
-        Ok(Self {
-            options,
-            counts,
-            labels,
-            next_label,
-            active: Vec::new(),
-            number_table,
-            backquote_output: 0,
-        })
-    }
 }
 
 /// print.c reads the printer's DEFVARs as C variables: their dynamic
@@ -273,475 +220,19 @@ pub(crate) fn record_prin1_fields(interp: &Interpreter, id: u64) -> Option<Vec<V
     }
 }
 
-pub(crate) fn print_ref_key(
-    interp: &Interpreter,
-    value: &Value,
-    options: PrintOptions,
-) -> Option<PrintRefKey> {
-    match value.kind() {
-        Kind::Cons(cell) => Some(PrintRefKey::Cons(crate::lisp::types::ConsCell::identity(
-            &cell,
-        ))),
-        Kind::Vector(vector) => Some(PrintRefKey::Vector(vector.identity())),
-        Kind::LispRecord(record) => Some(PrintRefKey::Vector(record.identity())),
-        Kind::CharTable(table) => Some(PrintRefKey::Vector(table.identity())),
-        Kind::HashTable(table) => Some(PrintRefKey::Vector(table.identity())),
-        Kind::SubCharTable(table) => Some(PrintRefKey::Vector(table.identity())),
-        // print.c:PRINT_CIRCLE_CANDIDATE_P includes every string.  Immutable
-        // strings still have Lisp identity: cloning SharedText preserves its
-        // Rc allocation, so repeated occurrences must receive one #N label.
-        Kind::Closure(lambda) => Some(PrintRefKey::Lambda(lambda.identity())),
-        Kind::StringObject(state) => Some(PrintRefKey::StringObject(state.identity())),
-        Kind::Symbol(symbol) if options.gensym && symbol.cell().is_uninterned() => {
-            Some(PrintRefKey::Symbol(symbol.to_string()))
-        }
-        // print.c:1299 `PRINT_CIRCLE_CANDIDATE_P' counts hash tables, so a
-        // table that contains itself is labelled (or truncated) rather than
-        // printed forever.
-        Kind::Record(id)
-            if record_prin1_fields(interp, id.id).is_some()
-                || json::is_hash_table(interp, value) =>
-        {
-            Some(PrintRefKey::Record(id.id))
-        }
-        _ => None,
-    }
-}
-
-/// print.c:2253: without `print-circle', an object already being printed is
-/// rendered as `#N', where N is the print depth the outer occurrence sits
-/// at -- not an object identity of any kind.
-/// print.c:63 `PRINT_CIRCLE'.
-const PRINT_CIRCLE_DEPTH_LIMIT: usize = 200;
-
-pub(crate) fn print_ref_placeholder(depth: usize) -> String {
-    format!("#{depth}")
-}
-
-fn parse_print_number_table(
-    interp: &Interpreter,
-    value: Option<&Value>,
-    options: PrintOptions,
-) -> HashMap<PrintRefKey, PrintLabel> {
-    let Some(value) = value else {
-        return HashMap::new();
-    };
-    let Some((_, entries)) = json::hash_table_entries(interp, value) else {
-        return HashMap::new();
-    };
-
-    let mut labels = HashMap::new();
-    for (object, state) in entries {
-        let Ok(state) = state.as_integer() else {
-            continue;
-        };
-        let Some(number) = state
-            .checked_abs()
-            .and_then(|number| usize::try_from(number).ok())
-            .filter(|number| *number > 0)
-        else {
-            continue;
-        };
-        let Some(key) = print_ref_key(interp, &object, options) else {
-            continue;
-        };
-        labels.insert(
-            key,
-            PrintLabel {
-                number,
-                printed: state > 0,
-                object,
-            },
-        );
-    }
-
-    labels
-}
-
-pub(crate) fn collect_print_counts(
-    interp: &Interpreter,
-    value: &Value,
-    options: PrintOptions,
-    counts: &mut HashMap<PrintRefKey, usize>,
-) -> Result<(), LispError> {
-    let mut expanded = HashSet::new();
-    walk_print_graph(interp, value, options, |key, _| {
-        *counts.entry(key.clone()).or_insert(0) += 1;
-        expanded.insert(key)
-    })
-}
-
-/// Match print.c:print_preprocess's numbering rule: a shared object's label
-/// is allocated when the traversal encounters that object for the second
-/// time, not when the printer later reaches its first occurrence.  These
-/// orders differ for nested vectors and are observable in serialized .eln
-/// constants.
-fn collect_print_sharing(
-    interp: &Interpreter,
-    value: &Value,
-    options: PrintOptions,
-    counts: &mut HashMap<PrintRefKey, usize>,
-    labels: &mut HashMap<PrintRefKey, PrintLabel>,
-    next_label: &mut usize,
-) -> Result<(), LispError> {
-    walk_print_graph(interp, value, options, |key, object| {
-        let count = counts.entry(key.clone()).or_insert(0);
-        *count += 1;
-        if *count == 2 {
-            labels.insert(
-                key,
-                PrintLabel {
-                    number: *next_label,
-                    printed: false,
-                    object: *object,
-                },
-            );
-            *next_label += 1;
-        }
-        *count == 1
-    })
-}
-
-/// Walk the exact object graph considered by GNU print.c's
-/// PRINT_CIRCLE_CANDIDATE_P, visiting children in print order.  VISIT returns
-/// whether a candidate's children should be traversed.  The explicit work
-/// stack matches GNU's ppstack and remains safe for deep and cyclic objects.
-fn walk_print_graph(
-    interp: &Interpreter,
-    value: &Value,
-    options: PrintOptions,
-    mut visit: impl FnMut(PrintRefKey, &Value) -> bool,
-) -> Result<(), LispError> {
-    let mut pending = vec![*value];
-    while let Some(value) = pending.pop() {
-        if let Some(key) = print_ref_key(interp, &value, options)
-            && !visit(key, &value)
-        {
-            continue;
-        }
-
-        match value.kind() {
-            Kind::Vector(_) | Kind::Cons(_) if is_vector_value(&value) => {
-                let items = vector_items(&value)?;
-                pending.extend(items.into_iter().rev());
-            }
-            Kind::Cons(_) => {
-                let Some((car, cdr)) = value.cons_values() else {
-                    continue;
-                };
-                pending.push(cdr);
-                pending.push(car);
-            }
-            Kind::StringObject(state) => {
-                let props = state.borrow().props.to_vec();
-                for span in props.into_iter().rev() {
-                    pending.extend(
-                        span.props
-                            .into_iter()
-                            .rev()
-                            .map(|(_, prop_value)| prop_value),
-                    );
-                }
-            }
-            Kind::HashTable(table) => {
-                for slot in (0..table.capacity()).rev() {
-                    if let Some((key, value)) = table.entry(slot) {
-                        pending.push(value);
-                        pending.push(key);
-                    }
-                }
-            }
-            Kind::Record(id) => {
-                if let Some(fields) = record_prin1_fields(interp, id.id) {
-                    pending.extend(fields.into_iter().rev());
-                }
-            }
-            Kind::LispRecord(record) => pending.extend(record.slots().rev()),
-            Kind::CharTable(table) => pending.extend(table.slots().rev()),
-            Kind::SubCharTable(table) => pending.extend(table.slots().rev()),
-            Kind::Closure(lambda) => {
-                pending.extend(lambda.slots().rev());
-            }
-            _ => {}
-        }
-    }
-    Ok(())
-}
-
+/// print.c:Fprint_preprocess: `print-number-table' for OBJECT when
+/// `print-circle' is non-nil, numbering from zero.
 pub(crate) fn print_preprocess(
     interp: &mut Interpreter,
     value: &Value,
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    if !interp
-        .lookup_var_key(cached_symbol!("print-circle"), env)
-        .is_some_and(|value| value.is_truthy())
-    {
-        return Ok(Value::Nil);
-    }
-
-    // Fprint_preprocess resets the process-local counter on every call,
-    // independently of `print-number-table'.
-    interp.print_number_index = 0;
-
-    let table = match interp.lookup_var_key(cached_symbol!("print-number-table"), env) {
-        Some(existing) if json::is_hash_table(interp, &existing) => existing,
-        _ => json::make_hash_table(interp, "eq", Vec::new()),
-    };
-    // GNU's Vprint_number_table is a real special variable.  Update its
-    // active dynamic binding, not merely a lexical frame passed to the
-    // primitive.
-    interp.set_variable("print-number-table", table, env);
-
     let options = print_options(interp);
-    let mut entries = json::hash_table_entries(interp, &table)
-        .map(|(_, entries)| entries)
-        .unwrap_or_default();
-    let mut positions = entries
-        .iter()
-        .enumerate()
-        .filter_map(|(index, (object, _))| {
-            print_ref_key(interp, object, options).map(|key| (key, index))
-        })
-        .collect::<HashMap<_, _>>();
-    let mut number_index = 0i64;
-    walk_print_graph(interp, value, options, |key, object| {
-        let continuous_gensym = options.continuous_numbering
-            && matches!(
-                object.kind(),
-                Kind::Symbol(symbol) if symbol.cell().is_uninterned()
-            );
-        if let Some(index) = positions.get(&key).copied() {
-            let state = &entries[index].1;
-            if state.is_truthy() || continuous_gensym {
-                if matches!(state.kind(), Kind::Nil | Kind::T | Kind::Symbol(_)) {
-                    number_index = number_index.saturating_add(1);
-                    entries[index].1 = Value::Integer(-number_index);
-                }
-                return false;
-            }
-            entries[index].1 = Value::T;
-            return true;
-        }
-
-        let state = if continuous_gensym {
-            number_index = number_index.saturating_add(1);
-            Value::Integer(-number_index)
-        } else {
-            Value::T
-        };
-        let descend = !continuous_gensym;
-        positions.insert(key, entries.len());
-        entries.push((*object, state));
-        descend
-    })?;
-
-    set_hash_table_entries(interp, &table, entries)?;
-    interp.print_number_index = usize::try_from(number_index).unwrap_or(usize::MAX);
+    if options.circle {
+        interp.print_number_index = 0;
+        object::print_preprocess(interp, env, *value, options)?;
+    }
     Ok(Value::Nil)
-}
-
-pub(crate) fn render_prin1_list(
-    interp: &mut Interpreter,
-    value: &Value,
-    env: &mut crate::lisp::types::Env,
-    context: &mut PrintContext,
-    depth: usize,
-) -> Result<PrintOutput, LispError> {
-    let Some((car, cdr)) = value.cons_values() else {
-        return Ok(value.to_string().into());
-    };
-    if context.options.level.is_some_and(|limit| depth >= limit) {
-        return Ok("...".into());
-    }
-    if context.options.length == Some(0) {
-        return Ok("(...)".into());
-    }
-
-    let mut rendered = vec![render_prin1_with_context(
-        interp,
-        &car,
-        env,
-        context,
-        depth + 1,
-    )?];
-    // print.c:2541 seeds Brent's cycle detection with the cons whose car was
-    // just printed; the tortoise teleports on a doubling period, so a
-    // circular list prints its elements until the hare laps it and then
-    // closes with `. #TORTOISE-INDEX'.
-    let mut tortoise = *value;
-    let mut tortoise_countdown: i64 = 2;
-    let mut tortoise_period: i64 = 2;
-    let mut tortoise_index: i64 = 0;
-    let mut tail = cdr;
-    loop {
-        if is_vector_value(&tail) {
-            let tail_rendered = render_prin1_with_context(interp, &tail, env, context, depth + 1)?;
-            return Ok(PrintOutput::dotted(&rendered, tail_rendered));
-        }
-        match tail.kind() {
-            Kind::Nil => return Ok(PrintOutput::join(&rendered, " ").enclosed("(", ")")),
-            Kind::Cons(_) => {
-                if context
-                    .options
-                    .length
-                    .is_some_and(|limit| rendered.len() >= limit)
-                {
-                    rendered.push("...".into());
-                    return Ok(PrintOutput::join(&rendered, " ").enclosed("(", ")"));
-                }
-                if let Some(key) = print_ref_key(interp, &tail, context.options)
-                    && should_label_value(&tail, &key, context)
-                {
-                    let tail_rendered =
-                        render_prin1_with_context(interp, &tail, env, context, depth + 1)?;
-                    return Ok(PrintOutput::dotted(&rendered, tail_rendered));
-                }
-                if !context.options.circle {
-                    tortoise_countdown -= 1;
-                    if tortoise_countdown == 0 {
-                        tortoise_index += tortoise_period;
-                        tortoise_period <<= 1;
-                        tortoise_countdown = tortoise_period;
-                        tortoise = tail;
-                    } else if same_cons_cell(&tail, &tortoise) {
-                        return Ok(PrintOutput::dotted(
-                            &rendered,
-                            format!("#{tortoise_index}").into(),
-                        ));
-                    }
-                }
-                let Some((next_car, next_cdr)) = tail.cons_values() else {
-                    return Ok(value.to_string().into());
-                };
-                rendered.push(render_prin1_with_context(
-                    interp,
-                    &next_car,
-                    env,
-                    context,
-                    depth + 1,
-                )?);
-                tail = next_cdr;
-            }
-            other => {
-                let tail_rendered =
-                    render_prin1_with_context(interp, &other.value(), env, context, depth + 1)?;
-                return Ok(PrintOutput::dotted(&rendered, tail_rendered));
-            }
-        }
-    }
-}
-
-fn same_cons_cell(left: &Value, right: &Value) -> bool {
-    match (left.kind(), right.kind()) {
-        (Kind::Cons(left), Kind::Cons(right)) => {
-            crate::lisp::types::ConsCell::identity(&left)
-                == crate::lisp::types::ConsCell::identity(&right)
-        }
-        _ => false,
-    }
-}
-
-pub(crate) fn should_label_value(value: &Value, key: &PrintRefKey, context: &PrintContext) -> bool {
-    if !context.options.circle {
-        return false;
-    }
-    if context.labels.contains_key(key) {
-        return true;
-    }
-    if context.counts.get(key).copied().unwrap_or(0) > 1 {
-        return true;
-    }
-    context.options.continuous_numbering
-        && context.options.gensym
-        && matches!(value.kind(), Kind::Symbol(symbol) if symbol.cell().is_uninterned())
-}
-
-pub(crate) fn render_prin1_with_context(
-    interp: &mut Interpreter,
-    value: &Value,
-    env: &mut crate::lisp::types::Env,
-    context: &mut PrintContext,
-    depth: usize,
-) -> Result<PrintOutput, LispError> {
-    if context.options.circle
-        && let Some(rendered) = print_number_table_substitution(interp, value, env)?
-    {
-        return Ok(rendered);
-    }
-    if let Some(key) = print_ref_key(interp, value, context.options) {
-        if should_label_value(value, &key, context) {
-            if let Some(label) = context.labels.get_mut(&key) {
-                let number = label.number;
-                if label.printed {
-                    return Ok(format!("#{number}#").into());
-                }
-                label.printed = true;
-                context.active.push((key, depth));
-                let rendered = render_prin1_body(interp, value, env, context, depth);
-                context.active.pop();
-                return rendered.map(|body| body.enclosed(&format!("#{number}="), ""));
-            }
-            let number = context.next_label;
-            context.next_label += 1;
-            context.labels.insert(
-                key.clone(),
-                PrintLabel {
-                    number,
-                    printed: true,
-                    object: *value,
-                },
-            );
-            context.active.push((key, depth));
-            let rendered = render_prin1_body(interp, value, env, context, depth);
-            context.active.pop();
-            return rendered.map(|body| body.enclosed(&format!("#{number}="), ""));
-        }
-        if let Some(&(_, outer_depth)) = context.active.iter().find(|(active, _)| *active == key) {
-            return Ok(print_ref_placeholder(outer_depth).into());
-        }
-        // print.c:2249: printing without `print-circle' gives up past
-        // PRINT_CIRCLE levels rather than exhausting the C stack; with
-        // `print-circle' non-nil GNU prints ANY depth (its object walk
-        // is explicitly iterative), so the guard must not fire there.
-        if !context.options.circle && depth >= PRINT_CIRCLE_DEPTH_LIMIT {
-            return Err(LispError::Signal(
-                "Apparently circular structure being printed".into(),
-            ));
-        }
-        context.active.push((key, depth));
-        let rendered = render_prin1_body(interp, value, env, context, depth);
-        context.active.pop();
-        return rendered;
-    }
-
-    render_prin1_body(interp, value, env, context, depth)
-}
-
-pub(crate) fn print_number_table_substitution(
-    interp: &mut Interpreter,
-    value: &Value,
-    env: &Env,
-) -> Result<Option<PrintOutput>, LispError> {
-    let Some(table) = interp.lookup_var_key(cached_symbol!("print-number-table"), env) else {
-        return Ok(None);
-    };
-    let Some((_, entries)) = json::hash_table_entries(interp, &table) else {
-        return Ok(None);
-    };
-    for (key, replacement) in entries {
-        if key == *value
-            && let Kind::StringObject(text) = replacement.kind()
-        {
-            return Ok(Some(render_princ_string(
-                interp,
-                &text.borrow(),
-                env,
-                false,
-            )));
-        }
-    }
-    Ok(None)
 }
 
 pub(crate) fn symbol_name_looks_like_number(name: &str) -> bool {
@@ -791,10 +282,6 @@ fn render_integer_as_character(value: &Value, escape: bool) -> Option<String> {
     Some(format!("?{body}"))
 }
 
-pub(crate) fn render_prin1_integer_as_character(value: &Value) -> Option<String> {
-    render_integer_as_character(value, true)
-}
-
 pub(crate) fn render_princ_integer_as_character(value: &Value) -> Option<String> {
     render_integer_as_character(value, false)
 }
@@ -802,43 +289,54 @@ pub(crate) fn render_princ_integer_as_character(value: &Value) -> Option<String>
 pub(crate) fn render_prin1_symbol(
     symbol: &crate::lisp::types::SymbolName,
     options: PrintOptions,
-) -> String {
+    out: &mut PrintOutput,
+) {
     let visible = crate::lisp::types::visible_symbol_name(symbol);
-    if visible.is_empty() {
-        if options.gensym && symbol.cell().is_uninterned() {
-            return "#:##".into();
-        }
-        return "##".into();
-    }
-
-    let first = visible.chars().next();
-    let mut confusing =
-        symbol_name_looks_like_number(visible) || first == Some('?') || first == Some('.');
-
-    let mut rendered = String::new();
-    if options.gensym && symbol.cell().is_uninterned() {
-        rendered.push_str("#:");
+    // print.c: `#:' under `print-gensym' for a symbol not interned in the
+    // initial obarray, else `##' for the empty name.
+    let gensym = options.gensym
+        && (symbol.cell().is_uninterned() || crate::lisp::types::is_private_obarray_symbol(symbol));
+    if gensym {
+        out.push_str("#:");
+    } else if visible.is_empty() {
+        out.push_str("##");
+        return;
     }
     // print.c quotes a symbol's confusing characters only under
     // `escapeflag'; `princ' writes the name as it stands.
     if !options.escape {
-        rendered.push_str(visible);
-        return rendered;
+        out.push_str(visible);
+        return;
     }
-    for ch in visible.chars() {
-        if matches!(
+    let first = visible.chars().next();
+    let mut confusing =
+        symbol_name_looks_like_number(visible) || first == Some('?') || first == Some('.');
+    let quoted = |ch: char| {
+        matches!(
             ch,
             '"' | '\\' | '\'' | ';' | '#' | '(' | ')' | ',' | '`' | '[' | ']'
         ) || ch <= ' '
             || ch == '\u{00A0}'
-            || confusing
-        {
+    };
+    if visible.is_ascii() {
+        for byte in visible.bytes() {
+            if quoted(char::from(byte)) || confusing {
+                out.push('\\');
+                confusing = false;
+            }
+            out.push_code(u32::from(byte));
+        }
+        return;
+    }
+    let mut rendered = String::with_capacity(visible.len() + 2);
+    for ch in visible.chars() {
+        if quoted(ch) || confusing {
             rendered.push('\\');
             confusing = false;
         }
         rendered.push(ch);
     }
-    rendered
+    out.push_str(&rendered);
 }
 
 /// print.c print_prune_string_charset: a string's `charset' properties
@@ -888,80 +386,6 @@ pub(crate) fn charset_text_properties_print(
                 })
         })
     })
-}
-
-pub(crate) fn render_hash_table_prin1(
-    interp: &mut Interpreter,
-    value: &Value,
-    env: &mut Env,
-    context: &mut PrintContext,
-    depth: usize,
-) -> Result<PrintOutput, LispError> {
-    // print.c:2588 prints only what the reader needs: the test when it is
-    // not `eql', the weakness when the table is weak, `purecopy t' when
-    // set, and the data when the table is non-empty.
-    let table = check_hash_table(value)?;
-    let test = table.test_name();
-    let weakness = hash_table_weakness_value(table);
-    let purecopy = table.purecopy();
-    let entries = json::hash_table_entries(interp, value)
-        .map(|(_, entries)| entries)
-        .unwrap_or_default();
-
-    let mut rendered = PrintOutput::from("#s(hash-table");
-    if !matches!(test.kind(), Kind::Symbol(name) if name == "eql") {
-        rendered.push_str(" test ");
-        rendered.append(&render_prin1_with_context(
-            interp,
-            &test,
-            env,
-            context,
-            depth + 1,
-        )?);
-    }
-    if weakness.is_truthy() {
-        rendered.push_str(" weakness ");
-        rendered.append(&render_prin1_with_context(
-            interp,
-            &weakness,
-            env,
-            context,
-            depth + 1,
-        )?);
-    }
-    if purecopy {
-        rendered.push_str(" purecopy t");
-    }
-
-    if !entries.is_empty() {
-        let count = entries.len();
-        let printed = context.options.length.unwrap_or(count).min(count);
-        let mut data_parts = Vec::new();
-        for (key, entry_value) in entries.iter().take(printed) {
-            data_parts.push(render_prin1_with_context(
-                interp,
-                key,
-                env,
-                context,
-                depth + 1,
-            )?);
-            data_parts.push(render_prin1_with_context(
-                interp,
-                entry_value,
-                env,
-                context,
-                depth + 1,
-            )?);
-        }
-        if printed < count {
-            data_parts.push("...".into());
-        }
-        rendered.push_str(" data (");
-        rendered.append(&PrintOutput::join(&data_parts, " "));
-        rendered.push(')');
-    }
-    rendered.push(')');
-    Ok(rendered)
 }
 
 /// `print_bool_vector' (print.c): the bits are packed eight to a byte,
@@ -1029,436 +453,6 @@ fn render_bool_vector_prin1(
     rendered
 }
 
-pub(crate) fn render_prin1_body(
-    interp: &mut Interpreter,
-    value: &Value,
-    env: &mut crate::lisp::types::Env,
-    context: &mut PrintContext,
-    depth: usize,
-) -> Result<PrintOutput, LispError> {
-    let unreadable_override = |interp: &mut Interpreter,
-                               value: &Value,
-                               env: &mut crate::lisp::types::Env|
-     -> Result<Option<PrintOutput>, LispError> {
-        let Some(function) =
-            interp.lookup_var_key(cached_symbol!("print-unreadable-function"), env)
-        else {
-            return Ok(None);
-        };
-        if !function.is_truthy() {
-            return Ok(None);
-        }
-        let rendered = call_function_value(interp, &function, &[*value, Value::T], env)?;
-        if matches!(rendered.kind(), Kind::T) {
-            return Ok(Some(PrintOutput::default()));
-        }
-        if rendered.is_nil() {
-            return Ok(None);
-        }
-        let Kind::StringObject(string) = rendered.kind() else {
-            return Err(LispError::WrongTypeArgument("stringp".into(), rendered));
-        };
-        Ok(Some(render_princ_string(
-            interp,
-            &string.borrow(),
-            env,
-            false,
-        )))
-    };
-
-    // print.c's print_object for a two-element list headed by Qquote,
-    // Qfunction, Qbackquote (the symbol named "`"), Qcomma (",") or
-    // Qcomma_at (",@") under `print-quoted'.  The symbols named
-    // `backquote', `comma' and `comma-at' are ordinary.  The comma
-    // shorthand appears only inside a printed backquote
-    // (`new_backquote_output'), and consumes one level of it.
-    if context.options.quoted
-        && let Some((head, rest)) = value.cons_values()
-        && let Kind::Symbol(symbol) = head.kind()
-        && let Some((inner, tail)) = rest.cons_values()
-        && tail.is_nil()
-    {
-        let quoted = match symbol.as_str() {
-            "quote" => Some(("'", 0)),
-            "function" | "function-quote" => Some(("#'", 0)),
-            "`" => Some(("`", 1)),
-            "," if context.backquote_output > 0 => Some((",", -1)),
-            ",@" if context.backquote_output > 0 => Some((",@", -1)),
-            _ => None,
-        };
-        if let Some((prefix, nesting)) = quoted {
-            // GNU's print-quoted syntax replaces the (quote INNER) wrapper;
-            // it does not charge that elided cons level against print-level.
-            // Passing depth + 1 here truncates one level too early (for
-            // example, print-level 1 would render '(a) as '...).
-            context.backquote_output = context.backquote_output.wrapping_add_signed(nesting);
-            let rendered = render_prin1_with_context(interp, &inner, env, context, depth);
-            context.backquote_output = context.backquote_output.wrapping_add_signed(-nesting);
-            return Ok(rendered?.enclosed(prefix, ""));
-        }
-    }
-
-    match value.kind() {
-        Kind::Integer(_) | Kind::BigInteger(_) if context.options.integers_as_characters => {
-            let rendered = if context.options.escape {
-                render_prin1_integer_as_character(value)
-            } else {
-                render_princ_integer_as_character(value)
-            };
-            Ok(rendered.unwrap_or_else(|| value.to_string()).into())
-        }
-        Kind::StringObject(state) if !context.options.escape => {
-            let state = state.borrow();
-            Ok(render_princ_string(
-                interp,
-                &state,
-                env,
-                context.options.output_is_function,
-            ))
-        }
-        Kind::StringObject(state) => {
-            let (literal, props, keep_charset) = {
-                let state = state.borrow();
-                let literal = render_prin1_string(interp, &state);
-                let props = state.props.to_vec();
-                let keep_charset = props
-                    .iter()
-                    .any(|span| span.props.iter().any(|(name, _)| name == "charset"))
-                    && charset_text_properties_print(interp, env, &state.codes(), &props);
-                (literal, props, keep_charset)
-            };
-            if props.is_empty() {
-                return Ok(literal);
-            }
-            let mut rendered = vec![literal];
-            let mut field_values = Vec::new();
-            for span in props {
-                let filtered_props = span
-                    .props
-                    .iter()
-                    .filter(|(name, _)| name != "charset" || keep_charset)
-                    .cloned()
-                    .collect::<Vec<_>>();
-                if filtered_props.is_empty() {
-                    continue;
-                }
-                field_values.push(Value::Integer(span.start as i64));
-                field_values.push(Value::Integer(span.end as i64));
-                field_values.push(plist_value(&filtered_props));
-            }
-            for field in &field_values {
-                if context
-                    .options
-                    .length
-                    .is_some_and(|limit| rendered.len() >= limit)
-                {
-                    rendered.push("...".into());
-                    break;
-                }
-                rendered.push(render_prin1_with_context(
-                    interp,
-                    field,
-                    env,
-                    context,
-                    depth + 1,
-                )?);
-            }
-            if rendered.len() == 1 {
-                return Ok(rendered.remove(0));
-            }
-            Ok(PrintOutput::join(&rendered, " ").enclosed("#(", ")"))
-        }
-        Kind::Symbol(symbol) if context.options.escape && symbol == "`" => Ok("\\`".into()),
-        Kind::Symbol(symbol) if context.options.escape && symbol == "," => Ok("\\,".into()),
-        Kind::Symbol(symbol) if context.options.escape && symbol == ",@" => Ok("\\,@".into()),
-        Kind::Symbol(symbol) => Ok(render_prin1_symbol(&symbol, context.options).into()),
-        Kind::Vector(_) | Kind::Cons(_) if is_vector_value(value) => {
-            let items = vector_items(value)?;
-            let mut rendered_items = Vec::new();
-            for (index, item) in items.iter().enumerate() {
-                if context.options.length.is_some_and(|limit| index >= limit) {
-                    rendered_items.push("...".into());
-                    break;
-                }
-                rendered_items.push(render_prin1_with_context(
-                    interp,
-                    item,
-                    env,
-                    context,
-                    depth + 1,
-                )?);
-            }
-            Ok(PrintOutput::join(&rendered_items, " ").enclosed("[", "]"))
-        }
-        Kind::Cons(_) => render_prin1_list(interp, value, env, context, depth),
-        Kind::Closure(lambda_value) => {
-            if let Some(rendered) = unreadable_override(interp, value, env)? {
-                return Ok(rendered);
-            }
-            // GNU print.c prints every stored closure slot. Capture filtering
-            // belongs to cconv.el at construction, never to the printer.
-            let slots = lambda_value.slots();
-            let mut rendered_slots = Vec::new();
-            for (index, slot) in slots.enumerate() {
-                if context.options.length.is_some_and(|limit| index >= limit) {
-                    rendered_slots.push("...".into());
-                    break;
-                }
-                rendered_slots.push(render_prin1_with_context(
-                    interp,
-                    &slot,
-                    env,
-                    context,
-                    depth + 1,
-                )?);
-            }
-            Ok(PrintOutput::join(&rendered_slots, " ").enclosed("#[", "]"))
-        }
-        Kind::CharTable(table) => {
-            let mut fields = Vec::new();
-            for (index, field) in table.slots().enumerate() {
-                if context.options.length.is_some_and(|limit| index >= limit) {
-                    fields.push("...".into());
-                    break;
-                }
-                fields.push(render_prin1_with_context(
-                    interp,
-                    &field,
-                    env,
-                    context,
-                    depth + 1,
-                )?);
-            }
-            Ok(PrintOutput::join(&fields, " ").enclosed("#^[", "]"))
-        }
-        Kind::SubCharTable(table) => {
-            let mut fields = vec![
-                PrintOutput::from(table.depth().to_string()),
-                PrintOutput::from(table.min_char().to_string()),
-            ];
-            for field in table.slots() {
-                if context
-                    .options
-                    .length
-                    .is_some_and(|limit| fields.len() >= limit)
-                {
-                    fields.push("...".into());
-                    break;
-                }
-                fields.push(render_prin1_with_context(
-                    interp,
-                    &field,
-                    env,
-                    context,
-                    depth + 1,
-                )?);
-            }
-            Ok(PrintOutput::join(&fields, " ").enclosed("#^^[", "]"))
-        }
-        Kind::BuiltinFunc(_)
-        | Kind::NativeFunction(_)
-        | Kind::Buffer(_)
-        | Kind::Marker(_)
-        | Kind::Overlay(_) => {
-            if let Some(rendered) = unreadable_override(interp, value, env)? {
-                return Ok(rendered);
-            }
-            match value.kind() {
-                Kind::BuiltinFunc(name) => Ok(format!("#<subr {name}>").into()),
-                Kind::NativeFunction(function) => {
-                    let mut rendered = PrintOutput::from("#<subr ");
-                    if context.options.output_is_function {
-                        for byte in function.name().bytes() {
-                            rendered.push_c_function_byte(byte);
-                        }
-                    } else {
-                        rendered.push_c_string(function.name());
-                    }
-                    rendered.push('>');
-                    Ok(rendered)
-                }
-                Kind::Buffer(buffer) => Ok(PrintOutput::from(
-                    match interp.get_buffer_by_id(buffer.id) {
-                        Some(live) if context.options.escape => format!("#<buffer {}>", live.name),
-                        Some(live) => live.name.clone(),
-                        None => "#<killed buffer>".into(),
-                    },
-                )),
-                Kind::Marker(marker) => Ok(PrintOutput::from(match marker.buffer() {
-                    Some(buffer) => {
-                        let buffer_name = &buffer.borrow().name;
-                        let position = marker.last_position();
-                        let advances = if marker.insertion_type() {
-                            " (moves after insertion)"
-                        } else {
-                            ""
-                        };
-                        format!("#<marker{advances} at {position} in {buffer_name}>")
-                    }
-                    None => "#<marker in no buffer>".into(),
-                })),
-                _ => Ok(value.to_string().into()),
-            }
-        }
-        Kind::Frame(frame) => {
-            let id = frame.identity();
-            let name = string_text(&frame.name.get())
-                .unwrap_or_else(|_| format!("F{}", frame.borrow().id));
-            Ok(format!("#<frame {name} 0x{id:x}>").into())
-        }
-        Kind::Terminal(terminal) => {
-            let state = terminal.borrow();
-            Ok(PrintOutput::from(if state.live {
-                format!("#<terminal {} on {}>", terminal.id, state.name)
-            } else {
-                format!("#<terminal {}>", terminal.id)
-            }))
-        }
-        Kind::SymbolWithPos(object) => {
-            let symbol = object.symbol();
-            let position = object.position();
-            if context.options.symbols_bare {
-                return render_prin1_with_context(interp, &symbol, env, context, depth);
-            }
-            let rendered_symbol =
-                render_prin1_with_context(interp, &symbol, env, context, depth + 1)?;
-            Ok(rendered_symbol.enclosed("#<symbol ", &format!(" at {position}>")))
-        }
-        Kind::LispRecord(record) => {
-            let mut fields = Vec::new();
-            for (index, field) in record.slots().enumerate() {
-                if context.options.length.is_some_and(|limit| index >= limit) {
-                    fields.push("...".into());
-                    break;
-                }
-                fields.push(render_prin1_with_context(
-                    interp,
-                    &field,
-                    env,
-                    context,
-                    depth + 1,
-                )?);
-            }
-            Ok(PrintOutput::join(&fields, " ").enclosed("#s(", ")"))
-        }
-        Kind::NativeCompUnit(unit) => {
-            let fields = [
-                render_prin1_with_context(interp, &unit.field(0), env, context, depth + 1)?,
-                render_prin1_with_context(interp, &unit.field(1), env, context, depth + 1)?,
-            ];
-            Ok(PrintOutput::join(&fields, " ").enclosed("#<native compilation unit: ", ">"))
-        }
-        Kind::HashTable(_) => render_hash_table_prin1(interp, value, env, context, depth),
-        Kind::Record(id) => {
-            if let Some(record) = interp.find_record(id) {
-                let rendered = match record.kind {
-                    crate::lisp::eval::RecordKind::ModuleFunction => {
-                        PrintOutput::from(crate::lisp::modules::print_function(interp, id.id))
-                    }
-                    crate::lisp::eval::RecordKind::UserPointer => {
-                        PrintOutput::from(crate::lisp::modules::print_user_pointer(interp, id.id))
-                    }
-                    // print.c:1930 prints a thread, mutex or condition
-                    // variable by name, falling back to the object's
-                    // address.  Emaxx has no addresses to quote, so it
-                    // prints its own object identity in the same syntax.
-                    crate::lisp::eval::RecordKind::Thread => interp
-                        .thread_name(id.id)
-                        .map(|name| format!("#<thread {name}>"))
-                        .unwrap_or_else(|| format!("#<thread 0x{:x}>", id.identity()))
-                        .into(),
-                    crate::lisp::eval::RecordKind::Mutex => interp
-                        .mutex_name(id.id)
-                        .map(|name| format!("#<mutex {name}>"))
-                        .unwrap_or_else(|| format!("#<mutex 0x{:x}>", id.identity()))
-                        .into(),
-                    crate::lisp::eval::RecordKind::ConditionVariable => interp
-                        .condition_variable_name(id.id)
-                        .map(|name| format!("#<condvar {name}>"))
-                        .unwrap_or_else(|| format!("#<condvar 0x{:x}>", id.identity()))
-                        .into(),
-                    // print.c `print_bool_vector': `#&SIZE"BYTES"', the
-                    // bits packed low-order-first and the bytes written
-                    // with string escaping rules.
-                    crate::lisp::eval::RecordKind::BoolVector => {
-                        let bits = bool_vector_bits(interp, value)?;
-                        render_bool_vector_prin1(interp, env, &bits, context.options).into()
-                    }
-                    // print.c:1782: a process prints as `#<process NAME>',
-                    // or as its bare name when `princ' clears escapeflag.
-                    crate::lisp::eval::RecordKind::Process => {
-                        let name = interp
-                            .process_name(id.id)
-                            .unwrap_or_else(|| format!("0x{:x}", id.identity()));
-                        if context.options.escape {
-                            PrintOutput::from(format!("#<process {name}>"))
-                        } else {
-                            name.into()
-                        }
-                    }
-                    // print.c:2087.
-                    crate::lisp::eval::RecordKind::Obarray => {
-                        let count =
-                            crate::lisp::primitives::completion::obarray_symbols(interp, value)
-                                .map(|symbols| symbols.len())
-                                .unwrap_or(0);
-                        PrintOutput::from(format!("#<obarray n={count}>"))
-                    }
-                    _ => {
-                        let Some(fields) = record_prin1_fields(interp, id.id) else {
-                            return Ok(value.to_string().into());
-                        };
-                        let rendered_fields = fields
-                            .iter()
-                            .map(|field| {
-                                render_prin1_with_context(interp, field, env, context, depth + 1)
-                            })
-                            .collect::<Result<Vec<_>, _>>()?;
-                        PrintOutput::join(&rendered_fields, " ").enclosed("#s(", ")")
-                    }
-                };
-                return Ok(rendered);
-            }
-            Ok(value.to_string().into())
-        }
-        _ => Ok(value.to_string().into()),
-    }
-}
-
-pub(crate) fn finish_print_number_table(
-    interp: &mut Interpreter,
-    env: &mut Env,
-    context: &PrintContext,
-) -> Result<(), LispError> {
-    if !context.options.circle || !context.options.continuous_numbering {
-        return Ok(());
-    }
-    interp.print_number_index = context.next_label.saturating_sub(1);
-    if context.number_table.is_none() && context.counts.is_empty() {
-        return Ok(());
-    }
-    let table = context
-        .number_table
-        .unwrap_or_else(|| json::make_hash_table(interp, "eq", Vec::new()));
-    let mut entries = json::hash_table_entries(interp, &table)
-        .map(|(_, entries)| entries)
-        .unwrap_or_default();
-    entries.retain(|(_, state)| !matches!(state.kind(), Kind::Integer(_)));
-    let mut labels = context.labels.values().collect::<Vec<_>>();
-    labels.sort_by_key(|label| label.number);
-    entries.extend(labels.into_iter().map(|label| {
-        let number = i64::try_from(label.number).unwrap_or(i64::MAX);
-        let state = if label.printed { number } else { -number };
-        (label.object, Value::Integer(state))
-    }));
-    set_hash_table_entries(interp, &table, entries)?;
-    // This is a native special variable, so update its active dynamic value
-    // cell.  Writing only the evaluator frame makes the table disappear at a
-    // function boundary (and leaks a fake lexical binding to the caller).
-    interp.set_variable("print-number-table", table, env);
-    Ok(())
-}
-
 fn prepare_print_numbering(interp: &mut Interpreter, env: &mut Env, options: PrintOptions) {
     // print.c resets both pieces of state unless continuous numbering has a
     // live public table.  A nil table therefore starts numbering over even
@@ -1492,6 +486,28 @@ pub(crate) fn render_prin1(
     with_printer_buffer_escape(interp, env, Some(true), |interp, env| {
         render_printer_object(interp, value, env, true, false)
     })
+}
+
+/// keyboard.c:cmd_error: `print-level' and `print-length' are 10 while
+/// cmd_error_internal reports the error ("Avoid unquittable loop if data
+/// contains a circular list"), assigned and assigned back, as C does, when
+/// the report returns.
+pub(crate) fn with_cmd_error_print_limits<T>(
+    interp: &mut Interpreter,
+    report: impl FnOnce(&mut Interpreter) -> Result<T, LispError>,
+) -> Result<T, LispError> {
+    let old_level = interp
+        .symbol_value_key(cached_symbol!("print-level"))
+        .unwrap_or(Value::Nil);
+    let old_length = interp
+        .symbol_value_key(cached_symbol!("print-length"))
+        .unwrap_or(Value::Nil);
+    interp.set_c_variable("print-level", Value::Integer(10));
+    interp.set_c_variable("print-length", Value::Integer(10));
+    let result = report(interp)?;
+    interp.set_c_variable("print-level", old_level);
+    interp.set_c_variable("print-length", old_length);
+    Ok(result)
 }
 
 /// print.c:print_prepare binds the escape flag required by a buffer's
@@ -1545,11 +561,7 @@ pub(crate) fn render_printer_output(
     let mut options = print_options(interp);
     options.escape = escape;
     options.output_is_function = output_is_function;
-    prepare_print_numbering(interp, env, options);
-    let mut context = PrintContext::new(interp, value, options)?;
-    let rendered = render_prin1_with_context(interp, value, env, &mut context, 0)?;
-    finish_print_number_table(interp, env, &context)?;
-    Ok(rendered)
+    object::print(interp, env, *value, options)
 }
 
 /// `princ': print.c's `print_object' with `escapeflag' cleared.  This is the
@@ -2647,28 +1659,10 @@ mod tests {
     }
 
     fn table_state(interp: &Interpreter, table: &Value, object: &Value) -> Option<Value> {
-        let key = print_ref_key(
-            interp,
-            object,
-            PrintOptions {
-                circle: true,
-                ..PrintOptions::default()
-            },
-        )?;
         json::hash_table_entries(interp, table)?
             .1
             .into_iter()
-            .find_map(|(candidate, state)| {
-                (print_ref_key(
-                    interp,
-                    &candidate,
-                    PrintOptions {
-                        circle: true,
-                        ..PrintOptions::default()
-                    },
-                ) == Some(key.clone()))
-                .then_some(state)
-            })
+            .find_map(|(candidate, state)| (candidate.word() == object.word()).then_some(state))
     }
 
     #[test]
@@ -2726,5 +1720,28 @@ mod tests {
             table_state(&interp, &table, &repeated),
             Some(Value::Integer(-1))
         );
+    }
+
+    #[test]
+    fn print_object_walks_deep_nesting_on_its_stack() {
+        // print-tests.el's print-deeply-nested, forty times deeper: the
+        // printer's explicit stack and one output, neither host
+        // recursion nor a copy of the inner text at each level.
+        let mut interp = Interpreter::new();
+        let mut env = preprocess_env(&mut interp, Value::Nil);
+        let levels = 400_000;
+        let mut object = Value::symbol("a");
+        for _ in 0..levels {
+            let record = Value::LispRecord(crate::lisp::types::LispRecordRef::new(
+                Value::symbol("r"),
+                &[object],
+            ));
+            object = Value::list([Value::vector(vec![record])]);
+        }
+        let printed = render_printer_output(&mut interp, &object, &mut env, true, false)
+            .expect("print a deep object")
+            .host_text();
+        let expected = format!("{}a{}", "([#s(r ".repeat(levels), ")])".repeat(levels));
+        assert!(printed == expected, "deep object printed as GNU prints it");
     }
 }

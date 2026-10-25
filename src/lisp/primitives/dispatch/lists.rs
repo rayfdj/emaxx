@@ -720,16 +720,18 @@ fn report_kbd_command_error(
         .lookup_var("command-error-function", env)
         .unwrap_or(Value::Nil);
     if !error_function.is_nil() {
-        interp.call_function_value(
-            error_function,
-            None,
-            &[
-                crate::lisp::eval::error_condition_value(error),
-                Value::String(String::new().into()),
-                Value::Nil,
-            ],
-            env,
-        )?;
+        with_cmd_error_print_limits(interp, |interp| {
+            interp.call_function_value(
+                error_function,
+                None,
+                &[
+                    crate::lisp::eval::error_condition_value(error),
+                    Value::String(String::new().into()),
+                    Value::Nil,
+                ],
+                env,
+            )
+        })?;
     }
     Ok(())
 }

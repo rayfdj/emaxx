@@ -17,6 +17,9 @@ pub struct NativeFunctionState {
     /// (`register_counts'): kept in Lisp_Subr's padding after the arity,
     /// which no C or generated code reads.
     register_counts: Cell<u8>,
+    /// Whether the two names are the image's bytes (pdumper's subrs name
+    /// their C strings in the dump), not this object's allocations.
+    image_names: Cell<bool>,
     symbol_name: Cell<*mut c_char>,
     interactive: Cell<Value>,
     command_modes: Cell<Value>,
@@ -46,6 +49,7 @@ const _: () = {
     assert!(std::mem::offset_of!(NativeFunctionState, min_args) == 8);
     assert!(std::mem::offset_of!(NativeFunctionState, max_args) == 10);
     assert!(std::mem::offset_of!(NativeFunctionState, register_counts) == 12);
+    assert!(std::mem::offset_of!(NativeFunctionState, image_names) == 13);
     assert!(std::mem::offset_of!(NativeFunctionState, symbol_name) == 16);
     assert!(std::mem::offset_of!(NativeFunctionState, interactive) == 24);
     assert!(std::mem::offset_of!(NativeFunctionState, command_modes) == 32);
@@ -69,6 +73,7 @@ impl NativeFunctionRef {
             min_args: Cell::new(spec.min_args),
             max_args: Cell::new(spec.max_args),
             register_counts: Cell::new(0),
+            image_names: Cell::new(false),
             symbol_name: Cell::new(spec.name.into_raw()),
             interactive: Cell::new(spec.fields[0]),
             command_modes: Cell::new(spec.fields[1]),
@@ -82,16 +87,26 @@ impl NativeFunctionRef {
         function
     }
 
+    /// A record the image loader fills: no target and no names yet.
     pub(crate) fn blank() -> Self {
-        Self::new(NativeFunctionSpec {
-            target: std::ptr::null(),
-            min_args: 0,
-            max_args: 0,
-            name: CString::default(),
-            c_name: CString::default(),
-            doc: 0,
-            fields: [Value::Nil; 5],
-        })
+        crate::lisp::native_comp::note_lisp_allocation(88);
+        let function = Self::allocate(NativeFunctionState {
+            target: Cell::new(std::ptr::null()),
+            min_args: Cell::new(0),
+            max_args: Cell::new(0),
+            register_counts: Cell::new(0),
+            image_names: Cell::new(false),
+            symbol_name: Cell::new(std::ptr::null_mut()),
+            interactive: Cell::new(Value::Nil),
+            command_modes: Cell::new(Value::Nil),
+            doc: Cell::new(0),
+            unit: Cell::new(Value::Nil),
+            c_name: Cell::new(std::ptr::null_mut()),
+            lambda_list: Cell::new(Value::Nil),
+            native_type: Cell::new(Value::Nil),
+        });
+        function.refresh_register_counts();
+        function
     }
 }
 
@@ -151,24 +166,46 @@ impl NativeFunctionState {
         self.doc.set(doc);
     }
     pub(crate) fn name(&self) -> &str {
-        // SAFETY: this live object owns a NUL-terminated CString. Its Rust
-        // registration/dump inputs were UTF-8 and no native path changes names.
-        unsafe { CStr::from_ptr(self.symbol_name.get()) }
-            .to_str()
-            .expect("native name UTF-8")
+        name_text(self.symbol_name.get())
     }
     pub(crate) fn c_name(&self) -> &str {
-        // SAFETY: as name(); the second C string has independent ownership.
-        unsafe { CStr::from_ptr(self.c_name.get()) }
-            .to_str()
-            .expect("native C name UTF-8")
+        name_text(self.c_name.get())
     }
-    pub(crate) fn set_names(&mut self, name: CString, c_name: CString) {
-        // Exclusive access is required: a prior borrowed name cannot outlive it.
-        // SAFETY: both old pointers came from CString::into_raw exactly once.
-        unsafe {
-            drop(CString::from_raw(self.symbol_name.replace(name.into_raw())));
-            drop(CString::from_raw(self.c_name.replace(c_name.into_raw())));
+    /// The C name with its NUL, as dlsym takes it.
+    pub(crate) fn c_name_c_str(&self) -> &CStr {
+        let name = self.c_name.get();
+        if name.is_null() {
+            return c"";
+        }
+        // SAFETY: as `name_text'.
+        unsafe { CStr::from_ptr(name) }
+    }
+    /// Name a loaded record by the image's own NUL-terminated bytes, as
+    /// pdumper.c leaves a dumped subr's `symbol_name' and `native_c_name'
+    /// pointing into the dump.
+    ///
+    /// # Safety
+    /// NAME and C_NAME are UTF-8 C strings without interior NULs that live
+    /// as long as the process and never change.
+    pub(crate) unsafe fn set_image_names(&mut self, name: *const c_char, c_name: *const c_char) {
+        // SAFETY: exclusive access: no borrowed view of the old names
+        // outlives this.
+        unsafe { self.release_names() };
+        self.symbol_name.set(name.cast_mut());
+        self.c_name.set(c_name.cast_mut());
+        self.image_names.set(true);
+    }
+
+    /// # Safety
+    /// The names are not used again until replaced.
+    unsafe fn release_names(&self) {
+        if !self.image_names.replace(false) {
+            // SAFETY: owned names are null or came from CString::into_raw
+            // exactly once.
+            unsafe {
+                release_name(self.symbol_name.replace(std::ptr::null_mut()));
+                release_name(self.c_name.replace(std::ptr::null_mut()));
+            }
         }
     }
     #[inline]
@@ -224,10 +261,28 @@ impl NativeFunctionState {
 impl Drop for NativeFunctionState {
     fn drop(&mut self) {
         // alloc.c:cleanup_vector releases both C names when the subr dies.
-        // SAFETY: these are this object's two unique CString allocations.
-        unsafe {
-            drop(CString::from_raw(self.symbol_name.get()));
-            drop(CString::from_raw(self.c_name.get()));
-        }
+        // SAFETY: the object is gone after this; image names are not
+        // released.
+        unsafe { self.release_names() };
+    }
+}
+
+/// A name's text: empty while a loaded record is still unnamed.
+fn name_text<'a>(name: *mut c_char) -> &'a str {
+    if name.is_null() {
+        return "";
+    }
+    // SAFETY: a live object's NUL-terminated CString. Its Rust registration
+    // and dump inputs were UTF-8 and no native path changes names.
+    unsafe { CStr::from_ptr(name) }
+        .to_str()
+        .expect("native name UTF-8")
+}
+
+/// # Safety
+/// NAME is null or came from CString::into_raw, and is released once.
+unsafe fn release_name(name: *mut c_char) {
+    if !name.is_null() {
+        drop(unsafe { CString::from_raw(name) });
     }
 }

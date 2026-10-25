@@ -66,6 +66,56 @@ pub(crate) fn highest_priority_overlay_property_with_id(
     })
 }
 
+/// buffer.c:next_overlay_change: the first overlay boundary after
+/// POSITION, else ZV.
+pub(crate) fn next_overlay_change_position(
+    buffer: &crate::buffer::Buffer,
+    position: usize,
+) -> usize {
+    let mut next = buffer.point_max();
+    let mut iter = buffer.overlays.intersecting(
+        position as isize,
+        next as isize,
+        crate::overlay::Traversal::Ascending,
+    );
+    while let Some(overlay) = iter.next() {
+        let (beg, end) = overlay.bounds();
+        if beg > position as isize {
+            next = beg as usize;
+            break;
+        }
+        if beg < end && end < next as isize {
+            next = end as usize;
+            iter.narrow(position as isize, next as isize);
+        }
+    }
+    next
+}
+
+/// buffer.c:previous_overlay_change: the last overlay boundary before
+/// POSITION, else BEGV.
+pub(crate) fn previous_overlay_change_position(
+    buffer: &crate::buffer::Buffer,
+    position: usize,
+) -> usize {
+    let mut previous = buffer.point_min();
+    let mut iter = buffer.overlays.intersecting(
+        previous as isize,
+        position as isize,
+        crate::overlay::Traversal::Descending,
+    );
+    while let Some(overlay) = iter.next() {
+        let (beg, end) = overlay.bounds();
+        previous = if end < position as isize {
+            end as usize
+        } else {
+            previous.max(beg as usize)
+        };
+        iter.narrow(previous as isize, position as isize);
+    }
+    previous
+}
+
 pub(crate) fn sort_overlays(
     interp: &Interpreter,
     overlays: &mut Vec<crate::overlay::OverlayRef>,
@@ -222,9 +272,9 @@ pub(crate) fn fix_position(interp: &Interpreter, value: &Value) -> Result<i64, L
             .map(|pos| pos as i64)
             .ok_or_else(|| LispError::Signal("Marker does not point anywhere".into())),
         Kind::BigInteger(n) => Ok(if n.sign() == num_bigint::Sign::Minus {
-            i64::MIN
+            -(1_i64 << 61)
         } else {
-            i64::MAX
+            (1_i64 << 61) - 1
         }),
         _ => Err(LispError::WrongTypeArgument(
             "integer-or-marker-p".into(),

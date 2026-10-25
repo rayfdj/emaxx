@@ -7,21 +7,6 @@ use crate::lisp::types::LispErrorKind;
 /// constraint returns NEW_POS untouched, so line motion tests it first:
 /// four lookups, where scanning the buffer's whole span list for a `field'
 /// made each `beginning-of-line' as long as that list.
-pub(super) fn field_near(interp: &Interpreter, new_pos: usize, old_pos: usize) -> bool {
-    let buffer = interp.buffer.borrow();
-    let point_min = buffer.point_min();
-    let field_at = |pos: usize| {
-        buffer
-            .text_property_at(pos, "field")
-            .is_some_and(|value| !value.is_nil())
-    };
-    new_pos != old_pos
-        && (field_at(new_pos)
-            || field_at(old_pos)
-            || (new_pos > point_min && field_at(new_pos - 1))
-            || (old_pos > point_min && field_at(old_pos - 1)))
-}
-
 fn plist_property_is_truthy(plist: &Value, property: &str) -> bool {
     let Ok(items) = plist.to_vec() else {
         return false;
@@ -149,237 +134,69 @@ define_dispatch!(
                 )))
             }
             "field-beginning" | "field-end" => {
-                let pos = if args.is_empty() || args[0].is_nil() {
-                    interp.buffer.borrow().point()
-                } else {
-                    position_from_value(interp, &args[0])?
-                };
-                let escape_from_edge = args.get(1).is_some_and(|value| value.is_truthy());
-                let limit = match args.get(2).filter(|value| !value.is_nil()) {
-                    Some(value) => Some(position_from_value(interp, value)?),
-                    None => None,
-                };
-                let point_min = interp.buffer.borrow().point_min();
-                let after_field = super::call(
-                    interp,
-                    "get-char-property",
-                    &[Value::Integer(pos as i64), Value::Symbol("field".into())],
-                    env,
-                )?;
-                let before_field = if pos > point_min {
-                    super::call(
+                need_arg_range(name, args, 0, 3)?;
+                let escape_from_edge = args.get(1).is_some_and(|value| !value.is_nil());
+                let bound = if name == "field-beginning" {
+                    field_beginning(
                         interp,
-                        "get-char-property",
-                        &[
-                            Value::Integer((pos - 1) as i64),
-                            Value::Symbol("field".into()),
-                        ],
-                        env,
+                        &args.first().copied().unwrap_or(Value::Nil),
+                        escape_from_edge,
+                        args.get(2).copied().unwrap_or(Value::Nil),
                     )?
                 } else {
-                    after_field
-                };
-                let mut at_field_start = false;
-                let mut at_field_end = false;
-                if !escape_from_edge {
-                    let inherited_field = super::call(
+                    field_end(
                         interp,
-                        "get-pos-property",
-                        &[Value::Integer(pos as i64), Value::Symbol("field".into())],
-                        env,
-                    )?;
-                    at_field_end = inherited_field != after_field;
-                    at_field_start = inherited_field != before_field;
-                    if inherited_field.is_nil() && at_field_start && at_field_end {
-                        // A nil insertion between two non-nil fields normally
-                        // marks a non-editable boundary (for example, a prompt),
-                        // not a synthetic zero-width field.
-                        at_field_start = false;
-                        at_field_end = false;
-                    }
-                }
-
-                let change = |interp: &mut Interpreter,
-                              primitive: &str,
-                              position: usize,
-                              limit: Option<usize>,
-                              env: &mut Env|
-                 -> Result<usize, LispError> {
-                    super::call(
-                        interp,
-                        primitive,
-                        &[
-                            Value::Integer(position as i64),
-                            Value::Symbol("field".into()),
-                            Value::Nil,
-                            limit.map_or(Value::Nil, |value| Value::Integer(value as i64)),
-                        ],
-                        env,
+                        &args.first().copied().unwrap_or(Value::Nil),
+                        escape_from_edge,
+                        args.get(2).copied().unwrap_or(Value::Nil),
                     )?
-                    .as_integer()
-                    .map(|value| value as usize)
                 };
-
-                if name == "field-beginning" {
-                    if at_field_start {
-                        return Ok(Value::Integer(pos as i64));
-                    }
-                    let mut beginning = pos;
-                    if escape_from_edge
-                        && matches!(before_field.kind(), Kind::Symbol(value) if value == "boundary")
-                    {
-                        beginning = change(
-                            interp,
-                            "previous-single-char-property-change",
-                            beginning,
-                            limit,
-                            env,
-                        )?;
-                    }
-                    beginning = change(
-                        interp,
-                        "previous-single-char-property-change",
-                        beginning,
-                        limit,
-                        env,
-                    )?;
-                    Ok(Value::Integer(beginning as i64))
-                } else {
-                    if at_field_end {
-                        return Ok(Value::Integer(pos as i64));
-                    }
-                    let mut end = pos;
-                    if escape_from_edge
-                        && matches!(after_field.kind(), Kind::Symbol(value) if value == "boundary")
-                    {
-                        end = change(interp, "next-single-char-property-change", end, limit, env)?;
-                    }
-                    end = change(interp, "next-single-char-property-change", end, limit, env)?;
-                    Ok(Value::Integer(end as i64))
-                }
+                Ok(Value::Integer(bound))
             }
             "field-string" | "field-string-no-properties" => {
                 need_arg_range(name, args, 0, 1)?;
-                let pos = match args.first().filter(|value| !value.is_nil()) {
-                    Some(value) => position_from_value(interp, value)?,
-                    None => interp.buffer.borrow().point(),
-                };
-                let start = super::call(
+                let (beg, end) = find_field(
                     interp,
-                    "field-beginning",
-                    &[Value::Integer(pos as i64)],
-                    env,
-                )?
-                .as_integer()? as usize;
-                let end = super::call(interp, "field-end", &[Value::Integer(pos as i64)], env)?
-                    .as_integer()? as usize;
-                let text = interp
-                    .buffer
-                    .borrow()
-                    .buffer_substring(start, end)
-                    .map_err(|e| LispError::Signal(e.to_string()))?;
+                    &args.first().copied().unwrap_or(Value::Nil),
+                    false,
+                    Value::Nil,
+                    true,
+                    Value::Nil,
+                    true,
+                )?;
+                let bounds = [Value::Integer(beg), Value::Integer(end)];
                 if name == "field-string" {
-                    Ok(string_like_value_with_multibyte(
-                        text,
-                        interp.buffer.borrow().substring_property_spans(start, end),
-                        interp.buffer.borrow().is_multibyte(),
-                    ))
+                    super::buffer_edit::direct_buffer_substring(interp, &bounds, env)
                 } else {
-                    Ok(string_like_value_with_multibyte(
-                        text,
-                        Vec::new(),
-                        interp.buffer.borrow().is_multibyte(),
-                    ))
+                    super::buffer_edit::direct_buffer_substring_no_properties(interp, &bounds, env)
                 }
             }
             "delete-field" => {
-                need_args(name, args, 1)?;
-                let pos = position_from_value(interp, &args[0])?;
-                let start = super::call(
+                need_arg_range(name, args, 0, 1)?;
+                let (beg, end) = find_field(
                     interp,
-                    "field-beginning",
-                    &[Value::Integer(pos as i64)],
-                    env,
-                )?
-                .as_integer()? as usize;
-                let end = super::call(interp, "field-end", &[Value::Integer(pos as i64)], env)?
-                    .as_integer()? as usize;
-                delete_region_with_hooks(interp, start, end, env)?;
+                    &args.first().copied().unwrap_or(Value::Nil),
+                    false,
+                    Value::Nil,
+                    true,
+                    Value::Nil,
+                    true,
+                )?;
+                if beg != end {
+                    delete_region_with_hooks(interp, beg as usize, end as usize, env)?;
+                }
                 Ok(Value::Nil)
             }
             "constrain-to-field" => {
-                // (NEW-POS OLD-POS &optional ESCAPE-FROM-EDGE ONLY-IN-LINE
-                //  INHIBIT-CAPTURE-PROPERTY); the optional flags only matter
-                // for edge stickiness, which the span model doesn't track.
-                if args.is_empty() || args.len() > 5 {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-                }
-                let new_pos = if args[0].is_nil() {
-                    interp.buffer.borrow().point()
-                } else {
-                    position_from_value(interp, &args[0])?
-                };
-                let old_pos = if args.len() > 1 {
-                    position_from_value(interp, &args[1])?
-                } else {
-                    interp.buffer.borrow().point()
-                };
-                let inhibit_motion = interp
-                    .lookup_var("inhibit-field-text-motion", env)
-                    .is_some_and(|value| value.is_truthy());
-                let mut constrained = new_pos;
-                let fwd = new_pos > old_pos;
-                if !inhibit_motion && field_near(interp, new_pos, old_pos) {
-                    let escape = args.get(2).cloned().unwrap_or(Value::Nil);
-                    let field_bound = if fwd {
-                        super::call(
-                            interp,
-                            "field-end",
-                            &[
-                                Value::Integer(old_pos as i64),
-                                escape,
-                                Value::Integer(new_pos as i64),
-                            ],
-                            env,
-                        )?
-                        .as_integer()? as usize
-                    } else {
-                        super::call(
-                            interp,
-                            "field-beginning",
-                            &[
-                                Value::Integer(old_pos as i64),
-                                escape,
-                                Value::Integer(new_pos as i64),
-                            ],
-                            env,
-                        )?
-                        .as_integer()? as usize
-                    };
-                    // GNU only constrains when FIELD_BOUND lies between OLD-POS
-                    // and NEW-POS; a bound already past NEW-POS means NEW-POS is
-                    // acceptable (see Fconstrain_to_field's "other side" check).
-                    // With ONLY-IN-LINE, the constraint applies only when it
-                    // does not move the result across a newline.
-                    let only_in_line = args.get(3).is_some_and(|value| value.is_truthy());
-                    let crosses_newline = || {
-                        let (low, high) = if field_bound < new_pos {
-                            (field_bound, new_pos)
-                        } else {
-                            (new_pos, field_bound)
-                        };
-                        (low..high).any(|pos| interp.buffer.borrow().char_at(pos) == Some('\n'))
-                    };
-                    if (if field_bound < new_pos { fwd } else { !fwd })
-                        && (!only_in_line || !crosses_newline())
-                    {
-                        constrained = field_bound;
-                    }
-                }
-                if args[0].is_nil() {
-                    interp.buffer.borrow_mut().goto_char(constrained);
-                }
-                Ok(Value::Integer(constrained as i64))
+                need_arg_range(name, args, 2, 5)?;
+                Ok(Value::Integer(constrain_to_field(
+                    interp,
+                    &args[0],
+                    &args[1],
+                    args.get(2).is_some_and(|value| !value.is_nil()),
+                    args.get(3).is_some_and(|value| !value.is_nil()),
+                    args.get(4).copied().unwrap_or(Value::Nil),
+                )?))
             }
             "current-buffer" => Ok(Value::Buffer(interp.buffer)),
             "get-buffer" => {

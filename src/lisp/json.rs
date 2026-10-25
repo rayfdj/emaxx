@@ -597,10 +597,6 @@ pub(crate) fn serialize(
     })
 }
 
-pub(crate) fn is_hash_table(_interp: &Interpreter, value: &Value) -> bool {
-    matches!(value.kind(), Kind::HashTable(_))
-}
-
 pub(crate) fn make_hash_table(
     interp: &mut Interpreter,
     test: &str,

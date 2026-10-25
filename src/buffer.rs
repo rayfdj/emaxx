@@ -895,12 +895,12 @@ impl<'a, S: PropertySpan> PropertyIntervals<'a, S> {
     }
 
     /// next_interval.
-    pub(crate) fn next(&self, interval: &PropertyInterval<'a>) -> Option<PropertyInterval<'a>> {
+    pub(crate) fn next(&self, interval: &PropertyInterval<'_>) -> Option<PropertyInterval<'a>> {
         (interval.end < self.end).then(|| self.find(interval.end))
     }
 
     /// previous_interval.
-    pub(crate) fn previous(&self, interval: &PropertyInterval<'a>) -> Option<PropertyInterval<'a>> {
+    pub(crate) fn previous(&self, interval: &PropertyInterval<'_>) -> Option<PropertyInterval<'a>> {
         (interval.start > self.beg).then(|| self.find(interval.start - 1))
     }
 }
@@ -2033,6 +2033,16 @@ impl Buffer {
             }
             current
         });
+    }
+
+    /// F over the plist of each interval of [START, END), its result the
+    /// interval's new plist, in one pass (recorded and counted as a
+    /// property change where one changes).
+    pub(crate) fn update_text_properties<F>(&mut self, start: usize, end: usize, f: F)
+    where
+        F: FnMut(Vec<(PropertyName, Value)>) -> Vec<(PropertyName, Value)>,
+    {
+        self.modify_text_properties(start, end, f);
     }
 
     pub fn put_text_property(

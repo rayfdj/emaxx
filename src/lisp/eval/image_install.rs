@@ -9,7 +9,7 @@
 use super::*;
 use crate::lisp::primitives::pdumper::image::RootSlot;
 use crate::lisp::primitives::pdumper::load::{LoadedImage, LoadedSymbol};
-use crate::lisp::types::Kind;
+use crate::lisp::types::{IdentityHasher, Kind};
 
 /// What pdumper.c keeps of a load: `dump_private.dump_filename' and
 /// `load_time', for `pdumper-stats'.
@@ -31,29 +31,30 @@ impl Interpreter {
     }
 
     /// Install the image's symbols and static roots, then record the load.
+    /// A symbol record is found by the symbol's identity, as pdumper.c's
+    /// records are the symbols themselves.
     pub(crate) fn install_image(
         &mut self,
         image: &LoadedImage,
         record: PdumperLoadRecord,
     ) -> Result<(), String> {
-        let mut by_name: HashMap<&str, &LoadedSymbol, crate::lisp::primitives::FnvBuildHasher> =
-            HashMap::default();
-        for symbol in &image.symbols {
-            by_name.insert(symbol.symbol.as_str(), symbol);
+        let mut records: HashMap<SymbolName, usize, std::hash::BuildHasherDefault<IdentityHasher>> =
+            HashMap::with_capacity_and_hasher(image.symbols.len(), Default::default());
+        for (index, symbol) in image.symbols.iter().enumerate() {
+            records.insert(symbol.symbol, index);
         }
+        let builtin = |symbol: &SymbolName| matches!(symbol.as_str(), "nil" | "t");
         // Restore membership in the actual owner. Mutable fields do not
-        // determine which symbols the obarray enumerates.
-        let mut installed: HashSet<&str, crate::lisp::primitives::FnvBuildHasher> =
-            HashSet::default();
+        // determine which symbols the obarray enumerates; the loader
+        // interned each of them as it read its record.
+        let mut installed = vec![false; image.symbols.len()];
         for name in &image.obarray {
-            let text = name.as_str();
-            if text == "nil" || text == "t" {
+            if builtin(name) {
                 continue;
             }
-            self.intern_symbol_name(text);
-            if let Some(symbol) = by_name.get(text) {
-                self.install_symbol(symbol);
-                installed.insert(text);
+            if let Some(&index) = records.get(name) {
+                self.install_symbol(&image.symbols[index]);
+                installed[index] = true;
             }
         }
         // Symbols the obarray does not list: one `unintern' removed keeps
@@ -64,11 +65,11 @@ impl Interpreter {
         // interned symbol does in GNU (the writer's obarray list can miss
         // a symbol whose only mention is an autoload not yet read into
         // its function cell).
-        for symbol in &image.symbols {
-            let text = symbol.symbol.as_str();
-            if installed.contains(text) || text == "nil" || text == "t" {
+        for (index, symbol) in image.symbols.iter().enumerate() {
+            if installed[index] || builtin(&symbol.symbol) {
                 continue;
             }
+            let text = symbol.symbol.as_str();
             if !symbol.symbol.cell().is_uninterned()
                 && !crate::lisp::types::is_private_obarray_symbol(text)
             {
@@ -77,10 +78,9 @@ impl Interpreter {
             self.install_symbol(symbol);
         }
         for cells in &image.builtin_cells {
-            let name = cells.symbol.as_str();
-            self.install_function_cell(name, &cells.function);
-            self.install_plist(name, &cells.plist);
-            self.install_watchers(name, &cells.watchers);
+            self.install_function_cell(&cells.symbol, &cells.function);
+            self.install_plist(&cells.symbol, &cells.plist);
+            self.install_watchers(&cells.symbol, &cells.watchers);
         }
         for (slot, value) in &image.roots {
             self.install_root_slot(*slot, value);
@@ -215,7 +215,7 @@ impl Interpreter {
             FLAG_FWD_INT, FLAG_LOCAL_IF_SET, FLAG_LOCALIZED_BESIDE_FORWARDED, FLAG_PER_BUFFER,
             SYMBOL_FORWARDED, SYMBOL_LOCALIZED, SYMBOL_REDIRECT_MASK,
         };
-        let name = symbol.symbol.as_str().to_owned();
+        let name = symbol.symbol;
         let redirect = symbol.flags & SYMBOL_REDIRECT_MASK;
         let mut flags = 0_u8;
         if redirect == SYMBOL_LOCALIZED || symbol.flags & FLAG_LOCALIZED_BESIDE_FORWARDED != 0 {
@@ -237,25 +237,20 @@ impl Interpreter {
             }
         }
         self.globals.install_cell(
-            &symbol.symbol,
+            &name,
             SymbolCellSnapshot {
                 value: symbol.value,
                 alias: symbol.alias,
                 flags,
             },
         );
-        symbol
-            .symbol
-            .cell()
-            .set_constant(symbol.flags & FLAG_CONSTANT != 0);
-        symbol
-            .symbol
-            .cell()
+        name.cell().set_constant(symbol.flags & FLAG_CONSTANT != 0);
+        name.cell()
             .set_c_slot(redirect == SYMBOL_FORWARDED || symbol.flags & FLAG_C_SLOT != 0);
         if let Some(value) = &symbol.value
-            && symbol.symbol.cell().has_c_slot()
+            && name.cell().has_c_slot()
         {
-            self.note_installed_value(&name, value);
+            self.note_installed_value(name.as_str(), value);
         }
         self.install_function_cell(&name, &symbol.function);
         self.install_plist(&name, &symbol.plist);
@@ -278,32 +273,35 @@ impl Interpreter {
 
     /// Restore the actual function cell, including a voided builtin. An
     /// unchanged static subr needs no entry in the Lisp-definition index.
-    fn install_function_cell(&mut self, name: &str, function: &Value) {
+    fn install_function_cell(&mut self, symbol: &SymbolName, function: &Value) {
         if function.is_nil() {
-            self.remove_all_function_bindings(name);
+            self.set_function_binding_symbol(symbol, None);
             return;
         }
         if let Kind::BuiltinFunc(subr) = function.kind()
-            && subr.as_str() == name
+            && subr.as_str() == symbol.as_str()
         {
-            self.remove_all_function_bindings(name);
-            self.globals
-                .set_function(&SymbolName::intern_str(name), Some(*function));
+            self.set_function_binding_symbol(symbol, None);
+            self.globals.set_function(symbol, Some(*function));
             return;
         }
-        self.set_function_binding(name, Some(*function));
+        self.set_function_binding_symbol(symbol, Some(*function));
     }
 
-    fn install_plist(&mut self, name: &str, plist: &Value) {
-        if plist.is_nil() && self.symbol_plist(name).is_nil() {
+    fn install_plist(&mut self, symbol: &SymbolName, plist: &Value) {
+        if plist.is_nil() && self.symbol_plist_symbol(symbol).is_nil() {
             return;
         }
         // The restored symbol owns the same live plist read by every caller.
-        let _ = self.set_symbol_plist(name, *plist);
+        let _ = self.set_symbol_plist_symbol(symbol, *plist);
     }
 
-    fn install_watchers(&mut self, name: &str, watchers: &[Value]) {
-        if let Some(index) = self.variable_watcher_index(name) {
+    fn install_watchers(&mut self, symbol: &SymbolName, watchers: &[Value]) {
+        if let Some(index) = self
+            .variable_watchers
+            .iter()
+            .rposition(|(watched, _)| watched == symbol)
+        {
             if watchers.is_empty() {
                 self.remove_variable_watcher_entry(index);
             } else {
@@ -314,9 +312,8 @@ impl Interpreter {
                 self.variable_watchers[index].1 = watchers.to_vec();
             }
         } else if !watchers.is_empty() {
-            let symbol = SymbolName::intern_str(name);
             symbol.cell().set_trapped_write(true);
-            self.variable_watchers.push((symbol, watchers.to_vec()));
+            self.variable_watchers.push((*symbol, watchers.to_vec()));
         }
     }
 

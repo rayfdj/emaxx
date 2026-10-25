@@ -290,11 +290,26 @@ impl From<crate::lisp::types::SymbolName> for BuiltinRef {
     }
 }
 
+/// The subr named NAME: the first of that name in the table, through an
+/// index built on first use (the table is in defsubr order).
 pub(crate) fn find_builtin(name: &str) -> Option<BuiltinRef> {
-    native_subrs()
-        .iter()
-        .find(|subr| subr.name == name)
-        .map(BuiltinRef)
+    static BY_NAME: std::sync::OnceLock<
+        std::collections::HashMap<&'static str, u16, crate::lisp::primitives::FnvBuildHasher>,
+    > = std::sync::OnceLock::new();
+    let subrs = native_subrs();
+    let index = BY_NAME.get_or_init(|| {
+        let mut index =
+            std::collections::HashMap::with_capacity_and_hasher(subrs.len(), Default::default());
+        for (position, subr) in subrs.iter().enumerate() {
+            index
+                .entry(subr.name)
+                .or_insert(u16::try_from(position).expect("the subr table fits a u16"));
+        }
+        index
+    });
+    index
+        .get(name)
+        .map(|&position| BuiltinRef(&subrs[usize::from(position)]))
 }
 
 /// Checked external-word decoding: validate the allocation start without

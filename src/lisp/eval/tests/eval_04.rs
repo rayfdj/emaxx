@@ -3383,8 +3383,14 @@ fn base64_encode_string_rejects_multibyte_non_ascii_input() {
 
 #[test]
 fn sha1_and_buffer_hash_match_for_ascii_buffer_contents() {
+    // fns.c:extract_data_from_object encodes a unibyte string as
+    // `raw-text', which mule-conf.el defines: GNU's batch runtime, not
+    // its early Lisp.
+    let mut interp = Interpreter::new();
+    load_gnu_batch_runtime(&mut interp);
     assert_eq!(
-        eval_str(
+        eval_str_with(
+            &mut interp,
             r#"(list
                     (sha1 "foo")
                     (with-temp-buffer
@@ -3400,7 +3406,11 @@ fn sha1_and_buffer_hash_match_for_ascii_buffer_contents() {
 
 #[test]
 fn secure_hash_supports_core_algorithms_and_iv_auto() {
-    let result = eval_str(
+    // As above, `raw-text' for the unibyte strings.
+    let mut interp = Interpreter::new();
+    load_gnu_batch_runtime(&mut interp);
+    let result = eval_str_with(
+        &mut interp,
         r#"(list
                 (secure-hash 'md5 "foobar")
                 (secure-hash 'sha1 "foobar")

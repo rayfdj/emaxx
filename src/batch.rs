@@ -390,13 +390,17 @@ fn emit_batch_error_message(interpreter: &mut Interpreter, error: &LispError) {
     // print_error_message: the same rendering `error-message-string'
     // performs (error-message property through `substitute-command-keys',
     // condition-specific data quoting), falling back to the native text
-    // if that primitive cannot run this early.
-    let message = lisp::primitives::call(
-        interpreter,
-        "error-message-string",
-        &[lisp::eval::error_condition_value(error)],
-        &mut crate::lisp::types::Env::new(),
-    )
+    // if that primitive cannot run this early.  cmd_error sets
+    // `print-level' and `print-length' to 10 around it, against circular
+    // data.
+    let message = lisp::primitives::with_cmd_error_print_limits(interpreter, |interpreter| {
+        lisp::primitives::call(
+            interpreter,
+            "error-message-string",
+            &[lisp::eval::error_condition_value(error)],
+            &mut crate::lisp::types::Env::new(),
+        )
+    })
     .ok()
     .and_then(|value| lisp::primitives::string_like(&value).map(|text| text.text))
     .unwrap_or_else(|| error.to_string());
@@ -667,15 +671,22 @@ fn initialize_interpreter_attempt(
     // sibling test's fixture env made random preloads fail with
     // "Cannot open load file".
     let _boot_environment = compat::boot_environment_read_guard();
-    let mut interpreter = Interpreter::new();
     // emacs.c:main: load_pdump precedes every init_* call.  A process
     // with an image starts from it (`initialized') and never runs
     // loadup; without one it is temacs and reconstructs the dumped state
     // in the closure below.  The process values the constructor took
     // once are applied again over the image, as GNU's init_* are.
     // `--temacs=MODE' names the dumping process itself: it attempts no
-    // image load (emacs.c's `attempt_load_pdump' stays false).
+    // image load (emacs.c's `attempt_load_pdump' stays false).  A process
+    // about to load an image leaves out the syms_of_* definitions the
+    // image's symbols carry, and starts again from the full state when
+    // no image loads.
     let temacs = options.dump_mode.is_some();
+    let mut interpreter = if temacs {
+        Interpreter::new()
+    } else {
+        Interpreter::for_image()
+    };
     let mut initialized = !temacs
         && crate::lisp::primitives::pdumper::load_pdump_at_startup(
             &mut interpreter,
@@ -719,6 +730,9 @@ fn initialize_interpreter_attempt(
         // directory lock goes with the attempt.
         drop(fixture_to_dump);
         return Ok(BootAttempt::NeedsProcessPermit);
+    }
+    if !initialized && !temacs {
+        interpreter = Interpreter::new();
     }
     if initialized {
         interpreter

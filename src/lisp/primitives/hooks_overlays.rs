@@ -597,25 +597,15 @@ fn delete_region_with_hooks_then<R>(
     })
 }
 
-/// The buffer a text-property primitive's OBJECT names: the current
-/// buffer for nil (textprop.c:validate_interval_range).
-pub(crate) fn property_buffer_id(
-    interp: &Interpreter,
-    object: Option<&Value>,
-) -> Result<u64, LispError> {
-    match object {
-        Some(object) if !object.is_nil() => interp.resolve_buffer_id(object),
-        _ => Ok(interp.current_buffer_id()),
-    }
-}
-
 /// textprop.c's buffer case of a property change, when CHANGES finds that
-/// the properties of [START, END) in BUFFER_ID would change:
+/// the properties of [START, END) in BUFFER_ID would change, with that
+/// buffer current throughout (the primitives' set_buffer_internal, bug
+/// 36190) and the caller's restored after:
 /// modify_text_properties (insdel.c:prepare_to_modify_buffer_1 over the
-/// range with that buffer current: the read-only checks, the overlays'
-/// modification hooks, the undoable-change notice and
-/// `before-change-functions'), APPLY over the buffer and its indirect
-/// relatives, then signal_after_change.  Whether anything changed.
+/// range: the read-only checks, the overlays' modification hooks, the
+/// undoable-change notice and `before-change-functions'), APPLY over the
+/// buffer and its indirect relatives, then signal_after_change.  Whether
+/// anything changed.
 pub(crate) fn modify_buffer_text_properties(
     interp: &mut Interpreter,
     buffer_id: u64,
@@ -641,25 +631,24 @@ pub(crate) fn modify_buffer_text_properties(
     if !changing {
         return Ok(false);
     }
-    // modify_text_properties makes the buffer current for
-    // prepare_to_modify_buffer_1 alone (an error leaves it current); the
-    // change and its signal_after_change come in the caller's buffer.
     if buffer_id != original {
         interp.set_current_buffer_id(buffer_id)?;
     }
-    let prepared = prepare_to_modify_buffer(interp, start, end, false, env)?;
+    let result = prepare_to_modify_buffer(interp, start, end, false, env).and_then(|prepared| {
+        with_overlay_hook_roots(interp, &prepared.overlay_calls, |interp| {
+            interp.apply_text_property_change_shared_for(buffer_id, apply);
+            signal_after_change(
+                interp,
+                AfterChange::new(start, end - start, end - start),
+                &prepared.overlay_calls,
+                env,
+            )
+        })
+    });
     if buffer_id != original && interp.has_buffer_id(original) {
         interp.set_current_buffer_id(original)?;
     }
-    with_overlay_hook_roots(interp, &prepared.overlay_calls, |interp| {
-        interp.apply_text_property_change_shared_for(buffer_id, apply);
-        signal_after_change(
-            interp,
-            AfterChange::new(start, end - start, end - start),
-            &prepared.overlay_calls,
-            env,
-        )
-    })?;
+    result?;
     Ok(true)
 }
 
@@ -704,19 +693,6 @@ pub(crate) fn properties_would_remove(
             }
         })
         .is_err()
-}
-
-/// Whether set_text_properties modifies the buffer: a nonempty range, and
-/// either properties to set or intervals in the buffer, though every
-/// plist be empty.
-pub(crate) fn properties_would_set(
-    buffer: &crate::buffer::Buffer,
-    from: usize,
-    to: usize,
-    props: &[(PropertyName, Value)],
-) -> bool {
-    let (from, to) = clamp_property_range(buffer, from, to);
-    from < to && (!props.is_empty() || buffer.has_interval_tree())
 }
 
 fn clamp_property_range(buffer: &crate::buffer::Buffer, from: usize, to: usize) -> (usize, usize) {
@@ -803,181 +779,6 @@ pub(crate) fn memq(elt: impl crate::lisp::types::PropertyKey, list: Value) -> bo
 
 pub(crate) fn is_cons(value: &Value) -> bool {
     matches!(value.kind(), Kind::Cons(_))
-}
-
-pub(crate) fn add_face_text_property(
-    interp: &mut Interpreter,
-    name: &str,
-    args: &[Value],
-    env: &mut crate::lisp::types::Env,
-) -> Result<Value, LispError> {
-    need_arg_range(name, args, 3, 5)?;
-    let face = args[2];
-    let append = args.get(3).is_some_and(|value| value.is_truthy());
-    if let Some(object) = args.get(4)
-        && string_like(object).is_some()
-    {
-        let start = args[0].as_integer()?.max(0) as usize;
-        let end = args[1].as_integer()?.max(0) as usize;
-        let mut cursor = start;
-        while cursor < end {
-            let previous = string_property_at(object, cursor, "face").unwrap_or(Value::Nil);
-            let next = font_lock_next_string_property_change(object, cursor, end, "face");
-            let updated = if previous.is_nil() {
-                face
-            } else {
-                combine_font_lock_property_value("face", previous, &face, append)
-            };
-            modify_shared_string_properties(object, cursor, next, |mut current| {
-                current.retain(|(key, _)| *key != "face");
-                current.push((PropertyName::symbol("face"), updated));
-                current
-            })?;
-            cursor = next;
-        }
-        return Ok(Value::Nil);
-    }
-
-    let start = position_from_value(interp, &args[0])?;
-    let end = position_from_value(interp, &args[1])?;
-    let buffer_id = font_lock_target_buffer_id(interp, args.get(4))?;
-    // add_text_properties_1 with TEXT_PROPERTY_APPEND or _PREPEND skips no
-    // interval: any nonempty range changes, and each of its intervals
-    // takes FACE combined with its own.
-    let (from, to) = if start <= end {
-        (start, end)
-    } else {
-        (end, start)
-    };
-    modify_buffer_text_properties(
-        interp,
-        buffer_id,
-        from,
-        to,
-        &|buffer| {
-            let (from, to) = clamp_property_range(buffer, from, to);
-            from < to
-        },
-        &|buffer| add_face_to_buffer(buffer, from, to, face, append),
-        env,
-    )?;
-    Ok(Value::Nil)
-}
-
-/// add_properties' TEXT_PROPERTY_APPEND or _PREPEND of FACE over
-/// [FROM, TO): each interval's face combined with FACE.
-pub(crate) fn add_face_to_buffer(
-    buffer: &mut crate::buffer::Buffer,
-    from: usize,
-    to: usize,
-    face: Value,
-    append: bool,
-) {
-    let face_name = PropertyName::symbol("face");
-    let (from, to) = clamp_property_range(buffer, from, to);
-    let mut cursor = from;
-    while cursor < to {
-        let previous = buffer
-            .text_property_at(cursor, face_name)
-            .unwrap_or(Value::Nil);
-        let next = font_lock_next_buffer_property_change(buffer, cursor, to, "face");
-        let updated = if previous.is_nil() {
-            face
-        } else {
-            combine_font_lock_property_value("face", previous, &face, append)
-        };
-        if updated.is_nil() {
-            buffer.remove_list_of_text_properties(cursor, next, &[face_name]);
-        } else {
-            buffer.put_text_property(cursor, next, face_name, updated);
-        }
-        cursor = next;
-    }
-}
-
-pub(crate) fn font_lock_target_buffer_id(
-    interp: &Interpreter,
-    object: Option<&Value>,
-) -> Result<u64, LispError> {
-    match object {
-        Some(value) if !value.is_nil() => interp.resolve_buffer_id(value),
-        _ => Ok(interp.current_buffer_id()),
-    }
-}
-
-pub(crate) fn font_lock_next_buffer_property_change(
-    buffer: &crate::buffer::Buffer,
-    start: usize,
-    end: usize,
-    prop: &str,
-) -> usize {
-    let initial = buffer.text_property_at(start, prop).unwrap_or(Value::Nil);
-    for cursor in start.saturating_add(1)..end {
-        if buffer.text_property_at(cursor, prop).unwrap_or(Value::Nil) != initial {
-            return cursor;
-        }
-    }
-    end
-}
-
-pub(crate) fn font_lock_next_string_property_change(
-    value: &Value,
-    start: usize,
-    end: usize,
-    prop: &str,
-) -> usize {
-    let initial = string_property_at(value, start, prop).unwrap_or(Value::Nil);
-    for cursor in start.saturating_add(1)..end {
-        if string_property_at(value, cursor, prop).unwrap_or(Value::Nil) != initial {
-            return cursor;
-        }
-    }
-    end
-}
-
-pub(crate) fn combine_font_lock_property_value(
-    prop: &str,
-    previous: Value,
-    value: &Value,
-    append: bool,
-) -> Value {
-    let mut previous_items = font_lock_previous_property_items(prop, previous);
-    let mut value_items = font_lock_value_items(value);
-    if append {
-        previous_items.append(&mut value_items);
-        Value::list(previous_items)
-    } else {
-        value_items.append(&mut previous_items);
-        Value::list(value_items)
-    }
-}
-
-pub(crate) fn font_lock_previous_property_items(prop: &str, previous: Value) -> Vec<Value> {
-    if matches!(prop, "face" | "font-lock-face") && anonymous_font_lock_face(&previous) {
-        return vec![previous];
-    }
-    previous.to_vec().unwrap_or_else(|_| vec![previous])
-}
-
-pub(crate) fn font_lock_value_items(value: &Value) -> Vec<Value> {
-    match value.to_vec() {
-        Ok(items) if !matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(symbol)) if symbol.starts_with(':')) => {
-            items
-        }
-        _ => vec![*value],
-    }
-}
-
-pub(crate) fn anonymous_font_lock_face(value: &Value) -> bool {
-    let Ok(items) = value.to_vec() else {
-        return false;
-    };
-    matches!(
-        items.first().map(|v| v.kind()),
-        Some(Kind::Symbol(symbol))
-            if symbol.starts_with(':')
-                || matches!(symbol.as_str(), "foreground-color" | "background-color")
-    )
 }
 
 pub(crate) fn face_attribute_index(attribute: &str) -> Option<usize> {
