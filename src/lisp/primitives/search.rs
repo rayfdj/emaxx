@@ -771,8 +771,11 @@ struct BufferSnapshot {
     rope: ropey::Rope,
     begv: usize,
     begv_byte: usize,
+    zv: usize,
     zv_byte: usize,
     point: usize,
+    /// Point's byte, as GNU's PT_BYTE: the matcher starts there.
+    point_byte: usize,
     multibyte: bool,
     side: bool,
     ascii: bool,
@@ -782,21 +785,23 @@ impl BufferSnapshot {
     fn take(interp: &Interpreter) -> Self {
         let buffer = interp.buffer.borrow();
         let rope = buffer.text_rope();
-        let (begv, zv) = (buffer.point_min(), buffer.point_max());
+        let (begv, zv, point) = (buffer.point_min(), buffer.point_max(), buffer.point());
         let ascii = rope.len_bytes() == rope.len_chars();
+        // The buffer's conversions, which know its ends and the positions
+        // converted since its last edit before them.
         let byte = |pos: usize| {
-            if ascii {
-                pos - 1
-            } else {
-                rope.char_to_byte(pos - 1)
-            }
+            buffer
+                .storage_byte_position(pos)
+                .expect("an accessible position")
+                - 1
         };
-        let (begv_byte, zv_byte) = (byte(begv), byte(zv));
         BufferSnapshot {
             begv,
-            begv_byte,
-            zv_byte,
-            point: buffer.point(),
+            begv_byte: byte(begv),
+            zv,
+            zv_byte: byte(zv),
+            point,
+            point_byte: byte(point),
             multibyte: buffer.is_multibyte(),
             side: buffer.has_extended_chars_in(begv, zv),
             ascii,
@@ -812,6 +817,12 @@ impl BufferSnapshot {
     fn offset(&self, pos: usize) -> usize {
         if self.ascii {
             pos - self.begv
+        } else if pos == self.point {
+            self.point_byte - self.begv_byte
+        } else if pos == self.zv {
+            self.zv_byte - self.begv_byte
+        } else if pos == self.begv {
+            0
         } else {
             self.rope.char_to_byte(pos - 1) - self.begv_byte
         }
@@ -819,10 +830,17 @@ impl BufferSnapshot {
 
     /// The buffer position of text offset OFFSET.
     fn position(&self, offset: usize) -> usize {
+        let byte = self.begv_byte + offset;
         if self.ascii {
             self.begv + offset
+        } else if byte == self.point_byte {
+            self.point
+        } else if byte == self.zv_byte {
+            self.zv
+        } else if offset == 0 {
+            self.begv
         } else {
-            self.rope.byte_to_char(self.begv_byte + offset) + 1
+            self.rope.byte_to_char(byte) + 1
         }
     }
 

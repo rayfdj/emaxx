@@ -160,14 +160,15 @@ impl<'r> Text<'r> {
         }
     }
 
-    /// CHAR_TO_BYTE.
+    /// CHAR_TO_BYTE.  The text's ends need no walk of the rope.
     fn char_to_byte(&self, charpos: usize) -> usize {
-        if self.ascii {
+        let index = (charpos - 1).min(self.rope.len_chars());
+        if self.ascii || index == 0 {
             charpos
+        } else if index == self.rope.len_chars() {
+            self.len + 1
         } else {
-            self.rope
-                .char_to_byte((charpos - 1).min(self.rope.len_chars()))
-                + 1
+            self.rope.char_to_byte(index) + 1
         }
     }
 

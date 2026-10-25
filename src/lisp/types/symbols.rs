@@ -119,6 +119,8 @@ const KEY_NAMES: &[&str] = &[
     "category-table",
     "case-fold-search",
     "undo-auto--undoable-change",
+    "undo-auto-amalgamate",
+    "field",
     "overriding-terminal-local-map",
     "last-command",
     "real-last-command",

@@ -5,7 +5,7 @@ use super::*;
 use crate::lisp::types::PropertyName;
 
 fn field_name() -> PropertyName {
-    PropertyName::symbol("field")
+    PropertyName::new(Value::Symbol(cached_symbol!("field").with(Clone::clone)))
 }
 
 fn eq(interp: &Interpreter, left: &Value, right: &Value) -> bool {

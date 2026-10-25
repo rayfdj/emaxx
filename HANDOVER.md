@@ -6259,6 +6259,53 @@ setup_process_coding_systems's check now refuses). A 13-form
   (round 84's build): 514 of the 515 files give GNU's `Ran' line and exit
   code; network-stream-tests differs only in GNU's own skip count, which
   moves between runs (5, 4 or 3 skipped) while Emaxx's stays 3.
+- **Round 86: buffer position conversions from the nearest known
+  position, as marker.c buf_charpos_to_bytepos does.** A rope's char to
+  byte conversion walked its tree every time (350 to 700 instructions);
+  GNU scans from the closest of PT, GPT, BEGV, ZV, its cached last
+  conversion and the markers. (1) BufferText keeps the chunk of the rope
+  its last walk reached, with the char and byte offsets it starts at, and
+  the last four conversions (shifted by an insertion or deletion before
+  them, dropped by one over them): a conversion that was made since the
+  last edit before it is answered at once, and one inside the chunk is
+  scanned from the nearest known position there, so walks happen only
+  when a lookup leaves the chunk. The ends of the text, an ASCII text and
+  position 1 need no lookup at all. The chunk's characters are counted
+  only when a later lookup by character needs them (a deletion's single
+  lookup would otherwise count a whole chunk). The view is forgotten by
+  every edit, and a cloned rope shares its leaves, so the chunk it
+  addresses stays as it was. (2) The regexp matcher's snapshot takes
+  point's byte (PT_BYTE) and the accessible region's bytes from those
+  conversions, and maps point, BEGV and ZV back and forth without walking.
+  (3) `delete-region' reads the deleted text and its two byte offsets in
+  one walk instead of three (text, then each end's marker byte position).
+  (4) The syntax scanner's CHAR_TO_BYTE answers the text's ends without a
+  walk. (5) `undo-auto-amalgamate' (called by `delete-char' and
+  `self-insert-command') and the `field' property name are looked up by
+  their symbols, not by interning their names on every call. Per call, on
+  a 20,000-line multibyte buffer (base subtracted): `delete-char' in the
+  middle 8,980 instructions to 6,212 (GNU 2,686); `looking-at' at
+  successive positions 5,780 to 3,285 (GNU 1,197); `forward-word' 9,388
+  to 7,959 (GNU 2,864); `forward-sexp' 7,422 to 6,155 (GNU 3,678);
+  `re-search-forward' 7,033 to 6,681 (GNU 3,400); `search-forward' 7,251
+  to 6,899 (GNU 3,997); `buffer-substring' 5,794 (GNU 5,022) and
+  `char-after' 373 (GNU 301) unchanged. What remains of these gaps:
+  ropey's own costs (each public call checks its index against a length
+  summed over the root's children, `Rope::len_bytes' and `len_chars' do
+  the same and rescan a one-leaf rope, `RopeSlice' creation sums them
+  five times, and a one-character removal costs about 1,650 instructions
+  of tree work against GNU's gap move); scanners that walk their own
+  snapshot's rope instead of sharing the buffer's conversions (the syntax
+  scanner, the matcher's reader, the non-regexp search); and per-call
+  costs outside the text (`forward-word''s field and overlay lookups,
+  char-table reads and variable lookups are most of its gap). A probe of
+  `looking-at', `re-search-forward' and `delete-char' at, before and after
+  point, at narrowing bounds and after edits gives GNU 30.2's values (an
+  eval_05 test holds them), and a buffer test checks conversions against
+  a model across 400 random insertions and deletions. Local validation:
+  the full gate, 3,227 passed across its ten groups with the documented
+  local skips (eval_05, 364, and the buffer tests include the new ones);
+  clippy `-D warnings', rustfmt and `git diff --check' pass.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -6964,10 +7011,16 @@ frozen passed on its first attempt (run 40221557268); PR #107 merged
 rounds 80 and 81 into main (`e5a16c0`).
 **On `b2c9e9d`** (round 82): full Rust gate passed (run 40230698235),
 frozen passed on its first attempt (run 40230700102).
-**On `cf7b8ef`** (round 83): full Rust gate passed (run 40238054634);
-the frozen run (40238056589) was still running when round 84 was
-committed. survey83 (the 515 GNU test files under round 83's build): each
-file gives GNU's `Ran' line and exit code.
+**On `cf7b8ef`** (round 83): full Rust gate passed (run 40238054634),
+frozen passed on its first attempt (run 40238056589). survey83 (the 515
+GNU test files under round 83's build): each file gives GNU's `Ran' line
+and exit code.
+**On `457fa3e`** (round 84): full Rust gate passed (run 40240886483),
+frozen passed on its first attempt (run 40240888419).
+**On `ed0631e`** (round 85): full Rust gate passed (run 40243227941);
+frozen failed only GNU's known oracle flake (Emaxx 7,670 passed with 0
+unexpected, GNU 7,669 passed with 1 unexpected), and its failed job was
+rerun (run 40243230215, attempt 2).
 
 **Findings recorded, not fixed:**
 - `features`, `values` and `top-level` are special variables in Emaxx

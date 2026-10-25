@@ -7,13 +7,11 @@ use crate::lisp::types::{Kind, PropertyName};
 // reached as an ordinary Lisp call.
 /// call0 (Qundo_auto_amalgamate), once simple.el has defined it.
 fn call_undo_auto_amalgamate(interp: &mut Interpreter, env: &mut Env) -> Result<(), LispError> {
-    if interp.lookup_function("undo-auto-amalgamate", env).is_ok() {
-        interp.call_function_value(
-            Value::Symbol("undo-auto-amalgamate".into()),
-            Some("undo-auto-amalgamate"),
-            &[],
-            env,
-        )?;
+    // call0 (Qundo_auto_amalgamate), the symbol in hand; before simple.el
+    // defines it there is nothing to call.
+    let symbol = cached_symbol!("undo-auto-amalgamate").with(Clone::clone);
+    if interp.lookup_function_symbol(&symbol, env).is_ok() {
+        interp.call_function_value(Value::Symbol(symbol), None, &[], env)?;
     }
     Ok(())
 }

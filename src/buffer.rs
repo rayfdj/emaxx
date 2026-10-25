@@ -3,7 +3,7 @@
 use crate::lisp::types::{BufferRef, Kind, MarkerRef};
 use crate::lisp::types::{PropertyKey, PropertyName, Value};
 use ropey::Rope;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::time::SystemTime;
 
 /// One edit of a buffer: the characters [START, OLD_END) became
@@ -280,6 +280,126 @@ struct BufferText {
     /// A small text's rope for `text_rope', built when a scan asks for
     /// one and dropped by the next change.
     rope_view: RefCell<Option<Rope>>,
+    /// Recent char/byte conversions of a rope's text.
+    positions: Cell<PositionCache>,
+    /// The rope's chunk the last walk reached.
+    chunk: Cell<Option<ChunkView>>,
+}
+
+/// The chunk of a rope's text the last walk of its tree reached, with the
+/// char and byte offsets it starts at: a lookup inside it scans from the
+/// nearest position known there instead of walking the tree again, as
+/// GNU's buf_charpos_to_bytepos scans from the known position nearest.
+/// TEXT addresses the rope's leaf, which lives and does not change while
+/// no `&mut' method runs (each of them forgets the view).
+#[derive(Clone, Copy)]
+struct ChunkView {
+    text: usize,
+    len: usize,
+    byte: usize,
+    char: usize,
+    /// The chunk's characters, counted when a lookup by character first
+    /// needs them (UNCOUNTED until then).
+    chars: usize,
+}
+
+/// ChunkView::chars before the chunk's characters are counted.
+const UNCOUNTED: usize = usize::MAX;
+
+impl ChunkView {
+    fn new(chunk: &str, byte: usize, char: usize) -> Self {
+        Self {
+            text: chunk.as_ptr() as usize,
+            len: chunk.len(),
+            byte,
+            char,
+            chars: UNCOUNTED,
+        }
+    }
+
+    /// The chunk's text.
+    ///
+    /// # Safety
+    ///
+    /// The rope the view was taken from has not changed since.
+    unsafe fn text<'t>(&self) -> &'t str {
+        // SAFETY: the caller's guarantee keeps the leaf's bytes, valid
+        // UTF-8 as a chunk of the rope, where they were.
+        unsafe {
+            std::str::from_utf8_unchecked(std::slice::from_raw_parts(
+                self.text as *const u8,
+                self.len,
+            ))
+        }
+    }
+
+    fn holds_byte(&self, byte: usize) -> bool {
+        byte >= self.byte && byte < self.byte + self.len
+    }
+}
+
+/// marker.c buf_charpos_to_bytepos's cache, for a rope whose characters
+/// are not all one byte: the char and byte offsets of recent conversions,
+/// shifted by an edit before them and dropped by one over them.
+#[derive(Clone, Copy, Default)]
+struct PositionCache {
+    entries: [(usize, usize); 4],
+    len: usize,
+    next: usize,
+}
+
+impl PositionCache {
+    fn entries(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
+        self.entries[..self.len].iter().copied()
+    }
+
+    fn by_char(&self, index: usize) -> Option<usize> {
+        self.entries[..self.len]
+            .iter()
+            .find(|entry| entry.0 == index)
+            .map(|entry| entry.1)
+    }
+
+    fn by_byte(&self, byte: usize) -> Option<usize> {
+        self.entries[..self.len]
+            .iter()
+            .find(|entry| entry.1 == byte)
+            .map(|entry| entry.0)
+    }
+
+    fn record(&mut self, index: usize, byte: usize) {
+        self.entries[self.next] = (index, byte);
+        self.next = (self.next + 1) % self.entries.len();
+        self.len = (self.len + 1).min(self.entries.len());
+    }
+
+    /// CHARS characters, BYTES bytes, inserted at char INDEX.
+    fn inserted(&mut self, index: usize, chars: usize, bytes: usize) {
+        for entry in &mut self.entries[..self.len] {
+            if entry.0 > index {
+                *entry = (entry.0 + chars, entry.1 + bytes);
+            }
+        }
+    }
+
+    /// The characters of RANGE, BYTES bytes, removed.
+    fn removed(&mut self, range: std::ops::Range<usize>, bytes: usize) {
+        let mut kept = 0;
+        for at in 0..self.len {
+            let (index, byte) = self.entries[at];
+            let entry = if index <= range.start {
+                (index, byte)
+            } else if index >= range.end {
+                (index - range.len(), byte - bytes)
+            } else {
+                continue;
+            };
+            self.entries[kept] = entry;
+            kept += 1;
+        }
+        self.len = kept;
+        self.next = kept % self.entries.len();
+    }
 }
 
 #[derive(Clone)]
@@ -317,7 +437,47 @@ impl BufferText {
             bytes: text.len(),
             raw_markers: count_raw_markers(text.as_bytes()),
             rope_view: RefCell::new(None),
+            positions: Cell::default(),
+            chunk: Cell::new(None),
         }
+    }
+
+    /// The chunk of ROPE, this text's, holding char INDEX: the one the last
+    /// walk reached when it does.
+    fn view_at_char(&self, rope: &Rope, index: usize) -> ChunkView {
+        if let Some(view) = self.chunk.get()
+            && index >= view.char
+            // A chunk holds no more characters than bytes.
+            && index - view.char < view.len
+        {
+            let mut view = view;
+            if view.chars == UNCOUNTED {
+                // SAFETY: the view is of this unchanged rope.
+                let text = unsafe { view.text() };
+                view.chars = ropey::str_utils::byte_to_char_idx(text, text.len());
+                self.chunk.set(Some(view));
+            }
+            if index - view.char < view.chars {
+                return view;
+            }
+        }
+        let (chunk, byte, char, _) = rope.chunk_at_char(index);
+        let view = ChunkView::new(chunk, byte, char);
+        self.chunk.set(Some(view));
+        view
+    }
+
+    /// The chunk of ROPE holding byte BYTE, as `view_at_char'.
+    fn view_at_byte(&self, rope: &Rope, byte: usize) -> ChunkView {
+        if let Some(view) = self.chunk.get()
+            && view.holds_byte(byte)
+        {
+            return view;
+        }
+        let (chunk, byte, char, _) = rope.chunk_at_byte(byte);
+        let view = ChunkView::new(chunk, byte, char);
+        self.chunk.set(Some(view));
+        view
     }
 
     /// The raw-byte markers in the first BYTES bytes of the text.
@@ -380,6 +540,11 @@ impl BufferText {
     fn chunk_at_char(&self, index: usize) -> (&str, usize, usize, usize) {
         match &self.store {
             TextStore::Small(text) => (text, 0, 0, 0),
+            TextStore::Rope(rope) if index < self.chars => {
+                let view = self.view_at_char(rope, index);
+                // SAFETY: the view is of this unchanged rope.
+                (unsafe { view.text() }, view.byte, view.char, 0)
+            }
             TextStore::Rope(rope) => rope.chunk_at_char(index),
         }
     }
@@ -389,6 +554,11 @@ impl BufferText {
     fn chunk_at_byte(&self, index: usize) -> (&str, usize, usize, usize) {
         match &self.store {
             TextStore::Small(text) => (text, 0, 0, 0),
+            TextStore::Rope(rope) if index < self.bytes => {
+                let view = self.view_at_byte(rope, index);
+                // SAFETY: the view is of this unchanged rope.
+                (unsafe { view.text() }, view.byte, view.char, 0)
+            }
             TextStore::Rope(rope) => rope.chunk_at_byte(index),
         }
     }
@@ -408,7 +578,39 @@ impl BufferText {
     fn char_to_byte(&self, index: usize) -> usize {
         match &self.store {
             TextStore::Small(text) => self.small_byte(text, index),
-            TextStore::Rope(rope) => rope.char_to_byte(index),
+            TextStore::Rope(rope) => {
+                // The text's ends and an ASCII text need no walk; nor does
+                // a position converted since the last edit before it.
+                if self.chars == self.bytes || index == 0 {
+                    return index;
+                }
+                if index == self.chars {
+                    return self.bytes;
+                }
+                let mut positions = self.positions.get();
+                if let Some(byte) = positions.by_char(index) {
+                    return byte;
+                }
+                // Scan the chunk holding INDEX from the nearest position
+                // known before it there.
+                let view = self.view_at_char(rope, index);
+                let (from, from_byte) = positions
+                    .entries()
+                    .filter(|entry| entry.0 >= view.char && entry.0 <= index)
+                    .fold((view.char, view.byte), |best, entry| {
+                        if entry.0 > best.0 { entry } else { best }
+                    });
+                // SAFETY: the view is of this unchanged rope.
+                let text = unsafe { view.text() };
+                let byte = from_byte
+                    + ropey::str_utils::char_to_byte_idx(
+                        &text[from_byte - view.byte..],
+                        index - from,
+                    );
+                positions.record(index, byte);
+                self.positions.set(positions);
+                byte
+            }
         }
     }
 
@@ -416,7 +618,33 @@ impl BufferText {
     fn byte_to_char(&self, byte: usize) -> usize {
         match &self.store {
             TextStore::Small(text) => ropey::str_utils::byte_to_char_idx(text, byte),
-            TextStore::Rope(rope) => rope.byte_to_char(byte),
+            TextStore::Rope(rope) => {
+                if self.chars == self.bytes || byte == 0 {
+                    return byte;
+                }
+                if byte == self.bytes {
+                    return self.chars;
+                }
+                // A byte in the middle of a character names no position of
+                // its own, so only conversions from chars are recorded.
+                let positions = self.positions.get();
+                if let Some(index) = positions.by_byte(byte) {
+                    return index;
+                }
+                let view = self.view_at_byte(rope, byte);
+                let (from, from_byte) = positions
+                    .entries()
+                    .filter(|entry| entry.1 >= view.byte && entry.1 <= byte)
+                    .fold((view.char, view.byte), |best, entry| {
+                        if entry.1 > best.1 { entry } else { best }
+                    });
+                // SAFETY: the view is of this unchanged rope.
+                let text = unsafe { view.text() };
+                from + ropey::str_utils::byte_to_char_idx(
+                    &text[from_byte - view.byte..],
+                    byte - from_byte,
+                )
+            }
         }
     }
 
@@ -517,6 +745,10 @@ impl BufferText {
             }
             TextStore::Rope(rope) => rope.insert(char_index, text),
         }
+        self.positions
+            .get_mut()
+            .inserted(char_index, added, text.len());
+        *self.chunk.get_mut() = None;
         self.chars += added;
         self.bytes += text.len();
         self.raw_markers += count_raw_markers(text.as_bytes());
@@ -569,6 +801,8 @@ impl BufferText {
     /// The counts after RANGE, BYTES long, was removed; a rope that fell
     /// under half the small size becomes a string.
     fn removed(&mut self, range: std::ops::Range<usize>, bytes: usize) {
+        self.positions.get_mut().removed(range.clone(), bytes);
+        *self.chunk.get_mut() = None;
         self.chars -= range.len();
         self.bytes -= bytes;
         if let TextStore::Rope(rope) = &self.store
@@ -1299,40 +1533,50 @@ impl Buffer {
     /// chunk: a rope slice counts the lines of its end chunks before
     /// anything is read, most of a short deletion's record.
     fn text_range_string(&self, from: usize, to: usize) -> String {
+        self.text_range_with_bytes(from, to).0
+    }
+
+    /// `text_range_string' with the store byte offsets of the range's
+    /// ends, from one walk to FROM's chunk when the range lies in it (as a
+    /// short deletion's does): the characters are counted from FROM, not
+    /// over the whole chunk.
+    fn text_range_with_bytes(&self, from: usize, to: usize) -> (String, usize, usize) {
         let to = to.min(self.text.len_chars());
-        // An ASCII text's char indexes are its byte indexes, and the range
-        // is that many bytes.
+        // An ASCII text's char indexes are its byte indexes.
         let ascii = self.text_is_ascii();
         let mut out = String::with_capacity(to.saturating_sub(from));
         let mut index = from;
-        while index < to {
-            let (chunk, _, chunk_start, _) = self.text.chunk_at_char(index);
-            let byte_of = |chars: usize| {
-                if ascii {
-                    chars
-                } else {
-                    ropey::str_utils::char_to_byte_idx(chunk, chars)
-                }
-            };
-            let start = byte_of(index - chunk_start);
-            let chunk_chars = if ascii {
-                chunk.len()
+        let mut first = None;
+        loop {
+            let (chunk, chunk_byte, chunk_start, _) = self.text.chunk_at_char(index);
+            let start = if ascii {
+                index - chunk_start
             } else {
-                ropey::str_utils::byte_to_char_idx(chunk, chunk.len())
+                ropey::str_utils::char_to_byte_idx(chunk, index - chunk_start)
             };
-            let chunk_end = chunk_start + chunk_chars;
-            let end = if to >= chunk_end {
-                chunk.len()
+            let start_byte = *first.get_or_insert(chunk_byte + start);
+            let rest = &chunk[start..];
+            let wanted = to - index;
+            let take = if ascii {
+                wanted.min(rest.len())
             } else {
-                byte_of(to - chunk_start)
+                ropey::str_utils::char_to_byte_idx(rest, wanted)
             };
-            if start >= end {
-                break;
+            out.push_str(&rest[..take]);
+            let taken = if ascii {
+                take
+            } else if take < rest.len() {
+                wanted
+            } else {
+                // The range runs to the chunk's end or past it: count what
+                // the chunk held.
+                ropey::str_utils::byte_to_char_idx(rest, rest.len())
+            };
+            index += taken;
+            if index >= to || taken == 0 {
+                return (out, start_byte, chunk_byte + start + take);
             }
-            out.push_str(&chunk[start..end]);
-            index = chunk_end;
         }
-        out
     }
 
     /// search.c's find_newline forward: the 0-based index of the first
@@ -1524,7 +1768,15 @@ impl Buffer {
         if !self.multibyte || self.text.len_bytes() == self.text.len_chars() {
             return position;
         }
-        let stored = self.text.char_to_byte(position - 1);
+        self.byte_position_at_stored(position, self.text.char_to_byte(position - 1))
+    }
+
+    /// `marker_byte_position' of POSITION, whose character starts at byte
+    /// STORED of the text as stored.
+    fn byte_position_at_stored(&self, position: usize, stored: usize) -> usize {
+        if !self.multibyte || self.text.len_bytes() == self.text.len_chars() {
+            return position;
+        }
         let mut bytes = stored - self.text.raw_markers_before(stored);
         for &(at, code) in &self.extended_chars {
             if at >= position {
@@ -2448,8 +2700,9 @@ impl Buffer {
         let from0 = from - 1;
         let to0 = to - 1;
 
-        // Grab text for undo before deleting
-        let deleted: String = self.text_range_string(from0, to0);
+        // Grab text for undo before deleting, with the byte offsets of its
+        // ends in the same walk.
+        let (deleted, from_stored, to_stored) = self.text_range_with_bytes(from0, to0);
         let deleted_props = self.substring_property_spans(from, to);
         let deleted_extended_chars = self.substring_extended_chars(from, to);
         let nchars = to - from;
@@ -2466,8 +2719,8 @@ impl Buffer {
             });
         }
 
-        let from_byte = self.marker_byte_position(from);
-        let to_byte = self.marker_byte_position(to);
+        let from_byte = self.byte_position_at_stored(from, from_stored);
+        let to_byte = self.byte_position_at_stored(to, to_stored);
         self.text.remove_text(from0..to0, &deleted);
         self.invalidate_char_cache();
 
@@ -4050,6 +4303,46 @@ mod tests {
         buf.swap_text_state(&mut other);
         assert_eq!(buf.char_at(1), Some('q'));
         assert_eq!(other.char_at(1501), Some('Ω'));
+    }
+
+    #[test]
+    fn rope_position_cache_follows_edits_before_and_over_it() {
+        // Conversions recorded since an edit stay right across the edits
+        // after them: shifted by an edit before, dropped by one over them.
+        let mut model: Vec<char> = "aé€bc\n".repeat(400).chars().collect();
+        let mut text = BufferText::from_str(&model.iter().collect::<String>());
+        assert!(matches!(text.store, TextStore::Rope(_)));
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut next = |bound: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % bound.max(1) as u64) as usize
+        };
+        let byte_of = |model: &[char], index: usize| -> usize {
+            model[..index].iter().map(|ch| ch.len_utf8()).sum()
+        };
+        for round in 0..400 {
+            for _ in 0..3 {
+                let index = next(model.len() + 1);
+                assert_eq!(text.char_to_byte(index), byte_of(&model, index));
+                let byte = byte_of(&model, index);
+                assert_eq!(text.byte_to_char(byte), index);
+            }
+            let at = next(model.len());
+            if round % 2 == 0 {
+                let inserted = ["x", "λ", "€é", "\n"][next(4)];
+                text.insert(at, inserted);
+                for (offset, ch) in inserted.chars().enumerate() {
+                    model.insert(at + offset, ch);
+                }
+            } else {
+                let end = (at + 1 + next(3)).min(model.len());
+                text.remove(at..end);
+                model.drain(at..end);
+            }
+            assert_eq!(text.len_chars(), model.len());
+        }
     }
 
     #[test]

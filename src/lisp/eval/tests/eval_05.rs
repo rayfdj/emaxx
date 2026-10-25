@@ -8951,3 +8951,42 @@ fn load_reads_a_compiled_file_as_gnu_readchar_reads_it() {
          ((\"x\" . 5) (z) [a [b] c]))",
     );
 }
+
+#[test]
+fn edits_and_matches_on_multibyte_text_keep_positions_like_gnu() {
+    // Each conversion between characters and bytes the buffer remembers
+    // must follow the edits after it.  The values are GNU 30.2's.
+    assert_eq!(
+        eval_str(
+            r#"(prin1-to-string
+                (with-temp-buffer
+                  (dotimes (i 300) (insert "line é " (number-to-string i) "\n"))
+                  (let (r)
+                    (goto-char 100)
+                    (push (list (looking-at "[^\n]*") (match-beginning 0) (match-end 0)) r)
+                    (goto-char (point-max))
+                    (push (list (looking-at "\\'") (match-beginning 0)) r)
+                    (goto-char 50) (delete-char 3)
+                    (push (list (point) (char-after) (buffer-substring 45 55)) r)
+                    (goto-char 51) (delete-char -2)
+                    (push (list (point) (buffer-substring 45 55)) r)
+                    (narrow-to-region 200 300) (goto-char 250)
+                    (push (list (looking-at ".*") (match-beginning 0) (match-end 0)) r)
+                    (goto-char 300) (push (list (looking-at "") (match-end 0)) r)
+                    (goto-char 200)
+                    (push (list (re-search-forward "é \\([0-9]+\\)" nil t)
+                                (match-beginning 1) (match-end 1))
+                          r)
+                    (widen)
+                    (goto-char (point-max)) (delete-char -5)
+                    (push (list (point) (buffer-size)) r)
+                    (goto-char 1) (insert "ééé") (goto-char 2)
+                    (push (list (looking-at "é+") (match-end 0)) r)
+                    (nreverse r))))"#
+        ),
+        Value::string(
+            "((t 100 100) (t 3191) (50 53 \"\nline5\nlin\") (49 \"\nlin\nline \") \
+             (t 250 255) (t 300) (205 203 205) (3181 3180) (t 4))"
+        )
+    );
+}
