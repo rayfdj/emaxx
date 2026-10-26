@@ -13,7 +13,7 @@ use super::super::*;
 use super::context::*;
 use super::image::*;
 use crate::lisp::eval::RecordKind;
-use crate::lisp::types::{CharTableRef, Kind, SubCharTableRef, SymbolName};
+use crate::lisp::types::{CharTableRef, Kind, SymbolName};
 
 /// pdumper.c:pdumper_load_result.
 #[derive(Debug, PartialEq, Eq)]
@@ -360,6 +360,7 @@ pub(crate) fn load_permanent_image(
         very_late_relocs: relocs(VERY_LATE_RELOCS)?,
         conses: ImageConses::default(),
         strings: ImageStrings::default(),
+        vectors: ImageVectors::default(),
         subrs: HashMap::default(),
         reader,
         image,
@@ -552,6 +553,8 @@ struct Loader<'a> {
     conses: ImageConses,
     /// The image's string blocks, once adopted.
     strings: ImageStrings,
+    /// The image's vector blocks and large vectors, once adopted.
+    vectors: ImageVectors,
     /// The subr each copied record of the Emacs image names.
     subrs: HashMap<
         u32,
@@ -659,12 +662,59 @@ impl ImageStrings {
     }
 }
 
+/// The codes of RELOC_DUMP_TO_DUMP_LV naming a vector of the vector
+/// blocks or the large vectors, by its kind.
+pub(super) const VECTOR_LV: u32 = 0x100 | DumpType::Vector as u32;
+pub(super) const CLOSURE_LV: u32 = 0x100 | DumpType::Closure as u32;
+pub(super) const LISP_RECORD_LV: u32 = 0x100 | DumpType::LispRecord as u32;
+pub(super) const CHAR_TABLE_LV: u32 = 0x100 | DumpType::CharTable as u32;
+pub(super) const SUB_CHAR_TABLE_LV: u32 = 0x100 | DumpType::SubCharTable as u32;
+
+/// The image's vector blocks and its large vectors after them, where the
+/// image is mapped: BASE the image's address, START the first block's
+/// offset, END past the last large vector's mark, from START.
+#[derive(Default)]
+struct ImageVectors {
+    base: usize,
+    start: usize,
+    end: usize,
+    /// A bit for each word from START, set where a vector starts.
+    starts: Vec<u64>,
+    /// Each vector's Lisp words, from its first to past its last, as
+    /// offsets from START, in order: the words a relocation may name.
+    words: Vec<(u32, u32)>,
+    /// The closures' offsets from START, for the check of their code
+    /// once their words are relocated.
+    closures: Vec<u32>,
+}
+
+impl ImageVectors {
+    /// The vector whose header is at OFFSET, which must start one of the
+    /// image's vectors.
+    #[inline(always)]
+    fn vector_at(&self, offset: u32) -> Result<Value, LoadError> {
+        let at = (offset as usize).wrapping_sub(self.start);
+        if at >= self.end
+            || !at.is_multiple_of(8)
+            || self.starts[at / 512] & (1 << (at / 8 % 64)) == 0
+        {
+            return Err(LoadError::Error(format!(
+                "vector at {offset} is not one of the image's vectors"
+            )));
+        }
+        // SAFETY: an adopted vector, by the check, whose header is a
+        // vectorlike's (lisp.h's Lisp_Vectorlike tag).
+        Ok(unsafe { Value::from_word((self.base + offset as usize) | 5) })
+    }
+}
+
 impl Loader<'_> {
     fn load(&mut self, header: DumpHeader) -> Result<LoadedImage, LoadError> {
         // pdumper's mapped objects: the image's cons blocks are the heap's
         // where they lie, before anything names one of their conses.
         self.conses = self.adopt_cons_blocks(&header)?;
         let string_props = self.adopt_string_blocks(&header)?;
+        self.adopt_vectors(&header)?;
         // Each object's type, and the objects by the phases that build
         // them, each list in image order: the objects that need only their
         // own bytes, and the rest; a cons is where its block holds it.
@@ -685,7 +735,17 @@ impl Loader<'_> {
                         "object {number} is a string outside the string blocks"
                     )));
                 }
+                DumpType::Vector
+                | DumpType::Closure
+                | DumpType::LispRecord
+                | DumpType::CharTable
+                | DumpType::SubCharTable => {
+                    return Err(LoadError::Error(format!(
+                        "object {number} is a vector outside the vector blocks"
+                    )));
+                }
                 DumpType::EmptyString
+                | DumpType::ZeroVector
                 | DumpType::Float
                 | DumpType::Bignum
                 | DumpType::BoolVector => own_bytes_objects.push(number as u32),
@@ -701,6 +761,15 @@ impl Loader<'_> {
             match kind {
                 DumpType::EmptyString => {
                     self.objects[number] = self.load_empty_string(offset)?;
+                }
+                DumpType::ZeroVector => {
+                    if self.reader.word(offset)? != 0 {
+                        return Err(LoadError::Error(format!(
+                            "the empty vector at {offset} has slots"
+                        )));
+                    }
+                    self.objects[number] =
+                        Value::Vector(crate::lisp::types::VectorRef::filled(0, Value::Nil));
                 }
                 DumpType::Float => {
                     let value = Value::float(f64::from_bits(self.reader.word(offset)?));
@@ -723,8 +792,6 @@ impl Loader<'_> {
         let mut symbol_records = Vec::new();
         let mut obarray_records = Vec::new();
         let mut hash_table_records = Vec::new();
-        let mut char_tables = Vec::new();
-        let mut sub_char_tables = Vec::new();
         let mut buffers = Vec::new();
         let mut markers = Vec::new();
         let mut overlays = Vec::new();
@@ -744,39 +811,6 @@ impl Loader<'_> {
                     let symbol = self.symbol_of_record(offset, flags, name)?;
                     self.objects[number] = Value::Symbol(symbol);
                     symbol_records.push((offset, symbol, flags));
-                }
-                DumpType::Closure => {
-                    let size = self.reader.word(offset)? as usize;
-                    if !(3..=0xfff).contains(&size) {
-                        return Err(LoadError::Error(format!(
-                            "invalid closure size at {offset}"
-                        )));
-                    }
-                    // Publish every identity before relocating any field.
-                    // Any closure slot can participate in an object cycle.
-                    self.objects[number] =
-                        Value::Closure(crate::lisp::types::ClosureRef::filled(size, Value::Nil));
-                }
-                DumpType::Vector => {
-                    let size = self.reader.word(offset)? as usize;
-                    if size != 0 {
-                        // Value::vector's C footprint: the header word and
-                        // a word a slot.
-                        crate::lisp::native_comp::note_lisp_allocation((size + 1) * 8);
-                    }
-                    self.objects[number] =
-                        Value::Vector(crate::lisp::types::VectorRef::filled(size, Value::Nil));
-                }
-                DumpType::LispRecord => {
-                    let size = self.reader.word(offset)? as usize;
-                    if !(1..=crate::lisp::alloc::vectors::generic_records::MAX_RECORD_SLOTS)
-                        .contains(&size)
-                    {
-                        return Err(LoadError::Error(format!("invalid record size at {offset}")));
-                    }
-                    let record =
-                        crate::lisp::types::LispRecordRef::filled(Value::Nil, size - 1, Value::Nil);
-                    self.objects[number] = Value::LispRecord(record);
                 }
                 DumpType::HashTable => {
                     let nslots = self.reader.word(offset + 24)? as usize;
@@ -863,27 +897,6 @@ impl Loader<'_> {
                         obarray_records.push((offset, id, nslots));
                     }
                 }
-                DumpType::CharTable => {
-                    let slots = self.reader.word(offset)? as usize;
-                    if !(68..=crate::lisp::alloc::vectors::char_tables::CHAR_TABLE_MAX_SLOTS)
-                        .contains(&slots)
-                    {
-                        return Err(LoadError::Error("invalid char-table slot count".into()));
-                    }
-                    let table = CharTableRef::new(Value::Nil, Value::Nil, slots - 68);
-                    self.objects[number] = Value::CharTable(table);
-                    char_tables.push((offset, table));
-                }
-                DumpType::SubCharTable => {
-                    let depth = self.reader.word(offset)? as usize;
-                    let min_char = self.reader.word(offset + 8)?;
-                    if !(1..=3).contains(&depth) || min_char > 0x3fffff {
-                        return Err(LoadError::Error("invalid sub-char-table header".into()));
-                    }
-                    let table = SubCharTableRef::new(depth, min_char as u32, Value::Nil);
-                    self.objects[number] = Value::SubCharTable(table);
-                    sub_char_tables.push((offset, table));
-                }
                 DumpType::Buffer => {
                     let id = self.reader.word(offset)?;
                     let flags = self.reader.word(offset + 8 * BUFFER_FLAGS)?;
@@ -945,49 +958,13 @@ impl Loader<'_> {
 
         // Phase 3: relocate the fields of the published containers.
         let mut obarray = Vec::new();
-        let mut scratch = Vec::new();
         self.relocate_conses()?;
+        self.relocate_vectors()?;
         for &number in &other_objects {
             let number = number as usize;
             let kind = kinds[number];
             let offset = self.starts.offset(number);
             match kind {
-                DumpType::Closure => {
-                    let Kind::Closure(closure) = self.objects[number].kind() else {
-                        unreachable!()
-                    };
-                    scratch.resize(closure.public_len(), Value::Nil);
-                    self.fields(offset + 8, &mut scratch)?;
-                    for (index, &value) in scratch.iter().enumerate() {
-                        closure.initialize_slot(index, value);
-                    }
-                    if !closure.is_bytecode() && !matches!(closure.body().kind(), Kind::Cons(_)) {
-                        return Err(LoadError::Error(format!(
-                            "invalid closure code at {offset}"
-                        )));
-                    }
-                }
-                DumpType::Vector => {
-                    let size = self.reader.word(offset)? as usize;
-                    let Kind::Vector(vector) = self.objects[number].kind() else {
-                        unreachable!()
-                    };
-                    scratch.resize(size, Value::Nil);
-                    self.fields(offset + 8, &mut scratch)?;
-                    for (index, &value) in scratch.iter().enumerate() {
-                        vector.set(index, value);
-                    }
-                }
-                DumpType::LispRecord => {
-                    let Kind::LispRecord(record) = self.objects[number].kind() else {
-                        unreachable!("record placeholder installed in phase 2")
-                    };
-                    scratch.resize(record.len(), Value::Nil);
-                    self.fields(offset + 8, &mut scratch)?;
-                    for (index, &field) in scratch.iter().enumerate() {
-                        record.set(index, field);
-                    }
-                }
                 DumpType::Record | DumpType::Obarray => {
                     let id = self.reader.word(offset)?;
                     let nslots = self.reader.word(offset + 24)? as usize;
@@ -1045,16 +1022,6 @@ impl Loader<'_> {
                     obarray.push(symbol);
                 }
             }
-        }
-        for (offset, table) in char_tables {
-            scratch.resize(table.slot_count(), Value::Nil);
-            self.fields(offset + 8, &mut scratch)?;
-            table.set_slots(&scratch);
-        }
-        for (offset, table) in sub_char_tables {
-            scratch.resize(table.slots().len(), Value::Nil);
-            self.fields(offset + 16, &mut scratch)?;
-            table.set_slots(&scratch);
         }
         for (string, props_offset) in string_props {
             let spans = self.load_text_properties(props_offset)?;
@@ -1251,11 +1218,13 @@ impl Loader<'_> {
         if header.hash_list == 0 {
             return Ok(Vec::new());
         }
-        let offset = header.hash_list;
-        let size = self.reader.word(offset)? as usize;
-        let mut ids = Vec::with_capacity(size);
-        for index in 0..size {
-            match (self.value_at(offset + 8 * (index as u32 + 1))?).kind() {
+        // A vector of the vector blocks, relocated where it is.
+        let Kind::Vector(list) = self.vectors.vector_at(header.hash_list)?.kind() else {
+            return Err(LoadError::Error("the hash list is not a vector".into()));
+        };
+        let mut ids = Vec::with_capacity(list.len());
+        for entry in list.slots() {
+            match entry.kind() {
                 Kind::HashTable(table) => ids.push(table),
                 other => {
                     return Err(LoadError::Error(format!(
@@ -1267,8 +1236,8 @@ impl Loader<'_> {
         Ok(ids)
     }
 
-    /// The object whose start is at OFFSET: a cons or a string of the
-    /// blocks, or one of the object starts.
+    /// The object whose start is at OFFSET: a cons, a string or a vector
+    /// of the blocks, or one of the object starts.
     fn object_at(&self, offset: u32) -> Option<Value> {
         match self.starts.find(offset) {
             Some(number) => self.object(number),
@@ -1276,6 +1245,7 @@ impl Loader<'_> {
                 .conses
                 .cons_at(offset)
                 .or_else(|_| self.strings.string_at(offset))
+                .or_else(|_| self.vectors.vector_at(offset))
                 .ok(),
         }
     }
@@ -1446,6 +1416,116 @@ impl Loader<'_> {
         Ok(props)
     }
 
+    /// The image's vector blocks and large vectors
+    /// (`DumpHeader::vector_blocks', `DumpHeader::large_vectors'), made the
+    /// heap's where the image holds them, once their place in the hot
+    /// section is checked: each vector's start is remembered for the words
+    /// that name it, its Lisp words for the relocations that name them.
+    fn adopt_vectors(&mut self, header: &DumpHeader) -> Result<(), LoadError> {
+        use crate::lisp::alloc::vectors::{IMAGE_VECTOR_BLOCK_BYTES, VectorTag};
+        let start = header.vector_blocks.offset as usize;
+        let blocks = header.vector_blocks.nr_entries as usize;
+        let large = header.large_vectors.nr_entries as usize;
+        if blocks == 0 && large == 0 {
+            return Ok(());
+        }
+        let hot_end = (header.discardable_start as usize).min(self.image.len);
+        if !start.is_multiple_of(IMAGE_VECTOR_BLOCK_BYTES)
+            || start < HEADER_LEN
+            || start > hot_end
+            || header.large_vectors.offset as usize != start + blocks * IMAGE_VECTOR_BLOCK_BYTES
+        {
+            return Err(LoadError::Error(format!(
+                "the vector blocks at {start} are not in the hot section"
+            )));
+        }
+        let limit = hot_end - start;
+        let mut starts = vec![0_u64; limit.div_ceil(512)];
+        let mut words = Vec::new();
+        let mut closures = Vec::new();
+        // SAFETY: the image is aligned to a block (`IMAGE_ALIGNMENT'), so
+        // the blocks from START are, and the LIMIT bytes from it, inside the
+        // image by the check above, stay for the life of the process, and
+        // nothing else uses them.
+        let end = unsafe {
+            crate::lisp::alloc::vectors::adopt_image_vectors(
+                self.image.at(start).as_ptr(),
+                blocks,
+                large,
+                limit,
+                |vector| {
+                    starts[vector.start / 512] |= 1 << (vector.start / 8 % 64);
+                    words.push((vector.lisp as u32, vector.end as u32));
+                    if vector.tag == VectorTag::Closure {
+                        closures.push(vector.start as u32);
+                    }
+                },
+            )
+        }
+        .map_err(LoadError::Error)?;
+        self.vectors = ImageVectors {
+            base: self.image.address.as_ptr() as usize,
+            start,
+            end,
+            starts,
+            words,
+            closures,
+        };
+        Ok(())
+    }
+
+    /// Phase 3 for the vectors: as for the conses (`relocate_conses'), each
+    /// relocation in the vector area applied to the word it names, a Lisp
+    /// word of a vector; then each closure's code is checked.
+    fn relocate_vectors(&mut self) -> Result<(), LoadError> {
+        let words = std::mem::take(&mut self.vectors.words);
+        if words.is_empty() {
+            return Ok(());
+        }
+        let (base, start) = (self.vectors.base, self.vectors.start as u32);
+        let first = self.relocs.rank_from(0, start);
+        let last = self
+            .relocs
+            .rank_from(first, start + self.vectors.end as u32);
+        let entries = self.relocs.entries;
+        let mut vector = 0;
+        for entry in &entries[first..last] {
+            let field = entry_word(entry, 0);
+            let at = field - start;
+            while words.get(vector).is_some_and(|&(_, end)| end <= at) {
+                vector += 1;
+            }
+            if words.get(vector).is_none_or(|&(lisp, _)| at < lisp) {
+                return Err(LoadError::Error(format!(
+                    "relocation at {field} is not a Lisp word of a vector"
+                )));
+            }
+            let slot = (base + field as usize) as *mut Value;
+            // SAFETY: a Lisp word of an adopted vector, read where it is.
+            let word = unsafe { slot.cast::<u64>().read() };
+            let value =
+                self.reloc_value(field, entry_word(entry, 4), entry_word(entry, 8), word)?;
+            // SAFETY: a Lisp word of an adopted vector, which nothing has
+            // seen.
+            unsafe { slot.write(value) };
+        }
+        // The next field read seeks its relocation afresh.
+        self.reloc_last = u32::MAX;
+        for &closure in &self.vectors.closures {
+            let Kind::Closure(closure) = self.vectors.vector_at(start + closure)?.kind() else {
+                unreachable!("an adopted closure")
+            };
+            if !closure.is_bytecode() && !matches!(closure.body().kind(), Kind::Cons(_)) {
+                return Err(LoadError::Error(format!(
+                    "invalid closure code at {}",
+                    closure.identity() - base
+                )));
+            }
+        }
+        self.vectors.closures = Vec::new();
+        Ok(())
+    }
+
     /// Phase 3 for the conses: pdumper.c's relocation of the dump where it
     /// is mapped, each relocation in the cons blocks applied to the word it
     /// names, in order; the other words are the heap's as the dumper wrote
@@ -1532,11 +1612,6 @@ impl Loader<'_> {
             return immediate_value(word);
         };
         let code = self.relocs.code(reloc);
-        match code {
-            CONS_LV => return self.conses.cons_at(word as u32),
-            STRING_LV => return self.strings.string_at(word as u32),
-            _ => {}
-        }
         // DUMP_RELOC_DUMP_TO_DUMP_LV, whatever the target's type: the
         // entry names the object the word does.
         if code >> 8 == 1
@@ -1553,14 +1628,14 @@ impl Loader<'_> {
             );
             return Ok(value);
         }
-        self.relocated_value(field_offset, code, word)
+        self.block_value(field_offset, code, word)
     }
 
     /// The value of the word WORD at FIELD that the relocation of CODE and
-    /// object TARGET names: a cons or a string of the blocks (pdumper.c's
-    /// RELOC_DUMP_TO_DUMP_LV, the mapped image's address and the word's
-    /// offset), the object the entry numbers, or what another relocation
-    /// makes.
+    /// object TARGET names: a cons, a string or a vector of the blocks
+    /// (pdumper.c's RELOC_DUMP_TO_DUMP_LV, the mapped image's address and
+    /// the word's offset), the object the entry numbers, or what another
+    /// relocation makes.
     #[inline(always)]
     fn reloc_value(
         &mut self,
@@ -1569,13 +1644,25 @@ impl Loader<'_> {
         target: u32,
         word: u64,
     ) -> Result<Value, LoadError> {
-        match code {
-            CONS_LV => return self.conses.cons_at(word as u32),
-            STRING_LV => return self.strings.string_at(word as u32),
-            _ => {}
+        if code >> 8 == 1
+            && let Some(value) = self.object(target as usize)
+        {
+            return Ok(value);
         }
-        match self.object(target as usize) {
-            Some(value) if code >> 8 == 1 => Ok(value),
+        self.block_value(field, code, word)
+    }
+
+    /// reloc_value for a relocation that numbers no object: a cons, a
+    /// string or a vector of the blocks, which the entry does not number
+    /// (`NO_OBJECT'), or what another relocation makes.
+    #[inline(always)]
+    fn block_value(&mut self, field: u32, code: u32, word: u64) -> Result<Value, LoadError> {
+        match code {
+            CONS_LV => self.conses.cons_at(word as u32),
+            STRING_LV => self.strings.string_at(word as u32),
+            VECTOR_LV | CLOSURE_LV | LISP_RECORD_LV | CHAR_TABLE_LV | SUB_CHAR_TABLE_LV => {
+                self.vectors.vector_at(word as u32)
+            }
             _ => self.relocated_value(field, code, word),
         }
     }
@@ -1589,12 +1676,20 @@ impl Loader<'_> {
         word: u64,
     ) -> Result<Value, LoadError> {
         match DumpRelocKind::from_u32(code) {
-            // RELOC_DUMP_TO_DUMP_LV of a cons or a string: the word is the
-            // cell's offset, and the object is where the image is mapped.
+            // RELOC_DUMP_TO_DUMP_LV of a cons, a string or a vector: the
+            // word is the object's offset, and the object is where the
+            // image is mapped.
             Some(DumpRelocKind::DumpToDumpLv(DumpType::Cons)) => self.conses.cons_at(word as u32),
             Some(DumpRelocKind::DumpToDumpLv(DumpType::String)) => {
                 self.strings.string_at(word as u32)
             }
+            Some(DumpRelocKind::DumpToDumpLv(
+                DumpType::Vector
+                | DumpType::Closure
+                | DumpType::LispRecord
+                | DumpType::CharTable
+                | DumpType::SubCharTable,
+            )) => self.vectors.vector_at(word as u32),
             Some(DumpRelocKind::DumpToDumpLv(_)) => Err(LoadError::Error(format!(
                 "field at {field_offset} names no object ({word})"
             ))),

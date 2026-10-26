@@ -6788,6 +6788,61 @@ setup_process_coding_systems's check now refuses). A 13-form
   beside the gate and passed five times of five alone; the new test with
   the other 30 pdumper tests; clippy `-D warnings', rustfmt and `git diff
   --check' pass.
+- **Round 98: the image's vectors mapped in place.** The image's
+  ordinary vectors (but the empty one, alloc.c's `zero_vector', which
+  stays an object start of its own), closures, records, char tables and
+  sub-char-tables take the conses' and strings' way: the dumper writes
+  each in its runtime form (the size word the allocator gave it, then
+  its words, a subtable's packed depth and first character among them,
+  the immediates as the heap holds them) into this allocator's vector
+  blocks, each vector in the first block with room for it below
+  `VECTOR_BLOCK_BYTES' (dump order alone left 0.66 MB of block tails
+  unused; first fit leaves 0.20 MB), a block's unused bytes one free
+  vector and its marks zero; a vector past `VBLOCK_BYTES_MAX' follows
+  the blocks on its own with its mark's word. Two more header locators
+  give the blocks and the large vectors with their counts (the header is
+  now 132 bytes); a vector's offset is provisional while the other
+  objects are dumped, above the strings' range, and every remembered one
+  (the hash-table list's included) is translated when the blocks are
+  placed. The loader checks each vector's size word against the kinds
+  the image holds (a free vector only at a block's end; a subtable's
+  depth, slot count and first character; a closure's three slots at
+  least), sets each block's marks and each large vector's mark to the
+  current epoch, and registers the 870 blocks and 35 large vectors (the
+  image's 13,932 vectors, 3.76 MB) as the image's own bytes; nothing is
+  allocated or counted. A vector reference is the mapped image's
+  address plus the word's offset (RELOC_DUMP_TO_DUMP_LV of the vector's
+  kind), checked against a bitmap of the vectors' starts; the 210K
+  relocations in the vector area are applied in place, each checked to
+  name a Lisp word of a vector, and the closures' code is checked after
+  them. The collector never gives a mapped vector block back (a block
+  with nothing live stays one free vector, on no free list) nor frees a
+  mapped large vector, which leaves the registry. A relocation naming an
+  object of the starts is resolved before the cell and vector kinds are
+  tried (166K of the area's 210K name symbols or bool vectors), which
+  brought the area's relocation from 55 instructions a relocation to 38.
+  Startup (`--batch --eval nil') took 170.8M instructions and now 162.3M
+  (GNU 166.1M, 52.6M of it collecting); `Loader::load' 91.5M and now
+  83.0M; loading `ert' 358.4M and now 349.6M (GNU 396.6M); the frozen
+  runner's setup of xml-tests.el 492.7M and now 483.7M (GNU 469.5M). The
+  image is 25.5 MB. Every symbol's value, function and plist after
+  startup is round 97's but for timestamps, paths, the image's consing
+  counters and the order of `comp-loaded-comp-units-h''s load-time
+  entries (dump-queue order, which the hot section's size moves; GNU's
+  differs from both). The cons, interning and string probes give GNU
+  30.2's output byte for byte, and a new probe that stores into image
+  char tables, keymaps and records, keys a weak table by them and drops
+  one across collections gives round 97's output; its one difference
+  from GNU's, a replaced `char-script-table' still keyed after three
+  collections, is conservative stack residue (with one collection GNU
+  keeps a fresh unreachable char table and Emaxx keeps neither), and no
+  Lisp or host root holds the old table. Local validation: the full
+  gate, 3,240 passed across its ten groups with the documented local
+  skips (the pdumper tests 32, one new), and the one other test,
+  `just_this_one_wait_still_notifies_an_exited_distractor', failed once
+  while the host ran profiles beside the gate, as in round 97, and passed
+  five times of five alone; clippy `-D warnings', rustfmt and `git diff
+  --check' pass.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -7531,7 +7586,12 @@ runner in the integration stage after the library groups and binaries
 had passed, and the re-run passed (run 40294000763, attempt 2); frozen
 passed on its first attempt (run 40294012283).
 **On `c75f77f`** (round 96): frozen passed on its first attempt (run
-40304554801); the Rust gate (run 40304550655) was still running.
+40304554801); the Rust gate passed (run 40304550655).
+**On `c2ebbb7`** (round 97): frozen failed only GNU's known oracle flake
+(`eglot-test-rust-completion-exit-function` failed in GNU; Emaxx 7,670
+passed with 0 unexpected, GNU 7,669 with 1 unexpected), and its failed
+job was rerun (run 40313513267, attempt 2, still running); the Rust gate
+passed (run 40313509629).
 
 **Findings recorded, not fixed:**
 - `features`, `values` and `top-level` are special variables in Emaxx
@@ -7831,8 +7891,9 @@ and failures are still recorded.
    hot spot, so it wants the image mapped in place rather than another
    trim; round 95 maps the conses in place, round 96 keeps the symbols'
    host text in the image and files them in lread.c's obarray, and round
-   97 maps the strings in place; the symbols, vectors, records and
-   tables are still rebuilt,
+   97 maps the strings in place and round 98 the vectors, closures,
+   records and char tables; the symbols and the other records are still
+   rebuilt,
    and the initial obarray's buckets are filled again as the symbols are
    read rather than restored); the encode side of coding.c (bullet "Round 56"); and text
    properties kept in one flat vector of spans (each edit shifts it; GNU

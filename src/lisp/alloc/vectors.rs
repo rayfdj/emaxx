@@ -578,6 +578,326 @@ fn free_large_vector(header: *mut VectorHeader, nbytes: usize) {
     unsafe { std::alloc::dealloc(header.cast(), layout) };
 }
 
+/// The image's vectors -- the ordinary vectors but the empty one, the
+/// closures, the records and the char tables and their subtables -- are
+/// this allocator's vector blocks and large vectors, written whole by the
+/// dumper and used where the loader maps them, as pdumper.c's dump holds
+/// its objects in their runtime form (see `adopt_image_cons_blocks'): a
+/// block of `VECTOR_BLOCK_SIZE' holds vectors from its start, each in the
+/// first block with room for it as they are dumped, its usable bytes past
+/// the last one a free vector (when they are at least one), and its marks
+/// after `VECTOR_BLOCK_BYTES'; each large
+/// vector, past `VBLOCK_BYTES_MAX', follows the blocks on its own, with
+/// its mark after it.
+pub(crate) const IMAGE_VECTOR_BLOCK_BYTES: usize = VECTOR_BLOCK_SIZE;
+
+/// The dumper's image vectors: each vector's words, in its runtime form,
+/// where the image will hold it.
+#[derive(Default)]
+pub(crate) struct ImageVectorWriter {
+    /// The blocks' words, whole blocks.
+    blocks: Vec<u64>,
+    /// The bytes each block's vectors take from its start.
+    used: Vec<usize>,
+    /// The blocks with room for another vector, in order.
+    open: Vec<usize>,
+    /// The large vectors' words, each one's mark after it.
+    large: Vec<u64>,
+    large_count: usize,
+}
+
+/// Where an image vector goes: its offset from the first block, or from
+/// the first large vector.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ImageVectorPlace {
+    Block(usize),
+    Large(usize),
+}
+
+impl ImageVectorWriter {
+    /// Where the next vector, of NBYTES, goes: after the last vector of the
+    /// first block it fits in below `VECTOR_BLOCK_BYTES', else at the start
+    /// of a new block; a large one after the last large one.
+    pub(crate) fn next_place(&self, nbytes: usize) -> ImageVectorPlace {
+        if nbytes > VBLOCK_BYTES_MAX {
+            return ImageVectorPlace::Large(self.large.len() * WORD_SIZE);
+        }
+        let block = self
+            .open
+            .iter()
+            .copied()
+            .find(|&block| self.used[block] + nbytes <= VECTOR_BLOCK_BYTES)
+            .unwrap_or(self.used.len());
+        ImageVectorPlace::Block(
+            block * VECTOR_BLOCK_SIZE + self.used.get(block).copied().unwrap_or(0),
+        )
+    }
+
+    /// Write WORDS, a vector's header and payload as the heap holds them,
+    /// where `next_place' puts it.
+    pub(crate) fn push(&mut self, words: &[u64]) -> ImageVectorPlace {
+        let nbytes = words.len() * WORD_SIZE;
+        debug_assert!(nbytes >= VBLOCK_BYTES_MIN);
+        let place = self.next_place(nbytes);
+        match place {
+            ImageVectorPlace::Large(_) => {
+                self.large.extend_from_slice(words);
+                self.large
+                    .resize(self.large.len() + LARGE_MARK_BYTES / WORD_SIZE, 0);
+                self.large_count += 1;
+            }
+            ImageVectorPlace::Block(at) => {
+                let block = at / VECTOR_BLOCK_SIZE;
+                if block == self.used.len() {
+                    self.blocks
+                        .resize(self.blocks.len() + VECTOR_BLOCK_SIZE / WORD_SIZE, 0);
+                    self.used.push(0);
+                    self.open.push(block);
+                }
+                self.blocks[at / WORD_SIZE..at / WORD_SIZE + words.len()].copy_from_slice(words);
+                self.used[block] += nbytes;
+                if self.used[block] + VBLOCK_BYTES_MIN > VECTOR_BLOCK_BYTES {
+                    self.open.retain(|&open| open != block);
+                }
+            }
+        }
+        place
+    }
+
+    /// The blocks' words, each block's usable bytes past its last vector a
+    /// free vector when they are at least one, its marks zero, and their
+    /// count; the large vectors' words, and their count.
+    pub(crate) fn finish(mut self) -> (Vec<u64>, usize, Vec<u64>, usize) {
+        for (block, &used) in self.used.iter().enumerate() {
+            let rest = VECTOR_BLOCK_BYTES - used;
+            if rest >= VBLOCK_BYTES_MIN {
+                self.blocks[(block * VECTOR_BLOCK_SIZE + used) / WORD_SIZE] =
+                    VectorHeader::pseudovector_size_word(VectorTag::Free, rest) as u64;
+            }
+        }
+        (self.blocks, self.used.len(), self.large, self.large_count)
+    }
+}
+
+/// The size word of the vector whose header is at IDENTITY, and its
+/// footprint (alloc.c's `vector_nbytes'), for the dumper, which writes the
+/// image's vectors as the heap holds them.
+///
+/// # Safety
+/// IDENTITY is an allocated vector's header.
+pub(crate) unsafe fn header_and_footprint(identity: usize) -> (usize, usize) {
+    let header = identity as *const VectorHeader;
+    // SAFETY: the caller's contract.
+    unsafe { ((*header).size, (*header).nbytes()) }
+}
+
+/// One of the image's vectors as its adoption found it: the offsets, from
+/// the first block, of its header, of its first Lisp word and past its
+/// last, and its kind.
+pub(crate) struct ImageVector {
+    pub(crate) start: usize,
+    pub(crate) lisp: usize,
+    pub(crate) end: usize,
+    pub(crate) tag: VectorTag,
+}
+
+/// The kind, footprint and offset of the first Lisp word of the image
+/// vector at HEADER, which has ROOM bytes from its header on: one of the
+/// kinds the image holds as vectors (`IMAGE_VECTOR_BLOCK_BYTES') with the
+/// size word the allocator gives it, or a free vector.
+///
+/// # Safety
+/// HEADER is aligned, and the ROOM bytes from it are readable.
+unsafe fn image_vector_shape(
+    header: *const VectorHeader,
+    room: usize,
+) -> Result<(VectorTag, usize, usize), String> {
+    use char_tables::{CHAR_TABLE_MAX_CHAR, CHAR_TABLE_MAX_SLOTS, CHAR_TABLE_STANDARD_SLOTS};
+    const CANONICAL: usize = PSEUDOVECTOR_FLAG | (0x3f << PSEUDOVECTOR_AREA_BITS) | 0xff_ffff;
+    let invalid = || {
+        Err(format!(
+            "invalid image vector header at {:#x}",
+            header as usize
+        ))
+    };
+    if room < VBLOCK_BYTES_MIN {
+        return invalid();
+    }
+    // SAFETY: the caller's contract.
+    let size = unsafe { (*header).size };
+    if size & PSEUDOVECTOR_FLAG == 0 {
+        if size == 0 || size > (room - HEADER_SIZE) / WORD_SIZE {
+            return invalid();
+        }
+        return Ok((
+            VectorTag::Normal,
+            HEADER_SIZE + size * WORD_SIZE,
+            HEADER_SIZE,
+        ));
+    }
+    let tag = match (size >> PSEUDOVECTOR_AREA_BITS) & 0x3f {
+        _ if size & !CANONICAL != 0 => return invalid(),
+        1 => VectorTag::Free,
+        31 => VectorTag::Closure,
+        32 => VectorTag::CharTable,
+        33 => VectorTag::SubCharTable,
+        34 => VectorTag::Record,
+        _ => return invalid(),
+    };
+    let traced = size & PSEUDOVECTOR_SIZE_MASK;
+    let rest = (size >> PSEUDOVECTOR_SIZE_BITS) & PSEUDOVECTOR_SIZE_MASK;
+    // SAFETY: a pseudovector header, whose footprint it alone gives.
+    let nbytes = unsafe { (*header).nbytes() };
+    if nbytes > room || nbytes < VBLOCK_BYTES_MIN {
+        return invalid();
+    }
+    let valid = match tag {
+        VectorTag::Free => traced == 0,
+        VectorTag::Closure => rest == 0 && traced >= 3,
+        VectorTag::Record => rest == 0 && traced >= 1,
+        VectorTag::CharTable => {
+            rest == 0 && (CHAR_TABLE_STANDARD_SLOTS..=CHAR_TABLE_MAX_SLOTS).contains(&traced)
+        }
+        _ => {
+            // The packed word: the depth and the first character.
+            // SAFETY: the footprint's first payload word, in ROOM.
+            let (depth, min_char) = unsafe {
+                let body = payload(header.cast_mut());
+                (body.cast::<i32>().read(), body.add(4).cast::<i32>().read())
+            };
+            rest == 0
+                && (1..=3).contains(&depth)
+                && traced == 1 + char_tables::SUB_CHAR_TABLE_SIZES[depth as usize]
+                && (0..=CHAR_TABLE_MAX_CHAR as i32).contains(&min_char)
+        }
+    };
+    if !valid {
+        return invalid();
+    }
+    let lisp = HEADER_SIZE + usize::from(tag == VectorTag::SubCharTable) * WORD_SIZE;
+    Ok((tag, nbytes, lisp))
+}
+
+/// pdumper's mapped vectors: the BLOCKS vector blocks at START and the
+/// LARGE large vectors after them become the allocator's, image blocks
+/// where the image holds them, as the dump's objects are the heap's once
+/// it is mapped (nothing is allocated or counted for them, and the
+/// collector never frees their storage).  Each vector is checked to be one
+/// of the image's kinds with the size word the allocator gives it, the
+/// blocks to be tiled by them, and every vector to lie in the LIMIT bytes
+/// from START; VECTOR is told each one, in order.  The vectors keep the
+/// words the image gave them, for the loader to relocate in place.  An
+/// image that fails a check is refused, and no block is adopted.  The
+/// result is the bytes from START past the last large vector's mark.
+///
+/// # Safety
+/// START is aligned to `VECTOR_BLOCK_SIZE' and the LIMIT bytes from it are
+/// writable for the life of the process, and no other block overlaps them.
+pub(crate) unsafe fn adopt_image_vectors(
+    start: *mut u8,
+    blocks: usize,
+    large: usize,
+    limit: usize,
+    mut vector: impl FnMut(ImageVector),
+) -> Result<usize, String> {
+    let start = start as usize;
+    assert!(
+        start.is_multiple_of(VECTOR_BLOCK_SIZE),
+        "unaligned image vectors"
+    );
+    let epoch = super::super::types::current_mark_epoch();
+    let small = blocks
+        .checked_mul(VECTOR_BLOCK_SIZE)
+        .filter(|&bytes| bytes <= limit)
+        .ok_or("the image's vector blocks are outside the image")?;
+    for block in 0..blocks {
+        let base = start + block * VECTOR_BLOCK_SIZE;
+        let marks = VectorBlockMarks::new(true);
+        marks.epoch.set(epoch);
+        let mut at = 0;
+        while at <= VECTOR_BLOCK_BYTES - VBLOCK_BYTES_MIN {
+            // SAFETY: an aligned word of the block, whose usable bytes
+            // past it are the room.
+            let (tag, nbytes, lisp) = unsafe {
+                image_vector_shape((base + at) as *const VectorHeader, VECTOR_BLOCK_BYTES - at)?
+            };
+            if tag == VectorTag::Free {
+                if at + nbytes != VECTOR_BLOCK_BYTES {
+                    return Err(format!("a free image vector at {base:#x} ends early"));
+                }
+                break;
+            }
+            if nbytes > VBLOCK_BYTES_MAX {
+                return Err(format!("a large image vector at {base:#x} is in a block"));
+            }
+            let index = at / VBLOCK_BYTES_MIN;
+            let word = &marks.words[index / usize::BITS as usize];
+            word.set(word.get() | 1 << (index % usize::BITS as usize));
+            let first = block * VECTOR_BLOCK_SIZE + at;
+            vector(ImageVector {
+                start: first,
+                lisp: first + lisp,
+                end: first + nbytes,
+                tag,
+            });
+            at += nbytes;
+        }
+        // SAFETY: the block's marks, past the bytes it holds vectors in.
+        unsafe {
+            (base as *mut u8)
+                .add(VECTOR_BLOCK_BYTES)
+                .cast::<VectorBlockMarks>()
+                .write(marks)
+        };
+    }
+    let mut at = small;
+    let mut large_vectors = Vec::with_capacity(large);
+    for _ in 0..large {
+        // SAFETY: an aligned word inside the LIMIT bytes, the rest of them
+        // the room.
+        let (tag, nbytes, lisp) =
+            unsafe { image_vector_shape((start + at) as *const VectorHeader, limit - at)? };
+        if tag == VectorTag::Free
+            || nbytes <= VBLOCK_BYTES_MAX
+            || nbytes + LARGE_MARK_BYTES > limit - at
+        {
+            return Err(format!("invalid large image vector at {:#x}", start + at));
+        }
+        // SAFETY: the mark's word after the footprint, inside the bytes.
+        unsafe {
+            let mark = (start + at + nbytes) as *mut MarkBit;
+            mark.write(MarkBit::default());
+            (*mark).set_raw(epoch);
+        }
+        vector(ImageVector {
+            start: at,
+            lisp: at + lisp,
+            end: at + nbytes,
+            tag,
+        });
+        large_vectors.push((start + at, nbytes + LARGE_MARK_BYTES));
+        at += nbytes + LARGE_MARK_BYTES;
+    }
+    for block in 0..blocks {
+        super::register_block_of(
+            start + block * VECTOR_BLOCK_SIZE,
+            VECTOR_BLOCK_SIZE,
+            BlockKind::VectorBlock,
+            true,
+            true,
+        );
+    }
+    for (address, bytes) in large_vectors {
+        super::register_block_of(address, bytes, BlockKind::LargeVector, true, true);
+    }
+    // New tables, which no cached pattern has seen; and the image's
+    // vectors changed, with or without an image region open: the next
+    // sweep reads them all.
+    char_tables::note_char_table_store();
+    super::forget_image_live();
+    Ok(at)
+}
+
 /// The one zero-length vector (alloc.c's `zero_vector'), outside every
 /// block: every empty allocation is it, so it is never swept.
 #[repr(C)]
@@ -1381,7 +1701,12 @@ pub(crate) fn sweep_vectors(epoch: u32) {
                         break;
                     }
                 }
-                if vector as usize == block && !vector_in_block(next, block) {
+                // A block with nothing live is given back, unless it is
+                // the image's own bytes, which stay one free run.
+                if vector as usize == block
+                    && !vector_in_block(next, block)
+                    && !(image_block && super::is_mapped_block(block))
+                {
                     free_this_block = true;
                 } else if image_block {
                     setup_free_unlinked(vector, total);
@@ -1415,7 +1740,13 @@ pub(crate) fn sweep_vectors(epoch: u32) {
             } else {
                 let nbytes = (*vector).nbytes();
                 cleanup_vector(vector);
-                free_large_vector(vector, nbytes);
+                if image_block && super::is_mapped_block(start) {
+                    // The image's own bytes: no longer a vector, never
+                    // given back.
+                    unregister_block(start);
+                } else {
+                    free_large_vector(vector, nbytes);
+                }
             }
         }
     }

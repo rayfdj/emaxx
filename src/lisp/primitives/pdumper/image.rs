@@ -21,7 +21,7 @@ pub(crate) const FINGERPRINT_LEN: usize = 32;
 pub(crate) const DUMP_ALIGNMENT: usize = 8;
 /// `dump_off' is `int_least32_t'.
 pub(crate) const DUMP_OFF_MAX: usize = i32::MAX as usize;
-pub(crate) const HEADER_LEN: usize = 116;
+pub(crate) const HEADER_LEN: usize = 132;
 pub(crate) const RELOC_NUM_PHASES: usize = 3;
 pub(crate) const EARLY_RELOCS: usize = 0;
 /// pdumper.c:reloc_phase: the native compilation units are loaded in
@@ -107,10 +107,10 @@ pub(crate) struct TableLocator {
 }
 
 /// pdumper.c:dump_header in the same field order, and after it the image's
-/// cons and string blocks: the conses and strings are the allocator's
-/// blocks in the hot section, mapped where they lie (GNU's dump objects
-/// are its heap's form; Emaxx's cells carry their blocks' metadata),
-/// found by their offset and count.
+/// cons, string and vector blocks and its large vectors: these objects are
+/// the allocator's blocks in the hot section, mapped where they lie (GNU's
+/// dump objects are its heap's form; Emaxx's cells carry their blocks'
+/// metadata), found by their offset and count.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DumpHeader {
     pub(crate) magic: [u8; 16],
@@ -125,6 +125,11 @@ pub(crate) struct DumpHeader {
     pub(crate) cons_blocks: TableLocator,
     /// The first string block's offset and the number of strings.
     pub(crate) string_blocks: TableLocator,
+    /// The first vector block's offset and the number of blocks.
+    pub(crate) vector_blocks: TableLocator,
+    /// The first large vector's offset, just past the vector blocks, and
+    /// the number of large vectors.
+    pub(crate) large_vectors: TableLocator,
 }
 
 impl DumpHeader {
@@ -142,6 +147,8 @@ impl DumpHeader {
             hash_list: 0,
             cons_blocks: TableLocator::default(),
             string_blocks: TableLocator::default(),
+            vector_blocks: TableLocator::default(),
+            large_vectors: TableLocator::default(),
         }
     }
 
@@ -169,6 +176,10 @@ impl DumpHeader {
         put(self.cons_blocks.nr_entries);
         put(self.string_blocks.offset);
         put(self.string_blocks.nr_entries);
+        put(self.vector_blocks.offset);
+        put(self.vector_blocks.nr_entries);
+        put(self.large_vectors.offset);
+        put(self.large_vectors.nr_entries);
         out
     }
 
@@ -211,6 +222,14 @@ impl DumpHeader {
             offset: get(),
             nr_entries: get(),
         };
+        let vector_blocks = TableLocator {
+            offset: get(),
+            nr_entries: get(),
+        };
+        let large_vectors = TableLocator {
+            offset: get(),
+            nr_entries: get(),
+        };
         Some(Self {
             magic,
             fingerprint,
@@ -222,6 +241,8 @@ impl DumpHeader {
             hash_list,
             cons_blocks,
             string_blocks,
+            vector_blocks,
+            large_vectors,
         })
     }
 }
@@ -242,7 +263,10 @@ pub(crate) enum DumpType {
     /// One of alloc.c's two static empty-string roots, identified by its flag.
     EmptyString = 30,
     Symbol = 4,
+    /// An ordinary vector of the image's vector blocks or large vectors.
     Vector = 5,
+    /// alloc.c's `zero_vector': the one empty vector, an object start.
+    ZeroVector = 31,
     Float = 6,
     Bignum = 7,
     /// A built-in function, addressed by name (a copied object in GNU).
@@ -307,6 +331,7 @@ impl DumpType {
             30 => Self::EmptyString,
             4 => Self::Symbol,
             5 => Self::Vector,
+            31 => Self::ZeroVector,
             6 => Self::Float,
             7 => Self::Bignum,
             8 => Self::Subr,
@@ -657,6 +682,14 @@ mod tests {
         header.string_blocks = TableLocator {
             offset: 65536,
             nr_entries: 86,
+        };
+        header.vector_blocks = TableLocator {
+            offset: 69632,
+            nr_entries: 2,
+        };
+        header.large_vectors = TableLocator {
+            offset: 77824,
+            nr_entries: 1,
         };
         let bytes = header.to_bytes();
         assert_eq!(bytes.len(), HEADER_LEN);

@@ -130,9 +130,9 @@ struct BlockRegistry {
     /// load registered it (see `IMAGE_REGION_OPEN'), for its sweep.
     by_kind: [BTreeMap<usize, bool>; BLOCK_KINDS],
     /// The image blocks that are the image's own bytes where the loader
-    /// mapped them (`adopt_image_cons_blocks', `adopt_image_string_blocks'):
-    /// pdumper.c never frees its dump, so their storage is never given
-    /// back.
+    /// mapped them (`adopt_image_cons_blocks', `adopt_image_string_blocks',
+    /// `vectors::adopt_image_vectors'): pdumper.c never frees its dump, so
+    /// their storage is never given back.
     mapped: BTreeSet<usize>,
 }
 
@@ -191,13 +191,14 @@ fn unregister_block(start: usize) {
     if let Some(kind) = removed {
         blocks.by_kind[kind as usize].remove(&start);
     }
+    blocks.mapped.remove(&start);
 }
 
 /// pdumper's mapped region, as this loader has it. GNU's sweeps never visit
 /// dumped objects, gcstat never counts them (so `total_bytes_of_live_objects'
 /// and the `garbage-collect' census are the heap's own objects), and their
-/// storage is never reused. This loader maps the image's conses and
-/// strings where the image holds them and rebuilds its other objects in
+/// storage is never reused. This loader maps the image's conses, strings
+/// and vectors where the image holds them and rebuilds its other objects in
 /// ordinary blocks, and every block registered while an image loads is an
 /// image block: the sweeps leave its objects out of the census and its freed
 /// cells off the free lists. Dead objects there are still cleaned, because

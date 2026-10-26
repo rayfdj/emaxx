@@ -517,6 +517,13 @@ pub(crate) struct DumpContext {
     /// The string blocks' offsets, from the first to just past the last
     /// cell, once the blocks are written.
     string_blocks: Option<(u32, u32)>,
+    /// The vectors' words, as the heap holds them, where the image's
+    /// vector blocks and large vectors hold them: written with the cons
+    /// and string blocks, each vector until then at its offset there plus
+    /// `VECTOR_PROVISIONAL' or `LARGE_VECTOR_PROVISIONAL'.
+    vector_cells: crate::lisp::alloc::vectors::ImageVectorWriter,
+    /// The first vector block's offset, once the vectors are written.
+    vector_blocks: Option<u32>,
 }
 
 /// The base of a cons's offset until the cons blocks are placed: above
@@ -525,6 +532,12 @@ const CONS_PROVISIONAL: u32 = 1 << 30;
 /// The base of a string's offset until the string blocks are placed:
 /// above every cons's provisional offset.
 const STRING_PROVISIONAL: u32 = 1 << 31;
+/// The bases of a vector's offset until the vector blocks and the large
+/// vectors are placed: above every string's provisional offset, each
+/// below the next by `VECTOR_PROVISIONAL_SPAN'.
+const VECTOR_PROVISIONAL: u32 = 3 << 30;
+const LARGE_VECTOR_PROVISIONAL: u32 = VECTOR_PROVISIONAL + VECTOR_PROVISIONAL_SPAN;
+const VECTOR_PROVISIONAL_SPAN: u32 = 1 << 29;
 
 impl DumpContext {
     pub(crate) fn new(track_referrers: bool, main_thread_id: u64) -> Self {
@@ -566,6 +579,8 @@ impl DumpContext {
             cons_blocks: None,
             string_cells: Vec::new(),
             string_blocks: None,
+            vector_cells: Default::default(),
+            vector_blocks: None,
         }
     }
 
@@ -591,6 +606,7 @@ impl DumpContext {
             Kind::StringObject(state) if state.is_empty_singleton() => DumpType::EmptyString,
             Kind::StringObject(_) => DumpType::String,
             Kind::Symbol(_) => DumpType::Symbol,
+            Kind::Vector(vector) if vector.len() == 0 => DumpType::ZeroVector,
             Kind::Vector(_) => DumpType::Vector,
             Kind::LispRecord(_) => DumpType::LispRecord,
             Kind::Float(_) => DumpType::Float,
@@ -1092,7 +1108,7 @@ impl DumpContext {
         self.set_referrer(*object);
         let (offset, kind) = match object.kind() {
             Kind::StringObject(_) => self.dump_string(interp, object)?,
-            Kind::Vector(vector) => (self.dump_vector(&vector)?, DumpType::Vector),
+            Kind::Vector(vector) => self.dump_vector(&vector)?,
             Kind::Symbol(_) => (self.dump_symbol(interp, object)?, DumpType::Symbol),
             Kind::Cons(cell) => (self.dump_cons(&cell)?, DumpType::Cons),
             Kind::Float(float) => (self.dump_float(*float)?, DumpType::Float),
@@ -1136,11 +1152,10 @@ impl DumpContext {
             if let Some(key) = object_key(object) {
                 self.object_types.insert(key, kind);
             }
-            // A cons or a string is found by its offset in the cons or
-            // string blocks, which the header locates; the starts are the
-            // other objects'.
-            if self.flags.record_object_starts && kind != DumpType::Cons && kind != DumpType::String
-            {
+            // A cons, a string or a vector is found by its offset in the
+            // image's blocks, which the header locates (its provisional
+            // offset says it is one); the starts are the other objects'.
+            if self.flags.record_object_starts && offset < CONS_PROVISIONAL {
                 assert!(!self.flags.pack_objects);
                 self.object_starts.push((offset, kind));
             }
@@ -1184,16 +1199,21 @@ impl DumpContext {
         Ok(start)
     }
 
-    /// The image's cons and string blocks, at block-aligned offsets at
-    /// the end of the hot section: each cons block's metadata (zero; the
-    /// loader sets its bits) and cells, the last block's unused cells
-    /// zero, then the strings' cells, lisp.h's four words of each (the
-    /// loader makes the rest), the last block's unused cells zero.  Every
-    /// offset remembered for a cons or a string, or for a field of one,
-    /// becomes its place in the blocks.
+    /// The image's cons, string and vector blocks and its large vectors,
+    /// at block-aligned offsets at the end of the hot section: each cons
+    /// block's metadata (zero; the loader sets its bits) and cells, the last
+    /// block's unused cells zero, then the strings' cells, lisp.h's four
+    /// words of each (the loader makes the rest), the last block's unused
+    /// cells zero, then the vector blocks, each its vectors as the heap
+    /// holds them and a free vector after them (its marks zero; the loader
+    /// sets them), and the large vectors after them, each with its mark's
+    /// word.  Every offset remembered for one of these objects, or for a
+    /// field of one, becomes its place in the image.
     pub(crate) fn write_cell_blocks(&mut self) -> Result<(), DumpError> {
         assert!(
-            self.cons_blocks.is_none() && self.string_blocks.is_none(),
+            self.cons_blocks.is_none()
+                && self.string_blocks.is_none()
+                && self.vector_blocks.is_none(),
             "cell blocks written twice"
         );
         let count = self.cons_cells.len();
@@ -1237,8 +1257,35 @@ impl DumpContext {
             nr_entries: u32::try_from(count).expect("string count fits a word"),
         };
         self.string_cells = Vec::new();
+
+        let (blocks, block_count, large, large_count) =
+            std::mem::take(&mut self.vector_cells).finish();
+        self.align_output(crate::lisp::alloc::vectors::IMAGE_VECTOR_BLOCK_BYTES)?;
+        let vectors = self.offset;
+        let bytes = |words: &[u64]| {
+            words
+                .iter()
+                .flat_map(|word| word.to_le_bytes())
+                .collect::<Vec<_>>()
+        };
+        self.write(&bytes(&blocks))?;
+        let large_vectors = self.offset;
+        self.write(&bytes(&large))?;
+        self.vector_blocks = Some(vectors);
+        self.header.vector_blocks = TableLocator {
+            offset: vectors,
+            nr_entries: u32::try_from(block_count).expect("block count fits a word"),
+        };
+        self.header.large_vectors = TableLocator {
+            offset: large_vectors,
+            nr_entries: u32::try_from(large_count).expect("vector count fits a word"),
+        };
         let placed = |offset: u32| {
-            if offset >= STRING_PROVISIONAL {
+            if offset >= LARGE_VECTOR_PROVISIONAL {
+                large_vectors + (offset - LARGE_VECTOR_PROVISIONAL)
+            } else if offset >= VECTOR_PROVISIONAL {
+                vectors + (offset - VECTOR_PROVISIONAL)
+            } else if offset >= STRING_PROVISIONAL {
                 strings + (offset - STRING_PROVISIONAL)
             } else if offset >= CONS_PROVISIONAL {
                 start + (offset - CONS_PROVISIONAL)
@@ -1278,6 +1325,8 @@ impl DumpContext {
                 *offset = placed(*offset);
             }
         }
+        // The hash tables' list, a vector, was dumped before the blocks.
+        self.header.hash_list = placed(self.header.hash_list);
         Ok(())
     }
 
@@ -1456,16 +1505,19 @@ impl DumpContext {
         self.object_finish(&words)
     }
 
-    /// dump_vectorlike_generic for an ordinary vector: size, then slots.
-    fn dump_vector(&mut self, vector: &crate::lisp::types::VectorRef) -> Result<u32, DumpError> {
-        let slots = vector.slots().collect::<Vec<_>>();
-        let start = self.object_start()?;
-        let mut words = vec![slots.len() as u64];
-        words.resize(slots.len() + 1, 0);
-        for (index, slot) in slots.iter().enumerate() {
-            self.field_lv(start, &mut words, index + 1, slot, WEIGHT_STRONG);
+    /// dump_vectorlike_generic for an ordinary vector: its slots.  The
+    /// empty vector is alloc.c's `zero_vector', an object start of its own.
+    fn dump_vector(
+        &mut self,
+        vector: &crate::lisp::types::VectorRef,
+    ) -> Result<(u32, DumpType), DumpError> {
+        if vector.len() == 0 {
+            self.object_start()?;
+            return Ok((self.object_finish(&[0])?, DumpType::ZeroVector));
         }
-        self.object_finish(&words)
+        let slots = vector.slots().collect::<Vec<_>>();
+        let offset = self.dump_vector_cell(vector.identity(), &[], &slots, WEIGHT_STRONG)?;
+        Ok((offset, DumpType::Vector))
     }
 
     /// pdumper.c:dump_vectorlike_generic writes every inline record field,
@@ -1474,13 +1526,69 @@ impl DumpContext {
         &mut self,
         record: crate::lisp::types::LispRecordRef,
     ) -> Result<u32, DumpError> {
-        let start = self.object_start()?;
-        let mut words = vec![0; record.len() + 1];
-        words[0] = record.len() as u64;
-        for (index, field) in record.slots().enumerate() {
-            self.field_lv(start, &mut words, index + 1, &field, WEIGHT_STRONG);
+        let fields = record.slots().collect::<Vec<_>>();
+        self.dump_vector_cell(record.identity(), &[], &fields, WEIGHT_STRONG)
+    }
+
+    /// A vector of the image's vector blocks or large vectors (see
+    /// `write_cell_blocks'), whose words wait in `vector_cells' until they
+    /// are written after the other hot objects: the size word of the vector
+    /// at IDENTITY as the heap holds it, the non-Lisp words RAW, then a Lisp
+    /// word for each of SLOTS, the immediates as the heap holds them.  Until
+    /// then its offset is provisional (see `VECTOR_PROVISIONAL').
+    fn dump_vector_cell(
+        &mut self,
+        identity: usize,
+        raw: &[u64],
+        slots: &[Value],
+        weight: LinkWeight,
+    ) -> Result<u32, DumpError> {
+        use crate::lisp::alloc::vectors::ImageVectorPlace;
+        assert_eq!(self.obj_offset, 0, "nested dump_object_start");
+        assert!(
+            self.vector_blocks.is_none() || !self.flags.dump_object_contents,
+            "a vector dumped after the vector blocks were written"
+        );
+        // SAFETY: IDENTITY is the header of the live vector being dumped.
+        let (size, nbytes) = unsafe { crate::lisp::alloc::vectors::header_and_footprint(identity) };
+        let lisp = 1 + raw.len();
+        assert_eq!(
+            (lisp + slots.len()) * 8,
+            nbytes,
+            "a vector's words are its footprint"
+        );
+        let start = if self.flags.dump_object_contents {
+            let (base, offset) = match self.vector_cells.next_place(nbytes) {
+                ImageVectorPlace::Block(offset) => (VECTOR_PROVISIONAL, offset),
+                ImageVectorPlace::Large(offset) => (LARGE_VECTOR_PROVISIONAL, offset),
+            };
+            base + u32::try_from(offset)
+                .ok()
+                .filter(|offset| *offset < VECTOR_PROVISIONAL_SPAN)
+                .ok_or_else(|| LispError::Signal("dump file too large".into()))?
+        } else {
+            VECTOR_PROVISIONAL
+        };
+        let mut words = Vec::with_capacity(lisp + slots.len());
+        words.push(size as u64);
+        words.extend_from_slice(raw);
+        words.resize(lisp + slots.len(), 0);
+        self.obj_offset = start;
+        for (index, slot) in slots.iter().enumerate() {
+            self.field_lv(start, &mut words, lisp + index, slot, weight);
         }
-        self.object_finish(&words)
+        self.obj_offset = 0;
+        if self.flags.dump_object_contents {
+            // The vector's words as the heap holds them: the loader writes
+            // only the words its relocations name.
+            for word in &mut words[lisp..] {
+                if *word != FIXUP_PLACEHOLDER {
+                    *word = runtime_word(*word);
+                }
+            }
+            self.vector_cells.push(&words);
+        }
+        Ok(start)
     }
 
     /// dump_float: the IEEE word, in the cold section.
@@ -1763,13 +1871,8 @@ impl DumpContext {
     /// the environment are shared objects dumped through raw-pointer
     /// fixups, as intervals are.
     fn dump_closure(&mut self, lambda: &crate::lisp::types::ClosureRef) -> Result<u32, DumpError> {
-        let start = self.object_start()?;
-        let mut words = vec![0; lambda.public_len() + 1];
-        words[0] = lambda.public_len() as u64;
-        for (index, value) in lambda.slots().enumerate() {
-            self.field_lv(start, &mut words, index + 1, &value, WEIGHT_NORMAL);
-        }
-        self.object_finish(&words)
+        let slots = lambda.slots().collect::<Vec<_>>();
+        self.dump_vector_cell(lambda.identity(), &[], &slots, WEIGHT_NORMAL)
     }
 
     /// Canonical root slots, including the ASCII alias and actual purpose.
@@ -1777,28 +1880,19 @@ impl DumpContext {
         &mut self,
         table: crate::lisp::types::CharTableRef,
     ) -> Result<u32, DumpError> {
-        let start = self.object_start()?;
-        let mut words = vec![0; 1 + table.slot_count()];
-        words[0] = table.slot_count() as u64;
-        for (index, value) in table.slots().enumerate() {
-            self.field_lv(start, &mut words, index + 1, &value, WEIGHT_STRONG);
-        }
-        self.object_finish(&words)
+        let slots = table.slots().collect::<Vec<_>>();
+        self.dump_vector_cell(table.identity(), &[], &slots, WEIGHT_STRONG)
     }
 
-    /// The packed non-Lisp word is separate from the relocated Lisp slots.
+    /// The packed non-Lisp word, chartab.c's depth and min_char as the
+    /// heap holds them, is separate from the relocated Lisp slots.
     fn dump_sub_char_table(
         &mut self,
         table: crate::lisp::types::SubCharTableRef,
     ) -> Result<u32, DumpError> {
-        let start = self.object_start()?;
-        let mut words = vec![0; 2 + table.slots().len()];
-        words[0] = table.depth() as u64;
-        words[1] = u64::from(table.min_char());
-        for (index, value) in table.slots().enumerate() {
-            self.field_lv(start, &mut words, index + 2, &value, WEIGHT_STRONG);
-        }
-        self.object_finish(&words)
+        let packed = u64::from(table.depth() as u32) | (u64::from(table.min_char()) << 32);
+        let slots = table.slots().collect::<Vec<_>>();
+        self.dump_vector_cell(table.identity(), &[packed], &slots, WEIGHT_STRONG)
     }
 
     /// dump_buffer: the buffer's own fields with `last_name' and the
