@@ -6352,6 +6352,42 @@ setup_process_coding_systems's check now refuses). A 13-form
   documented local skips (eval_05, 365, includes the new test; the reader
   tests check the placeholder, the substitution and the per-read maps);
   clippy `-D warnings', rustfmt and `git diff --check' pass.
+- **Round 88: the reader's common cases read in place.** Each character
+  the reader took from an encoded string or an `.elc' file's bytes was
+  decoded twice (once to look, once to step past it), each atom was
+  built a character at a time into a fresh `String', whitespace was
+  skipped through the general peek, a string literal's characters were
+  pushed one at a time, and a symbol's recorded position was found by
+  decoding every character since the last one. Now an atom of ASCII
+  without escapes (nearly every symbol and number in Lisp source) is
+  scanned in place up to read0's terminators (whitespace, `()[]";' and,
+  after its first character, `#'`,') and goes straight to the number
+  parse and the obarray; a run of ASCII whitespace and a run of string
+  text other than `"' and `\' are taken from the bytes at once; an
+  encoded character is decoded once; the shorthand rewrite is skipped
+  when the file has no shorthands; and positions in a well-formed string
+  count its lead bytes. make_string's classification of a native unit's
+  static data (alloc.c: multibyte only when every byte is part of a
+  valid character) steps over ASCII runs instead of decoding and
+  re-encoding each byte. Loading `json' took 165.5M instructions and now
+  125.3M (GNU 109.6M, of which about 53M is its collector against
+  Emaxx's 33M); loading `ert' 281.2M and now 230.2M (GNU 235.1M); a test
+  file's setup in the frozen runner 767.2M and now 710.4M (GNU 518.3M).
+  Outside collection, Emaxx's reader in the `ert' load now costs less
+  than GNU's readchar/read0. What remains of the `ert' load gap: the
+  matcher, 28M against GNU's 18M, where each `re_search' call scans the
+  256-entry fastmap for a single lead byte (about 1,100 instructions a
+  call, 11.5K calls); MD5 of the source files, 15.7M against 7.6M (the
+  `md5' crate copies each byte into its block buffer); and interning,
+  13.2M against GNU's 1.3M `oblookup'. A probe of tokens next to every
+  terminator, escapes, numbers, NO-BREAK SPACE and other non-ASCII
+  characters, unterminated atoms and strings, string escapes, positions
+  after comments and multibyte text, unibyte and encoded sources and a
+  function stream gives GNU 30.2's values (an eval_05 test holds them).
+  Local validation: the full gate, 3,229 passed across its ten
+  groups with the documented local skips (eval_05, 366, includes
+  the new test); clippy `-D warnings', rustfmt and `git diff --check'
+  pass.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -7069,6 +7105,10 @@ unexpected, GNU 7,669 passed with 1 unexpected), and its failed job was
 rerun passed (run 40243230215, attempt 2).
 **On `20204fe`** (round 86): full Rust gate passed (run 40246689049),
 frozen passed on its first attempt (run 40246690701).
+**On `6f55171`** (round 87): full Rust gate passed (run 40250303048);
+frozen failed only GNU's known oracle flake (Emaxx 7,670 passed with 0
+unexpected, GNU 7,669 passed with 1 unexpected), and its failed job was
+rerun (run 40250305113, attempt 2).
 
 **Findings recorded, not fixed:**
 - `features`, `values` and `top-level` are special variables in Emaxx

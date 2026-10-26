@@ -170,6 +170,16 @@ fn interpreted_closure_code_syntax(value: &Value) -> bool {
     !matches!(cdr.get().kind(), Kind::Integer(_))
 }
 
+/// The host character an encoded input's character CODE is held as: a raw
+/// byte as its sentinel, a code past Unicode as the invalid sentinel.
+fn encoded_code_char(code: u32) -> char {
+    if (0x3fff80..=0x3fffff).contains(&code) {
+        encode_raw_byte(code as u8)
+    } else {
+        char::from_u32(code).unwrap_or(INVALID_UNICODE_SENTINEL)
+    }
+}
+
 /// The objects substitute_object_recurse does not look inside: symbols,
 /// numbers and strings without text properties.
 fn atomic_for_substitution(value: &Value) -> bool {
@@ -801,13 +811,10 @@ impl<'a> Reader<'a> {
             return Ok(Some(byte as char));
         }
         if matches!(self.input, Input::Encoded { .. }) {
-            return Ok(self.input.encoded_character(self.pos)?.map(|(code, _)| {
-                if (0x3fff80..=0x3fffff).contains(&code) {
-                    encode_raw_byte(code as u8)
-                } else {
-                    char::from_u32(code).unwrap_or(INVALID_UNICODE_SENTINEL)
-                }
-            }));
+            return Ok(self
+                .input
+                .encoded_character(self.pos)?
+                .map(|(code, _)| encoded_code_char(code)));
         }
         let Some(first) = self.peek()? else {
             return Ok(None);
@@ -835,6 +842,11 @@ impl<'a> Reader<'a> {
     }
 
     fn advance_char(&mut self) -> Result<Option<char>, LispError> {
+        // An encoded input's character, decoded once.
+        if let Some((code, width)) = self.input.encoded_character(self.pos)? {
+            self.pos += width;
+            return Ok(Some(encoded_code_char(code)));
+        }
         let character = self.peek_char()?;
         if let Some(character) = character {
             let width = self
@@ -848,8 +860,12 @@ impl<'a> Reader<'a> {
 
     fn skip_whitespace_and_comments(&mut self) -> Result<(), LispError> {
         loop {
-            // Skip whitespace: ASCII a byte at a time, NO-BREAK SPACE as a
-            // character.
+            // Skip whitespace: ASCII a byte at a time (in place when the
+            // input's bytes are at hand), NO-BREAK SPACE as a character.
+            let slice: &'a [u8] = self.slice;
+            while slice.get(self.pos).is_some_and(|byte| *byte <= b' ') {
+                self.pos += 1;
+            }
             while let Some(byte) = self.peek()? {
                 if byte <= b' ' {
                     self.advance()?;
@@ -1081,7 +1097,23 @@ impl<'a> Reader<'a> {
         let mut has_explicit_multibyte = false;
         let mut has_raw_bytes = false;
         let mut has_invalid_unicode = false;
+        let slice: &'a [u8] = self.slice;
         loop {
+            // A run of ASCII other than the quote and the backslash, copied
+            // in place when the input's bytes are at hand.
+            let run = slice
+                .get(self.pos..)
+                .unwrap_or_default()
+                .iter()
+                .take_while(|byte| **byte < 0x80 && **byte != b'"' && **byte != b'\\')
+                .count();
+            if run > 0 {
+                // SAFETY: the bytes are ASCII.
+                s.push_str(unsafe {
+                    std::str::from_utf8_unchecked(&slice[self.pos..self.pos + run])
+                });
+                self.pos += run;
+            }
             match self.peek()? {
                 None => return Err(LispError::EndOfInput()),
                 Some(b'"') => {
@@ -1185,14 +1217,20 @@ impl<'a> Reader<'a> {
         invalid_unicode: &mut bool,
         extended: &mut Vec<(usize, u32)>,
     ) -> Result<(), LispError> {
-        let code = self
-            .input
-            .encoded_character(self.pos)?
-            .map(|(code, _)| i64::from(code))
-            .or(self.input.function_code()?);
-        let character = self
-            .read_utf8_char()?
-            .ok_or_else(|| LispError::ReadError("invalid UTF-8 in string".into()))?;
+        let (code, character) = match self.input.encoded_character(self.pos)? {
+            // An encoded input's character, decoded once.
+            Some((code, width)) => {
+                self.pos += width;
+                (Some(i64::from(code)), encoded_code_char(code))
+            }
+            None => {
+                let code = self.input.function_code()?;
+                let character = self
+                    .read_utf8_char()?
+                    .ok_or_else(|| LispError::ReadError("invalid UTF-8 in string".into()))?;
+                (code, character)
+            }
+        };
         if code.map_or_else(
             || raw_byte_from_source_char(character).is_some(),
             |code| (0x3fff80..=0x3fffff).contains(&code),
@@ -2126,6 +2164,23 @@ impl<'a> Reader<'a> {
         if let Some(position) = self.input.function_position() {
             return self.position_base + position;
         }
+        if let Input::Encoded {
+            bytes,
+            multibyte,
+            lenient: false,
+        } = &self.input
+        {
+            // A string's bytes: each character one byte, or else one lead
+            // byte and its trailing codes.
+            let span = &bytes[self.position_cursor_byte..self.pos];
+            self.position_cursor_char += if *multibyte {
+                span.iter().filter(|byte| **byte & 0xC0 != 0x80).count()
+            } else {
+                span.len()
+            } as i64;
+            self.position_cursor_byte = self.pos;
+            return self.position_base + self.position_cursor_char;
+        }
         if matches!(self.input, Input::Encoded { .. }) {
             while self.position_cursor_byte < self.pos {
                 let (_, width) = self
@@ -2176,12 +2231,38 @@ impl<'a> Reader<'a> {
         })
     }
 
+    /// The atom at point read in place when it is ASCII without escapes,
+    /// the common case: the bytes up to read0's terminators.  None leaves
+    /// the input where it was, for the general loop.
+    fn ascii_token(&mut self) -> Option<&'a str> {
+        let slice: &'a [u8] = self.slice;
+        let start = self.pos;
+        let mut end = start;
+        while let Some(&byte) = slice.get(end) {
+            match byte {
+                0..=b' ' | b'(' | b')' | b'[' | b']' | b'"' | b';' => break,
+                b',' | b'\'' | b'`' | b'#' if end > start => break,
+                b'\\' | 0x80.. => return None,
+                _ => end += 1,
+            }
+        }
+        if end == start {
+            return None;
+        }
+        self.pos = end;
+        // SAFETY: the bytes are ASCII.
+        Some(unsafe { std::str::from_utf8_unchecked(&slice[start..end]) })
+    }
+
     fn read_atom_in_syntax(&mut self, syntax: AtomSyntax) -> Result<Option<Value>, LispError> {
         let token_start = if self.locate_symbols {
             self.character_position()
         } else {
             0
         };
+        if let Some(token) = self.ascii_token() {
+            return self.finish_atom(token_start, token, false, syntax);
+        }
         let mut token = String::new();
         let mut saw_escape = false;
         while let Some(ch) = self.peek()? {
@@ -2232,53 +2313,54 @@ impl<'a> Reader<'a> {
             }
         }
 
-        // read0 unreads the terminator before numeric conversion or interning.
+        self.finish_atom(token_start, &token, saw_escape, syntax)
+    }
+
+    /// The object an atom's token TOKEN reads as: read0 unreads the
+    /// terminator, then tries a number (unless an escape was read), then
+    /// the symbol, its name expanded by the shorthands.
+    fn finish_atom(
+        &mut self,
+        token_start: i64,
+        token: &str,
+        saw_escape: bool,
+        syntax: AtomSyntax,
+    ) -> Result<Option<Value>, LispError> {
         self.input.unread_lookahead()?;
         if token.is_empty() {
             return Err(LispError::EndOfInput());
         }
 
-        if saw_escape {
-            let token = if syntax == AtomSyntax::Ordinary {
-                self.apply_symbol_shorthands(token)
-            } else {
-                token
-            };
-            return self
-                .read_symbol_value(token_start, &token, syntax)
-                .map(Some);
-        }
-
         // Try parsing as integer.  lread.c string_to_number accepts only a
         // token that starts with a sign, a digit or a period.
-        if syntax == AtomSyntax::Ordinary
+        if !saw_escape
+            && syntax == AtomSyntax::Ordinary
             && matches!(token.as_bytes()[0], b'+' | b'-' | b'.' | b'0'..=b'9')
         {
             if let Ok(n) = token.parse::<i64>() {
                 return Ok(Some(Value::Integer(n)));
             }
-            if is_integer_token(&token)
+            if is_integer_token(token)
                 && let Ok(n) = token.parse::<BigInt>()
             {
                 return Ok(Some(normalize_bigint(n)));
             }
 
-            if let Some(f) = parse_special_float_token(&token) {
+            if let Some(f) = parse_special_float_token(token) {
                 return Ok(Some(Value::float(f)));
             }
-            if let Some(number) = parse_decimal_token(&token) {
+            if let Some(number) = parse_decimal_token(token) {
                 return Ok(Some(number));
             }
         }
 
-        let token = if syntax == AtomSyntax::Ordinary {
-            self.apply_symbol_shorthands(token)
-        } else {
-            token
-        };
-
-        self.read_symbol_value(token_start, &token, syntax)
-            .map(Some)
+        if syntax == AtomSyntax::Ordinary && !self.symbol_shorthands.is_empty() {
+            let token = self.apply_symbol_shorthands(token.to_owned());
+            return self
+                .read_symbol_value(token_start, &token, syntax)
+                .map(Some);
+        }
+        self.read_symbol_value(token_start, token, syntax).map(Some)
     }
 
     fn read_symbol_character(&mut self) -> Result<Option<char>, LispError> {

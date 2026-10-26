@@ -264,6 +264,16 @@ impl StringObjectRef {
         let mut offset = 0;
         let mut characters = 0;
         while offset < bytes.len() {
+            // A run of ASCII, each byte a character.
+            let run = bytes[offset..]
+                .iter()
+                .take_while(|byte| **byte < 0x80)
+                .count();
+            offset += run;
+            characters += run;
+            if offset == bytes.len() {
+                break;
+            }
             let decoded = decode_character(&bytes[offset..])
                 .ok()
                 .filter(|&(code, width)| {

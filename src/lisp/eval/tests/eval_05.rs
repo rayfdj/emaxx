@@ -8992,6 +8992,38 @@ fn edits_and_matches_on_multibyte_text_keep_positions_like_gnu() {
 }
 
 #[test]
+fn read_tokens_strings_and_positions_like_lread() {
+    // lread.c read0: a symbol's token ends at whitespace, at "()[]\";" and,
+    // after its first character, at "#'`,"; strings copy their runs; the
+    // positions count characters.  The values are GNU 30.2's.
+    assert_eq!(
+        eval_str(
+            r###"(prin1-to-string
+                 (list
+                  (mapcar (lambda (s) (condition-case err (read-from-string s) (error (car err))))
+                          '("foo#bar" "foo'bar" "foo,bar" "foo`bar" "a?b" "a.b" "1.5e3" "-" "+1"
+                            ".5" "1." "foo\\ bar" "foo\\" "aé" "a\u00a0b" "a;b" "a\"b\"" "  abc"
+                            "\"aé b\"" "\"\\x41\\ b\"" "\"a\\\nb\"" "\"abc" "##" "1\\23" "abc\u3000def"))
+                  (let ((symbols-with-pos-enabled t))
+                    (with-temp-buffer
+                      (insert "(aé b \"çd\" e)")
+                      (goto-char (point-min))
+                      (list (mapcar (lambda (x) (if (symbol-with-pos-p x) (symbol-with-pos-pos x) x))
+                                    (read-positioning-symbols (current-buffer)))
+                            (point))))
+                  (read-from-string "(é foo bar)")
+                  (read-from-string (string-to-unibyte "(a \"\351\" b)"))))"###
+        ),
+        Value::string(
+            "(((foo . 3) (foo . 3) (foo . 3) (foo . 3) (a?b . 3) (a.b . 3) (1500.0 . 5) (- . 1) \
+             (1 . 2) (0.5 . 2) (1 . 2) (foo\\ bar . 8) end-of-file (aé . 2) (a . 1) (a . 1) (a . 1) \
+             (abc . 5) (\"aé b\" . 6) (\"Ab\" . 9) (\"ab\" . 6) end-of-file (## . 2) (\\123 . 4) \
+             (abc\u{3000}def . 7)) ((2 5 \"çd\" 12) 14) ((é foo bar) . 11) ((a \"é\" b) . 9))"
+        )
+    );
+}
+
+#[test]
 fn read_labels_are_placeholders_substituted_like_lread() {
     // lread.c read0: `#N=' reads a placeholder cons for the `#N#' inside
     // the object, which becomes the object itself when it is a cons and is
