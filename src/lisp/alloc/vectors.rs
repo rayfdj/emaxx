@@ -634,6 +634,32 @@ impl VectorRef {
         Self(unsafe { NonNull::new_unchecked(header) })
     }
 
+    /// alloc.c's `make_vector' of LEN slots, each VALUE, written in
+    /// place (no vector of the slots to move from).
+    pub(crate) fn filled(len: usize, value: Value) -> Self {
+        if len == 0 {
+            // SAFETY: the leaked header.
+            return Self(unsafe { NonNull::new_unchecked(zero_vector()) });
+        }
+        let header = allocate_vectorlike(HEADER_SIZE + len * std::mem::size_of::<Value>());
+        // SAFETY: fresh storage of the size asked for, each slot written
+        // before the header is published.
+        unsafe {
+            (*header).size = len;
+            (*header)
+                .mark_bit()
+                .mark(super::super::types::current_mark_epoch());
+            let slots = payload(header).cast::<Value>();
+            for index in 0..len {
+                slots.add(index).write(value);
+            }
+        }
+        raise(&LIVE_VECTORS, 1);
+        raise(&LIVE_VECTOR_SLOTS, len + 1);
+        // SAFETY: a fresh, non-null header.
+        Self(unsafe { NonNull::new_unchecked(header) })
+    }
+
     pub(crate) fn shallow_copy(&self) -> Self {
         let len = self.len();
         if len == 0 {

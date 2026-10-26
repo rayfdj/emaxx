@@ -418,7 +418,13 @@ impl SymbolName {
     /// the supplied Lisp string; internal C-string callers create that name
     /// only when the symbol is first allocated.
     pub(crate) fn intern_with_lisp_name(text: String, lisp_name: Option<Value>) -> Self {
-        if text.contains(UNINTERNED_SYMBOL_MARKER_CHAR) {
+        // One scan for both markers (a symbol name is short, so a plain
+        // loop beats memchr's setup); a name without them, nearly every
+        // one, is read for neither again.
+        let marked = text.as_bytes().iter().any(|&byte| {
+            byte == OBARRAY_SYMBOL_MARKER_CHAR as u8 || byte == UNINTERNED_SYMBOL_MARKER_CHAR as u8
+        });
+        if marked && text.contains(UNINTERNED_SYMBOL_MARKER_CHAR) {
             if let Some(existing) = Self::live_uninterned(text.as_str()) {
                 return existing;
             }
@@ -433,7 +439,7 @@ impl SymbolName {
                 return name.0;
             }
             crate::lisp::native_comp::note_lisp_allocation(crate::lisp::alloc::SYMBOL_CELL_BYTES);
-            let private = text.contains(OBARRAY_SYMBOL_MARKER);
+            let private = marked && text.contains(OBARRAY_SYMBOL_MARKER);
             let lisp_name = lisp_name.unwrap_or_else(|| {
                 Value::String(SharedText::from(if private {
                     visible_symbol_name(&text)

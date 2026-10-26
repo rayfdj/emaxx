@@ -6613,6 +6613,46 @@ setup_process_coding_systems's check now refuses). A 13-form
   full gate, 3,232 passed across its ten groups with the documented
   local skips; clippy `-D warnings', rustfmt and `git diff --check'
   pass.
+- **Round 94: the obarray's hash and the image loader's walks.** The
+  name table behind the obarray hashed each name by FNV, a multiply a
+  byte; it now takes fns.c's `hash_string', oblookup's hash (the length,
+  then a word at a time -- at most eight steps across a long name and
+  its last word -- or a short name's bytes as one word, each folded in
+  by lisp.h's `sxhash_combine'), spread over the word for the table's
+  probe filter. `intern_with_lisp_name' scans a name once for both the
+  uninterned and the private-obarray markers, where it searched for each
+  in turn. The loader's pass over the object types also lists the
+  objects by the phase that builds them (the conses, the objects of
+  their own bytes, the rest), so each phase walks its own objects where
+  all three walked all 273.8K; phase 3 relocates the 177.6K conses' cars
+  and cdrs in one ascending walk that merges the relocations with the
+  fields, as pdumper.c applies its sorted relocations; the native subr
+  and unit records' relocation checks and the native functions' name
+  lookups search on from where the last one stopped instead of bisecting
+  the whole table; and a vector's placeholder is written in place
+  (alloc.c's `make_vector') rather than built as a host vector and
+  moved. Startup (`--batch -l subr-x') took 225.9M instructions and now
+  212.9M (GNU 156.4M, of which 52.6M is the collection GNU runs during
+  startup); `Loader::load' 137.2M and now 124.5M, where GNU's whole
+  `pdumper_load' is 53.4M, 24.2M of it reopening the native units and
+  resolving their subrs (ours 24.4M); loading ert 408.4M and now 393.7M;
+  a frozen-run test file's setup 630.0M and now 614.8M (GNU 518.3M). In
+  wall time, best of 40 interleaved runs, startup took 71.5 ms and now
+  68.4 ms (GNU 60.5 ms). What remains of the startup gap is the
+  loader's design: GNU maps the image and relocates its words in place,
+  where this loader builds every cons, string, symbol and vector anew.
+  `hash_string' is tested against the values GNU's own function gives;
+  an interning probe (names of every length to 89 differing in one byte
+  at each position, multibyte, unibyte and empty names, `obarray-make',
+  `unintern', `mapatoms' counts) gives GNU 30.2's output byte for byte;
+  every symbol's value, function and plist after startup, printed with
+  `print-circle', is round 93's but for timestamps, paths, the consing
+  counters the image carries from its build, and the entry order of
+  `comp-subr-arities-h', which loadup fills through `mapatoms' and so
+  follows the name table's order (unspecified in GNU, and not GNU's
+  before this round either). Local validation: the full gate, 3,233
+  passed across its ten groups with the documented local skips; clippy
+  `-D warnings', rustfmt and `git diff --check' pass.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -7347,6 +7387,8 @@ rounds 82 to 90 into main (`44f1c76`).
 frozen passed on its first attempt (run 40265342433).
 **On `1e7203d`** (round 92): full Rust gate passed (run 40273030577),
 frozen passed on its first attempt (run 40273033064).
+**On `827b8eb`** (round 93): full Rust gate passed (run 40278885996),
+frozen passed on its first attempt (run 40278888554).
 
 **Findings recorded, not fixed:**
 - `features`, `values` and `top-level` are special variables in Emaxx

@@ -8,16 +8,86 @@
 
 use super::{ProcessTable, SymbolName, Value};
 use crate::lisp::alloc::vectors::hash_tables::DescriptorPool;
-use crate::lisp::primitives::FnvBuildHasher;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-type Names = HashSet<NameEntry, FnvBuildHasher>;
+type Names = HashSet<NameEntry, ObarrayBuildHasher>;
 /// Host text's address with its length in the high bits a user-space
 /// address leaves clear (`SymbolName::interned_cached'), hashed by one
 /// multiply.
 type AddressNames = HashMap<usize, SymbolName, super::IdentityBuildHasher>;
+
+/// The obarray's hash of a name: fns.c's `hash_string', which oblookup
+/// takes of the name's bytes -- the length, then a word at a time (at most
+/// eight steps across a long name, and its last word), or a short name's
+/// bytes in one word -- each combined by lisp.h's `sxhash_combine'.
+/// `finish' spreads the result over the word: GNU reduces it modulo the
+/// obarray's size, while this table takes its probe filter from the top
+/// bits, which the combination leaves empty for a short name.
+#[derive(Default)]
+pub(crate) struct ObarrayHasher(u64);
+
+/// lisp.h's `sxhash_combine'.
+#[inline(always)]
+fn sxhash_combine(x: u64, y: u64) -> u64 {
+    (x << 4).wrapping_add(x >> (u64::BITS - 4)).wrapping_add(y)
+}
+
+/// fns.c's `hash_string' of BYTES.
+#[inline]
+pub(crate) fn hash_string(bytes: &[u8]) -> u64 {
+    const WORD: usize = std::mem::size_of::<u64>();
+    let word_at = |at: usize| {
+        u64::from_le_bytes(bytes[at..at + WORD].try_into().expect("a word of the name"))
+    };
+    let len = bytes.len();
+    let mut hash = len as u64;
+    if len >= WORD {
+        let step = WORD.max(len >> 3);
+        let mut at = 0;
+        while at + WORD <= len {
+            hash = sxhash_combine(hash, word_at(at));
+            at += step;
+        }
+        sxhash_combine(hash, word_at(len - WORD))
+    } else {
+        let mut tail = 0_u64;
+        let mut at = 0;
+        if len - at >= 4 {
+            let c = u32::from_le_bytes(bytes[at..at + 4].try_into().expect("four bytes"));
+            tail = (tail << 32) + u64::from(c);
+            at += 4;
+        }
+        if len - at >= 2 {
+            let c = u16::from_le_bytes(bytes[at..at + 2].try_into().expect("two bytes"));
+            tail = (tail << 16) + u64::from(c);
+            at += 2;
+        }
+        if at < len {
+            tail = (tail << 8) + u64::from(bytes[at]);
+        }
+        sxhash_combine(hash, tail)
+    }
+}
+
+impl std::hash::Hasher for ObarrayHasher {
+    #[inline]
+    fn finish(&self) -> u64 {
+        (self.0 ^ (self.0 >> 32)).wrapping_mul(0x9e37_79b9_7f4a_7c15)
+    }
+
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        self.0 = sxhash_combine(self.0, hash_string(bytes));
+    }
+
+    /// `str's terminator, which the name's hash leaves out.
+    #[inline]
+    fn write_u8(&mut self, _: u8) {}
+}
+
+pub(crate) type ObarrayBuildHasher = std::hash::BuildHasherDefault<ObarrayHasher>;
 
 /// Lookup compares immutable host text; Lisp symbol equality compares the
 /// allocated object. Keep the lookup key's equality separate so two editor
@@ -592,6 +662,31 @@ mod tests {
             }
             assert_eq!(SymbolName::intern_str(text), outer);
             assert_eq!(values.get(&SymbolName::intern_str(text)), Some(&17));
+        }
+    }
+
+    #[test]
+    fn hash_string_is_gnu_hash_string() {
+        // fns.c's hash_string of each name, as GNU 30.2 computes it.
+        for (name, hash) in [
+            ("", 0x0000_0000_0000_0000_u64),
+            ("a", 0x0000_0000_0000_0071),
+            ("ab", 0x0000_0000_0000_6281),
+            ("abc", 0x0000_0000_0062_6193),
+            ("abcd", 0x0000_0000_6463_62a1),
+            ("abcde", 0x0000_0064_6362_61b5),
+            ("abcdefg", 0x0064_6362_6166_65d7),
+            ("abcdefgh", 0xeedd_ccbb_aa99_9077),
+            ("abcdefghi", 0xefde_cdbc_ab9a_9278),
+            ("car", 0x0000_0000_0061_63a2),
+            ("emacs-lisp-mode-hook", 0xadf3_29c2_61ab_110b),
+            ("\u{20ac}-euro", 0x6699_cbb8_0874_b908),
+            (
+                "this is a long symbol name with more than sixty-four bytes in it for the stepping",
+                0xe803_9a2e_8d6b_20da,
+            ),
+        ] {
+            assert_eq!(super::hash_string(name.as_bytes()), hash, "{name:?}");
         }
     }
 }

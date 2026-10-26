@@ -418,9 +418,14 @@ impl<'a, const LEN: usize> ImageTable<'a, LEN> {
         entry_word(&self.entries[index], 4)
     }
 
-    /// The relocation at OFFSET.
-    fn reloc_at(&self, offset: u32) -> Option<DumpRelocKind> {
-        DumpRelocKind::from_u32(self.code(self.find(offset)?))
+    /// The relocation at OFFSET, for a pass that asks in ascending order:
+    /// the search starts at HINT, where the pass's last answer left it.
+    fn reloc_at_from(&self, hint: &mut usize, offset: u32) -> Option<DumpRelocKind> {
+        let index = self.rank_from(*hint, offset);
+        *hint = index;
+        (self.offset_or_end(index) == offset)
+            .then(|| DumpRelocKind::from_u32(self.code(index)))
+            .flatten()
     }
 
     /// The number of entries before OFFSET, searched outward from entry
@@ -510,16 +515,41 @@ struct Loader<'a> {
 
 impl Loader<'_> {
     fn load(&mut self, header: DumpHeader) -> Result<LoadedImage, LoadError> {
+        // Each object's type, and the objects by the phases that build
+        // them, each list in image order: the conses (one allocation run,
+        // then their fields), the objects that need only their own bytes,
+        // and the rest.
         let mut kinds = Vec::with_capacity(self.starts.len());
+        let mut cons_objects = Vec::new();
+        let mut own_bytes_objects = Vec::new();
+        let mut other_objects = Vec::new();
+        let mut symbol_count = 0;
         for number in 0..self.starts.len() {
             let code = self.starts.code(number);
-            kinds.push(DumpType::from_u32(code).ok_or_else(|| {
+            let kind = DumpType::from_u32(code).ok_or_else(|| {
                 LoadError::Error(format!("unknown object type {code} of object {number}"))
-            })?);
+            })?;
+            match kind {
+                DumpType::Cons => cons_objects.push(number as u32),
+                DumpType::String
+                | DumpType::StringObject
+                | DumpType::EmptyString
+                | DumpType::Float
+                | DumpType::Bignum
+                | DumpType::BoolVector => own_bytes_objects.push(number as u32),
+                DumpType::Symbol => {
+                    symbol_count += 1;
+                    other_objects.push(number as u32);
+                }
+                _ => other_objects.push(number as u32),
+            }
+            kinds.push(kind);
         }
         // Phase 1: objects that need nothing but their own bytes.
         let mut string_props: Vec<(usize, u32)> = Vec::new();
-        for (number, &kind) in kinds.iter().enumerate() {
+        for &number in &own_bytes_objects {
+            let number = number as usize;
+            let kind = kinds[number];
             let offset = self.starts.offset(number);
             match kind {
                 DumpType::String | DumpType::StringObject | DumpType::EmptyString => {
@@ -548,24 +578,12 @@ impl Loader<'_> {
         // Phase 2: objects whose construction needs a name, and the
         // containers as placeholders.  The conses first, all at once.
         let objects = &mut self.objects;
-        let mut conses = kinds
-            .iter()
-            .enumerate()
-            .filter(|&(_, &kind)| kind == DumpType::Cons)
-            .map(|(number, _)| number);
-        crate::lisp::alloc::allocate_nil_conses(
-            kinds.iter().filter(|&&kind| kind == DumpType::Cons).count(),
-            |cell| {
-                let number = conses.next().expect("an object for each cons");
-                objects[number] = Value::Cons(cell);
-            },
-        );
-        SymbolName::reserve_interned(
-            kinds
-                .iter()
-                .filter(|&&kind| kind == DumpType::Symbol)
-                .count(),
-        );
+        let mut conses = cons_objects.iter();
+        crate::lisp::alloc::allocate_nil_conses(cons_objects.len(), |cell| {
+            let number = *conses.next().expect("an object for each cons");
+            objects[number as usize] = Value::Cons(cell);
+        });
+        SymbolName::reserve_interned(symbol_count);
         let mut symbol_records = Vec::new();
         let mut obarray_records = Vec::new();
         let mut hash_table_records = Vec::new();
@@ -577,7 +595,11 @@ impl Loader<'_> {
         let mut finalizers = Vec::new();
         let mut native_units = Vec::new();
         let mut native_function_records = Vec::new();
-        for (number, &kind) in kinds.iter().enumerate() {
+        // The native records' relocations, found in object order.
+        let (mut native_subr_hint, mut native_unit_hint) = (0, 0);
+        for &number in &other_objects {
+            let number = number as usize;
+            let kind = kinds[number];
             let offset = self.starts.offset(number);
             match kind {
                 DumpType::Symbol => {
@@ -601,7 +623,13 @@ impl Loader<'_> {
                 }
                 DumpType::Vector => {
                     let size = self.reader.word(offset)? as usize;
-                    self.objects[number] = Value::vector(vec![Value::Nil; size]);
+                    if size != 0 {
+                        // Value::vector's C footprint: the header word and
+                        // a word a slot.
+                        crate::lisp::native_comp::note_lisp_allocation((size + 1) * 8);
+                    }
+                    self.objects[number] =
+                        Value::Vector(crate::lisp::types::VectorRef::filled(size, Value::Nil));
                 }
                 DumpType::LispRecord => {
                     let size = self.reader.word(offset)? as usize;
@@ -655,7 +683,9 @@ impl Loader<'_> {
                     let type_tag = self.symbol_or_immediate_at(offset + 16)?;
                     if kind_code == NATIVE_SUBR_CODE {
                         if nslots != 11
-                            || self.very_late_relocs.reloc_at(offset)
+                            || self
+                                .very_late_relocs
+                                .reloc_at_from(&mut native_subr_hint, offset)
                                 != Some(DumpRelocKind::NativeSubr)
                         {
                             return Err(LoadError::Error(
@@ -669,7 +699,9 @@ impl Loader<'_> {
                     }
                     if kind_code == super::context::NATIVE_UNIT_CODE {
                         if nslots != 7
-                            || self.late_relocs.reloc_at(offset)
+                            || self
+                                .late_relocs
+                                .reloc_at_from(&mut native_unit_hint, offset)
                                 != Some(DumpRelocKind::NativeCompUnit)
                         {
                             return Err(LoadError::Error(
@@ -778,19 +810,12 @@ impl Loader<'_> {
         // Phase 3: relocate the fields of the published containers.
         let mut obarray = Vec::new();
         let mut scratch = Vec::new();
-        for (number, &kind) in kinds.iter().enumerate() {
+        self.relocate_conses(&cons_objects)?;
+        for &number in &other_objects {
+            let number = number as usize;
+            let kind = kinds[number];
             let offset = self.starts.offset(number);
             match kind {
-                DumpType::Cons => {
-                    let [car, cdr] = self.field_array(offset)?;
-                    let cell = self.objects[number]
-                        .cons_ref()
-                        .expect("a cons placeholder was installed in phase 2");
-                    // The placeholder's relocated words, stored as
-                    // pdumper.c stores them: nothing has seen the cell.
-                    cell.car.set(car);
-                    cell.cdr.set(cdr);
-                }
                 DumpType::Closure => {
                     let Kind::Closure(closure) = self.objects[number].kind() else {
                         unreachable!()
@@ -864,10 +889,11 @@ impl Loader<'_> {
             }
         }
         let mut native_functions = Vec::new();
+        let mut name_hint = 0;
         for (offset, function, nslots) in native_function_records {
             let names_at = offset + 32 + 8 * nslots as u32;
-            let name = self.image_c_string(names_at, "name")?;
-            let c_name = self.image_c_string(names_at + 8, "C name")?;
+            let name = self.image_c_string(names_at, &mut name_hint, "name")?;
+            let c_name = self.image_c_string(names_at + 8, &mut name_hint, "C name")?;
             // SAFETY: this load's newly allocated object is unpublished, and
             // both names are C strings of the permanent image.
             unsafe { (*function.as_ptr()).set_image_names(name, c_name) };
@@ -1152,6 +1178,64 @@ impl Loader<'_> {
         self.relocs.rank_from(self.reloc_cursor, field)
     }
 
+    /// Phase 3 for the conses, numbered CONSES in image order: each
+    /// placeholder's car and cdr from its two words, the relocations merged
+    /// with the fields in one ascending walk (those of the objects between
+    /// passed over), as pdumper.c applies its sorted relocations in order.
+    fn relocate_conses(&mut self, conses: &[u32]) -> Result<(), LoadError> {
+        let Some(&first) = conses.first() else {
+            return Ok(());
+        };
+        let mut cursor = self.relocs.rank_from(0, self.starts.offset(first as usize));
+        let mut next = self.relocs.offset_or_end(cursor);
+        for &number in conses {
+            let number = number as usize;
+            let offset = self.starts.offset(number);
+            let words = (offset as usize)
+                .checked_add(16)
+                .and_then(|end| self.reader.bytes.get(offset as usize..end))
+                .ok_or_else(|| {
+                    LoadError::Error(format!("cons at {offset} is outside the image"))
+                })?;
+            let mut values = [Value::Nil; 2];
+            for (index, value) in values.iter_mut().enumerate() {
+                let field = offset + 8 * index as u32;
+                let word = u64::from_le_bytes(
+                    words[8 * index..8 * index + 8]
+                        .try_into()
+                        .expect("a word of the cons"),
+                );
+                // The relocations of the objects since the last cons.
+                while next < field {
+                    cursor += 1;
+                    next = self.relocs.offset_or_end(cursor);
+                }
+                *value = if field == next {
+                    let entry = &self.relocs.entries[cursor];
+                    cursor += 1;
+                    next = self.relocs.offset_or_end(cursor);
+                    let code = entry_word(entry, 4);
+                    match self.object(entry_word(entry, 8) as usize) {
+                        Some(value) if code >> 8 == 1 => value,
+                        _ => self.relocated_value(field, code, word)?,
+                    }
+                } else {
+                    immediate_value(word)?
+                };
+            }
+            let cell = self.objects[number]
+                .cons_ref()
+                .expect("a cons placeholder was installed in phase 2");
+            // The placeholder's relocated words, stored as pdumper.c
+            // stores them: nothing has seen the cell.
+            cell.car.set(values[0]);
+            cell.cdr.set(values[1]);
+        }
+        // The next field read seeks its relocation afresh.
+        self.reloc_last = u32::MAX;
+        Ok(())
+    }
+
     /// The values of the consecutive fields from START into OUT: the
     /// relocations walked alongside the words, as pdumper.c applies its
     /// sorted relocations in order.
@@ -1361,15 +1445,17 @@ impl Loader<'_> {
     /// The C string the raw dump pointer at FIELD names: a native subr's
     /// name in the cold section (dump_cold_native_subr), NUL-terminated
     /// UTF-8 that lives as long as the process.
-    fn image_c_string(&self, field: u32, what: &str) -> Result<*const std::ffi::c_char, LoadError> {
+    /// FIELDs are asked in ascending order: the relocation's search
+    /// starts at HINT, where the last one left it.
+    fn image_c_string(
+        &self,
+        field: u32,
+        hint: &mut usize,
+        what: &str,
+    ) -> Result<*const std::ffi::c_char, LoadError> {
         let invalid =
             || LoadError::Error(format!("native function {what} is not an image C string"));
-        if self
-            .relocs
-            .find(field)
-            .map(|reloc| DumpRelocKind::from_u32(self.relocs.code(reloc)))
-            != Some(Some(DumpRelocKind::DumpToDumpPtrRaw))
-        {
+        if self.relocs.reloc_at_from(hint, field) != Some(DumpRelocKind::DumpToDumpPtrRaw) {
             return Err(invalid());
         }
         let start = usize::try_from(self.reader.word(field)?).map_err(|_| invalid())?;
