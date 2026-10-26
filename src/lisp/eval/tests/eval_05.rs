@@ -8990,3 +8990,42 @@ fn edits_and_matches_on_multibyte_text_keep_positions_like_gnu() {
         )
     );
 }
+
+#[test]
+fn read_labels_are_placeholders_substituted_like_lread() {
+    // lread.c read0: `#N=' reads a placeholder cons for the `#N#' inside
+    // the object, which becomes the object itself when it is a cons and is
+    // replaced inside it otherwise; GNU 30's walk leaves a hash table's
+    // entries alone.  The values are GNU 30.2's.
+    assert_eq!(
+        eval_str(
+            r##"(let ((print-circle t))
+                  (prin1-to-string
+                   (mapcar
+                    (lambda (s)
+                      (condition-case err
+                          (let ((v (car (read-from-string s))))
+                            (cond
+                             ((and (consp v) (stringp (car v)))
+                              (list (eq (plist-get (text-properties-at 0 (car v)) 'p) (car v))
+                                    (eq (car v) (cadr v))))
+                             ((and (consp v) (hash-table-p (nth 2 v)))
+                              (list (eq (car v) (cadr v)) (gethash (car v) (nth 2 v))))
+                             ((byte-code-function-p v) (eq (aref (aref v 2) 0) v))
+                             ((hash-table-p v) (gethash 'k v))
+                             (t v)))
+                        (error err)))
+                    '("#1=(a . #1#)" "#1=[a #1#]" "#1=#s(foo #1#)"
+                      "#1=#s(hash-table data (k #1#))" "#1=#2=(a #1# #2#)"
+                      "(#1=a #1#)" "#1=#2=#3=(x #3#)" "#1=#1#" "(#1# #1=a)"
+                      "(#1=#(\"ab\" 0 1 (p #1#)) #1#)"
+                      "(#1=[x] #1# #2=#s(hash-table test eq data (#1# #2#)))"
+                      "#1=#[(x) \"\\300\\207\" [#1# foo] 2]"))))"##
+        ),
+        Value::string(
+            "(#1=(a . #1#) #2=[a #2#] #3=#s(foo #3#) (nil) #4=(a . #5=(#4# (a . #5#))) \
+             (a a) (x . #6=((x . #6#))) (invalid-read-syntax \"nonsensical self-reference\") \
+             (invalid-read-syntax \"#1#\") (t t) (t (nil)) t)"
+        )
+    );
+}

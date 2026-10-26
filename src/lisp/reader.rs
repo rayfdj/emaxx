@@ -1,6 +1,6 @@
 use super::types::{
-    Kind, LispError, ReaderClosureKind, ReaderForm, StringObjectRef, StringPropertySpan, Value,
-    make_uninterned_symbol_name,
+    IdentityBuildHasher, Kind, LispError, ReaderClosureKind, ReaderForm, StringObjectRef,
+    StringPropertySpan, Value, make_uninterned_symbol_name,
 };
 mod input;
 use input::Input;
@@ -8,7 +8,7 @@ pub(crate) use input::ReaderStream;
 
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use unicode_names2::character as unicode_character;
 
@@ -160,30 +160,7 @@ pub(crate) fn forget_saved_lazy_strings() {
     SAVED_STRINGS.with_borrow_mut(|saved| *saved = [None, None]);
 }
 
-fn circular_read_label_form(value: &Value) -> Option<(u32, Value)> {
-    match value.kind() {
-        Kind::ReaderForm(form) => match form.as_ref() {
-            ReaderForm::CircularLabel { id, payload } => Some((*id, *payload)),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-fn circular_read_ref_form(value: &Value) -> Option<u32> {
-    match value.kind() {
-        Kind::ReaderForm(form) => match form.as_ref() {
-            ReaderForm::CircularReference(id) => Some(*id),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
 fn interpreted_closure_code_syntax(value: &Value) -> bool {
-    if let Some((_id, payload)) = circular_read_label_form(value) {
-        return interpreted_closure_code_syntax(&payload);
-    }
     let Some((_, cdr)) = (value).cons_cells() else {
         return false;
     };
@@ -193,55 +170,179 @@ fn interpreted_closure_code_syntax(value: &Value) -> bool {
     !matches!(cdr.get().kind(), Kind::Integer(_))
 }
 
-pub(crate) fn contains_circular_read_syntax(value: &Value) -> bool {
-    let mut pending = vec![*value];
-    let mut seen_cons = HashSet::new();
-    let mut seen_vectors = HashSet::new();
-    while let Some(value) = pending.pop() {
-        if circular_read_ref_form(&value).is_some() || circular_read_label_form(&value).is_some() {
-            return true;
+/// The objects substitute_object_recurse does not look inside: symbols,
+/// numbers and strings without text properties.
+fn atomic_for_substitution(value: &Value) -> bool {
+    match value.kind() {
+        Kind::Nil
+        | Kind::T
+        | Kind::Symbol(_)
+        | Kind::SymbolWithPos(_)
+        | Kind::Integer(_)
+        | Kind::BigInteger(_)
+        | Kind::Float(_) => true,
+        Kind::StringObject(string) => string.borrow().props.is_empty(),
+        _ => false,
+    }
+}
+
+/// lread.c's struct subst: the object a `#N=' label stands for, the
+/// placeholder `#N#' read as inside it, the labelled objects (a cycle can
+/// be entered only through one of them) and those of them already seen.
+struct Substitution<'c> {
+    object: Value,
+    placeholder: Value,
+    completed: &'c HashSet<usize, IdentityBuildHasher>,
+    seen: HashSet<usize, IdentityBuildHasher>,
+}
+
+impl Substitution<'_> {
+    /// substitute_object_recurse: SUBTREE, with each placeholder in it
+    /// replaced by the object, in place.
+    fn recurse(&mut self, subtree: Value) -> Value {
+        if subtree.eq_value(self.placeholder) {
+            return self.object;
         }
-        match value.kind() {
-            Kind::Cons(_) => {
-                let Some((car, cdr)) = value.cons_cells() else {
-                    continue;
-                };
-                if seen_cons.insert(car.cell_id()) {
-                    pending.push(cdr.get());
-                    pending.push(car.get());
+        if atomic_for_substitution(&subtree) || !self.enter(&subtree) {
+            return subtree;
+        }
+        match subtree.kind() {
+            Kind::Cons(_) => self.recurse_list(subtree),
+            Kind::Vector(vector) => {
+                for index in 0..vector.len() {
+                    let slot = vector.get(index).expect("an index below the length");
+                    vector.set(index, self.recurse(slot));
                 }
             }
-            Kind::Vector(vector) if seen_vectors.insert(vector.identity()) => {
-                pending.extend(vector.slots());
-            }
-            // lread.c's substitute_object_recurse walks a string's
-            // intervals too: a #N= label may sit in a property list.
-            Kind::StringObject(state) => {
-                for span in &state.borrow().props {
-                    for (name, property) in &span.props {
-                        pending.push(name.value());
-                        pending.push(*property);
-                    }
+            Kind::Closure(closure) => {
+                for (index, slot) in closure.slots().collect::<Vec<_>>().into_iter().enumerate() {
+                    closure.initialize_slot(index, self.recurse(slot));
                 }
             }
-            Kind::ReaderForm(form) => match form.as_ref() {
-                ReaderForm::HashTable { fields }
-                | ReaderForm::CharTable { fields }
-                | ReaderForm::SubCharTable { fields } => {
-                    pending.extend(fields.iter().cloned());
+            Kind::LispRecord(record) => {
+                for (index, slot) in record.slots().collect::<Vec<_>>().into_iter().enumerate() {
+                    record.set(index, self.recurse(slot));
                 }
-                ReaderForm::Record { slots } | ReaderForm::Closure { slots, .. } => {
-                    pending.extend(slots.iter().cloned());
+            }
+            Kind::CharTable(table) => {
+                for (index, slot) in table.slots().collect::<Vec<_>>().into_iter().enumerate() {
+                    table.set_slot(index, self.recurse(slot));
                 }
-                ReaderForm::BoolVector { .. } => {}
-                ReaderForm::CircularLabel { .. } | ReaderForm::CircularReference(_) => {
-                    return true;
+            }
+            Kind::SubCharTable(table) => {
+                for (index, slot) in table.slots().collect::<Vec<_>>().into_iter().enumerate() {
+                    table.set_slot(index, self.recurse(slot));
                 }
-            },
+            }
+            Kind::StringObject(string) => {
+                // substitute_in_interval: each interval's plist.
+                let spans = string.borrow().props.to_vec();
+                let spans = spans
+                    .into_iter()
+                    .map(|span| StringPropertySpan {
+                        props: span
+                            .props
+                            .iter()
+                            .map(|(name, value)| {
+                                (
+                                    crate::lisp::types::PropertyName::new(
+                                        self.recurse(name.value()),
+                                    ),
+                                    self.recurse(*value),
+                                )
+                            })
+                            .collect(),
+                        ..span
+                    })
+                    .collect::<Vec<_>>();
+                string.borrow_mut().props = spans.into();
+            }
+            Kind::ReaderForm(form) => {
+                // A literal read without a context, its fields still open.
+                let len = reader_form_fields(&form).len();
+                for index in 0..len {
+                    let field = reader_form_fields(&form)[index];
+                    let field = self.recurse(field);
+                    // SAFETY: the reader made the form and holds no other
+                    // reference to its fields while this store runs.
+                    unsafe { set_reader_form_field(&form, index, field) };
+                }
+            }
+            // GNU 30's hash tables have no Lisp slots in their header (the
+            // walk leaves their entries alone), nor do bool vectors and
+            // the other kinds.
             _ => {}
         }
+        subtree
     }
-    false
+
+    /// Whether to look inside SUBTREE: not when it was seen, and a
+    /// labelled object is remembered as seen as it is entered.
+    fn enter(&mut self, subtree: &Value) -> bool {
+        let word = subtree.word();
+        if self.seen.contains(&word) {
+            return false;
+        }
+        if self.completed.contains(&word) {
+            self.seen.insert(word);
+        }
+        true
+    }
+
+    /// The cons case, along the cdrs without a Rust frame per element: the
+    /// car, then the cdr, as GNU's recursion does them.
+    fn recurse_list(&mut self, list: Value) {
+        let mut cursor = list;
+        while let Some((car, cdr)) = cursor.cons_cells() {
+            car.set(self.recurse(car.get()));
+            let tail = cdr.get();
+            if tail.eq_value(self.placeholder) {
+                cdr.set(self.object);
+                return;
+            }
+            if !matches!(tail.kind(), Kind::Cons(_)) {
+                cdr.set(self.recurse(tail));
+                return;
+            }
+            if !self.enter(&tail) {
+                return;
+            }
+            cursor = tail;
+        }
+    }
+}
+
+/// The fields of a literal read without a context.
+fn reader_form_fields(form: &crate::lisp::types::ReaderFormRef) -> &[Value] {
+    match form.as_ref() {
+        ReaderForm::HashTable { fields }
+        | ReaderForm::CharTable { fields }
+        | ReaderForm::SubCharTable { fields }
+        | ReaderForm::Record { slots: fields }
+        | ReaderForm::Closure { slots: fields, .. } => fields,
+        ReaderForm::BoolVector { .. } => &[],
+    }
+}
+
+/// Store VALUE as field INDEX of a literal read without a context.
+///
+/// # Safety
+///
+/// No reference to the form's fields is alive while the store runs.
+unsafe fn set_reader_form_field(
+    form: &crate::lisp::types::ReaderFormRef,
+    index: usize,
+    value: Value,
+) {
+    // SAFETY: the caller's guarantee; the payload is the form's.
+    match unsafe { &mut *form.as_ptr() } {
+        ReaderForm::HashTable { fields }
+        | ReaderForm::CharTable { fields }
+        | ReaderForm::SubCharTable { fields }
+        | ReaderForm::Record { slots: fields }
+        | ReaderForm::Closure { slots: fields, .. } => fields[index] = value,
+        ReaderForm::BoolVector { .. } => {}
+    }
 }
 
 /// Whether a parsed object still contains reader forms requiring runtime
@@ -349,9 +450,16 @@ pub struct Reader<'a> {
     /// bool-vector or closure literal): only then
     /// does the read result need Interpreter-owned object materialization.
     emitted_reader_forms: bool,
-    /// read0's read_objects_map keys: the `#N=' labels read so far, so a
-    /// `#N#' naming no earlier label is invalid syntax where it is read.
-    defined_labels: HashSet<u32>,
+    /// read0's read_objects_map: each `#N=' label of this top-level read,
+    /// mapped to its placeholder until the labelled object is complete and
+    /// to the object after; a `#N#' naming no label is invalid syntax.
+    read_objects_map: HashMap<u32, Value, IdentityBuildHasher>,
+    /// read0's read_objects_completed: the objects labelled so far, by
+    /// word, through which alone a substitution walk can enter a cycle.
+    read_objects_completed: HashSet<usize, IdentityBuildHasher>,
+    /// The `read' calls in progress: a top-level read leaves the label
+    /// maps empty, as readevalloop and read_internal_start do.
+    read_depth: usize,
     /// FROM_FILE_P: the bytes of a file `load' reads directly, where `#@'
     /// skips by byte count and lazily loaded code is read at once.
     from_file: bool,
@@ -378,7 +486,9 @@ impl<'a> Reader<'a> {
             // registered under those names.
             unescaped_character_literals: BTreeSet::new(),
             emitted_reader_forms: false,
-            defined_labels: HashSet::new(),
+            read_objects_map: HashMap::default(),
+            read_objects_completed: HashSet::default(),
+            read_depth: 0,
             locate_symbols: false,
             position_base: 0,
             position_cursor_byte: 0,
@@ -593,13 +703,47 @@ impl<'a> Reader<'a> {
         }
     }
 
-    /// The object a literal's syntax stands for, built now (read0) unless a
-    /// `#N=' label read so far may be referred to inside it: then, and
-    /// without a context, the placeholder waits for the interpreter.
+    /// read0's RE_numbered: OBJECT, read after `#N=', replaces PLACEHOLDER.
+    /// A cons takes the placeholder's place itself (its car and cdr copied
+    /// in), as the `#N#' inside it already are the placeholder; any other
+    /// object is put everywhere the placeholder is inside it.
+    fn complete_numbered(
+        &mut self,
+        id: u32,
+        placeholder: Value,
+        object: Value,
+    ) -> Result<Value, LispError> {
+        if let Some((car, cdr)) = object.cons_values() {
+            if object.eq_value(placeholder) {
+                // Catch silly games like #1=#1#.
+                return Err(LispError::ReadError("nonsensical self-reference".into()));
+            }
+            let (placeholder_car, placeholder_cdr) =
+                placeholder.cons_cells().expect("a placeholder is a cons");
+            placeholder_car.set(car);
+            placeholder_cdr.set(cdr);
+            self.read_objects_completed.insert(placeholder.word());
+            return Ok(placeholder);
+        }
+        // If it can be recursive, remember it for future substitutions.
+        if !atomic_for_substitution(&object) {
+            self.read_objects_completed.insert(object.word());
+        }
+        Substitution {
+            object,
+            placeholder,
+            completed: &self.read_objects_completed,
+            seen: HashSet::default(),
+        }
+        .recurse(object);
+        self.read_objects_map.insert(id, object);
+        Ok(object)
+    }
+
+    /// The object a literal's syntax stands for, built now (read0); without
+    /// a context the placeholder waits for the interpreter.
     fn literal_object(&mut self, form: ReaderForm) -> Result<Value, LispError> {
-        if self.defined_labels.is_empty()
-            && let Some(context) = self.read_context()
-        {
+        if let Some(context) = self.read_context() {
             return context.build(form);
         }
         Ok(Value::ReaderForm(
@@ -741,7 +885,13 @@ impl<'a> Reader<'a> {
     /// Read one s-expression. Returns None at end of input.
     pub fn read(&mut self) -> Result<Option<Value>, LispError> {
         let roots = self.input.root_depth();
+        self.read_depth += 1;
         let result = self.read_datum();
+        self.read_depth -= 1;
+        if self.read_depth == 0 && !self.read_objects_map.is_empty() {
+            self.read_objects_map.clear();
+            self.read_objects_completed.clear();
+        }
         self.input
             .root_result(roots, result.as_ref().ok().copied().flatten());
         let value = result?;
@@ -1795,23 +1945,20 @@ impl<'a> Reader<'a> {
                     return Err(LispError::ReadError(token));
                 };
                 if c == i64::from(b'=') {
-                    // #N=OBJ -- assign number N to OBJ.
-                    self.defined_labels.insert(id);
-                    let value = self.read()?.ok_or(LispError::EndOfInput())?;
-                    return Ok(Some(Value::ReaderForm(
-                        crate::lisp::alloc::VectorlikeRef::allocate(ReaderForm::CircularLabel {
-                            id,
-                            payload: value,
-                        }),
-                    )));
+                    // #N=OBJ -- assign number N to OBJ: a placeholder for
+                    // the `#N#' inside OBJ until OBJ is read.
+                    let placeholder = Value::cons(Value::Nil, Value::Nil);
+                    self.read_objects_map.insert(id, placeholder);
+                    let roots = self.input.root_depth();
+                    self.input.root_result(roots, Some(placeholder));
+                    let object = self.read()?.ok_or(LispError::EndOfInput())?;
+                    return self.complete_numbered(id, placeholder, object).map(Some);
                 }
-                if c == i64::from(b'#') && self.defined_labels.contains(&id) {
+                if c == i64::from(b'#')
+                    && let Some(object) = self.read_objects_map.get(&id)
+                {
                     // #N# -- reference to numbered object.
-                    return Ok(Some(Value::ReaderForm(
-                        crate::lisp::alloc::VectorlikeRef::allocate(ReaderForm::CircularReference(
-                            id,
-                        )),
-                    )));
+                    return Ok(Some(*object));
                 }
                 Err(LispError::ReadError(token))
             }
@@ -2352,8 +2499,9 @@ mod tests {
         // Marker-free text, nested lists and vectors included, is final as read.
         assert!(!emitted("(a (b [c d] \"e\") . f)"));
         assert!(!emitted("'(quote (1 2))"));
-        // Placeholders nested anywhere set the flag.
-        assert!(emitted("#1=(a . #1#)"));
+        // So is a labelled object: read0's placeholder becomes the object.
+        assert!(!emitted("#1=(a . #1#)"));
+        // Literal placeholders nested anywhere set the flag.
         assert!(emitted("(x (y #s(hash-table data (1 2))))"));
         assert!(emitted("[1 #s(record a) 2]"));
         assert!(emitted("(f #&3\"\\7\")"));
@@ -2782,23 +2930,42 @@ mod tests {
     }
 
     #[test]
-    fn reads_reader_labels_as_circular_syntax_forms() {
+    fn reads_labels_as_the_objects_they_name() {
+        // read0's placeholder becomes the labelled cons itself.
         let value = read_one("'#1=((a . 1) . #1#)");
         let items = value.to_vec().expect("quote form");
         assert!(matches!(
             items.first().map(|v| v.kind()),
             Some(Kind::Symbol(symbol)) if symbol == "quote"
         ));
-        assert!(circular_read_label_form(&items[1]).is_some());
+        let (_, tail) = items[1].cons_values().expect("the labelled list");
+        assert!(tail.eq_value(items[1]));
+        // Any other object takes the placeholder's places inside it.
+        let vector = read_one("#1=[a #1#]");
+        let Kind::Vector(slots) = vector.kind() else {
+            panic!("a vector");
+        };
+        assert!(slots.get(1).expect("two slots").eq_value(vector));
+        // A literal read without a context, its fields still open.
+        let record = read_one("#1=#s(r #1#)");
+        let Kind::ReaderForm(form) = record.kind() else {
+            panic!("a record form");
+        };
+        let ReaderForm::Record { slots } = form.as_ref() else {
+            panic!("a record form");
+        };
+        assert!(slots[1].eq_value(record));
+        // `#N#' before its label, and `#1=#1#', are invalid.
+        assert!(Reader::new("(#1# #1=a)").read().is_err());
+        assert!(matches!(
+            Reader::new("#1=#1#").read().as_ref().map_err(LispError::kind),
+            Err(LispErrorKind::ReadError(message)) if message == "nonsensical self-reference"
+        ));
     }
 
     #[test]
     fn circular_label_numbers_can_be_reused_within_one_top_level_form() {
-        let parsed = read_one("(#1=(a #1#) #1=(b #1#))");
-        let mut interpreter = crate::lisp::eval::Interpreter::new();
-        let resolved = interpreter
-            .materialize_read_object_literals(parsed, &mut crate::lisp::types::Env::new())
-            .expect("resolve reused labels");
+        let resolved = read_one("(#1=(a #1#) #1=(b #1#))");
         let objects = resolved.to_vec().expect("outer list");
         assert_eq!(objects.len(), 2);
 
@@ -2825,18 +2992,12 @@ mod tests {
     }
 
     #[test]
-    fn circular_syntax_scan_handles_already_materialized_cycles() {
-        let cycle = Value::list([Value::Integer(1)]);
-        let (_, cdr) = cycle.cons_cells().expect("one-element list");
-        cdr.set(cycle);
-
-        assert!(!contains_circular_read_syntax(&cycle));
-
-        let reference = Value::ReaderForm(crate::lisp::alloc::VectorlikeRef::allocate(
-            ReaderForm::CircularReference(7),
-        ));
-        let containing_cycle = Value::list([cycle, reference]);
-        assert!(contains_circular_read_syntax(&containing_cycle));
+    fn labels_belong_to_one_top_level_read() {
+        // readevalloop and read_internal_start empty the maps around each
+        // top-level read, so a later form cannot name an earlier label.
+        let mut reader = Reader::new("#1=(a) #1#");
+        assert!(reader.read().expect("first form").is_some());
+        assert!(reader.read().is_err());
     }
 
     #[test]

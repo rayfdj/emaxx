@@ -1167,14 +1167,6 @@ pub(crate) fn materialize_read_hash_table_literals(
     materialize_hash_table_literals_inner(interp, value, env, &mut seen)
 }
 
-pub(crate) fn materialize_read_hash_table_literal_fields(
-    interp: &mut Interpreter,
-    fields: &[Value],
-    env: &mut Env,
-) -> Result<Value, LispError> {
-    hash_table_from_literal_fields(interp, fields, env, &mut HashSet::new())
-}
-
 const CHAR_TABLE_STANDARD_SLOTS: usize = 68;
 
 // Reader forms become the actual root/subtable graph. Each object is

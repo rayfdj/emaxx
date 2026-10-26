@@ -6306,6 +6306,52 @@ setup_process_coding_systems's check now refuses). A 13-form
   the full gate, 3,227 passed across its ten groups with the documented
   local skips (eval_05, 364, and the buffer tests include the new ones);
   clippy `-D warnings', rustfmt and `git diff --check' pass.
+- **Round 87: `#N=' labels as lread.c read0 reads them.** Emaxx read a
+  label as a wrapper form (`#N=' around its object, `#N#' as a reference
+  form), and once a top-level read had a label every later literal
+  (record, closure, hash table, char-table) stayed a placeholder too; the
+  read's caller then walked the whole result up to six times (finding the
+  forms, resolving labels, then records, hash tables and char-tables),
+  each walk keeping its visited objects in SipHash sets. Native-compiled
+  units' static data is printed with `print-circle', so every `.eln' load
+  paid for this over its whole constant vector. Now `#N=' makes read0's
+  placeholder cons, in read_objects_map, before the object is read, and
+  `#N#' reads as whatever the map holds (an unknown number is invalid
+  syntax). When the object is complete (RE_numbered): a cons takes over
+  the placeholder (its car and cdr copied in, so the `#N#' inside it are
+  already right); any other object is recorded in read_objects_completed
+  and put everywhere the placeholder is inside it by
+  substitute_object_recurse (conses, vectors, closures, records,
+  char-tables, string property lists and, for a read without a context,
+  the open literal forms; GNU 30's walk leaves a hash table's entries
+  alone, as its hash tables have no Lisp slots in their header). The maps
+  are emptied after each top-level read, as readevalloop and
+  read_internal_start do, so a later form cannot name an earlier label.
+  Literals are built as their syntax closes whenever the read has a
+  context. The wrapper forms, the materializer behind them (`#N=' handling
+  in `materialize_read_object_literals') and their cases in the copier,
+  the collector, the interning walk and `json-serialize' are gone. Two
+  reads that signalled errors now give GNU's values:
+  `#1=#s(hash-table data (k #1#))' is a table whose value is the
+  placeholder `(nil)', and `#1=#2=(a #1# #2#)' is
+  `#1=(a . #2=(#1# (a . #2#)))'. Loading `json' (and with it the byte
+  compiler's native unit) took 198.3M instructions and now 165.5M (GNU
+  109.6M); a test file's setup in the frozen runner (startup, `ert', the
+  runner, the file) 802.6M and now 767.2M (GNU 518.3M). What remains of
+  that setup gap, by stage: startup 222M against 152M (the image loader
+  deserializes object by object where GNU maps its dump); loading `ert'
+  281M against 235M, though GNU spends 105M of its 235M in two
+  collections and Emaxx 25M in one, so outside collection the reader is
+  97M against GNU's 57M, the matcher 34M against 18M and MD5 of the
+  source files for the native-code lookup 16M against 8M (the `md5'
+  crate is 2.5 times gnulib's cost a byte; both hash the same files).
+  A probe reading labels in conses, vectors, records, closures, hash
+  tables and string properties, from a string, a buffer and a loaded
+  file, gives GNU 30.2's values (an eval_05 test holds them). Local
+  validation: the full gate, 3,228 passed across its ten groups with the
+  documented local skips (eval_05, 365, includes the new test; the reader
+  tests check the placeholder, the substitution and the per-read maps);
+  clippy `-D warnings', rustfmt and `git diff --check' pass.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -7020,7 +7066,9 @@ frozen passed on its first attempt (run 40240888419).
 **On `ed0631e`** (round 85): full Rust gate passed (run 40243227941);
 frozen failed only GNU's known oracle flake (Emaxx 7,670 passed with 0
 unexpected, GNU 7,669 passed with 1 unexpected), and its failed job was
-rerun (run 40243230215, attempt 2).
+rerun passed (run 40243230215, attempt 2).
+**On `20204fe`** (round 86): full Rust gate passed (run 40246689049),
+frozen passed on its first attempt (run 40246690701).
 
 **Findings recorded, not fixed:**
 - `features`, `values` and `top-level` are special variables in Emaxx

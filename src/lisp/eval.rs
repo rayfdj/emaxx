@@ -1,5 +1,5 @@
 use crate::file_system as fs;
-use crate::lisp::types::{CharTableRef, LispRecordRef, RecordRef, SubCharTableRef};
+use crate::lisp::types::{CharTableRef, LispRecordRef, RecordRef};
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::{ErrorKind, Read, Write};
@@ -11,8 +11,7 @@ use std::time::{Duration, SystemTime};
 use super::primitives;
 use super::sqlite::SqliteHandleState;
 use super::types::{
-    ConsCell, EmacsTermination, Env, EnvFrame, Kind, LispError, LispErrorKind, ReaderForm,
-    SymbolName, Value,
+    EmacsTermination, Env, EnvFrame, Kind, LispError, LispErrorKind, ReaderForm, SymbolName, Value,
 };
 use crate::compat::DiscoveredTest;
 #[cfg(test)]
@@ -3109,7 +3108,11 @@ impl ImageGraphCopier {
                 if let Some(copy) = self.vectors.get(&table.identity()) {
                     return *copy;
                 }
-                let copy = SubCharTableRef::new(table.depth(), table.min_char(), Value::Nil);
+                let copy = crate::lisp::types::SubCharTableRef::new(
+                    table.depth(),
+                    table.min_char(),
+                    Value::Nil,
+                );
                 self.vectors
                     .insert(table.identity(), Value::SubCharTable(copy));
                 for (index, value) in table.slots().enumerate() {
@@ -3302,15 +3305,6 @@ impl ImageGraphCopier {
                 }
                 let copied = Value::ReaderForm(crate::lisp::alloc::VectorlikeRef::allocate(
                     match form.as_ref() {
-                        crate::lisp::types::ReaderForm::CircularLabel { id, payload } => {
-                            crate::lisp::types::ReaderForm::CircularLabel {
-                                id: *id,
-                                payload: self.copy(payload),
-                            }
-                        }
-                        crate::lisp::types::ReaderForm::CircularReference(id) => {
-                            crate::lisp::types::ReaderForm::CircularReference(*id)
-                        }
                         crate::lisp::types::ReaderForm::HashTable { fields } => {
                             crate::lisp::types::ReaderForm::HashTable {
                                 fields: fields.iter().map(|field| self.copy(field)).collect(),
@@ -3774,13 +3768,12 @@ impl LispReachability {
             }
             Kind::ReaderForm(form) => {
                 let children: &[Value] = match form.as_ref() {
-                    ReaderForm::CircularLabel { payload, .. } => std::slice::from_ref(payload),
                     ReaderForm::HashTable { fields }
                     | ReaderForm::CharTable { fields }
                     | ReaderForm::SubCharTable { fields }
                     | ReaderForm::Record { slots: fields }
                     | ReaderForm::Closure { slots: fields, .. } => fields,
-                    ReaderForm::CircularReference(_) | ReaderForm::BoolVector { .. } => &[],
+                    ReaderForm::BoolVector { .. } => &[],
                 };
                 for child in children {
                     self.enqueue(child);

@@ -787,11 +787,6 @@ fn serialize_value(
         Kind::BigInteger(number) => Ok(number.to_string()),
         Kind::Float(number) => Ok(number.to_string()),
         Kind::ReaderForm(form) => match form.as_ref() {
-            ReaderForm::CircularLabel { .. } | ReaderForm::CircularReference(_) => Err(json_error(
-                "circular-list",
-                "Circular list is not serializable as JSON",
-                1,
-            )),
             ReaderForm::HashTable { .. } => {
                 serialize_hash_table_literal(interp, value, options, depth)?
                     .ok_or_else(|| LispError::TypeError("json-value".into(), value.type_name()))

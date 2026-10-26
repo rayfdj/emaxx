@@ -1525,11 +1525,6 @@ pub enum ReaderClosureKind {
 #[derive(Clone, Debug, PartialEq)]
 #[doc(hidden)]
 pub enum ReaderForm {
-    CircularLabel {
-        id: u32,
-        payload: Value,
-    },
-    CircularReference(u32),
     HashTable {
         fields: Vec<Value>,
     },

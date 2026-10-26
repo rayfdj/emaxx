@@ -997,15 +997,11 @@ impl Interpreter {
                 }
                 // GNU's reader interns symbols inside every literal it
                 // builds: `#[...]' closure constant vectors, `#s(...)'
-                // hash tables/records, char-tables, and circular labels
-                // (lread.c read0 interns at each `read_symbol').  Skipping
+                // hash tables/records and char-tables (lread.c read0
+                // interns at each `read_symbol').  Skipping
                 // these left every symbol that only occurs in a compiled
                 // constant vector out of the standard obarray.
                 Kind::ReaderForm(form) => match form.as_ref() {
-                    crate::lisp::types::ReaderForm::CircularLabel { payload, .. } => {
-                        pending.push(*payload);
-                    }
-                    crate::lisp::types::ReaderForm::CircularReference(_) => {}
                     crate::lisp::types::ReaderForm::HashTable { fields }
                     | crate::lisp::types::ReaderForm::CharTable { fields }
                     | crate::lisp::types::ReaderForm::SubCharTable { fields } => {
