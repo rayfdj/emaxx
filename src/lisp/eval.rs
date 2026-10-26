@@ -5546,6 +5546,10 @@ pub struct InterpreterState {
     pub last_match_data: Option<Vec<Option<(usize, usize)>>>,
     /// Source buffer for buffer-origin match data; string searches leave this unset.
     pub last_match_data_buffer_id: Option<u64>,
+    /// The matcher's registers in text offsets (search.c's search_regs
+    /// before a search converts them to positions), held between searches
+    /// so their allocation serves every search.
+    pub(crate) search_registers: crate::lisp::regex_emacs::Registers,
     pub profiler_memory_running: bool,
     pub profiler_memory_log_pending: bool,
     pub profiler_cpu_running: bool,
@@ -6290,6 +6294,7 @@ impl Interpreter {
             pending_termination: None,
             last_match_data: None,
             last_match_data_buffer_id: None,
+            search_registers: Default::default(),
             profiler_memory_running: false,
             profiler_memory_log_pending: false,
             profiler_cpu_running: false,

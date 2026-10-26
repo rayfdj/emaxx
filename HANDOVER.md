@@ -6530,6 +6530,61 @@ setup_process_coding_systems's check now refuses). A 13-form
   and eval_05 again with the new test (367); clippy `-D warnings',
   rustfmt and `git diff --check' pass.
 
+- **Round 92: the empty pattern's cache comparison, the matcher's
+  registers in a held buffer, no group registers without groups.** Both
+  frozen runners call `(ert-select-tests t t)' twice for every test file,
+  once when the runner loads and once when it runs, and each is an
+  `apropos-internal' over all 19.8K symbols: `string-match' of `""'
+  against each name and the predicate. In wall time (best of 30 inside
+  one process) a call took 10.0 ms against GNU's 4.4 ms although its
+  instruction count was only 1.4 times GNU's; `string-match ""' over the
+  names took 8.5 ms against GNU's 3.2 while `string-match "a"', which
+  scans every name, took 5.3 against 4.3. Timing string_match_1's stages
+  with the time-stamp counter put the excess in compile_pattern's cache
+  walk, about 570 cycles a call for `""' against 100 for `"x*"' or
+  `"a"': the empty pattern's saved bytes are an empty vector, whose
+  pointer is a placeholder (0x1) rather than an address, Rust's slice
+  equality hands both pointers to memcmp even at length 0, and on this
+  Xeon such a call costs some 200 to 270 cycles where one through real
+  addresses costs 5 (a standalone test shows it); each lookup compared
+  twice. Now (1) the cache compares the lengths first and two empty
+  patterns are equal without memcmp, as Fstring_equal's SBYTES test
+  makes them; (2) re_search_2 and re_match_2 fill the registers they are
+  given (GNU's REGS argument) and answer the match's start or end:
+  `string-match' and `looking-at' pass a register buffer the interpreter
+  keeps between searches when the match data may change (search_regs
+  before its conversion to positions) and none otherwise, and a buffer
+  search passes it either way (search_regs_1 when the match data stays),
+  where each match allocated a register vector and freed it; (3)
+  re_match_2_internal sets the group registers unset only when the
+  pattern has groups, as GNU does not "bother to initialize all the
+  register variables", where each attempt filled both arrays through two
+  memset calls; (4) `string-match' makes last_thing_searched t whenever
+  the match data may change, matched or not, so after a failed
+  `string-match' an earlier buffer search's match data reads as
+  integers, as in GNU (Emaxx kept the markers). `string-match ""' over
+  the names now takes 4.5 ms (GNU 3.2) and `apropos-internal' 6.2 ms
+  (GNU 4.4); in instructions, three `apropos-internal' calls 181.0M and
+  now 174.4M (GNU 128.4M), a test file's setup in the frozen runner
+  640.3M and now 634.8M (GNU 518.3M), and its test phase 99.8M and now
+  97.4M (GNU 63.9M). An LD_PRELOAD count of zero-length memcmp and bcmp
+  calls through a placeholder pointer over a trivial test file and six
+  real ones (fns, subr, subr-x, search, files and simple tests) found
+  the rest rare: about 600 in completion's obarray matching, 140 in one
+  other primitive and four elsewhere. A probe of the match data after successful and failed
+  `string-match', `string-match-p', `looking-at', `looking-at-p',
+  `looking-back', `posix-string-match', `search-forward' and repeated
+  and backward regexp searches, with and without groups and
+  `inhibit-changing-match-data', of the empty pattern from the start
+  and from inside a string, on empty, unibyte and multibyte strings,
+  folded and not, of
+  `save-match-data', invalid patterns, `replace-regexp-in-string' and
+  `split-string' with `""' gives GNU 30.2's values; an eval_05 test
+  holds the failed-search and empty-pattern cases. Local validation:
+  the full gate, 3,231 passed across its ten groups with the documented
+  local skips, and eval_05 again with the new test (368); clippy `-D
+  warnings', rustfmt and `git diff --check' pass.
+
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
 25 sorting/case-folding/substring tests plus the comparison tests, and 95
@@ -7259,6 +7314,8 @@ rerun passed (run 40255538925, attempt 2).
 **On `8dd2e58`** (round 90): full Rust gate passed (run 40259071504),
 frozen passed on its first attempt (run 40259074201); PR #108 merged
 rounds 82 to 90 into main (`44f1c76`).
+**On `171d0c0`** (round 91): full Rust gate passed (run 40265340023),
+frozen passed on its first attempt (run 40265342433).
 
 **Findings recorded, not fixed:**
 - `features`, `values` and `top-level` are special variables in Emaxx

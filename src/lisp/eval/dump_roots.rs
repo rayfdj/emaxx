@@ -326,6 +326,7 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
         "search.c's search_regs are the running process's",
     ),
     ("last_match_data_buffer_id", "as last_match_data"),
+    ("search_registers", "a search's scratch registers"),
     ("profiler_memory_running", "the running profiler"),
     ("profiler_memory_log_pending", "the running profiler"),
     ("profiler_cpu_running", "the running profiler"),

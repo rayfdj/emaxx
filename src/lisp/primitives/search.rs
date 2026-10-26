@@ -733,6 +733,17 @@ fn match_error(error: MatchError) -> LispError {
 /// looked at most recently used first; a pattern not found is compiled
 /// into the first empty cell or else the least recently used one that is
 /// not busy, and the cell used goes to the front.
+/// Fstring_equal's test of two patterns' bytes: the lengths, then the
+/// bytes.  Two empty ones are equal without memcmp: an empty pattern's
+/// saved copy is an empty vector, whose pointer is a placeholder rather
+/// than an address, and a zero-length memcmp through it measured some 200
+/// cycles on the Xeon these numbers come from, against 5 through real
+/// addresses (the `""' of `apropos-internal' paid that twice a symbol).
+#[inline]
+fn same_bytes(saved: &[u8], now: &[u8]) -> bool {
+    saved.len() == now.len() && (saved.is_empty() || saved == now)
+}
+
 fn compile_pattern(
     menv: &mut LispMatchEnv<'_, '_>,
     regexp: &Value,
@@ -753,7 +764,7 @@ fn compile_pattern(
     let syntax_table = menv.syntax_table;
 
     let matches = |entry: &CacheEntry| {
-        entry.regexp.as_slice() == bytes
+        same_bytes(&entry.regexp, bytes)
             && entry.multibyte == multibyte
             && entry.translate == translate
             && entry.posix == posix
@@ -761,7 +772,7 @@ fn compile_pattern(
             && match (&entry.whitespace, whitespace_bytes) {
                 (None, None) => true,
                 (Some((saved, saved_multibyte)), Some((now, now_multibyte))) => {
-                    saved.as_slice() == now && *saved_multibyte == now_multibyte
+                    same_bytes(saved, now) && *saved_multibyte == now_multibyte
                 }
                 _ => false,
             }
@@ -1006,6 +1017,19 @@ fn set_search_regs(
     interp.last_match_data_buffer_id = buffer;
 }
 
+/// search.c's `&search_regs' argument to the matcher: the held register
+/// buffer while the match data may change (MODIFY), else none.  Given back
+/// with `give_back_registers' however the search ends.
+fn take_registers(interp: &mut Interpreter, modify: bool) -> Option<Registers> {
+    modify.then(|| std::mem::take(&mut interp.search_registers))
+}
+
+fn give_back_registers(interp: &mut Interpreter, registers: Option<Registers>) {
+    if let Some(registers) = registers {
+        interp.search_registers = registers;
+    }
+}
+
 /// looking_at_1.
 pub(super) fn looking_at_1(
     interp: &mut Interpreter,
@@ -1035,25 +1059,32 @@ pub(super) fn looking_at_1(
         .with_latin1_bytes(!snapshot.multibyte && !snapshot.ascii);
     menv.object = snapshot.object(slice);
     let pos = snapshot.offset(snapshot.point);
-    let result = rx::re_match(&mut entry.pattern, &text, pos, text.len(), &mut menv);
+    let mut registers = take_registers(menv.interp, modify_match_data);
+    let result = rx::re_match(
+        &mut entry.pattern,
+        &text,
+        pos,
+        text.len(),
+        registers.as_mut(),
+        &mut menv,
+    );
     let pending = menv.error.take();
     drop(menv);
     release_pattern(entry);
-    if let Some(error) = pending {
-        return Err(error);
-    }
-    let Some(registers) = result.map_err(match_error)? else {
-        return Ok(Value::Nil);
+    let found = match (pending, result.map_err(match_error)) {
+        (Some(error), _) | (None, Err(error)) => Err(error),
+        (None, Ok(end)) => Ok(end.is_some()),
     };
-    if modify_match_data {
+    if let (Ok(true), Some(registers)) = (&found, &registers) {
         set_search_regs(
             interp,
-            &registers,
+            registers,
             |offset| snapshot.position(offset),
             Some(buffer_id),
         );
     }
-    Ok(Value::T)
+    give_back_registers(interp, registers);
+    Ok(if found? { Value::T } else { Value::Nil })
 }
 
 /// string_match_1.
@@ -1118,19 +1149,18 @@ pub(super) fn string_match_1(
         in_place: string_text.in_place(),
         string: Some(*string),
     };
+    let mut registers = take_registers(menv.interp, modify_match_data);
     let result = rx::re_search(
         &mut entry.pattern,
         &text,
         pos_byte,
         (text.len() - pos_byte) as isize,
         text.len(),
+        registers.as_mut(),
         &mut menv,
     );
     drop(menv);
     release_pattern(entry);
-    let Some(registers) = result.map_err(match_error)? else {
-        return Ok(Value::Nil);
-    };
     let to_char = |offset: usize| {
         if ascii {
             offset
@@ -1138,10 +1168,18 @@ pub(super) fn string_match_1(
             string_text.byte_to_char(offset)
         }
     };
-    let start = registers.regs[0].expect("group 0").0;
+    // last_thing_searched is Qt once the match data may change, whether
+    // or not this search changes it.
     if modify_match_data {
-        set_search_regs(interp, &registers, to_char, None);
+        interp.last_match_data_buffer_id = None;
     }
+    if let (Ok(Some(_)), Some(registers)) = (&result, &registers) {
+        set_search_regs(interp, registers, to_char, None);
+    }
+    give_back_registers(interp, registers);
+    let Some(start) = result.map_err(match_error)? else {
+        return Ok(Value::Nil);
+    };
     Ok(Value::Integer(to_char(start) as i64))
 }
 
@@ -1295,7 +1333,10 @@ fn search_buffer_re(
     let lim_byte = snapshot.offset(lim);
     let mut pos_byte = snapshot.offset(pos);
     let mut pos = pos;
-    let mut last: Option<Registers> = None;
+    // search_regs, or search_regs_1 when the match data is to stay: each
+    // match needs its group 0 to go on from.
+    let mut registers = std::mem::take(&mut menv.interp.search_registers);
+    let mut found_any = false;
 
     let outcome = (|| -> Result<i64, LispError> {
         menv.maybe_quit()?;
@@ -1307,15 +1348,16 @@ fn search_buffer_re(
                 lim_byte as isize - pos_byte as isize,
                 // Don't allow a match past the current point.
                 pos_byte,
+                Some(&mut registers),
                 &mut menv,
             )
             .map_err(match_error)?;
-            let Some(registers) = found else {
+            if found.is_none() {
                 return Ok(n);
-            };
+            }
             pos_byte = registers.regs[0].expect("group 0").0;
             pos = snapshot.position(pos_byte);
-            last = Some(registers);
+            found_any = true;
             n += 1;
             menv.maybe_quit()?;
         }
@@ -1326,15 +1368,16 @@ fn search_buffer_re(
                 pos_byte,
                 lim_byte as isize - pos_byte as isize,
                 lim_byte,
+                Some(&mut registers),
                 &mut menv,
             )
             .map_err(match_error)?;
-            let Some(registers) = found else {
+            if found.is_none() {
                 return Ok(-n);
-            };
+            }
             pos_byte = registers.regs[0].expect("group 0").1;
             pos = snapshot.position(pos_byte);
-            last = Some(registers);
+            found_any = true;
             n -= 1;
             menv.maybe_quit()?;
         }
@@ -1344,14 +1387,15 @@ fn search_buffer_re(
     drop(menv);
     release_pattern(entry);
     // Each match found updated the match data, the last one standing.
-    if preserve_match_data && let Some(registers) = &last {
+    if preserve_match_data && found_any {
         set_search_regs(
             interp,
-            registers,
+            &registers,
             |offset| snapshot.position(offset),
             Some(buffer_id),
         );
     }
+    interp.search_registers = registers;
     if let Some(error) = pending {
         return Err(error);
     }
@@ -1473,17 +1517,17 @@ fn text_match(
         0,
         text.len() as isize,
         text.len(),
+        None,
         &mut menv,
     );
     drop(menv);
     release_pattern(entry);
-    let registers = match result {
-        Ok(Some(registers)) => registers,
+    let start = match result {
+        Ok(Some(start)) => start,
         Ok(None) => return Ok(None),
         Err(MatchError::Overflow) if !signal_overflow => return Ok(None),
         Err(error) => return Err(match_error(error)),
     };
-    let start = registers.regs[0].expect("group 0").0;
     Ok(Some(match in_place {
         Some(state) => state.borrow().byte_to_char(start),
         None if haystack.is_ascii() => start,
@@ -1529,6 +1573,7 @@ pub(crate) fn fast_c_string_match_ignore_case(
         0,
         text.len() as isize,
         text.len(),
+        None,
         &mut menv,
     );
     drop(menv);
@@ -1561,14 +1606,14 @@ pub(crate) fn fast_looking_at(
             &text,
             start,
             snapshot.offset(limit),
+            None,
             &mut menv,
         );
         drop(menv);
         release_pattern(entry);
-        let Some(registers) = result.map_err(match_error)? else {
+        let Some(end) = result.map_err(match_error)? else {
             return Ok(None);
         };
-        let end = registers.regs[0].expect("group 0").1;
         return Ok(Some(snapshot.position(end) - pos));
     }
     let Some((_, multibyte, chars)) = string_bytes(string) else {
@@ -1593,13 +1638,19 @@ pub(crate) fn fast_looking_at(
         in_place: string_text.in_place(),
         string: Some(*string),
     };
-    let result = rx::re_match(&mut entry.pattern, &text, byte(pos), byte(limit), &mut menv);
+    let result = rx::re_match(
+        &mut entry.pattern,
+        &text,
+        byte(pos),
+        byte(limit),
+        None,
+        &mut menv,
+    );
     drop(menv);
     release_pattern(entry);
-    let Some(registers) = result.map_err(match_error)? else {
+    let Some(end) = result.map_err(match_error)? else {
         return Ok(None);
     };
-    let end = registers.regs[0].expect("group 0").1;
     Ok(Some(
         if ascii {
             end

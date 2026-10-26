@@ -9098,3 +9098,31 @@ fn read_labels_are_placeholders_substituted_like_lread() {
         )
     );
 }
+
+#[test]
+fn string_match_keeps_search_c_match_data() {
+    // search.c string_match_1: once the match data may change,
+    // last_thing_searched is t whether or not the search matches, so a
+    // buffer search's data reads as integers after a failed
+    // `string-match'; a pattern without groups leaves no group registers
+    // set; the empty pattern is found in its cache cell.  GNU 30.2's values.
+    assert_eq!(
+        eval_str(
+            r#"(with-temp-buffer
+                 (insert "hello world")
+                 (goto-char (point-min))
+                 (re-search-forward "\\(wor\\)ld")
+                 (let ((a (match-data)))
+                   (prin1-to-string
+                    (list (mapcar (lambda (m) (if (markerp m) (marker-position m) m)) a)
+                          (string-match "nomatch" "abc") (match-data)
+                          (progn (string-match "\\(a\\)\\(b\\)\\(c\\)" "abc") (string-match "a" "a"))
+                          (match-data) (match-beginning 2)
+                          (string-match "" "abc") (string-match "" "abc" 2) (match-data)
+                          (string-match "" "") (string-match-p "" "x") (match-data)
+                          (let ((case-fold-search nil)) (string-match "" "ABC"))
+                          (replace-regexp-in-string "" "-" "abc")))))"#
+        ),
+        Value::string("((7 12 7 10) nil (7 12 7 10) 0 (0 1) nil 0 2 (2 2) 0 0 (0 0) 0 \"-a-b-c\")")
+    );
+}
