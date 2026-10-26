@@ -901,7 +901,7 @@ define_dispatch!(
                             }
                             let item = car.get();
                             if matches!(item.kind(), Kind::Cons(_))
-                                && values_equal_in_env(interp, &item.cdr()?, &args[0], env)
+                                && values_equal(interp, &item.cdr()?, &args[0])?
                             {
                                 return Ok(item);
                             }
@@ -946,7 +946,7 @@ define_dispatch!(
                                     )?
                                     .is_truthy()
                                 } else {
-                                    values_equal_in_env(interp, &item.car()?, &args[0], env)
+                                    values_equal(interp, &item.car()?, &args[0])?
                                 }
                             {
                                 return Ok(item);
@@ -1940,7 +1940,7 @@ pub(super) fn direct_member_family(
     while let Kind::Cons(cell) = tail.kind() {
         let item = cell.car.get();
         let matches = match test {
-            MemTest::Equal => values_equal_in_env(interp, &item, &args[0], env),
+            MemTest::Equal => values_equal(interp, &item, &args[0])?,
             MemTest::Eql => values_eql(&item, &args[0]),
             MemTest::Eq => values_eq_in_env(interp, &item, &args[0], env),
         };

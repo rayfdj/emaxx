@@ -6476,6 +6476,374 @@ setup_process_coding_systems's check now refuses). A 13-form
   passed across its ten groups with the documented local skips; clippy
   `-D warnings', rustfmt and `git diff --check' pass.
 
+- **Round 91: fns.c internal_equal, one walk for `equal' and
+  `equal-including-properties'.** Emaxx had three walks: a non-signaling
+  one for Rust callers that kept a SipHash set of every cons pair it
+  passed (an insertion and allocation a cons), a signaling one for
+  `equal' that handed every non-cons leaf back to the first, and a third
+  for `equal-including-properties' that compared vectors' and records'
+  elements without their strings' properties. Against GNU 30.2:
+  250-deep vectors compared t where GNU signals "Stack overflow in
+  equal", `(equal-including-properties [#("a" 0 1 (p 1))] ["a"])' was t,
+  and a cdr cycle's `circular-list' carried the original list where GNU
+  gives the tail at which FOR_EACH_TAIL's tortoise is met. Now
+  src/lisp/primitives/values.rs has internal_equal with fns.c's
+  equal_kind (EQUAL_PLAIN, EQUAL_INCLUDING_PROPERTIES): past depth 10 a
+  table of the objects O2 each cons or vectorlike O1 was compared with
+  (made the first time), a pair met again counting as equal; past 200
+  `Stack overflow in equal'; the cdrs walked by lisp.h's FOR_EACH_TAIL
+  (struct for_each_tail_internal: Q, N and MAX, the tortoise moved to
+  the tail after MAX steps and MAX doubled), the shared-tail EQ exit,
+  and `circular-list' with the tail in hand; the last cdr and an
+  overlay's plist compared one level down by going round again
+  (tail_recurse); symbols with position stripped while
+  `symbols-with-pos-enabled' is set; strings by characters, bytes and
+  data, and with EQUAL_INCLUDING_PROPERTIES by compare_string_intervals
+  at every level, property values by `equal'; bignums, markers, bool
+  vectors, tree-sitter nodes and symbols with position by value;
+  vectors, closures, char-tables, sub-char-tables and records by their
+  slots; other pseudovectors only when eq. `equal' signals wherever GNU's
+  Fequal does: `values_equal' returns a Result and its 34 callers
+  propagate it (member, assoc, rassoc, delete, remove, hash tables'
+  equal test and the runtime's equal-table lookups and puts, purecopy's
+  hash-consing, `find-buffer', `featurep' subfeatures, keymaps' where-is
+  and describe paths, composition ids, face vectors, font matching,
+  autoload checks, the load nesting check), where the non-signaling walk
+  answered t for isomorphic cycles. Loading `ert' took 198.8M
+  instructions and now 194.5M; a test file's setup in the frozen runner
+  644.7M and now 640.3M (GNU 518.3M). A probe of cdr cycles of ten
+  shapes (the reported tail), cycles against proper lists both ways,
+  `member', `assoc', `rassoc', `delete' and `remove' on cycles, car and
+  vector nesting at depths 9 to 12 and 150 to 250, a 100,000-cell cdr
+  chain, car-, vector- and record-circular structures, overlays with
+  each other on their plists, live and deleted, properties inside
+  strings, vectors, lists, cdrs, records and alists under both
+  functions, property values that differ only in their own properties
+  or are circular, symbols with position in and out of lists and
+  vectors, floats, bignums, bool vectors, char-tables, hash tables,
+  subrs, buffers, markers, closures and byte code, `equal' hash tables
+  with circular and 250-deep keys, `sxhash-equal' of a cycle,
+  `delete-dups' and `seq-uniq' gives GNU 30.2's values, as do the
+  earlier `equal', regexp, reader and md5 probes; an eval_05 test holds
+  the cycle, depth and property cases. Local validation: the full gate,
+  3,230 passed across its ten groups with the documented local skips,
+  and eval_05 again with the new test (367); clippy `-D warnings',
+  rustfmt and `git diff --check' pass.
+
+- **Round 92: the empty pattern's cache comparison, the matcher's
+  registers in a held buffer, no group registers without groups.** Both
+  frozen runners call `(ert-select-tests t t)' twice for every test file,
+  once when the runner loads and once when it runs, and each is an
+  `apropos-internal' over all 19.8K symbols: `string-match' of `""'
+  against each name and the predicate. In wall time (best of 30 inside
+  one process) a call took 10.0 ms against GNU's 4.4 ms although its
+  instruction count was only 1.4 times GNU's; `string-match ""' over the
+  names took 8.5 ms against GNU's 3.2 while `string-match "a"', which
+  scans every name, took 5.3 against 4.3. Timing string_match_1's stages
+  with the time-stamp counter put the excess in compile_pattern's cache
+  walk, about 570 cycles a call for `""' against 100 for `"x*"' or
+  `"a"': the empty pattern's saved bytes are an empty vector, whose
+  pointer is a placeholder (0x1) rather than an address, Rust's slice
+  equality hands both pointers to memcmp even at length 0, and on this
+  Xeon such a call costs some 200 to 270 cycles where one through real
+  addresses costs 5 (a standalone test shows it); each lookup compared
+  twice. Now (1) the cache compares the lengths first and two empty
+  patterns are equal without memcmp, as Fstring_equal's SBYTES test
+  makes them; (2) re_search_2 and re_match_2 fill the registers they are
+  given (GNU's REGS argument) and answer the match's start or end:
+  `string-match' and `looking-at' pass a register buffer the interpreter
+  keeps between searches when the match data may change (search_regs
+  before its conversion to positions) and none otherwise, and a buffer
+  search passes it either way (search_regs_1 when the match data stays),
+  where each match allocated a register vector and freed it; (3)
+  re_match_2_internal sets the group registers unset only when the
+  pattern has groups, as GNU does not "bother to initialize all the
+  register variables", where each attempt filled both arrays through two
+  memset calls; (4) `string-match' makes last_thing_searched t whenever
+  the match data may change, matched or not, so after a failed
+  `string-match' an earlier buffer search's match data reads as
+  integers, as in GNU (Emaxx kept the markers). `string-match ""' over
+  the names now takes 4.5 ms (GNU 3.2) and `apropos-internal' 6.2 ms
+  (GNU 4.4); in instructions, three `apropos-internal' calls 181.0M and
+  now 174.4M (GNU 128.4M), a test file's setup in the frozen runner
+  640.3M and now 634.8M (GNU 518.3M), and its test phase 99.8M and now
+  97.4M (GNU 63.9M). An LD_PRELOAD count of zero-length memcmp and bcmp
+  calls through a placeholder pointer over a trivial test file and six
+  real ones (fns, subr, subr-x, search, files and simple tests) found
+  the rest rare: about 600 in completion's obarray matching, 140 in one
+  other primitive and four elsewhere. A probe of the match data after successful and failed
+  `string-match', `string-match-p', `looking-at', `looking-at-p',
+  `looking-back', `posix-string-match', `search-forward' and repeated
+  and backward regexp searches, with and without groups and
+  `inhibit-changing-match-data', of the empty pattern from the start
+  and from inside a string, on empty, unibyte and multibyte strings,
+  folded and not, of
+  `save-match-data', invalid patterns, `replace-regexp-in-string' and
+  `split-string' with `""' gives GNU 30.2's values; an eval_05 test
+  holds the failed-search and empty-pattern cases. Local validation:
+  the full gate, 3,231 passed across its ten groups with the documented
+  local skips, and eval_05 again with the new test (368); clippy `-D
+  warnings', rustfmt and `git diff --check' pass.
+
+- **Round 93: byte-code frames and handlers on thread-wide lists.** Each
+  byte-code activation entered from Rust (a `funcall' from a primitive,
+  `mapatoms', `mapcar', `sort's predicate, a hook) kept its suspended
+  frames and its catch and condition-case handlers in vectors of its
+  own, taken from a thread-local spare list on the first push and given
+  back at its end: in `apropos-internal's predicate calls the spare
+  list's borrow, pop and push cost about 95 instructions an activation.
+  Now the thread holds one list of suspended frames and one of handlers
+  (bytecode.c keeps its frames on the thread's byte-code stack and
+  eval.c its handlers on the thread's handlerlist), each activation's
+  entries lying above the lengths it began at, to which its end returns
+  them however it ends; a thread switch exchanges both with the
+  byte-code stack, and the spare lists are gone. Three
+  `apropos-internal' calls (both frozen runners make two for every test
+  file through `ert-select-tests') took 174.4M instructions and now
+  166.8M (GNU 128.4M); a test file's setup in the frozen runner 634.8M
+  and now 630.0M (GNU 518.3M); the locked workloads per unit:
+  native-to-bytecode 3,943 and now 3,914, upstream-undo 1,573.9K and now
+  1,563.6K, bytecode-calls 435.5 and now 434.0, bytecode-to-native 345.6
+  and now 343.2. A probe of byte-code `condition-case' and `catch'
+  around `mapcar', `mapc', `apply' and `sort' whose byte-code callees
+  signal, throw, catch for themselves, hold non-matching handlers or
+  `unwind-protect', of `handler-bind', a 30-deep recursion through
+  `apply' with a catch at every level, and of two Lisp threads yielding
+  inside their handlers gives GNU 30.2's values. Local validation: the
+  full gate, 3,232 passed across its ten groups with the documented
+  local skips; clippy `-D warnings', rustfmt and `git diff --check'
+  pass.
+- **Round 94: the obarray's hash and the image loader's walks.** The
+  name table behind the obarray hashed each name by FNV, a multiply a
+  byte; it now takes fns.c's `hash_string', oblookup's hash (the length,
+  then a word at a time -- at most eight steps across a long name and
+  its last word -- or a short name's bytes as one word, each folded in
+  by lisp.h's `sxhash_combine'), spread over the word for the table's
+  probe filter. `intern_with_lisp_name' scans a name once for both the
+  uninterned and the private-obarray markers, where it searched for each
+  in turn. The loader's pass over the object types also lists the
+  objects by the phase that builds them (the conses, the objects of
+  their own bytes, the rest), so each phase walks its own objects where
+  all three walked all 273.8K; phase 3 relocates the 177.6K conses' cars
+  and cdrs in one ascending walk that merges the relocations with the
+  fields, as pdumper.c applies its sorted relocations; the native subr
+  and unit records' relocation checks and the native functions' name
+  lookups search on from where the last one stopped instead of bisecting
+  the whole table; and a vector's placeholder is written in place
+  (alloc.c's `make_vector') rather than built as a host vector and
+  moved. Startup (`--batch -l subr-x') took 225.9M instructions and now
+  212.9M (GNU 156.4M, of which 52.6M is the collection GNU runs during
+  startup); `Loader::load' 137.2M and now 124.5M, where GNU's whole
+  `pdumper_load' is 53.4M, 24.2M of it reopening the native units and
+  resolving their subrs (ours 24.4M); loading ert 408.4M and now 393.7M;
+  a frozen-run test file's setup 630.0M and now 614.8M (GNU 518.3M). In
+  wall time, best of 40 interleaved runs, startup took 71.5 ms and now
+  68.4 ms (GNU 60.5 ms). What remains of the startup gap is the
+  loader's design: GNU maps the image and relocates its words in place,
+  where this loader builds every cons, string, symbol and vector anew.
+  `hash_string' is tested against the values GNU's own function gives;
+  an interning probe (names of every length to 89 differing in one byte
+  at each position, multibyte, unibyte and empty names, `obarray-make',
+  `unintern', `mapatoms' counts) gives GNU 30.2's output byte for byte;
+  every symbol's value, function and plist after startup, printed with
+  `print-circle', is round 93's but for timestamps, paths, the consing
+  counters the image carries from its build, and the entry order of
+  `comp-subr-arities-h', which loadup fills through `mapatoms' and so
+  follows the name table's order (unspecified in GNU, and not GNU's
+  before this round either). Local validation: the full gate, 3,233
+  passed across its ten groups with the documented local skips; clippy
+  `-D warnings', rustfmt and `git diff --check' pass.
+- **Round 95: the image's conses mapped in place.** The frozen run's
+  largest gap is a test file's setup, 1.39 times GNU's in CI (98.5 s
+  against 70.6 s over 519 files, where the tests themselves take 1.03
+  times), and most of a setup's excess instructions were the image
+  loader's, which built every object anew where pdumper.c maps the dump
+  and relocates its words where they lie. The conses, 177.6K of the
+  image's 273.8K objects, now take GNU's way. The dumper writes them as
+  this allocator's cons blocks (each block's metadata and 1,344 cells,
+  the runtime form, as GNU's dump holds its objects in theirs) at a
+  block-aligned offset at the end of the hot section, which a new
+  header locator gives with their count (the header is 108 bytes); a
+  cons's offset is provisional while the other objects are dumped and
+  every remembered one is translated once the blocks are placed. A
+  cell's immediates are written as the heap's words, its references as
+  relocations. The loader maps the image at a block's alignment
+  (address space reserved and the file mapped over its first aligned
+  address), makes the blocks image blocks where they lie (their bits
+  set as an allocation sets them, nothing counted or allocated; the
+  collector never gives their storage back, as GNU never frees its
+  dump), and applies the 289.5K relocations that fall in them in order,
+  pdumper.c's RELOC_DUMP_TO_DUMP_LV for a cons being the mapped image's
+  address plus the word's offset. The conses are no longer among the
+  object starts, so the loader neither types nor numbers them.
+  Startup (`--batch -l subr-x') took 212.9M instructions and now 193.4M;
+  `Loader::load' 124.5M and now 106.3M; loading ert 393.7M and now
+  374.3M; a frozen-run test file's setup 614.8M and now 595.5M (GNU
+  518.3M). Wall time, best of interleaved runs: startup 66.1 ms at round
+  93 and now 61.5 ms (GNU 58.1 ms); the frozen runner's setup of
+  xml-tests.el with CI's load path 137.2 ms at round 93 and now 124.2
+  ms (GNU 112.7 ms). Of CI's setup ratio the gate profile (debug
+  assertions, overflow checks, thin LTO) accounts for about a tenth:
+  locally the gate build's setup is 1.25 times GNU's where the release
+  build's is 1.21. Every symbol's value, function and plist after
+  startup is round 94's but for timestamps, paths and the image's
+  consing counters; a probe that mutates image conses and collects,
+  drops an image list's tail while holding it, keys a weak table by
+  image conses, holds 20,000 heap conses pointing at one and reaches one
+  only from the stack across collections gives GNU 30.2's output byte
+  for byte, as does round 94's interning probe. Local validation: the
+  full gate, 3,233 passed across its ten groups with the documented
+  local skips, and the new test with the other 29 pdumper tests; clippy
+  `-D warnings', rustfmt and `git diff --check' pass.
+- **Round 96: lread.c's obarray, keyed by each symbol's current name.**
+  The obarray was a hash set of the host text each symbol cell owned
+  beside its Lisp name, and a private obarray a record holding a list of
+  its symbols. Both are now GNU 30's `struct Lisp_Obarray': 2^size_bits
+  buckets, each empty or the first of the symbols whose names
+  obarray_index (fns.c's hash_string reduced by knuth_hash) files there,
+  the rest chained newest first through a new `next' field of the symbol
+  cell (Lisp_Symbol.u.s.next); oblookup compares each chained symbol's
+  current name, bytes and characters, intern_sym files a new symbol and
+  doubles the buckets past one symbol a bucket (grow_obarray filing each
+  again by its current name), Funintern unlinks by the symbol's own name,
+  Fobarray_clear resets to the default eight buckets, `obarray-make' sizes
+  by elogb, a legacy vector gets make_obarray (0), and the collector
+  follows `next' as mark_object does. The initial obarray starts at 2^15
+  buckets (init_obarray_once); a private obarray's buckets are its
+  record's slots, so the image carries them and each of its symbols'
+  `next'. GNU-visible results that differed and now match GNU 30.2 byte
+  for byte: `internal--obarray-buckets' (it gave one symbol a bucket),
+  `mapatoms' order over a private obarray, the bucket count of
+  `obarray-make', and the lookups after a symbol's name string is changed
+  in place (`(aset (symbol-name 'string-trim-left) 0 ?x)' left the symbol
+  found by its old name; GNU finds it by neither name, and `intern' of
+  the old name makes another symbol). The host text a symbol keeps for
+  this implementation's own name-keyed code is now two words, a box the
+  cell owns or text of the permanent image, and the dumper writes each
+  symbol's text after its record, so a loaded symbol keeps the image's
+  text where it lies instead of a copy decoded from its name; the loader
+  files each initial-obarray symbol by its Lisp name. A name of
+  printable ASCII (nearly all) is recognised eight bytes a step, which
+  stands for both the marker scan and the character count, and
+  hash_string and the name comparison read short names as overlapping
+  words. Startup (`--batch --eval nil') took 186.2M instructions and now
+  179.4M (GNU 166.1M, 52.6M of it collecting); `Loader::load' 106.3M and
+  now 99.3M, its symbols 15.1M and now 7.3M; loading `ert' 372.6M and
+  now 367.4M; the frozen runner's setup of xml-tests.el 505.4M and now
+  501.7M (GNU 469.5M; outside collection 434.5M and now 429.5M against
+  GNU's 306.4M). The collector spends about 1.3M more a setup walking the
+  32K buckets, as GNU's does. Every symbol's value, function and plist
+  after startup is round 95's but for timestamps, paths and consing
+  counters, and `comp-subr-arities-h', which a `mapatoms' fills, now
+  begins in GNU's order. Not done: the reader names a symbol with a
+  unibyte string where GNU's read_symbol gives a name read from a file or
+  a multibyte source a multibyte one (GNU 30.2 has 5,884 such names
+  after startup, Emaxx 1). Local validation: the full gate, 3,239
+  passed across its ten groups with the documented local skips (one
+  completion test expected Emaxx's former insertion order of a private
+  obarray and now expects GNU's, `("abba" "abc")'); clippy `-D
+  warnings', rustfmt and `git diff --check' pass.
+- **Round 97: the image's strings mapped in place.** The image's 56,992
+  strings (but the two empty singletons) take the conses' way: the
+  dumper writes each as the next cell of this allocator's string blocks
+  (85 cells of 48 bytes in a 4,096-byte block, lisp.h's four words a
+  cell, the properties and data words the image offsets of what they
+  name) at a block-aligned offset after the cons blocks, given with their
+  count by a second header locator (the header is now 116 bytes); a
+  string's offset is provisional while the other objects are dumped,
+  above the conses' provisional range, and every remembered one is
+  translated when the blocks are placed. The loader makes each cell a
+  string of an image block where it lies (its data the sdata entry the
+  image holds after it, checked to be one inside the image and to hold
+  the cell's characters; its mark the current epoch; nothing allocated
+  or counted, as for the conses), returns the 19 that carry text
+  properties to have their records read, and registers the 671 blocks as
+  the image's own bytes, which the collector never gives back. A string
+  reference is the mapped image's address plus the word's offset
+  (RELOC_DUMP_TO_DUMP_LV of a string), so the strings are no longer
+  among the object starts, and their data words need no relocation
+  entries (602.0K hot relocations where there were 654.5K). Adopting the
+  strings resets the image strings' live count itself, so a load with no
+  image region open (the pdumper tests load images directly) can no
+  longer leave a sweep passing a block that holds a dead string unread,
+  which the checked build's assertion caught. The character count of a
+  multibyte string steps over ASCII bytes without decoding them (1,402
+  image strings, 1.6M instructions and now 1.05M). Startup (`--batch
+  --eval nil') took 179.4M instructions and now 170.8M (GNU 166.1M, 52.6M
+  of it collecting); `Loader::load' 99.3M and now 91.5M; loading `ert'
+  367.4M and now 358.4M (GNU 396.6M); the frozen runner's setup of
+  xml-tests.el 501.7M and now 492.7M (GNU 469.5M). Of that setup's gap,
+  outside collection Emaxx's startup is 57.3M over GNU's, loading `ert'
+  33.1M and the runner and test file 23.6M, while its two collections
+  (72.2M) cost less than GNU's three (163.0M). Every symbol's value,
+  function and plist after startup is round 96's but for timestamps,
+  paths and the image's consing counters, and round 96's interning
+  probes, round 95's cons probe and a new probe that stores into image
+  strings (one of them through a multibyte character), keys a weak table
+  by them and drops one across collections give GNU 30.2's output byte
+  for byte. Local validation: the full gate, 3,239 passed across its ten
+  groups with the documented local skips, and the one other test,
+  `just_this_one_wait_still_notifies_an_exited_distractor', whose 0.15 s
+  window is host scheduling, failed once while the host ran profiles
+  beside the gate and passed five times of five alone; the new test with
+  the other 30 pdumper tests; clippy `-D warnings', rustfmt and `git diff
+  --check' pass.
+- **Round 98: the image's vectors mapped in place.** The image's
+  ordinary vectors (but the empty one, alloc.c's `zero_vector', which
+  stays an object start of its own), closures, records, char tables and
+  sub-char-tables take the conses' and strings' way: the dumper writes
+  each in its runtime form (the size word the allocator gave it, then
+  its words, a subtable's packed depth and first character among them,
+  the immediates as the heap holds them) into this allocator's vector
+  blocks, each vector in the first block with room for it below
+  `VECTOR_BLOCK_BYTES' (dump order alone left 0.66 MB of block tails
+  unused; first fit leaves 0.20 MB), a block's unused bytes one free
+  vector and its marks zero; a vector past `VBLOCK_BYTES_MAX' follows
+  the blocks on its own with its mark's word. Two more header locators
+  give the blocks and the large vectors with their counts (the header is
+  now 132 bytes); a vector's offset is provisional while the other
+  objects are dumped, above the strings' range, and every remembered one
+  (the hash-table list's included) is translated when the blocks are
+  placed. The loader checks each vector's size word against the kinds
+  the image holds (a free vector only at a block's end; a subtable's
+  depth, slot count and first character; a closure's three slots at
+  least), sets each block's marks and each large vector's mark to the
+  current epoch, and registers the 870 blocks and 35 large vectors (the
+  image's 13,932 vectors, 3.76 MB) as the image's own bytes; nothing is
+  allocated or counted. A vector reference is the mapped image's
+  address plus the word's offset (RELOC_DUMP_TO_DUMP_LV of the vector's
+  kind), checked against a bitmap of the vectors' starts; the 210K
+  relocations in the vector area are applied in place, each checked to
+  name a Lisp word of a vector, and the closures' code is checked after
+  them. The collector never gives a mapped vector block back (a block
+  with nothing live stays one free vector, on no free list) nor frees a
+  mapped large vector, which leaves the registry. A relocation naming an
+  object of the starts is resolved before the cell and vector kinds are
+  tried (166K of the area's 210K name symbols or bool vectors), which
+  brought the area's relocation from 55 instructions a relocation to 38.
+  Startup (`--batch --eval nil') took 170.8M instructions and now 162.3M
+  (GNU 166.1M, 52.6M of it collecting); `Loader::load' 91.5M and now
+  83.0M; loading `ert' 358.4M and now 349.6M (GNU 396.6M); the frozen
+  runner's setup of xml-tests.el 492.7M and now 483.7M (GNU 469.5M). The
+  image is 25.5 MB. Every symbol's value, function and plist after
+  startup is round 97's but for timestamps, paths, the image's consing
+  counters and the order of `comp-loaded-comp-units-h''s load-time
+  entries (dump-queue order, which the hot section's size moves; GNU's
+  differs from both). The cons, interning and string probes give GNU
+  30.2's output byte for byte, and a new probe that stores into image
+  char tables, keymaps and records, keys a weak table by them and drops
+  one across collections gives round 97's output; its one difference
+  from GNU's, a replaced `char-script-table' still keyed after three
+  collections, is conservative stack residue (with one collection GNU
+  keeps a fresh unreachable char table and Emaxx keeps neither), and no
+  Lisp or host root holds the old table. Local validation: the full
+  gate, 3,240 passed across its ten groups with the documented local
+  skips (the pdumper tests 32, one new), and the one other test,
+  `just_this_one_wait_still_notifies_an_exited_distractor', failed once
+  while the host ran profiles beside the gate, as in round 97, and passed
+  five times of five alone; clippy `-D warnings', rustfmt and `git diff
+  --check' pass.
+
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
 25 sorting/case-folding/substring tests plus the comparison tests, and 95
@@ -7201,7 +7569,29 @@ frozen passed on its first attempt (run 40252773076).
 **On `2c64adc`** (round 89): full Rust gate passed (run 40255536669);
 frozen failed only GNU's known oracle flake (Emaxx 7,670 passed with 0
 unexpected, GNU 7,669 passed with 1 unexpected), and its failed job was
-rerun (run 40255538925, attempt 2).
+rerun passed (run 40255538925, attempt 2).
+**On `8dd2e58`** (round 90): full Rust gate passed (run 40259071504),
+frozen passed on its first attempt (run 40259074201); PR #108 merged
+rounds 82 to 90 into main (`44f1c76`).
+**On `171d0c0`** (round 91): full Rust gate passed (run 40265340023),
+frozen passed on its first attempt (run 40265342433).
+**On `1e7203d`** (round 92): full Rust gate passed (run 40273030577),
+frozen passed on its first attempt (run 40273033064).
+**On `827b8eb`** (round 93): full Rust gate passed (run 40278885996),
+frozen passed on its first attempt (run 40278888554).
+**On `198c173`** (round 94): full Rust gate passed (run 40285385018),
+frozen passed on its first attempt (run 40285394292).
+**On `a79bf68`** (round 95): the Rust gate's first attempt lost its
+runner in the integration stage after the library groups and binaries
+had passed, and the re-run passed (run 40294000763, attempt 2); frozen
+passed on its first attempt (run 40294012283).
+**On `c75f77f`** (round 96): frozen passed on its first attempt (run
+40304554801); the Rust gate passed (run 40304550655).
+**On `c2ebbb7`** (round 97): frozen failed only GNU's known oracle flake
+(`eglot-test-rust-completion-exit-function` failed in GNU; Emaxx 7,670
+passed with 0 unexpected, GNU 7,669 with 1 unexpected), and its failed
+job was rerun (run 40313513267, attempt 2, still running); the Rust gate
+passed (run 40313509629).
 
 **Findings recorded, not fixed:**
 - `features`, `values` and `top-level` are special variables in Emaxx
@@ -7499,7 +7889,13 @@ and failures are still recorded.
    maps the dump and relocates it; the cost is spread over the kinds,
    strings 28 million, symbols 16, `value_at` about 50, with no single
    hot spot, so it wants the image mapped in place rather than another
-   trim); the encode side of coding.c (bullet "Round 56"); and text
+   trim; round 95 maps the conses in place, round 96 keeps the symbols'
+   host text in the image and files them in lread.c's obarray, and round
+   97 maps the strings in place and round 98 the vectors, closures,
+   records and char tables; the symbols and the other records are still
+   rebuilt,
+   and the initial obarray's buckets are filled again as the symbols are
+   read rather than restored); the encode side of coding.c (bullet "Round 56"); and text
    properties kept in one flat vector of spans (each edit shifts it; GNU
    keeps intervals).
    The host is a different machine

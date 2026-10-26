@@ -8992,6 +8992,43 @@ fn edits_and_matches_on_multibyte_text_keep_positions_like_gnu() {
 }
 
 #[test]
+fn equal_walks_like_internal_equal() {
+    // fns.c internal_equal: a cdr cycle signals `circular-list' with the
+    // tail FOR_EACH_TAIL's tortoise meets, depth 200 is the limit for cars
+    // and vector slots but not for cdrs, a structure leading back to a
+    // pair being compared is equal, and `equal-including-properties'
+    // compares the strings inside vectors and records.  GNU 30.2's values.
+    assert_eq!(
+        eval_str(
+            r#"(let ((print-circle t)
+                  (circ (lambda (n k) (let ((l (number-sequence 1 n))) (setcdr (last l) (nthcdr k l)) l)))
+                  (nest (lambda (n leaf wrap) (let ((x leaf)) (dotimes (_ n) (setq x (funcall wrap x))) x)))
+                  (s (propertize "ab" 'face 'bold)))
+              (prin1-to-string
+               (list (condition-case err (equal (funcall circ 8 3) (funcall circ 8 3)) (error err))
+                     (condition-case err (equal (funcall circ 3 0) (list 1 2 3 1 2 3 1 2 3)) (error err))
+                     (equal (list 1 2 3 1 2 3 1 2 3) (funcall circ 3 0))
+                     (condition-case err (member 9 (funcall circ 5 0)) (error err))
+                     (equal (funcall nest 200 'a #'list) (funcall nest 200 'a #'list))
+                     (condition-case err (equal (funcall nest 201 'a #'list) (funcall nest 201 'a #'list)) (error err))
+                     (condition-case err (equal (funcall nest 201 'a #'vector) (funcall nest 201 'a #'vector)) (error err))
+                     (let ((k (lambda (x) (cons 1 x))))
+                       (equal (funcall nest 100000 'z k) (funcall nest 100000 'z k)))
+                     (let ((a (list 1 2)) (b (list 1 2))) (setcar a a) (setcar b b) (equal a b))
+                     (let ((a (vector 1 nil)) (b (vector 1 nil))) (aset a 1 a) (aset b 1 b) (equal a b))
+                     (list (equal (vector s) (vector "ab"))
+                           (equal-including-properties (vector s) (vector "ab"))
+                           (equal-including-properties (record 'r s) (record 'r (copy-sequence s)))))))"#
+        ),
+        Value::string(
+            "((circular-list #1=(7 8 4 5 6 . #1#)) (circular-list #2=(3 1 2 . #2#)) nil \
+             (circular-list #3=(2 3 4 5 1 . #3#)) t (error \"Stack overflow in equal\") \
+             (error \"Stack overflow in equal\") t t t (t nil t))"
+        )
+    );
+}
+
+#[test]
 fn read_tokens_strings_and_positions_like_lread() {
     // lread.c read0: a symbol's token ends at whitespace, at "()[]\";" and,
     // after its first character, at "#'`,"; strings copy their runs; the
@@ -9059,5 +9096,33 @@ fn read_labels_are_placeholders_substituted_like_lread() {
              (a a) (x . #6=((x . #6#))) (invalid-read-syntax \"nonsensical self-reference\") \
              (invalid-read-syntax \"#1#\") (t t) (t (nil)) t)"
         )
+    );
+}
+
+#[test]
+fn string_match_keeps_search_c_match_data() {
+    // search.c string_match_1: once the match data may change,
+    // last_thing_searched is t whether or not the search matches, so a
+    // buffer search's data reads as integers after a failed
+    // `string-match'; a pattern without groups leaves no group registers
+    // set; the empty pattern is found in its cache cell.  GNU 30.2's values.
+    assert_eq!(
+        eval_str(
+            r#"(with-temp-buffer
+                 (insert "hello world")
+                 (goto-char (point-min))
+                 (re-search-forward "\\(wor\\)ld")
+                 (let ((a (match-data)))
+                   (prin1-to-string
+                    (list (mapcar (lambda (m) (if (markerp m) (marker-position m) m)) a)
+                          (string-match "nomatch" "abc") (match-data)
+                          (progn (string-match "\\(a\\)\\(b\\)\\(c\\)" "abc") (string-match "a" "a"))
+                          (match-data) (match-beginning 2)
+                          (string-match "" "abc") (string-match "" "abc" 2) (match-data)
+                          (string-match "" "") (string-match-p "" "x") (match-data)
+                          (let ((case-fold-search nil)) (string-match "" "ABC"))
+                          (replace-regexp-in-string "" "-" "abc")))))"#
+        ),
+        Value::string("((7 12 7 10) nil (7 12 7 10) 0 (0 1) nil 0 2 (2 2) 0 0 (0 0) 0 \"-a-b-c\")")
     );
 }

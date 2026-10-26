@@ -3,6 +3,9 @@ use crate::lisp::types::Kind;
 use crate::lisp::types::LispErrorKind;
 use crate::lisp::types::RecordRef;
 
+/// A standard hash table's entry found for a key: its index, key and value.
+type HashEntry = (usize, Value, Value);
+
 /// What names a record to `find_record': the object, or an id in this
 /// state's registry (the side tables' key, until they live in the
 /// object).
@@ -1420,10 +1423,13 @@ impl Interpreter {
         table: crate::lisp::types::HashTableRef,
         key: &Value,
         env: &Env,
-    ) -> Option<Option<(usize, Value, Value)>> {
-        let test = table.test().standard_test()?;
+    ) -> Result<Option<Option<HashEntry>>, LispError> {
+        let Some(test) = table.test().standard_test() else {
+            return Ok(None);
+        };
         let hash = crate::lisp::primitives::standard_hash_code(self, test, key, env);
-        Some(self.standard_hash_entry(table, test, hash, key, env))
+        self.standard_hash_entry(table, test, hash, key, env)
+            .map(Some)
     }
 
     fn standard_hash_entry(
@@ -1433,20 +1439,20 @@ impl Interpreter {
         hash: u32,
         key: &Value,
         env: &Env,
-    ) -> Option<(usize, Value, Value)> {
+    ) -> Result<Option<HashEntry>, LispError> {
         let mut slot = table.first_in_bucket(hash);
         while slot >= 0 {
             let index = slot as usize;
             let (stored, value) = table.entry(index).expect("live hash chain");
             if crate::lisp::primitives::values_eq_in_env(self, key, &stored, env)
                 || (table.stored_hash(index) == hash
-                    && self.runtime_hash_keys_match(test, key, &stored, env))
+                    && self.runtime_hash_keys_match(test, key, &stored, env)?)
             {
-                return Some((index, stored, value));
+                return Ok(Some((index, stored, value)));
             }
             slot = table.next_in_bucket(index);
         }
-        None
+        Ok(None)
     }
 
     fn runtime_hash_keys_match(
@@ -1455,18 +1461,16 @@ impl Interpreter {
         left: &Value,
         right: &Value,
         env: &Env,
-    ) -> bool {
-        match test {
+    ) -> Result<bool, LispError> {
+        Ok(match test {
             RuntimeHashTest::Eq => {
                 crate::lisp::primitives::values_eq_in_env(self, left, right, env)
             }
             RuntimeHashTest::Eql => {
                 crate::lisp::primitives::values_eql_in_env(self, left, right, env)
             }
-            RuntimeHashTest::Equal => {
-                crate::lisp::primitives::values_equal_in_env(self, left, right, env)
-            }
-        }
+            RuntimeHashTest::Equal => crate::lisp::primitives::values_equal(self, left, right)?,
+        })
     }
 
     pub(crate) fn equal_hash_lookup(
@@ -1474,9 +1478,10 @@ impl Interpreter {
         table: crate::lisp::types::HashTableRef,
         key: &Value,
         env: &Env,
-    ) -> Option<Option<Value>> {
-        self.equal_hash_entry(table, key, env)
-            .map(|entry| entry.map(|(_, _, value)| value))
+    ) -> Result<Option<Option<Value>>, LispError> {
+        Ok(self
+            .equal_hash_entry(table, key, env)?
+            .map(|entry| entry.map(|(_, _, value)| value)))
     }
 
     pub(crate) fn equal_hash_lookup_key(
@@ -1484,9 +1489,11 @@ impl Interpreter {
         table: crate::lisp::types::HashTableRef,
         key: &Value,
         env: &Env,
-    ) -> Option<Value> {
-        self.equal_hash_entry(table, key, env)?
-            .map(|(_, key, _)| key)
+    ) -> Result<Option<Value>, LispError> {
+        Ok(self
+            .equal_hash_entry(table, key, env)?
+            .flatten()
+            .map(|(_, key, _)| key))
     }
 
     pub(crate) fn equal_hash_put(
@@ -1495,17 +1502,17 @@ impl Interpreter {
         key: Value,
         value: Value,
         env: &Env,
-    ) -> bool {
+    ) -> Result<bool, LispError> {
         let Some(test) = table.test().standard_test() else {
-            return false;
+            return Ok(false);
         };
         let hash = crate::lisp::primitives::standard_hash_code(self, test, &key, env);
-        if let Some((slot, _, _)) = self.standard_hash_entry(table, test, hash, &key, env) {
+        if let Some((slot, _, _)) = self.standard_hash_entry(table, test, hash, &key, env)? {
             table.set_value(slot, value);
         } else {
             table.insert(hash, key, value);
         }
-        true
+        Ok(true)
     }
 
     #[inline]

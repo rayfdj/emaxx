@@ -319,6 +319,7 @@ impl From<&SharedText> for String {
     }
 }
 
+pub(crate) mod obarray;
 pub(crate) mod symbols;
 
 /// A symbol name shared by every live occurrence of the same interned name.
@@ -418,7 +419,14 @@ impl SymbolName {
     /// the supplied Lisp string; internal C-string callers create that name
     /// only when the symbol is first allocated.
     pub(crate) fn intern_with_lisp_name(text: String, lisp_name: Option<Value>) -> Self {
-        if text.contains(UNINTERNED_SYMBOL_MARKER_CHAR) {
+        use obarray::Buckets;
+        // One scan for both markers (a symbol name is short, so a plain
+        // loop beats memchr's setup); a name without them, nearly every
+        // one, is read for neither again.
+        let marked = text.as_bytes().iter().any(|&byte| {
+            byte == OBARRAY_SYMBOL_MARKER_CHAR as u8 || byte == UNINTERNED_SYMBOL_MARKER_CHAR as u8
+        });
+        if marked && text.contains(UNINTERNED_SYMBOL_MARKER_CHAR) {
             if let Some(existing) = Self::live_uninterned(text.as_str()) {
                 return existing;
             }
@@ -428,46 +436,104 @@ impl SymbolName {
                 text,
             );
         }
+        if marked && text.contains(OBARRAY_SYMBOL_MARKER) {
+            return Self::intern_private(text, lisp_name);
+        }
+        let lisp_name = lisp_name.filter(|name| matches!(name.kind(), Kind::StringObject(_)));
         INTERNED_SYMBOL_NAMES.with_borrow_mut(|names| {
+            // oblookup by the bytes and characters of the Lisp name, or of
+            // the text a C caller interns (intern_1, intern_c_multibyte).
+            let found = match lisp_name {
+                Some(name) => names.lookup_name(name).expect("a string name"),
+                None => {
+                    let (bytes, chars) = obarray::text_key(&text);
+                    names.lookup(bytes, chars)
+                }
+            };
+            let index = match found {
+                Ok(name) => return name,
+                Err(index) => index,
+            };
+            let lisp_name =
+                lisp_name.unwrap_or_else(|| Value::String(SharedText::from(text.as_str())));
+            let name = Self::allocate(text, lisp_name);
+            Self::file_initial(names, name, index);
+            name
+        })
+    }
+
+    /// intern_sym in the initial obarray: NAME filed first in bucket INDEX.
+    fn file_initial(names: &mut obarray::StandardBuckets, name: Self, index: usize) {
+        use obarray::Buckets;
+        symbols::note_builtin_boolean(name);
+        // lread.c:intern_sym initializes only keywords in the initial
+        // obarray. Their value is this actual object, including after
+        // it is removed and another symbol takes the same spelling.
+        if name.as_str().starts_with(':') {
+            name.cell().set_constant(true);
+            name.cell()
+                .flags
+                .set(crate::lisp::eval::symbol_cell_flags::SPECIAL);
+            name.cell().set_value(Value::Symbol(name));
+        }
+        names.insert(name, index);
+    }
+
+    /// The image loader's intern in the initial obarray: the symbol the
+    /// Lisp string NAME names there, or a new one keeping KEY, text of the
+    /// permanent image, as its host text.
+    pub(crate) fn intern_image(name: Value, key: &'static str) -> Self {
+        use obarray::Buckets;
+        INTERNED_SYMBOL_NAMES.with_borrow_mut(|names| {
+            let index = match names.lookup_name(name).expect("a string name") {
+                Ok(symbol) => return symbol,
+                Err(index) => index,
+            };
+            let symbol = Self::allocate_with_text(crate::lisp::alloc::SymbolText::image(key), name);
+            Self::file_initial(names, symbol, index);
+            symbol
+        })
+    }
+
+    /// A symbol of a private obarray or an abbrev table, by its marked key.
+    fn intern_private(text: String, lisp_name: Option<Value>) -> Self {
+        symbols::with_private_names_mut(|names| {
             if let Some(name) = names.get(text.as_str()) {
                 return name.0;
             }
-            crate::lisp::native_comp::note_lisp_allocation(crate::lisp::alloc::SYMBOL_CELL_BYTES);
-            let private = text.contains(OBARRAY_SYMBOL_MARKER);
-            let lisp_name = lisp_name.unwrap_or_else(|| {
-                Value::String(SharedText::from(if private {
-                    visible_symbol_name(&text)
-                } else {
-                    text.as_str()
-                }))
-            });
-            let name = Self(crate::lisp::alloc::allocate_symbol(
-                crate::lisp::alloc::SymbolCell {
-                    internal: text,
-                    lisp_name: Cell::new(lisp_name),
-                    function: Cell::new(Value::Nil),
-                    plist: Cell::new(Value::Nil),
-                    payload: Cell::new(Default::default()),
-                    flags: Cell::new(0),
-                    image: false,
-                    state: Cell::new(0),
-                    mark: MarkBit::default(),
-                },
-            ));
-            symbols::note_builtin_boolean(name);
-            // lread.c:intern_sym initializes only keywords in the initial
-            // obarray. Their value is this actual object, including after
-            // it is removed and another symbol takes the same spelling.
-            if !private && name.as_str().starts_with(':') {
-                name.cell().set_constant(true);
-                name.cell()
-                    .flags
-                    .set(crate::lisp::eval::symbol_cell_flags::SPECIAL);
-                name.cell().set_value(Value::Symbol(name));
-            }
+            let lisp_name = lisp_name
+                .unwrap_or_else(|| Value::String(SharedText::from(visible_symbol_name(&text))));
+            let name = Self::allocate(text, lisp_name);
             names.insert(symbols::NameEntry(name));
             name
         })
+    }
+
+    /// alloc.c's Fmake_symbol's allocation: a cell with no value, function
+    /// or properties, keeping TEXT beside its LISP_NAME.
+    fn allocate(text: String, lisp_name: Value) -> Self {
+        Self::allocate_with_text(crate::lisp::alloc::SymbolText::owned(text), lisp_name)
+    }
+
+    pub(crate) fn allocate_with_text(
+        text: crate::lisp::alloc::SymbolText,
+        lisp_name: Value,
+    ) -> Self {
+        crate::lisp::native_comp::note_lisp_allocation(crate::lisp::alloc::SYMBOL_CELL_BYTES);
+        Self(crate::lisp::alloc::allocate_symbol(
+            crate::lisp::alloc::SymbolCell {
+                internal: text,
+                lisp_name: Cell::new(lisp_name),
+                function: Cell::new(Value::Nil),
+                plist: Cell::new(Value::Nil),
+                payload: Cell::new(Default::default()),
+                next: Cell::new(None),
+                flags: Cell::new(0),
+                image: false,
+                state: Cell::new(0),
+                mark: MarkBit::default(),
+            },
+        ))
     }
 
     /// alloc.c's mark bit on the symbol object.
@@ -481,18 +547,45 @@ impl SymbolName {
         self.0.mark(epoch)
     }
 
-    /// Room for ADDITIONAL interned names (the image loader knows how many
-    /// symbols it is about to intern; one growth instead of several).
-    pub(crate) fn reserve_interned(additional: usize) {
-        INTERNED_SYMBOL_NAMES.with_borrow_mut(|names| names.reserve(additional));
+    /// The interned symbol host TEXT names: oblookup in the initial
+    /// obarray, or a private obarray's marked key among the private names;
+    /// None for an uninterned key.
+    #[inline]
+    fn find_interned(text: &str) -> Option<Self> {
+        use obarray::Buckets;
+        let bytes = text.as_bytes();
+        let chars = if obarray::plain_ascii(bytes) {
+            bytes.len()
+        } else if !is_visible_symbol_name(text) {
+            return if text.contains(UNINTERNED_SYMBOL_MARKER_CHAR) {
+                None
+            } else {
+                symbols::with_private_names(|names| names.get(text).map(|entry| entry.0))
+            };
+        } else {
+            text.chars().count()
+        };
+        INTERNED_SYMBOL_NAMES.with_borrow(|names| names.lookup(bytes, chars).ok())
+    }
+
+    /// oblookup in the initial obarray of host TEXT; None for a marked key.
+    #[inline]
+    pub(crate) fn find_initial(text: &str) -> Option<Self> {
+        use obarray::Buckets;
+        let bytes = text.as_bytes();
+        let chars = if obarray::plain_ascii(bytes) {
+            bytes.len()
+        } else if !is_visible_symbol_name(text) {
+            return None;
+        } else {
+            text.chars().count()
+        };
+        INTERNED_SYMBOL_NAMES.with_borrow(|names| names.lookup(bytes, chars).ok())
     }
 
     /// The interned state for TEXT, without allocating when it exists.
     pub(crate) fn intern_str(text: &str) -> Self {
-        if !text.contains(UNINTERNED_SYMBOL_MARKER_CHAR)
-            && let Some(name) =
-                INTERNED_SYMBOL_NAMES.with_borrow(|names| names.get(text).map(|entry| entry.0))
-        {
+        if let Some(name) = Self::find_interned(text) {
             return name;
         }
         Self::intern(text.to_owned())
@@ -503,7 +596,14 @@ impl SymbolName {
         if text.contains(UNINTERNED_SYMBOL_MARKER_CHAR) {
             return Self::live_uninterned(text);
         }
-        INTERNED_SYMBOL_NAMES.with_borrow(|names| names.get(text).map(|name| name.0))
+        Self::find_interned(text)
+    }
+
+    /// oblookup in the initial obarray of the Lisp string NAME; None for
+    /// no string.
+    pub(crate) fn lookup_initial(name: Value) -> Option<Result<Self, usize>> {
+        use obarray::Buckets;
+        INTERNED_SYMBOL_NAMES.with_borrow(|names| names.lookup_name(name))
     }
 
     /// The interned symbol named TEXT, through a cache keyed by the text's
@@ -525,8 +625,7 @@ impl SymbolName {
         if text.contains(UNINTERNED_SYMBOL_MARKER_CHAR) {
             return Self::live_uninterned(text);
         }
-        let symbol =
-            INTERNED_SYMBOL_NAMES.with_borrow(|names| names.get(text).map(|entry| entry.0))?;
+        let symbol = Self::find_interned(text)?;
         symbols::with_address_names_mut(|cache| {
             // A bounded cache: a runtime-built name whose storage is freed
             // and reused would otherwise pin a stale entry (the text check
@@ -548,20 +647,7 @@ impl SymbolName {
     }
 
     fn new_uninterned(lisp_name: Value, internal: String) -> Self {
-        crate::lisp::native_comp::note_lisp_allocation(crate::lisp::alloc::SYMBOL_CELL_BYTES);
-        let name = Self(crate::lisp::alloc::allocate_symbol(
-            crate::lisp::alloc::SymbolCell {
-                internal,
-                lisp_name: Cell::new(lisp_name),
-                function: Cell::new(Value::Nil),
-                plist: Cell::new(Value::Nil),
-                payload: Cell::new(Default::default()),
-                flags: Cell::new(0),
-                image: false,
-                state: Cell::new(0),
-                mark: MarkBit::default(),
-            },
-        ));
+        let name = Self::allocate(internal, lisp_name);
         name.cell().mark_uninterned();
         UNINTERNED_SYMBOL_BOOK.with_borrow_mut(|book| {
             book.replace(symbols::NameEntry(name));
@@ -652,10 +738,10 @@ impl std::hash::Hash for SymbolName {
 }
 
 impl Deref for SymbolName {
-    type Target = String;
+    type Target = str;
 
     fn deref(&self) -> &Self::Target {
-        &self.0.internal
+        self.0.internal.as_str()
     }
 }
 

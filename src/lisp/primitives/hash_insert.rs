@@ -203,7 +203,7 @@ pub(crate) fn hash_table_key_matches(
     match table.test().standard_test() {
         Some(RuntimeHashTest::Eq) => Ok(false),
         Some(RuntimeHashTest::Eql) => Ok(values_eql_in_env(interp, left, right, env)),
-        Some(RuntimeHashTest::Equal) => Ok(values_equal_in_env(interp, left, right, env)),
+        Some(RuntimeHashTest::Equal) => values_equal(interp, left, right),
         None => Ok(call_hash_table_test_function(
             interp,
             &Value::HashTable(table),
@@ -786,7 +786,10 @@ mod tests {
             let Kind::Overlay(id) = overlay.kind() else {
                 panic!("not an overlay");
             };
-            assert!(interp.equal_hash_put(table_id, overlay, Value::T, env));
+            assert!(matches!(
+                interp.equal_hash_put(table_id, overlay, Value::T, env),
+                Ok(true)
+            ));
             call(interp, "garbage-collect", &[], env).expect("collect attached overlay");
             assert_eq!(table_id.count(), 1);
 
@@ -844,8 +847,14 @@ mod tests {
         ) -> Value {
             let rooted_key = Value::string("rooted key");
             let unrooted_key = Value::string("unrooted key");
-            assert!(interp.equal_hash_put(id, rooted_key, Value::Integer(1), env));
-            assert!(interp.equal_hash_put(id, unrooted_key, Value::Integer(2), env));
+            assert!(matches!(
+                interp.equal_hash_put(id, rooted_key, Value::Integer(1), env),
+                Ok(true)
+            ));
+            assert!(matches!(
+                interp.equal_hash_put(id, unrooted_key, Value::Integer(2), env),
+                Ok(true)
+            ));
             interp.set_global_binding("weak-key-root", Value::cons(rooted_key, Value::Nil));
             rooted_key
         }
@@ -860,10 +869,9 @@ mod tests {
             .map(|(_, key, value)| (key, value))
             .collect::<Vec<_>>();
         assert_eq!(entries.len(), 1);
-        assert!(crate::lisp::primitives::values_equal(
-            &interp,
-            &entries[0].0,
-            &rooted_key,
-        ));
+        assert!(
+            crate::lisp::primitives::values_equal(&interp, &entries[0].0, &rooted_key,)
+                .expect("equal")
+        );
     }
 }

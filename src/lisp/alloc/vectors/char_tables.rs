@@ -24,7 +24,7 @@ pub(crate) fn char_table_store_epoch() -> u64 {
 }
 
 #[inline]
-fn note_char_table_store() {
+pub(super) fn note_char_table_store() {
     CHAR_TABLE_STORES.store(
         CHAR_TABLE_STORES.load(Ordering::Relaxed).wrapping_add(1),
         Ordering::Relaxed,
@@ -35,6 +35,8 @@ pub(crate) const CHAR_TABLE_STANDARD_SLOTS: usize = 68;
 pub(crate) const CHAR_TABLE_MAX_SLOTS: usize = PSEUDOVECTOR_SIZE_MASK;
 pub(crate) const CHAR_TABLE_MAX_CHAR: u32 = 0x3f_ffff;
 const SIZES: [usize; 4] = [64, 16, 32, 128];
+/// chartab.c's `chartab_size': the slots of a subtable of each depth.
+pub(super) const SUB_CHAR_TABLE_SIZES: [usize; 4] = SIZES;
 const SHIFTS: [u32; 4] = [16, 12, 7, 0];
 const DEFAULT: usize = 0;
 const PARENT: usize = 1;
@@ -163,16 +165,6 @@ impl CharTableRef {
     #[inline]
     pub(crate) fn set_slot(&self, index: usize, value: Value) {
         self.cells()[index].set(value);
-        note_char_table_store();
-    }
-
-    /// Every slot at once, from VALUES, which has one for each.
-    pub(crate) fn set_slots(&self, values: &[Value]) {
-        let cells = self.cells();
-        assert_eq!(cells.len(), values.len(), "a value for each slot");
-        for (cell, &value) in cells.iter().zip(values) {
-            cell.set(value);
-        }
         note_char_table_store();
     }
 
@@ -556,16 +548,6 @@ impl SubCharTableRef {
     #[inline]
     pub(crate) fn set_slot(&self, index: usize, value: Value) {
         self.cells()[index].set(value);
-        note_char_table_store();
-    }
-
-    /// Every slot at once, from VALUES, which has one for each.
-    pub(crate) fn set_slots(&self, values: &[Value]) {
-        let cells = self.cells();
-        assert_eq!(cells.len(), values.len(), "a value for each slot");
-        for (cell, &value) in cells.iter().zip(values) {
-            cell.set(value);
-        }
         note_char_table_store();
     }
 

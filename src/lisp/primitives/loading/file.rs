@@ -116,7 +116,7 @@ pub(crate) fn load_file(
         }
     }
     if found.file.is_none() {
-        let operation = if values_equal(interp, &found.name, &request.file) {
+        let operation = if values_equal(interp, &found.name, &request.file)? {
             Value::symbol("load")
         } else {
             Value::T
@@ -144,7 +144,7 @@ pub(crate) fn load_file(
     let mut nesting = 0;
     let mut tail = search::SearchTail::new(saved_loads);
     while let Some((file, _)) = tail.current.cons_values() {
-        if values_equal_signaling(interp, &file, &found.name, env)? {
+        if values_equal(interp, &file, &found.name)? {
             nesting += 1;
             if nesting > 3 {
                 return Err(LispError::SignalValue(Value::list([

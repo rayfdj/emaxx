@@ -176,11 +176,17 @@ impl PooledState {
 }
 
 impl MatchState {
+    /// The start of re_match_2_internal: an empty failure stack and, when
+    /// the pattern has groups, each group's registers unset.  Register 0
+    /// is never read; a pattern without groups initializes nothing, as
+    /// GNU does not "bother to initialize all the register variables".
     fn reset(&mut self) {
         self.stack.clear();
         self.frame = 0;
-        self.regstart.fill(UNSET);
-        self.regend.fill(UNSET);
+        if self.regstart.len() > 1 {
+            self.regstart[1..].fill(UNSET);
+            self.regend[1..].fill(UNSET);
+        }
     }
 
     /// ENSURE_FAIL_STACK: room for SPACE more items, or GNU's -2.
@@ -940,9 +946,13 @@ fn compare_translated<E: MatchEnv + ?Sized>(
     p1 != p1_end || p2 != p2_end
 }
 
-/// The registers of a match ending at END that began at POS.
-fn registers(st: &MatchState, num_regs: usize, pos: usize, end: usize) -> Registers {
-    let mut regs = Vec::with_capacity(num_regs);
+/// re_match_2_internal's stores into REGS for a match ending at END that
+/// began at POS: group 0 the whole match, each other group its extent or
+/// unset.  REGS keeps its allocation from search to search, as
+/// `search_regs' does.
+fn store_registers(regs: &mut Registers, st: &MatchState, num_regs: usize, pos: usize, end: usize) {
+    let regs = &mut regs.regs;
+    regs.clear();
     regs.push(Some((pos, end)));
     for reg in 1..num_regs {
         if st.regend[reg] == UNSET {
@@ -951,26 +961,28 @@ fn registers(st: &MatchState, num_regs: usize, pos: usize, end: usize) -> Regist
             regs.push(Some((st.regstart[reg] as usize, st.regend[reg] as usize)));
         }
     }
-    Registers { regs }
 }
 
-/// re_match_2: match PATTERN at POS, not past STOP; the registers of the
-/// match, group 0 the whole of it.
+/// re_match_2: match PATTERN at POS, not past STOP; the end of the match.
+/// The registers go to REGS when given (GNU's REGS argument), and only on
+/// a match.
 pub(crate) fn re_match<E: MatchEnv + ?Sized>(
     pattern: &mut Pattern,
     text: &Text<'_>,
     pos: usize,
     stop: usize,
+    regs: Option<&mut Registers>,
     env: &mut E,
-) -> Result<Option<Registers>, MatchError> {
+) -> Result<Option<usize>, MatchError> {
     env.setup_syntax(pos);
     let num_regs = pattern.re_nsub + 1;
     let mut st = PooledState::new(num_regs);
     let mut rd = Reader::new(text);
-    Ok(
-        re_match_2_internal(pattern, text, &mut rd, pos, stop, &mut st, env)?
-            .map(|end| registers(&st, num_regs, pos, end)),
-    )
+    let end = re_match_2_internal(pattern, text, &mut rd, pos, stop, &mut st, env)?;
+    if let (Some(end), Some(regs)) = (end, regs) {
+        store_registers(regs, &st, num_regs, pos, end);
+    }
+    Ok(end)
 }
 
 /// Whether the character at D, translated, can start a match: the fastmap
@@ -1039,17 +1051,19 @@ fn ascii_admits<E: MatchEnv + ?Sized>(
     bits
 }
 
-/// re_search_2: the first match of PATTERN starting between STARTPOS and
-/// STARTPOS + RANGE (a backward search when RANGE is negative), not
-/// running past STOP.
+/// re_search_2: the start of the first match of PATTERN starting between
+/// STARTPOS and STARTPOS + RANGE (a backward search when RANGE is
+/// negative), not running past STOP.  The registers go to REGS when given,
+/// and only on a match.
 pub(crate) fn re_search<E: MatchEnv + ?Sized>(
     pattern: &mut Pattern,
     text: &Text<'_>,
     startpos: usize,
     range: isize,
     stop: usize,
+    regs: Option<&mut Registers>,
     env: &mut E,
-) -> Result<Option<Registers>, MatchError> {
+) -> Result<Option<usize>, MatchError> {
     let total = text.len() as isize;
     let mut startpos = startpos as isize;
     let mut range = range;
@@ -1187,7 +1201,10 @@ pub(crate) fn re_search<E: MatchEnv + ?Sized>(
             if let Some(end) =
                 re_match_2_internal(pattern, text, &mut rd, start, stop, &mut st, env)?
             {
-                return Ok(Some(registers(&st, num_regs, start, end)));
+                if let Some(regs) = regs {
+                    store_registers(regs, &st, num_regs, start, end);
+                }
+                return Ok(Some(start));
             }
         }
 

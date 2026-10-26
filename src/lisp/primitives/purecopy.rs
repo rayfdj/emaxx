@@ -8,15 +8,22 @@ fn purify_table(interp: &Interpreter, env: &Env) -> Option<crate::lisp::types::H
     Some(id)
 }
 
-fn hash_cons_lookup(interp: &Interpreter, value: &Value, env: &Env) -> Option<Value> {
-    purify_table(interp, env).and_then(|id| interp.equal_hash_lookup(id, value, env).flatten())
+fn hash_cons_lookup(
+    interp: &Interpreter,
+    value: &Value,
+    env: &Env,
+) -> Result<Option<Value>, LispError> {
+    match purify_table(interp, env) {
+        Some(id) => Ok(interp.equal_hash_lookup(id, value, env)?.flatten()),
+        None => Ok(None),
+    }
 }
 
-fn hash_cons_insert(interp: &mut Interpreter, value: Value, env: &Env) -> Value {
+fn hash_cons_insert(interp: &mut Interpreter, value: Value, env: &Env) -> Result<Value, LispError> {
     if let Some(id) = purify_table(interp, env) {
-        interp.equal_hash_put(id, value, value, env);
+        interp.equal_hash_put(id, value, value, env)?;
     }
-    value
+    Ok(value)
 }
 
 fn purecopy_cons_chain(
@@ -31,7 +38,7 @@ fn purecopy_cons_chain(
     let mut copied_cars = Vec::new();
     let mut cursor = *value;
     let tail = loop {
-        if let Some(cached) = hash_cons_lookup(interp, &cursor, env) {
+        if let Some(cached) = hash_cons_lookup(interp, &cursor, env)? {
             break cached;
         }
         let Some((car, cdr)) = cursor.cons_values() else {
@@ -50,7 +57,7 @@ fn purecopy_cons_chain(
 
     let mut copied_tail = tail;
     for copied_car in copied_cars.into_iter().rev() {
-        copied_tail = hash_cons_insert(interp, Value::cons(copied_car, copied_tail), env);
+        copied_tail = hash_cons_insert(interp, Value::cons(copied_car, copied_tail), env)?;
     }
     Ok(copied_tail)
 }
@@ -77,7 +84,7 @@ fn purecopy_vector(
         for (index, item) in vector.slots().enumerate() {
             vector.set(index, purecopy_inner(interp, &item, env)?);
         }
-        Ok(hash_cons_insert(interp, copied, env))
+        hash_cons_insert(interp, copied, env)
     })
 }
 
@@ -90,7 +97,7 @@ fn purecopy_hash_table(
     if table.weakness() != 0 || !table.purecopy() {
         return Ok(source);
     }
-    if let Some(cached) = hash_cons_lookup(interp, &source, env) {
+    if let Some(cached) = hash_cons_lookup(interp, &source, env)? {
         return Ok(cached);
     }
 
@@ -106,13 +113,13 @@ fn purecopy_hash_table(
             }
         }
         copy.set_mutable(false);
-        Ok(hash_cons_insert(interp, copied, env))
+        hash_cons_insert(interp, copied, env)
     })
 }
 
 fn purecopy_record(interp: &mut Interpreter, id: u64, env: &mut Env) -> Result<Value, LispError> {
     let source = interp.record_value(id);
-    if let Some(cached) = hash_cons_lookup(interp, &source, env) {
+    if let Some(cached) = hash_cons_lookup(interp, &source, env)? {
         return Ok(cached);
     }
     let record = interp
@@ -163,7 +170,7 @@ fn purecopy_inner(
             )
         })?;
     }
-    if let Some(cached) = hash_cons_lookup(interp, value, env) {
+    if let Some(cached) = hash_cons_lookup(interp, value, env)? {
         return Ok(cached);
     }
 
@@ -235,7 +242,7 @@ fn purecopy_inner(
         | Kind::Marker(_)
         | Kind::Overlay(_) => unreachable!("returned before hash-cons lookup"),
     };
-    Ok(hash_cons_insert(interp, copied, env))
+    hash_cons_insert(interp, copied, env)
 }
 
 /// alloc.c:Fpurecopy.  GNU enables this while constructing the dumped Lisp

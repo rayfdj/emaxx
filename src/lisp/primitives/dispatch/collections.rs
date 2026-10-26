@@ -109,9 +109,7 @@ fn delete_from_list(
                 let next = cell.cdr.get();
                 let matches = match comparison {
                     DeleteListComparison::Eq => values_eq_in_env(interp, &cell.car.get(), elt, env),
-                    DeleteListComparison::Equal => {
-                        values_equal_in_env(interp, elt, &cell.car.get(), env)
-                    }
+                    DeleteListComparison::Equal => values_equal(interp, elt, &cell.car.get())?,
                 };
                 if matches {
                     if let Some(previous) = &previous {
@@ -241,7 +239,7 @@ fn optimize_sub_char_table(
                 }
                 if optimizable {
                     optimizable = if test.is_nil() {
-                        values_equal_in_env(interp, &value, &first, env)
+                        values_equal(interp, &value, &first)?
                     } else if test.eq_value(Value::symbol("eq")) {
                         value.eq_value(first)
                     } else {
@@ -1493,10 +1491,10 @@ define_dispatch!(
                     let Kind::HashTable(id) = hash.kind() else {
                         return Err(LispError::WrongTypeArgument("hash-table-p".into(), hash));
                     };
-                    if let Some(key) = interp.equal_hash_lookup_key(id, &value, env) {
+                    if let Some(key) = interp.equal_hash_lookup_key(id, &value, env)? {
                         value = key;
                     } else {
-                        interp.equal_hash_put(id, value, Value::Nil, env);
+                        interp.equal_hash_put(id, value, Value::Nil, env)?;
                     }
                     table.set_range(segment_start, segment_end, value);
                 }

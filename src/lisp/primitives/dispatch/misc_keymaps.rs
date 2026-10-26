@@ -299,7 +299,7 @@ fn describe_vector_value(
                 }
                 if let Some((_, end, previous)) = ranges.last_mut()
                     && end.saturating_add(1) == entry.start
-                    && values_equal(interp, previous, &entry.value)
+                    && values_equal(interp, previous, &entry.value)?
                 {
                     *end = entry.end;
                 } else {
@@ -316,7 +316,7 @@ fn describe_vector_value(
                     .map_err(|_| LispError::Signal("Vector is too large".into()))?;
                 if let Some((_, end, previous)) = ranges.last_mut()
                     && end.saturating_add(1) == index
-                    && values_equal(interp, previous, &value)
+                    && values_equal(interp, previous, &value)?
                 {
                     *end = index;
                 } else {
@@ -733,13 +733,23 @@ define_dispatch!(
                 if args.len() > 1 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
+                // Fobarray_make: room for SIZE symbols, 2^(elogb (SIZE) + 1)
+                // buckets.
+                let mut bits = crate::lisp::types::obarray::DEFAULT_BITS;
                 if let Some(size) = args.first().filter(|size| !size.is_nil()) {
-                    let size_value = size.as_fixnum()?;
-                    if size_value < 0 {
-                        return Err(LispError::WrongTypeArgument("wholenump".into(), *size));
+                    let size_value = match size.kind() {
+                        Kind::Integer(value) if value >= 0 => value as u64,
+                        _ => return Err(LispError::WrongTypeArgument("wholenump".into(), *size)),
+                    };
+                    bits = u64::BITS - size_value.leading_zeros();
+                    if bits > crate::lisp::types::obarray::MAX_BITS {
+                        return Err(LispError::SignalValue(Value::list([
+                            Value::symbol("args-out-of-range"),
+                            *size,
+                        ])));
                     }
                 }
-                Ok(make_obarray(interp))
+                Ok(make_obarray_with_bits(interp, bits))
             }
             "obarrayp" => {
                 need_args(name, args, 1)?;
@@ -755,11 +765,7 @@ define_dispatch!(
             }
             "internal--obarray-buckets" => {
                 need_args(name, args, 1)?;
-                Ok(Value::list(
-                    obarray_symbols(interp, &args[0])?
-                        .into_iter()
-                        .map(|symbol| Value::list([symbol])),
-                ))
+                obarray_bucket_lists(interp, &args[0])
             }
             "define-hash-table-test" => {
                 need_args(name, args, 3)?;

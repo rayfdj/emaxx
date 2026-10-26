@@ -1016,15 +1016,21 @@ impl Interpreter {
 
     /// oblookup in the initial obarray: the symbol NAME names there.
     pub(crate) fn standard_obarray_symbol(&self, name: &str) -> Option<SymbolName> {
-        if !crate::lisp::types::is_visible_symbol_name(name) {
-            return None;
-        }
-        self.globals.find_name(name)
+        self.globals.find_initial_name(name)
     }
 
+    /// Finternal__obarray_buckets of the initial obarray.
+    pub(crate) fn standard_obarray_bucket_lists(&self) -> Vec<Vec<SymbolName>> {
+        self.globals.bucket_lists()
+    }
+
+    /// Fintern_soft of a symbol: oblookup of its own current name finds it.
     pub(crate) fn standard_obarray_contains_object(&self, symbol: &SymbolName) -> bool {
         crate::lisp::types::is_visible_symbol_name(symbol.as_str())
-            && self.globals.find_name(symbol.as_str()) == Some(*symbol)
+            && matches!(
+                SymbolName::lookup_initial(symbol.lisp_name()),
+                Some(Ok(found)) if found == *symbol
+            )
     }
 
     /// A function cell was bound, rebound or voided: cached funcall

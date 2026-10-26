@@ -97,6 +97,39 @@ fn compiled(pattern: &str, posix: bool, fold: bool) -> Pattern {
     .unwrap_or_else(|error| panic!("{pattern:?}: {}", error.message()))
 }
 
+/// re_search with registers to fill: the registers of the match found.
+fn search_regs<E: MatchEnv>(
+    pattern: &mut Pattern,
+    text: &Text<'_>,
+    startpos: usize,
+    range: isize,
+    stop: usize,
+    env: &mut E,
+) -> Result<Option<Registers>, MatchError> {
+    let mut regs = Registers::default();
+    let start = re_search(pattern, text, startpos, range, stop, Some(&mut regs), env)?;
+    if let Some(start) = start {
+        assert_eq!(regs.regs[0].map(|(start, _)| start), Some(start));
+    }
+    Ok(start.map(|_| regs))
+}
+
+/// re_match with registers to fill: the registers of the match.
+fn match_regs<E: MatchEnv>(
+    pattern: &mut Pattern,
+    text: &Text<'_>,
+    pos: usize,
+    stop: usize,
+    env: &mut E,
+) -> Result<Option<Registers>, MatchError> {
+    let mut regs = Registers::default();
+    let end = re_match(pattern, text, pos, stop, Some(&mut regs), env)?;
+    if let Some(end) = end {
+        assert_eq!(regs.regs[0], Some((pos, end)));
+    }
+    Ok(end.map(|_| regs))
+}
+
 /// The groups of the first match, as character offsets.
 fn search_with(
     pattern: &str,
@@ -106,7 +139,7 @@ fn search_with(
 ) -> Option<Vec<Option<(usize, usize)>>> {
     let mut pattern = compiled(pattern, posix, fold);
     let t = Text::from_str(text, true, false);
-    let regs = re_search(
+    let regs = search_regs(
         &mut pattern,
         &t,
         0,
@@ -253,17 +286,17 @@ fn backward_search() {
     let mut pattern = compiled("ab", false, false);
     let text = "ab ab ab";
     let t = Text::from_str(text, true, false);
-    let found = re_search(&mut pattern, &t, 7, -7, 8, &mut TestEnv::default())
+    let found = search_regs(&mut pattern, &t, 7, -7, 8, &mut TestEnv::default())
         .expect("no overflow")
         .expect("a match");
     assert_eq!(found.regs[0], Some((6, 8)));
-    let found = re_search(&mut pattern, &t, 5, -5, 5, &mut TestEnv::default())
+    let found = search_regs(&mut pattern, &t, 5, -5, 5, &mut TestEnv::default())
         .expect("no overflow")
         .expect("a match");
     assert_eq!(found.regs[0], Some((3, 5)));
     let mut pattern = compiled("é", false, false);
     let t = Text::from_str("aéaé", true, false);
-    let found = re_search(
+    let found = search_regs(
         &mut pattern,
         &t,
         t.len(),
@@ -282,14 +315,14 @@ fn match_at_position() {
     let t = Text::from_str("abbc", true, false);
     let env = &mut TestEnv::default();
     assert_eq!(
-        re_match(&mut pattern, &t, 0, 4, env).expect("no overflow"),
+        match_regs(&mut pattern, &t, 0, 4, env).expect("no overflow"),
         None
     );
-    let regs = re_match(&mut pattern, &t, 1, 4, env)
+    let regs = match_regs(&mut pattern, &t, 1, 4, env)
         .expect("no overflow")
         .expect("a match");
     assert_eq!(regs.regs[0], Some((1, 3)));
-    let regs = re_match(&mut pattern, &t, 1, 2, env)
+    let regs = match_regs(&mut pattern, &t, 1, 2, env)
         .expect("no overflow")
         .expect("a match");
     assert_eq!(regs.regs[0], Some((1, 2)));
@@ -300,7 +333,7 @@ fn point_operator() {
     let mut pattern = compiled("\\=b", false, false);
     let t = Text::from_str("abab", true, false);
     let env = &mut TestEnv { point: Some(3) };
-    let found = re_search(&mut pattern, &t, 0, 4, 4, env)
+    let found = search_regs(&mut pattern, &t, 0, 4, 4, env)
         .expect("no overflow")
         .expect("a match");
     assert_eq!(found.regs[0], Some((3, 4)));
@@ -338,7 +371,7 @@ fn failure_stack_overflow() {
     let mut pattern = compiled("\\(?:a\\|b\\)*c", false, false);
     let text = "a".repeat(200_000);
     let t = Text::from_str(&text, true, false);
-    let result = re_search(&mut pattern, &t, 0, 0, t.len(), &mut TestEnv::default());
+    let result = search_regs(&mut pattern, &t, 0, 0, t.len(), &mut TestEnv::default());
     assert!(matches!(result, Err(MatchError::Overflow)));
 }
 
@@ -350,7 +383,7 @@ fn rope_chunks_are_read_in_place() {
     let rope = ropey::Rope::from_str(&text);
     let t = Text::from_rope(rope.slice(..), true, false);
     let mut pattern = compiled("ne+dle\\|zz", false, false);
-    let found = re_search(
+    let found = search_regs(
         &mut pattern,
         &t,
         0,
@@ -362,7 +395,7 @@ fn rope_chunks_are_read_in_place() {
     .expect("a match");
     assert_eq!(found.regs[0], Some((5000, 5006)));
     let mut pattern = compiled("\\(x+\\)needle\\(y\\{4990,\\}\\)", false, false);
-    let found = re_search(
+    let found = search_regs(
         &mut pattern,
         &t,
         0,

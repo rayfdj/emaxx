@@ -331,21 +331,24 @@ fn register_composition(
     } else {
         key_items.iter().map(character_width).max().unwrap_or(0)
     };
-    let id = interp
-        .composition_states
-        .iter()
-        .position(|state| values_equal(interp, &state.components, &key))
-        .unwrap_or_else(|| {
-            let id = interp.composition_states.len();
-            interp
-                .composition_states
-                .push(crate::lisp::eval::CompositionState {
-                    components: key,
-                    relative,
-                    width,
-                });
-            id
-        });
+    let mut found = None;
+    for (index, state) in interp.composition_states.iter().enumerate() {
+        if values_equal(interp, &state.components, &key)? {
+            found = Some(index);
+            break;
+        }
+    }
+    let id = found.unwrap_or_else(|| {
+        let id = interp.composition_states.len();
+        interp
+            .composition_states
+            .push(crate::lisp::eval::CompositionState {
+                components: key,
+                relative,
+                width,
+            });
+        id
+    });
     range.property.set_car(Value::Integer(id as i64))?;
     range.property.set_cdr(Value::cons(
         Value::Integer((range.end - range.start) as i64),

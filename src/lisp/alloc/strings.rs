@@ -141,6 +141,22 @@ impl StringObjectRef {
         unsafe { (*cell.state.get()).bytes_unbounded() }
     }
 
+    /// `SDATA', `SBYTES' and `SCHARS' with no guard counted: the bytes and
+    /// the character count, for a comparison that runs no Lisp (oblookup's
+    /// of a symbol's name).
+    ///
+    /// # Safety
+    /// As `bytes_unguarded's.
+    #[inline(always)]
+    pub(crate) unsafe fn bytes_and_chars_unguarded<'a>(&self) -> (&'a [u8], usize) {
+        let cell = self.cell();
+        debug_assert!(cell.borrows.get() >= 0, "string already mutably borrowed");
+        // SAFETY: as the caller's contract.
+        let state = unsafe { &*cell.state.get() };
+        // SAFETY: as the caller's contract.
+        (unsafe { state.bytes_unbounded() }, state.len())
+    }
+
     /// `bytes_unguarded' for code bytes that were current when
     /// `code_changes' last read what it reads now: no mutable guard on
     /// them has been taken since (taking one counts a change), and none
@@ -355,6 +371,11 @@ pub(super) fn abandon_allocation_frontier() {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StringAllocation {
     Ordinary,
+    /// An image object's copy, which is not consing: the image's own
+    /// strings are adopted where it holds them
+    /// (`adopt_image_string_blocks'), so only the tests' graph copier
+    /// makes these.
+    #[cfg_attr(not(test), allow(dead_code))]
     Restored,
     Pure,
 }
@@ -465,33 +486,95 @@ fn take_cell() -> *mut StringCell {
     }
 }
 
-/// `allocate_string' of a restored string whose header is complete at
-/// birth: pdumper's string, its data where the image keeps it.  No
-/// initializer runs, so no construction guard is taken.
+/// The image's strings are this allocator's string cells, written whole by
+/// the dumper and used where the loader maps them, as pdumper.c's dump
+/// holds its objects in their runtime form (see `adopt_image_cons_blocks'):
+/// a block of `IMAGE_STRING_BLOCK_BYTES', its `STRINGS_PER_BLOCK' cells
+/// first, the image's strings numbered in that order.
+pub(crate) const IMAGE_STRING_BLOCK_BYTES: usize = 4096;
+pub(crate) const IMAGE_STRINGS_PER_BLOCK: usize = STRINGS_PER_BLOCK;
+const _: () = assert!(STRINGS_PER_BLOCK * STRING_CELL_SIZE <= IMAGE_STRING_BLOCK_BYTES);
+
+/// The offset of image string INDEX from the start of the image's blocks.
+pub(crate) const fn image_string_offset(index: usize) -> usize {
+    (index / STRINGS_PER_BLOCK) * IMAGE_STRING_BLOCK_BYTES
+        + (index % STRINGS_PER_BLOCK) * STRING_CELL_SIZE
+}
+
+/// The bytes the image's blocks of COUNT strings take.
+pub(crate) const fn image_string_bytes(count: usize) -> usize {
+    count.div_ceil(STRINGS_PER_BLOCK) * IMAGE_STRING_BLOCK_BYTES
+}
+
+/// pdumper's mapped strings: the COUNT cells of the image's string blocks
+/// at START become allocated strings of image blocks, as the dump's
+/// objects are the heap's once it is mapped (nothing is allocated or
+/// counted for them, and the collector never frees their storage).  STATE
+/// makes each cell's state from lisp.h's four words as the dumper wrote
+/// them -- the size, the byte size, and the image offsets of the
+/// properties record and of the data -- or refuses the image, in which
+/// case no block is adopted.  A cell's properties are empty until the
+/// loader gives it its own.
 ///
 /// # Safety
-/// STATE's data is valid for its bytes for as long as the string lives,
-/// and nothing else owns it.
-pub(crate) unsafe fn allocate_restored_string(state: SharedStringState) -> StringObjectRef {
-    let bytes = state.storage_bytes();
-    let spans = state.props.len();
-    let cell = take_cell();
-    // SAFETY: a free cell, initialized whole before its handle is made.
-    let handle = unsafe {
-        cell.write(StringCell::new(state, false));
-        StringObjectRef::from_raw(cell)
-    };
-    super::super::types::note_string_allocation(bytes);
-    LIVE_STRINGS.store(LIVE_STRINGS.load(Ordering::Relaxed) + 1, Ordering::Relaxed);
-    LIVE_BYTES.store(
-        LIVE_BYTES.load(Ordering::Relaxed) + bytes,
-        Ordering::Relaxed,
+/// START is aligned to a block and the `image_string_bytes' bytes from it
+/// are writable for the life of the process, and no other block overlaps
+/// them; every state STATE makes owns its data as an allocated string's
+/// state does.
+pub(crate) unsafe fn adopt_image_string_blocks<E>(
+    start: *mut u8,
+    count: usize,
+    mut state: impl FnMut(usize, [u64; 4]) -> Result<SharedStringState, E>,
+) -> Result<(), E> {
+    let start = start as usize;
+    assert!(
+        start.is_multiple_of(super::BLOCK_ALIGN),
+        "unaligned image strings"
     );
-    LIVE_SPANS.store(
-        LIVE_SPANS.load(Ordering::Relaxed) + spans,
-        Ordering::Relaxed,
-    );
-    handle
+    let epoch = super::super::types::current_mark_epoch();
+    for index in 0..count {
+        let cell = (start + image_string_offset(index)) as *mut StringCell;
+        // SAFETY: the caller's contract: a cell of the blocks, whose first
+        // four words the dumper wrote, written whole once its state is
+        // made.
+        unsafe {
+            let words = cell.cast::<[u64; 4]>().read();
+            let state = state(index, words)?;
+            let mark = MarkBit::default();
+            mark.set_raw(epoch);
+            cell.write(StringCell {
+                state: UnsafeCell::new(state),
+                borrows: Cell::new(0),
+                mark,
+                pure: false,
+                permanent_empty: false,
+                code: Cell::new(CodeState::Unverified as u8),
+                image: true,
+            });
+        }
+    }
+    for block in 0..count.div_ceil(STRINGS_PER_BLOCK) {
+        let base = start + block * IMAGE_STRING_BLOCK_BYTES;
+        for index in (count - block * STRINGS_PER_BLOCK).min(STRINGS_PER_BLOCK)..STRINGS_PER_BLOCK {
+            let cell = (base + index * STRING_CELL_SIZE) as *mut StringCell;
+            // SAFETY: an unused cell of the block: only its mark is read.
+            unsafe {
+                std::ptr::addr_of_mut!((*cell).mark).write(MarkBit::default());
+                (*cell).mark.set_raw(FREE_MARK);
+            }
+        }
+        super::register_block_of(
+            base,
+            STRINGS_PER_BLOCK * STRING_CELL_SIZE,
+            BlockKind::String,
+            true,
+            true,
+        );
+    }
+    // The image's strings changed, with or without an image region open:
+    // the next sweep reads them all.
+    super::forget_image_live();
+    Ok(())
 }
 
 /// # Safety

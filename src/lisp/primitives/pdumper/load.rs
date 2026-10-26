@@ -13,7 +13,7 @@ use super::super::*;
 use super::context::*;
 use super::image::*;
 use crate::lisp::eval::RecordKind;
-use crate::lisp::types::{CharTableRef, Kind, SubCharTableRef, SymbolName};
+use crate::lisp::types::{CharTableRef, Kind, SymbolName};
 
 /// pdumper.c:pdumper_load_result.
 #[derive(Debug, PartialEq, Eq)]
@@ -62,8 +62,9 @@ pub(crate) struct LoadedImage {
 /// (dump_mmap_contiguous): private and writable, the pages the page
 /// cache's until one is written, nothing copied or zeroed for them, where
 /// reading the file into a fresh vector cost the copy and the first touch
-/// of every page on each boot.  A file the host cannot map is read into
-/// memory of the same alignment.
+/// of every page on each boot.  The mapping starts at a cons block's
+/// alignment, so that the image's cons blocks are blocks where they lie.
+/// A file the host cannot map is read into memory of the same alignment.
 pub(crate) struct ImageBytes {
     address: std::ptr::NonNull<u8>,
     len: usize,
@@ -78,7 +79,56 @@ pub(crate) struct PermanentImage {
     len: usize,
 }
 
-const IMAGE_ALIGNMENT: usize = 8;
+const IMAGE_ALIGNMENT: usize = crate::lisp::alloc::CONS_BLOCK_BYTES;
+
+/// pdumper.c's dump_mmap_contiguous at `IMAGE_ALIGNMENT': address space
+/// that much larger than the file is reserved, the file mapped private and
+/// writable over its first aligned address, and the rest given back.
+///
+/// # Safety
+/// FD is an open file of at least LEN bytes, LEN nonzero.
+#[cfg(unix)]
+unsafe fn map_aligned(fd: std::ffi::c_int, len: usize) -> *mut std::ffi::c_void {
+    // SAFETY: a fresh reservation at an address of the kernel's choosing,
+    // then the file over part of it (MAP_FIXED replaces only reserved
+    // pages), then the reservation's unused ends unmapped.
+    unsafe {
+        let reserved = len + IMAGE_ALIGNMENT;
+        let base = libc::mmap(
+            std::ptr::null_mut(),
+            reserved,
+            libc::PROT_NONE,
+            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+            -1,
+            0,
+        );
+        if base == libc::MAP_FAILED {
+            return base;
+        }
+        let start = (base as usize).next_multiple_of(IMAGE_ALIGNMENT);
+        let address = libc::mmap(
+            start as *mut std::ffi::c_void,
+            len,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_PRIVATE | libc::MAP_FIXED,
+            fd,
+            0,
+        );
+        if address == libc::MAP_FAILED {
+            libc::munmap(base, reserved);
+            return address;
+        }
+        let page = usize::try_from(libc::sysconf(libc::_SC_PAGESIZE)).unwrap_or(4096);
+        let end = start + len.next_multiple_of(page);
+        if start > base as usize {
+            libc::munmap(base, start - base as usize);
+        }
+        if base as usize + reserved > end {
+            libc::munmap(end as *mut std::ffi::c_void, base as usize + reserved - end);
+        }
+        address
+    }
+}
 
 impl ImageBytes {
     pub(crate) fn open(path: &std::path::Path) -> std::io::Result<Self> {
@@ -102,19 +152,11 @@ impl ImageBytes {
             }
             // GNU's file mapping does not request anonymous-memory
             // prefaulting flags such as MAP_POPULATE.
-            // SAFETY: a fresh private mapping of the open file's `len'
-            // bytes at an address of the kernel's choosing, unmapped by
-            // Drop unless it is made permanent.
-            let address = unsafe {
-                libc::mmap(
-                    std::ptr::null_mut(),
-                    len,
-                    libc::PROT_READ | libc::PROT_WRITE,
-                    libc::MAP_PRIVATE,
-                    file.as_raw_fd(),
-                    0,
-                )
-            };
+            // SAFETY: a private mapping of the open file's `len' bytes at
+            // the first aligned address of address space reserved for it
+            // (`map_aligned'), unmapped by Drop unless it is made
+            // permanent.
+            let address = unsafe { map_aligned(file.as_raw_fd(), len) };
             if address == libc::MAP_FAILED {
                 // A file the host cannot map (a directory, a filesystem
                 // without mmap): read it, and report what the read does.
@@ -316,6 +358,9 @@ pub(crate) fn load_permanent_image(
         reloc_next: 0,
         late_relocs: relocs(LATE_RELOCS)?,
         very_late_relocs: relocs(VERY_LATE_RELOCS)?,
+        conses: ImageConses::default(),
+        strings: ImageStrings::default(),
+        vectors: ImageVectors::default(),
         subrs: HashMap::default(),
         reader,
         image,
@@ -418,9 +463,14 @@ impl<'a, const LEN: usize> ImageTable<'a, LEN> {
         entry_word(&self.entries[index], 4)
     }
 
-    /// The relocation at OFFSET.
-    fn reloc_at(&self, offset: u32) -> Option<DumpRelocKind> {
-        DumpRelocKind::from_u32(self.code(self.find(offset)?))
+    /// The relocation at OFFSET, for a pass that asks in ascending order:
+    /// the search starts at HINT, where the pass's last answer left it.
+    fn reloc_at_from(&self, hint: &mut usize, offset: u32) -> Option<DumpRelocKind> {
+        let index = self.rank_from(*hint, offset);
+        *hint = index;
+        (self.offset_or_end(index) == offset)
+            .then(|| DumpRelocKind::from_u32(self.code(index)))
+            .flatten()
     }
 
     /// The number of entries before OFFSET, searched outward from entry
@@ -499,6 +549,12 @@ struct Loader<'a> {
     reloc_next: u32,
     late_relocs: RelocTable<'a>,
     very_late_relocs: RelocTable<'a>,
+    /// The image's cons blocks, once adopted.
+    conses: ImageConses,
+    /// The image's string blocks, once adopted.
+    strings: ImageStrings,
+    /// The image's vector blocks and large vectors, once adopted.
+    vectors: ImageVectors,
     /// The subr each copied record of the Emacs image names.
     subrs: HashMap<
         u32,
@@ -508,26 +564,212 @@ struct Loader<'a> {
     interp: &'a mut Interpreter,
 }
 
+/// The code of RELOC_DUMP_TO_DUMP_LV naming a cons.
+pub(super) const CONS_LV: u32 = 0x100 | DumpType::Cons as u32;
+
+/// The image's cons blocks where the image is mapped: BASE the image's
+/// address, START the first block's offset, COUNT the conses.
+#[derive(Default)]
+struct ImageConses {
+    base: usize,
+    start: usize,
+    count: usize,
+    /// Past the last cell, from START.
+    end: usize,
+}
+
+impl ImageConses {
+    /// The offsets of the first cell and just past the last.
+    fn cells(&self) -> (u32, u32) {
+        let first = self.start + crate::lisp::alloc::image_cons_offset(0);
+        (first as u32, (self.start + self.end) as u32)
+    }
+
+    /// True when the word at OFFSET is in one of the cells: a block's
+    /// cells, not its metadata, and no later than the last cell.
+    #[inline(always)]
+    fn holds(&self, offset: u32) -> bool {
+        use crate::lisp::alloc::{CONS_BLOCK_BYTES, CONS_BLOCK_CELLS};
+        let at = (offset as usize).wrapping_sub(self.start);
+        at < self.end && at % CONS_BLOCK_BYTES >= CONS_BLOCK_CELLS
+    }
+
+    /// The cons whose cell is at OFFSET, which must be a cell of the
+    /// blocks.
+    #[inline(always)]
+    fn cons_at(&self, offset: u32) -> Result<Value, LoadError> {
+        if !self.holds(offset) || !offset.is_multiple_of(16) {
+            return Err(LoadError::Error(format!(
+                "cons at {offset} is not a cell of the cons blocks"
+            )));
+        }
+        // SAFETY: an allocated cell of the adopted blocks, by the check.
+        Ok(Value::Cons(unsafe {
+            crate::lisp::alloc::ConsRef::from_raw(
+                (self.base + offset as usize) as *const crate::lisp::types::ConsCell,
+            )
+        }))
+    }
+
+    /// The word at OFFSET, which must be a car or cdr of the cells.
+    #[inline(always)]
+    fn field(&self, offset: u32) -> Result<*mut Value, LoadError> {
+        if !self.holds(offset) || !offset.is_multiple_of(8) {
+            return Err(LoadError::Error(format!(
+                "relocation at {offset} is not a word of a cons"
+            )));
+        }
+        Ok((self.base + offset as usize) as *mut Value)
+    }
+}
+
+/// The code of RELOC_DUMP_TO_DUMP_LV naming a string.
+pub(super) const STRING_LV: u32 = 0x100 | DumpType::String as u32;
+
+/// The image's string blocks where the image is mapped: BASE the image's
+/// address, START the first block's offset, and END just past the last
+/// cell, from START.
+#[derive(Default)]
+struct ImageStrings {
+    base: usize,
+    start: usize,
+    end: usize,
+}
+
+impl ImageStrings {
+    /// The string whose cell is at OFFSET, which must be a cell of the
+    /// blocks.
+    #[inline(always)]
+    fn string_at(&self, offset: u32) -> Result<Value, LoadError> {
+        use crate::lisp::alloc::{
+            IMAGE_STRING_BLOCK_BYTES, IMAGE_STRINGS_PER_BLOCK, STRING_CELL_BYTES,
+        };
+        let at = (offset as usize).wrapping_sub(self.start);
+        let slot = at % IMAGE_STRING_BLOCK_BYTES;
+        if at >= self.end
+            || !slot.is_multiple_of(STRING_CELL_BYTES)
+            || slot >= IMAGE_STRINGS_PER_BLOCK * STRING_CELL_BYTES
+        {
+            return Err(LoadError::Error(format!(
+                "string at {offset} is not a cell of the string blocks"
+            )));
+        }
+        // SAFETY: an allocated cell of the adopted blocks, by the check
+        // (the cells before END are the image's strings, in order).
+        Ok(Value::StringObject(unsafe {
+            StringObjectRef::from_raw(((self.base + offset as usize) as *mut u8).cast())
+        }))
+    }
+}
+
+/// The codes of RELOC_DUMP_TO_DUMP_LV naming a vector of the vector
+/// blocks or the large vectors, by its kind.
+pub(super) const VECTOR_LV: u32 = 0x100 | DumpType::Vector as u32;
+pub(super) const CLOSURE_LV: u32 = 0x100 | DumpType::Closure as u32;
+pub(super) const LISP_RECORD_LV: u32 = 0x100 | DumpType::LispRecord as u32;
+pub(super) const CHAR_TABLE_LV: u32 = 0x100 | DumpType::CharTable as u32;
+pub(super) const SUB_CHAR_TABLE_LV: u32 = 0x100 | DumpType::SubCharTable as u32;
+
+/// The image's vector blocks and its large vectors after them, where the
+/// image is mapped: BASE the image's address, START the first block's
+/// offset, END past the last large vector's mark, from START.
+#[derive(Default)]
+struct ImageVectors {
+    base: usize,
+    start: usize,
+    end: usize,
+    /// A bit for each word from START, set where a vector starts.
+    starts: Vec<u64>,
+    /// Each vector's Lisp words, from its first to past its last, as
+    /// offsets from START, in order: the words a relocation may name.
+    words: Vec<(u32, u32)>,
+    /// The closures' offsets from START, for the check of their code
+    /// once their words are relocated.
+    closures: Vec<u32>,
+}
+
+impl ImageVectors {
+    /// The vector whose header is at OFFSET, which must start one of the
+    /// image's vectors.
+    #[inline(always)]
+    fn vector_at(&self, offset: u32) -> Result<Value, LoadError> {
+        let at = (offset as usize).wrapping_sub(self.start);
+        if at >= self.end
+            || !at.is_multiple_of(8)
+            || self.starts[at / 512] & (1 << (at / 8 % 64)) == 0
+        {
+            return Err(LoadError::Error(format!(
+                "vector at {offset} is not one of the image's vectors"
+            )));
+        }
+        // SAFETY: an adopted vector, by the check, whose header is a
+        // vectorlike's (lisp.h's Lisp_Vectorlike tag).
+        Ok(unsafe { Value::from_word((self.base + offset as usize) | 5) })
+    }
+}
+
 impl Loader<'_> {
     fn load(&mut self, header: DumpHeader) -> Result<LoadedImage, LoadError> {
+        // pdumper's mapped objects: the image's cons blocks are the heap's
+        // where they lie, before anything names one of their conses.
+        self.conses = self.adopt_cons_blocks(&header)?;
+        let string_props = self.adopt_string_blocks(&header)?;
+        self.adopt_vectors(&header)?;
+        // Each object's type, and the objects by the phases that build
+        // them, each list in image order: the objects that need only their
+        // own bytes, and the rest; a cons is where its block holds it.
         let mut kinds = Vec::with_capacity(self.starts.len());
+        let mut own_bytes_objects = Vec::new();
+        let mut other_objects = Vec::new();
         for number in 0..self.starts.len() {
             let code = self.starts.code(number);
-            kinds.push(DumpType::from_u32(code).ok_or_else(|| {
+            let kind = DumpType::from_u32(code).ok_or_else(|| {
                 LoadError::Error(format!("unknown object type {code} of object {number}"))
-            })?);
+            })?;
+            match kind {
+                DumpType::Cons => {
+                    self.objects[number] = self.conses.cons_at(self.starts.offset(number))?;
+                }
+                DumpType::String | DumpType::StringObject => {
+                    return Err(LoadError::Error(format!(
+                        "object {number} is a string outside the string blocks"
+                    )));
+                }
+                DumpType::Vector
+                | DumpType::Closure
+                | DumpType::LispRecord
+                | DumpType::CharTable
+                | DumpType::SubCharTable => {
+                    return Err(LoadError::Error(format!(
+                        "object {number} is a vector outside the vector blocks"
+                    )));
+                }
+                DumpType::EmptyString
+                | DumpType::ZeroVector
+                | DumpType::Float
+                | DumpType::Bignum
+                | DumpType::BoolVector => own_bytes_objects.push(number as u32),
+                _ => other_objects.push(number as u32),
+            }
+            kinds.push(kind);
         }
         // Phase 1: objects that need nothing but their own bytes.
-        let mut string_props: Vec<(usize, u32)> = Vec::new();
-        for (number, &kind) in kinds.iter().enumerate() {
+        for &number in &own_bytes_objects {
+            let number = number as usize;
+            let kind = kinds[number];
             let offset = self.starts.offset(number);
             match kind {
-                DumpType::String | DumpType::StringObject | DumpType::EmptyString => {
-                    let (value, props) = self.load_string(offset, kind)?;
-                    if let Some(props) = props {
-                        string_props.push((number, props));
+                DumpType::EmptyString => {
+                    self.objects[number] = self.load_empty_string(offset)?;
+                }
+                DumpType::ZeroVector => {
+                    if self.reader.word(offset)? != 0 {
+                        return Err(LoadError::Error(format!(
+                            "the empty vector at {offset} has slots"
+                        )));
                     }
-                    self.objects[number] = value;
+                    self.objects[number] =
+                        Value::Vector(crate::lisp::types::VectorRef::filled(0, Value::Nil));
                 }
                 DumpType::Float => {
                     let value = Value::float(f64::from_bits(self.reader.word(offset)?));
@@ -546,38 +788,21 @@ impl Loader<'_> {
         }
 
         // Phase 2: objects whose construction needs a name, and the
-        // containers as placeholders.  The conses first, all at once.
-        let objects = &mut self.objects;
-        let mut conses = kinds
-            .iter()
-            .enumerate()
-            .filter(|&(_, &kind)| kind == DumpType::Cons)
-            .map(|(number, _)| number);
-        crate::lisp::alloc::allocate_nil_conses(
-            kinds.iter().filter(|&&kind| kind == DumpType::Cons).count(),
-            |cell| {
-                let number = conses.next().expect("an object for each cons");
-                objects[number] = Value::Cons(cell);
-            },
-        );
-        SymbolName::reserve_interned(
-            kinds
-                .iter()
-                .filter(|&&kind| kind == DumpType::Symbol)
-                .count(),
-        );
+        // containers as placeholders.
         let mut symbol_records = Vec::new();
         let mut obarray_records = Vec::new();
         let mut hash_table_records = Vec::new();
-        let mut char_tables = Vec::new();
-        let mut sub_char_tables = Vec::new();
         let mut buffers = Vec::new();
         let mut markers = Vec::new();
         let mut overlays = Vec::new();
         let mut finalizers = Vec::new();
         let mut native_units = Vec::new();
         let mut native_function_records = Vec::new();
-        for (number, &kind) in kinds.iter().enumerate() {
+        // The native records' relocations, found in object order.
+        let (mut native_subr_hint, mut native_unit_hint) = (0, 0);
+        for &number in &other_objects {
+            let number = number as usize;
+            let kind = kinds[number];
             let offset = self.starts.offset(number);
             match kind {
                 DumpType::Symbol => {
@@ -586,33 +811,6 @@ impl Loader<'_> {
                     let symbol = self.symbol_of_record(offset, flags, name)?;
                     self.objects[number] = Value::Symbol(symbol);
                     symbol_records.push((offset, symbol, flags));
-                }
-                DumpType::Closure => {
-                    let size = self.reader.word(offset)? as usize;
-                    if !(3..=0xfff).contains(&size) {
-                        return Err(LoadError::Error(format!(
-                            "invalid closure size at {offset}"
-                        )));
-                    }
-                    // Publish every identity before relocating any field.
-                    // Any closure slot can participate in an object cycle.
-                    self.objects[number] =
-                        Value::Closure(crate::lisp::types::ClosureRef::filled(size, Value::Nil));
-                }
-                DumpType::Vector => {
-                    let size = self.reader.word(offset)? as usize;
-                    self.objects[number] = Value::vector(vec![Value::Nil; size]);
-                }
-                DumpType::LispRecord => {
-                    let size = self.reader.word(offset)? as usize;
-                    if !(1..=crate::lisp::alloc::vectors::generic_records::MAX_RECORD_SLOTS)
-                        .contains(&size)
-                    {
-                        return Err(LoadError::Error(format!("invalid record size at {offset}")));
-                    }
-                    let record =
-                        crate::lisp::types::LispRecordRef::filled(Value::Nil, size - 1, Value::Nil);
-                    self.objects[number] = Value::LispRecord(record);
                 }
                 DumpType::HashTable => {
                     let nslots = self.reader.word(offset + 24)? as usize;
@@ -655,7 +853,9 @@ impl Loader<'_> {
                     let type_tag = self.symbol_or_immediate_at(offset + 16)?;
                     if kind_code == NATIVE_SUBR_CODE {
                         if nslots != 11
-                            || self.very_late_relocs.reloc_at(offset)
+                            || self
+                                .very_late_relocs
+                                .reloc_at_from(&mut native_subr_hint, offset)
                                 != Some(DumpRelocKind::NativeSubr)
                         {
                             return Err(LoadError::Error(
@@ -669,7 +869,9 @@ impl Loader<'_> {
                     }
                     if kind_code == super::context::NATIVE_UNIT_CODE {
                         if nslots != 7
-                            || self.late_relocs.reloc_at(offset)
+                            || self
+                                .late_relocs
+                                .reloc_at_from(&mut native_unit_hint, offset)
                                 != Some(DumpRelocKind::NativeCompUnit)
                         {
                             return Err(LoadError::Error(
@@ -694,27 +896,6 @@ impl Loader<'_> {
                     if kind == DumpType::Obarray {
                         obarray_records.push((offset, id, nslots));
                     }
-                }
-                DumpType::CharTable => {
-                    let slots = self.reader.word(offset)? as usize;
-                    if !(68..=crate::lisp::alloc::vectors::char_tables::CHAR_TABLE_MAX_SLOTS)
-                        .contains(&slots)
-                    {
-                        return Err(LoadError::Error("invalid char-table slot count".into()));
-                    }
-                    let table = CharTableRef::new(Value::Nil, Value::Nil, slots - 68);
-                    self.objects[number] = Value::CharTable(table);
-                    char_tables.push((offset, table));
-                }
-                DumpType::SubCharTable => {
-                    let depth = self.reader.word(offset)? as usize;
-                    let min_char = self.reader.word(offset + 8)?;
-                    if !(1..=3).contains(&depth) || min_char > 0x3fffff {
-                        return Err(LoadError::Error("invalid sub-char-table header".into()));
-                    }
-                    let table = SubCharTableRef::new(depth, min_char as u32, Value::Nil);
-                    self.objects[number] = Value::SubCharTable(table);
-                    sub_char_tables.push((offset, table));
                 }
                 DumpType::Buffer => {
                     let id = self.reader.word(offset)?;
@@ -777,56 +958,13 @@ impl Loader<'_> {
 
         // Phase 3: relocate the fields of the published containers.
         let mut obarray = Vec::new();
-        let mut scratch = Vec::new();
-        for (number, &kind) in kinds.iter().enumerate() {
+        self.relocate_conses()?;
+        self.relocate_vectors()?;
+        for &number in &other_objects {
+            let number = number as usize;
+            let kind = kinds[number];
             let offset = self.starts.offset(number);
             match kind {
-                DumpType::Cons => {
-                    let [car, cdr] = self.field_array(offset)?;
-                    let cell = self.objects[number]
-                        .cons_ref()
-                        .expect("a cons placeholder was installed in phase 2");
-                    // The placeholder's relocated words, stored as
-                    // pdumper.c stores them: nothing has seen the cell.
-                    cell.car.set(car);
-                    cell.cdr.set(cdr);
-                }
-                DumpType::Closure => {
-                    let Kind::Closure(closure) = self.objects[number].kind() else {
-                        unreachable!()
-                    };
-                    scratch.resize(closure.public_len(), Value::Nil);
-                    self.fields(offset + 8, &mut scratch)?;
-                    for (index, &value) in scratch.iter().enumerate() {
-                        closure.initialize_slot(index, value);
-                    }
-                    if !closure.is_bytecode() && !matches!(closure.body().kind(), Kind::Cons(_)) {
-                        return Err(LoadError::Error(format!(
-                            "invalid closure code at {offset}"
-                        )));
-                    }
-                }
-                DumpType::Vector => {
-                    let size = self.reader.word(offset)? as usize;
-                    let Kind::Vector(vector) = self.objects[number].kind() else {
-                        unreachable!()
-                    };
-                    scratch.resize(size, Value::Nil);
-                    self.fields(offset + 8, &mut scratch)?;
-                    for (index, &value) in scratch.iter().enumerate() {
-                        vector.set(index, value);
-                    }
-                }
-                DumpType::LispRecord => {
-                    let Kind::LispRecord(record) = self.objects[number].kind() else {
-                        unreachable!("record placeholder installed in phase 2")
-                    };
-                    scratch.resize(record.len(), Value::Nil);
-                    self.fields(offset + 8, &mut scratch)?;
-                    for (index, &field) in scratch.iter().enumerate() {
-                        record.set(index, field);
-                    }
-                }
                 DumpType::Record | DumpType::Obarray => {
                     let id = self.reader.word(offset)?;
                     let nslots = self.reader.word(offset + 24)? as usize;
@@ -864,10 +1002,11 @@ impl Loader<'_> {
             }
         }
         let mut native_functions = Vec::new();
+        let mut name_hint = 0;
         for (offset, function, nslots) in native_function_records {
             let names_at = offset + 32 + 8 * nslots as u32;
-            let name = self.image_c_string(names_at, "name")?;
-            let c_name = self.image_c_string(names_at + 8, "C name")?;
+            let name = self.image_c_string(names_at, &mut name_hint, "name")?;
+            let c_name = self.image_c_string(names_at + 8, &mut name_hint, "C name")?;
             // SAFETY: this load's newly allocated object is unpublished, and
             // both names are C strings of the permanent image.
             unsafe { (*function.as_ptr()).set_image_names(name, c_name) };
@@ -884,28 +1023,9 @@ impl Loader<'_> {
                 }
             }
         }
-        for (offset, table) in char_tables {
-            scratch.resize(table.slot_count(), Value::Nil);
-            self.fields(offset + 8, &mut scratch)?;
-            table.set_slots(&scratch);
-        }
-        for (offset, table) in sub_char_tables {
-            scratch.resize(table.slots().len(), Value::Nil);
-            self.fields(offset + 16, &mut scratch)?;
-            table.set_slots(&scratch);
-        }
         for (string, props_offset) in string_props {
             let spans = self.load_text_properties(props_offset)?;
-            match self.objects[string].kind() {
-                Kind::StringObject(state) => {
-                    state.borrow_mut().props = spans.into();
-                }
-                other => {
-                    return Err(LoadError::Error(format!(
-                        "text properties on a non-object string: {other:?}"
-                    )));
-                }
-            }
+            string.borrow_mut().props = spans.into();
         }
         // The buffers with their text, then the markers into them, the
         // deleted overlays on their lists, and the finalizers in list
@@ -984,10 +1104,19 @@ impl Loader<'_> {
         let mut symbols = Vec::with_capacity(symbol_records.len());
         for (offset, symbol, flags) in symbol_records {
             let [val, function, plist] = self.field_array(offset + 16)?;
-            let nwatchers = self.reader.word(offset + 40)? as u32;
+            // A private obarray's chain; the initial obarray's was filled as
+            // its symbols were filed.
+            if (flags >> SYMBOL_INTERNED_SHIFT) & 3 == SYMBOL_INTERNED {
+                let next = self.value_at(offset + SYMBOL_NEXT)?;
+                symbol.cell().next.set(match next.kind() {
+                    Kind::Integer(0) => None,
+                    _ => Some(symbol_of(next, "obarray chain")?),
+                });
+            }
+            let nwatchers = self.reader.word(offset + SYMBOL_NWATCHERS)? as u32;
             let mut watchers = Vec::new();
             for index in 0..nwatchers {
-                watchers.push(self.value_at(offset + 48 + 8 * index)?);
+                watchers.push(self.value_at(offset + SYMBOL_WATCHERS + 8 * index)?);
             }
             let (value, alias) = if flags & SYMBOL_REDIRECT_MASK == SYMBOL_VARALIAS {
                 (None, Some(symbol_of(val, "alias target")?))
@@ -1089,11 +1218,13 @@ impl Loader<'_> {
         if header.hash_list == 0 {
             return Ok(Vec::new());
         }
-        let offset = header.hash_list;
-        let size = self.reader.word(offset)? as usize;
-        let mut ids = Vec::with_capacity(size);
-        for index in 0..size {
-            match (self.value_at(offset + 8 * (index as u32 + 1))?).kind() {
+        // A vector of the vector blocks, relocated where it is.
+        let Kind::Vector(list) = self.vectors.vector_at(header.hash_list)?.kind() else {
+            return Err(LoadError::Error("the hash list is not a vector".into()));
+        };
+        let mut ids = Vec::with_capacity(list.len());
+        for entry in list.slots() {
+            match entry.kind() {
                 Kind::HashTable(table) => ids.push(table),
                 other => {
                     return Err(LoadError::Error(format!(
@@ -1105,9 +1236,18 @@ impl Loader<'_> {
         Ok(ids)
     }
 
-    /// The object whose start is at OFFSET.
+    /// The object whose start is at OFFSET: a cons, a string or a vector
+    /// of the blocks, or one of the object starts.
     fn object_at(&self, offset: u32) -> Option<Value> {
-        self.object(self.starts.find(offset)?)
+        match self.starts.find(offset) {
+            Some(number) => self.object(number),
+            None => self
+                .conses
+                .cons_at(offset)
+                .or_else(|_| self.strings.string_at(offset))
+                .or_else(|_| self.vectors.vector_at(offset))
+                .ok(),
+        }
     }
 
     /// Object NUMBER, once made.
@@ -1152,6 +1292,267 @@ impl Loader<'_> {
         self.relocs.rank_from(self.reloc_cursor, field)
     }
 
+    /// The image's cons blocks (`DumpHeader::cons_blocks'), made the
+    /// heap's blocks where the image holds them, once their place in the
+    /// hot section is checked.
+    fn adopt_cons_blocks(&mut self, header: &DumpHeader) -> Result<ImageConses, LoadError> {
+        let start = header.cons_blocks.offset as usize;
+        let count = header.cons_blocks.nr_entries as usize;
+        let end = start + crate::lisp::alloc::image_cons_bytes(count);
+        let conses = ImageConses {
+            base: self.image.address.as_ptr() as usize,
+            start,
+            count,
+            end: count
+                .checked_sub(1)
+                .map_or(0, |last| crate::lisp::alloc::image_cons_offset(last) + 16),
+        };
+        if count == 0 {
+            return Ok(conses);
+        }
+        if !start.is_multiple_of(crate::lisp::alloc::CONS_BLOCK_BYTES)
+            || start < HEADER_LEN
+            || end > header.discardable_start as usize
+            || end > self.image.len
+        {
+            return Err(LoadError::Error(format!(
+                "the cons blocks at {start} are not in the hot section"
+            )));
+        }
+        // SAFETY: the image is aligned to a block (`IMAGE_ALIGNMENT'), so
+        // the blocks from START are, and their bytes, inside the image by
+        // the check above, stay for the life of the process; the dumper
+        // wrote their metadata zero, and nothing else uses those bytes.
+        unsafe {
+            crate::lisp::alloc::adopt_image_cons_blocks(self.image.at(start).as_ptr(), count)
+        };
+        Ok(conses)
+    }
+
+    /// The image's string blocks (`DumpHeader::string_blocks'), made the
+    /// heap's blocks where the image holds them, once their place in the
+    /// hot section is checked: each cell's data the sdata entry the image
+    /// holds after it (the address the image is mapped at and the word's
+    /// offset, pdumper.c's RELOC_DUMP_TO_DUMP_PTR_RAW), checked to be one
+    /// and to hold the cell's characters.  The strings with text
+    /// properties are returned with their properties records.
+    fn adopt_string_blocks(
+        &mut self,
+        header: &DumpHeader,
+    ) -> Result<Vec<(StringObjectRef, u32)>, LoadError> {
+        use crate::lisp::alloc::{STRING_DATA_ALIGNMENT, STRING_DATA_PREFIX, string_data_size};
+        let start = header.string_blocks.offset as usize;
+        let count = header.string_blocks.nr_entries as usize;
+        let end = start + crate::lisp::alloc::image_string_bytes(count);
+        self.strings = ImageStrings {
+            base: self.image.address.as_ptr() as usize,
+            start,
+            end: count.checked_sub(1).map_or(0, |last| {
+                crate::lisp::alloc::image_string_offset(last)
+                    + crate::lisp::alloc::STRING_CELL_BYTES
+            }),
+        };
+        if count == 0 {
+            return Ok(Vec::new());
+        }
+        if !start.is_multiple_of(crate::lisp::alloc::IMAGE_STRING_BLOCK_BYTES)
+            || start < HEADER_LEN
+            || end > header.discardable_start as usize
+            || end > self.image.len
+        {
+            return Err(LoadError::Error(format!(
+                "the string blocks at {start} are not in the hot section"
+            )));
+        }
+        let image = &self.image;
+        let mut props = Vec::new();
+        // SAFETY: the image is aligned to a block (`IMAGE_ALIGNMENT'), so
+        // the blocks from START are, and their bytes, inside the image by
+        // the check above, stay for the life of the process, and nothing
+        // else uses them; each state is given data checked to be an sdata
+        // entry inside the image, which no other string names (the dumper
+        // writes one for each).
+        unsafe {
+            crate::lisp::alloc::adopt_image_string_blocks(
+                image.at(start).as_ptr(),
+                count,
+                |index, [size, size_byte, intervals, data]| {
+                    let multibyte = size_byte != u64::MAX;
+                    let (size, data) = (size as usize, data as usize);
+                    let nbytes = if multibyte { size_byte as usize } else { size };
+                    let address = if nbytes == 0 {
+                        std::ptr::NonNull::dangling()
+                    } else if data.is_multiple_of(STRING_DATA_ALIGNMENT)
+                        && data >= STRING_DATA_PREFIX
+                        && (data - STRING_DATA_PREFIX)
+                            .checked_add(string_data_size(nbytes))
+                            .is_some_and(|end| end <= image.len)
+                    {
+                        image.at(data)
+                    } else {
+                        return Err(LoadError::Error(format!(
+                            "string data at {data} is not an entry inside the image"
+                        )));
+                    };
+                    if intervals != 0 {
+                        let record = u32::try_from(intervals).map_err(|_| {
+                            LoadError::Error(format!(
+                                "string properties at {intervals} are outside the image"
+                            ))
+                        })?;
+                        let cell = start + crate::lisp::alloc::image_string_offset(index);
+                        props.push((
+                            StringObjectRef::from_raw(image.at(cell).as_ptr().cast()),
+                            record,
+                        ));
+                    }
+                    crate::lisp::types::SharedStringState::from_image(
+                        address, nbytes, size, multibyte,
+                    )
+                    .map_err(|error| LoadError::Error(error.to_string()))
+                },
+            )?;
+        }
+        Ok(props)
+    }
+
+    /// The image's vector blocks and large vectors
+    /// (`DumpHeader::vector_blocks', `DumpHeader::large_vectors'), made the
+    /// heap's where the image holds them, once their place in the hot
+    /// section is checked: each vector's start is remembered for the words
+    /// that name it, its Lisp words for the relocations that name them.
+    fn adopt_vectors(&mut self, header: &DumpHeader) -> Result<(), LoadError> {
+        use crate::lisp::alloc::vectors::{IMAGE_VECTOR_BLOCK_BYTES, VectorTag};
+        let start = header.vector_blocks.offset as usize;
+        let blocks = header.vector_blocks.nr_entries as usize;
+        let large = header.large_vectors.nr_entries as usize;
+        if blocks == 0 && large == 0 {
+            return Ok(());
+        }
+        let hot_end = (header.discardable_start as usize).min(self.image.len);
+        if !start.is_multiple_of(IMAGE_VECTOR_BLOCK_BYTES)
+            || start < HEADER_LEN
+            || start > hot_end
+            || header.large_vectors.offset as usize != start + blocks * IMAGE_VECTOR_BLOCK_BYTES
+        {
+            return Err(LoadError::Error(format!(
+                "the vector blocks at {start} are not in the hot section"
+            )));
+        }
+        let limit = hot_end - start;
+        let mut starts = vec![0_u64; limit.div_ceil(512)];
+        let mut words = Vec::new();
+        let mut closures = Vec::new();
+        // SAFETY: the image is aligned to a block (`IMAGE_ALIGNMENT'), so
+        // the blocks from START are, and the LIMIT bytes from it, inside the
+        // image by the check above, stay for the life of the process, and
+        // nothing else uses them.
+        let end = unsafe {
+            crate::lisp::alloc::vectors::adopt_image_vectors(
+                self.image.at(start).as_ptr(),
+                blocks,
+                large,
+                limit,
+                |vector| {
+                    starts[vector.start / 512] |= 1 << (vector.start / 8 % 64);
+                    words.push((vector.lisp as u32, vector.end as u32));
+                    if vector.tag == VectorTag::Closure {
+                        closures.push(vector.start as u32);
+                    }
+                },
+            )
+        }
+        .map_err(LoadError::Error)?;
+        self.vectors = ImageVectors {
+            base: self.image.address.as_ptr() as usize,
+            start,
+            end,
+            starts,
+            words,
+            closures,
+        };
+        Ok(())
+    }
+
+    /// Phase 3 for the vectors: as for the conses (`relocate_conses'), each
+    /// relocation in the vector area applied to the word it names, a Lisp
+    /// word of a vector; then each closure's code is checked.
+    fn relocate_vectors(&mut self) -> Result<(), LoadError> {
+        let words = std::mem::take(&mut self.vectors.words);
+        if words.is_empty() {
+            return Ok(());
+        }
+        let (base, start) = (self.vectors.base, self.vectors.start as u32);
+        let first = self.relocs.rank_from(0, start);
+        let last = self
+            .relocs
+            .rank_from(first, start + self.vectors.end as u32);
+        let entries = self.relocs.entries;
+        let mut vector = 0;
+        for entry in &entries[first..last] {
+            let field = entry_word(entry, 0);
+            let at = field - start;
+            while words.get(vector).is_some_and(|&(_, end)| end <= at) {
+                vector += 1;
+            }
+            if words.get(vector).is_none_or(|&(lisp, _)| at < lisp) {
+                return Err(LoadError::Error(format!(
+                    "relocation at {field} is not a Lisp word of a vector"
+                )));
+            }
+            let slot = (base + field as usize) as *mut Value;
+            // SAFETY: a Lisp word of an adopted vector, read where it is.
+            let word = unsafe { slot.cast::<u64>().read() };
+            let value =
+                self.reloc_value(field, entry_word(entry, 4), entry_word(entry, 8), word)?;
+            // SAFETY: a Lisp word of an adopted vector, which nothing has
+            // seen.
+            unsafe { slot.write(value) };
+        }
+        // The next field read seeks its relocation afresh.
+        self.reloc_last = u32::MAX;
+        for &closure in &self.vectors.closures {
+            let Kind::Closure(closure) = self.vectors.vector_at(start + closure)?.kind() else {
+                unreachable!("an adopted closure")
+            };
+            if !closure.is_bytecode() && !matches!(closure.body().kind(), Kind::Cons(_)) {
+                return Err(LoadError::Error(format!(
+                    "invalid closure code at {}",
+                    closure.identity() - base
+                )));
+            }
+        }
+        self.vectors.closures = Vec::new();
+        Ok(())
+    }
+
+    /// Phase 3 for the conses: pdumper.c's relocation of the dump where it
+    /// is mapped, each relocation in the cons blocks applied to the word it
+    /// names, in order; the other words are the heap's as the dumper wrote
+    /// them.
+    fn relocate_conses(&mut self) -> Result<(), LoadError> {
+        if self.conses.count == 0 {
+            return Ok(());
+        }
+        let (start, end) = self.conses.cells();
+        let first = self.relocs.rank_from(0, start);
+        let last = self.relocs.rank_from(first, end);
+        for index in first..last {
+            let entry = &self.relocs.entries[index];
+            let field = entry_word(entry, 0);
+            let slot = self.conses.field(field)?;
+            // SAFETY: a word of an adopted cell, read where it is.
+            let word = unsafe { slot.cast::<u64>().read() };
+            let value =
+                self.reloc_value(field, entry_word(entry, 4), entry_word(entry, 8), word)?;
+            // SAFETY: a word of an adopted cell, which nothing has seen.
+            unsafe { slot.write(value) };
+        }
+        // The next field read seeks its relocation afresh.
+        self.reloc_last = u32::MAX;
+        Ok(())
+    }
+
     /// The values of the consecutive fields from START into OUT: the
     /// relocations walked alongside the words, as pdumper.c applies its
     /// sorted relocations in order.
@@ -1189,11 +1590,7 @@ impl Loader<'_> {
                 let entry = &self.relocs.entries[cursor];
                 cursor += 1;
                 next = self.relocs.offset_or_end(cursor);
-                let code = entry_word(entry, 4);
-                match self.object(entry_word(entry, 8) as usize) {
-                    Some(value) if code >> 8 == 1 => value,
-                    _ => self.relocated_value(field, code, word)?,
-                }
+                self.reloc_value(field, entry_word(entry, 4), entry_word(entry, 8), word)?
             } else {
                 immediate_value(word)?
             };
@@ -1231,7 +1628,43 @@ impl Loader<'_> {
             );
             return Ok(value);
         }
-        self.relocated_value(field_offset, code, word)
+        self.block_value(field_offset, code, word)
+    }
+
+    /// The value of the word WORD at FIELD that the relocation of CODE and
+    /// object TARGET names: a cons, a string or a vector of the blocks
+    /// (pdumper.c's RELOC_DUMP_TO_DUMP_LV, the mapped image's address and
+    /// the word's offset), the object the entry numbers, or what another
+    /// relocation makes.
+    #[inline(always)]
+    fn reloc_value(
+        &mut self,
+        field: u32,
+        code: u32,
+        target: u32,
+        word: u64,
+    ) -> Result<Value, LoadError> {
+        if code >> 8 == 1
+            && let Some(value) = self.object(target as usize)
+        {
+            return Ok(value);
+        }
+        self.block_value(field, code, word)
+    }
+
+    /// reloc_value for a relocation that numbers no object: a cons, a
+    /// string or a vector of the blocks, which the entry does not number
+    /// (`NO_OBJECT'), or what another relocation makes.
+    #[inline(always)]
+    fn block_value(&mut self, field: u32, code: u32, word: u64) -> Result<Value, LoadError> {
+        match code {
+            CONS_LV => self.conses.cons_at(word as u32),
+            STRING_LV => self.strings.string_at(word as u32),
+            VECTOR_LV | CLOSURE_LV | LISP_RECORD_LV | CHAR_TABLE_LV | SUB_CHAR_TABLE_LV => {
+                self.vectors.vector_at(word as u32)
+            }
+            _ => self.relocated_value(field, code, word),
+        }
     }
 
     /// value_at for the relocations other than one naming an object.
@@ -1243,6 +1676,20 @@ impl Loader<'_> {
         word: u64,
     ) -> Result<Value, LoadError> {
         match DumpRelocKind::from_u32(code) {
+            // RELOC_DUMP_TO_DUMP_LV of a cons, a string or a vector: the
+            // word is the object's offset, and the object is where the
+            // image is mapped.
+            Some(DumpRelocKind::DumpToDumpLv(DumpType::Cons)) => self.conses.cons_at(word as u32),
+            Some(DumpRelocKind::DumpToDumpLv(DumpType::String)) => {
+                self.strings.string_at(word as u32)
+            }
+            Some(DumpRelocKind::DumpToDumpLv(
+                DumpType::Vector
+                | DumpType::Closure
+                | DumpType::LispRecord
+                | DumpType::CharTable
+                | DumpType::SubCharTable,
+            )) => self.vectors.vector_at(word as u32),
             Some(DumpRelocKind::DumpToDumpLv(_)) => Err(LoadError::Error(format!(
                 "field at {field_offset} names no object ({word})"
             ))),
@@ -1328,48 +1775,72 @@ impl Loader<'_> {
         name: Value,
     ) -> Result<SymbolName, LoadError> {
         let interned = (flags >> SYMBOL_INTERNED_SHIFT) & 3;
-        let name_text = name
-            .as_string()
-            .map_err(|_| LoadError::Error("symbol name is not a string".into()))?;
+        if !matches!(name.kind(), Kind::StringObject(_)) {
+            return Err(LoadError::Error("symbol name is not a string".into()));
+        }
+        let key = self.symbol_key(offset)?;
         if interned == SYMBOL_UNINTERNED {
             return Ok(SymbolName::make_uninterned(
                 name,
-                &name_text,
+                key,
                 next_make_symbol_id(),
             ));
         }
         if interned == SYMBOL_INTERNED {
-            let nwatchers = self.reader.word(offset + 40)? as u32;
-            let internal = self.value_at(offset + 48 + 8 * nwatchers)?;
-            let internal = string_like(&internal)
-                .map(|string| string.text)
-                .ok_or_else(|| {
-                    LoadError::Error(format!(
-                        "symbol {name_text}: the other-obarray name is not a string"
-                    ))
-                })?;
-            if !crate::lisp::types::is_private_obarray_symbol(&internal) {
+            if !crate::lisp::types::is_private_obarray_symbol(key) {
                 return Err(LoadError::Error(format!(
-                    "symbol {name_text}: not an other-obarray name: {internal:?}"
+                    "symbol {key:?}: not an other-obarray name"
                 )));
             }
-            return Ok(SymbolName::intern_with_lisp_name(internal, Some(name)));
+            return Ok(SymbolName::intern_with_lisp_name(
+                key.to_owned(),
+                Some(name),
+            ));
         }
-        Ok(SymbolName::intern_with_lisp_name(name_text, Some(name)))
+        if !crate::lisp::types::obarray::plain_ascii(key.as_bytes())
+            && !crate::lisp::types::is_visible_symbol_name(key)
+        {
+            return Err(LoadError::Error(format!(
+                "symbol {key:?}: an initial-obarray symbol with a marked key"
+            )));
+        }
+        Ok(SymbolName::intern_image(name, key))
+    }
+
+    /// The host key a symbol record ends with: text of the permanent image.
+    fn symbol_key(&self, offset: u32) -> Result<&'static str, LoadError> {
+        let nwatchers = self.reader.word(offset + SYMBOL_NWATCHERS)?;
+        let at = u64::from(offset + SYMBOL_WATCHERS) + 8 * nwatchers;
+        let invalid = || LoadError::Error(format!("invalid symbol key at {offset}"));
+        let at = u32::try_from(at).map_err(|_| invalid())?;
+        let len = self.reader.word(at)? as usize;
+        let start = at as usize + 8;
+        let bytes = self
+            .image
+            .bytes()
+            .get(start..start.checked_add(len).ok_or_else(invalid)?)
+            .ok_or_else(invalid)?;
+        if crate::lisp::types::obarray::plain_ascii(bytes) {
+            // SAFETY: ASCII is UTF-8.
+            return Ok(unsafe { std::str::from_utf8_unchecked(bytes) });
+        }
+        std::str::from_utf8(bytes).map_err(|_| invalid())
     }
 
     /// The C string the raw dump pointer at FIELD names: a native subr's
     /// name in the cold section (dump_cold_native_subr), NUL-terminated
     /// UTF-8 that lives as long as the process.
-    fn image_c_string(&self, field: u32, what: &str) -> Result<*const std::ffi::c_char, LoadError> {
+    /// FIELDs are asked in ascending order: the relocation's search
+    /// starts at HINT, where the last one left it.
+    fn image_c_string(
+        &self,
+        field: u32,
+        hint: &mut usize,
+        what: &str,
+    ) -> Result<*const std::ffi::c_char, LoadError> {
         let invalid =
             || LoadError::Error(format!("native function {what} is not an image C string"));
-        if self
-            .relocs
-            .find(field)
-            .map(|reloc| DumpRelocKind::from_u32(self.relocs.code(reloc)))
-            != Some(Some(DumpRelocKind::DumpToDumpPtrRaw))
-        {
+        if self.relocs.reloc_at_from(hint, field) != Some(DumpRelocKind::DumpToDumpPtrRaw) {
             return Err(invalid());
         }
         let start = usize::try_from(self.reader.word(field)?).map_err(|_| invalid())?;
@@ -1385,64 +1856,22 @@ impl Loader<'_> {
         Ok(text.as_ptr())
     }
 
-    fn load_string(
-        &mut self,
-        offset: u32,
-        kind: DumpType,
-    ) -> Result<(Value, Option<u32>), LoadError> {
-        let [size, size_byte, intervals, data] = self.reader.words(offset)?;
-        let (size, intervals, data) = (size as usize, intervals as u32, data as u32);
+    /// One of the singleton empty strings: the process's own, as each
+    /// image object is its identity.
+    fn load_empty_string(&mut self, offset: u32) -> Result<Value, LoadError> {
+        let [size, size_byte, intervals, _] = self.reader.words(offset)?;
         let multibyte = size_byte != u64::MAX;
-        let nbytes = if multibyte { size_byte as usize } else { size };
-        let bytes = self
-            .reader
-            .bytes
-            .get(data as usize..data as usize + nbytes)
-            .ok_or_else(|| {
-                LoadError::Error(format!("string data at {data} is outside the image"))
-            })?;
-        let state = if kind == DumpType::EmptyString {
-            if size != 0 || nbytes != 0 || intervals != 0 {
-                return Err(LoadError::Error("nonempty static empty string".into()));
-            }
-            StringObjectRef::from_storage_kind(
-                bytes,
-                0,
-                multibyte,
-                crate::lisp::alloc::StringAllocation::Ordinary,
-            )
-        } else if nbytes == 0 {
-            StringObjectRef::from_storage_kind(
-                bytes,
-                size,
-                multibyte,
-                crate::lisp::alloc::StringAllocation::Restored,
-            )
-        } else {
-            // The data stays in the image, in the sdata entry the writer
-            // laid out around it.
-            use crate::lisp::alloc::{STRING_DATA_ALIGNMENT, STRING_DATA_PREFIX, string_data_size};
-            let start = data as usize;
-            if !start.is_multiple_of(STRING_DATA_ALIGNMENT)
-                || start < STRING_DATA_PREFIX
-                || start - STRING_DATA_PREFIX + string_data_size(nbytes) > self.image.len
-            {
-                return Err(LoadError::Error(format!(
-                    "string data at {data} is not an entry inside the image"
-                )));
-            }
-            // SAFETY: the permanent image's entry, checked to lie inside
-            // it, aligned, with its owner word and padding; its string is
-            // this one alone.
-            unsafe {
-                StringObjectRef::from_image_data(self.image.at(start), nbytes, size, multibyte)
-            }
+        if size != 0 || multibyte && size_byte != 0 || intervals != 0 {
+            return Err(LoadError::Error("nonempty static empty string".into()));
         }
-        .map_err(|error| LoadError::Error(error.to_string()))?;
-        Ok((
-            Value::StringObject(state),
-            (intervals != 0).then_some(intervals),
-        ))
+        StringObjectRef::from_storage_kind(
+            &[],
+            0,
+            multibyte,
+            crate::lisp::alloc::StringAllocation::Ordinary,
+        )
+        .map(Value::StringObject)
+        .map_err(|error| LoadError::Error(error.to_string()))
     }
 
     /// A bignum record after its fixup: sign/limb count and the cold limbs.
@@ -1919,6 +2348,12 @@ impl Loader<'_> {
         })
     }
 }
+
+/// A symbol record's fields: the flags, name, value, function and plist,
+/// then these.
+const SYMBOL_NEXT: u32 = 40;
+const SYMBOL_NWATCHERS: u32 = 48;
+const SYMBOL_WATCHERS: u32 = 56;
 
 /// A symbol-valued field: `nil' and `t' arrive as their immediate words.
 fn symbol_of(value: Value, what: &str) -> Result<SymbolName, LoadError> {

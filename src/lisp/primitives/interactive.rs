@@ -235,13 +235,6 @@ pub(crate) fn is_vector_value(value: &Value) -> bool {
     matches!(value.kind(), Kind::Vector(_))
 }
 
-pub(crate) fn vector_identity(value: &Value) -> Option<usize> {
-    match value.kind() {
-        Kind::Vector(vector) => Some(vector.identity()),
-        _ => None,
-    }
-}
-
 /// Whether VALUE has GNU cons identity despite Emaxx's internal runtime-keymap
 /// projection.  Ordinary vectors have their own object class and never enter
 /// this predicate.

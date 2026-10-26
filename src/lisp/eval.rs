@@ -3644,6 +3644,10 @@ impl LispReachability {
                 }
                 self.enqueue(&symbol.cell().function.get());
                 self.enqueue(&symbol.cell().plist.get());
+                // mark_object follows the symbol's obarray chain.
+                if let Some(next) = symbol.cell().next.get() {
+                    self.enqueue(&Value::Symbol(next));
+                }
             }
             Kind::Finalizer(object) => {
                 // alloc.c traces the function in the reached object itself.
@@ -4664,10 +4668,11 @@ impl Interpreter {
                 }
                 capacity
             } else {
-                // lread.c:obarray_default_bits is 3.  Nonstandard
-                // obarray growth is accounted when its symbol arena is
-                // moved out of the encoded namespace representation.
-                1_usize << 3
+                // A private obarray's buckets; an abbrev table keeps
+                // lread.c's obarray_default_bits.
+                self.record_ref(id)
+                    .filter(|record| crate::lisp::types::obarray::is_record_slots(&record.slots))
+                    .map_or(1_usize << 3, |record| record.slots.len() - 2)
             };
             bytes = bytes.saturating_add(capacity.saturating_mul(8));
         }
@@ -5014,6 +5019,8 @@ impl Interpreter {
         *clone.known_symbols_cache.get_mut() = None;
         *clone.syntax_segment_cache.get_mut() = None;
         clone.bc_stack = crate::lisp::bytecode::vm::BcStack::new();
+        clone.bc_frames = Default::default();
+        clone.bc_handlers = Default::default();
         clone.bc_unwinds.clear();
 
         // Identity-bearing keys acquire new addresses in the test image.
@@ -5453,6 +5460,16 @@ pub struct InterpreterState {
     /// entries, and the constants of the activations entered from Rust:
     /// roots for as long as the activations run (alloc.c:mark_threads).
     pub(crate) bc_stack: crate::lisp::bytecode::vm::BcStack,
+    /// The suspended callers of the running thread's byte-code
+    /// activations, innermost last: each activation's lie above where its
+    /// entry found the list (bytecode.c keeps them as frames on the
+    /// byte-code stack itself).
+    pub(crate) bc_frames: crate::lisp::bytecode::vm::BcFrames,
+    /// The catch and condition-case handlers those activations pushed,
+    /// innermost last (their part of eval.c's handlerlist; the tags and
+    /// clauses are rooted by the registries of active catches and
+    /// handlers).
+    pub(crate) bc_handlers: crate::lisp::bytecode::vm::BcHandlers,
     pub(crate) bc_unwinds: Vec<crate::lisp::bytecode::vm::UnwindEntry>,
     /// Live Rust-owned operand/context roots, independent of the reusable pool.
     stack_roots: roots::StackRoots,
@@ -5546,6 +5563,10 @@ pub struct InterpreterState {
     pub last_match_data: Option<Vec<Option<(usize, usize)>>>,
     /// Source buffer for buffer-origin match data; string searches leave this unset.
     pub last_match_data_buffer_id: Option<u64>,
+    /// The matcher's registers in text offsets (search.c's search_regs
+    /// before a search converts them to positions), held between searches
+    /// so their allocation serves every search.
+    pub(crate) search_registers: crate::lisp::regex_emacs::Registers,
     pub profiler_memory_running: bool,
     pub profiler_memory_log_pending: bool,
     pub profiler_cpu_running: bool,
@@ -6250,6 +6271,8 @@ impl Interpreter {
             gc_elapsed_total: 0.0,
             sqlite_handles: Vec::new(),
             bc_stack: crate::lisp::bytecode::vm::BcStack::new(),
+            bc_frames: Default::default(),
+            bc_handlers: Default::default(),
             bc_unwinds: Vec::new(),
             stack_roots: roots::StackRoots::default(),
             treesit_queries: Vec::new(),
@@ -6290,6 +6313,7 @@ impl Interpreter {
             pending_termination: None,
             last_match_data: None,
             last_match_data_buffer_id: None,
+            search_registers: Default::default(),
             profiler_memory_running: false,
             profiler_memory_log_pending: false,
             profiler_cpu_running: false,

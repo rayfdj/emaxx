@@ -580,7 +580,7 @@ fn font_match_p(interp: &Interpreter, spec: &Value, font: &Value) -> Result<bool
             continue;
         }
         let actual = font.slots.get(index).cloned().unwrap_or(Value::Nil);
-        if !actual.is_nil() && !values_equal(interp, &expected, &actual) {
+        if !actual.is_nil() && !values_equal(interp, &expected, &actual)? {
             return Ok(false);
         }
     }

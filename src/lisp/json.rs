@@ -627,7 +627,7 @@ pub(crate) fn make_hash_table_with_capacity(
     };
     for (key, value) in entries {
         assert!(
-            interp.equal_hash_put(table, key, value, &env),
+            matches!(interp.equal_hash_put(table, key, value, &env), Ok(true)),
             "internal constructor uses a standard test"
         );
     }

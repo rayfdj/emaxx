@@ -1044,27 +1044,290 @@ fn queue_order_writes_referents_after_their_referrer_and_each_object_once() {
         previous = offset;
         kinds.push(DumpType::from_u32(kind).expect("a known object type"));
     }
-    // One vector, two conses, three strings: nothing twice.
+    // One vector, two conses and three strings, in the image's blocks,
+    // not among the starts: nothing twice.
+    assert!(!kinds.contains(&DumpType::Vector));
+    assert!(!kinds.contains(&DumpType::Cons));
+    assert!(!kinds.contains(&DumpType::String));
+    assert_eq!(header.cons_blocks.nr_entries, 2);
+    assert_eq!(header.string_blocks.nr_entries, 3);
+    assert_eq!(header.vector_blocks.nr_entries, 1);
+    assert_eq!(header.large_vectors.nr_entries, 0);
+    // The root vector starts its block, its size word the heap's.
+    let at = header.vector_blocks.offset as usize;
     assert_eq!(
-        kinds
-            .iter()
-            .filter(|kind| **kind == DumpType::Vector)
-            .count(),
-        1
-    );
-    assert_eq!(
-        kinds.iter().filter(|kind| **kind == DumpType::Cons).count(),
-        2
-    );
-    assert_eq!(
-        kinds
-            .iter()
-            .filter(|kind| **kind == DumpType::String)
-            .count(),
+        u64::from_le_bytes(bytes[at..at + 8].try_into().expect("a word")),
         3
     );
-    // The root vector is the first heap object after the header.
-    assert_eq!(kinds[0], DumpType::Vector);
+}
+
+#[test]
+fn image_conses_are_cells_of_the_image_where_it_is_mapped() {
+    // pdumper.c maps the dump and relocates it in place: the conses come
+    // back as cells of the image's own blocks, their sharing and their
+    // immediates as they were written, and a collection keeps them.
+    let mut interp = Interpreter::new();
+    let tail = Value::list([Value::Integer(-7), Value::T, Value::string("x")]);
+    let root = Value::cons(tail, Value::cons(tail, Value::Nil));
+    let bytes = dump(&mut interp, vec![(RootSlot::LoadPath, root)]);
+    let mut target = Interpreter::new();
+    let image = load_image(&bytes, &mut target).expect("the cons graph loads");
+    assert_eq!(image.header.cons_blocks.nr_entries, 5);
+    assert!(
+        (image.header.cons_blocks.offset as usize)
+            .is_multiple_of(crate::lisp::alloc::CONS_BLOCK_BYTES)
+    );
+    assert!(image.header.cons_blocks.offset < image.header.discardable_start);
+    let loaded = image
+        .roots
+        .iter()
+        .find(|(slot, _)| *slot == RootSlot::LoadPath)
+        .map(|(_, value)| *value)
+        .expect("the root was installed");
+    let first = loaded.car().expect("a cons");
+    let second = loaded
+        .cdr()
+        .and_then(|rest| rest.car())
+        .expect("a second element");
+    assert_eq!(first.word(), second.word(), "the shared tail is one cons");
+    assert_eq!(first.to_string(), "(-7 t \"x\")");
+    // Reached from a variable, the cells survive collections where they
+    // are, the image's storage.
+    target.set_symbol_value_cell("zz-image-conses", loaded);
+    let answer = crate::test_support::eval_lisp(
+        &mut target,
+        &mut crate::lisp::types::Env::new(),
+        "(progn (garbage-collect) (garbage-collect)
+           (list (car zz-image-conses) (eq (car zz-image-conses) (car (cdr zz-image-conses)))
+                 (length (cdr zz-image-conses))))",
+    )
+    .expect("the image conses stay live");
+    assert_eq!(answer.to_string(), "((-7 t \"x\") t 1)");
+    assert_eq!(
+        super::load::CONS_LV,
+        DumpRelocKind::DumpToDumpLv(DumpType::Cons).to_u32()
+    );
+}
+
+#[test]
+fn image_strings_are_cells_of_the_image_where_it_is_mapped() {
+    // pdumper.c maps the dump and relocates it in place: the strings come
+    // back as cells of the image's own string blocks, each string once,
+    // with the bytes, characters and properties they were written with,
+    // and collections keep them, see them changed and drop them as they
+    // do the heap's own.
+    let mut interp = Interpreter::new();
+    let mut env = crate::lisp::types::Env::new();
+    let program = r#"
+        (let ((shared "shared")
+              (many nil))
+          (let ((i 0))
+            (while (< i 200)
+              (setq many (cons (format "s%d" i) many) i (1+ i))))
+          (vector shared shared "abc" "h\u00e9llo" (propertize "pq" 'face 'bold)
+                  "\377x" many ""))"#;
+    let form = crate::lisp::reader::Reader::new(program)
+        .read()
+        .expect("setup parses")
+        .expect("setup has a form");
+    let graph = interp.eval(&form, &mut env).expect("setup evaluates");
+    let bytes = dump(&mut interp, vec![(RootSlot::LoadPath, graph)]);
+    let mut target = Interpreter::new();
+    let image = load_image(&bytes, &mut target).expect("the strings load");
+    // The 205 strings, the empty singleton aside, and the property
+    // names', over three blocks.
+    assert!(image.header.string_blocks.nr_entries >= 205);
+    assert!(
+        (image.header.string_blocks.offset as usize)
+            .is_multiple_of(crate::lisp::alloc::IMAGE_STRING_BLOCK_BYTES)
+    );
+    assert!(
+        image.header.string_blocks.offset as usize
+            + crate::lisp::alloc::image_string_bytes(
+                image.header.string_blocks.nr_entries as usize
+            )
+            <= image.header.discardable_start as usize
+    );
+    let loaded = image
+        .roots
+        .iter()
+        .find(|(slot, _)| *slot == RootSlot::LoadPath)
+        .map(|(_, value)| *value)
+        .expect("the root was installed");
+    target.set_symbol_value_cell("zz-image-strings", loaded);
+    let eval = |target: &mut Interpreter, source: &str| {
+        crate::test_support::eval_lisp(target, &mut crate::lisp::types::Env::new(), source)
+            .unwrap_or_else(|error| panic!("{source}: {error:?}"))
+            .to_string()
+    };
+    assert_eq!(
+        eval(
+            &mut target,
+            "(let ((v zz-image-strings))
+               (garbage-collect)
+               (list (eq (aref v 0) (aref v 1)) (aref v 2) (multibyte-string-p (aref v 3))
+                     (length (aref v 3)) (string-bytes (aref v 3))
+                     (get-text-property 1 'face (aref v 4)) (text-properties-at 0 (aref v 2))
+                     (multibyte-string-p (aref v 5)) (aref (aref v 5) 0)
+                     (length (aref v 6)) (car (aref v 6)) (car (nthcdr 199 (aref v 6)))
+                     (eq (aref v 7) \"\")))"
+        ),
+        "(t \"abc\" t 5 6 bold nil nil 255 200 \"s199\" \"s0\" t)"
+    );
+    // Stores into image strings, the one that becomes multibyte and the
+    // one whose bytes shrink, and image strings no longer reached, which
+    // the collections free, the image's blocks staying where they are.
+    assert_eq!(
+        eval(
+            &mut target,
+            "(let ((v zz-image-strings))
+               (aset (aref v 2) 0 ?\\N{GREEK SMALL LETTER ALPHA})
+               (aset (aref v 3) 1 ?e)
+               (aset v 6 nil)
+               (garbage-collect)
+               (make-string 1000 ?z) (garbage-collect)
+               (make-string 1000 ?z) (garbage-collect)
+               (list (append (aref v 2) nil) (multibyte-string-p (aref v 2))
+                     (aref v 3) (string-bytes (aref v 3)) (aref v 0)
+                     (get-text-property 0 'face (aref v 4))))"
+        ),
+        "((945 98 99) t \"hello\" 5 \"shared\" bold)"
+    );
+    assert_eq!(
+        super::load::STRING_LV,
+        DumpRelocKind::DumpToDumpLv(DumpType::String).to_u32()
+    );
+}
+
+#[test]
+fn image_vectors_are_the_image_where_it_is_mapped() {
+    // pdumper.c maps the dump and relocates it in place: the vectors, the
+    // closures, the records and the char tables come back as the vectors
+    // of the image's own blocks and large vectors, their sharing, cycles
+    // and immediates as they were written, and collections keep them,
+    // see them changed and drop them as they do the heap's own.
+    let mut interp = Interpreter::new();
+    let mut env = crate::lisp::types::Env::new();
+    let program = r#"
+        (let ((shared (vector 1 "one" 'one))
+              (cycle (make-vector 2 nil))
+              (table (make-char-table 'zz-vectors 'dflt))
+              (many nil))
+          (aset cycle 0 cycle)
+          (set-char-table-range table '(?a . ?z) 'lower)
+          (set-char-table-range table ?\N{GREEK SMALL LETTER ALPHA} 'alpha)
+          (let ((i 0))
+            (while (< i 600)
+              (setq many (cons (vector i) many) i (1+ i))))
+          (vector shared shared cycle (make-vector 300 'big)
+                  (eval '(let ((k 3)) (function (lambda (x) (* k x)))) t)
+                  (record 'zz-rec 1 shared) table [] many))"#;
+    let form = crate::lisp::reader::Reader::new(program)
+        .read()
+        .expect("setup parses")
+        .expect("setup has a form");
+    let graph = interp.eval(&form, &mut env).expect("setup evaluates");
+    let bytes = dump(&mut interp, vec![(RootSlot::LoadPath, graph)]);
+    let mut target = Interpreter::new();
+    let image = load_image(&bytes, &mut target).expect("the vectors load");
+    let header = &image.header;
+    // The 600 small vectors take more than one block; the 300-slot one is
+    // large.
+    assert!(header.vector_blocks.nr_entries >= 3);
+    assert_eq!(header.large_vectors.nr_entries, 1);
+    assert!(
+        (header.vector_blocks.offset as usize)
+            .is_multiple_of(crate::lisp::alloc::vectors::IMAGE_VECTOR_BLOCK_BYTES)
+    );
+    assert_eq!(
+        header.large_vectors.offset,
+        header.vector_blocks.offset
+            + header.vector_blocks.nr_entries
+                * crate::lisp::alloc::vectors::IMAGE_VECTOR_BLOCK_BYTES as u32
+    );
+    assert!(header.large_vectors.offset < header.discardable_start);
+    let loaded = image
+        .roots
+        .iter()
+        .find(|(slot, _)| *slot == RootSlot::LoadPath)
+        .map(|(_, value)| *value)
+        .expect("the root was installed");
+    let mut seen = HashMap::new();
+    graph_matches(&graph, &loaded, &mut seen).unwrap_or_else(|error| panic!("{error}"));
+    target.set_symbol_value_cell("zz-image-vectors", loaded);
+    let eval = |target: &mut Interpreter, source: &str| {
+        crate::test_support::eval_lisp(target, &mut crate::lisp::types::Env::new(), source)
+            .unwrap_or_else(|error| panic!("{source}: {error:?}"))
+            .to_string()
+    };
+    assert_eq!(
+        eval(
+            &mut target,
+            "(let ((v zz-image-vectors))
+               (garbage-collect)
+               (list (eq (aref v 0) (aref v 1)) (aref v 0)
+                     (eq (aref (aref v 2) 0) (aref v 2)) (length (aref v 3))
+                     (aref (aref v 3) 299) (funcall (aref v 4) 5)
+                     (aref (aref v 5) 0) (eq (aref (aref v 5) 2) (aref v 0))
+                     (aref (aref v 6) ?q) (aref (aref v 6) ?\\N{GREEK SMALL LETTER ALPHA})
+                     (aref (aref v 6) ?Q) (eq (aref v 7) []) (length (aref v 8))
+                     (aref (car (aref v 8)) 0)))"
+        ),
+        "(t [1 \"one\" one] t 300 big 15 zz-rec t lower alpha dflt t 600 599)"
+    );
+    // Stores into image vectors and tables, and image vectors no longer
+    // reached, the large one among them, which the collections free, the
+    // image's storage staying where it is.
+    assert_eq!(
+        eval(
+            &mut target,
+            "(let ((v zz-image-vectors))
+               (aset (aref v 0) 0 'changed)
+               (aset (aref v 6) ?b 'bee)
+               (set-char-table-range (aref v 6) '(?x . ?y) 'ex)
+               (aset v 3 nil)
+               (aset v 8 nil)
+               (garbage-collect)
+               (make-vector 1000 'z) (garbage-collect)
+               (make-vector 1000 'z) (garbage-collect)
+               (list (aref v 1) (aref (aref v 6) ?b) (aref (aref v 6) ?c)
+                     (aref (aref v 6) ?y) (aref (aref v 6) ?z)
+                     (funcall (aref v 4) 2) (aref v 3)))"
+        ),
+        "([changed \"one\" one] bee lower ex lower 6 nil)"
+    );
+    // Nothing of the image reached: every image vector dies, its blocks
+    // stay the image's, and later collections and vectors use the heap.
+    assert_eq!(
+        eval(
+            &mut target,
+            "(progn
+               (setq zz-image-vectors nil load-path nil)
+               (garbage-collect) (garbage-collect)
+               (let ((fresh (make-vector 3 'fresh)))
+                 (garbage-collect)
+                 (list (aref fresh 2) (length (make-vector 400 0)))))"
+        ),
+        "(fresh 400)"
+    );
+    for code in [
+        super::load::VECTOR_LV,
+        super::load::CLOSURE_LV,
+        super::load::LISP_RECORD_LV,
+        super::load::CHAR_TABLE_LV,
+        super::load::SUB_CHAR_TABLE_LV,
+    ] {
+        assert!(matches!(
+            DumpRelocKind::from_u32(code),
+            Some(DumpRelocKind::DumpToDumpLv(
+                DumpType::Vector
+                    | DumpType::Closure
+                    | DumpType::LispRecord
+                    | DumpType::CharTable
+                    | DumpType::SubCharTable
+            ))
+        ));
+    }
 }
 
 #[test]

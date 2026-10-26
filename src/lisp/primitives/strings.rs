@@ -405,18 +405,6 @@ pub(crate) fn string_char_code_at_in_place(value: &Value, index: usize) -> Optio
     }
 }
 
-/// `equal' on two strings, compared in place.  fns.c's internal_equal
-/// compares the character count, the byte count and the bytes: two
-/// strings of the same characters differ when one is unibyte and the
-/// other multibyte and any character is not ASCII (a raw byte is one
-/// byte unibyte and two multibyte).  `None' when either is not a string.
-pub(crate) fn string_texts_equal_in_place(left: &Value, right: &Value) -> Option<bool> {
-    let (Kind::StringObject(left), Kind::StringObject(right)) = (left.kind(), right.kind()) else {
-        return None;
-    };
-    Some(left == right)
-}
-
 /// fns.c:Fstring_equal accepts SYMBOLP arguments and reads SYMBOL_NAME,
 /// which is the original Lisp string, not the symbol's host lookup key.
 /// lisp.h:SYMBOLP accepts positioned symbols only while the C flag is set.

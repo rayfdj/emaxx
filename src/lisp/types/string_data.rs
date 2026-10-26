@@ -107,7 +107,11 @@ fn check_character_count(
         let mut count = 0;
         let mut offset = 0;
         while offset < bytes.len() {
-            offset += decode_character(&bytes[offset..])?.1;
+            offset += if bytes[offset] < 0x80 {
+                1
+            } else {
+                decode_character(&bytes[offset..])?.1
+            };
             count += 1;
         }
         count
@@ -325,39 +329,6 @@ impl StringObjectRef {
         Self::try_from_slice(bytes, characters, multibyte, Vec::new(), kind)
     }
 
-    /// A string of an image whose data stays where the image holds it, as
-    /// pdumper.c leaves a dumped string's data in the mapped dump: the
-    /// entry is no block's, so compaction never moves it (as
-    /// compact_small_strings never reads the dump), and the header owns
-    /// it as it owns allocated data -- retiring or resizing it within its
-    /// slop writes the entry, as they write any.
-    ///
-    /// # Safety
-    /// DATA is the data of an sdata entry for NBYTES bytes and their NUL --
-    /// aligned, with its owner word before DATA and its padding after --
-    /// in writable memory that lives as long as the process and that
-    /// nothing else uses.
-    pub(crate) unsafe fn from_image_data(
-        data: NonNull<u8>,
-        nbytes: usize,
-        characters: usize,
-        multibyte: bool,
-    ) -> Result<Self, StringError> {
-        assert!(nbytes > 0, "an empty string's data is static");
-        validate_size(nbytes)?;
-        // SAFETY: the caller's entry holds NBYTES bytes at DATA.
-        let bytes = unsafe { std::slice::from_raw_parts(data.as_ptr(), nbytes) };
-        check_character_count(bytes, characters, multibyte)?;
-        let state = SharedStringState {
-            size: characters,
-            size_byte: if multibyte { nbytes as isize } else { -1 },
-            props: StringProperties::default(),
-            data,
-        };
-        // SAFETY: the caller's entry outlives the string and is its alone.
-        Ok(unsafe { crate::lisp::alloc::allocate_restored_string(state) })
-    }
-
     pub(crate) fn from_text(
         text: String,
         props: Vec<StringPropertySpan>,
@@ -468,6 +439,51 @@ impl SharedStringState {
             props: StringProperties::default(),
             data: NonNull::from(&EMPTY_DATA),
         }
+    }
+
+    /// The state of an image string whose data stays where the image
+    /// holds it, as pdumper.c leaves a dumped string's data in the mapped
+    /// dump: CHARACTERS in NBYTES at DATA, checked as the loader checks
+    /// what it reads (a unibyte string has a character a byte).  The entry
+    /// is no block's, so compaction never moves it (as
+    /// compact_small_strings never reads the dump), and the header owns it
+    /// as it owns allocated data -- retiring or resizing it within its
+    /// slop writes the entry, as they write any.  An empty string's data
+    /// is the static empty data, whatever DATA is.
+    ///
+    /// # Safety
+    /// Unless NBYTES is zero, DATA is the data of an sdata entry for
+    /// NBYTES bytes and their NUL -- aligned, with its owner word before
+    /// DATA and its padding after -- in writable memory that lives as long
+    /// as the process and that nothing else uses.
+    pub(crate) unsafe fn from_image(
+        data: NonNull<u8>,
+        nbytes: usize,
+        characters: usize,
+        multibyte: bool,
+    ) -> Result<Self, StringError> {
+        validate_size(nbytes)?;
+        let data = if nbytes == 0 {
+            NonNull::from(&EMPTY_DATA)
+        } else {
+            data
+        };
+        if multibyte {
+            // SAFETY: the caller's entry holds NBYTES bytes at DATA.
+            let bytes = unsafe { std::slice::from_raw_parts(data.as_ptr(), nbytes) };
+            check_character_count(bytes, characters, true)?;
+        } else if characters != nbytes {
+            return Err(LispError::Signal(
+                "String character count does not match its bytes".into(),
+            )
+            .into());
+        }
+        Ok(Self {
+            size: characters,
+            size_byte: if multibyte { nbytes as isize } else { -1 },
+            props: StringProperties::default(),
+            data,
+        })
     }
 
     /// This string's entry in the conversion cache, if it holds one.

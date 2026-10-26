@@ -10774,7 +10774,10 @@ mod tests {
                 panic!("hash table record");
             };
             id.set_weakness(1);
-            assert!(interpreter.equal_hash_put(id, key, value, environment));
+            assert!(matches!(
+                interpreter.equal_hash_put(id, key, value, environment),
+                Ok(true)
+            ));
             interpreter.set_global_binding("native-gc-weak-table", table);
             (
                 [key_word ^ HIDE, value_word ^ HIDE],
@@ -10845,7 +10848,10 @@ mod tests {
                     panic!("hash table record");
                 };
                 id.set_weakness(1);
-                assert!(interpreter.equal_hash_put(id, key, value, environment));
+                assert!(matches!(
+                    interpreter.equal_hash_put(id, key, value, environment),
+                    Ok(true)
+                ));
                 interpreter.set_global_binding(name, Value::HashTable(id));
                 tables.push(id);
             }
@@ -13172,8 +13178,14 @@ mod tests {
                 panic!("weak table")
             };
             table_ref.set_weakness(1);
-            assert!(interpreter.equal_hash_put(table_ref, string, values[0], environment));
-            assert!(interpreter.equal_hash_put(table_ref, child, values[1], environment));
+            assert!(matches!(
+                interpreter.equal_hash_put(table_ref, string, values[0], environment),
+                Ok(true)
+            ));
+            assert!(matches!(
+                interpreter.equal_hash_put(table_ref, child, values[1], environment),
+                Ok(true)
+            ));
             interpreter.set_global_binding("borrowed-string-weak-keys", table);
             let Kind::StringObject(object) = string.kind() else {
                 panic!("property-bearing string")
