@@ -8992,6 +8992,43 @@ fn edits_and_matches_on_multibyte_text_keep_positions_like_gnu() {
 }
 
 #[test]
+fn equal_walks_like_internal_equal() {
+    // fns.c internal_equal: a cdr cycle signals `circular-list' with the
+    // tail FOR_EACH_TAIL's tortoise meets, depth 200 is the limit for cars
+    // and vector slots but not for cdrs, a structure leading back to a
+    // pair being compared is equal, and `equal-including-properties'
+    // compares the strings inside vectors and records.  GNU 30.2's values.
+    assert_eq!(
+        eval_str(
+            r#"(let ((print-circle t)
+                  (circ (lambda (n k) (let ((l (number-sequence 1 n))) (setcdr (last l) (nthcdr k l)) l)))
+                  (nest (lambda (n leaf wrap) (let ((x leaf)) (dotimes (_ n) (setq x (funcall wrap x))) x)))
+                  (s (propertize "ab" 'face 'bold)))
+              (prin1-to-string
+               (list (condition-case err (equal (funcall circ 8 3) (funcall circ 8 3)) (error err))
+                     (condition-case err (equal (funcall circ 3 0) (list 1 2 3 1 2 3 1 2 3)) (error err))
+                     (equal (list 1 2 3 1 2 3 1 2 3) (funcall circ 3 0))
+                     (condition-case err (member 9 (funcall circ 5 0)) (error err))
+                     (equal (funcall nest 200 'a #'list) (funcall nest 200 'a #'list))
+                     (condition-case err (equal (funcall nest 201 'a #'list) (funcall nest 201 'a #'list)) (error err))
+                     (condition-case err (equal (funcall nest 201 'a #'vector) (funcall nest 201 'a #'vector)) (error err))
+                     (let ((k (lambda (x) (cons 1 x))))
+                       (equal (funcall nest 100000 'z k) (funcall nest 100000 'z k)))
+                     (let ((a (list 1 2)) (b (list 1 2))) (setcar a a) (setcar b b) (equal a b))
+                     (let ((a (vector 1 nil)) (b (vector 1 nil))) (aset a 1 a) (aset b 1 b) (equal a b))
+                     (list (equal (vector s) (vector "ab"))
+                           (equal-including-properties (vector s) (vector "ab"))
+                           (equal-including-properties (record 'r s) (record 'r (copy-sequence s)))))))"#
+        ),
+        Value::string(
+            "((circular-list #1=(7 8 4 5 6 . #1#)) (circular-list #2=(3 1 2 . #2#)) nil \
+             (circular-list #3=(2 3 4 5 1 . #3#)) t (error \"Stack overflow in equal\") \
+             (error \"Stack overflow in equal\") t t t (t nil t))"
+        )
+    );
+}
+
+#[test]
 fn read_tokens_strings_and_positions_like_lread() {
     // lread.c read0: a symbol's token ends at whitespace, at "()[]\";" and,
     // after its first character, at "#'`,"; strings copy their runs; the

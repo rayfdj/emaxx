@@ -846,7 +846,7 @@ define_dispatch!(
                     std::slice::from_ref(&funname),
                     env,
                 )?;
-                if values_equal(interp, &function, &fundef) {
+                if values_equal(interp, &function, &fundef)? {
                     let symbol = funname.as_symbol()?;
                     return Err(LispError::Signal(format!(
                         "Autoloading file {file} failed to define function {symbol}"

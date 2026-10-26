@@ -6,377 +6,369 @@ pub fn buffer_undo_list_value(buffer: &crate::buffer::Buffer) -> Value {
     buffer.undo_list_value()
 }
 
-pub(crate) fn values_equal(interp: &Interpreter, left: &Value, right: &Value) -> bool {
-    // Scalar fast paths: identical outcome to the recursive walk below, but
-    // without paying for a fresh seen-set and the aggregate-type probes.
-    match (left.kind(), right.kind()) {
-        (Kind::Integer(a), Kind::Integer(b)) => return a == b,
-        (Kind::Symbol(a), Kind::Symbol(b)) => return a == b,
-        (Kind::Nil, Kind::Nil) | (Kind::T, Kind::T) => return true,
-        (Kind::Nil | Kind::T, Kind::Integer(_)) | (Kind::Integer(_), Kind::Nil | Kind::T) => {
-            return false;
-        }
-        _ => {}
-    }
-    values_equal_recursive_with_env(interp, left, right, &mut HashSet::new(), None)
+/// fns.c's equal_kind for the two walks Lisp asks for (equal_no_quit's
+/// is not used here).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EqualKind {
+    /// Fequal.
+    Plain,
+    /// Fequal_including_properties: strings' text properties too.
+    IncludingProperties,
 }
 
-pub(crate) fn values_equal_in_env(
+/// fns.c:Fequal.
+pub(crate) fn values_equal(
     interp: &Interpreter,
     left: &Value,
     right: &Value,
-    env: &Env,
-) -> bool {
-    values_equal_recursive_with_env(interp, left, right, &mut HashSet::new(), Some(env))
-}
-
-/// fns.c's Fequal cons walk: FOR_EACH_TAIL iterates the left spine with
-/// cycle detection and signals `(circular-list LIST)' on a loop, after
-/// taking the shared-tail EQ escape.  The internal non-signaling
-/// `values_equal' instead answers `t' for isomorphic cycles, which
-/// testcover relies on GNU NOT doing (its circular-list marks come from
-/// the ignored signal).
-pub(crate) fn values_equal_signaling(
-    interp: &Interpreter,
-    left: &Value,
-    right: &Value,
-    env: &Env,
 ) -> Result<bool, LispError> {
-    values_equal_signaling_depth(interp, left, right, Some(env), 0, &mut HashMap::new())
+    internal_equal(interp, *left, *right, EqualKind::Plain, 0, &mut None)
 }
 
-fn values_equal_signaling_depth(
+/// fns.c:Fequal_including_properties.
+pub(crate) fn values_equal_including_properties(
     interp: &Interpreter,
     left: &Value,
     right: &Value,
-    env: Option<&Env>,
-    depth: usize,
-    memo: &mut HashMap<usize, Vec<usize>>,
 ) -> Result<bool, LispError> {
-    fn plain_cons(value: &Value) -> bool {
-        matches!(value.kind(), Kind::Cons(cell)
-            if !matches!(cell.car.get().kind(), Kind::Symbol(tag) if tag == "vector-literal"))
-    }
-    // internal_equal: BASE_EQ objects are equal, before any walk.
-    if left.eq_value(*right) {
-        return Ok(true);
-    }
-    if !plain_cons(left) || !plain_cons(right) {
-        // Leaves take the same env-aware walk `equal' uses everywhere
-        // else: internal_equal's EQ sees through `symbol-with-pos'
-        // wrappers while `symbols-with-pos-enabled' is set, at any depth.
-        return Ok(values_equal_recursive_with_env(
-            interp,
-            left,
-            right,
-            &mut HashSet::new(),
-            env,
-        ));
-    }
-    // fns.c internal_equal: past depth 10 a seen-pair table answers true
-    // for a revisited (o1, o2) pair -- how car-circular graphs compare
-    // equal -- and depth 200 is a hard error, not a crash.
-    if depth > 10 {
-        if depth > 200 {
-            return Err(LispError::Signal("Stack overflow in equal".into()));
+    internal_equal(
+        interp,
+        *left,
+        *right,
+        EqualKind::IncludingProperties,
+        0,
+        &mut None,
+    )
+}
+
+/// internal_equal's HT, made the first time the walk is more than 10
+/// deep: each cons or vectorlike O1 compared there, with the objects O2 it
+/// was compared with.  A pair met again is taken as equal, so structures
+/// that lead back into themselves compare without end.
+type EqualSeen = HashMap<usize, Vec<Value>>;
+
+/// lisp.h's FOR_EACH_TAIL bookkeeping (struct for_each_tail_internal):
+/// Brent's tortoise, which moves to the tail in hand after MAX steps
+/// (Q counts them, with N counting each 65,536), MAX doubling each time.
+struct ForEachTail {
+    tortoise: Value,
+    max: isize,
+    n: isize,
+    q: u16,
+}
+
+impl ForEachTail {
+    fn new(list: Value) -> Self {
+        ForEachTail {
+            tortoise: list,
+            max: 2,
+            n: 0,
+            q: 2,
         }
-        if let (Kind::Cons(lc), Kind::Cons(rc)) = (left.kind(), right.kind()) {
-            let left_key = lc.as_ptr() as usize;
-            let right_key = rc.as_ptr() as usize;
-            let entry = memo.entry(left_key).or_default();
-            if entry.contains(&right_key) {
-                return Ok(true);
+    }
+
+    /// The step after TAIL = XCDR (TAIL): whether TAIL is the tortoise,
+    /// closing a cycle.
+    #[inline]
+    fn step(&mut self, tail: Value) -> bool {
+        self.q = self.q.wrapping_sub(1);
+        if self.q != 0 {
+            return tail.eq_value(self.tortoise);
+        }
+        self.n -= 1;
+        if 0 < self.n {
+            return tail.eq_value(self.tortoise);
+        }
+        self.max <<= 1;
+        self.q = self.max as u16;
+        self.n = self.max >> 16;
+        self.tortoise = tail;
+        false
+    }
+}
+
+/// maybe_remove_pos_from_symbol: the bare symbol of a symbol with
+/// position while `symbols-with-pos-enabled' is set.
+#[inline]
+fn bare_symbol(interp: &Interpreter, value: Value) -> Value {
+    match value.kind() {
+        Kind::SymbolWithPos(symbol) if interp.symbols_with_positions_enabled() => symbol.symbol(),
+        _ => value,
+    }
+}
+
+/// fns.c:internal_equal: O1 and O2 compared DEPTH levels down.  Past
+/// depth 10 HT remembers the pairs compared; past depth 200 the walk
+/// signals instead of recursing further.  A list's cdrs are walked in a
+/// loop that signals `circular-list' with the tail that closes a cycle;
+/// its last cdr, and an overlay's plist, are compared one level down by
+/// going round again (tail_recurse).
+fn internal_equal(
+    interp: &Interpreter,
+    mut o1: Value,
+    mut o2: Value,
+    kind: EqualKind,
+    mut depth: usize,
+    ht: &mut Option<EqualSeen>,
+) -> Result<bool, LispError> {
+    loop {
+        if depth > 10 {
+            if depth > 200 {
+                return Err(LispError::Signal("Stack overflow in equal".into()));
             }
-            entry.push(right_key);
+            if o1.is_cons() || o1.is_vectorlike() {
+                let o2s = ht
+                    .get_or_insert_with(HashMap::new)
+                    .entry(o1.word())
+                    .or_default();
+                if o2s.iter().any(|seen| seen.eq_value(o2)) {
+                    return Ok(true);
+                }
+                o2s.push(o2);
+            }
         }
-    }
-    let mut l = *left;
-    let mut r = *right;
-    let mut tortoise = *left;
-    let mut steps = 0usize;
-    let mut limit = 2usize;
-    while let Kind::Cons(lc) = l.kind() {
-        let Kind::Cons(rc) = r.kind() else {
-            return Ok(false);
-        };
-        let left_car = lc.car.get();
-        let right_car = rc.car.get();
-        if !values_equal_signaling_depth(interp, &left_car, &right_car, env, depth + 1, memo)? {
-            return Ok(false);
-        }
-        let left_cdr = lc.cdr.get();
-        let right_cdr = rc.cdr.get();
-        if let (Kind::Cons(a), Kind::Cons(b)) = (left_cdr.kind(), right_cdr.kind())
-            && crate::lisp::types::SharedCons::ptr_eq(&a, &b)
-        {
+        // A symbol with position compares the contained symbol, and is
+        // `equal' to the corresponding ordinary symbol.
+        o1 = bare_symbol(interp, o1);
+        o2 = bare_symbol(interp, o2);
+        if o1.eq_value(o2) {
             return Ok(true);
         }
-        l = left_cdr;
-        r = right_cdr;
-        if let (Kind::Cons(current), Kind::Cons(lagging)) = (l.kind(), tortoise.kind())
-            && crate::lisp::types::SharedCons::ptr_eq(&current, &lagging)
-        {
-            return Err(LispError::SignalValue(Value::list([
-                Value::Symbol("circular-list".into()),
-                *left,
-            ])));
-        }
-        steps += 1;
-        if steps == limit {
-            tortoise = l;
-            steps = 0;
-            limit *= 2;
+        match (o1.kind(), o2.kind()) {
+            (Kind::Cons(_), Kind::Cons(_)) => {
+                let mut tail = ForEachTail::new(o1);
+                while let Kind::Cons(cell) = o1.kind() {
+                    let Kind::Cons(other) = o2.kind() else {
+                        return Ok(false);
+                    };
+                    if !internal_equal(
+                        interp,
+                        cell.car.get(),
+                        other.car.get(),
+                        kind,
+                        depth + 1,
+                        ht,
+                    )? {
+                        return Ok(false);
+                    }
+                    o2 = other.cdr.get();
+                    o1 = cell.cdr.get();
+                    // EQ (XCDR (o1), o2).
+                    if o1.eq_value(o2) || bare_symbol(interp, o1).eq_value(bare_symbol(interp, o2))
+                    {
+                        return Ok(true);
+                    }
+                    if tail.step(o1) {
+                        return Err(LispError::SignalValue(Value::list([
+                            Value::Symbol("circular-list".into()),
+                            o1,
+                        ])));
+                    }
+                }
+                depth += 1;
+            }
+            (Kind::Overlay(left), Kind::Overlay(right)) => {
+                if !overlay_extents_equal(left, right) {
+                    return Ok(false);
+                }
+                o1 = left.plist();
+                o2 = right.plist();
+                depth += 1;
+            }
+            _ => return equal_atoms(interp, o1, o2, kind, depth, ht),
         }
     }
-    Ok(values_equal_recursive_with_env(
-        interp,
-        &l,
-        &r,
-        &mut HashSet::new(),
-        env,
-    ))
 }
 
-fn char_tables_equal(
+/// internal_equal for O1 and O2 that are not both conses or overlays:
+/// numbers, strings and the other vectorlike objects.  Bignums, markers,
+/// bool vectors, tree-sitter nodes and symbols with position compare
+/// their values; vectors, closures, char-tables and records their slots;
+/// every other pseudovector is equal only to itself.
+fn equal_atoms(
     interp: &Interpreter,
-    left: crate::lisp::types::CharTableRef,
-    right: crate::lisp::types::CharTableRef,
-    seen: &mut HashSet<(usize, usize)>,
-    env: Option<&Env>,
-) -> bool {
-    if left == right || !seen.insert((left.identity(), right.identity())) {
-        return true;
-    }
-    left.slot_count() == right.slot_count()
-        && left
-            .slots()
-            .zip(right.slots())
-            .all(|(a, b)| values_equal_recursive_with_env(interp, &a, &b, seen, env))
-}
-
-pub(crate) fn record_equals_record_literal_form(
-    interp: &Interpreter,
-    record: crate::lisp::types::LispRecordRef,
-    form: &Value,
-    seen: &mut HashSet<(usize, usize)>,
-    env: Option<&Env>,
-) -> bool {
-    let Some(items) = record_literal_items(form) else {
-        return false;
+    o1: Value,
+    o2: Value,
+    kind: EqualKind,
+    depth: usize,
+    ht: &mut Option<EqualSeen>,
+) -> Result<bool, LispError> {
+    let mut slots = |left: &mut dyn Iterator<Item = Value>,
+                     right: &mut dyn Iterator<Item = Value>|
+     -> Result<bool, LispError> {
+        for (left, right) in left.zip(right) {
+            if !internal_equal(interp, left, right, kind, depth + 1, ht)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     };
-    if let Some((car, _)) = form.cons_cells() {
-        let pair = (record.identity(), car.cell_id());
-        if !seen.insert(pair) {
-            return true;
-        }
-    }
-
-    let actual_fields = &items[1..];
-
-    record.len() == actual_fields.len()
-        && record
-            .slots()
-            .zip(actual_fields.iter())
-            .all(|(left, right)| {
-                let right_value = record_literal_slot_data(right);
-                values_equal_recursive_with_env(interp, &left, &right_value, seen, env)
-            })
-}
-
-fn values_equal_recursive_with_env(
-    interp: &Interpreter,
-    left: &Value,
-    right: &Value,
-    seen: &mut HashSet<(usize, usize)>,
-    env: Option<&Env>,
-) -> bool {
-    if let Some(env) = env
-        && (matches!(left.kind(), Kind::SymbolWithPos(_))
-            || matches!(right.kind(), Kind::SymbolWithPos(_)))
-        && let Some(equal) = symbol_with_pos_equal_in_env(interp, left, right, env)
-    {
-        return equal;
-    }
-    // fns.c internal_equal: BASE_EQ objects are equal, before any walk.
-    if left.eq_value(*right) {
-        return true;
-    }
-    if let Some(equal) = crate::lisp::primitives::strings::string_texts_equal_in_place(left, right)
-    {
-        return equal;
-    }
-    if is_bool_vector_value(interp, left) && is_bool_vector_value(interp, right) {
-        return bool_vector_values(interp, left).ok() == bool_vector_values(interp, right).ok();
-    }
-    let left_is_vector = is_vector_value(left);
-    let right_is_vector = is_vector_value(right);
-    if left_is_vector || right_is_vector {
-        if !left_is_vector || !right_is_vector {
-            return false;
-        }
-        let (Some(left_id), Some(right_id)) = (vector_identity(left), vector_identity(right))
-        else {
-            return false;
-        };
-        if !seen.insert((left_id, right_id)) {
-            return true;
-        }
-        let (Ok(left_items), Ok(right_items)) = (vector_items(left), vector_items(right)) else {
-            return false;
-        };
-        return left_items.len() == right_items.len()
-            && left_items
-                .iter()
-                .zip(right_items.iter())
-                .all(|(left, right)| {
-                    values_equal_recursive_with_env(interp, left, right, seen, env)
-                });
-    }
-    match (left.kind(), right.kind()) {
-        (Kind::Nil, Kind::Nil) | (Kind::T, Kind::T) => true,
+    Ok(match (o1.kind(), o2.kind()) {
+        (Kind::Float(a), Kind::Float(b)) => a.to_bits() == b.to_bits(),
         (Kind::Integer(a), Kind::Integer(b)) => a == b,
         (Kind::BigInteger(a), Kind::BigInteger(b)) => a == b,
         (Kind::Integer(a), Kind::BigInteger(b)) | (Kind::BigInteger(b), Kind::Integer(a)) => {
             BigInt::from(a) == *b
         }
-        // fns.c internal_equal: floats compare by representation
-        // (same_float), like eql: NaN equals NaN, 0.0 differs from -0.0.
-        (Kind::Float(a), Kind::Float(b)) => a.to_bits() == b.to_bits(),
-        (Kind::StringObject(a), Kind::StringObject(b)) => a == b,
-        (Kind::Symbol(a), Kind::Symbol(b)) => a == b,
-        (Kind::BuiltinFunc(a), Kind::BuiltinFunc(b)) => a == b,
-        (Kind::NativeFunction(a), Kind::NativeFunction(b)) => a.ptr_eq(&b),
-        (Kind::NativeCompUnit(a), Kind::NativeCompUnit(b)) => a.ptr_eq(&b),
-        (Kind::Buffer(a), Kind::Buffer(b)) => a.ptr_eq(&b),
-        (Kind::Marker(a), Kind::Marker(b)) => markers_equal(a, b),
-        (Kind::HashTable(a), Kind::HashTable(b)) => a == b,
-        (Kind::Overlay(a), Kind::Overlay(b)) => overlays_equal(interp, a, b, seen, env),
-        (Kind::CharTable(left_id), Kind::CharTable(right_id)) => {
-            char_tables_equal(interp, left_id, right_id, seen, env)
+        (Kind::StringObject(left), Kind::StringObject(right)) => {
+            let (left, right) = (left.borrow(), right.borrow());
+            left.contents_equal(&right)
+                && (kind == EqualKind::Plain || string_intervals_equal(interp, &left, &right)?)
         }
-        (Kind::SubCharTable(left), Kind::SubCharTable(right)) => {
-            left == right
-                || (!seen.insert((left.identity(), right.identity()))
-                    || (left.depth() == right.depth()
-                        && left.min_char() == right.min_char()
-                        && left.slots().zip(right.slots()).all(|(a, b)| {
-                            values_equal_recursive_with_env(interp, &a, &b, seen, env)
-                        })))
-        }
-
-        (Kind::Frame(left_id), Kind::Frame(right_id)) => left_id == right_id,
-        (Kind::Terminal(left_id), Kind::Terminal(right_id)) => left_id.ptr_eq(&right_id),
+        (Kind::Marker(left), Kind::Marker(right)) => markers_equal(left, right),
         (Kind::SymbolWithPos(left), Kind::SymbolWithPos(right)) => {
-            left.symbol().eq_value(right.symbol()) && left.position() == right.position()
+            left.symbol().eq_value(right.symbol()) && left.position().eq_value(right.position())
         }
-        (Kind::Record(left_id), Kind::Record(right_id)) => {
-            if left_id.ptr_eq(&right_id) {
-                return true;
-            }
-            let (Some(left_record), Some(right_record)) =
-                (interp.find_record(left_id), interp.find_record(right_id))
-            else {
-                return false;
-            };
-            if left_record.kind != right_record.kind {
-                return false;
-            }
-            // GNU only walks real records and the pseudovectors at or above
-            // PVEC_CLOSURE.  Native handles below that boundary (threads,
-            // synchronization objects, parsers, SQLite handles, and the
-            // like) are opaque and compare by identity.
-            if matches!(
-                left_record.kind,
-                crate::lisp::eval::RecordKind::Process
-                    | crate::lisp::eval::RecordKind::Obarray
-                    | crate::lisp::eval::RecordKind::Window
-                    | crate::lisp::eval::RecordKind::WindowConfiguration
-                    | crate::lisp::eval::RecordKind::Thread
-                    | crate::lisp::eval::RecordKind::Mutex
-                    | crate::lisp::eval::RecordKind::ConditionVariable
-                    | crate::lisp::eval::RecordKind::ModuleFunction
-                    | crate::lisp::eval::RecordKind::UserPointer
-                    | crate::lisp::eval::RecordKind::TreeSitterParser
-                    | crate::lisp::eval::RecordKind::TreeSitterCompiledQuery
-                    | crate::lisp::eval::RecordKind::Sqlite
-            ) {
-                return false;
-            }
-            if left_record.kind == crate::lisp::eval::RecordKind::TreeSitterNode {
-                let left = interp.treesit_node_state(left);
-                let right = interp.treesit_node_state(right);
-                return matches!((left, right), (Some(left), Some(right))
-                    if left.parser_id == right.parser_id
-                        && left.generation == right.generation
-                        && left.node_id == right.node_id);
-            }
-            // GNU `equal' compares real records element-wise like vectors.
-            let pair = (left_id.identity(), right_id.identity());
-            if !seen.insert(pair) {
-                return true;
-            }
-            values_equal_recursive_with_env(
-                interp,
-                &left_record.type_tag,
-                &right_record.type_tag,
-                seen,
-                env,
-            ) && left_record.slots.len() == right_record.slots.len()
-                && left_record
-                    .slots
-                    .iter()
-                    .zip(right_record.slots.iter())
-                    .all(|(left, right)| {
-                        values_equal_recursive_with_env(interp, left, right, seen, env)
-                    })
-        }
-        (Kind::LispRecord(left), Kind::LispRecord(right)) => {
-            left.ptr_eq(&right)
-                || (left.len() == right.len()
-                    && (!seen.insert((left.identity(), right.identity()))
-                        || left.slots().zip(right.slots()).all(|(a, b)| {
-                            values_equal_recursive_with_env(interp, &a, &b, seen, env)
-                        })))
-        }
-        (Kind::LispRecord(record), _) if record_literal_items(right).is_some() => {
-            record_equals_record_literal_form(interp, record, right, seen, env)
-        }
-        (_, Kind::LispRecord(record)) if record_literal_items(left).is_some() => {
-            record_equals_record_literal_form(interp, record, left, seen, env)
-        }
-        (Kind::Cons(_), Kind::Cons(_)) => {
-            let Some((left_car, _)) = left.cons_cells() else {
-                return false;
-            };
-            let Some((right_car, _)) = right.cons_cells() else {
-                return false;
-            };
-            let pair = (left_car.cell_id(), right_car.cell_id());
-            if !seen.insert(pair) {
-                return true;
-            }
-            let Some((a_car, a_cdr)) = left.cons_values() else {
-                return false;
-            };
-            let Some((b_car, b_cdr)) = right.cons_values() else {
-                return false;
-            };
-            values_equal_recursive_with_env(interp, &a_car, &b_car, seen, env)
-                && values_equal_recursive_with_env(interp, &a_cdr, &b_cdr, seen, env)
+        (Kind::Vector(left), Kind::Vector(right)) => {
+            left.len() == right.len() && slots(&mut left.slots(), &mut right.slots())?
         }
         (Kind::Closure(left), Kind::Closure(right)) => {
-            let left_ptr = left.identity();
-            let right_ptr = right.identity();
-            if left_ptr == right_ptr || !seen.insert((left_ptr, right_ptr)) {
-                return true;
-            }
-            left.public_len() == right.public_len()
-                && left.slots().zip(right.slots()).all(|(left, right)| {
-                    values_equal_recursive_with_env(interp, &left, &right, seen, env)
-                })
+            left.public_len() == right.public_len() && slots(&mut left.slots(), &mut right.slots())?
         }
-        _ => left == right,
+        (Kind::CharTable(left), Kind::CharTable(right)) => {
+            left.slot_count() == right.slot_count() && slots(&mut left.slots(), &mut right.slots())?
+        }
+        (Kind::SubCharTable(left), Kind::SubCharTable(right)) => {
+            left.depth() == right.depth()
+                && left.min_char() == right.min_char()
+                && slots(&mut left.slots(), &mut right.slots())?
+        }
+        (Kind::LispRecord(left), Kind::LispRecord(right)) => {
+            left.len() == right.len() && slots(&mut left.slots(), &mut right.slots())?
+        }
+        // A record and the reader's form of a record literal.
+        (Kind::LispRecord(record), _) | (_, Kind::LispRecord(record)) => {
+            let form = if matches!(o1.kind(), Kind::LispRecord(_)) {
+                o2
+            } else {
+                o1
+            };
+            match record_literal_items(&form) {
+                Some(items) => {
+                    let fields = &items[1..];
+                    record.len() == fields.len()
+                        && slots(
+                            &mut record.slots(),
+                            &mut fields.iter().map(record_literal_slot_data),
+                        )?
+                }
+                None => false,
+            }
+        }
+        (Kind::Record(left_id), Kind::Record(right_id)) => {
+            let (Some(left), Some(right)) =
+                (interp.find_record(left_id), interp.find_record(right_id))
+            else {
+                return Ok(false);
+            };
+            if left.kind != right.kind {
+                return Ok(false);
+            }
+            use crate::lisp::eval::RecordKind;
+            match left.kind {
+                RecordKind::BoolVector => {
+                    bool_vector_values(interp, &o1).ok() == bool_vector_values(interp, &o2).ok()
+                }
+                RecordKind::TreeSitterNode => {
+                    let left = interp.treesit_node_state(&o1);
+                    let right = interp.treesit_node_state(&o2);
+                    matches!((left, right), (Some(left), Some(right))
+                        if left.parser_id == right.parser_id
+                            && left.generation == right.generation
+                            && left.node_id == right.node_id)
+                }
+                // Pseudovectors below PVEC_CLOSURE: equal only when eq.
+                RecordKind::Process
+                | RecordKind::Obarray
+                | RecordKind::Window
+                | RecordKind::WindowConfiguration
+                | RecordKind::Thread
+                | RecordKind::Mutex
+                | RecordKind::ConditionVariable
+                | RecordKind::ModuleFunction
+                | RecordKind::UserPointer
+                | RecordKind::TreeSitterParser
+                | RecordKind::TreeSitterCompiledQuery
+                | RecordKind::Sqlite => false,
+                _ => {
+                    left.slots.len() == right.slots.len()
+                        && slots(
+                            &mut std::iter::once(left.type_tag).chain(left.slots.iter().copied()),
+                            &mut std::iter::once(right.type_tag).chain(right.slots.iter().copied()),
+                        )?
+                }
+            }
+        }
+        _ => false,
+    })
+}
+
+/// The overlays' buffers and extents, which internal_equal compares
+/// before their plists.
+fn overlay_extents_equal(
+    left: crate::overlay::OverlayRef,
+    right: crate::overlay::OverlayRef,
+) -> bool {
+    let same_buffer = match (left.buffer(), right.buffer()) {
+        (None, None) => true,
+        (Some(a), Some(b)) => a.ptr_eq(&b),
+        _ => false,
+    };
+    // Detached overlays all have GNU's public -1 endpoints, regardless of
+    // the last interval coordinates retained in their unlinked node.
+    same_buffer && (left.is_dead() || left.bounds() == right.bounds())
+}
+
+/// intervals.c:compare_string_intervals: the strings' properties agree
+/// at every position.  Interval boundaries do not matter, and each
+/// position's plists compare as sets, their values by `equal'
+/// (intervals_equal_1 with USE_EQUAL).
+fn string_intervals_equal(
+    interp: &Interpreter,
+    left: &crate::lisp::types::SharedStringState,
+    right: &crate::lisp::types::SharedStringState,
+) -> Result<bool, LispError> {
+    let len = left.len();
+    let props_at = |spans: &[StringPropertySpan], pos: usize| {
+        let mut out: Vec<(PropertyName, Value)> = Vec::new();
+        for span in spans {
+            if span.start <= pos && pos < span.end {
+                for (key, value) in &span.props {
+                    if !out.iter().any(|(existing, _)| existing == key) {
+                        out.push((*key, *value));
+                    }
+                }
+            }
+        }
+        out
+    };
+    let mut bounds: Vec<usize> = vec![0, len];
+    for span in left.props.iter().chain(right.props.iter()) {
+        bounds.push(span.start.min(len));
+        bounds.push(span.end.min(len));
     }
+    bounds.sort_unstable();
+    bounds.dedup();
+    for window in bounds.windows(2) {
+        let pos = window[0];
+        if pos >= len {
+            break;
+        }
+        let (left_props, right_props) = (props_at(&left.props, pos), props_at(&right.props, pos));
+        if left_props.len() != right_props.len() {
+            return Ok(false);
+        }
+        for (key, left_value) in &left_props {
+            let Some((_, right_value)) = right_props.iter().find(|(right_key, _)| right_key == key)
+            else {
+                return Ok(false);
+            };
+            if !values_equal(interp, right_value, left_value)? {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(true)
 }
 
 pub(crate) fn values_eql(left: &Value, right: &Value) -> bool {
@@ -713,214 +705,6 @@ pub(crate) fn sequence_length_value(interp: &Interpreter, value: &Value) -> Resu
             Ok(length)
         }
         _ => Err(LispError::WrongTypeArgument("sequencep".into(), *value)),
-    }
-}
-
-fn text_property_plists_equal(
-    interp: &Interpreter,
-    left: &[(PropertyName, Value)],
-    right: &[(PropertyName, Value)],
-    env: &Env,
-) -> bool {
-    left.len() == right.len()
-        && left.iter().all(|(key, left_value)| {
-            right.iter().any(|(right_key, right_value)| {
-                // intervals.c:intervals_equal_1(..., true) uses Fequal
-                // for property values, not Fequal_including_properties.
-                right_key == key && values_equal_in_env(interp, left_value, right_value, env)
-            })
-        })
-}
-
-pub(crate) fn values_equal_including_properties(
-    interp: &Interpreter,
-    left: &Value,
-    right: &Value,
-    env: &Env,
-) -> bool {
-    values_equal_including_properties_recursive(interp, left, right, &mut HashSet::new(), env)
-}
-
-pub(crate) fn values_equal_including_properties_recursive(
-    interp: &Interpreter,
-    left: &Value,
-    right: &Value,
-    seen: &mut HashSet<(usize, usize)>,
-    env: &Env,
-) -> bool {
-    // fns.c:internal_equal calls maybe_remove_pos_from_symbol before its
-    // type/equality dispatch.  The switch is the dynamically bound
-    // `symbols-with-pos-enabled' flag, so the including-properties variant
-    // must consult the same evaluator environment as ordinary `equal'.
-    if (matches!(left.kind(), Kind::SymbolWithPos(_))
-        || matches!(right.kind(), Kind::SymbolWithPos(_)))
-        && let Some(equal) = symbol_with_pos_equal_in_env(interp, left, right, env)
-    {
-        return equal;
-    }
-    if let (Kind::StringObject(left_string), Kind::StringObject(right_string)) =
-        (left.kind(), right.kind())
-    {
-        // fns.c:internal_equal checks BASE_EQ before inspecting contents.
-        if left_string.ptr_eq(&right_string) {
-            return true;
-        }
-        let left_string = left_string.borrow();
-        let right_string = right_string.borrow();
-        if !left_string.contents_equal(&right_string) {
-            return false;
-        }
-        // GNU's compare_string_intervals walks POSITIONS, so interval
-        // segmentation is not significant, and plists within a span
-        // compare as sets (intervals_equal in intervals.c).
-        let len = left_string.len();
-        let collect_props = |spans: &[StringPropertySpan], pos: usize| {
-            let mut out: Vec<(PropertyName, Value)> = Vec::new();
-            for span in spans {
-                if span.start <= pos && pos < span.end {
-                    for (key, value) in &span.props {
-                        if !out.iter().any(|(existing, _)| existing == key) {
-                            out.push((*key, *value));
-                        }
-                    }
-                }
-            }
-            out
-        };
-        let mut bounds: Vec<usize> = vec![0, len];
-        for span in left_string.props.iter().chain(right_string.props.iter()) {
-            bounds.push(span.start.min(len));
-            bounds.push(span.end.min(len));
-        }
-        bounds.sort_unstable();
-        bounds.dedup();
-        for window in bounds.windows(2) {
-            let pos = window[0];
-            if pos >= len {
-                break;
-            }
-            if !text_property_plists_equal(
-                interp,
-                &collect_props(&left_string.props, pos),
-                &collect_props(&right_string.props, pos),
-                env,
-            ) {
-                return false;
-            }
-        }
-        return true;
-    }
-    if let (Ok(left_items), Ok(right_items)) = (vector_items(left), vector_items(right))
-        && matches!(left.kind(), Kind::Cons(_))
-        && matches!(right.kind(), Kind::Cons(_))
-    {
-        return left_items.len() == right_items.len()
-            && left_items
-                .iter()
-                .zip(right_items.iter())
-                .all(|(left, right)| {
-                    values_equal_including_properties_recursive(interp, left, right, seen, env)
-                });
-    }
-    match (left.kind(), right.kind()) {
-        (Kind::Nil, Kind::Nil) | (Kind::T, Kind::T) => true,
-        (Kind::Integer(a), Kind::Integer(b)) => a == b,
-        (Kind::BigInteger(a), Kind::BigInteger(b)) => a == b,
-        (Kind::Integer(a), Kind::BigInteger(b)) | (Kind::BigInteger(b), Kind::Integer(a)) => {
-            BigInt::from(a) == *b
-        }
-        (Kind::Float(a), Kind::Float(b)) => a.to_bits() == b.to_bits(),
-        (Kind::Symbol(a), Kind::Symbol(b)) => a == b,
-        (Kind::LispRecord(left), Kind::LispRecord(right)) => {
-            left.ptr_eq(&right)
-                || (left.len() == right.len()
-                    && (!seen.insert((left.identity(), right.identity()))
-                        || left.slots().zip(right.slots()).all(|(a, b)| {
-                            values_equal_including_properties_recursive(interp, &a, &b, seen, env)
-                        })))
-        }
-        (Kind::Record(left_id), Kind::Record(right_id)) => {
-            if left_id.ptr_eq(&right_id) {
-                return true;
-            }
-            let (Some(left_record), Some(right_record)) =
-                (interp.find_record(left_id), interp.find_record(right_id))
-            else {
-                return false;
-            };
-            if left_record.kind != right_record.kind {
-                return false;
-            }
-            // fns.c:internal_equal walks genuine records and pseudovectors
-            // at or above PVEC_CLOSURE element-by-element.  In particular,
-            // distinct but equal byte-code closures are keys in comp.el's
-            // relocation tables.  Runtime handles below that boundary stay
-            // identity-only.
-            if matches!(
-                left_record.kind,
-                crate::lisp::eval::RecordKind::Process
-                    | crate::lisp::eval::RecordKind::Obarray
-                    | crate::lisp::eval::RecordKind::Window
-                    | crate::lisp::eval::RecordKind::WindowConfiguration
-                    | crate::lisp::eval::RecordKind::Thread
-                    | crate::lisp::eval::RecordKind::Mutex
-                    | crate::lisp::eval::RecordKind::ConditionVariable
-                    | crate::lisp::eval::RecordKind::ModuleFunction
-                    | crate::lisp::eval::RecordKind::UserPointer
-                    | crate::lisp::eval::RecordKind::TreeSitterParser
-                    | crate::lisp::eval::RecordKind::TreeSitterCompiledQuery
-                    | crate::lisp::eval::RecordKind::Sqlite
-            ) {
-                return false;
-            }
-            if left_record.kind == crate::lisp::eval::RecordKind::TreeSitterNode {
-                let left = interp.treesit_node_state(left);
-                let right = interp.treesit_node_state(right);
-                return matches!((left, right), (Some(left), Some(right))
-                    if left.parser_id == right.parser_id
-                        && left.generation == right.generation
-                        && left.node_id == right.node_id);
-            }
-            let pair = (left_id.identity(), right_id.identity());
-            if !seen.insert(pair) {
-                return true;
-            }
-            values_equal_including_properties_recursive(
-                interp,
-                &left_record.type_tag,
-                &right_record.type_tag,
-                seen,
-                env,
-            ) && left_record.slots.len() == right_record.slots.len()
-                && left_record
-                    .slots
-                    .iter()
-                    .zip(&right_record.slots)
-                    .all(|(left, right)| {
-                        values_equal_including_properties_recursive(interp, left, right, seen, env)
-                    })
-        }
-        (Kind::Cons(_), Kind::Cons(_)) => {
-            let Some((left_car, _)) = left.cons_cells() else {
-                return false;
-            };
-            let Some((right_car, _)) = right.cons_cells() else {
-                return false;
-            };
-            let pair = (left_car.cell_id(), right_car.cell_id());
-            if !seen.insert(pair) {
-                return true;
-            }
-            let Some((a_car, a_cdr)) = left.cons_values() else {
-                return false;
-            };
-            let Some((b_car, b_cdr)) = right.cons_values() else {
-                return false;
-            };
-            values_equal_including_properties_recursive(interp, &a_car, &b_car, seen, env)
-                && values_equal_including_properties_recursive(interp, &a_cdr, &b_cdr, seen, env)
-        }
-        _ => values_equal_in_env(interp, left, right, env),
     }
 }
 
@@ -1478,11 +1262,12 @@ pub(crate) fn remove_equal(
 
     if is_vector_value(sequence) {
         let items = vector_items(sequence)?;
-        let filtered = items
-            .iter()
-            .copied()
-            .filter(|item| !values_equal(interp, item, elt))
-            .collect::<Vec<_>>();
+        let mut filtered = Vec::with_capacity(items.len());
+        for item in &items {
+            if !values_equal(interp, item, elt)? {
+                filtered.push(*item);
+            }
+        }
         if filtered.len() == items.len() {
             return Ok(*sequence);
         }
@@ -1492,13 +1277,15 @@ pub(crate) fn remove_equal(
     }
 
     match sequence.kind() {
-        Kind::Nil | Kind::Cons(_) => Ok(Value::list(
-            sequence
-                .to_vec()?
-                .into_iter()
-                .filter(|item| !values_equal(interp, item, elt))
-                .collect::<Vec<_>>(),
-        )),
+        Kind::Nil | Kind::Cons(_) => {
+            let mut kept = Vec::new();
+            for item in sequence.to_vec()? {
+                if !values_equal(interp, &item, elt)? {
+                    kept.push(item);
+                }
+            }
+            Ok(Value::list(kept))
+        }
         _ => Err(LispError::WrongTypeArgument("sequencep".into(), *sequence)),
     }
 }
@@ -2308,38 +2095,6 @@ pub(crate) fn markers_equal(
     }
 }
 
-pub(crate) fn overlays_equal(
-    interp: &Interpreter,
-    left: crate::overlay::OverlayRef,
-    right: crate::overlay::OverlayRef,
-    seen: &mut HashSet<(usize, usize)>,
-    env: Option<&Env>,
-) -> bool {
-    // fns.c internal_equal memoizes objects it has descended into (the
-    // depth>10 eq hash table) and assumes equality on revisit, so cyclic
-    // overlay graphs -- semantic's tag<->overlay plists are exactly that --
-    // terminate instead of recursing forever.  The pair-set mirrors GNU's
-    // termination across repeated object pairs; without
-    // it this comparison overflowed an 8 GiB stack on
-    // test/lisp/cedet/semantic-utest-ia.el.
-    let pair = (left.identity(), right.identity());
-    if !seen.insert(pair) {
-        return true;
-    }
-    let same_buffer = match (left.buffer(), right.buffer()) {
-        (None, None) => true,
-        (Some(a), Some(b)) => a.ptr_eq(&b),
-        _ => false,
-    };
-    // Detached overlays all have GNU's public -1 endpoints, regardless of
-    // the last interval coordinates retained in their unlinked node.
-    let equal = same_buffer
-        && (left.is_dead() || left.bounds() == right.bounds())
-        && values_equal_recursive_with_env(interp, &left.plist(), &right.plist(), seen, env);
-    seen.remove(&pair);
-    equal
-}
-
 pub(crate) fn resolve_callable(
     interp: &Interpreter,
     value: &Value,
@@ -2429,7 +2184,7 @@ pub(crate) fn value_matches_with_test(
             match name {
                 "eq" => Ok(values_eq_in_env(interp, left, right, env)),
                 "eql" => Ok(values_eql(left, right)),
-                "equal" => Ok(values_equal_in_env(interp, left, right, env)),
+                "equal" => values_equal(interp, left, right),
                 _ => {
                     let func = resolve_callable(interp, testfn.expect("checked Some"), env)?;
                     Ok(invoke_function_value(interp, &func, &[*left, *right], env)?.is_truthy())
@@ -3192,7 +2947,7 @@ fn describe_vector(
         if table.is_none() {
             while i + 1 < stop {
                 let next = keymap_get_keyelt(interp, &element(i + 1), false, env)?;
-                if next.is_nil() || !values_equal(interp, &next, &definition) {
+                if next.is_nil() || !values_equal(interp, &next, &definition)? {
                     break;
                 }
                 i += 1;
@@ -3215,7 +2970,7 @@ fn describe_vector(
             let mut j = range_beg + 1;
             while j <= i {
                 let tem = shadow_lookup(interp, &shadow, &[Value::Integer(i64::from(j))], env)?;
-                if !values_equal(interp, &tem, &shadowed_by) {
+                if !values_equal(interp, &tem, &shadowed_by)? {
                     i = j - 1;
                 }
                 j += 1;

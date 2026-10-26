@@ -564,9 +564,13 @@ define_dispatch!(
                     let subfeatures = interp
                         .get_symbol_property(symbol.as_str(), "subfeatures")
                         .unwrap_or(Value::Nil);
-                    let found = subfeatures.to_vec().unwrap_or_default().iter().any(|item| {
-                        crate::lisp::primitives::values_equal(interp, item, subfeature)
-                    });
+                    let mut found = false;
+                    for item in subfeatures.to_vec().unwrap_or_default() {
+                        if crate::lisp::primitives::values_equal(interp, &item, subfeature)? {
+                            found = true;
+                            break;
+                        }
+                    }
                     return Ok(if found { Value::T } else { Value::Nil });
                 }
                 Ok(Value::T)
@@ -685,14 +689,17 @@ define_dispatch!(
                     .and_then(|buffer_id| interp.buffer_identity_value(buffer_id))
                     .unwrap_or(Value::Nil);
                 let matches = if name == "minibuffer-innermost-command-loop-p" {
-                    !active.is_nil() && values_equal(interp, &target, &active)
+                    !active.is_nil() && values_equal(interp, &target, &active)?
                 } else if active.is_nil() {
-                    interp
+                    match interp
                         .find_buffer(" *Minibuf-0*")
                         .and_then(|(id, _)| interp.buffer_identity_value(id))
-                        .is_some_and(|buffer| values_equal(interp, &target, &buffer))
+                    {
+                        Some(buffer) => values_equal(interp, &target, &buffer)?,
+                        None => false,
+                    }
                 } else {
-                    values_equal(interp, &target, &active)
+                    values_equal(interp, &target, &active)?
                 };
                 Ok(if matches { Value::T } else { Value::Nil })
             }

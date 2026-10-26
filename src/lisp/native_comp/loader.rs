@@ -485,11 +485,10 @@ fn comp_unit_relocations_match(
             let Kind::HashTable(guard_id) = guard.kind() else {
                 return false;
             };
-            if interpreter
-                .equal_hash_lookup(guard_id, &actual, environment)
-                .flatten()
-                .is_none()
-            {
+            if !matches!(
+                interpreter.equal_hash_lookup(guard_id, &actual, environment),
+                Ok(Some(Some(_)))
+            ) {
                 return false;
             }
         } else if !crate::lisp::primitives::values_eq_in_env(
@@ -921,7 +920,7 @@ pub(super) fn register_with_state(
         let current = interpreter
             .logical_function_binding(&symbol, &Env::new())
             .unwrap_or(Value::Nil);
-        if !values_equal(interpreter, &current, &pending) {
+        if !values_equal(interpreter, &current, &pending)? {
             super::lisp::call_c_primitive(
                 interpreter,
                 environment,

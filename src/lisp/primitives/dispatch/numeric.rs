@@ -496,7 +496,7 @@ define_dispatch!(
             "equal-including-properties" => {
                 need_args(name, args, 2)?;
                 Ok(
-                    if values_equal_including_properties(interp, &args[0], &args[1], env) {
+                    if values_equal_including_properties(interp, &args[0], &args[1])? {
                         Value::T
                     } else {
                         Value::Nil
@@ -754,7 +754,7 @@ pub(super) fn direct_equal(
     need_args(name, args, 2)?;
     let equal = match symbol_with_pos_equal_in_env(interp, &args[0], &args[1], env) {
         Some(equal) => equal,
-        None => super::super::values::values_equal_signaling(interp, &args[0], &args[1], env)?,
+        None => super::super::values::values_equal(interp, &args[0], &args[1])?,
     };
     Ok(if equal { Value::T } else { Value::Nil })
 }

@@ -283,21 +283,17 @@ fn merge_face_height(
     }
 }
 
-fn values_are_equal(interp: &Interpreter, left: &Value, right: &Value) -> bool {
-    values_equal(interp, left, right)
-}
-
 fn face_vectors_equal(
     interp: &Interpreter,
     left: &Value,
     right: &Value,
 ) -> Result<bool, LispError> {
     for index in 1..LFACE_VECTOR_SIZE {
-        if !values_are_equal(
+        if !values_equal(
             interp,
             &vector_slot_value(left, index)?,
             &vector_slot_value(right, index)?,
-        ) {
+        )? {
             return Ok(false);
         }
     }

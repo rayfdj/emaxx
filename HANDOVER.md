@@ -6476,6 +6476,60 @@ setup_process_coding_systems's check now refuses). A 13-form
   passed across its ten groups with the documented local skips; clippy
   `-D warnings', rustfmt and `git diff --check' pass.
 
+- **Round 91: fns.c internal_equal, one walk for `equal' and
+  `equal-including-properties'.** Emaxx had three walks: a non-signaling
+  one for Rust callers that kept a SipHash set of every cons pair it
+  passed (an insertion and allocation a cons), a signaling one for
+  `equal' that handed every non-cons leaf back to the first, and a third
+  for `equal-including-properties' that compared vectors' and records'
+  elements without their strings' properties. Against GNU 30.2:
+  250-deep vectors compared t where GNU signals "Stack overflow in
+  equal", `(equal-including-properties [#("a" 0 1 (p 1))] ["a"])' was t,
+  and a cdr cycle's `circular-list' carried the original list where GNU
+  gives the tail at which FOR_EACH_TAIL's tortoise is met. Now
+  src/lisp/primitives/values.rs has internal_equal with fns.c's
+  equal_kind (EQUAL_PLAIN, EQUAL_INCLUDING_PROPERTIES): past depth 10 a
+  table of the objects O2 each cons or vectorlike O1 was compared with
+  (made the first time), a pair met again counting as equal; past 200
+  `Stack overflow in equal'; the cdrs walked by lisp.h's FOR_EACH_TAIL
+  (struct for_each_tail_internal: Q, N and MAX, the tortoise moved to
+  the tail after MAX steps and MAX doubled), the shared-tail EQ exit,
+  and `circular-list' with the tail in hand; the last cdr and an
+  overlay's plist compared one level down by going round again
+  (tail_recurse); symbols with position stripped while
+  `symbols-with-pos-enabled' is set; strings by characters, bytes and
+  data, and with EQUAL_INCLUDING_PROPERTIES by compare_string_intervals
+  at every level, property values by `equal'; bignums, markers, bool
+  vectors, tree-sitter nodes and symbols with position by value;
+  vectors, closures, char-tables, sub-char-tables and records by their
+  slots; other pseudovectors only when eq. `equal' signals wherever GNU's
+  Fequal does: `values_equal' returns a Result and its 34 callers
+  propagate it (member, assoc, rassoc, delete, remove, hash tables'
+  equal test and the runtime's equal-table lookups and puts, purecopy's
+  hash-consing, `find-buffer', `featurep' subfeatures, keymaps' where-is
+  and describe paths, composition ids, face vectors, font matching,
+  autoload checks, the load nesting check), where the non-signaling walk
+  answered t for isomorphic cycles. Loading `ert' took 198.8M
+  instructions and now 194.5M; a test file's setup in the frozen runner
+  644.7M and now 640.3M (GNU 518.3M). A probe of cdr cycles of ten
+  shapes (the reported tail), cycles against proper lists both ways,
+  `member', `assoc', `rassoc', `delete' and `remove' on cycles, car and
+  vector nesting at depths 9 to 12 and 150 to 250, a 100,000-cell cdr
+  chain, car-, vector- and record-circular structures, overlays with
+  each other on their plists, live and deleted, properties inside
+  strings, vectors, lists, cdrs, records and alists under both
+  functions, property values that differ only in their own properties
+  or are circular, symbols with position in and out of lists and
+  vectors, floats, bignums, bool vectors, char-tables, hash tables,
+  subrs, buffers, markers, closures and byte code, `equal' hash tables
+  with circular and 250-deep keys, `sxhash-equal' of a cycle,
+  `delete-dups' and `seq-uniq' gives GNU 30.2's values, as do the
+  earlier `equal', regexp, reader and md5 probes; an eval_05 test holds
+  the cycle, depth and property cases. Local validation: the full gate,
+  3,230 passed across its ten groups with the documented local skips,
+  and eval_05 again with the new test (367); clippy `-D warnings',
+  rustfmt and `git diff --check' pass.
+
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
 25 sorting/case-folding/substring tests plus the comparison tests, and 95
@@ -7201,7 +7255,10 @@ frozen passed on its first attempt (run 40252773076).
 **On `2c64adc`** (round 89): full Rust gate passed (run 40255536669);
 frozen failed only GNU's known oracle flake (Emaxx 7,670 passed with 0
 unexpected, GNU 7,669 passed with 1 unexpected), and its failed job was
-rerun (run 40255538925, attempt 2).
+rerun passed (run 40255538925, attempt 2).
+**On `8dd2e58`** (round 90): full Rust gate passed (run 40259071504),
+frozen passed on its first attempt (run 40259074201); PR #108 merged
+rounds 82 to 90 into main (`44f1c76`).
 
 **Findings recorded, not fixed:**
 - `features`, `values` and `top-level` are special variables in Emaxx

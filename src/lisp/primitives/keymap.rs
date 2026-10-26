@@ -1423,7 +1423,7 @@ fn where_is_internal(
     if nomenus && !noindirect {
         // Check heuristic-consistency of the cache.
         let cached_keymaps = interp.where_is_cache_keymaps;
-        if !values_equal(interp, &keymaps, &cached_keymaps) {
+        if !values_equal(interp, &keymaps, &cached_keymaps)? {
             interp.where_is_cache = Value::Nil;
         }
         if interp.where_is_cache.is_nil() {
@@ -1485,7 +1485,7 @@ fn where_is_internal(
                     let filling = !interp.where_is_cache.is_nil();
                     if !(filling
                         || binding.eq_value(definition)
-                        || (definition.is_cons() && values_equal(interp, &binding, &definition)))
+                        || (definition.is_cons() && values_equal(interp, &binding, &definition)?))
                     {
                         return Ok(());
                     }
@@ -1645,7 +1645,7 @@ pub(crate) fn where_is_internal_command(
 
         // Not shadowed by another binding for the same key.
         let looked_up = shadow_lookup(interp, keymaps, sequence, false, remapped, env)?;
-        if !values_equal(interp, &looked_up, &definition) {
+        if !values_equal(interp, &looked_up, &definition)? {
             continue;
         }
 
@@ -1682,7 +1682,7 @@ pub(crate) fn where_is_internal_command(
         let mut seen = false;
         let mut tail = roots[5];
         while let Some(cell) = tail.cons_ref() {
-            if values_equal(interp, &cell.car.get(), &sequence) {
+            if values_equal(interp, &cell.car.get(), &sequence)? {
                 seen = true;
                 break;
             }

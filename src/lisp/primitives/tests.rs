@@ -2916,7 +2916,7 @@ fn native_comp_source_names_hash_canonical_paths_and_real_contents() {
         .expect("native-comp expected filenames should parse")
         .expect("native-comp expected filenames should exist");
     assert!(
-        values_equal(&interp, &actual, &expected_value),
+        values_equal(&interp, &actual, &expected_value).expect("equal"),
         "native-comp filename result differs from GNU:\nactual: {actual:?}\nexpected: {expected_value:?}"
     );
 
@@ -4408,7 +4408,7 @@ fn portable_dump_introspection_and_backend_boundary_are_honest() {
         .expect("portable-dump sort result should parse")
         .expect("portable-dump sort result should exist");
     assert!(
-        values_equal(&interp, &actual, &expected),
+        values_equal(&interp, &actual, &expected).expect("equal"),
         "portable-dump relocation ordering differs from GNU:\nactual: {actual:?}\nexpected: {expected:?}"
     );
 
@@ -4493,7 +4493,7 @@ fn portable_dump_introspection_and_backend_boundary_are_honest() {
         .expect("portable-dumper boundary expectation should parse")
         .expect("portable-dumper boundary expectation should contain a form");
     assert!(
-        values_equal(&interp, &actual, &expected),
+        values_equal(&interp, &actual, &expected).expect("equal"),
         "portable-dumper boundary was not explicit:\nactual: {actual}\nexpected: {expected}"
     );
 }
@@ -5315,7 +5315,7 @@ fn compiled_regexp_introspection_preserves_the_real_backend_boundary() {
         .expect("compiled-regexp boundary expectation should parse")
         .expect("compiled-regexp boundary expectation should contain a form");
     assert!(
-        values_equal(&interp, &actual, &expected),
+        values_equal(&interp, &actual, &expected).expect("equal"),
         "compiled-regexp boundary was not explicit:\nactual: {actual:?}\nexpected: {expected:?}"
     );
 }
@@ -5518,7 +5518,7 @@ fn module_load_validates_and_initializes_real_libraries() {
         .expect("dynamic-module expectation should parse")
         .expect("dynamic-module expectation should contain a form");
     assert!(
-        values_equal(&interp, &contract_actual, &contract_expected),
+        values_equal(&interp, &contract_actual, &contract_expected).expect("equal"),
         "dynamic-module validation conditions diverged:\nactual: {contract_actual:?}"
     );
 
@@ -5536,7 +5536,7 @@ fn module_load_validates_and_initializes_real_libraries() {
         .expect("dynamic-module ABI boundary should be catchable");
     let expected = Value::T;
     assert!(
-        values_equal(&interp, &actual, &expected),
+        values_equal(&interp, &actual, &expected).expect("equal"),
         "a successful module initializer returns t:\nactual: {actual:?}"
     );
     std::fs::remove_dir_all(directory).expect("module probe directory should be removed");
@@ -6217,7 +6217,7 @@ fn native_frame_identity_and_single_tty_traversal_match_gnu() {
         .expect("frame identity expected value should parse")
         .expect("frame identity expected value should exist");
     assert!(
-        values_equal(&interp, &actual, &expected),
+        values_equal(&interp, &actual, &expected).expect("equal"),
         "frame identity differs from GNU:\nactual: {actual:?}\nexpected: {expected:?}"
     );
 }
@@ -6306,7 +6306,7 @@ fn native_frame_geometry_parameters_and_state_flags_match_gnu() {
         .expect("frame geometry expected value should parse")
         .expect("frame geometry expected value should exist");
     assert!(
-        values_equal(&interp, &actual, &expected),
+        values_equal(&interp, &actual, &expected).expect("equal"),
         "frame geometry differs from GNU:\nactual: {actual:?}\nexpected: {expected:?}"
     );
 }
@@ -6345,7 +6345,7 @@ fn window_configuration_restore_keeps_the_current_frame_size_like_gnu() {
         .expect("window configuration expected value should parse")
         .expect("window configuration expected value should exist");
     assert!(
-        values_equal(&interp, &actual, &expected),
+        values_equal(&interp, &actual, &expected).expect("equal"),
         "window configuration restore differs from GNU:\nactual: {actual:?}\nexpected: {expected:?}"
     );
 }
@@ -6445,7 +6445,7 @@ fn native_frame_focus_mouse_geometry_and_headless_errors_match_gnu() {
         .expect("frame headless expected value should parse")
         .expect("frame headless expected value should exist");
     assert!(
-        values_equal(&interp, &actual, &expected),
+        values_equal(&interp, &actual, &expected).expect("equal"),
         "frame headless contract differs from GNU:\nactual: {actual:?}\nexpected: {expected:?}"
     );
 }
@@ -6505,7 +6505,7 @@ fn native_font_spec_state_and_headless_lookup_family_matches_gnu() {
         .expect("font.c expected value should parse")
         .expect("font.c expected value should exist");
     assert!(
-        values_equal(&interp, &actual, &expected),
+        values_equal(&interp, &actual, &expected).expect("equal"),
         "font.c result differs from GNU:\nactual: {actual:?}\nexpected: {expected:?}"
     );
 }
@@ -6562,7 +6562,7 @@ fn native_font_spec_validation_and_name_normalization_match_gnu() {
         .expect("font validation expected value should parse")
         .expect("font validation expected value should exist");
     assert!(
-        values_equal(&interp, &actual, &expected),
+        values_equal(&interp, &actual, &expected).expect("equal"),
         "font validation differs from GNU:\nactual: {actual:?}\nexpected: {expected:?}"
     );
 }
@@ -6610,7 +6610,7 @@ fn native_font_at_and_info_match_the_headless_gnu_boundary() {
         .expect("headless font result should parse")
         .expect("headless font result should exist");
     assert!(
-        values_equal(&interp, &actual, &expected),
+        values_equal(&interp, &actual, &expected).expect("equal"),
         "headless font result differs from GNU:\nactual: {actual:?}\nexpected: {expected:?}"
     );
 }
@@ -6870,7 +6870,7 @@ fn native_fontset_registry_family_matches_gnu() {
         .expect("fontset.c expected value should parse")
         .expect("fontset.c expected value should exist");
     assert!(
-        values_equal(&interp, &actual, &expected),
+        values_equal(&interp, &actual, &expected).expect("equal"),
         "fontset.c result differs from GNU:\nactual: {actual:?}\nexpected: {expected:?}"
     );
 }
@@ -7281,7 +7281,7 @@ fn native_terminal_identity_is_opaque_and_shared_with_the_frame() {
         .expect("terminal identity expected value should parse")
         .expect("terminal identity expected value should exist");
     assert!(
-        values_equal(&interp, &actual, &expected),
+        values_equal(&interp, &actual, &expected).expect("equal"),
         "terminal identity differs from GNU:\nactual: {actual:?}\nexpected: {expected:?}"
     );
 }
@@ -10555,7 +10555,7 @@ fn make_network_process_coding_precedence_matches_gnu() {
     .expect("network coding precedence expectation should parse")
     .expect("network coding precedence expectation should contain a form");
     assert!(
-        values_equal(&interp, &actual, &expected),
+        values_equal(&interp, &actual, &expected).expect("equal"),
         "network coding precedence differed from GNU:\nactual: {actual:?}"
     );
 }
@@ -11696,7 +11696,7 @@ fn native_fringe_bitmap_registry_family_matches_gnu() {
         .expect("fringe.c expected value should parse")
         .expect("fringe.c expected value should exist");
     assert!(
-        values_equal(&interp, &actual, &expected),
+        values_equal(&interp, &actual, &expected).expect("equal"),
         "fringe.c result differs from GNU:\nactual: {actual:?}\nexpected: {expected:?}"
     );
 }
@@ -11837,7 +11837,7 @@ fn native_composite_c_family_and_text_property_identity_match_gnu() {
         .expect("composite.c expected value should parse")
         .expect("composite.c expected value should exist");
     assert!(
-        values_equal(&interp, &actual, &expected),
+        values_equal(&interp, &actual, &expected).expect("equal"),
         "composite.c result differs from GNU:\nactual: {actual:?}\nexpected: {expected:?}"
     );
 }
@@ -12519,7 +12519,7 @@ Raw \\[forward-char] docs.\n\n(fn LIST)\
         .expect("doc.c expected value should parse")
         .expect("doc.c expected value should exist");
     assert!(
-        values_equal(&interp, &actual, &expected),
+        values_equal(&interp, &actual, &expected).expect("equal"),
         "doc.c result differs from GNU:\nactual: {actual:?}\nexpected: {expected:?}"
     );
     let _ = std::fs::remove_dir_all(directory);
@@ -12758,7 +12758,7 @@ fn native_xfaces_lisp_face_registry_family_matches_gnu() {
         .expect("xfaces.c expected value should parse")
         .expect("xfaces.c expected value should exist");
     assert!(
-        values_equal(&interp, &actual, &expected),
+        values_equal(&interp, &actual, &expected).expect("equal"),
         "xfaces.c result differs from GNU:\nactual: {actual:?}\nexpected: {expected:?}"
     );
     let _ = std::fs::remove_file(
@@ -12831,7 +12831,7 @@ fn native_xfaces_set_attribute_frame_and_creation_contract_matches_gnu() {
         .expect("xfaces set-attribute expectation should parse")
         .expect("xfaces set-attribute expectation should contain a value");
     assert!(
-        values_equal(&interp, &actual, &expected),
+        values_equal(&interp, &actual, &expected).expect("equal"),
         "xfaces set-attribute result differs from GNU:\nactual: {actual:?}\nexpected: {expected:?}"
     );
 }
@@ -13198,7 +13198,7 @@ fn native_gnutls_formats_x509_certificates_with_the_host_library() {
         .expect("GnuTLS certificate expected result should parse")
         .expect("GnuTLS certificate expected result should exist");
     assert!(
-        values_equal(&interp, &actual, &expected),
+        values_equal(&interp, &actual, &expected).expect("equal"),
         "host GnuTLS certificate result differs from GNU:\nactual: {actual:?}\nexpected: {expected:?}"
     );
 }
@@ -13262,7 +13262,7 @@ fn native_gnutls_mac_uses_the_host_crypto_and_zeroizes_keys() {
         .expect("GnuTLS MAC expected result should parse")
         .expect("GnuTLS MAC expected result should exist");
     assert!(
-        values_equal(&interp, &actual, &expected),
+        values_equal(&interp, &actual, &expected).expect("equal"),
         "host GnuTLS MAC result differs from GNU:\nactual: {actual:?}\nexpected: {expected:?}"
     );
 }
@@ -13376,7 +13376,7 @@ fn native_gnutls_symmetric_crypto_round_trips_block_and_aead_ciphers() {
         .expect("GnuTLS symmetric expected result should parse")
         .expect("GnuTLS symmetric expected result should exist");
     assert!(
-        values_equal(&interp, &actual, &expected),
+        values_equal(&interp, &actual, &expected).expect("equal"),
         "host GnuTLS symmetric result differs from GNU:\nactual: {actual:?}\nexpected: {expected:?}"
     );
 }
@@ -13526,7 +13526,7 @@ fn native_gnutls_boot_and_bye_preserve_gnu_validation_contracts() {
         .expect("GnuTLS lifecycle expectation should parse")
         .expect("GnuTLS lifecycle expectation should contain a form");
     assert!(
-        values_equal(&interp, &actual, &expected),
+        values_equal(&interp, &actual, &expected).expect("equal"),
         "GnuTLS lifecycle validation differs from GNU:\nactual: {actual:?}"
     );
 }
@@ -13642,7 +13642,7 @@ fn native_gnutls_session_encrypts_process_io_and_closes_the_same_transport() {
         .expect("GnuTLS transport expectation should parse")
         .expect("GnuTLS transport expectation should contain a form");
     assert!(
-        values_equal(&interp, &actual, &expected),
+        values_equal(&interp, &actual, &expected).expect("equal"),
         "GnuTLS process transport did not round-trip through one live session:\nactual: {actual:?}"
     );
 
@@ -13696,7 +13696,7 @@ fn native_gnutls_session_encrypts_process_io_and_closes_the_same_transport() {
         .expect("asynchronous GnuTLS transport expectation should parse")
         .expect("asynchronous GnuTLS transport expectation should contain a form");
     assert!(
-        values_equal(&interp, &actual, &expected),
+        values_equal(&interp, &actual, &expected).expect("equal"),
         "asynchronous GnuTLS negotiation did not complete in the process event loop:\nactual: {actual:?}"
     );
 }
@@ -20063,7 +20063,7 @@ fn completion_predicates_preserve_string_list_membership() {
                 Value::list([Value::String("abc".into()), Value::String("def".into())]),
             ]);
             assert!(
-                values_equal(&interp, &result, &expected),
+                values_equal(&interp, &result, &expected).expect("equal"),
                 "expected {expected}, got {result}"
             );
         })
@@ -20807,7 +20807,7 @@ fn url_retrieve_synchronously_matches_gnu_over_a_real_local_http_connection() {
     emaxx_server.join().expect("join Emaxx HTTP fixture");
 
     assert!(
-        values_equal(&interp, &actual, &expected),
+        values_equal(&interp, &actual, &expected).expect("equal"),
         "local HTTP retrieval differed from GNU:\nactual: {actual:?}\nexpected: {expected:?}"
     );
     for (request, port) in [
@@ -22676,7 +22676,7 @@ fn native_gui_creation_tip_and_chooser_boundary_matches_gnu() {
     .expect("headless GUI action expected value should parse")
     .expect("headless GUI action expected value should exist");
     assert!(
-        values_equal(&interp, &actual, &expected),
+        values_equal(&interp, &actual, &expected).expect("equal"),
         "headless GUI action result differs from GNU:\nactual: {actual:?}\nexpected: {expected:?}"
     );
 }
@@ -22737,7 +22737,7 @@ fn native_headless_menu_and_drag_actions_preserve_gnu_boundaries() {
         .expect("headless menu expected value should parse")
         .expect("headless menu expected value should exist");
     assert!(
-        values_equal(&interp, &actual, &expected),
+        values_equal(&interp, &actual, &expected).expect("equal"),
         "headless menu result differs from GNU:\nactual: {actual:?}\nexpected: {expected:?}"
     );
 
@@ -22813,7 +22813,7 @@ fn native_display_connection_management_stops_at_the_headless_backend() {
         .expect("display connection validation result should parse")
         .expect("display connection validation result should exist");
     assert!(
-        values_equal(&interp, &actual, &expected),
+        values_equal(&interp, &actual, &expected).expect("equal"),
         "display connection validation differs from GNU:\nactual: {actual:?}\nexpected: {expected:?}"
     );
 
@@ -23487,7 +23487,7 @@ fn native_network_process_resolves_named_services_from_the_services_database() {
         .eval(&form, &mut env)
         .expect("named-service contract should evaluate");
     assert!(
-        values_equal(&interp, &actual, &expected_value),
+        values_equal(&interp, &actual, &expected_value).expect("equal"),
         "named-service result differs from GNU:\nactual: {actual:?}\nexpected: {expected_value:?}"
     );
 }

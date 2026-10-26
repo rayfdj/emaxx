@@ -698,10 +698,10 @@ define_dispatch!(
             "find-buffer" => {
                 need_args(name, args, 2)?;
                 let variable = args[0].as_symbol()?;
-                Ok(interp
+                let candidates = interp
                     .buffer_list
                     .iter()
-                    .find_map(|(id, name)| {
+                    .filter_map(|(id, name)| {
                         let value = match variable {
                             "buffer-file-name" => interp.get_buffer_by_id(*id).and_then(|buffer| {
                                 buffer.file.clone().map(|value| Value::String(value.into()))
@@ -716,11 +716,15 @@ define_dispatch!(
                             }
                             _ => interp.buffer_local_value(*id, variable),
                         };
-                        value
-                            .filter(|value| values_equal(interp, value, &args[1]))
-                            .map(|_| interp.buffer_value(*id).expect("live buffer object"))
+                        value.map(|value| (*id, value))
                     })
-                    .unwrap_or(Value::Nil))
+                    .collect::<Vec<_>>();
+                for (id, value) in candidates {
+                    if values_equal(interp, &value, &args[1])? {
+                        return Ok(interp.buffer_value(id).expect("live buffer object"));
+                    }
+                }
+                Ok(Value::Nil)
             }
             "expand-file-name" => {
                 if args.is_empty() || args.len() > 2 {

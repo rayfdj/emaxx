@@ -1093,7 +1093,7 @@ pub(crate) fn try_completion(
         return Ok(string);
     }
     // Return t if the supplied string is an exact match (counting case).
-    if matchcount == 1 && values_equal(interp, &bestmatch, &string) {
+    if matchcount == 1 && values_equal(interp, &bestmatch, &string)? {
         return Ok(Value::T);
     }
     substring_value(

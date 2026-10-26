@@ -348,14 +348,20 @@ fn gnu_hash_capacity_survives_clear_and_grows_at_the_same_boundary() {
     assert_eq!(Some(id.capacity()), Some(0));
 
     for key in 0..6 {
-        assert!(interp.equal_hash_put(id, Value::Integer(key), Value::Integer(key), &env,));
+        assert!(matches!(
+            interp.equal_hash_put(id, Value::Integer(key), Value::Integer(key), &env,),
+            Ok(true)
+        ));
     }
     assert_eq!(Some(id.capacity()), Some(6));
     id.clear();
     assert_eq!(Some(id.capacity()), Some(6));
 
     for key in 0..7 {
-        assert!(interp.equal_hash_put(id, Value::Integer(key), Value::Integer(key), &env,));
+        assert!(matches!(
+            interp.equal_hash_put(id, Value::Integer(key), Value::Integer(key), &env,),
+            Ok(true)
+        ));
     }
     assert_eq!(Some(id.capacity()), Some(24));
 }

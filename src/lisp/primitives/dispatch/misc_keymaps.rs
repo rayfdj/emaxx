@@ -299,7 +299,7 @@ fn describe_vector_value(
                 }
                 if let Some((_, end, previous)) = ranges.last_mut()
                     && end.saturating_add(1) == entry.start
-                    && values_equal(interp, previous, &entry.value)
+                    && values_equal(interp, previous, &entry.value)?
                 {
                     *end = entry.end;
                 } else {
@@ -316,7 +316,7 @@ fn describe_vector_value(
                     .map_err(|_| LispError::Signal("Vector is too large".into()))?;
                 if let Some((_, end, previous)) = ranges.last_mut()
                     && end.saturating_add(1) == index
-                    && values_equal(interp, previous, &value)
+                    && values_equal(interp, previous, &value)?
                 {
                     *end = index;
                 } else {
