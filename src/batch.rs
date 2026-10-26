@@ -2817,6 +2817,51 @@ mod tests {
     }
 
     #[test]
+    fn named_character_escapes_read_as_char_from_name_answers() {
+        // lread.c character_name_to_code: a name is the code
+        // `(char-from-name NAME t)' gives, so the reader takes exactly the
+        // names `ucs-names' and the numbered ideographs know, case ignored.
+        // The first name builds `ucs-names', which collects while the
+        // strings read before it are held by the read alone.
+        run_with_large_stack(|| {
+            let emacs_repo = compat::project_root().join("../emacs");
+            let options = BatchRunOptions {
+                load_path: compat::emaxx_upstream_load_path(&emacs_repo)
+                    .expect("upstream load path"),
+                ..Default::default()
+            };
+            let mut interpreter =
+                initialize_batch_interpreter(&options).expect("init batch interpreter");
+            let form = Reader::new(
+                r#"(prin1-to-string
+                    (list (read "(\"abc\" (1 . \"x\") ?\\N{GREEK SMALL LETTER BETA} \"def\")")
+                          (condition-case err (read "?\\N{CJK UNIFIED IDEOGRAPH-4E2D}")
+                            (invalid-read-syntax err))
+                          (read "?\\N{greek small letter alpha}")
+                          (read "\"\\N{LINE FEED (LF)}\"")
+                          (condition-case err (read "?\\N{LINE FEED}")
+                            (invalid-read-syntax (cadr err)))
+                          (read "?\\N{TANGUT IDEOGRAPH-17000}")
+                          (read "?\\N{U+1F600}")))"#,
+            )
+            .read_all()
+            .expect("read named-character probe")
+            .remove(0);
+            let printed = interpreter
+                .eval(&form, &mut crate::lisp::types::Env::new())
+                .expect("evaluate named-character probe");
+            assert_eq!(
+                lisp::primitives::string_like(&printed)
+                    .expect("printed")
+                    .text,
+                "((\"abc\" (1 . \"x\") 946 \"def\") \
+                 (invalid-read-syntax \"\\\\N{CJK UNIFIED IDEOGRAPH-4E2D}\") 945 \"\n\" \
+                 \"\\\\N{LINE FEED}\" 94208 128512)"
+            );
+        });
+    }
+
+    #[test]
     fn batch_runtime_preloads_the_complete_tabulated_list_state() {
         run_with_large_stack(|| {
             let emacs_repo = compat::project_root().join("../emacs");

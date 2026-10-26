@@ -728,8 +728,13 @@ pub struct RootedVec<T> {
 }
 
 impl<T> RootedVec<T> {
-    pub fn new() -> Self {
-        Self::from_vec(Vec::new())
+    /// An empty vector: no buffer, nothing registered.
+    pub const fn new() -> Self {
+        Self {
+            inner: Vec::new(),
+            slot: UNREGISTERED,
+            region: (0, 0),
+        }
     }
 
     pub fn with_capacity(capacity: usize) -> Self {

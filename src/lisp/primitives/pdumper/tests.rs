@@ -1181,7 +1181,7 @@ fn image_strings_are_cells_of_the_image_where_it_is_mapped() {
         eval(
             &mut target,
             "(let ((v zz-image-strings))
-               (aset (aref v 2) 0 ?\\N{GREEK SMALL LETTER ALPHA})
+               (aset (aref v 2) 0 ?\\N{U+3B1})
                (aset (aref v 3) 1 ?e)
                (aset v 6 nil)
                (garbage-collect)
@@ -1215,7 +1215,7 @@ fn image_vectors_are_the_image_where_it_is_mapped() {
               (many nil))
           (aset cycle 0 cycle)
           (set-char-table-range table '(?a . ?z) 'lower)
-          (set-char-table-range table ?\N{GREEK SMALL LETTER ALPHA} 'alpha)
+          (set-char-table-range table ?\N{U+3B1} 'alpha)
           (let ((i 0))
             (while (< i 600)
               (setq many (cons (vector i) many) i (1+ i))))
@@ -1269,7 +1269,7 @@ fn image_vectors_are_the_image_where_it_is_mapped() {
                      (eq (aref (aref v 2) 0) (aref v 2)) (length (aref v 3))
                      (aref (aref v 3) 299) (funcall (aref v 4) 5)
                      (aref (aref v 5) 0) (eq (aref (aref v 5) 2) (aref v 0))
-                     (aref (aref v 6) ?q) (aref (aref v 6) ?\\N{GREEK SMALL LETTER ALPHA})
+                     (aref (aref v 6) ?q) (aref (aref v 6) ?\\N{U+3B1})
                      (aref (aref v 6) ?Q) (eq (aref v 7) []) (length (aref v 8))
                      (aref (car (aref v 8)) 0)))"
         ),

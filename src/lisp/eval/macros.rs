@@ -69,9 +69,32 @@ impl crate::lisp::reader::ReadContext for LispReadContext<'_> {
     fn doc_string(&mut self, reference: Value) -> Result<Value, LispError> {
         crate::lisp::primitives::unibyte_doc_string(self.interp, &reference, self.env)
     }
+
+    fn char_from_name(&mut self, name: &str) -> Result<Value, LispError> {
+        self.interp.read_char_from_name(name, self.env)
+    }
 }
 
 impl Interpreter {
+    /// lread.c character_name_to_code's `call2 (Qchar_from_name,
+    /// make_unibyte_string (name, name_len), Qt)': the code a `\N{NAME}'
+    /// escape reads as, NAME's case ignored.
+    pub(crate) fn read_char_from_name(
+        &mut self,
+        name: &str,
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        let name = Value::StringObject(crate::lisp::types::StringObjectRef::from_unibyte(
+            name.as_bytes().to_vec(),
+        ));
+        self.call_function_value(
+            Value::symbol("char-from-name"),
+            Some("char-from-name"),
+            &[name, Value::T],
+            env,
+        )
+    }
+
     /// Vload_file_name as the reader reads `#$'.
     pub(crate) fn read_load_file_name(&self, env: &Env) -> Value {
         self.lookup_var("load-file-name", env).unwrap_or(Value::Nil)

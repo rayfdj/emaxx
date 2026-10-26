@@ -1075,6 +1075,10 @@ impl crate::lisp::reader::ReadContext for CallableReader<'_> {
     fn doc_string(&mut self, reference: Value) -> Result<Value, LispError> {
         crate::lisp::primitives::unibyte_doc_string(self.interp, &reference, self.env)
     }
+
+    fn char_from_name(&mut self, name: &str) -> Result<Value, LispError> {
+        self.interp.read_char_from_name(name, self.env)
+    }
 }
 
 impl crate::lisp::reader::ReaderStream for CallableReader<'_> {

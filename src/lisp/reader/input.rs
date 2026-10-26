@@ -2,7 +2,6 @@
 //! keep only bounded lookahead, and return it through the Lisp callback.
 
 use super::{INVALID_UNICODE_SENTINEL, encode_raw_byte};
-use crate::lisp::alloc::RootedVec;
 use crate::lisp::types::{LispError, Value};
 
 /// One exclusive borrow owns calls and symbol interning. A callback may
@@ -46,9 +45,6 @@ pub(super) struct FunctionInput<'a> {
     first_byte: usize,
     eof: bool,
     position: i64,
-    // Like lread.c:rdstack: completed siblings stay rooted while the next
-    // callback runs. A completed parent replaces its children in this stack.
-    roots: RootedVec<Value>,
 }
 
 impl FunctionInput<'_> {
@@ -171,7 +167,6 @@ impl<'a> Input<'a> {
             first_byte: 0,
             eof: false,
             position: 0,
-            roots: RootedVec::new(),
         })
     }
 
@@ -241,22 +236,6 @@ impl<'a> Input<'a> {
         match self {
             Self::Text(_) | Self::Encoded { .. } | Self::Rope(_) => None,
             Self::Function(input) => Some(input.position),
-        }
-    }
-
-    pub(super) fn root_depth(&self) -> usize {
-        match self {
-            Self::Text(_) | Self::Encoded { .. } | Self::Rope(_) => 0,
-            Self::Function(input) => input.roots.len(),
-        }
-    }
-
-    pub(super) fn root_result(&mut self, depth: usize, value: Option<Value>) {
-        if let Self::Function(input) = self {
-            input.roots.truncate(depth);
-            if let Some(value) = value {
-                input.roots.push(value);
-            }
         }
     }
 

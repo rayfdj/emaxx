@@ -6843,6 +6843,78 @@ setup_process_coding_systems's check now refuses). A 13-form
   while the host ran profiles beside the gate, as in round 97, and passed
   five times of five alone; clippy `-D warnings', rustfmt and `git diff
   --check' pass.
+- **Round 99: `\N{NAME}' read as lread.c reads it.** lread.c's
+  character_name_to_code takes "U+" and hex digits itself and asks
+  `(char-from-name NAME t)' (mule-cmds.el) for any other name, where the
+  reader looked the name up in Unicode's own table: a name `ucs-names'
+  does not hold (Unicode's "CJK UNIFIED IDEOGRAPH-4E2D", which GNU reads
+  only as `\N{U+4E2D}') is now `invalid-read-syntax' as in GNU, a name
+  matches ignoring case, and the numbered ideographs ("TANGUT
+  IDEOGRAPH-17000") read as their codes. In an image built before
+  mule-cmds.el is loaded `char-from-name' is void and a named escape
+  signals, as it does in GNU; the pdumper tests' probes now spell their
+  Greek alpha `\N{U+3B1}'. A read with no Lisp context (the host's own)
+  still looks names up in Unicode's table. Lisp now runs in the middle
+  of any read, and the first name builds `ucs-names' (loading
+  uni-name.el), which collects: the reader rooted what it had read so
+  far only for a function stream, so the strings read before a
+  `\N{NAME}' in the same form were freed and their cells reused (the
+  gate's quoting-style test read uni-name.el's word lists in their
+  place). The root stack is now one per thread, lread.c's rdstack as
+  mark_lread marks it, for every input: each completed datum is rooted
+  until its parent replaces it, each reader works above the depth it
+  found, and a whole datum leaves the stack at its base as read0 does.
+  It costs 1.2M instructions loading ert (353.0M) and 1.3M in the
+  xml-tests setup (488.0M); a stack per reader cost twice that, from
+  registering a buffer per read. A new batch test reads a list of
+  strings around the first name, then six escapes, and prints GNU 30.2's
+  output byte for byte. Measured and not
+  kept: resolving a relocation by its target's number first (an entry
+  numbering no object then trying the cell and vector kinds) left
+  startup at 162.29M instructions against 162.26M. Local validation:
+  the full gate, every group passed but primitives (752 of 753: the
+  timing-sensitive just_this_one_wait test, failing while profiles ran
+  beside the gate as in rounds 97 and 98, passed three times of three
+  alone); clippy `-D warnings', rustfmt and `git
+  diff --check' pass.
+- **The frozen run's timings at round 97, and where the per-file cost
+  goes.** Round 97's frozen run (gate profile; summary.json's
+  `timings') puts the 519 files' summed wall time at 1.052 times GNU's
+  (294.5 s against 279.9 s): setup 1.270 (58.1 s against 45.7 s, about
+  24 ms a file), the test bodies 1.010. The 269 files whose GNU body
+  takes 8 ms or less take a median 13 ms against 5 ms. The largest body
+  excesses are comp-tests (+2.8 s), tramp-tests (+2.2 s),
+  package-tests (+1.9 s), semantic-utest-ia (1.93 times), mule-tests
+  (2.23), emacs-module-tests, mml-sec-tests, edebug-tests (1.65),
+  electric-tests (2.15) and undo-tests (1.61). With the runner's own
+  command line (tools: scratchpad trivial.sh), cal-french-tests.el takes
+  569.7M instructions to its loaded marker against GNU's 508.1M and
+  92.9M for its body against 64.6M. The body is nearly all
+  `ert-select-tests' calling `apropos-internal' with "" over every
+  symbol (twice a file: the runner's list of tests loaded before the
+  file is the other), 55.6M a call against 42.8M (2,794 instructions a
+  symbol against 2,143): the byte-code lambda's `string-match' costs
+  about 1,400 against 1,000 (the matcher itself 221 against 348, the
+  setup around it the rest: `string_match_1' 345 against 166,
+  `compile_pattern' 180 against 132, `case-fold-search' through the
+  buffer-local lookup about 150 where GNU reads a BVAR, the StringText,
+  Canon and register adapters), and the calls into and out of byte-code
+  about 1,420 against 960 (`call_plain' 161 a subr call where GNU's
+  Bcall and funcall_subr take about 70). Loading the runner and the
+  test file (both source) takes 220M against 111.5M: 37M of it
+  collecting where GNU collects in the earlier stages (its setup
+  collects 163.8M in all, Emaxx 72M), byte-code 38.9M against 21.5M,
+  matching 39.4M against 29.2M, the reader 20.3M against 18.1M, host
+  allocation 13.7M against 1.8M, and `assoc-string' 8.8M against
+  nothing: it folds both sides with a full downcase whose word test
+  scans `syntax_word_chars', a list kept beside the syntax table, where
+  minibuf.c's Fassoc_string calls `compare-strings' (upcasing a pair of
+  characters only where they differ) on each element of the list.
+  Writing a file with `with-temp-file' locks it: GNU's filelock.c makes
+  the lock a symlink to "USER@HOST.PID:BOOT" with the login name it
+  holds, and reads no account file; Emaxx writes a regular file and
+  reads /etc/passwd twice a lock (system calls are otherwise even, 475
+  in the body against GNU's 502).
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -7590,8 +7662,11 @@ passed on its first attempt (run 40294012283).
 **On `c2ebbb7`** (round 97): frozen failed only GNU's known oracle flake
 (`eglot-test-rust-completion-exit-function` failed in GNU; Emaxx 7,670
 passed with 0 unexpected, GNU 7,669 with 1 unexpected), and its failed
-job was rerun (run 40313513267, attempt 2, still running); the Rust gate
-passed (run 40313509629).
+job's rerun passed (run 40313513267, attempt 2); the Rust gate passed
+(run 40313509629).
+**On `2a230c6`** (round 98): full Rust gate passed (run 40322773968),
+frozen passed on its first attempt (run 40322787666); PR #109 merged
+rounds 91 to 98 into main (`2b01388`).
 
 **Findings recorded, not fixed:**
 - `features`, `values` and `top-level` are special variables in Emaxx

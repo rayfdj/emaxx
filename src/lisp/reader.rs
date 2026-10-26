@@ -68,15 +68,25 @@ fn hex_digit_value(c: i64) -> Option<i64> {
         .map(i64::from)
 }
 
-/// lread.c character_name_to_code: "U+" and hex digits, or a name
-/// `char-from-name' knows; anything else, a surrogate or a code past
-/// Unicode is `\N{NAME}' invalid syntax.
-fn character_name_to_code(name: &str) -> Result<i64, LispError> {
+/// lread.c character_name_to_code: "U+" and hex digits, or the code
+/// `(char-from-name NAME t)' gives, which CONTEXT calls in its Lisp world
+/// (a reader with none looks NAME up in Unicode's names); anything else,
+/// a surrogate or a code past Unicode is `\N{NAME}' invalid syntax.
+fn character_name_to_code(
+    name: &str,
+    context: Option<&mut dyn ReadContext>,
+) -> Result<i64, LispError> {
     let code = match name.strip_prefix("U+") {
         Some(hex) => (!hex.is_empty() && hex.bytes().all(|byte| byte.is_ascii_hexdigit()))
             .then(|| u32::from_str_radix(hex, 16).ok())
             .flatten(),
-        None => unicode_character(name).map(|ch| ch as u32),
+        None => match context {
+            Some(context) => match context.char_from_name(name)?.kind() {
+                Kind::Integer(code) => u32::try_from(code).ok(),
+                _ => None,
+            },
+            None => unicode_character(name).map(|ch| ch as u32),
+        },
     };
     match code {
         Some(code) if valid_unicode_scalar(code) => Ok(i64::from(code)),
@@ -107,6 +117,8 @@ pub(crate) trait ReadContext {
     /// get_lazy_string's fallback, doc.c get_doc_string (REFERENCE, true):
     /// the unibyte text the (FILE . POSITION) REFERENCE names in its file.
     fn doc_string(&mut self, reference: Value) -> Result<Value, LispError>;
+    /// character_name_to_code's `(char-from-name NAME t)'.
+    fn char_from_name(&mut self, name: &str) -> Result<Value, LispError>;
 }
 
 /// One of lread.c's saved_strings: the bytes `#@' skipped in a file while
@@ -120,6 +132,32 @@ thread_local! {
     /// lread.c saved_strings: the last two, the most recent first.
     static SAVED_STRINGS: std::cell::RefCell<[Option<SavedString>; 2]> =
         const { std::cell::RefCell::new([None, None]) };
+    /// lread.c's rdstack, as mark_lread marks it: each completed datum of
+    /// a read in progress stays rooted while a later one is read, for Lisp
+    /// can run in the middle of a read (a function stream's callbacks,
+    /// `char-from-name' for a `\N{NAME}' escape) and collect.  A completed
+    /// parent replaces its children here; each reader works above the
+    /// depth it found, as each read0 above its saved base.
+    static READ_ROOTS: std::cell::RefCell<crate::lisp::alloc::RootedVec<Value>> =
+        const { std::cell::RefCell::new(crate::lisp::alloc::RootedVec::new()) };
+}
+
+/// The depth of the read root stack.
+#[inline]
+fn read_roots_depth() -> usize {
+    READ_ROOTS.with_borrow(|roots| roots.len())
+}
+
+/// The read roots back to DEPTH, the depth before a datum's read, and that
+/// datum, VALUE, rooted in its children's place.
+#[inline]
+fn root_read_result(depth: usize, value: Option<Value>) {
+    READ_ROOTS.with_borrow_mut(|roots| {
+        roots.truncate(depth);
+        if let Some(value) = value {
+            roots.push(value);
+        }
+    });
 }
 
 /// skip_lazy_string's record of a skipped doc string.
@@ -473,6 +511,20 @@ pub struct Reader<'a> {
     /// FROM_FILE_P: the bytes of a file `load' reads directly, where `#@'
     /// skips by byte count and lazily loaded code is read at once.
     from_file: bool,
+    /// The read root stack's depth when this reader began: its roots lie
+    /// above it, and go when it does.
+    roots_base: usize,
+}
+
+impl Drop for Reader<'_> {
+    fn drop(&mut self) {
+        let base = self.roots_base;
+        READ_ROOTS.with_borrow_mut(|roots| {
+            if roots.len() > base {
+                roots.truncate(base);
+            }
+        });
+    }
 }
 
 impl<'a> Reader<'a> {
@@ -499,6 +551,7 @@ impl<'a> Reader<'a> {
             read_objects_map: HashMap::default(),
             read_objects_completed: HashSet::default(),
             read_depth: 0,
+            roots_base: read_roots_depth(),
             locate_symbols: false,
             position_base: 0,
             position_cursor_byte: 0,
@@ -900,7 +953,7 @@ impl<'a> Reader<'a> {
 
     /// Read one s-expression. Returns None at end of input.
     pub fn read(&mut self) -> Result<Option<Value>, LispError> {
-        let roots = self.input.root_depth();
+        let roots = read_roots_depth();
         self.read_depth += 1;
         let result = self.read_datum();
         self.read_depth -= 1;
@@ -908,8 +961,11 @@ impl<'a> Reader<'a> {
             self.read_objects_map.clear();
             self.read_objects_completed.clear();
         }
-        self.input
-            .root_result(roots, result.as_ref().ok().copied().flatten());
+        // A datum within another stays rooted until its parent replaces
+        // it; a whole one goes to the caller, as read0 leaves rdstack at
+        // its base.
+        let datum = result.as_ref().ok().copied().flatten();
+        root_read_result(roots, datum.filter(|_| self.read_depth != 0));
         let value = result?;
         // Every placeholder is the value of some `read' call, nested ones
         // included (lists, vectors and quotes read their elements here).
@@ -1038,9 +1094,9 @@ impl<'a> Reader<'a> {
                         // The dot lookahead has already happened. Read this
                         // atom directly, retaining it across later callbacks
                         // just as the ordinary recursive read would.
-                        let roots = self.input.root_depth();
+                        let roots = read_roots_depth();
                         let val = self.read_atom()?.ok_or(LispError::EndOfInput())?;
-                        self.input.root_result(roots, Some(val));
+                        root_read_result(roots, Some(val));
                         items.push(val);
                     } else {
                         let val = self.read()?.ok_or(LispError::EndOfInput())?;
@@ -1473,7 +1529,7 @@ impl<'a> Reader<'a> {
                     if name.is_empty() {
                         return Err(LispError::ReadError("Empty character name".into()));
                     }
-                    character_name_to_code(&name)?
+                    character_name_to_code(&name, self.read_context())?
                 }
                 _ => c,
             };
@@ -1987,8 +2043,8 @@ impl<'a> Reader<'a> {
                     // the `#N#' inside OBJ until OBJ is read.
                     let placeholder = Value::cons(Value::Nil, Value::Nil);
                     self.read_objects_map.insert(id, placeholder);
-                    let roots = self.input.root_depth();
-                    self.input.root_result(roots, Some(placeholder));
+                    let roots = read_roots_depth();
+                    root_read_result(roots, Some(placeholder));
                     let object = self.read()?.ok_or(LispError::EndOfInput())?;
                     return self.complete_numbered(id, placeholder, object).map(Some);
                 }
