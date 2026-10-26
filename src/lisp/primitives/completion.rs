@@ -1,6 +1,7 @@
 use super::*;
 use crate::lisp::types::Kind;
 use crate::lisp::types::LispErrorKind;
+use crate::lisp::types::obarray::{self, Buckets};
 
 pub(crate) const OBARRAY_RECORD_TYPE: &str = "obarray";
 
@@ -32,12 +33,24 @@ pub(crate) fn is_window_value(interp: &Interpreter, value: &Value) -> bool {
             record.kind == crate::lisp::eval::RecordKind::Window))
 }
 
+#[cfg(test)]
 pub(crate) fn make_obarray(interp: &mut Interpreter) -> Value {
+    make_obarray_with_bits(interp, obarray::DEFAULT_BITS)
+}
+
+/// lread.c:make_obarray: an obarray of 2^BITS empty buckets.
+pub(crate) fn make_obarray_with_bits(interp: &mut Interpreter, bits: u32) -> Value {
     interp.create_pseudovector(
         crate::lisp::eval::RecordKind::Obarray,
         OBARRAY_RECORD_TYPE,
-        vec![Value::Nil],
+        obarray::record_slots(bits),
     )
+}
+
+/// The bucket slots of the private obarray record ID.
+fn private_obarray_slots(record: &crate::lisp::eval::RecordState) -> Option<&[Value]> {
+    (record.has_symbol_type(OBARRAY_RECORD_TYPE) && obarray::is_record_slots(&record.slots))
+        .then_some(record.slots.as_slice())
 }
 
 pub(crate) fn clear_obarray(interp: &mut Interpreter, obarray: &Value) -> Result<Value, LispError> {
@@ -48,10 +61,10 @@ pub(crate) fn clear_obarray(interp: &mut Interpreter, obarray: &Value) -> Result
         return Err(LispError::WrongTypeArgument("obarrayp".into(), *obarray));
     };
     if record.has_symbol_type(OBARRAY_RECORD_TYPE) {
-        if record.slots.is_empty() {
-            record.slots.push(Value::Nil);
-        } else {
-            record.slots[0] = Value::Nil;
+        // Fobarray_clear.  Not GNU: the initial obarray keeps its symbols,
+        // which this implementation's own code names by their text.
+        if obarray::is_record_slots(&record.slots) {
+            obarray::RecordBuckets(&mut record.slots).clear();
         }
     } else if record.has_symbol_type(ABBREV_TABLE_RECORD_TYPE) {
         if record.slots.len() <= ABBREV_TABLE_ENTRIES_SLOT {
@@ -122,8 +135,13 @@ pub(crate) fn obarray_symbols(
                 .collect()
         });
     }
-    if record.has_symbol_type(OBARRAY_RECORD_TYPE) {
-        return record.slots.first().cloned().unwrap_or(Value::Nil).to_vec();
+    if let Some(slots) = private_obarray_slots(record) {
+        // DOOBARRAY's walk.
+        return Ok(obarray::RecordBucketsRef(slots)
+            .symbols()
+            .into_iter()
+            .map(Value::Symbol)
+            .collect());
     }
     Err(LispError::WrongTypeArgument("obarrayp".into(), *obarray))
 }
@@ -136,6 +154,38 @@ pub(crate) fn obarray_symbol_matches(value: &Value, symbol_name: &str) -> bool {
         value.kind(),
         Kind::Symbol(name) if crate::lisp::types::visible_symbol_name(&name) == symbol_name
     )
+}
+
+/// Finternal__obarray_buckets: each bucket's symbols in chain order.
+pub(crate) fn obarray_bucket_lists(
+    interp: &mut Interpreter,
+    obarray: &Value,
+) -> Result<Value, LispError> {
+    let obarray = &coerce_legacy_vector_obarray(interp, obarray)?;
+    let Kind::Record(id) = obarray.kind() else {
+        return Err(LispError::WrongTypeArgument("obarrayp".into(), *obarray));
+    };
+    let lists = if interp.is_standard_obarray_id(id.id) {
+        interp.standard_obarray_bucket_lists()
+    } else {
+        let Some(record) = interp.find_record(id) else {
+            return Err(LispError::WrongTypeArgument("obarrayp".into(), *obarray));
+        };
+        match private_obarray_slots(record) {
+            Some(slots) => obarray::RecordBucketsRef(slots).bucket_lists(),
+            // Not GNU: an abbrev table's symbols, each a bucket of its own.
+            None => {
+                return Ok(Value::list(
+                    obarray_symbols(interp, obarray)?
+                        .into_iter()
+                        .map(|symbol| Value::list([symbol])),
+                ));
+            }
+        }
+    };
+    Ok(Value::list(lists.into_iter().map(|bucket| {
+        Value::list(bucket.into_iter().map(Value::Symbol))
+    })))
 }
 
 /// lread.c check_obarray_slow: a legacy VECTOR obarray whose first slot
@@ -158,7 +208,8 @@ pub(crate) fn coerce_legacy_vector_obarray(
         return Ok(current);
     }
     if matches!(current.kind(), Kind::Integer(0)) {
-        let fresh = make_obarray(interp);
+        // make_obarray (0): one bucket.
+        let fresh = make_obarray_with_bits(interp, 0);
         aset_vector_value(obarray, 0, fresh)?;
         return Ok(fresh);
     }
@@ -219,35 +270,25 @@ pub(crate) fn intern_in_obarray_with_name(
         define_abbrev_entry(interp, obarray, symbol_name, Value::Nil, Value::Nil)?;
         return Ok(Value::Symbol(abbrev_symbol_name(id.id, symbol_name).into()));
     }
-    if !record.has_symbol_type(OBARRAY_RECORD_TYPE) {
+    let Some(slots) = private_obarray_slots(record) else {
         return Err(LispError::WrongTypeArgument("obarrayp".into(), *obarray));
-    }
-    let mut symbols = record
-        .slots
-        .first()
-        .cloned()
-        .unwrap_or(Value::Nil)
-        .to_vec()?;
-    if let Some(existing) = symbols
-        .iter()
-        .find(|value| obarray_symbol_matches(value, symbol_name))
-        .cloned()
-    {
-        return Ok(existing);
+    };
+    // oblookup, then intern_driver for a miss.
+    let (bytes, chars) = obarray::text_key(symbol_name);
+    if let Ok(existing) = obarray::RecordBucketsRef(slots).lookup(bytes, chars) {
+        return Ok(Value::Symbol(existing));
     }
     let name = make_name(interp)?;
-    let symbol = Value::Symbol(crate::lisp::types::SymbolName::intern_with_lisp_name(
+    let symbol = crate::lisp::types::SymbolName::intern_with_lisp_name(
         crate::lisp::types::make_fresh_obarray_symbol_name(symbol_name, id.id),
         Some(name),
-    ));
-    symbols.push(symbol);
+    );
     let record = interp.find_record_mut(id).expect("validated obarray");
-    if record.slots.is_empty() {
-        record.slots.push(Value::list(symbols));
-    } else {
-        record.slots[0] = Value::list(symbols);
-    }
-    Ok(symbol)
+    let mut buckets = obarray::RecordBuckets(&mut record.slots);
+    // intern_sym files it in the bucket of the name oblookup compared.
+    let index = obarray::name_bucket(symbol, buckets.size_bits());
+    buckets.insert(symbol, index);
+    Ok(Value::Symbol(symbol))
 }
 
 pub(crate) fn intern_soft_in_obarray(
@@ -260,6 +301,16 @@ pub(crate) fn intern_soft_in_obarray(
             .standard_obarray_symbol(symbol_name)
             .map_or(Value::Nil, Value::Symbol));
     }
+    if let Kind::Record(id) = obarray.kind()
+        && let Some(slots) = interp.find_record(id).and_then(private_obarray_slots)
+    {
+        // oblookup.
+        let (bytes, chars) = obarray::text_key(symbol_name);
+        return Ok(obarray::RecordBucketsRef(slots)
+            .lookup(bytes, chars)
+            .map_or(Value::Nil, Value::Symbol));
+    }
+    // An abbrev table, or a legacy vector, by its symbols.
     Ok(obarray_symbols(interp, obarray)?
         .into_iter()
         .find(|value| obarray_symbol_matches(value, symbol_name))
@@ -276,50 +327,40 @@ pub(crate) fn unintern_from_obarray(
     let Kind::Record(id) = obarray.kind() else {
         return Err(LispError::WrongTypeArgument("obarrayp".into(), *obarray));
     };
-    if interp.is_standard_obarray_id(id.id) {
-        let symbol_name = if let Ok(symbol) = checked_symbol_identity(interp, target, env) {
-            if !interp.standard_obarray_contains_object(&symbol) {
-                return Ok(false);
+    // Funintern: a symbol is looked up by its own name and only it is
+    // removed; a string, after its shorthand, names any symbol.
+    let (name, only) = match checked_symbol_identity(interp, target, env) {
+        Ok(symbol) => (symbol.lisp_name(), Some(symbol)),
+        Err(_) => {
+            let text = string_text(target)?;
+            let longhand = apply_symbol_shorthands_in_env(interp, &text, env)?;
+            if longhand == text {
+                (*target, None)
+            } else {
+                (Value::string(&longhand), None)
             }
-            symbol.as_str().to_owned()
-        } else {
-            apply_symbol_shorthands_in_env(interp, &string_text(target)?, env)?
-        };
-        return Ok(interp.unintern_standard_symbol_name(&symbol_name));
-    }
-    let Some(record) = interp.find_record(id) else {
-        return Err(LispError::WrongTypeArgument("obarrayp".into(), *obarray));
+        }
     };
-    if !record.has_symbol_type(OBARRAY_RECORD_TYPE) {
-        return Err(LispError::WrongTypeArgument("obarrayp".into(), *obarray));
+    if interp.is_standard_obarray_id(id.id) {
+        return Ok(interp.unintern_standard_symbol(name, only));
     }
-    let mut symbols = record
-        .slots
-        .first()
-        .cloned()
-        .unwrap_or(Value::Nil)
-        .to_vec()?;
-    let original_len = symbols.len();
-    match target.kind() {
-        Kind::Symbol(symbol_name) => {
-            symbols
-                .retain(|value| !matches!(value.kind(), Kind::Symbol(name) if name == symbol_name));
-        }
-        _ => {
-            let symbol_name = apply_symbol_shorthands_in_env(interp, &string_text(target)?, env)?;
-            symbols.retain(|value| !obarray_symbol_matches(value, &symbol_name));
-        }
-    }
-    let removed = symbols.len() != original_len;
     let Some(record) = interp.find_record_mut(id) else {
         return Err(LispError::WrongTypeArgument("obarrayp".into(), *obarray));
     };
-    if record.slots.is_empty() {
-        record.slots.push(Value::list(symbols));
-    } else {
-        record.slots[0] = Value::list(symbols);
+    if !(record.has_symbol_type(OBARRAY_RECORD_TYPE) && obarray::is_record_slots(&record.slots)) {
+        return Err(LispError::WrongTypeArgument("obarrayp".into(), *obarray));
     }
-    Ok(removed)
+    let mut buckets = obarray::RecordBuckets(&mut record.slots);
+    let Some(Ok(symbol)) = buckets.lookup_name(name) else {
+        return Ok(false);
+    };
+    if only.is_some_and(|only| only != symbol) {
+        return Ok(false);
+    }
+    let index = obarray::name_bucket(symbol, buckets.size_bits());
+    buckets.remove(symbol, index);
+    symbol.cell().mark_uninterned();
+    Ok(true)
 }
 
 pub(crate) fn values_eq_for_substitution(left: &Value, right: &Value) -> bool {

@@ -141,6 +141,22 @@ impl StringObjectRef {
         unsafe { (*cell.state.get()).bytes_unbounded() }
     }
 
+    /// `SDATA', `SBYTES' and `SCHARS' with no guard counted: the bytes and
+    /// the character count, for a comparison that runs no Lisp (oblookup's
+    /// of a symbol's name).
+    ///
+    /// # Safety
+    /// As `bytes_unguarded's.
+    #[inline(always)]
+    pub(crate) unsafe fn bytes_and_chars_unguarded<'a>(&self) -> (&'a [u8], usize) {
+        let cell = self.cell();
+        debug_assert!(cell.borrows.get() >= 0, "string already mutably borrowed");
+        // SAFETY: as the caller's contract.
+        let state = unsafe { &*cell.state.get() };
+        // SAFETY: as the caller's contract.
+        (unsafe { state.bytes_unbounded() }, state.len())
+    }
+
     /// `bytes_unguarded' for code bytes that were current when
     /// `code_changes' last read what it reads now: no mutable guard on
     /// them has been taken since (taking one counts a change), and none

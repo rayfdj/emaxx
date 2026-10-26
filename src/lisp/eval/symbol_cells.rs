@@ -76,12 +76,21 @@ impl SymbolCells {
         self.symbols.len()
     }
 
-    pub(crate) fn find_name(&self, name: &str) -> Option<SymbolName> {
-        self.symbols.find(name)
+    /// oblookup in this owner's initial obarray; None for a marked key.
+    pub(crate) fn find_initial_name(&self, name: &str) -> Option<SymbolName> {
+        self.symbols.find_initial(name)
     }
 
-    pub(crate) fn remove_name(&self, name: &str) -> Option<SymbolName> {
-        self.symbols.remove(name)
+    pub(crate) fn unintern_name(
+        &self,
+        name: Value,
+        only: Option<SymbolName>,
+    ) -> Option<SymbolName> {
+        self.symbols.unintern_name(name, only)
+    }
+
+    pub(crate) fn bucket_lists(&self) -> Vec<Vec<SymbolName>> {
+        self.symbols.bucket_lists()
     }
 
     #[cfg(test)]

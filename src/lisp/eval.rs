@@ -3644,6 +3644,10 @@ impl LispReachability {
                 }
                 self.enqueue(&symbol.cell().function.get());
                 self.enqueue(&symbol.cell().plist.get());
+                // mark_object follows the symbol's obarray chain.
+                if let Some(next) = symbol.cell().next.get() {
+                    self.enqueue(&Value::Symbol(next));
+                }
             }
             Kind::Finalizer(object) => {
                 // alloc.c traces the function in the reached object itself.
@@ -4664,10 +4668,11 @@ impl Interpreter {
                 }
                 capacity
             } else {
-                // lread.c:obarray_default_bits is 3.  Nonstandard
-                // obarray growth is accounted when its symbol arena is
-                // moved out of the encoded namespace representation.
-                1_usize << 3
+                // A private obarray's buckets; an abbrev table keeps
+                // lread.c's obarray_default_bits.
+                self.record_ref(id)
+                    .filter(|record| crate::lisp::types::obarray::is_record_slots(&record.slots))
+                    .map_or(1_usize << 3, |record| record.slots.len() - 2)
             };
             bytes = bytes.saturating_add(capacity.saturating_mul(8));
         }

@@ -1324,8 +1324,11 @@ impl DumpContext {
         Ok(offset)
     }
 
-    /// dump_symbol: the flags, name, value cell, function, plist and the
-    /// watcher list.
+    /// dump_symbol: the flags, name, value cell, function, plist, the next
+    /// symbol of its bucket and the watcher list, then the host key.
+    /// `next' is a private obarray's chain (its buckets are its record's
+    /// slots); the initial obarray's buckets are filled again as the
+    /// loader files its symbols, and an uninterned symbol chains none.
     fn dump_symbol(&mut self, interp: &Interpreter, object: &Value) -> Result<u32, DumpError> {
         let Kind::Symbol(symbol) = object.kind() else {
             unreachable!()
@@ -1359,22 +1362,36 @@ impl DumpContext {
         self.field_lv(start, &mut words, 2, &val, WEIGHT_NORMAL);
         self.field_lv(start, &mut words, 3, &function, WEIGHT_NORMAL);
         self.field_lv(start, &mut words, 4, &plist, WEIGHT_NORMAL);
-        // `next' (the obarray bucket chain) is rebuilt by interning.
-        words[5] = watchers.len() as u64;
+        let private = !symbol.cell().is_uninterned()
+            && crate::lisp::types::is_private_obarray_symbol(symbol.as_str());
+        let next = match symbol.cell().next.get() {
+            Some(next) if private => Value::Symbol(next),
+            _ => Value::Integer(0),
+        };
+        self.field_lv(start, &mut words, 5, &next, WEIGHT_NORMAL);
+        words.push(watchers.len() as u64);
         for watcher in &watchers {
             let index = words.len();
             words.push(0);
             self.field_lv(start, &mut words, index, watcher, WEIGHT_NORMAL);
         }
-        // Not GNU: a symbol interned in another obarray is keyed here by
-        // its internal name (the Lisp name, the obarray's id and a
-        // serial), which the loader needs to give it the identity its
-        // obarray's lookups produce; it follows the watchers.
-        if crate::lisp::types::is_private_obarray_symbol(symbol.as_str()) {
-            let index = words.len();
-            words.push(0);
-            let internal = Value::String(symbol.as_str().to_owned().into());
-            self.field_lv(start, &mut words, index, &internal, WEIGHT_STRONG);
+        // Not GNU: the host key the symbol keeps beside its name, its length
+        // and its bytes, which the loaded symbol keeps where the image
+        // holds them: an uninterned symbol's visible name (it gets a fresh
+        // identity), or the name a private obarray's symbol is keyed by
+        // (the Lisp name, the obarray's id and a serial).
+        let key = if symbol.cell().is_uninterned() {
+            crate::lisp::types::visible_symbol_name(symbol.as_str())
+        } else {
+            symbol.as_str()
+        };
+        words.push(key.len() as u64);
+        let at = words.len();
+        words.resize(at + key.len().div_ceil(8), 0);
+        for (index, chunk) in key.as_bytes().chunks(8).enumerate() {
+            let mut word = [0; 8];
+            word[..chunk.len()].copy_from_slice(chunk);
+            words[at + index] = u64::from_le_bytes(word);
         }
         self.object_finish(&words)
     }

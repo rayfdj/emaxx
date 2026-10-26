@@ -947,13 +947,16 @@ impl Interpreter {
         SymbolName::intern_str(name);
     }
 
-    pub(crate) fn unintern_standard_symbol_name(&mut self, name: &str) -> bool {
-        if !self.standard_obarray_contains_symbol(name) {
+    /// Funintern from the initial obarray of the symbol the Lisp string
+    /// NAME names there, when it is ONLY (any, for None).
+    pub(crate) fn unintern_standard_symbol(
+        &mut self,
+        name: Value,
+        only: Option<SymbolName>,
+    ) -> bool {
+        if self.globals.unintern_name(name, only).is_none() {
             return false;
         }
-        self.globals
-            .remove_name(name)
-            .expect("verified obarray member");
         self.note_obarray_removal();
         true
     }

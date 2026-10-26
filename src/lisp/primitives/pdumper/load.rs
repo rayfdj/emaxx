@@ -628,7 +628,6 @@ impl Loader<'_> {
         let mut kinds = Vec::with_capacity(self.starts.len());
         let mut own_bytes_objects = Vec::new();
         let mut other_objects = Vec::new();
-        let mut symbol_count = 0;
         for number in 0..self.starts.len() {
             let code = self.starts.code(number);
             let kind = DumpType::from_u32(code).ok_or_else(|| {
@@ -644,10 +643,6 @@ impl Loader<'_> {
                 | DumpType::Float
                 | DumpType::Bignum
                 | DumpType::BoolVector => own_bytes_objects.push(number as u32),
-                DumpType::Symbol => {
-                    symbol_count += 1;
-                    other_objects.push(number as u32);
-                }
                 _ => other_objects.push(number as u32),
             }
             kinds.push(kind);
@@ -684,7 +679,6 @@ impl Loader<'_> {
 
         // Phase 2: objects whose construction needs a name, and the
         // containers as placeholders.
-        SymbolName::reserve_interned(symbol_count);
         let mut symbol_records = Vec::new();
         let mut obarray_records = Vec::new();
         let mut hash_table_records = Vec::new();
@@ -1111,10 +1105,19 @@ impl Loader<'_> {
         let mut symbols = Vec::with_capacity(symbol_records.len());
         for (offset, symbol, flags) in symbol_records {
             let [val, function, plist] = self.field_array(offset + 16)?;
-            let nwatchers = self.reader.word(offset + 40)? as u32;
+            // A private obarray's chain; the initial obarray's was filled as
+            // its symbols were filed.
+            if (flags >> SYMBOL_INTERNED_SHIFT) & 3 == SYMBOL_INTERNED {
+                let next = self.value_at(offset + SYMBOL_NEXT)?;
+                symbol.cell().next.set(match next.kind() {
+                    Kind::Integer(0) => None,
+                    _ => Some(symbol_of(next, "obarray chain")?),
+                });
+            }
+            let nwatchers = self.reader.word(offset + SYMBOL_NWATCHERS)? as u32;
             let mut watchers = Vec::new();
             for index in 0..nwatchers {
-                watchers.push(self.value_at(offset + 48 + 8 * index)?);
+                watchers.push(self.value_at(offset + SYMBOL_WATCHERS + 8 * index)?);
             }
             let (value, alias) = if flags & SYMBOL_REDIRECT_MASK == SYMBOL_VARALIAS {
                 (None, Some(symbol_of(val, "alias target")?))
@@ -1547,34 +1550,56 @@ impl Loader<'_> {
         name: Value,
     ) -> Result<SymbolName, LoadError> {
         let interned = (flags >> SYMBOL_INTERNED_SHIFT) & 3;
-        let name_text = name
-            .as_string()
-            .map_err(|_| LoadError::Error("symbol name is not a string".into()))?;
+        if !matches!(name.kind(), Kind::StringObject(_)) {
+            return Err(LoadError::Error("symbol name is not a string".into()));
+        }
+        let key = self.symbol_key(offset)?;
         if interned == SYMBOL_UNINTERNED {
             return Ok(SymbolName::make_uninterned(
                 name,
-                &name_text,
+                key,
                 next_make_symbol_id(),
             ));
         }
         if interned == SYMBOL_INTERNED {
-            let nwatchers = self.reader.word(offset + 40)? as u32;
-            let internal = self.value_at(offset + 48 + 8 * nwatchers)?;
-            let internal = string_like(&internal)
-                .map(|string| string.text)
-                .ok_or_else(|| {
-                    LoadError::Error(format!(
-                        "symbol {name_text}: the other-obarray name is not a string"
-                    ))
-                })?;
-            if !crate::lisp::types::is_private_obarray_symbol(&internal) {
+            if !crate::lisp::types::is_private_obarray_symbol(key) {
                 return Err(LoadError::Error(format!(
-                    "symbol {name_text}: not an other-obarray name: {internal:?}"
+                    "symbol {key:?}: not an other-obarray name"
                 )));
             }
-            return Ok(SymbolName::intern_with_lisp_name(internal, Some(name)));
+            return Ok(SymbolName::intern_with_lisp_name(
+                key.to_owned(),
+                Some(name),
+            ));
         }
-        Ok(SymbolName::intern_with_lisp_name(name_text, Some(name)))
+        if !crate::lisp::types::obarray::plain_ascii(key.as_bytes())
+            && !crate::lisp::types::is_visible_symbol_name(key)
+        {
+            return Err(LoadError::Error(format!(
+                "symbol {key:?}: an initial-obarray symbol with a marked key"
+            )));
+        }
+        Ok(SymbolName::intern_image(name, key))
+    }
+
+    /// The host key a symbol record ends with: text of the permanent image.
+    fn symbol_key(&self, offset: u32) -> Result<&'static str, LoadError> {
+        let nwatchers = self.reader.word(offset + SYMBOL_NWATCHERS)?;
+        let at = u64::from(offset + SYMBOL_WATCHERS) + 8 * nwatchers;
+        let invalid = || LoadError::Error(format!("invalid symbol key at {offset}"));
+        let at = u32::try_from(at).map_err(|_| invalid())?;
+        let len = self.reader.word(at)? as usize;
+        let start = at as usize + 8;
+        let bytes = self
+            .image
+            .bytes()
+            .get(start..start.checked_add(len).ok_or_else(invalid)?)
+            .ok_or_else(invalid)?;
+        if crate::lisp::types::obarray::plain_ascii(bytes) {
+            // SAFETY: ASCII is UTF-8.
+            return Ok(unsafe { std::str::from_utf8_unchecked(bytes) });
+        }
+        std::str::from_utf8(bytes).map_err(|_| invalid())
     }
 
     /// The C string the raw dump pointer at FIELD names: a native subr's
@@ -2140,6 +2165,12 @@ impl Loader<'_> {
         })
     }
 }
+
+/// A symbol record's fields: the flags, name, value, function and plist,
+/// then these.
+const SYMBOL_NEXT: u32 = 40;
+const SYMBOL_NWATCHERS: u32 = 48;
+const SYMBOL_WATCHERS: u32 = 56;
 
 /// A symbol-valued field: `nil' and `t' arrive as their immediate words.
 fn symbol_of(value: Value, what: &str) -> Result<SymbolName, LoadError> {

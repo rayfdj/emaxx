@@ -5354,7 +5354,8 @@ fn assert_minibuffer_completion_primitives_cover_batch_cases() {
                 (let ((ob (obarray-make 7)))
                   (intern "abc" ob)
                   (intern "abba" ob)
-                  (equal (all-completions "a" ob) '("abc" "abba")))
+                  ;; GNU 30.2's order: both in one bucket, newest first.
+                  (equal (all-completions "a" ob) '("abba" "abc")))
                 "#
         ),
         Value::T
@@ -5571,6 +5572,74 @@ fn intern_primitives_honor_the_dynamically_bound_obarray() {
                 "#
         ),
         Value::list([Value::T, Value::T, Value::T, Value::T, Value::T])
+    );
+}
+
+#[test]
+fn obarrays_are_lread_c_buckets_filed_by_hash_string() {
+    // GNU 30.2's output: obarray_index of each name, newest first in its
+    // bucket, the buckets doubled past one symbol a bucket, removal from
+    // the chain, the size hint, a legacy vector's one bucket.
+    let printed = |source: &str| {
+        let value = eval_str(&format!("(format \"%S\" {source})"));
+        primitives::string_text(&value).expect("printed")
+    };
+    assert_eq!(
+        printed(
+            r#"(let ((o (obarray-make)))
+                 (dolist (n '("a" "b" "c" "d" "e" "f" "g" "h" "i" "j")) (intern n o))
+                 (list (internal--obarray-buckets o)
+                       (let (l) (mapatoms (lambda (s) (push s l)) o) l)
+                       (unintern "c" o) (unintern "c" o) (intern-soft "c" o)
+                       (let ((d (intern-soft "d" o)))
+                         (list (unintern 'd o) (unintern d o)))
+                       (eq (intern "car" o) 'car)
+                       (internal--obarray-buckets o)))"#
+        ),
+        "((nil (c) (h) nil (e) nil (j) (b) (g) nil nil (d) (i) (a) (f) nil) \
+         (f a i d g b j e h c) t nil nil (nil t) nil \
+         (nil nil (h) nil (e) nil (j) (b) (g) nil nil (car) (i) (a) (f) nil))"
+    );
+    assert_eq!(
+        printed(
+            "(mapcar (lambda (n) (length (internal--obarray-buckets (obarray-make n)))) \
+             '(0 1 2 5 8 9 100 1000))"
+        ),
+        "(1 2 4 8 16 16 128 1024)"
+    );
+    assert_eq!(
+        printed(
+            "(let ((v (make-vector 7 0))) (intern \"vv\" v) \
+             (list (intern-soft \"vv\" v) (length (internal--obarray-buckets v))))"
+        ),
+        "(vv 1)"
+    );
+    assert_eq!(
+        printed(
+            r#"(let ((o (obarray-make)))
+                 (intern "p" o)
+                 (obarray-clear o)
+                 (list (internal--obarray-buckets o) (intern-soft "p" o)))"#
+        ),
+        "((nil nil nil nil nil nil nil nil) nil)"
+    );
+}
+
+#[test]
+fn oblookup_compares_the_current_name_of_each_symbol() {
+    // lread.c:oblookup compares SYMBOL_NAME: a symbol whose name string is
+    // changed is found by neither name, and intern then makes another.
+    let value = eval_str(
+        r#"(format "%S"
+             (let* ((s (intern "zz-oblookup-fresh")) (name (symbol-name s)))
+               (aset name 0 ?y)
+               (list name (intern-soft "zz-oblookup-fresh") (intern-soft "yz-oblookup-fresh")
+                     (intern-soft s) (eq (intern "zz-oblookup-fresh") s)
+                     (unintern s nil) (unintern "zz-oblookup-fresh" nil))))"#,
+    );
+    assert_eq!(
+        primitives::string_text(&value).expect("printed"),
+        r#"("yz-oblookup-fresh" nil nil nil nil nil t)"#
     );
 }
 

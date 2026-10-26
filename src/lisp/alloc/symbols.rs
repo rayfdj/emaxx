@@ -21,11 +21,64 @@ use std::cell::Cell;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicI64, AtomicPtr, AtomicUsize, Ordering};
 
+/// The immutable host text a symbol keeps beside its Lisp name: a box the
+/// cell owns and frees with it, or text of the permanent image, which
+/// lives as long as the process.  Two words: the text's address, and its
+/// length with the top bit set when the box is the cell's.
+pub(crate) struct SymbolText {
+    text: NonNull<u8>,
+    len: usize,
+}
+
+const OWNED_TEXT: usize = 1 << (usize::BITS - 1);
+
+impl SymbolText {
+    pub(crate) fn owned(text: String) -> Self {
+        let len = text.len();
+        let text = Box::into_raw(text.into_boxed_str());
+        Self {
+            // SAFETY: a box's pointer is never null.
+            text: unsafe { NonNull::new_unchecked(text.cast::<u8>()) },
+            len: len | OWNED_TEXT,
+        }
+    }
+
+    /// TEXT of the permanent image.
+    pub(crate) fn image(text: &'static str) -> Self {
+        Self {
+            text: NonNull::from(text.as_bytes()).cast(),
+            len: text.len(),
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn as_str(&self) -> &str {
+        // SAFETY: the text was a `str' and is never written.
+        unsafe {
+            std::str::from_utf8_unchecked(std::slice::from_raw_parts(
+                self.text.as_ptr(),
+                self.len & !OWNED_TEXT,
+            ))
+        }
+    }
+}
+
+impl Drop for SymbolText {
+    fn drop(&mut self) {
+        if self.len & OWNED_TEXT != 0 {
+            let text =
+                std::ptr::slice_from_raw_parts_mut(self.text.as_ptr(), self.len & !OWNED_TEXT);
+            // SAFETY: the owned text is the box `owned' made.
+            drop(unsafe { Box::from_raw(text as *mut str) });
+        }
+    }
+}
+
 /// alloc.c's `struct Lisp_Symbol', as this implementation keeps it.
 #[repr(C)]
 pub struct SymbolCell {
-    /// Immutable host lookup key, owned and released with the symbol.
-    pub(crate) internal: String,
+    /// Immutable host lookup key, released with the symbol.
+    pub(crate) internal: SymbolText,
     /// `SYMBOL_NAME': the Lisp-visible name object.
     pub(crate) lisp_name: std::cell::Cell<Value>,
     /// `Lisp_Symbol.u.s.function' and `.plist': one authoritative word each.
@@ -33,6 +86,8 @@ pub struct SymbolCell {
     pub(crate) plist: std::cell::Cell<Value>,
     /// Lisp_Symbol.val: a value word or an alias object, selected by state.
     pub(crate) payload: Cell<SymbolPayload>,
+    /// `Lisp_Symbol.u.s.next': the next symbol of its obarray bucket.
+    pub(crate) next: Cell<Option<SymbolName>>,
     pub(crate) flags: Cell<u8>,
     /// Allocated while an image loaded (see `ImageCells'); set by
     /// `allocate_symbol'.

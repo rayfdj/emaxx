@@ -6,13 +6,18 @@
 //! heap. The active owner is selected at the editor boundary, not per VM
 //! instruction. Interpreter states retain their owner for GC and parked calls.
 
+use super::obarray::{Buckets, StandardBuckets, text_key};
 use super::{ProcessTable, SymbolName, Value};
 use crate::lisp::alloc::vectors::hash_tables::DescriptorPool;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-type Names = HashSet<NameEntry, ObarrayBuildHasher>;
+/// Not GNU: the symbols of private obarrays and abbrev tables by their
+/// host keys, which carry the obarray's mark (see `make_obarray_symbol_name');
+/// a name-keyed caller finds them here, and they are roots, as they were
+/// when one table held every interned key.
+type PrivateNames = HashSet<NameEntry, ObarrayBuildHasher>;
 /// Host text's address with its length in the high bits a user-space
 /// address leaves clear (`SymbolName::interned_cached'), hashed by one
 /// multiply.
@@ -34,34 +39,51 @@ fn sxhash_combine(x: u64, y: u64) -> u64 {
     (x << 4).wrapping_add(x >> (u64::BITS - 4)).wrapping_add(y)
 }
 
+/// The little-endian word at AT of BYTES, which holds it.
+#[inline(always)]
+pub(crate) fn read_word(bytes: &[u8], at: usize) -> u64 {
+    assert!(at + 8 <= bytes.len());
+    // SAFETY: the eight bytes at AT are inside BYTES.
+    u64::from_le(unsafe { bytes.as_ptr().add(at).cast::<u64>().read_unaligned() })
+}
+
+#[inline(always)]
+pub(crate) fn read_u32(bytes: &[u8], at: usize) -> u32 {
+    assert!(at + 4 <= bytes.len());
+    // SAFETY: the four bytes at AT are inside BYTES.
+    u32::from_le(unsafe { bytes.as_ptr().add(at).cast::<u32>().read_unaligned() })
+}
+
+#[inline(always)]
+pub(crate) fn read_u16(bytes: &[u8], at: usize) -> u16 {
+    assert!(at + 2 <= bytes.len());
+    // SAFETY: the two bytes at AT are inside BYTES.
+    u16::from_le(unsafe { bytes.as_ptr().add(at).cast::<u16>().read_unaligned() })
+}
+
 /// fns.c's `hash_string' of BYTES.
 #[inline]
 pub(crate) fn hash_string(bytes: &[u8]) -> u64 {
     const WORD: usize = std::mem::size_of::<u64>();
-    let word_at = |at: usize| {
-        u64::from_le_bytes(bytes[at..at + WORD].try_into().expect("a word of the name"))
-    };
     let len = bytes.len();
     let mut hash = len as u64;
     if len >= WORD {
         let step = WORD.max(len >> 3);
         let mut at = 0;
         while at + WORD <= len {
-            hash = sxhash_combine(hash, word_at(at));
+            hash = sxhash_combine(hash, read_word(bytes, at));
             at += step;
         }
-        sxhash_combine(hash, word_at(len - WORD))
+        sxhash_combine(hash, read_word(bytes, len - WORD))
     } else {
         let mut tail = 0_u64;
         let mut at = 0;
         if len - at >= 4 {
-            let c = u32::from_le_bytes(bytes[at..at + 4].try_into().expect("four bytes"));
-            tail = (tail << 32) + u64::from(c);
+            tail = (tail << 32) + u64::from(read_u32(bytes, at));
             at += 4;
         }
         if len - at >= 2 {
-            let c = u16::from_le_bytes(bytes[at..at + 2].try_into().expect("two bytes"));
-            tail = (tail << 16) + u64::from(c);
+            tail = (tail << 16) + u64::from(read_u16(bytes, at));
             at += 2;
         }
         if at < len {
@@ -268,7 +290,9 @@ const KEY_NAMES: &[&str] = &[
 ];
 
 struct Symbols {
-    names: RefCell<Names>,
+    /// Vobarray: the initial obarray's buckets.
+    names: RefCell<StandardBuckets>,
+    private: RefCell<PrivateNames>,
     by_address: RefCell<AddressNames>,
     builtins: [Cell<Option<SymbolName>>; 2],
     keys: [Cell<Option<SymbolName>>; KEY_NAMES.len()],
@@ -278,7 +302,8 @@ struct Symbols {
 impl Default for Symbols {
     fn default() -> Self {
         Self {
-            names: RefCell::new(Names::default()),
+            names: RefCell::new(StandardBuckets::default()),
+            private: RefCell::new(PrivateNames::default()),
             by_address: RefCell::new(AddressNames::default()),
             builtins: std::array::from_fn(|_| Cell::new(None)),
             keys: std::array::from_fn(|_| Cell::new(None)),
@@ -371,32 +396,80 @@ impl SymbolOwner {
         });
     }
 
+    /// The initial obarray's count.
     pub(crate) fn len(&self) -> usize {
-        self.0.names.borrow().len()
+        self.0.names.borrow().count() as usize
     }
 
     pub(crate) fn contains(&self, name: &str) -> bool {
-        self.0.names.borrow().contains(name)
+        self.find(name).is_some()
     }
 
+    /// The symbol host text NAME names: oblookup in the initial obarray,
+    /// or a private obarray's key among the private names.
     pub(crate) fn find(&self, name: &str) -> Option<SymbolName> {
-        self.0.names.borrow().get(name).map(|entry| entry.0)
+        if super::obarray::plain_ascii(name.as_bytes()) || super::is_visible_symbol_name(name) {
+            let (bytes, chars) = text_key(name);
+            self.0.names.borrow().lookup(bytes, chars).ok()
+        } else {
+            self.0.private.borrow().get(name).map(|entry| entry.0)
+        }
     }
 
-    /// lread.c:Funintern removes the bucket entry, preserving the object and
-    /// its fields while it is otherwise reachable. A later miss allocates anew.
-    pub(crate) fn remove(&self, name: &str) -> Option<SymbolName> {
-        let symbol = self.0.names.borrow_mut().take(name)?.0;
+    /// oblookup in the initial obarray; None for a marked key.
+    pub(crate) fn find_initial(&self, name: &str) -> Option<SymbolName> {
+        if !super::obarray::plain_ascii(name.as_bytes()) && !super::is_visible_symbol_name(name) {
+            return None;
+        }
+        let (bytes, chars) = text_key(name);
+        self.0.names.borrow().lookup(bytes, chars).ok()
+    }
+
+    /// lread.c:Funintern of the symbol the Lisp string NAME names, when it
+    /// is ONLY (or any symbol, for None): oblookup by the name's bytes and
+    /// characters, then the bucket's unlinking.  The object keeps its
+    /// fields while it is otherwise reachable; a later miss allocates anew.
+    pub(crate) fn unintern_name(
+        &self,
+        name: Value,
+        only: Option<SymbolName>,
+    ) -> Option<SymbolName> {
+        let symbol = {
+            let mut names = self.0.names.borrow_mut();
+            let Ok(symbol) = names.lookup_name(name)? else {
+                return None;
+            };
+            if only.is_some_and(|only| only != symbol) {
+                return None;
+            }
+            let index = super::obarray::name_bucket(symbol, names.size_bits());
+            names.remove(symbol, index);
+            symbol
+        };
+        self.forget(symbol);
+        Some(symbol)
+    }
+
+    /// The uninterned state of a symbol Funintern unlinked.
+    fn forget(&self, symbol: SymbolName) {
         symbol.cell().mark_uninterned();
         self.0
             .by_address
             .borrow_mut()
             .retain(|_, cached| *cached != symbol);
-        Some(symbol)
     }
 
+    /// The initial obarray's symbols in DOOBARRAY's order, then the
+    /// private names.
     pub(crate) fn names(&self) -> Vec<SymbolName> {
-        self.0.names.borrow().iter().map(|entry| entry.0).collect()
+        let mut names = self.0.names.borrow().symbols();
+        names.extend(self.0.private.borrow().iter().map(|entry| entry.0));
+        names
+    }
+
+    /// Finternal__obarray_buckets of the initial obarray.
+    pub(crate) fn bucket_lists(&self) -> Vec<Vec<SymbolName>> {
+        self.0.names.borrow().bucket_lists()
     }
 
     pub(crate) fn mark_roots(&self, mark: &mut dyn FnMut(&Value)) {
@@ -464,13 +537,21 @@ pub(crate) fn builtin_boolean(truth: bool) -> SymbolName {
 }
 
 impl InternedNames {
-    pub(super) fn with_borrow<R>(&self, body: impl FnOnce(&Names) -> R) -> R {
+    pub(super) fn with_borrow<R>(&self, body: impl FnOnce(&StandardBuckets) -> R) -> R {
         with_current(|symbols| body(&symbols.names.borrow()))
     }
 
-    pub(super) fn with_borrow_mut<R>(&self, body: impl FnOnce(&mut Names) -> R) -> R {
+    pub(super) fn with_borrow_mut<R>(&self, body: impl FnOnce(&mut StandardBuckets) -> R) -> R {
         with_current(|symbols| body(&mut symbols.names.borrow_mut()))
     }
+}
+
+pub(super) fn with_private_names<R>(body: impl FnOnce(&PrivateNames) -> R) -> R {
+    with_current(|symbols| body(&symbols.private.borrow()))
+}
+
+pub(super) fn with_private_names_mut<R>(body: impl FnOnce(&mut PrivateNames) -> R) -> R {
+    with_current(|symbols| body(&mut symbols.private.borrow_mut()))
 }
 
 pub(super) fn with_address_names<R>(body: impl FnOnce(&AddressNames) -> R) -> R {
@@ -581,11 +662,18 @@ fn mark_names(symbols: &Symbols, mark: &mut dyn FnMut(&Value)) {
             }
             mark(&name.cell().function.get());
             mark(&name.cell().plist.get());
+            if let Some(next) = name.cell().next.get() {
+                mark(&Value::Symbol(next));
+            }
         } else {
             mark(&value);
         }
     }
-    for name in symbols.names.borrow().iter() {
+    symbols
+        .names
+        .borrow()
+        .for_each(|name| mark_symbol(name, mark));
+    for name in symbols.private.borrow().iter() {
         mark_symbol(name.0, mark);
     }
     // GNU's lispsym/static Qsymbol references remain roots after unintern.

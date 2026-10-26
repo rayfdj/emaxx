@@ -6695,6 +6695,54 @@ setup_process_coding_systems's check now refuses). A 13-form
   full gate, 3,233 passed across its ten groups with the documented
   local skips, and the new test with the other 29 pdumper tests; clippy
   `-D warnings', rustfmt and `git diff --check' pass.
+- **Round 96: lread.c's obarray, keyed by each symbol's current name.**
+  The obarray was a hash set of the host text each symbol cell owned
+  beside its Lisp name, and a private obarray a record holding a list of
+  its symbols. Both are now GNU 30's `struct Lisp_Obarray': 2^size_bits
+  buckets, each empty or the first of the symbols whose names
+  obarray_index (fns.c's hash_string reduced by knuth_hash) files there,
+  the rest chained newest first through a new `next' field of the symbol
+  cell (Lisp_Symbol.u.s.next); oblookup compares each chained symbol's
+  current name, bytes and characters, intern_sym files a new symbol and
+  doubles the buckets past one symbol a bucket (grow_obarray filing each
+  again by its current name), Funintern unlinks by the symbol's own name,
+  Fobarray_clear resets to the default eight buckets, `obarray-make' sizes
+  by elogb, a legacy vector gets make_obarray (0), and the collector
+  follows `next' as mark_object does. The initial obarray starts at 2^15
+  buckets (init_obarray_once); a private obarray's buckets are its
+  record's slots, so the image carries them and each of its symbols'
+  `next'. GNU-visible results that differed and now match GNU 30.2 byte
+  for byte: `internal--obarray-buckets' (it gave one symbol a bucket),
+  `mapatoms' order over a private obarray, the bucket count of
+  `obarray-make', and the lookups after a symbol's name string is changed
+  in place (`(aset (symbol-name 'string-trim-left) 0 ?x)' left the symbol
+  found by its old name; GNU finds it by neither name, and `intern' of
+  the old name makes another symbol). The host text a symbol keeps for
+  this implementation's own name-keyed code is now two words, a box the
+  cell owns or text of the permanent image, and the dumper writes each
+  symbol's text after its record, so a loaded symbol keeps the image's
+  text where it lies instead of a copy decoded from its name; the loader
+  files each initial-obarray symbol by its Lisp name. A name of
+  printable ASCII (nearly all) is recognised eight bytes a step, which
+  stands for both the marker scan and the character count, and
+  hash_string and the name comparison read short names as overlapping
+  words. Startup (`--batch --eval nil') took 186.2M instructions and now
+  179.4M (GNU 166.1M, 52.6M of it collecting); `Loader::load' 106.3M and
+  now 99.3M, its symbols 15.1M and now 7.3M; loading `ert' 372.6M and
+  now 367.4M; the frozen runner's setup of xml-tests.el 505.4M and now
+  501.7M (GNU 469.5M; outside collection 434.5M and now 429.5M against
+  GNU's 306.4M). The collector spends about 1.3M more a setup walking the
+  32K buckets, as GNU's does. Every symbol's value, function and plist
+  after startup is round 95's but for timestamps, paths and consing
+  counters, and `comp-subr-arities-h', which a `mapatoms' fills, now
+  begins in GNU's order. Not done: the reader names a symbol with a
+  unibyte string where GNU's read_symbol gives a name read from a file or
+  a multibyte source a multibyte one (GNU 30.2 has 5,884 such names
+  after startup, Emaxx 1). Local validation: the full gate, 3,239
+  passed across its ten groups with the documented local skips (one
+  completion test expected Emaxx's former insertion order of a private
+  obarray and now expects GNU's, `("abba" "abc")'); clippy `-D
+  warnings', rustfmt and `git diff --check' pass.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -7433,6 +7481,10 @@ frozen passed on its first attempt (run 40273033064).
 frozen passed on its first attempt (run 40278888554).
 **On `198c173`** (round 94): full Rust gate passed (run 40285385018),
 frozen passed on its first attempt (run 40285394292).
+**On `a79bf68`** (round 95): the Rust gate's ten library groups (3,241
+tests) and the binaries passed and the runner was then lost in the
+integration stage (run 40294000763), whose re-run is pending; frozen
+passed on its first attempt (run 40294012283).
 
 **Findings recorded, not fixed:**
 - `features`, `values` and `top-level` are special variables in Emaxx
@@ -7730,9 +7782,11 @@ and failures are still recorded.
    maps the dump and relocates it; the cost is spread over the kinds,
    strings 28 million, symbols 16, `value_at` about 50, with no single
    hot spot, so it wants the image mapped in place rather than another
-   trim; round 95 maps the conses in place, and the strings, symbols,
-   vectors, records and tables are still rebuilt, the symbols for the
-   host name string each cell owns); the encode side of coding.c (bullet "Round 56"); and text
+   trim; round 95 maps the conses in place and round 96 keeps the
+   symbols' host text in the image and files them in lread.c's obarray;
+   the strings, symbols, vectors, records and tables are still rebuilt,
+   and the initial obarray's buckets are filled again as the symbols are
+   read rather than restored); the encode side of coding.c (bullet "Round 56"); and text
    properties kept in one flat vector of spans (each edit shifts it; GNU
    keeps intervals).
    The host is a different machine
