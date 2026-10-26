@@ -359,6 +359,7 @@ pub(crate) fn load_permanent_image(
         late_relocs: relocs(LATE_RELOCS)?,
         very_late_relocs: relocs(VERY_LATE_RELOCS)?,
         conses: ImageConses::default(),
+        strings: ImageStrings::default(),
         subrs: HashMap::default(),
         reader,
         image,
@@ -549,6 +550,8 @@ struct Loader<'a> {
     very_late_relocs: RelocTable<'a>,
     /// The image's cons blocks, once adopted.
     conses: ImageConses,
+    /// The image's string blocks, once adopted.
+    strings: ImageStrings,
     /// The subr each copied record of the Emacs image names.
     subrs: HashMap<
         u32,
@@ -617,11 +620,51 @@ impl ImageConses {
     }
 }
 
+/// The code of RELOC_DUMP_TO_DUMP_LV naming a string.
+pub(super) const STRING_LV: u32 = 0x100 | DumpType::String as u32;
+
+/// The image's string blocks where the image is mapped: BASE the image's
+/// address, START the first block's offset, and END just past the last
+/// cell, from START.
+#[derive(Default)]
+struct ImageStrings {
+    base: usize,
+    start: usize,
+    end: usize,
+}
+
+impl ImageStrings {
+    /// The string whose cell is at OFFSET, which must be a cell of the
+    /// blocks.
+    #[inline(always)]
+    fn string_at(&self, offset: u32) -> Result<Value, LoadError> {
+        use crate::lisp::alloc::{
+            IMAGE_STRING_BLOCK_BYTES, IMAGE_STRINGS_PER_BLOCK, STRING_CELL_BYTES,
+        };
+        let at = (offset as usize).wrapping_sub(self.start);
+        let slot = at % IMAGE_STRING_BLOCK_BYTES;
+        if at >= self.end
+            || !slot.is_multiple_of(STRING_CELL_BYTES)
+            || slot >= IMAGE_STRINGS_PER_BLOCK * STRING_CELL_BYTES
+        {
+            return Err(LoadError::Error(format!(
+                "string at {offset} is not a cell of the string blocks"
+            )));
+        }
+        // SAFETY: an allocated cell of the adopted blocks, by the check
+        // (the cells before END are the image's strings, in order).
+        Ok(Value::StringObject(unsafe {
+            StringObjectRef::from_raw(((self.base + offset as usize) as *mut u8).cast())
+        }))
+    }
+}
+
 impl Loader<'_> {
     fn load(&mut self, header: DumpHeader) -> Result<LoadedImage, LoadError> {
         // pdumper's mapped objects: the image's cons blocks are the heap's
         // where they lie, before anything names one of their conses.
         self.conses = self.adopt_cons_blocks(&header)?;
+        let string_props = self.adopt_string_blocks(&header)?;
         // Each object's type, and the objects by the phases that build
         // them, each list in image order: the objects that need only their
         // own bytes, and the rest; a cons is where its block holds it.
@@ -637,9 +680,12 @@ impl Loader<'_> {
                 DumpType::Cons => {
                     self.objects[number] = self.conses.cons_at(self.starts.offset(number))?;
                 }
-                DumpType::String
-                | DumpType::StringObject
-                | DumpType::EmptyString
+                DumpType::String | DumpType::StringObject => {
+                    return Err(LoadError::Error(format!(
+                        "object {number} is a string outside the string blocks"
+                    )));
+                }
+                DumpType::EmptyString
                 | DumpType::Float
                 | DumpType::Bignum
                 | DumpType::BoolVector => own_bytes_objects.push(number as u32),
@@ -648,18 +694,13 @@ impl Loader<'_> {
             kinds.push(kind);
         }
         // Phase 1: objects that need nothing but their own bytes.
-        let mut string_props: Vec<(usize, u32)> = Vec::new();
         for &number in &own_bytes_objects {
             let number = number as usize;
             let kind = kinds[number];
             let offset = self.starts.offset(number);
             match kind {
-                DumpType::String | DumpType::StringObject | DumpType::EmptyString => {
-                    let (value, props) = self.load_string(offset, kind)?;
-                    if let Some(props) = props {
-                        string_props.push((number, props));
-                    }
-                    self.objects[number] = value;
+                DumpType::EmptyString => {
+                    self.objects[number] = self.load_empty_string(offset)?;
                 }
                 DumpType::Float => {
                     let value = Value::float(f64::from_bits(self.reader.word(offset)?));
@@ -1017,16 +1058,7 @@ impl Loader<'_> {
         }
         for (string, props_offset) in string_props {
             let spans = self.load_text_properties(props_offset)?;
-            match self.objects[string].kind() {
-                Kind::StringObject(state) => {
-                    state.borrow_mut().props = spans.into();
-                }
-                other => {
-                    return Err(LoadError::Error(format!(
-                        "text properties on a non-object string: {other:?}"
-                    )));
-                }
-            }
+            string.borrow_mut().props = spans.into();
         }
         // The buffers with their text, then the markers into them, the
         // deleted overlays on their lists, and the finalizers in list
@@ -1235,12 +1267,16 @@ impl Loader<'_> {
         Ok(ids)
     }
 
-    /// The object whose start is at OFFSET: a cons of the blocks, or one
-    /// of the object starts.
+    /// The object whose start is at OFFSET: a cons or a string of the
+    /// blocks, or one of the object starts.
     fn object_at(&self, offset: u32) -> Option<Value> {
         match self.starts.find(offset) {
             Some(number) => self.object(number),
-            None => self.conses.cons_at(offset).ok(),
+            None => self
+                .conses
+                .cons_at(offset)
+                .or_else(|_| self.strings.string_at(offset))
+                .ok(),
         }
     }
 
@@ -1321,6 +1357,93 @@ impl Loader<'_> {
             crate::lisp::alloc::adopt_image_cons_blocks(self.image.at(start).as_ptr(), count)
         };
         Ok(conses)
+    }
+
+    /// The image's string blocks (`DumpHeader::string_blocks'), made the
+    /// heap's blocks where the image holds them, once their place in the
+    /// hot section is checked: each cell's data the sdata entry the image
+    /// holds after it (the address the image is mapped at and the word's
+    /// offset, pdumper.c's RELOC_DUMP_TO_DUMP_PTR_RAW), checked to be one
+    /// and to hold the cell's characters.  The strings with text
+    /// properties are returned with their properties records.
+    fn adopt_string_blocks(
+        &mut self,
+        header: &DumpHeader,
+    ) -> Result<Vec<(StringObjectRef, u32)>, LoadError> {
+        use crate::lisp::alloc::{STRING_DATA_ALIGNMENT, STRING_DATA_PREFIX, string_data_size};
+        let start = header.string_blocks.offset as usize;
+        let count = header.string_blocks.nr_entries as usize;
+        let end = start + crate::lisp::alloc::image_string_bytes(count);
+        self.strings = ImageStrings {
+            base: self.image.address.as_ptr() as usize,
+            start,
+            end: count.checked_sub(1).map_or(0, |last| {
+                crate::lisp::alloc::image_string_offset(last)
+                    + crate::lisp::alloc::STRING_CELL_BYTES
+            }),
+        };
+        if count == 0 {
+            return Ok(Vec::new());
+        }
+        if !start.is_multiple_of(crate::lisp::alloc::IMAGE_STRING_BLOCK_BYTES)
+            || start < HEADER_LEN
+            || end > header.discardable_start as usize
+            || end > self.image.len
+        {
+            return Err(LoadError::Error(format!(
+                "the string blocks at {start} are not in the hot section"
+            )));
+        }
+        let image = &self.image;
+        let mut props = Vec::new();
+        // SAFETY: the image is aligned to a block (`IMAGE_ALIGNMENT'), so
+        // the blocks from START are, and their bytes, inside the image by
+        // the check above, stay for the life of the process, and nothing
+        // else uses them; each state is given data checked to be an sdata
+        // entry inside the image, which no other string names (the dumper
+        // writes one for each).
+        unsafe {
+            crate::lisp::alloc::adopt_image_string_blocks(
+                image.at(start).as_ptr(),
+                count,
+                |index, [size, size_byte, intervals, data]| {
+                    let multibyte = size_byte != u64::MAX;
+                    let (size, data) = (size as usize, data as usize);
+                    let nbytes = if multibyte { size_byte as usize } else { size };
+                    let address = if nbytes == 0 {
+                        std::ptr::NonNull::dangling()
+                    } else if data.is_multiple_of(STRING_DATA_ALIGNMENT)
+                        && data >= STRING_DATA_PREFIX
+                        && (data - STRING_DATA_PREFIX)
+                            .checked_add(string_data_size(nbytes))
+                            .is_some_and(|end| end <= image.len)
+                    {
+                        image.at(data)
+                    } else {
+                        return Err(LoadError::Error(format!(
+                            "string data at {data} is not an entry inside the image"
+                        )));
+                    };
+                    if intervals != 0 {
+                        let record = u32::try_from(intervals).map_err(|_| {
+                            LoadError::Error(format!(
+                                "string properties at {intervals} are outside the image"
+                            ))
+                        })?;
+                        let cell = start + crate::lisp::alloc::image_string_offset(index);
+                        props.push((
+                            StringObjectRef::from_raw(image.at(cell).as_ptr().cast()),
+                            record,
+                        ));
+                    }
+                    crate::lisp::types::SharedStringState::from_image(
+                        address, nbytes, size, multibyte,
+                    )
+                    .map_err(|error| LoadError::Error(error.to_string()))
+                },
+            )?;
+        }
+        Ok(props)
     }
 
     /// Phase 3 for the conses: pdumper.c's relocation of the dump where it
@@ -1409,8 +1532,10 @@ impl Loader<'_> {
             return immediate_value(word);
         };
         let code = self.relocs.code(reloc);
-        if code == CONS_LV {
-            return self.conses.cons_at(word as u32);
+        match code {
+            CONS_LV => return self.conses.cons_at(word as u32),
+            STRING_LV => return self.strings.string_at(word as u32),
+            _ => {}
         }
         // DUMP_RELOC_DUMP_TO_DUMP_LV, whatever the target's type: the
         // entry names the object the word does.
@@ -1432,7 +1557,7 @@ impl Loader<'_> {
     }
 
     /// The value of the word WORD at FIELD that the relocation of CODE and
-    /// object TARGET names: a cons of the blocks (pdumper.c's
+    /// object TARGET names: a cons or a string of the blocks (pdumper.c's
     /// RELOC_DUMP_TO_DUMP_LV, the mapped image's address and the word's
     /// offset), the object the entry numbers, or what another relocation
     /// makes.
@@ -1444,8 +1569,10 @@ impl Loader<'_> {
         target: u32,
         word: u64,
     ) -> Result<Value, LoadError> {
-        if code == CONS_LV {
-            return self.conses.cons_at(word as u32);
+        match code {
+            CONS_LV => return self.conses.cons_at(word as u32),
+            STRING_LV => return self.strings.string_at(word as u32),
+            _ => {}
         }
         match self.object(target as usize) {
             Some(value) if code >> 8 == 1 => Ok(value),
@@ -1462,9 +1589,12 @@ impl Loader<'_> {
         word: u64,
     ) -> Result<Value, LoadError> {
         match DumpRelocKind::from_u32(code) {
-            // RELOC_DUMP_TO_DUMP_LV of a cons: the word is the cell's
-            // offset, and the cons is where the image is mapped.
+            // RELOC_DUMP_TO_DUMP_LV of a cons or a string: the word is the
+            // cell's offset, and the object is where the image is mapped.
             Some(DumpRelocKind::DumpToDumpLv(DumpType::Cons)) => self.conses.cons_at(word as u32),
+            Some(DumpRelocKind::DumpToDumpLv(DumpType::String)) => {
+                self.strings.string_at(word as u32)
+            }
             Some(DumpRelocKind::DumpToDumpLv(_)) => Err(LoadError::Error(format!(
                 "field at {field_offset} names no object ({word})"
             ))),
@@ -1631,64 +1761,22 @@ impl Loader<'_> {
         Ok(text.as_ptr())
     }
 
-    fn load_string(
-        &mut self,
-        offset: u32,
-        kind: DumpType,
-    ) -> Result<(Value, Option<u32>), LoadError> {
-        let [size, size_byte, intervals, data] = self.reader.words(offset)?;
-        let (size, intervals, data) = (size as usize, intervals as u32, data as u32);
+    /// One of the singleton empty strings: the process's own, as each
+    /// image object is its identity.
+    fn load_empty_string(&mut self, offset: u32) -> Result<Value, LoadError> {
+        let [size, size_byte, intervals, _] = self.reader.words(offset)?;
         let multibyte = size_byte != u64::MAX;
-        let nbytes = if multibyte { size_byte as usize } else { size };
-        let bytes = self
-            .reader
-            .bytes
-            .get(data as usize..data as usize + nbytes)
-            .ok_or_else(|| {
-                LoadError::Error(format!("string data at {data} is outside the image"))
-            })?;
-        let state = if kind == DumpType::EmptyString {
-            if size != 0 || nbytes != 0 || intervals != 0 {
-                return Err(LoadError::Error("nonempty static empty string".into()));
-            }
-            StringObjectRef::from_storage_kind(
-                bytes,
-                0,
-                multibyte,
-                crate::lisp::alloc::StringAllocation::Ordinary,
-            )
-        } else if nbytes == 0 {
-            StringObjectRef::from_storage_kind(
-                bytes,
-                size,
-                multibyte,
-                crate::lisp::alloc::StringAllocation::Restored,
-            )
-        } else {
-            // The data stays in the image, in the sdata entry the writer
-            // laid out around it.
-            use crate::lisp::alloc::{STRING_DATA_ALIGNMENT, STRING_DATA_PREFIX, string_data_size};
-            let start = data as usize;
-            if !start.is_multiple_of(STRING_DATA_ALIGNMENT)
-                || start < STRING_DATA_PREFIX
-                || start - STRING_DATA_PREFIX + string_data_size(nbytes) > self.image.len
-            {
-                return Err(LoadError::Error(format!(
-                    "string data at {data} is not an entry inside the image"
-                )));
-            }
-            // SAFETY: the permanent image's entry, checked to lie inside
-            // it, aligned, with its owner word and padding; its string is
-            // this one alone.
-            unsafe {
-                StringObjectRef::from_image_data(self.image.at(start), nbytes, size, multibyte)
-            }
+        if size != 0 || multibyte && size_byte != 0 || intervals != 0 {
+            return Err(LoadError::Error("nonempty static empty string".into()));
         }
-        .map_err(|error| LoadError::Error(error.to_string()))?;
-        Ok((
-            Value::StringObject(state),
-            (intervals != 0).then_some(intervals),
-        ))
+        StringObjectRef::from_storage_kind(
+            &[],
+            0,
+            multibyte,
+            crate::lisp::alloc::StringAllocation::Ordinary,
+        )
+        .map(Value::StringObject)
+        .map_err(|error| LoadError::Error(error.to_string()))
     }
 
     /// A bignum record after its fixup: sign/limb count and the cold limbs.

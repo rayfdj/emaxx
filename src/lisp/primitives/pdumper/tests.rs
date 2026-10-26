@@ -1044,8 +1044,8 @@ fn queue_order_writes_referents_after_their_referrer_and_each_object_once() {
         previous = offset;
         kinds.push(DumpType::from_u32(kind).expect("a known object type"));
     }
-    // One vector, two conses (in the cons blocks, not among the starts),
-    // three strings: nothing twice.
+    // One vector, two conses and three strings (in the cons and string
+    // blocks, not among the starts): nothing twice.
     assert_eq!(
         kinds
             .iter()
@@ -1054,14 +1054,9 @@ fn queue_order_writes_referents_after_their_referrer_and_each_object_once() {
         1
     );
     assert!(!kinds.contains(&DumpType::Cons));
+    assert!(!kinds.contains(&DumpType::String));
     assert_eq!(header.cons_blocks.nr_entries, 2);
-    assert_eq!(
-        kinds
-            .iter()
-            .filter(|kind| **kind == DumpType::String)
-            .count(),
-        3
-    );
+    assert_eq!(header.string_blocks.nr_entries, 3);
     // The root vector is the first heap object after the header.
     assert_eq!(kinds[0], DumpType::Vector);
 }
@@ -1111,6 +1106,96 @@ fn image_conses_are_cells_of_the_image_where_it_is_mapped() {
     assert_eq!(
         super::load::CONS_LV,
         DumpRelocKind::DumpToDumpLv(DumpType::Cons).to_u32()
+    );
+}
+
+#[test]
+fn image_strings_are_cells_of_the_image_where_it_is_mapped() {
+    // pdumper.c maps the dump and relocates it in place: the strings come
+    // back as cells of the image's own string blocks, each string once,
+    // with the bytes, characters and properties they were written with,
+    // and collections keep them, see them changed and drop them as they
+    // do the heap's own.
+    let mut interp = Interpreter::new();
+    let mut env = crate::lisp::types::Env::new();
+    let program = r#"
+        (let ((shared "shared")
+              (many nil))
+          (let ((i 0))
+            (while (< i 200)
+              (setq many (cons (format "s%d" i) many) i (1+ i))))
+          (vector shared shared "abc" "h\u00e9llo" (propertize "pq" 'face 'bold)
+                  "\377x" many ""))"#;
+    let form = crate::lisp::reader::Reader::new(program)
+        .read()
+        .expect("setup parses")
+        .expect("setup has a form");
+    let graph = interp.eval(&form, &mut env).expect("setup evaluates");
+    let bytes = dump(&mut interp, vec![(RootSlot::LoadPath, graph)]);
+    let mut target = Interpreter::new();
+    let image = load_image(&bytes, &mut target).expect("the strings load");
+    // The 205 strings, the empty singleton aside, and the property
+    // names', over three blocks.
+    assert!(image.header.string_blocks.nr_entries >= 205);
+    assert!(
+        (image.header.string_blocks.offset as usize)
+            .is_multiple_of(crate::lisp::alloc::IMAGE_STRING_BLOCK_BYTES)
+    );
+    assert!(
+        image.header.string_blocks.offset as usize
+            + crate::lisp::alloc::image_string_bytes(
+                image.header.string_blocks.nr_entries as usize
+            )
+            <= image.header.discardable_start as usize
+    );
+    let loaded = image
+        .roots
+        .iter()
+        .find(|(slot, _)| *slot == RootSlot::LoadPath)
+        .map(|(_, value)| *value)
+        .expect("the root was installed");
+    target.set_symbol_value_cell("zz-image-strings", loaded);
+    let eval = |target: &mut Interpreter, source: &str| {
+        crate::test_support::eval_lisp(target, &mut crate::lisp::types::Env::new(), source)
+            .unwrap_or_else(|error| panic!("{source}: {error:?}"))
+            .to_string()
+    };
+    assert_eq!(
+        eval(
+            &mut target,
+            "(let ((v zz-image-strings))
+               (garbage-collect)
+               (list (eq (aref v 0) (aref v 1)) (aref v 2) (multibyte-string-p (aref v 3))
+                     (length (aref v 3)) (string-bytes (aref v 3))
+                     (get-text-property 1 'face (aref v 4)) (text-properties-at 0 (aref v 2))
+                     (multibyte-string-p (aref v 5)) (aref (aref v 5) 0)
+                     (length (aref v 6)) (car (aref v 6)) (car (nthcdr 199 (aref v 6)))
+                     (eq (aref v 7) \"\")))"
+        ),
+        "(t \"abc\" t 5 6 bold nil nil 255 200 \"s199\" \"s0\" t)"
+    );
+    // Stores into image strings, the one that becomes multibyte and the
+    // one whose bytes shrink, and image strings no longer reached, which
+    // the collections free, the image's blocks staying where they are.
+    assert_eq!(
+        eval(
+            &mut target,
+            "(let ((v zz-image-strings))
+               (aset (aref v 2) 0 ?\\N{GREEK SMALL LETTER ALPHA})
+               (aset (aref v 3) 1 ?e)
+               (aset v 6 nil)
+               (garbage-collect)
+               (make-string 1000 ?z) (garbage-collect)
+               (make-string 1000 ?z) (garbage-collect)
+               (list (append (aref v 2) nil) (multibyte-string-p (aref v 2))
+                     (aref v 3) (string-bytes (aref v 3)) (aref v 0)
+                     (get-text-property 0 'face (aref v 4))))"
+        ),
+        "((945 98 99) t \"hello\" 5 \"shared\" bold)"
+    );
+    assert_eq!(
+        super::load::STRING_LV,
+        DumpRelocKind::DumpToDumpLv(DumpType::String).to_u32()
     );
 }
 

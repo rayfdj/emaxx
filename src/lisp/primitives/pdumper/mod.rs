@@ -300,9 +300,10 @@ pub(crate) fn write_image(
     // parts.  Emaxx's symbols are heap objects already written above,
     // except `nil' and `t', whose cells are written here.
     ctx.dump_builtin_symbol_roots(interp)?;
-    // The conses, as the allocator's blocks the loader maps in place: the
-    // last of the hot objects, every cons having been dumped.
-    ctx.write_cons_blocks()?;
+    // The conses and strings, as the allocator's blocks the loader maps in
+    // place: the last of the hot objects, every cons and string having
+    // been dumped.
+    ctx.write_cell_blocks()?;
 
     let hot_end = ctx.offset();
     ctx.header.discardable_start = hot_end;

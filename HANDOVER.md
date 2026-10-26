@@ -6743,6 +6743,51 @@ setup_process_coding_systems's check now refuses). A 13-form
   completion test expected Emaxx's former insertion order of a private
   obarray and now expects GNU's, `("abba" "abc")'); clippy `-D
   warnings', rustfmt and `git diff --check' pass.
+- **Round 97: the image's strings mapped in place.** The image's 56,992
+  strings (but the two empty singletons) take the conses' way: the
+  dumper writes each as the next cell of this allocator's string blocks
+  (85 cells of 48 bytes in a 4,096-byte block, lisp.h's four words a
+  cell, the properties and data words the image offsets of what they
+  name) at a block-aligned offset after the cons blocks, given with their
+  count by a second header locator (the header is now 116 bytes); a
+  string's offset is provisional while the other objects are dumped,
+  above the conses' provisional range, and every remembered one is
+  translated when the blocks are placed. The loader makes each cell a
+  string of an image block where it lies (its data the sdata entry the
+  image holds after it, checked to be one inside the image and to hold
+  the cell's characters; its mark the current epoch; nothing allocated
+  or counted, as for the conses), returns the 19 that carry text
+  properties to have their records read, and registers the 671 blocks as
+  the image's own bytes, which the collector never gives back. A string
+  reference is the mapped image's address plus the word's offset
+  (RELOC_DUMP_TO_DUMP_LV of a string), so the strings are no longer
+  among the object starts, and their data words need no relocation
+  entries (602.0K hot relocations where there were 654.5K). Adopting the
+  strings resets the image strings' live count itself, so a load with no
+  image region open (the pdumper tests load images directly) can no
+  longer leave a sweep passing a block that holds a dead string unread,
+  which the checked build's assertion caught. The character count of a
+  multibyte string steps over ASCII bytes without decoding them (1,402
+  image strings, 1.6M instructions and now 1.05M). Startup (`--batch
+  --eval nil') took 179.4M instructions and now 170.8M (GNU 166.1M, 52.6M
+  of it collecting); `Loader::load' 99.3M and now 91.5M; loading `ert'
+  367.4M and now 358.4M (GNU 396.6M); the frozen runner's setup of
+  xml-tests.el 501.7M and now 492.7M (GNU 469.5M). Of that setup's gap,
+  outside collection Emaxx's startup is 57.3M over GNU's, loading `ert'
+  33.1M and the runner and test file 23.6M, while its two collections
+  (72.2M) cost less than GNU's three (163.0M). Every symbol's value,
+  function and plist after startup is round 96's but for timestamps,
+  paths and the image's consing counters, and round 96's interning
+  probes, round 95's cons probe and a new probe that stores into image
+  strings (one of them through a multibyte character), keys a weak table
+  by them and drops one across collections give GNU 30.2's output byte
+  for byte. Local validation: the full gate, 3,239 passed across its ten
+  groups with the documented local skips, and the one other test,
+  `just_this_one_wait_still_notifies_an_exited_distractor', whose 0.15 s
+  window is host scheduling, failed once while the host ran profiles
+  beside the gate and passed five times of five alone; the new test with
+  the other 30 pdumper tests; clippy `-D warnings', rustfmt and `git diff
+  --check' pass.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -7481,10 +7526,12 @@ frozen passed on its first attempt (run 40273033064).
 frozen passed on its first attempt (run 40278888554).
 **On `198c173`** (round 94): full Rust gate passed (run 40285385018),
 frozen passed on its first attempt (run 40285394292).
-**On `a79bf68`** (round 95): the Rust gate's ten library groups (3,241
-tests) and the binaries passed and the runner was then lost in the
-integration stage (run 40294000763), whose re-run is pending; frozen
+**On `a79bf68`** (round 95): the Rust gate's first attempt lost its
+runner in the integration stage after the library groups and binaries
+had passed, and the re-run passed (run 40294000763, attempt 2); frozen
 passed on its first attempt (run 40294012283).
+**On `c75f77f`** (round 96): frozen passed on its first attempt (run
+40304554801); the Rust gate (run 40304550655) was still running.
 
 **Findings recorded, not fixed:**
 - `features`, `values` and `top-level` are special variables in Emaxx
@@ -7782,9 +7829,10 @@ and failures are still recorded.
    maps the dump and relocates it; the cost is spread over the kinds,
    strings 28 million, symbols 16, `value_at` about 50, with no single
    hot spot, so it wants the image mapped in place rather than another
-   trim; round 95 maps the conses in place and round 96 keeps the
-   symbols' host text in the image and files them in lread.c's obarray;
-   the strings, symbols, vectors, records and tables are still rebuilt,
+   trim; round 95 maps the conses in place, round 96 keeps the symbols'
+   host text in the image and files them in lread.c's obarray, and round
+   97 maps the strings in place; the symbols, vectors, records and
+   tables are still rebuilt,
    and the initial obarray's buckets are filled again as the symbols are
    read rather than restored); the encode side of coding.c (bullet "Round 56"); and text
    properties kept in one flat vector of spans (each edit shifts it; GNU

@@ -35,8 +35,9 @@ pub use strings::StringObjectRef;
 #[cfg(test)]
 pub(crate) use strings::string_data_census;
 pub(crate) use strings::{
-    CodeState, PendingStringData, STRING_DATA_ALIGNMENT, STRING_DATA_PREFIX, StringAllocation,
-    allocate_restored_string, allocate_string, borrowed_string_roots, code_changes,
+    CodeState, IMAGE_STRING_BLOCK_BYTES, IMAGE_STRINGS_PER_BLOCK, PendingStringData,
+    STRING_DATA_ALIGNMENT, STRING_DATA_PREFIX, StringAllocation, adopt_image_string_blocks,
+    allocate_string, borrowed_string_roots, code_changes, image_string_bytes, image_string_offset,
     live_string_object_census, retire_string_data, string_data_size, sweep_strings,
 };
 pub(crate) mod vectors;
@@ -129,8 +130,9 @@ struct BlockRegistry {
     /// load registered it (see `IMAGE_REGION_OPEN'), for its sweep.
     by_kind: [BTreeMap<usize, bool>; BLOCK_KINDS],
     /// The image blocks that are the image's own bytes where the loader
-    /// mapped them (`adopt_image_cons_blocks'): pdumper.c never frees its
-    /// dump, so their storage is never given back.
+    /// mapped them (`adopt_image_cons_blocks', `adopt_image_string_blocks'):
+    /// pdumper.c never frees its dump, so their storage is never given
+    /// back.
     mapped: BTreeSet<usize>,
 }
 
@@ -194,11 +196,13 @@ fn unregister_block(start: usize) {
 /// pdumper's mapped region, as this loader has it. GNU's sweeps never visit
 /// dumped objects, gcstat never counts them (so `total_bytes_of_live_objects'
 /// and the `garbage-collect' census are the heap's own objects), and their
-/// storage is never reused. This loader rebuilds the image's objects in
-/// ordinary blocks, so every block registered while an image loads is an
+/// storage is never reused. This loader maps the image's conses and
+/// strings where the image holds them and rebuilds its other objects in
+/// ordinary blocks, and every block registered while an image loads is an
 /// image block: the sweeps leave its objects out of the census and its freed
 /// cells off the free lists. Dead objects there are still cleaned, because
-/// they own host storage, and a block with nothing live is still released.
+/// they own host storage, and a block with nothing live is still released
+/// unless it is the image's own bytes.
 static IMAGE_REGION_OPEN: AtomicBool = AtomicBool::new(false);
 
 /// The image's cells of one kind (strings and symbols allocated while an

@@ -21,7 +21,7 @@ pub(crate) const FINGERPRINT_LEN: usize = 32;
 pub(crate) const DUMP_ALIGNMENT: usize = 8;
 /// `dump_off' is `int_least32_t'.
 pub(crate) const DUMP_OFF_MAX: usize = i32::MAX as usize;
-pub(crate) const HEADER_LEN: usize = 108;
+pub(crate) const HEADER_LEN: usize = 116;
 pub(crate) const RELOC_NUM_PHASES: usize = 3;
 pub(crate) const EARLY_RELOCS: usize = 0;
 /// pdumper.c:reloc_phase: the native compilation units are loaded in
@@ -107,9 +107,10 @@ pub(crate) struct TableLocator {
 }
 
 /// pdumper.c:dump_header in the same field order, and after it the image's
-/// cons blocks: the conses are the allocator's blocks in the hot section,
-/// mapped where they lie (GNU's dump objects are its heap's form; Emaxx's
-/// conses carry their blocks' metadata), found by their offset and count.
+/// cons and string blocks: the conses and strings are the allocator's
+/// blocks in the hot section, mapped where they lie (GNU's dump objects
+/// are its heap's form; Emaxx's cells carry their blocks' metadata),
+/// found by their offset and count.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DumpHeader {
     pub(crate) magic: [u8; 16],
@@ -122,6 +123,8 @@ pub(crate) struct DumpHeader {
     pub(crate) hash_list: u32,
     /// The first cons block's offset and the number of conses.
     pub(crate) cons_blocks: TableLocator,
+    /// The first string block's offset and the number of strings.
+    pub(crate) string_blocks: TableLocator,
 }
 
 impl DumpHeader {
@@ -138,6 +141,7 @@ impl DumpHeader {
             cold_start: 0,
             hash_list: 0,
             cons_blocks: TableLocator::default(),
+            string_blocks: TableLocator::default(),
         }
     }
 
@@ -163,6 +167,8 @@ impl DumpHeader {
         put(self.hash_list);
         put(self.cons_blocks.offset);
         put(self.cons_blocks.nr_entries);
+        put(self.string_blocks.offset);
+        put(self.string_blocks.nr_entries);
         out
     }
 
@@ -201,6 +207,10 @@ impl DumpHeader {
             offset: get(),
             nr_entries: get(),
         };
+        let string_blocks = TableLocator {
+            offset: get(),
+            nr_entries: get(),
+        };
         Some(Self {
             magic,
             fingerprint,
@@ -211,6 +221,7 @@ impl DumpHeader {
             cold_start,
             hash_list,
             cons_blocks,
+            string_blocks,
         })
     }
 }
@@ -642,6 +653,10 @@ mod tests {
         header.cons_blocks = TableLocator {
             offset: 32768,
             nr_entries: 3,
+        };
+        header.string_blocks = TableLocator {
+            offset: 65536,
+            nr_entries: 86,
         };
         let bytes = header.to_bytes();
         assert_eq!(bytes.len(), HEADER_LEN);
