@@ -654,39 +654,95 @@ define_dispatch!(
                 if args.len() < 2 || args.len() > 3 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let needle = string_text(&args[0])?;
-                let haystack = string_text(&args[1])?;
-                let hay_chars: Vec<char> = haystack.chars().collect();
-                // fns.c: a nil START-POS, explicit or omitted, means 0.
-                let start = match args.get(2) {
-                    Some(start_pos) if start_pos.is_truthy() => {
-                        let start = start_pos.as_fixnum()?;
-                        if start < 0 || start as usize > hay_chars.len() {
-                            return Err(LispError::SignalValue(Value::list([
-                                Value::symbol("args-out-of-range"),
-                                args[1],
-                                *start_pos,
-                            ])));
-                        }
-                        start as usize
-                    }
-                    _ => 0,
-                };
-                if needle.is_empty() {
-                    return Ok(Value::Integer(start as i64));
-                }
-                let suffix: String = hay_chars[start..].iter().collect();
-                match suffix.find(&needle) {
-                    Some(byte_offset) => {
-                        let char_offset = suffix[..byte_offset].chars().count();
-                        Ok(Value::Integer((start + char_offset) as i64))
-                    }
-                    None => Ok(Value::Nil),
-                }
+                string_search(args[0], args[1], args.get(2).copied().unwrap_or(Value::Nil))
             }
         }
     }
 );
+
+/// fns.c:Fstring_search: memmem over the strings' bytes from START-POS's
+/// byte (string_char_to_byte), the needle first converted to the
+/// haystack's representation when only its ASCII would match as it is.
+fn string_search(needle: Value, haystack: Value, start_pos: Value) -> Result<Value, LispError> {
+    let Kind::StringObject(needle_state) = needle.kind() else {
+        return Err(LispError::WrongTypeArgument("stringp".into(), needle));
+    };
+    let Kind::StringObject(haystack_state) = haystack.kind() else {
+        return Err(LispError::WrongTypeArgument("stringp".into(), haystack));
+    };
+    let needle_text = needle_state.borrow();
+    let hay = haystack_state.borrow();
+    let mut start = 0;
+    let mut start_byte = 0;
+    if !start_pos.is_nil() {
+        let Kind::Integer(index) = start_pos.kind() else {
+            return Err(LispError::WrongTypeArgument("fixnump".into(), start_pos));
+        };
+        if index < 0 || index as usize > hay.len() {
+            return Err(LispError::SignalValue(Value::list([
+                Value::symbol("args-out-of-range"),
+                start_pos,
+            ])));
+        }
+        start = index as usize;
+        start_byte = hay.char_to_byte(start);
+    }
+    if needle_text.len() > hay.len() - start {
+        return Ok(Value::Nil);
+    }
+    let haystart = &hay.bytes()[start_byte..];
+    let needle_bytes = needle_text.bytes();
+    let needle_ascii = || needle_bytes.is_ascii();
+    let found = if if hay.is_multibyte() {
+        needle_text.is_multibyte() || hay.len() == hay.bytes().len() || needle_ascii()
+    } else {
+        !needle_text.is_multibyte() || needle_text.len() == needle_bytes.len()
+    } {
+        if hay.is_multibyte()
+            && needle_text.is_multibyte()
+            && hay.len() == hay.bytes().len()
+            && needle_text.len() != needle_bytes.len()
+        {
+            // A multibyte non-ASCII needle in a multibyte ASCII haystack.
+            return Ok(Value::Nil);
+        }
+        memchr::memmem::find(haystart, needle_bytes)
+    } else if hay.is_multibyte() {
+        // A unibyte non-ASCII needle: string_to_multibyte makes each byte
+        // above 0x7F its eight-bit character.
+        let mut multi = Vec::with_capacity(needle_bytes.len() * 2);
+        for &byte in needle_bytes {
+            if byte < 0x80 {
+                multi.push(byte);
+            } else {
+                multi.extend_from_slice(&[0xC0 | ((byte >> 6) & 1), 0x80 | (byte & 0x3F)]);
+            }
+        }
+        memchr::memmem::find(haystart, &multi)
+    } else {
+        // A multibyte non-ASCII needle in a unibyte haystack can match only
+        // when it is raw bytes (and ASCII): Fstring_to_unibyte's bytes.
+        let mut uni = Vec::with_capacity(needle_bytes.len());
+        let mut i = 0;
+        while i < needle_bytes.len() {
+            let c = needle_bytes[i];
+            if c & 0xFE == 0xC0 {
+                // CHAR_BYTE8_HEAD_P: a raw byte's two-byte form.
+                uni.push(((c & 1) << 6) | (needle_bytes[i + 1] & 0x3F) | 0x80);
+                i += 2;
+            } else if c < 0x80 {
+                uni.push(c);
+                i += 1;
+            } else {
+                return Ok(Value::Nil);
+            }
+        }
+        memchr::memmem::find(haystart, &uni)
+    };
+    Ok(found.map_or(Value::Nil, |offset| {
+        Value::Integer(hay.byte_to_char(start_byte + offset) as i64)
+    }))
+}
 
 /// The `equal' primitive, callable directly (a subr's function pointer).
 pub(super) fn direct_equal(

@@ -1525,11 +1525,6 @@ pub enum ReaderClosureKind {
 #[derive(Clone, Debug, PartialEq)]
 #[doc(hidden)]
 pub enum ReaderForm {
-    CircularLabel {
-        id: u32,
-        payload: Value,
-    },
-    CircularReference(u32),
     HashTable {
         fields: Vec<Value>,
     },
@@ -2249,7 +2244,12 @@ pub(crate) fn is_private_obarray_symbol(symbol: &str) -> bool {
 /// unchanged.  A byte scan, where the split cost every symbol of an
 /// obarray walk.
 pub(crate) fn is_visible_symbol_name(name: &str) -> bool {
-    !name.contains(UNINTERNED_SYMBOL_MARKER_CHAR) && !name.contains(OBARRAY_SYMBOL_MARKER_CHAR)
+    memchr::memchr2(
+        UNINTERNED_SYMBOL_MARKER_CHAR as u8,
+        OBARRAY_SYMBOL_MARKER_CHAR as u8,
+        name.as_bytes(),
+    )
+    .is_none()
 }
 
 pub(crate) fn visible_symbol_name(symbol: &str) -> &str {

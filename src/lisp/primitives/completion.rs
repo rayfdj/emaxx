@@ -188,16 +188,17 @@ pub(crate) fn intern_in_obarray_with_name(
         return Err(LispError::WrongTypeArgument("obarrayp".into(), *obarray));
     };
     if interp.is_standard_obarray_id(id.id) {
-        if !interp.standard_obarray_contains_symbol(symbol_name) {
-            let name = make_name(interp)?;
+        // oblookup's hit is the bucket's symbol; intern_driver makes one
+        // for a miss.
+        if let Some(symbol) = interp.standard_obarray_symbol(symbol_name) {
+            return Ok(Value::Symbol(symbol));
+        }
+        let name = make_name(interp)?;
+        return Ok(Value::Symbol(
             crate::lisp::types::SymbolName::intern_with_lisp_name(
                 symbol_name.to_owned(),
                 Some(name),
-            );
-        }
-        interp.intern_symbol_name(symbol_name);
-        return Ok(crate::lisp::types::interned_symbol_value(
-            symbol_name.to_string(),
+            ),
         ));
     }
     let Some(record) = interp.find_record_mut(id) else {
@@ -255,11 +256,9 @@ pub(crate) fn intern_soft_in_obarray(
     symbol_name: &str,
 ) -> Result<Value, LispError> {
     if matches!(obarray.kind(), Kind::Record(id) if interp.is_standard_obarray_id(id.id)) {
-        return Ok(if interp.standard_obarray_contains_symbol(symbol_name) {
-            crate::lisp::types::interned_symbol_value(symbol_name.to_string())
-        } else {
-            Value::Nil
-        });
+        return Ok(interp
+            .standard_obarray_symbol(symbol_name)
+            .map_or(Value::Nil, Value::Symbol));
     }
     Ok(obarray_symbols(interp, obarray)?
         .into_iter()

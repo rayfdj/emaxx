@@ -519,11 +519,9 @@ fn native_file_primitives_use_deterministic_metadata_not_wall_clock_races() {
         root = root.display().to_string(),
     ));
     let canonical_source = fs::canonicalize(&source).expect("canonicalize native source");
-    let source_path_hash = format!(
-        "{:x}",
-        md5::compute(canonical_source.display().to_string().as_bytes())
-    );
-    let source_content_hash = format!("{:x}", md5::compute(b"source contents\n"));
+    let source_path_hash =
+        crate::lisp::md5::md5_hex(canonical_source.display().to_string().as_bytes());
+    let source_content_hash = crate::lisp::md5::md5_hex(b"source contents\n");
     // comp.c places eln files under `comp-native-version-dir'
     // (VERSION-ABIHASH, this build's own ABI identity -- audit finding
     // 77) inside BASE-DIR; the hash components match the oracle's.
@@ -4430,6 +4428,96 @@ fn overlay_positions_survive_unibyte_to_multibyte_transition() {
             Value::list([Value::Integer(4), Value::Integer(5)]),
             Value::list([Value::Integer(5), Value::Integer(5)]),
         ])
+    );
+}
+
+#[test]
+fn columns_count_display_widths_and_skip_invisible_text_as_scan_for_column_does() {
+    // GNU 30.2's values: a `display' string counts its string-width over
+    // the text it covers, a (space ...) spec its :width, :align-to or
+    // float :relative-width (a float :width is ignored), invisible text
+    // counts nothing and is skipped before the goal is tested, text an
+    // ellipsis stands for still counts, `selective-display' t ends the
+    // line at a CR, and a display table's glyph vector counts its glyphs.
+    assert_eq!(
+        eval_str(
+            r#"
+                (progn
+                  (defun cols (l)
+                    (let (r)
+                      (goto-char (point-min)) (forward-line (1- l))
+                      (let ((b (point)) (e (line-end-position)))
+                        (while (<= b e)
+                          (goto-char b) (push (current-column) r) (setq b (1+ b))))
+                      (nreverse r)))
+                  (defun mtc (l cs)
+                    (let (r)
+                      (dolist (c cs)
+                        (goto-char (point-min)) (forward-line (1- l))
+                        (let ((m (move-to-column c)))
+                          (push (list c m (- (point) (line-beginning-position))) r)))
+                      (nreverse r)))
+                  ;; characters.el's width for the CJK ideographs below.
+                  (set-char-table-range char-width-table '(#x4e00 . #x9fff) 2)
+                  (with-temp-buffer
+                    (insert "a\tb\t\tc\n")
+                    (insert "x\x01y\x7fz\n")
+                    (insert "中文字 abc\n")
+                    (insert "pqr" (propertize "SPACE" 'display '(space :width 5)) "stu\n")
+                    (insert "ab" (propertize "ALIGN" 'display '(space :align-to 10)) "cd\n")
+                    (insert "ab" (propertize "REL" 'display '(space :relative-width 2.0)) "cd\n")
+                    (insert "hid" (propertize "DEN" 'invisible 'foo) "xyz\n")
+                    (insert "abc\rdef\n")
+                    (insert "overlaytext\n")
+                    (overlay-put (make-overlay (- (point) 9) (- (point) 5)) 'display "[O]")
+                    (insert "fl" (propertize "W" 'display '(space :width 2.6)) "x\n")
+                    (insert "<nick20> message\n")
+                    (put-text-property (- (point) 17) (- (point) 8) 'display "X")
+                    (insert "<nick22> abcdefgh\n")
+                    (put-text-property (- (point) 18) (- (point) 9) 'invisible t)
+                    (add-to-invisibility-spec '(foo . t))
+                    (let (r)
+                      (dolist (l '(1 2 3 4 5 6 7 8 9 10 11 12)) (push (cons l (cols l)) r))
+                      (push (mtc 1 '(0 1 2 5 8 9 16 17 20)) r)
+                      (push (mtc 3 '(0 1 2 3 4 6 7 9)) r)
+                      (push (mtc 7 '(0 3 4 5 6 7 8)) r)
+                      (push (mtc 11 '(0 1 3 7)) r)
+                      (push (mtc 12 '(0 1 3 7)) r)
+                      (setq tab-width 4) (push (cons 'tw4 (cols 1)) r)
+                      (setq ctl-arrow nil) (push (cons 'noctl (cols 2)) r)
+                      (setq selective-display t) (push (cons 'sel (cols 8)) r)
+                      (setq selective-display nil)
+                      (put 'display-table 'char-table-extra-slots 6)
+                      (let ((dt (make-char-table 'display-table)))
+                        (aset dt ?b (vector ?B ?B ?B))
+                        (aset dt ?中 (vector ?Z))
+                        (setq buffer-display-table dt)
+                        (push (cons 'dt (list (cols 1) (cols 3))) r)
+                        (setq buffer-display-table nil))
+                      (setq tab-width 8)
+                      (goto-char (point-min))
+                      (push (list 'force (move-to-column 3 t) (point)
+                                  (buffer-substring (line-beginning-position) (line-end-position)))
+                            r)
+                      (prin1-to-string (nreverse r)))))
+                "#
+        ),
+        Value::String(
+            concat!(
+                "((1 0 1 8 9 16 24 25) (2 0 1 3 4 6 7) (3 0 2 4 6 7 8 9 10) ",
+                "(4 0 1 2 3 8 8 8 8 8 9 10 11) (5 0 1 2 10 10 10 10 10 11 12) ",
+                "(6 0 1 2 4 4 4 5 6) (7 0 1 2 3 4 5 6 7 8 9) (8 0 1 2 3 5 6 7 8) ",
+                "(9 0 1 2 3 6 6 6 6 7 8 9 10) (10 0 1 2 3 4) ",
+                "(11 0 1 1 1 1 1 1 1 1 1 2 3 4 5 6 7 8) (12 0 0 0 0 0 0 0 0 0 0 1 2 3 4 5 6 7 8) ",
+                "((0 0 0) (1 1 1) (2 8 2) (5 8 2) (8 8 2) (9 9 3) (16 16 4) (17 24 5) (20 24 5)) ",
+                "((0 0 0) (1 2 1) (2 2 1) (3 4 2) (4 4 2) (6 6 3) (7 7 4) (9 9 6)) ",
+                "((0 0 0) (3 3 3) (4 4 4) (5 5 5) (6 6 6) (7 7 7) (8 8 8)) ",
+                "((0 0 0) (1 1 9) (3 3 11) (7 7 15)) ((0 0 9) (1 1 10) (3 3 12) (7 7 16)) ",
+                "(tw4 0 1 4 5 8 12 13) (noctl 0 1 5 6 10 11) (sel 0 1 2 3 3 3 3 3) ",
+                "(dt (0 1 4 7 8 12 13) (0 1 3 5 6 7 10 11)) (force 3 4 \"a  \tb\t\tc\"))"
+            )
+            .into()
+        )
     );
 }
 

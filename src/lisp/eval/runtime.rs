@@ -1649,6 +1649,7 @@ impl Interpreter {
         self.create_record_with_type(Value::symbol(type_name), slots)
     }
 
+    #[cfg(test)]
     pub fn create_record_with_type(&mut self, type_tag: Value, slots: Vec<Value>) -> Value {
         Value::LispRecord(LispRecordRef::new(type_tag, &slots))
     }

@@ -8729,3 +8729,335 @@ fn unibyte_conversion_keeps_each_byte_and_maps_point() {
         ])
     );
 }
+
+#[test]
+fn string_positions_convert_through_gnu_cache() {
+    // fns.c string_char_to_byte / string_byte_to_char: forward, backward
+    // and random indices, Faset changing a character's width, and the
+    // primitives that start from a character index (GNU 30.2's values).
+    assert_eq!(
+        eval_str(
+            r#"(prin1-to-string
+                (let* ((s (concat "aé" (make-string 3 ?b) "€x\377" "ü"))
+                       (out nil))
+                  (dotimes (i (length s)) (push (aref s i) out))
+                  (let ((i (length s)))
+                    (while (> i 0) (setq i (1- i)) (push (aref s i) out)))
+                  (dolist (i '(7 1 6 2 0 8 3)) (push (aref s i) out))
+                  (aset s 1 ?e)
+                  (push (list (aref s 1) (aref s 2) (aref s 6) (length s) (string-bytes s)) out)
+                  (aset s 0 ?€)
+                  (push (list (aref s 0) (aref s 1) (aref s 5) (aref s 8) (string-bytes s)) out)
+                  (aset s 7 ?y)
+                  (push (list s (aref s 7) (aref s 8) (string-bytes s)) out)
+                  (push (list (substring s 2 5) (substring s 5) (substring s -2)) out)
+                  (push (list (string-match "b+" s 1) (match-end 0) (string-match "€" s 3)
+                              (string-match "y" s) (string-match "ü" s 8))
+                        out)
+                  (push (list (string-search "b" s 3) (string-search "€" s 1)
+                              (string-search "ü" s) (string-search "zz" s)
+                              (string-search "" s 4)
+                              (condition-case e (string-search "a" s 99) (error e)))
+                        out)
+                  (let ((text "(a é) \"é€\" [b ü] c") (pos 0) forms)
+                    (condition-case nil
+                        (while t
+                          (let ((r (read-from-string text pos)))
+                            (push r forms)
+                            (setq pos (cdr r))))
+                      (end-of-file nil))
+                    (push (nreverse forms) out)
+                    (push (read-from-string text 2 9) out))
+                  (nreverse out)))"#
+        ),
+        Value::string(
+            "(97 233 98 98 98 8364 120 4194303 252 252 4194303 120 8364 98 98 98 233 97 \
+             4194303 233 120 98 97 252 98 (101 98 120 9 13) (8364 101 8364 252 15) \
+             (\"€ebbb€xyü\" 121 252 14) (\"bbb\" \"€xyü\" \"yü\") (2 5 5 7 8) \
+             (3 5 8 nil 4 (args-out-of-range 99)) \
+             (((a é) . 5) (\"é€\" . 10) ([b ü] . 16) (c . 18)) (é . 4))"
+        )
+    );
+}
+
+#[test]
+fn string_search_converts_needle_representation_like_gnu() {
+    assert_eq!(
+        eval_str(
+            r#"(prin1-to-string
+                (list (string-search "\351" "a\351b")
+                      (string-search (string-to-multibyte "\351") "a\351b")
+                      (string-search "é" "aéb" 1)
+                      (string-search "" "abc" 3)
+                      (string-search "b" (string-to-multibyte "a\351b"))
+                      (string-search "\351" (string-to-multibyte "a\351b"))
+                      (string-search "é" "abc")
+                      (string-search "abcd" "abc")))"#
+        ),
+        Value::string("(1 1 1 3 2 1 nil nil)")
+    );
+}
+
+#[test]
+fn string_property_edits_touch_only_the_spans_they_meet() {
+    assert_eq!(
+        eval_str(
+            r#"(prin1-to-string
+                (let ((s (copy-sequence "abcdefghij")))
+                  (put-text-property 2 5 'face 'bold s)
+                  (put-text-property 4 7 'face 'italic s)
+                  (put-text-property 0 10 'x 1 s)
+                  (put-text-property 3 4 'face 'bold s)
+                  (remove-text-properties 5 6 '(x nil) s)
+                  (put-text-property 8 9 'face 'bold s)
+                  (put-text-property 9 10 'face 'italic s)
+                  (let ((many (make-string 40 ?z)))
+                    (dotimes (i 10) (put-text-property (* 4 i) (+ 2 (* 4 i)) 'n i many))
+                    (put-text-property 5 27 'm t many)
+                    (remove-text-properties 9 13 '(n nil) many)
+                    (list (object-intervals s)
+                          (next-single-property-change 0 'm many)
+                          (text-properties-at 9 many)
+                          (text-properties-at 4 many)
+                          (text-properties-at 26 many)))))"#
+        ),
+        Value::string(
+            "(((0 2 (x 1)) (2 4 (x 1 face bold)) (4 5 (x 1 face italic)) (5 6 (face italic)) \
+             (6 7 (x 1 face italic)) (7 8 (x 1)) (8 9 (face bold x 1)) (9 10 (face italic x 1))) \
+             5 (m t) (n 1) (m t))"
+        )
+    );
+}
+
+#[test]
+fn reading_a_buffer_takes_its_text_in_place() {
+    assert_eq!(
+        eval_str(
+            r#"(prin1-to-string
+                (with-temp-buffer
+                  (insert "(a é) ; c\n\"é€\" [b ü] #s(hash-table data (k v)) c")
+                  (goto-char (point-min))
+                  (let (forms)
+                    (condition-case nil
+                        (while t (push (list (read (current-buffer)) (point)) forms))
+                      (end-of-file nil))
+                    (goto-char 2)
+                    (narrow-to-region 2 8)
+                    (push (list (read (current-buffer)) (point)) forms)
+                    (widen)
+                    (goto-char (point-min))
+                    (push (read-positioning-symbols (current-buffer)) forms)
+                    (nreverse forms))))"#
+        ),
+        Value::string(
+            "(((a é) 6) (\"é€\" 15) ([b ü] 21) (#s(hash-table data (k v)) 47) (c 49) (a 3) \
+             (#<symbol a at 2> #<symbol é at 4>))"
+        )
+    );
+}
+
+#[test]
+fn read_builds_literal_objects_as_their_syntax_closes() {
+    assert_eq!(
+        eval_str(
+            r##"(prin1-to-string
+                (list (car (read-from-string "#s(foo 1 #s(bar 2))"))
+                      (let ((h (car (read-from-string
+                                     "#s(hash-table test equal data (\"a\" 1 #s(k) [2 3]))"))))
+                        (list (hash-table-count h) (gethash "a" h) (hash-table-test h)))
+                      (car (read-from-string "#&5\"\\37\""))
+                      (aref (car (read-from-string "#[(x) \"\\300\\207\" [x] 1]")) 0)
+                      (car (read-from-string "#1=(a #s(r #1#) . #1#)"))
+                      (let ((x (car (read-from-string "(#s(r) #2=(b) #2#)"))))
+                        (eq (nth 1 x) (nth 2 x)))
+                      (car (read-from-string "#s(r #3=(c) #3#)"))
+                      (condition-case e (read-from-string "#s()") (error e))
+                      (condition-case e (read-from-string "#[1 2]") (error e))
+                      (char-table-p
+                       (car (read-from-string
+                             (prin1-to-string (make-char-table 'foo)))))))"##
+        ),
+        Value::string(
+            "(#s(foo 1 #s(bar 2)) (2 1 equal) #&5\"\x1f\" (x) (a #s(r #1) a #s(r #1) . #2) t \
+             #s(r (c) (c)) (invalid-read-syntax \"#s\") \
+             (invalid-read-syntax \"Invalid byte-code object\") t)"
+        )
+    );
+}
+
+#[test]
+fn load_reads_a_compiled_file_as_gnu_readchar_reads_it() {
+    // lread.c Fload's direct read of a compiled file: `#@N' skips N bytes,
+    // `#$' is `load-file-name', (#$ . POS) stays a lazy doc reference
+    // unless `load-force-doc-strings' (then the unibyte string skipped),
+    // `#@00' ends the file, and a byte that begins no whole character is
+    // a raw byte.  The values are GNU 30.2's.
+    let result = eval_str_with_upstream_batch(
+        r##"(progn
+             (defvar emaxx-lazy-out nil)
+             (let* ((header ";ELC\x1e\0\0\0\n;;; Compiled\n;;; in Emacs version 30.2\n;;; with all optimizations.\n\n\n\n")
+                    (doc (+ (length header) 5))
+                    (lazy (make-temp-file "emaxx-lazy-" nil ".elc"))
+                    (raw (make-temp-file "emaxx-raw-" nil ".elc"))
+                    (coding-system-for-write 'no-conversion)
+                    results)
+               (unwind-protect
+                   (progn
+                     (with-temp-file lazy
+                       (set-buffer-multibyte nil)
+                       (insert header "#@27 My little\ndoc string\nhere\x1f\n"
+                               (format "(defalias 'emaxx-lazy-fun #[0 \"\\300\\207\" [ok] 1 (#$ . %d)])\n" doc)
+                               (format "(setq emaxx-lazy-out (list (eq #$ load-file-name) '(#$ . %d)))\n" doc)
+                               "#@00 rest ignored (\n"))
+                     (with-temp-file raw
+                       (set-buffer-multibyte nil)
+                       (insert header
+                               "(setq emaxx-lazy-out (list \"\xc0\x01\xc2\xff\" \"h\xc3\xa9\" \"\xf6\xa0\x87\x8a\" ?\xc3\xa9 (symbol-name 'a\xc3\x9b)))\n"))
+                     (load lazy nil t)
+                     (push (list (equal (aref (symbol-function 'emaxx-lazy-fun) 4) (cons lazy doc))
+                                 (car emaxx-lazy-out)
+                                 (equal (nth 1 emaxx-lazy-out) (cons lazy doc))
+                                 (documentation 'emaxx-lazy-fun))
+                           results)
+                     (let ((load-force-doc-strings t))
+                       (load lazy nil t))
+                     (push (list (aref (symbol-function 'emaxx-lazy-fun) 4)
+                                 (multibyte-string-p (aref (symbol-function 'emaxx-lazy-fun) 4))
+                                 (nth 1 emaxx-lazy-out))
+                           results)
+                     (load raw nil t)
+                     (push (mapcar (lambda (s)
+                                     (if (stringp s)
+                                         (list (multibyte-string-p s) (string-to-list s))
+                                       s))
+                                   emaxx-lazy-out)
+                           results)
+                     (push (list (let ((load-file-name "x")) (read "(#$ . 5)"))
+                                 (with-temp-buffer
+                                   (insert "#@5 abc\x1f(z)")
+                                   (goto-char (point-min))
+                                   (read (current-buffer)))
+                                 (read "[a [b] c]"))
+                           results)
+                     (prin1-to-string (nreverse results)))
+                 (delete-file lazy)
+                 (delete-file raw))))"##,
+    );
+    assert_string_value(
+        result,
+        "((t t t \"My little\ndoc string\nhere\") \
+         (\"My little\ndoc string\nhere\" nil \"My little\ndoc string\nhere\") \
+         ((nil (192 1 194 255)) (t (104 233)) (t (1704394)) 233 (t (97 219))) \
+         ((\"x\" . 5) (z) [a [b] c]))",
+    );
+}
+
+#[test]
+fn edits_and_matches_on_multibyte_text_keep_positions_like_gnu() {
+    // Each conversion between characters and bytes the buffer remembers
+    // must follow the edits after it.  The values are GNU 30.2's.
+    assert_eq!(
+        eval_str(
+            r#"(prin1-to-string
+                (with-temp-buffer
+                  (dotimes (i 300) (insert "line é " (number-to-string i) "\n"))
+                  (let (r)
+                    (goto-char 100)
+                    (push (list (looking-at "[^\n]*") (match-beginning 0) (match-end 0)) r)
+                    (goto-char (point-max))
+                    (push (list (looking-at "\\'") (match-beginning 0)) r)
+                    (goto-char 50) (delete-char 3)
+                    (push (list (point) (char-after) (buffer-substring 45 55)) r)
+                    (goto-char 51) (delete-char -2)
+                    (push (list (point) (buffer-substring 45 55)) r)
+                    (narrow-to-region 200 300) (goto-char 250)
+                    (push (list (looking-at ".*") (match-beginning 0) (match-end 0)) r)
+                    (goto-char 300) (push (list (looking-at "") (match-end 0)) r)
+                    (goto-char 200)
+                    (push (list (re-search-forward "é \\([0-9]+\\)" nil t)
+                                (match-beginning 1) (match-end 1))
+                          r)
+                    (widen)
+                    (goto-char (point-max)) (delete-char -5)
+                    (push (list (point) (buffer-size)) r)
+                    (goto-char 1) (insert "ééé") (goto-char 2)
+                    (push (list (looking-at "é+") (match-end 0)) r)
+                    (nreverse r))))"#
+        ),
+        Value::string(
+            "((t 100 100) (t 3191) (50 53 \"\nline5\nlin\") (49 \"\nlin\nline \") \
+             (t 250 255) (t 300) (205 203 205) (3181 3180) (t 4))"
+        )
+    );
+}
+
+#[test]
+fn read_tokens_strings_and_positions_like_lread() {
+    // lread.c read0: a symbol's token ends at whitespace, at "()[]\";" and,
+    // after its first character, at "#'`,"; strings copy their runs; the
+    // positions count characters.  The values are GNU 30.2's.
+    assert_eq!(
+        eval_str(
+            r###"(prin1-to-string
+                 (list
+                  (mapcar (lambda (s) (condition-case err (read-from-string s) (error (car err))))
+                          '("foo#bar" "foo'bar" "foo,bar" "foo`bar" "a?b" "a.b" "1.5e3" "-" "+1"
+                            ".5" "1." "foo\\ bar" "foo\\" "aé" "a\u00a0b" "a;b" "a\"b\"" "  abc"
+                            "\"aé b\"" "\"\\x41\\ b\"" "\"a\\\nb\"" "\"abc" "##" "1\\23" "abc\u3000def"))
+                  (let ((symbols-with-pos-enabled t))
+                    (with-temp-buffer
+                      (insert "(aé b \"çd\" e)")
+                      (goto-char (point-min))
+                      (list (mapcar (lambda (x) (if (symbol-with-pos-p x) (symbol-with-pos-pos x) x))
+                                    (read-positioning-symbols (current-buffer)))
+                            (point))))
+                  (read-from-string "(é foo bar)")
+                  (read-from-string (string-to-unibyte "(a \"\351\" b)"))))"###
+        ),
+        Value::string(
+            "(((foo . 3) (foo . 3) (foo . 3) (foo . 3) (a?b . 3) (a.b . 3) (1500.0 . 5) (- . 1) \
+             (1 . 2) (0.5 . 2) (1 . 2) (foo\\ bar . 8) end-of-file (aé . 2) (a . 1) (a . 1) (a . 1) \
+             (abc . 5) (\"aé b\" . 6) (\"Ab\" . 9) (\"ab\" . 6) end-of-file (## . 2) (\\123 . 4) \
+             (abc\u{3000}def . 7)) ((2 5 \"çd\" 12) 14) ((é foo bar) . 11) ((a \"é\" b) . 9))"
+        )
+    );
+}
+
+#[test]
+fn read_labels_are_placeholders_substituted_like_lread() {
+    // lread.c read0: `#N=' reads a placeholder cons for the `#N#' inside
+    // the object, which becomes the object itself when it is a cons and is
+    // replaced inside it otherwise; GNU 30's walk leaves a hash table's
+    // entries alone.  The values are GNU 30.2's.
+    assert_eq!(
+        eval_str(
+            r##"(let ((print-circle t))
+                  (prin1-to-string
+                   (mapcar
+                    (lambda (s)
+                      (condition-case err
+                          (let ((v (car (read-from-string s))))
+                            (cond
+                             ((and (consp v) (stringp (car v)))
+                              (list (eq (plist-get (text-properties-at 0 (car v)) 'p) (car v))
+                                    (eq (car v) (cadr v))))
+                             ((and (consp v) (hash-table-p (nth 2 v)))
+                              (list (eq (car v) (cadr v)) (gethash (car v) (nth 2 v))))
+                             ((byte-code-function-p v) (eq (aref (aref v 2) 0) v))
+                             ((hash-table-p v) (gethash 'k v))
+                             (t v)))
+                        (error err)))
+                    '("#1=(a . #1#)" "#1=[a #1#]" "#1=#s(foo #1#)"
+                      "#1=#s(hash-table data (k #1#))" "#1=#2=(a #1# #2#)"
+                      "(#1=a #1#)" "#1=#2=#3=(x #3#)" "#1=#1#" "(#1# #1=a)"
+                      "(#1=#(\"ab\" 0 1 (p #1#)) #1#)"
+                      "(#1=[x] #1# #2=#s(hash-table test eq data (#1# #2#)))"
+                      "#1=#[(x) \"\\300\\207\" [#1# foo] 2]"))))"##
+        ),
+        Value::string(
+            "(#1=(a . #1#) #2=[a #2#] #3=#s(foo #3#) (nil) #4=(a . #5=(#4# (a . #5#))) \
+             (a a) (x . #6=((x . #6#))) (invalid-read-syntax \"nonsensical self-reference\") \
+             (invalid-read-syntax \"#1#\") (t t) (t (nil)) t)"
+        )
+    );
+}

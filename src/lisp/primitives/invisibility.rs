@@ -104,7 +104,7 @@ pub(crate) fn invisibility_atom_eq(a: &Value, b: &Value) -> bool {
     match (a.kind(), b.kind()) {
         (Kind::Symbol(a), Kind::Symbol(b)) => a == b,
         (Kind::Integer(a), Kind::Integer(b)) => a == b,
-        (Kind::Nil, Kind::Nil) => true,
+        (Kind::Nil, Kind::Nil) | (Kind::T, Kind::T) => true,
         _ => false,
     }
 }

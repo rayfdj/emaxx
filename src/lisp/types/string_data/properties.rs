@@ -55,6 +55,32 @@ impl StringProperties {
     pub fn has_intervals(&self) -> bool {
         self.0.is_some()
     }
+
+    /// The spans, moved out of their allocation.
+    pub fn into_vec(mut self) -> Vec<StringPropertySpan> {
+        let Some(data) = self.0.take() else {
+            return Vec::new();
+        };
+        // SAFETY: this unique owner initialized LEN spans in this layout;
+        // they move into the vector, and the allocation is freed without
+        // dropping them (the emptied owner drops nothing).
+        unsafe {
+            let len = data.as_ref().len;
+            let (layout, offset) = property_layout(len);
+            let mut spans = Vec::with_capacity(len);
+            std::ptr::copy_nonoverlapping(
+                data.as_ptr()
+                    .cast::<u8>()
+                    .add(offset)
+                    .cast::<StringPropertySpan>(),
+                spans.as_mut_ptr(),
+                len,
+            );
+            spans.set_len(len);
+            dealloc(data.as_ptr().cast(), layout);
+            spans
+        }
+    }
 }
 
 impl std::fmt::Debug for StringProperties {

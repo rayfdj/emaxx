@@ -6047,14 +6047,434 @@ setup_process_coding_systems's check now refuses). A 13-form
   top margin at the last adjust_frame_glyphs, so after a `menu-bar-mode'
   toggle and window commands in one command GNU draws the window one row
   off (its menu bar over the first text row, the echo area twice) until
-  the next resize; Emaxx draws from the windows' pixel edges. And the
-  move_it_by_lines reseat skip found in round 80 is still open.
+  the next resize; Emaxx draws from the windows' pixel edges. (The
+  move_it_by_lines reseat skip found in round 80 is round 82's.)
   Local validation: the full gate, 3,215 passed across its ten groups
   with the documented local skips (eval_03, 326, includes the new
   bar-lines and margin tests), and 89 GNU test files (every ERC scenario
   file, edebug, kmacro, keyboard, minibuffer, simple, xdisp, scroll,
   xt-mouse, isearch, repeat, term, python, so-long and others; 1,785
   tests) as GNU.
+- **Round 82: the display iterator's motion between screen lines on a
+  live display (xdisp.c move_it_by_lines, indent.c Fvertical_motion),
+  and indent.c's column scan.** (1) src/lisp/primitives/move_it.rs
+  ports what the iterator does that the terminal's screen-line layouts
+  do not show by themselves: reseat's handle_stop at a position (a
+  replacing `display' spec first: an empty string is popped at once,
+  past the text the property covers, while a string that shows, a
+  stretch or an image stops there; then invisible text, skipped with the
+  properties after it handled anew unless an ellipsis shows); where
+  move_it_to (MOVE_TO_POS) stops for a position (at a screen line it
+  begins there from the buffer, which move_it_to checks before
+  handle_stop runs, else past the display replacement or invisible text
+  over it); back_to_previous_visible_line_start;
+  move_it_vertically_backward (IT, 0), whose start of a screen line that
+  begins inside a multi-line display string is the buffer text after the
+  string; and move_it_by_lines (forward to ZV when the lines run out and
+  past a display string a line begins inside; backward -DVPOS buffer
+  lines within -DVPOS full screen lines, reseated there, forward again
+  when continuation lines took it too far, back to the reseated start
+  when that moved nowhere, and the pass without the limit). Interactive
+  `vertical-motion' is Fvertical_motion over them (start_display's reseat
+  at point, the scan from the reseated start of point's line, the stop
+  before a display string at point, the overshoot backtracking, one line
+  less from a line start a display string covers, the forward cases), so
+  `scroll-up' and `scroll-down' (window_scroll_line_based),
+  `move-to-window-line' and `line-move-visual' follow it; `recenter' with
+  a non-negative ARG is move_it_by_lines (IT, 0) then (IT, -ARG); and
+  compute_window_start_on_continuation_line starts from the reseated
+  line start, so a start reseated past a prefix stays. (recenter 1) and
+  (vertical-motion -1) now land past a 9-character invisible or
+  empty-display prefix at a line start, the round 80 finding, while
+  (vertical-motion 0), (recenter 0), a negative ARG and a display string
+  that shows keep the line start, and `scroll-down' from a line start a
+  display string covers lands on the previous line's start. A position's
+  screen line among a display line's row starts is the first beginning
+  at it (a multi-line display string begins several rows at its
+  position) else the last beginning before it (row_index_of, also for
+  `posn-at-point''s walk). (2) indent.c scan_for_column is ported for
+  `current-column', `move-to-column' and `indent-to': invisible text is
+  skipped, though not text an ellipsis stands for, before the goal is
+  tested (so (move-to-column 0) on a line beginning with invisible text
+  goes past it); check_display_width counts a `display' string's
+  `string-width' and a (space ...) spec's :width, :relative-width or
+  :align-to over the text the property or its overlay covers (a float
+  :width is ignored, as GNU's `||' leaves it); a display table's glyph
+  vectors count their glyphs; `selective-display' t ends the line at a
+  CR; and Fmove_to_column converts an overshooting tab from the scan's
+  previous position. Emaxx counted the raw characters under a display
+  string, so `previous-line' from text after a display string set the
+  wrong goal column. buffer_display_table also wants DISP_TABLE_P's six
+  extra slots now, for `string-width' and the mode line too. (3) An
+  invisibility spec list holding t hides text whose `invisible' is t
+  (invisibility_atom_eq never matched t). tmux probes of GNU 30.2 (40
+  lines whose prefixes are in turn an empty display string, invisible
+  and "X": `recenter' 0 to 5 and -1 to -3 from line ends, line starts and
+  inside a prefix, `vertical-motion' -1 and 0, `scroll-down' twice from
+  line 20, `set-window-start' with and without NOFORCE; 30 lines adding
+  overlay prefixes, wrapping lines and a prefix displayed as "AB\nCD":
+  `vertical-motion' -3 to 2 from line ends, starts and middles,
+  `recenter' 1 to 3, a cons goal column, `previous-line',
+  `scroll-down', `move-to-window-line' and motion from inside the
+  two-line string) give GNU's values and screens; batch probes of the
+  columns of tabs, controls with and without `ctl-arrow', wide
+  characters, display strings, space specs, ellipses, a CR under
+  `selective-display', display tables and `move-to-column' FORCE give
+  GNU's. An instrumented copy of GNU's build (fprintf in Fvertical_motion
+  and move_it_by_lines) settled the multi-line display string case:
+  move_it_to stops at a line start that is its target before the string
+  there is pushed.
+  Local validation: the full gate, 3,219 passed across its ten groups
+  with the documented local skips (eval_04, 255, includes the column
+  test; primitives, 753, the two motion tests), and the same 89 GNU test
+  files (1,785 tests) as GNU.
+- **Round 83: character and byte positions in strings, the reader's
+  inputs and `load''s read loop.** A survey of 515 GNU test files
+  (survey82) put Emaxx at 0.71 of GNU's total but small files at 1.6 to
+  2.4 times; profiles of them showed per-call costs that grow with the
+  string or text (quadratic loops) and a reader doing extra passes.
+  (1) fns.c string_char_to_byte and string_byte_to_char with GNU's
+  one-entry cache (the string and the character and byte positions last
+  converted) replace a scan from the start of a multibyte string for each
+  character index: `aref', `substring', `compare-strings', Faset (which
+  leaves the cache at the stored character, as GNU's does), `string-match'
+  and `looking-at' on strings convert their START and the match registers
+  through it, and the matcher's text-property lookups on a string read in
+  place too. On a 100,001-character string holding one non-ASCII
+  character, 100,001 `aref's took 11.8 s (GNU 0.037 s) and now 0.023 s;
+  10,000 `substring's 2.4 s, now 0.014 s (GNU 0.019); 50,000 `string-match'
+  calls with START 3.8 s, now 0.019 s (GNU 0.029). The cache entry also
+  remembers whether the string's bytes are the matcher's stored form, so
+  `string-match' no longer validates the whole string on every call.
+  (2) `read-from-string' converts only START (read_internal_start), so
+  reading a 2,782-form text form by form went from 11.0 s to 0.15 s (GNU
+  0.095). (3) fns.c Fstring_search is ported: memmem over the strings'
+  bytes from START's byte, the needle converted to the haystack's
+  representation as GNU converts it (a unibyte non-ASCII needle to
+  eight-bit characters, a raw-byte needle to unibyte), the out-of-range
+  error `(args-out-of-range START)' as GNU signals it. (4) `read' from a
+  buffer or marker reads the buffer's rope in place instead of copying the
+  text from point to the end for every call. (5) A string's text
+  properties are edited only over the spans the change meets, with their
+  equal neighbours merged; the old code cloned every span's plist on each
+  `put-text-property' (128 times GNU on a string of 2,000 intervals, now
+  12). (6) `load' of a file is lread.c's readevalloop: each form is read
+  with its symbols interned in the obarray current then, then evaluated
+  before the next is read, so a read error comes after the forms before it
+  ran and the separate whole-form interning walk is gone; the
+  unescaped-character-literal warning is computed after the forms
+  (Fload's load_warn_unescaped_character_literals). (7) The reader skips
+  ASCII whitespace a byte at a time, comments with memchr, and checks for
+  NO-BREAK SPACE only at its lead byte; a token is tried as a number only
+  when it starts with a sign, digit or period (string_to_number), which
+  also stops `infe+INF' reading as a float.
+  Known differences kept: Emaxx merges a string's adjacent intervals with
+  equal plists and drops a string's intervals whose plists are all empty
+  (GNU's `object-intervals' shows (8 9 ...) (9 10 ...) and ((0 3 nil))).
+  Local validation: the full gate, 3,223 passed across its ten groups
+  with the documented local skips (eval_05, 361, includes four new tests
+  of the position cache, `string-search', string property edits and
+  buffer reads, whose values are GNU 30.2's); clippy `-D warnings',
+  rustfmt and `git diff --check' pass.
+- **Round 84: literal objects built as the reader reads them (lread.c
+  read0), and an intern that looks a name up once.** (1) Records, closures
+  (bytecode_from_rev_list), bool vectors, hash tables
+  (hash_table_from_plist) and char-tables are now made when their syntax
+  closes, from fields that are already the objects they read as, through a
+  read context (`LispReadContext': the obarray current at the read, the
+  interpreter that builds the object) that `read', `read-from-string',
+  `load''s readevalloop and positioned reads share; the placeholder and
+  the interpreter's walk over every read form that replaced placeholders
+  afterwards remain only for a form that defines a `#N=' label, which
+  can be referred to inside a literal before the literal is complete (the
+  case read0 itself defers to its substitution pass). Loading 13 `.elc'
+  files spent 62M instructions in that walk; now 5.6M. (2) An empty
+  `#s()' is invalid syntax "#s" (RE_record), not an error of Emaxx's
+  wording. (3) The reader reads a text or encoded input's bytes from the
+  slice directly instead of through the input enum on every byte. (4)
+  `intern' in the standard obarray looks the name up once: a hit returns
+  the symbol found, a miss interns it then (the old path looked up, then
+  interned, which looked up again). The 13-file load went from 541.6M
+  instructions to 479.8M (GNU 390.9M, of which Emaxx's startup is 239M
+  and GNU's 173M); the reads inside it from 146.3M to 102.7M including the
+  objects now built there. The remaining load-specific gap is the
+  decoding pass over a `.elc''s bytes and the lazy-docstring rewriting
+  (35M together), which GNU does not have: it reads the file's bytes with
+  readchar and handles `#@' and `#$' in read0 (next round). Local
+  validation: the full gate, 3,223 passed across its ten groups with the
+  documented local skips, and the new eval_05 test of the literals read
+  builds (its values are GNU 30.2's) on its own; clippy `-D warnings',
+  rustfmt and `git diff --check' pass.
+- **Round 85: `load' reads a compiled file's bytes directly, as lread.c
+  readevalloop on Qget_file_char does.** Emaxx decoded each `.elc' into
+  a Rust string first (decode_utf8_emacs_source, re-spelling raw bytes and
+  characters past Unicode as `\x' escapes) and then rewrote it twice
+  (preprocess_lazy_doc_source cut the `#@' doc strings out,
+  rewrite_lazy_doc_refs replaced `#$' and (#$ . N) with the file name
+  as a literal); the three passes and their 426 lines are gone. (1) A file
+  named `.elc' or starting with `;ELC' is read from its bytes, each
+  character as readchar's read_multibyte takes it: a lead byte and its
+  trailing codes, else the lead byte as a raw byte (BYTE8_TO_CHAR), so a
+  string of raw byte-code octets reads unibyte and one of characters past
+  Unicode multibyte, as GNU's do. `utf-8-emacs' source that is not UTF-8
+  reads the same way. (2) skip_lazy_string: from a file `#@N' skips N
+  bytes after the digits, the character just read among them (not up to
+  the next ^_, which a doc string can hold), with `load-force-doc-strings'
+  saving them as lread.c's two saved_strings, freed when the load ends;
+  `#@00' ends the input; elsewhere (a buffer, a string) the skip still
+  runs to the ^_. (3) `#$' reads as the value of `load-file-name' in any
+  read (it read as the symbol `#$' outside a load), so a compiled
+  function's (#$ . N) doc reference holds the load's file name object.
+  (4) read0's RE_list_dot hack: with `load-force-doc-strings' a (#$ . N)
+  whose car is `load-file-name' reads as get_lazy_string's unibyte
+  string, from the saved strings or else the file (doc.c get_doc_string
+  (VAL, true)); the old rewrite made it a multibyte literal.
+  bytecode_from_rev_list's reading of lazily loaded byte-code from a file
+  (the `byte-compile-dynamic' of Emacs before 30) is ported too: a
+  (FILE . N) code slot is read at once, and code with nil constants is
+  the printed (BYTECODE . CONSTANTS) read from it. (5) Fload of a compiled
+  file binds no `read-symbol-shorthands' and scans no file-local
+  variables; its `lexical-binding' comes from the head lines. (6) A
+  function stream's reader (`read' with a function) builds literal
+  objects as it reads too: the stream is the read's context. (7) The
+  reader makes a vector literal a vector directly, not a list headed by
+  `vector-literal' that `Value::list' turned into one. Loading the 13
+  `.elc' files took 479.8M instructions and now 425.0M (GNU 390.9M; the
+  loads themselves, without startup, 186M against GNU's 218M), and their
+  wall time is within noise of GNU's (0.033 to 0.051 s against 0.037 to
+  0.040). A probe writing compiled files with lazy doc strings, `#$',
+  `#@00', raw bytes, a character past Unicode and a two-byte symbol
+  character, loaded with and without `load-force-doc-strings', and `#$'
+  and `#@' read from a string and a buffer, gives GNU 30.2's values (an
+  eval_05 test holds them).
+  Finding recorded, not fixed: `Value::list' still turns any list whose
+  first element is the symbol `vector-literal' into a vector, and
+  `Value::to_vec' of a vector still prepends that symbol; 63 sites rely on
+  the pair, and each `Value::list' call compares a leading symbol's name.
+  A list a Lisp program builds with that symbol first through a primitive
+  that uses `Value::list' would come back a vector.
+  Local validation: the full gate, 3,225 passed across its ten groups
+  with the documented local skips (eval_05, 363, includes the new test);
+  clippy `-D warnings', rustfmt and `git diff --check' pass. survey84
+  (round 84's build): 514 of the 515 files give GNU's `Ran' line and exit
+  code; network-stream-tests differs only in GNU's own skip count, which
+  moves between runs (5, 4 or 3 skipped) while Emaxx's stays 3.
+- **Round 86: buffer position conversions from the nearest known
+  position, as marker.c buf_charpos_to_bytepos does.** A rope's char to
+  byte conversion walked its tree every time (350 to 700 instructions);
+  GNU scans from the closest of PT, GPT, BEGV, ZV, its cached last
+  conversion and the markers. (1) BufferText keeps the chunk of the rope
+  its last walk reached, with the char and byte offsets it starts at, and
+  the last four conversions (shifted by an insertion or deletion before
+  them, dropped by one over them): a conversion that was made since the
+  last edit before it is answered at once, and one inside the chunk is
+  scanned from the nearest known position there, so walks happen only
+  when a lookup leaves the chunk. The ends of the text, an ASCII text and
+  position 1 need no lookup at all. The chunk's characters are counted
+  only when a later lookup by character needs them (a deletion's single
+  lookup would otherwise count a whole chunk). The view is forgotten by
+  every edit, and a cloned rope shares its leaves, so the chunk it
+  addresses stays as it was. (2) The regexp matcher's snapshot takes
+  point's byte (PT_BYTE) and the accessible region's bytes from those
+  conversions, and maps point, BEGV and ZV back and forth without walking.
+  (3) `delete-region' reads the deleted text and its two byte offsets in
+  one walk instead of three (text, then each end's marker byte position).
+  (4) The syntax scanner's CHAR_TO_BYTE answers the text's ends without a
+  walk. (5) `undo-auto-amalgamate' (called by `delete-char' and
+  `self-insert-command') and the `field' property name are looked up by
+  their symbols, not by interning their names on every call. Per call, on
+  a 20,000-line multibyte buffer (base subtracted): `delete-char' in the
+  middle 8,980 instructions to 6,212 (GNU 2,686); `looking-at' at
+  successive positions 5,780 to 3,285 (GNU 1,197); `forward-word' 9,388
+  to 7,959 (GNU 2,864); `forward-sexp' 7,422 to 6,155 (GNU 3,678);
+  `re-search-forward' 7,033 to 6,681 (GNU 3,400); `search-forward' 7,251
+  to 6,899 (GNU 3,997); `buffer-substring' 5,794 (GNU 5,022) and
+  `char-after' 373 (GNU 301) unchanged. What remains of these gaps:
+  ropey's own costs (each public call checks its index against a length
+  summed over the root's children, `Rope::len_bytes' and `len_chars' do
+  the same and rescan a one-leaf rope, `RopeSlice' creation sums them
+  five times, and a one-character removal costs about 1,650 instructions
+  of tree work against GNU's gap move); scanners that walk their own
+  snapshot's rope instead of sharing the buffer's conversions (the syntax
+  scanner, the matcher's reader, the non-regexp search); and per-call
+  costs outside the text (`forward-word''s field and overlay lookups,
+  char-table reads and variable lookups are most of its gap). A probe of
+  `looking-at', `re-search-forward' and `delete-char' at, before and after
+  point, at narrowing bounds and after edits gives GNU 30.2's values (an
+  eval_05 test holds them), and a buffer test checks conversions against
+  a model across 400 random insertions and deletions. Local validation:
+  the full gate, 3,227 passed across its ten groups with the documented
+  local skips (eval_05, 364, and the buffer tests include the new ones);
+  clippy `-D warnings', rustfmt and `git diff --check' pass.
+- **Round 87: `#N=' labels as lread.c read0 reads them.** Emaxx read a
+  label as a wrapper form (`#N=' around its object, `#N#' as a reference
+  form), and once a top-level read had a label every later literal
+  (record, closure, hash table, char-table) stayed a placeholder too; the
+  read's caller then walked the whole result up to six times (finding the
+  forms, resolving labels, then records, hash tables and char-tables),
+  each walk keeping its visited objects in SipHash sets. Native-compiled
+  units' static data is printed with `print-circle', so every `.eln' load
+  paid for this over its whole constant vector. Now `#N=' makes read0's
+  placeholder cons, in read_objects_map, before the object is read, and
+  `#N#' reads as whatever the map holds (an unknown number is invalid
+  syntax). When the object is complete (RE_numbered): a cons takes over
+  the placeholder (its car and cdr copied in, so the `#N#' inside it are
+  already right); any other object is recorded in read_objects_completed
+  and put everywhere the placeholder is inside it by
+  substitute_object_recurse (conses, vectors, closures, records,
+  char-tables, string property lists and, for a read without a context,
+  the open literal forms; GNU 30's walk leaves a hash table's entries
+  alone, as its hash tables have no Lisp slots in their header). The maps
+  are emptied after each top-level read, as readevalloop and
+  read_internal_start do, so a later form cannot name an earlier label.
+  Literals are built as their syntax closes whenever the read has a
+  context. The wrapper forms, the materializer behind them (`#N=' handling
+  in `materialize_read_object_literals') and their cases in the copier,
+  the collector, the interning walk and `json-serialize' are gone. Two
+  reads that signalled errors now give GNU's values:
+  `#1=#s(hash-table data (k #1#))' is a table whose value is the
+  placeholder `(nil)', and `#1=#2=(a #1# #2#)' is
+  `#1=(a . #2=(#1# (a . #2#)))'. Loading `json' (and with it the byte
+  compiler's native unit) took 198.3M instructions and now 165.5M (GNU
+  109.6M); a test file's setup in the frozen runner (startup, `ert', the
+  runner, the file) 802.6M and now 767.2M (GNU 518.3M). What remains of
+  that setup gap, by stage: startup 222M against 152M (the image loader
+  deserializes object by object where GNU maps its dump); loading `ert'
+  281M against 235M, though GNU spends 105M of its 235M in two
+  collections and Emaxx 25M in one, so outside collection the reader is
+  97M against GNU's 57M, the matcher 34M against 18M and MD5 of the
+  source files for the native-code lookup 16M against 8M (the `md5'
+  crate is 2.5 times gnulib's cost a byte; both hash the same files).
+  A probe reading labels in conses, vectors, records, closures, hash
+  tables and string properties, from a string, a buffer and a loaded
+  file, gives GNU 30.2's values (an eval_05 test holds them). Local
+  validation: the full gate, 3,228 passed across its ten groups with the
+  documented local skips (eval_05, 365, includes the new test; the reader
+  tests check the placeholder, the substitution and the per-read maps);
+  clippy `-D warnings', rustfmt and `git diff --check' pass.
+- **Round 88: the reader's common cases read in place.** Each character
+  the reader took from an encoded string or an `.elc' file's bytes was
+  decoded twice (once to look, once to step past it), each atom was
+  built a character at a time into a fresh `String', whitespace was
+  skipped through the general peek, a string literal's characters were
+  pushed one at a time, and a symbol's recorded position was found by
+  decoding every character since the last one. Now an atom of ASCII
+  without escapes (nearly every symbol and number in Lisp source) is
+  scanned in place up to read0's terminators (whitespace, `()[]";' and,
+  after its first character, `#'`,') and goes straight to the number
+  parse and the obarray; a run of ASCII whitespace and a run of string
+  text other than `"' and `\' are taken from the bytes at once; an
+  encoded character is decoded once; the shorthand rewrite is skipped
+  when the file has no shorthands; and positions in a well-formed string
+  count its lead bytes. make_string's classification of a native unit's
+  static data (alloc.c: multibyte only when every byte is part of a
+  valid character) steps over ASCII runs instead of decoding and
+  re-encoding each byte. Loading `json' took 165.5M instructions and now
+  125.3M (GNU 109.6M, of which about 53M is its collector against
+  Emaxx's 33M); loading `ert' 281.2M and now 230.2M (GNU 235.1M); a test
+  file's setup in the frozen runner 767.2M and now 710.4M (GNU 518.3M).
+  Outside collection, Emaxx's reader in the `ert' load now costs less
+  than GNU's readchar/read0. What remains of the `ert' load gap: the
+  matcher, 28M against GNU's 18M, where each `re_search' call scans the
+  256-entry fastmap for a single lead byte (about 1,100 instructions a
+  call, 11.5K calls); MD5 of the source files, 15.7M against 7.6M (the
+  `md5' crate copies each byte into its block buffer); and interning,
+  13.2M against GNU's 1.3M `oblookup'. A probe of tokens next to every
+  terminator, escapes, numbers, NO-BREAK SPACE and other non-ASCII
+  characters, unterminated atoms and strings, string escapes, positions
+  after comments and multibyte text, unibyte and encoded sources and a
+  function stream gives GNU 30.2's values (an eval_05 test holds them).
+  Local validation: the full gate, 3,229 passed across its ten
+  groups with the documented local skips (eval_05, 366, includes
+  the new test); clippy `-D warnings', rustfmt and `git diff --check'
+  pass.
+- **Round 89: gnulib's MD5, the fastmap's lone lead byte, one obarray
+  probe.** Three costs of every file `load' finds or reads. (1) The `md5'
+  crate copied each input byte into its block buffer and rebuilt the
+  words from it, about twice gnulib's cost a byte; the native-code lookup
+  hashes each candidate source file (comp-el-to-eln-filename), so loading
+  `ert' spent 15.7M instructions there against GNU's 7.6M. Now
+  src/lisp/md5.rs is gnulib md5.c (md5_init_ctx, md5_process_bytes with
+  whole blocks processed where they lie, md5_process_block,
+  md5_finish_ctx, md5_buffer) and serves `md5', `secure-hash' and the
+  native compiler's file and ABI hashes; the crate is gone. (2) Each
+  `re_search' call found out whether the fastmap admits exactly one byte
+  (for its memchr skip) by scanning all 256 entries, about 1,100
+  instructions a call; the count is now taken once, when
+  re_compile_fastmap fills the fastmap. (3) Reading a symbol in the
+  initial obarray hashed its name twice (a membership test, then the
+  intern) and scanned it twice for the internal markers; now one scan
+  and one probe return the symbol, as oblookup does. Loading `ert' took
+  230.2M instructions and now 203.6M (GNU 235.1M); loading `json'
+  125.3M and now 113.6M (GNU 109.6M); a test file's setup in the frozen
+  runner 710.4M and now 673.3M (GNU 518.3M); startup 221.3M and now
+  219.3M (GNU 151.6M). The setup gap is now mostly after `ert' is
+  loaded: loading the runner and running the file cost 250.4M against
+  GNU's 131.6M, where 41K `string-match' calls cost about 1,950
+  instructions each with everything they call against GNU's 1,060: a
+  search's `gl_state' setup for `parse-sexp-lookup-properties' costs 361
+  against GNU's 113 and its pooled matcher state 236, and each call's
+  string text view 106 and case-fold variable reads 110. A probe of `md5' and
+  `secure-hash' over strings of every block boundary, multibyte and
+  unibyte strings and coding systems, substrings, buffers and regions,
+  and of `string-match' and buffer searches whose patterns one byte,
+  several or none can start (with and without case folding, multibyte
+  and unibyte text) gives GNU 30.2's values; the md5 module's test
+  checks RFC 1321's suite and every split of a message. Local
+  validation: the full gate, 3,230 passed across its ten groups
+  with the documented local skips; clippy `-D warnings', rustfmt and
+  `git diff --check' pass.
+
+- **Round 90: search.c's searchbufs, a search's matcher state and
+  syntax setup as GNU's.** A test file's setup in the frozen runner
+  makes 41K `string-match' calls from byte code, each about 1,950
+  instructions with everything it calls against GNU's 1,060. Where the excess was: (1) the pattern cache was
+  a vector, the pattern found removed from it and inserted again at the
+  front on release; it is now searchbufs: REGEXP_CACHE_SIZE cells
+  linked most recently used first, the cell found or compiled into
+  moved to the front and busy while its search runs (freeze_pattern),
+  the first empty cell or else the least recently used one that is not
+  busy taken for a new pattern, `Too much matching reentrancy' when
+  every cell is busy, a failed compile leaving its cell empty
+  (compile_pattern_1), clear_regexp_cache skipping busy cells; the cell
+  is released however the search ends, as the unwind-protect does; (2)
+  each search took its matcher arrays from a pool vector and cleared
+  all four register arrays; now the last finished search's state is
+  kept whole and reused, its best registers written before they are
+  read, as re_match_2_internal's are (13.1M to 3.4M); (3) a search in a
+  string set up gl_state for `parse-sexp-lookup-properties' whatever
+  the string held (361 against GNU's 113 a call); now a string without
+  intervals leaves the buffer's table, since update_syntax_table's
+  interval_of finds no `syntax-table' property there and returns, and
+  only a string with text properties gets gl_state (20.2M to 2.3M); (4)
+  a unibyte string's view checks its bytes for ASCII directly instead
+  of through the conversion cache.
+  `string-match' now costs about 1,410 instructions a call (re_search
+  478 against GNU's 579; compile_pattern and the release 293 against
+  GNU's 289 with its unwind records); what remains above GNU is the
+  `case-fold-search' read (82: a LOCALIZED variable's loaded binding
+  through the general lookup, where C reads Vcase_fold_search), the
+  string view (74), the canon table lookup (56) and the match data
+  copy (59). A test file's setup took 673.3M instructions and now 644.7M
+  (GNU 518.3M); loading `ert' 203.6M and now 198.8M (GNU 235.1M);
+  loading `json' 113.6M and now 111.9M (GNU 109.6M). Of the setup gap
+  now: startup 219.1M against GNU's 151.6M, where the image loader
+  costs 176.5M against pdumper_load's 53.4M (GNU's startup also
+  collects once, 52.6M, which Emaxx's does not); collections overall
+  70M in Emaxx against GNU's 163.8M, so outside collection Emaxx's
+  setup is 574.7M against GNU's 354.5M. A probe of more than 20
+  patterns in rotation, many-group patterns followed by one-group
+  ones, POSIX and backtracking matches, invalid patterns, case folding
+  (ASCII, non-ASCII, unibyte), `search-spaces-regexp', syntax classes
+  across `modify-syntax-entry' and `with-syntax-table', strings with
+  `syntax-table' and other text properties with and without
+  `parse-sexp-lookup-properties', buffer searches over properties,
+  searches nested through `replace-regexp-in-string' and a
+  `syntax-propertize-function', 30 nested `string-match' calls and the
+  `-p' variants gives GNU 30.2's values, as do the earlier regexp,
+  reader and md5 probes. Local validation: the full gate, 3,230
+  passed across its ten groups with the documented local skips; clippy
+  `-D warnings', rustfmt and `git diff --check' pass.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -6755,6 +7175,33 @@ frozen passed on its first attempt (run 40199438907); PR #106 merged
 rounds 77 to 79 into main (`4fc869e`).
 **On `0a98371`** (round 80): full Rust gate passed (run 40213825220),
 frozen passed on its first attempt (run 40213827546).
+**On `1d47612`** (round 81): full Rust gate passed (run 40221555021),
+frozen passed on its first attempt (run 40221557268); PR #107 merged
+rounds 80 and 81 into main (`e5a16c0`).
+**On `b2c9e9d`** (round 82): full Rust gate passed (run 40230698235),
+frozen passed on its first attempt (run 40230700102).
+**On `cf7b8ef`** (round 83): full Rust gate passed (run 40238054634),
+frozen passed on its first attempt (run 40238056589). survey83 (the 515
+GNU test files under round 83's build): each file gives GNU's `Ran' line
+and exit code.
+**On `457fa3e`** (round 84): full Rust gate passed (run 40240886483),
+frozen passed on its first attempt (run 40240888419).
+**On `ed0631e`** (round 85): full Rust gate passed (run 40243227941);
+frozen failed only GNU's known oracle flake (Emaxx 7,670 passed with 0
+unexpected, GNU 7,669 passed with 1 unexpected), and its failed job was
+rerun passed (run 40243230215, attempt 2).
+**On `20204fe`** (round 86): full Rust gate passed (run 40246689049),
+frozen passed on its first attempt (run 40246690701).
+**On `6f55171`** (round 87): full Rust gate passed (run 40250303048);
+frozen failed only GNU's known oracle flake (Emaxx 7,670 passed with 0
+unexpected, GNU 7,669 passed with 1 unexpected), and its failed job was
+rerun passed (run 40250305113, attempt 2).
+**On `b69436b`** (round 88): full Rust gate passed (run 40252770662),
+frozen passed on its first attempt (run 40252773076).
+**On `2c64adc`** (round 89): full Rust gate passed (run 40255536669);
+frozen failed only GNU's known oracle flake (Emaxx 7,670 passed with 0
+unexpected, GNU 7,669 passed with 1 unexpected), and its failed job was
+rerun (run 40255538925, attempt 2).
 
 **Findings recorded, not fixed:**
 - `features`, `values` and `top-level` are special variables in Emaxx

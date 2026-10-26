@@ -65,7 +65,7 @@ pub(crate) fn initialize_runtime(interpreter: &mut Interpreter) {
         generated_native_subrs::NATIVE_ABI_SYSTEM_CONFIGURATION_OPTIONS,
         signatures,
     );
-    let abi_hash = format!("{:x}", md5::compute(identity.as_bytes()))[..8].to_string();
+    let abi_hash = crate::lisp::md5::md5_hex(identity.as_bytes())[..8].to_string();
     let version_directory = format!(
         "{}-{abi_hash}",
         crate::lisp::primitives::emacs_version_value()

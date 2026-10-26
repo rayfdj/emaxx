@@ -1,8 +1,7 @@
 use super::*;
 use crate::lisp::types::Kind;
-use crate::lisp::types::StringPropertySpan;
 
-/// lread.c:bytecode_from_rev_list, after resolving circular reader labels.
+/// lread.c:bytecode_from_rev_list's checks of a closure literal's slots.
 fn prepare_closure_literal(
     interp: &mut Interpreter,
     slots: &mut [Value],
@@ -30,362 +29,119 @@ fn prepare_closure_literal(
     Ok(())
 }
 
-struct CircularReadMaterializer<'a> {
-    interpreter: &'a mut Interpreter,
-    environment: &'a mut Env,
-    labels: std::collections::HashMap<u32, Value>,
-    records: std::collections::HashMap<usize, Value>,
-    resolved_cons: std::collections::HashSet<usize>,
-    resolved_vectors: std::collections::HashSet<usize>,
+/// The reader's view of the Lisp world as `read' and `load' read: symbols
+/// interned in OBARRAY, literal objects built as their syntax closes.
+pub(crate) struct LispReadContext<'i> {
+    pub(crate) interp: &'i mut Interpreter,
+    pub(crate) obarray: Value,
+    pub(crate) env: &'i mut Env,
 }
 
-impl CircularReadMaterializer<'_> {
-    fn invalid() -> LispError {
-        LispError::ReadError("invalid-read-syntax".into())
-    }
-
-    fn circular_label(value: &Value) -> Option<(u32, Value)> {
-        let Kind::ReaderForm(form) = value.kind() else {
-            return None;
-        };
-        match form.as_ref() {
-            ReaderForm::CircularLabel { id, payload } => Some((*id, *payload)),
-            _ => None,
+impl<'i> LispReadContext<'i> {
+    /// The context of a read now: the current `obarray'.
+    pub(crate) fn current(interp: &'i mut Interpreter, env: &'i mut Env) -> Self {
+        let obarray = interp.lookup_var("obarray", env).unwrap_or(Value::Nil);
+        Self {
+            interp,
+            obarray,
+            env,
         }
     }
+}
 
-    fn circular_reference(value: &Value) -> Option<u32> {
-        let Kind::ReaderForm(form) = value.kind() else {
-            return None;
-        };
-        match form.as_ref() {
-            ReaderForm::CircularReference(id) => Some(*id),
-            _ => None,
-        }
+impl crate::lisp::reader::ReadContext for LispReadContext<'_> {
+    fn intern(&mut self, name: &str) -> Result<Value, LispError> {
+        crate::lisp::primitives::intern_in_obarray(self.interp, &self.obarray, name)
     }
 
-    fn quoted_hash_table_with_circular_data(value: &Value) -> bool {
-        let Some((head, tail)) = value.cons_values() else {
-            return false;
-        };
-        if head.symbol_str() != Some("quote") {
-            return false;
-        }
-        let Some((literal, end)) = tail.cons_values() else {
-            return false;
-        };
-        end.is_nil()
-            && matches!(
-                literal.kind(),
-                Kind::ReaderForm(form)
-                    if matches!(form.as_ref(), ReaderForm::HashTable { .. })
-            )
-            && crate::lisp::reader::contains_circular_read_syntax(&literal)
+    fn build(&mut self, form: ReaderForm) -> Result<Value, LispError> {
+        self.interp.build_read_object(form, self.env)
     }
 
-    fn char_table_placeholder(
-        &mut self,
-        form: &crate::lisp::types::ReaderFormRef,
-        label: Option<u32>,
-    ) -> Result<Option<Value>, LispError> {
-        if let Some(value) = self.records.get(&form.identity()).copied() {
-            if let Some(label) = label {
-                self.labels.insert(label, value);
-            }
-            return Ok(Some(value));
-        }
-        let (value, fields, skip) = match form.as_ref() {
-            ReaderForm::CharTable { fields } => (
-                Value::CharTable(CharTableRef::new(Value::Nil, Value::Nil, fields.len() - 68)),
-                fields,
-                0,
-            ),
-            ReaderForm::SubCharTable { fields } => (
-                Value::SubCharTable(SubCharTableRef::new(
-                    fields[0].as_integer()? as usize,
-                    fields[1].as_integer()? as u32,
-                    Value::Nil,
-                )),
-                fields,
-                2,
-            ),
-            _ => return Ok(None),
-        };
-        self.records.insert(form.identity(), value);
-        if let Some(label) = label {
-            self.labels.insert(label, value);
-        }
-        for (index, field) in fields.iter().skip(skip).enumerate() {
-            let field = self.resolve(field)?;
-            let field = self
-                .interpreter
-                .materialize_read_object_literals(field, self.environment)?;
-            match value.kind() {
-                Kind::CharTable(table) => table.set_slot(index, field),
-                Kind::SubCharTable(table) => table.set_slot(index, field),
-                _ => unreachable!(),
-            }
-        }
-        Ok(Some(value))
+    fn load_file_name(&mut self) -> Value {
+        self.interp.read_load_file_name(self.env)
     }
 
-    fn record_placeholder(
-        &mut self,
-        form: &crate::lisp::types::ReaderFormRef,
-        label: Option<u32>,
-    ) -> Result<Option<Value>, LispError> {
-        if let Some(table) = self.char_table_placeholder(form, label)? {
-            return Ok(Some(table));
-        }
-        let identity = form.identity();
-        if let Some(record) = self.records.get(&identity).cloned() {
-            if let Some(label) = label {
-                self.labels.insert(label, record);
-            }
-            return Ok(Some(record));
-        }
-
-        let (slots, closure_kind) = match form.as_ref() {
-            ReaderForm::Record { slots } => (slots, None),
-            ReaderForm::Closure { kind, slots } => (slots, Some(*kind)),
-            _ => return Ok(None),
-        };
-        let ordinary_record = closure_kind.is_none();
-        if ordinary_record {
-            if slots.is_empty() {
-                return Err(LispError::ReadError("empty record literal".into()));
-            }
-            crate::lisp::primitives::check_record_data_slots(slots.len() - 1)?;
-        }
-
-        // lread.c installs the finished object's address in the #N= table
-        // before reading its fields.  Allocate the Rust arena object first
-        // for the same reason: comp.el's serialized IR contains records whose
-        // predecessor/successor slots point back to the record itself.
-        let placeholder = if closure_kind.is_some() {
-            if !(3..=6).contains(&slots.len()) {
-                return Err(LispError::ReadError("Invalid byte-code object".into()));
-            }
-            Value::Closure(crate::lisp::types::ClosureRef::filled(
-                slots.len(),
-                Value::Nil,
-            ))
-        } else {
-            self.interpreter.create_record_with_type(
-                Value::Nil,
-                vec![Value::Nil; slots.len().saturating_sub(1)],
-            )
-        };
-        self.records.insert(identity, placeholder);
-        if let Some(label) = label {
-            // Reused label numbers replace the previous mapping, exactly as
-            // GNU's reader does; already-built objects retain their links.
-            self.labels.insert(label, placeholder);
-        }
-
-        let mut resolved = Vec::with_capacity(slots.len());
-        for slot in slots {
-            let slot = self.resolve(slot)?;
-            let slot = self
-                .interpreter
-                .materialize_read_record_literals(&slot, self.environment)?;
-            let slot = crate::lisp::primitives::materialize_read_hash_table_literals(
-                self.interpreter,
-                &slot,
-                self.environment,
-            )?;
-            let slot = crate::lisp::primitives::materialize_read_char_table_literals(
-                self.interpreter,
-                &slot,
-                self.environment,
-            )?;
-            resolved.push(slot);
-        }
-
-        if let Kind::Closure(closure) = placeholder.kind() {
-            prepare_closure_literal(self.interpreter, &mut resolved, self.environment)?;
-            for (index, value) in resolved.into_iter().enumerate() {
-                closure.initialize_slot(index, value);
-            }
-            return Ok(Some(placeholder));
-        }
-        if let Kind::LispRecord(record) = placeholder.kind() {
-            for (index, value) in resolved.into_iter().enumerate() {
-                record.set(index, value);
-            }
-            return Ok(Some(placeholder));
-        }
-        unreachable!("reader allocated an inline closure or record")
+    fn force_doc_strings(&mut self) -> bool {
+        self.interp.read_force_doc_strings(self.env)
     }
 
-    fn fill_cons(&mut self, template: &Value, target: &Value) -> Result<(), LispError> {
-        let Some((template_car, template_cdr)) = template.cons_values() else {
-            return Err(Self::invalid());
-        };
-        let Some((target_car, target_cdr)) = target.cons_cells() else {
-            return Err(Self::invalid());
-        };
-        target_car.set(self.resolve(&template_car)?);
-        target_cdr.set(self.resolve(&template_cdr)?);
-        Ok(())
-    }
-
-    fn resolve(&mut self, value: &Value) -> Result<Value, LispError> {
-        if Self::quoted_hash_table_with_circular_data(value) {
-            return Err(Self::invalid());
-        }
-        if let Some(id) = Self::circular_reference(value) {
-            return self.labels.get(&id).cloned().ok_or_else(Self::invalid);
-        }
-        if let Some((id, template)) = Self::circular_label(value) {
-            if Self::circular_reference(&template) == Some(id) {
-                return Err(LispError::ReadError("nonsensical self-reference".into()));
-            }
-            if let Kind::ReaderForm(form) = template.kind()
-                && let Some(record) = self.record_placeholder(&form, Some(id))?
-            {
-                return Ok(record);
-            }
-
-            if matches!(template.kind(), Kind::Vector(_)) {
-                // The inline slots can already refer to this very vector.
-                // Publish the existing identity before filling those slots.
-                self.labels.insert(id, template);
-                return self.resolve(&template);
-            }
-
-            // The parser has already allocated the cons tree.  GNU's reader
-            // installs that object's address in the #N= table before filling
-            // it, so use the existing cons as the placeholder instead of
-            // cloning every list in a form that happens to contain a label.
-            // Besides matching GNU's identity model, this avoids quadratic
-            // list rescans in comp.el's large serialized compiler context.
-            let placeholder = matches!(template.kind(), Kind::Cons(_)).then(|| template);
-            if let Some(placeholder) = placeholder {
-                self.labels.insert(id, placeholder);
-                if let Kind::Cons(cell) = placeholder.kind() {
-                    self.resolved_cons.insert(ConsCell::identity(&cell));
-                }
-                self.fill_cons(&template, &placeholder)?;
-                return Ok(placeholder);
-            }
-
-            let resolved = self.resolve(&template)?;
-            self.labels.insert(id, resolved);
-            return Ok(resolved);
-        }
-
-        match value.kind() {
-            Kind::Cons(_) => {
-                // Walk ordinary list spines without one Rust frame per
-                // element. Labels still enter through resolve, so shared
-                // and cyclic tails keep their already-published identity.
-                let mut cursor = *value;
-                while let Kind::Cons(cell) = cursor.kind() {
-                    if !self.resolved_cons.insert(ConsCell::identity(&cell)) {
-                        break;
-                    }
-                    cell.car.set(self.resolve(&cell.car.get())?);
-                    let tail = cell.cdr.get();
-                    if matches!(tail.kind(), Kind::Cons(_)) {
-                        cursor = tail;
-                    } else {
-                        cell.cdr.set(self.resolve(&tail)?);
-                        break;
-                    }
-                }
-                Ok(*value)
-            }
-            Kind::Vector(vector) => {
-                if !self.resolved_vectors.insert(vector.identity()) {
-                    return Ok(*value);
-                }
-                let slots = vector.slots().collect::<Vec<_>>();
-                for (index, slot) in slots.iter().enumerate() {
-                    vector.set(index, self.resolve(slot)?);
-                }
-                Ok(*value)
-            }
-            Kind::StringObject(state) => {
-                let spans = state.borrow().props.to_vec();
-                if spans.is_empty() {
-                    return Ok(*value);
-                }
-                let mut resolved_spans = Vec::with_capacity(spans.len());
-                for span in spans {
-                    let mut props = Vec::with_capacity(span.props.len());
-                    for (key, property) in span.props {
-                        props.push((
-                            crate::lisp::types::PropertyName::new(self.resolve(&key.value())?),
-                            self.resolve(&property)?,
-                        ));
-                    }
-                    resolved_spans.push(StringPropertySpan { props, ..span });
-                }
-                state.borrow_mut().props = resolved_spans.into();
-                Ok(*value)
-            }
-            Kind::ReaderForm(form) => {
-                if let Some(record) = self.record_placeholder(&form, None)? {
-                    return Ok(record);
-                }
-                let resolve_fields = |this: &mut Self, fields: &[Value]| {
-                    fields
-                        .iter()
-                        .map(|field| this.resolve(field))
-                        .collect::<Result<Vec<_>, _>>()
-                };
-                let resolved = match form.as_ref() {
-                    // A #N= label can make the same hash table appear both
-                    // as an instruction constant and as its relocation-table
-                    // key.  Hash tables compare by identity, so materialize
-                    // the table before the label is installed rather than
-                    // leaving a ReaderForm that each later graph walk would
-                    // independently turn into a different table.
-                    ReaderForm::HashTable { fields } => {
-                        let fields = resolve_fields(self, fields)?;
-                        return crate::lisp::primitives::materialize_read_hash_table_literal_fields(
-                            self.interpreter,
-                            &fields,
-                            self.environment,
-                        );
-                    }
-                    ReaderForm::CharTable { fields } => ReaderForm::CharTable {
-                        fields: resolve_fields(self, fields)?,
-                    },
-                    ReaderForm::SubCharTable { fields } => ReaderForm::SubCharTable {
-                        fields: resolve_fields(self, fields)?,
-                    },
-                    ReaderForm::Record { slots } => ReaderForm::Record {
-                        slots: resolve_fields(self, slots)?,
-                    },
-                    ReaderForm::Closure { kind, slots } => ReaderForm::Closure {
-                        kind: *kind,
-                        slots: resolve_fields(self, slots)?,
-                    },
-                    ReaderForm::BoolVector { bits } => {
-                        ReaderForm::BoolVector { bits: bits.clone() }
-                    }
-                    ReaderForm::CircularLabel { .. } | ReaderForm::CircularReference(_) => {
-                        unreachable!("circular forms are handled before structural descent")
-                    }
-                };
-                Ok(Value::ReaderForm(
-                    crate::lisp::alloc::VectorlikeRef::allocate(resolved),
-                ))
-            }
-            _ => Ok(*value),
-        }
+    fn doc_string(&mut self, reference: Value) -> Result<Value, LispError> {
+        crate::lisp::primitives::unibyte_doc_string(self.interp, &reference, self.env)
     }
 }
 
 impl Interpreter {
+    /// Vload_file_name as the reader reads `#$'.
+    pub(crate) fn read_load_file_name(&self, env: &Env) -> Value {
+        self.lookup_var("load-file-name", env).unwrap_or(Value::Nil)
+    }
+
+    /// load_force_doc_strings as the reader tests it.
+    pub(crate) fn read_force_doc_strings(&self, env: &Env) -> bool {
+        self.lookup_var("load-force-doc-strings", env)
+            .is_some_and(|value| value.is_truthy())
+    }
+
+    /// read0's construction of a literal whose syntax just closed, its
+    /// fields already the objects they read as: a record (RE_record), a
+    /// closure (bytecode_from_rev_list), a bool vector, a hash table
+    /// (hash_table_from_plist) or a char-table.
+    pub(crate) fn build_read_object(
+        &mut self,
+        form: ReaderForm,
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        match form {
+            ReaderForm::Record { slots } => {
+                let Some(kind) = slots.first() else {
+                    return Err(LispError::ReadError("empty record literal".into()));
+                };
+                crate::lisp::primitives::check_record_data_slots(slots.len() - 1)?;
+                Ok(Value::LispRecord(LispRecordRef::new(*kind, &slots[1..])))
+            }
+            ReaderForm::Closure { mut slots, .. } => {
+                if !(3..=6).contains(&slots.len()) {
+                    return Err(LispError::ReadError("Invalid byte-code object".into()));
+                }
+                prepare_closure_literal(self, &mut slots, env)?;
+                let value = Value::Closure(crate::lisp::types::ClosureRef::filled(
+                    slots.len(),
+                    Value::Nil,
+                ));
+                let Kind::Closure(closure) = value.kind() else {
+                    unreachable!()
+                };
+                for (index, slot) in slots.into_iter().enumerate() {
+                    closure.initialize_slot(index, slot);
+                }
+                Ok(value)
+            }
+            ReaderForm::BoolVector { bits } => Ok(self.create_pseudovector(
+                RecordKind::BoolVector,
+                "bool-vector",
+                bits.iter()
+                    .map(|bit| if *bit { Value::T } else { Value::Nil })
+                    .collect(),
+            )),
+            ReaderForm::HashTable { fields } => {
+                crate::lisp::primitives::hash_table_from_read_fields(self, &fields, env)
+            }
+            ReaderForm::CharTable { fields } => {
+                crate::lisp::primitives::char_table_from_read_fields(&fields, false)
+            }
+            ReaderForm::SubCharTable { fields } => {
+                crate::lisp::primitives::char_table_from_read_fields(&fields, true)
+            }
+        }
+    }
+
     /// Finish the Interpreter-dependent part of GNU's reader contract.
     ///
-    /// Emaxx deliberately parses without an Interpreter, so circular labels
-    /// and identity-bearing `#s(...)' literals remain explicit reader forms
-    /// until the reader entry point finishes the object. Keep that allocation
-    /// here so every read constructs one shared graph before evaluation.
+    /// A read without a context leaves identity-bearing literals (`#s(...)',
+    /// `#[...]', `#^[...]', `#&') as reader forms until the reader's caller
+    /// finishes the object here, so every read constructs one shared graph
+    /// before evaluation.
     pub(crate) fn materialize_read_object_literals(
         &mut self,
         value: Value,
@@ -394,19 +150,6 @@ impl Interpreter {
         if !crate::lisp::reader::read_object_needs_resolution(&value) {
             return Ok(value);
         }
-        let value = if crate::lisp::reader::contains_circular_read_syntax(&value) {
-            CircularReadMaterializer {
-                interpreter: self,
-                environment: env,
-                labels: std::collections::HashMap::new(),
-                records: std::collections::HashMap::new(),
-                resolved_cons: std::collections::HashSet::new(),
-                resolved_vectors: std::collections::HashSet::new(),
-            }
-            .resolve(&value)?
-        } else {
-            value
-        };
         let value = self.materialize_read_record_literals(&value, env)?;
         let value =
             crate::lisp::primitives::materialize_read_hash_table_literals(self, &value, env)?;

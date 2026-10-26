@@ -1562,73 +1562,91 @@ where
         return Ok(false);
     }
 
-    let original = state.borrow().props.to_vec();
-    let mut updated = Vec::new();
-    for span in &original {
-        if span.end <= start || span.start >= end {
-            updated.push(span.clone());
-        } else {
-            if span.start < start {
-                updated.push(StringPropertySpan {
-                    start: span.start,
-                    end: start,
-                    props: span.props.clone(),
-                });
-            }
-            if span.end > end {
-                updated.push(StringPropertySpan {
-                    start: end,
-                    end: span.end,
-                    props: span.props.clone(),
-                });
-            }
-        }
-    }
-
-    let mut boundaries = vec![start, end];
-    for span in &original {
-        if span.end <= start || span.start >= end {
-            continue;
-        }
-        boundaries.push(span.start.max(start));
-        boundaries.push(span.end.min(end));
-    }
-    boundaries.sort_unstable();
-    boundaries.dedup();
-
-    let mut changed = false;
-    for window in boundaries.windows(2) {
-        let seg_start = window[0];
-        let seg_end = window[1];
-        if seg_start >= seg_end {
-            continue;
-        }
-        let current = string_object_properties_at(&original, seg_start);
-        let next = f(current.clone());
-        changed |= !crate::buffer::text_property_plists_eq(&current, &next);
-        if !next.is_empty() {
-            updated.push(StringPropertySpan {
-                start: seg_start,
-                end: seg_end,
-                props: next,
+    // Only the spans meeting [START, END) change, as textprop.c edits only
+    // the intervals there: they are replaced by their parts outside the
+    // range and the range's segments as F leaves them, merged with each
+    // other and with the equal neighbours they now touch.
+    let (first, last, replacement, changed, total) = {
+        let borrowed = state.borrow();
+        let spans = &borrowed.props[..];
+        let lo = spans.partition_point(|span| span.end <= start);
+        let hi = spans.partition_point(|span| span.start < end).max(lo);
+        let affected = &spans[lo..hi];
+        let mut pieces = Vec::new();
+        if let Some(span) = affected.first()
+            && span.start < start
+        {
+            pieces.push(StringPropertySpan {
+                start: span.start,
+                end: start,
+                props: span.props.clone(),
             });
         }
-    }
+        let mut boundaries = vec![start, end];
+        for span in affected {
+            boundaries.push(span.start.max(start));
+            boundaries.push(span.end.min(end));
+        }
+        boundaries.sort_unstable();
+        boundaries.dedup();
+        let mut changed = false;
+        for window in boundaries.windows(2) {
+            let (seg_start, seg_end) = (window[0], window[1]);
+            if seg_start >= seg_end {
+                continue;
+            }
+            let current = string_object_properties_at(affected, seg_start);
+            let next = f(current.clone());
+            changed |= !crate::buffer::text_property_plists_eq(&current, &next);
+            if !next.is_empty() {
+                pieces.push(StringPropertySpan {
+                    start: seg_start,
+                    end: seg_end,
+                    props: next,
+                });
+            }
+        }
+        if let Some(span) = affected.last()
+            && span.end > end
+        {
+            pieces.push(StringPropertySpan {
+                start: end,
+                end: span.end,
+                props: span.props.clone(),
+            });
+        }
+        // Take in the neighbours a merge may join.
+        let mut first = lo;
+        let mut last = hi;
+        if first > 0 {
+            first -= 1;
+            pieces.insert(0, spans[first].clone());
+        }
+        if last < spans.len() {
+            pieces.push(spans[last].clone());
+            last += 1;
+        }
+        let replacement = merge_string_object_props(pieces);
+        let total = spans.len() - (last - first) + replacement.len();
+        (first, last, replacement, changed, total)
+    };
 
-    let updated = merge_string_object_props(updated);
     // A pure string has no intervals. GNU soft removal therefore returns
     // without writing; creating intervals invokes CHECK_IMPURE instead.
-    if state.is_pure() && updated.is_empty() {
+    if state.is_pure() && total == 0 {
         return Ok(false);
     }
     state.check_impure()?;
     let mut state = state.borrow_mut();
+    let had_intervals = state.props.has_intervals();
+    let mut spans = std::mem::take(&mut state.props).into_vec();
+    spans.splice(first..last, replacement);
     // Intervals stay when their properties go (textprop.c removes plist
     // entries; only `set-text-properties' of the whole string drops them).
-    state.props = if updated.is_empty() && state.props.has_intervals() {
+    state.props = if spans.is_empty() && had_intervals {
         crate::lisp::types::string_data::StringProperties::empty_tree()
     } else {
-        updated.into()
+        spans.into()
     };
     Ok(changed)
 }

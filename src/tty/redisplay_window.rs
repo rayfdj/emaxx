@@ -700,8 +700,12 @@ impl Planner<'_, '_, '_> {
             line: rows.row_of(start).line,
             seg: 0,
         };
-        let line_start = rows.start_pos(row);
-        if line_start > pt || start - line_start >= self.state.total_cells {
+        // reseat_at_previous_visible_line_start: past what handle_stop
+        // skips there, so a start move_it_by_lines reseated stays.
+        let line_start =
+            crate::lisp::primitives::move_it::reseat(rows.buffer, rows.spec, rows.start_pos(row))
+                .pos;
+        if line_start > pt || start.saturating_sub(line_start) >= self.state.total_cells {
             return start;
         }
         let mut it = line_start;

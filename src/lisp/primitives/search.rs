@@ -38,13 +38,55 @@ struct CacheEntry {
 /// table's identity, the epoch and its entries.
 type CanonSlot = Option<(usize, u64, Rc<Canon>)>;
 
+/// A cell of searchbufs: its compiled pattern, if any, and the next cell
+/// in most-recently-used order.  A busy cell's pattern is lent to the
+/// search running it (GNU's `busy'), so a search Lisp code runs inside
+/// the matcher compiles its own copy into another cell.
+struct SearchBuf {
+    entry: Option<Box<CacheEntry>>,
+    busy: bool,
+    next: Option<u8>,
+}
+
+/// searchbufs and searchbuf_head: REGEXP_CACHE_SIZE cells linked most
+/// recently used first.  Cells stay where they are; only the links move.
+#[derive(Default)]
+struct SearchBufs {
+    cells: Vec<SearchBuf>,
+    head: Option<u8>,
+}
+
+/// A compiled pattern lent to one search by its busy cache cell, which
+/// holds it again when the search is done however it ends (GNU's
+/// unfreeze_pattern, run by an unwind-protect).
+struct LentPattern {
+    entry: std::mem::ManuallyDrop<Box<CacheEntry>>,
+    cell: u8,
+}
+
+impl Drop for LentPattern {
+    fn drop(&mut self) {
+        // SAFETY: the entry is taken once, here, and not used after.
+        let entry = unsafe { std::mem::ManuallyDrop::take(&mut self.entry) };
+        release_cell(self.cell, Some(entry));
+    }
+}
+
+impl std::ops::Deref for LentPattern {
+    type Target = CacheEntry;
+    fn deref(&self) -> &CacheEntry {
+        &self.entry
+    }
+}
+
+impl std::ops::DerefMut for LentPattern {
+    fn deref_mut(&mut self) -> &mut CacheEntry {
+        &mut self.entry
+    }
+}
+
 thread_local! {
-    /// The cache, most recently used first.  A pattern in use is taken out
-    /// (GNU's `busy'), so a search Lisp code runs inside the matcher
-    /// compiles its own copy.  Entries move by pointer, as GNU relinks its
-    /// list.
-    #[allow(clippy::vec_box)]
-    static SEARCHBUFS: RefCell<Vec<Box<CacheEntry>>> = const { RefCell::new(Vec::new()) };
+    static SEARCHBUFS: RefCell<SearchBufs> = RefCell::new(SearchBufs::default());
     /// The canonicalization tables last read, with the char-table store
     /// epoch they were read at: a search folding case reads the
     /// case_canon_table and its case_eqv_table.
@@ -106,26 +148,44 @@ fn pattern_codes(bytes: &[u8], multibyte: bool) -> Vec<u32> {
 /// are that form already (ASCII, or multibyte UTF-8 with no character the
 /// stored form reads otherwise), else the decoded text and its side table.
 enum StringText<'v> {
-    InPlace(&'v str),
+    /// The string's data, whose character and byte indices convert
+    /// through fns.c's string_char_to_byte cache.
+    InPlace(&'v str, StringObjectRef),
     Decoded(String, Vec<(usize, u32)>),
+}
+
+/// Whether BYTES, a string's data, are the matcher's stored form.
+fn stored_form_in_place(bytes: &[u8], multibyte: bool) -> bool {
+    bytes.is_ascii()
+        || (multibyte
+            && std::str::from_utf8(bytes).is_ok_and(|text| {
+                !text.chars().any(|ch| {
+                    rx_storage_ambiguous(ch) && ch != crate::lisp::json::INVALID_UNICODE_SENTINEL
+                })
+            }))
 }
 
 impl StringText<'_> {
     fn new(value: &Value) -> Option<StringText<'_>> {
-        let (bytes, multibyte, _) = string_bytes(value)?;
-        if bytes.is_ascii() {
-            // SAFETY: ASCII is UTF-8.
-            return Some(StringText::InPlace(unsafe {
-                std::str::from_utf8_unchecked(bytes)
-            }));
-        }
-        if multibyte
-            && let Ok(text) = std::str::from_utf8(bytes)
-            && !text.chars().any(|ch| {
-                rx_storage_ambiguous(ch) && ch != crate::lisp::json::INVALID_UNICODE_SENTINEL
-            })
+        let (bytes, multibyte, chars) = string_bytes(value)?;
+        let Kind::StringObject(state) = value.kind() else {
+            return None;
+        };
+        // A multibyte string of a byte a character is ASCII, and a
+        // unibyte one is in place when it is; otherwise the scan is
+        // remembered while the string holds the cache.
+        if (multibyte && bytes.len() == chars)
+            || (!multibyte && bytes.is_ascii())
+            || (multibyte
+                && state
+                    .borrow()
+                    .stored_text_in_place(|bytes| stored_form_in_place(bytes, true)))
         {
-            return Some(StringText::InPlace(text));
+            // SAFETY: stored_form_in_place found the bytes UTF-8.
+            return Some(StringText::InPlace(
+                unsafe { std::str::from_utf8_unchecked(bytes) },
+                state,
+            ));
         }
         let (text, extended) =
             crate::lisp::types::string_data::decode_bytes(bytes, multibyte).ok()?;
@@ -134,15 +194,39 @@ impl StringText<'_> {
 
     fn text(&self) -> &str {
         match self {
-            StringText::InPlace(text) => text,
+            StringText::InPlace(text, _) => text,
             StringText::Decoded(text, _) => text,
         }
     }
 
     fn extended(&self) -> &[(usize, u32)] {
         match self {
-            StringText::InPlace(_) => &[],
+            StringText::InPlace(..) => &[],
             StringText::Decoded(_, extended) => extended,
+        }
+    }
+
+    /// The string read in place, whose positions convert through the cache.
+    fn in_place(&self) -> Option<StringObjectRef> {
+        match self {
+            StringText::InPlace(_, state) => Some(*state),
+            StringText::Decoded(..) => None,
+        }
+    }
+
+    /// The byte offset in `text' of character INDEX.
+    fn char_to_byte(&self, index: usize) -> usize {
+        match self {
+            StringText::InPlace(_, state) => state.borrow().char_to_byte(index),
+            StringText::Decoded(text, _) => ropey::str_utils::char_to_byte_idx(text, index),
+        }
+    }
+
+    /// The character index of byte offset OFFSET in `text'.
+    fn byte_to_char(&self, offset: usize) -> usize {
+        match self {
+            StringText::InPlace(_, state) => state.borrow().byte_to_char(offset),
+            StringText::Decoded(text, _) => ropey::str_utils::byte_to_char_idx(text, offset),
         }
     }
 }
@@ -169,6 +253,8 @@ enum Object<'t> {
         /// The string's data, read in place.
         text: &'t str,
         extended: &'t [(usize, u32)],
+        /// The string whose own bytes TEXT is, for its position cache.
+        in_place: Option<StringObjectRef>,
         /// The string object (`re_match_object'), None for text without
         /// one (GNU's t).
         string: Option<Value>,
@@ -305,6 +391,10 @@ impl<'a, 't> LispMatchEnv<'a, 't> {
                     begv + rope.byte_to_char(at)
                 }
             }
+            Object::String {
+                in_place: Some(state),
+                ..
+            } => state.borrow().byte_to_char(at),
             Object::String { text, .. } => ropey::str_utils::byte_to_char_idx(text, at),
             Object::None => at,
         }
@@ -483,18 +573,25 @@ impl MatchEnv for LispMatchEnv<'_, '_> {
 
     fn setup_syntax(&mut self, at: usize) {
         use super::syntax_scan::{GlObject, GlState};
+        if let Some(gl) = self.gl.take() {
+            GlState::release_for_regexp(gl);
+        }
         let object = match &self.object {
             Object::Buffer { .. } => GlObject::Buffer,
             Object::String {
                 string: Some(string),
                 ..
-            } => GlObject::String(*string),
-            Object::String { string: None, .. } => GlObject::Plain,
-            Object::None => return,
+            } if matches!(string.kind(), Kind::StringObject(state)
+                    if state.borrow().props.has_intervals()) =>
+            {
+                GlObject::String(*string)
+            }
+            // Text without intervals has no `syntax-table' property:
+            // update_syntax_table's interval_of finds none and returns,
+            // leaving the buffer's table, which the matcher reads without
+            // gl_state too.
+            Object::String { .. } | Object::None => return,
         };
-        if let Some(gl) = self.gl.take() {
-            GlState::release_for_regexp(gl);
-        }
         if !self
             .interp
             .symbol_value_key(cached_symbol!("parse-sexp-lookup-properties"))
@@ -632,12 +729,15 @@ fn match_error(error: MatchError) -> LispError {
 }
 
 /// compile_pattern: the cached compilation of REGEXP for the current
-/// buffer's tables, taken out of the cache until `release_pattern'.
+/// buffer's tables, its cell busy until `release_pattern'.  The cells are
+/// looked at most recently used first; a pattern not found is compiled
+/// into the first empty cell or else the least recently used one that is
+/// not busy, and the cell used goes to the front.
 fn compile_pattern(
     menv: &mut LispMatchEnv<'_, '_>,
     regexp: &Value,
     posix: bool,
-) -> Result<Box<CacheEntry>, LispError> {
+) -> Result<LentPattern, LispError> {
     let (bytes, multibyte, _) = string_bytes(regexp)
         .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *regexp))?;
     let translate = menv.canon.as_ref().map(|canon| canon.table.identity());
@@ -652,26 +752,76 @@ fn compile_pattern(
         .map(|(bytes, multibyte, _)| (bytes, multibyte));
     let syntax_table = menv.syntax_table;
 
-    let found = SEARCHBUFS.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        let index = cache.iter().position(|entry| {
-            entry.regexp.as_slice() == bytes
-                && entry.multibyte == multibyte
-                && entry.translate == translate
-                && entry.posix == posix
-                && entry.syntax_table.is_none_or(|table| table == syntax_table)
-                && match (&entry.whitespace, whitespace_bytes) {
-                    (None, None) => true,
-                    (Some((saved, saved_multibyte)), Some((now, now_multibyte))) => {
-                        saved.as_slice() == now && *saved_multibyte == now_multibyte
-                    }
-                    _ => false,
+    let matches = |entry: &CacheEntry| {
+        entry.regexp.as_slice() == bytes
+            && entry.multibyte == multibyte
+            && entry.translate == translate
+            && entry.posix == posix
+            && entry.syntax_table.is_none_or(|table| table == syntax_table)
+            && match (&entry.whitespace, whitespace_bytes) {
+                (None, None) => true,
+                (Some((saved, saved_multibyte)), Some((now, now_multibyte))) => {
+                    saved.as_slice() == now && *saved_multibyte == now_multibyte
                 }
-        });
-        index.map(|index| cache.remove(index))
+                _ => false,
+            }
+    };
+    // The cell found or to compile into, marked busy and moved to the
+    // front; with it, its pattern when it holds this one.  None when
+    // every cell is busy.
+    let lent = SEARCHBUFS.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        let cache = &mut *cache;
+        if cache.cells.is_empty() {
+            cache.cells = (0..REGEXP_CACHE_SIZE)
+                .map(|index| SearchBuf {
+                    entry: None,
+                    busy: false,
+                    next: (index + 1 < REGEXP_CACHE_SIZE).then_some((index + 1) as u8),
+                })
+                .collect();
+            cache.head = Some(0);
+        }
+        let mut previous = None;
+        let mut current = cache.head;
+        let mut least_recent = None;
+        let mut chosen = None;
+        while let Some(index) = current {
+            let cell = &cache.cells[usize::from(index)];
+            if !cell.busy {
+                match &cell.entry {
+                    None => {
+                        chosen = Some((previous, index));
+                        break;
+                    }
+                    Some(entry) if matches(entry) => {
+                        chosen = Some((previous, index));
+                        break;
+                    }
+                    Some(_) => least_recent = Some((previous, index)),
+                }
+            }
+            previous = current;
+            current = cell.next;
+        }
+        let (previous, index) = chosen.or(least_recent)?;
+        if let Some(previous) = previous {
+            cache.cells[usize::from(previous)].next = cache.cells[usize::from(index)].next;
+            cache.cells[usize::from(index)].next = cache.head;
+            cache.head = Some(index);
+        }
+        let cell = &mut cache.cells[usize::from(index)];
+        cell.busy = true;
+        Some((index, cell.entry.take().filter(|entry| matches(entry))))
     });
+    let Some((cell, found)) = lent else {
+        return Err(LispError::Signal("Too much matching reentrancy".into()));
+    };
     if let Some(entry) = found {
-        return Ok(entry);
+        return Ok(LentPattern {
+            entry: std::mem::ManuallyDrop::new(entry),
+            cell,
+        });
     }
 
     #[cfg(test)]
@@ -687,9 +837,13 @@ fn compile_pattern(
         fold,
         menv,
     )
-    .map_err(|error| invalid_regexp(error.message()))?;
+    .map_err(|error| {
+        // compile_pattern_1 leaves the cell empty.
+        release_cell(cell, None);
+        invalid_regexp(error.message())
+    })?;
     let used_syntax = pattern.used_syntax;
-    Ok(Box::new(CacheEntry {
+    let entry = Box::new(CacheEntry {
         regexp: bytes.to_vec(),
         multibyte,
         translate,
@@ -697,26 +851,42 @@ fn compile_pattern(
         whitespace: whitespace_bytes.map(|(bytes, multibyte)| (bytes.to_vec(), multibyte)),
         syntax_table: used_syntax.then_some(syntax_table),
         pattern,
-    }))
+    });
+    Ok(LentPattern {
+        entry: std::mem::ManuallyDrop::new(entry),
+        cell,
+    })
 }
 
 /// search.c:clear_regexp_cache, after a syntax table changes: every
-/// pattern holding syntax-table contents is compiled again.  A pattern in
-/// use is out of the cache and returns to it; GNU skips `busy' entries.
+/// pattern holding syntax-table contents is compiled again, but for the
+/// busy ones.
 pub(crate) fn clear_regexp_cache() {
     SEARCHBUFS.with(|cache| {
-        cache
-            .borrow_mut()
-            .retain(|entry| entry.syntax_table.is_none());
+        for cell in &mut cache.borrow_mut().cells {
+            if !cell.busy
+                && cell
+                    .entry
+                    .as_ref()
+                    .is_some_and(|entry| entry.syntax_table.is_some())
+            {
+                cell.entry = None;
+            }
+        }
     });
 }
 
-/// Return a pattern to the cache as its most recently used entry.
-fn release_pattern(entry: Box<CacheEntry>) {
-    SEARCHBUFS.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        cache.insert(0, entry);
-        cache.truncate(REGEXP_CACHE_SIZE);
+/// A search is done with its pattern: its cell is no longer busy.
+fn release_pattern(lent: LentPattern) {
+    drop(lent);
+}
+
+/// CELL holds ENTRY again and is not busy.
+fn release_cell(cell: u8, entry: Option<Box<CacheEntry>>) {
+    let _ = SEARCHBUFS.try_with(|cache| {
+        let cell = &mut cache.borrow_mut().cells[usize::from(cell)];
+        cell.entry = entry;
+        cell.busy = false;
     });
 }
 
@@ -726,8 +896,11 @@ struct BufferSnapshot {
     rope: ropey::Rope,
     begv: usize,
     begv_byte: usize,
+    zv: usize,
     zv_byte: usize,
     point: usize,
+    /// Point's byte, as GNU's PT_BYTE: the matcher starts there.
+    point_byte: usize,
     multibyte: bool,
     side: bool,
     ascii: bool,
@@ -737,21 +910,23 @@ impl BufferSnapshot {
     fn take(interp: &Interpreter) -> Self {
         let buffer = interp.buffer.borrow();
         let rope = buffer.text_rope();
-        let (begv, zv) = (buffer.point_min(), buffer.point_max());
+        let (begv, zv, point) = (buffer.point_min(), buffer.point_max(), buffer.point());
         let ascii = rope.len_bytes() == rope.len_chars();
+        // The buffer's conversions, which know its ends and the positions
+        // converted since its last edit before them.
         let byte = |pos: usize| {
-            if ascii {
-                pos - 1
-            } else {
-                rope.char_to_byte(pos - 1)
-            }
+            buffer
+                .storage_byte_position(pos)
+                .expect("an accessible position")
+                - 1
         };
-        let (begv_byte, zv_byte) = (byte(begv), byte(zv));
         BufferSnapshot {
             begv,
-            begv_byte,
-            zv_byte,
-            point: buffer.point(),
+            begv_byte: byte(begv),
+            zv,
+            zv_byte: byte(zv),
+            point,
+            point_byte: byte(point),
             multibyte: buffer.is_multibyte(),
             side: buffer.has_extended_chars_in(begv, zv),
             ascii,
@@ -767,6 +942,12 @@ impl BufferSnapshot {
     fn offset(&self, pos: usize) -> usize {
         if self.ascii {
             pos - self.begv
+        } else if pos == self.point {
+            self.point_byte - self.begv_byte
+        } else if pos == self.zv {
+            self.zv_byte - self.begv_byte
+        } else if pos == self.begv {
+            0
         } else {
             self.rope.char_to_byte(pos - 1) - self.begv_byte
         }
@@ -774,10 +955,17 @@ impl BufferSnapshot {
 
     /// The buffer position of text offset OFFSET.
     fn position(&self, offset: usize) -> usize {
+        let byte = self.begv_byte + offset;
         if self.ascii {
             self.begv + offset
+        } else if byte == self.point_byte {
+            self.point
+        } else if byte == self.zv_byte {
+            self.zv
+        } else if offset == 0 {
+            self.begv
         } else {
-            self.rope.byte_to_char(self.begv_byte + offset) + 1
+            self.rope.byte_to_char(byte) + 1
         }
     }
 
@@ -914,7 +1102,7 @@ pub(super) fn string_match_1(
     let pos_byte = if ascii {
         pos
     } else {
-        ropey::str_utils::char_to_byte_idx(haystack, pos)
+        string_text.char_to_byte(pos)
     };
     let text = Text::from_str(
         haystack,
@@ -927,6 +1115,7 @@ pub(super) fn string_match_1(
     menv.object = Object::String {
         text: haystack,
         extended: string_text.extended(),
+        in_place: string_text.in_place(),
         string: Some(*string),
     };
     let result = rx::re_search(
@@ -946,7 +1135,7 @@ pub(super) fn string_match_1(
         if ascii {
             offset
         } else {
-            ropey::str_utils::byte_to_char_idx(haystack, offset)
+            string_text.byte_to_char(offset)
         }
     };
     let start = registers.regs[0].expect("group 0").0;
@@ -1216,6 +1405,7 @@ pub(crate) fn fast_string_match(
         env,
         regexp,
         Some(*string),
+        string_text.in_place(),
         string_text.text(),
         &extended,
         multibyte,
@@ -1244,6 +1434,7 @@ pub(crate) fn fast_text_match(
         env,
         regexp,
         None,
+        None,
         haystack,
         extended,
         multibyte,
@@ -1252,13 +1443,15 @@ pub(crate) fn fast_text_match(
     )
 }
 
-/// fast_string_match_internal on HAYSTACK, the text of STRING when given.
+/// fast_string_match_internal on HAYSTACK, the text of STRING when given
+/// (its own bytes when IN_PLACE names it).
 #[allow(clippy::too_many_arguments)]
 fn text_match(
     interp: &mut Interpreter,
     env: &mut Env,
     regexp: &Value,
     string: Option<Value>,
+    in_place: Option<StringObjectRef>,
     haystack: &str,
     extended: &[(usize, u32)],
     multibyte: bool,
@@ -1271,6 +1464,7 @@ fn text_match(
     menv.object = Object::String {
         text: haystack,
         extended,
+        in_place,
         string,
     };
     let result = rx::re_search(
@@ -1290,10 +1484,10 @@ fn text_match(
         Err(error) => return Err(match_error(error)),
     };
     let start = registers.regs[0].expect("group 0").0;
-    Ok(Some(if haystack.is_ascii() {
-        start
-    } else {
-        ropey::str_utils::byte_to_char_idx(haystack, start)
+    Ok(Some(match in_place {
+        Some(state) => state.borrow().byte_to_char(start),
+        None if haystack.is_ascii() => start,
+        None => ropey::str_utils::byte_to_char_idx(haystack, start),
     }))
 }
 
@@ -1326,6 +1520,7 @@ pub(crate) fn fast_c_string_match_ignore_case(
     menv.object = Object::String {
         text: &haystack,
         extended: &[],
+        in_place: None,
         string: None,
     };
     let result = rx::re_search(
@@ -1386,7 +1581,7 @@ pub(crate) fn fast_looking_at(
         if ascii {
             index
         } else {
-            ropey::str_utils::char_to_byte_idx(haystack, index)
+            string_text.char_to_byte(index)
         }
     };
     let text = Text::from_str(haystack, multibyte, !string_text.extended().is_empty());
@@ -1395,6 +1590,7 @@ pub(crate) fn fast_looking_at(
     menv.object = Object::String {
         text: haystack,
         extended: string_text.extended(),
+        in_place: string_text.in_place(),
         string: Some(*string),
     };
     let result = rx::re_match(&mut entry.pattern, &text, byte(pos), byte(limit), &mut menv);
@@ -1408,7 +1604,7 @@ pub(crate) fn fast_looking_at(
         if ascii {
             end
         } else {
-            ropey::str_utils::byte_to_char_idx(haystack, end)
+            string_text.byte_to_char(end)
         } - pos,
     ))
 }

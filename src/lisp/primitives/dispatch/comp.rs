@@ -9,10 +9,9 @@ fn string_argument(value: &Value) -> Result<String, LispError> {
 }
 
 fn md5_prefix(bytes: &[u8]) -> String {
-    format!("{:x}", md5::compute(bytes))
-        .chars()
-        .take(8)
-        .collect()
+    let mut hex = crate::lisp::md5::md5_hex(bytes);
+    hex.truncate(8);
+    hex
 }
 
 fn source_bytes(path: &Path) -> Result<Vec<u8>, LispError> {

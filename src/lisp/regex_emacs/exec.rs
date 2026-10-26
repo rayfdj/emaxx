@@ -104,18 +104,19 @@ struct MatchState {
 }
 
 thread_local! {
-    /// The arrays of finished searches, reused as GNU reuses its failure
-    /// stack's allocation instead of allocating for every search.
-    static SPARE_STATES: std::cell::RefCell<Vec<MatchState>> =
-        const { std::cell::RefCell::new(Vec::new()) };
+    /// The last finished search's arrays, reused as GNU reuses its failure
+    /// stack's allocation instead of allocating for every search (a
+    /// search inside a search makes its own).
+    static SPARE_STATE: std::cell::Cell<Option<Box<MatchState>>> =
+        const { std::cell::Cell::new(None) };
 }
 
 /// The failure stack length above which a finished search's stack is not
 /// kept for the next one.
 const SPARE_STACK_LIMIT: usize = 1 << 16;
 
-/// A search's MatchState, given back to SPARE_STATES when it ends.
-struct PooledState(MatchState);
+/// A search's MatchState, given back to SPARE_STATE when it ends.
+struct PooledState(std::mem::ManuallyDrop<Box<MatchState>>);
 
 impl std::ops::Deref for PooledState {
     type Target = MatchState;
@@ -132,52 +133,45 @@ impl std::ops::DerefMut for PooledState {
 
 impl Drop for PooledState {
     fn drop(&mut self) {
-        if self.0.stack.capacity() > SPARE_STACK_LIMIT {
-            return;
+        // SAFETY: the state is taken once, here, and not used after.
+        let state = unsafe { std::mem::ManuallyDrop::take(&mut self.0) };
+        if state.stack.capacity() <= SPARE_STACK_LIMIT {
+            let _ = SPARE_STATE.try_with(|spare| spare.set(Some(state)));
         }
-        let state = MatchState {
-            stack: std::mem::take(&mut self.0.stack),
-            frame: 0,
-            regstart: std::mem::take(&mut self.0.regstart),
-            regend: std::mem::take(&mut self.0.regend),
-            best_regstart: std::mem::take(&mut self.0.best_regstart),
-            best_regend: std::mem::take(&mut self.0.best_regend),
-        };
-        let _ = SPARE_STATES.try_with(|spare| {
-            let mut spare = spare.borrow_mut();
-            if spare.len() < 4 {
-                spare.push(state);
-            }
-        });
     }
 }
 
 impl PooledState {
-    /// A MatchState for NUM_REGS registers, a finished search's arrays
-    /// when one is spare.
+    /// A MatchState for NUM_REGS registers, the last finished search's
+    /// arrays when they are spare.  The best registers are written before
+    /// they are read, as re_match_2_internal's are.
     fn new(num_regs: usize) -> Self {
-        let mut st = SPARE_STATES
-            .with(|spare| spare.borrow_mut().pop())
-            .unwrap_or_else(|| MatchState {
-                stack: Vec::new(),
-                frame: 0,
-                regstart: Vec::new(),
-                regend: Vec::new(),
-                best_regstart: Vec::new(),
-                best_regend: Vec::new(),
+        let mut st = SPARE_STATE
+            .try_with(std::cell::Cell::take)
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| {
+                Box::new(MatchState {
+                    stack: Vec::new(),
+                    frame: 0,
+                    regstart: Vec::new(),
+                    regend: Vec::new(),
+                    best_regstart: Vec::new(),
+                    best_regend: Vec::new(),
+                })
             });
         st.stack.clear();
         st.frame = 0;
-        for regs in [
-            &mut st.regstart,
-            &mut st.regend,
-            &mut st.best_regstart,
-            &mut st.best_regend,
-        ] {
+        for regs in [&mut st.regstart, &mut st.regend] {
             regs.clear();
             regs.resize(num_regs, UNSET);
         }
-        PooledState(st)
+        for regs in [&mut st.best_regstart, &mut st.best_regend] {
+            if regs.len() < num_regs {
+                regs.resize(num_regs, UNSET);
+            }
+        }
+        PooledState(std::mem::ManuallyDrop::new(st))
     }
 }
 
@@ -1103,20 +1097,6 @@ pub(crate) fn re_search<E: MatchEnv + ?Sized>(
     // only for a character's first byte, never a continuation byte, and a
     // side-table character's lead is its stored form's.
     let plain_scan = !pattern.translate && !text.latin1_bytes;
-    let single = if plain_scan {
-        let mut set = pattern
-            .fastmap
-            .iter()
-            .enumerate()
-            .filter_map(|(byte, &on)| on.then_some(byte as u8));
-        match (set.next(), set.next()) {
-            (Some(byte), None) => Some(Some(byte)),
-            (None, _) => Some(None),
-            _ => None,
-        }
-    } else {
-        None
-    };
 
     loop {
         'attempt: {
@@ -1134,10 +1114,10 @@ pub(crate) fn re_search<E: MatchEnv + ?Sized>(
                             let rest = rd.rest(d);
                             let n = rest.len().min(limit - d);
                             let window = &rest[..n];
-                            let found = match single {
-                                Some(Some(byte)) => memchr::memchr(byte, window),
-                                Some(None) => None,
-                                None => {
+                            let found = match pattern.fastmap_leads {
+                                FastmapLeads::One(byte) => memchr::memchr(byte, window),
+                                FastmapLeads::None => None,
+                                FastmapLeads::Many => {
                                     window.iter().position(|&b| pattern.fastmap[usize::from(b)])
                                 }
                             };

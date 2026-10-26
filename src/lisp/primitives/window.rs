@@ -503,11 +503,22 @@ pub(crate) fn recenter_selected_window(
     let ht = text_height.max(1) as i64;
     let margin = selected_scroll_margin(interp, env, text_height) as i64;
     let point = interp.buffer.borrow().point();
-    let start = if interactive {
-        // The display code: whole screen lines above point's row.
+    let start = if interactive && !center && iarg >= 0 {
+        // The display code: the start of point's screen line, then
+        // move_it_by_lines ARG lines back, which reseats at a line start.
+        let nlines = clip_to_bounds(margin, iarg, ht - margin - 1).max(0);
+        let row = super::move_it::move_it_by_lines(interp, env, window_id, point, 0).0;
+        if nlines > 0 {
+            super::move_it::move_it_by_lines(interp, env, window_id, row, -nlines).0
+        } else {
+            row
+        }
+    } else if interactive {
+        // move_it_vertically_backward: whole screen lines above point's
+        // row, no reseat.
         let lines_back = if center {
             ht / 2
-        } else if iarg < 0 {
+        } else {
             let nlines = clip_to_bounds(margin + 1, -iarg, ht - margin);
             // Point's row ends NLINES from the bottom, empty lines past
             // the buffer's end counted in.
@@ -516,8 +527,6 @@ pub(crate) fn recenter_selected_window(
                 return Ok(());
             }
             h
-        } else {
-            clip_to_bounds(margin, iarg, ht - margin - 1).max(0)
         };
         move_screen_lines(interp, env, point, -(lines_back as isize)).0
     } else {
@@ -570,13 +579,13 @@ pub(crate) fn move_screen_lines_in(
     from: usize,
     count: isize,
 ) -> (usize, isize) {
-    use crate::lisp::primitives::dispatch::{screen_row_starts, visual_line_bounds};
+    use crate::lisp::primitives::dispatch::{row_index_of, screen_row_starts, visual_line_bounds};
     let point_min = interp.buffer.borrow().point_min();
     let point_max = interp.buffer.borrow().point_max();
     let from = from.clamp(point_min, point_max);
     let (mut bol, mut eol) = visual_line_bounds(interp, from);
     let mut starts = screen_row_starts(interp, env, window_id, bol, eol);
-    let mut index = starts.iter().rposition(|&start| start <= from).unwrap_or(0);
+    let mut index = row_index_of(&starts, from);
     let mut remaining = count;
     while remaining > 0 {
         if index + 1 < starts.len() {

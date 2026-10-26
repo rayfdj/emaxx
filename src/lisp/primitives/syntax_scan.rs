@@ -160,14 +160,15 @@ impl<'r> Text<'r> {
         }
     }
 
-    /// CHAR_TO_BYTE.
+    /// CHAR_TO_BYTE.  The text's ends need no walk of the rope.
     fn char_to_byte(&self, charpos: usize) -> usize {
-        if self.ascii {
+        let index = (charpos - 1).min(self.rope.len_chars());
+        if self.ascii || index == 0 {
             charpos
+        } else if index == self.rope.len_chars() {
+            self.len + 1
         } else {
-            self.rope
-                .char_to_byte((charpos - 1).min(self.rope.len_chars()))
-                + 1
+            self.rope.char_to_byte(index) + 1
         }
     }
 
@@ -285,8 +286,6 @@ pub(super) enum GlObject {
     Buffer,
     /// A string, with its own text properties.
     String(Value),
-    /// t: text without properties (a C string).
-    Plain,
 }
 
 /// syntax.h's gl_state, with SYNTAX's ASCII entries of the table in use.
@@ -569,14 +568,6 @@ impl GlState {
                     .then(|| PropertyIntervals::new(&state.props[..], 0, len));
                 self.update_in(interp, intervals, Some((0, len)), charpos, count, init)
             }
-            GlObject::Plain => self.update_in(
-                interp,
-                None::<PropertyIntervals<'_, crate::buffer::TextPropertySpan>>,
-                None,
-                charpos,
-                count,
-                init,
-            ),
         }
     }
 
@@ -750,7 +741,6 @@ impl GlState {
         gl.setup_buffer_syntax_table();
         (gl.b_property, gl.e_property) = match object {
             GlObject::Buffer => (1, interp.buffer.borrow().point_max()),
-            GlObject::Plain => (0, usize::MAX),
             GlObject::String(string) => (0, 1 + string_chars(&string)),
         };
         let error = gl.update_syntax_table(interp, charpos(), 1, true).err();
