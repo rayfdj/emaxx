@@ -327,6 +327,14 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
     ),
     ("last_match_data_buffer_id", "as last_match_data"),
     ("search_registers", "a search's scratch registers"),
+    (
+        "bc_frames",
+        "bytecode.c: the frames of byte-code activations live on bc_thread_state's stack, the running thread's and never written by pdumper.c; their programs are rooted by bc_stack's footers",
+    ),
+    (
+        "bc_handlers",
+        "eval.c: handlerlist is the running thread's, rebuilt empty by init_eval_once_for_pdumper; a byte-code activation's handlers leave with it, their tags and clauses rooted by the registries of active catches and handlers",
+    ),
     ("profiler_memory_running", "the running profiler"),
     ("profiler_memory_log_pending", "the running profiler"),
     ("profiler_cpu_running", "the running profiler"),

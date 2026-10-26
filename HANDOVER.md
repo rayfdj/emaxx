@@ -6585,6 +6585,35 @@ setup_process_coding_systems's check now refuses). A 13-form
   local skips, and eval_05 again with the new test (368); clippy `-D
   warnings', rustfmt and `git diff --check' pass.
 
+- **Round 93: byte-code frames and handlers on thread-wide lists.** Each
+  byte-code activation entered from Rust (a `funcall' from a primitive,
+  `mapatoms', `mapcar', `sort's predicate, a hook) kept its suspended
+  frames and its catch and condition-case handlers in vectors of its
+  own, taken from a thread-local spare list on the first push and given
+  back at its end: in `apropos-internal's predicate calls the spare
+  list's borrow, pop and push cost about 95 instructions an activation.
+  Now the thread holds one list of suspended frames and one of handlers
+  (bytecode.c keeps its frames on the thread's byte-code stack and
+  eval.c its handlers on the thread's handlerlist), each activation's
+  entries lying above the lengths it began at, to which its end returns
+  them however it ends; a thread switch exchanges both with the
+  byte-code stack, and the spare lists are gone. Three
+  `apropos-internal' calls (both frozen runners make two for every test
+  file through `ert-select-tests') took 174.4M instructions and now
+  166.8M (GNU 128.4M); a test file's setup in the frozen runner 634.8M
+  and now 630.0M (GNU 518.3M); the locked workloads per unit:
+  native-to-bytecode 3,943 and now 3,914, upstream-undo 1,573.9K and now
+  1,563.6K, bytecode-calls 435.5 and now 434.0, bytecode-to-native 345.6
+  and now 343.2. A probe of byte-code `condition-case' and `catch'
+  around `mapcar', `mapc', `apply' and `sort' whose byte-code callees
+  signal, throw, catch for themselves, hold non-matching handlers or
+  `unwind-protect', of `handler-bind', a 30-deep recursion through
+  `apply' with a catch at every level, and of two Lisp threads yielding
+  inside their handlers gives GNU 30.2's values. Local validation: the
+  full gate, 3,232 passed across its ten groups with the documented
+  local skips; clippy `-D warnings', rustfmt and `git diff --check'
+  pass.
+
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
 25 sorting/case-folding/substring tests plus the comparison tests, and 95
@@ -7316,6 +7345,8 @@ frozen passed on its first attempt (run 40259074201); PR #108 merged
 rounds 82 to 90 into main (`44f1c76`).
 **On `171d0c0`** (round 91): full Rust gate passed (run 40265340023),
 frozen passed on its first attempt (run 40265342433).
+**On `1e7203d`** (round 92): full Rust gate passed (run 40273030577),
+frozen passed on its first attempt (run 40273033064).
 
 **Findings recorded, not fixed:**
 - `features`, `values` and `top-level` are special variables in Emaxx

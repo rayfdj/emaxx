@@ -488,7 +488,8 @@ impl Running {
 /// One suspended byte-code frame of this activation (bytecode.c's
 /// `bc_frame': the caller's program and pc, its stack top, and the
 /// watermarks the callee's return or error restores).
-struct BcFrame {
+#[derive(Clone)]
+pub(crate) struct BcFrame {
     program: Running,
     /// The caller's slot holding the callee (Bcall's TOP after DISCARD):
     /// the callee's arguments and frame lie above it, and the return
@@ -507,15 +508,17 @@ struct BcFrame {
 }
 
 /// What a frame switch in the dispatch loop changes: the thread's state
-/// (its byte-code stack, backtrace and depth), this activation's program
-/// and suspended frames, its handlers, and the frames its signaling ops
+/// (its byte-code stack, backtrace and depth, suspended frames and
+/// handlers), this activation's program, and the frames its signaling ops
 /// recorded.
 struct VmFrames<'a> {
     interp: &'a mut Interpreter,
     env: &'a mut Env,
     program: &'a mut Running,
-    frames: &'a mut Vec<BcFrame>,
-    handlers: &'a mut Vec<Handler>,
+    /// Where this activation's suspended frames and handlers begin in the
+    /// thread's `bc_frames' and `bc_handlers'.
+    frames_base: usize,
+    handlers_base: usize,
     op_error_frames: &'a mut usize,
     trace_errors: bool,
 }
@@ -546,10 +549,9 @@ fn bytecode_call(
         interp,
         env,
         program,
-        frames,
-        handlers,
         op_error_frames,
         trace_errors,
+        ..
     } = vm;
     interp.bc_stack.top = top;
     let args_start = interp.bc_stack.len() - argc;
@@ -598,18 +600,16 @@ fn bytecode_call(
                     interp.bc_stack.len(),
                 ));
             }
-            push_pooled(
-                frames,
-                BcFrame {
-                    program: std::mem::replace(*program, Running::of(&callee)),
-                    base: args_start - 1,
-                    handlers_len: handlers.len(),
-                    unwinds_len: interp.bc_unwinds.len(),
-                    backtrace_depth,
-                    op_error_frames: std::mem::take(*op_error_frames),
-                    code_changes: usize::MAX,
-                },
-            );
+            let frame = BcFrame {
+                program: std::mem::replace(*program, Running::of(&callee)),
+                base: args_start - 1,
+                handlers_len: interp.bc_handlers.len(),
+                unwinds_len: interp.bc_unwinds.len(),
+                backtrace_depth,
+                op_error_frames: std::mem::take(*op_error_frames),
+                code_changes: usize::MAX,
+            };
+            interp.bc_frames.push(frame);
             // setup_frame: the callee's frame starts above the caller's
             // top; the arguments are copied into it (`PUSH (*args)'), the
             // optionals padded, the rest gathered.  The caller's own slots
@@ -911,22 +911,20 @@ fn enter_closure_frame(
     let backtrace_depth = state.enter_plain_funcall(func, call_args);
     // The caller's program copied into the frame's slot, then the callee's
     // over it: `mem::replace' moved the caller's through a temporary.
-    push_pooled(
-        vm.frames,
-        BcFrame {
-            program: *vm.program,
-            base: args_start - 1,
-            handlers_len: vm.handlers.len(),
-            unwinds_len: state.bc_unwinds.len(),
-            backtrace_depth,
-            op_error_frames: std::mem::take(vm.op_error_frames),
-            code_changes: if verified_return {
-                crate::lisp::alloc::code_changes()
-            } else {
-                usize::MAX
-            },
+    let frame = BcFrame {
+        program: *vm.program,
+        base: args_start - 1,
+        handlers_len: state.bc_handlers.len(),
+        unwinds_len: state.bc_unwinds.len(),
+        backtrace_depth,
+        op_error_frames: std::mem::take(vm.op_error_frames),
+        code_changes: if verified_return {
+            crate::lisp::alloc::code_changes()
+        } else {
+            usize::MAX
         },
-    );
+    };
+    state.bc_frames.push(frame);
     *vm.program = Running::entered(callee);
     // setup_frame's `PUSH (*args)' and the optionals' nils.
     // SAFETY: the program takes ARGC arguments (`takes'), at most its entry
@@ -955,29 +953,99 @@ fn return_to_bytecode_frame(
     // frame moved out whole (`pop', an Option) was copied in pieces offset
     // by its argument list's tag byte, and the loop's next read of the
     // caller's constants spanned two of those stores.
-    let frame = vm
-        .frames
-        .last()
+    let frame = state
+        .bc_frames
+        .last_above(vm.frames_base)
         .filter(|frame| unwinds <= frame.unwinds_len)?;
-    state.leave_plain_funcall(frame.backtrace_depth);
+    let (backtrace_depth, base, program, op_error_frames, handlers_len, code_changes) = (
+        frame.backtrace_depth,
+        frame.base,
+        frame.program,
+        frame.op_error_frames,
+        frame.handlers_len,
+        frame.code_changes,
+    );
+    state.leave_plain_funcall(backtrace_depth);
     // SAFETY: the frame's call entered the stack frame this leaves, and
     // the caller's function slot lies below the top the call found.
     let resume = unsafe {
         let resume = state.bc_stack.leave_entered_frame();
-        state.bc_stack.replace_call_below_top(frame.base, value);
+        state.bc_stack.replace_call_below_top(base, value);
         resume
     };
-    *vm.program = frame.program;
-    *vm.op_error_frames = frame.op_error_frames;
-    vm.handlers.truncate(frame.handlers_len);
-    let unchanged = frame.code_changes == crate::lisp::alloc::code_changes();
+    *vm.program = program;
+    *vm.op_error_frames = op_error_frames;
+    state.bc_handlers.truncate(handlers_len);
+    let unchanged = code_changes == crate::lisp::alloc::code_changes();
     // SAFETY: FRAME is the last, which needs no drop.
-    unsafe { vm.frames.set_len(vm.frames.len() - 1) };
+    unsafe { state.bc_frames.0.set_len(state.bc_frames.len() - 1) };
     Some((resume, state.bc_stack.top, state.bc_stack.len(), unchanged))
 }
 
-// A frame's slot is released by the length alone.
+// A frame's slot is released by the length alone, and neither list's
+// truncation runs any drop.
 const _: () = assert!(!std::mem::needs_drop::<BcFrame>());
+const _: () = assert!(!std::mem::needs_drop::<Handler>());
+
+/// One of the thread's lists of its byte-code activations' state,
+/// innermost last: the suspended frames (`BcFrames', the bookkeeping beside
+/// the bc_frame footers on `bc_stack') and the catch and condition-case
+/// handlers (`BcHandlers', eval.c's handlerlist entries), each kept for the
+/// thread as the footers are.  Each activation's entries lie above the
+/// length it began at (its base), to which it returns however it ends.
+#[derive(Clone)]
+pub(crate) struct Suspended<T>(Vec<T>);
+
+pub(crate) type BcFrames = Suspended<BcFrame>;
+pub(crate) type BcHandlers = Suspended<Handler>;
+
+impl<T> Default for Suspended<T> {
+    fn default() -> Self {
+        Self(Vec::new())
+    }
+}
+
+impl<T> std::fmt::Debug for Suspended<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Suspended({} entries)", self.0.len())
+    }
+}
+
+impl<T> Suspended<T> {
+    #[inline(always)]
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    #[inline(always)]
+    fn push(&mut self, entry: T) {
+        self.0.push(entry);
+    }
+
+    /// The innermost entry of the activation whose entries begin at BASE.
+    #[inline(always)]
+    fn last_above(&self, base: usize) -> Option<&T> {
+        self.0.last().filter(|_| self.0.len() > base)
+    }
+
+    /// The innermost entry of the activation whose entries begin at BASE,
+    /// taken off.
+    #[inline(always)]
+    fn pop_above(&mut self, base: usize) -> Option<T> {
+        if self.0.len() > base {
+            self.0.pop()
+        } else {
+            None
+        }
+    }
+
+    /// The entries above LEN dropped: an activation, or a frame within
+    /// one, ended.
+    #[inline(always)]
+    fn truncate(&mut self, len: usize) {
+        self.0.truncate(len);
+    }
+}
 
 /// Breturn's and the error path's leave of a frame: its specpdl entries
 /// above the watermark undone, its backtrace frame popped, Ffuncall's
@@ -1165,6 +1233,7 @@ fn unwind_one(
     }
 }
 
+#[derive(Clone)]
 enum HandlerKind {
     /// Bpushcatch: TAG caught by `eq`.
     Catch(Value),
@@ -1172,7 +1241,8 @@ enum HandlerKind {
     ConditionCase(Value),
 }
 
-struct Handler {
+#[derive(Clone)]
+pub(crate) struct Handler {
     kind: HandlerKind,
     dest: usize,
     stack_len: usize,
@@ -2952,14 +3022,14 @@ fn exec_op_inline(vm: &mut VmFrames<'_>, op: Op, pc: &mut usize) -> Result<(), L
         interp,
         env,
         program,
-        handlers,
+        handlers_base,
         op_error_frames,
         ..
     } = vm;
     let interp: &mut Interpreter = interp;
     let env: &mut Env = env;
     let program: &mut Running = program;
-    let handlers: &mut Vec<Handler> = handlers;
+    let handlers_base: usize = *handlers_base;
     let op_error_frames: &mut usize = op_error_frames;
     macro_rules! pop {
         () => {
@@ -3316,16 +3386,14 @@ fn exec_op_inline(vm: &mut VmFrames<'_>, op: Op, pc: &mut usize) -> Result<(), L
             // registry before unwinding; a VM catch frame must be
             // visible there like any `sf_catch' frame.
             interp.push_active_catch_tag(tag);
-            push_pooled(
-                handlers,
-                Handler {
-                    kind: HandlerKind::Catch(tag),
-                    dest: target as usize,
-                    stack_len: interp.bc_stack.len(),
-                    unwind_len: interp.bc_unwinds.len(),
-                    registry_start: None,
-                },
-            );
+            let handler = Handler {
+                kind: HandlerKind::Catch(tag),
+                dest: target as usize,
+                stack_len: interp.bc_stack.len(),
+                unwind_len: interp.bc_unwinds.len(),
+                registry_start: None,
+            };
+            interp.bc_handlers.push(handler);
         }
         Op::PushConditionCase { target } => {
             let conditions = pop!();
@@ -3334,19 +3402,17 @@ fn exec_op_inline(vm: &mut VmFrames<'_>, op: Op, pc: &mut usize) -> Result<(), L
             // boundaries sees this frame before any outer handler,
             // exactly like an interpreted `condition-case'.
             let registry_start = interp.push_condition_case_handler(vec![conditions]);
-            push_pooled(
-                handlers,
-                Handler {
-                    kind: HandlerKind::ConditionCase(conditions),
-                    dest: target as usize,
-                    stack_len: interp.bc_stack.len(),
-                    unwind_len: interp.bc_unwinds.len(),
-                    registry_start: Some(registry_start),
-                },
-            );
+            let handler = Handler {
+                kind: HandlerKind::ConditionCase(conditions),
+                dest: target as usize,
+                stack_len: interp.bc_stack.len(),
+                unwind_len: interp.bc_unwinds.len(),
+                registry_start: Some(registry_start),
+            };
+            interp.bc_handlers.push(handler);
         }
         Op::PopHandler => {
-            if let Some(handler) = handlers.pop() {
+            if let Some(handler) = interp.bc_handlers.pop_above(handlers_base) {
                 if matches!(handler.kind, HandlerKind::Catch(_)) {
                     interp.pop_active_catch_tag();
                 }
@@ -3776,13 +3842,7 @@ fn run(
     env: &mut Env,
 ) -> Result<Value, LispError> {
     interp.bc_stack.ensure_allocated();
-    let stack_at_entry = (
-        interp.bc_stack.frame,
-        interp.bc_stack.base,
-        interp.bc_stack.top,
-    );
-    let unwinds_at_entry = interp.bc_unwinds.len();
-    let frames_at_entry = interp.backtrace_frames_len();
+    let marks = EntryMarks::of(interp);
     // The activation's program is a root while it runs (alloc.c marks the
     // thread's bytecode stack, whose frames hold their functions).
     let result = if function.is_nil() {
@@ -3794,14 +3854,7 @@ fn run(
     } else {
         run_frames(interp, program, function, args, env)
     };
-    finish_activation(
-        interp,
-        env,
-        result,
-        stack_at_entry,
-        unwinds_at_entry,
-        frames_at_entry,
-    )
+    finish_activation(interp, env, result, marks)
 }
 
 /// `run' for a closure whose fields and verification the frame entry
@@ -3819,13 +3872,8 @@ fn run_entered(
 ) -> Result<Value, LispError> {
     let entry_depth = program.entry_depth;
     interp.bc_stack.ensure_allocated();
-    let stack_at_entry = (
-        interp.bc_stack.frame,
-        interp.bc_stack.base,
-        interp.bc_stack.top,
-    );
-    let unwinds_at_entry = interp.bc_unwinds.len();
-    let frames_at_entry = interp.backtrace_frames_len();
+    let marks = EntryMarks::of(interp);
+    let (frames_base, handlers_base) = (marks.suspended, marks.handlers);
     let result = 'entry: {
         if let Err(error) = interp
             .bc_stack
@@ -3837,8 +3885,6 @@ fn run_entered(
         // slots against the frame's depth.
         interp.bc_stack.push_arguments(args, entry_depth);
         let mut program = Running::entered(&program);
-        let mut frames = Pooled::new();
-        let mut handlers = Pooled::new();
         let mut op_error_frames = 0;
         let mut pc = 0;
         let mut quitcounter = 1;
@@ -3857,8 +3903,8 @@ fn run_entered(
                     interp,
                     env,
                     program: &mut program,
-                    frames: &mut frames,
-                    handlers: &mut handlers,
+                    frames_base,
+                    handlers_base,
                     op_error_frames: &mut op_error_frames,
                     trace_errors: trace_load_errors(),
                 },
@@ -3872,7 +3918,10 @@ fn run_entered(
                 interp.bc_stack.top = top;
             }
             match verified_exit {
-                FastExit::Return(value) if frames.is_empty() && handlers.is_empty() => {
+                FastExit::Return(value)
+                    if interp.bc_frames.len() == frames_base
+                        && interp.bc_handlers.len() == handlers_base =>
+                {
                     // The return owns nothing to drop.
                     std::mem::forget(verified_exit);
                     break 'entry Ok(value);
@@ -3889,54 +3938,79 @@ fn run_entered(
             Activation {
                 program,
                 pc,
-                frames,
-                handlers,
+                frames_base,
+                handlers_base,
                 op_error_frames,
                 quitcounter,
             },
             exit,
         )
     };
-    finish_activation(
-        interp,
-        env,
-        result,
-        stack_at_entry,
-        unwinds_at_entry,
-        frames_at_entry,
-    )
+    finish_activation(interp, env, result, marks)
+}
+
+/// The thread's lengths an activation entered from Rust found on entry and
+/// leaves behind: its byte-code stack's frame, base and top, its specpdl
+/// entries, backtrace frames, suspended byte-code frames and handlers.
+#[derive(Clone, Copy)]
+struct EntryMarks {
+    stack: (usize, usize, usize),
+    unwinds: usize,
+    backtrace: usize,
+    suspended: usize,
+    handlers: usize,
+}
+
+impl EntryMarks {
+    #[inline(always)]
+    fn of(interp: &Interpreter) -> Self {
+        Self {
+            stack: (
+                interp.bc_stack.frame,
+                interp.bc_stack.base,
+                interp.bc_stack.top,
+            ),
+            unwinds: interp.bc_unwinds.len(),
+            backtrace: interp.backtrace_frames_len(),
+            suspended: interp.bc_frames.len(),
+            handlers: interp.bc_handlers.len(),
+        }
+    }
 }
 
 /// The end of an activation entered from Rust: the frames its signaling
 /// byte ops recorded and the specpdl-style entries an abnormal exit left
-/// above UNWINDS_AT_ENTRY undone, and the stack cut back to its entry
-/// mark.
+/// above the MARKS undone, the suspended frames it left dropped, any
+/// handler it left taken off (`pop_handlers_above'), and the stack cut
+/// back to its entry mark.
 #[inline(always)]
 fn finish_activation(
     interp: &mut Interpreter,
     env: &mut Env,
     result: Result<Value, LispError>,
-    stack_at_entry: (usize, usize, usize),
-    unwinds_at_entry: usize,
-    frames_at_entry: usize,
+    marks: EntryMarks,
 ) -> Result<Value, LispError> {
     // A signaling byte op recorded itself as a backtrace frame
     // (bytecode.c's record_in_backtrace) so handler-bind handlers saw it;
     // the handlers have run by now, so unwind it like GNU's specpdl does.
-    interp.truncate_backtrace_frames(frames_at_entry);
+    interp.truncate_backtrace_frames(marks.backtrace);
     // Balance any entries left by an abnormal exit (GNU unbind_to on the
     // frame's specpdl watermark), running unwind-protect handlers and
     // restoring saved buffer state on the way out.
-    let result = if interp.bc_unwinds.len() > unwinds_at_entry {
-        unwind_activation(interp, env, result, unwinds_at_entry)
+    let result = if interp.bc_unwinds.len() > marks.unwinds {
+        unwind_activation(interp, env, result, marks.unwinds)
     } else {
         result
     };
+    interp.bc_frames.truncate(marks.suspended);
+    if interp.bc_handlers.len() > marks.handlers {
+        pop_handlers_above(interp, marks.handlers);
+    }
     (
         interp.bc_stack.frame,
         interp.bc_stack.base,
         interp.bc_stack.top,
-    ) = stack_at_entry;
+    ) = marks.stack;
     result
 }
 
@@ -4078,117 +4152,27 @@ fn run_frames(
         ArgSpec::Legacy(_) => 0,
     };
     program.verified = super::verify::verified_code(&program, entry_depth);
-    run_loop(interp, env, Activation::new(Running::of(&program)), None)
+    let frames_base = interp.bc_frames.len();
+    let handlers_base = interp.bc_handlers.len();
+    run_loop(
+        interp,
+        env,
+        Activation::new(Running::of(&program), frames_base, handlers_base),
+        None,
+    )
 }
 
-thread_local! {
-    /// Frame and handler vectors of finished activations, cleared and
-    /// kept with their capacity: an activation's first calls and
-    /// handlers grew fresh vectors from nothing (an allocation, then a
-    /// reallocation and a copy at each doubling) and freed them at its end.
-    static SPARE_FRAMES: std::cell::RefCell<Vec<Vec<BcFrame>>> =
-        const { std::cell::RefCell::new(Vec::new()) };
-    static SPARE_HANDLERS: std::cell::RefCell<Vec<Vec<Handler>>> =
-        const { std::cell::RefCell::new(Vec::new()) };
-}
-
-/// The spare vectors kept for each element type, at most this many.
-const SPARE_VECTORS: usize = 8;
-
-/// An element type whose activation vectors are kept on a spare list.
-trait Spare: Sized + 'static {
-    fn spares() -> &'static std::thread::LocalKey<std::cell::RefCell<Vec<Vec<Self>>>>;
-}
-
-impl Spare for BcFrame {
-    fn spares() -> &'static std::thread::LocalKey<std::cell::RefCell<Vec<Vec<Self>>>> {
-        &SPARE_FRAMES
-    }
-}
-
-impl Spare for Handler {
-    fn spares() -> &'static std::thread::LocalKey<std::cell::RefCell<Vec<Vec<Self>>>> {
-        &SPARE_HANDLERS
-    }
-}
-
-/// An activation's vector, empty until its first push takes a spare
-/// (`push_pooled'), and given back cleared when the activation ends,
-/// whichever way it ends; most activations push nothing and touch no
-/// list. Its elements are no roots: a frame's program is its closure's,
-/// which the byte-code stack's header holds.
-struct Pooled<T: Spare>(Vec<T>);
-
-impl<T: Spare> Pooled<T> {
-    fn new() -> Self {
-        Self(Vec::new())
-    }
-}
-
-/// The largest spare kept, in elements: a deep recursion's vector is
-/// freed rather than held.
-const SPARE_CAPACITY: usize = 1024;
-
-impl<T: Spare> Drop for Pooled<T> {
-    #[inline(always)]
-    fn drop(&mut self) {
-        // An activation that pushed nothing has nothing to give back.
-        if self.0.capacity() != 0 {
-            give_back(&mut self.0);
+/// eval.c's handlerlist entries of the byte-code activations above
+/// BASE taken off innermost first: a catch's tag leaves the registry of
+/// active catches, a condition-case's clause the handler registry.
+fn pop_handlers_above(interp: &mut Interpreter, base: usize) {
+    while let Some(handler) = interp.bc_handlers.pop_above(base) {
+        if matches!(handler.kind, HandlerKind::Catch(_)) {
+            interp.pop_active_catch_tag();
         }
-    }
-}
-
-#[cold]
-#[inline(never)]
-fn give_back<T: Spare>(vector: &mut Vec<T>) {
-    let mut vector = std::mem::take(vector);
-    if vector.capacity() > SPARE_CAPACITY {
-        return;
-    }
-    vector.clear();
-    let _ = T::spares().try_with(|spares| {
-        let mut spares = spares.borrow_mut();
-        if spares.len() < SPARE_VECTORS {
-            spares.push(vector);
+        if let Some(start) = handler.registry_start {
+            interp.pop_handler_bindings(start);
         }
-    });
-}
-
-/// `Vec::push' for an activation's vector, whose growth from nothing
-/// takes a spare first.
-#[inline(always)]
-fn push_pooled<T: Spare>(vector: &mut Vec<T>, value: T) {
-    if vector.len() == vector.capacity() {
-        grow_pooled(vector);
-    }
-    vector.push(value);
-}
-
-#[cold]
-#[inline(never)]
-fn grow_pooled<T: Spare>(vector: &mut Vec<T>) {
-    if vector.capacity() == 0
-        && let Ok(Some(spare)) = T::spares().try_with(|spares| spares.borrow_mut().pop())
-    {
-        *vector = spare;
-        if vector.capacity() > 0 {
-            return;
-        }
-    }
-    vector.reserve(1);
-}
-
-impl<T: Spare> std::ops::Deref for Pooled<T> {
-    type Target = Vec<T>;
-    fn deref(&self) -> &Vec<T> {
-        &self.0
-    }
-}
-
-impl<T: Spare> std::ops::DerefMut for Pooled<T> {
-    fn deref_mut(&mut self) -> &mut Vec<T> {
-        &mut self.0
     }
 }
 
@@ -4196,8 +4180,10 @@ impl<T: Spare> std::ops::DerefMut for Pooled<T> {
 struct Activation {
     program: Running,
     pc: usize,
-    frames: Pooled<BcFrame>,
-    handlers: Pooled<Handler>,
+    /// Where its suspended frames and handlers begin in the thread's
+    /// `bc_frames' and `bc_handlers'.
+    frames_base: usize,
+    handlers_base: usize,
     /// Frames pushed by signaling byte ops (record_in_backtrace); an
     /// in-frame condition-case that catches must unwind them, and the
     /// caller (`run') balances whatever is left after handler dispatch.
@@ -4209,12 +4195,12 @@ struct Activation {
 }
 
 impl Activation {
-    fn new(program: Running) -> Self {
+    fn new(program: Running, frames_base: usize, handlers_base: usize) -> Self {
         Self {
             program,
             pc: 0,
-            frames: Pooled::new(),
-            handlers: Pooled::new(),
+            frames_base,
+            handlers_base,
             op_error_frames: 0,
             quitcounter: 1,
         }
@@ -4234,8 +4220,8 @@ fn run_loop(
     let Activation {
         mut program,
         mut pc,
-        mut frames,
-        mut handlers,
+        frames_base,
+        handlers_base,
         mut op_error_frames,
         mut quitcounter,
     } = activation;
@@ -4282,10 +4268,10 @@ fn run_loop(
     macro_rules! breturn {
         ($value:expr) => {{
             let value = $value;
-            match frames.pop() {
+            match interp.bc_frames.pop_above(frames_base) {
                 Some(frame) => {
                     if let Err(error) = leave_frame(interp, env, &frame) {
-                        push_pooled(&mut frames, frame);
+                        interp.bc_frames.push(frame);
                         return Err(error);
                     }
                     pc = interp.bc_stack.leave_frame();
@@ -4293,7 +4279,7 @@ fn run_loop(
                     push!(value);
                     program = frame.program;
                     op_error_frames = frame.op_error_frames;
-                    handlers.truncate(frame.handlers_len);
+                    interp.bc_handlers.truncate(frame.handlers_len);
                     continue;
                 }
                 None => return Ok(value),
@@ -4328,8 +4314,8 @@ fn run_loop(
                                 interp,
                                 env,
                                 program: &mut program,
-                                frames: &mut frames,
-                                handlers: &mut handlers,
+                                frames_base,
+                                handlers_base,
                                 op_error_frames: &mut op_error_frames,
                                 trace_errors,
                             },
@@ -4366,8 +4352,8 @@ fn run_loop(
                     interp,
                     env,
                     program: &mut program,
-                    frames: &mut frames,
-                    handlers: &mut handlers,
+                    frames_base,
+                    handlers_base,
                     op_error_frames: &mut op_error_frames,
                     trace_errors,
                 };
@@ -4378,7 +4364,7 @@ fn run_loop(
                         len,
                         ..
                     }) if enter_bytecode_frame(&mut vm, pc + len, usize::from(argc)) => pc = 0,
-                    FastExit::Return(value) if !vm.frames.is_empty() => {
+                    FastExit::Return(value) if vm.interp.bc_frames.len() > vm.frames_base => {
                         let top = vm.interp.bc_stack.top;
                         match return_to_bytecode_frame(&mut vm, top, value) {
                             Some((resume, ..)) => pc = resume,
@@ -4462,8 +4448,8 @@ fn run_loop(
                         interp,
                         env,
                         program: &mut program,
-                        frames: &mut frames,
-                        handlers: &mut handlers,
+                        frames_base,
+                        handlers_base,
                         op_error_frames: &mut op_error_frames,
                         trace_errors,
                     };
@@ -4509,8 +4495,8 @@ fn run_loop(
                             interp,
                             env,
                             program: &mut program,
-                            frames: &mut frames,
-                            handlers: &mut handlers,
+                            frames_base,
+                            handlers_base,
                             op_error_frames: &mut op_error_frames,
                             trace_errors,
                         },
@@ -4535,11 +4521,11 @@ fn run_loop(
                 // search continues in its caller's handlers.
                 let mut handled = false;
                 'frames: loop {
-                    let floor = frames.last().map_or(0, |frame| frame.handlers_len);
-                    while handlers.len() > floor {
-                        let Some(handler) = handlers.pop() else {
-                            break;
-                        };
+                    let floor = interp
+                        .bc_frames
+                        .last_above(frames_base)
+                        .map_or(handlers_base, |frame| frame.handlers_len);
+                    while let Some(handler) = interp.bc_handlers.pop_above(floor) {
                         if matches!(handler.kind, HandlerKind::Catch(_)) {
                             interp.pop_active_catch_tag();
                         }
@@ -4594,7 +4580,7 @@ fn run_loop(
                             break 'frames;
                         }
                     }
-                    let Some(frame) = frames.pop() else {
+                    let Some(frame) = interp.bc_frames.pop_above(frames_base) else {
                         break 'frames;
                     };
                     // The error leaves this frame: the frames its
@@ -4615,7 +4601,7 @@ fn run_loop(
                             push!(value);
                             program = frame.program;
                             op_error_frames = frame.op_error_frames;
-                            handlers.truncate(frame.handlers_len);
+                            interp.bc_handlers.truncate(frame.handlers_len);
                             continue 'run;
                         }
                         Err(error) => error,
@@ -4666,14 +4652,7 @@ fn run_loop(
     // the frame's specpdl watermark), running unwind-protect handlers
     // and restoring saved buffer state on the way out; catch tags of
     // still-pushed handlers leave the registry with their frame.
-    for handler in handlers.drain(..).rev() {
-        if matches!(handler.kind, HandlerKind::Catch(_)) {
-            interp.pop_active_catch_tag();
-        }
-        if let Some(start) = handler.registry_start {
-            interp.pop_handler_bindings(start);
-        }
-    }
+    pop_handlers_above(interp, handlers_base);
     // GNU runs `handler-bind' handlers from `signal' itself, so an error
     // raised inside byte-code reaches them exactly as one raised by the
     // interpreter does.  Emaxx dispatches at each native-call boundary
