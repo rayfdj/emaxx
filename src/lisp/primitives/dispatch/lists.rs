@@ -965,34 +965,13 @@ define_dispatch!(
             }
             "assoc-string" => {
                 need_arg_range(name, args, 2, 3)?;
-                let items = args[1].to_vec()?;
-                if items.is_empty() {
-                    return Ok(Value::Nil);
-                }
-                let key = assoc_string_text(&args[0])?;
-                let key = if args.get(2).is_some_and(|value| !value.is_nil()) {
-                    assoc_string_folded_text(interp, &key)?
-                } else {
-                    key
-                };
-                for item in &items {
-                    let thiscar = match item.kind() {
-                        Kind::Cons(_) => item.car()?,
-                        _ => *item,
-                    };
-                    let Some(candidate) = assoc_string_candidate_text(&thiscar) else {
-                        continue;
-                    };
-                    let candidate = if args.get(2).is_some_and(|value| !value.is_nil()) {
-                        assoc_string_folded_text(interp, &candidate)?
-                    } else {
-                        candidate
-                    };
-                    if candidate == key {
-                        return Ok(*item);
-                    }
-                }
-                Ok(Value::Nil)
+                assoc_string(
+                    interp,
+                    args[0],
+                    args[1],
+                    args.get(2).copied().unwrap_or(Value::Nil),
+                    env,
+                )
             }
 
             // Fast native ports of the GNU cl-seq.el sequence functions.  The
@@ -2211,4 +2190,63 @@ fn map_sequence(
         _ => return Err(LispError::WrongTypeArgument("vectorp".into(), *sequence)),
     }
     Ok(())
+}
+
+/// minibuf.c:Fassoc_string: the first element of LIST whose car, or which
+/// itself, is a string or a symbol `compare-strings' finds equal to KEY
+/// over their whole lengths, upcasing a differing pair of characters when
+/// CASE-FOLD is non-nil.  Other elements are passed over, and the walk ends
+/// at the first tail that is not a cons, as `CONSP (tail)' ends GNU's.
+fn assoc_string(
+    interp: &mut Interpreter,
+    key: Value,
+    list: Value,
+    case_fold: Value,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let key = symbol_name_of(interp, &key, env).unwrap_or(key);
+    let mut tail = list;
+    while let Kind::Cons(cell) = tail.kind() {
+        let elt = cell.car.get();
+        let thiscar = match elt.kind() {
+            Kind::Cons(inner) => inner.car.get(),
+            _ => elt,
+        };
+        let thiscar = match symbol_name_of(interp, &thiscar, env) {
+            Some(name) => name,
+            None if matches!(thiscar.kind(), Kind::StringObject(_)) => thiscar,
+            None => {
+                tail = cell.cdr.get();
+                continue;
+            }
+        };
+        let tem = crate::lisp::primitives::strings::compare_strings_value(
+            interp,
+            &[
+                thiscar,
+                Value::Integer(0),
+                Value::Nil,
+                key,
+                Value::Integer(0),
+                Value::Nil,
+                case_fold,
+            ],
+            env,
+        )?;
+        if matches!(tem.kind(), Kind::T) {
+            return Ok(elt);
+        }
+        interp.maybe_quit(env)?;
+        tail = cell.cdr.get();
+    }
+    Ok(Value::Nil)
+}
+
+/// `SYMBOLP (OBJECT) ? Fsymbol_name (OBJECT)': a symbol's name, a
+/// symbol-with-position's while `symbols-with-pos-enabled'; None for any
+/// other object.
+fn symbol_name_of(interp: &Interpreter, object: &Value, env: &Env) -> Option<Value> {
+    crate::lisp::primitives::interactive::checked_symbol_identity(interp, object, env)
+        .ok()
+        .map(|symbol| symbol.lisp_name())
 }

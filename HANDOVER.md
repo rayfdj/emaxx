@@ -6877,6 +6877,32 @@ setup_process_coding_systems's check now refuses). A 13-form
   beside the gate as in rounds 97 and 98, passed three times of three
   alone); clippy `-D warnings', rustfmt and `git
   diff --check' pass.
+- **Round 100: `assoc-string' as minibuf.c's Fassoc_string.** The walk
+  is GNU's: a symbol KEY is its name, the list is followed while its
+  tail is a cons, an element (or its car) that is a symbol stands for
+  its name, one that is neither a string nor a symbol is passed over,
+  and each remaining one is asked of `compare-strings' over both whole
+  lengths with CASE-FOLD, which upcases only a differing pair of
+  characters; `maybe_quit' runs between elements. The old arm copied
+  the list first (a vector LIST read as `vector-literal' and its slots,
+  so `(assoc-string "foo" ["foo"])' found "foo", and a dotted or non-list
+  tail signalled where GNU stops), signalled for a non-string KEY even
+  when no element is a string, and folded both whole strings through
+  the casing machinery with a word-boundary rule of its own. That rule
+  read `syntax_word_chars', a list of codes `modify-syntax-entry' kept
+  beside the syntax table, one code at a time over a whole range, for
+  this alone; the list, its image root slot (41) and the three folding
+  helpers are gone. A 32-line probe of keys, symbols, dotted tails,
+  non-string elements and keys, the characters whose case mappings
+  differ (ß and ẞ, the Turkish dotless i, the Greek sigmas, ǅ, the ﬀ
+  ligature) and multibyte text gives GNU 30.2's output byte for byte,
+  and a new batch test pins eleven of its cases. The frozen runner's
+  setup of cal-french-tests.el (runner command line, `-L' GNU's whole
+  load path) took 572.9M instructions before round 99 and now 564.0M
+  (GNU 508.1M): the folding's 11.9M is gone and round 99's root stack
+  costs 3.0M here. Local validation: the full gate, 3,243 passed across
+  its ten groups with the documented local skips (the batch tests 52,
+  one new); clippy `-D warnings', rustfmt and `git diff --check' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -7667,8 +7693,43 @@ job's rerun passed (run 40313513267, attempt 2); the Rust gate passed
 **On `2a230c6`** (round 98): full Rust gate passed (run 40322773968),
 frozen passed on its first attempt (run 40322787666); PR #109 merged
 rounds 91 to 98 into main (`2b01388`).
+**On `7130092`** (round 99): full Rust gate passed (run 40415810583),
+frozen passed on its first attempt (run 40415814171).
 
 **Findings recorded, not fixed:**
+- **Where a test file's setup goes, mutator and collector apart (round
+  100).** With the frozen runner's command line, each stage's
+  instructions less its collections (`garbage_collect' in GNU,
+  `emaxx_native_gc_collect' here):
+
+  | stage | Emaxx | GNU | gap |
+  |---|---|---|---|
+  | startup (`--batch --eval nil') | 162.1M | 98.5M | +63.6M |
+  | loading ert | +156.2M | +123.0M | +33.2M |
+  | loading json | +9.0M | +7.6M | +1.4M |
+  | loading the runner (203 lines of .el) | +85.0M | +62.5M | +22.5M |
+  | loading cal-french-tests.el | +78.8M | +52.2M | +26.6M |
+
+  The totals hide this: GNU collects three times in that setup for
+  163.8M (one in startup itself, 52.6M, below init_faces_initial), Emaxx
+  twice for 71.7M, so the setup's totals are 507.6M against 562.8M while
+  the mutators are 343.8M against 491.1M. Both allocate alike (the
+  runner's load adds 12.3K conses here against 14.9K, 5,795 vector
+  cells against 5,815, 68.7K string bytes against 68.6K); only where the
+  collections fall differs. Startup is the largest gap. GNU's 98.5M is
+  31.7M of dynamic linking and 53.4M of `pdumper_load' (597,762
+  relocations at 37 instructions, 7.9M opening 92 .eln files, 7.0M for
+  6,056 `dynlib_sym's), about 13M of Lisp. Here `pdumper_load' is
+  120.3M: `Loader::load' 82.8M (the cons, string and vector areas' 666K
+  relocations at about 70 instructions with their checks;
+  `symbol_of_record' 7.3M for 18,172 symbols; `value_at' 5.3M, most of
+  it the symbols' three fields; `install_root_group' 4.9M;
+  `image_c_string' 4.6M for 11,802 native subr names), `load_dumped_code'
+  24.5M, `install_symbol' 5.0M (its `install_watchers' 1.8M, a search of
+  the watcher list per symbol). The symbols are the next part to map in
+  place (their cells in the allocator's symbol blocks, each word a
+  relocation, the initial obarray's buckets restored), about 17M of the
+  gap; the relocation loop itself is the next.
 - `features`, `values` and `top-level` are special variables in Emaxx
   (`special-variable-p` answers t) where GNU unmarks them after their
   DEFVARs (`Fmake_var_non_special (Qfeatures)` in fns.c, `values` in

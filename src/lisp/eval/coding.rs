@@ -1151,20 +1151,6 @@ impl Interpreter {
         }
     }
 
-    pub fn set_syntax_word_char(&mut self, code: u32, enabled: bool) {
-        if enabled {
-            if !self.syntax_word_chars.contains(&code) {
-                self.syntax_word_chars.push(code);
-            }
-        } else {
-            self.syntax_word_chars.retain(|existing| *existing != code);
-        }
-    }
-
-    pub fn is_syntax_word_char(&self, code: u32) -> bool {
-        self.syntax_word_chars.contains(&code)
-    }
-
     pub fn category_docstring(&self, table: CharTableRef, category: u32) -> Value {
         let Some(index) = category.checked_sub(32) else {
             return Value::Nil;

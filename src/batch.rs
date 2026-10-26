@@ -2862,6 +2862,51 @@ mod tests {
     }
 
     #[test]
+    fn assoc_string_compares_each_string_or_symbol_element_as_minibuf_c() {
+        // minibuf.c Fassoc_string: the walk stops at the first tail that
+        // is not a cons, passes over elements whose car is neither a string
+        // nor a symbol, and asks `compare-strings' of the rest, which
+        // upcases only a differing pair of characters.
+        run_with_large_stack(|| {
+            let emacs_repo = compat::project_root().join("../emacs");
+            let options = BatchRunOptions {
+                load_path: compat::emaxx_upstream_load_path(&emacs_repo)
+                    .expect("upstream load path"),
+                ..Default::default()
+            };
+            let mut interpreter =
+                initialize_batch_interpreter(&options).expect("init batch interpreter");
+            let form = Reader::new(
+                r#"(prin1-to-string
+                    (list (assoc-string 'foo '(bar ("foo" . 1) baz))
+                          (assoc-string "FOO" '(1 (2 . 3) "bar" "foo") t)
+                          (assoc-string "foo" '("a" "b" . "foo"))
+                          (assoc-string "foo" ["foo"])
+                          (assoc-string 7 '(1 2))
+                          (condition-case err (assoc-string 7 '("a")) (error err))
+                          (assoc-string "ß" '("SS" "ẞ") t)
+                          (assoc-string "ς" '("Σ") t)
+                          (assoc-string "ǅ" '("ǆ") t)
+                          (assoc-string "ﬀ" '("FF" "ff") t)
+                          (assoc-string "a-b" '("A-B") t)))"#,
+            )
+            .read_all()
+            .expect("read assoc-string probe")
+            .remove(0);
+            let printed = interpreter
+                .eval(&form, &mut crate::lisp::types::Env::new())
+                .expect("evaluate assoc-string probe");
+            assert_eq!(
+                lisp::primitives::string_like(&printed)
+                    .expect("printed")
+                    .text,
+                "((\"foo\" . 1) \"foo\" nil nil nil (wrong-type-argument stringp 7) \
+                 \"ẞ\" \"Σ\" \"ǆ\" nil \"A-B\")"
+            );
+        });
+    }
+
+    #[test]
     fn batch_runtime_preloads_the_complete_tabulated_list_state() {
         run_with_large_stack(|| {
             let emacs_repo = compat::project_root().join("../emacs");

@@ -5609,7 +5609,6 @@ pub struct InterpreterState {
     /// Raw etc/DOC byte offsets installed in built-in subroutine objects by
     /// `Snarf-documentation`, keyed by the canonical native function name.
     pub(crate) builtin_doc_offsets: HashMap<String, i64>,
-    syntax_word_chars: Vec<u32>,
     syntax_code_objects: Value,
     /// keymap.c's staticpro'd unicode_case_table belongs to one editor.
     /// Keeping it with that state also isolates successive embedded editors.
@@ -6349,7 +6348,6 @@ impl Interpreter {
             fringe_bitmap_states,
             composition_states: Vec::new(),
             builtin_doc_offsets: HashMap::new(),
-            syntax_word_chars: Vec::new(),
             syntax_code_objects,
             unicode_menu_case_table: Value::Nil,
             where_is_cache: Value::Nil,

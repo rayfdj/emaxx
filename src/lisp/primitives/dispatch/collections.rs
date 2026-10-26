@@ -1354,16 +1354,6 @@ define_dispatch!(
                     end,
                     syntax::syntax_entry_value(interp, entry),
                 )?;
-                if table_id == interp.standard_syntax_table_id()
-                    || table_id == interp.current_syntax_table_id()
-                {
-                    for code in start.min(end)..=start.max(end) {
-                        interp.set_syntax_word_char(
-                            normalize_case_key(code),
-                            syntax.starts_with('w'),
-                        );
-                    }
-                }
                 // "We clear the regexp cache, since character classes can
                 // now have different values from those in the compiled
                 // regexps."

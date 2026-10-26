@@ -616,14 +616,6 @@ impl Interpreter {
                 Value::vector(tables.each().into_iter().map(Value::CharTable))
             }),
         ));
-        groups.push((
-            RootSlot::SyntaxWordChars,
-            Value::vector(
-                self.syntax_word_chars
-                    .iter()
-                    .map(|code| Value::Integer(i64::from(*code))),
-            ),
-        ));
         // fontset.c: Vfontset_table; each fontset's mappings.
         groups.push((
             RootSlot::Fontsets,
@@ -1130,16 +1122,6 @@ mod install {
                 RootSlot::IntervalInsertBehindHooks => self.interval_insert_hooks[0] = *value,
                 RootSlot::IntervalInsertInFrontHooks => self.interval_insert_hooks[1] = *value,
                 RootSlot::FundamentalModeName => self.fundamental_mode_name = *value,
-                RootSlot::SyntaxWordChars => {
-                    let mut codes = Vec::new();
-                    for entry in expect_vector(value, "syntax word chars")? {
-                        codes.push(
-                            u32::try_from(expect_int(&entry, "word char")?)
-                                .map_err(|_| "word char out of range".to_owned())?,
-                        );
-                    }
-                    self.syntax_word_chars = codes;
-                }
                 RootSlot::Fontsets => {
                     let mut fontsets = Vec::new();
                     for entry in expect_list(value, "fontsets")? {

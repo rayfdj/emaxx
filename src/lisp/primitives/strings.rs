@@ -815,54 +815,6 @@ pub(crate) fn validate_collation_locale(locale: Option<&Value>) -> Result<(), Li
     Ok(())
 }
 
-pub(crate) fn assoc_string_text(value: &Value) -> Result<String, LispError> {
-    match value.kind() {
-        Kind::Nil => Ok("nil".into()),
-        Kind::T => Ok("t".into()),
-        Kind::Symbol(name) => Ok(name.to_string()),
-        _ => string_text(value),
-    }
-}
-
-pub(crate) fn assoc_string_candidate_text(value: &Value) -> Option<String> {
-    match value.kind() {
-        Kind::Nil => Some("nil".into()),
-        Kind::T => Some("t".into()),
-        Kind::Symbol(name) => Some(name.to_string()),
-        _ => string_like(value).map(|string| string.text),
-    }
-}
-
-pub(crate) fn assoc_string_folded_text(
-    interp: &mut Interpreter,
-    text: &str,
-) -> Result<String, LispError> {
-    // fns.c's assoc-string folds through the same casing machinery, so it uses
-    // the same prepared context (GNU: `casify_object' with CASE_DOWN).
-    let context = case::CasingContext::prepare(
-        interp,
-        case::CaseAction::Down,
-        &mut crate::lisp::types::Env::new(),
-    );
-    let (down_table, _) = current_case_table_ids(interp)?;
-    let mut folded = String::new();
-    let chars: Vec<char> = text.chars().collect();
-    for (index, ch) in chars.iter().copied().enumerate() {
-        let next_is_word = chars
-            .get(index + 1)
-            .copied()
-            .is_some_and(|next| interp.is_syntax_word_char(normalize_case_key(next as u32)));
-        folded.push_str(&full_downcase_string(
-            interp,
-            &context,
-            down_table,
-            ch,
-            interp.is_syntax_word_char(normalize_case_key(ch as u32)) && !next_is_word,
-        ));
-    }
-    Ok(folded)
-}
-
 /// data.c's Faset signals `args-out-of-range' with the array and the index.
 fn args_out_of_range_for_aset(target: &Value, index: usize) -> LispError {
     LispError::SignalValue(Value::list([
