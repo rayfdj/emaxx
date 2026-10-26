@@ -2869,8 +2869,8 @@ fn native_comp_source_names_hash_canonical_paths_and_real_contents() {
         let canonical = fs::canonicalize(path).expect("canonicalize native-comp source");
         let canonical = canonical.display().to_string();
         let hash_path = canonical.strip_suffix(".gz").unwrap_or(&canonical);
-        let path_hash = format!("{:x}", md5::compute(hash_path.as_bytes()));
-        let content_hash = format!("{:x}", md5::compute(contents));
+        let path_hash = crate::lisp::md5::md5_hex(hash_path.as_bytes());
+        let content_hash = crate::lisp::md5::md5_hex(contents);
         format!("sample-{}-{}.eln", &path_hash[..8], &content_hash[..8])
     };
     let source_relative = relative_name(&source);

@@ -373,6 +373,12 @@ pub(super) fn re_compile_fastmap<E: MatchEnv + ?Sized>(pattern: &mut Pattern, en
             |at: usize| analyze_first_fastmap(buf, at, &mut fastmap, &mut match_any_multibyte, env);
         forall_firstchar(buf, whole, 0, Some(buf.len()), &mut f)
     };
+    let mut admitted = (0..=255u8).filter(|&byte| fastmap[usize::from(byte)]);
+    pattern.fastmap_leads = match (admitted.next(), admitted.next()) {
+        (None, _) => FastmapLeads::None,
+        (Some(byte), None) => FastmapLeads::One(byte),
+        _ => FastmapLeads::Many,
+    };
     pattern.fastmap = fastmap;
     pattern.fastmap_accurate = true;
     pattern.ascii_admits = None;

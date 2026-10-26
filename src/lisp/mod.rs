@@ -502,6 +502,7 @@ pub(crate) mod alloc;
 pub(crate) mod bytecode;
 pub(crate) mod eval;
 pub(crate) mod json;
+pub(crate) mod md5;
 pub(crate) mod modules;
 pub(crate) mod native_comp;
 pub(crate) mod primitives;

@@ -98,7 +98,7 @@ pub(crate) fn secure_hash_source_bytes(
 
 pub(crate) fn secure_hash_digest(algorithm: &str, input: &[u8]) -> Result<Vec<u8>, LispError> {
     Ok(match algorithm {
-        "md5" => md5::compute(input).0.to_vec(),
+        "md5" => crate::lisp::md5::md5_buffer(input).to_vec(),
         "sha1" => Sha1::digest(input).to_vec(),
         "sha224" => Sha224::digest(input).to_vec(),
         "sha256" => Sha256::digest(input).to_vec(),

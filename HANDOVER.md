@@ -6388,6 +6388,42 @@ setup_process_coding_systems's check now refuses). A 13-form
   groups with the documented local skips (eval_05, 366, includes
   the new test); clippy `-D warnings', rustfmt and `git diff --check'
   pass.
+- **Round 89: gnulib's MD5, the fastmap's lone lead byte, one obarray
+  probe.** Three costs of every file `load' finds or reads. (1) The `md5'
+  crate copied each input byte into its block buffer and rebuilt the
+  words from it, about twice gnulib's cost a byte; the native-code lookup
+  hashes each candidate source file (comp-el-to-eln-filename), so loading
+  `ert' spent 15.7M instructions there against GNU's 7.6M. Now
+  src/lisp/md5.rs is gnulib md5.c (md5_init_ctx, md5_process_bytes with
+  whole blocks processed where they lie, md5_process_block,
+  md5_finish_ctx, md5_buffer) and serves `md5', `secure-hash' and the
+  native compiler's file and ABI hashes; the crate is gone. (2) Each
+  `re_search' call found out whether the fastmap admits exactly one byte
+  (for its memchr skip) by scanning all 256 entries, about 1,100
+  instructions a call; the count is now taken once, when
+  re_compile_fastmap fills the fastmap. (3) Reading a symbol in the
+  initial obarray hashed its name twice (a membership test, then the
+  intern) and scanned it twice for the internal markers; now one scan
+  and one probe return the symbol, as oblookup does. Loading `ert' took
+  230.2M instructions and now 203.6M (GNU 235.1M); loading `json'
+  125.3M and now 113.6M (GNU 109.6M); a test file's setup in the frozen
+  runner 710.4M and now 673.3M (GNU 518.3M); startup 221.3M and now
+  219.3M (GNU 151.6M). The setup gap is now mostly after `ert' is
+  loaded: loading the runner and running the file cost 250.4M against
+  GNU's 131.6M, where 41K `string-match' calls cost about 1,950
+  instructions each with everything they call against GNU's 1,060: a
+  search's `gl_state' setup for `parse-sexp-lookup-properties' costs 361
+  against GNU's 113 and its pooled matcher state 236, and each call's
+  string text view 106 and case-fold variable reads 110. A probe of `md5' and
+  `secure-hash' over strings of every block boundary, multibyte and
+  unibyte strings and coding systems, substrings, buffers and regions,
+  and of `string-match' and buffer searches whose patterns one byte,
+  several or none can start (with and without case folding, multibyte
+  and unibyte text) gives GNU 30.2's values; the md5 module's test
+  checks RFC 1321's suite and every split of a message. Local
+  validation: the full gate, 3,230 passed across its ten groups
+  with the documented local skips; clippy `-D warnings', rustfmt and
+  `git diff --check' pass.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -7108,7 +7144,9 @@ frozen passed on its first attempt (run 40246690701).
 **On `6f55171`** (round 87): full Rust gate passed (run 40250303048);
 frozen failed only GNU's known oracle flake (Emaxx 7,670 passed with 0
 unexpected, GNU 7,669 passed with 1 unexpected), and its failed job was
-rerun (run 40250305113, attempt 2).
+rerun passed (run 40250305113, attempt 2).
+**On `b69436b`** (round 88): full Rust gate passed (run 40252770662),
+frozen passed on its first attempt (run 40252773076).
 
 **Findings recorded, not fixed:**
 - `features`, `values` and `top-level` are special variables in Emaxx

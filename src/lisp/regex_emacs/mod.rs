@@ -154,6 +154,10 @@ pub(crate) struct Pattern {
     pub(crate) re_nsub: usize,
     pub(crate) fastmap: [bool; 256],
     pub(crate) fastmap_accurate: bool,
+    /// The bytes the fastmap admits, counted when it is computed: an
+    /// untranslated search for a pattern only one byte can start skips
+    /// to that byte's next occurrence.
+    pub(crate) fastmap_leads: FastmapLeads,
     /// Whether the pattern can match the empty string (only as precise as
     /// `re_search_2' needs: true means "don't use the fastmap").
     pub(crate) can_be_null: bool,
@@ -168,6 +172,14 @@ pub(crate) struct Pattern {
     /// translation stamp and a multibyte or unibyte text: bit B is set
     /// when B, translated, can start a match.
     pub(crate) ascii_admits: Option<(u64, bool, u128)>,
+}
+
+/// How many bytes a pattern's fastmap admits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FastmapLeads {
+    None,
+    One(u8),
+    Many,
 }
 
 /// The largest compiled pattern: jump offsets are two-byte numbers.

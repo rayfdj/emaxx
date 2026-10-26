@@ -76,10 +76,6 @@ impl SymbolCells {
         self.symbols.len()
     }
 
-    pub(crate) fn contains_name(&self, name: &str) -> bool {
-        self.symbols.contains(name)
-    }
-
     pub(crate) fn find_name(&self, name: &str) -> Option<SymbolName> {
         self.symbols.find(name)
     }

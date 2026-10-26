@@ -1103,20 +1103,6 @@ pub(crate) fn re_search<E: MatchEnv + ?Sized>(
     // only for a character's first byte, never a continuation byte, and a
     // side-table character's lead is its stored form's.
     let plain_scan = !pattern.translate && !text.latin1_bytes;
-    let single = if plain_scan {
-        let mut set = pattern
-            .fastmap
-            .iter()
-            .enumerate()
-            .filter_map(|(byte, &on)| on.then_some(byte as u8));
-        match (set.next(), set.next()) {
-            (Some(byte), None) => Some(Some(byte)),
-            (None, _) => Some(None),
-            _ => None,
-        }
-    } else {
-        None
-    };
 
     loop {
         'attempt: {
@@ -1134,10 +1120,10 @@ pub(crate) fn re_search<E: MatchEnv + ?Sized>(
                             let rest = rd.rest(d);
                             let n = rest.len().min(limit - d);
                             let window = &rest[..n];
-                            let found = match single {
-                                Some(Some(byte)) => memchr::memchr(byte, window),
-                                Some(None) => None,
-                                None => {
+                            let found = match pattern.fastmap_leads {
+                                FastmapLeads::One(byte) => memchr::memchr(byte, window),
+                                FastmapLeads::None => None,
+                                FastmapLeads::Many => {
                                     window.iter().position(|&b| pattern.fastmap[usize::from(b)])
                                 }
                             };

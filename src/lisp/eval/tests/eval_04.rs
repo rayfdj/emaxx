@@ -519,11 +519,9 @@ fn native_file_primitives_use_deterministic_metadata_not_wall_clock_races() {
         root = root.display().to_string(),
     ));
     let canonical_source = fs::canonicalize(&source).expect("canonicalize native source");
-    let source_path_hash = format!(
-        "{:x}",
-        md5::compute(canonical_source.display().to_string().as_bytes())
-    );
-    let source_content_hash = format!("{:x}", md5::compute(b"source contents\n"));
+    let source_path_hash =
+        crate::lisp::md5::md5_hex(canonical_source.display().to_string().as_bytes());
+    let source_content_hash = crate::lisp::md5::md5_hex(b"source contents\n");
     // comp.c places eln files under `comp-native-version-dir'
     // (VERSION-ABIHASH, this build's own ABI identity -- audit finding
     // 77) inside BASE-DIR; the hash components match the oracle's.

@@ -531,6 +531,7 @@ pub(crate) fn compile(
         re_nsub: cc.re_nsub as usize,
         fastmap: [false; 256],
         fastmap_accurate: false,
+        fastmap_leads: FastmapLeads::Many,
         ascii_admits: None,
         can_be_null: false,
         used_syntax: cc.used_syntax,

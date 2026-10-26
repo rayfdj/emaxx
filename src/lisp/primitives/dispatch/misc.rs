@@ -472,7 +472,7 @@ define_dispatch!(
             "md5" => {
                 need_arg_range(name, args, 1, 5)?;
                 let bytes = md5_source_bytes(interp, args, env)?;
-                Ok(Value::String(format!("{:x}", md5::compute(bytes)).into()))
+                Ok(Value::String(crate::lisp::md5::md5_hex(&bytes).into()))
             }
             "secure-hash" => {
                 need_arg_range(name, args, 2, 5)?;

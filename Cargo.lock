@@ -353,7 +353,6 @@ dependencies = [
  "libc",
  "libloading",
  "libxml",
- "md5",
  "memchr",
  "mimalloc",
  "num-bigint",
@@ -753,12 +752,6 @@ checksum = "d640282b302c0bb0a2a8e0233ead9035e3bed871f0b7e81fe4a1ec829765db44"
 dependencies = [
  "libc",
 ]
-
-[[package]]
-name = "md5"
-version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ae960838283323069879657ca3de837e9f7bbb4c7bf6ea7f1b290d5e9476d2e0"
 
 [[package]]
 name = "memchr"

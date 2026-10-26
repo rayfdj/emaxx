@@ -1011,7 +1011,15 @@ impl Interpreter {
     }
 
     pub(crate) fn standard_obarray_contains_symbol(&self, name: &str) -> bool {
-        crate::lisp::types::is_visible_symbol_name(name) && self.globals.contains_name(name)
+        self.standard_obarray_symbol(name).is_some()
+    }
+
+    /// oblookup in the initial obarray: the symbol NAME names there.
+    pub(crate) fn standard_obarray_symbol(&self, name: &str) -> Option<SymbolName> {
+        if !crate::lisp::types::is_visible_symbol_name(name) {
+            return None;
+        }
+        self.globals.find_name(name)
     }
 
     pub(crate) fn standard_obarray_contains_object(&self, symbol: &SymbolName) -> bool {
