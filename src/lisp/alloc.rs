@@ -20,7 +20,7 @@
 
 use super::types::{ConsCell, Kind, Value};
 use std::cell::Cell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ptr::NonNull;
 use std::sync::Mutex;
 
@@ -128,11 +128,16 @@ struct BlockRegistry {
     /// Each kind's blocks by start address, each with whether an image
     /// load registered it (see `IMAGE_REGION_OPEN'), for its sweep.
     by_kind: [BTreeMap<usize, bool>; BLOCK_KINDS],
+    /// The image blocks that are the image's own bytes where the loader
+    /// mapped them (`adopt_image_cons_blocks'): pdumper.c never frees its
+    /// dump, so their storage is never given back.
+    mapped: BTreeSet<usize>,
 }
 
 static BLOCKS: Mutex<BlockRegistry> = Mutex::new(BlockRegistry {
     all: BTreeMap::new(),
     by_kind: [const { BTreeMap::new() }; BLOCK_KINDS],
+    mapped: BTreeSet::new(),
 });
 
 /// alloc.c's `min_heap_address' and `max_heap_address': the lowest block
@@ -146,14 +151,32 @@ static HEAP_HIGH: AtomicUsize = AtomicUsize::new(0);
 /// alloc.c's `mem_insert' of a block of KIND and BYTES at START.
 fn register_block(start: usize, bytes: usize, kind: BlockKind) {
     let image = IMAGE_REGION_OPEN.load(Ordering::Relaxed);
+    register_block_of(start, bytes, kind, image, false);
+}
+
+/// `register_block' of an image block (IMAGE), one of the image's own
+/// mapped bytes (MAPPED) or not.
+fn register_block_of(start: usize, bytes: usize, kind: BlockKind, image: bool, mapped: bool) {
     let mut blocks = BLOCKS
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     blocks.all.insert(start, kind);
     blocks.by_kind[kind as usize].insert(start, image);
+    if mapped {
+        blocks.mapped.insert(start);
+    }
     drop(blocks);
     HEAP_LOW.fetch_min(start, Ordering::Relaxed);
     HEAP_HIGH.fetch_max(start + bytes, Ordering::Relaxed);
+}
+
+/// True when the block at START is one of the image's mapped blocks.
+fn is_mapped_block(start: usize) -> bool {
+    BLOCKS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .mapped
+        .contains(&start)
 }
 
 /// alloc.c's `mem_delete'.
@@ -1652,46 +1675,54 @@ pub(crate) fn allocate_cons(cell: ConsCell) -> ConsRef {
     unsafe { fill_cons(slot, cell) }
 }
 
-/// Fcons (Qnil, Qnil) COUNT times, each cell handed to EACH in allocation
-/// order: pdumper's cons placeholders.  Cells come as Fcons takes them,
-/// the free list's first; a run of the newest block's untouched cells is
-/// written and counted at once, its allocation bits set a word at a time.
-pub(crate) fn allocate_nil_conses(mut count: usize, mut each: impl FnMut(ConsRef)) {
-    let nil = || ConsCell {
-        car: std::cell::Cell::new(Value::Nil),
-        cdr: std::cell::Cell::new(Value::Nil),
-    };
-    while count > 0 {
-        let next = BUMP_NEXT.load(Ordering::Relaxed);
-        let available = BUMP_END.load(Ordering::Relaxed).saturating_sub(next) / CELL_SIZE;
-        if !FREE_LIST.load(Ordering::Relaxed).is_null() || available == 0 {
-            each(
-                Value::cons(Value::Nil, Value::Nil)
-                    .cons_ref()
-                    .expect("a cons"),
-            );
-            count -= 1;
-            continue;
-        }
-        let run = available.min(count);
-        crate::lisp::native_comp::note_lisp_allocation(run * CELL_SIZE);
-        let first = next as *mut ConsCell;
-        BUMP_NEXT.store(next + run * CELL_SIZE, Ordering::Relaxed);
-        LIVE_CONSES.store(LIVE_CONSES.load(Ordering::Relaxed) + run, Ordering::Relaxed);
-        counters::tally(&counters::CONS_CELLS_CONSED, run as i64);
-        // SAFETY: the RUN cells from FIRST are the newest block's bump
-        // region, never allocated: each is written before its handle is
-        // made, and their bits are this block's.
+/// The image's conses are this allocator's cons blocks, written whole by
+/// the dumper and used where the loader maps them, as pdumper.c's dump
+/// holds its objects in their runtime form: a block of `CONS_BLOCK_BYTES',
+/// its metadata first and its `CELLS_PER_BLOCK' cells from
+/// `CONS_BLOCK_CELLS', the image's conses numbered in that order.
+pub(crate) const CONS_BLOCK_BYTES: usize = CONS_BLOCK_ALIGN;
+pub(crate) const CONS_BLOCK_CELLS: usize = CONS_CELLS;
+
+/// The offset of image cons INDEX from the start of the image's blocks.
+pub(crate) const fn image_cons_offset(index: usize) -> usize {
+    (index / CELLS_PER_BLOCK) * CONS_BLOCK_BYTES
+        + CONS_CELLS
+        + (index % CELLS_PER_BLOCK) * CELL_SIZE
+}
+
+/// The bytes the image's blocks of COUNT conses take.
+pub(crate) const fn image_cons_bytes(count: usize) -> usize {
+    count.div_ceil(CELLS_PER_BLOCK) * CONS_BLOCK_BYTES
+}
+
+/// pdumper's mapped conses: the COUNT cells of the image's blocks at
+/// START become allocated cells of image blocks, as the dump's objects
+/// are the heap's once it is mapped (nothing is allocated or counted for
+/// them, and the collector never frees their storage).  The cells keep
+/// the words the image gave them, for the loader to relocate in place.
+///
+/// # Safety
+/// START is aligned to `CONS_BLOCK_BYTES' and the `image_cons_bytes'
+/// bytes from it are writable for the life of the process, the blocks'
+/// metadata zero, and no other block overlaps them.
+pub(crate) unsafe fn adopt_image_cons_blocks(start: *mut u8, count: usize) {
+    let start = start as usize;
+    assert!(
+        start.is_multiple_of(CONS_BLOCK_ALIGN),
+        "unaligned image conses"
+    );
+    let epoch = super::types::current_mark_epoch();
+    for block in 0..count.div_ceil(CELLS_PER_BLOCK) {
+        let base = start + block * CONS_BLOCK_BYTES;
+        let cells = (count - block * CELLS_PER_BLOCK).min(CELLS_PER_BLOCK);
+        // SAFETY: the caller's contract: a block's storage whose metadata
+        // nothing reads yet; its first CELLS cells are written, the rest
+        // stay free.
         unsafe {
-            for index in 0..run {
-                std::ptr::write(first.add(index), nil());
-            }
-            cons_mark(first).allocate_run(run, super::types::current_mark_epoch());
-            for index in 0..run {
-                each(ConsRef(NonNull::new_unchecked(first.add(index))));
-            }
+            ConsMetadata::init(std::ptr::addr_of_mut!((*(base as *mut ConsBlock)).metadata));
+            cons_mark(cons_cell(base, 0)).allocate_run(cells, epoch);
         }
-        count -= run;
+        register_block_of(base, CONS_BLOCK_BYTES, BlockKind::Cons, true, true);
     }
 }
 
@@ -1734,6 +1765,10 @@ unsafe fn fill_cons(slot: *mut ConsCell, cell: ConsCell) -> ConsRef {
 /// alloc.c's `lisp_align_free' of a block every cell of which is free
 /// (the sweep found nothing live in it).
 fn release_block(start: usize, kind: BlockKind) {
+    // The image's mapped blocks stay as they are, their cells free.
+    if is_mapped_block(start) {
+        return;
+    }
     unregister_block(start);
     // SAFETY: a block `new_block' allocated of this kind, unregistered
     // above; every cell is free (nothing reaches it).

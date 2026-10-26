@@ -21,7 +21,7 @@ pub(crate) const FINGERPRINT_LEN: usize = 32;
 pub(crate) const DUMP_ALIGNMENT: usize = 8;
 /// `dump_off' is `int_least32_t'.
 pub(crate) const DUMP_OFF_MAX: usize = i32::MAX as usize;
-pub(crate) const HEADER_LEN: usize = 100;
+pub(crate) const HEADER_LEN: usize = 108;
 pub(crate) const RELOC_NUM_PHASES: usize = 3;
 pub(crate) const EARLY_RELOCS: usize = 0;
 /// pdumper.c:reloc_phase: the native compilation units are loaded in
@@ -106,7 +106,10 @@ pub(crate) struct TableLocator {
     pub(crate) nr_entries: u32,
 }
 
-/// pdumper.c:dump_header, 100 bytes in the same field order.
+/// pdumper.c:dump_header in the same field order, and after it the image's
+/// cons blocks: the conses are the allocator's blocks in the hot section,
+/// mapped where they lie (GNU's dump objects are its heap's form; Emaxx's
+/// conses carry their blocks' metadata), found by their offset and count.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DumpHeader {
     pub(crate) magic: [u8; 16],
@@ -117,6 +120,8 @@ pub(crate) struct DumpHeader {
     pub(crate) discardable_start: u32,
     pub(crate) cold_start: u32,
     pub(crate) hash_list: u32,
+    /// The first cons block's offset and the number of conses.
+    pub(crate) cons_blocks: TableLocator,
 }
 
 impl DumpHeader {
@@ -132,6 +137,7 @@ impl DumpHeader {
             discardable_start: 0,
             cold_start: 0,
             hash_list: 0,
+            cons_blocks: TableLocator::default(),
         }
     }
 
@@ -155,6 +161,8 @@ impl DumpHeader {
         put(self.discardable_start);
         put(self.cold_start);
         put(self.hash_list);
+        put(self.cons_blocks.offset);
+        put(self.cons_blocks.nr_entries);
         out
     }
 
@@ -186,15 +194,23 @@ impl DumpHeader {
             offset: get(),
             nr_entries: get(),
         };
+        let discardable_start = get();
+        let cold_start = get();
+        let hash_list = get();
+        let cons_blocks = TableLocator {
+            offset: get(),
+            nr_entries: get(),
+        };
         Some(Self {
             magic,
             fingerprint,
             dump_relocs,
             object_starts,
             emacs_relocs,
-            discardable_start: get(),
-            cold_start: get(),
-            hash_list: get(),
+            discardable_start,
+            cold_start,
+            hash_list,
+            cons_blocks,
         })
     }
 }
@@ -611,7 +627,7 @@ mod tests {
     }
 
     #[test]
-    fn header_round_trips_through_its_hundred_bytes() {
+    fn header_round_trips_through_its_bytes() {
         let mut header = DumpHeader::incomplete();
         header.dump_relocs[EARLY_RELOCS] = TableLocator {
             offset: 1000,
@@ -623,6 +639,10 @@ mod tests {
         };
         header.discardable_start = 500;
         header.cold_start = 4096;
+        header.cons_blocks = TableLocator {
+            offset: 32768,
+            nr_entries: 3,
+        };
         let bytes = header.to_bytes();
         assert_eq!(bytes.len(), HEADER_LEN);
         assert_eq!(&bytes[..16], b"!UMPEDGNUEMACS\0\0");

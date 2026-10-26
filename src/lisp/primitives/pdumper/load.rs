@@ -62,8 +62,9 @@ pub(crate) struct LoadedImage {
 /// (dump_mmap_contiguous): private and writable, the pages the page
 /// cache's until one is written, nothing copied or zeroed for them, where
 /// reading the file into a fresh vector cost the copy and the first touch
-/// of every page on each boot.  A file the host cannot map is read into
-/// memory of the same alignment.
+/// of every page on each boot.  The mapping starts at a cons block's
+/// alignment, so that the image's cons blocks are blocks where they lie.
+/// A file the host cannot map is read into memory of the same alignment.
 pub(crate) struct ImageBytes {
     address: std::ptr::NonNull<u8>,
     len: usize,
@@ -78,7 +79,56 @@ pub(crate) struct PermanentImage {
     len: usize,
 }
 
-const IMAGE_ALIGNMENT: usize = 8;
+const IMAGE_ALIGNMENT: usize = crate::lisp::alloc::CONS_BLOCK_BYTES;
+
+/// pdumper.c's dump_mmap_contiguous at `IMAGE_ALIGNMENT': address space
+/// that much larger than the file is reserved, the file mapped private and
+/// writable over its first aligned address, and the rest given back.
+///
+/// # Safety
+/// FD is an open file of at least LEN bytes, LEN nonzero.
+#[cfg(unix)]
+unsafe fn map_aligned(fd: std::ffi::c_int, len: usize) -> *mut std::ffi::c_void {
+    // SAFETY: a fresh reservation at an address of the kernel's choosing,
+    // then the file over part of it (MAP_FIXED replaces only reserved
+    // pages), then the reservation's unused ends unmapped.
+    unsafe {
+        let reserved = len + IMAGE_ALIGNMENT;
+        let base = libc::mmap(
+            std::ptr::null_mut(),
+            reserved,
+            libc::PROT_NONE,
+            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+            -1,
+            0,
+        );
+        if base == libc::MAP_FAILED {
+            return base;
+        }
+        let start = (base as usize).next_multiple_of(IMAGE_ALIGNMENT);
+        let address = libc::mmap(
+            start as *mut std::ffi::c_void,
+            len,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_PRIVATE | libc::MAP_FIXED,
+            fd,
+            0,
+        );
+        if address == libc::MAP_FAILED {
+            libc::munmap(base, reserved);
+            return address;
+        }
+        let page = usize::try_from(libc::sysconf(libc::_SC_PAGESIZE)).unwrap_or(4096);
+        let end = start + len.next_multiple_of(page);
+        if start > base as usize {
+            libc::munmap(base, start - base as usize);
+        }
+        if base as usize + reserved > end {
+            libc::munmap(end as *mut std::ffi::c_void, base as usize + reserved - end);
+        }
+        address
+    }
+}
 
 impl ImageBytes {
     pub(crate) fn open(path: &std::path::Path) -> std::io::Result<Self> {
@@ -102,19 +152,11 @@ impl ImageBytes {
             }
             // GNU's file mapping does not request anonymous-memory
             // prefaulting flags such as MAP_POPULATE.
-            // SAFETY: a fresh private mapping of the open file's `len'
-            // bytes at an address of the kernel's choosing, unmapped by
-            // Drop unless it is made permanent.
-            let address = unsafe {
-                libc::mmap(
-                    std::ptr::null_mut(),
-                    len,
-                    libc::PROT_READ | libc::PROT_WRITE,
-                    libc::MAP_PRIVATE,
-                    file.as_raw_fd(),
-                    0,
-                )
-            };
+            // SAFETY: a private mapping of the open file's `len' bytes at
+            // the first aligned address of address space reserved for it
+            // (`map_aligned'), unmapped by Drop unless it is made
+            // permanent.
+            let address = unsafe { map_aligned(file.as_raw_fd(), len) };
             if address == libc::MAP_FAILED {
                 // A file the host cannot map (a directory, a filesystem
                 // without mmap): read it, and report what the read does.
@@ -316,6 +358,7 @@ pub(crate) fn load_permanent_image(
         reloc_next: 0,
         late_relocs: relocs(LATE_RELOCS)?,
         very_late_relocs: relocs(VERY_LATE_RELOCS)?,
+        conses: ImageConses::default(),
         subrs: HashMap::default(),
         reader,
         image,
@@ -504,6 +547,8 @@ struct Loader<'a> {
     reloc_next: u32,
     late_relocs: RelocTable<'a>,
     very_late_relocs: RelocTable<'a>,
+    /// The image's cons blocks, once adopted.
+    conses: ImageConses,
     /// The subr each copied record of the Emacs image names.
     subrs: HashMap<
         u32,
@@ -513,14 +558,74 @@ struct Loader<'a> {
     interp: &'a mut Interpreter,
 }
 
+/// The code of RELOC_DUMP_TO_DUMP_LV naming a cons.
+pub(super) const CONS_LV: u32 = 0x100 | DumpType::Cons as u32;
+
+/// The image's cons blocks where the image is mapped: BASE the image's
+/// address, START the first block's offset, COUNT the conses.
+#[derive(Default)]
+struct ImageConses {
+    base: usize,
+    start: usize,
+    count: usize,
+    /// Past the last cell, from START.
+    end: usize,
+}
+
+impl ImageConses {
+    /// The offsets of the first cell and just past the last.
+    fn cells(&self) -> (u32, u32) {
+        let first = self.start + crate::lisp::alloc::image_cons_offset(0);
+        (first as u32, (self.start + self.end) as u32)
+    }
+
+    /// True when the word at OFFSET is in one of the cells: a block's
+    /// cells, not its metadata, and no later than the last cell.
+    #[inline(always)]
+    fn holds(&self, offset: u32) -> bool {
+        use crate::lisp::alloc::{CONS_BLOCK_BYTES, CONS_BLOCK_CELLS};
+        let at = (offset as usize).wrapping_sub(self.start);
+        at < self.end && at % CONS_BLOCK_BYTES >= CONS_BLOCK_CELLS
+    }
+
+    /// The cons whose cell is at OFFSET, which must be a cell of the
+    /// blocks.
+    #[inline(always)]
+    fn cons_at(&self, offset: u32) -> Result<Value, LoadError> {
+        if !self.holds(offset) || !offset.is_multiple_of(16) {
+            return Err(LoadError::Error(format!(
+                "cons at {offset} is not a cell of the cons blocks"
+            )));
+        }
+        // SAFETY: an allocated cell of the adopted blocks, by the check.
+        Ok(Value::Cons(unsafe {
+            crate::lisp::alloc::ConsRef::from_raw(
+                (self.base + offset as usize) as *const crate::lisp::types::ConsCell,
+            )
+        }))
+    }
+
+    /// The word at OFFSET, which must be a car or cdr of the cells.
+    #[inline(always)]
+    fn field(&self, offset: u32) -> Result<*mut Value, LoadError> {
+        if !self.holds(offset) || !offset.is_multiple_of(8) {
+            return Err(LoadError::Error(format!(
+                "relocation at {offset} is not a word of a cons"
+            )));
+        }
+        Ok((self.base + offset as usize) as *mut Value)
+    }
+}
+
 impl Loader<'_> {
     fn load(&mut self, header: DumpHeader) -> Result<LoadedImage, LoadError> {
+        // pdumper's mapped objects: the image's cons blocks are the heap's
+        // where they lie, before anything names one of their conses.
+        self.conses = self.adopt_cons_blocks(&header)?;
         // Each object's type, and the objects by the phases that build
-        // them, each list in image order: the conses (one allocation run,
-        // then their fields), the objects that need only their own bytes,
-        // and the rest.
+        // them, each list in image order: the objects that need only their
+        // own bytes, and the rest; a cons is where its block holds it.
         let mut kinds = Vec::with_capacity(self.starts.len());
-        let mut cons_objects = Vec::new();
         let mut own_bytes_objects = Vec::new();
         let mut other_objects = Vec::new();
         let mut symbol_count = 0;
@@ -530,7 +635,9 @@ impl Loader<'_> {
                 LoadError::Error(format!("unknown object type {code} of object {number}"))
             })?;
             match kind {
-                DumpType::Cons => cons_objects.push(number as u32),
+                DumpType::Cons => {
+                    self.objects[number] = self.conses.cons_at(self.starts.offset(number))?;
+                }
                 DumpType::String
                 | DumpType::StringObject
                 | DumpType::EmptyString
@@ -576,13 +683,7 @@ impl Loader<'_> {
         }
 
         // Phase 2: objects whose construction needs a name, and the
-        // containers as placeholders.  The conses first, all at once.
-        let objects = &mut self.objects;
-        let mut conses = cons_objects.iter();
-        crate::lisp::alloc::allocate_nil_conses(cons_objects.len(), |cell| {
-            let number = *conses.next().expect("an object for each cons");
-            objects[number as usize] = Value::Cons(cell);
-        });
+        // containers as placeholders.
         SymbolName::reserve_interned(symbol_count);
         let mut symbol_records = Vec::new();
         let mut obarray_records = Vec::new();
@@ -810,7 +911,7 @@ impl Loader<'_> {
         // Phase 3: relocate the fields of the published containers.
         let mut obarray = Vec::new();
         let mut scratch = Vec::new();
-        self.relocate_conses(&cons_objects)?;
+        self.relocate_conses()?;
         for &number in &other_objects {
             let number = number as usize;
             let kind = kinds[number];
@@ -1131,9 +1232,13 @@ impl Loader<'_> {
         Ok(ids)
     }
 
-    /// The object whose start is at OFFSET.
+    /// The object whose start is at OFFSET: a cons of the blocks, or one
+    /// of the object starts.
     fn object_at(&self, offset: u32) -> Option<Value> {
-        self.object(self.starts.find(offset)?)
+        match self.starts.find(offset) {
+            Some(number) => self.object(number),
+            None => self.conses.cons_at(offset).ok(),
+        }
     }
 
     /// Object NUMBER, once made.
@@ -1178,58 +1283,64 @@ impl Loader<'_> {
         self.relocs.rank_from(self.reloc_cursor, field)
     }
 
-    /// Phase 3 for the conses, numbered CONSES in image order: each
-    /// placeholder's car and cdr from its two words, the relocations merged
-    /// with the fields in one ascending walk (those of the objects between
-    /// passed over), as pdumper.c applies its sorted relocations in order.
-    fn relocate_conses(&mut self, conses: &[u32]) -> Result<(), LoadError> {
-        let Some(&first) = conses.first() else {
-            return Ok(());
+    /// The image's cons blocks (`DumpHeader::cons_blocks'), made the
+    /// heap's blocks where the image holds them, once their place in the
+    /// hot section is checked.
+    fn adopt_cons_blocks(&mut self, header: &DumpHeader) -> Result<ImageConses, LoadError> {
+        let start = header.cons_blocks.offset as usize;
+        let count = header.cons_blocks.nr_entries as usize;
+        let end = start + crate::lisp::alloc::image_cons_bytes(count);
+        let conses = ImageConses {
+            base: self.image.address.as_ptr() as usize,
+            start,
+            count,
+            end: count
+                .checked_sub(1)
+                .map_or(0, |last| crate::lisp::alloc::image_cons_offset(last) + 16),
         };
-        let mut cursor = self.relocs.rank_from(0, self.starts.offset(first as usize));
-        let mut next = self.relocs.offset_or_end(cursor);
-        for &number in conses {
-            let number = number as usize;
-            let offset = self.starts.offset(number);
-            let words = (offset as usize)
-                .checked_add(16)
-                .and_then(|end| self.reader.bytes.get(offset as usize..end))
-                .ok_or_else(|| {
-                    LoadError::Error(format!("cons at {offset} is outside the image"))
-                })?;
-            let mut values = [Value::Nil; 2];
-            for (index, value) in values.iter_mut().enumerate() {
-                let field = offset + 8 * index as u32;
-                let word = u64::from_le_bytes(
-                    words[8 * index..8 * index + 8]
-                        .try_into()
-                        .expect("a word of the cons"),
-                );
-                // The relocations of the objects since the last cons.
-                while next < field {
-                    cursor += 1;
-                    next = self.relocs.offset_or_end(cursor);
-                }
-                *value = if field == next {
-                    let entry = &self.relocs.entries[cursor];
-                    cursor += 1;
-                    next = self.relocs.offset_or_end(cursor);
-                    let code = entry_word(entry, 4);
-                    match self.object(entry_word(entry, 8) as usize) {
-                        Some(value) if code >> 8 == 1 => value,
-                        _ => self.relocated_value(field, code, word)?,
-                    }
-                } else {
-                    immediate_value(word)?
-                };
-            }
-            let cell = self.objects[number]
-                .cons_ref()
-                .expect("a cons placeholder was installed in phase 2");
-            // The placeholder's relocated words, stored as pdumper.c
-            // stores them: nothing has seen the cell.
-            cell.car.set(values[0]);
-            cell.cdr.set(values[1]);
+        if count == 0 {
+            return Ok(conses);
+        }
+        if !start.is_multiple_of(crate::lisp::alloc::CONS_BLOCK_BYTES)
+            || start < HEADER_LEN
+            || end > header.discardable_start as usize
+            || end > self.image.len
+        {
+            return Err(LoadError::Error(format!(
+                "the cons blocks at {start} are not in the hot section"
+            )));
+        }
+        // SAFETY: the image is aligned to a block (`IMAGE_ALIGNMENT'), so
+        // the blocks from START are, and their bytes, inside the image by
+        // the check above, stay for the life of the process; the dumper
+        // wrote their metadata zero, and nothing else uses those bytes.
+        unsafe {
+            crate::lisp::alloc::adopt_image_cons_blocks(self.image.at(start).as_ptr(), count)
+        };
+        Ok(conses)
+    }
+
+    /// Phase 3 for the conses: pdumper.c's relocation of the dump where it
+    /// is mapped, each relocation in the cons blocks applied to the word it
+    /// names, in order; the other words are the heap's as the dumper wrote
+    /// them.
+    fn relocate_conses(&mut self) -> Result<(), LoadError> {
+        if self.conses.count == 0 {
+            return Ok(());
+        }
+        let (start, end) = self.conses.cells();
+        let first = self.relocs.rank_from(0, start);
+        let last = self.relocs.rank_from(first, end);
+        for index in first..last {
+            let entry = &self.relocs.entries[index];
+            let field = entry_word(entry, 0);
+            let slot = self.conses.field(field)?;
+            // SAFETY: a word of an adopted cell, read where it is.
+            let word = unsafe { slot.cast::<u64>().read() };
+            let value =
+                self.reloc_value(field, entry_word(entry, 4), entry_word(entry, 8), word)?;
+            // SAFETY: a word of an adopted cell, which nothing has seen.
+            unsafe { slot.write(value) };
         }
         // The next field read seeks its relocation afresh.
         self.reloc_last = u32::MAX;
@@ -1273,11 +1384,7 @@ impl Loader<'_> {
                 let entry = &self.relocs.entries[cursor];
                 cursor += 1;
                 next = self.relocs.offset_or_end(cursor);
-                let code = entry_word(entry, 4);
-                match self.object(entry_word(entry, 8) as usize) {
-                    Some(value) if code >> 8 == 1 => value,
-                    _ => self.relocated_value(field, code, word)?,
-                }
+                self.reloc_value(field, entry_word(entry, 4), entry_word(entry, 8), word)?
             } else {
                 immediate_value(word)?
             };
@@ -1299,6 +1406,9 @@ impl Loader<'_> {
             return immediate_value(word);
         };
         let code = self.relocs.code(reloc);
+        if code == CONS_LV {
+            return self.conses.cons_at(word as u32);
+        }
         // DUMP_RELOC_DUMP_TO_DUMP_LV, whatever the target's type: the
         // entry names the object the word does.
         if code >> 8 == 1
@@ -1318,6 +1428,28 @@ impl Loader<'_> {
         self.relocated_value(field_offset, code, word)
     }
 
+    /// The value of the word WORD at FIELD that the relocation of CODE and
+    /// object TARGET names: a cons of the blocks (pdumper.c's
+    /// RELOC_DUMP_TO_DUMP_LV, the mapped image's address and the word's
+    /// offset), the object the entry numbers, or what another relocation
+    /// makes.
+    #[inline(always)]
+    fn reloc_value(
+        &mut self,
+        field: u32,
+        code: u32,
+        target: u32,
+        word: u64,
+    ) -> Result<Value, LoadError> {
+        if code == CONS_LV {
+            return self.conses.cons_at(word as u32);
+        }
+        match self.object(target as usize) {
+            Some(value) if code >> 8 == 1 => Ok(value),
+            _ => self.relocated_value(field, code, word),
+        }
+    }
+
     /// value_at for the relocations other than one naming an object.
     #[cold]
     fn relocated_value(
@@ -1327,6 +1459,9 @@ impl Loader<'_> {
         word: u64,
     ) -> Result<Value, LoadError> {
         match DumpRelocKind::from_u32(code) {
+            // RELOC_DUMP_TO_DUMP_LV of a cons: the word is the cell's
+            // offset, and the cons is where the image is mapped.
+            Some(DumpRelocKind::DumpToDumpLv(DumpType::Cons)) => self.conses.cons_at(word as u32),
             Some(DumpRelocKind::DumpToDumpLv(_)) => Err(LoadError::Error(format!(
                 "field at {field_offset} names no object ({word})"
             ))),

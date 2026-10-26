@@ -6653,6 +6653,48 @@ setup_process_coding_systems's check now refuses). A 13-form
   before this round either). Local validation: the full gate, 3,233
   passed across its ten groups with the documented local skips; clippy
   `-D warnings', rustfmt and `git diff --check' pass.
+- **Round 95: the image's conses mapped in place.** The frozen run's
+  largest gap is a test file's setup, 1.39 times GNU's in CI (98.5 s
+  against 70.6 s over 519 files, where the tests themselves take 1.03
+  times), and most of a setup's excess instructions were the image
+  loader's, which built every object anew where pdumper.c maps the dump
+  and relocates its words where they lie. The conses, 177.6K of the
+  image's 273.8K objects, now take GNU's way. The dumper writes them as
+  this allocator's cons blocks (each block's metadata and 1,344 cells,
+  the runtime form, as GNU's dump holds its objects in theirs) at a
+  block-aligned offset at the end of the hot section, which a new
+  header locator gives with their count (the header is 108 bytes); a
+  cons's offset is provisional while the other objects are dumped and
+  every remembered one is translated once the blocks are placed. A
+  cell's immediates are written as the heap's words, its references as
+  relocations. The loader maps the image at a block's alignment
+  (address space reserved and the file mapped over its first aligned
+  address), makes the blocks image blocks where they lie (their bits
+  set as an allocation sets them, nothing counted or allocated; the
+  collector never gives their storage back, as GNU never frees its
+  dump), and applies the 289.5K relocations that fall in them in order,
+  pdumper.c's RELOC_DUMP_TO_DUMP_LV for a cons being the mapped image's
+  address plus the word's offset. The conses are no longer among the
+  object starts, so the loader neither types nor numbers them.
+  Startup (`--batch -l subr-x') took 212.9M instructions and now 193.4M;
+  `Loader::load' 124.5M and now 106.3M; loading ert 393.7M and now
+  374.3M; a frozen-run test file's setup 614.8M and now 595.5M (GNU
+  518.3M). Wall time, best of interleaved runs: startup 66.1 ms at round
+  93 and now 61.5 ms (GNU 58.1 ms); the frozen runner's setup of
+  xml-tests.el with CI's load path 137.2 ms at round 93 and now 124.2
+  ms (GNU 112.7 ms). Of CI's setup ratio the gate profile (debug
+  assertions, overflow checks, thin LTO) accounts for about a tenth:
+  locally the gate build's setup is 1.25 times GNU's where the release
+  build's is 1.21. Every symbol's value, function and plist after
+  startup is round 94's but for timestamps, paths and the image's
+  consing counters; a probe that mutates image conses and collects,
+  drops an image list's tail while holding it, keys a weak table by
+  image conses, holds 20,000 heap conses pointing at one and reaches one
+  only from the stack across collections gives GNU 30.2's output byte
+  for byte, as does round 94's interning probe. Local validation: the
+  full gate, 3,233 passed across its ten groups with the documented
+  local skips, and the new test with the other 29 pdumper tests; clippy
+  `-D warnings', rustfmt and `git diff --check' pass.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -7389,6 +7431,8 @@ frozen passed on its first attempt (run 40265342433).
 frozen passed on its first attempt (run 40273033064).
 **On `827b8eb`** (round 93): full Rust gate passed (run 40278885996),
 frozen passed on its first attempt (run 40278888554).
+**On `198c173`** (round 94): full Rust gate passed (run 40285385018),
+frozen passed on its first attempt (run 40285394292).
 
 **Findings recorded, not fixed:**
 - `features`, `values` and `top-level` are special variables in Emaxx
@@ -7686,7 +7730,9 @@ and failures are still recorded.
    maps the dump and relocates it; the cost is spread over the kinds,
    strings 28 million, symbols 16, `value_at` about 50, with no single
    hot spot, so it wants the image mapped in place rather than another
-   trim); the encode side of coding.c (bullet "Round 56"); and text
+   trim; round 95 maps the conses in place, and the strings, symbols,
+   vectors, records and tables are still rebuilt, the symbols for the
+   host name string each cell owns); the encode side of coding.c (bullet "Round 56"); and text
    properties kept in one flat vector of spans (each edit shifts it; GNU
    keeps intervals).
    The host is a different machine

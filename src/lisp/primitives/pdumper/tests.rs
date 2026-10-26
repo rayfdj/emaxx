@@ -1044,7 +1044,8 @@ fn queue_order_writes_referents_after_their_referrer_and_each_object_once() {
         previous = offset;
         kinds.push(DumpType::from_u32(kind).expect("a known object type"));
     }
-    // One vector, two conses, three strings: nothing twice.
+    // One vector, two conses (in the cons blocks, not among the starts),
+    // three strings: nothing twice.
     assert_eq!(
         kinds
             .iter()
@@ -1052,10 +1053,8 @@ fn queue_order_writes_referents_after_their_referrer_and_each_object_once() {
             .count(),
         1
     );
-    assert_eq!(
-        kinds.iter().filter(|kind| **kind == DumpType::Cons).count(),
-        2
-    );
+    assert!(!kinds.contains(&DumpType::Cons));
+    assert_eq!(header.cons_blocks.nr_entries, 2);
     assert_eq!(
         kinds
             .iter()
@@ -1065,6 +1064,54 @@ fn queue_order_writes_referents_after_their_referrer_and_each_object_once() {
     );
     // The root vector is the first heap object after the header.
     assert_eq!(kinds[0], DumpType::Vector);
+}
+
+#[test]
+fn image_conses_are_cells_of_the_image_where_it_is_mapped() {
+    // pdumper.c maps the dump and relocates it in place: the conses come
+    // back as cells of the image's own blocks, their sharing and their
+    // immediates as they were written, and a collection keeps them.
+    let mut interp = Interpreter::new();
+    let tail = Value::list([Value::Integer(-7), Value::T, Value::string("x")]);
+    let root = Value::cons(tail, Value::cons(tail, Value::Nil));
+    let bytes = dump(&mut interp, vec![(RootSlot::LoadPath, root)]);
+    let mut target = Interpreter::new();
+    let image = load_image(&bytes, &mut target).expect("the cons graph loads");
+    assert_eq!(image.header.cons_blocks.nr_entries, 5);
+    assert!(
+        (image.header.cons_blocks.offset as usize)
+            .is_multiple_of(crate::lisp::alloc::CONS_BLOCK_BYTES)
+    );
+    assert!(image.header.cons_blocks.offset < image.header.discardable_start);
+    let loaded = image
+        .roots
+        .iter()
+        .find(|(slot, _)| *slot == RootSlot::LoadPath)
+        .map(|(_, value)| *value)
+        .expect("the root was installed");
+    let first = loaded.car().expect("a cons");
+    let second = loaded
+        .cdr()
+        .and_then(|rest| rest.car())
+        .expect("a second element");
+    assert_eq!(first.word(), second.word(), "the shared tail is one cons");
+    assert_eq!(first.to_string(), "(-7 t \"x\")");
+    // Reached from a variable, the cells survive collections where they
+    // are, the image's storage.
+    target.set_symbol_value_cell("zz-image-conses", loaded);
+    let answer = crate::test_support::eval_lisp(
+        &mut target,
+        &mut crate::lisp::types::Env::new(),
+        "(progn (garbage-collect) (garbage-collect)
+           (list (car zz-image-conses) (eq (car zz-image-conses) (car (cdr zz-image-conses)))
+                 (length (cdr zz-image-conses))))",
+    )
+    .expect("the image conses stay live");
+    assert_eq!(answer.to_string(), "((-7 t \"x\") t 1)");
+    assert_eq!(
+        super::load::CONS_LV,
+        DumpRelocKind::DumpToDumpLv(DumpType::Cons).to_u32()
+    );
 }
 
 #[test]
