@@ -6425,6 +6425,57 @@ setup_process_coding_systems's check now refuses). A 13-form
   with the documented local skips; clippy `-D warnings', rustfmt and
   `git diff --check' pass.
 
+- **Round 90: search.c's searchbufs, a search's matcher state and
+  syntax setup as GNU's.** A test file's setup in the frozen runner
+  makes 41K `string-match' calls from byte code, each about 1,950
+  instructions with everything it calls against GNU's 1,060. Where the excess was: (1) the pattern cache was
+  a vector, the pattern found removed from it and inserted again at the
+  front on release; it is now searchbufs: REGEXP_CACHE_SIZE cells
+  linked most recently used first, the cell found or compiled into
+  moved to the front and busy while its search runs (freeze_pattern),
+  the first empty cell or else the least recently used one that is not
+  busy taken for a new pattern, `Too much matching reentrancy' when
+  every cell is busy, a failed compile leaving its cell empty
+  (compile_pattern_1), clear_regexp_cache skipping busy cells; the cell
+  is released however the search ends, as the unwind-protect does; (2)
+  each search took its matcher arrays from a pool vector and cleared
+  all four register arrays; now the last finished search's state is
+  kept whole and reused, its best registers written before they are
+  read, as re_match_2_internal's are (13.1M to 3.4M); (3) a search in a
+  string set up gl_state for `parse-sexp-lookup-properties' whatever
+  the string held (361 against GNU's 113 a call); now a string without
+  intervals leaves the buffer's table, since update_syntax_table's
+  interval_of finds no `syntax-table' property there and returns, and
+  only a string with text properties gets gl_state (20.2M to 2.3M); (4)
+  a unibyte string's view checks its bytes for ASCII directly instead
+  of through the conversion cache.
+  `string-match' now costs about 1,410 instructions a call (re_search
+  478 against GNU's 579; compile_pattern and the release 293 against
+  GNU's 289 with its unwind records); what remains above GNU is the
+  `case-fold-search' read (82: a LOCALIZED variable's loaded binding
+  through the general lookup, where C reads Vcase_fold_search), the
+  string view (74), the canon table lookup (56) and the match data
+  copy (59). A test file's setup took 673.3M instructions and now 644.7M
+  (GNU 518.3M); loading `ert' 203.6M and now 198.8M (GNU 235.1M);
+  loading `json' 113.6M and now 111.9M (GNU 109.6M). Of the setup gap
+  now: startup 219.1M against GNU's 151.6M, where the image loader
+  costs 176.5M against pdumper_load's 53.4M (GNU's startup also
+  collects once, 52.6M, which Emaxx's does not); collections overall
+  70M in Emaxx against GNU's 163.8M, so outside collection Emaxx's
+  setup is 574.7M against GNU's 354.5M. A probe of more than 20
+  patterns in rotation, many-group patterns followed by one-group
+  ones, POSIX and backtracking matches, invalid patterns, case folding
+  (ASCII, non-ASCII, unibyte), `search-spaces-regexp', syntax classes
+  across `modify-syntax-entry' and `with-syntax-table', strings with
+  `syntax-table' and other text properties with and without
+  `parse-sexp-lookup-properties', buffer searches over properties,
+  searches nested through `replace-regexp-in-string' and a
+  `syntax-propertize-function', 30 nested `string-match' calls and the
+  `-p' variants gives GNU 30.2's values, as do the earlier regexp,
+  reader and md5 probes. Local validation: the full gate, 3,230
+  passed across its ten groups with the documented local skips; clippy
+  `-D warnings', rustfmt and `git diff --check' pass.
+
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
 25 sorting/case-folding/substring tests plus the comparison tests, and 95
@@ -7147,6 +7198,10 @@ unexpected, GNU 7,669 passed with 1 unexpected), and its failed job was
 rerun passed (run 40250305113, attempt 2).
 **On `b69436b`** (round 88): full Rust gate passed (run 40252770662),
 frozen passed on its first attempt (run 40252773076).
+**On `2c64adc`** (round 89): full Rust gate passed (run 40255536669);
+frozen failed only GNU's known oracle flake (Emaxx 7,670 passed with 0
+unexpected, GNU 7,669 passed with 1 unexpected), and its failed job was
+rerun (run 40255538925, attempt 2).
 
 **Findings recorded, not fixed:**
 - `features`, `values` and `top-level` are special variables in Emaxx

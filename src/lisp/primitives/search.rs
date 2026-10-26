@@ -38,13 +38,55 @@ struct CacheEntry {
 /// table's identity, the epoch and its entries.
 type CanonSlot = Option<(usize, u64, Rc<Canon>)>;
 
+/// A cell of searchbufs: its compiled pattern, if any, and the next cell
+/// in most-recently-used order.  A busy cell's pattern is lent to the
+/// search running it (GNU's `busy'), so a search Lisp code runs inside
+/// the matcher compiles its own copy into another cell.
+struct SearchBuf {
+    entry: Option<Box<CacheEntry>>,
+    busy: bool,
+    next: Option<u8>,
+}
+
+/// searchbufs and searchbuf_head: REGEXP_CACHE_SIZE cells linked most
+/// recently used first.  Cells stay where they are; only the links move.
+#[derive(Default)]
+struct SearchBufs {
+    cells: Vec<SearchBuf>,
+    head: Option<u8>,
+}
+
+/// A compiled pattern lent to one search by its busy cache cell, which
+/// holds it again when the search is done however it ends (GNU's
+/// unfreeze_pattern, run by an unwind-protect).
+struct LentPattern {
+    entry: std::mem::ManuallyDrop<Box<CacheEntry>>,
+    cell: u8,
+}
+
+impl Drop for LentPattern {
+    fn drop(&mut self) {
+        // SAFETY: the entry is taken once, here, and not used after.
+        let entry = unsafe { std::mem::ManuallyDrop::take(&mut self.entry) };
+        release_cell(self.cell, Some(entry));
+    }
+}
+
+impl std::ops::Deref for LentPattern {
+    type Target = CacheEntry;
+    fn deref(&self) -> &CacheEntry {
+        &self.entry
+    }
+}
+
+impl std::ops::DerefMut for LentPattern {
+    fn deref_mut(&mut self) -> &mut CacheEntry {
+        &mut self.entry
+    }
+}
+
 thread_local! {
-    /// The cache, most recently used first.  A pattern in use is taken out
-    /// (GNU's `busy'), so a search Lisp code runs inside the matcher
-    /// compiles its own copy.  Entries move by pointer, as GNU relinks its
-    /// list.
-    #[allow(clippy::vec_box)]
-    static SEARCHBUFS: RefCell<Vec<Box<CacheEntry>>> = const { RefCell::new(Vec::new()) };
+    static SEARCHBUFS: RefCell<SearchBufs> = RefCell::new(SearchBufs::default());
     /// The canonicalization tables last read, with the char-table store
     /// epoch they were read at: a search folding case reads the
     /// case_canon_table and its case_eqv_table.
@@ -129,12 +171,15 @@ impl StringText<'_> {
         let Kind::StringObject(state) = value.kind() else {
             return None;
         };
-        // A multibyte string of a byte a character is ASCII; otherwise
-        // the scan is remembered while the string holds the cache.
+        // A multibyte string of a byte a character is ASCII, and a
+        // unibyte one is in place when it is; otherwise the scan is
+        // remembered while the string holds the cache.
         if (multibyte && bytes.len() == chars)
-            || state
-                .borrow()
-                .stored_text_in_place(|bytes| stored_form_in_place(bytes, multibyte))
+            || (!multibyte && bytes.is_ascii())
+            || (multibyte
+                && state
+                    .borrow()
+                    .stored_text_in_place(|bytes| stored_form_in_place(bytes, true)))
         {
             // SAFETY: stored_form_in_place found the bytes UTF-8.
             return Some(StringText::InPlace(
@@ -528,18 +573,25 @@ impl MatchEnv for LispMatchEnv<'_, '_> {
 
     fn setup_syntax(&mut self, at: usize) {
         use super::syntax_scan::{GlObject, GlState};
+        if let Some(gl) = self.gl.take() {
+            GlState::release_for_regexp(gl);
+        }
         let object = match &self.object {
             Object::Buffer { .. } => GlObject::Buffer,
             Object::String {
                 string: Some(string),
                 ..
-            } => GlObject::String(*string),
-            Object::String { string: None, .. } => GlObject::Plain,
-            Object::None => return,
+            } if matches!(string.kind(), Kind::StringObject(state)
+                    if state.borrow().props.has_intervals()) =>
+            {
+                GlObject::String(*string)
+            }
+            // Text without intervals has no `syntax-table' property:
+            // update_syntax_table's interval_of finds none and returns,
+            // leaving the buffer's table, which the matcher reads without
+            // gl_state too.
+            Object::String { .. } | Object::None => return,
         };
-        if let Some(gl) = self.gl.take() {
-            GlState::release_for_regexp(gl);
-        }
         if !self
             .interp
             .symbol_value_key(cached_symbol!("parse-sexp-lookup-properties"))
@@ -677,12 +729,15 @@ fn match_error(error: MatchError) -> LispError {
 }
 
 /// compile_pattern: the cached compilation of REGEXP for the current
-/// buffer's tables, taken out of the cache until `release_pattern'.
+/// buffer's tables, its cell busy until `release_pattern'.  The cells are
+/// looked at most recently used first; a pattern not found is compiled
+/// into the first empty cell or else the least recently used one that is
+/// not busy, and the cell used goes to the front.
 fn compile_pattern(
     menv: &mut LispMatchEnv<'_, '_>,
     regexp: &Value,
     posix: bool,
-) -> Result<Box<CacheEntry>, LispError> {
+) -> Result<LentPattern, LispError> {
     let (bytes, multibyte, _) = string_bytes(regexp)
         .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *regexp))?;
     let translate = menv.canon.as_ref().map(|canon| canon.table.identity());
@@ -697,26 +752,76 @@ fn compile_pattern(
         .map(|(bytes, multibyte, _)| (bytes, multibyte));
     let syntax_table = menv.syntax_table;
 
-    let found = SEARCHBUFS.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        let index = cache.iter().position(|entry| {
-            entry.regexp.as_slice() == bytes
-                && entry.multibyte == multibyte
-                && entry.translate == translate
-                && entry.posix == posix
-                && entry.syntax_table.is_none_or(|table| table == syntax_table)
-                && match (&entry.whitespace, whitespace_bytes) {
-                    (None, None) => true,
-                    (Some((saved, saved_multibyte)), Some((now, now_multibyte))) => {
-                        saved.as_slice() == now && *saved_multibyte == now_multibyte
-                    }
-                    _ => false,
+    let matches = |entry: &CacheEntry| {
+        entry.regexp.as_slice() == bytes
+            && entry.multibyte == multibyte
+            && entry.translate == translate
+            && entry.posix == posix
+            && entry.syntax_table.is_none_or(|table| table == syntax_table)
+            && match (&entry.whitespace, whitespace_bytes) {
+                (None, None) => true,
+                (Some((saved, saved_multibyte)), Some((now, now_multibyte))) => {
+                    saved.as_slice() == now && *saved_multibyte == now_multibyte
                 }
-        });
-        index.map(|index| cache.remove(index))
+                _ => false,
+            }
+    };
+    // The cell found or to compile into, marked busy and moved to the
+    // front; with it, its pattern when it holds this one.  None when
+    // every cell is busy.
+    let lent = SEARCHBUFS.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        let cache = &mut *cache;
+        if cache.cells.is_empty() {
+            cache.cells = (0..REGEXP_CACHE_SIZE)
+                .map(|index| SearchBuf {
+                    entry: None,
+                    busy: false,
+                    next: (index + 1 < REGEXP_CACHE_SIZE).then_some((index + 1) as u8),
+                })
+                .collect();
+            cache.head = Some(0);
+        }
+        let mut previous = None;
+        let mut current = cache.head;
+        let mut least_recent = None;
+        let mut chosen = None;
+        while let Some(index) = current {
+            let cell = &cache.cells[usize::from(index)];
+            if !cell.busy {
+                match &cell.entry {
+                    None => {
+                        chosen = Some((previous, index));
+                        break;
+                    }
+                    Some(entry) if matches(entry) => {
+                        chosen = Some((previous, index));
+                        break;
+                    }
+                    Some(_) => least_recent = Some((previous, index)),
+                }
+            }
+            previous = current;
+            current = cell.next;
+        }
+        let (previous, index) = chosen.or(least_recent)?;
+        if let Some(previous) = previous {
+            cache.cells[usize::from(previous)].next = cache.cells[usize::from(index)].next;
+            cache.cells[usize::from(index)].next = cache.head;
+            cache.head = Some(index);
+        }
+        let cell = &mut cache.cells[usize::from(index)];
+        cell.busy = true;
+        Some((index, cell.entry.take().filter(|entry| matches(entry))))
     });
+    let Some((cell, found)) = lent else {
+        return Err(LispError::Signal("Too much matching reentrancy".into()));
+    };
     if let Some(entry) = found {
-        return Ok(entry);
+        return Ok(LentPattern {
+            entry: std::mem::ManuallyDrop::new(entry),
+            cell,
+        });
     }
 
     #[cfg(test)]
@@ -732,9 +837,13 @@ fn compile_pattern(
         fold,
         menv,
     )
-    .map_err(|error| invalid_regexp(error.message()))?;
+    .map_err(|error| {
+        // compile_pattern_1 leaves the cell empty.
+        release_cell(cell, None);
+        invalid_regexp(error.message())
+    })?;
     let used_syntax = pattern.used_syntax;
-    Ok(Box::new(CacheEntry {
+    let entry = Box::new(CacheEntry {
         regexp: bytes.to_vec(),
         multibyte,
         translate,
@@ -742,26 +851,42 @@ fn compile_pattern(
         whitespace: whitespace_bytes.map(|(bytes, multibyte)| (bytes.to_vec(), multibyte)),
         syntax_table: used_syntax.then_some(syntax_table),
         pattern,
-    }))
+    });
+    Ok(LentPattern {
+        entry: std::mem::ManuallyDrop::new(entry),
+        cell,
+    })
 }
 
 /// search.c:clear_regexp_cache, after a syntax table changes: every
-/// pattern holding syntax-table contents is compiled again.  A pattern in
-/// use is out of the cache and returns to it; GNU skips `busy' entries.
+/// pattern holding syntax-table contents is compiled again, but for the
+/// busy ones.
 pub(crate) fn clear_regexp_cache() {
     SEARCHBUFS.with(|cache| {
-        cache
-            .borrow_mut()
-            .retain(|entry| entry.syntax_table.is_none());
+        for cell in &mut cache.borrow_mut().cells {
+            if !cell.busy
+                && cell
+                    .entry
+                    .as_ref()
+                    .is_some_and(|entry| entry.syntax_table.is_some())
+            {
+                cell.entry = None;
+            }
+        }
     });
 }
 
-/// Return a pattern to the cache as its most recently used entry.
-fn release_pattern(entry: Box<CacheEntry>) {
-    SEARCHBUFS.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        cache.insert(0, entry);
-        cache.truncate(REGEXP_CACHE_SIZE);
+/// A search is done with its pattern: its cell is no longer busy.
+fn release_pattern(lent: LentPattern) {
+    drop(lent);
+}
+
+/// CELL holds ENTRY again and is not busy.
+fn release_cell(cell: u8, entry: Option<Box<CacheEntry>>) {
+    let _ = SEARCHBUFS.try_with(|cache| {
+        let cell = &mut cache.borrow_mut().cells[usize::from(cell)];
+        cell.entry = entry;
+        cell.busy = false;
     });
 }
 
