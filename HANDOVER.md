@@ -7022,6 +7022,32 @@ setup_process_coding_systems's check now refuses). A 13-form
   to 12.0M). Local validation: the full gate across its ten groups with
   the documented local skips; clippy `-D warnings', rustfmt and `git
   diff --check' pass.
+- **Round 105: pdumper.c's dump_reloc.** A relocation entry is one
+  word, as pdumper.c's `struct dump_reloc' is: the field's offset
+  (a word's, its three low bits implied) in the high 27 bits and the
+  type in the low 5 (dump_reloc_get_offset, DUMP_RELOC_TYPE_BITS); it
+  was 12 bytes, the field, a code and the number of the object named.
+  A word naming a cell of the image's blocks holds the cell's offset and
+  the type is RELOC_DUMP_TO_DUMP_LV of its Lisp type (a symbol, a cons,
+  a string or a vectorlike), so the loader makes the object from the
+  word alone, as dump_make_lv_from_reloc does; a word naming an object
+  the loader makes holds that object's number, its place in the object
+  starts; RELOC_DUMP_TO_EMACS_LV names a subr or the main thread through
+  its copied record. The relocation loops take a mapped target with one
+  check that it is a cell (no `Result' until a check fails). The image
+  went from 25.5 MB to 20.5 MB (its 617,608 relocations from 7.4 MB to
+  2.5 MB; GNU's dump has 597,762), startup with the frozen runner's
+  command line from 148.8M instructions to 141.2M (GNU 98.5M; the
+  loader from 78.6M to 71.2M, the cons relocations 18.8M to 14.1M, the
+  vectors' 12.0M to 10.0M), and the cal-french-tests.el setup from
+  532.8M to 525.2M (GNU 507.6M). The probe of every symbol's state in
+  the process that dumped the loadup state and in one that loaded it
+  differs only in the allocation counters, the paths and the main
+  thread's and frame's addresses. The relocations' remaining cost is
+  the checks of each target (about 45 instructions a relocation against
+  pdumper.c's dozen, which trusts the dump). Local validation: the full
+  gate across its ten groups with the documented local skips; clippy
+  `-D warnings', rustfmt and `git diff --check' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -7820,6 +7846,8 @@ frozen passed on its first attempt (run 40421854122).
 frozen passed on its first attempt (run 40426753917).
 **On `daf859c`** (round 102): full Rust gate passed (run 40433085141),
 frozen passed on its first attempt (run 40433088195).
+**On `837e119`** (round 103): full Rust gate passed (run 40440572554),
+frozen passed on its first attempt (run 40440575378).
 
 **Findings recorded, not fixed:**
 - **`sxhash' is not fns.c's (round 104).** `sxhash-equal' and

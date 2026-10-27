@@ -369,50 +369,85 @@ impl DumpType {
 }
 
 /// pdumper.c:dump_reloc_type.  A relocation names a word in the dump and
-/// how the loader must rewrite it.
+/// how the loader rewrites it.  A word naming an object of the dump holds
+/// the object's offset, the type giving the object's Lisp type (pdumper.c's
+/// RELOC_DUMP_TO_DUMP_LV + Lisp_Type), where the object is mapped in the
+/// image's blocks; the objects the loader makes are named by number
+/// instead, the word their index in the object-start table.
+#[repr(u32)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum DumpRelocKind {
-    /// dump_ptr = dump_ptr + dump_base: a raw offset into the dump.
-    DumpToDumpPtrRaw,
-    /// Rebuild a bignum from its cold limbs.
-    Bignum,
+pub(crate) enum RelocType {
+    /// RELOC_DUMP_TO_DUMP_PTR_RAW: the word is an offset into the dump.
+    DumpToDumpPtrRaw = 0,
+    /// RELOC_BIGNUM: a bignum rebuilt from its cold limbs.
+    Bignum = 1,
     /// RELOC_NATIVE_COMP_UNIT: reopen and link the unit's shared object
     /// (the late phase).
-    NativeCompUnit,
-    /// RELOC_NATIVE_SUBR: resolve the function in its unit (the very
-    /// late phase).
-    NativeSubr,
-    /// A Lisp word that names an object in the dump, by dump offset.
-    DumpToDumpLv(DumpType),
-    /// A Lisp word that names an object of the Emacs image (a built-in
-    /// function), through its copied record.
-    DumpToEmacsLv(DumpType),
+    NativeCompUnit = 2,
+    /// RELOC_NATIVE_SUBR: resolve the function in its unit (the very late
+    /// phase).
+    NativeSubr = 3,
+    /// RELOC_DUMP_TO_DUMP_LV of Lisp_Symbol: a cell of the symbol blocks.
+    DumpToDumpSymbol = 4,
+    /// Of Lisp_Cons: a cell of the cons blocks.
+    DumpToDumpCons = 5,
+    /// Of Lisp_String: a cell of the string blocks.
+    DumpToDumpString = 6,
+    /// Of Lisp_Vectorlike: a vector of the vector blocks or a large one.
+    DumpToDumpVectorlike = 7,
+    /// An object the loader makes, the word its number.
+    DumpToDumpObject = 8,
+    /// RELOC_DUMP_TO_EMACS_LV: a built-in function, the word the offset
+    /// of its copied record.
+    DumpToEmacsSubr = 9,
+    /// The running process's main thread, through its copied record.
+    DumpToEmacsMainThread = 10,
 }
 
-impl DumpRelocKind {
-    pub(crate) fn to_u32(self) -> u32 {
-        match self {
-            Self::DumpToDumpPtrRaw => 1,
-            Self::Bignum => 4,
-            Self::NativeCompUnit => 5,
-            Self::NativeSubr => 6,
-            Self::DumpToDumpLv(kind) => 0x100 | kind as u32,
-            Self::DumpToEmacsLv(kind) => 0x200 | kind as u32,
-        }
-    }
-
-    #[cfg_attr(not(test), allow(dead_code))]
+impl RelocType {
     pub(crate) fn from_u32(value: u32) -> Option<Self> {
         Some(match value {
-            1 => Self::DumpToDumpPtrRaw,
-            4 => Self::Bignum,
-            5 => Self::NativeCompUnit,
-            6 => Self::NativeSubr,
-            0x100..=0x1FF => Self::DumpToDumpLv(DumpType::from_u32(value & 0xFF)?),
-            0x200..=0x2FF => Self::DumpToEmacsLv(DumpType::from_u32(value & 0xFF)?),
+            0 => Self::DumpToDumpPtrRaw,
+            1 => Self::Bignum,
+            2 => Self::NativeCompUnit,
+            3 => Self::NativeSubr,
+            4 => Self::DumpToDumpSymbol,
+            5 => Self::DumpToDumpCons,
+            6 => Self::DumpToDumpString,
+            7 => Self::DumpToDumpVectorlike,
+            8 => Self::DumpToDumpObject,
+            9 => Self::DumpToEmacsSubr,
+            10 => Self::DumpToEmacsMainThread,
             _ => return None,
         })
     }
+}
+
+/// pdumper.c's DUMP_RELOC_TYPE_BITS: a relocation's type is the low bits
+/// of its entry.
+pub(crate) const DUMP_RELOC_TYPE_BITS: u32 = 5;
+/// pdumper.c's DUMP_RELOC_ALIGNMENT_BITS: the field's offset, a word's,
+/// keeps the rest of the entry without its low bits.
+pub(crate) const DUMP_RELOC_ALIGNMENT_BITS: u32 = 3;
+/// The offsets an entry can hold.
+pub(crate) const DUMP_RELOC_OFFSET_LIMIT: u32 =
+    1 << (32 - DUMP_RELOC_TYPE_BITS + DUMP_RELOC_ALIGNMENT_BITS);
+
+/// pdumper.c's `struct dump_reloc' of the word at OFFSET, of TYPE.
+pub(crate) const fn dump_reloc(offset: u32, kind: RelocType) -> u32 {
+    (offset >> DUMP_RELOC_ALIGNMENT_BITS) << DUMP_RELOC_TYPE_BITS | kind as u32
+}
+
+/// dump_reloc_get_offset.
+#[inline(always)]
+pub(crate) const fn dump_reloc_offset(entry: u32) -> u32 {
+    (entry >> DUMP_RELOC_TYPE_BITS) << DUMP_RELOC_ALIGNMENT_BITS
+}
+
+/// The type of ENTRY, a RelocType's value.
+#[inline(always)]
+pub(crate) const fn dump_reloc_type(entry: u32) -> u32 {
+    entry & ((1 << DUMP_RELOC_TYPE_BITS) - 1)
 }
 
 /// One entry of the object-start table: the dump offset and the object
@@ -420,13 +455,8 @@ impl DumpRelocKind {
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) const TABLE_ENTRY_LEN: usize = 8;
 
-/// One entry of a dump-relocation table: the dump offset, the relocation
-/// kind, and for a word naming an object of the dump that object's
-/// number, its entry's index in the object-start table (`NO_OBJECT'
-/// otherwise).  GNU's loader adds the dump's address to the word in
-/// place; this one rebuilds each object, and finds the target by number.
-pub(crate) const RELOC_ENTRY_LEN: usize = 12;
-pub(crate) const NO_OBJECT: u32 = u32::MAX;
+/// One entry of a dump-relocation table, a `dump_reloc'.
+pub(crate) const RELOC_ENTRY_LEN: usize = 4;
 
 /// pdumper.c:emacs_reloc_type: how a slot of the running process (an
 /// Emacs C variable there, a root slot of the interpreter here) is set
@@ -729,14 +759,19 @@ mod tests {
     #[test]
     fn relocation_kinds_round_trip() {
         for kind in [
-            DumpRelocKind::DumpToDumpPtrRaw,
-            DumpRelocKind::Bignum,
-            DumpRelocKind::DumpToDumpLv(DumpType::Cons),
-            DumpRelocKind::DumpToEmacsLv(DumpType::Subr),
+            RelocType::DumpToDumpPtrRaw,
+            RelocType::Bignum,
+            RelocType::DumpToDumpCons,
+            RelocType::DumpToDumpObject,
+            RelocType::DumpToEmacsMainThread,
         ] {
-            assert_eq!(DumpRelocKind::from_u32(kind.to_u32()), Some(kind));
+            let entry = dump_reloc(8 * 12_345, kind);
+            assert_eq!(RelocType::from_u32(dump_reloc_type(entry)), Some(kind));
+            assert_eq!(dump_reloc_offset(entry), 8 * 12_345);
         }
-        assert_eq!(DumpRelocKind::from_u32(0x1FF), None);
+        let last = DUMP_RELOC_OFFSET_LIMIT - 8;
+        assert_eq!(dump_reloc_offset(dump_reloc(last, RelocType::Bignum)), last);
+        assert_eq!(RelocType::from_u32(11), None);
         for kind in [
             EmacsRelocKind::Immediate,
             EmacsRelocKind::DumpLv(DumpType::Obarray),

@@ -1122,10 +1122,7 @@ fn image_conses_are_cells_of_the_image_where_it_is_mapped() {
     )
     .expect("the image conses stay live");
     assert_eq!(answer.to_string(), "((-7 t \"x\") t 1)");
-    assert_eq!(
-        super::load::CONS_LV,
-        DumpRelocKind::DumpToDumpLv(DumpType::Cons).to_u32()
-    );
+    assert_eq!(super::load::CONS_LV, RelocType::DumpToDumpCons as u32);
 }
 
 #[test]
@@ -1212,10 +1209,7 @@ fn image_strings_are_cells_of_the_image_where_it_is_mapped() {
         ),
         "((945 98 99) t \"hello\" 5 \"shared\" bold)"
     );
-    assert_eq!(
-        super::load::STRING_LV,
-        DumpRelocKind::DumpToDumpLv(DumpType::String).to_u32()
-    );
+    assert_eq!(super::load::STRING_LV, RelocType::DumpToDumpString as u32);
 }
 
 #[test]
@@ -1329,24 +1323,10 @@ fn image_vectors_are_the_image_where_it_is_mapped() {
         ),
         "(fresh 400)"
     );
-    for code in [
-        super::load::VECTOR_LV,
-        super::load::CLOSURE_LV,
-        super::load::LISP_RECORD_LV,
-        super::load::CHAR_TABLE_LV,
-        super::load::SUB_CHAR_TABLE_LV,
-    ] {
-        assert!(matches!(
-            DumpRelocKind::from_u32(code),
-            Some(DumpRelocKind::DumpToDumpLv(
-                DumpType::Vector
-                    | DumpType::Closure
-                    | DumpType::LispRecord
-                    | DumpType::CharTable
-                    | DumpType::SubCharTable
-            ))
-        ));
-    }
+    assert_eq!(
+        super::load::VECTORLIKE_LV,
+        RelocType::DumpToDumpVectorlike as u32
+    );
 }
 
 #[test]

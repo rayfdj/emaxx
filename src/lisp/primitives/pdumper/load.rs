@@ -396,8 +396,8 @@ struct ImageTable<'a, const LEN: usize> {
 
 /// The object-start table: an object's offset and type code.
 type StartTable<'a> = ImageTable<'a, TABLE_ENTRY_LEN>;
-/// A relocation table: the field's offset, the relocation's code and the
-/// number of the object it names.
+/// A relocation table: pdumper.c's `dump_reloc', the field's offset and
+/// the relocation's type in one word.
 type RelocTable<'a> = ImageTable<'a, RELOC_ENTRY_LEN>;
 
 impl<'a, const LEN: usize> ImageTable<'a, LEN> {
@@ -417,7 +417,7 @@ impl<'a, const LEN: usize> ImageTable<'a, LEN> {
         let mut previous = -1_i64;
         let mut misplaced = false;
         for entry in entries {
-            let offset = entry_word(entry, 0);
+            let offset = entry_offset(entry);
             misplaced |=
                 !(offset as usize).is_multiple_of(DUMP_ALIGNMENT) || i64::from(offset) <= previous;
             previous = i64::from(offset);
@@ -446,30 +446,28 @@ impl<'a, const LEN: usize> ImageTable<'a, LEN> {
     /// The offset of entry INDEX, which is below `len'.
     #[inline(always)]
     fn offset(&self, index: usize) -> u32 {
-        entry_word(&self.entries[index], 0)
+        entry_offset(&self.entries[index])
     }
 
     /// The offset of entry INDEX, u32::MAX past the last.
     #[inline(always)]
     fn offset_or_end(&self, index: usize) -> u32 {
-        self.entries
-            .get(index)
-            .map_or(u32::MAX, |entry| entry_word(entry, 0))
+        self.entries.get(index).map_or(u32::MAX, entry_offset)
     }
 
     /// The code of entry INDEX, which is below `len'.
     #[inline(always)]
     fn code(&self, index: usize) -> u32 {
-        entry_word(&self.entries[index], 4)
+        entry_code(&self.entries[index])
     }
 
     /// The relocation at OFFSET, for a pass that asks in ascending order:
     /// the search starts at HINT, where the pass's last answer left it.
-    fn reloc_at_from(&self, hint: &mut usize, offset: u32) -> Option<DumpRelocKind> {
+    fn reloc_at_from(&self, hint: &mut usize, offset: u32) -> Option<RelocType> {
         let index = self.rank_from(*hint, offset);
         *hint = index;
         (self.offset_or_end(index) == offset)
-            .then(|| DumpRelocKind::from_u32(self.code(index)))
+            .then(|| RelocType::from_u32(self.code(index)))
             .flatten()
     }
 
@@ -502,23 +500,15 @@ impl<'a, const LEN: usize> ImageTable<'a, LEN> {
                 step *= 2;
             }
         }
-        low + self.entries[low..high].partition_point(|entry| entry_word(entry, 0) < offset)
+        low + self.entries[low..high].partition_point(|entry| entry_offset(entry) < offset)
     }
 
     /// The index of the entry at OFFSET.
     fn find(&self, offset: u32) -> Option<usize> {
         let index = self
             .entries
-            .partition_point(|entry| entry_word(entry, 0) < offset);
+            .partition_point(|entry| entry_offset(entry) < offset);
         (index < self.len() && self.offset(index) == offset).then_some(index)
-    }
-}
-
-impl RelocTable<'_> {
-    /// The object number of relocation INDEX, which is below `len'.
-    #[inline(always)]
-    fn target(&self, index: usize) -> u32 {
-        entry_word(&self.entries[index], 8)
     }
 }
 
@@ -527,6 +517,27 @@ impl RelocTable<'_> {
 fn entry_word<const LEN: usize>(entry: &[u8; LEN], at: usize) -> u32 {
     let word: [u8; 4] = entry[at..at + 4].try_into().expect("a word of the entry");
     u32::from_le_bytes(word)
+}
+
+/// The offset an entry is keyed by: an object start's first word, a
+/// relocation's dump_reloc_get_offset.
+#[inline(always)]
+fn entry_offset<const LEN: usize>(entry: &[u8; LEN]) -> u32 {
+    if LEN == RELOC_ENTRY_LEN {
+        dump_reloc_offset(entry_word(entry, 0))
+    } else {
+        entry_word(entry, 0)
+    }
+}
+
+/// An object start's type code, a relocation's type.
+#[inline(always)]
+fn entry_code<const LEN: usize>(entry: &[u8; LEN]) -> u32 {
+    if LEN == RELOC_ENTRY_LEN {
+        dump_reloc_type(entry_word(entry, 0))
+    } else {
+        entry_word(entry, 4)
+    }
 }
 
 struct Loader<'a> {
@@ -566,8 +577,8 @@ struct Loader<'a> {
     interp: &'a mut Interpreter,
 }
 
-/// The code of RELOC_DUMP_TO_DUMP_LV naming a cons.
-pub(super) const CONS_LV: u32 = 0x100 | DumpType::Cons as u32;
+/// The type of RELOC_DUMP_TO_DUMP_LV naming a cons.
+pub(super) const CONS_LV: u32 = RelocType::DumpToDumpCons as u32;
 
 /// The image's cons blocks where the image is mapped: BASE the image's
 /// address, START the first block's offset, COUNT the conses.
@@ -596,21 +607,27 @@ impl ImageConses {
         at < self.end && at % CONS_BLOCK_BYTES >= CONS_BLOCK_CELLS
     }
 
+    /// The cons whose cell is at OFFSET, if OFFSET is a cell of the
+    /// blocks.
+    #[inline(always)]
+    fn cons_checked(&self, offset: u32) -> Option<Value> {
+        (self.holds(offset) && offset.is_multiple_of(16)).then(|| {
+            // SAFETY: an allocated cell of the adopted blocks, by the check.
+            Value::Cons(unsafe {
+                crate::lisp::alloc::ConsRef::from_raw(
+                    (self.base + offset as usize) as *const crate::lisp::types::ConsCell,
+                )
+            })
+        })
+    }
+
     /// The cons whose cell is at OFFSET, which must be a cell of the
     /// blocks.
     #[inline(always)]
     fn cons_at(&self, offset: u32) -> Result<Value, LoadError> {
-        if !self.holds(offset) || !offset.is_multiple_of(16) {
-            return Err(LoadError::Error(format!(
-                "cons at {offset} is not a cell of the cons blocks"
-            )));
-        }
-        // SAFETY: an allocated cell of the adopted blocks, by the check.
-        Ok(Value::Cons(unsafe {
-            crate::lisp::alloc::ConsRef::from_raw(
-                (self.base + offset as usize) as *const crate::lisp::types::ConsCell,
-            )
-        }))
+        self.cons_checked(offset).ok_or_else(|| {
+            LoadError::Error(format!("cons at {offset} is not a cell of the cons blocks"))
+        })
     }
 
     /// The word at OFFSET, which must be a car or cdr of the cells.
@@ -625,8 +642,8 @@ impl ImageConses {
     }
 }
 
-/// The code of RELOC_DUMP_TO_DUMP_LV naming a string.
-pub(super) const STRING_LV: u32 = 0x100 | DumpType::String as u32;
+/// The type of RELOC_DUMP_TO_DUMP_LV naming a string.
+pub(super) const STRING_LV: u32 = RelocType::DumpToDumpString as u32;
 
 /// The image's string blocks where the image is mapped: BASE the image's
 /// address, START the first block's offset, and END just past the last
@@ -639,34 +656,42 @@ struct ImageStrings {
 }
 
 impl ImageStrings {
-    /// The string whose cell is at OFFSET, which must be a cell of the
+    /// The string whose cell is at OFFSET, if OFFSET is a cell of the
     /// blocks.
     #[inline(always)]
-    fn string_at(&self, offset: u32) -> Result<Value, LoadError> {
+    fn string_checked(&self, offset: u32) -> Option<Value> {
         use crate::lisp::alloc::{
             IMAGE_STRING_BLOCK_BYTES, IMAGE_STRINGS_PER_BLOCK, STRING_CELL_BYTES,
         };
         let at = (offset as usize).wrapping_sub(self.start);
         let slot = at % IMAGE_STRING_BLOCK_BYTES;
-        if at >= self.end
-            || !slot.is_multiple_of(STRING_CELL_BYTES)
-            || slot >= IMAGE_STRINGS_PER_BLOCK * STRING_CELL_BYTES
-        {
-            return Err(LoadError::Error(format!(
+        (at < self.end
+            && slot.is_multiple_of(STRING_CELL_BYTES)
+            && slot < IMAGE_STRINGS_PER_BLOCK * STRING_CELL_BYTES)
+            .then(|| {
+                // SAFETY: an allocated cell of the adopted blocks, by the
+                // check (the cells before END are the image's strings, in
+                // order).
+                Value::StringObject(unsafe {
+                    StringObjectRef::from_raw(((self.base + offset as usize) as *mut u8).cast())
+                })
+            })
+    }
+
+    /// The string whose cell is at OFFSET, which must be a cell of the
+    /// blocks.
+    #[inline(always)]
+    fn string_at(&self, offset: u32) -> Result<Value, LoadError> {
+        self.string_checked(offset).ok_or_else(|| {
+            LoadError::Error(format!(
                 "string at {offset} is not a cell of the string blocks"
-            )));
-        }
-        // SAFETY: an allocated cell of the adopted blocks, by the check
-        // (the cells before END are the image's strings, in order).
-        Ok(Value::StringObject(unsafe {
-            StringObjectRef::from_raw(((self.base + offset as usize) as *mut u8).cast())
-        }))
+            ))
+        })
     }
 }
 
-/// The code of RELOC_DUMP_TO_DUMP_LV naming a symbol, which names a cell
-/// of the symbol blocks when it numbers no object.
-pub(super) const SYMBOL_LV: u32 = 0x100 | DumpType::Symbol as u32;
+/// The type of RELOC_DUMP_TO_DUMP_LV naming a symbol of the symbol blocks.
+pub(super) const SYMBOL_LV: u32 = RelocType::DumpToDumpSymbol as u32;
 
 /// The image's symbol blocks where the image is mapped: BASE the image's
 /// address, START the first block's offset, COUNT the symbols, END past
@@ -694,18 +719,25 @@ impl ImageSymbols {
         at < self.end && at.is_multiple_of(crate::lisp::alloc::SYMBOL_CELL_BYTES)
     }
 
+    /// The symbol whose cell is at OFFSET, if it is one of them.
+    #[inline(always)]
+    fn symbol_checked(&self, offset: u32) -> Option<Value> {
+        self.holds(offset)
+            .then(|| Value::Symbol(self.symbol(offset as usize)))
+    }
+
     /// The symbol whose cell is at OFFSET, which must be one of them.
     #[inline(always)]
     fn symbol_at(&self, offset: u32) -> Result<Value, LoadError> {
-        if !self.holds(offset) {
-            return Err(LoadError::Error(format!(
+        self.symbol_checked(offset).ok_or_else(|| {
+            LoadError::Error(format!(
                 "symbol at {offset} is not a cell of the symbol blocks"
-            )));
-        }
-        Ok(Value::Symbol(self.symbol(offset as usize)))
+            ))
+        })
     }
 
     /// The symbol whose cell is at OFFSET, a cell of the blocks.
+    #[inline(always)]
     fn symbol(&self, offset: usize) -> SymbolName {
         // SAFETY: an adopted cell, by the caller's check.
         SymbolName::from_ref(unsafe {
@@ -730,14 +762,13 @@ impl ImageSymbols {
     }
 }
 
-/// The codes of RELOC_DUMP_TO_DUMP_LV naming a vector of the vector
-/// blocks or the large vectors, by its kind.
-pub(super) const VECTOR_LV: u32 = 0x100 | DumpType::Vector as u32;
-pub(super) const CLOSURE_LV: u32 = 0x100 | DumpType::Closure as u32;
-pub(super) const LISP_RECORD_LV: u32 = 0x100 | DumpType::LispRecord as u32;
-pub(super) const CHAR_TABLE_LV: u32 = 0x100 | DumpType::CharTable as u32;
-pub(super) const SUB_CHAR_TABLE_LV: u32 = 0x100 | DumpType::SubCharTable as u32;
-pub(super) const BOOL_VECTOR_LV: u32 = 0x100 | DumpType::BoolVector as u32;
+/// The type of RELOC_DUMP_TO_DUMP_LV naming a vectorlike of the vector
+/// blocks or the large vectors.
+pub(super) const VECTORLIKE_LV: u32 = RelocType::DumpToDumpVectorlike as u32;
+/// The type naming an object the loader makes, by number.
+pub(super) const OBJECT_LV: u32 = RelocType::DumpToDumpObject as u32;
+/// RELOC_DUMP_TO_DUMP_PTR_RAW's type.
+const PTR_RAW: u32 = RelocType::DumpToDumpPtrRaw as u32;
 
 /// The image's vector blocks and its large vectors after them, where the
 /// image is mapped: BASE the image's address, START the first block's
@@ -758,22 +789,28 @@ struct ImageVectors {
 }
 
 impl ImageVectors {
+    /// The vector whose header is at OFFSET, if it starts one of the
+    /// image's vectors.
+    #[inline(always)]
+    fn vector_checked(&self, offset: u32) -> Option<Value> {
+        let at = (offset as usize).wrapping_sub(self.start);
+        (at < self.end && at.is_multiple_of(8) && self.starts[at / 512] & (1 << (at / 8 % 64)) != 0)
+            .then(|| {
+                // SAFETY: an adopted vector, by the check, whose header is
+                // a vectorlike's (lisp.h's Lisp_Vectorlike tag).
+                unsafe { Value::from_word((self.base + offset as usize) | 5) }
+            })
+    }
+
     /// The vector whose header is at OFFSET, which must start one of the
     /// image's vectors.
     #[inline(always)]
     fn vector_at(&self, offset: u32) -> Result<Value, LoadError> {
-        let at = (offset as usize).wrapping_sub(self.start);
-        if at >= self.end
-            || !at.is_multiple_of(8)
-            || self.starts[at / 512] & (1 << (at / 8 % 64)) == 0
-        {
-            return Err(LoadError::Error(format!(
+        self.vector_checked(offset).ok_or_else(|| {
+            LoadError::Error(format!(
                 "vector at {offset} is not one of the image's vectors"
-            )));
-        }
-        // SAFETY: an adopted vector, by the check, whose header is a
-        // vectorlike's (lisp.h's Lisp_Vectorlike tag).
-        Ok(unsafe { Value::from_word((self.base + offset as usize) | 5) })
+            ))
+        })
     }
 }
 
@@ -924,7 +961,7 @@ impl Loader<'_> {
                             || self
                                 .very_late_relocs
                                 .reloc_at_from(&mut native_subr_hint, offset)
-                                != Some(DumpRelocKind::NativeSubr)
+                                != Some(RelocType::NativeSubr)
                         {
                             return Err(LoadError::Error(
                                 "invalid native subr image record".into(),
@@ -940,7 +977,7 @@ impl Loader<'_> {
                             || self
                                 .late_relocs
                                 .reloc_at_from(&mut native_unit_hint, offset)
-                                != Some(DumpRelocKind::NativeCompUnit)
+                                != Some(RelocType::NativeCompUnit)
                         {
                             return Err(LoadError::Error(
                                 "invalid native compilation unit image record".into(),
@@ -1560,7 +1597,7 @@ impl Loader<'_> {
         let entries = self.relocs.entries;
         let mut vector = 0;
         for entry in &entries[first..last] {
-            let field = entry_word(entry, 0);
+            let field = entry_offset(entry);
             let at = field - start;
             while words.get(vector).is_some_and(|&(_, end)| end <= at) {
                 vector += 1;
@@ -1573,8 +1610,7 @@ impl Loader<'_> {
             let slot = (base + field as usize) as *mut Value;
             // SAFETY: a Lisp word of an adopted vector, read where it is.
             let word = unsafe { slot.cast::<u64>().read() };
-            let value =
-                self.reloc_value(field, entry_word(entry, 4), entry_word(entry, 8), word)?;
+            let value = self.reloc_value(field, entry_code(entry), word)?;
             // SAFETY: a Lisp word of an adopted vector, which nothing has
             // seen.
             unsafe { slot.write(value) };
@@ -1637,8 +1673,8 @@ impl Loader<'_> {
         let (mut keys, mut names) = (0, 0);
         for index in first..last {
             let entry = &self.relocs.entries[index];
-            let (slot, word) = self.symbols.field(entry_word(entry, 0))?;
-            let code = entry_word(entry, 4);
+            let (slot, word) = self.symbols.field(entry_offset(entry))?;
+            let code = entry_code(entry);
             // SAFETY: a word of a cell of the blocks, inside the image.
             let value = unsafe { slot.read() };
             match word {
@@ -1647,7 +1683,7 @@ impl Loader<'_> {
                     let len = unsafe { slot.add(1).read() } as usize;
                     let text = usize::try_from(value)
                         .ok()
-                        .filter(|_| code == DumpRelocKind::DumpToDumpPtrRaw.to_u32())
+                        .filter(|_| code == PTR_RAW)
                         .and_then(|at| self.image.bytes().get(at..at.checked_add(len)?))
                         .filter(|text| {
                             crate::lisp::types::obarray::plain_ascii(text)
@@ -1656,7 +1692,7 @@ impl Loader<'_> {
                         .ok_or_else(|| {
                             LoadError::Error(format!(
                                 "invalid symbol key at {}",
-                                entry_word(entry, 0)
+                                entry_offset(entry)
                             ))
                         })?;
                     // SAFETY: as above; the cell's key is the image's text.
@@ -1669,7 +1705,7 @@ impl Loader<'_> {
                         _ => {
                             return Err(LoadError::Error(format!(
                                 "symbol name at {} is not a string of the blocks",
-                                entry_word(entry, 0)
+                                entry_offset(entry)
                             )));
                         }
                     };
@@ -1727,17 +1763,16 @@ impl Loader<'_> {
         let last_field = (self.symbols.start + self.symbols.end) as u32;
         let first = self.relocs.rank_from(0, first_field);
         let last = self.relocs.rank_from(first, last_field);
-        for index in first..last {
-            let entry = &self.relocs.entries[index];
-            let field = entry_word(entry, 0);
+        let entries = self.relocs.entries;
+        for entry in &entries[first..last] {
+            let field = entry_offset(entry);
             let (slot, word) = self.symbols.field(field)?;
             if !(SYMBOL_CELL_FUNCTION..=SYMBOL_CELL_VALUE).contains(&word) {
                 continue;
             }
             // SAFETY: a word of an adopted cell, read where it is.
             let value = unsafe { slot.read() };
-            let value =
-                self.reloc_value(field, entry_word(entry, 4), entry_word(entry, 8), value)?;
+            let value = self.reloc_value(field, entry_code(entry), value)?;
             // SAFETY: a word of an adopted cell, which nothing has read.
             unsafe { slot.write(value.word() as u64) };
         }
@@ -1756,14 +1791,13 @@ impl Loader<'_> {
         let (start, end) = self.conses.cells();
         let first = self.relocs.rank_from(0, start);
         let last = self.relocs.rank_from(first, end);
-        for index in first..last {
-            let entry = &self.relocs.entries[index];
-            let field = entry_word(entry, 0);
+        let entries = self.relocs.entries;
+        for entry in &entries[first..last] {
+            let field = entry_offset(entry);
             let slot = self.conses.field(field)?;
             // SAFETY: a word of an adopted cell, read where it is.
             let word = unsafe { slot.cast::<u64>().read() };
-            let value =
-                self.reloc_value(field, entry_word(entry, 4), entry_word(entry, 8), word)?;
+            let value = self.reloc_value(field, entry_code(entry), word)?;
             // SAFETY: a word of an adopted cell, which nothing has seen.
             unsafe { slot.write(value) };
         }
@@ -1809,7 +1843,7 @@ impl Loader<'_> {
                 let entry = &self.relocs.entries[cursor];
                 cursor += 1;
                 next = self.relocs.offset_or_end(cursor);
-                self.reloc_value(field, entry_word(entry, 4), entry_word(entry, 8), word)?
+                self.reloc_value(field, entry_code(entry), word)?
             } else {
                 immediate_value(word)?
             };
@@ -1830,63 +1864,62 @@ impl Loader<'_> {
         let Some(reloc) = self.reloc_entry(field_offset) else {
             return immediate_value(word);
         };
-        let code = self.relocs.code(reloc);
-        // DUMP_RELOC_DUMP_TO_DUMP_LV, whatever the target's type: the
-        // entry names the object the word does.
-        if code >> 8 == 1
-            && let Some(value) = self.object(self.relocs.target(reloc) as usize)
-        {
-            debug_assert_eq!(
-                Some(word as u32),
-                self.relocs
-                    .target(reloc)
-                    .try_into()
-                    .ok()
-                    .map(|number| self.starts.offset(number)),
-                "the relocation's object starts where its word names"
-            );
-            return Ok(value);
-        }
-        self.block_value(field_offset, code, word)
+        self.reloc_value(field_offset, self.relocs.code(reloc), word)
     }
 
-    /// The value of the word WORD at FIELD that the relocation of CODE and
-    /// object TARGET names: a cons, a string or a vector of the blocks
-    /// (pdumper.c's RELOC_DUMP_TO_DUMP_LV, the mapped image's address and
-    /// the word's offset), the object the entry numbers, or what another
-    /// relocation makes.
+    /// The value of the word WORD at FIELD that a relocation of type CODE
+    /// names: pdumper.c's RELOC_DUMP_TO_DUMP_LV, a cons, a string, a symbol
+    /// or a vectorlike of the blocks where the image is mapped, at the
+    /// offset the word holds; an object the loader made, by the number
+    /// the word holds; or what another relocation makes.
     #[inline(always)]
-    fn reloc_value(
-        &mut self,
-        field: u32,
-        code: u32,
-        target: u32,
-        word: u64,
-    ) -> Result<Value, LoadError> {
-        if code >> 8 == 1
-            && let Some(value) = self.object(target as usize)
-        {
+    fn reloc_value(&mut self, field: u32, code: u32, word: u64) -> Result<Value, LoadError> {
+        if let Some(value) = self.mapped_value(code, word) {
             return Ok(value);
         }
-        self.block_value(field, code, word)
+        self.reloc_value_slow(field, code, word)
     }
 
-    /// reloc_value for a relocation that numbers no object: a cons, a
-    /// string or a vector of the blocks, which the entry does not number
-    /// (`NO_OBJECT'), or what another relocation makes.
+    /// reloc_value's common case, pdumper.c's dump_make_lv_from_reloc: the
+    /// object a RELOC_DUMP_TO_DUMP_LV names, a cell of the blocks or an
+    /// object made, None for another relocation or a word naming nothing.
     #[inline(always)]
-    fn block_value(&mut self, field: u32, code: u32, word: u64) -> Result<Value, LoadError> {
+    fn mapped_value(&self, code: u32, word: u64) -> Option<Value> {
+        match code {
+            CONS_LV => self.conses.cons_checked(word as u32),
+            STRING_LV => self.strings.string_checked(word as u32),
+            SYMBOL_LV => self.symbols.symbol_checked(word as u32),
+            VECTORLIKE_LV => self.vectors.vector_checked(word as u32),
+            OBJECT_LV => self.object(usize::try_from(word).ok()?),
+            _ => None,
+        }
+    }
+
+    /// reloc_value of the relocations `mapped_value' leaves: the other
+    /// types, and the errors.
+    #[cold]
+    #[inline(never)]
+    fn reloc_value_slow(&mut self, field: u32, code: u32, word: u64) -> Result<Value, LoadError> {
         match code {
             CONS_LV => self.conses.cons_at(word as u32),
             STRING_LV => self.strings.string_at(word as u32),
             SYMBOL_LV => self.symbols.symbol_at(word as u32),
-            VECTOR_LV | CLOSURE_LV | LISP_RECORD_LV | CHAR_TABLE_LV | SUB_CHAR_TABLE_LV
-            | BOOL_VECTOR_LV => self.vectors.vector_at(word as u32),
+            VECTORLIKE_LV => self.vectors.vector_at(word as u32),
+            OBJECT_LV => match usize::try_from(word)
+                .ok()
+                .and_then(|number| self.object(number))
+            {
+                Some(value) => Ok(value),
+                None => Err(LoadError::Error(format!(
+                    "field at {field} names no object ({word})"
+                ))),
+            },
             _ => self.relocated_value(field, code, word),
         }
     }
 
-    /// value_at for the relocations other than one naming an object.
+    /// value_at for the relocations other than one naming an object of
+    /// the dump.
     #[cold]
     fn relocated_value(
         &mut self,
@@ -1894,26 +1927,13 @@ impl Loader<'_> {
         code: u32,
         word: u64,
     ) -> Result<Value, LoadError> {
-        match DumpRelocKind::from_u32(code) {
-            // RELOC_DUMP_TO_DUMP_LV of a cons, a string or a vector: the
-            // word is the object's offset, and the object is where the
-            // image is mapped.
-            Some(DumpRelocKind::DumpToDumpLv(DumpType::Cons)) => self.conses.cons_at(word as u32),
-            Some(DumpRelocKind::DumpToDumpLv(DumpType::String)) => {
-                self.strings.string_at(word as u32)
+        match RelocType::from_u32(code) {
+            Some(RelocType::DumpToEmacsSubr) => {
+                self.emacs_image_object(word as u32, DumpType::Subr)
             }
-            Some(DumpRelocKind::DumpToDumpLv(
-                DumpType::Vector
-                | DumpType::Closure
-                | DumpType::LispRecord
-                | DumpType::CharTable
-                | DumpType::SubCharTable
-                | DumpType::BoolVector,
-            )) => self.vectors.vector_at(word as u32),
-            Some(DumpRelocKind::DumpToDumpLv(_)) => Err(LoadError::Error(format!(
-                "field at {field_offset} names no object ({word})"
-            ))),
-            Some(DumpRelocKind::DumpToEmacsLv(kind)) => self.emacs_image_object(word as u32, kind),
+            Some(RelocType::DumpToEmacsMainThread) => {
+                self.emacs_image_object(word as u32, DumpType::MainThread)
+            }
             Some(other) => Err(LoadError::Error(format!(
                 "field at {field_offset} has a non-object relocation {other:?}"
             ))),
@@ -1923,21 +1943,26 @@ impl Loader<'_> {
         }
     }
 
+    /// The type of the object NUMBER of the object starts.
+    fn start_type(&self, number: usize) -> Option<DumpType> {
+        (number < self.starts.len())
+            .then(|| DumpType::from_u32(self.starts.code(number)))
+            .flatten()
+    }
+
     /// A field that holds a symbol or an immediate, read before the
     /// symbol objects exist: the symbol record's name is a phase-1 string.
     fn symbol_or_immediate_at(&mut self, field_offset: u32) -> Result<Value, LoadError> {
         let word = self.reader.word(field_offset)?;
         let reloc = self.reloc_entry(field_offset);
-        match reloc.map(|reloc| DumpRelocKind::from_u32(self.relocs.code(reloc))) {
-            Some(Some(DumpRelocKind::DumpToDumpLv(DumpType::Symbol))) => {
-                let target = word as u32;
-                let number = self.relocs.target(reloc.expect("a relocation")) as usize;
+        match reloc.map(|reloc| self.relocs.code(reloc)) {
+            Some(SYMBOL_LV) => self.symbols.symbol_at(word as u32),
+            Some(OBJECT_LV) if self.start_type(word as usize) == Some(DumpType::Symbol) => {
+                let number = word as usize;
                 if let Some(value) = self.object(number) {
                     return Ok(value);
                 }
-                if self.symbols.holds(target) {
-                    return self.symbols.symbol_at(target);
-                }
+                let target = self.starts.offset(number);
                 let flags = self.reader.word(target)?;
                 let name = self.value_at(target + 8)?;
                 if (flags >> SYMBOL_INTERNED_SHIFT) & 3 == SYMBOL_UNINTERNED {
@@ -2063,7 +2088,7 @@ impl Loader<'_> {
     ) -> Result<*const std::ffi::c_char, LoadError> {
         let invalid =
             || LoadError::Error(format!("native function {what} is not an image C string"));
-        if self.relocs.reloc_at_from(hint, field) != Some(DumpRelocKind::DumpToDumpPtrRaw) {
+        if self.relocs.reloc_at_from(hint, field) != Some(RelocType::DumpToDumpPtrRaw) {
             return Err(invalid());
         }
         let start = usize::try_from(self.reader.word(field)?).map_err(|_| invalid())?;

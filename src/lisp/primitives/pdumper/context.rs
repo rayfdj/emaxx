@@ -500,9 +500,8 @@ pub(crate) struct DumpContext {
     fixups: Vec<Fixup>,
     copied_queue: Vec<Value>,
     cold_queue: Vec<ColdOp>,
-    /// Each relocation's offset and kind, with the target's offset for a
-    /// word naming an object of the dump.
-    dump_relocs: [Vec<(u32, DumpRelocKind, Option<u32>)>; RELOC_NUM_PHASES],
+    /// Each relocation's offset and type.
+    dump_relocs: [Vec<(u32, RelocType)>; RELOC_NUM_PHASES],
     object_starts: Vec<(u32, DumpType)>,
     emacs_relocs: Vec<EmacsReloc>,
     bignum_data: HashMap<ObjectKey, (u32, i64)>,
@@ -856,9 +855,9 @@ impl DumpContext {
 
     /// dump_reloc_dump_to_dump_ptr_raw / dump_reloc_dump_to_dump_lv /
     /// dump_reloc_dump_to_emacs_lv (early phase).
-    fn push_dump_reloc(&mut self, offset: u32, kind: DumpRelocKind, target: Option<u32>) {
+    fn push_dump_reloc(&mut self, offset: u32, kind: RelocType) {
         if self.flags.dump_object_contents {
-            self.dump_relocs[EARLY_RELOCS].push((offset, kind, target));
+            self.dump_relocs[EARLY_RELOCS].push((offset, kind));
         }
     }
 
@@ -1333,7 +1332,7 @@ impl DumpContext {
             for (word, value) in words.iter().enumerate() {
                 blocks[at + 8 * word..at + 8 * (word + 1)].copy_from_slice(&value.to_le_bytes());
             }
-            self.push_dump_reloc(symbols + at as u32, DumpRelocKind::DumpToDumpPtrRaw, None);
+            self.push_dump_reloc(symbols + at as u32, RelocType::DumpToDumpPtrRaw);
         }
         self.write(&blocks)?;
         self.write(&keys)?;
@@ -1377,11 +1376,8 @@ impl DumpContext {
             }
         }
         for relocs in &mut self.dump_relocs {
-            for (offset, _, target) in relocs.iter_mut() {
+            for (offset, _) in relocs.iter_mut() {
                 *offset = placed(*offset);
-                if let Some(target) = target {
-                    *target = placed(*target);
-                }
             }
         }
         for reloc in &mut self.emacs_relocs {
@@ -1735,7 +1731,7 @@ impl DumpContext {
                 offset: start + 8,
                 value: *object,
             });
-            self.push_dump_reloc(offset, DumpRelocKind::Bignum, None);
+            self.push_dump_reloc(offset, RelocType::Bignum);
         }
         Ok(offset)
     }
@@ -1838,7 +1834,7 @@ impl DumpContext {
         }
         let offset = self.object_finish(&words)?;
         if self.flags.dump_object_contents {
-            self.dump_relocs[LATE_RELOCS].push((offset, DumpRelocKind::NativeCompUnit, None));
+            self.dump_relocs[LATE_RELOCS].push((offset, RelocType::NativeCompUnit));
         }
         Ok(offset)
     }
@@ -1894,7 +1890,7 @@ impl DumpContext {
         words[name_index + 1] = FIXUP_PLACEHOLDER;
         let offset = self.object_finish(&words)?;
         if self.flags.dump_object_contents {
-            self.dump_relocs[VERY_LATE_RELOCS].push((offset, DumpRelocKind::NativeSubr, None));
+            self.dump_relocs[VERY_LATE_RELOCS].push((offset, RelocType::NativeSubr));
         }
         self.remember_cold_op(ColdOp::NativeSubr {
             names: offset + (name_index * 8) as u32,
@@ -2624,6 +2620,9 @@ impl DumpContext {
         let saved_offset = self.offset;
         let mut fixups = std::mem::take(&mut self.fixups);
         fixups.sort_by_key(Fixup::offset);
+        // An object the loader makes is named by its number, its place in
+        // the object starts as `emit_object_starts' writes them.
+        self.object_starts.sort_by_key(|(offset, _)| *offset);
         let mut previous_offset = None;
         for fixup in fixups {
             let offset = fixup.offset();
@@ -2637,13 +2636,40 @@ impl DumpContext {
                         panic!("fixup target was dumped");
                     };
                     let kind = self.dump_type_of(&value);
-                    let (reloc, object) = if self.in_emacs_image(&value) {
-                        (DumpRelocKind::DumpToEmacsLv(kind), None)
+                    let (word, reloc) = if self.in_emacs_image(&value) {
+                        let reloc = match kind {
+                            DumpType::Subr => RelocType::DumpToEmacsSubr,
+                            DumpType::MainThread => RelocType::DumpToEmacsMainThread,
+                            other => panic!("{other:?} is not an object of the Emacs image"),
+                        };
+                        (target, reloc)
+                    } else if let Ok(number) = self
+                        .object_starts
+                        .binary_search_by_key(&target, |(start, _)| *start)
+                    {
+                        let number = u32::try_from(number).expect("object count fits a word");
+                        (number, RelocType::DumpToDumpObject)
                     } else {
-                        (DumpRelocKind::DumpToDumpLv(kind), Some(target))
+                        // A cell of the image's blocks, mapped where the
+                        // image holds it: RELOC_DUMP_TO_DUMP_LV of its type.
+                        let reloc = match kind {
+                            DumpType::Symbol => RelocType::DumpToDumpSymbol,
+                            DumpType::Cons => RelocType::DumpToDumpCons,
+                            DumpType::String | DumpType::StringObject => {
+                                RelocType::DumpToDumpString
+                            }
+                            DumpType::Vector
+                            | DumpType::Closure
+                            | DumpType::LispRecord
+                            | DumpType::CharTable
+                            | DumpType::SubCharTable
+                            | DumpType::BoolVector => RelocType::DumpToDumpVectorlike,
+                            other => panic!("{other:?} at {target} is not a cell of the blocks"),
+                        };
+                        (target, reloc)
                     };
-                    self.write_word(u64::from(target))?;
-                    self.push_dump_reloc(offset, reloc, object);
+                    self.write_word(u64::from(word))?;
+                    self.push_dump_reloc(offset, reloc);
                 }
                 Fixup::PtrDumpRaw { target, .. } => {
                     self.write_word(u64::from(target))?;
@@ -2653,7 +2679,7 @@ impl DumpContext {
                         .string_blocks
                         .is_some_and(|(start, end)| (start..end).contains(&offset))
                     {
-                        self.push_dump_reloc(offset, DumpRelocKind::DumpToDumpPtrRaw, None);
+                        self.push_dump_reloc(offset, RelocType::DumpToDumpPtrRaw);
                     }
                 }
                 Fixup::BignumData { value, .. } => {
@@ -2676,25 +2702,13 @@ impl DumpContext {
     /// drain_reloc_list for the dump relocations of PHASE.
     pub(crate) fn emit_dump_relocs(&mut self, phase: usize) -> Result<(), DumpError> {
         let mut relocs = std::mem::take(&mut self.dump_relocs[phase]);
-        relocs.sort_by_key(|(offset, _, _)| *offset);
-        // The object starts in the order `emit_object_starts' writes them:
-        // an object's number is its place there.
-        self.object_starts.sort_by_key(|(offset, _)| *offset);
+        relocs.sort_by_key(|(offset, _)| *offset);
         self.align_output(8)?;
         let locator_offset = self.offset;
-        for (offset, kind, target) in &relocs {
-            assert!(*offset > 0 && *offset < self.end_heap);
-            let number = target.map_or(NO_OBJECT, |target| {
-                self.object_starts
-                    .binary_search_by_key(&target, |(start, _)| *start)
-                    .map_or(NO_OBJECT, |number| {
-                        u32::try_from(number).expect("object count fits a word")
-                    })
-            });
-            self.write(&offset.to_le_bytes())?;
-            self.write(&kind.to_u32().to_le_bytes())?;
-            self.write(&number.to_le_bytes())?;
-            if *offset < self.header.discardable_start {
+        for &(offset, kind) in &relocs {
+            assert!(offset > 0 && offset < self.end_heap && offset < DUMP_RELOC_OFFSET_LIMIT);
+            self.write(&dump_reloc(offset, kind).to_le_bytes())?;
+            if offset < self.header.discardable_start {
                 self.number_hot_relocations += 1;
             } else {
                 self.number_discardable_relocations += 1;
