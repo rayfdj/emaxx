@@ -27,73 +27,13 @@ pub(crate) fn internal_string_bytes(string: &StringLike) -> Result<Vec<u8>, Lisp
     Ok(bytes)
 }
 
-pub(crate) fn secure_hash_source_bytes(
-    interp: &mut Interpreter,
-    source: &Value,
-    start: Option<&Value>,
-    end: Option<&Value>,
-) -> Result<Vec<u8>, LispError> {
-    if let Kind::Symbol(symbol) = source.kind()
-        && symbol == "iv-auto"
-    {
-        let length = start
-            .ok_or_else(|| LispError::Signal("Without a length, `iv-auto' can't be used".into()))?
-            .as_integer()? as usize;
-        let mut bytes = vec![0u8; length];
-        getrandom::fill(&mut bytes)
-            .map_err(|error| LispError::Signal(format!("Getting random data: {error}")))?;
-        return Ok(bytes);
-    }
-
-    match source.kind() {
-        Kind::Buffer(_) => {
-            let buffer_id = interp.resolve_buffer_id(source)?;
-            let buffer = interp
-                .get_buffer_by_id(buffer_id)
-                .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?;
-            let start = start
-                .filter(|value| !value.is_nil())
-                .map(|value| position_from_value(interp, value))
-                .transpose()?
-                .unwrap_or_else(|| buffer.point_min());
-            let end = end
-                .filter(|value| !value.is_nil())
-                .map(|value| position_from_value(interp, value))
-                .transpose()?
-                .unwrap_or_else(|| buffer.point_max());
-            let text = buffer
-                .buffer_substring(start, end)
-                .map_err(|error| LispError::Signal(error.to_string()))?;
-            internal_text_bytes(&text, buffer.is_multibyte())
-        }
-        _ => {
-            let string = string_like(source)
-                .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *source))?;
-            let codes = string.character_codes();
-            let start = normalize_string_index(start, 0, codes.len() as i64)? as usize;
-            let end = normalize_string_index(end, codes.len() as i64, codes.len() as i64)? as usize;
-            let mut bytes = Vec::new();
-            for code in &codes[start..end] {
-                if string.multibyte {
-                    // fns.c extract_data_from_object encodes a multibyte
-                    // string with the preferred coding system (utf-8 under
-                    // the gate's LANG=C), where an eight-bit char encodes
-                    // as its verbatim byte -- not its 2-byte internal form.
-                    if (0x3F_FF80..=0x3F_FFFF).contains(code) {
-                        // character.h BYTE8_TO_CHAR: byte B is 0x3FFF00 + B.
-                        bytes.push((*code - 0x3F_FF00) as u8);
-                    } else {
-                        push_emacs_multibyte_char(&mut bytes, *code as u32)?;
-                    }
-                } else if (0..=0xFF).contains(code) {
-                    bytes.push(*code as u8);
-                } else {
-                    return Err(LispError::Signal("Character cannot be encoded".into()));
-                }
-            }
-            Ok(bytes)
-        }
-    }
+/// fns.c:extract_data_from_object's (iv-auto LENGTH): LENGTH bytes from
+/// getrandom.
+pub(crate) fn iv_auto_bytes(length: usize) -> Result<Vec<u8>, LispError> {
+    let mut bytes = vec![0u8; length];
+    getrandom::fill(&mut bytes)
+        .map_err(|error| LispError::Signal(format!("Getting random data: {error}")))?;
+    Ok(bytes)
 }
 
 pub(crate) fn secure_hash_digest(algorithm: &str, input: &[u8]) -> Result<Vec<u8>, LispError> {
@@ -119,10 +59,13 @@ pub(crate) fn secure_hash_digest(algorithm: &str, input: &[u8]) -> Result<Vec<u8
     })
 }
 
+/// fns.c:hexbuf_digest.
 pub(crate) fn digest_hex(bytes: &[u8]) -> String {
+    const HEXDIGIT: &[u8; 16] = b"0123456789abcdef";
     let mut output = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        output.push_str(&format!("{byte:02x}"));
+    for &byte in bytes {
+        output.push(char::from(HEXDIGIT[usize::from(byte >> 4)]));
+        output.push(char::from(HEXDIGIT[usize::from(byte & 0xf)]));
     }
     output
 }

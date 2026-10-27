@@ -3368,6 +3368,169 @@ mod tests {
     }
 
     #[test]
+    fn string_aref_aset_and_hash_input_follow_data_c_and_fns_c() {
+        // data.c:Faref and Faset on unibyte and multibyte strings, from
+        // byte-code (bytecode.c's Baref and Baset) and as functions:
+        // CHECK_IMPURE, the index, then CHECK_CHARACTER of NEWELT.
+        // fns.c:extract_data_from_object hashes a string's bytes, encoded
+        // first when multibyte, between endpoints into those bytes.
+        run_with_large_stack(|| {
+            let emacs_repo = compat::project_root().join("../emacs");
+            let options = BatchRunOptions {
+                load_path: compat::emaxx_upstream_load_path(&emacs_repo)
+                    .expect("upstream load path"),
+                ..Default::default()
+            };
+            let mut interpreter =
+                initialize_batch_interpreter(&options).expect("init batch interpreter");
+            let mut env = crate::lisp::types::Env::new();
+            let mut forms = Reader::new(
+                r##"(defmacro emaxx-probe-or-error (form)
+                     `(condition-case e ,form (error (list 'ERR e))))
+FORM"##
+                    .replace(
+                        "FORM",
+                        r##"(let* ((get (byte-compile (lambda (s i) (aref s i))))
+       (put (byte-compile (lambda (s i v) (aset s i v))))
+       (u (string-to-unibyte "abc\377"))
+       (m (string ?a ?é ?b ?\x3fff80))
+       (out nil))
+  (dolist (fn (list get #'aref))
+    (dolist (args (list (list u 0) (list u 3) (list u 4) (list u -1) (list u 1.0)
+                        (list m 1) (list m 3) (list m 4) (list "" 0)))
+      (push (emaxx-probe-or-error (apply fn args)) out)))
+  (dolist (fn (list put #'aset))
+    (let ((s (copy-sequence u)))
+      (dolist (args '((0 ?z) (1 255) (2 ?é) (4 ?a) (-1 ?a) (0 -1) (0 x) (0 #x400000)))
+        (push (emaxx-probe-or-error
+               (list (apply fn s args) (string-to-list s) (multibyte-string-p s)))
+              out)))
+    (let ((s (copy-sequence "abcd")))
+      (dolist (args '((1 ?é) (1 ?x) (2 #x3fff80)))
+        (push (emaxx-probe-or-error
+               (list (apply fn s args) (string-to-list s) (multibyte-string-p s)
+                     (string-bytes s)))
+              out)))
+    (let ((s (copy-sequence m)))
+      (dolist (args '((1 ?è) (1 ?z) (0 ?€) (3 ?q)))
+        (push (emaxx-probe-or-error
+               (list (apply fn s args) (string-to-list s) (string-bytes s)))
+              out))))
+  (dolist (form '((md5 "abc") (md5 (string-to-unibyte "a\377")) (md5 "aé")
+                  (md5 "aé" nil nil 'latin-1) (md5 "aébc" 1 3) (md5 "abcdef" -3)
+                  (md5 "abc" 0 4) (md5 "abc" 2 1) (md5 "abc" 'x)
+                  (secure-hash 'sha256 "abc")
+                  (secure-hash 'sha1 (string-to-unibyte "\200\201") 0 1)
+                  (string-to-list (secure-hash 'md5 "é" nil nil t))
+                  (secure-hash 'md5 "abcdef" 1 -1) (secure-hash 'sha224 "aé" 1 2)
+                  (secure-hash 'sha224 "aé" 1 3) (md5 "x" nil nil 'no-such-coding)
+                  (md5 "x" nil nil 'no-such-coding t) (md5 "é" nil nil 'no-such-coding t)
+                  (md5 42)))
+    (push (emaxx-probe-or-error (eval form t)) out))
+  (with-temp-buffer
+    (insert "héllo")
+    (push (list (md5 (current-buffer)) (md5 (current-buffer) 2 4)
+                (secure-hash 'sha1 (current-buffer)) (buffer-hash))
+          out))
+  (prin1-to-string (nreverse out)))"##,
+                    )
+                    .as_str(),
+            )
+            .read_all()
+            .expect("read aref probe");
+            let probe = forms.pop().expect("probe form");
+            interpreter
+                .eval(&forms[0], &mut env)
+                .expect("define the probe's macro");
+            let printed = interpreter
+                .eval(&probe, &mut env)
+                .expect("evaluate aref probe");
+            assert_eq!(
+                lisp::primitives::string_like(&printed)
+                    .expect("printed")
+                    .text,
+                r##"(97 255 (ERR (args-out-of-range "abc\377" 4)) (ERR (args-out-of-range "abc\377" -1)) (ERR (wrong-type-argument fixnump 1.0)) 233 128 (ERR (args-out-of-range "aéb" 4)) (ERR (args-out-of-range "" 0)) 97 255 (ERR (args-out-of-range "abc\377" 4)) (ERR (args-out-of-range "abc\377" -1)) (ERR (wrong-type-argument fixnump 1.0)) 233 128 (ERR (args-out-of-range "aéb" 4)) (ERR (args-out-of-range "" 0)) (122 (122 98 99 255) nil) (255 (122 255 99 255) nil) (233 (122 255 233 255) nil) (ERR (args-out-of-range "z\377\351\377" 4)) (ERR (args-out-of-range "z\377\351\377" -1)) (ERR (wrong-type-argument characterp -1)) (ERR (wrong-type-argument characterp x)) (ERR (wrong-type-argument characterp 4194304)) (233 (97 233 99 100) nil 4) (120 (97 120 99 100) nil 4) (4194176 (97 120 4194176 100) t 5) (232 (97 232 98 128) 6) (122 (97 122 98 128) 5) (8364 (8364 122 98 128) 7) (113 (8364 122 98 113) 6) (122 (122 98 99 255) nil) (255 (122 255 99 255) nil) (233 (122 255 233 255) nil) (ERR (args-out-of-range "z\377\351\377" 4)) (ERR (args-out-of-range "z\377\351\377" -1)) (ERR (wrong-type-argument characterp -1)) (ERR (wrong-type-argument characterp x)) (ERR (wrong-type-argument characterp 4194304)) (233 (97 233 99 100) nil 4) (120 (97 120 99 100) nil 4) (4194176 (97 120 4194176 100) t 5) (232 (97 232 98 128) 6) (122 (97 122 98 128) 5) (8364 (8364 122 98 128) 7) (113 (8364 122 98 113) 6) "900150983cd24fb0d6963f7d28e17f72" "cc7bb99ae517c38d9547266ff7157071" "128fda53c8c07c8c66f2a4812187d92f" "784ca25d737cedf39d61866697e6ba7e" "66ddcd97cfdeabb2f6fb8a999b4bc76f" "4ed9407630eb1000c0f6b63842defa7d" (ERR (args-out-of-range "abc" 0 4)) (ERR (args-out-of-range "abc" 2 1)) (ERR (wrong-type-argument integerp x)) "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad" "c78ebd3c85a39a596d9f5cfd2b8d240bc1b9c125" (102 221 205 151 207 222 171 178 246 251 138 153 155 75 199 111) "e02cfbe5502b64aa5ae9f2d0d69eaa8d" "d82a2abcec72bf6f5b7085ac1e793c66ddc7102186c519b2fb019c97" "33dd9448e5538d16ddc6df32dd7f16240cac6cb5238c1c22cb33ae66" (ERR (coding-system-error no-such-coding)) "9dd4e461268c8034f5c8564e155c67a6" "66ddcd97cfdeabb2f6fb8a999b4bc76f" (ERR (error "Invalid object argument" 42)) ("be50e8478cf24ff3595bc7307fb91b50" "4fc48b7d17df5bbe6402fd375f558e0c" "35b5ea45c5e41f78b46a937cc74d41dfea920890" "35b5ea45c5e41f78b46a937cc74d41dfea920890"))"##
+            );
+        });
+    }
+
+    #[test]
+    fn gnutls_inputs_are_extract_data_from_object_specs() {
+        // gnutls.c makes a buffer or string input the spec `list1' gives,
+        // CHECK_CONSes the rest and reads every key, IV, input and AEAD
+        // datum with fns.c:extract_data_from_object: OBJECT, START, END,
+        // CODING-SYSTEM and NOERROR, endpoints into the encoded bytes.
+        run_with_large_stack(|| {
+            let emacs_repo = compat::project_root().join("../emacs");
+            let options = BatchRunOptions {
+                load_path: compat::emaxx_upstream_load_path(&emacs_repo)
+                    .expect("upstream load path"),
+                ..Default::default()
+            };
+            let mut interpreter =
+                initialize_batch_interpreter(&options).expect("init batch interpreter");
+            let mut env = crate::lisp::types::Env::new();
+            let mut forms = Reader::new(
+                r##"(defmacro emaxx-probe-or-error (form)
+                     `(condition-case e ,form (error (list 'ERR e))))
+FORM"##
+                    .replace("FORM", r##"(progn
+(require 'hex-util)
+(let ((out nil)
+      (h (lambda (in) (encode-hex-string (gnutls-hash-digest 'SHA256 in)))))
+  (dolist (in (list "abc" "é" (string-to-unibyte "\377") '("aé" 1 2) '("aé" 1 3) '("aé" 1)
+                    '("é" nil nil latin-1) '("é" nil nil no-such-coding)
+                    '("é" nil nil no-such-coding t) '("abcdef" -2) '("abc" 2 1)
+                    '("abc" 0 4) '("abc" x) '(nil) '(42) 42 nil '(iv-auto) '(iv-auto x)))
+    (push (emaxx-probe-or-error (funcall h in)) out))
+  (with-temp-buffer
+    (insert "héllo")
+    (dolist (in (list (current-buffer) (list (current-buffer) 2 4) (list (current-buffer) 4 2)
+                      (list (current-buffer) 1 99) (list (current-buffer) nil nil 'latin-1)))
+      (push (emaxx-probe-or-error (funcall h in)) out)))
+  (push (emaxx-probe-or-error (length (gnutls-hash-digest 'SHA256 '(iv-auto 5)))) out)
+  (push (emaxx-probe-or-error
+         (encode-hex-string (gnutls-hash-mac 'SHA256 (copy-sequence "key") '("aé" 1 3))))
+        out)
+  (push (emaxx-probe-or-error
+         (let ((k (copy-sequence "key")))
+           (gnutls-hash-mac 'SHA256 (list k) "x")
+           k))
+        out)
+  (push (emaxx-probe-or-error
+         (let* ((c (cdr (assq 'AES-128-CBC (gnutls-ciphers))))
+                (k (copy-sequence "0123456789abcdef"))
+                (r (gnutls-symmetric-encrypt c k '("0123456789abcdefXX" 0 16) '("aé" nil nil latin-1 t))))
+           r))
+        out)
+  (push (emaxx-probe-or-error
+         (let* ((c (cdr (assq 'AES-128-CBC (gnutls-ciphers))))
+                (k (copy-sequence "0123456789abcdef"))
+                (r (gnutls-symmetric-encrypt c k "0123456789abcdef" "0123456789abcdé")))
+           (list (mapcar #'encode-hex-string r) k)))
+        out)
+  (prin1-to-string (nreverse out))))"##)
+                    .as_str(),
+            )
+            .read_all()
+            .expect("read gnutls probe");
+            let probe = forms.pop().expect("probe form");
+            interpreter
+                .eval(&forms[0], &mut env)
+                .expect("define the probe's macro");
+            let printed = interpreter
+                .eval(&probe, &mut env)
+                .expect("evaluate gnutls probe");
+            assert_eq!(
+                lisp::primitives::string_like(&printed)
+                    .expect("printed")
+                    .text,
+                r##"("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad" "4a99557e4033c3539de2eb65472017cad5f9557f7a0625a09f1c3f6e2ba69c4c" "a8100ae6aa1940d0b663bb31cd466142ebbdbd5187131b92d93818987832eb89" "ae3f4619b0413d70d3004b9131c3752153074e45725be13b9a148978895e359e" "4a99557e4033c3539de2eb65472017cad5f9557f7a0625a09f1c3f6e2ba69c4c" "4a99557e4033c3539de2eb65472017cad5f9557f7a0625a09f1c3f6e2ba69c4c" "de2e331d891ae267a7009cb45b4e8830f170e0c937288ea2731a1941c7a53b0d" (ERR (coding-system-error no-such-coding)) "4a99557e4033c3539de2eb65472017cad5f9557f7a0625a09f1c3f6e2ba69c4c" "4ca669ac3713d1f4aea07dae8dcc0d1c9867d27ea82a3ba4e6158a42206f959b" (ERR (args-out-of-range "abc" 2 1)) (ERR (args-out-of-range "abc" 0 4)) (ERR (wrong-type-argument integerp x)) (ERR (error "Invalid object argument" "nil")) (ERR (error "Invalid object argument" 42)) (ERR (wrong-type-argument consp 42)) (ERR (wrong-type-argument consp nil)) (ERR (error "Without a length, `iv-auto' can't be used; see ELisp manual")) (ERR (error "Without a length, `iv-auto' can't be used; see ELisp manual")) "3c48591d8d098a4538f5e013dfcf406e948eac4d3277b10bf614e295d6068179" "018576b8030e53d8294d839a689d014d313f0170c07d0817670d2e2d9c3d3e73" "018576b8030e53d8294d839a689d014d313f0170c07d0817670d2e2d9c3d3e73" (ERR (args-out-of-range 1 99)) "c63c19ed1e0ee079f22ddb0d4112cfc799132c88684eb42324c62b9899b0c6c1" 32 "e5eb9b0a697f5df0e9c03ffdd759f4b6edb39204332904d5eb74735b54259255" "   " (ERR (error "GnuTLS cipher AES-128-CBC/encrypt input block length 2 is not a multiple of the required 16")) (("0750400a883b035762997c1160d05967" "30313233343536373839616263646566") "                "))"##
+            );
+        });
+    }
+
+    #[test]
     fn image_symbols_are_the_obarrays_and_the_initial_frame_is_terminal_frame() {
         // pdumper.c maps the dumped symbols where the image holds them:
         // a preloaded symbol is the obarray's, its cells are traced by the

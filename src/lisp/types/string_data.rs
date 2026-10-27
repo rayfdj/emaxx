@@ -925,6 +925,35 @@ impl SharedStringState {
         Some(i64::from(code))
     }
 
+    /// data.c:Faset's stores that keep the string's size: a unibyte
+    /// string's byte, or a multibyte character as wide as the old one.
+    /// False (nothing stored) for an index past the end or any other store.
+    pub(crate) fn store_character_in_place(&mut self, index: usize, code: u32) -> bool {
+        if index >= self.len() {
+            return false;
+        }
+        if !self.is_multibyte() {
+            if code > 255 {
+                return false;
+            }
+            self.bytes_mut()[index] = code as u8;
+            return true;
+        }
+        let Ok((encoded, width)) = encode_character(code) else {
+            return false;
+        };
+        let offset = self.char_to_byte(index);
+        let Ok((_, old_width)) = decode_character(&self.bytes()[offset..]) else {
+            return false;
+        };
+        if width != old_width {
+            return false;
+        }
+        self.bytes_mut()[offset..offset + width].copy_from_slice(&encoded[..width]);
+        self.set_char_byte_cache(index, offset, None);
+        true
+    }
+
     /// data.c:Faset. The caller checks the index and character first.
     /// False means a non-ASCII unibyte string cannot be promoted in place.
     pub(crate) fn store_character(&mut self, index: usize, code: u32) -> Result<bool, StringError> {

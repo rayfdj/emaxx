@@ -1050,24 +1050,30 @@ fn safe_cdr(value: &Value) -> Value {
         .unwrap_or(Value::Nil)
 }
 
+/// gnutls.c's cryptographic inputs: a buffer or string is the spec
+/// `list1' makes of it, anything else must be a cons (CHECK_CONS), and
+/// the spec is fns.c:extract_data_from_object's (OBJECT START END
+/// CODING-SYSTEM NOERROR), each element read by CAR_SAFE.
 fn digest_input_bytes(interp: &mut Interpreter, input: &Value) -> Result<Vec<u8>, LispError> {
-    if input.is_string() || matches!(input.kind(), Kind::Buffer(_)) {
-        return secure_hash_source_bytes(interp, input, None, None);
-    }
-    if !input.is_cons() {
+    let mut spec = if input.is_string() || matches!(input.kind(), Kind::Buffer(_)) {
+        Value::list([*input])
+    } else if input.is_cons() {
+        *input
+    } else {
         return Err(wrong_type_argument("consp", *input));
+    };
+    let mut fields = [
+        safe_car(&spec),
+        Value::Nil,
+        Value::Nil,
+        Value::Nil,
+        Value::Nil,
+    ];
+    for field in &mut fields[1..] {
+        spec = safe_cdr(&spec);
+        *field = safe_car(&spec);
     }
-
-    let source = safe_car(input);
-    let tail = safe_cdr(input);
-    let start = safe_car(&tail);
-    let end = safe_car(&safe_cdr(&tail));
-    secure_hash_source_bytes(
-        interp,
-        &source,
-        (!start.is_nil()).then_some(&start),
-        (!end.is_nil()).then_some(&end),
-    )
+    crate::lisp::primitives::md5_source_bytes(interp, &fields, &mut crate::lisp::types::Env::new())
 }
 
 fn peer_status_warning_description(status: &str) -> Option<&'static str> {

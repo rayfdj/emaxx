@@ -816,17 +816,18 @@ pub(crate) fn validate_collation_locale(locale: Option<&Value>) -> Result<(), Li
 }
 
 /// data.c's Faset signals `args-out-of-range' with the array and the index.
-fn args_out_of_range_for_aset(target: &Value, index: usize) -> LispError {
+fn args_out_of_range_for_aset(target: &Value, index: i64) -> LispError {
     LispError::SignalValue(Value::list([
         Value::Symbol("args-out-of-range".into()),
         *target,
-        Value::Integer(index as i64),
+        Value::Integer(index),
     ]))
 }
 
+/// data.c:Faset on a string: CHECK_IMPURE, then INDEX, then NEWELT.
 pub(crate) fn aset_string_value(
     target: &Value,
-    index: usize,
+    index: i64,
     new_value: &Value,
 ) -> Result<Value, crate::lisp::types::string_data::StringError> {
     let Kind::StringObject(state) = target.kind() else {
@@ -834,11 +835,13 @@ pub(crate) fn aset_string_value(
     };
     state.check_impure()?;
     let mut state = state.borrow_mut();
-    // data.c:Faset checks the existing index before NEWELT.
-    if index >= state.len() {
+    let Some(index) = usize::try_from(index)
+        .ok()
+        .filter(|&index| index < state.len())
+    else {
         drop(state);
         return Err(args_out_of_range_for_aset(target, index).into());
-    }
+    };
     let code = crate::lisp::types::string_data::character_code(*new_value)?;
     if !state.store_character(index, code)? {
         drop(state);

@@ -7269,6 +7269,53 @@ setup_process_coding_systems's check now refuses). A 13-form
   `just_this_one_wait_still_notifies_an_exited_distractor' failed once
   under a loaded machine and passes alone), and the seven integration
   targets; clippy `-D warnings', rustfmt and `git diff --check' pass.
+- **Round 112: hashing a string's bytes, and strings in Faref, Faset
+  and byte-code's Baref and Baset.** fns.c:extract_data_from_object
+  hashes SSDATA: a string's own bytes, after code_convert_string when
+  it is multibyte, between endpoints into those bytes. `md5' and
+  `secure-hash' decoded the string into a text view three times (to
+  read the multibyte flag, the flag of the encoded string, and its
+  bytes, re-encoded from the view) where they now read the flag and
+  the bytes in place. hexbuf_digest writes two digits a byte from a
+  table, where each byte was a `format!'. data.c:Faref and Faset test
+  for a string first (the arms tested records, vectors, closures,
+  char-tables and bool vectors before it, and checked purity apart
+  from the store), and bytecode.c's Baref and Baset read and store a
+  string's character in the verified loop as the Faref and Faset they
+  call do: a unibyte byte, a multibyte character read at
+  string_char_to_byte, a store that keeps the string's size into
+  impure storage. Any other case, out-of-range index or NEWELT that
+  is not a character leaves the loop for the full `aref' or `aset',
+  so GNU's errors and promotions are unchanged. A 60-form probe of
+  `aref' and `aset' on unibyte, multibyte and raw-byte strings (from
+  byte-code and as functions), `md5' and `secure-hash' with endpoints,
+  coding systems, NOERROR, BINARY and buffer sources gives GNU 30.2's
+  output. erc-sasl-tests.el's
+  `erc-sasl-create-client--scram-sha-512--no-authzid' (rfc2104's
+  `aref' and `aset' loops over its pads, `secure-hash' of each
+  iteration) went from 1,962M instructions to 872M (GNU 972M), and
+  gnutls-tests.el's `test-gnutls-004-symmetric-ciphers' (its hex
+  comparisons and padding) takes 1,496M (GNU 1,630M).
+- **Round 112: gnutls's inputs are extract_data_from_object's specs.**
+  gnutls.c makes a buffer or string key, IV, input or AEAD datum the
+  spec `list1' gives, CHECK_CONSes anything else, and reads each with
+  extract_data_from_object, the function `md5' and `secure-hash' use.
+  A second reader of its own took only OBJECT, START and END, counted
+  the endpoints in characters of the unencoded string, encoded a
+  multibyte string as UTF-8 whatever CODING-SYSTEM said, ignored
+  NOERROR, and panicked on a START past END (`("abc" 2 1)' aborted the
+  process where GNU signals `args-out-of-range'). The specs now go to
+  the one port of extract_data_from_object; only `iv-auto''s random
+  bytes stay apart. A 30-form probe of `gnutls-hash-digest',
+  `gnutls-hash-mac' and `gnutls-symmetric-encrypt' with string, buffer,
+  endpoint, coding-system, NOERROR and `iv-auto' specs gives GNU 30.2's
+  output.
+  167 of GNU's ERT files (3,756 tests) give round 111's results.
+  Local validation: the full gate across its ten groups with the
+  documented local skips (`just_this_one_wait_still_notifies_an_exited_distractor'
+  again failed once under a loaded machine and passes alone), and the
+  seven integration targets; clippy `-D warnings', rustfmt and `git
+  diff --check' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -8096,6 +8143,26 @@ frozen passed on its first attempt (run 40476733898); PR #110 merged
 rounds 99 to 110 into main (`9ed0ceb`).
 
 **Findings recorded, not fixed:**
+- **The frozen run times the gate profile (round 112).** The frozen
+  workflow's harness builds the Emaxx it runs with `--profile gate'
+  (thin LTO, 16 codegen units, debug assertions and overflow checks;
+  the checked build's collector also poisons dead conses, fills freed
+  vectors and walks every vector block a sweep). With the runner's
+  command line on erc-sasl-tests.el and no test selected, the gate
+  build takes 972M instructions against the release build's 776M
+  (1.25), and the SCRAM test's body 3,045M against 1,962M (1.55).
+  Round 110's frozen run (519 files, summary.json's timings): setup
+  78.4 s against GNU's 62.4 s (1.256), the test bodies 261.1 s against
+  260.4 s (1.003), in all 1.040; about the whole setup ratio is what
+  the checked build costs. The largest body excesses there:
+  comp-tests +3.5 s (1.25), tramp-tests +2.3 s (1.13),
+  semantic-utest-ia +2.2 s (1.85), mule-tests +1.8 s (1.97; its two
+  `ucs-names' walks), package-tests +1.1 s, edebug-tests +0.8 s,
+  mml-sec-tests +0.8 s, electric-tests +0.75 s (2.32), icalendar-tests
+  +0.7 s (2.78; it varies from run to run), emacs-module-tests +0.7 s,
+  epg-tests +0.7 s, undo-tests +0.6 s, erc-sasl-tests +0.5 s (2.78;
+  round 112) and gnutls-tests +0.3 s (2.68; round 112). Instruction
+  counts and timing pilots here use the release build.
 - **Setup's time at equal instructions (round 110).** The
   cal-french-tests.el setup with the frozen runner's command line takes
   507.9M instructions against GNU's 507.6M, but 0.19 s of user time

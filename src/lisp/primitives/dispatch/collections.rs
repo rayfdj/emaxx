@@ -886,6 +886,15 @@ define_dispatch!(
             "aref" => {
                 need_args(name, args, 2)?;
                 let raw_idx = fixnum_index_arg(&args[1])?;
+                if let Kind::StringObject(state) = args[0].kind() {
+                    // data.c:Faref: SREF of a unibyte string, STRING_CHAR at
+                    // string_char_to_byte of a multibyte one.
+                    return usize::try_from(raw_idx)
+                        .ok()
+                        .and_then(|idx| state.borrow().character_at(idx))
+                        .map(Value::Integer)
+                        .ok_or_else(|| args_out_of_range(&args[0], &args[1]));
+                }
                 let literal = record_literal_items(&args[0]);
                 // data.c:Faref exposes records and closures, but not the
                 // other pseudovectors kept in our internal Record storage.
@@ -916,14 +925,6 @@ define_dispatch!(
                     return record_literal_aref(&args[0], &items, idx, &args[1]);
                 }
                 match args[0].kind() {
-                    Kind::StringObject(_) => {
-                        match crate::lisp::primitives::strings::string_char_code_at_in_place(
-                            &args[0], idx,
-                        ) {
-                            Some(code) => Ok(Value::Integer(code)),
-                            None => Err(args_out_of_range(&args[0], &args[1])),
-                        }
-                    }
                     Kind::Closure(lambda) => lambda
                         .get(idx)
                         .ok_or_else(|| args_out_of_range(&args[0], &args[1])),
@@ -951,6 +952,13 @@ define_dispatch!(
             "aset" => {
                 need_args(name, args, 3)?;
                 let raw_idx = fixnum_index_arg(&args[1])?;
+                if let Kind::StringObject(_) = args[0].kind() {
+                    // data.c:Faset's string case: CHECK_IMPURE, the index,
+                    // then CHECK_CHARACTER of NEWELT.
+                    aset_string_value(&args[0], raw_idx, &args[2])
+                        .map_err(|error| string_storage_error(interp, env, error))?;
+                    return Ok(args[2]);
+                }
                 // data.c:Faset permits actual records as well as arrays;
                 // native functions and other opaque pseudovectors are neither.
                 if !args[0].is_string()
@@ -966,9 +974,6 @@ define_dispatch!(
                     && !(0..=0x3f_ffff).contains(&raw_idx)
                 {
                     return Err(LispError::WrongTypeArgument("characterp".into(), args[1]));
-                }
-                if let Kind::StringObject(state) = args[0].kind() {
-                    state.check_impure()?;
                 }
                 if raw_idx < 0 {
                     return Err(args_out_of_range(&args[0], &args[1]));
@@ -990,11 +995,6 @@ define_dispatch!(
                             return Err(args_out_of_range(&args[0], &args[1]));
                         }
                         vector.set(idx, args[2].is_truthy());
-                        Ok(args[2])
-                    }
-                    Kind::StringObject(_) => {
-                        aset_string_value(&args[0], idx, &args[2])
-                            .map_err(|error| string_storage_error(interp, env, error))?;
                         Ok(args[2])
                     }
                     Kind::LispRecord(record) => {
