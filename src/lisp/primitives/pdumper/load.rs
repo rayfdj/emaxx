@@ -1194,12 +1194,7 @@ impl Loader<'_> {
             for _ in 0..count {
                 let key = self.value_at(at)?;
                 let value = self.value_at(at + 8)?;
-                let hash = crate::lisp::primitives::standard_hash_code(
-                    self.interp,
-                    test,
-                    &key,
-                    &Env::new(),
-                );
+                let hash = crate::lisp::primitives::standard_hash_code(self.interp, test, &key);
                 table.insert(hash, key, value);
                 at += 16;
             }
@@ -2092,16 +2087,13 @@ impl Loader<'_> {
             return Err(invalid());
         }
         let start = usize::try_from(self.reader.word(field)?).map_err(|_| invalid())?;
-        let text = self
-            .image
-            .bytes()
-            .get(start..)
-            .and_then(|bytes| std::ffi::CStr::from_bytes_until_nul(bytes).ok())
-            .ok_or_else(invalid)?;
-        if text.is_empty() || text.to_str().is_err() {
+        let bytes = self.image.bytes().get(start..).ok_or_else(invalid)?;
+        // The NUL that ends the name, as strlen finds it.
+        let text = &bytes[..memchr::memchr(0, bytes).ok_or_else(invalid)?];
+        if text.is_empty() || (!text.is_ascii() && std::str::from_utf8(text).is_err()) {
             return Err(invalid());
         }
-        Ok(text.as_ptr())
+        Ok(bytes.as_ptr().cast())
     }
 
     /// One of the singleton empty strings: the process's own, as each

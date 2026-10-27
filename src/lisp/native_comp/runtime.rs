@@ -3404,7 +3404,6 @@ fn hash_table_native_hash(
                 unsafe { &*active.interpreter },
                 test,
                 &key,
-                unsafe { &*active.environment.get() },
             );
         }
         if let Err(error) =

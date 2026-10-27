@@ -1883,6 +1883,33 @@ pub(crate) unsafe fn header_tag(header: *mut VectorHeader) -> VectorTag {
     unsafe { (*header).tag() }
 }
 
+/// fns.c:sxhash_vector's view of a (pseudo)vector: `ASIZE', the whole
+/// size word, and the `PVSIZE' (an ordinary vector's size) Lisp slots
+/// `AREF' reads after the header.
+///
+/// # Safety
+/// HEADER is a live ordinary vector or a pseudovector whose Lisp slots
+/// follow its header (a closure, char-table or record), kept live while
+/// the slots are read.
+#[inline]
+pub(crate) unsafe fn vector_size_and_slots<'a>(
+    header: *mut VectorHeader,
+) -> (usize, &'a [Cell<Value>]) {
+    // SAFETY: the caller's contract.
+    unsafe {
+        let size = (*header).size;
+        let count = if size & PSEUDOVECTOR_FLAG == 0 {
+            size
+        } else {
+            size & PSEUDOVECTOR_SIZE_MASK
+        };
+        (
+            size,
+            std::slice::from_raw_parts(payload(header).cast::<Cell<Value>>(), count),
+        )
+    }
+}
+
 /// An allocated native subr has its actual ten payload words in the size
 /// header. Static DEFUN subrs have zero Lisp/rest counts. This classification
 /// uses only the shared header, before borrowing either different payload.

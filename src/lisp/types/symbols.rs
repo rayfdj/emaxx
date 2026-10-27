@@ -35,7 +35,7 @@ pub(crate) struct ObarrayHasher(u64);
 
 /// lisp.h's `sxhash_combine'.
 #[inline(always)]
-fn sxhash_combine(x: u64, y: u64) -> u64 {
+pub(crate) fn sxhash_combine(x: u64, y: u64) -> u64 {
     (x << 4).wrapping_add(x >> (u64::BITS - 4)).wrapping_add(y)
 }
 

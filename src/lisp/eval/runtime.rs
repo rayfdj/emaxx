@@ -1427,7 +1427,7 @@ impl Interpreter {
         let Some(test) = table.test().standard_test() else {
             return Ok(None);
         };
-        let hash = crate::lisp::primitives::standard_hash_code(self, test, key, env);
+        let hash = crate::lisp::primitives::standard_hash_code(self, test, key);
         self.standard_hash_entry(table, test, hash, key, env)
             .map(Some)
     }
@@ -1506,7 +1506,7 @@ impl Interpreter {
         let Some(test) = table.test().standard_test() else {
             return Ok(false);
         };
-        let hash = crate::lisp::primitives::standard_hash_code(self, test, &key, env);
+        let hash = crate::lisp::primitives::standard_hash_code(self, test, &key);
         if let Some((slot, _, _)) = self.standard_hash_entry(table, test, hash, &key, env)? {
             table.set_value(slot, value);
         } else {

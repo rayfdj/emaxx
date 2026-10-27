@@ -272,11 +272,12 @@ fn name_text<'a>(name: *mut c_char) -> &'a str {
     if name.is_null() {
         return "";
     }
-    // SAFETY: a live object's NUL-terminated CString. Its Rust registration
-    // and dump inputs were UTF-8 and no native path changes names.
-    unsafe { CStr::from_ptr(name) }
-        .to_str()
-        .expect("native name UTF-8")
+    // SAFETY: a live object's NUL-terminated name, a CString made from a
+    // Rust string or the image's bytes, which `set_image_names' requires
+    // be UTF-8 (the loader checks them); no native path changes names.
+    let bytes = unsafe { CStr::from_ptr(name) }.to_bytes();
+    debug_assert!(std::str::from_utf8(bytes).is_ok(), "native name UTF-8");
+    unsafe { std::str::from_utf8_unchecked(bytes) }
 }
 
 /// # Safety

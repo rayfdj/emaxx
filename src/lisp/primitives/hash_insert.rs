@@ -158,15 +158,8 @@ pub(crate) fn standard_hash_code(
     interp: &Interpreter,
     test: crate::lisp::eval::RuntimeHashTest,
     key: &Value,
-    env: &Env,
 ) -> u32 {
-    use crate::lisp::eval::RuntimeHashTest;
-    let hash = if test == RuntimeHashTest::Equal {
-        equal_hash_table_key_hash_in_env(interp, key, env).unwrap_or(0)
-    } else {
-        runtime_hash_bucket_key(interp, test, key).unwrap_or(0)
-    };
-    reduce_hash_code(hash as u64)
+    reduce_hash_code(standard_table_hash(interp, test, *key))
 }
 
 pub(crate) fn hash_table_hash_code(
@@ -176,7 +169,7 @@ pub(crate) fn hash_table_hash_code(
     env: &mut Env,
 ) -> Result<u32, LispError> {
     if let Some(test) = table.test().standard_test() {
-        return Ok(standard_hash_code(interp, test, key, env));
+        return Ok(standard_hash_code(interp, test, key));
     }
     let result = call_hash_table_test_function(
         interp,
@@ -185,9 +178,10 @@ pub(crate) fn hash_table_hash_code(
         std::slice::from_ref(key),
         env,
     )?;
+    // hashfn_user_defined: a fixnum's XUFIXNUM, any other object's sxhash.
     let hash = match result.kind() {
         Kind::Integer(_) => (result.word() >> 2) as u64,
-        _ => sxhash_value_in_env(interp, &result, HashMode::Equal, env) as u64,
+        _ => sxhash(interp, result),
     };
     Ok(reduce_hash_code(hash))
 }

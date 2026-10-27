@@ -3024,6 +3024,72 @@ mod tests {
     }
 
     #[test]
+    fn sxhash_is_fns_c_sxhash_obj() {
+        // GNU 30.2's values for objects whose hash holds no address:
+        // fns.c's hash_string, sxhash_list, sxhash_vector over the size
+        // word, sxhash_bool_vector, sxhash_bignum and sxhash_float, the
+        // depth and length bounds, hash_interval over a string's
+        // intervals (an emptied one included, which `object-intervals'
+        // lists), and SXHASH_REDUCE.
+        run_with_large_stack(|| {
+            let emacs_repo = compat::project_root().join("../emacs");
+            let options = BatchRunOptions {
+                load_path: compat::emaxx_upstream_load_path(&emacs_repo)
+                    .expect("upstream load path"),
+                ..Default::default()
+            };
+            let mut interpreter =
+                initialize_batch_interpreter(&options).expect("init batch interpreter");
+            let form = Reader::new(
+                r#"(prin1-to-string
+                    (list (sxhash-equal "abc") (sxhash-equal "") (sxhash-equal "abcdefghijklmnop")
+                          (sxhash-equal "été") (sxhash-equal (string-to-multibyte "\351"))
+                          (sxhash-equal 5) (sxhash-equal -5) (sxhash-equal most-positive-fixnum)
+                          (sxhash-equal t) (sxhash-eq 5) (sxhash-eq -5) (sxhash-eq t)
+                          (sxhash-equal -0.0) (sxhash-equal 1.5) (sxhash-eql 1.5)
+                          (sxhash-equal (expt 2 70)) (sxhash-equal (- (expt 2 70)))
+                          (sxhash-eql (expt 2 70)) (sxhash-equal (1+ most-positive-fixnum))
+                          (sxhash-equal (list 1 2)) (sxhash-equal (make-list 10 1))
+                          (sxhash-equal (list 1 (list 2 (list 3 (list 4 (list 5))))))
+                          (sxhash-equal (let ((l (list 1 2))) (setcdr (cdr l) l) l))
+                          (sxhash-equal [1 2]) (sxhash-equal (make-vector 10 1))
+                          (sxhash-equal (vector 1 (vector 2 (vector 3 (vector 4)))))
+                          (sxhash-equal (list "a" 1.0 [2 "b"]))
+                          (sxhash-equal (record nil 1 2)) (sxhash-equal (make-char-table nil))
+                          (sxhash-equal (make-byte-code 0 "" [] 0))
+                          (sxhash-equal (bool-vector t)) (sxhash-equal (make-bool-vector 200 t))
+                          (sxhash-equal (make-marker))
+                          (sxhash-equal-including-properties (propertize "abc" 1 2))
+                          (sxhash-equal-including-properties (concat "a" (propertize "bc" 1 2)))
+                          (sxhash-equal-including-properties
+                           (concat (propertize "a" 1 2 3 4) "b" (propertize "c" 1 2)))
+                          (let ((s (propertize "abc" 1 2)))
+                            (remove-text-properties 0 3 (list 1 nil) s)
+                            (list (object-intervals s) (sxhash-equal-including-properties s)))
+                          (sxhash-equal-including-properties (list (propertize "abc" 1 2)))))"#,
+            )
+            .read_all()
+            .expect("read sxhash probe")
+            .remove(0);
+            let printed = interpreter
+                .eval(&form, &mut crate::lisp::types::Env::new())
+                .expect("evaluate sxhash probe");
+            assert_eq!(
+                lisp::primitives::string_like(&printed)
+                    .expect("printed")
+                    .text,
+                "(8059383 0 -1621414601513750798 1046521033479 33689 \
+                 4 -1152921504606846971 1729382256910270464 15 3 -1152921504606846974 15 \
+                 -2305843009213693952 -1151232654746583040 -1151232654746583040 \
+                 80 272 80 -1729382256910270464 \
+                 22 357914281 120 1410602000 662 2304070997 2028 54043195528474480 \
+                 2920577775894 180144007995719680 27212913135616 21 16126996 0 \
+                 33011235922 135214022082942 553836364246106794 (((0 3 nil)) 33011235900) 8059383)"
+            );
+        });
+    }
+
+    #[test]
     fn image_symbols_are_the_obarrays_and_the_initial_frame_is_terminal_frame() {
         // pdumper.c maps the dumped symbols where the image holds them:
         // a preloaded symbol is the obarray's, its cells are traced by the

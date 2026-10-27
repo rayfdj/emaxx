@@ -1030,23 +1030,31 @@ pub(crate) fn object_intervals_value(
     interp: &mut Interpreter,
     object: &Value,
 ) -> Result<Value, LispError> {
-    let (len, spans) = if let Some(string) = string_like(object) {
+    // A string keeps its intervals when their properties are removed;
+    // traverse_intervals then visits them with empty plists.
+    let (len, spans, has_intervals) = if let Some(string) = string_like(object) {
+        let has_intervals = matches!(object.kind(), Kind::StringObject(state)
+            if state.borrow().props.has_intervals());
         (
             string.text.chars().count(),
             merge_string_props(string.props),
+            has_intervals,
         )
     } else {
         let buffer_id = interp.resolve_buffer_id(object)?;
         let buffer = interp
             .get_buffer_by_id(buffer_id)
             .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?;
+        let spans = buffer.substring_property_spans(buffer.point_min(), buffer.point_max());
+        let has_intervals = !spans.is_empty();
         (
             buffer.point_max() - buffer.point_min(),
-            buffer.substring_property_spans(buffer.point_min(), buffer.point_max()),
+            spans,
+            has_intervals,
         )
     };
 
-    if spans.is_empty() {
+    if !has_intervals {
         return Ok(Value::Nil);
     }
 

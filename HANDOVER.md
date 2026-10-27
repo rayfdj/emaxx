@@ -7048,6 +7048,50 @@ setup_process_coding_systems's check now refuses). A 13-form
   pdumper.c's dozen, which trusts the dump). Local validation: the full
   gate across its ten groups with the documented local skips; clippy
   `-D warnings', rustfmt and `git diff --check' pass.
+- **Round 106: fns.c's sxhash.** `sxhash-eq', `sxhash-eql',
+  `sxhash-equal', `sxhash-equal-including-properties' and the hashes
+  the standard hash tables file a key under are fns.c's: sxhash_obj
+  (hash_string, sxhash_list, sxhash_vector over the (pseudo)vector's
+  size word and leading slots, sxhash_bool_vector, sxhash_bignum,
+  sxhash_float, a marker's buffer and byte position, an overlay's
+  extent and plist, a sub-char-table's 42, the address of a kind
+  `equal' compares only by `eq') within SXHASH_MAX_DEPTH and
+  SXHASH_MAX_LEN, sxhash_eq's XHASH with the type bits, hash_interval
+  over a string's intervals and SXHASH_REDUCE (new module
+  `primitives/sxhash.rs'). They were an FNV hash of each kind's own
+  encoding (a fixnum's and a symbol's printed names byte by byte, every
+  byte of a string); `sxhash-eq' of a cons hashed its contents, so it
+  changed when the cons was mutated, and
+  `sxhash-equal-including-properties' folded in the properties of
+  strings nested in the object, which hash_interval does not. An
+  `equal' table now files every key by its hash: records, markers,
+  overlays, char-tables, closures, buffers and lists headed by `keymap'
+  all went to one bucket that every lookup of such a key scanned. A
+  record literal still read as a reader form hashes as the record it is
+  `equal' to, a host record (a font, a tree-sitter node) by what
+  `equal' compares, a bignum in fixnum range as its fixnum and a symbol
+  with position as its bare symbol (as GNU's does while
+  `symbols-with-pos-enabled'; tables do so whatever the variable says,
+  so a key stays in the bucket of the keys `eq' to it).
+  `object-intervals' lists a string's intervals once their properties
+  are all removed (`((0 3 nil))'), where it gave nil. The loader finds
+  a native subr name's NUL with memchr and decodes the name as UTF-8
+  only when it is not ASCII, and the name accessor no longer decodes it
+  on each use. A 59-form probe gives GNU 30.2's output for every form
+  but the three whose hash includes the address of the symbol `face',
+  and seven more with integer property names match too; a batch test
+  pins 38 values. Startup with `-Q --batch --eval' went from 141.2M
+  instructions to 134.8M (the loader from 71.2M to 68.1M, its tables'
+  hashing 2.2M to 0.8M, the native subrs' names 4.3M to 2.8M;
+  `load_dumped_code' 24.5M to 21.5M), against GNU's 151.1M, 52.5M of
+  which is its one collection. Rounds 102 to 105 gave this command
+  line's figure as the frozen runner's and set it beside GNU's 98.5M,
+  which is GNU's startup less that collection (Emaxx collects nothing
+  during startup); the like-for-like comparison is below. The
+  cal-french-tests.el setup with the frozen runner's command line went
+  from 525.2M to 516.8M (GNU 507.6M). Local validation: the full gate
+  across its ten groups with the documented local skips; clippy `-D
+  warnings', rustfmt and `git diff --check' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -7850,12 +7894,28 @@ frozen passed on its first attempt (run 40433088195).
 frozen passed on its first attempt (run 40440575378).
 
 **Findings recorded, not fixed:**
-- **`sxhash' is not fns.c's (round 104).** `sxhash-equal' and
-  `sxhash-eq' give other numbers than GNU 30.2's for every kind of
-  object, a fixnum included (`(sxhash-equal 5)' is 4 in GNU), and the
-  empty bool vector's is not 0; hash tables are consistent within the
-  process, but a test that prints or compares a hash with a constant
-  diverges.
+- **A test file's setup by stage, collections apart (round 106).** With
+  the frozen runner's command line (scratchpad `phases100.sh', and
+  startup with no file loaded), each stage's cumulative instructions,
+  then the same less the collections (`garbage_collect' in GNU,
+  `emaxx_native_gc_collect' here):
+
+  | stage | Emaxx | GNU | Emaxx mutator | GNU mutator |
+  |---|---|---|---|---|
+  | startup | 142.7M | 157.5M | 142.7M | 105.0M |
+  | loading ert | 311.8M | 385.3M | 277.4M | 221.5M |
+  | loading the runner | 403.8M | 455.4M | 369.5M | 291.6M |
+  | loading cal-french-tests.el | 516.8M | 507.6M | 444.3M | 343.8M |
+
+  GNU collects three times by the end of loading ert (163.8M, 52.5M of
+  it in startup) and not again; Emaxx once by then (34.4M) and once
+  more loading the test file (72.5M in all). The totals are 1.8 percent
+  apart only because GNU's collections cost 91M more; the mutators are
+  100.5M apart, 37.7M of it in startup (the loader 68.1M and
+  `load_dumped_code' 21.5M against GNU's `pdumper_load' 53.4M), then
+  18.2M, 22.0M and 22.6M for the three loads. The collection schedule
+  (GNU's gc-cons-threshold of allocation since the last collection) has
+  not been compared.
 - **A test file's setup in wall time, and what the instruction count
   misses (round 102).** With the frozen runner's command line,
   cal-french-tests.el's setup takes 137 to 148 ms against GNU's 118 to
