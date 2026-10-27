@@ -552,7 +552,8 @@ pub(crate) enum RootSlot {
     StandardCategoryTable = 38,
     StandardCaseTable = 39,
     Fontsets = 42,
-    LispFaces = 43,
+    // Former Lisp faces root code 43 is unsupported: the faces are
+    // face--new-frame-defaults' value.
     AlternativeFontFamilyAlist = 44,
     AlternativeFontRegistryAlist = 45,
     FringeBitmaps = 46,
@@ -620,7 +621,6 @@ impl RootSlot {
             38 => Self::StandardCategoryTable,
             39 => Self::StandardCaseTable,
             42 => Self::Fontsets,
-            43 => Self::LispFaces,
             44 => Self::AlternativeFontFamilyAlist,
             45 => Self::AlternativeFontRegistryAlist,
             46 => Self::FringeBitmaps,

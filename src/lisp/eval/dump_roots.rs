@@ -22,6 +22,10 @@ use crate::lisp::types::Kind;
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) const ROOTS_RESET_AFTER_LOAD: &[(&str, &str)] = &[
     (
+        "lface_id_to_name",
+        "xfaces.c:init_xfaces makes lface_id_to_name from face--new-frame-defaults, which the image carries, after a load",
+    ),
+    (
         "where_is_cache",
         "keymap.c's staticpro'd where_is_cache is a memo of where_is_internal for menu-less lookups, used only while Fequal finds the keymaps it was built for in where_is_cache_keymaps and flushed by every store_in_keymap and Fset_keymap_parent; the image starts without one and the next such lookup rebuilds it",
     ),
@@ -363,7 +367,6 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
     ),
     ("lossage_size", "carried in the remembered scalars"),
     ("interactive_call_depth", "the running command"),
-    ("next_lisp_face_id", "carried in the remembered scalars"),
     (
         "tty_suppress_bold_inverse_default_colors",
         "tty state set at terminal init",
@@ -652,19 +655,6 @@ impl Interpreter {
                 ])
             })),
         ));
-        // xfaces.c: Vface_new_frame_defaults holds the global lface
-        // vectors; a frame's own vectors (the `frames' map) go with the
-        // nilled frame.
-        groups.push((
-            RootSlot::LispFaces,
-            Value::list(self.lisp_face_states.iter().map(|face| {
-                Value::vector([
-                    Value::string(&face.name),
-                    face.id.map_or(Value::Nil, Value::Integer),
-                    face.global.unwrap_or(Value::Nil),
-                ])
-            })),
-        ));
         groups.push((
             RootSlot::FontSelectionOrder,
             Value::vector(
@@ -778,10 +768,6 @@ impl Interpreter {
                 pair(
                     Value::symbol("next-record-id"),
                     Value::Integer(self.next_record_id as i64),
-                ),
-                pair(
-                    Value::symbol("next-lisp-face-id"),
-                    Value::Integer(self.next_lisp_face_id),
                 ),
                 pair(
                     Value::symbol("next-special-binding-id"),
@@ -1181,21 +1167,6 @@ mod install {
                     }
                     self.fontset_states = fontsets;
                 }
-                RootSlot::LispFaces => {
-                    let mut faces = Vec::new();
-                    for entry in expect_list(value, "lisp faces")? {
-                        let fields = expect_vector(&entry, "lisp face")?;
-                        if fields.len() != 3 {
-                            return Err("lisp face: three fields expected".into());
-                        }
-                        faces.push(LispFaceState {
-                            name: expect_string(&fields[0], "face name")?,
-                            id: opt_of(&fields[1], |v| expect_int(v, "face id"))?,
-                            global: opt_of(&fields[2], |v| Ok(*v))?,
-                        });
-                    }
-                    self.lisp_face_states = faces;
-                }
                 RootSlot::FontSelectionOrder => {
                     let order = expect_vector(value, "font selection order")?;
                     if order.len() != 4 {
@@ -1322,7 +1293,6 @@ mod install {
                             "next-record-id" => {
                                 self.next_record_id = self.next_record_id.max(id(&name)?)
                             }
-                            "next-lisp-face-id" => self.next_lisp_face_id = int(&name)?,
                             "next-special-binding-id" => {
                                 self.next_special_binding_id = id(&name)?;
                             }

@@ -33,6 +33,7 @@ mod core;
 mod definitions;
 mod dump_roots;
 mod faces;
+pub(crate) use faces::invalid_face_error;
 mod image_install;
 mod local_cells;
 mod loops;
@@ -2664,13 +2665,6 @@ pub(crate) struct CompositionState {
 
 pub(crate) const LFACE_VECTOR_SIZE: usize = 20;
 
-#[derive(Clone, Debug)]
-pub(crate) struct LispFaceState {
-    pub(crate) name: String,
-    pub(crate) id: Option<i64>,
-    pub(crate) global: Option<Value>,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct FontPatternState {
     pub(crate) family: Option<String>,
@@ -2700,10 +2694,9 @@ pub(crate) struct FontsetState {
 #[derive(Clone, Debug)]
 pub(crate) struct FrameState {
     pub(crate) terminal: Option<crate::lisp::types::TerminalRef>,
+    /// frame.h's face_hash_table: the frame's own face definitions, an
+    /// `eq' table of each face's symbol to its lface vector.
     pub(crate) face_hash_table: Option<Value>,
-    /// Frame-local face vectors belong to this object, including when it
-    /// outlives its creating interpreter. The public hash table is a view.
-    pub(crate) local_faces: Vec<(String, Value)>,
     pub(crate) root_window: Option<crate::lisp::types::RecordRef>,
     pub(crate) selected_window: Option<crate::lisp::types::RecordRef>,
     pub(crate) minibuffer_window: Option<crate::lisp::types::RecordRef>,
@@ -2976,11 +2969,7 @@ impl ImageGraphCopier {
                 if let Some(table) = state.face_hash_table {
                     state.face_hash_table = Some(self.copy(&table));
                 }
-                for (_, item) in state
-                    .parameter_overrides
-                    .iter_mut()
-                    .chain(&mut state.local_faces)
-                {
+                for (_, item) in state.parameter_overrides.iter_mut() {
                     *item = self.copy(item);
                 }
                 value
@@ -3731,7 +3720,7 @@ impl LispReachability {
                 if let Some(table) = state.face_hash_table {
                     self.enqueue(&table);
                 }
-                for (_, value) in state.parameter_overrides.iter().chain(&state.local_faces) {
+                for (_, value) in &state.parameter_overrides {
                     self.enqueue(value);
                 }
             }
@@ -4087,7 +4076,6 @@ impl Interpreter {
             FrameState {
                 terminal: None,
                 face_hash_table: None,
-                local_faces: Vec::new(),
                 root_window: None,
                 selected_window: None,
                 minibuffer_window: None,
@@ -4494,10 +4482,8 @@ impl Interpreter {
                 }
             }
         }
-        for face in &self.lisp_face_states {
-            if let Some(value) = &face.global {
-                mark(value);
-            }
+        for face in &self.lface_id_to_name {
+            mark(face);
         }
         for bitmap in &self.fringe_bitmap_states {
             if let Some(value) = &bitmap.definition {
@@ -4969,10 +4955,8 @@ impl Interpreter {
                     }
                 }
             }
-            for face in &mut clone.lisp_face_states {
-                if let Some(global) = &face.global {
-                    face.global = Some(c.copy(global));
-                }
+            for face in &mut clone.lface_id_to_name {
+                *face = c.copy(face);
             }
             for bitmap in &mut clone.fringe_bitmap_states {
                 if let Some(definition) = &bitmap.definition {
@@ -5605,8 +5589,8 @@ pub struct InterpreterState {
     pub(crate) window_sequence_numbers: HashMap<u64, i64>,
     pub lossage_size: i64,
     interactive_call_depth: usize,
-    pub(crate) lisp_face_states: Vec<LispFaceState>,
-    pub(crate) next_lisp_face_id: i64,
+    /// xfaces.c's lface_id_to_name: each Lisp face's symbol at its id.
+    pub(crate) lface_id_to_name: Vec<Value>,
     pub(crate) font_selection_order: [String; 4],
     pub(crate) alternative_font_family_alist: Value,
     pub(crate) alternative_font_registry_alist: Value,
@@ -5852,7 +5836,6 @@ impl Interpreter {
             FrameState {
                 terminal: Some(initial_terminal),
                 face_hash_table: None,
-                local_faces: vec![("default".into(), tty_default_lisp_face_vector())],
                 root_window: None,
                 selected_window: None,
                 minibuffer_window: None,
@@ -6328,12 +6311,7 @@ impl Interpreter {
             window_sequence_numbers: HashMap::new(),
             lossage_size: 300,
             interactive_call_depth: 0,
-            lisp_face_states: vec![LispFaceState {
-                name: "default".into(),
-                id: Some(0),
-                global: Some(empty_lisp_face_vector()),
-            }],
-            next_lisp_face_id: 1,
+            lface_id_to_name: Vec::new(),
             font_selection_order: [
                 ":width".into(),
                 ":height".into(),

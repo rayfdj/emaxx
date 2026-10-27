@@ -13834,7 +13834,7 @@ mod tests {
             let name = Value::string("escaped-frame-name");
             let payload = Value::vector([Value::Frame(frame), Value::Frame(focus)]);
             let face = owner
-                .ensure_lisp_face_on("escaped-frame-face", Some(frame), false)
+                .make_lisp_face_on(Value::symbol("escaped-frame-face"), Some(frame), false)
                 .expect("frame-local face");
             frame.name.set(name);
             frame.borrow_mut().focus_frame_id = Some(focus);
@@ -13891,9 +13891,15 @@ mod tests {
                 panic!("frame object")
             };
             assert!(object.is_live());
+            let faces = object.borrow().face_hash_table.expect("frame face table");
+            let Kind::HashTable(faces) = faces.kind() else {
+                panic!("frame face table")
+            };
             assert_eq!(
-                holder
-                    .lisp_face_vector_on("escaped-frame-face", Some(object))
+                faces
+                    .entries()
+                    .find(|(_, face, _)| face.symbol_str() == Some("escaped-frame-face"))
+                    .map(|(_, _, lface)| lface)
                     .expect("frame owns its face after its interpreter exits")
                     .word()
                     ^ HIDE,
@@ -13961,10 +13967,6 @@ mod tests {
             .parameter_overrides
             .push(("frame-copy-parameter".into(), payload));
         frame.borrow_mut().face_hash_table = Some(payload);
-        frame
-            .borrow_mut()
-            .local_faces
-            .push(("frame-copy-face".into(), payload));
         let cloned = source.deep_clone_image();
         let copied = cloned.selected_frame_id;
         assert_ne!(copied, frame);
@@ -14008,14 +14010,6 @@ mod tests {
             panic!("copied payload")
         };
         assert_eq!(slots.get(0), Some(Value::Frame(copied)));
-        assert_eq!(
-            cloned.lisp_face_vector_on("frame-copy-face", Some(copied)),
-            Some(copied_payload)
-        );
-        assert_eq!(
-            source.lisp_face_vector_on("frame-copy-face", Some(frame)),
-            Some(payload)
-        );
         copied.name.set(Value::string("renamed-copy"));
         assert_ne!(copied.name.get(), frame.name.get());
     }

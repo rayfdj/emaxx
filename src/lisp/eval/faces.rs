@@ -1,36 +1,50 @@
 use super::*;
-use crate::lisp::primitives::{aset_vector_value, vector_slot_value};
-use crate::lisp::types::Kind;
+use crate::lisp::primitives::{aset_vector_value, vector_items, vector_slot_value};
+use crate::lisp::types::{FrameRef, HashTableRef, Kind};
+
+/// signal_error ("Invalid face", FACE).
+pub(crate) fn invalid_face_error(face: Value) -> LispError {
+    LispError::SignalValue(Value::list([
+        Value::symbol("error"),
+        Value::string("Invalid face"),
+        face,
+    ]))
+}
 
 impl Interpreter {
     /// Install the variables owned by GNU's xfaces.c at the same native
     /// boundary.  Lisp libraries may subsequently customize these values,
     /// but compiled libraries must never depend on source-loading order for
     /// the underlying C-owned value cells to exist.
+    ///
+    /// syms_of_xfaces makes Vface_new_frame_defaults, the face definitions
+    /// for new frames: an `eq' table of each face's symbol to its id and
+    /// global lface vector.  The default face is face 0 from the start,
+    /// and the selected frame's own definition of it is the one
+    /// realize_default_face gives a tty frame.
     pub(crate) fn initialize_native_face_variables(&mut self) {
-        let initial_faces = self
-            .lisp_face_states
-            .iter()
-            .filter_map(|face| Some((face.name.clone(), face.id?, face.global?)))
-            .collect::<Vec<_>>();
-        let entries = initial_faces
-            .iter()
-            .map(|(name, id, vector)| {
-                (
-                    Value::symbol(name),
-                    Value::cons(Value::Integer(*id), *vector),
-                )
-            })
-            .collect();
-        let defaults = crate::lisp::json::make_hash_table(self, "eq", entries);
+        let default = Value::symbol("default");
+        let defaults = crate::lisp::json::make_hash_table(
+            self,
+            "eq",
+            vec![(
+                default,
+                Value::cons(Value::Integer(0), empty_lisp_face_vector()),
+            )],
+        );
         self.define_special_variable("face--new-frame-defaults", defaults);
-        for (name, id, _) in initial_faces {
-            // GNU Finternal_make_lisp_face owns both directions of the
-            // Lisp-face-ID mapping: the native hash entry above and the
-            // symbol's `face' property.  The precreated default face must
-            // enter through the same lifecycle as later faces.
-            self.put_symbol_property(&name, "face", Value::Integer(id));
-        }
+        self.lface_id_to_name = vec![default];
+        // GNU Finternal_make_lisp_face owns both directions of the
+        // Lisp-face-ID mapping: the native hash entry above and the
+        // symbol's `face' property.  The precreated default face must
+        // enter through the same lifecycle as later faces.
+        self.put_symbol_property("default", "face", Value::Integer(0));
+        let frame_faces = crate::lisp::json::make_hash_table(
+            self,
+            "eq",
+            vec![(default, tty_default_lisp_face_vector())],
+        );
+        self.selected_frame_id.borrow_mut().face_hash_table = Some(frame_faces);
         self.define_special_variable("face-filters-always-match", Value::Nil);
         self.define_special_variable("face-default-stipple", Value::String("gray3".into()));
         self.define_special_variable("scalable-fonts-allowed", Value::Nil);
@@ -41,234 +55,199 @@ impl Interpreter {
         self.define_special_variable("face-font-lax-matched-attributes", Value::T);
     }
 
-    fn lisp_face_state_index(&self, name: &str) -> Option<usize> {
-        self.lisp_face_states
-            .iter()
-            .position(|state| state.name == name)
+    /// xfaces.c:init_xfaces after a dump loads: lface_id_to_name from
+    /// Vface_new_frame_defaults, each face at its id.
+    pub(crate) fn rebuild_lface_id_to_name(&mut self) {
+        let Some(table) = self.face_new_frame_defaults() else {
+            self.lface_id_to_name.clear();
+            return;
+        };
+        let mut names = vec![Value::Nil; table.count()];
+        for (_, face, spec) in table.entries() {
+            if let Some((id, _)) = spec.cons_values()
+                && let Kind::Integer(id) = id.kind()
+                && let Some(slot) = usize::try_from(id).ok().and_then(|id| names.get_mut(id))
+            {
+                *slot = face;
+            }
+        }
+        self.lface_id_to_name = names;
     }
 
-    pub(crate) fn lisp_face_vector(&self, name: &str, global: bool) -> Option<Value> {
-        self.lisp_face_vector_on(name, (!global).then_some(self.selected_frame_id))
+    /// Vface_new_frame_defaults, while it holds a hash table.
+    fn face_new_frame_defaults(&self) -> Option<HashTableRef> {
+        let table = cached_symbol!("face--new-frame-defaults")
+            .with(|symbol| self.global_binding_value_symbol(symbol))?;
+        match table.kind() {
+            Kind::HashTable(table) => Some(table),
+            _ => None,
+        }
     }
 
+    /// lface_id_to_name: the face whose id is ID.
+    pub(crate) fn lisp_face_name_of_id(&self, id: i64) -> Option<Value> {
+        usize::try_from(id)
+            .ok()
+            .and_then(|id| self.lface_id_to_name.get(id))
+            .copied()
+            .filter(|face| !face.is_nil())
+    }
+
+    /// lface_from_face_name_no_resolve without the signal: FACE's
+    /// definition on FRAME, or the one for new frames.
     pub(crate) fn lisp_face_vector_on(
         &self,
-        name: &str,
-        frame: Option<crate::lisp::types::FrameRef>,
+        face: Value,
+        frame: Option<FrameRef>,
     ) -> Option<Value> {
+        let env = Env::new();
         match frame {
-            None => self
-                .lisp_face_state_index(name)
-                .and_then(|index| self.lisp_face_states[index].global),
-            Some(frame) => frame
-                .borrow()
-                .local_faces
-                .iter()
-                .find(|(face, _)| face == name)
-                .map(|(_, value)| *value),
-        }
-    }
-
-    pub(crate) fn ensure_lisp_face(
-        &mut self,
-        name: &str,
-        selected_frame: bool,
-        reset: bool,
-    ) -> Result<Value, LispError> {
-        self.ensure_lisp_face_on(
-            name,
-            selected_frame.then_some(self.selected_frame_id),
-            reset,
-        )
-    }
-
-    pub(crate) fn ensure_lisp_face_on(
-        &mut self,
-        name: &str,
-        frame: Option<crate::lisp::types::FrameRef>,
-        reset: bool,
-    ) -> Result<Value, LispError> {
-        let index = match self.lisp_face_state_index(name) {
-            Some(index) => index,
-            None => {
-                self.lisp_face_states.push(LispFaceState {
-                    name: name.to_string(),
-                    id: None,
-                    global: Some(empty_lisp_face_vector()),
-                });
-                self.lisp_face_states.len() - 1
-            }
-        };
-
-        if self.lisp_face_states[index].global.is_none() {
-            self.lisp_face_states[index].global = Some(empty_lisp_face_vector());
-        }
-        let vector = match frame {
             Some(frame) => {
-                let mut frame = frame.borrow_mut();
-                if let Some((_, vector)) = frame.local_faces.iter().find(|(face, _)| face == name) {
-                    *vector
-                } else {
-                    let vector = empty_lisp_face_vector();
-                    frame.local_faces.push((name.to_owned(), vector));
-                    vector
-                }
+                let table = frame.borrow().face_hash_table?;
+                let Kind::HashTable(table) = table.kind() else {
+                    return None;
+                };
+                self.equal_hash_lookup(table, &face, &env).ok()??
             }
-            None => *self.lisp_face_states[index]
-                .global
-                .as_ref()
-                .expect("face has an initialized global definition"),
-        };
-        if reset {
-            for slot in 1..LFACE_VECTOR_SIZE {
-                aset_vector_value(&vector, slot, Value::symbol("unspecified"))?;
-            }
+            None => self
+                .equal_hash_lookup(self.face_new_frame_defaults()?, &face, &env)
+                .ok()???
+                .cons_values()
+                .map(|(_, lface)| lface),
         }
-        if let Some(id) = frame {
-            self.sync_frame_face_hash_entry(id, name, vector)?;
-        }
-        Ok(vector)
     }
 
-    fn sync_frame_face_hash_entry(
+    pub(crate) fn lisp_face_vector(&self, face: Value, global: bool) -> Option<Value> {
+        self.lisp_face_vector_on(face, (!global).then_some(self.selected_frame_id))
+    }
+
+    /// Finternal_make_lisp_face: FACE's definition on FRAME (the one for
+    /// new frames when FRAME is None), made with every attribute
+    /// unspecified where FACE has none, else reset when RESET.  A face new
+    /// to Vface_new_frame_defaults takes the next id, which its `face'
+    /// property records.
+    pub(crate) fn make_lisp_face_on(
         &mut self,
-        frame: crate::lisp::types::FrameRef,
-        name: &str,
-        vector: Value,
-    ) -> Result<(), LispError> {
-        let Some(table) = frame.borrow().face_hash_table else {
-            return Ok(());
+        face: Value,
+        frame: Option<FrameRef>,
+        reset: bool,
+    ) -> Result<Value, LispError> {
+        let env = Env::new();
+        let global = match self.lisp_face_vector_on(face, None) {
+            Some(global) => {
+                if frame.is_none() && reset {
+                    reset_lisp_face_vector(&global)?;
+                }
+                global
+            }
+            None => {
+                let table = self.face_new_frame_defaults().ok_or_else(|| {
+                    LispError::WrongTypeArgument("hash-table-p".into(), Value::Nil)
+                })?;
+                let id = self.lface_id_to_name.len() as i64;
+                self.lface_id_to_name.push(face);
+                if let Kind::Symbol(name) = face.kind() {
+                    self.put_symbol_property_on(&name, "face", Value::Integer(id));
+                }
+                let global = empty_lisp_face_vector();
+                self.equal_hash_put(table, face, Value::cons(Value::Integer(id), global), &env)?;
+                global
+            }
         };
-        let Some((_, mut entries)) = crate::lisp::json::hash_table_entries(self, &table) else {
-            unreachable!("the frame face table must remain a hash table");
+        self.face_change_count += 1;
+        let Some(frame) = frame else {
+            return Ok(global);
         };
-        if let Some((_, value)) = entries
-            .iter_mut()
-            .find(|(key, _)| matches!(key.kind(), Kind::Symbol(symbol) if symbol == name))
-        {
-            *value = vector;
-        } else {
-            entries.push((Value::symbol(name), vector));
+        let Kind::HashTable(table) = self.frame_face_hash_table(frame).kind() else {
+            unreachable!("a frame's face table is a hash table");
+        };
+        match self.equal_hash_lookup(table, &face, &env)?.flatten() {
+            Some(lface) => {
+                if reset {
+                    reset_lisp_face_vector(&lface)?;
+                }
+                Ok(lface)
+            }
+            None => {
+                let lface = empty_lisp_face_vector();
+                self.equal_hash_put(table, face, lface, &env)?;
+                Ok(lface)
+            }
         }
-        crate::lisp::primitives::set_hash_table_entries(self, &table, entries)
     }
 
-    fn sync_new_frame_face_hash_entry(&mut self, name: &str) -> Result<(), LispError> {
-        let Some(index) = self.lisp_face_state_index(name) else {
-            return Ok(());
-        };
-        let Some(id) = self.lisp_face_states[index].id else {
-            return Ok(());
-        };
-        let Some(vector) = self.lisp_face_states[index].global else {
-            return Ok(());
-        };
-        let Some(table) = self.global_binding_value("face--new-frame-defaults") else {
-            return Ok(());
-        };
-        let Some((_, mut entries)) = crate::lisp::json::hash_table_entries(self, &table) else {
-            return Ok(());
-        };
-        let spec = Value::cons(Value::Integer(id), vector);
-        if let Some((_, value)) = entries
-            .iter_mut()
-            .find(|(key, _)| matches!(key.kind(), Kind::Symbol(symbol) if symbol == name))
-        {
-            *value = spec;
-        } else {
-            entries.push((Value::symbol(name), spec));
+    /// The frame's face_hash_table, made empty for a frame that has none.
+    pub(crate) fn frame_face_hash_table(&mut self, frame: FrameRef) -> Value {
+        if let Some(table) = frame.borrow().face_hash_table {
+            return table;
         }
-        crate::lisp::primitives::set_hash_table_entries(self, &table, entries)
-    }
-
-    pub(crate) fn frame_face_hash_table(&mut self, frame: crate::lisp::types::FrameRef) -> Value {
-        if let Some(table) = &frame.borrow().face_hash_table {
-            return *table;
-        }
-        let entries = frame
-            .borrow()
-            .local_faces
-            .iter()
-            .map(|(name, vector)| (Value::symbol(name), *vector))
-            .collect();
-        let table = crate::lisp::json::make_hash_table(self, "eq", entries);
+        let table = crate::lisp::json::make_hash_table(self, "eq", Vec::new());
         frame.borrow_mut().face_hash_table = Some(table);
         table
-    }
-
-    pub(crate) fn register_lisp_face_id(&mut self, name: &str) -> i64 {
-        let index = self
-            .lisp_face_state_index(name)
-            .expect("registering a Lisp face ID requires an existing face");
-        if let Some(id) = self.lisp_face_states[index].id {
-            return id;
-        }
-        let id = self.next_lisp_face_id;
-        self.next_lisp_face_id += 1;
-        self.lisp_face_states[index].id = Some(id);
-        self.put_symbol_property(name, "face", Value::Integer(id));
-        self.sync_new_frame_face_hash_entry(name)
-            .expect("the native face defaults table must remain a hash table");
-        id
     }
 
     pub(crate) fn face_definitions_generation(&self) -> u64 {
         self.face_change_count
     }
 
+    /// Store VALUE in attribute INDEX of FACE's definition on FRAME (the
+    /// one for new frames when FRAME is None), making a frame's missing
+    /// definition first as Finternal_set_lisp_face_attribute does.
     pub(crate) fn set_lisp_face_attribute_on(
         &mut self,
-        name: &str,
+        face: Value,
         index: usize,
         value: Value,
-        frame: Option<crate::lisp::types::FrameRef>,
+        frame: Option<FrameRef>,
     ) -> Result<Value, LispError> {
-        let vector = self.ensure_lisp_face_on(name, frame, false)?;
+        let vector = self.make_lisp_face_on(face, frame, false)?;
         aset_vector_value(&vector, index, value)?;
         self.face_change_count += 1;
-        if frame.is_none() {
-            self.sync_new_frame_face_hash_entry(name)?;
-        }
         Ok(value)
     }
 
+    /// Finternal_copy_lisp_face: FROM's definition on SOURCE_FRAME copied
+    /// over TO's, made or reset on TARGET_FRAME (None for both: the
+    /// definitions for new frames).
     pub(crate) fn copy_lisp_face_attributes(
         &mut self,
-        from: &str,
-        to: &str,
-        source_frame: Option<crate::lisp::types::FrameRef>,
-        target_frame: Option<crate::lisp::types::FrameRef>,
+        from: Value,
+        to: Value,
+        source_frame: Option<FrameRef>,
+        target_frame: Option<FrameRef>,
     ) -> Result<(), LispError> {
         let source = self
             .lisp_face_vector_on(from, source_frame)
-            .ok_or_else(|| LispError::Signal(format!("Invalid face: {from}")))?;
-        let target = self.ensure_lisp_face_on(to, target_frame, true)?;
-        self.register_lisp_face_id(to);
+            .ok_or_else(|| invalid_face_error(from))?;
+        let target = self.make_lisp_face_on(to, target_frame, true)?;
         for index in 0..LFACE_VECTOR_SIZE {
             aset_vector_value(&target, index, vector_slot_value(&source, index)?)?;
         }
         Ok(())
     }
+
+    /// frame.c:make_terminal_frame: TO's face_hash_table is a copy of
+    /// FROM's with each definition copied too (Fcopy_hash_table, then
+    /// Fcopy_sequence of every value).
+    pub(crate) fn copy_frame_faces(&mut self, from: FrameRef, to: FrameRef) {
+        let Kind::HashTable(source) = self.frame_face_hash_table(from).kind() else {
+            unreachable!("a frame's face table is a hash table");
+        };
+        let table = source.copy();
+        let entries = table.entries().collect::<Vec<_>>();
+        for (slot, _, lface) in entries {
+            if let Ok(slots) = vector_items(&lface) {
+                table.set_value(slot, Value::vector(slots));
+            }
+        }
+        to.borrow_mut().face_hash_table = Some(Value::HashTable(table));
+    }
 }
 
-impl Interpreter {
-    pub(crate) fn copy_frame_faces(
-        &mut self,
-        from: crate::lisp::types::FrameRef,
-        to: crate::lisp::types::FrameRef,
-    ) {
-        let copied = from
-            .borrow()
-            .local_faces
-            .iter()
-            .map(|(name, vector)| {
-                let slots = (0..LFACE_VECTOR_SIZE).map(|index| {
-                    vector_slot_value(vector, index)
-                        .expect("face vector has LFACE_VECTOR_SIZE slots")
-                });
-                (name.clone(), Value::vector(slots))
-            })
-            .collect();
-        to.borrow_mut().local_faces = copied;
+/// Every attribute of the lface vector LFACE back to `unspecified'.
+fn reset_lisp_face_vector(lface: &Value) -> Result<(), LispError> {
+    for slot in 1..LFACE_VECTOR_SIZE {
+        aset_vector_value(lface, slot, Value::symbol("unspecified"))?;
     }
+    Ok(())
 }

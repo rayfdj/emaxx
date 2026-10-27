@@ -2425,13 +2425,7 @@ impl<'a> CharacterDisplayContext<'a> {
         };
         let character = crate::lisp::primitives::char_from_integer(code).unwrap_or(default);
         let face = (face_id > 0)
-            .then(|| {
-                self.interpreter
-                    .lisp_face_states
-                    .iter()
-                    .find(|face| face.id == Some(face_id))
-                    .map(|face| Value::symbol(&face.name))
-            })
+            .then(|| self.interpreter.lisp_face_name_of_id(face_id))
             .flatten()
             .unwrap_or(escape_face);
         (character, face)
@@ -2596,15 +2590,9 @@ impl<'a> CharacterDisplayContext<'a> {
                         );
                     }
                     if face_id > 0
-                        && let Some(face) = self
-                            .interpreter
-                            .lisp_face_states
-                            .iter()
-                            .find(|face| face.id == Some(face_id))
+                        && let Some(face) = self.interpreter.lisp_face_name_of_id(face_id)
                     {
-                        display
-                            .face_spans
-                            .push((from, count, Value::symbol(&face.name)));
+                        display.face_spans.push((from, count, face));
                     }
                 }
             } else if let Some(method) = self.table_method_for(character) {

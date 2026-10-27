@@ -137,6 +137,9 @@ impl Interpreter {
         };
         self.set_global_binding("initial-environment", environment());
         self.set_global_binding("process-environment", environment());
+        // xfaces.c:init_xfaces: lface_id_to_name from the loaded
+        // face--new-frame-defaults.
+        self.rebuild_lface_id_to_name();
         // window.c:init_window_once_for_pdumper, which pdumper runs after
         // the load: the image's frames are nilled, and the initial frame
         // this process made is Vterminal_frame.

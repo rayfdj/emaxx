@@ -273,21 +273,6 @@ pub(crate) fn sweep_weak_hash_tables(
     interp.modules.collect(&live);
 }
 
-pub(crate) fn set_hash_table_entries(
-    interp: &mut Interpreter,
-    table: &Value,
-    entries: Vec<(Value, Value)>,
-) -> Result<(), LispError> {
-    let table = check_hash_table(table)?;
-    check_hash_table_mutable(table)?;
-    table.clear();
-    let mut env = Env::new();
-    for (key, value) in entries {
-        hash_table_put(interp, table, key, value, &mut env)?;
-    }
-    Ok(())
-}
-
 pub(crate) fn parse_xml_region(xml: &str, discard_comments: bool) -> Value {
     parse_libxml_region(xml, discard_comments, false)
 }

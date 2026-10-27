@@ -298,6 +298,7 @@ const KEY_NAMES: &[&str] = &[
     "face-alias",
     "circular-list",
     "obarray",
+    "face--new-frame-defaults",
 ];
 
 struct Symbols {

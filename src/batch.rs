@@ -3134,6 +3134,77 @@ mod tests {
     }
 
     #[test]
+    fn lisp_faces_are_xfaces_c_tables_and_checks() {
+        // xfaces.c: face--new-frame-defaults and the frame's face table are
+        // the faces' only storage (a frame-local face made by setting an
+        // attribute takes a global id too), an unspecified value for new
+        // frames is :ignore-defface, and Finternal_set_lisp_face_attribute's
+        // checks signal with the value; a tty stores no font.
+        run_with_large_stack(|| {
+            let emacs_repo = compat::project_root().join("../emacs");
+            let options = BatchRunOptions {
+                load_path: compat::emaxx_upstream_load_path(&emacs_repo)
+                    .expect("upstream load path"),
+                ..Default::default()
+            };
+            let mut interpreter =
+                initialize_batch_interpreter(&options).expect("init batch interpreter");
+            let form = Reader::new(
+                r#"(prin1-to-string
+                 (progn
+                   (internal-make-lisp-face 'zz)
+                   (list
+                    (internal-lisp-face-p 'zz-nosuch)
+                    (condition-case e (internal-get-lisp-face-attribute 'zz-nosuch :weight) (error e))
+                    (let ((n (hash-table-count face--new-frame-defaults)))
+                      (internal-set-lisp-face-attribute 'zz-frame-first :weight 'bold (selected-frame))
+                      (list (- (hash-table-count face--new-frame-defaults) n)
+                            (integerp (get 'zz-frame-first 'face))
+                            (internal-get-lisp-face-attribute 'zz-frame-first :weight t)))
+                    (progn (internal-set-lisp-face-attribute 'zz :weight 'unspecified t)
+                           (list (aref (internal-lisp-face-p 'zz) 5)
+                                 (internal-get-lisp-face-attribute 'zz :weight t)))
+                    (condition-case e (internal-set-lisp-face-attribute 'zz :underline '(:style bogus) t) (error e))
+                    (condition-case e (internal-set-lisp-face-attribute 'zz :box '(:line-width 0) t) (error e))
+                    (condition-case e (internal-set-lisp-face-attribute 'zz :height 0.01 t) (error e))
+                    (condition-case e (internal-set-lisp-face-attribute 'default :height 1.5 t) (error e))
+                    (condition-case e (internal-set-lisp-face-attribute 'zz :foundry "" t) (error e))
+                    (condition-case e (internal-set-lisp-face-attribute 'zz :weight 5 t) (error e))
+                    (condition-case e (internal-set-lisp-face-attribute 'zz :extend 'foo t) (error e))
+                    (condition-case e (internal-set-lisp-face-attribute 'zz :inherit '(bold . italic) t) (error e))
+                    (condition-case e (internal-set-lisp-face-attribute 'zz :overline 'foo t) (error e))
+                    (progn (internal-set-lisp-face-attribute 'zz :weight 'heavy t)
+                           (internal-get-lisp-face-attribute 'zz :weight t))
+                    (progn (internal-set-lisp-face-attribute 'zz :font "Mono" t)
+                           (internal-get-lisp-face-attribute 'zz :font t))
+                    (progn (internal-set-lisp-face-attribute 'zz :height (lambda (h) (* 2 h)) t)
+                           (functionp (internal-get-lisp-face-attribute 'zz :height t)))
+                    (progn (internal-set-lisp-face-attribute 'zz :foreground nil t)
+                           (list (internal-get-lisp-face-attribute 'zz :foreground t)
+                                 (and (string-match-p "attribute `:foreground' of face `zz': nil value is invalid"
+                                                      (with-current-buffer "*Messages*" (buffer-string)))
+                                      t)))
+                    (list (face-id 'default) (face-id 'bold) (aref (cdr (gethash 'bold face--new-frame-defaults)) 0))
+                    (merge-face-attribute :height 1.5 10)
+                    (merge-face-attribute :height :ignore-defface 10)
+                    (face-attribute-relative-p :weight :ignore-defface))))"#,
+            )
+            .read_all()
+            .expect("read face probe")
+            .remove(0);
+            let printed = interpreter
+                .eval(&form, &mut crate::lisp::types::Env::new())
+                .expect("evaluate face probe");
+            assert_eq!(
+                lisp::primitives::string_like(&printed)
+                    .expect("printed")
+                    .text,
+                r#"(nil (error "Invalid face" zz-nosuch) (1 t unspecified) (:ignore-defface unspecified) (error "Invalid face underline" :style bogus) (error "Invalid face box" :line-width 0) (error "Face height does not produce a positive integer" 0.01) (error "Default face height not absolute and positive" 1.5) (error "Invalid face foundry" "") (wrong-type-argument symbolp 5) (error "Invalid extend face attribute value" foo) (error "Invalid face inheritance" (bold . italic)) (error "Invalid face overline" foo) heavy unspecified t (unspecified t) (0 1 face) 15 10 t)"#
+            );
+        });
+    }
+
+    #[test]
     fn image_symbols_are_the_obarrays_and_the_initial_frame_is_terminal_frame() {
         // pdumper.c maps the dumped symbols where the image holds them:
         // a preloaded symbol is the obarray's, its cells are traced by the

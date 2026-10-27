@@ -7121,6 +7121,43 @@ setup_process_coding_systems's check now refuses). A 13-form
   fails either way. Local validation: the full gate across its ten
   groups with the documented local skips; clippy `-D warnings', rustfmt
   and `git diff --check' pass.
+- **Round 108: xfaces.c's Lisp face storage and attribute checks.**
+  `face--new-frame-defaults' (an `eq' table of each face's symbol to its
+  id and lface vector) and each frame's `face_hash_table' are the faces'
+  only storage, and `lface_id_to_name' (each face at its id, rebuilt from
+  the table after a load as init_xfaces does) the ids'. They were a
+  vector of face names searched by string comparison, a vector of
+  (name . lface) pairs in each frame, and the two hash tables rebuilt
+  entry by entry from those after every change; the image carried the
+  name vector as a root group of its own. Faces are looked up by their
+  symbols. `internal-make-lisp-face' is Finternal_make_lisp_face: a face
+  new to the table takes its id at once, so a frame-local face made by
+  setting an attribute is a face for new frames too (it was one only
+  after `internal-make-lisp-face'); `internal-merge-in-global-face'
+  merges into FRAME's definition (it took the selected frame's);
+  `make-terminal-frame' copies the selected frame's table and each
+  vector (Fcopy_hash_table and Fcopy_sequence). An unspecified attribute
+  set for new frames is stored as the keyword `:ignore-defface' (it was
+  the symbol `ignore-defface'). `internal-set-lisp-face-attribute'
+  checks each attribute as Finternal_set_lisp_face_attribute does and
+  signals with the value (signal_error): font.c's weight, slant and
+  width names, the underline and box plists, `:height' by a test merge
+  (merge_face_heights, a function called through safe_call) and the
+  default face's absolute height, the overline and strike-through
+  colors, an inheritance list's symbols, the stipple's bitmap spec, nil
+  colors (logged and taken as `unspecified'), and a font or fontset a
+  tty frame does not store; `merge-face-attribute' is merge_face_heights
+  too. A 30-form probe of the face storage and a 70-form probe of the
+  checks give GNU 30.2's output for every form; a batch test pins 21.
+  167 of GNU's ERT files (3,756 tests) give the same results as round
+  106's binary. Startup with `-Q --batch --eval' went from 134.8M
+  instructions to 130.1M (`tty-set-up-initial-frame-faces' 12.3M to
+  7.8M against GNU's 4.3M) and with the frozen runner's environment and
+  flags from 142.7M to 138.2M (GNU 157.5M, 105.0M of it outside its
+  collection); the cal-french-tests.el setup from 516.8M to 511.0M (GNU
+  507.6M). Local validation: the full gate across its ten groups with
+  the documented local skips; clippy `-D warnings', rustfmt and `git
+  diff --check' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -7923,6 +7960,8 @@ frozen passed on its first attempt (run 40433088195).
 frozen passed on its first attempt (run 40440575378).
 **On `b7b95e2`** (rounds 104 and 105): full Rust gate passed (run
 40448910038), frozen passed on its first attempt (run 40448912084).
+**On `acd67d2`** (round 106): full Rust gate passed (run 40453519173),
+frozen passed on its first attempt (run 40453521629).
 
 **Findings recorded, not fixed:**
 - **A test file's setup by stage, collections apart (round 106).** With
