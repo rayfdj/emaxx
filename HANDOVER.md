@@ -7566,6 +7566,37 @@ setup_process_coding_systems's check now refuses). A 13-form
   before the child signal that follows. Ten `cat's sent an EOF and
   waited for in turn: each wait took about 10 ms on pipes and on ptys,
   now 0.3 to 0.4 ms (GNU 0.3 to 0.4).
+- **Round 120: emacs_spawn's posix_spawn.** callproc.c:emacs_spawn
+  starts a child with posix_spawn (emacs_posix_spawn_init_actions and
+  _attributes: the three standard descriptors, the working directory, a
+  new session, SIGINT, SIGQUIT, SIGPROF and SIGPIPE at their defaults
+  and the caller's signal mask), and vforks a child on a pty, which
+  makes the pty its controlling terminal by opening it by name after
+  setsid. Emaxx forked through std's `Command' (its pre_exec hook rules
+  out std's own posix_spawn), so each child copied the page tables of
+  Emaxx's address space and tore them down again in execve: a traced
+  child spent 3.5 ms in copy-on-write faults before its first dup2 and
+  7.5 ms in its execve, and a `make-process' or `call-process' took 11
+  to 14 ms where GNU took 6 to 8 on the same loaded machine. On Linux
+  every child of `make-process' and `call-process' is now posix_spawned,
+  in 5.5 to 9.5 ms on that machine (GNU 6 to 8.6): a child on a pty
+  opens the slave by name in a file action after POSIX_SPAWN_SETSID,
+  which makes it the controlling terminal as GNU's reopen does (for a
+  pty on output alone too, where Emaxx set it only for input), and std's
+  `Child' gives way to SpawnedChild (the pid, the parent's ends, and the
+  status once waitpid reaps it, so a status the pump reaped is never
+  waited for again). A child with no :stderr writes its errors into its
+  output pipe (std_err < 0 means std_out), where Emaxx gave it a second
+  pipe whose bytes reached the filter after the output a pass read:
+  `printf a; printf b >&2; printf c' arrived as "acb", GNU's "abc".
+  `call-process' gives the child the null device for input when it has
+  none (callproc.c's NULL_DEVICE) and reads its output and errors
+  together. An argument holding a NUL, a pty without a name, an exec on
+  a pty that fails (the vfork child reports it: "emacs: PROGRAM: Exec
+  format error" and exit 126, which the fork path still produces), and
+  other systems keep the fork path. Exec failures, `default-directory',
+  a pty's controlling terminal and the foreground group on it give GNU
+  30.2's results.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's

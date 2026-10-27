@@ -4,6 +4,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::{ErrorKind, Read, Write};
 use std::path::PathBuf;
+#[cfg(not(unix))]
 use std::process::Child;
 use std::rc::Rc;
 use std::time::{Duration, SystemTime};
@@ -2049,8 +2050,119 @@ impl std::fmt::Debug for SerialRuntime {
     }
 }
 
+/// A subprocess callproc.c:emacs_spawn started: its pid, the parent's ends
+/// of the pipes it was given, and its status once waitpid has reaped it.
+/// Unlike std's `Child', a status the process pump reaps (with waitpid's
+/// job-control flags) is kept, so the child is never waited for again.
+#[cfg(unix)]
+pub(crate) struct SpawnedChild {
+    pid: u32,
+    status: Option<std::process::ExitStatus>,
+    pub(crate) stdin: Option<fs::File>,
+    pub(crate) stdout: Option<fs::File>,
+    pub(crate) stderr: Option<fs::File>,
+}
+
+#[cfg(not(unix))]
+pub(crate) type SpawnedChild = Child;
+
+#[cfg(unix)]
+impl SpawnedChild {
+    pub(crate) fn new(
+        pid: u32,
+        stdin: Option<fs::File>,
+        stdout: Option<fs::File>,
+        stderr: Option<fs::File>,
+    ) -> Self {
+        Self {
+            pid,
+            status: None,
+            stdin,
+            stdout,
+            stderr,
+        }
+    }
+
+    /// A child std's `Command' started, reaped from here on by pid.
+    pub(crate) fn from_std(mut child: std::process::Child) -> Self {
+        use std::os::fd::OwnedFd;
+        let stdin = child
+            .stdin
+            .take()
+            .map(|pipe| fs::File::from(OwnedFd::from(pipe)));
+        let stdout = child
+            .stdout
+            .take()
+            .map(|pipe| fs::File::from(OwnedFd::from(pipe)));
+        let stderr = child
+            .stderr
+            .take()
+            .map(|pipe| fs::File::from(OwnedFd::from(pipe)));
+        // Dropping std's handle neither signals nor waits for the child.
+        Self::new(child.id(), stdin, stdout, stderr)
+    }
+
+    pub(crate) fn id(&self) -> u32 {
+        self.pid
+    }
+
+    /// The status the process pump's own waitpid reaped.
+    pub(crate) fn record_exit(&mut self, status: std::process::ExitStatus) {
+        self.status = Some(status);
+    }
+
+    fn reap(&mut self, options: libc::c_int) -> std::io::Result<Option<std::process::ExitStatus>> {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(status) = self.status {
+            return Ok(Some(status));
+        }
+        loop {
+            let mut raw = 0;
+            // SAFETY: the pid is this child's and has not been reaped; RAW
+            // is writable caller storage.
+            let result = unsafe { libc::waitpid(self.pid as libc::pid_t, &mut raw, options) };
+            if result == 0 {
+                return Ok(None);
+            }
+            if result < 0 {
+                let error = std::io::Error::last_os_error();
+                if error.kind() == ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(error);
+            }
+            let status = std::process::ExitStatus::from_raw(raw);
+            self.status = Some(status);
+            return Ok(Some(status));
+        }
+    }
+
+    pub(crate) fn try_wait(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        self.reap(libc::WNOHANG)
+    }
+
+    /// Close the child's input, as `Child::wait' does, and wait for it.
+    pub(crate) fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
+        drop(self.stdin.take());
+        self.reap(0)
+            .map(|status| status.expect("waitpid without WNOHANG reaps"))
+    }
+
+    /// SIGKILL, unless the child has been reaped (its pid may be reused).
+    pub(crate) fn kill(&mut self) -> std::io::Result<()> {
+        if self.status.is_some() {
+            return Ok(());
+        }
+        // SAFETY: a signal to this unreaped child's pid.
+        if unsafe { libc::kill(self.pid as libc::pid_t, libc::SIGKILL) } != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    }
+}
+
 pub(crate) struct RunningProcess {
-    pub(crate) child: Child,
+    pub(crate) child: SpawnedChild,
     /// Embedded owners terminate and reap children when dropped. A leaving
     /// Unix CLI instead sends GNU's SIGHUP and leaves reaping to the host.
     pub(crate) terminate_on_drop: bool,

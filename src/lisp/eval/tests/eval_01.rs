@@ -618,6 +618,32 @@ fn process_waits_end_on_output_and_on_a_child_signal_before_their_timeout() {
 }
 
 #[test]
+fn a_pipe_child_without_stderr_writes_its_errors_into_its_output_pipe() {
+    // callproc.c:emacs_spawn: with no :stderr the child's standard error is
+    // its standard output (std_err < 0), one pipe, so the filter sees the
+    // two streams in the order the child wrote them.
+    run_with_large_stack(|| {
+        assert_eq!(
+            eval_str_with_upstream_batch(
+                r#"(let* ((out "")
+                         (process
+                          (make-process
+                           :name "shared-output"
+                           :command (list (executable-find "sh") "-c"
+                                          "printf a; printf b >&2; printf c")
+                           :connection-type 'pipe :noquery t
+                           :filter (lambda (_process string)
+                                     (setq out (concat out string))))))
+                    (while (accept-process-output process))
+                    (list out (process-exit-status process)
+                          (process-tty-name process 'stderr)))"#,
+            ),
+            Value::list([Value::string("abc"), Value::Integer(0), Value::Nil])
+        );
+    });
+}
+
+#[test]
 fn make_process_stderr_buffer_creates_the_linked_gnu_pipe_process() {
     run_with_large_stack(|| {
         assert_eq!(

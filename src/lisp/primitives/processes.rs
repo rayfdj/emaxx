@@ -198,54 +198,10 @@ fn exec_like_gnu(
     environment: Vec<Vec<u8>>,
     pty: bool,
 ) {
-    use std::ffi::CString;
-    use std::os::unix::ffi::OsStrExt;
     use std::os::unix::process::CommandExt;
 
-    let mut strings = Vec::with_capacity(argv.len() + 1);
-    let Ok(path) = CString::new(program) else {
+    let Some(image) = ExecImage::new(program, argv, environment) else {
         return;
-    };
-    strings.push(path);
-    for arg in argv {
-        let Ok(arg) = CString::new(c_string_bytes(arg)) else {
-            return;
-        };
-        strings.push(arg);
-    }
-    let argv_end = strings.len();
-    for entry in environment {
-        // make_environment_block cut every entry at its first NUL.
-        let Ok(entry) = CString::new(entry) else {
-            return;
-        };
-        strings.push(entry);
-    }
-    let pointers = |range: std::ops::Range<usize>| {
-        strings[range]
-            .iter()
-            .map(|string| string.as_ptr())
-            .chain(std::iter::once(std::ptr::null()))
-            .collect::<Vec<_>>()
-    };
-    #[cfg(not(target_os = "macos"))]
-    let prefix = {
-        let mut prefix = std::env::args_os()
-            .next()
-            .map(|argv0| argv0.as_bytes().to_vec())
-            .filter(|argv0| !argv0.is_empty())
-            .unwrap_or_else(|| b"emacs".to_vec());
-        prefix.extend_from_slice(b": ");
-        prefix.extend_from_slice(program.as_bytes());
-        prefix.extend_from_slice(b": ");
-        prefix
-    };
-    let image = ExecImage {
-        argv: pointers(0..argv_end),
-        envp: pointers(argv_end..strings.len()),
-        _strings: strings,
-        #[cfg(not(target_os = "macos"))]
-        prefix,
     };
 
     // SAFETY: the child only calls execve, write, strerror and _exit on data
@@ -258,6 +214,50 @@ fn exec_like_gnu(
 
 #[cfg(unix)]
 impl ExecImage {
+    /// PROGRAM, ARGV and the environment ENVIRONMENT as execve takes them;
+    /// None when one holds a NUL.
+    fn new(program: &str, argv: &[Vec<u8>], environment: Vec<Vec<u8>>) -> Option<Self> {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+
+        let mut strings = Vec::with_capacity(argv.len() + 1);
+        strings.push(CString::new(program).ok()?);
+        for arg in argv {
+            strings.push(CString::new(c_string_bytes(arg)).ok()?);
+        }
+        let argv_end = strings.len();
+        for entry in environment {
+            // make_environment_block cut every entry at its first NUL.
+            strings.push(CString::new(entry).ok()?);
+        }
+        let pointers = |range: std::ops::Range<usize>| {
+            strings[range]
+                .iter()
+                .map(|string| string.as_ptr())
+                .chain(std::iter::once(std::ptr::null()))
+                .collect::<Vec<_>>()
+        };
+        #[cfg(not(target_os = "macos"))]
+        let prefix = {
+            let mut prefix = std::env::args_os()
+                .next()
+                .map(|argv0| argv0.as_bytes().to_vec())
+                .filter(|argv0| !argv0.is_empty())
+                .unwrap_or_else(|| b"emacs".to_vec());
+            prefix.extend_from_slice(b": ");
+            prefix.extend_from_slice(program.as_bytes());
+            prefix.extend_from_slice(b": ");
+            prefix
+        };
+        Some(ExecImage {
+            argv: pointers(0..argv_end),
+            envp: pointers(argv_end..strings.len()),
+            _strings: strings,
+            #[cfg(not(target_os = "macos"))]
+            prefix,
+        })
+    }
+
     /// The child side of `exec_like_gnu'.
     ///
     /// # Safety
@@ -659,7 +659,15 @@ pub(crate) fn run_external_process(
     let program = locate_program_for_exec(interp, env, program, false)?;
     let mut command = Command::new(&program);
     add_command_arguments(&mut command, argv);
-    let environment = configure_external_command(interp, env, &mut command)?;
+    let (environment, directory) = configure_external_command(interp, env, &mut command)?;
+    #[cfg(target_os = "linux")]
+    if let Some(output) =
+        posix_spawn_call_process(&program, argv, &environment, directory, input, stderr)?
+    {
+        return Ok(output);
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = directory;
     #[cfg(unix)]
     configure_emacs_spawn(&mut command, false);
     #[cfg(unix)]
@@ -757,11 +765,17 @@ pub(crate) fn run_external_process(
         .map_err(|error| LispError::Signal(error.to_string()))
 }
 
+/// A child's environment block and, when `default-directory' names one,
+/// the directory it starts in.
+pub(crate) type ChildEnvironment = (Vec<Vec<u8>>, Option<Vec<u8>>);
+
+/// The child's environment and directory, the directory also set on
+/// COMMAND.
 pub(crate) fn configure_external_command(
     interp: &mut Interpreter,
     env: &mut Env,
     command: &mut Command,
-) -> Result<Vec<Vec<u8>>, LispError> {
+) -> Result<ChildEnvironment, LispError> {
     let mut current_dir = None;
     if let Some(default_directory) = interp
         .lookup_var("default-directory", env)
@@ -807,6 +821,7 @@ pub(crate) fn configure_external_command(
         command.current_dir(&directory);
         current_dir = Some(directory.into_bytes());
     }
+    let directory = current_dir.clone();
     let current_dir = current_dir.unwrap_or_else(|| {
         let directory = std::env::current_dir().unwrap_or_default();
         #[cfg(unix)]
@@ -828,7 +843,7 @@ pub(crate) fn configure_external_command(
             }
         }
     }
-    Ok(block)
+    Ok((block, directory))
 }
 
 pub(crate) fn spawn_persistent_process(
@@ -846,12 +861,26 @@ pub(crate) fn spawn_persistent_process(
     let _ = child_signal_read_fd();
     let mut command = Command::new(program);
     add_command_arguments(&mut command, argv);
-    let environment = configure_external_command(interp, env, &mut command)?;
+    let (environment, directory) = configure_external_command(interp, env, &mut command)?;
 
     let default_pty = interp
         .lookup_var("process-connection-type", env)
         .is_some_and(|value| value.is_truthy());
     let (input_pty, output_pty) = process_connection_pty_modes(connection_type, default_pty)?;
+    #[cfg(target_os = "linux")]
+    if let Some(runtime) = posix_spawn_process(
+        program,
+        argv,
+        &environment,
+        directory,
+        input_pty,
+        output_pty,
+        separate_stderr,
+    )? {
+        return finish_spawned_runtime(runtime);
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = directory;
     let mut pty_input = None;
     let mut pty_output = None;
     let mut pty_slave_guard = None;
@@ -942,6 +971,8 @@ pub(crate) fn spawn_persistent_process(
     );
 
     let child = command.spawn().map_err(|error| vfork_error(&error))?;
+    #[cfg(unix)]
+    let child = SpawnedChild::from_std(child);
     // Put the child under RunningProcess's terminate-and-reap Drop guard
     // before any fallible post-spawn setup.  A failed fcntl must not leak a
     // subprocess whose runtime was never installed in the interpreter.
@@ -955,6 +986,12 @@ pub(crate) fn spawn_persistent_process(
         stdout_at_end: false,
         stderr_at_end: false,
     };
+    finish_spawned_runtime(runtime)
+}
+
+/// create_process's fcntl (inchannel, F_SETFL, O_NONBLOCK) on the channels
+/// Emacs reads.
+fn finish_spawned_runtime(runtime: RunningProcess) -> Result<RunningProcess, LispError> {
     #[cfg(unix)]
     {
         if let Some(stdout) = runtime.child.stdout.as_ref() {
@@ -968,6 +1005,374 @@ pub(crate) fn spawn_persistent_process(
         }
     }
     Ok(runtime)
+}
+
+/// emacs_pipe: a pipe both of whose ends are close-on-exec, as (read end,
+/// write end).
+#[cfg(target_os = "linux")]
+fn emacs_pipe() -> std::io::Result<(fs::File, fs::File)> {
+    use std::os::fd::{FromRawFd, OwnedFd};
+    let mut fds = [-1; 2];
+    // SAFETY: PIPE2 writes exactly two descriptors to FDS on success, each
+    // owned at once below.
+    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: fresh descriptors, each owned by exactly one File.
+    unsafe {
+        Ok((
+            fs::File::from(OwnedFd::from_raw_fd(fds[0])),
+            fs::File::from(OwnedFd::from_raw_fd(fds[1])),
+        ))
+    }
+}
+
+/// Where emacs_spawn puts one of the child's standard descriptors.
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy)]
+enum SpawnFd {
+    /// This descriptor of the parent's.
+    Fd(std::os::fd::RawFd),
+    /// The pty, which the child opens by name (input before output).
+    Pty,
+    /// The descriptor the child's standard output became.
+    Stdout,
+}
+
+/// callproc.c:emacs_spawn's posix_spawn (emacs_posix_spawn_init_actions and
+/// emacs_posix_spawn_init_attributes): IMAGE in a new session, in DIRECTORY,
+/// with SIGINT, SIGQUIT, SIGPROF and SIGPIPE at their defaults and the
+/// parent's signal mask.  A child on the pty opens PTY_NAME as its vfork
+/// path does after setsid, which makes the pty its controlling terminal.
+/// The error is posix_spawn's, the errno of a failed exec among them.
+#[cfg(target_os = "linux")]
+fn emacs_posix_spawn(
+    image: &ExecImage,
+    directory: Option<&std::ffi::CStr>,
+    stdio: [SpawnFd; 3],
+    pty_name: Option<&std::ffi::CStr>,
+) -> std::io::Result<libc::pid_t> {
+    use std::mem::MaybeUninit;
+    let check = |error: libc::c_int| match error {
+        0 => Ok(()),
+        error => Err(std::io::Error::from_raw_os_error(error)),
+    };
+    let mut actions = MaybeUninit::<libc::posix_spawn_file_actions_t>::uninit();
+    let mut attributes = MaybeUninit::<libc::posix_spawnattr_t>::uninit();
+    // SAFETY: each object is initialized before use and destroyed once
+    // below; every pointer handed over (names, IMAGE's vectors) outlives
+    // the posix_spawn call.
+    unsafe {
+        check(libc::posix_spawn_file_actions_init(actions.as_mut_ptr()))?;
+        if let Err(error) = check(libc::posix_spawnattr_init(attributes.as_mut_ptr())) {
+            libc::posix_spawn_file_actions_destroy(actions.as_mut_ptr());
+            return Err(error);
+        }
+        let actions = actions.as_mut_ptr();
+        let attributes = attributes.as_mut_ptr();
+        let result = (|| {
+            let mut pty_fd = None;
+            for (target, source) in stdio.into_iter().enumerate() {
+                let target = target as libc::c_int;
+                match source {
+                    SpawnFd::Fd(fd) => {
+                        check(libc::posix_spawn_file_actions_adddup2(actions, fd, target))?
+                    }
+                    SpawnFd::Pty => match pty_fd {
+                        Some(fd) => {
+                            check(libc::posix_spawn_file_actions_adddup2(actions, fd, target))?
+                        }
+                        None => {
+                            let name = pty_name
+                                .ok_or_else(|| std::io::Error::from_raw_os_error(libc::EINVAL))?;
+                            check(libc::posix_spawn_file_actions_addopen(
+                                actions,
+                                target,
+                                name.as_ptr(),
+                                libc::O_RDWR,
+                                0,
+                            ))?;
+                            pty_fd = Some(target);
+                        }
+                    },
+                    SpawnFd::Stdout => check(libc::posix_spawn_file_actions_adddup2(
+                        actions,
+                        libc::STDOUT_FILENO,
+                        target,
+                    ))?,
+                }
+            }
+            if let Some(directory) = directory {
+                check(libc::posix_spawn_file_actions_addchdir_np(
+                    actions,
+                    directory.as_ptr(),
+                ))?;
+            }
+            check(libc::posix_spawnattr_setflags(
+                attributes,
+                (libc::POSIX_SPAWN_SETSID
+                    | libc::POSIX_SPAWN_SETSIGDEF
+                    | libc::POSIX_SPAWN_SETSIGMASK) as libc::c_short,
+            ))?;
+            let mut default = MaybeUninit::<libc::sigset_t>::uninit();
+            libc::sigemptyset(default.as_mut_ptr());
+            for signal in [libc::SIGINT, libc::SIGQUIT, libc::SIGPROF, libc::SIGPIPE] {
+                libc::sigaddset(default.as_mut_ptr(), signal);
+            }
+            check(libc::posix_spawnattr_setsigdefault(
+                attributes,
+                default.as_ptr(),
+            ))?;
+            let mut mask = MaybeUninit::<libc::sigset_t>::uninit();
+            check(libc::pthread_sigmask(
+                libc::SIG_SETMASK,
+                std::ptr::null(),
+                mask.as_mut_ptr(),
+            ))?;
+            check(libc::posix_spawnattr_setsigmask(attributes, mask.as_ptr()))?;
+            let mut pid = 0;
+            check(libc::posix_spawn(
+                &mut pid,
+                image.argv[0],
+                actions,
+                attributes,
+                image.argv.as_ptr().cast(),
+                image.envp.as_ptr().cast(),
+            ))?;
+            Ok(pid)
+        })();
+        libc::posix_spawn_file_actions_destroy(actions);
+        libc::posix_spawnattr_destroy(attributes);
+        result
+    }
+}
+
+/// Fmake_process's create_process through emacs_spawn's posix_spawn: the
+/// pipes (or the pty) its connection type asks for, and the child's
+/// standard error on its own pipe when it goes to a process or buffer of
+/// its own, else where its output goes.  None leaves the spawn to the fork
+/// path: an argument with a NUL, a pty without a name, or an exec on the
+/// pty that fails, whose report the vfork path's child makes.
+#[cfg(target_os = "linux")]
+fn posix_spawn_process(
+    program: &str,
+    argv: &[Vec<u8>],
+    environment: &[Vec<u8>],
+    directory: Option<Vec<u8>>,
+    input_pty: bool,
+    output_pty: bool,
+    separate_stderr: bool,
+) -> Result<Option<RunningProcess>, LispError> {
+    use std::os::fd::AsRawFd;
+    let Some(image) = ExecImage::new(program, argv, environment.to_vec()) else {
+        return Ok(None);
+    };
+    let Ok(directory) = directory.map(std::ffi::CString::new).transpose() else {
+        return Ok(None);
+    };
+    let pipe_error = |error: std::io::Error| {
+        LispError::SignalValue(file_operation_error_value_without_file(
+            "Creating pipe",
+            &error,
+        ))
+    };
+    let (pty_master, pty_slave, pty_name) = if input_pty || output_pty {
+        let (master, slave, name) = open_emacs_pty()?;
+        let Some(name) = name.and_then(|name| std::ffi::CString::new(name).ok()) else {
+            return Ok(None);
+        };
+        (Some(master), Some(slave), Some(name))
+    } else {
+        (None, None, None)
+    };
+    let input = (!input_pty)
+        .then(emacs_pipe)
+        .transpose()
+        .map_err(pipe_error)?;
+    let output = (!output_pty)
+        .then(emacs_pipe)
+        .transpose()
+        .map_err(pipe_error)?;
+    let errors = separate_stderr
+        .then(emacs_pipe)
+        .transpose()
+        .map_err(pipe_error)?;
+    let stdio = [
+        input
+            .as_ref()
+            .map_or(SpawnFd::Pty, |(read, _)| SpawnFd::Fd(read.as_raw_fd())),
+        output
+            .as_ref()
+            .map_or(SpawnFd::Pty, |(_, write)| SpawnFd::Fd(write.as_raw_fd())),
+        errors
+            .as_ref()
+            .map_or(SpawnFd::Stdout, |(_, write)| SpawnFd::Fd(write.as_raw_fd())),
+    ];
+    let pid = match emacs_posix_spawn(&image, directory.as_deref(), stdio, pty_name.as_deref()) {
+        Ok(pid) => pid,
+        Err(_) if pty_name.is_some() => return Ok(None),
+        Err(error) => return Err(vfork_error(&error)),
+    };
+    // Only the child keeps its ends.
+    let child = SpawnedChild::new(
+        pid as u32,
+        input.map(|(_, write)| write),
+        output.map(|(read, _)| read),
+        errors.map(|(read, _)| read),
+    );
+    // As on the fork path: with the pty on both sides, one slave is held
+    // until the child's output is drained; the master is both channels.
+    let (pty_input, pty_output, pty_slave_guard) = match (pty_master, input_pty, output_pty) {
+        (Some(master), true, true) => {
+            let input = master
+                .try_clone()
+                .map_err(|error| LispError::Signal(error.to_string()))?;
+            (Some(input), Some(master), pty_slave)
+        }
+        (Some(master), true, false) => (Some(master), None, None),
+        (Some(master), false, true) => (None, Some(master), pty_slave),
+        _ => (None, None, None),
+    };
+    Ok(Some(RunningProcess {
+        child,
+        terminate_on_drop: true,
+        pty_input,
+        pty_output,
+        pty_slave_guard,
+        pty_slave_name: pty_name.map(|name| name.to_string_lossy().into_owned()),
+        stdout_at_end: false,
+        stderr_at_end: false,
+    }))
+}
+
+/// Read STDOUT and STDERR, either absent, to their ends at once, as
+/// call_process reads its output while the child may still write errors.
+#[cfg(target_os = "linux")]
+fn read_to_ends(
+    stdout: Option<fs::File>,
+    stderr: Option<fs::File>,
+) -> (std::io::Result<Vec<u8>>, Vec<u8>) {
+    use std::os::fd::AsRawFd;
+    let mut streams = [stdout, stderr];
+    let mut bytes = [Vec::new(), Vec::new()];
+    let mut buffer = vec![0u8; 65536];
+    loop {
+        let mut fds = streams
+            .iter()
+            .flatten()
+            .map(|stream| libc::pollfd {
+                fd: stream.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            })
+            .collect::<Vec<_>>();
+        if fds.is_empty() {
+            let [stdout, stderr] = bytes;
+            return (Ok(stdout), stderr);
+        }
+        // SAFETY: FDS holds the live descriptors of STREAMS.
+        if unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, -1) } < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() == ErrorKind::Interrupted {
+                continue;
+            }
+            return (Err(error), std::mem::take(&mut bytes[1]));
+        }
+        let mut ready = fds.iter().map(|fd| fd.revents != 0);
+        for (index, slot) in streams.iter_mut().enumerate() {
+            let Some(stream) = slot.as_mut() else {
+                continue;
+            };
+            if !ready.next().unwrap_or(false) {
+                continue;
+            }
+            match stream.read(&mut buffer) {
+                Ok(0) => *slot = None,
+                Ok(read) => bytes[index].extend_from_slice(&buffer[..read]),
+                Err(error) if error.kind() == ErrorKind::Interrupted => {}
+                Err(error) => return (Err(error), std::mem::take(&mut bytes[1])),
+            }
+        }
+    }
+}
+
+/// Fcall_process's emacs_spawn through posix_spawn: INPUT on a pipe (else
+/// the null device), the output on one pipe that standard error shares for
+/// STDERR `Mixed', else on two, all read to their ends before the wait.
+/// None leaves it to the fork path (an argument with a NUL).
+#[cfg(target_os = "linux")]
+fn posix_spawn_call_process(
+    program: &str,
+    argv: &[Vec<u8>],
+    environment: &[Vec<u8>],
+    directory: Option<Vec<u8>>,
+    input: Option<&[u8]>,
+    stderr: ExternalStderr,
+) -> Result<Option<std::process::Output>, LispError> {
+    use std::os::fd::AsRawFd;
+    let Some(image) = ExecImage::new(program, argv, environment.to_vec()) else {
+        return Ok(None);
+    };
+    let Ok(directory) = directory.map(std::ffi::CString::new).transpose() else {
+        return Ok(None);
+    };
+    let pipe_error = |error: std::io::Error| {
+        LispError::SignalValue(file_operation_error_value_without_file(
+            "Creating process pipe",
+            &error,
+        ))
+    };
+    let (stdin_read, stdin_write) = match input {
+        Some(_) => {
+            let (read, write) = emacs_pipe().map_err(pipe_error)?;
+            (read, Some(write))
+        }
+        None => (
+            fs::File::open("/dev/null").map_err(|error| LispError::Signal(error.to_string()))?,
+            None,
+        ),
+    };
+    let (output_read, output_write) = emacs_pipe().map_err(pipe_error)?;
+    let errors = (stderr != ExternalStderr::Mixed)
+        .then(emacs_pipe)
+        .transpose()
+        .map_err(pipe_error)?;
+    let stdio = [
+        SpawnFd::Fd(stdin_read.as_raw_fd()),
+        SpawnFd::Fd(output_write.as_raw_fd()),
+        errors
+            .as_ref()
+            .map_or(SpawnFd::Stdout, |(_, write)| SpawnFd::Fd(write.as_raw_fd())),
+    ];
+    let pid = emacs_posix_spawn(&image, directory.as_deref(), stdio, None)
+        .map_err(|error| vfork_error(&error))?;
+    // Only the child keeps its ends, or the reads below never end.
+    drop((stdin_read, output_write));
+    let mut child = SpawnedChild::new(
+        pid as u32,
+        stdin_write,
+        Some(output_read),
+        errors.map(|(read, _)| read),
+    );
+    if let Some(stdin_data) = input
+        && let Some(mut stdin) = child.stdin.take()
+        && let Err(error) = stdin.write_all(stdin_data)
+    {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(LispError::Signal(error.to_string()));
+    }
+    drop(child.stdin.take());
+    let (stdout, stderr) = read_to_ends(child.stdout.take(), child.stderr.take());
+    let status = child
+        .wait()
+        .map_err(|error| LispError::Signal(error.to_string()))?;
+    let stdout = stdout.map_err(|error| LispError::Signal(error.to_string()))?;
+    Ok(Some(std::process::Output {
+        status,
+        stdout,
+        stderr,
+    }))
 }
 
 fn process_connection_pty_modes(

@@ -48,7 +48,7 @@ enum ChildStatusEvent {
 }
 
 #[cfg(unix)]
-fn poll_child_status(child: &mut Child) -> std::io::Result<Option<ChildStatusEvent>> {
+fn poll_child_status(child: &mut SpawnedChild) -> std::io::Result<Option<ChildStatusEvent>> {
     use std::os::unix::process::ExitStatusExt;
 
     let mut status = 0;
@@ -81,14 +81,14 @@ fn poll_child_status(child: &mut Child) -> std::io::Result<Option<ChildStatusEve
         if libc::WIFCONTINUED(status) {
             return Ok(Some(ChildStatusEvent::Continued));
         }
-        return Ok(Some(ChildStatusEvent::Exited(
-            std::process::ExitStatus::from_raw(status),
-        )));
+        let status = std::process::ExitStatus::from_raw(status);
+        child.record_exit(status);
+        return Ok(Some(ChildStatusEvent::Exited(status)));
     }
 }
 
 #[cfg(not(unix))]
-fn poll_child_status(child: &mut Child) -> std::io::Result<Option<ChildStatusEvent>> {
+fn poll_child_status(child: &mut SpawnedChild) -> std::io::Result<Option<ChildStatusEvent>> {
     child
         .try_wait()
         .map(|status| status.map(ChildStatusEvent::Exited))
