@@ -2548,9 +2548,7 @@ impl Value {
     }
 
     /// fns.c's Flist over VALUES: a proper list of them, consed from the
-    /// last, with no copy of them first and none of `list's reading of a
-    /// `vector-literal' head (a list of Lisp data that starts with that
-    /// symbol is a list).
+    /// last, with no copy of them first.
     pub(crate) fn list_of(values: &[Value]) -> Self {
         let mut result = Value::Nil;
         for value in values.iter().rev() {
@@ -2562,17 +2560,7 @@ impl Value {
     /// Build a proper list from an iterator of values.
     pub fn list(items: impl IntoIterator<Item = Value>) -> Self {
         let items: Vec<Value> = items.into_iter().collect();
-        if matches!(
-            items.first().map(|v| v.kind()),
-            Some(Kind::Symbol(tag)) if tag == "vector-literal"
-        ) {
-            return Value::vector(items.into_iter().skip(1));
-        }
-        let mut result = Value::Nil;
-        for item in items.into_iter().rev() {
-            result = Value::cons(item, result);
-        }
-        result
+        Value::list_of(&items)
     }
 
     // Predicates
@@ -2873,13 +2861,6 @@ impl Value {
 
     /// Convert a proper list to a Vec.
     pub fn to_vec(self) -> Result<Vec<Value>, LispError> {
-        if let Kind::Vector(vector) = self.kind() {
-            let slots = vector.slots();
-            let mut result = Vec::with_capacity(slots.len().saturating_add(1));
-            result.push(Value::symbol("vector-literal"));
-            result.extend(slots);
-            return Ok(result);
-        }
         let mut result = Vec::new();
         self.extend_list_elements(&mut result)?;
         Ok(result)
@@ -3112,22 +3093,6 @@ fn format_value(
                 format_value(&value, f, seen)?;
             }
             seen.remove(&id);
-            write!(f, "]")
-        }
-        Kind::Cons(cell) if matches!(cell.car.get().kind(), Kind::Symbol(head) if head == "vector-literal") =>
-        {
-            // Vector literals ride on conses internally but print as vectors.
-            write!(f, "[")?;
-            let mut current = cell.cdr.get();
-            let mut first = true;
-            while let Kind::Cons(cell) = current.kind() {
-                if !first {
-                    write!(f, " ")?;
-                }
-                format_value(&cell.car.get(), f, seen)?;
-                first = false;
-                current = cell.cdr.get();
-            }
             write!(f, "]")
         }
         Kind::Cons(cell) => {
@@ -3856,11 +3821,7 @@ mod tests {
     fn live_census_counts_one_gnu_vector_without_representation_conses() {
         let conses_before = census_live_conses();
         let vectors_before = census_live_vectors();
-        let vector = Value::list([
-            Value::symbol("vector-literal"),
-            Value::Integer(1),
-            Value::Integer(2),
-        ]);
+        let vector = Value::vector([Value::Integer(1), Value::Integer(2)]);
         let vectors_after = census_live_vectors();
 
         assert_eq!(census_live_conses(), conses_before);

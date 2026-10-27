@@ -480,12 +480,8 @@ fn link_layer_address(name: &str) -> Value {
                 .cast::<u8>()
                 .add(link.sdl_nlen as usize)
         };
-        let bytes: Vec<Value> = (0..6)
-            .map(|offset| Value::Integer(unsafe { *address.add(offset) } as i64))
-            .collect();
-        let mut vector = vec![Value::symbol("vector-literal")];
-        vector.extend(bytes);
-        result = Value::cons(Value::Integer(family as i64), Value::list(vector));
+        let bytes = (0..6).map(|offset| Value::Integer(unsafe { *address.add(offset) } as i64));
+        result = Value::cons(Value::Integer(family as i64), Value::vector(bytes));
         break;
     }
     // SAFETY: `list' came from a successful getifaddrs and is freed once.

@@ -455,20 +455,16 @@ fn libxml_attributes_in_source_order(node: &LibxmlNode) -> Vec<Value> {
 }
 
 pub(crate) fn display_property_value(value: &Value, property: &str) -> Option<Value> {
+    if let Kind::Vector(vector) = value.kind() {
+        return vector
+            .slots()
+            .find_map(|item| display_property_value(&item, property));
+    }
     if let Ok(items) = value.to_vec() {
         if let Some(Kind::Symbol(name)) = items.first().map(|v| v.kind())
             && name == property
         {
             return items.get(1).cloned();
-        }
-        if matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(name)) if name == "vector-literal")
-        {
-            for item in items.iter().skip(1) {
-                if let Some(found) = display_property_value(item, property) {
-                    return Some(found);
-                }
-            }
-            return None;
         }
         for item in items {
             if let Some(found) = display_property_value(&item, property) {

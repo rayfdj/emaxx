@@ -1369,7 +1369,7 @@ fn aset_is_a_normal_primitive_with_left_to_right_argument_evaluation() {
                      (subrp (symbol-function 'aset))))"
         ),
         Value::list([
-            Value::list([Value::Symbol("vector-literal".into()), Value::Integer(7),]),
+            Value::vector([Value::Integer(7),]),
             Value::list([Value::Symbol("value".into()), Value::Symbol("index".into()),]),
             Value::Nil,
             Value::T,
@@ -1747,11 +1747,7 @@ fn setf_supports_aref_places_bound_in_lexical_variables() {
         eval_str_with_upstream_batch(
             "(let ((stats (vector 0 0)) (i 1)) (setf (aref stats (mod i 2)) 7) stats)",
         ),
-        Value::list([
-            Value::Symbol("vector-literal".into()),
-            Value::Integer(0),
-            Value::Integer(7),
-        ])
+        Value::vector([Value::Integer(0), Value::Integer(7),])
     );
 }
 
@@ -1811,11 +1807,7 @@ fn setf_resolves_conditional_places() {
 fn aset_mutates_vectors_bound_in_lexical_variables() {
     assert_eq!(
         eval_str("(let ((stats (make-vector 2 nil))) (aset stats 1 'ok) stats)"),
-        Value::list([
-            Value::Symbol("vector-literal".into()),
-            Value::Nil,
-            Value::Symbol("ok".into()),
-        ])
+        Value::vector([Value::Nil, Value::Symbol("ok".into()),])
     );
 }
 
@@ -1823,11 +1815,7 @@ fn aset_mutates_vectors_bound_in_lexical_variables() {
 fn prog1_returns_vectors_after_in_place_mutation() {
     assert_eq!(
         eval_str("(let ((stats (make-vector 2 nil))) (prog1 stats (aset stats 1 'ok)))"),
-        Value::list([
-            Value::Symbol("vector-literal".into()),
-            Value::Nil,
-            Value::Symbol("ok".into()),
-        ])
+        Value::vector([Value::Nil, Value::Symbol("ok".into()),])
     );
 }
 
@@ -1864,11 +1852,7 @@ fn prog2_returns_vectors_after_in_place_mutation() {
             "(let ((stats (make-vector 2 nil)))
                    (prog2 'ignored stats (aset stats 1 'ok)))"
         ),
-        Value::list([
-            Value::Symbol("vector-literal".into()),
-            Value::Nil,
-            Value::Symbol("ok".into()),
-        ])
+        Value::vector([Value::Nil, Value::Symbol("ok".into()),])
     );
 }
 
@@ -2417,11 +2401,7 @@ fn remove_filters_lists_vectors_and_strings() {
     );
     assert_eq!(
         items[1],
-        Value::list([
-            Value::Symbol("vector-literal".into()),
-            Value::Integer(1),
-            Value::Integer(3),
-        ])
+        Value::vector([Value::Integer(1), Value::Integer(3),])
     );
     assert_eq!(primitives::string_text(&items[2]).unwrap(), "b");
 }
@@ -2881,12 +2861,7 @@ fn assert_eval_string_ops() {
     assert_string_value(eval_str(r#"(substring "hello" 0 -1)"#), "hell");
     assert_eq!(
         eval_str(r#"(substring [255 99 98 97] 1 4)"#),
-        Value::list([
-            Value::Symbol("vector-literal".into()),
-            Value::Integer(99),
-            Value::Integer(98),
-            Value::Integer(97),
-        ])
+        Value::vector([Value::Integer(99), Value::Integer(98), Value::Integer(97),])
     );
     assert_eq!(eval_str(r#"(string-to-number "1e-1")"#), Value::float(0.1));
     assert_eq!(

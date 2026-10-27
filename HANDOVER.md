@@ -7092,6 +7092,35 @@ setup_process_coding_systems's check now refuses). A 13-form
   from 525.2M to 516.8M (GNU 507.6M). Local validation: the full gate
   across its ten groups with the documented local skips; clippy `-D
   warnings', rustfmt and `git diff --check' pass.
+- **Round 107: no list spelling of a vector.** `Value::list' made a
+  vector of a list whose first element is the symbol `vector-literal'
+  (the Rust spelling of a vector built through a list, left from when
+  vectors were lists), so a list a primitive built from Lisp data with
+  that head came back a vector: `(copy-sequence (list 'vector-literal
+  1))' and `(reverse (list 1 'vector-literal))' gave `[1]', and `(elt
+  '(vector-literal a b) 1)' signalled `arrayp' (`elt' read such a list
+  as a vector). `Value::to_vec' of a vector gave its slots after a
+  `vector-literal' element, which the code reading vectors as lists
+  stripped. A list is now a list, and `to_vec' takes a list only (a
+  vector signals `listp', as GNU's list walkers do). The places that
+  built vectors through the spelling make them with `Value::vector'
+  (`vector', `make-vector', `vconcat', `sort', `reverse' and
+  `copy-sequence' of a vector, `remove', key sequences and keyboard
+  macros, socket and interface addresses, JSON arrays, the unicode
+  property tables' value vectors, face vectors), and the ones that read
+  it test for a vector (coding systems' code spaces and designations,
+  translation-table targets, an old-style menu item's obsolete key
+  binding cache, which menu.c takes when its car is nil or a vector,
+  `this-command-keys-vector', the display property search). A batch
+  test pins GNU 30.2's output for 15 forms. With `to_vec' logging each
+  call on a vector, the Rust test suite and 167 of GNU's ERT files
+  (`test/src' and `test/lisp' top level, 3,756 tests, results identical
+  to round 106's binary) reached it from five places, each testing a
+  list's head (lambda expressions, autoloads, macro calls, a quoted
+  hash table literal and an eager-expanded `progn'), which a vector
+  fails either way. Local validation: the full gate across its ten
+  groups with the documented local skips; clippy `-D warnings', rustfmt
+  and `git diff --check' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -7892,6 +7921,8 @@ frozen passed on its first attempt (run 40426753917).
 frozen passed on its first attempt (run 40433088195).
 **On `837e119`** (round 103): full Rust gate passed (run 40440572554),
 frozen passed on its first attempt (run 40440575378).
+**On `b7b95e2`** (rounds 104 and 105): full Rust gate passed (run
+40448910038), frozen passed on its first attempt (run 40448912084).
 
 **Findings recorded, not fixed:**
 - **A test file's setup by stage, collections apart (round 106).** With

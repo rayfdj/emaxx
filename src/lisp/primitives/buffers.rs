@@ -591,16 +591,11 @@ fn translation_characters(value: &Value) -> Option<Vec<u32>> {
             .filter(|character| *character <= 0x3F_FFFF)
             .map(|character| vec![character]);
     }
-    let items = value.to_vec().ok()?;
-    let (first, characters) = items.split_first()?;
-    let Kind::Symbol(marker) = first.kind() else {
+    let Kind::Vector(characters) = value.kind() else {
         return None;
     };
-    if marker != "vector-literal" {
-        return None;
-    }
     characters
-        .iter()
+        .slots()
         .map(|character| {
             character
                 .as_integer()
@@ -689,6 +684,14 @@ pub(crate) fn vector_items(value: &Value) -> Result<Vec<Value>, LispError> {
         Ok(vector.slots().collect::<Vec<_>>())
     } else {
         Err(LispError::WrongTypeArgument("vectorp".into(), *value))
+    }
+}
+
+/// The elements of VALUE, a vector or a proper list.
+pub(crate) fn vector_or_list_items(value: &Value) -> Result<Vec<Value>, LispError> {
+    match value.kind() {
+        Kind::Vector(vector) => Ok(vector.slots().collect()),
+        _ => value.to_vec(),
     }
 }
 

@@ -1338,7 +1338,7 @@ pub(crate) mod tests {
             Value::StringObject(crate::lisp::types::StringObjectRef::from_unibyte(vec![
                 0o211, 0o207,
             ])),
-            Value::list([Value::symbol("vector-literal")]),
+            Value::vector([]),
             Value::Integer(3),
         ];
         let object = ByteCodeObject::from_slots(&slots).unwrap().unwrap();
@@ -1394,14 +1394,14 @@ pub(crate) mod tests {
         let slots = [
             Value::Integer(0),
             Value::String("\u{53}".into()), // 0o123 is Sub1 — fine; use 0o153
-            Value::list([Value::symbol("vector-literal")]),
+            Value::vector([]),
             Value::Integer(2),
         ];
         assert!(ByteCodeObject::from_slots(&slots).unwrap().is_some());
         let slots = [
             Value::Integer(0),
             Value::String("\u{6B}".into()), // 0o153: undefined in GNU 30.2
-            Value::list([Value::symbol("vector-literal")]),
+            Value::vector([]),
             Value::Integer(2),
         ];
         assert_eq!(

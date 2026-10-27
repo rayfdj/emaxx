@@ -1266,9 +1266,7 @@ pub(crate) fn remove_equal(
         if filtered.len() == items.len() {
             return Ok(*sequence);
         }
-        let mut result = vec![Value::symbol("vector-literal")];
-        result.extend(filtered);
-        return Ok(Value::list(result));
+        return Ok(Value::vector(filtered));
     }
 
     match sequence.kind() {

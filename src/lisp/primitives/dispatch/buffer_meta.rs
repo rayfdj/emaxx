@@ -1520,12 +1520,10 @@ define_dispatch!(
                         .iter()
                         .all(|variant| interp.has_coding_system(variant))
                     {
-                        Value::list(
-                            std::iter::once(Value::Symbol("vector-literal".into())).chain(
-                                variants
-                                    .into_iter()
-                                    .map(|value| Value::Symbol(value.into())),
-                            ),
+                        Value::vector(
+                            variants
+                                .into_iter()
+                                .map(|value| Value::Symbol(value.into())),
                         )
                     } else {
                         Value::Nil

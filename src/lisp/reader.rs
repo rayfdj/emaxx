@@ -2960,8 +2960,7 @@ mod tests {
     fn bare_vector_syntax() {
         assert_eq!(
             read_one("[1 2 foo]"),
-            Value::list([
-                Value::Symbol("vector-literal".into()),
+            Value::vector([
                 Value::Integer(1),
                 Value::Integer(2),
                 Value::Symbol("foo".into()),
@@ -3189,10 +3188,9 @@ mod tests {
                 if kind == "a"
                     && field == "b"
                     && matches!(nested.as_ref(), ReaderForm::Record { .. })
-                    && vector.value().to_vec().ok().is_some_and(|items| matches!(
+                    && crate::lisp::primitives::vector_items(&vector.value()).is_ok_and(|items| matches!(
                         crate::lisp::types::kinds(&items).as_slice(),
-                        [Kind::Symbol(name), Kind::Symbol(item)]
-                            if name == "vector-literal" && item == "e"
+                        [Kind::Symbol(item)] if item == "e"
                     ))
         ));
     }

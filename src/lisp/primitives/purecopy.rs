@@ -267,7 +267,7 @@ mod tests {
     use super::*;
 
     fn vector(values: impl IntoIterator<Item = Value>) -> Value {
-        Value::list(std::iter::once(Value::symbol("vector-literal")).chain(values))
+        Value::vector(values)
     }
 
     #[test]

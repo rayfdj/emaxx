@@ -4,7 +4,7 @@ use crate::lisp::types::Kind;
 use crate::lisp::types::LispErrorKind;
 
 fn event_vector(events: impl IntoIterator<Item = Value>) -> Value {
-    Value::list(std::iter::once(Value::symbol("vector-literal")).chain(events))
+    Value::vector(events)
 }
 
 fn event_array(events: &[Value], force_vector: bool) -> Value {
@@ -1203,10 +1203,7 @@ define_dispatch!(
                         .kbd_macro_definition
                         .truncate(state.kbd_macro_committed_len);
                 }
-                let last_macro = Value::list(
-                    std::iter::once(Value::symbol("vector-literal"))
-                        .chain(interp.kbd_macro_definition.iter().cloned()),
-                );
+                let last_macro = Value::vector(interp.kbd_macro_definition.iter().cloned());
                 interp.set_variable("last-kbd-macro", last_macro, env);
                 super::call(
                     interp,
@@ -1866,15 +1863,7 @@ pub(super) fn direct_elt(
 ) -> Result<Value, LispError> {
     let name = "elt";
     need_args(name, args, 2)?;
-    // A proper list headed by `vector-literal' is a vector's list form.
-    // Its head is read first: copying every other list to see its head
-    // made each `elt' as long as the list.
-    if args[0].cons_ref().is_some_and(
-        |cell| matches!(cell.car.get().kind(), Kind::Symbol(symbol) if symbol == "vector-literal"),
-    ) && args[0].to_vec().is_ok()
-    {
-        super::call(interp, "aref", args, env)
-    } else if matches!(args[0].kind(), Kind::Nil | Kind::Cons(_)) {
+    if matches!(args[0].kind(), Kind::Nil | Kind::Cons(_)) {
         nth_list_element(interp, env, &args[0], &args[1])
     } else {
         super::call(interp, "aref", args, env)

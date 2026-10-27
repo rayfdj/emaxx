@@ -266,10 +266,7 @@ impl Interpreter {
                     vector_slot_value(vector, index)
                         .expect("face vector has LFACE_VECTOR_SIZE slots")
                 });
-                (
-                    name.clone(),
-                    Value::list(std::iter::once(Value::symbol("vector-literal")).chain(slots)),
-                )
+                (name.clone(), Value::vector(slots))
             })
             .collect();
         to.borrow_mut().local_faces = copied;

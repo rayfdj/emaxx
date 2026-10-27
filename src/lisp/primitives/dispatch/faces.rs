@@ -49,7 +49,7 @@ fn resolve_face_name(interp: &mut Interpreter, value: &Value) -> Result<String, 
 }
 
 fn face_vector(items: impl IntoIterator<Item = Value>) -> Value {
-    Value::list(std::iter::once(Value::symbol("vector-literal")).chain(items))
+    Value::vector(items)
 }
 
 fn unspecified_face_vector() -> Value {

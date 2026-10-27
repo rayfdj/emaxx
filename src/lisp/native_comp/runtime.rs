@@ -6721,11 +6721,7 @@ mod tests {
         let mut environment = Env::new();
         let mut runtime = NativeRuntime::default();
         let retained = Value::cons(Value::symbol("retained"), Value::Nil);
-        let prototype_constants = Value::list([
-            Value::symbol("vector-literal"),
-            Value::symbol("placeholder"),
-            retained,
-        ]);
+        let prototype_constants = Value::vector([Value::symbol("placeholder"), retained]);
         let prototype = Value::allocated_closure(&[
             Value::Nil,
             Value::string("bytecode"),
@@ -6883,11 +6879,7 @@ mod tests {
         );
         assert_ne!(mapped.cons_id(), sequence.cons_id());
 
-        let vector = Value::list([
-            Value::symbol("vector-literal"),
-            Value::Integer(4),
-            Value::Integer(5),
-        ]);
+        let vector = Value::vector([Value::Integer(4), Value::Integer(5)]);
         assert_eq!(
             runtime
                 .invoke(
@@ -6963,12 +6955,7 @@ mod tests {
             .expect_err("circular list");
         assert_eq!(error.condition_type(), "circular-list");
 
-        let vector = Value::list([
-            Value::symbol("vector-literal"),
-            Value::Integer(1),
-            Value::Integer(2),
-            Value::Integer(3),
-        ]);
+        let vector = Value::vector([Value::Integer(1), Value::Integer(2), Value::Integer(3)]);
         let reversed = runtime
             .invoke(
                 &mut interpreter,
@@ -7019,11 +7006,7 @@ mod tests {
             Value::Integer(3)
         );
 
-        let vector = Value::list([
-            Value::symbol("vector-literal"),
-            Value::Integer(1),
-            Value::Integer(2),
-        ]);
+        let vector = Value::vector([Value::Integer(1), Value::Integer(2)]);
         assert_eq!(
             invoke(&mut runtime, &mut interpreter, &mut environment, vector,)
                 .expect("vector fallback"),
@@ -7349,11 +7332,7 @@ mod tests {
         let mut interpreter = Interpreter::new();
         let mut environment = Env::new();
         let mut runtime = NativeRuntime::default();
-        let vector = Value::list([
-            Value::symbol("vector-literal"),
-            Value::Integer(1),
-            Value::Integer(2),
-        ]);
+        let vector = Value::vector([Value::Integer(1), Value::Integer(2)]);
 
         assert_eq!(
             runtime
@@ -8205,11 +8184,7 @@ mod tests {
                 Value::symbol("cons"),
             ),
             (
-                Value::list([
-                    Value::symbol("vector-literal"),
-                    Value::Integer(1),
-                    Value::Integer(2),
-                ]),
+                Value::vector([Value::Integer(1), Value::Integer(2)]),
                 Value::symbol("vector"),
             ),
         ] {
@@ -8664,7 +8639,7 @@ mod tests {
             Value::StringObject(crate::lisp::types::StringObjectRef::from_unibyte(vec![
                 0o211, 0o124, 0o207,
             ])),
-            Value::list([Value::symbol("vector-literal")]),
+            Value::vector([]),
             Value::Integer(3),
         ]);
         assert!(matches!(

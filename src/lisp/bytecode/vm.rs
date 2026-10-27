@@ -3430,7 +3430,7 @@ fn exec_op_inline(vm: &mut VmFrames<'_>, op: Op, pc: &mut usize) -> Result<(), L
             }
         }
         // bytecode.c:Blist and BlistN: the operands consed from the stack,
-        // as Flist does (a leading `vector-literal' stays a symbol).
+        // as Flist does.
         Op::ListN(n) => {
             let start = interp.bc_stack.len() - n as usize;
             let list = Value::list_of(&interp.bc_stack[start..]);
@@ -4903,7 +4903,7 @@ mod tests {
             )
         );
 
-        let vector = Value::list([Value::symbol("vector-literal"), Value::Integer(9)]);
+        let vector = Value::vector([Value::Integer(9)]);
         let value = run("emaxx-fx-branch", std::slice::from_ref(&vector)).unwrap();
         assert_eq!(value, Value::list([vector, Value::symbol("tagged")]));
     }

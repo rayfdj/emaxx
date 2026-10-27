@@ -399,10 +399,7 @@ impl Interpreter {
             // character.c reserves sixteen IDs initially.  mule.el doubles
             // this vector when it fills; an empty vector can never grow
             // because doubling zero still yields zero.
-            "translation-table-vector" => Some(Value::list(
-                std::iter::once(Value::symbol("vector-literal"))
-                    .chain(std::iter::repeat_n(Value::Nil, 16)),
-            )),
+            "translation-table-vector" => Some(Value::vector(std::iter::repeat_n(Value::Nil, 16))),
             "gc-elapsed" => Some(Value::float(0.0)),
             "gcs-done" => Some(Value::Integer(0)),
             "syntax-propertize--done" => Some(Value::Integer(-1)),

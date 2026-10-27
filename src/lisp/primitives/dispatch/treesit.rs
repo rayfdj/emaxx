@@ -179,12 +179,7 @@ fn pattern_expand(
         return Ok(query_string(&string.text));
     }
     if is_vector_value(pattern) {
-        let mut items = pattern.to_vec()?;
-        debug_assert_eq!(
-            items.first().and_then(|value| value.symbol_str()),
-            Some("vector-literal")
-        );
-        items.remove(0);
+        let items = vector_items(pattern)?;
         return Ok(format!(
             "[{}]",
             expand_patterns(interp, &items, env)?.join(" ")

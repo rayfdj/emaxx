@@ -944,10 +944,10 @@ pub(crate) fn reverse_sequence_value(value: &Value) -> Result<Value, LispError> 
         return Ok(make_bool_vector_value(bits));
     }
     match value.kind() {
-        Kind::Vector(_) | Kind::Cons(_) if is_vector_value(value) => {
-            let mut items = value.to_vec()?;
-            items[1..].reverse();
-            Ok(Value::list(items))
+        Kind::Vector(_) => {
+            let mut items = vector_items(value)?;
+            items.reverse();
+            Ok(Value::vector(items))
         }
         Kind::Nil | Kind::Cons(_) => {
             let mut items = value.to_vec()?;

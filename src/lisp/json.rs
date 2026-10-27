@@ -712,9 +712,7 @@ fn node_to_lisp(interp: &mut Interpreter, node: JsonNode, options: &JsonParseOpt
                 .map(|item| node_to_lisp(interp, item, options))
                 .collect();
             match options.array_type {
-                JsonArrayType::Vector => Value::list(
-                    std::iter::once(Value::Symbol("vector-literal".into())).chain(items),
-                ),
+                JsonArrayType::Vector => Value::vector(items),
                 JsonArrayType::List => Value::list(items),
             }
         }
@@ -794,18 +792,11 @@ fn serialize_value(
             _ => Err(LispError::TypeError("json-value".into(), value.type_name())),
         },
         Kind::HashTable(_) => serialize_hash_table(interp, value, options, depth),
-        // json.c lisp_to_json: a vector is a JSON array.  (The merged vector
-        // representation is `Value::Vector'; the `vector-literal' list below
-        // is the older spelling that reader forms can still produce.)
+        // json.c lisp_to_json: a vector is a JSON array.
         Kind::Vector(_) => serialize_array(interp, &vector_items(value)?, options, depth),
         Kind::Cons(_) => {
             if let Some(rendered) = serialize_hash_table_literal(interp, value, options, depth)? {
                 return Ok(rendered);
-            }
-            if let Ok(items) = vector_items(value)
-                && matches!(value.to_vec().ok().and_then(|v| v.first().cloned()).map(|v| v.kind()), Some(Kind::Symbol(symbol)) if symbol == "vector-literal")
-            {
-                return serialize_array(interp, &items, options, depth);
             }
             if string_like(value).is_some() {
                 return serialize_string(value);

@@ -3090,6 +3090,50 @@ mod tests {
     }
 
     #[test]
+    fn a_list_headed_by_vector_literal_is_a_list() {
+        // The symbol `vector-literal' is Lisp data like any other: a list
+        // that starts with it stays a list through the primitives that
+        // build lists, and vectors are made and copied as vectors.
+        run_with_large_stack(|| {
+            let emacs_repo = compat::project_root().join("../emacs");
+            let options = BatchRunOptions {
+                load_path: compat::emaxx_upstream_load_path(&emacs_repo)
+                    .expect("upstream load path"),
+                ..Default::default()
+            };
+            let mut interpreter =
+                initialize_batch_interpreter(&options).expect("init batch interpreter");
+            let form = Reader::new(
+                "(prin1-to-string
+                  (list (copy-sequence (list 'vector-literal 1))
+                        (reverse (list 1 'vector-literal))
+                        (elt (list 'vector-literal 'a 'b) 1)
+                        (nreverse (list 2 'vector-literal))
+                        (append (list 'vector-literal) nil)
+                        (copy-sequence [1 2]) (reverse [1 2 3]) (sort [3 1 2] #'<)
+                        (vconcat (list 1 2) [3]) (make-vector 2 'x)
+                        (vector 'vector-literal 1) (remove 1 [1 2 1])
+                        (seq-into (list 1 2) 'vector) (mapcar #'identity [4 5])
+                        (delete-dups (list 'vector-literal 1 'vector-literal))))",
+            )
+            .read_all()
+            .expect("read vector-literal probe")
+            .remove(0);
+            let printed = interpreter
+                .eval(&form, &mut crate::lisp::types::Env::new())
+                .expect("evaluate vector-literal probe");
+            assert_eq!(
+                lisp::primitives::string_like(&printed)
+                    .expect("printed")
+                    .text,
+                "((vector-literal 1) (vector-literal 1) a (vector-literal 2) (vector-literal) \
+                 [1 2] [3 2 1] [1 2 3] [1 2 3] [x x] [vector-literal 1] [2] [1 2] (4 5) \
+                 (vector-literal 1))"
+            );
+        });
+    }
+
+    #[test]
     fn image_symbols_are_the_obarrays_and_the_initial_frame_is_terminal_frame() {
         // pdumper.c maps the dumped symbols where the image holds them:
         // a preloaded symbol is the obarray's, its cells are traced by the
@@ -3922,8 +3966,7 @@ mod tests {
                         Value::Symbol("utf-8-unix".into()),
                     ]),
                     Value::Integer(13),
-                    Value::list([
-                        Value::Symbol("vector-literal".into()),
+                    Value::vector([
                         Value::Integer(2),
                         Value::Integer(16),
                         Value::Integer(0),

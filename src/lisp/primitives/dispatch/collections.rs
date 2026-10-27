@@ -800,7 +800,7 @@ define_dispatch!(
                         // sort.c permutes a vector's own slots: a signal
                         // leaves one sorted in place as far as the sort got.
                         if in_place
-                            && matches!(kind, SortSequenceKind::Vector(_))
+                            && matches!(kind, SortSequenceKind::Vector)
                             && let Some(items) = &failure.items
                         {
                             write_sorted_sequence(&args[0], &kind, items)?;
@@ -848,11 +848,7 @@ define_dispatch!(
                 }
             }
 
-            "vector" => {
-                let mut items = vec![Value::symbol("vector-literal")];
-                items.extend(args.iter().cloned());
-                Ok(Value::list(items))
-            }
+            "vector" => Ok(Value::vector(args.iter().copied())),
             "bool-vector-count-population" => {
                 need_args(name, args, 1)?;
                 let vector = bool_vector_arg(&args[0])?;
@@ -1093,15 +1089,11 @@ define_dispatch!(
                         Some(text.to_string_lossy().into_owned())
                     }
                     fn langinfo_vector(items: &[libc::nl_item]) -> Value {
-                        let mut result = vec![Value::symbol("vector-literal")];
-                        for item in items {
-                            result.push(
-                                langinfo_string(*item)
-                                    .map(|name| Value::String(name.into()))
-                                    .unwrap_or(Value::Nil),
-                            );
-                        }
-                        Value::list(result)
+                        Value::vector(items.iter().map(|item| {
+                            langinfo_string(*item)
+                                .map(|name| Value::String(name.into()))
+                                .unwrap_or(Value::Nil)
+                        }))
                     }
                     match item {
                         "codeset" => {

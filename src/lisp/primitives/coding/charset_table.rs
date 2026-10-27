@@ -109,16 +109,9 @@ fn plist_get(items: &[Value], key: &str) -> Option<Value> {
     })
 }
 
-/// A vector's elements, read through the reader's `vector-literal' form
-/// too.
+/// The elements of a vector, or of a list.
 fn vector_items(value: &Value) -> Option<Vec<Value>> {
-    let values = value.to_vec().ok()?;
-    Some(
-        match values.strip_prefix(&[Value::Symbol("vector-literal".into())]) {
-            Some(rest) => rest.to_vec(),
-            None => values,
-        },
-    )
+    crate::lisp::primitives::vector_or_list_items(value).ok()
 }
 
 impl CharsetInfo {

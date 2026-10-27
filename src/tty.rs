@@ -3543,9 +3543,9 @@ fn displayed_line_with_map(
         };
         // Lisp often builds the replacement with `concat' or
         // `substitute-command-keys', so it can itself be a propertized
-        // string represented by a vector-literal value.  It is still a
-        // string for display purposes; matching only the two direct Rust
-        // string variants dropped Dired's free-space suffix.
+        // string.  It is still a string for display purposes; matching
+        // only the two direct Rust string variants dropped Dired's
+        // free-space suffix.
         let replacement = display
             .as_ref()
             .and_then(|value| crate::lisp::primitives::string_text(value).ok());

@@ -263,10 +263,7 @@ fn map_keymap_direct_value(
 }
 
 fn vector_index_description(index: u32) -> Result<String, LispError> {
-    key_sequence_binding_text(&Value::list([
-        Value::Symbol("vector-literal".into()),
-        Value::Integer(i64::from(index)),
-    ]))
+    key_sequence_binding_text(&Value::vector([Value::Integer(i64::from(index))]))
 }
 
 fn insert_description_indent(interp: &mut Interpreter, column: usize) {

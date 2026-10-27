@@ -1610,7 +1610,7 @@ mod tests {
                 slots: vec![
                     super::types::Value::Integer(0),
                     super::types::Value::String(String::new().into()),
-                    super::types::Value::list([super::types::Value::symbol("vector-literal")]),
+                    super::types::Value::vector([]),
                     super::types::Value::Integer(0),
                     callable_looking_data,
                 ],

@@ -2756,13 +2756,11 @@ impl FrameState {
 }
 
 fn empty_lisp_face_vector() -> Value {
-    Value::list(
-        std::iter::once(Value::symbol("vector-literal"))
-            .chain(std::iter::once(Value::symbol("face")))
-            .chain(std::iter::repeat_n(
-                Value::symbol("unspecified"),
-                LFACE_VECTOR_SIZE - 1,
-            )),
+    Value::vector(
+        std::iter::once(Value::symbol("face")).chain(std::iter::repeat_n(
+            Value::symbol("unspecified"),
+            LFACE_VECTOR_SIZE - 1,
+        )),
     )
 }
 
@@ -2772,7 +2770,7 @@ fn tty_default_lisp_face_vector() -> Value {
     attributes[0] = Value::symbol("face");
     attributes[9] = Value::String("unspecified-fg".into());
     attributes[10] = Value::String("unspecified-bg".into());
-    Value::list(std::iter::once(Value::symbol("vector-literal")).chain(attributes))
+    Value::vector(attributes)
 }
 
 type OrderedHooks = LinkedHashMap<String, Vec<Value>, crate::lisp::primitives::FnvBuildHasher>;
@@ -6031,10 +6029,7 @@ impl Interpreter {
                 ),
                 (
                     "code-conversion-map-vector".into(),
-                    Value::list(
-                        std::iter::once(Value::Symbol("vector-literal".into()))
-                            .chain(std::iter::repeat_n(Value::Nil, 16)),
-                    ),
+                    Value::vector(std::iter::repeat_n(Value::Nil, 16)),
                 ),
                 ("translation-hash-table-vector".into(), Value::Nil),
                 ("font-ccl-encoder-alist".into(), Value::Nil),
@@ -6043,10 +6038,7 @@ impl Interpreter {
                 ("last-code-conversion-error".into(), Value::Nil),
                 (
                     "latin-extra-code-table".into(),
-                    Value::list(
-                        std::iter::once(Value::Symbol("vector-literal".into()))
-                            .chain(std::iter::repeat_n(Value::Nil, 256)),
-                    ),
+                    Value::vector(std::iter::repeat_n(Value::Nil, 256)),
                 ),
                 ("select-safe-coding-system-function".into(), Value::Nil),
                 ("standard-translation-table-for-decode".into(), Value::Nil),
@@ -8023,22 +8015,6 @@ fn buffer_undo_head_to_entry(value: &Value) -> crate::buffer::UndoEntry {
         },
         _ => crate::buffer::UndoEntry::Opaque(*value),
     }
-}
-
-/// Whether VALUE is a proper list whose head is the symbol NAME.  The
-/// head is read in place; the list is walked only when the head matches
-/// (these checks run on every function call and `let', and used to copy
-/// the whole form into a vector to look at its first element).
-fn proper_list_headed_by(value: &Value, name: &str) -> bool {
-    let Some((car, _)) = value.cons_cells() else {
-        return false;
-    };
-    let head_matches = matches!(car.get().kind(), Kind::Symbol(head) if head == name);
-    head_matches && value.to_vec().is_ok()
-}
-
-fn is_vector_literal(value: &Value) -> bool {
-    proper_list_headed_by(value, "vector-literal")
 }
 
 fn is_lambda_form(interp: &Interpreter, value: &Value, env: &Env) -> bool {

@@ -314,7 +314,7 @@ impl Interpreter {
         let Some((varlist, _)) = list_next(args) else {
             return Err(LispError::WrongNumberOfArgs("let*".into(), 0));
         };
-        if is_vector_literal(&varlist) || !matches!(varlist.kind(), Kind::Nil | Kind::Cons(_)) {
+        if !matches!(varlist.kind(), Kind::Nil | Kind::Cons(_)) {
             return Err(wrong_type_argument("listp", varlist));
         }
         // FletX: `lexenv' is the environment at entry; the first lexical

@@ -598,11 +598,10 @@ pub(crate) fn parse_interactive_string(
                 // mouse posn); keyboard keys never do.
                 let event = interp
                     .lookup_var("this-command-keys-vector", env)
-                    .and_then(|keys| keys.to_vec().ok())
+                    .and_then(|keys| vector_or_list_items(&keys).ok())
                     .and_then(|events| {
                         events
                             .into_iter()
-                            .skip(1)
                             .find(|event| matches!(event.kind(), Kind::Cons(_)))
                     });
                 match event {
@@ -1077,9 +1076,7 @@ fn execute_command_binding_inner(
     // raw input separately. Commands and hooks must observe both unchanged.
     interp.set_variable(
         "this-command-keys-vector",
-        Value::list(
-            std::iter::once(Value::Symbol("vector-literal".into())).chain(keys.iter().cloned()),
-        ),
+        Value::vector(keys.iter().cloned()),
         env,
     );
     interp.set_variable("this-command", binding, env);
@@ -1842,9 +1839,12 @@ pub(crate) fn menu_item_details_with_button(
         if def.car().is_ok_and(|help| help.is_string()) {
             def = def.cdr_if_list()?;
         }
+        // An obsolete key binding cache: a cons whose car is nil or a vector.
         if def.car().is_ok_and(|cache| {
-            matches!(cache.car().map(|v| v.kind()), Ok(Kind::Nil))
-                || matches!(cache.car().map(|v| v.kind()), Ok(Kind::Symbol(tag)) if tag == "vector-literal")
+            matches!(
+                cache.car().map(|v| v.kind()),
+                Ok(Kind::Nil | Kind::Vector(_))
+            )
         }) {
             def = def.cdr_if_list()?;
         }

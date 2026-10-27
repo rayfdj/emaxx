@@ -520,7 +520,7 @@ fn apply_follows_eval_c_proper_list_contract() {
         Value::Nil
     );
 
-    let vector = Value::list([Value::symbol("vector-literal"), Value::Integer(1)]);
+    let vector = Value::vector([Value::Integer(1)]);
     match call(
         &mut interp,
         "apply",
@@ -777,11 +777,7 @@ fn assert_upstream_primitive_contract_with_stdin(program: &str, stdin: &str, exp
 
 #[test]
 fn record_literal_detection_does_not_traverse_vector_storage() {
-    let vector = Value::list([
-        Value::symbol("vector-literal"),
-        Value::Integer(1),
-        Value::Integer(2),
-    ]);
+    let vector = Value::vector([Value::Integer(1), Value::Integer(2)]);
     let Kind::Vector(vector_storage) = vector.kind() else {
         panic!("vector syntax must construct a GNU-class vector object")
     };
@@ -799,7 +795,7 @@ fn character_table_literal_materializes_nested_bytecode_decoder() {
             slots: vec![
                 Value::Integer(0),
                 Value::String(String::new().into()),
-                Value::list([Value::symbol("vector-literal")]),
+                Value::vector([]),
                 Value::Integer(0),
             ],
         },
@@ -7007,8 +7003,7 @@ fn coding_system_eol_type_exposes_base_variant_vectors() {
     for (coding, expected) in [
         (
             "utf-8",
-            Value::list([
-                Value::Symbol("vector-literal".into()),
+            Value::vector([
                 Value::Symbol("utf-8-unix".into()),
                 Value::Symbol("utf-8-dos".into()),
                 Value::Symbol("utf-8-mac".into()),
@@ -7017,8 +7012,7 @@ fn coding_system_eol_type_exposes_base_variant_vectors() {
         ("utf-8-unix", Value::Integer(0)),
         (
             "undecided",
-            Value::list([
-                Value::Symbol("vector-literal".into()),
+            Value::vector([
                 Value::Symbol("undecided-unix".into()),
                 Value::Symbol("undecided-dos".into()),
                 Value::Symbol("undecided-mac".into()),
@@ -14168,10 +14162,8 @@ fn network_interface_info_reports_the_real_interface() {
         .expect("evaluate interface-info program");
     let rendered = string_text(&rendered).expect("prin1-to-string returns a string");
 
-    // Compare Lisp-rendered text on both sides.  Rust's `Display' for a cons
-    // whose CDR is a vector flattens it -- `(18 vector-literal 74 ...)' -- while
-    // `prin1' correctly writes `(18 . [74 ...])'; only the Lisp printer is the
-    // contract, and only it is what GNU is being compared against.
+    // Compare Lisp-rendered text on both sides: only the Lisp printer is
+    // the contract, and only it is what GNU is being compared against.
     assert_upstream_primitive_contract(&format!("(princ {program})"), &rendered);
 
     let rows = Reader::new(&rendered)
@@ -19060,11 +19052,8 @@ fn key_description_matches_upstream_string_and_vector_cases() {
         &mut interp,
         "key-description",
         &[
-            Value::list([
-                Value::Symbol("vector-literal".into()),
-                Value::Symbol("right".into()),
-            ]),
-            Value::list([Value::Symbol("vector-literal".into()), Value::Integer(0x18)]),
+            Value::vector([Value::Symbol("right".into())]),
+            Value::vector([Value::Integer(0x18)]),
         ],
         &mut env,
     )
@@ -19075,14 +19064,8 @@ fn key_description_matches_upstream_string_and_vector_cases() {
         &mut interp,
         "key-description",
         &[
-            Value::list([
-                Value::Symbol("vector-literal".into()),
-                Value::Integer('<' as i64),
-            ]),
-            Value::list([
-                Value::Symbol("vector-literal".into()),
-                Value::Integer(KEY_DESCRIPTION_META_PREFIX),
-            ]),
+            Value::vector([Value::Integer('<' as i64)]),
+            Value::vector([Value::Integer(KEY_DESCRIPTION_META_PREFIX)]),
         ],
         &mut env,
     )
@@ -19093,12 +19076,8 @@ fn key_description_matches_upstream_string_and_vector_cases() {
         &mut interp,
         "key-description",
         &[
-            Value::list([
-                Value::Symbol("vector-literal".into()),
-                Value::Integer('c' as i64),
-            ]),
-            Value::list([
-                Value::Symbol("vector-literal".into()),
+            Value::vector([Value::Integer('c' as i64)]),
+            Value::vector([
                 Value::Integer(KEY_DESCRIPTION_META_PREFIX),
                 Value::Integer('g' as i64),
                 Value::Integer(KEY_DESCRIPTION_META_PREFIX),
@@ -19121,8 +19100,7 @@ fn key_description_matches_upstream_string_and_vector_cases() {
     let list_event = call(
         &mut interp,
         "key-description",
-        &[Value::list([
-            Value::Symbol("vector-literal".into()),
+        &[Value::vector([
             Value::list([Value::Symbol("control".into()), Value::Symbol("x".into())]),
             Value::list([Value::Symbol("control".into()), Value::Symbol("f".into())]),
         ])],
@@ -19155,8 +19133,7 @@ fn key_sequence_binding_parts_preserve_control_prefixes() {
         vec!["C-c".to_string(), "g".to_string()]
     );
     assert_eq!(
-        key_sequence_binding_parts(&Value::list([
-            Value::Symbol("vector-literal".into()),
+        key_sequence_binding_parts(&Value::vector([
             Value::Integer(3),
             Value::Integer('g' as i64),
         ]))
@@ -19213,10 +19190,10 @@ fn string_make_multibyte_preserves_identity_or_converts_raw_bytes_without_proper
 
 #[test]
 fn keymap_lookup_uses_the_event_head_of_a_character_range() {
-    let range_event = Value::list([
-        Value::Symbol("vector-literal".into()),
-        Value::cons(Value::Integer('w' as i64), Value::Integer('x' as i64)),
-    ]);
+    let range_event = Value::vector([Value::cons(
+        Value::Integer('w' as i64),
+        Value::Integer('x' as i64),
+    )]);
     assert_eq!(
         key_sequence_keymap_parts(&range_event)
             .expect("a map-keymap character range should remain a valid lookup event"),
@@ -21808,10 +21785,7 @@ fn terminal_command_loop_records_keyboard_macro_events_and_nonmenu_event() {
 
     assert_eq!(
         interp.lookup_var("last-kbd-macro", &env),
-        Some(Value::list([
-            Value::Symbol("vector-literal".into()),
-            Value::Integer(6),
-        ]))
+        Some(Value::vector([Value::Integer(6),]))
     );
     assert_eq!(
         interp.lookup_var("last-input-event", &env),
@@ -21855,8 +21829,7 @@ fn keyboard_macro_records_input_read_inside_a_command() {
 
     assert_eq!(
         interp.lookup_var("last-kbd-macro", &env),
-        Some(Value::list([
-            Value::Symbol("vector-literal".into()),
+        Some(Value::vector([
             Value::Integer(3),
             Value::Integer(114),
             Value::Integer(97),
@@ -21908,8 +21881,7 @@ fn keyboard_macro_records_minibuffer_command_events_exactly_once() {
     );
     assert_eq!(
         interp.lookup_var("last-kbd-macro", &env),
-        Some(Value::list([
-            Value::Symbol("vector-literal".into()),
+        Some(Value::vector([
             Value::Integer(3),
             Value::Integer(99),
             Value::Integer(98),
@@ -25425,9 +25397,7 @@ fn dumped_default_bindings_resolve_for_the_terminal_frontend() {
             "delete-forward-char",
         ),
     ] {
-        let key_vector = Value::list(
-            std::iter::once(Value::Symbol("vector-literal".into())).chain(keys.iter().cloned()),
-        );
+        let key_vector = Value::vector(keys.iter().cloned());
         let binding = call(
             &mut interp,
             "key-binding",
