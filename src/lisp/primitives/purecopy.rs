@@ -208,26 +208,27 @@ fn purecopy_inner(
                 Ok::<Value, LispError>(Value::LispRecord(copy))
             })?
         }
-        Kind::NativeCompUnit(_) => {
-            let printed = render_prin1(interp, value, env)?;
-            return Err(LispError::Signal(format!(
-                "Don't know how to purify: {printed}"
-            )));
-        }
         Kind::HashTable(table) => purecopy_hash_table(interp, table, env)?,
         Kind::Record(id) => {
             return interp
                 .with_lisp_stack_roots(value, |interp| purecopy_record(interp, id.id, env));
         }
-        Kind::Buffer(_)
+        // alloc.c's last case: (error "Don't know how to purify: %S").
+        Kind::NativeCompUnit(_)
+        | Kind::BoolVector(_)
+        | Kind::Buffer(_)
         | Kind::CharTable(_)
         | Kind::SubCharTable(_)
         | Kind::Frame(_)
         | Kind::Terminal(_)
         | Kind::SymbolWithPos(_)
-        | Kind::Finalizer(_)
-        | Kind::ReaderForm(_)
-        | Kind::Unbound => {
+        | Kind::Finalizer(_) => {
+            let printed = render_prin1(interp, value, env)?;
+            return Err(LispError::Signal(format!(
+                "Don't know how to purify: {printed}"
+            )));
+        }
+        Kind::ReaderForm(_) | Kind::Unbound => {
             return Err(LispError::Signal(format!(
                 "Don't know how to purify: {}",
                 value.type_name()

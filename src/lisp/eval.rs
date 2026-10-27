@@ -1264,7 +1264,6 @@ pub(crate) struct SyntaxSegmentCache {
 /// names happen to match.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RecordKind {
-    BoolVector,
     Font,
     Process,
     Obarray,
@@ -1282,10 +1281,8 @@ pub(crate) enum RecordKind {
 }
 
 impl RecordKind {
-    fn gnu_vector_slots(self, logical_slots: usize) -> usize {
+    fn gnu_vector_slots(self) -> usize {
         match self {
-            // lisp.h:Lisp_Bool_Vector is header + bit count + packed words.
-            Self::BoolVector => 2_usize.saturating_add(logical_slots.div_ceil(64)),
             // Verified from the configured GNU headers: 72 and 24 bytes.
             Self::Obarray => 3,
             // alloc.c:allocate_process uses VECSIZE(struct Lisp_Process),
@@ -1449,7 +1446,7 @@ impl RecordState {
     /// The vector slots alloc.c would count for this record (zero for a
     /// kind GNU keeps outside the vectors).
     pub(crate) fn gnu_vector_slots(&self) -> usize {
-        self.kind.gnu_vector_slots(self.slots.len())
+        self.kind.gnu_vector_slots()
     }
 
     pub(crate) fn symbol_type_name(&self) -> Option<&str> {
@@ -3242,6 +3239,15 @@ impl ImageGraphCopier {
                 copy.set_fields(function.fields().map(|field| self.copy(&field)));
                 copied
             }
+            Kind::BoolVector(vector) => {
+                let key = vector.identity();
+                if let Some(copied) = self.vectors.get(&key) {
+                    return *copied;
+                }
+                let copied = Value::BoolVector(crate::lisp::types::BoolVectorRef::copy(vector));
+                self.vectors.insert(key, copied);
+                copied
+            }
             Kind::LispRecord(record) => {
                 let key = record.identity();
                 if let Some(copied) = self.vectors.get(&key) {
@@ -3333,9 +3339,6 @@ impl ImageGraphCopier {
                                 kind: *kind,
                                 slots: slots.iter().map(|slot| self.copy(slot)).collect(),
                             }
-                        }
-                        crate::lisp::types::ReaderForm::BoolVector { bits } => {
-                            crate::lisp::types::ReaderForm::BoolVector { bits: bits.clone() }
                         }
                     },
                 ));
@@ -3524,6 +3527,7 @@ impl LispReachability {
             Kind::SymbolWithPos(value) => value.mark_bit().is_marked(self.epoch),
             Kind::Record(record) => record.mark_bit().is_marked(self.epoch),
             Kind::LispRecord(record) => record.mark_bit().is_marked(self.epoch),
+            Kind::BoolVector(vector) => vector.mark_bit().is_marked(self.epoch),
             Kind::Finalizer(object) => object.mark_bit().is_marked(self.epoch),
             Kind::ReaderForm(value) => value.mark_bit().is_marked(self.epoch),
         }
@@ -3616,6 +3620,7 @@ impl LispReachability {
             Kind::SymbolWithPos(value) => value.mark_bit().mark(self.epoch),
             Kind::Record(record) => record.mark_bit().mark(self.epoch),
             Kind::LispRecord(record) => record.mark_bit().mark(self.epoch),
+            Kind::BoolVector(vector) => vector.mark_bit().mark(self.epoch),
             Kind::Finalizer(object) => object.mark_bit().mark(self.epoch),
             Kind::ReaderForm(value) => value.mark_bit().mark(self.epoch),
         }
@@ -3780,7 +3785,6 @@ impl LispReachability {
                     | ReaderForm::SubCharTable { fields }
                     | ReaderForm::Record { slots: fields }
                     | ReaderForm::Closure { slots: fields, .. } => fields,
-                    ReaderForm::BoolVector { .. } => &[],
                 };
                 for child in children {
                     self.enqueue(child);
@@ -3793,6 +3797,9 @@ impl LispReachability {
             | Kind::Float(_)
             | Kind::BuiltinFunc(_)
             | Kind::Marker(_)
+            // alloc.c:mark_object marks a bool vector and has nothing in
+            // it to follow.
+            | Kind::BoolVector(_)
             | Kind::Unbound => {}
         }
     }

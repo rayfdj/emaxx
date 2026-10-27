@@ -992,7 +992,7 @@ impl Interpreter {
             return id;
         }
         let id = CharTableRef::new(Value::symbol("category-table"), Value::Nil, 2);
-        id.set_default(primitives::make_bool_vector_value(self, [false; 128]));
+        id.set_default(primitives::make_bool_vector_value([false; 128]));
         id.set_extra(0, Value::vector(std::iter::repeat_n(Value::Nil, 95)));
         self.standard_category_table_id = Some(id);
         id

@@ -368,7 +368,6 @@ fn reader_form_fields(form: &crate::lisp::types::ReaderFormRef) -> &[Value] {
         | ReaderForm::SubCharTable { fields }
         | ReaderForm::Record { slots: fields }
         | ReaderForm::Closure { slots: fields, .. } => fields,
-        ReaderForm::BoolVector { .. } => &[],
     }
 }
 
@@ -389,7 +388,6 @@ unsafe fn set_reader_form_field(
         | ReaderForm::SubCharTable { fields }
         | ReaderForm::Record { slots: fields }
         | ReaderForm::Closure { slots: fields, .. } => fields[index] = value,
-        ReaderForm::BoolVector { .. } => {}
     }
 }
 
@@ -1966,11 +1964,15 @@ impl<'a> Reader<'a> {
                 {
                     return Err(LispError::ReadError("#&...".into()));
                 }
-                let bits = (0..length)
-                    .map(|bit| bytes[bit / 8] & (1 << (bit % 8)) != 0)
-                    .collect();
-                self.literal_object(ReaderForm::BoolVector { bits })
-                    .map(Some)
+                // make_uninit_bool_vector, the string's bytes copied in, the
+                // bits past the length cleared.
+                let vector = crate::lisp::types::BoolVectorRef::new(length);
+                for bit in 0..length {
+                    if bytes[bit / 8] & (1 << (bit % 8)) != 0 {
+                        vector.set(bit, true);
+                    }
+                }
+                Ok(Some(Value::BoolVector(vector)))
             }
             Some(b':') => {
                 self.advance()?;
@@ -2657,7 +2659,8 @@ mod tests {
         // Literal placeholders nested anywhere set the flag.
         assert!(emitted("(x (y #s(hash-table data (1 2))))"));
         assert!(emitted("[1 #s(record a) 2]"));
-        assert!(emitted("(f #&3\"\\7\")"));
+        // A bool vector is the object itself, made as read0 makes it.
+        assert!(!emitted("(f #&3\"\\7\")"));
     }
 
     #[test]
@@ -3017,15 +3020,13 @@ mod tests {
 
     #[test]
     fn reads_bool_vector_literals() {
-        let Kind::ReaderForm(form) = read_one(r#"#&8"\1""#).kind() else {
-            panic!("bool vector literal should read as a reader form");
+        // lread.c reads the bool vector itself, the string's bits past the
+        // length cleared.
+        let Kind::BoolVector(vector) = read_one(r#"#&3"\377""#).kind() else {
+            panic!("a bool vector literal reads as a bool vector");
         };
-        assert_eq!(
-            *form,
-            crate::lisp::types::ReaderForm::BoolVector {
-                bits: vec![true, false, false, false, false, false, false, false],
-            }
-        );
+        assert_eq!(vector.bits().collect::<Vec<_>>(), [true, true, true]);
+        assert_eq!(vector.words()[0].get(), 7);
     }
 
     #[test]

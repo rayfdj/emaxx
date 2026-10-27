@@ -1,6 +1,5 @@
 use super::*;
-use crate::lisp::eval::RecordKind;
-use crate::lisp::types::Kind;
+use crate::lisp::types::{BoolVectorRef, Kind};
 
 mod timsort;
 
@@ -21,13 +20,8 @@ pub(crate) fn copy_sequence_value(
         Kind::Cons(_) => Ok(Value::list(value.to_vec()?)),
         Kind::CharTable(id) => interp.clone_char_table(id),
         Kind::LispRecord(record) => Ok(Value::LispRecord(record.shallow_copy())),
-        Kind::Record(id)
-            if interp
-                .find_record(id)
-                .is_some_and(|record| record.kind == RecordKind::BoolVector) =>
-        {
-            interp.copy_record(id.id)
-        }
+        // fns.c:Fcopy_sequence: a new bool vector of the same bits.
+        Kind::BoolVector(vector) => Ok(Value::BoolVector(BoolVectorRef::copy(vector))),
         _ => Err(LispError::WrongTypeArgument("sequencep".into(), *value)),
     }
 }

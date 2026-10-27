@@ -449,14 +449,9 @@ impl Printer {
                 return Ok(Step::Next);
             }
             Kind::HashTable(table) => return self.print_hash_table(interp, env, table, escape),
-            Kind::Record(id)
-                if interp.find_record(id).is_some_and(|record| {
-                    record.kind == crate::lisp::eval::RecordKind::BoolVector
-                }) =>
-            {
-                let bits = bool_vector_bits(interp, &obj)?;
+            Kind::BoolVector(vector) => {
                 self.out
-                    .push_str(&render_bool_vector_prin1(interp, env, &bits, self.options));
+                    .push_str(&render_bool_vector_prin1(interp, env, vector, self.options));
             }
             Kind::Unbound | Kind::ReaderForm(_) => self.out.push_str(&obj.to_string()),
             _ => self.print_vectorlike_unreadable(interp, env, obj, escape)?,
@@ -1008,8 +1003,7 @@ impl Printer {
                 rendered
             }
             RecordKind::WindowConfiguration => "#<window-configuration>".into(),
-            RecordKind::BoolVector
-            | RecordKind::Font
+            RecordKind::Font
             | RecordKind::TreeSitterParser
             | RecordKind::TreeSitterNode
             | RecordKind::TreeSitterCompiledQuery

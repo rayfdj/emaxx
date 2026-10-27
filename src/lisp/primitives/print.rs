@@ -394,7 +394,7 @@ pub(crate) fn charset_text_properties_print(
 fn render_bool_vector_prin1(
     interp: &Interpreter,
     env: &Env,
-    bits: &[bool],
+    vector: crate::lisp::types::BoolVectorRef,
     options: PrintOptions,
 ) -> String {
     let escape_newlines = interp
@@ -404,14 +404,15 @@ fn render_bool_vector_prin1(
         .lookup_var_key(cached_symbol!("print-escape-control-characters"), env)
         .is_some_and(|value| value.is_truthy());
 
-    let size = bits.len();
+    let size = vector.len();
     let real_size_in_bytes = size.div_ceil(8);
-    let mut data = vec![0u8; real_size_in_bytes];
-    for (index, bit) in bits.iter().enumerate() {
-        if *bit {
-            data[index / 8] |= 1 << (index % 8);
-        }
-    }
+    // bool_vector_uchar_data: the words' bytes in memory order.
+    let data = vector
+        .words()
+        .iter()
+        .flat_map(|word| word.get().to_le_bytes())
+        .take(real_size_in_bytes)
+        .collect::<Vec<u8>>();
     let size_in_bytes = options
         .length
         .map_or(real_size_in_bytes, |limit| limit.min(real_size_in_bytes));

@@ -5201,6 +5201,7 @@ impl NativeHeap {
                         | crate::lisp::alloc::VectorTag::Closure
                         | crate::lisp::alloc::VectorTag::Bignum
                         | crate::lisp::alloc::VectorTag::Record
+                        | crate::lisp::alloc::VectorTag::BoolVector
                         | crate::lisp::alloc::VectorTag::ReaderForm
                         | crate::lisp::alloc::VectorTag::Buffer
                         | crate::lisp::alloc::VectorTag::Terminal

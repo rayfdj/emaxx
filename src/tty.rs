@@ -2088,9 +2088,7 @@ impl<'a> CharacterDisplayContext<'a> {
             return 0;
         };
         let set = table.get(u32::from(character));
-        let member = |category: u8| {
-            crate::lisp::primitives::category_member(self.interpreter, &set, category)
-        };
+        let member = |category: u8| crate::lisp::primitives::category_member(&set, category);
         let mut bits = 0;
         if member(b'|') {
             bits |= layout::LINE_BREAKABLE;

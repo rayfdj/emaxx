@@ -6885,8 +6885,8 @@ fn key_description(
     prefix: Value,
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    let nkeys = sequence_length_value(interp, &keys)?;
-    let nprefix = sequence_length_value(interp, &prefix)?;
+    let nkeys = sequence_length_value(&keys)?;
+    let nprefix = sequence_length_value(&prefix)?;
     let meta_prefix_char = interp
         .lookup_var("meta-prefix-char", env)
         .unwrap_or(Value::Integer(KEY_DESCRIPTION_META_PREFIX));

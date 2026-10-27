@@ -1280,10 +1280,7 @@ fn value_less_vectors_break_ties_after_equal_prefix_values() {
             )
             .expect("create vector"),
         ),
-        (
-            "bool-vector",
-            make_bool_vector_value(&mut interp, [true, false, true]),
-        ),
+        ("bool-vector", make_bool_vector_value([true, false, true])),
         (
             "record",
             interp.create_record("a", vec![Value::Integer(2), Value::Integer(3)]),
@@ -1545,23 +1542,23 @@ fn value_less_selected_upstream_ordered_cases_match_emacs() {
         ),
         (
             "bool_vector_empty",
-            make_bool_vector_value(&mut interp, []),
-            make_bool_vector_value(&mut interp, [false]),
+            make_bool_vector_value([]),
+            make_bool_vector_value([false]),
         ),
         (
             "bool_vector_false_true",
-            make_bool_vector_value(&mut interp, [false]),
-            make_bool_vector_value(&mut interp, [true]),
+            make_bool_vector_value([false]),
+            make_bool_vector_value([true]),
         ),
         (
             "bool_vector_bit_flip",
-            make_bool_vector_value(&mut interp, [true, false, true, false]),
-            make_bool_vector_value(&mut interp, [true, false, true, true]),
+            make_bool_vector_value([true, false, true, false]),
+            make_bool_vector_value([true, false, true, true]),
         ),
         (
             "bool_vector_prefix",
-            make_bool_vector_value(&mut interp, [true, false, true]),
-            make_bool_vector_value(&mut interp, [true, false, true, false]),
+            make_bool_vector_value([true, false, true]),
+            make_bool_vector_value([true, false, true, false]),
         ),
         ("record_type", record_a23, record_b34),
         ("record_prefix", record_b, record_ba),
@@ -1856,10 +1853,7 @@ fn value_less_selected_upstream_type_mismatch_cases_match_emacs() {
             )
             .expect("vector"),
         ),
-        (
-            "bool_vector",
-            make_bool_vector_value(&mut interp, [false, true]),
-        ),
+        ("bool_vector", make_bool_vector_value([false, true])),
         (
             "record",
             interp.create_record("a", vec![Value::Symbol("b".into())]),

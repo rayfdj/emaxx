@@ -3674,7 +3674,7 @@ fn exec_op_inline(vm: &mut VmFrames<'_>, op: Op, pc: &mut usize) -> Result<(), L
         Op::Length => {
             let sequence = pop!();
             push!(Value::Integer(primitives::sequence_length_value(
-                interp, &sequence,
+                &sequence,
             )?));
         }
         // One-argument primitive ops.

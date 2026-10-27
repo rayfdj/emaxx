@@ -141,13 +141,6 @@ impl Interpreter {
                 }
                 Ok(value)
             }
-            ReaderForm::BoolVector { bits } => Ok(self.create_pseudovector(
-                RecordKind::BoolVector,
-                "bool-vector",
-                bits.iter()
-                    .map(|bit| if *bit { Value::T } else { Value::Nil })
-                    .collect(),
-            )),
             ReaderForm::HashTable { fields } => {
                 crate::lisp::primitives::hash_table_from_read_fields(self, &fields, env)
             }
@@ -209,21 +202,6 @@ impl Interpreter {
         active_reader_forms: &mut std::collections::HashSet<usize>,
         records: &mut std::collections::HashMap<usize, Value>,
     ) -> Result<Value, LispError> {
-        if let Kind::ReaderForm(form) = value.kind()
-            && let ReaderForm::BoolVector { bits } = form.as_ref()
-        {
-            // GNU's reader allocates the bool vector itself; Emaxx does it
-            // here, at the same boundary as `#s(...)' records, so the object
-            // -- not a reader marker -- is what quoted structure, bytecode
-            // constants and `read' hand to Lisp.
-            return Ok(self.create_pseudovector(
-                RecordKind::BoolVector,
-                "bool-vector",
-                bits.iter()
-                    .map(|bit| if *bit { Value::T } else { Value::Nil })
-                    .collect(),
-            ));
-        }
         if let Kind::ReaderForm(form) = value.kind()
             && matches!(
                 form.as_ref(),

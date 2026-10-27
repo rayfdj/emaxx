@@ -41,20 +41,18 @@ define_dispatch!(
             }
             "arrayp" => {
                 need_args(name, args, 1)?;
-                Ok(
-                    if args[0].is_string() || is_vector_like_value(interp, &args[0]) {
-                        Value::T
-                    } else {
-                        Value::Nil
-                    },
-                )
+                Ok(if args[0].is_string() || is_vector_like_value(&args[0]) {
+                    Value::T
+                } else {
+                    Value::Nil
+                })
             }
             "sequencep" => {
                 need_args(name, args, 1)?;
                 Ok(
                     if matches!(args[0].kind(), Kind::Nil | Kind::Cons(_))
                         || args[0].is_string()
-                        || is_vector_like_value(interp, &args[0])
+                        || is_vector_like_value(&args[0])
                     {
                         Value::T
                     } else {
@@ -95,7 +93,7 @@ define_dispatch!(
             }
             "bool-vector-p" => {
                 need_args(name, args, 1)?;
-                Ok(if is_bool_vector_value(interp, &args[0]) {
+                Ok(if is_bool_vector_value(&args[0]) {
                     Value::T
                 } else {
                     Value::Nil
@@ -103,22 +101,7 @@ define_dispatch!(
             }
             "bool-vector-subsetp" => {
                 need_args(name, args, 2)?;
-                let left = bool_vector_bits(interp, &args[0])?;
-                let right = bool_vector_bits(interp, &args[1])?;
-                if left.len() != right.len() {
-                    return Err(LispError::Signal("Args out of range".into()));
-                }
-                Ok(
-                    if left
-                        .iter()
-                        .zip(&right)
-                        .all(|(left_bit, right_bit)| !*left_bit || *right_bit)
-                    {
-                        Value::T
-                    } else {
-                        Value::Nil
-                    },
-                )
+                super::collections::bool_vector_subsetp(&args[0], &args[1])
             }
             "floatp" => {
                 need_args(name, args, 1)?;
@@ -724,24 +707,20 @@ define_dispatch!(
 
             "atom" => {
                 need_args(name, args, 1)?;
-                Ok(
-                    if args[0].is_cons() && !is_vector_like_value(interp, &args[0]) {
-                        Value::Nil
-                    } else {
-                        Value::T
-                    },
-                )
+                Ok(if args[0].is_cons() && !is_vector_like_value(&args[0]) {
+                    Value::Nil
+                } else {
+                    Value::T
+                })
             }
 
             "nlistp" => {
                 need_args(name, args, 1)?;
-                Ok(
-                    if args[0].is_list() && !is_vector_like_value(interp, &args[0]) {
-                        Value::Nil
-                    } else {
-                        Value::T
-                    },
-                )
+                Ok(if args[0].is_list() && !is_vector_like_value(&args[0]) {
+                    Value::Nil
+                } else {
+                    Value::T
+                })
             }
 
             "characterp" => {

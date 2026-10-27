@@ -236,6 +236,15 @@ fn equal_atoms(
         (Kind::LispRecord(left), Kind::LispRecord(right)) => {
             left.len() == right.len() && slots(&mut left.slots(), &mut right.slots())?
         }
+        // fns.c:internal_equal: the lengths, then the bits' bytes.
+        (Kind::BoolVector(left), Kind::BoolVector(right)) => {
+            left.len() == right.len()
+                && left
+                    .words()
+                    .iter()
+                    .zip(right.words())
+                    .all(|(left, right)| left.get() == right.get())
+        }
         // A record and the reader's form of a record literal.
         (Kind::LispRecord(record), _) | (_, Kind::LispRecord(record)) => {
             let form = if matches!(o1.kind(), Kind::LispRecord(_)) {
@@ -266,9 +275,6 @@ fn equal_atoms(
             }
             use crate::lisp::eval::RecordKind;
             match left.kind {
-                RecordKind::BoolVector => {
-                    bool_vector_values(interp, &o1).ok() == bool_vector_values(interp, &o2).ok()
-                }
                 RecordKind::TreeSitterNode => {
                     let left = interp.treesit_node_state(&o1);
                     let right = interp.treesit_node_state(&o2);
@@ -510,6 +516,7 @@ fn values_eq_by_kind(left: &Value, right: &Value) -> bool {
         (Kind::Finalizer(left_id), Kind::Finalizer(right_id)) => left_id == right_id,
         (Kind::Record(left), Kind::Record(right)) => left.ptr_eq(&right),
         (Kind::LispRecord(left), Kind::LispRecord(right)) => left.ptr_eq(&right),
+        (Kind::BoolVector(left), Kind::BoolVector(right)) => left.identity() == right.identity(),
         // eq must be reflexive on every object: edebug-unwrap*'s fixed point
         // `(while (not (eq sexp (setq sexp (edebug-unwrap sexp)))))' spins
         // forever when an opaque form is never eq to itself.
@@ -674,7 +681,7 @@ fn rarely_quit(interp: &mut Interpreter, env: &mut Env, count: i64) -> Result<()
     Ok(())
 }
 
-pub(crate) fn sequence_length_value(interp: &Interpreter, value: &Value) -> Result<i64, LispError> {
+pub(crate) fn sequence_length_value(value: &Value) -> Result<i64, LispError> {
     if let Some(items) = record_literal_items(value) {
         return Ok(items.len().saturating_sub(1) as i64);
     }
@@ -689,9 +696,7 @@ pub(crate) fn sequence_length_value(interp: &Interpreter, value: &Value) -> Resu
         // fns.c Flength: a char-table's length is MAX_CHAR (0x3FFFFF),
         // not the number of covered codepoints.
         Kind::CharTable(_) => Ok(0x3f_ffff),
-        item if is_bool_vector_value(interp, &item.value()) => {
-            Ok(bool_vector_values(interp, &item.value())?.len() as i64)
-        }
+        Kind::BoolVector(vector) => Ok(vector.len() as i64),
         Kind::Closure(lambda) => Ok(lambda.public_len() as i64),
         Kind::LispRecord(record) => Ok(record.len() as i64),
         // fns.c:list_length counts the tails in place (FOR_EACH_TAIL and
@@ -892,6 +897,10 @@ pub(crate) fn compare_record_values(
         (Kind::LispRecord(_), _) | (_, Kind::LispRecord(_)) => {
             return Err(type_mismatch_signal(left, right));
         }
+        (Kind::BoolVector(a), Kind::BoolVector(b)) => return Ok(Some(bool_vector_cmp(a, b))),
+        (Kind::BoolVector(_), _) | (_, Kind::BoolVector(_)) => {
+            return Err(type_mismatch_signal(left, right));
+        }
         _ => {}
     }
     match (left.kind(), right.kind()) {
@@ -918,20 +927,6 @@ pub(crate) fn compare_record_values(
     }
 
     match left_record.kind {
-        crate::lisp::eval::RecordKind::BoolVector => {
-            let left_bits = bool_vector_bits(interp, left)?;
-            let right_bits = bool_vector_bits(interp, right)?;
-            for (left_bit, right_bit) in left_bits.iter().zip(right_bits.iter()) {
-                match left_bit.cmp(right_bit) {
-                    Ordering::Less => return Ok(Some(ValueOrder::Less)),
-                    Ordering::Greater => return Ok(Some(ValueOrder::Greater)),
-                    Ordering::Equal => {}
-                }
-            }
-            Ok(Some(order_from_ordering(
-                left_bits.len().cmp(&right_bits.len()),
-            )))
-        }
         crate::lisp::eval::RecordKind::Process => Ok(Some(
             match (
                 interp.process_name(left_id.id),
@@ -1629,6 +1624,45 @@ fn hash_value_recursive_with_symbol_positions(
     }
 }
 
+/// fns.c:bool_vector_cmp: the lexicographic order of the bits, the equal
+/// words skipped, a proper prefix first.
+fn bool_vector_cmp(
+    a: crate::lisp::types::BoolVectorRef,
+    b: crate::lisp::types::BoolVectorRef,
+) -> ValueOrder {
+    use crate::lisp::alloc::vectors::bool_vectors::BITS_PER_BITS_WORD;
+    let (mut na, mut nb) = (a.len(), b.len());
+    let words_min = na.min(nb) / BITS_PER_BITS_WORD;
+    let (ad, bd) = (a.words(), b.words());
+    let mut i = 0;
+    while i < words_min && ad[i].get() == bd[i].get() {
+        i += 1;
+    }
+    na -= i * BITS_PER_BITS_WORD;
+    nb -= i * BITS_PER_BITS_WORD;
+    if nb == 0 {
+        return if na != 0 {
+            ValueOrder::Greater
+        } else {
+            ValueOrder::Equal
+        };
+    }
+    if na == 0 {
+        return ValueOrder::Less;
+    }
+    let (aw, bw) = (ad[i].get(), bd[i].get());
+    let xw = aw ^ bw;
+    if xw == 0 {
+        return order_from_ordering(na.cmp(&nb));
+    }
+    // The first difference.
+    if xw.isolate_lowest_one() & aw != 0 {
+        ValueOrder::Greater
+    } else {
+        ValueOrder::Less
+    }
+}
+
 pub(crate) fn hash_value_eq(state: &mut u64, value: &Value) {
     match value.kind() {
         Kind::Nil => hash_mix(state, 0),
@@ -1704,6 +1738,10 @@ pub(crate) fn hash_value_eq(state: &mut u64, value: &Value) {
         Kind::LispRecord(record) => {
             hash_mix(state, 45);
             hash_mix(state, record.identity() as u64);
+        }
+        Kind::BoolVector(vector) => {
+            hash_mix(state, 23);
+            hash_mix(state, vector.identity() as u64);
         }
         Kind::Record(id) => {
             hash_mix(state, 12);
@@ -1956,6 +1994,14 @@ pub(crate) fn hash_value_equal_at(
                 );
             }
         }
+        // fns.c:sxhash_bool_vector: the length, then the words.
+        Kind::BoolVector(vector) => {
+            hash_mix(state, 55);
+            hash_mix(state, vector.len() as u64);
+            for word in vector.words().iter().take(SXHASH_MAX_LEN) {
+                hash_mix(state, word.get() as u64);
+            }
+        }
         Kind::Record(id) => {
             hash_record_equal(
                 interp,
@@ -2025,17 +2071,6 @@ pub(crate) fn hash_record_equal(
     };
 
     match record.kind {
-        crate::lisp::eval::RecordKind::BoolVector => {
-            hash_str(state, "bool-vector");
-            if let Ok(bits) = bool_vector_bits(interp, &interp.record_value(id)) {
-                hash_mix(state, bits.len() as u64);
-                for bit in bits {
-                    hash_mix(state, u64::from(bit));
-                }
-            } else {
-                hash_mix(state, id);
-            }
-        }
         crate::lisp::eval::RecordKind::Process
         | crate::lisp::eval::RecordKind::Obarray
         | crate::lisp::eval::RecordKind::Window
@@ -2454,7 +2489,7 @@ pub(crate) fn keymap_lookup_live_sequence_value(
     accept_default: bool,
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    let length = sequence_length_value(interp, &sequence)? as usize;
+    let length = sequence_length_value(&sequence)? as usize;
     interp.with_lisp_stack_roots(&(keymap, sequence), |interp| {
         keymap_lookup_events(
             interp,

@@ -58,21 +58,17 @@ define_dispatch!(
                 result.extend(items);
                 Ok(Value::list(result))
             }
+            // alloc.c:Fmake_bool_vector: CHECK_FIXNAT, then the bits filled.
             "make-bool-vector" => {
                 need_args(name, args, 2)?;
-                let length = args[0].as_integer()?;
-                if length < 0 {
-                    return Err(LispError::Signal("Wrong type argument: natnump".into()));
-                }
-                Ok(make_bool_vector_value(
-                    interp,
-                    std::iter::repeat_n(args[1].is_truthy(), length as usize),
+                let Kind::Integer(length @ 0..) = args[0].kind() else {
+                    return Err(LispError::WrongTypeArgument("wholenump".into(), args[0]));
+                };
+                Ok(Value::BoolVector(
+                    crate::lisp::types::BoolVectorRef::filled(length as usize, args[1].is_truthy()),
                 ))
             }
-            "bool-vector" => Ok(make_bool_vector_value(
-                interp,
-                args.iter().map(Value::is_truthy),
-            )),
+            "bool-vector" => Ok(make_bool_vector_value(args.iter().map(Value::is_truthy))),
             "make-keymap" => {
                 if args.len() > 1 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
@@ -94,7 +90,7 @@ define_dispatch!(
             "vconcat" => {
                 let mut items = vec![Value::symbol("vector-literal")];
                 for value in args {
-                    items.extend(sequence_values(interp, value)?);
+                    items.extend(sequence_values(value)?);
                 }
                 Ok(Value::list(items))
             }
@@ -744,7 +740,7 @@ define_dispatch!(
             }
             "format-network-address" => {
                 need_arg_range(name, args, 1, 2)?;
-                let items = sequence_values(interp, &args[0])?;
+                let items = sequence_values(&args[0])?;
                 if items.len() < 4 {
                     return Err(LispError::Signal("Invalid network address".into()));
                 }

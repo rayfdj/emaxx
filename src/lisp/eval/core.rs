@@ -465,7 +465,9 @@ impl Interpreter {
 
             // lread.c constructs every nested object before eval_sub.
             // A vector is self-evaluating and keeps its reader identity.
-            Kind::Vector(_) | Kind::LispRecord(_) | Kind::HashTable(_) => Ok(*expr),
+            Kind::Vector(_) | Kind::LispRecord(_) | Kind::HashTable(_) | Kind::BoolVector(_) => {
+                Ok(*expr)
+            }
 
             Kind::SymbolWithPos(_)
                 if crate::lisp::primitives::symbols_with_pos_enabled(self, env)

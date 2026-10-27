@@ -1229,7 +1229,7 @@ pub use crate::lisp::alloc::StringObjectRef;
 pub type ReaderFormRef = crate::lisp::alloc::VectorlikeRef<ReaderForm>;
 /// PVEC_RECORD's handle: the record's state in a vector block.
 pub type RecordRef = crate::lisp::alloc::VectorlikeRef<crate::lisp::eval::RecordState>;
-pub use crate::lisp::alloc::vectors::{LispRecordRef, SymbolWithPosRef};
+pub use crate::lisp::alloc::vectors::{BoolVectorRef, LispRecordRef, SymbolWithPosRef};
 
 /// lisp.h:struct Lisp_Cons. Interpreter, bytecode and generated code read and
 /// write these same two Lisp words. Allocator metadata is in the containing
@@ -1673,12 +1673,6 @@ pub enum ReaderForm {
         kind: ReaderClosureKind,
         slots: Vec<Value>,
     },
-    /// `#&N"..."'.  GNU's reader builds the bool vector directly; Emaxx's
-    /// reader has no Interpreter to allocate one in, so the bits wait here
-    /// for the same read/evaluation materialization boundary records use.
-    BoolVector {
-        bits: Vec<bool>,
-    },
 }
 
 /// lisp.h's `Lisp_Object': one machine word, the object's address or an
@@ -1764,6 +1758,8 @@ pub enum Kind {
     Record(RecordRef),
     /// GNU PVEC_RECORD with its type and data slots inline.
     LispRecord(LispRecordRef),
+    /// GNU PVEC_BOOL_VECTOR: the length in bits, then the bits.
+    BoolVector(BoolVectorRef),
     /// GNU PVEC_FINALIZER: the object containing its callback and list links.
     Finalizer(crate::lisp::alloc::FinalizerRef),
     /// Typed reader state awaiting Interpreter-owned object allocation.
@@ -1904,6 +1900,10 @@ impl Value {
         Value::from_bits(record.identity() | TAG_VECTORLIKE)
     }
     #[inline]
+    pub fn BoolVector(vector: BoolVectorRef) -> Value {
+        Value::from_bits(vector.identity() | TAG_VECTORLIKE)
+    }
+    #[inline]
     pub fn Record(record: RecordRef) -> Value {
         Value::from_bits(record.identity() | TAG_VECTORLIKE)
     }
@@ -2013,6 +2013,9 @@ impl Value {
                         crate::lisp::alloc::VectorTag::Frame => {
                             Kind::Frame(crate::lisp::alloc::VectorlikeRef::from_raw(header))
                         }
+                        crate::lisp::alloc::VectorTag::BoolVector => {
+                            Kind::BoolVector(BoolVectorRef::from_raw(header))
+                        }
                         crate::lisp::alloc::VectorTag::Terminal => {
                             Kind::Terminal(crate::lisp::alloc::VectorlikeRef::from_raw(header))
                         }
@@ -2121,6 +2124,7 @@ impl Kind {
             Kind::SymbolWithPos(v) => Value::SymbolWithPos(v),
             Kind::Record(v) => Value::Record(v),
             Kind::LispRecord(v) => Value::LispRecord(v),
+            Kind::BoolVector(v) => Value::BoolVector(v),
             Kind::Finalizer(v) => Value::Finalizer(v),
             Kind::ReaderForm(v) => Value::ReaderForm(v),
         }
@@ -2947,6 +2951,7 @@ impl Value {
             Kind::SymbolWithPos(_) => "symbol-with-pos".into(),
             Kind::Record(record) => format!("record<{}>", record.id),
             Kind::LispRecord(record) => format!("record<{:x}>", record.identity()),
+            Kind::BoolVector(vector) => format!("bool-vector<{:x}>", vector.identity()),
             Kind::Finalizer(object) => format!("finalizer<{:x}>", object.identity()),
             Kind::ReaderForm(_) => "reader-form".into(),
             Kind::Unbound => "unbound".into(),
@@ -3071,6 +3076,7 @@ fn values_equal_recursive(
         (Kind::HashTable(a), Kind::HashTable(b)) => a == b,
         (Kind::Record(a), Kind::Record(b)) => a.ptr_eq(&b),
         (Kind::LispRecord(a), Kind::LispRecord(b)) => a.ptr_eq(&b),
+        (Kind::BoolVector(a), Kind::BoolVector(b)) => a.identity() == b.identity(),
         (Kind::Finalizer(a), Kind::Finalizer(b)) => a == b,
         (Kind::ReaderForm(a), Kind::ReaderForm(b)) => a.ptr_eq(&b),
         (Kind::Unbound, Kind::Unbound) => true,
@@ -3183,6 +3189,19 @@ fn format_value(
         }
         Kind::Record(record) => write!(f, "#<record id:{}>", record.id),
         Kind::LispRecord(record) => write!(f, "#<record {:x}>", record.identity()),
+        // print.c's form of a bool vector: its length, then its bytes.
+        Kind::BoolVector(vector) => {
+            write!(f, "#&{}\"", vector.len())?;
+            for index in 0..vector.len().div_ceil(8) {
+                let byte = (vector.words()[index / 8].get() >> (8 * (index % 8))) as u8;
+                match byte {
+                    b'"' | b'\\' => write!(f, "\\{}", byte as char)?,
+                    0x20..=0x7e => write!(f, "{}", byte as char)?,
+                    _ => write!(f, "\\{byte:o}")?,
+                }
+            }
+            write!(f, "\"")
+        }
         // print.c prints a finalizer as `#<finalizer>' with no identity.
         Kind::Finalizer(_) => write!(f, "#<finalizer>"),
         Kind::ReaderForm(_) => write!(f, "#<reader-form>"),

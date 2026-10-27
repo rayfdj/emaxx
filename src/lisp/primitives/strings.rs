@@ -934,17 +934,14 @@ pub(crate) fn reverse_string_like_value(value: &Value) -> Result<Value, LispErro
     Ok(string_like_value(text, merge_string_props(props)))
 }
 
-pub(crate) fn reverse_sequence_value(
-    interp: &mut Interpreter,
-    value: &Value,
-) -> Result<Value, LispError> {
+pub(crate) fn reverse_sequence_value(value: &Value) -> Result<Value, LispError> {
     if string_like(value).is_some() {
         return reverse_string_like_value(value);
     }
-    if is_bool_vector_value(interp, value) {
-        let mut bits = bool_vector_bits(interp, value)?;
+    if is_bool_vector_value(value) {
+        let mut bits = bool_vector_bits(value)?;
         bits.reverse();
-        return Ok(make_bool_vector_value(interp, bits));
+        return Ok(make_bool_vector_value(bits));
     }
     match value.kind() {
         Kind::Vector(_) | Kind::Cons(_) if is_vector_value(value) => {
@@ -961,20 +958,18 @@ pub(crate) fn reverse_sequence_value(
     }
 }
 
-pub(crate) fn nreverse_sequence_value(
-    interp: &mut Interpreter,
-    value: &Value,
-) -> Result<Value, LispError> {
+pub(crate) fn nreverse_sequence_value(value: &Value) -> Result<Value, LispError> {
     if string_like(value).is_some() {
         return reverse_string_like_value(value);
     }
-    if let Kind::Record(id) = value.kind()
-        && is_bool_vector_value(interp, value)
-    {
-        let record = interp
-            .find_record_mut(id)
-            .ok_or_else(|| LispError::WrongTypeArgument("bool-vector-p".into(), *value))?;
-        record.slots.reverse();
+    // fns.c:Fnreverse: the bits swapped in place.
+    if let Kind::BoolVector(vector) = value.kind() {
+        let size = vector.len();
+        for index in 0..size / 2 {
+            let (low, high) = (vector.get(index), vector.get(size - index - 1));
+            vector.set(index, high == Some(true));
+            vector.set(size - index - 1, low == Some(true));
+        }
         return Ok(*value);
     }
     match value.kind() {

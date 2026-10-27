@@ -162,6 +162,141 @@ fn category_table_arg(
     Ok(id)
 }
 
+/// data.c's `enum bool_vector_op'.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BoolVectorOp {
+    ExclusiveOr,
+    Union,
+    Intersection,
+    SetDifference,
+    Subsetp,
+}
+
+/// data.c:wrong_length_argument.
+fn wrong_length_argument(values: &[Value]) -> LispError {
+    let mut list = vec![Value::symbol("wrong-length-argument")];
+    list.extend(values.iter().map(|value| match value.kind() {
+        Kind::BoolVector(vector) => Value::Integer(vector.len() as i64),
+        _ => *value,
+    }));
+    LispError::SignalValue(Value::list(list))
+}
+
+/// data.c:bool_vector_binop_driver: OP of A and B word by word, into a new
+/// vector, or into DEST, which is then returned only if it changed; the
+/// subset test is a predicate.
+fn bool_vector_binop_driver(
+    a: &Value,
+    b: &Value,
+    dest: Value,
+    op: BoolVectorOp,
+) -> Result<Value, LispError> {
+    let (av, bv) = (bool_vector_arg(a)?, bool_vector_arg(b)?);
+    let nr_bits = av.len();
+    if bv.len() != nr_bits {
+        return Err(wrong_length_argument(&if dest.is_nil() {
+            vec![*a, *b]
+        } else {
+            vec![*a, *b, dest]
+        }));
+    }
+    let combine = |x: usize, y: usize| match op {
+        BoolVectorOp::ExclusiveOr => x ^ y,
+        BoolVectorOp::Union => x | y,
+        BoolVectorOp::Intersection => x & y,
+        BoolVectorOp::SetDifference | BoolVectorOp::Subsetp => x & !y,
+    };
+    let (adata, bdata) = (av.words(), bv.words());
+    let dest = if dest.is_nil() {
+        Value::BoolVector(crate::lisp::types::BoolVectorRef::new(nr_bits))
+    } else {
+        let destv = bool_vector_arg(&dest)?;
+        if destv.len() != nr_bits {
+            return Err(wrong_length_argument(&[*a, *b, dest]));
+        }
+        if op == BoolVectorOp::Subsetp {
+            return Ok(
+                if adata
+                    .iter()
+                    .zip(bdata)
+                    .all(|(x, y)| x.get() & !y.get() == 0)
+                {
+                    Value::T
+                } else {
+                    Value::Nil
+                },
+            );
+        }
+        let unchanged = destv
+            .words()
+            .iter()
+            .zip(adata.iter().zip(bdata))
+            .all(|(d, (x, y))| d.get() == combine(x.get(), y.get()));
+        if unchanged {
+            return Ok(Value::Nil);
+        }
+        dest
+    };
+    let destv = bool_vector_arg(&dest)?;
+    for (d, (x, y)) in destv.words().iter().zip(adata.iter().zip(bdata)) {
+        d.set(combine(x.get(), y.get()));
+    }
+    Ok(dest)
+}
+
+/// data.c:Fbool_vector_subsetp: the driver with B as the destination.
+pub(super) fn bool_vector_subsetp(a: &Value, b: &Value) -> Result<Value, LispError> {
+    bool_vector_binop_driver(a, b, *b, BoolVectorOp::Subsetp)
+}
+
+/// data.c:Fbool_vector_not: ~A, into a new vector or into B.
+fn bool_vector_not(a: &Value, b: Value) -> Result<Value, LispError> {
+    let av = bool_vector_arg(a)?;
+    let nr_bits = av.len();
+    let b = if b.is_nil() {
+        Value::BoolVector(crate::lisp::types::BoolVectorRef::new(nr_bits))
+    } else {
+        if bool_vector_arg(&b)?.len() != nr_bits {
+            return Err(wrong_length_argument(&[*a, b]));
+        }
+        b
+    };
+    let bv = bool_vector_arg(&b)?;
+    use crate::lisp::alloc::vectors::bool_vectors::BITS_PER_BITS_WORD;
+    for (index, (to, from)) in bv.words().iter().zip(av.words()).enumerate() {
+        let mut word = !from.get();
+        if index == nr_bits / BITS_PER_BITS_WORD {
+            // bool_vector_spare_mask: the bits past the end stay clear.
+            word &= (1 << (nr_bits % BITS_PER_BITS_WORD)) - 1;
+        }
+        to.set(word);
+    }
+    Ok(b)
+}
+
+/// data.c:Fbool_vector_count_consecutive: how many bits from I on equal
+/// B, I at most the length.
+fn bool_vector_count_consecutive(a: &Value, b: &Value, i: &Value) -> Result<Value, LispError> {
+    let vector = bool_vector_arg(a)?;
+    let start = match i.kind() {
+        Kind::Integer(index) if index >= 0 => index as usize,
+        _ => return Err(LispError::WrongTypeArgument("wholenump".into(), *i)),
+    };
+    let nr_bits = vector.len();
+    if start > nr_bits {
+        return Err(LispError::SignalValue(Value::list([
+            Value::symbol("args-out-of-range"),
+            *a,
+            *i,
+        ])));
+    }
+    let target = b.is_truthy();
+    let count = (start..nr_bits)
+        .take_while(|index| vector.get(*index) == Some(target))
+        .count();
+    Ok(Value::Integer(count as i64))
+}
+
 fn category_arg(value: &Value) -> Result<u32, LispError> {
     match value.kind() {
         Kind::Integer(code) if (32..=126).contains(&code) => Ok(code as u32),
@@ -169,8 +304,8 @@ fn category_arg(value: &Value) -> Result<u32, LispError> {
     }
 }
 
-fn category_set_bits(interp: &Interpreter, value: &Value) -> Result<Vec<bool>, LispError> {
-    bool_vector_bits(interp, value)
+fn category_set_bits(value: &Value) -> Result<Vec<bool>, LispError> {
+    bool_vector_bits(value)
         .ok()
         .filter(|bits| bits.len() == 128)
         .ok_or_else(|| LispError::WrongTypeArgument("categorysetp".into(), *value))
@@ -720,73 +855,36 @@ define_dispatch!(
             }
             "bool-vector-count-population" => {
                 need_args(name, args, 1)?;
+                let vector = bool_vector_arg(&args[0])?;
                 Ok(Value::Integer(
-                    bool_vector_bits(interp, &args[0])?
-                        .into_iter()
-                        .filter(|bit| *bit)
-                        .count() as i64,
+                    vector
+                        .words()
+                        .iter()
+                        .map(|word| word.get().count_ones() as i64)
+                        .sum(),
                 ))
             }
             "bool-vector-count-consecutive" => {
                 need_args(name, args, 3)?;
-                let bits = bool_vector_bits(interp, &args[0])?;
-                let target = args[1].is_truthy();
-                let start = args[2].as_integer()?.max(0) as usize;
-                let mut count = 0usize;
-                for bit in bits.into_iter().skip(start) {
-                    if bit != target {
-                        break;
-                    }
-                    count += 1;
-                }
-                Ok(Value::Integer(count as i64))
+                bool_vector_count_consecutive(&args[0], &args[1], &args[2])
             }
             "bool-vector-intersection"
             | "bool-vector-union"
             | "bool-vector-exclusive-or"
             | "bool-vector-set-difference" => {
                 need_arg_range(name, args, 2, 3)?;
-                let left = bool_vector_bits(interp, &args[0])?;
-                let right = bool_vector_bits(interp, &args[1])?;
-                if left.len() != right.len() {
-                    return Err(LispError::Signal("Args out of range".into()));
-                }
-                let result = left
-                    .iter()
-                    .zip(&right)
-                    .map(|(left_bit, right_bit)| match name {
-                        "bool-vector-intersection" => *left_bit && *right_bit,
-                        "bool-vector-union" => *left_bit || *right_bit,
-                        "bool-vector-exclusive-or" => *left_bit ^ *right_bit,
-                        "bool-vector-set-difference" => *left_bit && !*right_bit,
-                        _ => false,
-                    })
-                    .collect::<Vec<_>>();
-                if let Some(target) = args.get(2).filter(|target| !target.is_nil()) {
-                    let current = bool_vector_bits(interp, target)?;
-                    if current.len() != result.len() {
-                        return Err(LispError::Signal("Args out of range".into()));
-                    }
-                    let mut changed = false;
-                    for (index, bit) in result.into_iter().enumerate() {
-                        if current[index] != bit {
-                            changed = true;
-                        }
-                        set_bool_vector_bit(interp, target, index, bit)?;
-                    }
-                    Ok(if changed { *target } else { Value::Nil })
-                } else {
-                    Ok(make_bool_vector_value(interp, result))
-                }
+                let op = match name {
+                    "bool-vector-intersection" => BoolVectorOp::Intersection,
+                    "bool-vector-union" => BoolVectorOp::Union,
+                    "bool-vector-exclusive-or" => BoolVectorOp::ExclusiveOr,
+                    _ => BoolVectorOp::SetDifference,
+                };
+                let dest = args.get(2).copied().unwrap_or(Value::Nil);
+                bool_vector_binop_driver(&args[0], &args[1], dest, op)
             }
             "bool-vector-not" => {
-                need_args(name, args, 1)?;
-                Ok(make_bool_vector_value(
-                    interp,
-                    bool_vector_bits(interp, &args[0])?
-                        .into_iter()
-                        .map(|bit| !bit),
-                ))
+                need_arg_range(name, args, 1, 2)?;
+                bool_vector_not(&args[0], args.get(1).copied().unwrap_or(Value::Nil))
             }
 
             "aref" => {
@@ -795,19 +893,16 @@ define_dispatch!(
                 let literal = record_literal_items(&args[0]);
                 // data.c:Faref exposes records and closures, but not the
                 // other pseudovectors kept in our internal Record storage.
-                let readable_record = matches!(args[0].kind(), Kind::Record(id)
-                if interp.find_record(id).is_some_and(|record| matches!(
-                    record.kind,
-                    crate::lisp::eval::RecordKind::BoolVector
-                )));
                 if literal.is_none()
                     && !args[0].is_string()
                     && !is_vector_value(&args[0])
                     && !matches!(
                         args[0].kind(),
-                        Kind::Closure(_) | Kind::CharTable(_) | Kind::LispRecord(_)
+                        Kind::Closure(_)
+                            | Kind::CharTable(_)
+                            | Kind::LispRecord(_)
+                            | Kind::BoolVector(_)
                     )
-                    && !readable_record
                 {
                     return Err(LispError::WrongTypeArgument("arrayp".into(), args[0]));
                 }
@@ -843,19 +938,10 @@ define_dispatch!(
                     Kind::LispRecord(record) => record
                         .get(idx)
                         .ok_or_else(|| args_out_of_range(&args[0], &args[1])),
-                    Kind::Record(id) => {
-                        let record = interp.find_record(id).ok_or_else(|| {
-                            LispError::TypeError("record".into(), format!("record<{}>", id.id))
-                        })?;
-                        if record.kind == crate::lisp::eval::RecordKind::BoolVector {
-                            return record
-                                .slots
-                                .get(idx)
-                                .cloned()
-                                .ok_or_else(|| args_out_of_range(&args[0], &args[1]));
-                        }
-                        unreachable!("array check admitted only a bool-vector adapter")
-                    }
+                    Kind::BoolVector(vector) => vector
+                        .get(idx)
+                        .map(|bit| if bit { Value::T } else { Value::Nil })
+                        .ok_or_else(|| args_out_of_range(&args[0], &args[1])),
                     _ => {
                         if is_vector_value(&args[0]) {
                             vector_slot_value(&args[0], idx)
@@ -871,15 +957,12 @@ define_dispatch!(
                 let raw_idx = fixnum_index_arg(&args[1])?;
                 // data.c:Faset permits actual records as well as arrays;
                 // native functions and other opaque pseudovectors are neither.
-                let writable_record = matches!(args[0].kind(), Kind::Record(id)
-                if interp.find_record(id).is_some_and(|record| matches!(
-                    record.kind,
-                    crate::lisp::eval::RecordKind::BoolVector
-                )));
                 if !args[0].is_string()
                     && !is_vector_value(&args[0])
-                    && !matches!(args[0].kind(), Kind::CharTable(_) | Kind::LispRecord(_))
-                    && !writable_record
+                    && !matches!(
+                        args[0].kind(),
+                        Kind::CharTable(_) | Kind::LispRecord(_) | Kind::BoolVector(_)
+                    )
                 {
                     return Err(LispError::WrongTypeArgument("arrayp".into(), args[0]));
                 }
@@ -906,8 +989,11 @@ define_dispatch!(
                         interp.char_table_set(id, key, args[2])?;
                         Ok(args[2])
                     }
-                    value if is_bool_vector_value(interp, &value.value()) => {
-                        set_bool_vector_bit(interp, &value.value(), idx, args[2].is_truthy())?;
+                    Kind::BoolVector(vector) => {
+                        if idx >= vector.len() {
+                            return Err(args_out_of_range(&args[0], &args[1]));
+                        }
+                        vector.set(idx, args[2].is_truthy());
                         Ok(args[2])
                     }
                     Kind::StringObject(_) => {
@@ -927,7 +1013,7 @@ define_dispatch!(
 
             "nreverse" => {
                 need_args(name, args, 1)?;
-                nreverse_sequence_value(interp, &args[0])
+                nreverse_sequence_value(&args[0])
             }
 
             "copy-sequence" => {
@@ -954,16 +1040,9 @@ define_dispatch!(
                         }
                         Ok(args[0])
                     }
-                    value if is_bool_vector_value(interp, &value.value()) => {
-                        let len = bool_vector_bits(interp, &value.value())?.len();
-                        for index in 0..len {
-                            set_bool_vector_bit(
-                                interp,
-                                &value.value(),
-                                index,
-                                args[1].is_truthy(),
-                            )?;
-                        }
+                    // alloc.c:bool_vector_fill.
+                    Kind::BoolVector(vector) => {
+                        vector.fill(args[1].is_truthy());
                         Ok(args[0])
                     }
                     Kind::CharTable(id) => {
@@ -1365,9 +1444,9 @@ define_dispatch!(
             "setcdr" => direct_setcdr(interp, args, env),
             "make-category-table" => {
                 let table = CharTableRef::new(Value::symbol("category-table"), Value::Nil, 2);
-                table.set_default(make_bool_vector_value(interp, [false; 128]));
+                table.set_default(make_bool_vector_value([false; 128]));
                 for index in 4..68 {
-                    table.set_slot(index, make_bool_vector_value(interp, [false; 128]));
+                    table.set_slot(index, make_bool_vector_value([false; 128]));
                 }
                 table.set_extra(0, Value::vector(std::iter::repeat_n(Value::Nil, 95)));
                 Ok(Value::CharTable(table))
@@ -1436,12 +1515,12 @@ define_dispatch!(
                 for ch in string.text.chars() {
                     bits[category_arg(&Value::Integer(ch as i64))? as usize] = true;
                 }
-                Ok(make_bool_vector_value(interp, bits))
+                Ok(make_bool_vector_value(bits))
             }
 
             "category-set-mnemonics" => {
                 need_args(name, args, 1)?;
-                let bits = category_set_bits(interp, &args[0])?;
+                let bits = category_set_bits(&args[0])?;
                 let text: String = (32u8..127)
                     .filter(|i| bits[*i as usize])
                     .map(char::from)
@@ -1467,12 +1546,12 @@ define_dispatch!(
                 let boundaries = char_table_change_boundaries(table, start, end);
                 for (index, segment_start) in boundaries.iter().copied().enumerate() {
                     let segment_end = boundaries.get(index + 1).map_or(end, |next| next - 1);
-                    let mut bits = category_set_bits(interp, &table.get(segment_start))?;
+                    let mut bits = category_set_bits(&table.get(segment_start))?;
                     if bits[category as usize] == set {
                         continue;
                     }
                     bits[category as usize] = set;
-                    let mut value = make_bool_vector_value(interp, bits);
+                    let mut value = make_bool_vector_value(bits);
                     let mut hash = table.extra(1).unwrap_or(Value::Nil);
                     if hash.is_nil() {
                         hash = json::make_hash_table(interp, "equal", Vec::new());

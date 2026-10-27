@@ -18,6 +18,8 @@
 //! ARRAY_MARK_FLAG: small vectors share a block bitmap, and large vectors
 //! carry their mark past the payload. Ordinary object access reads neither.
 
+pub(crate) mod bool_vectors;
+pub use bool_vectors::BoolVectorRef;
 pub(crate) mod char_tables;
 pub use char_tables::{CharTableRef, SubCharTableRef};
 pub(crate) mod generic_records;
@@ -94,6 +96,7 @@ pub enum VectorTag {
     Finalizer = 5,
     SymbolWithPos = 6,
     Frame = 10,
+    BoolVector = 12,
     Buffer = 13,
     HashTable = 14,
     Terminal = 16,
@@ -119,6 +122,7 @@ impl VectorTag {
             5 => Self::Finalizer,
             6 => Self::SymbolWithPos,
             10 => Self::Frame,
+            12 => Self::BoolVector,
             13 => Self::Buffer,
             14 => Self::HashTable,
             16 => Self::Terminal,
@@ -260,11 +264,21 @@ impl VectorHeader {
     /// alloc.c's `vector_nbytes': the footprint.
     fn nbytes(&self) -> usize {
         if self.is_pseudovector() {
+            let tag = self.tag();
+            if tag == VectorTag::BoolVector {
+                // SAFETY: a bool vector's length word follows its header.
+                let nbits = unsafe {
+                    payload(std::ptr::from_ref(self).cast_mut())
+                        .cast::<usize>()
+                        .read()
+                };
+                return bool_vectors::bool_vector_nbytes(nbits);
+            }
             let traced = self.size & PSEUDOVECTOR_SIZE_MASK;
             let rest = (self.size >> PSEUDOVECTOR_SIZE_BITS) & PSEUDOVECTOR_SIZE_MASK;
             let bytes = HEADER_SIZE + (traced + rest) * WORD_SIZE;
             if matches!(
-                self.tag(),
+                tag,
                 VectorTag::CharTable
                     | VectorTag::SubCharTable
                     | VectorTag::SymbolWithPos
@@ -738,6 +752,7 @@ unsafe fn image_vector_shape(
     let tag = match (size >> PSEUDOVECTOR_AREA_BITS) & 0x3f {
         _ if size & !CANONICAL != 0 => return invalid(),
         1 => VectorTag::Free,
+        12 => VectorTag::BoolVector,
         31 => VectorTag::Closure,
         32 => VectorTag::CharTable,
         33 => VectorTag::SubCharTable,
@@ -752,6 +767,8 @@ unsafe fn image_vector_shape(
         return invalid();
     }
     let valid = match tag {
+        // A bool vector's length gives its footprint; it has no Lisp words.
+        VectorTag::BoolVector => traced == 0 && rest == 0,
         VectorTag::Free => traced == 0,
         VectorTag::Closure => rest == 0 && traced >= 3,
         VectorTag::Record => rest == 0 && traced >= 1,
@@ -774,7 +791,11 @@ unsafe fn image_vector_shape(
     if !valid {
         return invalid();
     }
-    let lisp = HEADER_SIZE + usize::from(tag == VectorTag::SubCharTable) * WORD_SIZE;
+    let lisp = if tag == VectorTag::BoolVector {
+        nbytes
+    } else {
+        HEADER_SIZE + usize::from(tag == VectorTag::SubCharTable) * WORD_SIZE
+    };
     Ok((tag, nbytes, lisp))
 }
 
@@ -1370,6 +1391,7 @@ unsafe fn census_on_allocate(header: *mut VectorHeader) {
             | VectorTag::Terminal
             | VectorTag::Marker
             | VectorTag::Overlay
+            | VectorTag::BoolVector
             | VectorTag::CharTable
             | VectorTag::SubCharTable
             | VectorTag::HashTable
@@ -1450,7 +1472,10 @@ unsafe fn cleanup_vector(header: *mut VectorHeader) {
             // destructor. Its children are reclaimed by tracing, as in C;
             // the byte-code entry cache's entry of it goes.
             VectorTag::Closure => crate::lisp::bytecode::verify::forget_closure(header as usize),
-            VectorTag::CharTable | VectorTag::SubCharTable | VectorTag::SymbolWithPos => {}
+            VectorTag::BoolVector
+            | VectorTag::CharTable
+            | VectorTag::SubCharTable
+            | VectorTag::SymbolWithPos => {}
             VectorTag::ReaderForm => std::ptr::drop_in_place(body.cast::<ReaderForm>()),
             VectorTag::HashTable => hash_tables::cleanup(header),
             VectorTag::Record if generic_records::record_has_inline_slots(header) => {}
@@ -1528,6 +1553,7 @@ impl SweepStats {
                 | VectorTag::Terminal
                 | VectorTag::Marker
                 | VectorTag::Overlay
+                | VectorTag::BoolVector
                 | VectorTag::CharTable
                 | VectorTag::SubCharTable
                 | VectorTag::HashTable
@@ -1693,8 +1719,10 @@ pub(crate) fn sweep_vectors(epoch: u32) {
                             vector as usize,
                         );
                     }
-                    cleanup_vector(next);
+                    // The footprint before the cleanup, which may write
+                    // over a bool vector's length.
                     let nbytes = (*next).nbytes();
+                    cleanup_vector(next);
                     total += nbytes;
                     next = advance(next, nbytes);
                     if !vector_in_block(next, block) || (*next).is_marked(epoch) {
@@ -1897,6 +1925,7 @@ pub(super) unsafe fn value_of(header: *mut VectorHeader) -> Value {
             VectorTag::Terminal => Value::Terminal(VectorlikeRef::from_raw(header)),
             VectorTag::Finalizer => Value::Finalizer(VectorlikeRef::from_raw(header)),
             VectorTag::SymbolWithPos => Value::SymbolWithPos(SymbolWithPosRef::from_raw(header)),
+            VectorTag::BoolVector => Value::BoolVector(BoolVectorRef::from_raw(header)),
             VectorTag::Closure => Value::Closure(ClosureRef::from_raw(header)),
             VectorTag::CharTable => Value::CharTable(CharTableRef::from_raw(header)),
             VectorTag::SubCharTable => Value::SubCharTable(SubCharTableRef::from_raw(header)),

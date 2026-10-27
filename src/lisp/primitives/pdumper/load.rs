@@ -12,7 +12,6 @@
 use super::super::*;
 use super::context::*;
 use super::image::*;
-use crate::lisp::eval::RecordKind;
 use crate::lisp::types::{CharTableRef, Kind, SymbolName};
 
 /// pdumper.c:pdumper_load_result.
@@ -738,6 +737,7 @@ pub(super) const CLOSURE_LV: u32 = 0x100 | DumpType::Closure as u32;
 pub(super) const LISP_RECORD_LV: u32 = 0x100 | DumpType::LispRecord as u32;
 pub(super) const CHAR_TABLE_LV: u32 = 0x100 | DumpType::CharTable as u32;
 pub(super) const SUB_CHAR_TABLE_LV: u32 = 0x100 | DumpType::SubCharTable as u32;
+pub(super) const BOOL_VECTOR_LV: u32 = 0x100 | DumpType::BoolVector as u32;
 
 /// The image's vector blocks and its large vectors after them, where the
 /// image is mapped: BASE the image's address, START the first block's
@@ -811,7 +811,8 @@ impl Loader<'_> {
                 | DumpType::Closure
                 | DumpType::LispRecord
                 | DumpType::CharTable
-                | DumpType::SubCharTable => {
+                | DumpType::SubCharTable
+                | DumpType::BoolVector => {
                     return Err(LoadError::Error(format!(
                         "object {number} is a vector outside the vector blocks"
                     )));
@@ -819,8 +820,7 @@ impl Loader<'_> {
                 DumpType::EmptyString
                 | DumpType::ZeroVector
                 | DumpType::Float
-                | DumpType::Bignum
-                | DumpType::BoolVector => own_bytes_objects.push(number as u32),
+                | DumpType::Bignum => own_bytes_objects.push(number as u32),
                 _ => other_objects.push(number as u32),
             }
             kinds.push(kind);
@@ -849,10 +849,6 @@ impl Loader<'_> {
                 }
                 DumpType::Bignum => {
                     let value = self.load_bignum(offset)?;
-                    self.objects[number] = value;
-                }
-                DumpType::BoolVector => {
-                    let value = self.load_bool_vector(offset)?;
                     self.objects[number] = value;
                 }
                 _ => {}
@@ -1884,9 +1880,8 @@ impl Loader<'_> {
             CONS_LV => self.conses.cons_at(word as u32),
             STRING_LV => self.strings.string_at(word as u32),
             SYMBOL_LV => self.symbols.symbol_at(word as u32),
-            VECTOR_LV | CLOSURE_LV | LISP_RECORD_LV | CHAR_TABLE_LV | SUB_CHAR_TABLE_LV => {
-                self.vectors.vector_at(word as u32)
-            }
+            VECTOR_LV | CLOSURE_LV | LISP_RECORD_LV | CHAR_TABLE_LV | SUB_CHAR_TABLE_LV
+            | BOOL_VECTOR_LV => self.vectors.vector_at(word as u32),
             _ => self.relocated_value(field, code, word),
         }
     }
@@ -1912,7 +1907,8 @@ impl Loader<'_> {
                 | DumpType::Closure
                 | DumpType::LispRecord
                 | DumpType::CharTable
-                | DumpType::SubCharTable,
+                | DumpType::SubCharTable
+                | DumpType::BoolVector,
             )) => self.vectors.vector_at(word as u32),
             Some(DumpRelocKind::DumpToDumpLv(_)) => Err(LoadError::Error(format!(
                 "field at {field_offset} names no object ({word})"
@@ -2128,28 +2124,6 @@ impl Loader<'_> {
             Ok(value) if fixnum_word(value).is_none() => Value::Integer(value),
             _ => Value::big_integer(integer),
         })
-    }
-
-    /// A bool-vector's cold record: id, bit count, packed bits.
-    fn load_bool_vector(&mut self, offset: u32) -> Result<Value, LoadError> {
-        let id = self.reader.word(offset)?;
-        let nbits = self.reader.word(offset + 8)? as usize;
-        let mut slots = Vec::with_capacity(nbits);
-        for index in 0..nbits {
-            let word = self.reader.word(offset + 16 + 8 * (index / 64) as u32)?;
-            slots.push(if word & (1 << (index % 64)) != 0 {
-                Value::T
-            } else {
-                Value::Nil
-            });
-        }
-        self.interp.install_record(record_state_for_load(
-            id,
-            RecordKind::BoolVector,
-            Value::symbol("bool-vector"),
-            slots,
-        ));
-        Ok(self.interp.record_value(id))
     }
 
     /// A text-properties record: count, then (start, end, nprops, (name,

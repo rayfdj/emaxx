@@ -692,13 +692,19 @@ pub(crate) fn vector_items(value: &Value) -> Result<Vec<Value>, LispError> {
     }
 }
 
-pub(crate) fn is_bool_vector_value(interp: &Interpreter, value: &Value) -> bool {
-    let Kind::Record(id) = value.kind() else {
-        return false;
-    };
-    interp
-        .find_record(id)
-        .is_some_and(|record| record.kind == crate::lisp::eval::RecordKind::BoolVector)
+/// BOOL_VECTOR_P.
+pub(crate) fn is_bool_vector_value(value: &Value) -> bool {
+    matches!(value.kind(), Kind::BoolVector(_))
+}
+
+/// CHECK_BOOL_VECTOR.
+pub(crate) fn bool_vector_arg(
+    value: &Value,
+) -> Result<crate::lisp::types::BoolVectorRef, LispError> {
+    match value.kind() {
+        Kind::BoolVector(vector) => Ok(vector),
+        _ => Err(LispError::WrongTypeArgument("bool-vector-p".into(), *value)),
+    }
 }
 
 /// O(1) element read for the VM's Baref: bytecode.c's fast case, a vector
@@ -743,69 +749,28 @@ pub(crate) fn vector_slot_value(value: &Value, index: usize) -> Result<Value, Li
     })
 }
 
-pub(crate) fn bool_vector_values(
-    interp: &Interpreter,
-    value: &Value,
-) -> Result<Vec<Value>, LispError> {
-    let Kind::Record(id) = value.kind() else {
-        return Err(LispError::WrongTypeArgument("bool-vector-p".into(), *value));
-    };
-    let record = interp
-        .find_record(id)
-        .ok_or_else(|| LispError::WrongTypeArgument("bool-vector-p".into(), *value))?;
-    if record.kind != crate::lisp::eval::RecordKind::BoolVector {
-        return Err(LispError::WrongTypeArgument("bool-vector-p".into(), *value));
-    }
-    Ok(record.slots.clone())
-}
-
-pub(crate) fn bool_vector_bits(
-    interp: &Interpreter,
-    value: &Value,
-) -> Result<Vec<bool>, LispError> {
-    Ok(bool_vector_values(interp, value)?
-        .into_iter()
-        .map(|slot| slot.is_truthy())
+/// The elements of a bool vector, `bool_vector_ref' of each bit.
+pub(crate) fn bool_vector_values(value: &Value) -> Result<Vec<Value>, LispError> {
+    Ok(bool_vector_arg(value)?
+        .bits()
+        .map(|bit| if bit { Value::T } else { Value::Nil })
         .collect())
 }
 
-pub(crate) fn make_bool_vector_value(
-    interp: &mut Interpreter,
-    bits: impl IntoIterator<Item = bool>,
-) -> Value {
-    interp.create_pseudovector(
-        crate::lisp::eval::RecordKind::BoolVector,
-        "bool-vector",
-        bits.into_iter()
-            .map(|bit| if bit { Value::T } else { Value::Nil })
-            .collect(),
-    )
+pub(crate) fn bool_vector_bits(value: &Value) -> Result<Vec<bool>, LispError> {
+    Ok(bool_vector_arg(value)?.bits().collect())
+}
+
+/// A new bool vector of BITS.
+pub(crate) fn make_bool_vector_value(bits: impl IntoIterator<Item = bool>) -> Value {
+    let bits = bits.into_iter().collect::<Vec<_>>();
+    Value::BoolVector(crate::lisp::types::BoolVectorRef::from_bits(
+        bits.into_iter(),
+    ))
 }
 
 pub(crate) const ABBREV_TABLE_RECORD_TYPE: &str = "abbrev-table";
 pub(crate) const ABBREV_TABLE_ENTRIES_SLOT: usize = 2;
-
-pub(crate) fn set_bool_vector_bit(
-    interp: &mut Interpreter,
-    value: &Value,
-    index: usize,
-    bit: bool,
-) -> Result<(), LispError> {
-    let Kind::Record(id) = value.kind() else {
-        return Err(LispError::WrongTypeArgument("bool-vector-p".into(), *value));
-    };
-    let record = interp
-        .find_record_mut(id)
-        .ok_or_else(|| LispError::WrongTypeArgument("bool-vector-p".into(), *value))?;
-    if record.kind != crate::lisp::eval::RecordKind::BoolVector {
-        return Err(LispError::WrongTypeArgument("bool-vector-p".into(), *value));
-    }
-    if index >= record.slots.len() {
-        return Err(LispError::Signal("Args out of range".into()));
-    }
-    record.slots[index] = if bit { Value::T } else { Value::Nil };
-    Ok(())
-}
 
 pub(crate) fn abbrev_table_record_id(interp: &Interpreter, value: &Value) -> Option<u64> {
     let Kind::Record(id) = value.kind() else {
@@ -1062,6 +1027,7 @@ pub(crate) fn cl_type_value(interp: &Interpreter, value: &Value) -> Result<Value
         Kind::Frame(_) => "frame",
         Kind::Terminal(_) => "terminal",
         Kind::SymbolWithPos(_) => "symbol-with-pos",
+        Kind::BoolVector(_) => "bool-vector",
         Kind::LispRecord(record) => {
             let type_tag = record.type_tag();
             if let Kind::LispRecord(descriptor) = type_tag.kind()
@@ -1076,7 +1042,6 @@ pub(crate) fn cl_type_value(interp: &Interpreter, value: &Value) -> Result<Value
                 return Ok(Value::symbol("record"));
             };
             let type_name = match record.kind {
-                crate::lisp::eval::RecordKind::BoolVector => "bool-vector",
                 crate::lisp::eval::RecordKind::Font => match record.symbol_type_name() {
                     Some("font-entity") => "font-entity",
                     Some("font-object") => "font-object",

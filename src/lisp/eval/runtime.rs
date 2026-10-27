@@ -1730,7 +1730,7 @@ impl Interpreter {
         slots: Vec<Value>,
         kind: RecordKind,
     ) -> Value {
-        let vector_slots = kind.gnu_vector_slots(slots.len());
+        let vector_slots = kind.gnu_vector_slots();
         if vector_slots != 0 {
             crate::lisp::native_comp::note_lisp_allocation(vector_slots.saturating_mul(8));
         }
@@ -1863,14 +1863,6 @@ impl Interpreter {
             .iter_mut()
             .find(|(record_id, _)| *record_id == id)
             .map(|(_, state)| state)
-    }
-
-    pub fn copy_record(&mut self, id: u64) -> Result<Value, LispError> {
-        let record = self
-            .find_record(id)
-            .cloned()
-            .ok_or_else(|| LispError::TypeError("record".into(), format!("record<{id}>")))?;
-        Ok(self.create_record_with_kind(record.type_tag, record.slots, record.kind))
     }
 
     pub fn provide_feature(&mut self, feature: &str) {

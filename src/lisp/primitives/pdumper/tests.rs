@@ -629,6 +629,12 @@ fn graph_matches(
             }
             Ok(())
         }
+        (Kind::BoolVector(left), Kind::BoolVector(right)) => {
+            if left.bits().ne(right.bits()) {
+                return Err("bool vector differs".into());
+            }
+            Ok(())
+        }
         (Kind::CharTable(_), Kind::CharTable(_)) | (Kind::Record(_), Kind::Record(_)) => Ok(()),
         (Kind::Cons(_), Kind::Cons(_)) => {
             graph_matches(&a.car().expect("car"), &b.car().expect("car"), seen)?;
@@ -1442,18 +1448,15 @@ fn image_round_trips_closures_char_tables_records_and_bool_vectors() {
         Some("extra".into())
     );
 
-    // The bool-vector's bits came through the cold section.
-    let Kind::Record(bits_id) = slots[2].kind() else {
+    // The bool-vector is mapped where the image's vector blocks hold it.
+    let Kind::BoolVector(bits) = slots[2].kind() else {
         panic!("bool-vector")
     };
-    let bits = target.find_record(bits_id).expect("installed bool-vector");
-    assert_eq!(bits.kind, crate::lisp::eval::RecordKind::BoolVector);
-    assert_eq!(bits.slots.len(), 70);
+    assert_eq!(bits.len(), 70);
     let set = bits
-        .slots
-        .iter()
+        .bits()
         .enumerate()
-        .filter(|(_, slot)| slot.is_truthy())
+        .filter(|(_, bit)| *bit)
         .map(|(index, _)| index)
         .collect::<Vec<_>>();
     assert_eq!(set, vec![0, 65, 69]);

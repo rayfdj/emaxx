@@ -41,7 +41,7 @@ fn lookup_key_once(
         return Err(LispError::WrongTypeArgument("arrayp".into(), key));
     }
     interp.with_lisp_stack_roots(&(keymap, key), |interp| {
-        if sequence_length_value(interp, &key)? == 0 {
+        if sequence_length_value(&key)? == 0 {
             return Ok(keymap);
         }
         let translated = possibly_translate_key_sequence(interp, key, env)?;
@@ -1545,6 +1545,7 @@ define_dispatch!(
                     Kind::Frame(_) => "frame",
                     Kind::Terminal(_) => "terminal",
                     Kind::LispRecord(_) => return cl_type_value(interp, &args[0]),
+                    Kind::BoolVector(_) => "bool-vector",
                     Kind::NativeFunction(_) => "subr",
                     Kind::NativeCompUnit(_) => "native-comp-unit",
                     Kind::Record(id) => {

@@ -1014,7 +1014,6 @@ impl Interpreter {
                     | crate::lisp::types::ReaderForm::Closure { slots, .. } => {
                         pending.extend(slots.iter().cloned());
                     }
-                    _ => {}
                 },
                 _ => {}
             }

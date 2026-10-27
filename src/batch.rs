@@ -2964,6 +2964,66 @@ mod tests {
     }
 
     #[test]
+    fn bool_vectors_keep_their_bits_and_signal_as_data_c() {
+        // lisp.h's Lisp_Bool_Vector: the bits packed in words, a large one
+        // across a collection; data.c's checks (Faset's range,
+        // wrong_length_argument of the lengths, CHECK_FIXNAT), Fbool_vector_not
+        // into its destination, fns.c:bool_vector_cmp, and an image's
+        // category set read where the image holds it.
+        run_with_large_stack(|| {
+            let emacs_repo = compat::project_root().join("../emacs");
+            let options = BatchRunOptions {
+                load_path: compat::emaxx_upstream_load_path(&emacs_repo)
+                    .expect("upstream load path"),
+                ..Default::default()
+            };
+            let mut interpreter =
+                initialize_batch_interpreter(&options).expect("init batch interpreter");
+            let form = Reader::new(
+                r##"(prin1-to-string
+                    (let* ((a (bool-vector t nil t t nil))
+                           (d (make-bool-vector 5 nil))
+                           (big (make-bool-vector 100001 nil)))
+                      (aset big 100000 t)
+                      (garbage-collect)
+                      (list (condition-case e (aset a 5 t) (error e))
+                            (bool-vector-count-consecutive a t 2)
+                            (condition-case e (bool-vector-count-consecutive a t 6)
+                              (error (car e)))
+                            (condition-case e (bool-vector-union a (make-bool-vector 0 nil))
+                              (error e))
+                            (condition-case e (bool-vector-subsetp (make-bool-vector 3 nil)
+                                                                   (make-bool-vector 4 nil))
+                              (error e))
+                            (progn (bool-vector-not a d) (append d nil))
+                            (condition-case e (make-bool-vector -1 nil) (error e))
+                            (bool-vector-count-population big)
+                            (aref big 100000)
+                            (value< (bool-vector t nil t) (bool-vector t))
+                            (value< (bool-vector t) (bool-vector t nil t))
+                            (category-set-mnemonics (char-category-set ?a))
+                            (equal (read "#&5\"\\r\"") a)
+                            (type-of a))))"##,
+            )
+            .read_all()
+            .expect("read bool vector probe")
+            .remove(0);
+            let printed = interpreter
+                .eval(&form, &mut crate::lisp::types::Env::new())
+                .expect("evaluate bool vector probe");
+            assert_eq!(
+                lisp::primitives::string_like(&printed)
+                    .expect("printed")
+                    .text,
+                "((args-out-of-range #&5\"\r\" 5) 2 args-out-of-range \
+                 (wrong-length-argument 5 0) (wrong-length-argument 3 4 4) \
+                 (nil t nil nil t) (wrong-type-argument wholenump -1) 1 t nil t \".Lalr\" t \
+                 bool-vector)"
+            );
+        });
+    }
+
+    #[test]
     fn image_symbols_are_the_obarrays_and_the_initial_frame_is_terminal_frame() {
         // pdumper.c maps the dumped symbols where the image holds them:
         // a preloaded symbol is the obarray's, its cells are traced by the

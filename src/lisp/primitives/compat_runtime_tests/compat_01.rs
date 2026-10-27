@@ -991,7 +991,7 @@ fn fillarray_mutates_supported_sequences() {
     call(&mut interp, "fillarray", &[bool_vector, Value::T], &mut env)
         .expect("fillarray should fill bool-vectors");
     assert_eq!(
-        bool_vector_bits(&interp, &bool_vector).expect("filled bool-vector"),
+        bool_vector_bits(&bool_vector).expect("filled bool-vector"),
         vec![true, true, true, true]
     );
 
@@ -1221,7 +1221,7 @@ fn reverse_and_vconcat_support_bool_vectors() {
     )
     .expect("reverse should accept bool-vectors");
     assert_eq!(
-        bool_vector_bits(&interp, &reversed).expect("reversed bool-vector"),
+        bool_vector_bits(&reversed).expect("reversed bool-vector"),
         vec![false, false, true, true]
     );
     assert_eq!(
@@ -1251,7 +1251,7 @@ fn reverse_and_vconcat_support_bool_vectors() {
         bool_vector
     );
     assert_eq!(
-        bool_vector_bits(&interp, &bool_vector).expect("mutated bool-vector"),
+        bool_vector_bits(&bool_vector).expect("mutated bool-vector"),
         vec![false, false, true, true]
     );
 }

@@ -591,7 +591,7 @@ pub(crate) fn possibly_translate_key_sequence(
         &[description],
         env,
     )?;
-    if check_vector_or_string(interp, parsed)? == 0 {
+    if check_vector_or_string(parsed)? == 0 {
         return Err(LispError::SignalValue(Value::list([
             Value::symbol("error"),
             Value::string("Invalid `key-parse' syntax: %S"),
@@ -602,11 +602,11 @@ pub(crate) fn possibly_translate_key_sequence(
 }
 
 /// CHECK_VECTOR_OR_STRING: the length, or `(wrong-type-argument arrayp X)'.
-fn check_vector_or_string(interp: &Interpreter, key: Value) -> Result<usize, LispError> {
+fn check_vector_or_string(key: Value) -> Result<usize, LispError> {
     if !is_vector_value(&key) && !key.is_string() {
         return Err(wrong_type_argument("arrayp", key));
     }
-    Ok(sequence_length_value(interp, &key)? as usize)
+    Ok(sequence_length_value(&key)? as usize)
 }
 
 /// Faref (KEY, INDEX) of a key sequence.
@@ -1033,7 +1033,7 @@ pub(crate) fn define_key(
 ) -> Result<Value, LispError> {
     let mut metized = false;
     let keymap = get_keymap(interp, keymap, true, true, env)?;
-    let mut length = check_vector_or_string(interp, key)?;
+    let mut length = check_vector_or_string(key)?;
     if length == 0 {
         return Ok(Value::Nil);
     }
@@ -1065,7 +1065,7 @@ pub(crate) fn define_key(
     roots[1] = possibly_translate_key_sequence(interp, key, env)?;
     let key = roots[1];
     if !key.eq_value(roots[1]) {
-        length = check_vector_or_string(interp, key)?;
+        length = check_vector_or_string(key)?;
     }
 
     let mut idx = 0usize;
@@ -1266,7 +1266,7 @@ pub(crate) fn accessible_keymaps(
     let prefixlen = if prefix.is_nil() {
         0
     } else {
-        sequence_length_value(interp, &prefix)? as usize
+        sequence_length_value(&prefix)? as usize
     };
     let mut roots = RootedVec::from_vec(vec![keymap, prefix, Value::Nil, Value::Nil]);
     if !prefix.is_nil() {

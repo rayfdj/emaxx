@@ -50,6 +50,7 @@ pub(crate) enum ObjectKey {
     Terminal(usize),
     Record(u64),
     LispRecord(usize),
+    BoolVector(usize),
     Finalizer(usize),
     ReaderForm(usize),
 }
@@ -91,6 +92,7 @@ pub(crate) fn object_key(value: &Value) -> Option<ObjectKey> {
         Kind::Terminal(terminal) => ObjectKey::Terminal(terminal.identity()),
         Kind::Record(record) => ObjectKey::Record(record.id),
         Kind::LispRecord(record) => ObjectKey::LispRecord(record.identity()),
+        Kind::BoolVector(vector) => ObjectKey::BoolVector(vector.identity()),
         Kind::Finalizer(object) => ObjectKey::Finalizer(object.identity()),
         Kind::ReaderForm(form) => ObjectKey::ReaderForm(form.identity()),
     })
@@ -151,7 +153,6 @@ pub(crate) const NATIVE_UNIT_CODE: u32 = 14;
 /// stable codes.
 pub(crate) fn record_kind_code(kind: RecordKind) -> u32 {
     match kind {
-        RecordKind::BoolVector => 2,
         RecordKind::Font => 4,
         RecordKind::Process => 6,
         RecordKind::Obarray => 8,
@@ -172,8 +173,8 @@ pub(crate) fn record_kind_code(kind: RecordKind) -> u32 {
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn record_kind_from_code(code: u32) -> Option<RecordKind> {
     Some(match code {
-        // Former generic record code 1 used a detached host payload.
-        2 => RecordKind::BoolVector,
+        // Former generic record code 1 used a detached host payload, and
+        // former bool-vector record code 2 a slot a bit.
         // Former detached byte-code record code 3 is unsupported.
         4 => RecordKind::Font,
         // Former positioned-symbol records are not a supported dump object.
@@ -1094,7 +1095,7 @@ impl DumpContext {
         }
         let state = self.recall_object(object);
 
-        let cold = matches!(object.kind(), Kind::Float(_)) || is_bool_vector(interp, object);
+        let cold = matches!(object.kind(), Kind::Float(_));
         if cold && self.flags.defer_cold_objects {
             if state != Some(ObjectState::OnColdQueue) {
                 assert!(matches!(state, None | Some(ObjectState::OnNormalQueue)));
@@ -1159,6 +1160,7 @@ impl DumpContext {
             Kind::SubCharTable(table) => (self.dump_sub_char_table(table)?, DumpType::SubCharTable),
             Kind::Record(id) => self.dump_record(interp, id.id, object)?,
             Kind::LispRecord(record) => (self.dump_lisp_record(record)?, DumpType::LispRecord),
+            Kind::BoolVector(vector) => (self.dump_bool_vector(vector)?, DumpType::BoolVector),
             Kind::Nil | Kind::T | Kind::Unbound => {
                 unreachable!("self-representing objects are never dumped")
             }
@@ -1780,10 +1782,6 @@ impl DumpContext {
                 let offset = self.dump_obarray(interp, id, &type_tag, &slots)?;
                 Ok((offset, DumpType::Obarray))
             }
-            RecordKind::BoolVector => {
-                let offset = self.dump_bool_vector(id, &slots)?;
-                Ok((offset, DumpType::BoolVector))
-            }
             RecordKind::Thread => {
                 if id == self.main_thread_id {
                     let offset = self.dump_main_thread(id)?;
@@ -1966,19 +1964,18 @@ impl DumpContext {
         self.object_finish(&words)
     }
 
-    /// dump_bool_vector: the bits, in the cold section, with the record's
-    /// id; a cold object refers to nothing.
-    fn dump_bool_vector(&mut self, id: u64, slots: &[Value]) -> Result<u32, DumpError> {
-        assert!(self.header.cold_start != 0);
-        self.object_start()?;
-        let mut words = vec![id, slots.len() as u64];
-        words.resize(2 + slots.len().div_ceil(64), 0);
-        for (index, slot) in slots.iter().enumerate() {
-            if slot.is_truthy() {
-                words[2 + index / 64] |= 1 << (index % 64);
-            }
-        }
-        self.object_finish(&words)
+    /// dump_bool_vector: the vector's bytes as the heap holds them, its
+    /// length and its words, which name nothing; a cell of the image's
+    /// vector blocks, mapped where the image holds it (pdumper.c writes it
+    /// in the cold section, likewise mapped).
+    fn dump_bool_vector(
+        &mut self,
+        vector: crate::lisp::types::BoolVectorRef,
+    ) -> Result<u32, DumpError> {
+        let mut raw = Vec::with_capacity(1 + vector.words().len());
+        raw.push(vector.len() as u64);
+        raw.extend(vector.words().iter().map(|word| word.get() as u64));
+        self.dump_vector_cell(vector.identity(), &raw, &[], WEIGHT_NORMAL)
     }
 
     /// The main thread's copied record: DUMP_OBJECT_IS_RUNTIME_MAGIC in
@@ -2869,11 +2866,6 @@ pub(crate) const HASH_TEST_EQUAL: u64 = 2;
 
 fn is_hash_table(_interp: &Interpreter, value: &Value) -> bool {
     matches!(value.kind(), Kind::HashTable(_))
-}
-
-fn is_bool_vector(interp: &Interpreter, value: &Value) -> bool {
-    matches!(value.kind(), Kind::Record(id)
-        if interp.find_record(id).is_some_and(|record| record.kind == RecordKind::BoolVector))
 }
 
 #[cfg_attr(not(test), allow(dead_code))]

@@ -6990,6 +6990,38 @@ setup_process_coding_systems's check now refuses). A 13-form
   507.6M). Local validation: the full gate across its ten groups with
   the documented local skips; clippy `-D warnings', rustfmt and `git
   diff --check' pass.
+- **Round 104: bool vectors as lisp.h's Lisp_Bool_Vector.** A bool
+  vector is a PVEC_BOOL_VECTOR pseudovector of the vector allocator:
+  the header, the length in bits and the bits packed in words, the last
+  word's bits past the length clear (make_uninit_bool_vector), its
+  footprint from its length (vector_nbytes); it was a record holding a
+  Lisp word for each bit, found through the interpreter on every access
+  and copied whole by `aref' paths that read it. The reader makes the
+  bool vector of `#&N"..."' itself, as read0 does, where it left a
+  reader form for evaluation to turn into one. The image writes a bool
+  vector as a cell of its vector blocks and the loader maps it there; it
+  was a cold record rebuilt bit by bit. `aref' and `aset' signal
+  `args-out-of-range' of the vector and index, `bool-vector-not'
+  stores into its second argument (it made a new vector), the set
+  operations and `bool-vector-subsetp' (B as the destination) are
+  bool_vector_binop_driver with `wrong-length-argument' of the lengths,
+  `bool-vector-count-consecutive' and `make-bool-vector' check
+  CHECK_FIXNAT and the index's range, `equal' compares the words,
+  `value<' is bool_vector_cmp, `fillarray' bool_vector_fill, `nreverse'
+  swaps the bits in place, and `purecopy' signals "Don't know how to
+  purify: %S" with the printed object for the kinds alloc.c refuses
+  (a buffer's message had its type name). A 30-case probe and a second
+  of large vectors, category sets across a collection and modified
+  category tables give GNU 30.2's output byte for byte but for
+  `sxhash-equal' (below); a batch test pins fourteen cases. With the
+  frozen runner's command line startup went from 146.7M instructions to
+  148.8M and the cal-french-tests.el setup from 530.1M to 532.8M: the
+  101,086 relocations naming the category tables' bool vectors resolve
+  their target by its offset, checked against the vector starts, where
+  they indexed the rebuilt objects by number (`relocate_vectors' 8.9M
+  to 12.0M). Local validation: the full gate across its ten groups with
+  the documented local skips; clippy `-D warnings', rustfmt and `git
+  diff --check' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -7790,6 +7822,12 @@ frozen passed on its first attempt (run 40426753917).
 frozen passed on its first attempt (run 40433088195).
 
 **Findings recorded, not fixed:**
+- **`sxhash' is not fns.c's (round 104).** `sxhash-equal' and
+  `sxhash-eq' give other numbers than GNU 30.2's for every kind of
+  object, a fixnum included (`(sxhash-equal 5)' is 4 in GNU), and the
+  empty bool vector's is not 0; hash tables are consistent within the
+  process, but a test that prints or compares a hash with a constant
+  diverges.
 - **A test file's setup in wall time, and what the instruction count
   misses (round 102).** With the frozen runner's command line,
   cal-french-tests.el's setup takes 137 to 148 ms against GNU's 118 to

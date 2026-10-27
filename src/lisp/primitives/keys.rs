@@ -598,16 +598,13 @@ pub(crate) fn normalize_key_description_event(event: Value) -> Value {
     }
 }
 
-pub(crate) fn sequence_values(
-    interp: &Interpreter,
-    sequence: &Value,
-) -> Result<Vec<Value>, LispError> {
+pub(crate) fn sequence_values(sequence: &Value) -> Result<Vec<Value>, LispError> {
     if let Some(string) = sequence_string_like(sequence) {
         Ok(string_sequence_values(&string))
     } else if matches!(sequence.kind(), Kind::Nil | Kind::Cons(_)) {
         sequence.to_vec()
-    } else if is_bool_vector_value(interp, sequence) {
-        bool_vector_values(interp, sequence)
+    } else if is_bool_vector_value(sequence) {
+        bool_vector_values(sequence)
     } else {
         vector_items(sequence)
     }

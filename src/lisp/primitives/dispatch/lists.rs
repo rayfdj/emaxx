@@ -182,7 +182,7 @@ pub(crate) fn next_kbd_macro_event(
         .lookup_var("executing-kbd-macro-index", env)
         .unwrap_or(Value::Integer(0))
         .as_integer()?;
-    if index >= sequence_length_value(interp, &array)? {
+    if index >= sequence_length_value(&array)? {
         return Ok(None);
     }
     // keyboard.c:read_char reads the live array with Faref. Mutation,
@@ -838,8 +838,8 @@ define_dispatch!(
                         items.extend(string_sequence_values(&string));
                         continue;
                     }
-                    if is_vector_like_value(interp, a) {
-                        items.extend(sequence_values(interp, a)?);
+                    if is_vector_like_value(a) {
+                        items.extend(sequence_values(a)?);
                         continue;
                     }
                     // fns.c concat_to_list: CLOSUREP args flatten to their
@@ -863,7 +863,7 @@ define_dispatch!(
             }
             "length<" | "length>" | "length=" => {
                 need_args(name, args, 2)?;
-                let length = sequence_length_value(interp, &args[0])?;
+                let length = sequence_length_value(&args[0])?;
                 let target = args[1].as_integer()?;
                 let matches = match name {
                     "length<" => length < target,
@@ -874,7 +874,7 @@ define_dispatch!(
             }
             "reverse" => {
                 need_args(name, args, 1)?;
-                reverse_sequence_value(interp, &args[0])
+                reverse_sequence_value(&args[0])
             }
             "copy-alist" => {
                 need_args(name, args, 1)?;
@@ -1883,13 +1883,13 @@ pub(super) fn direct_elt(
 
 /// The `length' primitive, callable directly (a subr's function pointer).
 pub(super) fn direct_length(
-    interp: &mut Interpreter,
+    _interp: &mut Interpreter,
     args: &[Value],
     _env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
     let name = "length";
     need_args(name, args, 1)?;
-    Ok(Value::Integer(sequence_length_value(interp, &args[0])?))
+    Ok(Value::Integer(sequence_length_value(&args[0])?))
 }
 
 /// `memq', `memql' and `member' by NAME (fns.c's three walks share this body).
@@ -2177,14 +2177,14 @@ fn map_sequence(
                 call(interp, Value::Integer(code), env)?;
             }
         }
-        Kind::Record(id) if is_bool_vector_value(interp, sequence) => {
-            // A bool vector keeps one slot a bit in its record; each bit is
-            // read when its call comes.
+        Kind::BoolVector(vector) => {
+            // mapcar1 reads each bit (bool_vector_ref) when its call comes.
             for index in 0..length {
-                let item = interp
-                    .find_record(id)
-                    .and_then(|record| record.slots.get(index).copied())
-                    .unwrap_or(Value::Nil);
+                let item = if vector.get(index) == Some(true) {
+                    Value::T
+                } else {
+                    Value::Nil
+                };
                 call(interp, item, env)?;
             }
         }

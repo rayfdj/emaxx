@@ -225,9 +225,9 @@ pub(crate) fn function_documentation(
     })
 }
 
-pub(crate) fn is_vector_like_value(interp: &Interpreter, value: &Value) -> bool {
+pub(crate) fn is_vector_like_value(value: &Value) -> bool {
     is_vector_value(value)
-        || is_bool_vector_value(interp, value)
+        || is_bool_vector_value(value)
         || matches!(value.kind(), Kind::CharTable(_))
 }
 
