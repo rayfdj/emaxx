@@ -7493,7 +7493,25 @@ setup_process_coding_systems's check now refuses). A 13-form
   format strings holding 101 directive variants over 15 times in two
   zones, and of `encode-time' over 11 zones, 20 broken-down times and
   the three DST values give GNU 30.2's output, apart from `encode-time'
-  with a nil SEC, which reads the clock.
+  with a nil SEC, which reads the clock. Local validation: the full gate
+  across its ten groups with the documented local skips, 3,255 of the
+  3,257 tests run passing (2 ignored), the failures
+  `just_this_one_wait_still_notifies_an_exited_distractor' (3 of 3
+  alone) and eval_02's
+  `format_time_string_supports_case_flags_widths_and_calendar_fields',
+  which expected Emaxx's old "utc" for zone t (GNU's "gmt" now, and it
+  passes); the seven integration targets; clippy `-D warnings', rustfmt
+  and `git diff --check'.
+- **Round 116's `time-subtract' of `eq' operands.** Round 116's frozen
+  run mismatched one outcome, time-date-tests' `test-time-since':
+  `(time-since nil)' is `(time-subtract nil nil)', which round 116's
+  time_arith decoded by reading the clock twice, giving `(-1 65535
+  999999 539000)' where the test wants zero. Ftime_subtract returns
+  make_lisp_time of a zero timespec for `eq' operands before decoding
+  either, `(0 0 0 0)' under `current-time-list' and `(0 . 1000000000)'
+  without, so `(time-subtract 5 5)' and `(time-subtract 'foo 'foo)' are
+  that zero too (Emaxx gave 0 and signalled); `time-add' has no such
+  case. Round 116's time probe now covers these, as GNU 30.2 prints them.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -8333,6 +8351,12 @@ frozen passed on its first attempt (run 40506742345). Its timings: setup
 72.0 s against 57.6 s (1.250), test bodies 254.4 s against 251.8 s
 (1.010), in all 1.054; erc-sasl-tests and gnutls-tests are no longer
 among the larger excesses.
+**On `3b2fc92`** (rounds 114 to 116): full Rust gate passed (run
+40529919154); frozen (run 40529925443) matched 7,927 of 7,928 outcomes,
+the mismatch time-date-tests' `test-time-since', round 116's
+`time-subtract' of `eq' operands (fixed after round 117; not rerun). Its
+timings: setup 81.1 s against 63.0 s (1.289), test bodies 270.5 s
+against 263.2 s (1.028), in all 1.059.
 
 **Findings recorded, not fixed:**
 - **The frozen run times the gate profile (round 112).** The frozen

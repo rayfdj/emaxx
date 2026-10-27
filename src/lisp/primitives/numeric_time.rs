@@ -1742,9 +1742,20 @@ define_dispatch!(
             }
             "time-add" | "time-subtract" => {
                 need_args(name, args, 2)?;
+                let subtract = name == "time-subtract";
+                // Ftime_subtract: `eq' operands, nil and nil (the clock
+                // read once) among them, give make_lisp_time of a zero
+                // timespec without being decoded, so even an invalid X
+                // gives zero.
+                if subtract && args[0].word() == args[1].word() {
+                    return Ok(if current_time_list_is_set(interp) {
+                        Value::list([Value::Integer(0); 4])
+                    } else {
+                        Value::cons(Value::Integer(0), Value::Integer(1_000_000_000))
+                    });
+                }
                 let (left_form, left) = decode_lisp_time(&args[0], false)?;
                 let (right_form, right) = decode_lisp_time(&args[1], false)?;
-                let subtract = name == "time-subtract";
                 // timefns.c time_arith: with equal clocks the ticks combine
                 // directly and HZ is kept; with different clocks the sum is
                 // taken over lcm (da, db) = fa * db (g = gcd (da, db), fa =
