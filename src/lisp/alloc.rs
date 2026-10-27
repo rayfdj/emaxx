@@ -46,7 +46,10 @@ pub use symbols::{SymbolCell, SymbolRef};
 /// The actual header cells this allocator holds, as charged to collection.
 pub(crate) const SYMBOL_CELL_BYTES: usize = symbols::SYMBOL_CELL_SIZE;
 pub(crate) const STRING_CELL_BYTES: usize = strings::STRING_CELL_SIZE;
-pub(crate) use symbols::{SymbolText, allocate_symbol, live_symbols, sweep_symbols};
+pub(crate) use symbols::{
+    SymbolText, adopt_image_symbol_blocks, allocate_symbol, image_cell_words, image_symbol_bytes,
+    image_symbol_offset, live_symbols, sweep_symbols,
+};
 pub use vectors::{ClosureRef, VectorHeader, VectorRef, VectorTag, VectorlikeRef};
 pub(crate) use vectors::{
     FreedRecord, live_record_census, live_vector_census, sweep_vectors, take_freed_records,
@@ -170,6 +173,32 @@ fn register_block_of(start: usize, bytes: usize, kind: BlockKind, image: bool, m
     drop(blocks);
     HEAP_LOW.fetch_min(start, Ordering::Relaxed);
     HEAP_HIGH.fetch_max(start + bytes, Ordering::Relaxed);
+}
+
+/// `register_block_of' of each of the image's mapped blocks of KIND, a
+/// (start, bytes) each, under one lock: the registry's maps take them
+/// built in order, where an insertion each walked them for its place.
+pub(crate) fn register_image_blocks(kind: BlockKind, blocks: &[(usize, usize)]) {
+    let Some(low) = blocks.iter().map(|&(start, _)| start).min() else {
+        return;
+    };
+    let high = blocks
+        .iter()
+        .map(|&(start, bytes)| start + bytes)
+        .max()
+        .expect("a block");
+    let mut registry = BLOCKS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut all = blocks.iter().map(|&(start, _)| (start, kind)).collect();
+    registry.all.append(&mut all);
+    let mut by_kind = blocks.iter().map(|&(start, _)| (start, true)).collect();
+    registry.by_kind[kind as usize].append(&mut by_kind);
+    let mut mapped = blocks.iter().map(|&(start, _)| start).collect();
+    registry.mapped.append(&mut mapped);
+    drop(registry);
+    HEAP_LOW.fetch_min(low, Ordering::Relaxed);
+    HEAP_HIGH.fetch_max(high, Ordering::Relaxed);
 }
 
 /// True when the block at START is one of the image's mapped blocks.
@@ -728,8 +757,13 @@ pub struct RootedVec<T> {
 }
 
 impl<T> RootedVec<T> {
-    pub fn new() -> Self {
-        Self::from_vec(Vec::new())
+    /// An empty vector: no buffer, nothing registered.
+    pub const fn new() -> Self {
+        Self {
+            inner: Vec::new(),
+            slot: UNREGISTERED,
+            region: (0, 0),
+        }
     }
 
     pub fn with_capacity(capacity: usize) -> Self {
@@ -1717,6 +1751,7 @@ pub(crate) unsafe fn adopt_image_cons_blocks(start: *mut u8, count: usize) {
         "unaligned image conses"
     );
     let epoch = super::types::current_mark_epoch();
+    let mut blocks = Vec::with_capacity(count.div_ceil(CELLS_PER_BLOCK));
     for block in 0..count.div_ceil(CELLS_PER_BLOCK) {
         let base = start + block * CONS_BLOCK_BYTES;
         let cells = (count - block * CELLS_PER_BLOCK).min(CELLS_PER_BLOCK);
@@ -1727,8 +1762,9 @@ pub(crate) unsafe fn adopt_image_cons_blocks(start: *mut u8, count: usize) {
             ConsMetadata::init(std::ptr::addr_of_mut!((*(base as *mut ConsBlock)).metadata));
             cons_mark(cons_cell(base, 0)).allocate_run(cells, epoch);
         }
-        register_block_of(base, CONS_BLOCK_BYTES, BlockKind::Cons, true, true);
+        blocks.push((base, CONS_BLOCK_BYTES));
     }
+    register_image_blocks(BlockKind::Cons, &blocks);
 }
 
 /// Fcons's `cons_block_index == CONS_BLOCK_SIZE' arm.  Out of line, and

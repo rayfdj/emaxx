@@ -33,6 +33,7 @@ mod core;
 mod definitions;
 mod dump_roots;
 mod faces;
+pub(crate) use faces::invalid_face_error;
 mod image_install;
 mod local_cells;
 mod loops;
@@ -1264,7 +1265,6 @@ pub(crate) struct SyntaxSegmentCache {
 /// names happen to match.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RecordKind {
-    BoolVector,
     Font,
     Process,
     Obarray,
@@ -1282,10 +1282,8 @@ pub(crate) enum RecordKind {
 }
 
 impl RecordKind {
-    fn gnu_vector_slots(self, logical_slots: usize) -> usize {
+    fn gnu_vector_slots(self) -> usize {
         match self {
-            // lisp.h:Lisp_Bool_Vector is header + bit count + packed words.
-            Self::BoolVector => 2_usize.saturating_add(logical_slots.div_ceil(64)),
             // Verified from the configured GNU headers: 72 and 24 bytes.
             Self::Obarray => 3,
             // alloc.c:allocate_process uses VECSIZE(struct Lisp_Process),
@@ -1449,7 +1447,7 @@ impl RecordState {
     /// The vector slots alloc.c would count for this record (zero for a
     /// kind GNU keeps outside the vectors).
     pub(crate) fn gnu_vector_slots(&self) -> usize {
-        self.kind.gnu_vector_slots(self.slots.len())
+        self.kind.gnu_vector_slots()
     }
 
     pub(crate) fn symbol_type_name(&self) -> Option<&str> {
@@ -2667,13 +2665,6 @@ pub(crate) struct CompositionState {
 
 pub(crate) const LFACE_VECTOR_SIZE: usize = 20;
 
-#[derive(Clone, Debug)]
-pub(crate) struct LispFaceState {
-    pub(crate) name: String,
-    pub(crate) id: Option<i64>,
-    pub(crate) global: Option<Value>,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct FontPatternState {
     pub(crate) family: Option<String>,
@@ -2703,10 +2694,9 @@ pub(crate) struct FontsetState {
 #[derive(Clone, Debug)]
 pub(crate) struct FrameState {
     pub(crate) terminal: Option<crate::lisp::types::TerminalRef>,
+    /// frame.h's face_hash_table: the frame's own face definitions, an
+    /// `eq' table of each face's symbol to its lface vector.
     pub(crate) face_hash_table: Option<Value>,
-    /// Frame-local face vectors belong to this object, including when it
-    /// outlives its creating interpreter. The public hash table is a view.
-    pub(crate) local_faces: Vec<(String, Value)>,
     pub(crate) root_window: Option<crate::lisp::types::RecordRef>,
     pub(crate) selected_window: Option<crate::lisp::types::RecordRef>,
     pub(crate) minibuffer_window: Option<crate::lisp::types::RecordRef>,
@@ -2759,13 +2749,11 @@ impl FrameState {
 }
 
 fn empty_lisp_face_vector() -> Value {
-    Value::list(
-        std::iter::once(Value::symbol("vector-literal"))
-            .chain(std::iter::once(Value::symbol("face")))
-            .chain(std::iter::repeat_n(
-                Value::symbol("unspecified"),
-                LFACE_VECTOR_SIZE - 1,
-            )),
+    Value::vector(
+        std::iter::once(Value::symbol("face")).chain(std::iter::repeat_n(
+            Value::symbol("unspecified"),
+            LFACE_VECTOR_SIZE - 1,
+        )),
     )
 }
 
@@ -2775,7 +2763,7 @@ fn tty_default_lisp_face_vector() -> Value {
     attributes[0] = Value::symbol("face");
     attributes[9] = Value::String("unspecified-fg".into());
     attributes[10] = Value::String("unspecified-bg".into());
-    Value::list(std::iter::once(Value::symbol("vector-literal")).chain(attributes))
+    Value::vector(attributes)
 }
 
 type OrderedHooks = LinkedHashMap<String, Vec<Value>, crate::lisp::primitives::FnvBuildHasher>;
@@ -2902,6 +2890,9 @@ impl ImageGraphCopier {
             .set_trapped_write(symbol.cell().is_trapped_write());
         copied.cell().set_c_slot(symbol.cell().has_c_slot());
         copied.cell().set_plain_store(symbol.cell().plain_store());
+        if symbol.cell().is_builtin() {
+            copied.cell().mark_builtin();
+        }
         copied
             .cell()
             .set_function_definition(symbol.cell().has_function_definition());
@@ -2978,11 +2969,7 @@ impl ImageGraphCopier {
                 if let Some(table) = state.face_hash_table {
                     state.face_hash_table = Some(self.copy(&table));
                 }
-                for (_, item) in state
-                    .parameter_overrides
-                    .iter_mut()
-                    .chain(&mut state.local_faces)
-                {
+                for (_, item) in state.parameter_overrides.iter_mut() {
                     *item = self.copy(item);
                 }
                 value
@@ -3239,6 +3226,15 @@ impl ImageGraphCopier {
                 copy.set_fields(function.fields().map(|field| self.copy(&field)));
                 copied
             }
+            Kind::BoolVector(vector) => {
+                let key = vector.identity();
+                if let Some(copied) = self.vectors.get(&key) {
+                    return *copied;
+                }
+                let copied = Value::BoolVector(crate::lisp::types::BoolVectorRef::copy(vector));
+                self.vectors.insert(key, copied);
+                copied
+            }
             Kind::LispRecord(record) => {
                 let key = record.identity();
                 if let Some(copied) = self.vectors.get(&key) {
@@ -3330,9 +3326,6 @@ impl ImageGraphCopier {
                                 kind: *kind,
                                 slots: slots.iter().map(|slot| self.copy(slot)).collect(),
                             }
-                        }
-                        crate::lisp::types::ReaderForm::BoolVector { bits } => {
-                            crate::lisp::types::ReaderForm::BoolVector { bits: bits.clone() }
                         }
                     },
                 ));
@@ -3521,6 +3514,7 @@ impl LispReachability {
             Kind::SymbolWithPos(value) => value.mark_bit().is_marked(self.epoch),
             Kind::Record(record) => record.mark_bit().is_marked(self.epoch),
             Kind::LispRecord(record) => record.mark_bit().is_marked(self.epoch),
+            Kind::BoolVector(vector) => vector.mark_bit().is_marked(self.epoch),
             Kind::Finalizer(object) => object.mark_bit().is_marked(self.epoch),
             Kind::ReaderForm(value) => value.mark_bit().is_marked(self.epoch),
         }
@@ -3613,6 +3607,7 @@ impl LispReachability {
             Kind::SymbolWithPos(value) => value.mark_bit().mark(self.epoch),
             Kind::Record(record) => record.mark_bit().mark(self.epoch),
             Kind::LispRecord(record) => record.mark_bit().mark(self.epoch),
+            Kind::BoolVector(vector) => vector.mark_bit().mark(self.epoch),
             Kind::Finalizer(object) => object.mark_bit().mark(self.epoch),
             Kind::ReaderForm(value) => value.mark_bit().mark(self.epoch),
         }
@@ -3725,7 +3720,7 @@ impl LispReachability {
                 if let Some(table) = state.face_hash_table {
                     self.enqueue(&table);
                 }
-                for (_, value) in state.parameter_overrides.iter().chain(&state.local_faces) {
+                for (_, value) in &state.parameter_overrides {
                     self.enqueue(value);
                 }
             }
@@ -3777,7 +3772,6 @@ impl LispReachability {
                     | ReaderForm::SubCharTable { fields }
                     | ReaderForm::Record { slots: fields }
                     | ReaderForm::Closure { slots: fields, .. } => fields,
-                    ReaderForm::BoolVector { .. } => &[],
                 };
                 for child in children {
                     self.enqueue(child);
@@ -3790,6 +3784,9 @@ impl LispReachability {
             | Kind::Float(_)
             | Kind::BuiltinFunc(_)
             | Kind::Marker(_)
+            // alloc.c:mark_object marks a bool vector and has nothing in
+            // it to follow.
+            | Kind::BoolVector(_)
             | Kind::Unbound => {}
         }
     }
@@ -4079,7 +4076,6 @@ impl Interpreter {
             FrameState {
                 terminal: None,
                 face_hash_table: None,
-                local_faces: Vec::new(),
                 root_window: None,
                 selected_window: None,
                 minibuffer_window: None,
@@ -4486,10 +4482,8 @@ impl Interpreter {
                 }
             }
         }
-        for face in &self.lisp_face_states {
-            if let Some(value) = &face.global {
-                mark(value);
-            }
+        for face in &self.lface_id_to_name {
+            mark(face);
         }
         for bitmap in &self.fringe_bitmap_states {
             if let Some(value) = &bitmap.definition {
@@ -4961,10 +4955,8 @@ impl Interpreter {
                     }
                 }
             }
-            for face in &mut clone.lisp_face_states {
-                if let Some(global) = &face.global {
-                    face.global = Some(c.copy(global));
-                }
+            for face in &mut clone.lface_id_to_name {
+                *face = c.copy(face);
             }
             for bitmap in &mut clone.fringe_bitmap_states {
                 if let Some(definition) = &bitmap.definition {
@@ -5597,8 +5589,8 @@ pub struct InterpreterState {
     pub(crate) window_sequence_numbers: HashMap<u64, i64>,
     pub lossage_size: i64,
     interactive_call_depth: usize,
-    pub(crate) lisp_face_states: Vec<LispFaceState>,
-    pub(crate) next_lisp_face_id: i64,
+    /// xfaces.c's lface_id_to_name: each Lisp face's symbol at its id.
+    pub(crate) lface_id_to_name: Vec<Value>,
     pub(crate) font_selection_order: [String; 4],
     pub(crate) alternative_font_family_alist: Value,
     pub(crate) alternative_font_registry_alist: Value,
@@ -5609,7 +5601,6 @@ pub struct InterpreterState {
     /// Raw etc/DOC byte offsets installed in built-in subroutine objects by
     /// `Snarf-documentation`, keyed by the canonical native function name.
     pub(crate) builtin_doc_offsets: HashMap<String, i64>,
-    syntax_word_chars: Vec<u32>,
     syntax_code_objects: Value,
     /// keymap.c's staticpro'd unicode_case_table belongs to one editor.
     /// Keeping it with that state also isolates successive embedded editors.
@@ -5845,7 +5836,6 @@ impl Interpreter {
             FrameState {
                 terminal: Some(initial_terminal),
                 face_hash_table: None,
-                local_faces: vec![("default".into(), tty_default_lisp_face_vector())],
                 root_window: None,
                 selected_window: None,
                 minibuffer_window: None,
@@ -6022,10 +6012,7 @@ impl Interpreter {
                 ),
                 (
                     "code-conversion-map-vector".into(),
-                    Value::list(
-                        std::iter::once(Value::Symbol("vector-literal".into()))
-                            .chain(std::iter::repeat_n(Value::Nil, 16)),
-                    ),
+                    Value::vector(std::iter::repeat_n(Value::Nil, 16)),
                 ),
                 ("translation-hash-table-vector".into(), Value::Nil),
                 ("font-ccl-encoder-alist".into(), Value::Nil),
@@ -6034,10 +6021,7 @@ impl Interpreter {
                 ("last-code-conversion-error".into(), Value::Nil),
                 (
                     "latin-extra-code-table".into(),
-                    Value::list(
-                        std::iter::once(Value::Symbol("vector-literal".into()))
-                            .chain(std::iter::repeat_n(Value::Nil, 256)),
-                    ),
+                    Value::vector(std::iter::repeat_n(Value::Nil, 256)),
                 ),
                 ("select-safe-coding-system-function".into(), Value::Nil),
                 ("standard-translation-table-for-decode".into(), Value::Nil),
@@ -6327,12 +6311,7 @@ impl Interpreter {
             window_sequence_numbers: HashMap::new(),
             lossage_size: 300,
             interactive_call_depth: 0,
-            lisp_face_states: vec![LispFaceState {
-                name: "default".into(),
-                id: Some(0),
-                global: Some(empty_lisp_face_vector()),
-            }],
-            next_lisp_face_id: 1,
+            lface_id_to_name: Vec::new(),
             font_selection_order: [
                 ":width".into(),
                 ":height".into(),
@@ -6349,7 +6328,6 @@ impl Interpreter {
             fringe_bitmap_states,
             composition_states: Vec::new(),
             builtin_doc_offsets: HashMap::new(),
-            syntax_word_chars: Vec::new(),
             syntax_code_objects,
             unicode_menu_case_table: Value::Nil,
             where_is_cache: Value::Nil,
@@ -7707,6 +7685,15 @@ impl Interpreter {
             SymbolName::intern_str(name).cell().set_constant(true);
         }
         crate::lisp::native_comp::initialize_runtime(&mut interp);
+        // lisp.h's lispsym: every symbol interned when construction ends,
+        // the cached keys' among them, is builtin. An image refers to such
+        // a symbol by name, which a process that loads it has made by now
+        // (`for_image' makes a part of what `new' makes); it maps the
+        // others where it holds them.
+        crate::lisp::types::symbols::intern_all_keys();
+        for symbol in interp.globals.names() {
+            symbol.cell().mark_builtin();
+        }
         interp
     }
 
@@ -8006,22 +7993,6 @@ fn buffer_undo_head_to_entry(value: &Value) -> crate::buffer::UndoEntry {
         },
         _ => crate::buffer::UndoEntry::Opaque(*value),
     }
-}
-
-/// Whether VALUE is a proper list whose head is the symbol NAME.  The
-/// head is read in place; the list is walked only when the head matches
-/// (these checks run on every function call and `let', and used to copy
-/// the whole form into a vector to look at its first element).
-fn proper_list_headed_by(value: &Value, name: &str) -> bool {
-    let Some((car, _)) = value.cons_cells() else {
-        return false;
-    };
-    let head_matches = matches!(car.get().kind(), Kind::Symbol(head) if head == name);
-    head_matches && value.to_vec().is_ok()
-}
-
-fn is_vector_literal(value: &Value) -> bool {
-    proper_list_headed_by(value, "vector-literal")
 }
 
 fn is_lambda_form(interp: &Interpreter, value: &Value, env: &Env) -> bool {

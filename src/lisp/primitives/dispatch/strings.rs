@@ -52,27 +52,19 @@ define_dispatch!(
                 if length < 0 {
                     return Err(LispError::Signal("Wrong type argument: natnump".into()));
                 }
-                let init = args[1];
-                let items: Vec<Value> = std::iter::repeat_n(init, length as usize).collect();
-                let mut result = vec![Value::symbol("vector-literal")];
-                result.extend(items);
-                Ok(Value::list(result))
+                Ok(Value::vector(std::iter::repeat_n(args[1], length as usize)))
             }
+            // alloc.c:Fmake_bool_vector: CHECK_FIXNAT, then the bits filled.
             "make-bool-vector" => {
                 need_args(name, args, 2)?;
-                let length = args[0].as_integer()?;
-                if length < 0 {
-                    return Err(LispError::Signal("Wrong type argument: natnump".into()));
-                }
-                Ok(make_bool_vector_value(
-                    interp,
-                    std::iter::repeat_n(args[1].is_truthy(), length as usize),
+                let Kind::Integer(length @ 0..) = args[0].kind() else {
+                    return Err(LispError::WrongTypeArgument("wholenump".into(), args[0]));
+                };
+                Ok(Value::BoolVector(
+                    crate::lisp::types::BoolVectorRef::filled(length as usize, args[1].is_truthy()),
                 ))
             }
-            "bool-vector" => Ok(make_bool_vector_value(
-                interp,
-                args.iter().map(Value::is_truthy),
-            )),
+            "bool-vector" => Ok(make_bool_vector_value(args.iter().map(Value::is_truthy))),
             "make-keymap" => {
                 if args.len() > 1 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
@@ -92,11 +84,11 @@ define_dispatch!(
                 ))
             }
             "vconcat" => {
-                let mut items = vec![Value::symbol("vector-literal")];
+                let mut items = Vec::new();
                 for value in args {
-                    items.extend(sequence_values(interp, value)?);
+                    items.extend(sequence_values(value)?);
                 }
-                Ok(Value::list(items))
+                Ok(Value::vector(items))
             }
             "copy-keymap" => {
                 need_args(name, args, 1)?;
@@ -744,7 +736,7 @@ define_dispatch!(
             }
             "format-network-address" => {
                 need_arg_range(name, args, 1, 2)?;
-                let items = sequence_values(interp, &args[0])?;
+                let items = sequence_values(&args[0])?;
                 if items.len() < 4 {
                     return Err(LispError::Signal("Invalid network address".into()));
                 }
@@ -1086,30 +1078,12 @@ pub(crate) fn decode_unicode_property_value(
     let Some(vector) = interp.char_table_extra_slot(table_id, 4) else {
         return Ok(value);
     };
-    let items = vector.to_vec()?;
-    let values = if matches!(
-        items.first().map(|v| v.kind()),
-        Some(Kind::Symbol(symbol)) if symbol == "vector-literal"
-    ) {
-        &items[1..]
-    } else {
-        &items
-    };
+    let values = vector_or_list_items(&vector)?;
     Ok(values.get(index).cloned().unwrap_or(value))
 }
 
 fn unicode_property_vector_values(value: &Value) -> Result<Vec<Value>, LispError> {
-    let items = value.to_vec()?;
-    Ok(
-        if matches!(
-            items.first().map(|v| v.kind()),
-            Some(Kind::Symbol(symbol)) if symbol == "vector-literal"
-        ) {
-            items[1..].to_vec()
-        } else {
-            items
-        },
-    )
+    vector_or_list_items(value)
 }
 
 fn encode_unicode_property_value(
@@ -1150,9 +1124,7 @@ fn encode_unicode_property_value(
                     // the newly allocated encoded index, not with the input
                     // number itself (chartab.c:uniprop_encode_value_numeric).
                     values.push(Value::Integer(index as i64));
-                    let mut public_vector = vec![Value::Symbol("vector-literal".into())];
-                    public_vector.extend(values);
-                    interp.set_char_table_extra_slot(table_id, 4, Value::list(public_vector))?;
+                    interp.set_char_table_extra_slot(table_id, 4, Value::vector(values))?;
                     index
                 }
                 None => {

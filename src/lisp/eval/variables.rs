@@ -914,7 +914,17 @@ impl Interpreter {
     }
 
     pub fn put_symbol_property(&mut self, name: &str, property: &str, value: Value) {
-        let symbol = SymbolName::intern_str(name);
+        self.put_symbol_property_on(&SymbolName::intern_str(name), property, value);
+    }
+
+    /// Fput (SYMBOL, PROPERTY, VALUE) on the symbol itself.
+    pub(crate) fn put_symbol_property_on(
+        &mut self,
+        symbol: &SymbolName,
+        property: &str,
+        value: Value,
+    ) {
+        let symbol = *symbol;
         let plist = self.globals.plist(&symbol);
         let mut tail = plist;
         let mut tortoise = Brent::new(&tail);
@@ -1014,7 +1024,6 @@ impl Interpreter {
                     | crate::lisp::types::ReaderForm::Closure { slots, .. } => {
                         pending.extend(slots.iter().cloned());
                     }
-                    _ => {}
                 },
                 _ => {}
             }

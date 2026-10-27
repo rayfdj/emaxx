@@ -815,54 +815,6 @@ pub(crate) fn validate_collation_locale(locale: Option<&Value>) -> Result<(), Li
     Ok(())
 }
 
-pub(crate) fn assoc_string_text(value: &Value) -> Result<String, LispError> {
-    match value.kind() {
-        Kind::Nil => Ok("nil".into()),
-        Kind::T => Ok("t".into()),
-        Kind::Symbol(name) => Ok(name.to_string()),
-        _ => string_text(value),
-    }
-}
-
-pub(crate) fn assoc_string_candidate_text(value: &Value) -> Option<String> {
-    match value.kind() {
-        Kind::Nil => Some("nil".into()),
-        Kind::T => Some("t".into()),
-        Kind::Symbol(name) => Some(name.to_string()),
-        _ => string_like(value).map(|string| string.text),
-    }
-}
-
-pub(crate) fn assoc_string_folded_text(
-    interp: &mut Interpreter,
-    text: &str,
-) -> Result<String, LispError> {
-    // fns.c's assoc-string folds through the same casing machinery, so it uses
-    // the same prepared context (GNU: `casify_object' with CASE_DOWN).
-    let context = case::CasingContext::prepare(
-        interp,
-        case::CaseAction::Down,
-        &mut crate::lisp::types::Env::new(),
-    );
-    let (down_table, _) = current_case_table_ids(interp)?;
-    let mut folded = String::new();
-    let chars: Vec<char> = text.chars().collect();
-    for (index, ch) in chars.iter().copied().enumerate() {
-        let next_is_word = chars
-            .get(index + 1)
-            .copied()
-            .is_some_and(|next| interp.is_syntax_word_char(normalize_case_key(next as u32)));
-        folded.push_str(&full_downcase_string(
-            interp,
-            &context,
-            down_table,
-            ch,
-            interp.is_syntax_word_char(normalize_case_key(ch as u32)) && !next_is_word,
-        ));
-    }
-    Ok(folded)
-}
-
 /// data.c's Faset signals `args-out-of-range' with the array and the index.
 fn args_out_of_range_for_aset(target: &Value, index: usize) -> LispError {
     LispError::SignalValue(Value::list([
@@ -982,23 +934,20 @@ pub(crate) fn reverse_string_like_value(value: &Value) -> Result<Value, LispErro
     Ok(string_like_value(text, merge_string_props(props)))
 }
 
-pub(crate) fn reverse_sequence_value(
-    interp: &mut Interpreter,
-    value: &Value,
-) -> Result<Value, LispError> {
+pub(crate) fn reverse_sequence_value(value: &Value) -> Result<Value, LispError> {
     if string_like(value).is_some() {
         return reverse_string_like_value(value);
     }
-    if is_bool_vector_value(interp, value) {
-        let mut bits = bool_vector_bits(interp, value)?;
+    if is_bool_vector_value(value) {
+        let mut bits = bool_vector_bits(value)?;
         bits.reverse();
-        return Ok(make_bool_vector_value(interp, bits));
+        return Ok(make_bool_vector_value(bits));
     }
     match value.kind() {
-        Kind::Vector(_) | Kind::Cons(_) if is_vector_value(value) => {
-            let mut items = value.to_vec()?;
-            items[1..].reverse();
-            Ok(Value::list(items))
+        Kind::Vector(_) => {
+            let mut items = vector_items(value)?;
+            items.reverse();
+            Ok(Value::vector(items))
         }
         Kind::Nil | Kind::Cons(_) => {
             let mut items = value.to_vec()?;
@@ -1009,20 +958,18 @@ pub(crate) fn reverse_sequence_value(
     }
 }
 
-pub(crate) fn nreverse_sequence_value(
-    interp: &mut Interpreter,
-    value: &Value,
-) -> Result<Value, LispError> {
+pub(crate) fn nreverse_sequence_value(value: &Value) -> Result<Value, LispError> {
     if string_like(value).is_some() {
         return reverse_string_like_value(value);
     }
-    if let Kind::Record(id) = value.kind()
-        && is_bool_vector_value(interp, value)
-    {
-        let record = interp
-            .find_record_mut(id)
-            .ok_or_else(|| LispError::WrongTypeArgument("bool-vector-p".into(), *value))?;
-        record.slots.reverse();
+    // fns.c:Fnreverse: the bits swapped in place.
+    if let Kind::BoolVector(vector) = value.kind() {
+        let size = vector.len();
+        for index in 0..size / 2 {
+            let (low, high) = (vector.get(index), vector.get(size - index - 1));
+            vector.set(index, high == Some(true));
+            vector.set(size - index - 1, low == Some(true));
+        }
         return Ok(*value);
     }
     match value.kind() {
@@ -1083,23 +1030,31 @@ pub(crate) fn object_intervals_value(
     interp: &mut Interpreter,
     object: &Value,
 ) -> Result<Value, LispError> {
-    let (len, spans) = if let Some(string) = string_like(object) {
+    // A string keeps its intervals when their properties are removed;
+    // traverse_intervals then visits them with empty plists.
+    let (len, spans, has_intervals) = if let Some(string) = string_like(object) {
+        let has_intervals = matches!(object.kind(), Kind::StringObject(state)
+            if state.borrow().props.has_intervals());
         (
             string.text.chars().count(),
             merge_string_props(string.props),
+            has_intervals,
         )
     } else {
         let buffer_id = interp.resolve_buffer_id(object)?;
         let buffer = interp
             .get_buffer_by_id(buffer_id)
             .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?;
+        let spans = buffer.substring_property_spans(buffer.point_min(), buffer.point_max());
+        let has_intervals = !spans.is_empty();
         (
             buffer.point_max() - buffer.point_min(),
-            buffer.substring_property_spans(buffer.point_min(), buffer.point_max()),
+            spans,
+            has_intervals,
         )
     };
 
-    if spans.is_empty() {
+    if !has_intervals {
         return Ok(Value::Nil);
     }
 

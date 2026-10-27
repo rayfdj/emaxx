@@ -1926,8 +1926,7 @@ fn macroexpanded_backquote_preserves_a_dynamic_dotted_vector_tail() {
         Value::list([
             Value::cons(
                 Value::symbol("abc"),
-                Value::list([
-                    Value::symbol("vector-literal"),
+                Value::vector([
                     Value::Integer(9),
                     Value::list([Value::Integer(1), Value::Integer(2), Value::Integer(3),]),
                 ]),
@@ -4079,8 +4078,7 @@ fn cl_loop_collect_into_finally_return() {
                       collect (symbol-name item) into names
                       finally return (apply #'vector names))",
         ),
-        Value::list([
-            Value::symbol("vector-literal"),
+        Value::vector([
             Value::String("a".into()),
             Value::String("b".into()),
             Value::String("c".into()),
@@ -4095,8 +4093,7 @@ fn cl_loop_vconcat_accumulates_vector_elements() {
             "cl-macs",
             "(cl-loop for x in (list 1 2 3 4 5) vconcat (vector (1+ x)))",
         ),
-        Value::list([
-            Value::symbol("vector-literal"),
+        Value::vector([
             Value::Integer(2),
             Value::Integer(3),
             Value::Integer(4),
@@ -6475,14 +6472,8 @@ fn preloaded_kbd_preserves_gnu_ascii_string_and_symbolic_vector_results() {
         Value::list([
             Value::String("\r".into()),
             Value::String("a\r".into()),
-            Value::list([
-                Value::Symbol("vector-literal".into()),
-                Value::Symbol("return".into()),
-            ]),
-            Value::list([
-                Value::Symbol("vector-literal".into()),
-                Value::Integer('é' as i64),
-            ]),
+            Value::vector([Value::Symbol("return".into()),]),
+            Value::vector([Value::Integer('é' as i64),]),
             Value::T,
             Value::T,
         ])
@@ -8683,12 +8674,7 @@ fn list_and_rest_arguments_keep_a_leading_vector_literal_symbol() {
         Value::list([
             Value::T,
             Value::T,
-            // Built by cons: `Value::list' reads a `vector-literal' head
-            // as the reader's vector marker.
-            Value::cons(
-                Value::symbol("vector-literal"),
-                Value::cons(Value::Integer(1), Value::Nil),
-            ),
+            Value::list([Value::symbol("vector-literal"), Value::Integer(1)]),
         ])
     );
 }
@@ -8696,12 +8682,7 @@ fn list_and_rest_arguments_keep_a_leading_vector_literal_symbol() {
 #[test]
 fn byte_code_list_ops_keep_a_leading_vector_literal_symbol() {
     // bytecode.c:Blist2 and BlistN cons their operands as Flist does.
-    let list = || {
-        Value::cons(
-            Value::symbol("vector-literal"),
-            Value::cons(Value::Integer(1), Value::Nil),
-        )
-    };
+    let list = || Value::list([Value::symbol("vector-literal"), Value::Integer(1)]);
     assert_eq!(
         eval_str(
             "(list (funcall #[514 \"\\001\\001D\\207\" [] 4] 'vector-literal 1)

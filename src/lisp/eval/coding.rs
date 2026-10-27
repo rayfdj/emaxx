@@ -178,13 +178,7 @@ impl Interpreter {
                 .and_then(|value| value.integer_value())
                 .unwrap_or(1);
             let chars_96 = property(":code-space")
-                .and_then(|space| space.to_vec().ok())
-                .map(|values| {
-                    values
-                        .strip_prefix(&[Value::Symbol("vector-literal".into())])
-                        .map(<[Value]>::to_vec)
-                        .unwrap_or(values)
-                })
+                .and_then(|space| crate::lisp::primitives::vector_or_list_items(&space).ok())
                 .and_then(|values| {
                     Some((
                         values.first()?.integer_value()?,
@@ -606,12 +600,8 @@ impl Interpreter {
                 } else {
                     let g1 = type_args
                         .first()
-                        .and_then(|initial| initial.to_vec().ok())
-                        .map(|items| {
-                            items
-                                .strip_prefix(&[Value::Symbol("vector-literal".into())])
-                                .map(<[Value]>::to_vec)
-                                .unwrap_or(items)
+                        .and_then(|initial| {
+                            crate::lisp::primitives::vector_or_list_items(initial).ok()
                         })
                         .and_then(|items| items.get(1).cloned())
                         .filter(|charset| !charset.is_nil());
@@ -836,14 +826,10 @@ impl Interpreter {
                     matches!(pair[0].kind(), Kind::Symbol(key) if key == ":designation")
                         .then(|| pair[1])
                 })
-                .and_then(|designation| designation.to_vec().ok())
-                .and_then(|values| {
-                    values
-                        .strip_prefix(&[Value::Symbol("vector-literal".into())])
-                        .unwrap_or(&values)
-                        .first()
-                        .cloned()
+                .and_then(|designation| {
+                    crate::lisp::primitives::vector_or_list_items(&designation).ok()
                 })
+                .and_then(|values| values.first().cloned())
                 .is_some_and(|initial| match initial.kind() {
                     Kind::Symbol(charset) => {
                         charset == "ascii"
@@ -992,7 +978,7 @@ impl Interpreter {
             return id;
         }
         let id = CharTableRef::new(Value::symbol("category-table"), Value::Nil, 2);
-        id.set_default(primitives::make_bool_vector_value(self, [false; 128]));
+        id.set_default(primitives::make_bool_vector_value([false; 128]));
         id.set_extra(0, Value::vector(std::iter::repeat_n(Value::Nil, 95)));
         self.standard_category_table_id = Some(id);
         id
@@ -1149,20 +1135,6 @@ impl Interpreter {
         } else {
             self.buffer_syntax_tables.push((current_buffer_id, id));
         }
-    }
-
-    pub fn set_syntax_word_char(&mut self, code: u32, enabled: bool) {
-        if enabled {
-            if !self.syntax_word_chars.contains(&code) {
-                self.syntax_word_chars.push(code);
-            }
-        } else {
-            self.syntax_word_chars.retain(|existing| *existing != code);
-        }
-    }
-
-    pub fn is_syntax_word_char(&self, code: u32) -> bool {
-        self.syntax_word_chars.contains(&code)
     }
 
     pub fn category_docstring(&self, table: CharTableRef, category: u32) -> Value {

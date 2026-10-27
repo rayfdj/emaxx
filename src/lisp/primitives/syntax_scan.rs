@@ -2274,7 +2274,7 @@ impl<'a, 'r> Scanner<'a, 'r> {
                 read
             }
         };
-        super::search::word_boundary_p_with(self.interp, vars, table, c1, c2)
+        super::search::word_boundary_p_with(vars, table, c1, c2)
     }
 
     /// scan_words: COUNT words from FROM.  A word-boundary function that

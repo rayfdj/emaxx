@@ -14,7 +14,10 @@ fn md5_prefix(bytes: &[u8]) -> String {
     hex
 }
 
-fn source_bytes(path: &Path) -> Result<Vec<u8>, LispError> {
+/// comp.c:comp_hash_source_file: the first eight hex digits of the MD5
+/// of the source file's contents, a gzipped file's uncompressed
+/// (md5_gz_stream), streamed through the digest as md5_stream reads it.
+fn source_hash(path: &Path) -> Result<String, LispError> {
     let file = fs::File::open(path).map_err(|error| {
         LispError::SignalValue(Value::list([
             Value::symbol("file-error"),
@@ -23,20 +26,21 @@ fn source_bytes(path: &Path) -> Result<Vec<u8>, LispError> {
             Value::String(path.display().to_string().into()),
         ]))
     })?;
-    let mut bytes = Vec::new();
-    let result = if path.extension().is_some_and(|extension| extension == "gz") {
-        GzDecoder::new(file).read_to_end(&mut bytes)
+    let digest = if path.extension().is_some_and(|extension| extension == "gz") {
+        crate::lisp::md5::md5_stream(&mut GzDecoder::new(file))
     } else {
-        std::io::BufReader::new(file).read_to_end(&mut bytes)
+        crate::lisp::md5::md5_stream(&mut { file })
     };
-    result.map_err(|_| {
+    let digest = digest.map_err(|_| {
         LispError::SignalValue(Value::list([
             Value::symbol("file-notify-error"),
             Value::string("hashing failed"),
             Value::String(path.display().to_string().into()),
         ]))
     })?;
-    Ok(bytes)
+    let mut hex = crate::lisp::md5::hex_digest(digest);
+    hex.truncate(8);
+    Ok(hex)
 }
 
 fn source_basename(path: &str) -> Result<String, LispError> {
@@ -121,7 +125,7 @@ pub(crate) fn comp_el_to_eln_rel_filename(
             Value::String(filename.into()),
         ])));
     }
-    let content_hash = md5_prefix(&source_bytes(Path::new(&filename))?);
+    let content_hash = source_hash(Path::new(&filename))?;
     if let Some(uncompressed) = filename.strip_suffix(".gz") {
         filename = uncompressed.to_string();
     }

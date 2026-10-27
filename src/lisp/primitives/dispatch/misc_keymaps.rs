@@ -41,7 +41,7 @@ fn lookup_key_once(
         return Err(LispError::WrongTypeArgument("arrayp".into(), key));
     }
     interp.with_lisp_stack_roots(&(keymap, key), |interp| {
-        if sequence_length_value(interp, &key)? == 0 {
+        if sequence_length_value(&key)? == 0 {
             return Ok(keymap);
         }
         let translated = possibly_translate_key_sequence(interp, key, env)?;
@@ -263,10 +263,7 @@ fn map_keymap_direct_value(
 }
 
 fn vector_index_description(index: u32) -> Result<String, LispError> {
-    key_sequence_binding_text(&Value::list([
-        Value::Symbol("vector-literal".into()),
-        Value::Integer(i64::from(index)),
-    ]))
+    key_sequence_binding_text(&Value::vector([Value::Integer(i64::from(index))]))
 }
 
 fn insert_description_indent(interp: &mut Interpreter, column: usize) {
@@ -647,10 +644,14 @@ define_dispatch!(
                     .unwrap_or(Value::Nil))
             }
             "lock-buffer" => {
-                maybe_lock_current_buffer(interp, env)?;
+                need_arg_range(name, args, 0, 1)?;
+                lock_buffer(interp, env, args.first().copied())
+            }
+            "unlock-buffer" => {
+                need_args(name, args, 0)?;
+                unlock_buffer(interp, env, interp.current_buffer_id())?;
                 Ok(Value::Nil)
             }
-            "unlock-buffer" => unlock_current_buffer(interp, env),
 
             "recent-auto-save-p" => {
                 need_args(name, args, 0)?;
@@ -1545,6 +1546,7 @@ define_dispatch!(
                     Kind::Frame(_) => "frame",
                     Kind::Terminal(_) => "terminal",
                     Kind::LispRecord(_) => return cl_type_value(interp, &args[0]),
+                    Kind::BoolVector(_) => "bool-vector",
                     Kind::NativeFunction(_) => "subr",
                     Kind::NativeCompUnit(_) => "native-comp-unit",
                     Kind::Record(id) => {

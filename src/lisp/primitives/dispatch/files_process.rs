@@ -480,12 +480,8 @@ fn link_layer_address(name: &str) -> Value {
                 .cast::<u8>()
                 .add(link.sdl_nlen as usize)
         };
-        let bytes: Vec<Value> = (0..6)
-            .map(|offset| Value::Integer(unsafe { *address.add(offset) } as i64))
-            .collect();
-        let mut vector = vec![Value::symbol("vector-literal")];
-        vector.extend(bytes);
-        result = Value::cons(Value::Integer(family as i64), Value::list(vector));
+        let bytes = (0..6).map(|offset| Value::Integer(unsafe { *address.add(offset) } as i64));
+        result = Value::cons(Value::Integer(family as i64), Value::vector(bytes));
         break;
     }
     // SAFETY: `list' came from a successful getifaddrs and is freed once.
@@ -1386,7 +1382,7 @@ define_dispatch!(
             }
             "file-locked-p" => {
                 need_args(name, args, 1)?;
-                file_locked_p(interp, env, &string_text(&args[0])?)
+                file_locked_p(interp, env, args[0])
             }
             "memory-info" => {
                 need_args(name, args, 0)?;
@@ -1411,12 +1407,11 @@ define_dispatch!(
             }
             "lock-file" => {
                 need_args(name, args, 1)?;
-                lock_file_path(interp, env, &string_text(&args[0])?)?;
-                Ok(Value::Nil)
+                lock_file_primitive(interp, env, args[0])
             }
             "unlock-file" => {
                 need_args(name, args, 1)?;
-                unlock_file_path(interp, env, &string_text(&args[0])?)
+                unlock_file_primitive(interp, env, args[0])
             }
             "write-region" => {
                 if args.len() < 3 {
@@ -2872,7 +2867,7 @@ define_dispatch!(
                 }
                 // GNU releases the target buffer's lock only after every query
                 // and hook has accepted the kill, immediately before teardown.
-                unlock_buffer_by_id(interp, env, id)?;
+                unlock_buffer(interp, env, id)?;
                 interp.kill_buffer_id(id);
                 if !inhibit_hooks {
                     run_named_hooks(interp, "buffer-list-update-hook", env, None)?;

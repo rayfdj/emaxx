@@ -335,7 +335,19 @@ fn run_batch_through_normal_top_level(
             // form (run_batch_toplevel_form), when
             // `backtrace-on-error-noninteractive' asked for it.
             emit_batch_error_message(interpreter, &LispError::from(error.clone()));
-            return Ok(BatchRunOutcome::Exit(255));
+            // Fkill_emacs (make_fixnum (-1), Qnil): `kill-emacs-hook' and
+            // shut_down_emacs run as for any other exit.
+            match lisp::primitives::call(
+                interpreter,
+                "kill-emacs",
+                &[Value::Integer(-1)],
+                &mut crate::lisp::types::Env::new(),
+            )
+            .map_err(LispError::into_kind)
+            {
+                Err(LispErrorKind::Terminate(termination)) => return Ok(termination.into()),
+                _ => return Ok(BatchRunOutcome::Exit(255)),
+            }
         }
     }
     Ok(interpreter
@@ -2817,6 +2829,579 @@ mod tests {
     }
 
     #[test]
+    fn named_character_escapes_read_as_char_from_name_answers() {
+        // lread.c character_name_to_code: a name is the code
+        // `(char-from-name NAME t)' gives, so the reader takes exactly the
+        // names `ucs-names' and the numbered ideographs know, case ignored.
+        // The first name builds `ucs-names', which collects while the
+        // strings read before it are held by the read alone.
+        run_with_large_stack(|| {
+            let emacs_repo = compat::project_root().join("../emacs");
+            let options = BatchRunOptions {
+                load_path: compat::emaxx_upstream_load_path(&emacs_repo)
+                    .expect("upstream load path"),
+                ..Default::default()
+            };
+            let mut interpreter =
+                initialize_batch_interpreter(&options).expect("init batch interpreter");
+            let form = Reader::new(
+                r#"(prin1-to-string
+                    (list (read "(\"abc\" (1 . \"x\") ?\\N{GREEK SMALL LETTER BETA} \"def\")")
+                          (condition-case err (read "?\\N{CJK UNIFIED IDEOGRAPH-4E2D}")
+                            (invalid-read-syntax err))
+                          (read "?\\N{greek small letter alpha}")
+                          (read "\"\\N{LINE FEED (LF)}\"")
+                          (condition-case err (read "?\\N{LINE FEED}")
+                            (invalid-read-syntax (cadr err)))
+                          (read "?\\N{TANGUT IDEOGRAPH-17000}")
+                          (read "?\\N{U+1F600}")))"#,
+            )
+            .read_all()
+            .expect("read named-character probe")
+            .remove(0);
+            let printed = interpreter
+                .eval(&form, &mut crate::lisp::types::Env::new())
+                .expect("evaluate named-character probe");
+            assert_eq!(
+                lisp::primitives::string_like(&printed)
+                    .expect("printed")
+                    .text,
+                "((\"abc\" (1 . \"x\") 946 \"def\") \
+                 (invalid-read-syntax \"\\\\N{CJK UNIFIED IDEOGRAPH-4E2D}\") 945 \"\n\" \
+                 \"\\\\N{LINE FEED}\" 94208 128512)"
+            );
+        });
+    }
+
+    #[test]
+    fn assoc_string_compares_each_string_or_symbol_element_as_minibuf_c() {
+        // minibuf.c Fassoc_string: the walk stops at the first tail that
+        // is not a cons, passes over elements whose car is neither a string
+        // nor a symbol, and asks `compare-strings' of the rest, which
+        // upcases only a differing pair of characters.
+        run_with_large_stack(|| {
+            let emacs_repo = compat::project_root().join("../emacs");
+            let options = BatchRunOptions {
+                load_path: compat::emaxx_upstream_load_path(&emacs_repo)
+                    .expect("upstream load path"),
+                ..Default::default()
+            };
+            let mut interpreter =
+                initialize_batch_interpreter(&options).expect("init batch interpreter");
+            let form = Reader::new(
+                r#"(prin1-to-string
+                    (list (assoc-string 'foo '(bar ("foo" . 1) baz))
+                          (assoc-string "FOO" '(1 (2 . 3) "bar" "foo") t)
+                          (assoc-string "foo" '("a" "b" . "foo"))
+                          (assoc-string "foo" ["foo"])
+                          (assoc-string 7 '(1 2))
+                          (condition-case err (assoc-string 7 '("a")) (error err))
+                          (assoc-string "ß" '("SS" "ẞ") t)
+                          (assoc-string "ς" '("Σ") t)
+                          (assoc-string "ǅ" '("ǆ") t)
+                          (assoc-string "ﬀ" '("FF" "ff") t)
+                          (assoc-string "a-b" '("A-B") t)))"#,
+            )
+            .read_all()
+            .expect("read assoc-string probe")
+            .remove(0);
+            let printed = interpreter
+                .eval(&form, &mut crate::lisp::types::Env::new())
+                .expect("evaluate assoc-string probe");
+            assert_eq!(
+                lisp::primitives::string_like(&printed)
+                    .expect("printed")
+                    .text,
+                "((\"foo\" . 1) \"foo\" nil nil nil (wrong-type-argument stringp 7) \
+                 \"ẞ\" \"Σ\" \"ǆ\" nil \"A-B\")"
+            );
+        });
+    }
+
+    #[test]
+    fn file_name_handlers_and_face_aliases_follow_fileio_c_and_xfaces_c() {
+        // fileio.c Ffind_file_name_handler: the latest match among the
+        // entries whose handler's `operations' lists the operation (Fmemq,
+        // which signals on a dotted list), the inhibited handlers passed
+        // over, case never folded.  xfaces.c resolve_face_name: an alias
+        // chain that comes round again signals `circular-list'.
+        run_with_large_stack(|| {
+            let emacs_repo = compat::project_root().join("../emacs");
+            let options = BatchRunOptions {
+                load_path: compat::emaxx_upstream_load_path(&emacs_repo)
+                    .expect("upstream load path"),
+                ..Default::default()
+            };
+            let mut interpreter =
+                initialize_batch_interpreter(&options).expect("init batch interpreter");
+            let form = Reader::new(
+                r#"(prin1-to-string
+                    (progn
+                      (defun r101-h1 (&rest _) 'h1)
+                      (defun r101-h2 (&rest _) 'h2)
+                      (put 'r101-h2 'operations '(file-exists-p load))
+                      (put 'r101-c 'face-alias 'r101-d)
+                      (put 'r101-d 'face-alias 'r101-c)
+                      (let ((file-name-handler-alist
+                             '(("\\.foo\\'" . r101-h1) ("foo" . r101-h2) (7 . r101-h1))))
+                        (list (find-file-name-handler "/a/b.foo" 'load)
+                              (find-file-name-handler "/a/b.foo" 'expand-file-name)
+                              (find-file-name-handler "/a/foo.c" 'expand-file-name)
+                              (let ((inhibit-file-name-operation 'load)
+                                    (inhibit-file-name-handlers '(r101-h2)))
+                                (find-file-name-handler "/a/foo.c" 'load))
+                              (let ((case-fold-search t))
+                                (find-file-name-handler "/A/B.FOO" 'load))
+                              (progn (put 'r101-h2 'operations '(load . bad))
+                                     (condition-case err
+                                         (find-file-name-handler "/a/foo.c" 'expand-file-name)
+                                       (error err)))
+                              (condition-case err (internal-lisp-face-p 'r101-c)
+                                (error err))))))"#,
+            )
+            .read_all()
+            .expect("read file-name-handler probe")
+            .remove(0);
+            let printed = interpreter
+                .eval(&form, &mut crate::lisp::types::Env::new())
+                .expect("evaluate file-name-handler probe");
+            assert_eq!(
+                lisp::primitives::string_like(&printed)
+                    .expect("printed")
+                    .text,
+                "(r101-h2 r101-h1 nil nil nil (wrong-type-argument listp (load . bad)) \
+                 (circular-list r101-c))"
+            );
+        });
+    }
+
+    #[test]
+    fn bool_vectors_keep_their_bits_and_signal_as_data_c() {
+        // lisp.h's Lisp_Bool_Vector: the bits packed in words, a large one
+        // across a collection; data.c's checks (Faset's range,
+        // wrong_length_argument of the lengths, CHECK_FIXNAT), Fbool_vector_not
+        // into its destination, fns.c:bool_vector_cmp, and an image's
+        // category set read where the image holds it.
+        run_with_large_stack(|| {
+            let emacs_repo = compat::project_root().join("../emacs");
+            let options = BatchRunOptions {
+                load_path: compat::emaxx_upstream_load_path(&emacs_repo)
+                    .expect("upstream load path"),
+                ..Default::default()
+            };
+            let mut interpreter =
+                initialize_batch_interpreter(&options).expect("init batch interpreter");
+            let form = Reader::new(
+                r##"(prin1-to-string
+                    (let* ((a (bool-vector t nil t t nil))
+                           (d (make-bool-vector 5 nil))
+                           (big (make-bool-vector 100001 nil)))
+                      (aset big 100000 t)
+                      (garbage-collect)
+                      (list (condition-case e (aset a 5 t) (error e))
+                            (bool-vector-count-consecutive a t 2)
+                            (condition-case e (bool-vector-count-consecutive a t 6)
+                              (error (car e)))
+                            (condition-case e (bool-vector-union a (make-bool-vector 0 nil))
+                              (error e))
+                            (condition-case e (bool-vector-subsetp (make-bool-vector 3 nil)
+                                                                   (make-bool-vector 4 nil))
+                              (error e))
+                            (progn (bool-vector-not a d) (append d nil))
+                            (condition-case e (make-bool-vector -1 nil) (error e))
+                            (bool-vector-count-population big)
+                            (aref big 100000)
+                            (value< (bool-vector t nil t) (bool-vector t))
+                            (value< (bool-vector t) (bool-vector t nil t))
+                            (category-set-mnemonics (char-category-set ?a))
+                            (equal (read "#&5\"\\r\"") a)
+                            (type-of a))))"##,
+            )
+            .read_all()
+            .expect("read bool vector probe")
+            .remove(0);
+            let printed = interpreter
+                .eval(&form, &mut crate::lisp::types::Env::new())
+                .expect("evaluate bool vector probe");
+            assert_eq!(
+                lisp::primitives::string_like(&printed)
+                    .expect("printed")
+                    .text,
+                "((args-out-of-range #&5\"\r\" 5) 2 args-out-of-range \
+                 (wrong-length-argument 5 0) (wrong-length-argument 3 4 4) \
+                 (nil t nil nil t) (wrong-type-argument wholenump -1) 1 t nil t \".Lalr\" t \
+                 bool-vector)"
+            );
+        });
+    }
+
+    #[test]
+    fn sxhash_is_fns_c_sxhash_obj() {
+        // GNU 30.2's values for objects whose hash holds no address:
+        // fns.c's hash_string, sxhash_list, sxhash_vector over the size
+        // word, sxhash_bool_vector, sxhash_bignum and sxhash_float, the
+        // depth and length bounds, hash_interval over a string's
+        // intervals (an emptied one included, which `object-intervals'
+        // lists), and SXHASH_REDUCE.
+        run_with_large_stack(|| {
+            let emacs_repo = compat::project_root().join("../emacs");
+            let options = BatchRunOptions {
+                load_path: compat::emaxx_upstream_load_path(&emacs_repo)
+                    .expect("upstream load path"),
+                ..Default::default()
+            };
+            let mut interpreter =
+                initialize_batch_interpreter(&options).expect("init batch interpreter");
+            let form = Reader::new(
+                r#"(prin1-to-string
+                    (list (sxhash-equal "abc") (sxhash-equal "") (sxhash-equal "abcdefghijklmnop")
+                          (sxhash-equal "été") (sxhash-equal (string-to-multibyte "\351"))
+                          (sxhash-equal 5) (sxhash-equal -5) (sxhash-equal most-positive-fixnum)
+                          (sxhash-equal t) (sxhash-eq 5) (sxhash-eq -5) (sxhash-eq t)
+                          (sxhash-equal -0.0) (sxhash-equal 1.5) (sxhash-eql 1.5)
+                          (sxhash-equal (expt 2 70)) (sxhash-equal (- (expt 2 70)))
+                          (sxhash-eql (expt 2 70)) (sxhash-equal (1+ most-positive-fixnum))
+                          (sxhash-equal (list 1 2)) (sxhash-equal (make-list 10 1))
+                          (sxhash-equal (list 1 (list 2 (list 3 (list 4 (list 5))))))
+                          (sxhash-equal (let ((l (list 1 2))) (setcdr (cdr l) l) l))
+                          (sxhash-equal [1 2]) (sxhash-equal (make-vector 10 1))
+                          (sxhash-equal (vector 1 (vector 2 (vector 3 (vector 4)))))
+                          (sxhash-equal (list "a" 1.0 [2 "b"]))
+                          (sxhash-equal (record nil 1 2)) (sxhash-equal (make-char-table nil))
+                          (sxhash-equal (make-byte-code 0 "" [] 0))
+                          (sxhash-equal (bool-vector t)) (sxhash-equal (make-bool-vector 200 t))
+                          (sxhash-equal (make-marker))
+                          (sxhash-equal-including-properties (propertize "abc" 1 2))
+                          (sxhash-equal-including-properties (concat "a" (propertize "bc" 1 2)))
+                          (sxhash-equal-including-properties
+                           (concat (propertize "a" 1 2 3 4) "b" (propertize "c" 1 2)))
+                          (let ((s (propertize "abc" 1 2)))
+                            (remove-text-properties 0 3 (list 1 nil) s)
+                            (list (object-intervals s) (sxhash-equal-including-properties s)))
+                          (sxhash-equal-including-properties (list (propertize "abc" 1 2)))))"#,
+            )
+            .read_all()
+            .expect("read sxhash probe")
+            .remove(0);
+            let printed = interpreter
+                .eval(&form, &mut crate::lisp::types::Env::new())
+                .expect("evaluate sxhash probe");
+            assert_eq!(
+                lisp::primitives::string_like(&printed)
+                    .expect("printed")
+                    .text,
+                "(8059383 0 -1621414601513750798 1046521033479 33689 \
+                 4 -1152921504606846971 1729382256910270464 15 3 -1152921504606846974 15 \
+                 -2305843009213693952 -1151232654746583040 -1151232654746583040 \
+                 80 272 80 -1729382256910270464 \
+                 22 357914281 120 1410602000 662 2304070997 2028 54043195528474480 \
+                 2920577775894 180144007995719680 27212913135616 21 16126996 0 \
+                 33011235922 135214022082942 553836364246106794 (((0 3 nil)) 33011235900) 8059383)"
+            );
+        });
+    }
+
+    #[test]
+    fn a_list_headed_by_vector_literal_is_a_list() {
+        // The symbol `vector-literal' is Lisp data like any other: a list
+        // that starts with it stays a list through the primitives that
+        // build lists, and vectors are made and copied as vectors.
+        run_with_large_stack(|| {
+            let emacs_repo = compat::project_root().join("../emacs");
+            let options = BatchRunOptions {
+                load_path: compat::emaxx_upstream_load_path(&emacs_repo)
+                    .expect("upstream load path"),
+                ..Default::default()
+            };
+            let mut interpreter =
+                initialize_batch_interpreter(&options).expect("init batch interpreter");
+            let form = Reader::new(
+                "(prin1-to-string
+                  (list (copy-sequence (list 'vector-literal 1))
+                        (reverse (list 1 'vector-literal))
+                        (elt (list 'vector-literal 'a 'b) 1)
+                        (nreverse (list 2 'vector-literal))
+                        (append (list 'vector-literal) nil)
+                        (copy-sequence [1 2]) (reverse [1 2 3]) (sort [3 1 2] #'<)
+                        (vconcat (list 1 2) [3]) (make-vector 2 'x)
+                        (vector 'vector-literal 1) (remove 1 [1 2 1])
+                        (seq-into (list 1 2) 'vector) (mapcar #'identity [4 5])
+                        (delete-dups (list 'vector-literal 1 'vector-literal))))",
+            )
+            .read_all()
+            .expect("read vector-literal probe")
+            .remove(0);
+            let printed = interpreter
+                .eval(&form, &mut crate::lisp::types::Env::new())
+                .expect("evaluate vector-literal probe");
+            assert_eq!(
+                lisp::primitives::string_like(&printed)
+                    .expect("printed")
+                    .text,
+                "((vector-literal 1) (vector-literal 1) a (vector-literal 2) (vector-literal) \
+                 [1 2] [3 2 1] [1 2 3] [1 2 3] [x x] [vector-literal 1] [2] [1 2] (4 5) \
+                 (vector-literal 1))"
+            );
+        });
+    }
+
+    #[test]
+    fn lisp_faces_are_xfaces_c_tables_and_checks() {
+        // xfaces.c: face--new-frame-defaults and the frame's face table are
+        // the faces' only storage (a frame-local face made by setting an
+        // attribute takes a global id too), an unspecified value for new
+        // frames is :ignore-defface, and Finternal_set_lisp_face_attribute's
+        // checks signal with the value; a tty stores no font.
+        run_with_large_stack(|| {
+            let emacs_repo = compat::project_root().join("../emacs");
+            let options = BatchRunOptions {
+                load_path: compat::emaxx_upstream_load_path(&emacs_repo)
+                    .expect("upstream load path"),
+                ..Default::default()
+            };
+            let mut interpreter =
+                initialize_batch_interpreter(&options).expect("init batch interpreter");
+            let form = Reader::new(
+                r#"(prin1-to-string
+                 (progn
+                   (internal-make-lisp-face 'zz)
+                   (list
+                    (internal-lisp-face-p 'zz-nosuch)
+                    (condition-case e (internal-get-lisp-face-attribute 'zz-nosuch :weight) (error e))
+                    (let ((n (hash-table-count face--new-frame-defaults)))
+                      (internal-set-lisp-face-attribute 'zz-frame-first :weight 'bold (selected-frame))
+                      (list (- (hash-table-count face--new-frame-defaults) n)
+                            (integerp (get 'zz-frame-first 'face))
+                            (internal-get-lisp-face-attribute 'zz-frame-first :weight t)))
+                    (progn (internal-set-lisp-face-attribute 'zz :weight 'unspecified t)
+                           (list (aref (internal-lisp-face-p 'zz) 5)
+                                 (internal-get-lisp-face-attribute 'zz :weight t)))
+                    (condition-case e (internal-set-lisp-face-attribute 'zz :underline '(:style bogus) t) (error e))
+                    (condition-case e (internal-set-lisp-face-attribute 'zz :box '(:line-width 0) t) (error e))
+                    (condition-case e (internal-set-lisp-face-attribute 'zz :height 0.01 t) (error e))
+                    (condition-case e (internal-set-lisp-face-attribute 'default :height 1.5 t) (error e))
+                    (condition-case e (internal-set-lisp-face-attribute 'zz :foundry "" t) (error e))
+                    (condition-case e (internal-set-lisp-face-attribute 'zz :weight 5 t) (error e))
+                    (condition-case e (internal-set-lisp-face-attribute 'zz :extend 'foo t) (error e))
+                    (condition-case e (internal-set-lisp-face-attribute 'zz :inherit '(bold . italic) t) (error e))
+                    (condition-case e (internal-set-lisp-face-attribute 'zz :overline 'foo t) (error e))
+                    (progn (internal-set-lisp-face-attribute 'zz :weight 'heavy t)
+                           (internal-get-lisp-face-attribute 'zz :weight t))
+                    (progn (internal-set-lisp-face-attribute 'zz :font "Mono" t)
+                           (internal-get-lisp-face-attribute 'zz :font t))
+                    (progn (internal-set-lisp-face-attribute 'zz :height (lambda (h) (* 2 h)) t)
+                           (functionp (internal-get-lisp-face-attribute 'zz :height t)))
+                    (progn (internal-set-lisp-face-attribute 'zz :foreground nil t)
+                           (list (internal-get-lisp-face-attribute 'zz :foreground t)
+                                 (and (string-match-p "attribute `:foreground' of face `zz': nil value is invalid"
+                                                      (with-current-buffer "*Messages*" (buffer-string)))
+                                      t)))
+                    (list (face-id 'default) (face-id 'bold) (aref (cdr (gethash 'bold face--new-frame-defaults)) 0))
+                    (merge-face-attribute :height 1.5 10)
+                    (merge-face-attribute :height :ignore-defface 10)
+                    (face-attribute-relative-p :weight :ignore-defface))))"#,
+            )
+            .read_all()
+            .expect("read face probe")
+            .remove(0);
+            let printed = interpreter
+                .eval(&form, &mut crate::lisp::types::Env::new())
+                .expect("evaluate face probe");
+            assert_eq!(
+                lisp::primitives::string_like(&printed)
+                    .expect("printed")
+                    .text,
+                r#"(nil (error "Invalid face" zz-nosuch) (1 t unspecified) (:ignore-defface unspecified) (error "Invalid face underline" :style bogus) (error "Invalid face box" :line-width 0) (error "Face height does not produce a positive integer" 0.01) (error "Default face height not absolute and positive" 1.5) (error "Invalid face foundry" "") (wrong-type-argument symbolp 5) (error "Invalid extend face attribute value" foo) (error "Invalid face inheritance" (bold . italic)) (error "Invalid face overline" foo) heavy unspecified t (unspecified t) (0 1 face) 15 10 t)"#
+            );
+        });
+    }
+
+    #[test]
+    fn file_locks_are_filelock_c_symlinks() {
+        // filelock.c: a lock is a symbolic link to USER@HOST.PID:BOOT named
+        // by `make-lock-file-name'; another host's lock asks
+        // `ask-user-about-lock' with USER@HOST (pid PID), which may take
+        // it; a dead process's lock on this host is removed; a malformed
+        // lock or a directory in its place is report_file_errno's
+        // "Testing file lock"; `lock-buffer' and `unlock-buffer' act on a
+        // modified buffer's file truename only.
+        run_with_large_stack(|| {
+            let emacs_repo = compat::project_root().join("../emacs");
+            let options = BatchRunOptions {
+                load_path: compat::emaxx_upstream_load_path(&emacs_repo)
+                    .expect("upstream load path"),
+                ..Default::default()
+            };
+            let mut interpreter =
+                initialize_batch_interpreter(&options).expect("init batch interpreter");
+            let form = Reader::new(
+                r#"(prin1-to-string
+                  (progn
+                    (require 'cl-lib)
+                    (let* ((dir (file-name-as-directory (make-temp-file "emaxx-lock" t)))
+                           (f (expand-file-name "a.txt" dir))
+                           (lock (expand-file-name ".#a.txt" dir))
+                           (me (format "%s@%s." (user-login-name) (system-name)))
+                           (plant (lambda (target)
+                                    (when (file-symlink-p lock) (delete-file lock))
+                                    (make-symbolic-link target lock))))
+                      (unwind-protect
+                          (progn
+                            (write-region "x" nil f)
+                            (list
+                             (progn (lock-file f)
+                                    (list (file-locked-p f) (string-prefix-p me (file-symlink-p lock))
+                                          (and (string-match-p "\\.[0-9]+:[0-9]+\\'" (file-symlink-p lock)) t)))
+                             (progn (unlock-file f) (file-symlink-p lock))
+                             (progn (funcall plant "someone@elsewhere.42:17") (file-locked-p f))
+                             (let (asked)
+                               (cl-letf (((symbol-function 'ask-user-about-lock)
+                                          (lambda (_file opponent) (setq asked opponent) nil)))
+                                 (lock-file f))
+                               (list asked (file-symlink-p lock)))
+                             (cl-letf (((symbol-function 'ask-user-about-lock) (lambda (_file _opponent) t)))
+                               (lock-file f)
+                               (list (file-locked-p f) (string-prefix-p me (file-symlink-p lock))))
+                             (progn (funcall plant (concat me "999999999"))
+                                    (list (file-locked-p f) (file-symlink-p lock)))
+                             (progn (funcall plant "u@h.12:x")
+                                    (prog1 (condition-case e (file-locked-p f) (file-error (nth 2 e)))
+                                      (delete-file lock)))
+                             (progn (make-directory lock)
+                                    (prog1 (condition-case e (file-locked-p f) (file-error (nth 2 e)))
+                                      (delete-directory lock)))
+                             (let ((create-lockfiles nil)) (lock-file f) (file-symlink-p lock))
+                             (with-current-buffer (find-file-noselect f)
+                               (prog1 (list (progn (insert "y") (file-locked-p f))
+                                            (progn (unlock-buffer) (file-locked-p f))
+                                            (progn (lock-buffer) (file-locked-p f))
+                                            (condition-case e (lock-buffer 7) (error e))
+                                            (progn (set-buffer-modified-p nil) (file-locked-p f)))
+                                 (kill-buffer)))))
+                        (delete-directory dir t)))))"#,
+            )
+            .read_all()
+            .expect("read lock probe")
+            .remove(0);
+            let printed = interpreter
+                .eval(&form, &mut crate::lisp::types::Env::new())
+                .expect("evaluate lock probe");
+            assert_eq!(
+                lisp::primitives::string_like(&printed)
+                    .expect("printed")
+                    .text,
+                r#"((t t t) nil "someone" ("someone@elsewhere (pid 42)" "someone@elsewhere.42:17") (t t) (nil nil) "Invalid argument" "Is a directory" nil (t nil t (wrong-type-argument stringp 7) nil))"#
+            );
+        });
+    }
+
+    #[test]
+    fn image_symbols_are_the_obarrays_and_the_initial_frame_is_terminal_frame() {
+        // pdumper.c maps the dumped symbols where the image holds them:
+        // a preloaded symbol is the obarray's, its cells are traced by the
+        // collector and Funintern leaves it whole.  window.c's
+        // init_window_once_for_pdumper makes the new process's initial
+        // frame Vterminal_frame.
+        run_with_large_stack(|| {
+            let emacs_repo = compat::project_root().join("../emacs");
+            let options = BatchRunOptions {
+                load_path: compat::emaxx_upstream_load_path(&emacs_repo)
+                    .expect("upstream load path"),
+                ..Default::default()
+            };
+            let mut interpreter =
+                initialize_batch_interpreter(&options).expect("init batch interpreter");
+            let form = Reader::new(
+                r#"(prin1-to-string
+                    (list (eq terminal-frame (selected-frame))
+                          (eq (intern-soft "cl-incf") 'cl-incf)
+                          (car-safe (symbol-function 'cl-incf))
+                          (progn (put 'cl-incf 'r103-prop (list 1 2 (make-string 3 ?x)))
+                                 (setq cl-incf (list 'a (copy-sequence "b")))
+                                 (garbage-collect)
+                                 (list (get 'cl-incf 'r103-prop) cl-incf))
+                          (let ((old 'cl-incf))
+                            (list (unintern "cl-incf" obarray)
+                                  (progn (garbage-collect) (intern-soft "cl-incf"))
+                                  (eq old (intern "cl-incf"))
+                                  (symbol-name old)
+                                  (get old 'r103-prop)
+                                  (car-safe (symbol-function old))
+                                  (intern-soft old)))))"#,
+            )
+            .read_all()
+            .expect("read image symbol probe")
+            .remove(0);
+            let printed = interpreter
+                .eval(&form, &mut crate::lisp::types::Env::new())
+                .expect("evaluate image symbol probe");
+            assert_eq!(
+                lisp::primitives::string_like(&printed)
+                    .expect("printed")
+                    .text,
+                "(t t autoload ((1 2 \"xxx\") (a \"b\")) \
+                 (t nil nil \"cl-incf\" (1 2 \"xxx\") autoload nil))"
+            );
+        });
+    }
+
+    #[test]
+    fn reader_interns_in_each_symbols_obarray_and_closes_dotted_lists_as_read0() {
+        // lread.c read0: each symbol is interned in `check_obarray
+        // (Vobarray)' as it is read, so Lisp run in the middle of a read
+        // (here `char-from-name', for `\N{NAME}') can redirect the rest;
+        // RE_list_dot skips to the next character, signalling at the end,
+        // and reads it before "expected )".
+        run_with_large_stack(|| {
+            let emacs_repo = compat::project_root().join("../emacs");
+            let options = BatchRunOptions {
+                load_path: compat::emaxx_upstream_load_path(&emacs_repo)
+                    .expect("upstream load path"),
+                ..Default::default()
+            };
+            let mut interpreter =
+                initialize_batch_interpreter(&options).expect("init batch interpreter");
+            let form = Reader::new(
+                r#"(prin1-to-string
+                    (let* ((orig obarray)
+                           (ob (obarray-make))
+                           (switch (lambda (&rest _) (setq obarray ob)))
+                           (form (progn
+                                   (advice-add 'char-from-name :after switch)
+                                   (unwind-protect
+                                       (car (read-from-string
+                                             "(r102-a ?\\N{LATIN SMALL LETTER A} r102-b . r102-c)"))
+                                     (advice-remove 'char-from-name switch)
+                                     (setq obarray orig)))))
+                      (list (eq (nth 0 form) 'r102-a)
+                            (eq (nth 2 form) (intern-soft "r102-b" ob))
+                            (intern-soft "r102-c")
+                            (nth 1 form)
+                            (condition-case e (read "(a . b") (error (car e)))
+                            (condition-case e (read "(a . b c)") (error e))
+                            (with-temp-buffer
+                              (insert "(a\n . b c)")
+                              (goto-char (point-min))
+                              (condition-case e (read (current-buffer))
+                                (error (list e (point))))))))"#,
+            )
+            .read_all()
+            .expect("read obarray probe")
+            .remove(0);
+            let printed = interpreter
+                .eval(&form, &mut crate::lisp::types::Env::new())
+                .expect("evaluate obarray probe");
+            assert_eq!(
+                lisp::primitives::string_like(&printed)
+                    .expect("printed")
+                    .text,
+                "(t t nil 97 end-of-file (invalid-read-syntax \"expected )\") \
+                 ((invalid-read-syntax \"expected )\" 2 6) 10))"
+            );
+        });
+    }
+
+    #[test]
     fn batch_runtime_preloads_the_complete_tabulated_list_state() {
         run_with_large_stack(|| {
             let emacs_repo = compat::project_root().join("../emacs");
@@ -3543,8 +4128,7 @@ mod tests {
                         Value::Symbol("utf-8-unix".into()),
                     ]),
                     Value::Integer(13),
-                    Value::list([
-                        Value::Symbol("vector-literal".into()),
+                    Value::vector([
                         Value::Integer(2),
                         Value::Integer(16),
                         Value::Integer(0),

@@ -2088,9 +2088,7 @@ impl<'a> CharacterDisplayContext<'a> {
             return 0;
         };
         let set = table.get(u32::from(character));
-        let member = |category: u8| {
-            crate::lisp::primitives::category_member(self.interpreter, &set, category)
-        };
+        let member = |category: u8| crate::lisp::primitives::category_member(&set, category);
         let mut bits = 0;
         if member(b'|') {
             bits |= layout::LINE_BREAKABLE;
@@ -2427,13 +2425,7 @@ impl<'a> CharacterDisplayContext<'a> {
         };
         let character = crate::lisp::primitives::char_from_integer(code).unwrap_or(default);
         let face = (face_id > 0)
-            .then(|| {
-                self.interpreter
-                    .lisp_face_states
-                    .iter()
-                    .find(|face| face.id == Some(face_id))
-                    .map(|face| Value::symbol(&face.name))
-            })
+            .then(|| self.interpreter.lisp_face_name_of_id(face_id))
             .flatten()
             .unwrap_or(escape_face);
         (character, face)
@@ -2598,15 +2590,9 @@ impl<'a> CharacterDisplayContext<'a> {
                         );
                     }
                     if face_id > 0
-                        && let Some(face) = self
-                            .interpreter
-                            .lisp_face_states
-                            .iter()
-                            .find(|face| face.id == Some(face_id))
+                        && let Some(face) = self.interpreter.lisp_face_name_of_id(face_id)
                     {
-                        display
-                            .face_spans
-                            .push((from, count, Value::symbol(&face.name)));
+                        display.face_spans.push((from, count, face));
                     }
                 }
             } else if let Some(method) = self.table_method_for(character) {
@@ -3545,9 +3531,9 @@ fn displayed_line_with_map(
         };
         // Lisp often builds the replacement with `concat' or
         // `substitute-command-keys', so it can itself be a propertized
-        // string represented by a vector-literal value.  It is still a
-        // string for display purposes; matching only the two direct Rust
-        // string variants dropped Dired's free-space suffix.
+        // string.  It is still a string for display purposes; matching
+        // only the two direct Rust string variants dropped Dired's
+        // free-space suffix.
         let replacement = display
             .as_ref()
             .and_then(|value| crate::lisp::primitives::string_text(value).ok());

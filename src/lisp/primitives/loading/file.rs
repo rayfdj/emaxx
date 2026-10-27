@@ -39,7 +39,12 @@ pub(crate) fn load_file(
 ) -> Result<(Value, Value), LispError> {
     let mut request = LoadRequest::new(args)?;
     let original = string_text(&request.file)?;
-    if let Some(handler) = find_file_name_handler(interp, env, &original, Value::symbol("load"))? {
+    if let Some(handler) = find_file_name_handler(
+        interp,
+        env,
+        &original,
+        cached_symbol!("load").with(|symbol| Value::Symbol(*symbol)),
+    )? {
         let result = interp.call_function_value(
             handler,
             None,

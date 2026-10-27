@@ -1,6 +1,5 @@
 use super::*;
-use crate::lisp::eval::RecordKind;
-use crate::lisp::types::Kind;
+use crate::lisp::types::{BoolVectorRef, Kind};
 
 mod timsort;
 
@@ -13,7 +12,7 @@ pub(crate) fn copy_sequence_value(
     }
 
     if is_vector_value(value) {
-        return Ok(Value::list(value.to_vec()?));
+        return Ok(Value::vector(vector_items(value)?));
     }
 
     match value.kind() {
@@ -21,20 +20,15 @@ pub(crate) fn copy_sequence_value(
         Kind::Cons(_) => Ok(Value::list(value.to_vec()?)),
         Kind::CharTable(id) => interp.clone_char_table(id),
         Kind::LispRecord(record) => Ok(Value::LispRecord(record.shallow_copy())),
-        Kind::Record(id)
-            if interp
-                .find_record(id)
-                .is_some_and(|record| record.kind == RecordKind::BoolVector) =>
-        {
-            interp.copy_record(id.id)
-        }
+        // fns.c:Fcopy_sequence: a new bool vector of the same bits.
+        Kind::BoolVector(vector) => Ok(Value::BoolVector(BoolVectorRef::copy(vector))),
         _ => Err(LispError::WrongTypeArgument("sequencep".into(), *value)),
     }
 }
 
 pub(crate) enum SortSequenceKind {
     List,
-    Vector(String),
+    Vector,
 }
 
 pub(crate) fn list_or_vector_type_error(value: &Value) -> LispError {
@@ -49,16 +43,7 @@ pub(crate) fn sort_sequence_kind_and_items(
     value: &Value,
 ) -> Result<(SortSequenceKind, Vec<Value>), LispError> {
     if is_vector_value(value) {
-        let items = value.to_vec()?;
-        let tag = items
-            .first()
-            .and_then(|value| value.symbol_str())
-            .unwrap_or("vector")
-            .to_string();
-        return Ok((
-            SortSequenceKind::Vector(tag),
-            items.into_iter().skip(1).collect(),
-        ));
+        return Ok((SortSequenceKind::Vector, vector_items(value)?));
     }
     if matches!(value.kind(), Kind::Nil | Kind::Cons(_)) {
         return Ok((SortSequenceKind::List, value.to_vec()?));
@@ -225,16 +210,14 @@ pub(crate) fn write_sorted_sequence(
             }
             Ok(())
         }
-        SortSequenceKind::Vector(_) => write_vector_items_in_place(target, items),
+        SortSequenceKind::Vector => write_vector_items_in_place(target, items),
     }
 }
 
 pub(crate) fn build_sorted_sequence(kind: &SortSequenceKind, items: Vec<Value>) -> Value {
     match kind {
         SortSequenceKind::List => Value::list(items),
-        SortSequenceKind::Vector(tag) => {
-            Value::list(std::iter::once(Value::Symbol(tag.clone().into())).chain(items))
-        }
+        SortSequenceKind::Vector => Value::vector(items),
     }
 }
 

@@ -430,15 +430,9 @@ pub(super) fn current_category_table(interp: &mut Interpreter) -> CharTableRef {
 }
 
 /// CATEGORY_MEMBER of a category set (a bool-vector).
-pub(crate) fn category_member(interp: &Interpreter, set: &Value, category: u8) -> bool {
+pub(crate) fn category_member(set: &Value, category: u8) -> bool {
     match set.kind() {
-        Kind::Record(id) => interp.find_record(id).is_some_and(|record| {
-            record.kind == crate::lisp::eval::RecordKind::BoolVector
-                && record
-                    .slots
-                    .get(usize::from(category))
-                    .is_some_and(Value::is_truthy)
-        }),
+        Kind::BoolVector(set) => set.get(usize::from(category)) == Some(true),
         _ => false,
     }
 }
@@ -473,12 +467,11 @@ impl WordBoundaryVars {
 
 /// category.c's word_boundary_p, TABLE the current category table.
 pub(super) fn word_boundary_p(interp: &Interpreter, table: CharTableRef, c1: u32, c2: u32) -> bool {
-    word_boundary_p_with(interp, WordBoundaryVars::read(interp), table, c1, c2)
+    word_boundary_p_with(WordBoundaryVars::read(interp), table, c1, c2)
 }
 
 /// word_boundary_p with the variables VARS read.
 pub(super) fn word_boundary_p_with(
-    interp: &Interpreter,
     vars: WordBoundaryVars,
     table: CharTableRef,
     c1: u32,
@@ -513,13 +506,11 @@ pub(super) fn word_boundary_p_with(
             && elt.is_cons()
         {
             let first_ok = first.is_nil()
-                || category(first).is_some_and(|cat| {
-                    category_member(interp, &set1, cat) && !category_member(interp, &set2, cat)
-                });
+                || category(first)
+                    .is_some_and(|cat| category_member(&set1, cat) && !category_member(&set2, cat));
             let second_ok = second.is_nil()
-                || category(second).is_some_and(|cat| {
-                    !category_member(interp, &set1, cat) && category_member(interp, &set2, cat)
-                });
+                || category(second)
+                    .is_some_and(|cat| !category_member(&set1, cat) && category_member(&set2, cat));
             if first_ok && second_ok {
                 return !default_result;
             }
@@ -628,7 +619,7 @@ impl MatchEnv for LispMatchEnv<'_, '_> {
     fn has_category(&mut self, c: u32, category: u8) -> bool {
         let table = self.category_table();
         let set = table.get(c);
-        category_member(self.interp, &set, category)
+        category_member(&set, category)
     }
 
     fn word_boundary_p(&mut self, c1: u32, c2: u32) -> bool {

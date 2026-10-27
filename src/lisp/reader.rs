@@ -68,15 +68,25 @@ fn hex_digit_value(c: i64) -> Option<i64> {
         .map(i64::from)
 }
 
-/// lread.c character_name_to_code: "U+" and hex digits, or a name
-/// `char-from-name' knows; anything else, a surrogate or a code past
-/// Unicode is `\N{NAME}' invalid syntax.
-fn character_name_to_code(name: &str) -> Result<i64, LispError> {
+/// lread.c character_name_to_code: "U+" and hex digits, or the code
+/// `(char-from-name NAME t)' gives, which CONTEXT calls in its Lisp world
+/// (a reader with none looks NAME up in Unicode's names); anything else,
+/// a surrogate or a code past Unicode is `\N{NAME}' invalid syntax.
+fn character_name_to_code(
+    name: &str,
+    context: Option<&mut dyn ReadContext>,
+) -> Result<i64, LispError> {
     let code = match name.strip_prefix("U+") {
         Some(hex) => (!hex.is_empty() && hex.bytes().all(|byte| byte.is_ascii_hexdigit()))
             .then(|| u32::from_str_radix(hex, 16).ok())
             .flatten(),
-        None => unicode_character(name).map(|ch| ch as u32),
+        None => match context {
+            Some(context) => match context.char_from_name(name)?.kind() {
+                Kind::Integer(code) => u32::try_from(code).ok(),
+                _ => None,
+            },
+            None => unicode_character(name).map(|ch| ch as u32),
+        },
     };
     match code {
         Some(code) if valid_unicode_scalar(code) => Ok(i64::from(code)),
@@ -107,6 +117,8 @@ pub(crate) trait ReadContext {
     /// get_lazy_string's fallback, doc.c get_doc_string (REFERENCE, true):
     /// the unibyte text the (FILE . POSITION) REFERENCE names in its file.
     fn doc_string(&mut self, reference: Value) -> Result<Value, LispError>;
+    /// character_name_to_code's `(char-from-name NAME t)'.
+    fn char_from_name(&mut self, name: &str) -> Result<Value, LispError>;
 }
 
 /// One of lread.c's saved_strings: the bytes `#@' skipped in a file while
@@ -120,6 +132,32 @@ thread_local! {
     /// lread.c saved_strings: the last two, the most recent first.
     static SAVED_STRINGS: std::cell::RefCell<[Option<SavedString>; 2]> =
         const { std::cell::RefCell::new([None, None]) };
+    /// lread.c's rdstack, as mark_lread marks it: each completed datum of
+    /// a read in progress stays rooted while a later one is read, for Lisp
+    /// can run in the middle of a read (a function stream's callbacks,
+    /// `char-from-name' for a `\N{NAME}' escape) and collect.  A completed
+    /// parent replaces its children here; each reader works above the
+    /// depth it found, as each read0 above its saved base.
+    static READ_ROOTS: std::cell::RefCell<crate::lisp::alloc::RootedVec<Value>> =
+        const { std::cell::RefCell::new(crate::lisp::alloc::RootedVec::new()) };
+}
+
+/// The depth of the read root stack.
+#[inline]
+fn read_roots_depth() -> usize {
+    READ_ROOTS.with_borrow(|roots| roots.len())
+}
+
+/// The read roots back to DEPTH, the depth before a datum's read, and that
+/// datum, VALUE, rooted in its children's place.
+#[inline]
+fn root_read_result(depth: usize, value: Option<Value>) {
+    READ_ROOTS.with_borrow_mut(|roots| {
+        roots.truncate(depth);
+        if let Some(value) = value {
+            roots.push(value);
+        }
+    });
 }
 
 /// skip_lazy_string's record of a skipped doc string.
@@ -330,7 +368,6 @@ fn reader_form_fields(form: &crate::lisp::types::ReaderFormRef) -> &[Value] {
         | ReaderForm::SubCharTable { fields }
         | ReaderForm::Record { slots: fields }
         | ReaderForm::Closure { slots: fields, .. } => fields,
-        ReaderForm::BoolVector { .. } => &[],
     }
 }
 
@@ -351,7 +388,6 @@ unsafe fn set_reader_form_field(
         | ReaderForm::SubCharTable { fields }
         | ReaderForm::Record { slots: fields }
         | ReaderForm::Closure { slots: fields, .. } => fields[index] = value,
-        ReaderForm::BoolVector { .. } => {}
     }
 }
 
@@ -473,6 +509,20 @@ pub struct Reader<'a> {
     /// FROM_FILE_P: the bytes of a file `load' reads directly, where `#@'
     /// skips by byte count and lazily loaded code is read at once.
     from_file: bool,
+    /// The read root stack's depth when this reader began: its roots lie
+    /// above it, and go when it does.
+    roots_base: usize,
+}
+
+impl Drop for Reader<'_> {
+    fn drop(&mut self) {
+        let base = self.roots_base;
+        READ_ROOTS.with_borrow_mut(|roots| {
+            if roots.len() > base {
+                roots.truncate(base);
+            }
+        });
+    }
 }
 
 impl<'a> Reader<'a> {
@@ -499,6 +549,7 @@ impl<'a> Reader<'a> {
             read_objects_map: HashMap::default(),
             read_objects_completed: HashSet::default(),
             read_depth: 0,
+            roots_base: read_roots_depth(),
             locate_symbols: false,
             position_base: 0,
             position_cursor_byte: 0,
@@ -900,7 +951,7 @@ impl<'a> Reader<'a> {
 
     /// Read one s-expression. Returns None at end of input.
     pub fn read(&mut self) -> Result<Option<Value>, LispError> {
-        let roots = self.input.root_depth();
+        let roots = read_roots_depth();
         self.read_depth += 1;
         let result = self.read_datum();
         self.read_depth -= 1;
@@ -908,8 +959,11 @@ impl<'a> Reader<'a> {
             self.read_objects_map.clear();
             self.read_objects_completed.clear();
         }
-        self.input
-            .root_result(roots, result.as_ref().ok().copied().flatten());
+        // A datum within another stays rooted until its parent replaces
+        // it; a whole one goes to the caller, as read0 leaves rdstack at
+        // its base.
+        let datum = result.as_ref().ok().copied().flatten();
+        root_read_result(roots, datum.filter(|_| self.read_depth != 0));
         let value = result?;
         // Every placeholder is the value of some `read' call, nested ones
         // included (lists, vectors and quotes read their elements here).
@@ -1006,8 +1060,13 @@ impl<'a> Reader<'a> {
 
     fn read_list(&mut self) -> Result<Option<Value>, LispError> {
         self.advance()?; // consume '('
-        let mut items = Vec::new();
-        let mut dotted_end: Option<Value> = None;
+        // read0's RE_list_start and RE_list: each element is consed onto
+        // the list's tail as soon as it is read, the list rooted in its
+        // elements' place from the first one on.
+        let roots = read_roots_depth();
+        let mut head = Value::Nil;
+        let mut tail: Option<(Value, usize)> = None;
+        let mut dotted = false;
 
         loop {
             self.skip_whitespace_and_comments()?;
@@ -1018,54 +1077,64 @@ impl<'a> Reader<'a> {
                     break;
                 }
                 _ => {
-                    if self.peek()? == Some(b'.') {
+                    let val = if self.peek()? == Some(b'.') {
                         if self.read_dot_separator()? {
-                            if items.is_empty() {
+                            let Some((last, _)) = tail else {
                                 return Err(LispError::ReadError(".".into()));
-                            }
+                            };
                             let val = self.read()?.ok_or(LispError::EndOfInput())?;
-                            dotted_end = Some(val);
+                            last.cons_cells().expect("a list cell").1.set(val);
+                            dotted = true;
+                            // RE_list_dot: skip_space_and_comments, which
+                            // signals at the end, then the character read.
                             self.skip_whitespace_and_comments()?;
                             self.input.unread_lookahead()?;
-                            if self.peek()? == Some(b')') {
-                                self.advance()?;
-                                break;
+                            match self.read_code()? {
+                                Some(0x29) => break,
+                                None => return Err(LispError::EndOfInput()),
+                                Some(_) => {
+                                    return Err(LispError::ReadError("expected )".into()));
+                                }
                             }
-                            return Err(LispError::ReadError(
-                                "expected ')' after dotted pair".into(),
-                            ));
                         }
-                        // The dot lookahead has already happened. Read this
-                        // atom directly, retaining it across later callbacks
-                        // just as the ordinary recursive read would.
-                        let roots = self.input.root_depth();
-                        let val = self.read_atom()?.ok_or(LispError::EndOfInput())?;
-                        self.input.root_result(roots, Some(val));
-                        items.push(val);
+                        // The dot lookahead has already happened: this
+                        // atom is read directly.
+                        self.read_atom()?.ok_or(LispError::EndOfInput())?
                     } else {
-                        let val = self.read()?.ok_or(LispError::EndOfInput())?;
-                        items.push(val);
-                    }
+                        self.read()?.ok_or(LispError::EndOfInput())?
+                    };
+                    let cell = Value::cons(val, Value::Nil);
+                    tail = Some(match tail {
+                        None => {
+                            head = cell;
+                            root_read_result(roots, Some(head));
+                            (cell, 1)
+                        }
+                        Some((last, count)) => {
+                            last.cons_cells().expect("a list cell").1.set(cell);
+                            (cell, count + 1)
+                        }
+                    });
                 }
             }
         }
 
         // read0's RE_list_dot hack: (#$ . FIXNUM) is the doc string it
         // names at once when `load-force-doc-strings' is set.
-        let lazy_head = (items.len() == 1
-            && !items[0].is_nil()
-            && dotted_end.is_some_and(|end| matches!(end.kind(), Kind::Integer(_))))
-        .then(|| items[0]);
-        let mut result = dotted_end.unwrap_or(Value::Nil);
-        for item in items.into_iter().rev() {
-            result = Value::cons(item, result);
-        }
+        let result = head;
+        let lazy_head = result.cons_values().and_then(|(first, end)| {
+            (dotted
+                && tail.is_some_and(|(_, count)| count == 1)
+                && !first.is_nil()
+                && matches!(end.kind(), Kind::Integer(_)))
+            .then_some(first)
+        });
         if let Some(head) = lazy_head
             && self.read_context().is_some_and(|context| {
                 context.force_doc_strings() && context.load_file_name().eq_value(head)
             })
         {
-            result = self.get_lazy_string(result)?;
+            return self.get_lazy_string(result).map(Some);
         }
         Ok(Some(result))
     }
@@ -1473,7 +1542,7 @@ impl<'a> Reader<'a> {
                     if name.is_empty() {
                         return Err(LispError::ReadError("Empty character name".into()));
                     }
-                    character_name_to_code(&name)?
+                    character_name_to_code(&name, self.read_context())?
                 }
                 _ => c,
             };
@@ -1895,11 +1964,15 @@ impl<'a> Reader<'a> {
                 {
                     return Err(LispError::ReadError("#&...".into()));
                 }
-                let bits = (0..length)
-                    .map(|bit| bytes[bit / 8] & (1 << (bit % 8)) != 0)
-                    .collect();
-                self.literal_object(ReaderForm::BoolVector { bits })
-                    .map(Some)
+                // make_uninit_bool_vector, the string's bytes copied in, the
+                // bits past the length cleared.
+                let vector = crate::lisp::types::BoolVectorRef::new(length);
+                for bit in 0..length {
+                    if bytes[bit / 8] & (1 << (bit % 8)) != 0 {
+                        vector.set(bit, true);
+                    }
+                }
+                Ok(Some(Value::BoolVector(vector)))
             }
             Some(b':') => {
                 self.advance()?;
@@ -1987,8 +2060,8 @@ impl<'a> Reader<'a> {
                     // the `#N#' inside OBJ until OBJ is read.
                     let placeholder = Value::cons(Value::Nil, Value::Nil);
                     self.read_objects_map.insert(id, placeholder);
-                    let roots = self.input.root_depth();
-                    self.input.root_result(roots, Some(placeholder));
+                    let roots = read_roots_depth();
+                    root_read_result(roots, Some(placeholder));
                     let object = self.read()?.ok_or(LispError::EndOfInput())?;
                     return self.complete_numbered(id, placeholder, object).map(Some);
                 }
@@ -2586,7 +2659,8 @@ mod tests {
         // Literal placeholders nested anywhere set the flag.
         assert!(emitted("(x (y #s(hash-table data (1 2))))"));
         assert!(emitted("[1 #s(record a) 2]"));
-        assert!(emitted("(f #&3\"\\7\")"));
+        // A bool vector is the object itself, made as read0 makes it.
+        assert!(!emitted("(f #&3\"\\7\")"));
     }
 
     #[test]
@@ -2886,8 +2960,7 @@ mod tests {
     fn bare_vector_syntax() {
         assert_eq!(
             read_one("[1 2 foo]"),
-            Value::list([
-                Value::Symbol("vector-literal".into()),
+            Value::vector([
                 Value::Integer(1),
                 Value::Integer(2),
                 Value::Symbol("foo".into()),
@@ -2946,15 +3019,13 @@ mod tests {
 
     #[test]
     fn reads_bool_vector_literals() {
-        let Kind::ReaderForm(form) = read_one(r#"#&8"\1""#).kind() else {
-            panic!("bool vector literal should read as a reader form");
+        // lread.c reads the bool vector itself, the string's bits past the
+        // length cleared.
+        let Kind::BoolVector(vector) = read_one(r#"#&3"\377""#).kind() else {
+            panic!("a bool vector literal reads as a bool vector");
         };
-        assert_eq!(
-            *form,
-            crate::lisp::types::ReaderForm::BoolVector {
-                bits: vec![true, false, false, false, false, false, false, false],
-            }
-        );
+        assert_eq!(vector.bits().collect::<Vec<_>>(), [true, true, true]);
+        assert_eq!(vector.words()[0].get(), 7);
     }
 
     #[test]
@@ -3117,10 +3188,9 @@ mod tests {
                 if kind == "a"
                     && field == "b"
                     && matches!(nested.as_ref(), ReaderForm::Record { .. })
-                    && vector.value().to_vec().ok().is_some_and(|items| matches!(
+                    && crate::lisp::primitives::vector_items(&vector.value()).is_ok_and(|items| matches!(
                         crate::lisp::types::kinds(&items).as_slice(),
-                        [Kind::Symbol(name), Kind::Symbol(item)]
-                            if name == "vector-literal" && item == "e"
+                        [Kind::Symbol(item)] if item == "e"
                     ))
         ));
     }

@@ -608,7 +608,6 @@ impl Interpreter {
                 id,
                 terminal: Some(object),
                 face_hash_table: None,
-                local_faces: Vec::new(),
                 root_window: Some(root),
                 selected_window: Some(root),
                 minibuffer_window: Some(mini),

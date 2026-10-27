@@ -4,7 +4,7 @@ use crate::lisp::types::Kind;
 use crate::lisp::types::LispErrorKind;
 
 fn event_vector(events: impl IntoIterator<Item = Value>) -> Value {
-    Value::list(std::iter::once(Value::symbol("vector-literal")).chain(events))
+    Value::vector(events)
 }
 
 fn event_array(events: &[Value], force_vector: bool) -> Value {
@@ -182,7 +182,7 @@ pub(crate) fn next_kbd_macro_event(
         .lookup_var("executing-kbd-macro-index", env)
         .unwrap_or(Value::Integer(0))
         .as_integer()?;
-    if index >= sequence_length_value(interp, &array)? {
+    if index >= sequence_length_value(&array)? {
         return Ok(None);
     }
     // keyboard.c:read_char reads the live array with Faref. Mutation,
@@ -838,8 +838,8 @@ define_dispatch!(
                         items.extend(string_sequence_values(&string));
                         continue;
                     }
-                    if is_vector_like_value(interp, a) {
-                        items.extend(sequence_values(interp, a)?);
+                    if is_vector_like_value(a) {
+                        items.extend(sequence_values(a)?);
                         continue;
                     }
                     // fns.c concat_to_list: CLOSUREP args flatten to their
@@ -863,7 +863,7 @@ define_dispatch!(
             }
             "length<" | "length>" | "length=" => {
                 need_args(name, args, 2)?;
-                let length = sequence_length_value(interp, &args[0])?;
+                let length = sequence_length_value(&args[0])?;
                 let target = args[1].as_integer()?;
                 let matches = match name {
                     "length<" => length < target,
@@ -874,7 +874,7 @@ define_dispatch!(
             }
             "reverse" => {
                 need_args(name, args, 1)?;
-                reverse_sequence_value(interp, &args[0])
+                reverse_sequence_value(&args[0])
             }
             "copy-alist" => {
                 need_args(name, args, 1)?;
@@ -965,34 +965,13 @@ define_dispatch!(
             }
             "assoc-string" => {
                 need_arg_range(name, args, 2, 3)?;
-                let items = args[1].to_vec()?;
-                if items.is_empty() {
-                    return Ok(Value::Nil);
-                }
-                let key = assoc_string_text(&args[0])?;
-                let key = if args.get(2).is_some_and(|value| !value.is_nil()) {
-                    assoc_string_folded_text(interp, &key)?
-                } else {
-                    key
-                };
-                for item in &items {
-                    let thiscar = match item.kind() {
-                        Kind::Cons(_) => item.car()?,
-                        _ => *item,
-                    };
-                    let Some(candidate) = assoc_string_candidate_text(&thiscar) else {
-                        continue;
-                    };
-                    let candidate = if args.get(2).is_some_and(|value| !value.is_nil()) {
-                        assoc_string_folded_text(interp, &candidate)?
-                    } else {
-                        candidate
-                    };
-                    if candidate == key {
-                        return Ok(*item);
-                    }
-                }
-                Ok(Value::Nil)
+                assoc_string(
+                    interp,
+                    args[0],
+                    args[1],
+                    args.get(2).copied().unwrap_or(Value::Nil),
+                    env,
+                )
             }
 
             // Fast native ports of the GNU cl-seq.el sequence functions.  The
@@ -1224,10 +1203,7 @@ define_dispatch!(
                         .kbd_macro_definition
                         .truncate(state.kbd_macro_committed_len);
                 }
-                let last_macro = Value::list(
-                    std::iter::once(Value::symbol("vector-literal"))
-                        .chain(interp.kbd_macro_definition.iter().cloned()),
-                );
+                let last_macro = Value::vector(interp.kbd_macro_definition.iter().cloned());
                 interp.set_variable("last-kbd-macro", last_macro, env);
                 super::call(
                     interp,
@@ -1887,15 +1863,7 @@ pub(super) fn direct_elt(
 ) -> Result<Value, LispError> {
     let name = "elt";
     need_args(name, args, 2)?;
-    // A proper list headed by `vector-literal' is a vector's list form.
-    // Its head is read first: copying every other list to see its head
-    // made each `elt' as long as the list.
-    if args[0].cons_ref().is_some_and(
-        |cell| matches!(cell.car.get().kind(), Kind::Symbol(symbol) if symbol == "vector-literal"),
-    ) && args[0].to_vec().is_ok()
-    {
-        super::call(interp, "aref", args, env)
-    } else if matches!(args[0].kind(), Kind::Nil | Kind::Cons(_)) {
+    if matches!(args[0].kind(), Kind::Nil | Kind::Cons(_)) {
         nth_list_element(interp, env, &args[0], &args[1])
     } else {
         super::call(interp, "aref", args, env)
@@ -1904,13 +1872,13 @@ pub(super) fn direct_elt(
 
 /// The `length' primitive, callable directly (a subr's function pointer).
 pub(super) fn direct_length(
-    interp: &mut Interpreter,
+    _interp: &mut Interpreter,
     args: &[Value],
     _env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
     let name = "length";
     need_args(name, args, 1)?;
-    Ok(Value::Integer(sequence_length_value(interp, &args[0])?))
+    Ok(Value::Integer(sequence_length_value(&args[0])?))
 }
 
 /// `memq', `memql' and `member' by NAME (fns.c's three walks share this body).
@@ -1980,7 +1948,8 @@ pub(super) fn direct_member_family(
     Ok(Value::Nil)
 }
 
-pub(super) fn direct_memq(
+/// The `memq' primitive, callable directly (fns.c:Fmemq).
+pub(in crate::lisp::primitives) fn direct_memq(
     interp: &mut Interpreter,
     args: &[Value],
     env: &mut crate::lisp::types::Env,
@@ -2197,18 +2166,77 @@ fn map_sequence(
                 call(interp, Value::Integer(code), env)?;
             }
         }
-        Kind::Record(id) if is_bool_vector_value(interp, sequence) => {
-            // A bool vector keeps one slot a bit in its record; each bit is
-            // read when its call comes.
+        Kind::BoolVector(vector) => {
+            // mapcar1 reads each bit (bool_vector_ref) when its call comes.
             for index in 0..length {
-                let item = interp
-                    .find_record(id)
-                    .and_then(|record| record.slots.get(index).copied())
-                    .unwrap_or(Value::Nil);
+                let item = if vector.get(index) == Some(true) {
+                    Value::T
+                } else {
+                    Value::Nil
+                };
                 call(interp, item, env)?;
             }
         }
         _ => return Err(LispError::WrongTypeArgument("vectorp".into(), *sequence)),
     }
     Ok(())
+}
+
+/// minibuf.c:Fassoc_string: the first element of LIST whose car, or which
+/// itself, is a string or a symbol `compare-strings' finds equal to KEY
+/// over their whole lengths, upcasing a differing pair of characters when
+/// CASE-FOLD is non-nil.  Other elements are passed over, and the walk ends
+/// at the first tail that is not a cons, as `CONSP (tail)' ends GNU's.
+fn assoc_string(
+    interp: &mut Interpreter,
+    key: Value,
+    list: Value,
+    case_fold: Value,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let key = symbol_name_of(interp, &key, env).unwrap_or(key);
+    let mut tail = list;
+    while let Kind::Cons(cell) = tail.kind() {
+        let elt = cell.car.get();
+        let thiscar = match elt.kind() {
+            Kind::Cons(inner) => inner.car.get(),
+            _ => elt,
+        };
+        let thiscar = match symbol_name_of(interp, &thiscar, env) {
+            Some(name) => name,
+            None if matches!(thiscar.kind(), Kind::StringObject(_)) => thiscar,
+            None => {
+                tail = cell.cdr.get();
+                continue;
+            }
+        };
+        let tem = crate::lisp::primitives::strings::compare_strings_value(
+            interp,
+            &[
+                thiscar,
+                Value::Integer(0),
+                Value::Nil,
+                key,
+                Value::Integer(0),
+                Value::Nil,
+                case_fold,
+            ],
+            env,
+        )?;
+        if matches!(tem.kind(), Kind::T) {
+            return Ok(elt);
+        }
+        interp.maybe_quit(env)?;
+        tail = cell.cdr.get();
+    }
+    Ok(Value::Nil)
+}
+
+/// `SYMBOLP (OBJECT) ? Fsymbol_name (OBJECT)': a symbol's name, a
+/// symbol-with-position's while `symbols-with-pos-enabled'; None for any
+/// other object.
+fn symbol_name_of(interp: &Interpreter, object: &Value, env: &Env) -> Option<Value> {
+    crate::lisp::primitives::interactive::checked_symbol_identity(interp, object, env)
+        .ok()
+        .map(|symbol| symbol.lisp_name())
 }

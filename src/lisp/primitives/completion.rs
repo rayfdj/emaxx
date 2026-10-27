@@ -221,6 +221,17 @@ pub(crate) fn intern_in_obarray(
     obarray: &Value,
     symbol_name: &str,
 ) -> Result<Value, LispError> {
+    // check_obarray's common case, the initial obarray itself: oblookup,
+    // and on a miss intern_driver with the name made only then.
+    if let Kind::Record(id) = obarray.kind()
+        && interp.is_standard_obarray_id(id.id)
+    {
+        return Ok(Value::Symbol(
+            crate::lisp::types::SymbolName::intern_initial_with(symbol_name, || {
+                Value::string(symbol_name)
+            }),
+        ));
+    }
     intern_in_obarray_with_name(interp, obarray, symbol_name, |_| {
         Ok(Value::string(symbol_name))
     })

@@ -629,6 +629,12 @@ fn graph_matches(
             }
             Ok(())
         }
+        (Kind::BoolVector(left), Kind::BoolVector(right)) => {
+            if left.bits().ne(right.bits()) {
+                return Err("bool vector differs".into());
+            }
+            Ok(())
+        }
         (Kind::CharTable(_), Kind::CharTable(_)) | (Kind::Record(_), Kind::Record(_)) => Ok(()),
         (Kind::Cons(_), Kind::Cons(_)) => {
             graph_matches(&a.car().expect("car"), &b.car().expect("car"), seen)?;
@@ -832,28 +838,41 @@ fn image_records_symbol_cells_from_the_interpreter() {
             .unwrap_or_else(|| panic!("no record for {name}"))
             .clone()
     };
-    let special = record("zz-dump-special");
-    assert_eq!(
-        special.flags & super::context::FLAG_DECLARED_SPECIAL,
-        super::context::FLAG_DECLARED_SPECIAL
+    // The symbols but the watched one are mapped where the image holds
+    // them, each the initial obarray's symbol of its name once the image
+    // loads.
+    let loaded = image
+        .roots
+        .iter()
+        .find(|(slot, _)| *slot == RootSlot::LoadPath)
+        .and_then(|(_, value)| value.to_vec().ok())
+        .expect("the root list");
+    let mapped = |index: usize, name: &str| {
+        assert!(
+            image.symbols.iter().all(|symbol| symbol.symbol != name),
+            "{name} is mapped, not a record"
+        );
+        assert_eq!(loaded[index], Value::symbol(name), "{name} is interned");
+        let Kind::Symbol(symbol) = loaded[index].kind() else {
+            panic!("{name} is a symbol")
+        };
+        symbol
+    };
+    let special = mapped(0, "zz-dump-special");
+    assert_ne!(
+        special.cell().flags.get() & crate::lisp::eval::symbol_cell_flags::SPECIAL,
+        0
     );
     assert_eq!(
-        special.value.as_ref().and_then(|value| value.to_vec().ok()),
+        special.cell().value().and_then(|value| value.to_vec().ok()),
         Some(vec![
             Value::Integer(1),
             Value::Integer(2),
             Value::Integer(3)
         ])
     );
-    let alias = record("zz-dump-alias");
-    assert_eq!(
-        alias.flags & super::context::SYMBOL_REDIRECT_MASK,
-        super::context::SYMBOL_VARALIAS
-    );
-    assert_eq!(
-        alias.alias.as_ref().map(SymbolName::as_str),
-        Some("zz-dump-special")
-    );
+    let alias = mapped(1, "zz-dump-alias");
+    assert_eq!(alias.cell().alias(), Some(special));
     let plain = record("zz-dump-plain");
     assert_eq!(plain.value, Some(Value::Integer(7)));
     assert_eq!(
@@ -862,9 +881,9 @@ fn image_records_symbol_cells_from_the_interpreter() {
     );
     assert_eq!(plain.watchers, vec![Value::symbol("ignore")]);
     assert_eq!(plain.plist.to_vec().ok().map(|plist| plist.len()), Some(2));
-    let function = record("zz-dump-fn");
-    assert_eq!(function.function, Value::symbol("car"));
-    assert_eq!(record("zz-dump-void").value, None);
+    let function = mapped(3, "zz-dump-fn");
+    assert_eq!(function.cell().function.get(), Value::symbol("car"));
+    assert_eq!(mapped(4, "zz-dump-void").cell().value(), None);
     assert!(image.obarray.is_empty(), "explicit roots dump no obarray");
 }
 
@@ -1103,10 +1122,7 @@ fn image_conses_are_cells_of_the_image_where_it_is_mapped() {
     )
     .expect("the image conses stay live");
     assert_eq!(answer.to_string(), "((-7 t \"x\") t 1)");
-    assert_eq!(
-        super::load::CONS_LV,
-        DumpRelocKind::DumpToDumpLv(DumpType::Cons).to_u32()
-    );
+    assert_eq!(super::load::CONS_LV, RelocType::DumpToDumpCons as u32);
 }
 
 #[test]
@@ -1181,7 +1197,7 @@ fn image_strings_are_cells_of_the_image_where_it_is_mapped() {
         eval(
             &mut target,
             "(let ((v zz-image-strings))
-               (aset (aref v 2) 0 ?\\N{GREEK SMALL LETTER ALPHA})
+               (aset (aref v 2) 0 ?\\N{U+3B1})
                (aset (aref v 3) 1 ?e)
                (aset v 6 nil)
                (garbage-collect)
@@ -1193,10 +1209,7 @@ fn image_strings_are_cells_of_the_image_where_it_is_mapped() {
         ),
         "((945 98 99) t \"hello\" 5 \"shared\" bold)"
     );
-    assert_eq!(
-        super::load::STRING_LV,
-        DumpRelocKind::DumpToDumpLv(DumpType::String).to_u32()
-    );
+    assert_eq!(super::load::STRING_LV, RelocType::DumpToDumpString as u32);
 }
 
 #[test]
@@ -1215,7 +1228,7 @@ fn image_vectors_are_the_image_where_it_is_mapped() {
               (many nil))
           (aset cycle 0 cycle)
           (set-char-table-range table '(?a . ?z) 'lower)
-          (set-char-table-range table ?\N{GREEK SMALL LETTER ALPHA} 'alpha)
+          (set-char-table-range table ?\N{U+3B1} 'alpha)
           (let ((i 0))
             (while (< i 600)
               (setq many (cons (vector i) many) i (1+ i))))
@@ -1269,7 +1282,7 @@ fn image_vectors_are_the_image_where_it_is_mapped() {
                      (eq (aref (aref v 2) 0) (aref v 2)) (length (aref v 3))
                      (aref (aref v 3) 299) (funcall (aref v 4) 5)
                      (aref (aref v 5) 0) (eq (aref (aref v 5) 2) (aref v 0))
-                     (aref (aref v 6) ?q) (aref (aref v 6) ?\\N{GREEK SMALL LETTER ALPHA})
+                     (aref (aref v 6) ?q) (aref (aref v 6) ?\\N{U+3B1})
                      (aref (aref v 6) ?Q) (eq (aref v 7) []) (length (aref v 8))
                      (aref (car (aref v 8)) 0)))"
         ),
@@ -1310,24 +1323,10 @@ fn image_vectors_are_the_image_where_it_is_mapped() {
         ),
         "(fresh 400)"
     );
-    for code in [
-        super::load::VECTOR_LV,
-        super::load::CLOSURE_LV,
-        super::load::LISP_RECORD_LV,
-        super::load::CHAR_TABLE_LV,
-        super::load::SUB_CHAR_TABLE_LV,
-    ] {
-        assert!(matches!(
-            DumpRelocKind::from_u32(code),
-            Some(DumpRelocKind::DumpToDumpLv(
-                DumpType::Vector
-                    | DumpType::Closure
-                    | DumpType::LispRecord
-                    | DumpType::CharTable
-                    | DumpType::SubCharTable
-            ))
-        ));
-    }
+    assert_eq!(
+        super::load::VECTORLIKE_LV,
+        RelocType::DumpToDumpVectorlike as u32
+    );
 }
 
 #[test]
@@ -1429,18 +1428,15 @@ fn image_round_trips_closures_char_tables_records_and_bool_vectors() {
         Some("extra".into())
     );
 
-    // The bool-vector's bits came through the cold section.
-    let Kind::Record(bits_id) = slots[2].kind() else {
+    // The bool-vector is mapped where the image's vector blocks hold it.
+    let Kind::BoolVector(bits) = slots[2].kind() else {
         panic!("bool-vector")
     };
-    let bits = target.find_record(bits_id).expect("installed bool-vector");
-    assert_eq!(bits.kind, crate::lisp::eval::RecordKind::BoolVector);
-    assert_eq!(bits.slots.len(), 70);
+    assert_eq!(bits.len(), 70);
     let set = bits
-        .slots
-        .iter()
+        .bits()
         .enumerate()
-        .filter(|(_, slot)| slot.is_truthy())
+        .filter(|(_, bit)| *bit)
         .map(|(index, _)| index)
         .collect::<Vec<_>>();
     assert_eq!(set, vec![0, 65, 69]);

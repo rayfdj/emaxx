@@ -3404,7 +3404,6 @@ fn hash_table_native_hash(
                 unsafe { &*active.interpreter },
                 test,
                 &key,
-                unsafe { &*active.environment.get() },
             );
         }
         if let Err(error) =
@@ -5201,6 +5200,7 @@ impl NativeHeap {
                         | crate::lisp::alloc::VectorTag::Closure
                         | crate::lisp::alloc::VectorTag::Bignum
                         | crate::lisp::alloc::VectorTag::Record
+                        | crate::lisp::alloc::VectorTag::BoolVector
                         | crate::lisp::alloc::VectorTag::ReaderForm
                         | crate::lisp::alloc::VectorTag::Buffer
                         | crate::lisp::alloc::VectorTag::Terminal
@@ -6721,11 +6721,7 @@ mod tests {
         let mut environment = Env::new();
         let mut runtime = NativeRuntime::default();
         let retained = Value::cons(Value::symbol("retained"), Value::Nil);
-        let prototype_constants = Value::list([
-            Value::symbol("vector-literal"),
-            Value::symbol("placeholder"),
-            retained,
-        ]);
+        let prototype_constants = Value::vector([Value::symbol("placeholder"), retained]);
         let prototype = Value::allocated_closure(&[
             Value::Nil,
             Value::string("bytecode"),
@@ -6883,11 +6879,7 @@ mod tests {
         );
         assert_ne!(mapped.cons_id(), sequence.cons_id());
 
-        let vector = Value::list([
-            Value::symbol("vector-literal"),
-            Value::Integer(4),
-            Value::Integer(5),
-        ]);
+        let vector = Value::vector([Value::Integer(4), Value::Integer(5)]);
         assert_eq!(
             runtime
                 .invoke(
@@ -6963,12 +6955,7 @@ mod tests {
             .expect_err("circular list");
         assert_eq!(error.condition_type(), "circular-list");
 
-        let vector = Value::list([
-            Value::symbol("vector-literal"),
-            Value::Integer(1),
-            Value::Integer(2),
-            Value::Integer(3),
-        ]);
+        let vector = Value::vector([Value::Integer(1), Value::Integer(2), Value::Integer(3)]);
         let reversed = runtime
             .invoke(
                 &mut interpreter,
@@ -7019,11 +7006,7 @@ mod tests {
             Value::Integer(3)
         );
 
-        let vector = Value::list([
-            Value::symbol("vector-literal"),
-            Value::Integer(1),
-            Value::Integer(2),
-        ]);
+        let vector = Value::vector([Value::Integer(1), Value::Integer(2)]);
         assert_eq!(
             invoke(&mut runtime, &mut interpreter, &mut environment, vector,)
                 .expect("vector fallback"),
@@ -7349,11 +7332,7 @@ mod tests {
         let mut interpreter = Interpreter::new();
         let mut environment = Env::new();
         let mut runtime = NativeRuntime::default();
-        let vector = Value::list([
-            Value::symbol("vector-literal"),
-            Value::Integer(1),
-            Value::Integer(2),
-        ]);
+        let vector = Value::vector([Value::Integer(1), Value::Integer(2)]);
 
         assert_eq!(
             runtime
@@ -8205,11 +8184,7 @@ mod tests {
                 Value::symbol("cons"),
             ),
             (
-                Value::list([
-                    Value::symbol("vector-literal"),
-                    Value::Integer(1),
-                    Value::Integer(2),
-                ]),
+                Value::vector([Value::Integer(1), Value::Integer(2)]),
                 Value::symbol("vector"),
             ),
         ] {
@@ -8664,7 +8639,7 @@ mod tests {
             Value::StringObject(crate::lisp::types::StringObjectRef::from_unibyte(vec![
                 0o211, 0o124, 0o207,
             ])),
-            Value::list([Value::symbol("vector-literal")]),
+            Value::vector([]),
             Value::Integer(3),
         ]);
         assert!(matches!(
@@ -13859,7 +13834,7 @@ mod tests {
             let name = Value::string("escaped-frame-name");
             let payload = Value::vector([Value::Frame(frame), Value::Frame(focus)]);
             let face = owner
-                .ensure_lisp_face_on("escaped-frame-face", Some(frame), false)
+                .make_lisp_face_on(Value::symbol("escaped-frame-face"), Some(frame), false)
                 .expect("frame-local face");
             frame.name.set(name);
             frame.borrow_mut().focus_frame_id = Some(focus);
@@ -13916,9 +13891,15 @@ mod tests {
                 panic!("frame object")
             };
             assert!(object.is_live());
+            let faces = object.borrow().face_hash_table.expect("frame face table");
+            let Kind::HashTable(faces) = faces.kind() else {
+                panic!("frame face table")
+            };
             assert_eq!(
-                holder
-                    .lisp_face_vector_on("escaped-frame-face", Some(object))
+                faces
+                    .entries()
+                    .find(|(_, face, _)| face.symbol_str() == Some("escaped-frame-face"))
+                    .map(|(_, _, lface)| lface)
                     .expect("frame owns its face after its interpreter exits")
                     .word()
                     ^ HIDE,
@@ -13986,10 +13967,6 @@ mod tests {
             .parameter_overrides
             .push(("frame-copy-parameter".into(), payload));
         frame.borrow_mut().face_hash_table = Some(payload);
-        frame
-            .borrow_mut()
-            .local_faces
-            .push(("frame-copy-face".into(), payload));
         let cloned = source.deep_clone_image();
         let copied = cloned.selected_frame_id;
         assert_ne!(copied, frame);
@@ -14033,14 +14010,6 @@ mod tests {
             panic!("copied payload")
         };
         assert_eq!(slots.get(0), Some(Value::Frame(copied)));
-        assert_eq!(
-            cloned.lisp_face_vector_on("frame-copy-face", Some(copied)),
-            Some(copied_payload)
-        );
-        assert_eq!(
-            source.lisp_face_vector_on("frame-copy-face", Some(frame)),
-            Some(payload)
-        );
         copied.name.set(Value::string("renamed-copy"));
         assert_ne!(copied.name.get(), frame.name.get());
     }

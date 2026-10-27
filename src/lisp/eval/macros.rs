@@ -30,28 +30,29 @@ fn prepare_closure_literal(
 }
 
 /// The reader's view of the Lisp world as `read' and `load' read: symbols
-/// interned in OBARRAY, literal objects built as their syntax closes.
+/// interned in the current obarray, literal objects built as their syntax
+/// closes.
 pub(crate) struct LispReadContext<'i> {
     pub(crate) interp: &'i mut Interpreter,
-    pub(crate) obarray: Value,
     pub(crate) env: &'i mut Env,
 }
 
 impl<'i> LispReadContext<'i> {
-    /// The context of a read now: the current `obarray'.
+    /// The context of a read now.
     pub(crate) fn current(interp: &'i mut Interpreter, env: &'i mut Env) -> Self {
-        let obarray = interp.lookup_var("obarray", env).unwrap_or(Value::Nil);
-        Self {
-            interp,
-            obarray,
-            env,
-        }
+        Self { interp, env }
     }
 }
 
 impl crate::lisp::reader::ReadContext for LispReadContext<'_> {
     fn intern(&mut self, name: &str) -> Result<Value, LispError> {
-        crate::lisp::primitives::intern_in_obarray(self.interp, &self.obarray, name)
+        // read0 interns each symbol in `check_obarray (Vobarray)', read
+        // as the symbol is: Lisp run in the middle of a read can bind it.
+        let obarray = self
+            .interp
+            .symbol_value_key(cached_symbol!("obarray"))
+            .unwrap_or(Value::Nil);
+        crate::lisp::primitives::intern_in_obarray(self.interp, &obarray, name)
     }
 
     fn build(&mut self, form: ReaderForm) -> Result<Value, LispError> {
@@ -69,9 +70,32 @@ impl crate::lisp::reader::ReadContext for LispReadContext<'_> {
     fn doc_string(&mut self, reference: Value) -> Result<Value, LispError> {
         crate::lisp::primitives::unibyte_doc_string(self.interp, &reference, self.env)
     }
+
+    fn char_from_name(&mut self, name: &str) -> Result<Value, LispError> {
+        self.interp.read_char_from_name(name, self.env)
+    }
 }
 
 impl Interpreter {
+    /// lread.c character_name_to_code's `call2 (Qchar_from_name,
+    /// make_unibyte_string (name, name_len), Qt)': the code a `\N{NAME}'
+    /// escape reads as, NAME's case ignored.
+    pub(crate) fn read_char_from_name(
+        &mut self,
+        name: &str,
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        let name = Value::StringObject(crate::lisp::types::StringObjectRef::from_unibyte(
+            name.as_bytes().to_vec(),
+        ));
+        self.call_function_value(
+            Value::symbol("char-from-name"),
+            Some("char-from-name"),
+            &[name, Value::T],
+            env,
+        )
+    }
+
     /// Vload_file_name as the reader reads `#$'.
     pub(crate) fn read_load_file_name(&self, env: &Env) -> Value {
         self.lookup_var("load-file-name", env).unwrap_or(Value::Nil)
@@ -117,13 +141,6 @@ impl Interpreter {
                 }
                 Ok(value)
             }
-            ReaderForm::BoolVector { bits } => Ok(self.create_pseudovector(
-                RecordKind::BoolVector,
-                "bool-vector",
-                bits.iter()
-                    .map(|bit| if *bit { Value::T } else { Value::Nil })
-                    .collect(),
-            )),
             ReaderForm::HashTable { fields } => {
                 crate::lisp::primitives::hash_table_from_read_fields(self, &fields, env)
             }
@@ -185,21 +202,6 @@ impl Interpreter {
         active_reader_forms: &mut std::collections::HashSet<usize>,
         records: &mut std::collections::HashMap<usize, Value>,
     ) -> Result<Value, LispError> {
-        if let Kind::ReaderForm(form) = value.kind()
-            && let ReaderForm::BoolVector { bits } = form.as_ref()
-        {
-            // GNU's reader allocates the bool vector itself; Emaxx does it
-            // here, at the same boundary as `#s(...)' records, so the object
-            // -- not a reader marker -- is what quoted structure, bytecode
-            // constants and `read' hand to Lisp.
-            return Ok(self.create_pseudovector(
-                RecordKind::BoolVector,
-                "bool-vector",
-                bits.iter()
-                    .map(|bit| if *bit { Value::T } else { Value::Nil })
-                    .collect(),
-            ));
-        }
         if let Kind::ReaderForm(form) = value.kind()
             && matches!(
                 form.as_ref(),

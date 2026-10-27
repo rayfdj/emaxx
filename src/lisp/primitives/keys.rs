@@ -242,11 +242,11 @@ pub(crate) fn parse_event_symbol_modifiers(
 }
 
 pub(crate) fn parse_kbd_sequence(text: &str) -> Result<Value, LispError> {
-    let mut items = vec![Value::Symbol("vector-literal".into())];
+    let mut items = Vec::new();
     for token in text.split_whitespace() {
         items.extend(parse_kbd_token(token));
     }
-    Ok(Value::list(items))
+    Ok(Value::vector(items))
 }
 
 pub(crate) fn parse_kbd_token(token: &str) -> Vec<Value> {
@@ -387,7 +387,7 @@ pub(crate) fn normalize_lucid_key_events(
     }) {
         return Ok(*key);
     }
-    let mut converted = vec![Value::Symbol("vector-literal".into())];
+    let mut converted = Vec::with_capacity(events.len());
     for event in events {
         let event = if lucid_event_type_list_p(&event) {
             event_convert_list_value(interp, &event)?
@@ -402,7 +402,7 @@ pub(crate) fn normalize_lucid_key_events(
             event
         });
     }
-    Ok(Value::list(converted))
+    Ok(Value::vector(converted))
 }
 
 /// keyboard.c's lucid_event_type_list_p: a proper list of fixnums and
@@ -496,7 +496,7 @@ pub(crate) fn textual_key_sequence_keymap_parts(value: &Value) -> Result<Vec<Val
         let events = vector_items(&parse_kbd_sequence(&string.text)?)?
             .into_iter()
             .map(reader_key_event_value);
-        let sequence = Value::list(std::iter::once(Value::symbol("vector-literal")).chain(events));
+        let sequence = Value::vector(events);
         return key_sequence_keymap_parts(&sequence);
     }
     key_sequence_keymap_parts(value)
@@ -598,16 +598,13 @@ pub(crate) fn normalize_key_description_event(event: Value) -> Value {
     }
 }
 
-pub(crate) fn sequence_values(
-    interp: &Interpreter,
-    sequence: &Value,
-) -> Result<Vec<Value>, LispError> {
+pub(crate) fn sequence_values(sequence: &Value) -> Result<Vec<Value>, LispError> {
     if let Some(string) = sequence_string_like(sequence) {
         Ok(string_sequence_values(&string))
     } else if matches!(sequence.kind(), Kind::Nil | Kind::Cons(_)) {
         sequence.to_vec()
-    } else if is_bool_vector_value(interp, sequence) {
-        bool_vector_values(interp, sequence)
+    } else if is_bool_vector_value(sequence) {
+        bool_vector_values(sequence)
     } else {
         vector_items(sequence)
     }
@@ -622,20 +619,7 @@ pub(crate) fn string_sequence_values(string: &StringLike) -> Vec<Value> {
 }
 
 pub(crate) fn sequence_string_like(value: &Value) -> Option<StringLike> {
-    match value.kind() {
-        Kind::StringObject(_) => string_like(value),
-        Kind::Cons(_) => {
-            let items = value.to_vec().ok()?;
-            if matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(symbol)) if symbol == "vector-literal")
-                && matches!(items.get(1).map(|v| v.kind()), Some(Kind::StringObject(_)))
-            {
-                string_like(value)
-            } else {
-                None
-            }
-        }
-        _ => None,
-    }
+    string_like(value)
 }
 
 pub(crate) fn single_key_description_text(

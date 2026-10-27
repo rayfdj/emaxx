@@ -191,87 +191,6 @@ pub(crate) fn set_file_times_path(
     }
 }
 
-pub(crate) fn lock_path_for_file(path: &str) -> PathBuf {
-    let expanded = PathBuf::from(expand_file_name(path, None));
-    let directory = expanded.parent().map(Path::to_path_buf).unwrap_or_default();
-    let file_name = expanded
-        .file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or(path);
-    directory.join(format!(".#{file_name}"))
-}
-
-fn current_lock_identity() -> (String, String, i64) {
-    let user = current_user_login_name().unwrap_or_default();
-    let host = system_name_value().replace('@', "-");
-    (user, host, i64::from(std::process::id()))
-}
-
-fn current_lock_info() -> String {
-    let (user, host, pid) = current_lock_identity();
-    format!("{user}@{host}.{pid}")
-}
-
-fn read_lock_info(path: &Path, metadata: &fs::Metadata) -> Option<String> {
-    if metadata.file_type().is_symlink() {
-        fs::read_link(path)
-            .ok()
-            .map(|target| target.to_string_lossy().into_owned())
-    } else {
-        fs::read_to_string(path).ok()
-    }
-}
-
-fn parse_lock_info(info: &str) -> Option<(&str, &str, i64)> {
-    let (user, host_and_pid) = info.rsplit_once('@')?;
-    let (host, pid_and_boot_time) = host_and_pid.rsplit_once('.')?;
-    let pid = pid_and_boot_time
-        .split_once(':')
-        .map_or(pid_and_boot_time, |(pid, _)| pid)
-        .parse()
-        .ok()?;
-    Some((user, host, pid))
-}
-
-#[cfg(unix)]
-fn process_is_alive(pid: i64) -> bool {
-    let Ok(pid) = libc::pid_t::try_from(pid) else {
-        return false;
-    };
-    if pid <= 0 {
-        return false;
-    }
-    let result = unsafe { libc::kill(pid, 0) };
-    result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
-}
-
-#[cfg(not(unix))]
-fn process_is_alive(pid: i64) -> bool {
-    pid == i64::from(std::process::id())
-}
-
-enum LockOwnership<'a> {
-    CurrentProcess,
-    Other(&'a str),
-    Stale,
-}
-
-fn lock_ownership(info: &str) -> Option<LockOwnership<'_>> {
-    let (user, host, pid) = parse_lock_info(info)?;
-    let (_, current_host, current_pid) = current_lock_identity();
-    if host != current_host {
-        return Some(LockOwnership::Other(user));
-    }
-    if pid == current_pid {
-        return Some(LockOwnership::CurrentProcess);
-    }
-    Some(if process_is_alive(pid) {
-        LockOwnership::Other(user)
-    } else {
-        LockOwnership::Stale
-    })
-}
-
 pub(crate) fn file_error_value(message: &str, path: &str) -> Value {
     Value::list([
         Value::Symbol("file-error".into()),
@@ -360,44 +279,6 @@ pub(crate) fn file_output_error(path: &str, error: &std::io::Error) -> LispError
         detail,
         path,
     ))
-}
-
-pub(crate) fn file_locked_p(
-    interp: &Interpreter,
-    env: &Env,
-    logical_path: &str,
-) -> Result<Value, LispError> {
-    let path = resolve_file_name_in_env(interp, env, logical_path);
-    let lock_path = lock_path_for_file(&path);
-    match fs::symlink_metadata(&lock_path) {
-        Ok(metadata) => {
-            if metadata.is_dir() {
-                return Err(LispError::SignalValue(file_error_value(
-                    "Testing file lock",
-                    &path,
-                )));
-            }
-            let owner = read_lock_info(&lock_path, &metadata).ok_or_else(|| {
-                LispError::SignalValue(file_error_value("Testing file lock", &path))
-            })?;
-            match lock_ownership(&owner) {
-                Some(LockOwnership::CurrentProcess) => Ok(Value::T),
-                Some(LockOwnership::Other(user)) => Ok(Value::String(user.into())),
-                Some(LockOwnership::Stale) => {
-                    fs::remove_file(&lock_path).map_err(|_| {
-                        LispError::SignalValue(file_error_value("Testing file lock", &path))
-                    })?;
-                    Ok(Value::Nil)
-                }
-                None => Err(LispError::SignalValue(file_error_value(
-                    "Testing file lock",
-                    &path,
-                ))),
-            }
-        }
-        Err(error) if error.kind() == ErrorKind::NotFound => Ok(Value::Nil),
-        Err(error) => Err(LispError::Signal(error.to_string())),
-    }
 }
 
 pub(crate) fn is_circular_list_value(value: &Value) -> bool {
@@ -940,18 +821,10 @@ fn write_region_with_coding(
         .or_else(|| args.get(5).and_then(string_like).map(|string| string.text))
         .or_else(|| args.get(4).and_then(string_like).map(|string| string.text))
         .unwrap_or_else(|| logical_path.to_string());
-    let lock_enabled = interp
-        .lookup_var("create-lockfiles", env)
-        .is_some_and(|value| value.is_truthy());
-    // GNU always enters lock-file here: that function performs the
-    // supersession check even when `create-lockfiles' suppresses the actual
-    // lock artifact.
-    call_named_function(
-        interp,
-        "lock-file",
-        &[Value::String(lock_path.clone().into())],
-        env,
-    )?;
+    // fileio.c:write_region: Flock_file before the file is opened (its
+    // lock_file asks about a supersession threat even when
+    // `create-lockfiles' makes no lock), Funlock_file once it is written.
+    flock_file(interp, env, Value::String(lock_path.clone().into()))?;
     let write_result = (|| {
         let exclusive = args[6].symbol_str() == Some("excl");
         if args[3].is_nil() && !exclusive {
@@ -983,17 +856,7 @@ fn write_region_with_coding(
         file.write_all(&bytes)
             .map_err(|error| file_output_error(path, &error))
     })();
-    let unlock_result = if lock_enabled {
-        call_named_function(
-            interp,
-            "unlock-file",
-            &[Value::String(lock_path.into())],
-            env,
-        )
-        .map(drop)
-    } else {
-        Ok(())
-    };
+    let unlock_result = funlock_file(interp, env, Value::String(lock_path.into()));
     match (write_result, unlock_result) {
         (Err(error), _) | (Ok(()), Err(error)) => return Err(error),
         (Ok(()), Ok(())) => {}
@@ -1028,7 +891,6 @@ fn write_region_with_coding(
             .borrow_mut()
             .set_visited_file_modtime(file_modtime(path)?);
         interp.buffer.borrow_mut().set_unmodified();
-        unlock_current_buffer(interp, env)?;
     }
     if interp
         .lookup_var("noninteractive", env)
@@ -2095,231 +1957,4 @@ pub(crate) fn finish_insert_file_contents(
     }
 
     Ok(inserted)
-}
-
-pub(crate) fn current_buffer_file(interp: &Interpreter) -> Option<std::cell::Ref<'_, str>> {
-    std::cell::Ref::filter_map(interp.buffer.borrow(), |buffer| {
-        buffer.file_truename.as_deref().or(buffer.file.as_deref())
-    })
-    .ok()
-}
-
-pub(crate) fn maybe_lock_current_buffer(
-    interp: &mut Interpreter,
-    env: &mut Env,
-) -> Result<(), LispError> {
-    if !interp.buffer.borrow().is_modified() {
-        return Ok(());
-    }
-    maybe_lock_current_buffer_file(interp, env)
-}
-
-pub(crate) fn maybe_lock_current_buffer_file(
-    interp: &mut Interpreter,
-    env: &mut Env,
-) -> Result<(), LispError> {
-    let Some(logical_path) = current_buffer_file(interp).map(|path| path.to_string()) else {
-        return Ok(());
-    };
-    call_named_function(
-        interp,
-        "lock-file",
-        &[Value::String(logical_path.into())],
-        env,
-    )?;
-    Ok(())
-}
-
-pub(crate) fn lock_file_path(
-    interp: &mut Interpreter,
-    env: &mut Env,
-    logical_path: &str,
-) -> Result<(), LispError> {
-    let lock_enabled = interp
-        .lookup_var("create-lockfiles", env)
-        .is_some_and(|value| value.is_truthy());
-    let path = resolve_file_name_in_env(interp, env, logical_path);
-    let lock_path = lock_path_for_file(&path);
-    let own_lock = lock_enabled
-        && fs::symlink_metadata(&lock_path)
-            .ok()
-            .and_then(|metadata| read_lock_info(&lock_path, &metadata))
-            .as_deref()
-            .and_then(lock_ownership)
-            .is_some_and(|owner| matches!(owner, LockOwnership::CurrentProcess));
-
-    // GNU checks the visited buffer for supersession even when lock-file
-    // creation is disabled.  `create-lockfiles' controls the filesystem
-    // notice, not whether an external rewrite may be silently overwritten.
-    if !own_lock {
-        let truename = canonical_file_name(&path);
-        let subject_id = interp.buffer_list.iter().find_map(|(id, _)| {
-            interp
-                .get_buffer_by_id(*id)
-                .filter(|buffer| buffer.file_truename.as_deref() == Some(truename.as_str()))
-                .map(|_| *id)
-        });
-        if let Some(subject_id) = subject_id {
-            let saved_id = interp.current_buffer_id();
-            if subject_id != saved_id {
-                interp.set_current_buffer_id(subject_id)?;
-            }
-            let supersession = ensure_no_supersession_threat(interp, env);
-            if subject_id != saved_id && interp.has_buffer_id(saved_id) {
-                interp.set_current_buffer_id(saved_id)?;
-            }
-            supersession?;
-        }
-    }
-
-    if !lock_enabled {
-        return Ok(());
-    }
-    // filelock.c:lock_file: "FIXME: This ignores errors when lock_if_free
-    // returns an errno value."  A lock that cannot be created (the
-    // directory is not writable: bytecomp's Bug#44631 case) or written
-    // leaves the file unlocked and the operation goes on; only another
-    // owner's lock is reported.
-    if let Ok(mut lock) = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(lock_path)
-    {
-        let _ = lock.write_all(current_lock_info().as_bytes());
-    }
-    Ok(())
-}
-
-pub(crate) fn unlock_current_buffer(
-    interp: &mut Interpreter,
-    env: &mut Env,
-) -> Result<Value, LispError> {
-    let Some(path) = current_buffer_file(interp).map(|path| path.to_string()) else {
-        return Ok(Value::Nil);
-    };
-    call_named_function(interp, "unlock-file", &[Value::String(path.into())], env)
-}
-
-pub(crate) fn unlock_buffer_by_id(
-    interp: &mut Interpreter,
-    env: &mut Env,
-    buffer_id: u64,
-) -> Result<Value, LispError> {
-    let Some(buffer) = interp.get_buffer_by_id(buffer_id) else {
-        return Ok(Value::Nil);
-    };
-    if !buffer.is_modified() {
-        return Ok(Value::Nil);
-    }
-    let Some(path) = buffer
-        .file_truename
-        .as_deref()
-        .or(buffer.file.as_deref())
-        .map(str::to_string)
-    else {
-        return Ok(Value::Nil);
-    };
-    drop(buffer);
-    call_named_function(interp, "unlock-file", &[Value::String(path.into())], env)
-}
-
-pub(crate) fn unlock_file_path(
-    interp: &mut Interpreter,
-    env: &mut Env,
-    logical_path: &str,
-) -> Result<Value, LispError> {
-    let path = resolve_file_name_in_env(interp, env, logical_path);
-    let lock_path = lock_path_for_file(&path);
-    match fs::symlink_metadata(&lock_path) {
-        Ok(metadata) if metadata.is_dir() => {
-            call_named_function(
-                interp,
-                "userlock--handle-unlock-error",
-                &[file_error_value("Unlocking file", &path)],
-                env,
-            )?;
-            Ok(Value::Nil)
-        }
-        Ok(_) => {
-            let metadata = fs::symlink_metadata(&lock_path)
-                .map_err(|error| LispError::Signal(error.to_string()))?;
-            let owner = read_lock_info(&lock_path, &metadata);
-            let own_lock = owner
-                .as_deref()
-                .and_then(lock_ownership)
-                .is_some_and(|owner| matches!(owner, LockOwnership::CurrentProcess));
-            if own_lock {
-                fs::remove_file(&lock_path)
-                    .map_err(|error| LispError::Signal(error.to_string()))?;
-            }
-            Ok(Value::Nil)
-        }
-        Err(error) if error.kind() == ErrorKind::NotFound => Ok(Value::Nil),
-        Err(error) => Err(LispError::Signal(error.to_string())),
-    }
-}
-
-pub(crate) fn ensure_no_supersession_threat(
-    interp: &mut Interpreter,
-    env: &mut Env,
-) -> Result<(), LispError> {
-    // GNU's check is gated on the `buffer-file-name' Lisp value, so a
-    // let-binding of it to nil suppresses the conflict prompt entirely
-    // (auto-revert-tail-handler relies on this while appending).
-    // The buffer's slot first (a field read), then the variable's binding.
-    let Some(logical_path) = current_buffer_file(interp).map(|path| path.to_string()) else {
-        return Ok(());
-    };
-    if interp
-        .symbol_value_key(cached_symbol!("buffer-file-name"))
-        .is_some_and(|value| value.is_nil())
-    {
-        return Ok(());
-    }
-    // filelock.c's supersession block lives in the native half of
-    // `lock-file', AFTER the file-name-handler dispatch: a handled file
-    // never reaches it, and its handler's own `lock-file' (Tramp routes
-    // straight to `ask-user-about-supersession-threat', deliberately
-    // skipping the local content comparison) owns the stale-file policy.
-    // Running the native check for handled files silently re-stamped the
-    // visited modtime through `userlock--check-content-unchanged' and
-    // suppressed the handler's prompt.
-    if super::system::find_file_name_handler(
-        interp,
-        env,
-        &logical_path,
-        Value::symbol("lock-file"),
-    )?
-    .is_some()
-    {
-        return Ok(());
-    }
-    let path = resolve_file_name_in_env(interp, env, &logical_path);
-    let Some(current_modtime) = file_modtime(&path)? else {
-        return Ok(());
-    };
-    let visited_modtime = interp.buffer.borrow().visited_file_modtime();
-    // An unknown recorded timestamp is GNU's explicit "do not verify"
-    // state (used by `set-visited-file-name', among others).
-    let unchanged = if interp
-        .buffer_remote_prefix(interp.current_buffer_id())
-        .is_some()
-    {
-        modtimes_equal_whole_seconds(&visited_modtime, &Some(current_modtime))
-    } else {
-        visited_modtime == Some(current_modtime)
-    };
-    if visited_modtime.is_none() || unchanged {
-        return Ok(());
-    }
-
-    // filelock.c owns the stale-file decision above, then delegates every
-    // user/content/revert policy choice to userlock.el.
-    call_named_function(
-        interp,
-        "userlock--ask-user-about-supersession-threat",
-        &[Value::String(logical_path.into())],
-        env,
-    )?;
-    Ok(())
 }

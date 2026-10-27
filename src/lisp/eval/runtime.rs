@@ -1427,7 +1427,7 @@ impl Interpreter {
         let Some(test) = table.test().standard_test() else {
             return Ok(None);
         };
-        let hash = crate::lisp::primitives::standard_hash_code(self, test, key, env);
+        let hash = crate::lisp::primitives::standard_hash_code(self, test, key);
         self.standard_hash_entry(table, test, hash, key, env)
             .map(Some)
     }
@@ -1506,7 +1506,7 @@ impl Interpreter {
         let Some(test) = table.test().standard_test() else {
             return Ok(false);
         };
-        let hash = crate::lisp::primitives::standard_hash_code(self, test, &key, env);
+        let hash = crate::lisp::primitives::standard_hash_code(self, test, &key);
         if let Some((slot, _, _)) = self.standard_hash_entry(table, test, hash, &key, env)? {
             table.set_value(slot, value);
         } else {
@@ -1730,7 +1730,7 @@ impl Interpreter {
         slots: Vec<Value>,
         kind: RecordKind,
     ) -> Value {
-        let vector_slots = kind.gnu_vector_slots(slots.len());
+        let vector_slots = kind.gnu_vector_slots();
         if vector_slots != 0 {
             crate::lisp::native_comp::note_lisp_allocation(vector_slots.saturating_mul(8));
         }
@@ -1865,14 +1865,6 @@ impl Interpreter {
             .map(|(_, state)| state)
     }
 
-    pub fn copy_record(&mut self, id: u64) -> Result<Value, LispError> {
-        let record = self
-            .find_record(id)
-            .cloned()
-            .ok_or_else(|| LispError::TypeError("record".into(), format!("record<{id}>")))?;
-        Ok(self.create_record_with_kind(record.type_tag, record.slots, record.kind))
-    }
-
     pub fn provide_feature(&mut self, feature: &str) {
         let mut features = self.provided_features.clone();
         if !features.iter().any(|name| name == feature) {
@@ -1930,11 +1922,21 @@ impl Interpreter {
         ) {
             return;
         }
-        let entry = Value::cons(Value::Symbol("require".into()), Value::Symbol(feature));
+        let entry = Value::cons(
+            cached_symbol!("require").with(|symbol| Value::Symbol(*symbol)),
+            Value::Symbol(feature),
+        );
         if entries.iter().any(|item| item == &entry) {
             return;
         }
-        self.set_global_binding("current-load-list", Value::cons(entry, current_load_list));
+        self.store_current_load_list(Value::cons(entry, current_load_list));
+    }
+
+    /// lisp.h:LOADHIST_ATTACH's store into Vcurrent_load_list, a C
+    /// variable no alias can name.
+    fn store_current_load_list(&mut self, list: Value) {
+        let symbol = cached_symbol!("current-load-list").with(|symbol| *symbol);
+        self.set_global_binding_resolved(&symbol, list);
     }
 
     pub(crate) fn record_definition_in_load_history(&mut self, kind: &str, name: &str) {
@@ -1946,16 +1948,17 @@ impl Interpreter {
         kind: &str,
         symbol: &SymbolName,
     ) {
-        let Some(current_load_list) = self.lookup_var("current-load-list", &Env::new()) else {
+        let Some(current_load_list) = self.symbol_value_key(cached_symbol!("current-load-list"))
+        else {
             return;
         };
-        let entry = if kind == "defvar" {
-            Value::Symbol(*symbol)
-        } else {
-            Value::cons(
-                Value::Symbol(kind.to_string().into()),
+        let entry = match kind {
+            "defvar" => Value::Symbol(*symbol),
+            "defun" => Value::cons(
+                cached_symbol!("defun").with(|symbol| Value::Symbol(*symbol)),
                 Value::Symbol(*symbol),
-            )
+            ),
+            _ => Value::cons(Value::symbol(kind), Value::Symbol(*symbol)),
         };
         // lisp.h:LOADHIST_ATTACH accepts an empty current-load-list too;
         // the entry remains a root outside a file load (e.g. defvaralias).
@@ -1965,7 +1968,7 @@ impl Interpreter {
         // remains last until build_load_history reverses the completed
         // entry.  A membership walk of the list here made each definition
         // cost the length of the file's list so far.
-        self.set_global_binding("current-load-list", Value::cons(entry, current_load_list));
+        self.store_current_load_list(Value::cons(entry, current_load_list));
     }
 
     /// Remember the definition hidden by a `defalias'-style operation.

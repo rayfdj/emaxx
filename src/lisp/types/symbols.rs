@@ -35,7 +35,7 @@ pub(crate) struct ObarrayHasher(u64);
 
 /// lisp.h's `sxhash_combine'.
 #[inline(always)]
-fn sxhash_combine(x: u64, y: u64) -> u64 {
+pub(crate) fn sxhash_combine(x: u64, y: u64) -> u64 {
     (x << 4).wrapping_add(x >> (u64::BITS - 4)).wrapping_add(y)
 }
 
@@ -287,6 +287,18 @@ const KEY_NAMES: &[&str] = &[
     "`",
     ",",
     ",@",
+    "inhibit-file-name-operation",
+    "inhibit-file-name-handlers",
+    "file-name-handler-alist",
+    "load",
+    "file-exists-p",
+    "expand-file-name",
+    "require",
+    "defun",
+    "face-alias",
+    "circular-list",
+    "obarray",
+    "face--new-frame-defaults",
 ];
 
 struct Symbols {
@@ -613,6 +625,14 @@ impl SymbolKey {
     /// The name the key's symbol has.
     pub(crate) const fn name(self) -> &'static str {
         KEY_NAMES[self.0]
+    }
+}
+
+/// Intern every cached key's symbol now, where `SymbolKey::with' would
+/// on its first use.
+pub(crate) fn intern_all_keys() {
+    for index in 0..KEY_NAMES.len() {
+        SymbolKey(index).with(|_| ());
     }
 }
 

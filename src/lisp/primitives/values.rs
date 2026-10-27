@@ -236,6 +236,15 @@ fn equal_atoms(
         (Kind::LispRecord(left), Kind::LispRecord(right)) => {
             left.len() == right.len() && slots(&mut left.slots(), &mut right.slots())?
         }
+        // fns.c:internal_equal: the lengths, then the bits' bytes.
+        (Kind::BoolVector(left), Kind::BoolVector(right)) => {
+            left.len() == right.len()
+                && left
+                    .words()
+                    .iter()
+                    .zip(right.words())
+                    .all(|(left, right)| left.get() == right.get())
+        }
         // A record and the reader's form of a record literal.
         (Kind::LispRecord(record), _) | (_, Kind::LispRecord(record)) => {
             let form = if matches!(o1.kind(), Kind::LispRecord(_)) {
@@ -266,9 +275,6 @@ fn equal_atoms(
             }
             use crate::lisp::eval::RecordKind;
             match left.kind {
-                RecordKind::BoolVector => {
-                    bool_vector_values(interp, &o1).ok() == bool_vector_values(interp, &o2).ok()
-                }
                 RecordKind::TreeSitterNode => {
                     let left = interp.treesit_node_state(&o1);
                     let right = interp.treesit_node_state(&o2);
@@ -510,6 +516,7 @@ fn values_eq_by_kind(left: &Value, right: &Value) -> bool {
         (Kind::Finalizer(left_id), Kind::Finalizer(right_id)) => left_id == right_id,
         (Kind::Record(left), Kind::Record(right)) => left.ptr_eq(&right),
         (Kind::LispRecord(left), Kind::LispRecord(right)) => left.ptr_eq(&right),
+        (Kind::BoolVector(left), Kind::BoolVector(right)) => left.identity() == right.identity(),
         // eq must be reflexive on every object: edebug-unwrap*'s fixed point
         // `(while (not (eq sexp (setq sexp (edebug-unwrap sexp)))))' spins
         // forever when an opaque form is never eq to itself.
@@ -674,7 +681,7 @@ fn rarely_quit(interp: &mut Interpreter, env: &mut Env, count: i64) -> Result<()
     Ok(())
 }
 
-pub(crate) fn sequence_length_value(interp: &Interpreter, value: &Value) -> Result<i64, LispError> {
+pub(crate) fn sequence_length_value(value: &Value) -> Result<i64, LispError> {
     if let Some(items) = record_literal_items(value) {
         return Ok(items.len().saturating_sub(1) as i64);
     }
@@ -689,9 +696,7 @@ pub(crate) fn sequence_length_value(interp: &Interpreter, value: &Value) -> Resu
         // fns.c Flength: a char-table's length is MAX_CHAR (0x3FFFFF),
         // not the number of covered codepoints.
         Kind::CharTable(_) => Ok(0x3f_ffff),
-        item if is_bool_vector_value(interp, &item.value()) => {
-            Ok(bool_vector_values(interp, &item.value())?.len() as i64)
-        }
+        Kind::BoolVector(vector) => Ok(vector.len() as i64),
         Kind::Closure(lambda) => Ok(lambda.public_len() as i64),
         Kind::LispRecord(record) => Ok(record.len() as i64),
         // fns.c:list_length counts the tails in place (FOR_EACH_TAIL and
@@ -892,6 +897,10 @@ pub(crate) fn compare_record_values(
         (Kind::LispRecord(_), _) | (_, Kind::LispRecord(_)) => {
             return Err(type_mismatch_signal(left, right));
         }
+        (Kind::BoolVector(a), Kind::BoolVector(b)) => return Ok(Some(bool_vector_cmp(a, b))),
+        (Kind::BoolVector(_), _) | (_, Kind::BoolVector(_)) => {
+            return Err(type_mismatch_signal(left, right));
+        }
         _ => {}
     }
     match (left.kind(), right.kind()) {
@@ -918,20 +927,6 @@ pub(crate) fn compare_record_values(
     }
 
     match left_record.kind {
-        crate::lisp::eval::RecordKind::BoolVector => {
-            let left_bits = bool_vector_bits(interp, left)?;
-            let right_bits = bool_vector_bits(interp, right)?;
-            for (left_bit, right_bit) in left_bits.iter().zip(right_bits.iter()) {
-                match left_bit.cmp(right_bit) {
-                    Ordering::Less => return Ok(Some(ValueOrder::Less)),
-                    Ordering::Greater => return Ok(Some(ValueOrder::Greater)),
-                    Ordering::Equal => {}
-                }
-            }
-            Ok(Some(order_from_ordering(
-                left_bits.len().cmp(&right_bits.len()),
-            )))
-        }
         crate::lisp::eval::RecordKind::Process => Ok(Some(
             match (
                 interp.process_name(left_id.id),
@@ -1271,9 +1266,7 @@ pub(crate) fn remove_equal(
         if filtered.len() == items.len() {
             return Ok(*sequence);
         }
-        let mut result = vec![Value::symbol("vector-literal")];
-        result.extend(filtered);
-        return Ok(Value::list(result));
+        return Ok(Value::vector(filtered));
     }
 
     match sequence.kind() {
@@ -1288,14 +1281,6 @@ pub(crate) fn remove_equal(
         }
         _ => Err(LispError::WrongTypeArgument("sequencep".into(), *sequence)),
     }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum HashMode {
-    Eq,
-    Eql,
-    Equal,
-    EqualIncludingProperties,
 }
 
 pub(crate) fn nconc_values(args: &[Value]) -> Result<Value, LispError> {
@@ -1412,675 +1397,42 @@ pub(crate) fn last_nconc_cell(value: &Value) -> Result<Value, LispError> {
     }
 }
 
-pub(crate) fn sxhash_value_in_env(
-    interp: &Interpreter,
-    value: &Value,
-    mode: HashMode,
-    env: &Env,
-) -> i64 {
-    sxhash_value_with_symbol_positions(interp, value, mode, symbols_with_pos_enabled(interp, env))
-}
-
-fn sxhash_value_with_symbol_positions(
-    interp: &Interpreter,
-    value: &Value,
-    mode: HashMode,
-    remove_symbol_positions: bool,
-) -> i64 {
-    let mut state = 0xcbf2_9ce4_8422_2325u64;
-    hash_value_recursive_with_symbol_positions(
-        interp,
-        &mut state,
-        value,
-        mode,
-        remove_symbol_positions,
-    );
-    (state & 0x7fff_ffff_ffff_ffff) as i64
-}
-
-/// Return the structural hash used to index a GNU `equal' hash table.
-///
-/// Some runtime objects can compare equal to a different representation
-/// (keymap records and their public list projection, for example).  Keep
-/// those values in a collision bucket.  The compatibility check follows only
-/// the portion GNU's `sxhash_obj' will inspect: depth is capped at three and a
-/// list contributes at most seven elements.  Walking the entire key first is
-/// both unnecessary and unlike fns.c, especially for compiler IR lists.
-pub(crate) fn equal_hash_table_key_hash_in_env(
-    interp: &Interpreter,
-    value: &Value,
-    env: &Env,
-) -> Option<i64> {
-    fn indexable(value: &Value, depth: u32) -> bool {
-        if depth > SXHASH_MAX_DEPTH {
-            return true;
-        }
-        match value.kind() {
-            Kind::Record(_)
-            | Kind::LispRecord(_)
-            | Kind::Buffer(_)
-            | Kind::Marker(_)
-            | Kind::Overlay(_)
-            | Kind::CharTable(_)
-            | Kind::Closure(_)
-            | Kind::ReaderForm(_) => false,
-            Kind::Cons(_) => {
-                let mut tail = *value;
-                let limit = if depth < SXHASH_MAX_DEPTH {
-                    SXHASH_MAX_LEN
-                } else {
-                    1
-                };
-                for _ in 0..limit {
-                    let Some((car, cdr)) = tail.cons_values() else {
-                        break;
-                    };
-                    if matches!(
-                            car.kind(),
-                        Kind::Symbol(symbol) if symbol == "keymap"
-                    ) {
-                        return false;
-                    }
-                    if depth < SXHASH_MAX_DEPTH && !indexable(&car, depth + 1) {
-                        return false;
-                    }
-                    tail = cdr;
-                }
-                if depth < SXHASH_MAX_DEPTH && !tail.is_nil() {
-                    return indexable(&tail, depth + 1);
-                }
-                true
-            }
-            _ => true,
-        }
+/// fns.c:bool_vector_cmp: the lexicographic order of the bits, the equal
+/// words skipped, a proper prefix first.
+fn bool_vector_cmp(
+    a: crate::lisp::types::BoolVectorRef,
+    b: crate::lisp::types::BoolVectorRef,
+) -> ValueOrder {
+    use crate::lisp::alloc::vectors::bool_vectors::BITS_PER_BITS_WORD;
+    let (mut na, mut nb) = (a.len(), b.len());
+    let words_min = na.min(nb) / BITS_PER_BITS_WORD;
+    let (ad, bd) = (a.words(), b.words());
+    let mut i = 0;
+    while i < words_min && ad[i].get() == bd[i].get() {
+        i += 1;
     }
-
-    indexable(value, 0).then(|| sxhash_value_in_env(interp, value, HashMode::Equal, env))
-}
-
-/// Bucket key for a runtime-accelerated hash table.  The invariant is that
-/// keys the table's test considers the same always share a bucket; probing
-/// a bucket still compares with the real test, so collisions are harmless.
-///
-/// The `eq'/`eql' hash therefore differs from `sxhash-eq' in three ways:
-/// conses and lambdas hash by cell identity (mutation- and cycle-proof,
-/// and `eq' only holds for the same cells), a symbol-with-pos hashes as
-/// its bare symbol (the two can be `eq' under symbols-with-pos-enabled),
-/// and -0.0 hashes as 0.0 (`eq'/`eql' compare floats by value here).
-pub(crate) fn runtime_hash_bucket_key(
-    interp: &Interpreter,
-    test: crate::lisp::eval::RuntimeHashTest,
-    value: &Value,
-) -> Option<i64> {
-    use crate::lisp::eval::RuntimeHashTest;
-    if test == RuntimeHashTest::Equal {
-        return equal_hash_table_key_hash_in_env(interp, value, &Env::new());
+    na -= i * BITS_PER_BITS_WORD;
+    nb -= i * BITS_PER_BITS_WORD;
+    if nb == 0 {
+        return if na != 0 {
+            ValueOrder::Greater
+        } else {
+            ValueOrder::Equal
+        };
     }
-    let mut state = 0xcbf2_9ce4_8422_2325u64;
-    if let Kind::SymbolWithPos(object) = value.kind() {
-        hash_value_eq(&mut state, &object.symbol());
-        return Some(state as i64);
+    if na == 0 {
+        return ValueOrder::Less;
     }
-    match value.kind() {
-        Kind::Cons(cons_cell) => {
-            hash_mix(&mut state, 16);
-            hash_mix(
-                &mut state,
-                crate::lisp::types::ConsCell::identity(&cons_cell) as u64,
-            );
-        }
-        Kind::Float(number) => {
-            hash_mix(&mut state, 15);
-            let normalized = if number.get() == 0.0 {
-                0.0f64
-            } else {
-                number.get()
-            };
-            hash_mix(&mut state, normalized.to_bits());
-        }
-        Kind::BigInteger(number) => {
-            hash_mix(&mut state, 14);
-            hash_str(&mut state, &number.to_string());
-        }
-        other => match test {
-            RuntimeHashTest::Eql => hash_value_eql(&mut state, &other.value()),
-            _ => hash_value_eq(&mut state, &other.value()),
-        },
+    let (aw, bw) = (ad[i].get(), bd[i].get());
+    let xw = aw ^ bw;
+    if xw == 0 {
+        return order_from_ordering(na.cmp(&nb));
     }
-    Some(state as i64)
-}
-
-pub(crate) fn hash_mix(state: &mut u64, value: u64) {
-    *state ^= value;
-    *state = state.wrapping_mul(0x0000_0100_0000_01b3);
-}
-
-pub(crate) fn hash_str(state: &mut u64, text: &str) {
-    for byte in text.as_bytes() {
-        hash_mix(state, u64::from(*byte));
-    }
-}
-
-/// fns.c:5336 `SXHASH_MAX_DEPTH' and fns.c:5341 `SXHASH_MAX_LEN'.  GNU stops
-/// descending at depth 3 and folds in at most seven elements of a list or
-/// vector, so hashing a cyclic structure terminates instead of recursing
-/// forever: `cl-print' labels a closure `#<bytecode %#x>' by calling
-/// `sxhash' on it, and a closure's constants routinely point back at the
-/// closure (ert builds exactly that graph while reporting a failure).
-const SXHASH_MAX_DEPTH: u32 = 3;
-const SXHASH_MAX_LEN: usize = 7;
-
-pub(crate) fn hash_props(
-    interp: &Interpreter,
-    state: &mut u64,
-    props: &[StringPropertySpan],
-    depth: u32,
-    remove_symbol_positions: bool,
-) {
-    hash_mix(state, props.len() as u64);
-    for span in props {
-        hash_mix(state, span.start as u64);
-        hash_mix(state, span.end as u64);
-        hash_mix(state, span.props.len() as u64);
-        for (key, value) in &span.props {
-            // Property names compare with EQ (intervals_equal).
-            hash_value_eq(state, &key.value());
-            hash_value_equal_at(
-                interp,
-                state,
-                value,
-                // fns.c:hash_interval hashes the plist with sxhash_obj;
-                // its property values use ordinary equal, like intervals.c.
-                false,
-                depth + 1,
-                remove_symbol_positions,
-            );
-        }
-    }
-}
-
-fn hash_value_recursive_with_symbol_positions(
-    interp: &Interpreter,
-    state: &mut u64,
-    value: &Value,
-    mode: HashMode,
-    remove_symbol_positions: bool,
-) {
-    if remove_symbol_positions && let Some((symbol, _)) = symbol_with_pos_parts(interp, value) {
-        return hash_value_recursive_with_symbol_positions(
-            interp,
-            state,
-            &symbol,
-            mode,
-            remove_symbol_positions,
-        );
-    }
-    match mode {
-        HashMode::Eq => hash_value_eq(state, value),
-        HashMode::Eql => hash_value_eql(state, value),
-        HashMode::Equal | HashMode::EqualIncludingProperties => hash_value_equal_at(
-            interp,
-            state,
-            value,
-            mode == HashMode::EqualIncludingProperties,
-            0,
-            remove_symbol_positions,
-        ),
-    }
-}
-
-pub(crate) fn hash_value_eq(state: &mut u64, value: &Value) {
-    match value.kind() {
-        Kind::Nil => hash_mix(state, 0),
-        Kind::T => hash_mix(state, 1),
-        Kind::Integer(number) => {
-            hash_mix(state, 2);
-            hash_mix(state, number as u64);
-        }
-        Kind::Symbol(symbol) => {
-            hash_mix(state, 3);
-            hash_str(state, &symbol);
-        }
-        Kind::StringObject(shared) => {
-            hash_mix(state, 4);
-            hash_mix(state, shared.identity() as u64);
-        }
-        Kind::Vector(vector) => {
-            hash_mix(state, 16);
-            hash_mix(state, vector.identity() as u64);
-        }
-        Kind::NativeCompUnit(unit) => {
-            hash_mix(state, 54);
-            hash_mix(state, unit.identity() as u64);
-        }
-        Kind::NativeFunction(function) => {
-            hash_mix(state, 53);
-            hash_mix(state, function.identity() as u64);
-        }
-        Kind::BuiltinFunc(name) => {
-            hash_mix(state, 6);
-            hash_str(state, &name);
-        }
-        Kind::Closure(lambda_value) => {
-            hash_mix(state, 7);
-            hash_mix(state, lambda_value.identity() as u64);
-        }
-        Kind::Buffer(buffer_value) => {
-            hash_mix(state, 8);
-            hash_mix(state, buffer_value.identity() as u64);
-        }
-        Kind::Marker(id) => {
-            hash_mix(state, 9);
-            hash_mix(state, id.identity() as u64);
-        }
-        Kind::Overlay(overlay) => {
-            hash_mix(state, 10);
-            hash_mix(state, overlay.identity() as u64);
-        }
-        Kind::HashTable(table) => {
-            hash_mix(state, 52);
-            hash_mix(state, table.identity() as u64);
-        }
-        Kind::CharTable(table) => {
-            hash_mix(state, 11);
-            hash_mix(state, table.identity() as u64);
-        }
-        Kind::SubCharTable(table) => {
-            hash_mix(state, 44);
-            hash_mix(state, table.identity() as u64);
-        }
-        Kind::Frame(id) => {
-            hash_mix(state, 18);
-            hash_mix(state, id.identity() as u64);
-        }
-        Kind::Terminal(id) => {
-            hash_mix(state, 19);
-            hash_mix(state, id.identity() as u64);
-        }
-        Kind::SymbolWithPos(object) => {
-            hash_mix(state, 21);
-            hash_mix(state, object.identity() as u64);
-        }
-        Kind::LispRecord(record) => {
-            hash_mix(state, 45);
-            hash_mix(state, record.identity() as u64);
-        }
-        Kind::Record(id) => {
-            hash_mix(state, 12);
-            hash_mix(state, id.id);
-        }
-        Kind::Finalizer(object) => {
-            hash_mix(state, 13);
-            hash_mix(state, object.identity() as u64);
-        }
-        Kind::ReaderForm(form) => {
-            hash_mix(state, 20);
-            hash_mix(state, form.identity() as u64);
-        }
-        Kind::Unbound => {
-            hash_mix(state, 17);
-        }
-        Kind::BigInteger(number) => {
-            hash_mix(state, 14);
-            hash_str(state, &number.to_string());
-        }
-        Kind::Float(number) => {
-            hash_mix(state, 15);
-            hash_mix(state, number.to_bits());
-        }
-        Kind::Cons(_) => {
-            let Some((car, cdr)) = value.cons_values() else {
-                return;
-            };
-            hash_mix(state, 16);
-            hash_value_eq(state, &car);
-            hash_value_eq(state, &cdr);
-        }
-    }
-}
-
-pub(crate) fn hash_value_eql(state: &mut u64, value: &Value) {
-    match value.kind() {
-        Kind::Float(number) => {
-            hash_mix(state, 21);
-            hash_mix(state, number.to_bits());
-        }
-        Kind::BigInteger(number) => {
-            hash_mix(state, 22);
-            hash_str(state, &number.to_string());
-        }
-        other => hash_value_eq(state, &other.value()),
-    }
-}
-
-/// `sxhash_obj' (fns.c:5505) with GNU's depth bound: past `SXHASH_MAX_DEPTH'
-/// every object hashes as 0 regardless of its contents.
-pub(crate) fn hash_value_equal_at(
-    interp: &Interpreter,
-    state: &mut u64,
-    value: &Value,
-    include_properties: bool,
-    depth: u32,
-    remove_symbol_positions: bool,
-) {
-    if depth > SXHASH_MAX_DEPTH {
-        hash_mix(state, 0);
-        return;
-    }
-    if remove_symbol_positions && let Some((symbol, _)) = symbol_with_pos_parts(interp, value) {
-        return hash_value_equal_at(
-            interp,
-            state,
-            &symbol,
-            include_properties,
-            depth,
-            remove_symbol_positions,
-        );
-    }
-    match value.kind() {
-        Kind::Nil => hash_mix(state, 30),
-        Kind::T => hash_mix(state, 31),
-        Kind::Integer(number) => {
-            hash_mix(state, 32);
-            hash_str(state, &number.to_string());
-        }
-        Kind::BigInteger(number) => {
-            hash_mix(state, 32);
-            hash_str(state, &number.to_string());
-        }
-        Kind::Float(number) => {
-            hash_mix(state, 34);
-            let bits = if number.get() == 0.0 {
-                0.0f64.to_bits()
-            } else if number.is_nan() {
-                f64::NAN.to_bits()
-            } else {
-                number.to_bits()
-            };
-            hash_mix(state, bits);
-        }
-        Kind::StringObject(shared) => {
-            hash_mix(state, 35);
-            let shared = shared.borrow();
-            // fns.c:sxhash_obj hashes SDATA/SBYTES, without converting
-            // internal characters to a host text representation.
-            for byte in shared.bytes() {
-                hash_mix(state, u64::from(*byte));
-            }
-            if include_properties {
-                hash_props(interp, state, &shared.props, depth, remove_symbol_positions);
-            }
-        }
-        Kind::Symbol(symbol) => {
-            hash_mix(state, 37);
-            hash_str(state, &symbol);
-        }
-        Kind::Vector(vector) => {
-            hash_mix(state, 40);
-            for slot in vector.slots().take(SXHASH_MAX_LEN) {
-                hash_value_equal_at(
-                    interp,
-                    state,
-                    &slot,
-                    include_properties,
-                    depth + 1,
-                    remove_symbol_positions,
-                );
-            }
-        }
-        Kind::Cons(_) => {
-            hash_mix(state, 38);
-            // `sxhash_list' (fns.c:5420): walk at most `SXHASH_MAX_LEN'
-            // elements, and only while the structure is shallower than
-            // `SXHASH_MAX_DEPTH'; whatever tail remains is folded in one
-            // level deeper, which is what terminates a circular list.
-            let mut tail = *value;
-            if depth < SXHASH_MAX_DEPTH {
-                for _ in 0..SXHASH_MAX_LEN {
-                    let Some((car, cdr)) = tail.cons_values() else {
-                        break;
-                    };
-                    hash_value_equal_at(
-                        interp,
-                        state,
-                        &car,
-                        include_properties,
-                        depth + 1,
-                        remove_symbol_positions,
-                    );
-                    tail = cdr;
-                }
-            }
-            if !tail.is_nil() {
-                hash_value_equal_at(
-                    interp,
-                    state,
-                    &tail,
-                    include_properties,
-                    depth + 1,
-                    remove_symbol_positions,
-                );
-            }
-        }
-        Kind::NativeCompUnit(unit) => {
-            hash_mix(state, 54);
-            hash_mix(state, unit.identity() as u64);
-        }
-        Kind::NativeFunction(function) => {
-            hash_mix(state, 53);
-            hash_mix(state, function.identity() as u64);
-        }
-        Kind::BuiltinFunc(name) => {
-            hash_mix(state, 39);
-            hash_str(state, &name);
-        }
-        Kind::Closure(lambda_value) => {
-            hash_mix(state, 40);
-            // `sxhash_vector' (fns.c:5447) bounds a closure the same way.
-            for slot in lambda_value.slots().take(SXHASH_MAX_LEN) {
-                hash_value_equal_at(
-                    interp,
-                    state,
-                    &slot,
-                    include_properties,
-                    depth + 1,
-                    remove_symbol_positions,
-                );
-            }
-        }
-        Kind::Buffer(buffer_value) => {
-            hash_mix(state, 41);
-            hash_mix(state, buffer_value.identity() as u64);
-        }
-        Kind::Marker(id) => {
-            hash_marker_equal(state, id);
-        }
-        Kind::Overlay(overlay) => {
-            hash_mix(state, 43);
-            let (beg, end) = if overlay.is_dead() {
-                (-1, -1)
-            } else {
-                overlay.bounds()
-            };
-            hash_mix(state, beg as u64);
-            hash_mix(state, end as u64);
-            hash_value_equal_at(
-                interp,
-                state,
-                &overlay.plist(),
-                include_properties,
-                depth + 1,
-                remove_symbol_positions,
-            );
-        }
-        Kind::SubCharTable(_) => hash_mix(state, 42),
-        Kind::HashTable(table) => {
-            hash_mix(state, 52);
-            hash_mix(state, table.identity() as u64);
-        }
-        Kind::CharTable(id) => {
-            hash_char_table_equal(
-                interp,
-                state,
-                id,
-                include_properties,
-                depth,
-                remove_symbol_positions,
-            );
-        }
-        Kind::Frame(id) => {
-            hash_mix(state, 48);
-            hash_mix(state, id.identity() as u64);
-        }
-        Kind::Terminal(id) => {
-            hash_mix(state, 49);
-            hash_mix(state, id.identity() as u64);
-        }
-        Kind::SymbolWithPos(object) => {
-            // fns.c:sxhash_obj uses this address with positions disabled.
-            // When enabled, the wrapper is stripped in the branch above.
-            hash_mix(state, 51);
-            hash_mix(state, object.identity() as u64);
-        }
-        Kind::LispRecord(record) => {
-            hash_mix(state, 45);
-            hash_mix(state, record.len() as u64);
-            for field in record.slots().take(SXHASH_MAX_LEN) {
-                hash_value_equal_at(
-                    interp,
-                    state,
-                    &field,
-                    include_properties,
-                    depth + 1,
-                    remove_symbol_positions,
-                );
-            }
-        }
-        Kind::Record(id) => {
-            hash_record_equal(
-                interp,
-                state,
-                id.id,
-                include_properties,
-                depth,
-                remove_symbol_positions,
-            );
-        }
-        Kind::Finalizer(object) => {
-            hash_mix(state, 46);
-            hash_mix(state, object.identity() as u64);
-        }
-        Kind::ReaderForm(form) => {
-            hash_mix(state, 50);
-            hash_mix(state, form.identity() as u64);
-        }
-        Kind::Unbound => {
-            hash_mix(state, 47);
-        }
-    }
-}
-
-pub(crate) fn hash_marker_equal(state: &mut u64, marker: crate::lisp::types::MarkerRef) {
-    hash_mix(state, 42);
-    if let Some(buffer) = marker.buffer() {
-        hash_mix(state, buffer.identity() as u64);
-        hash_mix(state, marker.bytepos() as u64);
-    }
-}
-
-pub(crate) fn hash_char_table_equal(
-    interp: &Interpreter,
-    state: &mut u64,
-    table: crate::lisp::types::CharTableRef,
-    include_properties: bool,
-    depth: u32,
-    remove_symbol_positions: bool,
-) {
-    hash_mix(state, 44);
-    hash_mix(state, table.slot_count() as u64);
-    for value in table.slots().take(SXHASH_MAX_LEN) {
-        hash_value_equal_at(
-            interp,
-            state,
-            &value,
-            include_properties,
-            depth + 1,
-            remove_symbol_positions,
-        );
-    }
-}
-
-pub(crate) fn hash_record_equal(
-    interp: &Interpreter,
-    state: &mut u64,
-    id: u64,
-    include_properties: bool,
-    depth: u32,
-    remove_symbol_positions: bool,
-) {
-    hash_mix(state, 45);
-    let Some(record) = interp.find_record(id) else {
-        hash_mix(state, id);
-        return;
-    };
-
-    match record.kind {
-        crate::lisp::eval::RecordKind::BoolVector => {
-            hash_str(state, "bool-vector");
-            if let Ok(bits) = bool_vector_bits(interp, &interp.record_value(id)) {
-                hash_mix(state, bits.len() as u64);
-                for bit in bits {
-                    hash_mix(state, u64::from(bit));
-                }
-            } else {
-                hash_mix(state, id);
-            }
-        }
-        crate::lisp::eval::RecordKind::Process
-        | crate::lisp::eval::RecordKind::Obarray
-        | crate::lisp::eval::RecordKind::Window
-        | crate::lisp::eval::RecordKind::WindowConfiguration
-        | crate::lisp::eval::RecordKind::Thread
-        | crate::lisp::eval::RecordKind::Mutex
-        | crate::lisp::eval::RecordKind::ConditionVariable
-        | crate::lisp::eval::RecordKind::ModuleFunction
-        | crate::lisp::eval::RecordKind::UserPointer
-        | crate::lisp::eval::RecordKind::TreeSitterParser
-        | crate::lisp::eval::RecordKind::TreeSitterNode
-        | crate::lisp::eval::RecordKind::TreeSitterCompiledQuery
-        | crate::lisp::eval::RecordKind::Sqlite => {
-            hash_value_equal_at(
-                interp,
-                state,
-                &record.type_tag,
-                include_properties,
-                depth + 1,
-                remove_symbol_positions,
-            );
-            hash_mix(state, id);
-        }
-        crate::lisp::eval::RecordKind::Font => {
-            hash_value_equal_at(
-                interp,
-                state,
-                &record.type_tag,
-                include_properties,
-                depth + 1,
-                remove_symbol_positions,
-            );
-            hash_mix(state, record.slots.len() as u64);
-            // fns.c:5447 `sxhash_vector' hashes a record's leading slots only.
-            for slot in record.slots.iter().take(SXHASH_MAX_LEN) {
-                hash_value_equal_at(
-                    interp,
-                    state,
-                    slot,
-                    include_properties,
-                    depth + 1,
-                    remove_symbol_positions,
-                );
-            }
-        }
+    // The first difference.
+    if xw.isolate_lowest_one() & aw != 0 {
+        ValueOrder::Greater
+    } else {
+        ValueOrder::Less
     }
 }
 
@@ -2356,12 +1708,9 @@ pub(crate) fn map_keymap_own_entries(
         map
     };
     let mut roots = crate::lisp::alloc::RootedVec::from_vec(vec![map, tail, Value::Nil]);
-    let mut seen = HashSet::new();
+    // GNU walks the cells as they are, with no test for a circular list.
     while let Some((entry, _)) = tail.cons_values() {
         if entry.eq_value(keymap_symbol()) || is_keymap_value(interp, &entry) {
-            break;
-        }
-        if !seen.insert(tail.word()) {
             break;
         }
         roots[2] = entry;
@@ -2457,7 +1806,7 @@ pub(crate) fn keymap_lookup_live_sequence_value(
     accept_default: bool,
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    let length = sequence_length_value(interp, &sequence)? as usize;
+    let length = sequence_length_value(&sequence)? as usize;
     interp.with_lisp_stack_roots(&(keymap, sequence), |interp| {
         keymap_lookup_events(
             interp,

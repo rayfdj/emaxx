@@ -675,6 +675,39 @@ fn batch_eval_error_uses_gnu_stderr_and_exit_status() {
     );
 }
 
+/// keyboard.c:cmd_error_internal in batch: the error's message, then
+/// Fkill_emacs (-1), which runs `kill-emacs-hook' and shut_down_emacs's
+/// unlock_all_files: the modified buffer's lock is held while the hook
+/// runs and is gone after.
+#[test]
+fn batch_top_level_error_kills_emacs_through_its_hook_and_unlocks_files() {
+    let directory = unique_temp_path("emaxx-cli-kill");
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(directory.join("f.txt"), "x\n").unwrap();
+    let output = Command::new(common::emaxx(false))
+        .current_dir(&directory)
+        .args([
+            "-Q",
+            "-batch",
+            "-eval",
+            "(let ((backtrace-on-error-noninteractive nil)) \
+             (add-hook 'kill-emacs-hook \
+                       (lambda () (message \"hook ran %s\" (and (file-symlink-p \".#f.txt\") t)))) \
+             (with-current-buffer (find-file-noselect \"f.txt\") (insert \"y\")) \
+             (error \"Stop\"))",
+        ])
+        .output()
+        .unwrap();
+    let lock_left = std::fs::symlink_metadata(directory.join(".#f.txt")).is_ok();
+    std::fs::remove_dir_all(&directory).unwrap();
+    assert_eq!(output.status.code(), Some(255));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "Stop\nhook ran t\n"
+    );
+    assert!(!lock_left, "the modified buffer's lock survived the exit");
+}
+
 #[test]
 fn batch_accepts_gnu_quick_and_long_load_options() {
     let source = unique_temp_path("emaxx-cli-load").with_extension("el");

@@ -479,6 +479,26 @@ impl SymbolName {
         names.insert(name, index);
     }
 
+    /// pdumper's symbol of the initial obarray, mapped where the image
+    /// holds it: filed in the bucket the lookup of its name ends at, as
+    /// intern_sym files a new one.  Err with the symbol that already has
+    /// the name.
+    pub(crate) fn file_image(symbol: Self) -> Result<(), Self> {
+        use obarray::Buckets;
+        INTERNED_SYMBOL_NAMES.with_borrow_mut(|names| {
+            match names
+                .lookup_name(symbol.lisp_name())
+                .expect("a string name")
+            {
+                Ok(existing) => Err(existing),
+                Err(index) => {
+                    names.insert(symbol, index);
+                    Ok(())
+                }
+            }
+        })
+    }
+
     /// The image loader's intern in the initial obarray: the symbol the
     /// Lisp string NAME names there, or a new one keeping KEY, text of the
     /// permanent image, as its host text.
@@ -597,6 +617,32 @@ impl SymbolName {
             return Self::live_uninterned(text);
         }
         Self::find_interned(text)
+    }
+
+    /// Fintern in the initial obarray of host TEXT: oblookup, then on a
+    /// miss intern_driver, which files a new symbol named by the string
+    /// MAKE_NAME makes in the bucket the lookup ended at.  A marked key
+    /// (a private obarray's or an uninterned symbol's) takes the general
+    /// path.
+    pub(crate) fn intern_initial_with(text: &str, make_name: impl FnOnce() -> Value) -> Self {
+        use obarray::Buckets;
+        let bytes = text.as_bytes();
+        let chars = if obarray::plain_ascii(bytes) {
+            bytes.len()
+        } else if !is_visible_symbol_name(text) {
+            return Self::intern_with_lisp_name(text.to_owned(), Some(make_name()));
+        } else {
+            text.chars().count()
+        };
+        INTERNED_SYMBOL_NAMES.with_borrow_mut(|names| {
+            let index = match names.lookup(bytes, chars) {
+                Ok(symbol) => return symbol,
+                Err(index) => index,
+            };
+            let symbol = Self::allocate(text.to_owned(), make_name());
+            Self::file_initial(names, symbol, index);
+            symbol
+        })
     }
 
     /// oblookup in the initial obarray of the Lisp string NAME; None for
@@ -1183,7 +1229,7 @@ pub use crate::lisp::alloc::StringObjectRef;
 pub type ReaderFormRef = crate::lisp::alloc::VectorlikeRef<ReaderForm>;
 /// PVEC_RECORD's handle: the record's state in a vector block.
 pub type RecordRef = crate::lisp::alloc::VectorlikeRef<crate::lisp::eval::RecordState>;
-pub use crate::lisp::alloc::vectors::{LispRecordRef, SymbolWithPosRef};
+pub use crate::lisp::alloc::vectors::{BoolVectorRef, LispRecordRef, SymbolWithPosRef};
 
 /// lisp.h:struct Lisp_Cons. Interpreter, bytecode and generated code read and
 /// write these same two Lisp words. Allocator metadata is in the containing
@@ -1627,12 +1673,6 @@ pub enum ReaderForm {
         kind: ReaderClosureKind,
         slots: Vec<Value>,
     },
-    /// `#&N"..."'.  GNU's reader builds the bool vector directly; Emaxx's
-    /// reader has no Interpreter to allocate one in, so the bits wait here
-    /// for the same read/evaluation materialization boundary records use.
-    BoolVector {
-        bits: Vec<bool>,
-    },
 }
 
 /// lisp.h's `Lisp_Object': one machine word, the object's address or an
@@ -1718,6 +1758,8 @@ pub enum Kind {
     Record(RecordRef),
     /// GNU PVEC_RECORD with its type and data slots inline.
     LispRecord(LispRecordRef),
+    /// GNU PVEC_BOOL_VECTOR: the length in bits, then the bits.
+    BoolVector(BoolVectorRef),
     /// GNU PVEC_FINALIZER: the object containing its callback and list links.
     Finalizer(crate::lisp::alloc::FinalizerRef),
     /// Typed reader state awaiting Interpreter-owned object allocation.
@@ -1858,6 +1900,10 @@ impl Value {
         Value::from_bits(record.identity() | TAG_VECTORLIKE)
     }
     #[inline]
+    pub fn BoolVector(vector: BoolVectorRef) -> Value {
+        Value::from_bits(vector.identity() | TAG_VECTORLIKE)
+    }
+    #[inline]
     pub fn Record(record: RecordRef) -> Value {
         Value::from_bits(record.identity() | TAG_VECTORLIKE)
     }
@@ -1967,6 +2013,9 @@ impl Value {
                         crate::lisp::alloc::VectorTag::Frame => {
                             Kind::Frame(crate::lisp::alloc::VectorlikeRef::from_raw(header))
                         }
+                        crate::lisp::alloc::VectorTag::BoolVector => {
+                            Kind::BoolVector(BoolVectorRef::from_raw(header))
+                        }
                         crate::lisp::alloc::VectorTag::Terminal => {
                             Kind::Terminal(crate::lisp::alloc::VectorlikeRef::from_raw(header))
                         }
@@ -2075,6 +2124,7 @@ impl Kind {
             Kind::SymbolWithPos(v) => Value::SymbolWithPos(v),
             Kind::Record(v) => Value::Record(v),
             Kind::LispRecord(v) => Value::LispRecord(v),
+            Kind::BoolVector(v) => Value::BoolVector(v),
             Kind::Finalizer(v) => Value::Finalizer(v),
             Kind::ReaderForm(v) => Value::ReaderForm(v),
         }
@@ -2498,9 +2548,7 @@ impl Value {
     }
 
     /// fns.c's Flist over VALUES: a proper list of them, consed from the
-    /// last, with no copy of them first and none of `list's reading of a
-    /// `vector-literal' head (a list of Lisp data that starts with that
-    /// symbol is a list).
+    /// last, with no copy of them first.
     pub(crate) fn list_of(values: &[Value]) -> Self {
         let mut result = Value::Nil;
         for value in values.iter().rev() {
@@ -2512,17 +2560,7 @@ impl Value {
     /// Build a proper list from an iterator of values.
     pub fn list(items: impl IntoIterator<Item = Value>) -> Self {
         let items: Vec<Value> = items.into_iter().collect();
-        if matches!(
-            items.first().map(|v| v.kind()),
-            Some(Kind::Symbol(tag)) if tag == "vector-literal"
-        ) {
-            return Value::vector(items.into_iter().skip(1));
-        }
-        let mut result = Value::Nil;
-        for item in items.into_iter().rev() {
-            result = Value::cons(item, result);
-        }
-        result
+        Value::list_of(&items)
     }
 
     // Predicates
@@ -2823,13 +2861,6 @@ impl Value {
 
     /// Convert a proper list to a Vec.
     pub fn to_vec(self) -> Result<Vec<Value>, LispError> {
-        if let Kind::Vector(vector) = self.kind() {
-            let slots = vector.slots();
-            let mut result = Vec::with_capacity(slots.len().saturating_add(1));
-            result.push(Value::symbol("vector-literal"));
-            result.extend(slots);
-            return Ok(result);
-        }
         let mut result = Vec::new();
         self.extend_list_elements(&mut result)?;
         Ok(result)
@@ -2901,6 +2932,7 @@ impl Value {
             Kind::SymbolWithPos(_) => "symbol-with-pos".into(),
             Kind::Record(record) => format!("record<{}>", record.id),
             Kind::LispRecord(record) => format!("record<{:x}>", record.identity()),
+            Kind::BoolVector(vector) => format!("bool-vector<{:x}>", vector.identity()),
             Kind::Finalizer(object) => format!("finalizer<{:x}>", object.identity()),
             Kind::ReaderForm(_) => "reader-form".into(),
             Kind::Unbound => "unbound".into(),
@@ -3025,6 +3057,7 @@ fn values_equal_recursive(
         (Kind::HashTable(a), Kind::HashTable(b)) => a == b,
         (Kind::Record(a), Kind::Record(b)) => a.ptr_eq(&b),
         (Kind::LispRecord(a), Kind::LispRecord(b)) => a.ptr_eq(&b),
+        (Kind::BoolVector(a), Kind::BoolVector(b)) => a.identity() == b.identity(),
         (Kind::Finalizer(a), Kind::Finalizer(b)) => a == b,
         (Kind::ReaderForm(a), Kind::ReaderForm(b)) => a.ptr_eq(&b),
         (Kind::Unbound, Kind::Unbound) => true,
@@ -3060,22 +3093,6 @@ fn format_value(
                 format_value(&value, f, seen)?;
             }
             seen.remove(&id);
-            write!(f, "]")
-        }
-        Kind::Cons(cell) if matches!(cell.car.get().kind(), Kind::Symbol(head) if head == "vector-literal") =>
-        {
-            // Vector literals ride on conses internally but print as vectors.
-            write!(f, "[")?;
-            let mut current = cell.cdr.get();
-            let mut first = true;
-            while let Kind::Cons(cell) = current.kind() {
-                if !first {
-                    write!(f, " ")?;
-                }
-                format_value(&cell.car.get(), f, seen)?;
-                first = false;
-                current = cell.cdr.get();
-            }
             write!(f, "]")
         }
         Kind::Cons(cell) => {
@@ -3137,6 +3154,19 @@ fn format_value(
         }
         Kind::Record(record) => write!(f, "#<record id:{}>", record.id),
         Kind::LispRecord(record) => write!(f, "#<record {:x}>", record.identity()),
+        // print.c's form of a bool vector: its length, then its bytes.
+        Kind::BoolVector(vector) => {
+            write!(f, "#&{}\"", vector.len())?;
+            for index in 0..vector.len().div_ceil(8) {
+                let byte = (vector.words()[index / 8].get() >> (8 * (index % 8))) as u8;
+                match byte {
+                    b'"' | b'\\' => write!(f, "\\{}", byte as char)?,
+                    0x20..=0x7e => write!(f, "{}", byte as char)?,
+                    _ => write!(f, "\\{byte:o}")?,
+                }
+            }
+            write!(f, "\"")
+        }
         // print.c prints a finalizer as `#<finalizer>' with no identity.
         Kind::Finalizer(_) => write!(f, "#<finalizer>"),
         Kind::ReaderForm(_) => write!(f, "#<reader-form>"),
@@ -3791,11 +3821,7 @@ mod tests {
     fn live_census_counts_one_gnu_vector_without_representation_conses() {
         let conses_before = census_live_conses();
         let vectors_before = census_live_vectors();
-        let vector = Value::list([
-            Value::symbol("vector-literal"),
-            Value::Integer(1),
-            Value::Integer(2),
-        ]);
+        let vector = Value::vector([Value::Integer(1), Value::Integer(2)]);
         let vectors_after = census_live_vectors();
 
         assert_eq!(census_live_conses(), conses_before);

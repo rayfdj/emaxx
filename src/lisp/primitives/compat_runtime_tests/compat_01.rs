@@ -941,12 +941,7 @@ fn fillarray_mutates_supported_sequences() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
 
-    let vector = Value::list([
-        Value::symbol("vector-literal"),
-        Value::Integer(1),
-        Value::Integer(2),
-        Value::Integer(3),
-    ]);
+    let vector = Value::vector([Value::Integer(1), Value::Integer(2), Value::Integer(3)]);
     call(
         &mut interp,
         "fillarray",
@@ -991,7 +986,7 @@ fn fillarray_mutates_supported_sequences() {
     call(&mut interp, "fillarray", &[bool_vector, Value::T], &mut env)
         .expect("fillarray should fill bool-vectors");
     assert_eq!(
-        bool_vector_bits(&interp, &bool_vector).expect("filled bool-vector"),
+        bool_vector_bits(&bool_vector).expect("filled bool-vector"),
         vec![true, true, true, true]
     );
 
@@ -1163,28 +1158,13 @@ fn reverse_and_nreverse_preserve_vector_types() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
 
-    let literal_vector = Value::list([
-        Value::symbol("vector-literal"),
-        Value::Integer(1),
-        Value::Integer(2),
-        Value::Integer(3),
-    ]);
+    let literal_vector = Value::vector([Value::Integer(1), Value::Integer(2), Value::Integer(3)]);
     assert_eq!(
         call(&mut interp, "reverse", &[literal_vector], &mut env).expect("reverse vector"),
-        Value::list([
-            Value::symbol("vector-literal"),
-            Value::Integer(3),
-            Value::Integer(2),
-            Value::Integer(1),
-        ])
+        Value::vector([Value::Integer(3), Value::Integer(2), Value::Integer(1),])
     );
 
-    let vector = Value::list([
-        Value::symbol("vector-literal"),
-        Value::Integer(1),
-        Value::Integer(2),
-        Value::Integer(3),
-    ]);
+    let vector = Value::vector([Value::Integer(1), Value::Integer(2), Value::Integer(3)]);
     assert_eq!(
         call(
             &mut interp,
@@ -1221,7 +1201,7 @@ fn reverse_and_vconcat_support_bool_vectors() {
     )
     .expect("reverse should accept bool-vectors");
     assert_eq!(
-        bool_vector_bits(&interp, &reversed).expect("reversed bool-vector"),
+        bool_vector_bits(&reversed).expect("reversed bool-vector"),
         vec![false, false, true, true]
     );
     assert_eq!(
@@ -1232,13 +1212,7 @@ fn reverse_and_vconcat_support_bool_vectors() {
             &mut env,
         )
         .expect("vconcat should accept bool-vectors"),
-        Value::list([
-            Value::symbol("vector-literal"),
-            Value::T,
-            Value::T,
-            Value::Nil,
-            Value::Nil,
-        ])
+        Value::vector([Value::T, Value::T, Value::Nil, Value::Nil,])
     );
     assert_eq!(
         call(
@@ -1251,7 +1225,7 @@ fn reverse_and_vconcat_support_bool_vectors() {
         bool_vector
     );
     assert_eq!(
-        bool_vector_bits(&interp, &bool_vector).expect("mutated bool-vector"),
+        bool_vector_bits(&bool_vector).expect("mutated bool-vector"),
         vec![false, false, true, true]
     );
 }

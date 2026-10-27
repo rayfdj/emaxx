@@ -50,6 +50,7 @@ pub(crate) enum ObjectKey {
     Terminal(usize),
     Record(u64),
     LispRecord(usize),
+    BoolVector(usize),
     Finalizer(usize),
     ReaderForm(usize),
 }
@@ -91,6 +92,7 @@ pub(crate) fn object_key(value: &Value) -> Option<ObjectKey> {
         Kind::Terminal(terminal) => ObjectKey::Terminal(terminal.identity()),
         Kind::Record(record) => ObjectKey::Record(record.id),
         Kind::LispRecord(record) => ObjectKey::LispRecord(record.identity()),
+        Kind::BoolVector(vector) => ObjectKey::BoolVector(vector.identity()),
         Kind::Finalizer(object) => ObjectKey::Finalizer(object.identity()),
         Kind::ReaderForm(form) => ObjectKey::ReaderForm(form.identity()),
     })
@@ -122,6 +124,26 @@ fn runtime_word(word: u64) -> u64 {
     value.word() as u64
 }
 
+/// The state of a symbol the image maps in place, or None for one it
+/// writes as a record: a symbol of the initial obarray under its name, not
+/// builtin (an image names those, which exist before it loads), whose name
+/// is a string of the string blocks and whose state is its cell's
+/// (`SymbolCell::image_state').
+fn mapped_symbol_state(
+    interp: &Interpreter,
+    symbol: &crate::lisp::types::SymbolName,
+) -> Option<u16> {
+    let state = symbol.cell().image_state()?;
+    let name = symbol.lisp_name();
+    let Kind::StringObject(string) = name.kind() else {
+        return None;
+    };
+    (!string.is_empty_singleton()
+        && interp.standard_obarray_contains_object(symbol)
+        && interp.variable_watchers(symbol.as_str()).is_empty())
+    .then_some(state)
+}
+
 // The serialized native-subr discriminator is retained for image compatibility.
 // It never names a RecordKind or installs a detached runtime record.
 pub(crate) const NATIVE_SUBR_CODE: u32 = 15;
@@ -131,7 +153,6 @@ pub(crate) const NATIVE_UNIT_CODE: u32 = 14;
 /// stable codes.
 pub(crate) fn record_kind_code(kind: RecordKind) -> u32 {
     match kind {
-        RecordKind::BoolVector => 2,
         RecordKind::Font => 4,
         RecordKind::Process => 6,
         RecordKind::Obarray => 8,
@@ -152,8 +173,8 @@ pub(crate) fn record_kind_code(kind: RecordKind) -> u32 {
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn record_kind_from_code(code: u32) -> Option<RecordKind> {
     Some(match code {
-        // Former generic record code 1 used a detached host payload.
-        2 => RecordKind::BoolVector,
+        // Former generic record code 1 used a detached host payload, and
+        // former bool-vector record code 2 a slot a bit.
         // Former detached byte-code record code 3 is unsupported.
         4 => RecordKind::Font,
         // Former positioned-symbol records are not a supported dump object.
@@ -479,9 +500,8 @@ pub(crate) struct DumpContext {
     fixups: Vec<Fixup>,
     copied_queue: Vec<Value>,
     cold_queue: Vec<ColdOp>,
-    /// Each relocation's offset and kind, with the target's offset for a
-    /// word naming an object of the dump.
-    dump_relocs: [Vec<(u32, DumpRelocKind, Option<u32>)>; RELOC_NUM_PHASES],
+    /// Each relocation's offset and type.
+    dump_relocs: [Vec<(u32, RelocType)>; RELOC_NUM_PHASES],
     object_starts: Vec<(u32, DumpType)>,
     emacs_relocs: Vec<EmacsReloc>,
     bignum_data: HashMap<ObjectKey, (u32, i64)>,
@@ -524,11 +544,21 @@ pub(crate) struct DumpContext {
     vector_cells: crate::lisp::alloc::vectors::ImageVectorWriter,
     /// The first vector block's offset, once the vectors are written.
     vector_blocks: Option<u32>,
+    /// The words and key text of each symbol the image maps in place, in
+    /// the order they were dumped: written as the image's symbol blocks
+    /// with the other blocks, each until then at its offset there plus
+    /// `SYMBOL_PROVISIONAL'.
+    symbol_cells: Vec<([u64; 8], String)>,
+    /// The first symbol block's offset, once the symbols are written.
+    symbol_blocks: Option<u32>,
 }
 
 /// The base of a cons's offset until the cons blocks are placed: above
 /// every offset the rest of the image takes.
 const CONS_PROVISIONAL: u32 = 1 << 30;
+/// The base of a mapped symbol's offset until the symbol blocks are
+/// placed: above every cons's provisional offset.
+const SYMBOL_PROVISIONAL: u32 = CONS_PROVISIONAL + (1 << 29);
 /// The base of a string's offset until the string blocks are placed:
 /// above every cons's provisional offset.
 const STRING_PROVISIONAL: u32 = 1 << 31;
@@ -581,6 +611,8 @@ impl DumpContext {
             string_blocks: None,
             vector_cells: Default::default(),
             vector_blocks: None,
+            symbol_cells: Vec::new(),
+            symbol_blocks: None,
         }
     }
 
@@ -823,9 +855,9 @@ impl DumpContext {
 
     /// dump_reloc_dump_to_dump_ptr_raw / dump_reloc_dump_to_dump_lv /
     /// dump_reloc_dump_to_emacs_lv (early phase).
-    fn push_dump_reloc(&mut self, offset: u32, kind: DumpRelocKind, target: Option<u32>) {
+    fn push_dump_reloc(&mut self, offset: u32, kind: RelocType) {
         if self.flags.dump_object_contents {
-            self.dump_relocs[EARLY_RELOCS].push((offset, kind, target));
+            self.dump_relocs[EARLY_RELOCS].push((offset, kind));
         }
     }
 
@@ -1062,7 +1094,7 @@ impl DumpContext {
         }
         let state = self.recall_object(object);
 
-        let cold = matches!(object.kind(), Kind::Float(_)) || is_bool_vector(interp, object);
+        let cold = matches!(object.kind(), Kind::Float(_));
         if cold && self.flags.defer_cold_objects {
             if state != Some(ObjectState::OnColdQueue) {
                 assert!(matches!(state, None | Some(ObjectState::OnNormalQueue)));
@@ -1127,6 +1159,7 @@ impl DumpContext {
             Kind::SubCharTable(table) => (self.dump_sub_char_table(table)?, DumpType::SubCharTable),
             Kind::Record(id) => self.dump_record(interp, id.id, object)?,
             Kind::LispRecord(record) => (self.dump_lisp_record(record)?, DumpType::LispRecord),
+            Kind::BoolVector(vector) => (self.dump_bool_vector(vector)?, DumpType::BoolVector),
             Kind::Nil | Kind::T | Kind::Unbound => {
                 unreachable!("self-representing objects are never dumped")
             }
@@ -1177,7 +1210,7 @@ impl DumpContext {
         let start = CONS_PROVISIONAL
             + u32::try_from(crate::lisp::alloc::image_cons_offset(index))
                 .ok()
-                .filter(|offset| *offset < CONS_PROVISIONAL)
+                .filter(|offset| *offset < SYMBOL_PROVISIONAL - CONS_PROVISIONAL)
                 .ok_or_else(|| LispError::Signal("dump file too large".into()))?;
         let mut words = [0_u64; 2];
         let car = Value::Cons(*cell).car()?;
@@ -1213,7 +1246,8 @@ impl DumpContext {
         assert!(
             self.cons_blocks.is_none()
                 && self.string_blocks.is_none()
-                && self.vector_blocks.is_none(),
+                && self.vector_blocks.is_none()
+                && self.symbol_blocks.is_none(),
             "cell blocks written twice"
         );
         let count = self.cons_cells.len();
@@ -1280,6 +1314,33 @@ impl DumpContext {
             offset: large_vectors,
             nr_entries: u32::try_from(large_count).expect("vector count fits a word"),
         };
+
+        // The mapped symbols' cells, then their key texts, each cell's
+        // first word the offset of its key (a raw pointer once relocated).
+        let cells = std::mem::take(&mut self.symbol_cells);
+        let count = cells.len();
+        self.align_output(64)?;
+        let symbols = self.offset;
+        let blocks_bytes = crate::lisp::alloc::image_symbol_bytes(count);
+        let mut blocks = vec![0_u8; blocks_bytes];
+        let mut keys = Vec::new();
+        for (index, (mut words, key)) in cells.into_iter().enumerate() {
+            let at = crate::lisp::alloc::image_symbol_offset(index);
+            let key_offset = symbols as usize + blocks_bytes + keys.len();
+            words[0] = key_offset as u64;
+            keys.extend_from_slice(key.as_bytes());
+            for (word, value) in words.iter().enumerate() {
+                blocks[at + 8 * word..at + 8 * (word + 1)].copy_from_slice(&value.to_le_bytes());
+            }
+            self.push_dump_reloc(symbols + at as u32, RelocType::DumpToDumpPtrRaw);
+        }
+        self.write(&blocks)?;
+        self.write(&keys)?;
+        self.symbol_blocks = Some(symbols);
+        self.header.symbol_blocks = TableLocator {
+            offset: symbols,
+            nr_entries: u32::try_from(count).expect("symbol count fits a word"),
+        };
         let placed = |offset: u32| {
             if offset >= LARGE_VECTOR_PROVISIONAL {
                 large_vectors + (offset - LARGE_VECTOR_PROVISIONAL)
@@ -1287,6 +1348,8 @@ impl DumpContext {
                 vectors + (offset - VECTOR_PROVISIONAL)
             } else if offset >= STRING_PROVISIONAL {
                 strings + (offset - STRING_PROVISIONAL)
+            } else if offset >= SYMBOL_PROVISIONAL {
+                symbols + (offset - SYMBOL_PROVISIONAL)
             } else if offset >= CONS_PROVISIONAL {
                 start + (offset - CONS_PROVISIONAL)
             } else {
@@ -1313,11 +1376,8 @@ impl DumpContext {
             }
         }
         for relocs in &mut self.dump_relocs {
-            for (offset, _, target) in relocs.iter_mut() {
+            for (offset, _) in relocs.iter_mut() {
                 *offset = placed(*offset);
-                if let Some(target) = target {
-                    *target = placed(*target);
-                }
             }
         }
         for reloc in &mut self.emacs_relocs {
@@ -1442,6 +1502,9 @@ impl DumpContext {
         let Kind::Symbol(symbol) = object.kind() else {
             unreachable!()
         };
+        if let Some(state) = mapped_symbol_state(interp, &symbol) {
+            return self.dump_symbol_cell(interp, &symbol, state);
+        }
         let cell = interp.dump_symbol_cell(&symbol);
         let function = interp
             .raw_function_binding_symbol(&symbol, &crate::lisp::types::Env::new())
@@ -1503,6 +1566,64 @@ impl DumpContext {
             words[at + index] = u64::from_le_bytes(word);
         }
         self.object_finish(&words)
+    }
+
+    /// A symbol the image maps in place (`mapped_symbol_state'): the next
+    /// cell of the image's symbol blocks, its name, function, plist and
+    /// value or alias words as `alloc::image_cell_words' lays them out,
+    /// waiting in `symbol_cells' with its key text until the blocks are
+    /// written after the other hot objects; until then its offset is
+    /// provisional (see `SYMBOL_PROVISIONAL').
+    fn dump_symbol_cell(
+        &mut self,
+        interp: &Interpreter,
+        symbol: &crate::lisp::types::SymbolName,
+        state: u16,
+    ) -> Result<u32, DumpError> {
+        assert_eq!(self.obj_offset, 0, "nested dump_object_start");
+        assert!(
+            self.symbol_blocks.is_none() || !self.flags.dump_object_contents,
+            "a symbol dumped after the symbol blocks were written"
+        );
+        let start = SYMBOL_PROVISIONAL
+            + u32::try_from(crate::lisp::alloc::image_symbol_offset(
+                self.symbol_cells.len(),
+            ))
+            .ok()
+            .filter(|offset| *offset < STRING_PROVISIONAL - SYMBOL_PROVISIONAL)
+            .ok_or_else(|| LispError::Signal("dump file too large".into()))?;
+        let cell = interp.dump_symbol_cell(symbol);
+        let function = interp
+            .raw_function_binding_symbol(symbol, &crate::lisp::types::Env::new())
+            .unwrap_or(Value::Nil);
+        let plist = interp.symbol_plist_symbol(symbol);
+        let val = match &cell.alias {
+            Some(target) => Value::Symbol(*target),
+            None => cell.value.unwrap_or(Value::Unbound),
+        };
+        let mut words = [0_u64; 8];
+        self.obj_offset = start;
+        self.field_lv(start, &mut words, 2, &symbol.lisp_name(), WEIGHT_STRONG);
+        self.field_lv(start, &mut words, 3, &function, WEIGHT_NORMAL);
+        self.field_lv(start, &mut words, 4, &plist, WEIGHT_NORMAL);
+        self.field_lv(start, &mut words, 5, &val, WEIGHT_NORMAL);
+        self.obj_offset = 0;
+        if self.flags.dump_object_contents {
+            let lisp = std::array::from_fn(|index| {
+                let word = words[2 + index];
+                if word == FIXUP_PLACEHOLDER {
+                    word
+                } else {
+                    runtime_word(word)
+                }
+            });
+            let key = symbol.as_str();
+            self.symbol_cells.push((
+                crate::lisp::alloc::image_cell_words((0, key.len()), lisp, cell.flags, state),
+                key.to_owned(),
+            ));
+        }
+        Ok(start)
     }
 
     /// dump_vectorlike_generic for an ordinary vector: its slots.  The
@@ -1610,7 +1731,7 @@ impl DumpContext {
                 offset: start + 8,
                 value: *object,
             });
-            self.push_dump_reloc(offset, DumpRelocKind::Bignum, None);
+            self.push_dump_reloc(offset, RelocType::Bignum);
         }
         Ok(offset)
     }
@@ -1656,10 +1777,6 @@ impl DumpContext {
             RecordKind::Obarray => {
                 let offset = self.dump_obarray(interp, id, &type_tag, &slots)?;
                 Ok((offset, DumpType::Obarray))
-            }
-            RecordKind::BoolVector => {
-                let offset = self.dump_bool_vector(id, &slots)?;
-                Ok((offset, DumpType::BoolVector))
             }
             RecordKind::Thread => {
                 if id == self.main_thread_id {
@@ -1717,7 +1834,7 @@ impl DumpContext {
         }
         let offset = self.object_finish(&words)?;
         if self.flags.dump_object_contents {
-            self.dump_relocs[LATE_RELOCS].push((offset, DumpRelocKind::NativeCompUnit, None));
+            self.dump_relocs[LATE_RELOCS].push((offset, RelocType::NativeCompUnit));
         }
         Ok(offset)
     }
@@ -1773,7 +1890,7 @@ impl DumpContext {
         words[name_index + 1] = FIXUP_PLACEHOLDER;
         let offset = self.object_finish(&words)?;
         if self.flags.dump_object_contents {
-            self.dump_relocs[VERY_LATE_RELOCS].push((offset, DumpRelocKind::NativeSubr, None));
+            self.dump_relocs[VERY_LATE_RELOCS].push((offset, RelocType::NativeSubr));
         }
         self.remember_cold_op(ColdOp::NativeSubr {
             names: offset + (name_index * 8) as u32,
@@ -1843,19 +1960,18 @@ impl DumpContext {
         self.object_finish(&words)
     }
 
-    /// dump_bool_vector: the bits, in the cold section, with the record's
-    /// id; a cold object refers to nothing.
-    fn dump_bool_vector(&mut self, id: u64, slots: &[Value]) -> Result<u32, DumpError> {
-        assert!(self.header.cold_start != 0);
-        self.object_start()?;
-        let mut words = vec![id, slots.len() as u64];
-        words.resize(2 + slots.len().div_ceil(64), 0);
-        for (index, slot) in slots.iter().enumerate() {
-            if slot.is_truthy() {
-                words[2 + index / 64] |= 1 << (index % 64);
-            }
-        }
-        self.object_finish(&words)
+    /// dump_bool_vector: the vector's bytes as the heap holds them, its
+    /// length and its words, which name nothing; a cell of the image's
+    /// vector blocks, mapped where the image holds it (pdumper.c writes it
+    /// in the cold section, likewise mapped).
+    fn dump_bool_vector(
+        &mut self,
+        vector: crate::lisp::types::BoolVectorRef,
+    ) -> Result<u32, DumpError> {
+        let mut raw = Vec::with_capacity(1 + vector.words().len());
+        raw.push(vector.len() as u64);
+        raw.extend(vector.words().iter().map(|word| word.get() as u64));
+        self.dump_vector_cell(vector.identity(), &raw, &[], WEIGHT_NORMAL)
     }
 
     /// The main thread's copied record: DUMP_OBJECT_IS_RUNTIME_MAGIC in
@@ -2504,6 +2620,9 @@ impl DumpContext {
         let saved_offset = self.offset;
         let mut fixups = std::mem::take(&mut self.fixups);
         fixups.sort_by_key(Fixup::offset);
+        // An object the loader makes is named by its number, its place in
+        // the object starts as `emit_object_starts' writes them.
+        self.object_starts.sort_by_key(|(offset, _)| *offset);
         let mut previous_offset = None;
         for fixup in fixups {
             let offset = fixup.offset();
@@ -2517,13 +2636,40 @@ impl DumpContext {
                         panic!("fixup target was dumped");
                     };
                     let kind = self.dump_type_of(&value);
-                    let (reloc, object) = if self.in_emacs_image(&value) {
-                        (DumpRelocKind::DumpToEmacsLv(kind), None)
+                    let (word, reloc) = if self.in_emacs_image(&value) {
+                        let reloc = match kind {
+                            DumpType::Subr => RelocType::DumpToEmacsSubr,
+                            DumpType::MainThread => RelocType::DumpToEmacsMainThread,
+                            other => panic!("{other:?} is not an object of the Emacs image"),
+                        };
+                        (target, reloc)
+                    } else if let Ok(number) = self
+                        .object_starts
+                        .binary_search_by_key(&target, |(start, _)| *start)
+                    {
+                        let number = u32::try_from(number).expect("object count fits a word");
+                        (number, RelocType::DumpToDumpObject)
                     } else {
-                        (DumpRelocKind::DumpToDumpLv(kind), Some(target))
+                        // A cell of the image's blocks, mapped where the
+                        // image holds it: RELOC_DUMP_TO_DUMP_LV of its type.
+                        let reloc = match kind {
+                            DumpType::Symbol => RelocType::DumpToDumpSymbol,
+                            DumpType::Cons => RelocType::DumpToDumpCons,
+                            DumpType::String | DumpType::StringObject => {
+                                RelocType::DumpToDumpString
+                            }
+                            DumpType::Vector
+                            | DumpType::Closure
+                            | DumpType::LispRecord
+                            | DumpType::CharTable
+                            | DumpType::SubCharTable
+                            | DumpType::BoolVector => RelocType::DumpToDumpVectorlike,
+                            other => panic!("{other:?} at {target} is not a cell of the blocks"),
+                        };
+                        (target, reloc)
                     };
-                    self.write_word(u64::from(target))?;
-                    self.push_dump_reloc(offset, reloc, object);
+                    self.write_word(u64::from(word))?;
+                    self.push_dump_reloc(offset, reloc);
                 }
                 Fixup::PtrDumpRaw { target, .. } => {
                     self.write_word(u64::from(target))?;
@@ -2533,7 +2679,7 @@ impl DumpContext {
                         .string_blocks
                         .is_some_and(|(start, end)| (start..end).contains(&offset))
                     {
-                        self.push_dump_reloc(offset, DumpRelocKind::DumpToDumpPtrRaw, None);
+                        self.push_dump_reloc(offset, RelocType::DumpToDumpPtrRaw);
                     }
                 }
                 Fixup::BignumData { value, .. } => {
@@ -2556,25 +2702,13 @@ impl DumpContext {
     /// drain_reloc_list for the dump relocations of PHASE.
     pub(crate) fn emit_dump_relocs(&mut self, phase: usize) -> Result<(), DumpError> {
         let mut relocs = std::mem::take(&mut self.dump_relocs[phase]);
-        relocs.sort_by_key(|(offset, _, _)| *offset);
-        // The object starts in the order `emit_object_starts' writes them:
-        // an object's number is its place there.
-        self.object_starts.sort_by_key(|(offset, _)| *offset);
+        relocs.sort_by_key(|(offset, _)| *offset);
         self.align_output(8)?;
         let locator_offset = self.offset;
-        for (offset, kind, target) in &relocs {
-            assert!(*offset > 0 && *offset < self.end_heap);
-            let number = target.map_or(NO_OBJECT, |target| {
-                self.object_starts
-                    .binary_search_by_key(&target, |(start, _)| *start)
-                    .map_or(NO_OBJECT, |number| {
-                        u32::try_from(number).expect("object count fits a word")
-                    })
-            });
-            self.write(&offset.to_le_bytes())?;
-            self.write(&kind.to_u32().to_le_bytes())?;
-            self.write(&number.to_le_bytes())?;
-            if *offset < self.header.discardable_start {
+        for &(offset, kind) in &relocs {
+            assert!(offset > 0 && offset < self.end_heap && offset < DUMP_RELOC_OFFSET_LIMIT);
+            self.write(&dump_reloc(offset, kind).to_le_bytes())?;
+            if offset < self.header.discardable_start {
                 self.number_hot_relocations += 1;
             } else {
                 self.number_discardable_relocations += 1;
@@ -2746,11 +2880,6 @@ pub(crate) const HASH_TEST_EQUAL: u64 = 2;
 
 fn is_hash_table(_interp: &Interpreter, value: &Value) -> bool {
     matches!(value.kind(), Kind::HashTable(_))
-}
-
-fn is_bool_vector(interp: &Interpreter, value: &Value) -> bool {
-    matches!(value.kind(), Kind::Record(id)
-        if interp.find_record(id).is_some_and(|record| record.kind == RecordKind::BoolVector))
 }
 
 #[cfg_attr(not(test), allow(dead_code))]

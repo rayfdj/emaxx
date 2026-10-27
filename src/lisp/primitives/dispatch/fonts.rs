@@ -10,9 +10,9 @@ const FONT_FOUNDRY_INDEX: usize = 1;
 const FONT_FAMILY_INDEX: usize = 2;
 const FONT_ADSTYLE_INDEX: usize = 3;
 const FONT_REGISTRY_INDEX: usize = 4;
-const FONT_WEIGHT_INDEX: usize = 5;
-const FONT_SLANT_INDEX: usize = 6;
-const FONT_WIDTH_INDEX: usize = 7;
+pub(super) const FONT_WEIGHT_INDEX: usize = 5;
+pub(super) const FONT_SLANT_INDEX: usize = 6;
+pub(super) const FONT_WIDTH_INDEX: usize = 7;
 const FONT_SIZE_INDEX: usize = 8;
 const FONT_DPI_INDEX: usize = 9;
 const FONT_SPACING_INDEX: usize = 10;
@@ -180,7 +180,7 @@ fn symbol_property(value: &Value, lowercase: bool) -> Result<Value, LispError> {
     Ok(Value::symbol(&name))
 }
 
-fn valid_style_name(index: usize, name: &str) -> bool {
+pub(super) fn valid_style_name(index: usize, name: &str) -> bool {
     let name = name.to_ascii_lowercase();
     match index {
         FONT_WEIGHT_INDEX => matches!(

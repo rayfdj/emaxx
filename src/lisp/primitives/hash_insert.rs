@@ -158,15 +158,8 @@ pub(crate) fn standard_hash_code(
     interp: &Interpreter,
     test: crate::lisp::eval::RuntimeHashTest,
     key: &Value,
-    env: &Env,
 ) -> u32 {
-    use crate::lisp::eval::RuntimeHashTest;
-    let hash = if test == RuntimeHashTest::Equal {
-        equal_hash_table_key_hash_in_env(interp, key, env).unwrap_or(0)
-    } else {
-        runtime_hash_bucket_key(interp, test, key).unwrap_or(0)
-    };
-    reduce_hash_code(hash as u64)
+    reduce_hash_code(standard_table_hash(interp, test, *key))
 }
 
 pub(crate) fn hash_table_hash_code(
@@ -176,7 +169,7 @@ pub(crate) fn hash_table_hash_code(
     env: &mut Env,
 ) -> Result<u32, LispError> {
     if let Some(test) = table.test().standard_test() {
-        return Ok(standard_hash_code(interp, test, key, env));
+        return Ok(standard_hash_code(interp, test, key));
     }
     let result = call_hash_table_test_function(
         interp,
@@ -185,9 +178,10 @@ pub(crate) fn hash_table_hash_code(
         std::slice::from_ref(key),
         env,
     )?;
+    // hashfn_user_defined: a fixnum's XUFIXNUM, any other object's sxhash.
     let hash = match result.kind() {
         Kind::Integer(_) => (result.word() >> 2) as u64,
-        _ => sxhash_value_in_env(interp, &result, HashMode::Equal, env) as u64,
+        _ => sxhash(interp, result),
     };
     Ok(reduce_hash_code(hash))
 }
@@ -277,21 +271,6 @@ pub(crate) fn sweep_weak_hash_tables(
         })
         .collect::<crate::lisp::eval::MarkedIds>();
     interp.modules.collect(&live);
-}
-
-pub(crate) fn set_hash_table_entries(
-    interp: &mut Interpreter,
-    table: &Value,
-    entries: Vec<(Value, Value)>,
-) -> Result<(), LispError> {
-    let table = check_hash_table(table)?;
-    check_hash_table_mutable(table)?;
-    table.clear();
-    let mut env = Env::new();
-    for (key, value) in entries {
-        hash_table_put(interp, table, key, value, &mut env)?;
-    }
-    Ok(())
 }
 
 pub(crate) fn parse_xml_region(xml: &str, discard_comments: bool) -> Value {
@@ -461,20 +440,16 @@ fn libxml_attributes_in_source_order(node: &LibxmlNode) -> Vec<Value> {
 }
 
 pub(crate) fn display_property_value(value: &Value, property: &str) -> Option<Value> {
+    if let Kind::Vector(vector) = value.kind() {
+        return vector
+            .slots()
+            .find_map(|item| display_property_value(&item, property));
+    }
     if let Ok(items) = value.to_vec() {
         if let Some(Kind::Symbol(name)) = items.first().map(|v| v.kind())
             && name == property
         {
             return items.get(1).cloned();
-        }
-        if matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(name)) if name == "vector-literal")
-        {
-            for item in items.iter().skip(1) {
-                if let Some(found) = display_property_value(item, property) {
-                    return Some(found);
-                }
-            }
-            return None;
         }
         for item in items {
             if let Some(found) = display_property_value(&item, property) {

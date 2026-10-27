@@ -517,6 +517,8 @@ define_dispatch!(
                     env,
                     Some(interp.current_buffer_id()),
                 )?;
+                // shut_down_emacs.
+                unlock_all_files(interp, env)?;
 
                 // emacs.c accepts only a fixnum here.  Preserve its explicit
                 // INT_MIN/INT_MAX masking before the CLI boundary narrows the

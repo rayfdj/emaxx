@@ -6843,6 +6843,437 @@ setup_process_coding_systems's check now refuses). A 13-form
   while the host ran profiles beside the gate, as in round 97, and passed
   five times of five alone; clippy `-D warnings', rustfmt and `git diff
   --check' pass.
+- **Round 99: `\N{NAME}' read as lread.c reads it.** lread.c's
+  character_name_to_code takes "U+" and hex digits itself and asks
+  `(char-from-name NAME t)' (mule-cmds.el) for any other name, where the
+  reader looked the name up in Unicode's own table: a name `ucs-names'
+  does not hold (Unicode's "CJK UNIFIED IDEOGRAPH-4E2D", which GNU reads
+  only as `\N{U+4E2D}') is now `invalid-read-syntax' as in GNU, a name
+  matches ignoring case, and the numbered ideographs ("TANGUT
+  IDEOGRAPH-17000") read as their codes. In an image built before
+  mule-cmds.el is loaded `char-from-name' is void and a named escape
+  signals, as it does in GNU; the pdumper tests' probes now spell their
+  Greek alpha `\N{U+3B1}'. A read with no Lisp context (the host's own)
+  still looks names up in Unicode's table. Lisp now runs in the middle
+  of any read, and the first name builds `ucs-names' (loading
+  uni-name.el), which collects: the reader rooted what it had read so
+  far only for a function stream, so the strings read before a
+  `\N{NAME}' in the same form were freed and their cells reused (the
+  gate's quoting-style test read uni-name.el's word lists in their
+  place). The root stack is now one per thread, lread.c's rdstack as
+  mark_lread marks it, for every input: each completed datum is rooted
+  until its parent replaces it, each reader works above the depth it
+  found, and a whole datum leaves the stack at its base as read0 does.
+  It costs 1.2M instructions loading ert (353.0M) and 1.3M in the
+  xml-tests setup (488.0M); a stack per reader cost twice that, from
+  registering a buffer per read. A new batch test reads a list of
+  strings around the first name, then six escapes, and prints GNU 30.2's
+  output byte for byte. Measured and not
+  kept: resolving a relocation by its target's number first (an entry
+  numbering no object then trying the cell and vector kinds) left
+  startup at 162.29M instructions against 162.26M. Local validation:
+  the full gate, every group passed but primitives (752 of 753: the
+  timing-sensitive just_this_one_wait test, failing while profiles ran
+  beside the gate as in rounds 97 and 98, passed three times of three
+  alone); clippy `-D warnings', rustfmt and `git
+  diff --check' pass.
+- **Round 100: `assoc-string' as minibuf.c's Fassoc_string.** The walk
+  is GNU's: a symbol KEY is its name, the list is followed while its
+  tail is a cons, an element (or its car) that is a symbol stands for
+  its name, one that is neither a string nor a symbol is passed over,
+  and each remaining one is asked of `compare-strings' over both whole
+  lengths with CASE-FOLD, which upcases only a differing pair of
+  characters; `maybe_quit' runs between elements. The old arm copied
+  the list first (a vector LIST read as `vector-literal' and its slots,
+  so `(assoc-string "foo" ["foo"])' found "foo", and a dotted or non-list
+  tail signalled where GNU stops), signalled for a non-string KEY even
+  when no element is a string, and folded both whole strings through
+  the casing machinery with a word-boundary rule of its own. That rule
+  read `syntax_word_chars', a list of codes `modify-syntax-entry' kept
+  beside the syntax table, one code at a time over a whole range, for
+  this alone; the list, its image root slot (41) and the three folding
+  helpers are gone. A 32-line probe of keys, symbols, dotted tails,
+  non-string elements and keys, the characters whose case mappings
+  differ (ß and ẞ, the Turkish dotless i, the Greek sigmas, ǅ, the ﬀ
+  ligature) and multibyte text gives GNU 30.2's output byte for byte,
+  and a new batch test pins eleven of its cases. The frozen runner's
+  setup of cal-french-tests.el (runner command line, `-L' GNU's whole
+  load path) took 572.9M instructions before round 99 and now 564.0M
+  (GNU 508.1M): the folding's 11.9M is gone and round 99's root stack
+  costs 3.0M here. Local validation: the full gate, 3,243 passed across
+  its ten groups with the documented local skips (the batch tests 52,
+  one new); clippy `-D warnings', rustfmt and `git diff --check' pass.
+- **Round 101: file-name handlers, face aliases, source hashes and
+  load-history as fileio.c, xfaces.c, comp.c and lread.c.**
+  `find_file_name_handler' is Ffind_file_name_handler: the three
+  variables are read as C reads them, a symbol handler's `operations'
+  property through `get' and the operation through `memq', each regexp
+  matched with fast_string_match (no case folding) on the file name,
+  the entry matching latest kept, a handler `inhibit-file-name-handlers'
+  names passed over only while OPERATION is
+  `inhibit-file-name-operation' (identity, both lists unvalidated until
+  reached), `maybe_quit' between entries; a nil handler that matched
+  latest still leaves the caller on its no-handler path. The old walk
+  copied the alist and compiled each regexp afresh through the general
+  matcher. `resolve_face_name' is xfaces.c's: a string names the symbol
+  it interns, the `face-alias' chain is followed through `get' with the
+  hare two links to the tortoise's one, and a chain that comes round
+  again signals `(circular-list FACE)' where the old walk stopped at the
+  first repeat. comp.c's source hash streams the file through
+  md5-stream.c's md5_stream 32,768 bytes at a time (a .gz file's
+  uncompressed bytes) instead of reading it whole. `map-keymap' walks a
+  keymap's cells as keymap.c does, with no set of visited cells.
+  `current-load-list' is read and stored as Vcurrent_load_list, by its
+  symbol, and the `require' and `defun' entries' heads are their
+  symbols, not names interned again. A 26-line probe of handlers (an
+  operations list, inhibition, a dotted entry, a later-matching nil
+  handler, a non-list entry) and face aliases (strings, chains, a
+  two-face cycle) gives GNU 30.2's output byte for byte; a batch test
+  pins seven of its cases. With the runner's command line, startup's
+  mutator (instructions less collections) went from 162.1M to 158.2M
+  and the cal-french-tests.el setup's from 491.1M to 470.7M (GNU
+  343.8M); its total is 542.6M (GNU 508.1M). Local validation: the
+  full gate across its ten groups with the documented local skips;
+  clippy `-D warnings', rustfmt and `git diff --check' pass.
+- **Round 102: read0's symbols and lists.** The reader interns each
+  symbol in `check_obarray (Vobarray)' read as the symbol is, as read0
+  does, where the read's context took `obarray' once when the read
+  began: Lisp run in the middle of a read (`char-from-name' for a
+  `\N{NAME}' escape, here advised to set `obarray') now redirects the
+  symbols after it, as in GNU. Interning in the initial obarray is one
+  probe, the name string made only on a miss and the new symbol filed
+  in the bucket the probe ended at (intern_driver), with no check of a
+  legacy vector obarray first. A list's elements are consed onto its
+  tail as each is read (RE_list_start, RE_list), the list rooted in its
+  elements' place from the first one on, where they were collected in a
+  host vector and consed at the close. After a dotted pair's last datum
+  the reader skips to the next character, signalling `end-of-file' at
+  the end, and reads it before signalling "expected )" (RE_list_dot):
+  `(read "(a . b")' was `invalid-read-syntax', and a buffer read's
+  error position was a character short. A 30-line probe gives GNU
+  30.2's output byte for byte and a batch test pins seven of its cases.
+  The reader's intern of a symbol took 365 instructions and now about
+  325 (GNU's oblookup about 118: the probe itself is 103 here); the
+  cal-french-tests.el setup's total went from 542.6M to 541.4M. Local
+  validation: the full gate across its ten groups with the documented
+  local skips; clippy `-D warnings', rustfmt and `git diff --check'
+  pass.
+- **Round 103: the image's symbols mapped in place.** A symbol of the
+  initial obarray that is not builtin (interned when the interpreter's
+  construction ends, as GNU's lispsym symbols exist before a dump
+  loads) and whose state is its cell's (not a C variable, not watched,
+  not uninterned) is written as a cell of the image's symbol blocks,
+  laid out as the heap's cells are (key text, name, function, plist,
+  value or alias word, flags and state), and the loader makes those
+  blocks the heap's where the image holds them, relocates their words
+  and files each symbol in the initial obarray, as pdumper.c relocates
+  its dumped symbols and obarray in place; it was a record the loader
+  interned again by name and copied field by field. The dumped obarray
+  is the loaded one: a builtin symbol that the image files another
+  under the name of was not in the dumping process's obarray and is
+  uninterned. A template clone's copy of a symbol keeps the builtin
+  mark. After a load the initial frame this process made is
+  `terminal-frame' (window.c's init_window_once_for_pdumper), where it
+  was the image's frame, dead. A probe printing every symbol's
+  specialness, binding, alias, default value, function and plist in
+  the process that built and dumped the loadup state and in one that
+  loaded the image differs only in the allocation counters, this
+  process's paths and the main thread's address (and, before the fix,
+  `terminal-frame'); a batch test pins GNU 30.2's output for a
+  preloaded symbol's cells across a collection, its `unintern' and
+  `terminal-frame'. The image maps 14,195 symbols; 3,974 remain
+  records. With the frozen runner's command line startup went from
+  158.1M instructions to 146.7M (GNU 98.5M): the loader from 82.8M to
+  76.5M, the records' symbols from 7.3M to 1.6M and their installation
+  from 5.0M to 1.2M, the filing of the mapped ones 2.4M. The
+  cal-french-tests.el setup's total went from 541.4M to 530.1M (GNU
+  507.6M). Local validation: the full gate across its ten groups with
+  the documented local skips; clippy `-D warnings', rustfmt and `git
+  diff --check' pass.
+- **Round 104: bool vectors as lisp.h's Lisp_Bool_Vector.** A bool
+  vector is a PVEC_BOOL_VECTOR pseudovector of the vector allocator:
+  the header, the length in bits and the bits packed in words, the last
+  word's bits past the length clear (make_uninit_bool_vector), its
+  footprint from its length (vector_nbytes); it was a record holding a
+  Lisp word for each bit, found through the interpreter on every access
+  and copied whole by `aref' paths that read it. The reader makes the
+  bool vector of `#&N"..."' itself, as read0 does, where it left a
+  reader form for evaluation to turn into one. The image writes a bool
+  vector as a cell of its vector blocks and the loader maps it there; it
+  was a cold record rebuilt bit by bit. `aref' and `aset' signal
+  `args-out-of-range' of the vector and index, `bool-vector-not'
+  stores into its second argument (it made a new vector), the set
+  operations and `bool-vector-subsetp' (B as the destination) are
+  bool_vector_binop_driver with `wrong-length-argument' of the lengths,
+  `bool-vector-count-consecutive' and `make-bool-vector' check
+  CHECK_FIXNAT and the index's range, `equal' compares the words,
+  `value<' is bool_vector_cmp, `fillarray' bool_vector_fill, `nreverse'
+  swaps the bits in place, and `purecopy' signals "Don't know how to
+  purify: %S" with the printed object for the kinds alloc.c refuses
+  (a buffer's message had its type name). A 30-case probe and a second
+  of large vectors, category sets across a collection and modified
+  category tables give GNU 30.2's output byte for byte but for
+  `sxhash-equal' (below); a batch test pins fourteen cases. With the
+  frozen runner's command line startup went from 146.7M instructions to
+  148.8M and the cal-french-tests.el setup from 530.1M to 532.8M: the
+  101,086 relocations naming the category tables' bool vectors resolve
+  their target by its offset, checked against the vector starts, where
+  they indexed the rebuilt objects by number (`relocate_vectors' 8.9M
+  to 12.0M). Local validation: the full gate across its ten groups with
+  the documented local skips; clippy `-D warnings', rustfmt and `git
+  diff --check' pass.
+- **Round 105: pdumper.c's dump_reloc.** A relocation entry is one
+  word, as pdumper.c's `struct dump_reloc' is: the field's offset
+  (a word's, its three low bits implied) in the high 27 bits and the
+  type in the low 5 (dump_reloc_get_offset, DUMP_RELOC_TYPE_BITS); it
+  was 12 bytes, the field, a code and the number of the object named.
+  A word naming a cell of the image's blocks holds the cell's offset and
+  the type is RELOC_DUMP_TO_DUMP_LV of its Lisp type (a symbol, a cons,
+  a string or a vectorlike), so the loader makes the object from the
+  word alone, as dump_make_lv_from_reloc does; a word naming an object
+  the loader makes holds that object's number, its place in the object
+  starts; RELOC_DUMP_TO_EMACS_LV names a subr or the main thread through
+  its copied record. The relocation loops take a mapped target with one
+  check that it is a cell (no `Result' until a check fails). The image
+  went from 25.5 MB to 20.5 MB (its 617,608 relocations from 7.4 MB to
+  2.5 MB; GNU's dump has 597,762), startup with the frozen runner's
+  command line from 148.8M instructions to 141.2M (GNU 98.5M; the
+  loader from 78.6M to 71.2M, the cons relocations 18.8M to 14.1M, the
+  vectors' 12.0M to 10.0M), and the cal-french-tests.el setup from
+  532.8M to 525.2M (GNU 507.6M). The probe of every symbol's state in
+  the process that dumped the loadup state and in one that loaded it
+  differs only in the allocation counters, the paths and the main
+  thread's and frame's addresses. The relocations' remaining cost is
+  the checks of each target (about 45 instructions a relocation against
+  pdumper.c's dozen, which trusts the dump). Local validation: the full
+  gate across its ten groups with the documented local skips; clippy
+  `-D warnings', rustfmt and `git diff --check' pass.
+- **Round 106: fns.c's sxhash.** `sxhash-eq', `sxhash-eql',
+  `sxhash-equal', `sxhash-equal-including-properties' and the hashes
+  the standard hash tables file a key under are fns.c's: sxhash_obj
+  (hash_string, sxhash_list, sxhash_vector over the (pseudo)vector's
+  size word and leading slots, sxhash_bool_vector, sxhash_bignum,
+  sxhash_float, a marker's buffer and byte position, an overlay's
+  extent and plist, a sub-char-table's 42, the address of a kind
+  `equal' compares only by `eq') within SXHASH_MAX_DEPTH and
+  SXHASH_MAX_LEN, sxhash_eq's XHASH with the type bits, hash_interval
+  over a string's intervals and SXHASH_REDUCE (new module
+  `primitives/sxhash.rs'). They were an FNV hash of each kind's own
+  encoding (a fixnum's and a symbol's printed names byte by byte, every
+  byte of a string); `sxhash-eq' of a cons hashed its contents, so it
+  changed when the cons was mutated, and
+  `sxhash-equal-including-properties' folded in the properties of
+  strings nested in the object, which hash_interval does not. An
+  `equal' table now files every key by its hash: records, markers,
+  overlays, char-tables, closures, buffers and lists headed by `keymap'
+  all went to one bucket that every lookup of such a key scanned. A
+  record literal still read as a reader form hashes as the record it is
+  `equal' to, a host record (a font, a tree-sitter node) by what
+  `equal' compares, a bignum in fixnum range as its fixnum and a symbol
+  with position as its bare symbol (as GNU's does while
+  `symbols-with-pos-enabled'; tables do so whatever the variable says,
+  so a key stays in the bucket of the keys `eq' to it).
+  `object-intervals' lists a string's intervals once their properties
+  are all removed (`((0 3 nil))'), where it gave nil. The loader finds
+  a native subr name's NUL with memchr and decodes the name as UTF-8
+  only when it is not ASCII, and the name accessor no longer decodes it
+  on each use. A 59-form probe gives GNU 30.2's output for every form
+  but the three whose hash includes the address of the symbol `face',
+  and seven more with integer property names match too; a batch test
+  pins 38 values. Startup with `-Q --batch --eval' went from 141.2M
+  instructions to 134.8M (the loader from 71.2M to 68.1M, its tables'
+  hashing 2.2M to 0.8M, the native subrs' names 4.3M to 2.8M;
+  `load_dumped_code' 24.5M to 21.5M), against GNU's 151.1M, 52.5M of
+  which is its one collection. Rounds 102 to 105 gave this command
+  line's figure as the frozen runner's and set it beside GNU's 98.5M,
+  which is GNU's startup less that collection (Emaxx collects nothing
+  during startup); the like-for-like comparison is below. The
+  cal-french-tests.el setup with the frozen runner's command line went
+  from 525.2M to 516.8M (GNU 507.6M). Local validation: the full gate
+  across its ten groups with the documented local skips; clippy `-D
+  warnings', rustfmt and `git diff --check' pass.
+- **Round 107: no list spelling of a vector.** `Value::list' made a
+  vector of a list whose first element is the symbol `vector-literal'
+  (the Rust spelling of a vector built through a list, left from when
+  vectors were lists), so a list a primitive built from Lisp data with
+  that head came back a vector: `(copy-sequence (list 'vector-literal
+  1))' and `(reverse (list 1 'vector-literal))' gave `[1]', and `(elt
+  '(vector-literal a b) 1)' signalled `arrayp' (`elt' read such a list
+  as a vector). `Value::to_vec' of a vector gave its slots after a
+  `vector-literal' element, which the code reading vectors as lists
+  stripped. A list is now a list, and `to_vec' takes a list only (a
+  vector signals `listp', as GNU's list walkers do). The places that
+  built vectors through the spelling make them with `Value::vector'
+  (`vector', `make-vector', `vconcat', `sort', `reverse' and
+  `copy-sequence' of a vector, `remove', key sequences and keyboard
+  macros, socket and interface addresses, JSON arrays, the unicode
+  property tables' value vectors, face vectors), and the ones that read
+  it test for a vector (coding systems' code spaces and designations,
+  translation-table targets, an old-style menu item's obsolete key
+  binding cache, which menu.c takes when its car is nil or a vector,
+  `this-command-keys-vector', the display property search). A batch
+  test pins GNU 30.2's output for 15 forms. With `to_vec' logging each
+  call on a vector, the Rust test suite and 167 of GNU's ERT files
+  (`test/src' and `test/lisp' top level, 3,756 tests, results identical
+  to round 106's binary) reached it from five places, each testing a
+  list's head (lambda expressions, autoloads, macro calls, a quoted
+  hash table literal and an eager-expanded `progn'), which a vector
+  fails either way. Local validation: the full gate across its ten
+  groups with the documented local skips; clippy `-D warnings', rustfmt
+  and `git diff --check' pass.
+- **Round 108: xfaces.c's Lisp face storage and attribute checks.**
+  `face--new-frame-defaults' (an `eq' table of each face's symbol to its
+  id and lface vector) and each frame's `face_hash_table' are the faces'
+  only storage, and `lface_id_to_name' (each face at its id, rebuilt from
+  the table after a load as init_xfaces does) the ids'. They were a
+  vector of face names searched by string comparison, a vector of
+  (name . lface) pairs in each frame, and the two hash tables rebuilt
+  entry by entry from those after every change; the image carried the
+  name vector as a root group of its own. Faces are looked up by their
+  symbols. `internal-make-lisp-face' is Finternal_make_lisp_face: a face
+  new to the table takes its id at once, so a frame-local face made by
+  setting an attribute is a face for new frames too (it was one only
+  after `internal-make-lisp-face'); `internal-merge-in-global-face'
+  merges into FRAME's definition (it took the selected frame's);
+  `make-terminal-frame' copies the selected frame's table and each
+  vector (Fcopy_hash_table and Fcopy_sequence). An unspecified attribute
+  set for new frames is stored as the keyword `:ignore-defface' (it was
+  the symbol `ignore-defface'). `internal-set-lisp-face-attribute'
+  checks each attribute as Finternal_set_lisp_face_attribute does and
+  signals with the value (signal_error): font.c's weight, slant and
+  width names, the underline and box plists, `:height' by a test merge
+  (merge_face_heights, a function called through safe_call) and the
+  default face's absolute height, the overline and strike-through
+  colors, an inheritance list's symbols, the stipple's bitmap spec, nil
+  colors (logged and taken as `unspecified'), and a font or fontset a
+  tty frame does not store; `merge-face-attribute' is merge_face_heights
+  too. A 30-form probe of the face storage and a 70-form probe of the
+  checks give GNU 30.2's output for every form; a batch test pins 21.
+  167 of GNU's ERT files (3,756 tests) give the same results as round
+  106's binary. Startup with `-Q --batch --eval' went from 134.8M
+  instructions to 130.1M (`tty-set-up-initial-frame-faces' 12.3M to
+  7.8M against GNU's 4.3M) and with the frozen runner's environment and
+  flags from 142.7M to 138.2M (GNU 157.5M, 105.0M of it outside its
+  collection); the cal-french-tests.el setup from 516.8M to 511.0M (GNU
+  507.6M). Local validation: the full gate across its ten groups with
+  the documented local skips; clippy `-D warnings', rustfmt and `git
+  diff --check' pass.
+- **Round 109: the loader's block registration and table check.** The
+  image's mapped cons, symbol, string, vector-block and large-vector
+  blocks enter the block registry in one call a kind
+  (`register_image_blocks'): under one lock, each of the registry's
+  three maps takes the kind's blocks, built in order, with BTreeMap's
+  `append', where `register_block_of' took the lock and walked each map
+  for every block's place. The check that each image table's keys are
+  aligned and strictly increasing is two folds that carry nothing from
+  one entry to the next (the bitwise OR of every offset, and each
+  adjacent pair's order), where one loop carried the previous offset; a
+  failure is still located after. Startup with `-Q --batch --eval' went
+  from 130.1M instructions to 127.0M (block registration 2.5M to 2.1M,
+  the tables' check 3.9M to 1.9M), with the frozen runner's environment
+  and flags from 138.2M to 135.0M (GNU 157.5M, 105.0M of it outside its
+  collection), and the cal-french-tests.el setup from 511.0M to 507.9M
+  (GNU 507.6M). Local validation: the full gate across its ten groups
+  with the documented local skips; clippy `-D warnings', rustfmt and
+  `git diff --check' pass.
+- **Round 110: filelock.c, shutdown's unlock and `file-writable-p'.**
+  Locks are filelock.c's (new module `primitives/filelock.rs'): a
+  symbolic link, named by `make-lock-file-name' (so
+  `lock-file-name-transforms' applies), to USER@HOST.PID:BOOT, the boot
+  time gnulib's get_boot_time (utmp's BOOT_TIME entry, then on Linux
+  the files only the boot touches and the clock less CLOCK_BOOTTIME),
+  with a nonce file renamed into place where links do not work
+  (renameat2 RENAME_NOREPLACE, else link and unlink). A lock is read
+  with readlinkat, a regular file's contents where it is not a link,
+  and parsed as current_lock_owner does (the CIFS U+F022 colon, an
+  overflowing pid as -1, nothing after the boot time); a lock of this
+  host whose process is dead or whose boot time is not this boot's is
+  removed; another's asks `ask-user-about-lock' with USER@HOST (pid
+  PID), whose t takes it. lock_file asks
+  `userlock--ask-user-about-supersession-threat' first when the
+  visiting buffer's file changed on disk, even with `create-lockfiles'
+  nil; `unlock-file' runs under internal_condition_case for `file-error'
+  and hands one to `userlock--handle-unlock-error'; `file-locked-p'
+  signals report_file_errno's "Testing file lock"; `lock-buffer' takes
+  its FILE and `lock-buffer' and `unlock-buffer' act on a modified
+  buffer's file truename only. The lock was a regular file holding
+  USER@HOST.PID, always `.#NAME' beside the file; each lock computed the
+  login name again (getpwuid: an nscd connection and two reads of
+  /etc/passwd a lock), another process's lock was passed over in
+  silence, a malformed one signalled without errno text, an unlock
+  failure raised, `lock-buffer' ignored its argument and
+  `unlock-buffer' unlocked an unmodified buffer's file. The first
+  change of a file's buffer locks it through Flock_file, whose errors
+  propagate (they were dropped) and whose lock_file makes the one
+  supersession check; `set-buffer-modified-p', `write-region' (it
+  unlocks whatever `create-lockfiles' says, and no longer unlocks the
+  visited file again after a visiting write) and `kill-buffer' use the
+  same entry points. `kill-emacs' unlocks every modified buffer's file
+  (shut_down_emacs's unlock_all_files: a batch run left them), and a
+  batch top-level error ends in cmd_error_internal's Fkill_emacs (-1):
+  `kill-emacs-hook' runs, which it did not. `file-writable-p' is
+  fileio.c's: faccessat W_OK, and for a missing file W_OK | X_OK on its
+  directory. It opened the file for writing, or created and deleted a
+  `.writable-probe-' file in the directory (changing the directory's
+  modification time), and answered nil where faccessat says root may
+  write (a sysfs directory). A batch test pins GNU 30.2's values for
+  ten lock cases and a CLI test the error exit's hook and unlock; the
+  lock lifecycle test asks `file-symlink-p' (GNU's `file-exists-p' of a
+  lock is nil: the link dangles). A 61-case probe gives GNU's output
+  but for a raw-byte lock target: Emaxx writes a unibyte file name's
+  bytes 128-255 as UTF-8 of their private-use characters wherever a
+  Lisp file name reaches the host (`write-region', `make-directory',
+  `make-symbolic-link'), where ENCODE_FILE passes them through (a
+  finding below). icalendar-tests.el's system calls now include
+  GNU's 411 symlinks (205 EEXIST) and 411 readlinkat, no nscd
+  connection or /etc/passwd read, and 411 unlinks (616: 205 were
+  writability probes). Round 107's frozen run gave
+  `icalendar-import-rrule' 576 ms and `icalendar-import-non-recurring'
+  537 ms (round 106's: 96 and 50; GNU 52 and 19), which instruction
+  counts (1.24 times GNU's) do not explain; its GNU setup medians were
+  17% slower than round 106's too, and round 109's run gave 152 and 79
+  (GNU 90 and 30): one run's noise. 167 of GNU's ERT files (3,756 tests)
+  give round 108's results. Local validation: the full gate across its
+  ten groups with the documented local skips, and the seven integration
+  targets; clippy `-D warnings', rustfmt and `git diff --check' pass.
+- **The frozen run's timings at round 97, and where the per-file cost
+  goes.** Round 97's frozen run (gate profile; summary.json's
+  `timings') puts the 519 files' summed wall time at 1.052 times GNU's
+  (294.5 s against 279.9 s): setup 1.270 (58.1 s against 45.7 s, about
+  24 ms a file), the test bodies 1.010. The 269 files whose GNU body
+  takes 8 ms or less take a median 13 ms against 5 ms. The largest body
+  excesses are comp-tests (+2.8 s), tramp-tests (+2.2 s),
+  package-tests (+1.9 s), semantic-utest-ia (1.93 times), mule-tests
+  (2.23), emacs-module-tests, mml-sec-tests, edebug-tests (1.65),
+  electric-tests (2.15) and undo-tests (1.61). With the runner's own
+  command line (tools: scratchpad trivial.sh), cal-french-tests.el takes
+  569.7M instructions to its loaded marker against GNU's 508.1M and
+  92.9M for its body against 64.6M. The body is nearly all
+  `ert-select-tests' calling `apropos-internal' with "" over every
+  symbol (twice a file: the runner's list of tests loaded before the
+  file is the other), 55.6M a call against 42.8M (2,794 instructions a
+  symbol against 2,143): the byte-code lambda's `string-match' costs
+  about 1,400 against 1,000 (the matcher itself 221 against 348, the
+  setup around it the rest: `string_match_1' 345 against 166,
+  `compile_pattern' 180 against 132, `case-fold-search' through the
+  buffer-local lookup about 150 where GNU reads a BVAR, the StringText,
+  Canon and register adapters), and the calls into and out of byte-code
+  about 1,420 against 960 (`call_plain' 161 a subr call where GNU's
+  Bcall and funcall_subr take about 70). Loading the runner and the
+  test file (both source) takes 220M against 111.5M: 37M of it
+  collecting where GNU collects in the earlier stages (its setup
+  collects 163.8M in all, Emaxx 72M), byte-code 38.9M against 21.5M,
+  matching 39.4M against 29.2M, the reader 20.3M against 18.1M, host
+  allocation 13.7M against 1.8M, and `assoc-string' 8.8M against
+  nothing: it folds both sides with a full downcase whose word test
+  scans `syntax_word_chars', a list kept beside the syntax table, where
+  minibuf.c's Fassoc_string calls `compare-strings' (upcasing a pair of
+  characters only where they differ) on each element of the list.
+  Writing a file with `with-temp-file' locks it: GNU's filelock.c makes
+  the lock a symlink to "USER@HOST.PID:BOOT" with the login name it
+  holds, and reads no account file; Emaxx writes a regular file and
+  reads /etc/passwd twice a lock (system calls are otherwise even, 475
+  in the body against GNU's 502).
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -7590,10 +8021,145 @@ passed on its first attempt (run 40294012283).
 **On `c2ebbb7`** (round 97): frozen failed only GNU's known oracle flake
 (`eglot-test-rust-completion-exit-function` failed in GNU; Emaxx 7,670
 passed with 0 unexpected, GNU 7,669 with 1 unexpected), and its failed
-job was rerun (run 40313513267, attempt 2, still running); the Rust gate
-passed (run 40313509629).
+job's rerun passed (run 40313513267, attempt 2); the Rust gate passed
+(run 40313509629).
+**On `2a230c6`** (round 98): full Rust gate passed (run 40322773968),
+frozen passed on its first attempt (run 40322787666); PR #109 merged
+rounds 91 to 98 into main (`2b01388`).
+**On `7130092`** (round 99): full Rust gate passed (run 40415810583),
+frozen passed on its first attempt (run 40415814171).
+**On `2d968ce`** (round 100): full Rust gate passed (run 40421848778),
+frozen passed on its first attempt (run 40421854122).
+**On `f587724`** (round 101): full Rust gate passed (run 40426750729),
+frozen passed on its first attempt (run 40426753917).
+**On `daf859c`** (round 102): full Rust gate passed (run 40433085141),
+frozen passed on its first attempt (run 40433088195).
+**On `837e119`** (round 103): full Rust gate passed (run 40440572554),
+frozen passed on its first attempt (run 40440575378).
+**On `b7b95e2`** (rounds 104 and 105): full Rust gate passed (run
+40448910038), frozen passed on its first attempt (run 40448912084).
+**On `acd67d2`** (round 106): full Rust gate passed (run 40453519173),
+frozen passed on its first attempt (run 40453521629).
+**On `b2c904e`** (round 107): frozen passed on its first attempt (run
+40460982714); the Rust gate failed one integration control (run
+40460978739), `c_owned_switches_and_startup_arguments_agree_with_gnu',
+on the backtrace of `--batch --no': the frame of a byte-code closure
+prints cl-print's `#<bytecode %#x>' of its `sxhash', which since round
+106 is fns.c's and so mixes in object addresses, and Emaxx's came out
+negative (`-0x...') where the test's normalization replaced only the
+digits after `0x' (round 106's run drew a positive one). GNU's own
+byte-code objects hash negative as often (`(sxhash-equal
+(symbol-function 'cl-print-object))' in three runs of GNU 30.2), and
+the frame the oracle prints is of native code. The normalization takes
+either sign as the one token (`tests/cli_parity.rs'); six runs of the
+target pass.
+**On `446b1b9`** (round 108 and the `cli_parity' fix): full Rust gate
+passed (run 40465961198), frozen passed on its first attempt (run
+40465971582).
+**On `620f3c9`** (round 109): full Rust gate passed (run 40470123265),
+frozen passed on its first attempt (run 40470126251).
 
 **Findings recorded, not fixed:**
+- **Setup's time at equal instructions (round 110).** The
+  cal-french-tests.el setup with the frozen runner's command line takes
+  507.9M instructions against GNU's 507.6M, but 0.19 s of user time
+  against 0.13 s (eight runs each, release build with line tables; the
+  gate build is the same, 0.24 s wall against 0.23 s), 7,310 minor
+  faults against 6,180. Under callgrind's cache simulation Emaxx takes
+  2.30M first-level instruction-cache misses against GNU's 0.31M, spread
+  thin (the most, `run_verified', 1.7%), with fewer data-cache misses
+  (3.6M against 4.6M) and as many last-level ones; its text is 13.4 MB
+  against GNU's 3.4 MB, and it makes 6.3M indirect branches against
+  3.8M (the collector's `trace_pending' 2.3M; the loader's
+  `relocate_conses' mispredicts three in four of its 0.29M). The frozen
+  runs put the 519 files' setup at 1.21 to 1.22 times GNU's (rounds 106,
+  107 and 109) while the test bodies are 0.96 to 1.01. The workflow's
+  `ordinary-samples' perf run of the file (run 40471735423) samples at
+  199 Hz and so gives the 142 ms setup about 28 samples: too few to
+  place it.
+- **A unibyte file name's raw bytes (round 110).** A Lisp file name
+  reaches the host through its text, in which a raw byte 128-255 is a
+  private-use character, so `(write-region "" nil "/tmp/a\\357")'
+  makes a file named a + EE 83 AF where GNU's ENCODE_FILE passes a
+  unibyte string's bytes through (a + EF); `make-directory' and
+  `make-symbolic-link''s target do the same. Every file primitive that
+  takes the name as text shares this.
+- **A test file's setup by stage, collections apart (round 106).** With
+  the frozen runner's command line (scratchpad `phases100.sh', and
+  startup with no file loaded), each stage's cumulative instructions,
+  then the same less the collections (`garbage_collect' in GNU,
+  `emaxx_native_gc_collect' here):
+
+  | stage | Emaxx | GNU | Emaxx mutator | GNU mutator |
+  |---|---|---|---|---|
+  | startup | 142.7M | 157.5M | 142.7M | 105.0M |
+  | loading ert | 311.8M | 385.3M | 277.4M | 221.5M |
+  | loading the runner | 403.8M | 455.4M | 369.5M | 291.6M |
+  | loading cal-french-tests.el | 516.8M | 507.6M | 444.3M | 343.8M |
+
+  GNU collects three times by the end of loading ert (163.8M, 52.5M of
+  it in startup) and not again; Emaxx once by then (34.4M) and once
+  more loading the test file (72.5M in all). The totals are 1.8 percent
+  apart only because GNU's collections cost 91M more; the mutators are
+  100.5M apart, 37.7M of it in startup (the loader 68.1M and
+  `load_dumped_code' 21.5M against GNU's `pdumper_load' 53.4M), then
+  18.2M, 22.0M and 22.6M for the three loads. The collection schedule
+  (GNU's gc-cons-threshold of allocation since the last collection) has
+  not been compared.
+- **A test file's setup in wall time, and what the instruction count
+  misses (round 102).** With the frozen runner's command line,
+  cal-french-tests.el's setup takes 137 to 148 ms against GNU's 118 to
+  120 ms (best of five, interleaved), 1.16 to 1.23 times, where the
+  instructions are 1.07 times (541.4M against 507.6M). Callgrind's cache
+  and branch simulation of the same setup: I1 misses 2.12M against
+  0.31M (6.8 times; the largest single function, glibc's `_int_malloc',
+  33.6K, then a long tail of a few thousand to 28K each), last-level
+  misses 715K against 486K, D1 misses 4.03M against 4.56M, mispredicted
+  branches 5.04M against 4.50M. A cycle model of instructions plus 10
+  an I1 or D1 miss, 100 a last-level miss and 15 a mispredict gives
+  749M against 674M, the measured ratio. The text segment is 13.4 MB
+  against GNU's 3.4 MB. The image is 25.5 MB against GNU's 17.7 MB: its
+  relocation table is 7.2 MB (597,441 entries of 12 bytes: the field,
+  the code and an object number), where pdumper.c's `struct dump_reloc'
+  is 4 bytes (a 28-bit offset and the type, the target being the word
+  itself), and its 133 cons blocks hold 177,409 conses in 4.36 MB (the
+  conses are 2.84 MB). The object number is needed while symbols and
+  the other numbered objects are rebuilt rather than mapped; mapping
+  the symbols in place is the step that lets the table shrink to
+  GNU's form.
+- **Where a test file's setup goes, mutator and collector apart (round
+  100).** With the frozen runner's command line, each stage's
+  instructions less its collections (`garbage_collect' in GNU,
+  `emaxx_native_gc_collect' here):
+
+  | stage | Emaxx | GNU | gap |
+  |---|---|---|---|
+  | startup (`--batch --eval nil') | 162.1M | 98.5M | +63.6M |
+  | loading ert | +156.2M | +123.0M | +33.2M |
+  | loading json | +9.0M | +7.6M | +1.4M |
+  | loading the runner (203 lines of .el) | +85.0M | +62.5M | +22.5M |
+  | loading cal-french-tests.el | +78.8M | +52.2M | +26.6M |
+
+  The totals hide this: GNU collects three times in that setup for
+  163.8M (one in startup itself, 52.6M, below init_faces_initial), Emaxx
+  twice for 71.7M, so the setup's totals are 507.6M against 562.8M while
+  the mutators are 343.8M against 491.1M. Both allocate alike (the
+  runner's load adds 12.3K conses here against 14.9K, 5,795 vector
+  cells against 5,815, 68.7K string bytes against 68.6K); only where the
+  collections fall differs. Startup is the largest gap. GNU's 98.5M is
+  31.7M of dynamic linking and 53.4M of `pdumper_load' (597,762
+  relocations at 37 instructions, 7.9M opening 92 .eln files, 7.0M for
+  6,056 `dynlib_sym's), about 13M of Lisp. Here `pdumper_load' is
+  120.3M: `Loader::load' 82.8M (the cons, string and vector areas' 666K
+  relocations at about 70 instructions with their checks;
+  `symbol_of_record' 7.3M for 18,172 symbols; `value_at' 5.3M, most of
+  it the symbols' three fields; `install_root_group' 4.9M;
+  `image_c_string' 4.6M for 11,802 native subr names), `load_dumped_code'
+  24.5M, `install_symbol' 5.0M (its `install_watchers' 1.8M, a search of
+  the watcher list per symbol). The symbols are the next part to map in
+  place (their cells in the allocator's symbol blocks, each word a
+  relocation, the initial obarray's buckets restored), about 17M of the
+  gap; the relocation loop itself is the next.
 - `features`, `values` and `top-level` are special variables in Emaxx
   (`special-variable-p` answers t) where GNU unmarks them after their
   DEFVARs (`Fmake_var_non_special (Qfeatures)` in fns.c, `values` in

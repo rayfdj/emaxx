@@ -980,10 +980,7 @@ fn frame_or_buffer_changed(
     let state = if reusable {
         old_state
     } else {
-        Value::list(
-            std::iter::once(Value::symbol("vector-literal"))
-                .chain(std::iter::repeat_n(Value::symbol("lambda"), required + 20)),
-        )
+        Value::vector(std::iter::repeat_n(Value::symbol("lambda"), required + 20))
     };
     for (index, value) in current.into_iter().enumerate() {
         aset_vector_value(&state, index, value)?;
@@ -4263,10 +4260,7 @@ define_dispatch!(
                             .kbd_macro_definition
                             .truncate(state.kbd_macro_committed_len);
                     }
-                    let last_macro = Value::list(
-                        std::iter::once(Value::symbol("vector-literal"))
-                            .chain(interp.kbd_macro_definition.iter().cloned()),
-                    );
+                    let last_macro = Value::vector(interp.kbd_macro_definition.iter().cloned());
                     interp.set_variable("last-kbd-macro", last_macro, env);
                 }
                 interp.set_variable("unread-command-events", Value::Nil, env);
@@ -6885,8 +6879,8 @@ fn key_description(
     prefix: Value,
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    let nkeys = sequence_length_value(interp, &keys)?;
-    let nprefix = sequence_length_value(interp, &prefix)?;
+    let nkeys = sequence_length_value(&keys)?;
+    let nprefix = sequence_length_value(&prefix)?;
     let meta_prefix_char = interp
         .lookup_var("meta-prefix-char", env)
         .unwrap_or(Value::Integer(KEY_DESCRIPTION_META_PREFIX));

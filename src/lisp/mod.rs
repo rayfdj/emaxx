@@ -728,10 +728,10 @@ fn extract_file_local_variable(source: &str, variable: &str) -> Option<String> {
         }
 
         let candidate = value.as_ref().expect("file-local value was initialized");
-        match reader::Reader::new(candidate)
+        let read = reader::Reader::new(candidate)
             .read()
-            .map_err(LispError::into_kind)
-        {
+            .map_err(LispError::into_kind);
+        match read {
             Ok(Some(_)) => return value,
             Err(types::LispErrorKind::EndOfInput) | Ok(None) => {}
             Err(_) => return value,
@@ -1610,7 +1610,7 @@ mod tests {
                 slots: vec![
                     super::types::Value::Integer(0),
                     super::types::Value::String(String::new().into()),
-                    super::types::Value::list([super::types::Value::symbol("vector-literal")]),
+                    super::types::Value::vector([]),
                     super::types::Value::Integer(0),
                     callable_looking_data,
                 ],
