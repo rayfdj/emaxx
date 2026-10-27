@@ -7316,6 +7316,48 @@ setup_process_coding_systems's check now refuses). A 13-form
   again failed once under a loaded machine and passes alone), and the
   seven integration targets; clippy `-D warnings', rustfmt and `git
   diff --check' pass.
+- **Round 113: lisp.h's FOR_EACH_TAIL, and `assoc''s TESTFN.**
+  `TailWalk' is FOR_EACH_TAIL_INTERNAL's iterator (Brent's tortoise on
+  GNU's `{ tail, 2, 0, 2 }' schedule, maybe_quit where it quits), so a
+  cycle is found at the cell GNU finds it and `circular-list' carries
+  that tail: every list walker reported `(circular-list "Circular
+  list")' from its own schedule. `assq' and `rassq' (Fassq, Frassq)
+  test a cons element's car or cdr by the words (EQ), where each
+  element decoded three object kinds (483M instructions to 238M in
+  semantic-utest-ia's doublens test; GNU 224M), and CHECK_LIST_END
+  reports the alist, not its tail. `assoc' and `rassoc' are Fassoc
+  and Frassoc: an `eq'-comparable KEY without TESTFN is Fassq's walk,
+  EQ is tried before Fequal, and TESTFN is called with the element's
+  car and then KEY (it was called with KEY first: `(assoc 2 '((1 . a)
+  (3 . b)) #'<)' gave `(3 . b)', GNU `(1 . a)'). `plist-get' (both
+  FOR_EACH_TAIL_SAFE walks), `plist-put' and `plist-member' with and
+  without PREDICATE step two cells as fns.c does and call PREDICATE
+  with the property first; `widget-get', `widget-put' and
+  `widget-apply' are Fwidget_get (plist_member, then the `widget-type'
+  of the type by Fget, CHECK_CONS of anything else), Fwidget_put
+  (plist_put) and Fwidget_apply (Fapply of the value even when nil).
+  `safe-length' counts FOR_EACH_TAIL_SAFE's steps (it counted to a
+  different tortoise, so `last' of a circular list differed), and
+  `length<', `length>' and `length=' are length_internal: CHECK_FIXNUM
+  of LENGTH, a short LENGTH walked with no cycle check (`(length< l 3)'
+  on a dotted or circular list answers as GNU's does where it
+  signalled), its `int' truncation kept. `nreverse''s list case is
+  Fnreverse's (a cycle is a next cell that is SEQ again; CHECK_LIST_END
+  against SEQ; `arrayp' for a non-sequence), `copy-sequence' and
+  `append' walk a list from its cdr as Fcopy_sequence and
+  concat_to_list do, `nconc' is CHECK_CONS and FOR_EACH_TAIL, `delq'
+  and `delete' are FOR_EACH_TAIL with CHECK_LIST_END against the list
+  as it now begins (`delete' signals `sequencep' for a non-sequence),
+  and `elt' is CHECK_ARRAY (SEQUENCE, Qsequencep) before Faref. A
+  probe of 37 list functions over a proper, dotted, two- and
+  three-cell circular, circular alist and non-list input, `assoc' and
+  plist predicates, and the widget functions gives GNU 30.2's output.
+  167 of GNU's ERT files (3,756 tests) give round 112's results.
+  Local validation: the full gate across its ten groups with the
+  documented local skips (`just_this_one_wait_still_notifies_an_exited_distractor'
+  failed once more under a loaded machine and passes alone), and the
+  seven integration targets; clippy `-D warnings', rustfmt and `git
+  diff --check' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -8141,6 +8183,13 @@ frozen passed on its first attempt (run 40470126251).
 **On `d2b6fb8`** (round 110): full Rust gate passed (run 40476730260),
 frozen passed on its first attempt (run 40476733898); PR #110 merged
 rounds 99 to 110 into main (`9ed0ceb`).
+**On `97c936a`** (round 111): full Rust gate passed (run 40491989407);
+frozen's first attempt (run 40491995199) matched 7,927 of 7,928 outcomes,
+the one mismatch GNU's `eglot-test-rust-completion-exit-function'
+failing with a `jsonrpc-error' from rust-analyzer while Emaxx passed (the
+recorded oracle flake), and was rerun once. Its timings: setup 75.9 s
+against 60.9 s (1.246), test bodies 257.3 s against 261.5 s (0.984), in
+all 1.031.
 
 **Findings recorded, not fixed:**
 - **The frozen run times the gate profile (round 112).** The frozen

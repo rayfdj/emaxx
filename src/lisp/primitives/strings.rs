@@ -985,31 +985,30 @@ pub(crate) fn nreverse_sequence_value(value: &Value) -> Result<Value, LispError>
             Ok(*value)
         }
         Kind::Nil | Kind::Cons(_) => nreverse_list_cells(value),
-        _ => Err(LispError::WrongTypeArgument("sequencep".into(), *value)),
+        _ => Err(LispError::WrongTypeArgument("arrayp".into(), *value)),
     }
 }
 
+/// fns.c:Fnreverse's list case: each cdr pointed back in place (Fsetcdr),
+/// a cycle found when a next cell is SEQ again, and CHECK_LIST_END
+/// against SEQ, by then the reversed list's last cell.
 fn nreverse_list_cells(value: &Value) -> Result<Value, LispError> {
-    let mut current = *value;
-    let mut reversed = Value::Nil;
-    let mut seen = crate::lisp::types::CycleGuard::new();
-    loop {
-        let cell = match current.kind() {
-            Kind::Nil => return Ok(reversed),
-            Kind::Cons(cell) => cell,
-            other => return Err(LispError::WrongTypeArgument("listp".into(), other.value())),
-        };
-        if seen.step(crate::lisp::types::ConsCell::identity(&cell)) {
-            return Err(LispError::SignalValue(Value::list([
-                Value::Symbol("circular-list".into()),
-                Value::String("Circular list".into()),
-            ])));
-        }
+    let seq = *value;
+    let mut prev = Value::Nil;
+    let mut tail = seq;
+    while let Some(cell) = tail.cons_ref() {
         let next = cell.cdr.get();
-        cell.cdr.set(reversed);
-        reversed = Value::Cons(cell);
-        current = next;
+        if next.word() == seq.word() {
+            return Err(crate::lisp::types::circular_list(seq));
+        }
+        tail.set_cdr(prev)?;
+        prev = tail;
+        tail = next;
     }
+    if !tail.is_nil() {
+        return Err(LispError::WrongTypeArgument("listp".into(), seq));
+    }
+    Ok(prev)
 }
 
 /// A property list's pairs: any object names a property, as textprop.c

@@ -533,25 +533,20 @@ pub(crate) fn plist_type_error(plist: &Value) -> LispError {
     ]))
 }
 
+/// fns.c:Fsafe_length: the steps FOR_EACH_TAIL_SAFE takes, which stops
+/// at a non-cons or where it finds a cycle.
 pub(crate) fn safe_list_length(list: &Value) -> i64 {
     let mut len = 0i64;
-    let mut current = *list;
-    let mut seen = crate::lisp::types::CycleGuard::new();
-    loop {
-        match current.kind() {
-            Kind::Cons(cons_cell) => {
-                let cdr = &cons_cell.cdr;
-                let cell_id = crate::lisp::types::ConsCell::identity(&cons_cell);
-                if seen.step(cell_id) {
-                    return len;
-                }
-                len += 1;
-                current = cdr.get();
-            }
-            Kind::Nil => return len,
-            _ => return len,
+    let mut tail = *list;
+    let mut walk = crate::lisp::types::TailWalk::new(tail);
+    while let Some(cell) = tail.cons_ref() {
+        len += 1;
+        tail = cell.cdr.get();
+        if walk.cycled_no_quit(tail) {
+            break;
         }
     }
+    len
 }
 
 pub(crate) fn nthcdr_value(
@@ -1376,25 +1371,23 @@ pub(crate) fn parse_remote_file_name(path: &str) -> Option<RemoteFileNameParts> 
     })
 }
 
+/// fns.c:Fnconc's walk of one argument: CHECK_CONS, then the last cons
+/// FOR_EACH_TAIL reaches.
 pub(crate) fn last_nconc_cell(value: &Value) -> Result<Value, LispError> {
-    let mut current = *value;
-    let mut seen = crate::lisp::types::CycleGuard::new();
-    loop {
-        let Some((car, cdr)) = (current.clone()).cons_cells() else {
-            return Err(LispError::WrongTypeArgument("consp".into(), current));
-        };
-        let cell_id = car.cell_id();
-        if seen.step(cell_id) {
-            return Err(LispError::SignalValue(Value::list([
-                Value::symbol("circular-list"),
-                Value::string("Circular list"),
-            ])));
-        }
-        match cdr.get().kind() {
-            Kind::Cons(_) => current = cdr.get(),
-            _ => return Ok(current),
+    if !value.is_cons() {
+        return Err(LispError::WrongTypeArgument("consp".into(), *value));
+    }
+    let mut tem = *value;
+    let mut tail = tem;
+    let mut walk = crate::lisp::types::TailWalk::new(tem);
+    while let Some(cell) = tem.cons_ref() {
+        tail = tem;
+        tem = cell.cdr.get();
+        if walk.cycled_no_quit(tem) {
+            return Err(crate::lisp::types::circular_list(tem));
         }
     }
+    Ok(tail)
 }
 
 /// fns.c:bool_vector_cmp: the lexicographic order of the bits, the equal
@@ -1516,38 +1509,6 @@ pub(crate) fn function_value_p(interp: &Interpreter, value: &Value, env: &Env) -
     let autoloaded_function =
         symbol.is_some() && autoload_parts(&resolved).is_some_and(|(_, _, kind)| kind.is_nil());
     callable_value_p(interp, &resolved, env) || autoloaded_function
-}
-
-pub(crate) fn value_matches_with_test(
-    interp: &mut Interpreter,
-    left: &Value,
-    right: &Value,
-    testfn: Option<&Value>,
-    env: &mut Env,
-) -> Result<bool, LispError> {
-    match testfn.filter(|value| !value.is_nil()).map(|v| v.kind()) {
-        None => Ok(values_eq_in_env(interp, left, right, env)),
-        Some(kind @ (Kind::Symbol(_) | Kind::BuiltinFunc(_))) => {
-            let name = match &kind {
-                Kind::Symbol(name) => name.as_str(),
-                Kind::BuiltinFunc(subr) => subr.as_str(),
-                _ => unreachable!("a symbol or a subr"),
-            };
-            match name {
-                "eq" => Ok(values_eq_in_env(interp, left, right, env)),
-                "eql" => Ok(values_eql(left, right)),
-                "equal" => values_equal(interp, left, right),
-                _ => {
-                    let func = resolve_callable(interp, testfn.expect("checked Some"), env)?;
-                    Ok(invoke_function_value(interp, &func, &[*left, *right], env)?.is_truthy())
-                }
-            }
-        }
-        Some(other) => {
-            let func = resolve_callable(interp, &other.value(), env)?;
-            Ok(invoke_function_value(interp, &func, &[*left, *right], env)?.is_truthy())
-        }
-    }
 }
 
 pub(crate) fn invoke_function_value(

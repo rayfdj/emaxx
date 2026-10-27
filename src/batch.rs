@@ -3531,6 +3531,106 @@ FORM"##
     }
 
     #[test]
+    fn list_walks_are_for_each_tail_and_assoc_calls_testfn_with_the_element_first() {
+        // lisp.h:FOR_EACH_TAIL's tortoise finds a cycle where GNU finds it
+        // and circular_list reports that tail; CHECK_LIST_END reports the
+        // list or tail each function names; FOR_EACH_TAIL_SAFE counts
+        // `safe-length'; length_internal answers `length<' without a cycle
+        // check for a short LENGTH.  fns.c calls an `assoc' TESTFN and a
+        // plist PREDICATE with the element first.
+        run_with_large_stack(|| {
+            let emacs_repo = compat::project_root().join("../emacs");
+            let options = BatchRunOptions {
+                load_path: compat::emaxx_upstream_load_path(&emacs_repo)
+                    .expect("upstream load path"),
+                ..Default::default()
+            };
+            let mut interpreter =
+                initialize_batch_interpreter(&options).expect("init batch interpreter");
+            let mut env = crate::lisp::types::Env::new();
+            let mut forms = Reader::new(
+                r##"(defmacro emaxx-probe-or-error (form)
+                     `(condition-case e ,form (error (list 'ERR e))))
+FORM"##
+                    .replace("FORM", r##"(let* ((out nil)
+       (circ (lambda (n) (let ((l (number-sequence 1 n))) (setcdr (last l) l) l)))
+       (circa (lambda (n) (let ((l (mapcar (lambda (i) (cons i i)) (number-sequence 1 n))))
+                            (setcdr (last l) l) l)))
+       (inputs (list (lambda () (list 1 2 3 4)) (lambda () (cons 1 (cons 2 3)))
+                     (lambda () (funcall circ 2)) (lambda () (funcall circ 3))
+                     (lambda () (funcall circa 3)) (lambda () 7)))
+       (fns (list (lambda (l) (assq 'z l)) (lambda (l) (rassq 'z l)) (lambda (l) (assoc 'z l))
+                  (lambda (l) (rassoc 'z l)) (lambda (l) (assoc "z" l)) (lambda (l) (assoc 'z l #'eq))
+                  (lambda (l) (memq 9 l)) (lambda (l) (memql 9 l)) (lambda (l) (member 9 l))
+                  (lambda (l) (delq 9 l)) (lambda (l) (remq 9 l)) (lambda (l) (delete 9 l))
+                  (lambda (l) (length l)) (lambda (l) (safe-length l)) (lambda (l) (proper-list-p l))
+                  (lambda (l) (nthcdr 10 l)) (lambda (l) (nth 10 l)) (lambda (l) (last l))
+                  (lambda (l) (reverse l)) (lambda (l) (copy-sequence l)) (lambda (l) (append l nil))
+                  (lambda (l) (mapcar #'identity l)) (lambda (l) (plist-get l 'z))
+                  (lambda (l) (plist-member l 'z)) (lambda (l) (plist-put l 'z 1))
+                  (lambda (l) (plist-get l 'z #'eq)) (lambda (l) (plist-member l 'z #'eq))
+                  (lambda (l) (plist-put l 'z 1 #'eq)) (lambda (l) (length< l 3))
+                  (lambda (l) (length> l 2)) (lambda (l) (length= l 4)) (lambda (l) (take 9 l))
+                  (lambda (l) (elt l 9)) (lambda (l) (nreverse l)) (lambda (l) (sort l #'<))
+                  (lambda (l) (alist-get 'z l)) (lambda (l) (nconc l (list 5))))))
+  (dolist (f fns)
+    (push (mapcar (lambda (mk) (emaxx-probe-or-error (funcall f (funcall mk)))) inputs) out))
+  (push (list (assoc 2 '((1 . a) (3 . b)) #'<)
+              (let (seen) (assoc 'k '((x . 1)) (lambda (a b) (push (list a b) seen) nil)) seen)
+              (let (seen) (plist-get '(a 1 b 2) 'b (lambda (a b) (push (list a b) seen) (eq a b)))
+                   seen)
+              (let (seen) (plist-member (list 'a 1 'b 2) 'b (lambda (a b) (push (list a b) seen) (eq a b)))
+                   seen)
+              (let ((l (list 'a 1 'b 2)))
+                (list (plist-put l 'b 9 #'equal) (plist-put l 'c 3 #'equal) l))
+              (emaxx-probe-or-error (plist-put (list 'a) 'b 1 #'equal))
+              (emaxx-probe-or-error (plist-put (list 'a 1 'b) 'c 1 #'equal))
+              (emaxx-probe-or-error (plist-put 7 'c 1 #'equal))
+              (plist-member (list 'a 1 'b) 'c #'equal)
+              (emaxx-probe-or-error (elt (record 'r 1) 0))
+              (emaxx-probe-or-error (length< '(1 2) 1.0))
+              (length< '(1 2) (expt 2 40))
+              (emaxx-probe-or-error (assq 'x '(a . b)))
+              (assq 1.0 (list (cons 1.0 'x)))
+              (let ((f 1.5)) (assq f (list (cons f 'x))))
+              (assq nil '(nil (nil . 2)))
+              (assq (expt 2 70) (list (cons (expt 2 70) 1))))
+        out)
+  (put 'emaxx-w1 'widget-type '(emaxx-w0 :p 1 :q 2))
+  (put 'emaxx-w2 'widget-type '(emaxx-w1 :q 3))
+  (push (list (widget-get '(emaxx-w2 :r 4) :r) (widget-get '(emaxx-w2) :q)
+              (widget-get '(emaxx-w2) :p) (widget-get '(emaxx-w2) :zz) (widget-get nil :a)
+              (emaxx-probe-or-error (widget-get 7 :a))
+              (emaxx-probe-or-error (widget-get '(7) :a))
+              (emaxx-probe-or-error (widget-get '(emaxx-w2 :a . 5) :a))
+              (emaxx-probe-or-error (widget-get '(emaxx-w2 :b . 5) :a))
+              (let ((w (list 'emaxx-w2 :a 1))) (list (widget-put w :a 2) (widget-put w :b 3) w))
+              (emaxx-probe-or-error (widget-put 7 :a 1))
+              (widget-apply '(emaxx-w2 :f list) :f 1 2)
+              (emaxx-probe-or-error (widget-apply '(emaxx-w2) :nof 1 2)))
+        out)
+  (prin1-to-string (nreverse out)))"##)
+                    .as_str(),
+            )
+            .read_all()
+            .expect("read list probe");
+            let probe = forms.pop().expect("probe form");
+            interpreter
+                .eval(&forms[0], &mut env)
+                .expect("define the probe's macro");
+            let printed = interpreter
+                .eval(&probe, &mut env)
+                .expect("evaluate list probe");
+            assert_eq!(
+                lisp::primitives::string_like(&printed)
+                    .expect("printed")
+                    .text,
+                r##"((nil (ERR (wrong-type-argument listp (1 2 . 3))) (ERR (circular-list (1 2 1 2 . #2))) (ERR (circular-list (3 1 2 3 1 . #2))) (ERR (circular-list ((3 . 3) (1 . 1) (2 . 2) (3 . 3) (1 . 1) . #2))) (ERR (wrong-type-argument listp 7))) (nil (ERR (wrong-type-argument listp (1 2 . 3))) (ERR (circular-list (1 2 1 2 . #2))) (ERR (circular-list (3 1 2 3 1 . #2))) (ERR (circular-list ((3 . 3) (1 . 1) (2 . 2) (3 . 3) (1 . 1) . #2))) (ERR (wrong-type-argument listp 7))) (nil (ERR (wrong-type-argument listp (1 2 . 3))) (ERR (circular-list (1 2 1 2 . #2))) (ERR (circular-list (3 1 2 3 1 . #2))) (ERR (circular-list ((3 . 3) (1 . 1) (2 . 2) (3 . 3) (1 . 1) . #2))) (ERR (wrong-type-argument listp 7))) (nil (ERR (wrong-type-argument listp (1 2 . 3))) (ERR (circular-list (1 2 1 2 . #2))) (ERR (circular-list (3 1 2 3 1 . #2))) (ERR (circular-list ((3 . 3) (1 . 1) (2 . 2) (3 . 3) (1 . 1) . #2))) (ERR (wrong-type-argument listp 7))) (nil (ERR (wrong-type-argument listp (1 2 . 3))) (ERR (circular-list (1 2 1 2 . #2))) (ERR (circular-list (3 1 2 3 1 . #2))) (ERR (circular-list ((3 . 3) (1 . 1) (2 . 2) (3 . 3) (1 . 1) . #2))) (ERR (wrong-type-argument listp 7))) (nil (ERR (wrong-type-argument listp (1 2 . 3))) (ERR (circular-list (1 2 1 2 . #2))) (ERR (circular-list (3 1 2 3 1 . #2))) (ERR (circular-list ((3 . 3) (1 . 1) (2 . 2) (3 . 3) (1 . 1) . #2))) (ERR (wrong-type-argument listp 7))) (nil (ERR (wrong-type-argument listp (1 2 . 3))) (ERR (circular-list (1 2 1 2 . #2))) (ERR (circular-list (3 1 2 3 1 . #2))) (ERR (circular-list ((3 . 3) (1 . 1) (2 . 2) (3 . 3) (1 . 1) . #2))) (ERR (wrong-type-argument listp 7))) (nil (ERR (wrong-type-argument listp (1 2 . 3))) (ERR (circular-list (1 2 1 2 . #2))) (ERR (circular-list (3 1 2 3 1 . #2))) (ERR (circular-list ((3 . 3) (1 . 1) (2 . 2) (3 . 3) (1 . 1) . #2))) (ERR (wrong-type-argument listp 7))) (nil (ERR (wrong-type-argument listp (1 2 . 3))) (ERR (circular-list (1 2 1 2 . #2))) (ERR (circular-list (3 1 2 3 1 . #2))) (ERR (circular-list ((3 . 3) (1 . 1) (2 . 2) (3 . 3) (1 . 1) . #2))) (ERR (wrong-type-argument listp 7))) ((1 2 3 4) (ERR (wrong-type-argument listp (1 2 . 3))) (ERR (circular-list (1 2 1 2 . #2))) (ERR (circular-list (3 1 2 3 1 . #2))) (ERR (circular-list ((3 . 3) (1 . 1) (2 . 2) (3 . 3) (1 . 1) . #2))) (ERR (wrong-type-argument listp 7))) ((1 2 3 4) (ERR (wrong-type-argument listp (1 2 . 3))) (ERR (circular-list (1 2 1 2 . #2))) (ERR (circular-list (3 1 2 3 1 . #2))) (ERR (circular-list ((3 . 3) (1 . 1) (2 . 2) (3 . 3) (1 . 1) . #2))) (ERR (wrong-type-argument listp 7))) ((1 2 3 4) (ERR (wrong-type-argument listp (1 2 . 3))) (ERR (circular-list (1 2 1 2 . #2))) (ERR (circular-list (3 1 2 3 1 . #2))) (ERR (circular-list ((3 . 3) (1 . 1) (2 . 2) (3 . 3) (1 . 1) . #2))) (ERR (wrong-type-argument sequencep 7))) (4 (ERR (wrong-type-argument listp 3)) (ERR (circular-list (1 2 1 2 . #2))) (ERR (circular-list (3 1 2 3 1 . #2))) (ERR (circular-list ((3 . 3) (1 . 1) (2 . 2) (3 . 3) (1 . 1) . #2))) (ERR (wrong-type-argument sequencep 7))) (4 2 4 5 5 0) (4 nil nil nil nil nil) (nil (ERR (wrong-type-argument listp (1 2 . 3))) (1 2 1 2 . #2) (2 3 1 2 3 . #2) ((2 . 2) (3 . 3) (1 . 1) (2 . 2) (3 . 3) . #2) (ERR (wrong-type-argument listp 7))) (nil (ERR (wrong-type-argument listp (1 2 . 3))) 1 2 (2 . 2) (ERR (wrong-type-argument listp 7))) ((4) (2 . 3) (2 1 2 1 . #2) (2 3 1 2 3 . #2) ((2 . 2) (3 . 3) (1 . 1) (2 . 2) (3 . 3) . #2) 7) ((4 3 2 1) (ERR (wrong-type-argument listp 3)) (ERR (circular-list (1 2 1 2 . #2))) (ERR (circular-list (3 1 2 3 1 . #2))) (ERR (circular-list ((3 . 3) (1 . 1) (2 . 2) (3 . 3) (1 . 1) . #2))) (ERR (wrong-type-argument sequencep 7))) ((1 2 3 4) (ERR (wrong-type-argument listp 3)) (ERR (circular-list (2 1 2 1 . #2))) (ERR (circular-list (1 2 3 1 2 . #2))) (ERR (circular-list ((1 . 1) (2 . 2) (3 . 3) (1 . 1) (2 . 2) . #2))) (ERR (wrong-type-argument sequencep 7))) ((1 2 3 4) (ERR (wrong-type-argument listp 3)) (ERR (circular-list (2 1 2 1 . #2))) (ERR (circular-list (1 2 3 1 2 . #2))) (ERR (circular-list ((1 . 1) (2 . 2) (3 . 3) (1 . 1) (2 . 2) . #2))) (ERR (wrong-type-argument sequencep 7))) ((1 2 3 4) (ERR (wrong-type-argument listp 3)) (ERR (circular-list (1 2 1 2 . #2))) (ERR (circular-list (3 1 2 3 1 . #2))) (ERR (circular-list ((3 . 3) (1 . 1) (2 . 2) (3 . 3) (1 . 1) . #2))) (ERR (wrong-type-argument sequencep 7))) (nil nil nil nil nil nil) (nil (ERR (wrong-type-argument plistp (1 2 . 3))) (ERR (circular-list (1 2 1 2 . #2))) (ERR (circular-list (2 3 1 2 3 . #2))) (ERR (circular-list ((2 . 2) (3 . 3) (1 . 1) (2 . 2) (3 . 3) . #2))) (ERR (wrong-type-argument plistp 7))) ((1 2 3 4 z 1) (ERR (wrong-type-argument plistp (1 2 . 3))) (ERR (circular-list (1 2 1 2 . #2))) (ERR (circular-list (2 3 1 2 3 . #2))) (ERR (circular-list ((2 . 2) (3 . 3) (1 . 1) (2 . 2) (3 . 3) . #2))) (ERR (wrong-type-argument plistp 7))) (nil nil nil nil nil nil) (nil (ERR (wrong-type-argument plistp (1 2 . 3))) (ERR (circular-list (1 2 1 2 . #2))) (ERR (circular-list (2 3 1 2 3 . #2))) (ERR (circular-list ((2 . 2) (3 . 3) (1 . 1) (2 . 2) (3 . 3) . #2))) (ERR (wrong-type-argument plistp 7))) ((1 2 3 4 z 1) (ERR (wrong-type-argument plistp (1 2 . 3))) (ERR (circular-list (1 2 1 2 . #2))) (ERR (circular-list (2 3 1 2 3 . #2))) (ERR (circular-list ((2 . 2) (3 . 3) (1 . 1) (2 . 2) (3 . 3) . #2))) (ERR (wrong-type-argument plistp 7))) (nil t nil nil nil (ERR (wrong-type-argument sequencep 7))) (t nil t t t (ERR (wrong-type-argument sequencep 7))) (t nil nil nil nil (ERR (wrong-type-argument sequencep 7))) ((1 2 3 4) (ERR (wrong-type-argument listp 3)) (1 2 1 2 1 2 1 2 1) (1 2 3 1 2 3 1 2 3) ((1 . 1) (2 . 2) (3 . 3) (1 . 1) (2 . 2) (3 . 3) (1 . 1) (2 . 2) (3 . 3)) (ERR (wrong-type-argument listp 7))) (nil (ERR (wrong-type-argument listp (1 2 . 3))) 2 1 (1 . 1) (ERR (wrong-type-argument sequencep 7))) ((4 3 2 1) (ERR (wrong-type-argument listp (1))) (ERR (circular-list (1))) (ERR (circular-list (1))) (ERR (circular-list ((1 . 1)))) (ERR (wrong-type-argument arrayp 7))) ((1 2 3 4) (ERR (wrong-type-argument listp 3)) (ERR (circular-list (1 2 1 2 . #2))) (ERR (circular-list (3 1 2 3 1 . #2))) (ERR (circular-list ((3 . 3) (1 . 1) (2 . 2) (3 . 3) (1 . 1) . #2))) (ERR (wrong-type-argument list-or-vector-p 7))) (nil (ERR (wrong-type-argument listp (1 2 . 3))) (ERR (circular-list (1 2 1 2 . #2))) (ERR (circular-list (3 1 2 3 1 . #2))) (ERR (circular-list ((3 . 3) (1 . 1) (2 . 2) (3 . 3) (1 . 1) . #2))) (ERR (wrong-type-argument listp 7))) ((1 2 3 4 5) (1 2 5) (ERR (circular-list (1 2 1 2 . #2))) (ERR (circular-list (3 1 2 3 1 . #2))) (ERR (circular-list ((3 . 3) (1 . 1) (2 . 2) (3 . 3) (1 . 1) . #2))) (ERR (wrong-type-argument consp 7))) ((1 . a) ((x k)) ((b b) (a b)) ((b b) (a b)) ((a 1 b 9 c 3) (a 1 b 9 c 3) (a 1 b 9 c 3)) (ERR (wrong-type-argument plistp (a))) (ERR (wrong-type-argument plistp (a 1 b))) (ERR (wrong-type-argument plistp 7)) nil (ERR (wrong-type-argument sequencep #s(r 1))) (ERR (wrong-type-argument fixnump 1.0)) nil (ERR (wrong-type-argument listp (a . b))) nil (1.5 . x) (nil . 2) nil) (4 3 1 nil nil (ERR (wrong-type-argument consp 7)) (ERR (wrong-type-argument symbolp 7)) (ERR (wrong-type-argument listp 5)) (ERR (wrong-type-argument plistp (:b . 5))) (2 3 (emaxx-w2 :a 2 :b 3)) (ERR (wrong-type-argument consp 7)) ((emaxx-w2 :f list) 1 2) (ERR (void-function nil))))"##
+            );
+        });
+    }
+
+    #[test]
     fn image_symbols_are_the_obarrays_and_the_initial_frame_is_terminal_frame() {
         // pdumper.c maps the dumped symbols where the image holds them:
         // a preloaded symbol is the obarray's, its cells are traced by the
