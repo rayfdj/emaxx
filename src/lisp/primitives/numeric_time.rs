@@ -740,6 +740,17 @@ pub(crate) struct ExactTimeValue {
     hz: BigInt,
 }
 
+impl ExactTimeValue {
+    /// A timespec's time on the nanosecond clock.
+    pub(crate) fn from_timespec(seconds: i64, nanoseconds: u32) -> Self {
+        Self {
+            ticks: BigInt::from(seconds) * BigInt::from(1_000_000_000u32)
+                + BigInt::from(nanoseconds),
+            hz: BigInt::from(1_000_000_000u32),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct ZoneSpec {
     offset_seconds: i32,
@@ -795,103 +806,231 @@ pub(crate) fn current_time_value() -> Result<ExactTimeValue, LispError> {
     exact_time_value(ticks, BigInt::from(1_000_000_000u64))
 }
 
-pub(crate) fn exact_time_from_float(value: f64) -> Result<ExactTimeValue, LispError> {
-    let Some((significand, exponent)) = exact_float_binary_rational(value) else {
-        return Err(LispError::TypeError("number".into(), "float".into()));
-    };
-    if exponent >= 0 {
-        exact_time_value(significand << exponent as usize, BigInt::from(1u8))
-    } else {
-        exact_time_value(significand, BigInt::from(1u8) << (-exponent) as usize)
-    }
-}
-
-pub(crate) fn exact_time_from_old_style(
-    interp: &Interpreter,
-    items: &[Value],
-) -> Result<ExactTimeValue, LispError> {
-    if !(2..=4).contains(&items.len()) {
-        return Err(LispError::TypeError(
-            "time-value".into(),
-            Value::list(items.to_vec()).type_name(),
-        ));
-    }
-    let high = integer_like_bigint(interp, &items[0])?;
-    let low = integer_like_bigint(interp, &items[1])?;
-    let micros = if items.len() >= 3 {
-        integer_like_bigint(interp, &items[2])?
-    } else {
-        BigInt::zero()
-    };
-    let picos = if items.len() >= 4 {
-        integer_like_bigint(interp, &items[3])?
-    } else {
-        BigInt::zero()
-    };
-    // decode_time_components: the clock is the list's own -- 1 for
-    // (HI LO), 1000000 for (HI LO US), 1000000000000 for (HI LO US PS).
-    let seconds = high * BigInt::from(65_536u32) + low;
-    match items.len() {
-        2 => exact_time_value(seconds, BigInt::from(1u8)),
-        3 => exact_time_value(
-            seconds * BigInt::from(1_000_000u32) + micros,
-            BigInt::from(1_000_000u32),
-        ),
-        _ => exact_time_value(
-            seconds * BigInt::from(1_000_000_000_000u64)
-                + micros * BigInt::from(1_000_000u32)
-                + picos,
-            BigInt::from(1_000_000_000_000u64),
-        ),
-    }
-}
-
-/// The form a time value came in, for time_arith's choice of result form.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TimeValueForm {
+/// timefns.c's enum timeform: the shape decode_lisp_time found a
+/// timestamp in, which time_arith and `time-convert' look at.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TimeForm {
+    Invalid,
+    /// Seconds as (HI << 16) + LO, or an integer.
+    HiLo,
+    /// (HI LO US).
+    HiLoUs,
+    /// nil, the clock.
+    Nil,
+    /// (HI LO US PS).
+    HiLoUsPs,
+    Float,
+    /// (TICKS . HZ).
     TicksHz,
-    Other,
 }
 
-pub(crate) fn time_value_form(value: &Value) -> TimeValueForm {
+/// timefns.c:time_error for EINVAL.
+pub(crate) fn invalid_time_specification() -> LispError {
+    LispError::Signal("Invalid time specification".into())
+}
+
+/// timefns.c:time_overflow, and time_error for EOVERFLOW.
+pub(crate) fn time_overflow() -> LispError {
+    LispError::Signal("Specified time is not representable".into())
+}
+
+/// timefns.c:invalid_hz.
+fn invalid_hz(hz: Value) -> LispError {
+    LispError::SignalValue(Value::list([
+        Value::symbol("error"),
+        Value::string("Invalid time frequency"),
+        hz,
+    ]))
+}
+
+fn lisp_integer(value: &Value) -> Option<BigInt> {
     match value.kind() {
-        Kind::Cons(_)
-            if value
-                .to_vec()
-                .is_ok_and(|items| (2..=4).contains(&items.len())) =>
-        {
-            TimeValueForm::Other
-        }
-        Kind::Cons(_) => TimeValueForm::TicksHz,
-        _ => TimeValueForm::Other,
+        Kind::Integer(n) => Some(BigInt::from(n)),
+        Kind::BigInteger(n) => Some(n.into()),
+        _ => None,
     }
 }
 
-pub(crate) fn exact_time_from_value(
-    interp: &Interpreter,
-    value: &Value,
-    now: &ExactTimeValue,
-) -> Result<ExactTimeValue, LispError> {
-    match value.kind() {
-        Kind::Nil => Ok(now.clone()),
-        Kind::Integer(value) => exact_time_value(BigInt::from(value), BigInt::from(1u8)),
-        Kind::BigInteger(value) => exact_time_value((value).into(), BigInt::from(1u8)),
-        Kind::Float(value) => exact_time_from_float(value.get()),
-        Kind::Cons(cons_cell) => {
-            let car = &cons_cell.car;
-            let cdr = &cons_cell.cdr;
-            if let Ok(items) = value.to_vec()
-                && (2..=4).contains(&items.len())
-            {
-                return exact_time_from_old_style(interp, &items);
+/// timefns.c:decode_float_time: TICKS / HZ exactly equal to the finite
+/// T, HZ being T's precision (trailing zeros count) or 1 if greater.
+pub(crate) fn decode_float_time(value: f64) -> ExactTimeValue {
+    match exact_float_binary_rational(value) {
+        Some((significand, exponent)) if exponent < 0 => ExactTimeValue {
+            ticks: significand,
+            hz: BigInt::from(1u8) << (-exponent) as usize,
+        },
+        Some((significand, exponent)) => ExactTimeValue {
+            ticks: significand << exponent as usize,
+            hz: BigInt::from(1u8),
+        },
+        None => ExactTimeValue {
+            ticks: BigInt::zero(),
+            hz: BigInt::from(1u8),
+        },
+    }
+}
+
+/// decode_lisp_time's reading of SPECIFIED_TIME: its form and its HIGH,
+/// LOW, USEC and PSEC components (LOW is the whole of a non-list).
+/// DECODE_SECS_ONLY leaves a list's subsecond parts unread.
+fn lisp_time_components(
+    specified_time: &Value,
+    decode_secs_only: bool,
+) -> (TimeForm, Value, Value, Value, Value) {
+    let zero = Value::Integer(0);
+    let (mut high, mut low, mut usec, mut psec) = (zero, *specified_time, zero, zero);
+    let mut form = TimeForm::HiLo;
+    if specified_time.is_nil() {
+        form = TimeForm::Nil;
+    } else if let Some(cell) = specified_time.cons_ref() {
+        high = cell.car.get();
+        low = cell.cdr.get();
+        if let Some(low_cell) = low.cons_ref() {
+            let mut low_tail = low_cell.cdr.get();
+            low = low_cell.car.get();
+            if !decode_secs_only {
+                if let Some(usec_cell) = low_tail.cons_ref() {
+                    usec = usec_cell.car.get();
+                    low_tail = usec_cell.cdr.get();
+                    if let Some(psec_cell) = low_tail.cons_ref() {
+                        psec = psec_cell.car.get();
+                        form = TimeForm::HiLoUsPs;
+                    } else {
+                        form = TimeForm::HiLoUs;
+                    }
+                } else if !low_tail.is_nil() {
+                    usec = low_tail;
+                    form = TimeForm::HiLoUs;
+                }
             }
-            exact_time_value(
-                integer_like_bigint(interp, &car.get())?,
-                integer_like_bigint(interp, &cdr.get())?,
-            )
+        } else {
+            form = TimeForm::TicksHz;
         }
-        _ => Err(LispError::TypeError("time-value".into(), value.type_name())),
+        // "Require LOW to be an integer, as otherwise the computation
+        // would be considerably trickier."
+        if !low.is_integer() {
+            form = TimeForm::Invalid;
+        }
     }
+    (form, high, low, usec, psec)
+}
+
+/// timefns.c:decode_time_components for a non-float FORM; None is its
+/// EINVAL.  The list forms carry each out-of-range lower component into
+/// the next, which leaves the value TICKS / HZ: HZ is the list's own
+/// clock, 1 for (HI LO), 10^6 for (HI LO US) and 10^12 for (HI LO US PS).
+pub(crate) fn decode_time_components(
+    form: TimeForm,
+    high: &Value,
+    low: &Value,
+    usec: &Value,
+    psec: &Value,
+) -> Option<ExactTimeValue> {
+    match form {
+        TimeForm::Invalid | TimeForm::Float => None,
+        TimeForm::TicksHz => {
+            let ticks = lisp_integer(high)?;
+            let hz = lisp_integer(low).filter(|hz| hz.sign() == Sign::Plus)?;
+            Some(ExactTimeValue { ticks, hz })
+        }
+        TimeForm::Nil => current_time_value().ok(),
+        TimeForm::HiLo | TimeForm::HiLoUs | TimeForm::HiLoUsPs => {
+            let high = lisp_integer(high)?;
+            let low = lisp_integer(low)?;
+            let us = BigInt::from(usec.fixnum()?);
+            let ps = BigInt::from(psec.fixnum()?);
+            let seconds = high * BigInt::from(65_536u32) + low;
+            Some(match form {
+                TimeForm::HiLo => ExactTimeValue {
+                    ticks: seconds,
+                    hz: BigInt::from(1u8),
+                },
+                TimeForm::HiLoUs => ExactTimeValue {
+                    ticks: seconds * BigInt::from(1_000_000u32) + us,
+                    hz: BigInt::from(1_000_000u32),
+                },
+                _ => ExactTimeValue {
+                    ticks: seconds * BigInt::from(1_000_000_000_000u64)
+                        + us * BigInt::from(1_000_000u32)
+                        + ps,
+                    hz: BigInt::from(1_000_000_000_000u64),
+                },
+            })
+        }
+    }
+}
+
+/// timefns.c:decode_lisp_time: SPECIFIED_TIME's form and value, nil
+/// reading the clock.  An integer is (TICKS . 1) in the HI-LO form; a
+/// float must be finite.  DECODE_SECS_ONLY ignores, and does not check,
+/// an old-style list's subsecond parts.
+pub(crate) fn decode_lisp_time(
+    specified_time: &Value,
+    decode_secs_only: bool,
+) -> Result<(TimeForm, ExactTimeValue), LispError> {
+    match specified_time.kind() {
+        Kind::Integer(ticks) => {
+            return Ok((
+                TimeForm::HiLo,
+                ExactTimeValue {
+                    ticks: BigInt::from(ticks),
+                    hz: BigInt::from(1u8),
+                },
+            ));
+        }
+        Kind::BigInteger(ticks) => {
+            return Ok((
+                TimeForm::HiLo,
+                ExactTimeValue {
+                    ticks: ticks.into(),
+                    hz: BigInt::from(1u8),
+                },
+            ));
+        }
+        Kind::Float(float) => {
+            let value = float.get();
+            if value.is_nan() {
+                return Err(invalid_time_specification());
+            }
+            if value.is_infinite() {
+                return Err(time_overflow());
+            }
+            return Ok((TimeForm::Float, decode_float_time(value)));
+        }
+        _ => {}
+    }
+    let (form, high, low, usec, psec) = lisp_time_components(specified_time, decode_secs_only);
+    decode_time_components(form, &high, &low, &usec, &psec)
+        .map(|time| (form, time))
+        .ok_or_else(invalid_time_specification)
+}
+
+/// timefns.c:lisp_time_struct.
+pub(crate) fn lisp_time_struct(specified_time: &Value) -> Result<ExactTimeValue, LispError> {
+    decode_lisp_time(specified_time, false).map(|(_, time)| time)
+}
+
+/// timefns.c:lisp_to_timespec: TIME floored to whole nanoseconds, as
+/// seconds and the nanoseconds within them; None when the seconds do not
+/// fit a time_t.
+pub(crate) fn lisp_to_timespec(time: &ExactTimeValue) -> Option<(i64, u32)> {
+    let nanoseconds = exact_time_floor_nanoseconds(time);
+    let (seconds, subsecond) = floor_div_mod(&nanoseconds, &BigInt::from(1_000_000_000u32));
+    Some((seconds.to_i64()?, subsecond.to_u32()?))
+}
+
+/// timefns.c:lisp_time_argument: SPECIFIED_TIME as a valid timespec.
+pub(crate) fn lisp_time_argument(specified_time: &Value) -> Result<(i64, u32), LispError> {
+    lisp_to_timespec(&lisp_time_struct(specified_time)?).ok_or_else(time_overflow)
+}
+
+/// timefns.c:lisp_seconds_argument: SPECIFIED_TIME's whole seconds,
+/// without decoding (or checking) an old-style list's subsecond parts.
+pub(crate) fn lisp_seconds_argument(specified_time: &Value) -> Result<i64, LispError> {
+    let (_, time) = decode_lisp_time(specified_time, true)?;
+    lisp_to_timespec(&time)
+        .map(|(seconds, _)| seconds)
+        .ok_or_else(time_overflow)
 }
 
 pub(crate) fn floor_div_mod(value: &BigInt, divisor: &BigInt) -> (BigInt, BigInt) {
@@ -912,17 +1051,6 @@ pub(crate) fn time_floor_parts(time: &ExactTimeValue) -> (BigInt, BigInt) {
 /// floored (TICKS * 10^9 floor-divided by HZ).
 pub(crate) fn exact_time_floor_nanoseconds(time: &ExactTimeValue) -> BigInt {
     floor_div_mod(&(&time.ticks * BigInt::from(1_000_000_000u32)), &time.hz).0
-}
-
-pub(crate) fn exact_time_to_value(time: &ExactTimeValue) -> Value {
-    if time.hz == BigInt::from(1u8) {
-        normalize_bigint_value(time.ticks.clone())
-    } else {
-        Value::cons(
-            normalize_bigint_value(time.ticks.clone()),
-            normalize_bigint_value(time.hz.clone()),
-        )
-    }
 }
 
 pub(crate) fn exact_time_to_tick_pair(time: &ExactTimeValue) -> Value {
@@ -1524,14 +1652,12 @@ pub(crate) fn time_local_datetime(
     zone: &ZoneSpec,
 ) -> Result<(chrono::DateTime<FixedOffset>, BigInt), LispError> {
     let (whole_seconds, fractional_ticks) = time_floor_parts(time);
-    let whole_seconds = whole_seconds
-        .to_i64()
-        .ok_or_else(|| LispError::Signal("Time out of range".into()))?;
+    let whole_seconds = whole_seconds.to_i64().ok_or_else(time_overflow)?;
     let offset = zone_offset(zone)?;
     let utc = Utc
         .timestamp_opt(whole_seconds, 0)
         .single()
-        .ok_or_else(|| LispError::Signal("Time out of range".into()))?;
+        .ok_or_else(time_overflow)?;
     Ok((utc.with_timezone(&offset), fractional_ticks))
 }
 
@@ -1997,20 +2123,29 @@ pub(crate) fn format_time_string_value(
     Ok(result)
 }
 
+/// Fdecode_time's list for TIME (whose timespec's seconds are SECONDS)
+/// in ZONE.  SEC is an integer unless FORM is t and TIME's clock is not
+/// 1, when it is (TICKS . HZ) with TICKS = HZ * SEC + mod (TIME's ticks,
+/// HZ).
 pub(crate) fn decode_time_value(
     time: &ExactTimeValue,
+    seconds: i64,
     zone: &ZoneSpec,
     form: &Value,
 ) -> Result<Value, LispError> {
-    let (datetime, fractional_ticks) = time_local_datetime(time, zone)?;
-    let seconds = exact_time_value(
-        BigInt::from(datetime.second()) * time.hz.clone() + fractional_ticks,
-        time.hz.clone(),
-    )?;
-    let second_field = match form.kind() {
-        Kind::Symbol(symbol) if symbol == "integer" => exact_time_floor_integer_value(&seconds),
-        Kind::T => exact_time_to_tick_pair(&seconds),
-        _ => exact_time_to_value(&seconds),
+    let whole = ExactTimeValue {
+        ticks: BigInt::from(seconds),
+        hz: BigInt::from(1u8),
+    };
+    let (datetime, _) = time_local_datetime(&whole, zone)?;
+    let second_field = if time.hz == BigInt::from(1u8) || !matches!(form.kind(), Kind::T) {
+        Value::Integer(i64::from(datetime.second()))
+    } else {
+        let (_, fractional_ticks) = time_floor_parts(time);
+        Value::cons(
+            normalize_bigint_value(BigInt::from(datetime.second()) * &time.hz + fractional_ticks),
+            normalize_bigint_value(time.hz.clone()),
+        )
     };
     Ok(Value::list([
         second_field,
@@ -2023,20 +2158,6 @@ pub(crate) fn decode_time_value(
         if zone.is_dst { Value::T } else { Value::Nil },
         Value::Integer(zone.offset_seconds as i64),
     ]))
-}
-
-pub(crate) fn decoded_seconds_value(
-    interp: &Interpreter,
-    value: &Value,
-) -> Result<ExactTimeValue, LispError> {
-    exact_time_from_value(
-        interp,
-        value,
-        &ExactTimeValue {
-            ticks: BigInt::zero(),
-            hz: BigInt::from(1u8),
-        },
-    )
 }
 
 pub(crate) fn integer_field(interp: &Interpreter, value: &Value) -> Result<i32, LispError> {
@@ -2061,39 +2182,186 @@ fn current_time_list_is_set(interp: &Interpreter) -> bool {
         .is_none_or(|value| value.is_truthy())
 }
 
-pub(crate) fn time_convert_value(time: &ExactTimeValue, form: &Value) -> Result<Value, LispError> {
-    match form.kind() {
-        Kind::Nil => Ok(exact_time_to_value(time)),
-        Kind::T => Ok(exact_time_to_tick_pair(time)),
-        Kind::Symbol(symbol) if symbol == "integer" => Ok(exact_time_floor_integer_value(time)),
-        Kind::Symbol(symbol) if symbol == "list" => exact_time_to_old_style(time),
-        Kind::Integer(4) => exact_time_to_old_style(time),
-        Kind::BigInteger(value) if *value == BigInt::from(4u8) => exact_time_to_old_style(time),
-        Kind::Integer(value) => exact_time_to_scaled_pair(time, &BigInt::from(value)),
-        Kind::BigInteger(value) => exact_time_to_scaled_pair(time, &value),
-        _ => Err(LispError::TypeError(
-            "time-convert form".into(),
-            form.type_name(),
-        )),
+/// timefns.c:Ftime_convert.  A (TICKS . HZ) TIME already on FORM's
+/// clock is returned itself, as is an integer TIME for `integer'.
+fn time_convert(interp: &Interpreter, time: &Value, form: &Value) -> Result<Value, LispError> {
+    let (input_form, decoded) = decode_lisp_time(time, false)?;
+    let form = if !form.is_nil() {
+        super::values::bare_symbol(interp, *form)
+    } else if current_time_list_is_set(interp) {
+        Value::symbol("list")
+    } else {
+        Value::T
+    };
+    if matches!(form.kind(), Kind::Symbol(symbol) if symbol == "list") {
+        return exact_time_to_old_style(&decoded);
+    }
+    if matches!(form.kind(), Kind::Symbol(symbol) if symbol == "integer") {
+        return Ok(if time.is_integer() {
+            *time
+        } else {
+            exact_time_floor_integer_value(&decoded)
+        });
+    }
+    if matches!(form.kind(), Kind::T) {
+        // FORM is TIME's own clock, which a (TICKS . HZ) TIME is on.
+        if input_form == TimeForm::TicksHz {
+            return Ok(*time);
+        }
+        return Ok(exact_time_to_tick_pair(&decoded));
+    }
+    if input_form == TimeForm::TicksHz
+        && time
+            .cons_ref()
+            .is_some_and(|cell| cell.cdr.get().word() == form.word())
+    {
+        return Ok(*time);
+    }
+    Ok(Value::cons(lisp_time_hz_ticks(&decoded, &form)?, form))
+}
+
+/// timefns.c:lisp_time_hz_ticks: TIME floored to a count of HZ ticks,
+/// HZ being checked.
+fn lisp_time_hz_ticks(time: &ExactTimeValue, hz: &Value) -> Result<Value, LispError> {
+    let Some(target) = lisp_integer(hz).filter(|target| target.sign() == Sign::Plus) else {
+        return Err(invalid_hz(*hz));
+    };
+    if target == time.hz {
+        return Ok(normalize_bigint_value(time.ticks.clone()));
+    }
+    let (ticks, _) = floor_div_mod(&(&time.ticks * &target), &time.hz);
+    Ok(normalize_bigint_value(ticks))
+}
+
+/// timefns.c:Fcurrent_time's make_lisp_time of the clock, as the general
+/// path renders it: (HI LO US PS) under `current-time-list', else
+/// (TICKS . 1000000000), while the ticks are a fixnum.
+fn current_time_without_bignums(interp: &Interpreter) -> Option<Value> {
+    let since = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?;
+    let seconds = i64::try_from(since.as_secs()).ok()?;
+    let nanos = i64::from(since.subsec_nanos());
+    if current_time_list_is_set(interp) {
+        return Some(Value::list([
+            Value::Integer(seconds >> 16),
+            Value::Integer(seconds & 0xffff),
+            Value::Integer(nanos / 1000),
+            Value::Integer(nanos % 1000 * 1000),
+        ]));
+    }
+    let ticks = seconds.checked_mul(1_000_000_000)?.checked_add(nanos)?;
+    (ticks <= MOST_POSITIVE_FIXNUM)
+        .then(|| Value::cons(Value::Integer(ticks), Value::Integer(1_000_000_000)))
+}
+
+/// timefns.c:time_cmp for the operands it can order without a bignum:
+/// `eq' operands (valid or not), fixnums, (X . Z) and (Y . Z) with one Z
+/// and fixnum X and Y (Z is not inspected), and otherwise the ticks and
+/// clocks of two time values that fit machine integers, cross-multiplied.
+/// None leaves the comparison, and any error, to the general decoding.
+fn time_cmp_without_bignums(a: &Value, b: &Value) -> Option<std::cmp::Ordering> {
+    if a.word() == b.word() {
+        return Some(std::cmp::Ordering::Equal);
+    }
+    let (mut x, mut y) = (*a, *b);
+    if let (Some(left), Some(right)) = (a.cons_ref(), b.cons_ref())
+        && left.cdr.get().word() == right.cdr.get().word()
+    {
+        x = left.car.get();
+        y = right.car.get();
+    }
+    if let (Some(x), Some(y)) = (x.fixnum(), y.fixnum()) {
+        return Some(x.cmp(&y));
+    }
+    let mut now = None;
+    let (a_ticks, a_hz) = small_time(a, &mut now)?;
+    let (b_ticks, b_hz) = small_time(b, &mut now)?;
+    Some(a_ticks.checked_mul(b_hz)?.cmp(&b_ticks.checked_mul(a_hz)?))
+}
+
+/// A time value's TICKS and HZ (as decode_lisp_time decodes it) when
+/// every part is a fixnum and they fit an i128: nil (the clock, read
+/// once into NOW), a fixnum, a float, (HI LO [US [PS]]) or (TICKS . HZ).
+fn small_time(value: &Value, now: &mut Option<(i128, i128)>) -> Option<(i128, i128)> {
+    match value.kind() {
+        Kind::Nil => {
+            if now.is_none() {
+                let since = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .ok()?;
+                *now = Some((
+                    i128::from(since.as_secs()) * 1_000_000_000 + i128::from(since.subsec_nanos()),
+                    1_000_000_000,
+                ));
+            }
+            *now
+        }
+        Kind::Integer(ticks) => Some((i128::from(ticks), 1)),
+        Kind::Float(float) => {
+            let value = float.get();
+            if !value.is_finite() {
+                return None;
+            }
+            if value == 0.0 {
+                return Some((0, 1));
+            }
+            // exact_float_binary_rational's significand and exponent.
+            let bits = value.to_bits();
+            let exponent_bits = ((bits >> 52) & 0x7ff) as i32;
+            let mantissa = bits & ((1u64 << 52) - 1);
+            let (significand, exponent) = if exponent_bits == 0 {
+                (mantissa, 1 - 1023 - 52)
+            } else {
+                ((1u64 << 52) | mantissa, exponent_bits - 1023 - 52)
+            };
+            let significand = if bits >> 63 != 0 {
+                -i128::from(significand)
+            } else {
+                i128::from(significand)
+            };
+            if exponent >= 0 {
+                (exponent <= 64).then(|| (significand << exponent, 1))
+            } else {
+                (exponent >= -120).then(|| (significand, 1i128 << -exponent))
+            }
+        }
+        Kind::Cons(_) => {
+            let (form, high, low, usec, psec) = lisp_time_components(value, false);
+            let (high, low) = (i128::from(high.fixnum()?), i128::from(low.fixnum()?));
+            if form == TimeForm::TicksHz {
+                return (low > 0).then_some((high, low));
+            }
+            if !matches!(form, TimeForm::HiLo | TimeForm::HiLoUs | TimeForm::HiLoUsPs) {
+                return None;
+            }
+            // decode_time_components: the list's own clock.
+            let (us, ps) = (i128::from(usec.fixnum()?), i128::from(psec.fixnum()?));
+            let seconds = high.checked_mul(65_536)?.checked_add(low)?;
+            match form {
+                TimeForm::HiLo => Some((seconds, 1)),
+                TimeForm::HiLoUs => {
+                    Some((seconds.checked_mul(1_000_000)?.checked_add(us)?, 1_000_000))
+                }
+                _ => Some((
+                    seconds
+                        .checked_mul(1_000_000_000_000)?
+                        .checked_add(us.checked_mul(1_000_000)?)?
+                        .checked_add(ps)?,
+                    1_000_000_000_000,
+                )),
+            }
+        }
+        _ => None,
     }
 }
 
-pub(crate) fn call_time_builtin(
-    interp: &mut Interpreter,
-    name: &str,
-    args: &[Value],
-    env: &mut Env,
-) -> Result<Value, LispError> {
-    call_time_builtin_at(interp, name, args, env, current_time_value()?)
-}
-
 define_dispatch!(
-    pub(crate) fn call_time_builtin_at(
+    pub(crate) fn call_time_builtin(
         interp: &mut Interpreter,
         name: &str,
         args: &[Value],
         _env: &mut Env,
-        now: ExactTimeValue,
     ) -> Result<Value, LispError> {
         match name {
             "set-time-zone-rule" => {
@@ -2104,16 +2372,20 @@ define_dispatch!(
                     args[0]
                 };
                 if !local_time_zone_rule_is_wall(&rule) {
-                    let _ = explicit_zone_spec_from_value(&rule, Some(&now))?;
+                    let _ = explicit_zone_spec_from_value(&rule, Some(&current_time_value()?))?;
                 }
                 interp.local_time_zone_rule = rule;
                 Ok(Value::Nil)
             }
             "current-time" => {
                 need_arg_range(name, args, 0, 0)?;
+                if let Some(value) = current_time_without_bignums(interp) {
+                    return Ok(value);
+                }
                 // timefns.c make_lisp_time: the old-style list under
                 // `current-time-list', else the nanosecond
                 // (TICKS . 1000000000) pair, never reduced.
+                let now = current_time_value()?;
                 if current_time_list_is_set(interp) {
                     exact_time_to_old_style(&now)
                 } else {
@@ -2122,21 +2394,30 @@ define_dispatch!(
             }
             "current-time-string" => {
                 need_arg_range(name, args, 0, 2)?;
-                let time =
-                    exact_time_from_value(interp, args.first().unwrap_or(&Value::Nil), &now)?;
+                // Fcurrent_time_string: the whole seconds alone, in ctime's
+                // layout without its newline or its four-digit year limit.
+                let seconds = lisp_seconds_argument(args.first().unwrap_or(&Value::Nil))?;
+                let time = ExactTimeValue {
+                    ticks: BigInt::from(seconds),
+                    hz: BigInt::from(1u8),
+                };
                 let zone =
                     zone_spec_from_value(interp, args.get(1).unwrap_or(&Value::Nil), Some(&time))?;
                 let (datetime, _) = time_local_datetime(&time, &zone)?;
                 Ok(string_like_value_with_multibyte(
-                    datetime.format("%a %b %e %H:%M:%S %Y").to_string(),
+                    format!(
+                        "{} {}",
+                        datetime.format("%a %b %e %H:%M:%S"),
+                        datetime.year()
+                    ),
                     Vec::new(),
                     false,
                 ))
             }
             "time-add" | "time-subtract" => {
                 need_args(name, args, 2)?;
-                let left = exact_time_from_value(interp, &args[0], &now)?;
-                let right = exact_time_from_value(interp, &args[1], &now)?;
+                let (left_form, left) = decode_lisp_time(&args[0], false)?;
+                let (right_form, right) = decode_lisp_time(&args[1], false)?;
                 let subtract = name == "time-subtract";
                 // timefns.c time_arith: with equal clocks the ticks combine
                 // directly and HZ is kept; with different clocks the sum is
@@ -2178,9 +2459,6 @@ define_dispatch!(
                     }
                     ExactTimeValue { ticks, hz }
                 };
-                if result.hz <= BigInt::zero() {
-                    return Err(LispError::Signal("Invalid time resolution".into()));
-                }
                 // time_arith's result form: an integer when HZ is 1; else
                 // (TICKS . HZ) when `current-time-list' is nil, either
                 // operand was (TICKS . HZ), or the value has no exact
@@ -2188,8 +2466,8 @@ define_dispatch!(
                 if result.hz == BigInt::from(1u8) {
                     return Ok(normalize_bigint_value(result.ticks));
                 }
-                let ticks_hz_input = time_value_form(&args[0]) == TimeValueForm::TicksHz
-                    || time_value_form(&args[1]) == TimeValueForm::TicksHz;
+                let ticks_hz_input =
+                    left_form == TimeForm::TicksHz || right_form == TimeForm::TicksHz;
                 let exact_in_list_form =
                     (BigInt::from(1_000_000_000_000u64) % &result.hz).is_zero();
                 if !current_time_list_is_set(interp) || ticks_hz_input || !exact_in_list_form {
@@ -2199,8 +2477,15 @@ define_dispatch!(
             }
             "time-equal-p" => {
                 need_args(name, args, 2)?;
-                let left = exact_time_from_value(interp, &args[0], &now)?;
-                let right = exact_time_from_value(interp, &args[1], &now)?;
+                // Ftime_equal_p: a nil argument equals only another.
+                if args[0].is_nil() != args[1].is_nil() {
+                    return Ok(Value::Nil);
+                }
+                if let Some(order) = time_cmp_without_bignums(&args[0], &args[1]) {
+                    return Ok(if order.is_eq() { Value::T } else { Value::Nil });
+                }
+                let left = lisp_time_struct(&args[0])?;
+                let right = lisp_time_struct(&args[1])?;
                 Ok(if exact_time_equal(&left, &right) {
                     Value::T
                 } else {
@@ -2209,8 +2494,11 @@ define_dispatch!(
             }
             "time-less-p" => {
                 need_args(name, args, 2)?;
-                let left = exact_time_from_value(interp, &args[0], &now)?;
-                let right = exact_time_from_value(interp, &args[1], &now)?;
+                if let Some(order) = time_cmp_without_bignums(&args[0], &args[1]) {
+                    return Ok(if order.is_lt() { Value::T } else { Value::Nil });
+                }
+                let left = lisp_time_struct(&args[0])?;
+                let right = lisp_time_struct(&args[1])?;
                 Ok(if exact_time_less(&left, &right) {
                     Value::T
                 } else {
@@ -2219,31 +2507,26 @@ define_dispatch!(
             }
             "float-time" => {
                 need_arg_range(name, args, 0, 1)?;
+                // Ffloat_time returns a float argument itself, even an
+                // infinity or a NaN.
                 let value = args.first().unwrap_or(&Value::Nil);
-                Ok(Value::float(exact_time_to_f64(&exact_time_from_value(
-                    interp, value, &now,
-                )?)))
+                if value.is_float() {
+                    return Ok(*value);
+                }
+                Ok(Value::float(exact_time_to_f64(&lisp_time_struct(value)?)))
             }
             "time-convert" => {
                 need_arg_range(name, args, 1, 2)?;
-                let time = exact_time_from_value(interp, &args[0], &now)?;
-                // Ftime_convert: a nil FORM is `list' under
-                // `current-time-list' and t otherwise.
-                let form = match args.get(1) {
-                    Some(form) if !form.is_nil() => *form,
-                    _ if current_time_list_is_set(interp) => Value::Symbol("list".into()),
-                    _ => Value::T,
-                };
-                time_convert_value(&time, &form)
+                time_convert(interp, &args[0], args.get(1).unwrap_or(&Value::Nil))
             }
             "decode-time" => {
                 need_arg_range(name, args, 0, 3)?;
-                let time =
-                    exact_time_from_value(interp, args.first().unwrap_or(&Value::Nil), &now)?;
+                let time = lisp_time_struct(args.first().unwrap_or(&Value::Nil))?;
+                let (seconds, _) = lisp_to_timespec(&time).ok_or_else(time_overflow)?;
                 let zone =
                     zone_spec_from_value(interp, args.get(1).unwrap_or(&Value::Nil), Some(&time))?;
                 let form = args.get(2).unwrap_or(&Value::Nil);
-                decode_time_value(&time, &zone, form)
+                decode_time_value(&time, seconds, &zone, form)
             }
             "encode-time" => {
                 need_arg_range(name, args, 1, 9)?;
@@ -2256,7 +2539,8 @@ define_dispatch!(
                 if fields.len() < 6 || fields.len() > 9 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), fields.len()));
                 }
-                let seconds = decoded_seconds_value(interp, &fields[0])?;
+                // Fencode_time: SEC is any time value (nil the clock).
+                let seconds = lisp_time_struct(&fields[0])?;
                 let (whole_seconds, fractional_ticks) = time_floor_parts(&seconds);
                 let second = whole_seconds
                     .to_i64()
@@ -2307,15 +2591,29 @@ define_dispatch!(
                     .from_local_datetime(&time)
                     .single()
                     .ok_or_else(|| LispError::Signal("Invalid decoded time".into()))?;
-                Ok(exact_time_to_value(&exact_time_value(
-                    BigInt::from(local.timestamp()) * seconds.hz.clone() + fractional_ticks,
-                    seconds.hz,
-                )?))
+                // An integer clock gives (HI LO) under `current-time-list'
+                // and the integer otherwise; any other gives (TICKS . HZ).
+                if seconds.hz == BigInt::from(1u8) {
+                    let value = local.timestamp();
+                    return Ok(if current_time_list_is_set(interp) {
+                        Value::list([Value::Integer(value >> 16), Value::Integer(value & 0xffff)])
+                    } else {
+                        Value::Integer(value)
+                    });
+                }
+                Ok(exact_time_to_tick_pair(&ExactTimeValue {
+                    ticks: BigInt::from(local.timestamp()) * &seconds.hz + fractional_ticks,
+                    hz: seconds.hz,
+                }))
             }
             "format-time-string" => {
                 need_arg_range(name, args, 1, 3)?;
                 let format = string_text(&args[0])?;
-                let time = exact_time_from_value(interp, args.get(1).unwrap_or(&Value::Nil), &now)?;
+                // Fformat_time_string formats the timespec: the time floored
+                // to whole nanoseconds.
+                let (seconds, nanoseconds) =
+                    lisp_time_argument(args.get(1).unwrap_or(&Value::Nil))?;
+                let time = ExactTimeValue::from_timespec(seconds, nanoseconds);
                 let zone =
                     zone_spec_from_value(interp, args.get(2).unwrap_or(&Value::Nil), Some(&time))?;
                 Ok(string_like_value_with_multibyte(
@@ -2326,16 +2624,16 @@ define_dispatch!(
             }
             "current-time-zone" => {
                 need_arg_range(name, args, 0, 2)?;
-                let time = if let Some(value) = args.first().filter(|value| !value.is_nil()) {
-                    Some(exact_time_from_value(interp, value, &now)?)
-                } else {
-                    None
+                // Fcurrent_time_zone: the zone at the whole seconds of TIME
+                // (the clock for nil), which must have a local time.
+                let seconds = lisp_seconds_argument(args.first().unwrap_or(&Value::Nil))?;
+                let time = ExactTimeValue {
+                    ticks: BigInt::from(seconds),
+                    hz: BigInt::from(1u8),
                 };
-                let zone = if let Some(zone_value) = args.get(1).filter(|value| !value.is_nil()) {
-                    zone_spec_from_value(interp, zone_value, time.as_ref())?
-                } else {
-                    local_zone_spec(interp, time.as_ref())
-                };
+                let zone =
+                    zone_spec_from_value(interp, args.get(1).unwrap_or(&Value::Nil), Some(&time))?;
+                time_local_datetime(&time, &zone)?;
                 Ok(Value::list([
                     Value::Integer(zone.offset_seconds as i64),
                     Value::String(zone.abbreviation.into()),

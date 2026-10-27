@@ -102,26 +102,18 @@ pub(crate) fn file_modtime_from_value(
     // not its seconds (`set-file-times' with `current-time' set a file's
     // mtime a fraction of a second early, and multisession's file backend
     // then took its cached value over another Emacs's newer one).
-    let now = current_time_value()?;
-    let exact = exact_time_from_value(interp, value, &now)?;
-    let nanoseconds = exact_time_floor_nanoseconds(&exact);
-    let (whole_seconds, subsecond) = floor_div_mod(&nanoseconds, &BigInt::from(1_000_000_000u32));
-    let seconds = whole_seconds
-        .to_i64()
-        .ok_or_else(|| LispError::Signal("Time out of range".into()))?;
-    let subsecond = subsecond
-        .to_u32()
-        .ok_or_else(|| LispError::Signal("Time out of range".into()))?;
+    let _ = interp;
+    let (seconds, subsecond) = lisp_time_argument(value)?;
     let modified = if seconds >= 0 {
         UNIX_EPOCH
             .checked_add(Duration::new(seconds as u64, subsecond))
-            .ok_or_else(|| LispError::Signal("Time out of range".into()))?
+            .ok_or_else(time_overflow)?
     } else {
         // Seconds before the epoch with a positive nanosecond part.
         UNIX_EPOCH
             .checked_sub(Duration::from_secs(seconds.unsigned_abs()))
             .and_then(|time| time.checked_add(Duration::from_nanos(u64::from(subsecond))))
-            .ok_or_else(|| LispError::Signal("Time out of range".into()))?
+            .ok_or_else(time_overflow)?
     };
     Ok(crate::buffer::FileModTime { modified })
 }

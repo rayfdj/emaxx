@@ -90,7 +90,7 @@ impl ForEachTail {
 /// maybe_remove_pos_from_symbol: the bare symbol of a symbol with
 /// position while `symbols-with-pos-enabled' is set.
 #[inline]
-fn bare_symbol(interp: &Interpreter, value: Value) -> Value {
+pub(crate) fn bare_symbol(interp: &Interpreter, value: Value) -> Value {
     match value.kind() {
         Kind::SymbolWithPos(symbol) if interp.symbols_with_positions_enabled() => symbol.symbol(),
         _ => value,

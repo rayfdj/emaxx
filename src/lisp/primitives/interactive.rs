@@ -1390,7 +1390,18 @@ fn decode_timer(interp: &Interpreter, timer: &Value) -> Option<ExactTimeValue> {
     if slots.len() != 10 || slots[0].is_truthy() || !matches!(slots[2].kind(), Kind::Integer(_)) {
         return None;
     }
-    exact_time_from_old_style(interp, &[slots[1], slots[2], slots[3], slots[8]]).ok()
+    let _ = interp;
+    let time = decode_time_components(
+        TimeForm::HiLoUsPs,
+        &slots[1],
+        &slots[2],
+        &slots[3],
+        &slots[8],
+    )?;
+    // lisp_to_timespec: the timer's time floored to whole nanoseconds,
+    // and valid.
+    let (seconds, nanoseconds) = lisp_to_timespec(&time)?;
+    Some(ExactTimeValue::from_timespec(seconds, nanoseconds))
 }
 
 /// timer_check's result: how long until the earliest timer on
@@ -1420,7 +1431,9 @@ pub(crate) fn run_due_timers(
         return Ok(false);
     }
     let wall_now = current_time_value().ok();
-    let idle_now = exact_time_from_float(idle_seconds).ok();
+    let idle_now = idle_seconds
+        .is_finite()
+        .then(|| decode_float_time(idle_seconds));
     let mut ran = false;
     for (list_name, idle) in [("timer-idle-list", true), ("timer-list", false)] {
         let Some(timers) = interp

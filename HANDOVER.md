@@ -7396,6 +7396,65 @@ setup_process_coding_systems's check now refuses). A 13-form
   `accept-process-output' and under `inhibit-quit', SIGINT, SIGHUP, and
   a second SIGTERM while the hook loops gives GNU 30.2's exit statuses,
   output and hook runs, and emacs-tests passes its 7 tests again.
+- **Round 116: timefns.c's decode_lisp_time, time_cmp and
+  `time-convert'.** Emaxx decoded a time value with its own rules: a
+  list had to be proper and of two to four elements, markers counted as
+  integers, and the errors were `(wrong-type-argument time-value
+  "symbol")', `(wrong-type-argument number-or-marker-p ...)', "Invalid
+  time resolution" and "Time out of range". decode_lisp_time reads a
+  list by its conses: `(HI LO US PS . REST)' ignores what follows PS,
+  `(HI LO . US)' and `(HI LO US . X)' are the microsecond form, `(TICKS
+  . HZ)' needs integer TICKS and a positive integer HZ, HIGH and LOW are
+  integers and US and PS fixnums; anything else is "Invalid time
+  specification", a NaN too, and an infinity is "Specified time is not
+  representable" (time_overflow, which the localtime failures and the
+  timespec range check also signal). `decode_lisp_time' is that, with
+  its form (time_arith keeps (TICKS . HZ) when either operand was of
+  that form, which a five-element list no longer counted as) and nil
+  reading the clock at each decode. `current-time-string' and
+  `current-time-zone' decode the seconds alone (lisp_seconds_argument:
+  `(0 1 1.5)' is a valid time there; the string's year is printed as
+  "%d", where chrono's "%Y" gave "+36812"), `format-time-string' formats
+  the time floored to nanoseconds, `decode-time' checks the timespec
+  range and gives an integer SEC unless FORM is t (it gave (TICKS . HZ)
+  for any time not on a 1 Hz clock: `(decode-time 1.5)' began with
+  `(6755399441055744 . 4503599627370496)', GNU 1), `encode-time' takes
+  any time value as SEC (nil the clock) and returns (HI LO) for an
+  integer clock under `current-time-list', `float-time' returns a float
+  argument itself (an infinity too), and `time-convert' is
+  Ftime_convert: a (TICKS . HZ) already on FORM's clock and an integer
+  for `integer' come back themselves, `4' is a clock and not `list', and
+  a FORM that is no positive integer is invalid_hz's `(error "Invalid
+  time frequency" FORM)'. time_cmp answers `eq' operands and `(X . Z)'
+  against `(Y . Z)' with fixnum X and Y before decoding either (so
+  `(time-less-p (cons 1 0) (cons 2 0))' is t where Emaxx signalled), and
+  `time-equal-p''s nil equals only nil. The comparison of two time
+  values whose parts are fixnums now cross-multiplies machine integers,
+  and `current-time' builds its value without a bignum while the ticks
+  fit a fixnum; the fast paths sit in the lifted arms, since a subr call
+  goes through `LIFTED_PRIMITIVES' and not through the module's dispatch
+  function. timer.el's `timer--time-less-p' made 378,015 `time-less-p'
+  calls in track-changes-tests' random test, each on two fresh (HI LO US
+  PS) lists: about 355 instructions a call now, and the test took 4,035M
+  instructions against 6,115M before (GNU 4,199M; the test draws a new
+  seed each run). A probe of `time-less-p' and `time-equal-p' over 27
+  values of every form, valid and not, and of `float-time',
+  `time-convert' with 12 forms, `time-add', `time-subtract',
+  `format-time-string', `current-time-string', `decode-time' and
+  `encode-time' over 34 values gives GNU 30.2's output, except that
+  `current-time-zone''s name for zone t is "UTC" where GNU's is "GMT"
+  (tzlookup's utc_tz is a null zone, so glibc's gmtime names it; see the
+  time zone finding below).
+  Local validation of rounds 114 to 116, on one build: the full gate
+  across its ten groups with the documented local skips, 3,254 of the
+  3,256 tests run passing (2 ignored), the two failures the
+  load-sensitive `subprocess_exit_is_event_driven_and_notifies_newest_process_first_once'
+  and `just_this_one_wait_still_notifies_an_exited_distractor' (6 of 6
+  and 3 of 3 alone); the seven integration targets, where round 115's
+  SIGTERM test now reads the newline `princ' to standard output leaves
+  `message' to emit before "ready" (GNU's standard error has it too);
+  clippy `-D warnings', rustfmt and `git diff --check'; and each of the
+  three commits builds alone.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -8237,6 +8296,17 @@ frozen passed on its first attempt (run 40506742345). Its timings: setup
 among the larger excesses.
 
 **Findings recorded, not fixed:**
+- **Time zones and broken-down time are chrono's (round 116).** GNU's
+  timefns.c hands TZ strings to glibc (tzalloc, localtime_rz, mktime_z);
+  Emaxx parses POSIX TZ strings itself and converts with chrono. A zone
+  file name (`"Asia/Tehran"', `"America/New_York"', as timezone and
+  time-stamp tests use) falls back to UTC, as do a quoted `"<+05>-5"', a
+  name glibc keeps with offset zero (`"garbage zone"' formats "%Z" as
+  "garbage") and `wall' as a ZONE argument (an error here); zone t and 0
+  name the zone "UTC" where glibc's gmtime names it "GMT"; `encode-time'
+  refuses a field outside its range where mktime normalizes it (`(61 59
+  23 31 12 1999 ...)' is the first second of 2000); and chrono's years
+  stop at 262,143 where glibc's run to an int `tm_year'.
 - **The frozen run times the gate profile (round 112).** The frozen
   workflow's harness builds the Emaxx it runs with `--profile gate'
   (thin LTO, 16 codegen units, debug assertions and overflow checks;
