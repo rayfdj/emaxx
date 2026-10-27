@@ -61,7 +61,7 @@ impl Corpus {
     /// Run BINARY with ARGS from the corpus directory; the binary's own
     /// path (argv[0], echoed by messages and `command-line-args') and
     /// the corpus directory are replaced by placeholders, and bytecode
-    /// object addresses in backtraces by one token.
+    /// object hashes in backtraces by one token.
     fn run(&self, binary: &Path, args: &[&str]) -> (String, String, Option<i32>) {
         let Output {
             status,
@@ -146,12 +146,15 @@ fn frame_function(line: &str) -> Option<String> {
     .then(|| name.to_string())
 }
 
-/// `#<bytecode 0x...>' in GNU's backtrace names a heap address.
+/// `#<bytecode 0x...>' in GNU's backtrace is cl-print's `%#x' of the
+/// object's `sxhash', which mixes in object addresses; `format' prints a
+/// negative one as `-0x...', so either sign becomes the one token.
 fn replace_addresses(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
     while let Some(index) = rest.find("0x") {
-        out.push_str(&rest[..index]);
+        let before = &rest[..index];
+        out.push_str(before.strip_suffix('-').unwrap_or(before));
         out.push_str("0xADDR");
         let after = &rest[index + 2..];
         let digits = after

@@ -7962,6 +7962,19 @@ frozen passed on its first attempt (run 40440575378).
 40448910038), frozen passed on its first attempt (run 40448912084).
 **On `acd67d2`** (round 106): full Rust gate passed (run 40453519173),
 frozen passed on its first attempt (run 40453521629).
+**On `b2c904e`** (round 107): frozen passed on its first attempt (run
+40460982714); the Rust gate failed one integration control (run
+40460978739), `c_owned_switches_and_startup_arguments_agree_with_gnu',
+on the backtrace of `--batch --no': the frame of a byte-code closure
+prints cl-print's `#<bytecode %#x>' of its `sxhash', which since round
+106 is fns.c's and so mixes in object addresses, and Emaxx's came out
+negative (`-0x...') where the test's normalization replaced only the
+digits after `0x' (round 106's run drew a positive one). GNU's own
+byte-code objects hash negative as often (`(sxhash-equal
+(symbol-function 'cl-print-object))' in three runs of GNU 30.2), and
+the frame the oracle prints is of native code. The normalization takes
+either sign as the one token (`tests/cli_parity.rs'); six runs of the
+target pass.
 
 **Findings recorded, not fixed:**
 - **A test file's setup by stage, collections apart (round 106).** With
