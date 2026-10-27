@@ -1533,7 +1533,7 @@ impl Interpreter {
         // lisp.h:maybe_quit first reads Vquit_flag directly and returns on
         // the overwhelmingly common nil case.  These are eval.c's forwarded
         // cells, not symbol-name lookups.
-        if self.quit_flag_is_nil() {
+        if self.quit_flag_is_nil() && !primitives::fatal_signal_pending() {
             return Ok(());
         }
         self.process_quit_flag(env)
@@ -1542,6 +1542,12 @@ impl Interpreter {
     /// eval.c:process_quit_flag, reached only with a non-nil quit-flag.
     #[cold]
     fn process_quit_flag(&mut self, env: &mut Env) -> Result<(), LispError> {
+        if primitives::fatal_signal_pending() {
+            primitives::run_pending_fatal_signal(self, env)?;
+            if self.quit_flag_is_nil() {
+                return Ok(());
+            }
+        }
         let flag = self.quit_flag_value();
         if self.inhibit_quit_is_truthy() {
             return Ok(());

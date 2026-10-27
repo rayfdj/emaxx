@@ -7373,6 +7373,29 @@ setup_process_coding_systems's check now refuses). A 13-form
   before comparing the rest (GNU's byte loop; nearly every attempt fails
   there, and the slice comparison was a memcmp call). The doublens test
   went from 7,358M instructions to about 6,986M (GNU 6,320M).
+- **Round 115: fatal signals end Emacs through `kill-emacs'.**
+  sysdep.c:init_signals catches SIGHUP, SIGTERM and, in batch, SIGINT
+  (each unless inherited ignored), and emacs.c:terminate_due_to_signal
+  calls Fkill_emacs with the signal number: `kill-emacs-hook' runs, the
+  files are unlocked, standard output is flushed and the exit status is
+  the signal's number. Emaxx installed no handler and died by the signal
+  (status 143 for SIGTERM, nothing flushed, no hook). The handler now
+  records the signal and the next quit check runs `kill-emacs' with it,
+  whatever `inhibit-quit' says; process waits (`sleep-for',
+  `accept-process-output') check on each pass, and `while' calls
+  maybe_quit before each body as Fwhile does (it never checked, so an
+  interpreted `(while t)' could not be quit at all). Any later fatal
+  signal after the first has run is dropped, as GNU's handler runs with
+  every signal blocked. A second one while the first still waits for a
+  quit check takes the signal's default action, so a primitive that
+  never reaches one (a native walk of a circular list) cannot leave the
+  process running; GNU's handler would have run the hook there. (A
+  watchdog thread for that case broke emacs-tests' seccomp and bwrap
+  tests, whose filters refuse the clone a spawned thread makes.) A
+  probe of SIGTERM in interpreted and byte-compiled loops, `sleep-for',
+  `accept-process-output' and under `inhibit-quit', SIGINT, SIGHUP, and
+  a second SIGTERM while the hook loops gives GNU 30.2's exit statuses,
+  output and hook runs, and emacs-tests passes its 7 tests again.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's

@@ -530,6 +530,12 @@ pub fn latch_trace_load_errors() {
     let _ = TRACE_LOAD_ERRORS.set(std::env::var_os("EMAXX_TRACE_LOAD_ERRORS").is_some());
 }
 
+/// sysdep.c:init_signals' handlers for the signals that end Emacs through
+/// `kill-emacs' (SIGHUP, SIGTERM, and SIGINT in batch).
+pub fn install_fatal_signal_handlers(noninteractive: bool) {
+    primitives::install_fatal_signal_handlers(noninteractive);
+}
+
 /// `fflush (stdout)' for the batch process: the stdio-style buffer behind
 /// `standard-output' (primitives::batch_stdout) reaches the descriptor.
 pub fn flush_batch_stdout() {

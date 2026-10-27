@@ -3513,6 +3513,11 @@ pub(crate) fn wait_pumping_processes(
         target_process_id.and_then(|process_id| interp.process_output_delivery_count(process_id));
     let mut all_processes_seen = interp.current_thread_process_output_delivery_count();
     loop {
+        // A fatal signal ends the wait as GNU's handler, run in the middle
+        // of the select, does.
+        if crate::lisp::primitives::fatal_signal_pending() {
+            crate::lisp::primitives::run_pending_fatal_signal(interp, env)?;
+        }
         let mut progressed = pump_external_process_output_for(interp, env, only_process_id)?;
         progressed |= pump_connection_processes_for(interp, env, only_process_id)?;
         // process.c after its select: "If we woke up due to SIGWINCH,
