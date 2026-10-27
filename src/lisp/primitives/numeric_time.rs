@@ -2665,24 +2665,46 @@ pub(crate) fn parse_integer_string_with_base(text: &str, base: u32) -> Value {
         _ => false,
     };
 
-    let mut value = BigInt::zero();
+    // lread.c:string_to_number accumulates in an unsigned machine word
+    // and makes a bignum only when the digits overflow it.
+    let mut small: u64 = 0;
+    let mut big: Option<BigInt> = None;
     let mut saw_digit = false;
     while let Some(&ch) = chars.peek() {
         let Some(digit) = digit_value_for_base(ch, base) else {
             break;
         };
         saw_digit = true;
-        value = value * base + BigInt::from(digit);
+        match &mut big {
+            Some(value) => *value = &*value * base + digit,
+            None => {
+                match small
+                    .checked_mul(u64::from(base))
+                    .and_then(|value| value.checked_add(u64::from(digit)))
+                {
+                    Some(value) => small = value,
+                    None => big = Some(BigInt::from(small) * base + digit),
+                }
+            }
+        }
         chars.next();
     }
 
     if !saw_digit {
         return Value::Integer(0);
     }
-    if negative {
-        value = -value;
+    match big {
+        None if small <= MOST_POSITIVE_FIXNUM as u64 => {
+            let value = small as i64;
+            Value::Integer(if negative { -value } else { value })
+        }
+        None => normalize_bigint_value(if negative {
+            -BigInt::from(small)
+        } else {
+            BigInt::from(small)
+        }),
+        Some(value) => normalize_bigint_value(if negative { -value } else { value }),
     }
-    normalize_bigint_value(value)
 }
 
 pub(crate) fn digit_value_for_base(ch: char, base: u32) -> Option<u32> {

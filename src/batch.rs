@@ -3296,6 +3296,78 @@ mod tests {
     }
 
     #[test]
+    fn unicode_property_tables_are_chartab_c_and_string_to_number_checks_base() {
+        // chartab.c: uniprop_table finds PROP's entry by `eq' and returns
+        // the table only when it is a property table with a known
+        // decoder; the run-length decoder reads nil as index 0.
+        // data.c:Fstring_to_number checks BASE as a fixnum in 2..16.
+        run_with_large_stack(|| {
+            let emacs_repo = compat::project_root().join("../emacs");
+            let options = BatchRunOptions {
+                load_path: compat::emaxx_upstream_load_path(&emacs_repo)
+                    .expect("upstream load path"),
+                ..Default::default()
+            };
+            let mut interpreter =
+                initialize_batch_interpreter(&options).expect("init batch interpreter");
+            let mut env = crate::lisp::types::Env::new();
+            let mut forms = Reader::new(
+                r#"(defmacro emaxx-probe-or-error (form)
+                     `(condition-case e ,form (error (list 'ERR e))))
+                   FORM"#
+                    .replace("FORM", r##"(prin1-to-string (list (let* ((name (unicode-property-table-internal 'name))
+       (gc (unicode-property-table-internal 'general-category))
+       (out nil))
+  (push (char-table-p name) out)
+  (push (unicode-property-table-internal 5) out)
+  (push (unicode-property-table-internal "name") out)
+  (push (unicode-property-table-internal 'no-such-prop) out)
+  (push (get-unicode-property-internal gc ?a) out)
+  (push (get-unicode-property-internal gc #x10FFFF) out)
+  (push (get-unicode-property-internal gc #x3FFF00) out)
+  (push (condition-case e (get-unicode-property-internal (make-char-table 'foo) ?a) (error e)) out)
+  (push (condition-case e (get-unicode-property-internal gc -1) (error e)) out)
+  (push (list (char-table-extra-slot gc 1) (length (char-table-extra-slot gc 4))) out)
+  (let ((tbl (make-char-table 'char-code-property-table)))
+    (push (char-table-extra-slot tbl 1) out)
+    (set-char-table-extra-slot tbl 1 0)
+    (set-char-table-extra-slot tbl 4 [a b c])
+    (aset tbl ?x 2) (aset tbl ?y nil) (aset tbl ?z 7) (aset tbl ?w 'sym) (aset tbl ?v -1)
+    (push (mapcar (lambda (c) (condition-case e (get-unicode-property-internal tbl c) (error e))) '(?x ?y ?z ?v ?u)) out))
+  (push (get-char-code-property ?A 'name) out)
+  (push (get-char-code-property ?a 'general-category) out)
+  (push (get-char-code-property ?\N{GREEK SMALL LETTER ALPHA} 'uppercase) out)
+  (push (upcase "ǆ") out)
+  (push (capitalize "ǆa") out)
+  (nreverse out)) (list (emaxx-probe-or-error (string-to-number "123")) (emaxx-probe-or-error (string-to-number "-123")) (emaxx-probe-or-error (string-to-number "ff" 16)) (emaxx-probe-or-error (string-to-number "-FF" 16))
+             (emaxx-probe-or-error (string-to-number "2305843009213693951")) (emaxx-probe-or-error (string-to-number "2305843009213693952")) (emaxx-probe-or-error (string-to-number "-2305843009213693952"))
+             (emaxx-probe-or-error (string-to-number "-2305843009213693953")) (emaxx-probe-or-error (string-to-number "18446744073709551615")) (emaxx-probe-or-error (string-to-number "18446744073709551616"))
+             (emaxx-probe-or-error (string-to-number "123456789012345678901234567890")) (emaxx-probe-or-error (string-to-number "-ZZZZZZZZZZZZZZZZ" 36)) (emaxx-probe-or-error (string-to-number "  +7")) (emaxx-probe-or-error (string-to-number "x"))
+             (emaxx-probe-or-error (string-to-number "1e3")) (emaxx-probe-or-error (string-to-number "0x10")) (emaxx-probe-or-error (string-to-number "777" 8)) (emaxx-probe-or-error (bignump (string-to-number "2305843009213693952")))
+             (emaxx-probe-or-error (string-to-number "12" 1)) (emaxx-probe-or-error (string-to-number "12" 17)) (emaxx-probe-or-error (string-to-number "12" 2.0)) (emaxx-probe-or-error (string-to-number "12" (expt 2 70)))
+             (emaxx-probe-or-error (string-to-number "-fffffffffffffffffffff" 16)) (emaxx-probe-or-error (string-to-number "1111111111111111111111111111111111111111111111111111111111111111111" 2))
+             #x1fffffffffffffff #x2000000000000000 #o7777777777777777777777 #b101 #24r1k (read "#x-10"))))"##)
+                    .as_str(),
+            )
+            .read_all()
+            .expect("read property probe");
+            let probe = forms.pop().expect("probe form");
+            interpreter
+                .eval(&forms[0], &mut env)
+                .expect("define the probe's macro");
+            let printed = interpreter
+                .eval(&probe, &mut env)
+                .expect("evaluate property probe");
+            assert_eq!(
+                lisp::primitives::string_like(&printed)
+                    .expect("printed")
+                    .text,
+                r##"((t nil nil nil Ll Cn Cn (error "Invalid Unicode property table") (wrong-type-argument characterp -1) (0 31) nil (c a 7 -1 a) "LATIN CAPITAL LETTER A" Ll 913 "Ǆ" "ǅa") (123 -123 255 -255 2305843009213693951 2305843009213693952 -2305843009213693952 -2305843009213693953 18446744073709551615 18446744073709551616 123456789012345678901234567890 (ERR (args-out-of-range 36)) 7 0 1000.0 0 511 t (ERR (args-out-of-range 1)) (ERR (args-out-of-range 17)) (ERR (wrong-type-argument fixnump 2.0)) (ERR (wrong-type-argument fixnump 1180591620717411303424)) -19342813113834066795298815 147573952589676412927 2305843009213693951 2305843009213693952 73786976294838206463 5 44 -16))"##
+            );
+        });
+    }
+
+    #[test]
     fn image_symbols_are_the_obarrays_and_the_initial_frame_is_terminal_frame() {
         // pdumper.c maps the dumped symbols where the image holds them:
         // a preloaded symbol is the obarray's, its cells are traced by the

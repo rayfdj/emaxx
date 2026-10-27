@@ -7236,6 +7236,39 @@ setup_process_coding_systems's check now refuses). A 13-form
   give round 108's results. Local validation: the full gate across its
   ten groups with the documented local skips, and the seven integration
   targets; clippy `-D warnings', rustfmt and `git diff --check' pass.
+- **Round 111: chartab.c's Unicode property tables, and
+  `string-to-number''s base.** `unicode-property-table-internal' is
+  Funicode_property_table_internal over uniprop_table: the entry of
+  `char-code-property-alist' found by `eq' (it compared each key's
+  name as a string, so any non-symbol PROP signalled `symbolp' where
+  GNU gives nil), a file it names loaded as save_match_data_load does
+  (`international/' FILE with NOERROR, NOMESSAGE and NOSUFFIX: it
+  loaded strictly, signalling where GNU gives the entry's value), and
+  the table returned only when it is a property table (UNIPROP_TABLE_P:
+  the purpose and five extra slots) with a decoder uniprop_get_decoder
+  knows, else the entry's value; that entry is the one read unless a
+  load ran. `get-unicode-property-internal' and
+  `put-unicode-property-internal' check the character before the table
+  and the table as UNIPROP_TABLE_P, and decode as
+  uniprop_decode_value_run_length: a value in range indexes extra slot
+  4's vector, nil (whose word is 0) is index 0, anything else stands.
+  The decoder signalled on nil or a negative value, read a list as the
+  vector and copied the whole vector on each call. casefiddle.c's
+  special-casing and titlecase tables are read with CHAR_TABLE_REF, not
+  decoded. `string-to-number' checks BASE as Fstring_to_number does
+  (`fixnump', then `args-out-of-range' with the base; it signalled a
+  bare error), and accumulates digits in a machine word, making a
+  bignum only when they overflow (each digit was a bignum operation).
+  A 17-form probe of the property primitives and a 30-form probe of
+  number parsing give GNU 30.2's output. mule-tests.el's
+  `mule-cmds-tests--ucs-names-missing-names' (the `ucs-names' walk over
+  every character) went from 12.40G instructions to 11.98G (GNU 11.05G;
+  the alist lookup 762M to 458M). 167 of GNU's ERT files (3,756 tests)
+  give round 108's results. Local validation: the full gate across its
+  ten groups with the documented local skips (the process-timing test
+  `just_this_one_wait_still_notifies_an_exited_distractor' failed once
+  under a loaded machine and passes alone), and the seven integration
+  targets; clippy `-D warnings', rustfmt and `git diff --check' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -8058,6 +8091,9 @@ passed (run 40465961198), frozen passed on its first attempt (run
 40465971582).
 **On `620f3c9`** (round 109): full Rust gate passed (run 40470123265),
 frozen passed on its first attempt (run 40470126251).
+**On `d2b6fb8`** (round 110): full Rust gate passed (run 40476730260),
+frozen passed on its first attempt (run 40476733898); PR #110 merged
+rounds 99 to 110 into main (`9ed0ceb`).
 
 **Findings recorded, not fixed:**
 - **Setup's time at equal instructions (round 110).** The
