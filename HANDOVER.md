@@ -7176,6 +7176,66 @@ setup_process_coding_systems's check now refuses). A 13-form
   (GNU 507.6M). Local validation: the full gate across its ten groups
   with the documented local skips; clippy `-D warnings', rustfmt and
   `git diff --check' pass.
+- **Round 110: filelock.c, shutdown's unlock and `file-writable-p'.**
+  Locks are filelock.c's (new module `primitives/filelock.rs'): a
+  symbolic link, named by `make-lock-file-name' (so
+  `lock-file-name-transforms' applies), to USER@HOST.PID:BOOT, the boot
+  time gnulib's get_boot_time (utmp's BOOT_TIME entry, then on Linux
+  the files only the boot touches and the clock less CLOCK_BOOTTIME),
+  with a nonce file renamed into place where links do not work
+  (renameat2 RENAME_NOREPLACE, else link and unlink). A lock is read
+  with readlinkat, a regular file's contents where it is not a link,
+  and parsed as current_lock_owner does (the CIFS U+F022 colon, an
+  overflowing pid as -1, nothing after the boot time); a lock of this
+  host whose process is dead or whose boot time is not this boot's is
+  removed; another's asks `ask-user-about-lock' with USER@HOST (pid
+  PID), whose t takes it. lock_file asks
+  `userlock--ask-user-about-supersession-threat' first when the
+  visiting buffer's file changed on disk, even with `create-lockfiles'
+  nil; `unlock-file' runs under internal_condition_case for `file-error'
+  and hands one to `userlock--handle-unlock-error'; `file-locked-p'
+  signals report_file_errno's "Testing file lock"; `lock-buffer' takes
+  its FILE and `lock-buffer' and `unlock-buffer' act on a modified
+  buffer's file truename only. The lock was a regular file holding
+  USER@HOST.PID, always `.#NAME' beside the file; each lock computed the
+  login name again (getpwuid: an nscd connection and two reads of
+  /etc/passwd a lock), another process's lock was passed over in
+  silence, a malformed one signalled without errno text, an unlock
+  failure raised, `lock-buffer' ignored its argument and
+  `unlock-buffer' unlocked an unmodified buffer's file. The first
+  change of a file's buffer locks it through Flock_file, whose errors
+  propagate (they were dropped) and whose lock_file makes the one
+  supersession check; `set-buffer-modified-p', `write-region' (it
+  unlocks whatever `create-lockfiles' says, and no longer unlocks the
+  visited file again after a visiting write) and `kill-buffer' use the
+  same entry points. `kill-emacs' unlocks every modified buffer's file
+  (shut_down_emacs's unlock_all_files: a batch run left them), and a
+  batch top-level error ends in cmd_error_internal's Fkill_emacs (-1):
+  `kill-emacs-hook' runs, which it did not. `file-writable-p' is
+  fileio.c's: faccessat W_OK, and for a missing file W_OK | X_OK on its
+  directory. It opened the file for writing, or created and deleted a
+  `.writable-probe-' file in the directory (changing the directory's
+  modification time), and answered nil where faccessat says root may
+  write (a sysfs directory). A batch test pins GNU 30.2's values for
+  ten lock cases and a CLI test the error exit's hook and unlock; the
+  lock lifecycle test asks `file-symlink-p' (GNU's `file-exists-p' of a
+  lock is nil: the link dangles). A 61-case probe gives GNU's output
+  but for a raw-byte lock target: Emaxx writes a unibyte file name's
+  bytes 128-255 as UTF-8 of their private-use characters wherever a
+  Lisp file name reaches the host (`write-region', `make-directory',
+  `make-symbolic-link'), where ENCODE_FILE passes them through (a
+  finding below). icalendar-tests.el's system calls now include
+  GNU's 411 symlinks (205 EEXIST) and 411 readlinkat, no nscd
+  connection or /etc/passwd read, and 411 unlinks (616: 205 were
+  writability probes). Round 107's frozen run gave
+  `icalendar-import-rrule' 576 ms and `icalendar-import-non-recurring'
+  537 ms (round 106's: 96 and 50; GNU 52 and 19), which instruction
+  counts (1.24 times GNU's) do not explain; its GNU setup medians were
+  17% slower than round 106's too, and round 109's run gave 152 and 79
+  (GNU 90 and 30): one run's noise. 167 of GNU's ERT files (3,756 tests)
+  give round 108's results. Local validation: the full gate across its
+  ten groups with the documented local skips, and the seven integration
+  targets; clippy `-D warnings', rustfmt and `git diff --check' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -7993,8 +8053,37 @@ byte-code objects hash negative as often (`(sxhash-equal
 the frame the oracle prints is of native code. The normalization takes
 either sign as the one token (`tests/cli_parity.rs'); six runs of the
 target pass.
+**On `446b1b9`** (round 108 and the `cli_parity' fix): full Rust gate
+passed (run 40465961198), frozen passed on its first attempt (run
+40465971582).
+**On `620f3c9`** (round 109): full Rust gate passed (run 40470123265),
+frozen passed on its first attempt (run 40470126251).
 
 **Findings recorded, not fixed:**
+- **Setup's time at equal instructions (round 110).** The
+  cal-french-tests.el setup with the frozen runner's command line takes
+  507.9M instructions against GNU's 507.6M, but 0.19 s of user time
+  against 0.13 s (eight runs each, release build with line tables; the
+  gate build is the same, 0.24 s wall against 0.23 s), 7,310 minor
+  faults against 6,180. Under callgrind's cache simulation Emaxx takes
+  2.30M first-level instruction-cache misses against GNU's 0.31M, spread
+  thin (the most, `run_verified', 1.7%), with fewer data-cache misses
+  (3.6M against 4.6M) and as many last-level ones; its text is 13.4 MB
+  against GNU's 3.4 MB, and it makes 6.3M indirect branches against
+  3.8M (the collector's `trace_pending' 2.3M; the loader's
+  `relocate_conses' mispredicts three in four of its 0.29M). The frozen
+  runs put the 519 files' setup at 1.21 to 1.22 times GNU's (rounds 106,
+  107 and 109) while the test bodies are 0.96 to 1.01. The workflow's
+  `ordinary-samples' perf run of the file (run 40471735423) samples at
+  199 Hz and so gives the 142 ms setup about 28 samples: too few to
+  place it.
+- **A unibyte file name's raw bytes (round 110).** A Lisp file name
+  reaches the host through its text, in which a raw byte 128-255 is a
+  private-use character, so `(write-region "" nil "/tmp/a\\357")'
+  makes a file named a + EE 83 AF where GNU's ENCODE_FILE passes a
+  unibyte string's bytes through (a + EF); `make-directory' and
+  `make-symbolic-link''s target do the same. Every file primitive that
+  takes the name as text shares this.
 - **A test file's setup by stage, collections apart (round 106).** With
   the frozen runner's command line (scratchpad `phases100.sh', and
   startup with no file loaded), each stage's cumulative instructions,

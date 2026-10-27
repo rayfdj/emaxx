@@ -1,6 +1,42 @@
 use super::*;
 use crate::lisp::types::{Kind, PropertyName};
 
+/// buffer.c:Frestore_buffer_modified_p: a buffer becoming modified locks
+/// its file truename and one becoming unmodified unlocks it, unless
+/// `inhibit-modification-hooks'.  Testing `buffer-file-name' makes
+/// binding it to nil effective.
+fn update_modified_lock(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    already: bool,
+    flag: bool,
+) -> Result<(), LispError> {
+    if already == flag
+        || interp
+            .lookup_var("inhibit-modification-hooks", env)
+            .is_some_and(|value| value.is_truthy())
+    {
+        return Ok(());
+    }
+    let Some(truename) = interp
+        .symbol_value_key(cached_symbol!("buffer-file-truename"))
+        .filter(|value| value.is_truthy())
+    else {
+        return Ok(());
+    };
+    if !interp
+        .symbol_value_key(cached_symbol!("buffer-file-name"))
+        .is_some_and(|value| value.is_truthy())
+    {
+        return Ok(());
+    }
+    if flag {
+        flock_file(interp, env, truename)
+    } else {
+        funlock_file(interp, env, truename)
+    }
+}
+
 // cmds.c:236/288: `self-insert-command' and `delete-char' amalgamate
 // their undo with a preceding run of the same command when the count's
 // magnitude is below 2 -- through simple.el's own `undo-auto-amalgamate',
@@ -1231,16 +1267,7 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 let modified = !args[0].is_nil();
                 let was_modified = interp.buffer.borrow().is_modified();
-                let update_lock = !interp
-                    .lookup_var("inhibit-modification-hooks", env)
-                    .is_some_and(|value| value.is_truthy())
-                    && interp.buffer.borrow().file.is_some()
-                    && interp.buffer.borrow().file_truename.is_some();
-                if was_modified && !modified && update_lock {
-                    unlock_current_buffer(interp, env)?;
-                } else if !was_modified && modified && update_lock {
-                    maybe_lock_current_buffer_file(interp, env)?;
-                }
+                update_modified_lock(interp, env, was_modified, modified)?;
                 if modified {
                     interp.buffer.borrow_mut().set_modified();
                 } else {
@@ -1253,16 +1280,7 @@ define_dispatch!(
                 let flag = args[0];
                 let modified = !flag.is_nil();
                 let was_modified = interp.buffer.borrow().is_modified();
-                let update_lock = !interp
-                    .lookup_var("inhibit-modification-hooks", env)
-                    .is_some_and(|value| value.is_truthy())
-                    && interp.buffer.borrow().file.is_some()
-                    && interp.buffer.borrow().file_truename.is_some();
-                if was_modified && !modified && update_lock {
-                    unlock_current_buffer(interp, env)?;
-                } else if !was_modified && modified && update_lock {
-                    maybe_lock_current_buffer_file(interp, env)?;
-                }
+                update_modified_lock(interp, env, was_modified, modified)?;
                 if flag.is_nil() {
                     interp.buffer.borrow_mut().set_unmodified();
                 } else if matches!(flag.kind(), Kind::Symbol(symbol) if symbol == "autosaved") {

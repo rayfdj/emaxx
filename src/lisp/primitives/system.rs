@@ -2187,55 +2187,43 @@ pub(crate) fn accessible_directory(path: &[u8]) -> std::io::Result<()> {
     }
 }
 
+/// fileio.c:Ffile_writable_p past its handler, for the expanded PATH:
+/// file_access_p with W_OK, and for a file that does not exist, with
+/// W_OK | X_OK on its directory, where it would be created.
 pub(crate) fn file_writable_p(path: &str) -> bool {
-    let candidate = Path::new(path);
-    if candidate.exists() {
-        if let Ok(metadata) = fs::metadata(candidate)
-            && metadata.is_dir()
-        {
-            return directory_allows_create(candidate);
-        }
-        return fs::OpenOptions::new().write(true).open(candidate).is_ok();
-    }
-    let Some(parent) = candidate.parent() else {
-        return false;
-    };
-    directory_allows_create(parent)
-}
-
-fn directory_allows_create(directory: &Path) -> bool {
-    let directory = if directory.as_os_str().is_empty() {
-        Path::new(".")
-    } else {
-        directory
-    };
-    if !fs::metadata(directory)
-        .map(|metadata| metadata.is_dir())
-        .unwrap_or(false)
+    #[cfg(unix)]
     {
-        return false;
-    }
-    let pid = std::process::id();
-    for attempt in 0..8u8 {
-        let stamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|duration| duration.as_nanos())
-            .unwrap_or(0);
-        let probe = directory.join(format!(".writable-probe-{pid}-{stamp:x}-{attempt:x}"));
-        match fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&probe)
-        {
-            Ok(_) => {
-                let _ = fs::remove_file(probe);
-                return true;
+        let access = |name: &str, mode: libc::c_int| {
+            let Ok(name) = std::ffi::CString::new(name) else {
+                return Err(libc::EINVAL);
+            };
+            // SAFETY: `name' is a valid NUL-terminated string for the call.
+            let status =
+                unsafe { libc::faccessat(libc::AT_FDCWD, name.as_ptr(), mode, libc::AT_EACCESS) };
+            if status == 0 {
+                Ok(())
+            } else {
+                Err(std::io::Error::last_os_error().raw_os_error().unwrap_or(0))
             }
-            Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
-            Err(_) => return false,
+        };
+        match access(path, libc::W_OK) {
+            Ok(()) => true,
+            Err(libc::ENOENT) => {
+                let directory = path.rfind('/').map_or("./", |slash| &path[..=slash]);
+                access(directory, libc::W_OK | libc::X_OK).is_ok()
+            }
+            Err(_) => false,
         }
     }
-    false
+    #[cfg(not(unix))]
+    {
+        // w32: a file whose read-only attribute is clear, or a missing
+        // file in an existing directory.
+        match fs::metadata(path) {
+            Ok(metadata) => !metadata.permissions().readonly(),
+            Err(_) => Path::new(path).parent().is_some_and(Path::is_dir),
+        }
+    }
 }
 
 /// fileio.c Ffile_executable_p is `file_access_p (name, X_OK)': a plain

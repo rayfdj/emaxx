@@ -335,7 +335,19 @@ fn run_batch_through_normal_top_level(
             // form (run_batch_toplevel_form), when
             // `backtrace-on-error-noninteractive' asked for it.
             emit_batch_error_message(interpreter, &LispError::from(error.clone()));
-            return Ok(BatchRunOutcome::Exit(255));
+            // Fkill_emacs (make_fixnum (-1), Qnil): `kill-emacs-hook' and
+            // shut_down_emacs run as for any other exit.
+            match lisp::primitives::call(
+                interpreter,
+                "kill-emacs",
+                &[Value::Integer(-1)],
+                &mut crate::lisp::types::Env::new(),
+            )
+            .map_err(LispError::into_kind)
+            {
+                Err(LispErrorKind::Terminate(termination)) => return Ok(termination.into()),
+                _ => return Ok(BatchRunOutcome::Exit(255)),
+            }
         }
     }
     Ok(interpreter
@@ -3200,6 +3212,85 @@ mod tests {
                     .expect("printed")
                     .text,
                 r#"(nil (error "Invalid face" zz-nosuch) (1 t unspecified) (:ignore-defface unspecified) (error "Invalid face underline" :style bogus) (error "Invalid face box" :line-width 0) (error "Face height does not produce a positive integer" 0.01) (error "Default face height not absolute and positive" 1.5) (error "Invalid face foundry" "") (wrong-type-argument symbolp 5) (error "Invalid extend face attribute value" foo) (error "Invalid face inheritance" (bold . italic)) (error "Invalid face overline" foo) heavy unspecified t (unspecified t) (0 1 face) 15 10 t)"#
+            );
+        });
+    }
+
+    #[test]
+    fn file_locks_are_filelock_c_symlinks() {
+        // filelock.c: a lock is a symbolic link to USER@HOST.PID:BOOT named
+        // by `make-lock-file-name'; another host's lock asks
+        // `ask-user-about-lock' with USER@HOST (pid PID), which may take
+        // it; a dead process's lock on this host is removed; a malformed
+        // lock or a directory in its place is report_file_errno's
+        // "Testing file lock"; `lock-buffer' and `unlock-buffer' act on a
+        // modified buffer's file truename only.
+        run_with_large_stack(|| {
+            let emacs_repo = compat::project_root().join("../emacs");
+            let options = BatchRunOptions {
+                load_path: compat::emaxx_upstream_load_path(&emacs_repo)
+                    .expect("upstream load path"),
+                ..Default::default()
+            };
+            let mut interpreter =
+                initialize_batch_interpreter(&options).expect("init batch interpreter");
+            let form = Reader::new(
+                r#"(prin1-to-string
+                  (progn
+                    (require 'cl-lib)
+                    (let* ((dir (file-name-as-directory (make-temp-file "emaxx-lock" t)))
+                           (f (expand-file-name "a.txt" dir))
+                           (lock (expand-file-name ".#a.txt" dir))
+                           (me (format "%s@%s." (user-login-name) (system-name)))
+                           (plant (lambda (target)
+                                    (when (file-symlink-p lock) (delete-file lock))
+                                    (make-symbolic-link target lock))))
+                      (unwind-protect
+                          (progn
+                            (write-region "x" nil f)
+                            (list
+                             (progn (lock-file f)
+                                    (list (file-locked-p f) (string-prefix-p me (file-symlink-p lock))
+                                          (and (string-match-p "\\.[0-9]+:[0-9]+\\'" (file-symlink-p lock)) t)))
+                             (progn (unlock-file f) (file-symlink-p lock))
+                             (progn (funcall plant "someone@elsewhere.42:17") (file-locked-p f))
+                             (let (asked)
+                               (cl-letf (((symbol-function 'ask-user-about-lock)
+                                          (lambda (_file opponent) (setq asked opponent) nil)))
+                                 (lock-file f))
+                               (list asked (file-symlink-p lock)))
+                             (cl-letf (((symbol-function 'ask-user-about-lock) (lambda (_file _opponent) t)))
+                               (lock-file f)
+                               (list (file-locked-p f) (string-prefix-p me (file-symlink-p lock))))
+                             (progn (funcall plant (concat me "999999999"))
+                                    (list (file-locked-p f) (file-symlink-p lock)))
+                             (progn (funcall plant "u@h.12:x")
+                                    (prog1 (condition-case e (file-locked-p f) (file-error (nth 2 e)))
+                                      (delete-file lock)))
+                             (progn (make-directory lock)
+                                    (prog1 (condition-case e (file-locked-p f) (file-error (nth 2 e)))
+                                      (delete-directory lock)))
+                             (let ((create-lockfiles nil)) (lock-file f) (file-symlink-p lock))
+                             (with-current-buffer (find-file-noselect f)
+                               (prog1 (list (progn (insert "y") (file-locked-p f))
+                                            (progn (unlock-buffer) (file-locked-p f))
+                                            (progn (lock-buffer) (file-locked-p f))
+                                            (condition-case e (lock-buffer 7) (error e))
+                                            (progn (set-buffer-modified-p nil) (file-locked-p f)))
+                                 (kill-buffer)))))
+                        (delete-directory dir t)))))"#,
+            )
+            .read_all()
+            .expect("read lock probe")
+            .remove(0);
+            let printed = interpreter
+                .eval(&form, &mut crate::lisp::types::Env::new())
+                .expect("evaluate lock probe");
+            assert_eq!(
+                lisp::primitives::string_like(&printed)
+                    .expect("printed")
+                    .text,
+                r#"((t t t) nil "someone" ("someone@elsewhere (pid 42)" "someone@elsewhere.42:17") (t t) (nil nil) "Invalid argument" "Is a directory" nil (t nil t (wrong-type-argument stringp 7) nil))"#
             );
         });
     }

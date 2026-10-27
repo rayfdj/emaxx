@@ -644,10 +644,14 @@ define_dispatch!(
                     .unwrap_or(Value::Nil))
             }
             "lock-buffer" => {
-                maybe_lock_current_buffer(interp, env)?;
+                need_arg_range(name, args, 0, 1)?;
+                lock_buffer(interp, env, args.first().copied())
+            }
+            "unlock-buffer" => {
+                need_args(name, args, 0)?;
+                unlock_buffer(interp, env, interp.current_buffer_id())?;
                 Ok(Value::Nil)
             }
-            "unlock-buffer" => unlock_current_buffer(interp, env),
 
             "recent-auto-save-p" => {
                 need_args(name, args, 0)?;

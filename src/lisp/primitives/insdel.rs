@@ -242,24 +242,27 @@ fn report_interval_modification(
     })
 }
 
-/// insdel.c: a file-visiting buffer's first change locks its file
-/// (Flock_file, whose lock_file asks about a supersession threat first).
+/// insdel.c:prepare_to_modify_buffer_1: a file-visiting buffer's first
+/// change locks its file truename (Flock_file, whose lock_file asks about
+/// a supersession threat first).  Testing `buffer-file-name' too makes
+/// binding it to nil effective.
 fn lock_file_on_first_change(interp: &mut Interpreter, env: &mut Env) -> Result<(), LispError> {
-    if current_buffer_file(interp).is_none() || interp.buffer.borrow().is_modified() {
+    if interp.buffer.borrow().is_modified() {
         return Ok(());
     }
+    let Some(truename) = interp
+        .symbol_value_key(cached_symbol!("buffer-file-truename"))
+        .filter(|value| value.is_truthy())
+    else {
+        return Ok(());
+    };
     if !interp
         .symbol_value_key(cached_symbol!("buffer-file-name"))
         .is_some_and(|value| value.is_truthy())
-        || !interp
-            .symbol_value_key(cached_symbol!("buffer-file-truename"))
-            .is_some_and(|value| value.is_truthy())
     {
         return Ok(());
     }
-    ensure_no_supersession_threat(interp, env)?;
-    let _ = maybe_lock_current_buffer_file(interp, env);
-    Ok(())
+    flock_file(interp, env, truename)
 }
 
 /// The markers signal_before_change keeps while the hooks run:

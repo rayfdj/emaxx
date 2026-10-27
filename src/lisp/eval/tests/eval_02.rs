@@ -5107,10 +5107,11 @@ fn loaded_todo_mode_resource_state_survives_real_ert_macro() {
     assert_eq!(summary.passed, 5, "{results}");
     let todo_lock = todo_directory.join(".#todo-test-1.todo");
     let archive_lock = todo_directory.join(".#todo-test-1.toda");
-    assert!(
-        !todo_lock.exists() && !archive_lock.exists(),
-        "Todo state tests left a resource lock"
-    );
+    let unlocked = || {
+        std::fs::symlink_metadata(&todo_lock).is_err()
+            && std::fs::symlink_metadata(&archive_lock).is_err()
+    };
+    assert!(unlocked(), "Todo state tests left a resource lock");
     let first_quit_selector = Value::list([
         Value::symbol("member"),
         Value::symbol("todo-test-todo-quit01"),
@@ -5129,7 +5130,7 @@ fn loaded_todo_mode_resource_state_survives_real_ert_macro() {
                   (buffer-list))"#,
     );
     assert!(
-        !todo_lock.exists() && !archive_lock.exists(),
+        unlocked(),
         "Todo quit left a resource lock; live buffers: {live_buffers:#?}"
     );
     let quit_selector = Value::list([
@@ -5179,21 +5180,21 @@ fn modified_state_transitions_and_buffer_kill_release_owned_file_locks() {
                       (let ((buffer-file-name nil))
                         (insert "internal change"))
                       (setq locked-with-hidden-file-name
-                            (file-exists-p (make-lock-file-name path)))
+                            (and (file-symlink-p (make-lock-file-name path)) t))
                       (restore-buffer-modified-p nil)
                       (insert "changed")
                       (setq locked-before-restore
-                            (file-exists-p (make-lock-file-name path)))
+                            (and (file-symlink-p (make-lock-file-name path)) t))
                       (setq restore-result (restore-buffer-modified-p nil))
                       (setq locked-after-restore
-                            (file-exists-p (make-lock-file-name path))))
+                            (and (file-symlink-p (make-lock-file-name path)) t)))
                     (kill-buffer buffer)
                     (setq buffer (find-file-noselect path))
                     (with-current-buffer buffer
                       (goto-char (point-max))
                       (insert "changed again")
                       (setq locked-before-kill
-                            (file-exists-p (make-lock-file-name path))))
+                            (and (file-symlink-p (make-lock-file-name path)) t)))
                     (let ((original-yes-or-no-p
                            (symbol-function 'yes-or-no-p)))
                       (unwind-protect
@@ -5206,7 +5207,7 @@ fn modified_state_transitions_and_buffer_kill_release_owned_file_locks() {
                           restore-result
                           locked-after-restore
                           locked-before-kill
-                          (file-exists-p (make-lock-file-name path))
+                          (and (file-symlink-p (make-lock-file-name path)) t)
                           (buffer-live-p buffer)))
                 (when (buffer-live-p buffer)
                   (with-current-buffer buffer
@@ -5227,7 +5228,10 @@ fn modified_state_transitions_and_buffer_kill_release_owned_file_locks() {
             Value::Nil,
         ])
     );
-    assert!(!lock.exists(), "owned lock survived buffer teardown");
+    assert!(
+        std::fs::symlink_metadata(&lock).is_err(),
+        "owned lock survived buffer teardown"
+    );
     std::fs::remove_dir_all(root).expect("remove lock lifecycle directory");
 }
 

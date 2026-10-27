@@ -11218,6 +11218,22 @@ fn native_file_lock_primitives_share_the_buffer_lock_state_machine() {
 
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
+    // filelock.c names a lock with files.el's `make-lock-file-name', which
+    // a bare interpreter has not loaded: its value with no
+    // `lock-file-name-transforms'.
+    let definition = Reader::new(
+        "(fset 'make-lock-file-name
+               (function
+                (lambda (filename)
+                  (concat (file-name-directory filename) \".#\"
+                          (file-name-nondirectory filename)))))",
+    )
+    .read()
+    .expect("read make-lock-file-name")
+    .expect("a definition");
+    interp
+        .eval(&definition, &mut env)
+        .expect("define make-lock-file-name");
     let path = std::env::temp_dir().join(format!(
         "lock-primitive-{}-{}",
         std::process::id(),
