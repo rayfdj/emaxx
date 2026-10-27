@@ -899,18 +899,11 @@ pub(crate) unsafe fn adopt_image_vectors(
         large_vectors.push((start + at, nbytes + LARGE_MARK_BYTES));
         at += nbytes + LARGE_MARK_BYTES;
     }
-    for block in 0..blocks {
-        super::register_block_of(
-            start + block * VECTOR_BLOCK_SIZE,
-            VECTOR_BLOCK_SIZE,
-            BlockKind::VectorBlock,
-            true,
-            true,
-        );
-    }
-    for (address, bytes) in large_vectors {
-        super::register_block_of(address, bytes, BlockKind::LargeVector, true, true);
-    }
+    let block_list = (0..blocks)
+        .map(|block| (start + block * VECTOR_BLOCK_SIZE, VECTOR_BLOCK_SIZE))
+        .collect::<Vec<_>>();
+    super::register_image_blocks(BlockKind::VectorBlock, &block_list);
+    super::register_image_blocks(BlockKind::LargeVector, &large_vectors);
     // New tables, which no cached pattern has seen; and the image's
     // vectors changed, with or without an image region open: the next
     // sweep reads them all.

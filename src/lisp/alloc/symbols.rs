@@ -647,6 +647,7 @@ pub(crate) unsafe fn adopt_image_symbol_blocks(start: *mut u8, count: usize) {
     assert!(start.is_multiple_of(64), "unaligned image symbols");
     let epoch = super::super::types::current_mark_epoch();
     let block_bytes = SYMBOLS_PER_BLOCK * SYMBOL_CELL_SIZE;
+    let mut blocks = Vec::with_capacity(count.div_ceil(SYMBOLS_PER_BLOCK));
     for block in 0..count.div_ceil(SYMBOLS_PER_BLOCK) {
         let base = start + block * block_bytes;
         let cells = (count - block * SYMBOLS_PER_BLOCK).min(SYMBOLS_PER_BLOCK);
@@ -659,8 +660,9 @@ pub(crate) unsafe fn adopt_image_symbol_blocks(start: *mut u8, count: usize) {
                     .write(if index < cells { epoch } else { FREE_MARK })
             };
         }
-        super::register_block_of(base, block_bytes, BlockKind::Symbol, true, true);
+        blocks.push((base, block_bytes));
     }
+    super::register_image_blocks(BlockKind::Symbol, &blocks);
 }
 
 pub(super) const SYMBOL_CELL_SIZE: usize = std::mem::size_of::<SymbolCell>();

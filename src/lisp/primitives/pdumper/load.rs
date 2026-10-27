@@ -412,17 +412,18 @@ impl<'a, const LEN: usize> ImageTable<'a, LEN> {
             .0;
         let table = Self { entries };
         // Each key is an aligned image word, once: a second entry for the
-        // same word would be lost.  One pass checks every entry, and a
+        // same word would be lost.  Each check is a fold over every entry
+        // (or pair), which carries nothing from one to the next, and a
         // failure is located after.
-        let mut previous = -1_i64;
-        let mut misplaced = false;
-        for entry in entries {
-            let offset = entry_offset(entry);
-            misplaced |=
-                !(offset as usize).is_multiple_of(DUMP_ALIGNMENT) || i64::from(offset) <= previous;
-            previous = i64::from(offset);
-        }
-        if misplaced {
+        let unaligned = entries
+            .iter()
+            .fold(0, |bits, entry| bits | entry_offset(entry))
+            % DUMP_ALIGNMENT as u32
+            != 0;
+        let unordered = entries.windows(2).fold(false, |unordered, pair| {
+            unordered | (entry_offset(&pair[0]) >= entry_offset(&pair[1]))
+        });
+        if unaligned || unordered {
             let index = (0..len)
                 .find(|&index| {
                     let offset = table.offset(index);

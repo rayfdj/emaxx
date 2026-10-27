@@ -553,6 +553,7 @@ pub(crate) unsafe fn adopt_image_string_blocks<E>(
             });
         }
     }
+    let mut blocks = Vec::with_capacity(count.div_ceil(STRINGS_PER_BLOCK));
     for block in 0..count.div_ceil(STRINGS_PER_BLOCK) {
         let base = start + block * IMAGE_STRING_BLOCK_BYTES;
         for index in (count - block * STRINGS_PER_BLOCK).min(STRINGS_PER_BLOCK)..STRINGS_PER_BLOCK {
@@ -563,14 +564,9 @@ pub(crate) unsafe fn adopt_image_string_blocks<E>(
                 (*cell).mark.set_raw(FREE_MARK);
             }
         }
-        super::register_block_of(
-            base,
-            STRINGS_PER_BLOCK * STRING_CELL_SIZE,
-            BlockKind::String,
-            true,
-            true,
-        );
+        blocks.push((base, STRINGS_PER_BLOCK * STRING_CELL_SIZE));
     }
+    super::register_image_blocks(BlockKind::String, &blocks);
     // The image's strings changed, with or without an image region open:
     // the next sweep reads them all.
     super::forget_image_live();

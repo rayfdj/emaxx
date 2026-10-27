@@ -7158,6 +7158,24 @@ setup_process_coding_systems's check now refuses). A 13-form
   507.6M). Local validation: the full gate across its ten groups with
   the documented local skips; clippy `-D warnings', rustfmt and `git
   diff --check' pass.
+- **Round 109: the loader's block registration and table check.** The
+  image's mapped cons, symbol, string, vector-block and large-vector
+  blocks enter the block registry in one call a kind
+  (`register_image_blocks'): under one lock, each of the registry's
+  three maps takes the kind's blocks, built in order, with BTreeMap's
+  `append', where `register_block_of' took the lock and walked each map
+  for every block's place. The check that each image table's keys are
+  aligned and strictly increasing is two folds that carry nothing from
+  one entry to the next (the bitwise OR of every offset, and each
+  adjacent pair's order), where one loop carried the previous offset; a
+  failure is still located after. Startup with `-Q --batch --eval' went
+  from 130.1M instructions to 127.0M (block registration 2.5M to 2.1M,
+  the tables' check 3.9M to 1.9M), with the frozen runner's environment
+  and flags from 138.2M to 135.0M (GNU 157.5M, 105.0M of it outside its
+  collection), and the cal-french-tests.el setup from 511.0M to 507.9M
+  (GNU 507.6M). Local validation: the full gate across its ten groups
+  with the documented local skips; clippy `-D warnings', rustfmt and
+  `git diff --check' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
