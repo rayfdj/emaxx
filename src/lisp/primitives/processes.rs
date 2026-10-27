@@ -41,6 +41,53 @@ fn configure_emacs_spawn(command: &mut Command, controlling_pty: bool) {
     }
 }
 
+/// process.c's child_signal_read_fd: the pipe handle_child_signal writes a
+/// byte to, which wait_reading_process_output selects on beside the
+/// processes' channels, so a SIGCHLD arriving before or during the select
+/// ends the wait.  catch_child_signal installs the handler before the
+/// first child is made; the first spawn does it here (None when the pipe
+/// or the handler cannot be had, leaving the waits to their timeouts).
+#[cfg(unix)]
+pub(crate) fn child_signal_read_fd() -> Option<std::os::fd::RawFd> {
+    static CHILD_SIGNAL_READ_FD: OnceLock<Option<std::os::fd::RawFd>> = OnceLock::new();
+    *CHILD_SIGNAL_READ_FD.get_or_init(|| {
+        use std::os::fd::{FromRawFd, OwnedFd};
+        let mut fds = [-1; 2];
+        // SAFETY: PIPE writes exactly two descriptors to FDS, each owned at
+        // once below.
+        if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+            return None;
+        }
+        let reader = unsafe { OwnedFd::from_raw_fd(fds[0]) };
+        let writer = unsafe { OwnedFd::from_raw_fd(fds[1]) };
+        for fd in fds {
+            // SAFETY: FD is one of the two live descriptors above.
+            let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+            if flags == -1
+                || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } == -1
+                || unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } == -1
+            {
+                return None;
+            }
+        }
+        // signal-hook's pipe handler is child_signal_notify: one
+        // non-blocking write, its errors ignored.
+        signal_hook::low_level::pipe::register(libc::SIGCHLD, writer).ok()?;
+        Some(std::os::fd::IntoRawFd::into_raw_fd(reader))
+    })
+}
+
+/// process.c:child_signal_read: empty the child signal pipe once the wait
+/// has seen it.
+#[cfg(unix)]
+pub(crate) fn drain_child_signal_pipe(fd: std::os::fd::RawFd) {
+    let mut bytes = [0u8; 64];
+    // SAFETY: FD is the live, non-blocking read end of the pipe.
+    while unsafe { libc::read(fd, bytes.as_mut_ptr().cast(), bytes.len()) } == bytes.len() as isize
+    {
+    }
+}
+
 /// callproc.c Fcall_process and process.c Fmake_process both locate the
 /// program with openp over `exec-path' and `exec-suffixes' asking for X_OK,
 /// and report a miss as "Searching for program" with the errno openp kept.
@@ -795,6 +842,8 @@ pub(crate) fn spawn_persistent_process(
     #[cfg(test)]
     crate::test_support::mark_process_test();
 
+    #[cfg(unix)]
+    let _ = child_signal_read_fd();
     let mut command = Command::new(program);
     add_command_arguments(&mut command, argv);
     let environment = configure_external_command(interp, env, &mut command)?;
@@ -903,6 +952,8 @@ pub(crate) fn spawn_persistent_process(
         pty_output,
         pty_slave_guard,
         pty_slave_name,
+        stdout_at_end: false,
+        stderr_at_end: false,
     };
     #[cfg(unix)]
     {
@@ -3512,6 +3563,14 @@ pub(crate) fn wait_pumping_processes(
     let target_start =
         target_process_id.and_then(|process_id| interp.process_output_delivery_count(process_id));
     let mut all_processes_seen = interp.current_thread_process_output_delivery_count();
+    // The last wait ended early, and how many waits in a row did so before
+    // a pass that found nothing.  A pass can find nothing after a wake and
+    // still change the wait set (a pipe read to its end leaves it, before
+    // the child signal that follows), but a second such wake in a row
+    // makes the next wait a plain sleep, so a descriptor that stays ready
+    // (a child signal for another wait's process) cannot make it spin.
+    let mut woke_early = false;
+    let mut fruitless_wakes = 0;
     loop {
         // A fatal signal ends the wait as GNU's handler, run in the middle
         // of the select, does.
@@ -3598,10 +3657,13 @@ pub(crate) fn wait_pumping_processes(
             break;
         }
         if progressed {
+            woke_early = false;
+            fruitless_wakes = 0;
             continue;
         }
-        // Idle: nap until the deadline or the next due timer, polling at
-        // most every 10ms so freshly arriving input is picked up promptly.
+        // Idle: wait until input arrives, a child's status changes, the
+        // deadline passes or the next timer is due, for at most 10ms at a
+        // time, so that what the wait set leaves out is still looked at.
         let mut nap = deadline
             .map(|deadline| deadline.saturating_duration_since(now))
             .unwrap_or(std::time::Duration::from_millis(10));
@@ -3617,7 +3679,15 @@ pub(crate) fn wait_pumping_processes(
         nap = nap
             .min(std::time::Duration::from_millis(10))
             .max(std::time::Duration::from_millis(1));
-        interp.sleep_current_thread(env, nap)?;
+        if std::mem::take(&mut woke_early) {
+            fruitless_wakes += 1;
+        }
+        if fruitless_wakes >= 2 {
+            fruitless_wakes = 0;
+            interp.sleep_current_thread(env, nap)?;
+        } else {
+            woke_early = interp.wait_current_thread_for_process_input(env, only_process_id, nap)?;
+        }
     }
     let result = if let Some(process_id) = target_process_id {
         interp.process_output_delivery_count(process_id) != target_start

@@ -32,6 +32,9 @@ fn tls_reads_wait_for_the_event_loop_to_finish_negotiation() {
     unsafe extern "C" fn error_is_fatal(_: c_int) -> c_int {
         1
     }
+    unsafe extern "C" fn check_pending(_: *mut c_void) -> usize {
+        0
+    }
 
     let mut transport = Transport::default();
     let mut session = ProcessGnuTlsSession::new(
@@ -43,6 +46,7 @@ fn tls_reads_wait_for_the_event_loop_to_finish_negotiation() {
             credential_deinit: deinit,
             record_recv: receive,
             record_send: send,
+            record_check_pending: check_pending,
             handshake,
             bye,
             error_string,
@@ -544,6 +548,71 @@ fn subprocess_exit_is_event_driven_and_notifies_newest_process_first_once() {
                 Value::Nil,
                 Value::T,
             ])
+        );
+    });
+}
+
+#[test]
+fn process_waits_end_on_output_and_on_a_child_signal_before_their_timeout() {
+    // process.c:wait_reading_process_output selects on the processes'
+    // channels and the child signal pipe: output arriving ends the wait,
+    // and so does a child's exit on a pty, whose slave Emacs keeps open so
+    // that no hangup reaches the master.  Each wait below may last five
+    // seconds; the whole exchange must not.
+    run_with_large_stack(|| {
+        let _permit = crate::test_support::acquire_host_test_permit();
+        let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+        let mut env = crate::lisp::types::Env::new();
+        let mut wait_until = |interp: &mut Interpreter, done: &str, what: &str| {
+            let start = std::time::Instant::now();
+            while !eval_str_with(interp, done).is_truthy() {
+                assert!(
+                    start.elapsed() < std::time::Duration::from_secs(4),
+                    "the wait for {what} lasted until its timeout"
+                );
+                interp
+                    .wait_current_thread_for_process_input(
+                        &mut env,
+                        None,
+                        std::time::Duration::from_secs(5),
+                    )
+                    .expect("wait for process input");
+            }
+        };
+        eval_str_with(
+            &mut interp,
+            r#"(setq emaxx-wait-exit
+                     (make-process :name "wait-exit"
+                                   :command (list (executable-find "sh") "-c" "sleep 0.2")
+                                   :connection-type 'pty :noquery t))"#,
+        );
+        wait_until(
+            &mut interp,
+            "(progn (accept-process-output nil 0) (not (process-live-p emaxx-wait-exit)))",
+            "a pty child's exit",
+        );
+        eval_str_with(
+            &mut interp,
+            r#"(setq emaxx-wait-output nil
+                     emaxx-wait-talker
+                     (make-process :name "wait-output"
+                                   :command (list (executable-find "sh") "-c"
+                                                  "sleep 0.2; printf x; sleep 30")
+                                   :connection-type 'pipe :noquery t
+                                   :filter (lambda (_process string)
+                                             (setq emaxx-wait-output string))))"#,
+        );
+        wait_until(
+            &mut interp,
+            "(progn (accept-process-output nil 0) emaxx-wait-output)",
+            "a child's output",
+        );
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                "(prog1 emaxx-wait-output (delete-process emaxx-wait-talker))"
+            ),
+            Value::string("x")
         );
     });
 }

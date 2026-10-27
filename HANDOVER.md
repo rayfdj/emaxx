@@ -7540,6 +7540,32 @@ setup_process_coding_systems's check now refuses). A 13-form
   `just_this_one_wait_still_notifies_an_exited_distractor' (3 of 3
   alone); the seven integration targets; clippy `-D warnings', rustfmt
   and `git diff --check'.
+- **Round 119: the process wait blocks on its wait set and the child
+  signal pipe.** wait_reading_process_output selects on the processes'
+  channels (compute_non_keyboard_wait_mask, only WAIT_PROC's for
+  JUST-THIS-ONE) and on child_signal_read_fd, which handle_child_signal
+  writes a byte to, so output, a connection or a child's change of
+  status ends the wait as it happens. Emaxx slept between its passes, up
+  to 10 ms at a time (or until the deadline or the next timer), and saw
+  nothing in between: a wait for a child's output or exit ended up to 10
+  ms late, and for a child on a pty about 10 ms late every time, since
+  Emacs holds the pty's slave open, no hangup reaches the master, and
+  only the child's status says it ended. The wait now polls the
+  descriptors the next pass reads (the output pipes not yet at their
+  end, a read that finds a pipe's end now marking it; ptys; pipe
+  processes' readers; sockets, listeners and serial ports; a connecting
+  socket for writing) and a SIGCHLD pipe installed before the first
+  child is made (signal-hook's pipe handler is child_signal_notify's one
+  non-blocking write), still for at most 10 ms, and skips the wait for
+  output kept from an earlier read or a TLS session's buffered records
+  (gnutls_record_check_pending, now loaded), as GNU skips its select.
+  Two waits in a row that end early before passes that find nothing make
+  the next one a plain sleep, so a descriptor that stays ready cannot
+  make the loop spin (GNU's would, on a subprocess pipe at its end); one
+  such wake is allowed, as a pipe read to its end leaves the wait set
+  before the child signal that follows. Ten `cat's sent an EOF and
+  waited for in turn: each wait took about 10 ms on pipes and on ptys,
+  now 0.3 to 0.4 ms (GNU 0.3 to 0.4).
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -8387,6 +8413,20 @@ timings: setup 81.1 s against 63.0 s (1.289), test bodies 270.5 s
 against 263.2 s (1.028), in all 1.059.
 
 **Findings recorded, not fixed:**
+- **Pipe processes hold no descriptors (round 119).** Fmake_pipe_process
+  opens two pipes, four descriptors, at once, and every process channel
+  at or above FD_SETSIZE (1024) is EMFILE ("Creating pipe", "Opening
+  pty", the serial port, sockets, accept), with the soft RLIMIT_NOFILE
+  lowered to FD_SETSIZE at startup (init_process_emacs) and restored in
+  children (restore_nofile_limit). Emaxx's pipe process opens a pipe
+  only when a module asks for its channel, and nothing checks
+  FD_SETSIZE: process-tests' fd-setsize tests make 1,025 pipe processes
+  where GNU stops at its 255th ("Creating pipe" "Too many open files"),
+  and start all ten `cat's of each connection type where GNU starts one
+  or two, so the three tests take 1,067 ms against GNU's 352 here. A
+  child given a pipe process as :stderr then writes into that pipe
+  process's own pipe in GNU, where Emaxx reads a pipe of the child's and
+  hands the bytes to it.
 - **The frozen run times the gate profile (round 112).** The frozen
   workflow's harness builds the Emaxx it runs with `--profile gate'
   (thin LTO, 16 codegen units, debug assertions and overflow checks;

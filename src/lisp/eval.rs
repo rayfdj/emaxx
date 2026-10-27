@@ -2067,6 +2067,11 @@ pub(crate) struct RunningProcess {
     /// send path branches on it to route long lines through a temp file
     /// instead of overflowing the canonical 1024-byte line buffer.
     pub(crate) pty_slave_name: Option<String>,
+    /// A read of the output (stderr) pipe found its end: the pipe is no
+    /// longer waited on, as the child's exit, not more input, is what can
+    /// follow.
+    pub(crate) stdout_at_end: bool,
+    pub(crate) stderr_at_end: bool,
 }
 
 impl RunningProcess {
@@ -2173,6 +2178,7 @@ pub(crate) type GnuTlsRecordRecv =
     unsafe extern "C" fn(*mut std::ffi::c_void, *mut std::ffi::c_void, usize) -> isize;
 pub(crate) type GnuTlsRecordSend =
     unsafe extern "C" fn(*mut std::ffi::c_void, *const std::ffi::c_void, usize) -> isize;
+pub(crate) type GnuTlsRecordCheckPending = unsafe extern "C" fn(*mut std::ffi::c_void) -> usize;
 pub(crate) type GnuTlsHandshake = unsafe extern "C" fn(*mut std::ffi::c_void) -> std::ffi::c_int;
 pub(crate) type GnuTlsBye =
     unsafe extern "C" fn(*mut std::ffi::c_void, std::ffi::c_int) -> std::ffi::c_int;
@@ -2185,6 +2191,7 @@ pub(crate) struct GnuTlsSessionApi {
     pub(crate) credential_deinit: GnuTlsDeinit,
     pub(crate) record_recv: GnuTlsRecordRecv,
     pub(crate) record_send: GnuTlsRecordSend,
+    pub(crate) record_check_pending: GnuTlsRecordCheckPending,
     pub(crate) handshake: GnuTlsHandshake,
     pub(crate) bye: GnuTlsBye,
     pub(crate) error_string: GnuTlsErrorString,
@@ -2230,6 +2237,13 @@ impl ProcessGnuTlsSession {
         }
         .unwrap_or_else(|| code.to_string());
         LispError::Signal(format!("GnuTLS {operation} failed: {description}"))
+    }
+
+    /// gnutls.c:emacs_gnutls_record_check_pending: decrypted bytes GnuTLS
+    /// holds that no select on the socket would report.
+    pub(crate) fn has_pending_records(&self) -> bool {
+        // SAFETY: STATE is live until this owner is dropped.
+        self.ready && unsafe { (self.api.record_check_pending)(self.state) } > 0
     }
 
     pub(crate) fn handshake(&mut self, complete: bool) -> Result<std::ffi::c_int, LispError> {

@@ -53,6 +53,7 @@ type ServerNameSet = unsafe extern "C" fn(*mut c_void, c_uint, *const c_void, us
 type CredentialsSet = unsafe extern "C" fn(*mut c_void, c_int, *mut c_void) -> c_int;
 type Handshake = unsafe extern "C" fn(*mut c_void) -> c_int;
 type RecordRecv = unsafe extern "C" fn(*mut c_void, *mut c_void, usize) -> isize;
+type RecordCheckPending = unsafe extern "C" fn(*mut c_void) -> usize;
 type RecordSend = unsafe extern "C" fn(*mut c_void, *const c_void, usize) -> isize;
 type SessionBye = unsafe extern "C" fn(*mut c_void, c_int) -> c_int;
 type CertificateAllocate = unsafe extern "C" fn(*mut *mut c_void) -> c_int;
@@ -109,6 +110,7 @@ struct GnuTlsApi {
     handshake: Handshake,
     record_recv: RecordRecv,
     record_send: RecordSend,
+    record_check_pending: RecordCheckPending,
     bye: SessionBye,
     certificate_allocate: CertificateAllocate,
     certificate_free: CertificateFree,
@@ -294,6 +296,7 @@ fn load_gnutls() -> Result<GnuTlsLibrary, LispError> {
                 handshake: load_symbol(&library, b"gnutls_handshake")?,
                 record_recv: load_symbol(&library, b"gnutls_record_recv")?,
                 record_send: load_symbol(&library, b"gnutls_record_send")?,
+                record_check_pending: load_symbol(&library, b"gnutls_record_check_pending")?,
                 bye: load_symbol(&library, b"gnutls_bye")?,
                 certificate_allocate: load_symbol(
                     &library,
@@ -1719,6 +1722,7 @@ fn gnutls_boot(
             credential_deinit: credential_free,
             record_recv: api.record_recv,
             record_send: api.record_send,
+            record_check_pending: api.record_check_pending,
             handshake: api.handshake,
             bye: api.bye,
             error_string: api.error_string,
