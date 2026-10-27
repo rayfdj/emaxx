@@ -3828,6 +3828,62 @@ FORM"##
     }
 
     #[test]
+    fn syntax_tables_are_a_per_buffer_slot_reset_with_the_buffer_locals() {
+        // BVAR (b, syntax_table): reset_buffer_local_variables returns it
+        // to the standard table for `kill-all-local-variables' (it is not
+        // a permanent slot) and for `kill-buffer'; clone_per_buffer_values
+        // copies it into a cloned indirect buffer.
+        run_with_large_stack(|| {
+            let emacs_repo = compat::project_root().join("../emacs");
+            let options = BatchRunOptions {
+                load_path: compat::emaxx_upstream_load_path(&emacs_repo)
+                    .expect("upstream load path"),
+                ..Default::default()
+            };
+            let mut interpreter =
+                initialize_batch_interpreter(&options).expect("init batch interpreter");
+            let mut env = crate::lisp::types::Env::new();
+            let mut forms = Reader::new(r##"(let* ((tb (make-syntax-table))
+       (std (standard-syntax-table)))
+  (prin1-to-string
+   (list (with-temp-buffer (set-syntax-table tb) (kill-all-local-variables) (eq (syntax-table) std))
+         (with-temp-buffer (set-syntax-table tb) (kill-all-local-variables t) (eq (syntax-table) std))
+         (with-temp-buffer
+           (set-syntax-table tb)
+           (list (eq (syntax-table) tb)
+                 (with-current-buffer (make-indirect-buffer (current-buffer) "emaxx-ind-1" t)
+                   (prog1 (eq (syntax-table) tb) (kill-buffer)))
+                 (with-current-buffer (make-indirect-buffer (current-buffer) "emaxx-ind-2" nil)
+                   (prog1 (eq (syntax-table) std) (kill-buffer)))
+                 (with-temp-buffer (eq (syntax-table) std))))
+         (let ((b (generate-new-buffer "emaxx-syntax")))
+           (with-current-buffer b (set-syntax-table tb))
+           (kill-buffer b)
+           (list (buffer-live-p b) (with-current-buffer (get-buffer-create "emaxx-syntax-2")
+                                     (prog1 (eq (syntax-table) std) (kill-buffer)))))
+         (with-temp-buffer
+           (set-syntax-table tb)
+           (modify-syntax-entry ?x "w" tb)
+           (insert "axb")
+           (goto-char (point-min))
+           (list (string-match "\\<x" "a x") (re-search-forward "\\wx\\w" nil t) (char-syntax ?x)
+                 (progn (fundamental-mode) (eq (syntax-table) std)))))))"##)
+                .read_all()
+                .expect("read syntax table probe");
+            let probe = forms.pop().expect("probe form");
+            let printed = interpreter
+                .eval(&probe, &mut env)
+                .expect("evaluate syntax table probe");
+            assert_eq!(
+                lisp::primitives::string_like(&printed)
+                    .expect("printed")
+                    .text,
+                r##"(t t (t t t t) (nil t) (2 4 119 t))"##
+            );
+        });
+    }
+
+    #[test]
     fn image_symbols_are_the_obarrays_and_the_initial_frame_is_terminal_frame() {
         // pdumper.c maps the dumped symbols where the image holds them:
         // a preloaded symbol is the obarray's, its cells are traced by the

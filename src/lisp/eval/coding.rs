@@ -1113,28 +1113,17 @@ impl Interpreter {
         self.standard_syntax_table_id
     }
 
+    /// BVAR (current_buffer, syntax_table).
     pub fn current_syntax_table_id(&self) -> CharTableRef {
         self.buffer_syntax_tables
-            .iter()
-            .rev()
-            .find_map(|(buffer_id, table_id)| {
-                (*buffer_id == self.current_buffer_id()).then_some(*table_id)
-            })
+            .get(&self.current_buffer_id())
+            .copied()
             .unwrap_or(self.standard_syntax_table_id())
     }
 
     pub fn set_current_syntax_table(&mut self, id: CharTableRef) {
         let current_buffer_id = self.current_buffer_id();
-        if let Some((_, table_id)) = self
-            .buffer_syntax_tables
-            .iter_mut()
-            .rev()
-            .find(|(buffer_id, _)| *buffer_id == current_buffer_id)
-        {
-            *table_id = id;
-        } else {
-            self.buffer_syntax_tables.push((current_buffer_id, id));
-        }
+        self.buffer_syntax_tables.insert(current_buffer_id, id);
     }
 
     pub fn category_docstring(&self, table: CharTableRef, category: u32) -> Value {

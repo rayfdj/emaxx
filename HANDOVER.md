@@ -7512,6 +7512,34 @@ setup_process_coding_systems's check now refuses). A 13-form
   without, so `(time-subtract 5 5)' and `(time-subtract 'foo 'foo)' are
   that zero too (Emaxx gave 0 and signalled); `time-add' has no such
   case. Round 116's time probe now covers these, as GNU 30.2 prints them.
+- **Round 118: the syntax table is a buffer slot.** BVAR (b,
+  syntax_table) is one word of the buffer; Emaxx kept a list of (buffer,
+  table) pairs that each `set-syntax-table' appended to and nothing
+  pruned, and read the current buffer's table by walking it backwards.
+  Every syntax lookup (`string-match', `re-search-forward',
+  `looking-at', `char-syntax', the word and sexp motions) paid for the
+  walk, and its length grew with every buffer that had ever set a table:
+  electric-tests makes a buffer per test, so its 80,733 `string-match'
+  calls took 837M instructions (GNU 96M) and its 38,525 searches 705M
+  (GNU 124M). The table is now a map by buffer, and
+  reset_buffer_local_variables's reset is ported: `kill-buffer' and
+  `kill-all-local-variables' (with or without KILL-PERMANENT, since the
+  slot's buffer_permanent_local_flags entry is 0) return the buffer to
+  the standard table, where Emaxx kept the old one through a major mode
+  change, and `make-indirect-buffer' with CLONE copies it as
+  clone_per_buffer_values does (Emaxx gave the clone the standard
+  table). electric-tests' 874 tests take 8,675M instructions against
+  10,001M (GNU 6,625M): `string-match' 166M, the searches 210M. A probe
+  of the table across `kill-all-local-variables', `kill-buffer', cloned
+  and plain indirect buffers, a major mode and the searches that read it
+  gives GNU 30.2's output. Local validation: the full gate across its
+  ten groups with the documented local skips, 3,256 of the 3,258 tests
+  run passing (2 ignored), the failures the load-sensitive
+  `subprocess_exit_is_event_driven_and_notifies_newest_process_first_once'
+  (5 of 6 alone, a stray process loading the machine) and
+  `just_this_one_wait_still_notifies_an_exited_distractor' (3 of 3
+  alone); the seven integration targets; clippy `-D warnings', rustfmt
+  and `git diff --check'.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's

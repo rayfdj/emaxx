@@ -4010,11 +4010,14 @@ impl Interpreter {
 
     /// BVAR (b, syntax_table) when the buffer has set one.
     pub(crate) fn buffer_syntax_table_id(&self, id: u64) -> Option<CharTableRef> {
-        self.buffer_syntax_tables
-            .iter()
-            .rev()
-            .find(|(buffer_id, _)| *buffer_id == id)
-            .map(|(_, table)| *table)
+        self.buffer_syntax_tables.get(&id).copied()
+    }
+
+    /// reset_buffer_local_variables's syntax table: BUFFER's slot returns
+    /// to buffer_defaults' (the standard table), which nothing then roots
+    /// for it.
+    pub(crate) fn reset_buffer_syntax_table(&mut self, id: u64) {
+        self.buffer_syntax_tables.remove(&id);
     }
 
     /// BUFFER's four case tables when they are not the standard ones.
@@ -4135,11 +4138,8 @@ impl Interpreter {
         }
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn install_buffer_syntax_table(&mut self, id: u64, table: CharTableRef) {
-        self.buffer_syntax_tables
-            .retain(|(buffer_id, _)| *buffer_id != id);
-        self.buffer_syntax_tables.push((id, table));
+        self.buffer_syntax_tables.insert(id, table);
     }
 
     pub(crate) fn install_buffer_case_tables(&mut self, id: u64, tables: coding::CaseTables) {
@@ -4378,7 +4378,7 @@ impl Interpreter {
         ) {
             mark(&Value::CharTable(table));
         }
-        for (_, table) in &self.buffer_syntax_tables {
+        for table in self.buffer_syntax_tables.values() {
             mark(&Value::CharTable(*table));
         }
         for (_, value) in &self.charset_plists {
@@ -4846,7 +4846,7 @@ impl Interpreter {
             clone.standard_case_tables = clone
                 .standard_case_tables
                 .map(|tables| tables.map(|table| copy_table(c, table)));
-            for (_, table) in clone.buffer_syntax_tables.iter_mut() {
+            for table in clone.buffer_syntax_tables.values_mut() {
                 *table = copy_table(c, *table);
             }
             for (_, tables) in &mut clone.buffer_case_tables {
@@ -5502,8 +5502,9 @@ pub struct InterpreterState {
     /// Each plain buffer-local variable's binding last read or stored, by
     /// buffer (data.c's blv `where' and `valcell').
     loaded_bindings: LoadedBindings,
-    /// Buffer-local syntax tables keyed by buffer id.
-    buffer_syntax_tables: Vec<(u64, CharTableRef)>,
+    /// BVAR (b, syntax_table) for each buffer whose table is not the
+    /// standard one (buffer_defaults'), keyed by buffer id.
+    buffer_syntax_tables: HashMap<u64, CharTableRef, crate::lisp::types::IdentityBuildHasher>,
     /// Active dynamic special bindings in stack order.
     active_special_restores: Vec<SpecialBindingRestore>,
     next_special_binding_id: u64,
@@ -6272,7 +6273,7 @@ impl Interpreter {
             buffer_local_hooks: HashMap::default(),
             buffer_locals: HashMap::default(),
             loaded_bindings: LoadedBindings::default(),
-            buffer_syntax_tables: Vec::new(),
+            buffer_syntax_tables: HashMap::default(),
             active_special_restores: Vec::new(),
             next_special_binding_id: 1,
             labeled_restrictions: Vec::new(),

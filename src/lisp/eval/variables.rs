@@ -530,6 +530,7 @@ impl Interpreter {
         self.remove_buffer_locals(buffer_id);
         self.buffer_local_hooks.remove(&buffer_id);
         crate::lisp::primitives::casetab::reset_buffer_case_tables(self, buffer_id);
+        self.reset_buffer_syntax_table(buffer_id);
     }
 
     /// Drop every local binding of BUFFER_ID. A current buffer's evaluator
@@ -568,6 +569,9 @@ impl Interpreter {
                 .insert(buffer_id, super::ordered_hooks(permanent_hooks));
         }
         crate::lisp::primitives::casetab::reset_buffer_case_tables(self, buffer_id);
+        // The syntax table's per-buffer index is not permanent
+        // (buffer_permanent_local_flags), so it returns to the default.
+        self.reset_buffer_syntax_table(buffer_id);
     }
 
     pub fn clone_buffer_local_state(&mut self, from_buffer_id: u64, to_buffer_id: u64) {
@@ -607,6 +611,10 @@ impl Interpreter {
 
         if let Some(tables) = self.buffer_case_tables(from_buffer_id) {
             self.install_buffer_case_tables(to_buffer_id, tables);
+        }
+        // clone_per_buffer_values copies BVAR (from, syntax_table) too.
+        if let Some(table) = self.buffer_syntax_table_id(from_buffer_id) {
+            self.install_buffer_syntax_table(to_buffer_id, table);
         }
     }
 
