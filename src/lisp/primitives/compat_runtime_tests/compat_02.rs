@@ -1011,15 +1011,37 @@ fn set_buffer_multibyte_reinterprets_the_unchanged_utf8_bytes() {
     assert!(!interp.buffer.borrow().is_multibyte());
 }
 
+/// `(call-process "sh" nil DESTINATION nil "-c" SCRIPT)' from Rust.
+fn call_sh(
+    interp: &mut Interpreter,
+    env: &mut crate::lisp::types::Env,
+    destination: Value,
+    script: &str,
+) -> Result<Value, LispError> {
+    call(
+        interp,
+        "call-process",
+        &[
+            Value::string("sh"),
+            Value::Nil,
+            destination,
+            Value::Nil,
+            Value::string("-c"),
+            Value::string(script),
+        ],
+        env,
+    )
+}
+
 #[test]
-fn write_process_output_supports_stdout_buffer_and_stderr_file() {
+fn call_process_sends_stderr_to_its_file_and_output_to_the_buffer() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = crate::lisp::types::Env::new();
     // The fixture's *scratch* holds the banner command-line-1 inserts at
     // the end of GNU's startup; this test uses the buffer as scratch space.
     crate::test_support::eval_lisp(&mut interp, &mut env, "(erase-buffer)").expect("erase scratch");
     let stderr_path = std::env::temp_dir()
-        .join("emaxx-process-stderr-test")
+        .join(format!("emaxx-process-stderr-test-{}", std::process::id()))
         .display()
         .to_string();
     let destination = Value::list([Value::T, Value::String(stderr_path.clone().into())]);
@@ -1035,16 +1057,14 @@ fn write_process_output_supports_stdout_buffer_and_stderr_file() {
         &mut env,
     );
 
-    write_process_output(
+    let status = call_sh(
         &mut interp,
-        &destination,
-        &[0xFF],
-        b"warn\n",
-        "call-process",
-        &[Value::String("sample".into())],
         &mut env,
+        destination,
+        "printf '\\377'; printf 'warn\\n' >&2",
     )
-    .expect("write process output");
+    .expect("call-process");
+    assert_eq!(status, Value::Integer(0));
     assert_eq!(
         interp.buffer.borrow().buffer_string(),
         decode_raw_text_bytes(&[0xFF])
@@ -1054,28 +1074,15 @@ fn write_process_output_supports_stdout_buffer_and_stderr_file() {
 }
 
 #[test]
-fn write_process_output_accepts_a_shared_string_buffer_name() {
+fn call_process_accepts_a_shared_string_buffer_name() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = crate::lisp::types::Env::new();
     let (buffer_id, _) = interp.create_buffer("*shared-name-output*");
     let destination =
         make_shared_string_value_with_multibyte("*shared-name-output*".into(), Vec::new(), true);
 
-    write_process_output(
-        &mut interp,
-        &destination,
-        b"output\n",
-        b"",
-        "call-process",
-        &[
-            Value::String("sample".into()),
-            Value::Nil,
-            destination,
-            Value::Nil,
-        ],
-        &mut env,
-    )
-    .expect("write output to a buffer named by a shared string");
+    call_sh(&mut interp, &mut env, destination, "printf 'output\\n'")
+        .expect("write output to a buffer named by a shared string");
 
     assert_eq!(
         interp
@@ -1087,43 +1094,49 @@ fn write_process_output_accepts_a_shared_string_buffer_name() {
 }
 
 #[test]
-fn write_process_output_merges_stderr_for_t_cons_destination() {
+fn call_process_mixes_stderr_into_the_output_for_a_t_cons_destination() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = crate::lisp::types::Env::new();
     // The fixture's *scratch* holds the banner command-line-1 inserts at
     // the end of GNU's startup; this test uses the buffer as scratch space.
     crate::test_support::eval_lisp(&mut interp, &mut env, "(erase-buffer)").expect("erase scratch");
-    let destination = Value::cons(Value::T, Value::T);
 
-    write_process_output(
+    // One descriptor for both streams keeps the order they were written in.
+    call_sh(
         &mut interp,
-        &destination,
-        b"out\n",
-        b"err\n",
-        "call-process",
-        &[Value::String("sample".into())],
         &mut env,
+        Value::cons(Value::T, Value::T),
+        "printf 'err1\\n' >&2; printf 'out\\n'; printf 'err2\\n' >&2",
     )
-    .expect("write merged process output");
-    assert_eq!(interp.buffer.borrow().buffer_string(), "out\nerr\n");
+    .expect("call-process with mixed output");
+    assert_eq!(interp.buffer.borrow().buffer_string(), "err1\nout\nerr2\n");
+
+    // STDERR-FILE nil with output kept sends standard error to the null
+    // device.
+    crate::test_support::eval_lisp(&mut interp, &mut env, "(erase-buffer)").expect("erase scratch");
+    call_sh(
+        &mut interp,
+        &mut env,
+        Value::list([Value::T, Value::Nil]),
+        "printf 'err\\n' >&2; printf 'out\\n'",
+    )
+    .expect("call-process discarding stderr");
+    assert_eq!(interp.buffer.borrow().buffer_string(), "out\n");
 }
 
 #[test]
-fn write_process_output_decodes_with_the_default_process_coding_system() {
+fn call_process_decodes_with_the_default_process_coding_system() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = crate::lisp::types::Env::new();
     // The fixture's *scratch* holds the banner command-line-1 inserts at
     // the end of GNU's startup; this test uses the buffer as scratch space.
     crate::test_support::eval_lisp(&mut interp, &mut env, "(erase-buffer)").expect("erase scratch");
 
-    write_process_output(
+    call_sh(
         &mut interp,
-        &Value::T,
-        b"Symbol\xE2\x80\x99s\n",
-        b"",
-        "call-process",
-        &[Value::String("sample".into())],
         &mut env,
+        Value::T,
+        "printf 'Symbol\\342\\200\\231s\\n'",
     )
     .expect("decode process output");
 
@@ -1147,7 +1160,7 @@ fn process_coding_alist_overrides_the_default_for_synchronous_output() {
         [(
             "process-coding-system-alist".into(),
             Value::list([Value::cons(
-                Value::String("sample\\'".into()),
+                Value::String("\\`sh\\'".into()),
                 Value::cons(
                     Value::Symbol("raw-text-unix".into()),
                     Value::Symbol("raw-text-unix".into()),
@@ -1157,21 +1170,80 @@ fn process_coding_alist_overrides_the_default_for_synchronous_output() {
         &Value::Nil,
     )]);
 
-    write_process_output(
-        &mut interp,
-        &Value::T,
-        b"\xE2\x80\x99",
-        b"",
-        "call-process",
-        &[Value::String("sample".into())],
-        &mut env,
-    )
-    .expect("decode process output through process-coding-system-alist");
+    call_sh(&mut interp, &mut env, Value::T, "printf '\\342\\200\\231'")
+        .expect("decode process output through process-coding-system-alist");
 
     assert_eq!(interp.buffer.borrow().buffer_string().chars().count(), 3);
     assert_eq!(
         interp.lookup_var("last-coding-system-used", &env),
         Some(Value::Symbol("raw-text-unix".into()))
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn call_process_waits_for_its_child_with_sigchld_at_its_default() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    call_sh(&mut interp, &mut env, Value::Nil, "true").expect("first call-process");
+    // libgccjit's driver, compiling in this process, sets SIGCHLD to
+    // SIG_DFL; the wait still ends when the child does.
+    // SAFETY: the old action is read into initialized storage and put
+    // back below.
+    let mut old: libc::sigaction = unsafe { std::mem::zeroed() };
+    unsafe {
+        libc::sigaction(libc::SIGCHLD, std::ptr::null(), &mut old);
+        libc::signal(libc::SIGCHLD, libc::SIG_DFL);
+    }
+    let status = call_sh(&mut interp, &mut env, Value::Nil, "sleep 0.1; exit 3");
+    // SAFETY: OLD is the action read above.
+    unsafe {
+        libc::sigaction(libc::SIGCHLD, &old, std::ptr::null_mut());
+    }
+    assert_eq!(status.expect("call-process"), Value::Integer(3));
+}
+
+#[test]
+fn call_process_opens_its_files_and_buffer_before_the_child_as_call_process_does() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let directory = std::env::temp_dir().join(format!("emaxx-call-process-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).expect("scratch directory");
+    std::fs::write(directory.join("in.txt"), "from infile\n").expect("input file");
+    let source = format!(
+        r#"(let ((default-directory "{}/"))
+             (list
+              ;; Fget_buffer_create runs before the program search.
+              (condition-case nil
+                  (call-process "emaxx-no-such-program" nil "*call-process-new*")
+                (file-missing (buffer-live-p (get-buffer "*call-process-new*"))))
+              ;; INFILE is expanded in the process's directory.
+              (with-temp-buffer (list (call-process "cat" "in.txt" t) (buffer-string)))
+              ;; DESTINATION 0 returns nil without waiting.
+              (let ((start (float-time)))
+                (list (call-process "sleep" nil 0 nil "3") (< (- (float-time) start) 2)))
+              ;; Region input is a regular file, so the child's output is
+              ;; read while it reads the input.
+              (with-temp-buffer
+                (list (call-process-region (make-string 300000 ?a) nil "cat" nil t)
+                      (buffer-size)))
+              (with-temp-buffer
+                (call-process-region "abc" nil "sh" nil t nil "-c"
+                                     "test -f /dev/stdin && echo regular; wc -c")
+                (split-string (buffer-string)))
+              ;; `(:file FILE)' writes the file named in `default-directory'.
+              (progn (call-process "sh" nil '(:file "out.txt") nil "-c" "echo to-file")
+                     (with-temp-buffer (insert-file-contents "out.txt") (buffer-string)))))"#,
+        directory.display()
+    );
+    let value = crate::test_support::eval_lisp(&mut interp, &mut env, &source)
+        .expect("call-process descriptors");
+    std::fs::remove_dir_all(&directory).expect("cleanup");
+    assert_eq!(
+        value.to_string(),
+        r#"(t (0 "from infile
+") (nil t) (0 300000) ("regular" "3") "to-file
+")"#
     );
 }
 

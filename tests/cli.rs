@@ -710,12 +710,18 @@ fn batch_top_level_error_kills_emacs_through_its_hook_and_unlocks_files() {
 
 /// sysdep.c:init_signals and emacs.c:terminate_due_to_signal: SIGTERM ends
 /// a batch Emacs through `kill-emacs' with the signal's number, from an
-/// interpreted loop as from a wait: the hook runs, standard output is
-/// flushed, and the status is 15.
+/// interpreted loop as from a wait, `call-process''s among them: the hook
+/// runs, standard output is flushed, and the status is 15.
 #[test]
 fn batch_sigterm_kills_emacs_through_its_hook() {
     use std::io::BufRead;
-    for body in ["(while t)", "(sleep-for 60)"] {
+    for body in [
+        "(while t)",
+        "(sleep-for 60)",
+        // call_process's wait for the child, and its read of the output.
+        "(call-process \"sleep\" nil nil nil \"10\")",
+        "(call-process \"sleep\" nil t nil \"10\")",
+    ] {
         let mut child = Command::new(common::emaxx(false))
             .args([
                 "-Q",

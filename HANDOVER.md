@@ -7631,6 +7631,39 @@ setup_process_coding_systems's check now refuses). A 13-form
   a 2.6 MB file 41 to 61 ms, now 33 to 37 (GNU 9 to 11, which still
   decodes in the visiting buffer itself and does not validate valid
   UTF-8 twice).
+- **Round 123: call_process opens the child's descriptors.** callproc.c
+  call_process opens everything the child gets in Emacs: INFILE (the null
+  device for nil), expanded in the process's directory; the null device
+  for writing when the output is discarded (DESTINATION nil or a
+  number), `(:file FILE)''s file, created and truncated, or else a pipe
+  it reads into the buffer; and standard error goes with the output
+  unless STDERR-FILE names a file, or is nil for output that is kept,
+  which opens the null device. `call-process-region' writes its input
+  to a temporary file (create_temp_file: "emacsXXXXXX" in
+  `temporary-file-directory', removed when the call ends), a number as
+  DESTINATION returns nil without waiting (record_deleted_pid: the child
+  is reaped, and its input file removed, whenever it exits), and the
+  destination buffer is made before the program search. Emaxx read
+  INFILE into memory and named it from Emacs's own directory, piped the
+  output and the errors back whatever DESTINATION said and wrote the
+  files afterwards, piped the region in, and waited for a DESTINATION of
+  0. So `emacs-tests/seccomp/forbids-subprocess' failed after round
+  120: under its filter GNU's parent dies of SIGSYS opening the null
+  device for writing, where Emaxx's parent, its fork now a posix_spawn,
+  survived and only the child died at its exec; `(call-process "sleep"
+  nil 0 nil "2")' took 2 s (GNU none); and `call-process-region' of
+  300,000 characters through `cat' never returned, the region written
+  into a pipe while `cat''s output filled the other. call_process's
+  read and wait also now poll, so a fatal signal ends them, as GNU's
+  handler runs `kill-emacs' in the middle of either: a SIGTERM to a
+  batch Emaxx waiting in `call-process' did nothing until the child
+  ended. The wait polls a pidfd on Linux (the child signal pipe for at
+  most 100 ms elsewhere), as GNU's blocking waitpid needs no SIGCHLD
+  handler either: libgccjit's driver sets SIGCHLD to SIG_DFL when
+  `native-compile' runs in the process, and a wait on the pipe alone
+  then never ended. A probe of every DESTINATION shape, INFILE, the temporary file
+  (a regular file on the child's standard input), the error files, a
+  missing program and DESTINATION 0 gives GNU 30.2's results.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -8484,6 +8517,14 @@ passed (run 40547766615); frozen (run 40547770427) matched 7,927 of
 recorded oracle flake), so the one rerun did not clear it. Its first
 attempt's timings: setup 64.6 s against 52.7 s (1.225), test bodies
 231.7 s against 242.1 s (0.957), in all 1.022.
+**On `7554397`** (rounds 118 to 121): full Rust gate passed (run
+40569915013); frozen (run 40569919988) matched 7,927 of 7,928 outcomes,
+the mismatch emacs-tests' `emacs-tests/seccomp/forbids-subprocess':
+under its filter GNU's parent dies of SIGSYS opening the null device for
+writing to discard the output, where round 120's posix_spawn left
+Emaxx's parent alive and only its child died at its exec (fixed in
+round 123). Its timings: setup 78.6 s against 58.1 s (1.352), test
+bodies 255.3 s against 254.9 s (1.002), in all 1.068.
 
 **Findings recorded, not fixed:**
 - **Pipe processes hold no descriptors (round 119).** Fmake_pipe_process

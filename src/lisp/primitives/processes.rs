@@ -290,18 +290,6 @@ impl ExecImage {
     }
 }
 
-/// callproc.c's treatment of the child's stderr.  STDERR-FILE t -- the
-/// default for every DESTINATION shape but `(REAL-BUFFER nil)' and
-/// `(REAL-BUFFER FILE)' -- sets `fd_error = fd_output': one descriptor,
-/// so the two streams reach the caller in the order the child wrote
-/// them.  A separate stream is read on its own pipe and routed by the
-/// caller afterwards.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ExternalStderr {
-    Mixed,
-    Separate,
-}
-
 /// callproc.c call_process's reading of DESTINATION.  A list whose car
 /// is not `:file' is (REAL-BUFFER STDERR-FILE): STDERR-FILE (when the
 /// list has one) nil discards the child's stderr, t mixes it with the
@@ -336,14 +324,6 @@ pub(crate) fn process_destination(destination: &Value) -> ProcessDestination {
         buffer,
         output_file,
         error_file,
-    }
-}
-
-pub(crate) fn external_stderr_for_destination(destination: &Value) -> ExternalStderr {
-    if process_destination(destination).error_file == Value::T {
-        ExternalStderr::Mixed
-    } else {
-        ExternalStderr::Separate
     }
 }
 
@@ -645,124 +625,437 @@ pub(crate) fn call_process_arguments(
         .collect()
 }
 
-pub(crate) fn run_external_process(
+/// callproc.c's NULL_DEVICE.
+#[cfg(not(windows))]
+pub(crate) const NULL_DEVICE: &str = "/dev/null";
+#[cfg(windows)]
+pub(crate) const NULL_DEVICE: &str = "NUL";
+
+/// The file create_temp_file made for `call-process-region', removed as
+/// delete_temp_file removes it: when the call is over, or for a
+/// DESTINATION of 0 once the child reading it has exited.
+pub(crate) struct CallProcessTempFile(std::path::PathBuf);
+
+impl Drop for CallProcessTempFile {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
+/// callproc.c create_temp_file's file, made from "emacsXXXXXX" in
+/// `temporary-file-directory' (else $TMPDIR, else "/tmp/") and opened
+/// close-on-exec, with its name.
+pub(crate) fn create_temp_file(
     interp: &mut Interpreter,
-    program: &str,
-    argv: &[Vec<u8>],
-    input: Option<&[u8]>,
-    stderr: ExternalStderr,
     env: &mut Env,
-) -> Result<std::process::Output, LispError> {
+) -> Result<(fs::File, String, CallProcessTempFile), LispError> {
+    let tmpdir = match interp
+        .lookup_var("temporary-file-directory", env)
+        .and_then(|value| string_like(&value))
+    {
+        Some(directory) => directory.text,
+        None => std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp/".into()),
+    };
+    let pattern = expand_file_name_in_env(interp, env, "emacsXXXXXX", Some(&tmpdir));
+    let failed = |error: &std::io::Error| {
+        file_operation_error(
+            "Failed to open temporary file using pattern",
+            error,
+            &pattern,
+        )
+    };
+    #[cfg(unix)]
+    {
+        use std::os::fd::FromRawFd;
+        let mut template = std::ffi::CString::new(pattern.as_str())
+            .map_err(|_| failed(&std::io::Error::from(ErrorKind::InvalidInput)))?
+            .into_bytes_with_nul();
+        // SAFETY: TEMPLATE is a writable NUL-terminated buffer mkostemp
+        // fills in place; the descriptor it returns is owned at once.
+        let fd = unsafe { libc::mkostemp(template.as_mut_ptr().cast(), libc::O_CLOEXEC) };
+        if fd < 0 {
+            return Err(failed(&std::io::Error::last_os_error()));
+        }
+        // SAFETY: a fresh descriptor, owned by this File alone.
+        let file = unsafe { fs::File::from_raw_fd(fd) };
+        template.pop();
+        let name = String::from_utf8_lossy(&template).into_owned();
+        let guard = CallProcessTempFile(name.clone().into());
+        Ok((file, name, guard))
+    }
+    #[cfg(not(unix))]
+    {
+        static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        loop {
+            let serial = SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let suffix = format!(
+                "{:06}",
+                (u64::from(std::process::id()) * 1000 + serial) % 1_000_000
+            );
+            let name = format!("{}{suffix}", &pattern[..pattern.len() - 6]);
+            match fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create_new(true)
+                .open(&name)
+            {
+                Ok(file) => {
+                    let guard = CallProcessTempFile(name.clone().into());
+                    return Ok((file, name, guard));
+                }
+                Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(failed(&error)),
+            }
+        }
+    }
+}
+
+/// A file call_process opens for the child to write: O_WRONLY | O_CREAT
+/// | O_TRUNC with default_output_mode, close-on-exec.
+fn open_child_output_file(path: &str) -> std::io::Result<fs::File> {
+    fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(path)
+}
+
+/// callproc.c call_process, for `call-process' and `call-process-region':
+/// ARGS are call-process's own (PROGRAM INFILE DESTINATION DISPLAY
+/// ARGS...), FILEFD the child's standard input, TEMPFILE the file
+/// `call-process-region' wrote that input to.  The parent opens every
+/// descriptor the child gets: the null device, for writing, for output
+/// that is discarded (so a policy forbidding that stops Emacs, not the
+/// child), `(:file FILE)''s file, else a pipe read into the buffer;
+/// standard error goes with the output unless STDERR-FILE names a file,
+/// or is nil for output that is kept, which opens the null device.  A
+/// DESTINATION of 0 returns nil at once, the child reaped, and TEMPFILE
+/// removed, whenever it exits.
+pub(crate) fn call_process(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    args: &[Value],
+    filefd: fs::File,
+    tempfile: Option<CallProcessTempFile>,
+) -> Result<Value, LispError> {
     #[cfg(test)]
     crate::test_support::mark_process_test();
 
-    let program = locate_program_for_exec(interp, env, program, false)?;
-    let mut command = Command::new(&program);
-    add_command_arguments(&mut command, argv);
-    let (environment, directory) = configure_external_command(interp, env, &mut command)?;
-    #[cfg(target_os = "linux")]
-    if let Some(output) =
-        posix_spawn_call_process(&program, argv, &environment, directory, input, stderr)?
-    {
-        return Ok(output);
+    let program = string_text(&args[0])?;
+    let argv = call_process_arguments(interp, env, args, args.get(4..).unwrap_or(&[]))?;
+    let ProcessDestination {
+        mut buffer,
+        output_file,
+        error_file,
+    } = process_destination(args.get(2).unwrap_or(&Value::Nil));
+    let error_path = if error_file.is_nil() || error_file == Value::T {
+        None
+    } else {
+        Some(resolve_file_name_in_env(
+            interp,
+            env,
+            &string_text(&error_file)?,
+        ))
+    };
+    let output_path = match output_file {
+        Some(file) => Some(resolve_file_name_in_env(interp, env, &string_text(&file)?)),
+        None => None,
+    };
+    let no_wait = matches!(buffer.kind(), Kind::Integer(_));
+    if !(buffer.is_nil() || buffer == Value::T || no_wait) {
+        buffer = call(interp, "get-buffer-create", &[buffer], env)?;
     }
-    #[cfg(not(target_os = "linux"))]
-    let _ = directory;
+    let directory = process_current_directory(interp, env)?;
+    let program = locate_program_for_exec(interp, env, &program, false)?;
+    let discard_output = no_wait || (buffer.is_nil() && output_path.is_none());
+    let (output_read, output) = if discard_output {
+        let output = fs::OpenOptions::new()
+            .write(true)
+            .open(NULL_DEVICE)
+            .map_err(|error| {
+                LispError::SignalValue(file_operation_error_value_without_file(
+                    "Opening null device",
+                    &error,
+                ))
+            })?;
+        (None, output)
+    } else if let Some(path) = &output_path {
+        let output = open_child_output_file(path)
+            .map_err(|error| file_operation_error("Opening process output file", &error, path))?;
+        (None, output)
+    } else {
+        let (read, write) = emacs_pipe().map_err(|error| {
+            LispError::SignalValue(file_operation_error_value_without_file(
+                "Creating process pipe",
+                &error,
+            ))
+        })?;
+        (Some(read), write)
+    };
+    let error = if error_path.is_some() || (error_file.is_nil() && !discard_output) {
+        let path = error_path.as_deref().unwrap_or(NULL_DEVICE);
+        Some(
+            open_child_output_file(path)
+                .map_err(|error| file_operation_error("Cannot redirect stderr", &error, path))?,
+        )
+    } else {
+        None
+    };
+    let environment = child_environment(interp, env, directory);
+    #[cfg(unix)]
+    let _ = child_signal_read_fd();
+    let mut child = spawn_call_process(
+        &program,
+        &argv,
+        environment,
+        &filefd,
+        &output,
+        error.as_ref().unwrap_or(&output),
+    )?;
+    // Only the child keeps what it was given, or the read below never ends.
+    drop((filefd, output, error));
+    if no_wait {
+        // record_deleted_pid: handle_child_signal reaps it, and removes
+        // the input file, when it exits.
+        reap_deleted_child(child, tempfile);
+        return Ok(Value::Nil);
+    }
+    // wait_for_termination (pid, &status, fd0 < 0).
+    let wait_interruptibly = output_read.is_none();
+    if let Some(mut reader) = output_read {
+        let mut bytes = Vec::new();
+        let read = read_child_output(interp, env, &mut reader, &mut bytes);
+        drop(reader);
+        let inserted = read.and_then(|()| {
+            append_process_bytes_to_buffer(interp, &buffer, &bytes, true, "call-process", args, env)
+        });
+        if let Err(error) = inserted {
+            // Fkill_emacs leaves without unwinding: no cleanup runs.
+            if !matches!(error.kind(), LispErrorKind::Terminate(_)) {
+                call_process_cleanup(interp, env, child)?;
+            }
+            return Err(error);
+        }
+    }
+    let status = wait_for_termination(interp, env, &mut child, wait_interruptibly)?;
+    drop(tempfile);
+    match status {
+        Ok(status) => Ok(call_process_status(&status)),
+        Err(_) => Ok(Value::string("internal error")),
+    }
+}
+
+/// record_deleted_pid: CHILD, which nothing waits for, reaped whenever it
+/// exits, and TEMPFILE removed then.
+fn reap_deleted_child(mut child: SpawnedChild, tempfile: Option<CallProcessTempFile>) {
+    let _ = std::thread::Builder::new()
+        .name("process-reaper".into())
+        .spawn(move || {
+            let _ = child.wait();
+            drop(tempfile);
+        });
+}
+
+/// call_process_cleanup, leaving call_process before the child's end: its
+/// process group interrupted and waited for, the wait announced; a quit
+/// in that wait leaves call_process_kill to kill the group.
+fn call_process_cleanup(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    mut child: SpawnedChild,
+) -> Result<(), LispError> {
+    #[cfg(unix)]
+    // SAFETY: a signal to the group of this unreaped child, which its new
+    // session made it lead.
+    unsafe {
+        libc::kill(-(child.id() as libc::pid_t), libc::SIGINT);
+    }
+    super::dispatch::display::message1(
+        interp,
+        "Waiting for process to die...(type C-g again to kill it instantly)",
+        env,
+    )?;
+    let waited = match wait_for_termination(interp, env, &mut child, true) {
+        Ok(waited) => waited,
+        Err(error) => {
+            // A quit leaves call_process_kill to record_kill_process;
+            // Fkill_emacs unwinds nothing.
+            if !matches!(error.kind(), LispErrorKind::Terminate(_)) {
+                #[cfg(unix)]
+                // SAFETY: as above.
+                unsafe {
+                    libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL);
+                }
+            }
+            reap_deleted_child(child, None);
+            return Err(error);
+        }
+    };
+    super::dispatch::display::message1(
+        interp,
+        if waited.is_ok() {
+            "Waiting for process to die...done"
+        } else {
+            "Waiting for process to die...internal error"
+        },
+        env,
+    )
+}
+
+/// call_process's emacs_read_quit loop over READER to its end: a signal
+/// interrupting the read runs the quit check, a fatal signal's
+/// `kill-emacs' among it; a failed read gives up, keeping what came
+/// before.
+fn read_child_output(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    reader: &mut fs::File,
+    bytes: &mut Vec<u8>,
+) -> Result<(), LispError> {
+    use std::io::Read;
+    let mut buffer = vec![0u8; 65536];
+    loop {
+        // The handlers restart a read they interrupt; a poll they do not.
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            let mut fd = libc::pollfd {
+                fd: reader.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            // SAFETY: FD is one initialized pollfd for READER's descriptor.
+            if unsafe { libc::poll(&mut fd, 1, -1) } < 0 {
+                if std::io::Error::last_os_error().kind() != ErrorKind::Interrupted {
+                    return Ok(());
+                }
+                interp.maybe_quit(env)?;
+                continue;
+            }
+        }
+        match reader.read(&mut buffer) {
+            Ok(0) => return Ok(()),
+            Ok(read) => bytes.extend_from_slice(&buffer[..read]),
+            Err(error) if error.kind() == ErrorKind::Interrupted => interp.maybe_quit(env)?,
+            Err(_) => return Ok(()),
+        }
+    }
+}
+
+/// wait_for_termination: CHILD's status, a signal interrupting the wait
+/// running a fatal signal's `kill-emacs' as GNU's handler does, and the
+/// quit check too when INTERRUPTIBLE.  GNU blocks in waitpid, which its
+/// handlers interrupt; here each wait polls what says the child may have
+/// exited: on Linux a pidfd, which needs no SIGCHLD handler (libgccjit's
+/// driver sets SIGCHLD to SIG_DFL when it compiles in this process), else
+/// the child signal pipe, for at most 100 ms in case nothing writes to it.
+fn wait_for_termination(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    child: &mut SpawnedChild,
+    interruptible: bool,
+) -> Result<std::io::Result<std::process::ExitStatus>, LispError> {
+    #[cfg(unix)]
+    {
+        use std::os::fd::{AsRawFd, OwnedFd};
+        #[cfg(target_os = "linux")]
+        let pidfd = {
+            use std::os::fd::FromRawFd;
+            // SAFETY: pidfd_open reads a pid and flags, and a descriptor it
+            // returns is owned at once.
+            match unsafe { libc::syscall(libc::SYS_pidfd_open, child.id() as libc::pid_t, 0) } {
+                fd if fd >= 0 => Some(unsafe { OwnedFd::from_raw_fd(fd as libc::c_int) }),
+                _ => None,
+            }
+        };
+        #[cfg(not(target_os = "linux"))]
+        let pidfd: Option<OwnedFd> = None;
+        let waited = match (&pidfd, child_signal_read_fd()) {
+            (Some(pidfd), _) => Some((pidfd.as_raw_fd(), -1)),
+            (None, Some(signal_fd)) => Some((signal_fd, 100)),
+            (None, None) => None,
+        };
+        if let Some((fd, timeout)) = waited {
+            loop {
+                match child.try_wait() {
+                    Ok(Some(status)) => return Ok(Ok(status)),
+                    Ok(None) => {}
+                    Err(error) => return Ok(Err(error)),
+                }
+                let mut pollfd = libc::pollfd {
+                    fd,
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+                // SAFETY: POLLFD is one initialized pollfd for a live
+                // descriptor.
+                let ready = unsafe { libc::poll(&mut pollfd, 1, timeout) };
+                if ready < 0 {
+                    let error = std::io::Error::last_os_error();
+                    if error.kind() != ErrorKind::Interrupted {
+                        return Ok(child.wait());
+                    }
+                    if interruptible {
+                        interp.maybe_quit(env)?;
+                    } else if crate::lisp::primitives::fatal_signal_pending() {
+                        crate::lisp::primitives::run_pending_fatal_signal(interp, env)?;
+                    }
+                } else if ready > 0 && pidfd.is_none() {
+                    drain_child_signal_pipe(fd);
+                }
+            }
+        }
+    }
+    let _ = (interp, env, interruptible);
+    Ok(child.wait())
+}
+
+/// emacs_spawn for call_process: PROGRAM with ARGV, in ENVIRONMENT's
+/// directory and environment, reading STDIN and writing STDOUT and STDERR
+/// (one descriptor when standard error goes with the output).
+fn spawn_call_process(
+    program: &str,
+    argv: &[Vec<u8>],
+    environment: ChildEnvironment,
+    stdin: &fs::File,
+    stdout: &fs::File,
+    stderr: &fs::File,
+) -> Result<SpawnedChild, LispError> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsRawFd;
+        let (block, directory) = &environment;
+        // An argument or directory holding a NUL takes the fork path.
+        if let (Some(image), Ok(directory)) = (
+            ExecImage::new(program, argv, block.clone()),
+            directory.clone().map(std::ffi::CString::new).transpose(),
+        ) {
+            let stdio = [stdin, stdout, stderr].map(|file| SpawnFd::Fd(file.as_raw_fd()));
+            let pid = emacs_posix_spawn(&image, directory.as_deref(), stdio, None)
+                .map_err(|error| vfork_error(&error))?;
+            return Ok(SpawnedChild::new(pid as u32, None, None, None));
+        }
+    }
+    let mut command = Command::new(program);
+    add_command_arguments(&mut command, argv);
+    set_command_environment(&mut command, &environment);
     #[cfg(unix)]
     configure_emacs_spawn(&mut command, false);
     #[cfg(unix)]
-    exec_like_gnu(&mut command, &program, argv, environment, false);
-    command.stdin(if input.is_some() {
-        Stdio::piped()
-    } else {
-        Stdio::null()
-    });
+    exec_like_gnu(&mut command, program, argv, environment.0, false);
+    let duplicate = |file: &fs::File| {
+        file.try_clone()
+            .map(Stdio::from)
+            .map_err(|error| LispError::Signal(error.to_string()))
+    };
+    command.stdin(duplicate(stdin)?);
+    command.stdout(duplicate(stdout)?);
+    command.stderr(duplicate(stderr)?);
+    let child = command.spawn().map_err(|error| vfork_error(&error))?;
     #[cfg(unix)]
-    let mixed_output = if stderr == ExternalStderr::Mixed {
-        use std::os::unix::io::FromRawFd;
-        let mut fds = [0 as libc::c_int; 2];
-        // macOS does not expose pipe2 through libc.  GNU's callproc.c uses
-        // the equivalent close-on-exec fallback when pipe2 is unavailable.
-        // SAFETY: pipe fills the two-element array with descriptors this
-        // frame owns from here on; fcntl marks both before either is wrapped.
-        if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
-            return Err(LispError::SignalValue(
-                file_operation_error_value_without_file(
-                    "Creating process pipe",
-                    &std::io::Error::last_os_error(),
-                ),
-            ));
-        }
-        for &fd in &fds {
-            if unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
-                let error = std::io::Error::last_os_error();
-                unsafe {
-                    libc::close(fds[0]);
-                    libc::close(fds[1]);
-                }
-                return Err(LispError::SignalValue(
-                    file_operation_error_value_without_file("Creating process pipe", &error),
-                ));
-            }
-        }
-        // SAFETY: fresh descriptors from pipe2, each owned by exactly one
-        // File.
-        let (reader, writer) = unsafe {
-            (
-                crate::file_system::File::from_raw_fd(fds[0]),
-                crate::file_system::File::from_raw_fd(fds[1]),
-            )
-        };
-        let stderr_end = writer
-            .try_clone()
-            .map_err(|error| LispError::Signal(error.to_string()))?;
-        command.stdout(Stdio::from(writer));
-        command.stderr(Stdio::from(stderr_end));
-        Some(reader)
-    } else {
-        command.stdout(Stdio::piped());
-        command.stderr(Stdio::piped());
-        None
-    };
+    return Ok(SpawnedChild::from_std(child));
     #[cfg(not(unix))]
-    let mixed_output: Option<crate::file_system::File> = {
-        let _ = stderr;
-        command.stdout(Stdio::piped());
-        command.stderr(Stdio::piped());
-        None
-    };
-    let mut child = command.spawn().map_err(|error| vfork_error(&error))?;
-    // The Command still holds the child's ends of the pipe; only the child
-    // may keep them open, or the reader below never sees end of file.
-    drop(command);
-    if let Some(stdin_data) = input
-        && let Some(mut stdin) = child.stdin.take()
-        && let Err(error) = stdin.write_all(stdin_data)
-    {
-        // Dropping `Child' does not terminate it.  If the peer closes stdin
-        // while input is being copied, explicitly reap the child before
-        // returning the write error.
-        let _ = child.kill();
-        let _ = child.wait();
-        return Err(LispError::Signal(error.to_string()));
-    }
-    if let Some(mut reader) = mixed_output {
-        use std::io::Read;
-        let mut stdout = Vec::new();
-        let read = reader.read_to_end(&mut stdout);
-        let status = child
-            .wait()
-            .map_err(|error| LispError::Signal(error.to_string()))?;
-        read.map_err(|error| LispError::Signal(error.to_string()))?;
-        return Ok(std::process::Output {
-            status,
-            stdout,
-            stderr: Vec::new(),
-        });
-    }
-    child
-        .wait_with_output()
-        .map_err(|error| LispError::Signal(error.to_string()))
+    Ok(child)
 }
 
 /// A child's environment block and, when `default-directory' names one,
@@ -776,53 +1069,75 @@ pub(crate) fn configure_external_command(
     env: &mut Env,
     command: &mut Command,
 ) -> Result<ChildEnvironment, LispError> {
-    let mut current_dir = None;
-    if let Some(default_directory) = interp
+    let directory = process_current_directory(interp, env)?;
+    let environment = child_environment(interp, env, directory);
+    set_command_environment(command, &environment);
+    Ok(environment)
+}
+
+/// callproc.c get_current_directory: the directory `default-directory'
+/// names, as `unhandled-file-name-directory' answers it ("~" for its nil),
+/// expanded and checked to be one; None when `default-directory' names
+/// none, which leaves a child in this process's directory.
+pub(crate) fn process_current_directory(
+    interp: &mut Interpreter,
+    env: &mut Env,
+) -> Result<Option<String>, LispError> {
+    let Some(default_directory) = interp
         .lookup_var("default-directory", env)
         .and_then(|value| string_like(&value).map(|string| string.text))
         .filter(|directory| !directory.is_empty())
-    {
-        // GNU's get_current_directory(true) asks a handler for the local
-        // directory without delegating the process operation itself.  This
-        // is what lets `:file-handler nil' run locally from a remote logical
-        // default-directory.
-        // callproc.c invokes Funhandled_file_name_directory directly, so a
-        // user redefinition of the Lisp function cell cannot replace the C
-        // mechanism.  Native dispatch still performs the legitimate
-        // file-name-handler call made inside that primitive.
-        let unhandled = call(
-            interp,
-            "unhandled-file-name-directory",
-            &[Value::String(default_directory.clone().into())],
-            env,
-        )?;
-        // A handler returns nil when its logical directory cannot be a host
-        // cwd.  GNU falls back to HOME, then expands the result without
-        // sending it back through remote-name resolution.
-        let unhandled = string_like(&unhandled)
-            .map(|directory| directory.text)
-            .unwrap_or_else(|| "~".into());
-        let directory = expand_file_name_in_env(interp, env, &unhandled, None);
-        let metadata = fs::metadata(&directory).map_err(|error| {
-            LispError::SignalValue(file_operation_error_value(
-                "Setting current directory",
-                &error,
-                &default_directory,
-            ))
-        })?;
-        if !metadata.is_dir() {
-            let error = std::io::Error::from(ErrorKind::NotADirectory);
-            return Err(LispError::SignalValue(file_operation_error_value(
-                "Setting current directory",
-                &error,
-                &default_directory,
-            )));
-        }
-        command.current_dir(&directory);
-        current_dir = Some(directory.into_bytes());
+    else {
+        return Ok(None);
+    };
+    // GNU's get_current_directory(true) asks a handler for the local
+    // directory without delegating the process operation itself.  This
+    // is what lets `:file-handler nil' run locally from a remote logical
+    // default-directory.
+    // callproc.c invokes Funhandled_file_name_directory directly, so a
+    // user redefinition of the Lisp function cell cannot replace the C
+    // mechanism.  Native dispatch still performs the legitimate
+    // file-name-handler call made inside that primitive.
+    let unhandled = call(
+        interp,
+        "unhandled-file-name-directory",
+        &[Value::String(default_directory.clone().into())],
+        env,
+    )?;
+    // A handler returns nil when its logical directory cannot be a host
+    // cwd.  GNU falls back to HOME, then expands the result without
+    // sending it back through remote-name resolution.
+    let unhandled = string_like(&unhandled)
+        .map(|directory| directory.text)
+        .unwrap_or_else(|| "~".into());
+    let directory = expand_file_name_in_env(interp, env, &unhandled, None);
+    let metadata = fs::metadata(&directory).map_err(|error| {
+        LispError::SignalValue(file_operation_error_value(
+            "Setting current directory",
+            &error,
+            &default_directory,
+        ))
+    })?;
+    if !metadata.is_dir() {
+        let error = std::io::Error::from(ErrorKind::NotADirectory);
+        return Err(LispError::SignalValue(file_operation_error_value(
+            "Setting current directory",
+            &error,
+            &default_directory,
+        )));
     }
-    let directory = current_dir.clone();
-    let current_dir = current_dir.unwrap_or_else(|| {
+    Ok(Some(directory))
+}
+
+/// make_environment_block for a child starting in DIRECTORY (this
+/// process's own when None), with that directory.
+fn child_environment(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    directory: Option<String>,
+) -> ChildEnvironment {
+    let directory = directory.map(String::into_bytes);
+    let current_dir = directory.clone().unwrap_or_else(|| {
         let directory = std::env::current_dir().unwrap_or_default();
         #[cfg(unix)]
         {
@@ -833,17 +1148,34 @@ pub(crate) fn configure_external_command(
         directory.to_string_lossy().into_owned().into_bytes()
     });
     let block = make_environment_block(interp, env, &current_dir);
+    (block, directory)
+}
+
+/// COMMAND started in ENVIRONMENT's directory, with (where the exec does
+/// not take the block itself) its environment.
+fn set_command_environment(command: &mut Command, environment: &ChildEnvironment) {
+    let (block, directory) = environment;
+    if let Some(directory) = directory {
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            command.current_dir(std::ffi::OsStr::from_bytes(directory));
+        }
+        #[cfg(not(unix))]
+        command.current_dir(String::from_utf8_lossy(directory).into_owned());
+    }
     #[cfg(not(unix))]
     {
         command.env_clear();
-        for entry in &block {
+        for entry in block {
             let entry = String::from_utf8_lossy(entry);
             if let Some((name, value)) = entry.split_once('=') {
                 command.env(name, value);
             }
         }
     }
-    Ok((block, directory))
+    #[cfg(unix)]
+    let _ = block;
 }
 
 pub(crate) fn spawn_persistent_process(
@@ -1025,6 +1357,21 @@ fn emacs_pipe() -> std::io::Result<(fs::File, fs::File)> {
             fs::File::from(OwnedFd::from_raw_fd(fds[1])),
         ))
     }
+}
+
+/// emacs_pipe where pipe2 is missing: std's pipe marks both ends
+/// close-on-exec itself.
+#[cfg(not(target_os = "linux"))]
+fn emacs_pipe() -> std::io::Result<(fs::File, fs::File)> {
+    #[cfg(unix)]
+    use std::os::fd::OwnedFd as Owned;
+    #[cfg(windows)]
+    use std::os::windows::io::OwnedHandle as Owned;
+    let (read, write) = std::io::pipe()?;
+    Ok((
+        fs::File::from(Owned::from(read)),
+        fs::File::from(Owned::from(write)),
+    ))
 }
 
 /// Where emacs_spawn puts one of the child's standard descriptors.
@@ -1242,136 +1589,6 @@ fn posix_spawn_process(
         pty_slave_name: pty_name.map(|name| name.to_string_lossy().into_owned()),
         stdout_at_end: false,
         stderr_at_end: false,
-    }))
-}
-
-/// Read STDOUT and STDERR, either absent, to their ends at once, as
-/// call_process reads its output while the child may still write errors.
-#[cfg(target_os = "linux")]
-fn read_to_ends(
-    stdout: Option<fs::File>,
-    stderr: Option<fs::File>,
-) -> (std::io::Result<Vec<u8>>, Vec<u8>) {
-    use std::os::fd::AsRawFd;
-    let mut streams = [stdout, stderr];
-    let mut bytes = [Vec::new(), Vec::new()];
-    let mut buffer = vec![0u8; 65536];
-    loop {
-        let mut fds = streams
-            .iter()
-            .flatten()
-            .map(|stream| libc::pollfd {
-                fd: stream.as_raw_fd(),
-                events: libc::POLLIN,
-                revents: 0,
-            })
-            .collect::<Vec<_>>();
-        if fds.is_empty() {
-            let [stdout, stderr] = bytes;
-            return (Ok(stdout), stderr);
-        }
-        // SAFETY: FDS holds the live descriptors of STREAMS.
-        if unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, -1) } < 0 {
-            let error = std::io::Error::last_os_error();
-            if error.kind() == ErrorKind::Interrupted {
-                continue;
-            }
-            return (Err(error), std::mem::take(&mut bytes[1]));
-        }
-        let mut ready = fds.iter().map(|fd| fd.revents != 0);
-        for (index, slot) in streams.iter_mut().enumerate() {
-            let Some(stream) = slot.as_mut() else {
-                continue;
-            };
-            if !ready.next().unwrap_or(false) {
-                continue;
-            }
-            match stream.read(&mut buffer) {
-                Ok(0) => *slot = None,
-                Ok(read) => bytes[index].extend_from_slice(&buffer[..read]),
-                Err(error) if error.kind() == ErrorKind::Interrupted => {}
-                Err(error) => return (Err(error), std::mem::take(&mut bytes[1])),
-            }
-        }
-    }
-}
-
-/// Fcall_process's emacs_spawn through posix_spawn: INPUT on a pipe (else
-/// the null device), the output on one pipe that standard error shares for
-/// STDERR `Mixed', else on two, all read to their ends before the wait.
-/// None leaves it to the fork path (an argument with a NUL).
-#[cfg(target_os = "linux")]
-fn posix_spawn_call_process(
-    program: &str,
-    argv: &[Vec<u8>],
-    environment: &[Vec<u8>],
-    directory: Option<Vec<u8>>,
-    input: Option<&[u8]>,
-    stderr: ExternalStderr,
-) -> Result<Option<std::process::Output>, LispError> {
-    use std::os::fd::AsRawFd;
-    let Some(image) = ExecImage::new(program, argv, environment.to_vec()) else {
-        return Ok(None);
-    };
-    let Ok(directory) = directory.map(std::ffi::CString::new).transpose() else {
-        return Ok(None);
-    };
-    let pipe_error = |error: std::io::Error| {
-        LispError::SignalValue(file_operation_error_value_without_file(
-            "Creating process pipe",
-            &error,
-        ))
-    };
-    let (stdin_read, stdin_write) = match input {
-        Some(_) => {
-            let (read, write) = emacs_pipe().map_err(pipe_error)?;
-            (read, Some(write))
-        }
-        None => (
-            fs::File::open("/dev/null").map_err(|error| LispError::Signal(error.to_string()))?,
-            None,
-        ),
-    };
-    let (output_read, output_write) = emacs_pipe().map_err(pipe_error)?;
-    let errors = (stderr != ExternalStderr::Mixed)
-        .then(emacs_pipe)
-        .transpose()
-        .map_err(pipe_error)?;
-    let stdio = [
-        SpawnFd::Fd(stdin_read.as_raw_fd()),
-        SpawnFd::Fd(output_write.as_raw_fd()),
-        errors
-            .as_ref()
-            .map_or(SpawnFd::Stdout, |(_, write)| SpawnFd::Fd(write.as_raw_fd())),
-    ];
-    let pid = emacs_posix_spawn(&image, directory.as_deref(), stdio, None)
-        .map_err(|error| vfork_error(&error))?;
-    // Only the child keeps its ends, or the reads below never end.
-    drop((stdin_read, output_write));
-    let mut child = SpawnedChild::new(
-        pid as u32,
-        stdin_write,
-        Some(output_read),
-        errors.map(|(read, _)| read),
-    );
-    if let Some(stdin_data) = input
-        && let Some(mut stdin) = child.stdin.take()
-        && let Err(error) = stdin.write_all(stdin_data)
-    {
-        let _ = child.kill();
-        let _ = child.wait();
-        return Err(LispError::Signal(error.to_string()));
-    }
-    drop(child.stdin.take());
-    let (stdout, stderr) = read_to_ends(child.stdout.take(), child.stderr.take());
-    let status = child
-        .wait()
-        .map_err(|error| LispError::Signal(error.to_string()))?;
-    let stdout = stdout.map_err(|error| LispError::Signal(error.to_string()))?;
-    Ok(Some(std::process::Output {
-        status,
-        stdout,
-        stderr,
     }))
 }
 
@@ -2582,95 +2799,6 @@ fn flush_process_decoder(
     let output = decode_process_output(interp, process_id, &[], env)?;
     deliver_process_output_decoded(interp, process_id, output, env)?;
     Ok((carried == 0, carried > 0))
-}
-
-pub(crate) fn write_process_bytes_to_file(
-    path: &str,
-    bytes: &[u8],
-    append: bool,
-) -> Result<(), LispError> {
-    let path = unquote_local_file_name(path).unwrap_or_else(|| path.to_string());
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create(true);
-    if append {
-        options.append(true);
-    } else {
-        options.truncate(true);
-    }
-    let mut file = options
-        .open(path)
-        .map_err(|error| LispError::Signal(error.to_string()))?;
-    file.write_all(bytes)
-        .map_err(|error| LispError::Signal(error.to_string()))
-}
-
-pub(crate) fn write_process_output(
-    interp: &mut Interpreter,
-    destination: &Value,
-    stdout: &[u8],
-    stderr: &[u8],
-    operation: &str,
-    operation_args: &[Value],
-    env: &mut Env,
-) -> Result<(), LispError> {
-    let ProcessDestination {
-        buffer,
-        output_file,
-        error_file,
-    } = process_destination(destination);
-    // An output or stderr file is expanded against `default-directory'
-    // and opened (truncated) whether or not the child writes to it.
-    let output_path = match output_file {
-        Some(file) => Some(resolve_file_name_in_env(interp, env, &string_text(&file)?)),
-        None => None,
-    };
-    let error_path = if error_file.is_nil() || error_file == Value::T {
-        None
-    } else {
-        Some(resolve_file_name_in_env(
-            interp,
-            env,
-            &string_text(&error_file)?,
-        ))
-    };
-    let discard =
-        matches!(buffer.kind(), Kind::Integer(_)) || (buffer.is_nil() && output_path.is_none());
-    // STDERR-FILE t shares the output's descriptor; standard error read
-    // on its own follows the output in that one stream.
-    let mixed;
-    let output = if error_file == Value::T && !stderr.is_empty() {
-        mixed = [stdout, stderr].concat();
-        &mixed[..]
-    } else {
-        stdout
-    };
-    if let Some(path) = &output_path {
-        write_process_bytes_to_file(path, output, false)?;
-    } else if !discard
-        && let Err(error) = append_process_bytes_to_buffer(
-            interp,
-            &buffer,
-            output,
-            true,
-            operation,
-            operation_args,
-            env,
-        )
-    {
-        // call_process_cleanup: leaving the read loop early kills and
-        // reaps the child, announcing the wait.
-        super::dispatch::display::message1(
-            interp,
-            "Waiting for process to die...(type C-g again to kill it instantly)",
-            env,
-        )?;
-        super::dispatch::display::message1(interp, "Waiting for process to die...done", env)?;
-        return Err(error);
-    }
-    if let Some(path) = &error_path {
-        write_process_bytes_to_file(path, stderr, false)?;
-    }
-    Ok(())
 }
 
 /// Drain live external process pipes into their buffers/filters.
