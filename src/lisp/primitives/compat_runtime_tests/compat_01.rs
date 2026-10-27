@@ -1635,6 +1635,58 @@ fn insert_file_contents_preserves_embedded_cr_in_unix_files() {
     std::fs::remove_file(path).expect("cleanup fixture");
 }
 
+#[test]
+fn set_auto_coding_runs_where_insert_file_contents_decides() {
+    let directory = std::env::temp_dir().join(format!("emaxx-auto-coding-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).expect("scratch directory");
+    let big = format!(
+        "head line\n{}\n{}tail\n",
+        "x".repeat(100),
+        format!("middle coding: latin-1 {}\n", "y".repeat(80)).repeat(100)
+    );
+    std::fs::write(directory.join("big.txt"), big).expect("big fixture");
+    std::fs::write(directory.join("small.txt"), "hello\n").expect("small fixture");
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let source = format!(
+        r#"(let ((default-directory "{}/") log)
+             (let ((set-auto-coding-function
+                    (lambda (_file size)
+                      (push (list (buffer-name) size (buffer-size) (point)
+                                  enable-multibyte-characters buffer-undo-list
+                                  (and (boundp 'auto-coding-test-local)
+                                       auto-coding-test-local))
+                            log)
+                      nil)))
+               (dolist (file '("big.txt" "small.txt"))
+                 (with-temp-buffer
+                   (setq-local auto-coding-test-local 'target)
+                   (insert-file-contents file)
+                   (push (list (buffer-size) enable-multibyte-characters
+                               (buffer-modified-tick) (point))
+                         log))
+                 (with-temp-buffer
+                   (setq-local auto-coding-test-local 'target)
+                   (insert "pre")
+                   (insert-file-contents file))))
+             (list (nreverse log)
+                   (buffer-live-p (get-buffer " *code-converting-work*"))))"#,
+        directory.display()
+    );
+    let value = crate::test_support::eval_lisp(&mut interp, &mut env, &source)
+        .expect("insert-file-contents with set-auto-coding-function");
+    std::fs::remove_dir_all(&directory).expect("cleanup");
+    // GNU 30.2: an empty buffer decides in itself on every byte; one with
+    // text in the kept work buffer on 1K and the 2K the lseek leaves.
+    assert_eq!(
+        value.to_string(),
+        "(((\" *temp*\" 10516 10516 1 nil t target) (10516 t 15 1) \
+         (\" *code-converting-work*\" 3072 3072 1 nil t nil) \
+         (\" *temp*\" 6 6 1 nil t target) (6 t 4 1) \
+         (\" *code-converting-work*\" 6 6 1 nil t nil)) t)"
+    );
+}
+
 // Finding 34 re-hosts: the originals ran on the bare interpreter against
 // native facades and were deleted with them; GNU's own test tree covers
 // none of these, so the coverage lives here on the full dumped image,

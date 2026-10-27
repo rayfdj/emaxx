@@ -7664,6 +7664,26 @@ setup_process_coding_systems's check now refuses). A 13-form
   then never ended. A probe of every DESTINATION shape, INFILE, the temporary file
   (a regular file on the child's standard input), the error files, a
   missing program and DESTINATION 0 gives GNU 30.2's results.
+- **Round 124: where `set-auto-coding-function' runs.** fileio.c
+  Finsert_file_contents decides the coding of a file read into a buffer
+  holding text before it reads: `set-auto-coding-function' sees the first
+  1K of a regular file and the 3K read after an lseek by the file's size
+  less 3K from there (SEEK_CUR, so the last 2K of a file larger than 4K),
+  or all of a smaller one, in the " *code-converting-work*" buffer, made
+  once (its hooks inhibited) and kept: its overlays deleted, the current
+  buffer's directory, writable, visiting nothing, undo off, erased and
+  unibyte. Read into an empty buffer, the file's bytes become the
+  buffer's own unibyte text, undo off, for the call, and
+  decide_coding_unwind takes them out again on any exit (markers,
+  overlays and point at the start, the properties gone) as the bytes to
+  decode, restoring the buffer's multibyteness and undo list; the
+  following find-operation-coding-system passes nil for REPLACE. Emaxx
+  copied all the bytes read into a new " *auto-coding-work*" buffer and
+  killed it, whichever the buffer: the function never saw the target
+  buffer's local variables and saw all of a large file where GNU shows
+  3K. A probe of both buffers with a 10K and a 6-byte file gives GNU
+  30.2's buffers, sizes, point, undo lists, buffer-local values and
+  modification ticks.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's

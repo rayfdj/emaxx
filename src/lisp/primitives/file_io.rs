@@ -1448,11 +1448,21 @@ pub(crate) fn buffer_position_at_line_start(
     position <= buffer.point_min() || buffer.char_at(position.saturating_sub(1)) == Some('\n')
 }
 
+/// fileio.c Finsert_file_contents's call of `set-auto-coding-function'
+/// with the file name and how many bytes it may read from point.  In a
+/// buffer holding text that is the first 1K of a regular file and up to
+/// 3K more read after an lseek by the file's size less 3K (SEEK_CUR, so
+/// the last 2K of a file larger than 4K), or all of a smaller one, in
+/// the " *code-converting-work*" buffer, which stays.  In an empty buffer
+/// it is every byte read, inserted in the buffer itself, made unibyte with
+/// undo off for the call; decide_coding_unwind then takes the text out
+/// again, as the bytes to decode (DECIDED_BYTES when the call changed it).
 fn auto_coding_for_file(
     interp: &mut Interpreter,
     env: &Env,
     bytes: &[u8],
     filename: &str,
+    decided_bytes: &mut Option<Vec<u8>>,
 ) -> Result<Option<String>, LispError> {
     let Some(function) = interp
         .lookup_var("set-auto-coding-function", env)
@@ -1460,36 +1470,152 @@ fn auto_coding_for_file(
     else {
         return Ok(None);
     };
-
-    // GNU calls the Lisp-owned auto-coding policy while the undecoded file
-    // bytes are visible in the current buffer.  Keep that policy on the Lisp
-    // side; this work buffer is only the byte-oriented host adapter it needs.
-    let saved_buffer_id = interp.current_buffer_id();
-    let base_name = " *auto-coding-work*";
-    let temp_name = if interp.has_buffer(base_name) {
-        let mut suffix = 2;
-        loop {
-            let candidate = format!("{base_name}<{suffix}>");
-            if !interp.has_buffer(&candidate) {
-                break candidate;
-            }
-            suffix += 1;
+    let coding = if interp.buffer.borrow().size_total() == 0 {
+        if bytes.is_empty() {
+            return Ok(None);
         }
+        auto_coding_in_empty_buffer(interp, env, function, bytes, filename, decided_bytes)?
     } else {
-        base_name.into()
+        let Some(head_and_tail) = auto_coding_file_sample(filename)? else {
+            return Ok(None);
+        };
+        auto_coding_in_work_buffer(interp, env, function, &head_and_tail, filename)?
     };
-    let (temp_id, _) = interp.create_buffer(&temp_name);
-    interp.set_buffer_hooks_inhibited(temp_id, true);
-    interp.set_current_buffer_id(temp_id)?;
-    interp.buffer.borrow_mut().set_multibyte(false);
-    interp.insert_current_buffer(&decode_raw_text_bytes(bytes));
-    {
-        let mut buffer = interp.buffer.borrow_mut();
-        let position = buffer.point_min();
-        buffer.goto_char(position);
-    }
+    checked_coding_given(interp, &coding)
+}
 
-    let mut detection_env = env.clone();
+/// The bytes Finsert_file_contents shows `set-auto-coding-function' for a
+/// buffer holding text: none for a file that is not regular, all of one
+/// of 4K or less, else its first 1K and what a read of 3K after
+/// `lseek (fd, st_size - 3K, SEEK_CUR)' finds.
+fn auto_coding_file_sample(path: &str) -> Result<Option<Vec<u8>>, LispError> {
+    use std::io::{Seek, SeekFrom};
+    let read_error = |error: std::io::Error| {
+        LispError::SignalValue(file_operation_error_value("Read error", &error, path))
+    };
+    let Ok(metadata) = fs::metadata(path) else {
+        return Ok(None);
+    };
+    if !metadata.is_file() {
+        return Ok(None);
+    }
+    let mut file = fs::File::open(path).map_err(read_error)?;
+    let size = metadata.len();
+    let mut sample = Vec::with_capacity(4096);
+    if size <= 4096 {
+        (&mut file)
+            .take(4096)
+            .read_to_end(&mut sample)
+            .map_err(read_error)?;
+    } else {
+        (&mut file)
+            .take(1024)
+            .read_to_end(&mut sample)
+            .map_err(read_error)?;
+        if sample.len() == 1024 {
+            file.seek(SeekFrom::Current((size - 3072) as i64))
+                .map_err(|error| file_operation_error("Setting file position", &error, path))?;
+            file.take(3072)
+                .read_to_end(&mut sample)
+                .map_err(read_error)?;
+        }
+    }
+    Ok((!sample.is_empty()).then_some(sample))
+}
+
+/// Finsert_file_contents's " *code-converting-work*" buffer, made (with
+/// its hooks inhibited) the first time and kept: its overlays deleted,
+/// the current buffer's directory, writable, visiting nothing, undo off,
+/// erased, unibyte, SAMPLE inserted and point at its start, where
+/// FUNCTION runs.
+fn auto_coding_in_work_buffer(
+    interp: &mut Interpreter,
+    env: &Env,
+    function: Value,
+    sample: &[u8],
+    filename: &str,
+) -> Result<Value, LispError> {
+    const WORK_BUFFER: &str = " *code-converting-work*";
+    let saved_buffer_id = interp.current_buffer_id();
+    let directory = interp
+        .lookup_var("default-directory", env)
+        .unwrap_or(Value::Nil);
+    let work_id = match interp.find_buffer(WORK_BUFFER) {
+        Some((id, _)) => id,
+        None => {
+            let (id, _) = interp.create_buffer(WORK_BUFFER);
+            interp.set_buffer_hooks_inhibited(id, true);
+            id
+        }
+    };
+    interp.delete_buffer_overlays(work_id);
+    interp.set_current_buffer_id(work_id)?;
+    let mut work_env = env.clone();
+    let result = (|| {
+        interp.set_variable("default-directory", directory, &mut work_env);
+        interp.set_variable("buffer-read-only", Value::Nil, &mut work_env);
+        interp.set_variable("buffer-file-name", Value::Nil, &mut work_env);
+        interp.set_variable("buffer-undo-list", Value::T, &mut work_env);
+        call(interp, "erase-buffer", &[], &mut work_env)?;
+        interp.buffer.borrow_mut().set_multibyte(false);
+        interp.insert_current_buffer(&decode_raw_text_bytes(sample));
+        {
+            let mut buffer = interp.buffer.borrow_mut();
+            let start = buffer.point_min();
+            buffer.goto_char(start);
+        }
+        interp.call_function_value(
+            function,
+            None,
+            &[
+                Value::String(filename.to_string().into()),
+                Value::Integer(sample.len() as i64),
+            ],
+            &mut work_env,
+        )
+    })();
+    if interp.has_buffer_id(saved_buffer_id) {
+        let _ = interp.set_current_buffer_id(saved_buffer_id);
+    }
+    result
+}
+
+/// Finsert_file_contents's decision in the empty buffer it reads into:
+/// BYTES made the unibyte text, with undo off and point at the start, for
+/// FUNCTION; then decide_coding_unwind, on any exit, empties the buffer
+/// (markers, overlays and point at its start, the text's properties
+/// gone) and restores its multibyteness and undo list.  The insertion
+/// and the emptying count as no modification, as insert_from_gap_1 and
+/// the gap's move are none.
+fn auto_coding_in_empty_buffer(
+    interp: &mut Interpreter,
+    env: &Env,
+    function: Value,
+    bytes: &[u8],
+    filename: &str,
+    decided_bytes: &mut Option<Vec<u8>>,
+) -> Result<Value, LispError> {
+    let buffer_id = interp.current_buffer_id();
+    let mut decide_env = env.clone();
+    let undo_list = interp
+        .lookup_var("buffer-undo-list", env)
+        .unwrap_or(Value::Nil);
+    let (multibyte, modiff, chars_modiff) = {
+        let buffer = interp.buffer.borrow();
+        (
+            buffer.is_multibyte(),
+            buffer.modified_tick(),
+            buffer.chars_modified_tick(),
+        )
+    };
+    interp.buffer.borrow_mut().set_multibyte(false);
+    interp.set_variable("buffer-undo-list", Value::T, &mut decide_env);
+    interp.insert_current_buffer(&decode_raw_text_bytes(bytes));
+    let inserted_tick = {
+        let mut buffer = interp.buffer.borrow_mut();
+        buffer.goto_char(1);
+        buffer.chars_modified_tick()
+    };
     let result = interp.call_function_value(
         function,
         None,
@@ -1497,14 +1623,37 @@ fn auto_coding_for_file(
             Value::String(filename.to_string().into()),
             Value::Integer(bytes.len() as i64),
         ],
-        &mut detection_env,
+        &mut decide_env,
     );
-    if interp.has_buffer_id(saved_buffer_id) {
-        let _ = interp.set_current_buffer_id(saved_buffer_id);
+    // decide_coding_unwind.
+    if interp.current_buffer_id() != buffer_id && interp.has_buffer_id(buffer_id) {
+        interp.set_current_buffer_id(buffer_id)?;
     }
-    interp.kill_buffer_id(temp_id);
-    let coding = result?;
-    checked_coding_given(interp, &coding)
+    if interp.current_buffer_id() == buffer_id {
+        interp.buffer.borrow_mut().widen();
+        let (changed, z) = {
+            let buffer = interp.buffer.borrow();
+            (
+                buffer.chars_modified_tick() != inserted_tick,
+                buffer.point_max(),
+            )
+        };
+        if changed {
+            let text = interp.buffer.borrow().buffer_string();
+            *decided_bytes = Some(encode_raw_text_bytes(&text)?);
+        }
+        interp
+            .delete_region_current_buffer(1, z)
+            .map_err(|error| LispError::Signal(error.to_string()))?;
+        let mut buffer = interp.buffer.borrow_mut();
+        buffer.goto_char(1);
+        buffer.set_multibyte(multibyte);
+        buffer.set_modified_tick(modiff);
+        buffer.set_chars_modified_tick(chars_modiff);
+        drop(buffer);
+        interp.set_variable("buffer-undo-list", undo_list, &mut decide_env);
+    }
+    result
 }
 
 /// What Finsert_file_contents's decoding leaves behind.
@@ -1555,13 +1704,21 @@ pub(crate) fn decode_file_contents(
             None => None,
         }
     };
-    if coding.is_none() && !bytes.is_empty() {
-        coding = auto_coding_for_file(interp, env, bytes, path)?;
+    let buffer_was_empty = interp.buffer.borrow().size_total() == 0;
+    let mut decided_bytes = None;
+    if coding.is_none() {
+        coding = auto_coding_for_file(interp, env, bytes, path, &mut decided_bytes)?;
     }
+    let bytes = decided_bytes.as_deref().unwrap_or(bytes);
     if coding.is_none() {
         let mut operation_env = env.clone();
         let mut lookup_args = vec![Value::Symbol("insert-file-contents".into())];
         lookup_args.extend_from_slice(operation_args);
+        // The decision made after reading into an empty buffer passes nil
+        // for REPLACE.
+        if buffer_was_empty && let Some(replace) = lookup_args.get_mut(5) {
+            *replace = Value::Nil;
+        }
         let pair = interp.call_function_value(
             Value::Symbol("find-operation-coding-system".into()),
             Some("find-operation-coding-system"),

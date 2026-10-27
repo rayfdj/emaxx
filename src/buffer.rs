@@ -3273,6 +3273,10 @@ impl Buffer {
         self.modiff = tick;
     }
 
+    pub(crate) fn set_chars_modified_tick(&mut self, tick: ModCount) {
+        self.chars_modiff = tick;
+    }
+
     pub fn swap_text_state(&mut self, other: &mut Buffer) {
         std::mem::swap(&mut self.text, &mut other.text);
         std::mem::swap(&mut self.char_cache, &mut other.char_cache);
