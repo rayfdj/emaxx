@@ -2535,6 +2535,7 @@ impl Clone for ProcessState {
             exit_code: self.exit_code,
             exit_signal: self.exit_signal,
             os_pid: self.os_pid,
+            tty: self.tty.clone(),
             runtime: None,
             network: None,
             serial: None,
@@ -2597,6 +2598,9 @@ struct ProcessState {
     /// OS pid retained after the Child handle is reaped; nil for pipe and
     /// network process records.
     os_pid: Option<u32>,
+    /// p->tty_name with p->pty_in and p->pty_out: the terminal the child
+    /// was given and which of its streams use it, kept after it exits.
+    tty: Option<(String, bool, bool)>,
     runtime: Option<RunningProcess>,
     network: Option<NetworkRuntime>,
     serial: Option<SerialRuntime>,

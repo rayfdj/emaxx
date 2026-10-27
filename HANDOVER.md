@@ -7597,6 +7597,18 @@ setup_process_coding_systems's check now refuses). A 13-form
   other systems keep the fork path. Exec failures, `default-directory',
   a pty's controlling terminal and the foreground group on it give GNU
   30.2's results.
+- **Round 121: a process's terminal name outlives the child.**
+  Fprocess_tty_name reads p->tty_name, p->pty_in and p->pty_out, which
+  the process keeps after its child exits: STREAM nil names the terminal
+  when any stream used one, `stdin' and `stdout' when theirs did, and
+  `stderr' when it was stdout's (no p->stderrproc). Emaxx read the live
+  runtime and answered nil for every stream once the child had exited. A
+  probe of the four connection types after the exit gives GNU 30.2's
+  output. Local validation of rounds 119 to 121, on one build: the full
+  gate across its ten groups with the documented local skips, all 3,261
+  tests run passing (2 ignored), the load-sensitive two among them; the
+  seven integration targets; clippy `-D warnings', rustfmt and `git diff
+  --check'; and each of the three commits builds alone.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -8442,6 +8454,14 @@ the mismatch time-date-tests' `test-time-since', round 116's
 `time-subtract' of `eq' operands (fixed after round 117; not rerun). Its
 timings: setup 81.1 s against 63.0 s (1.289), test bodies 270.5 s
 against 263.2 s (1.028), in all 1.059.
+**On `6abdb55`** (round 117 and the `time-subtract' fix): full Rust gate
+passed (run 40547766615); frozen (run 40547770427) matched 7,927 of
+7,928 outcomes on both its attempts, the mismatch each time GNU's
+`eglot-test-rust-completion-exit-function' failing with a
+`jsonrpc-error' ("Timed out") from rust-analyzer while Emaxx passed (the
+recorded oracle flake), so the one rerun did not clear it. Its first
+attempt's timings: setup 64.6 s against 52.7 s (1.225), test bodies
+231.7 s against 242.1 s (0.957), in all 1.022.
 
 **Findings recorded, not fixed:**
 - **Pipe processes hold no descriptors (round 119).** Fmake_pipe_process

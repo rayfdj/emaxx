@@ -644,6 +644,38 @@ fn a_pipe_child_without_stderr_writes_its_errors_into_its_output_pipe() {
 }
 
 #[test]
+fn process_tty_name_keeps_the_terminal_and_its_streams_after_the_exit() {
+    // process.c:Fprocess_tty_name reads p->tty_name, p->pty_in and
+    // p->pty_out, which outlive the child: an exited process still names
+    // the terminal of each stream that used one.
+    run_with_large_stack(|| {
+        let printed = eval_str_with_upstream_batch(
+            r#"(prin1-to-string
+                 (mapcar (lambda (type)
+                           (let ((p (make-process :name "t" :command '("true")
+                                                  :connection-type type :noquery t)))
+                             (while (accept-process-output p))
+                             (list type (process-status p)
+                                   (mapcar (lambda (stream)
+                                             (stringp (process-tty-name p stream)))
+                                           '(nil stdin stdout stderr))
+                                   (condition-case e (process-tty-name p 'other)
+                                     (error e)))))
+                         '(pty pipe (pipe . pty) (pty . pipe))))"#,
+        );
+        assert_eq!(
+            crate::lisp::primitives::string_like(&printed)
+                .expect("printed")
+                .text,
+            "((pty exit (t t t t) (error \"Unknown stream\" other)) \
+             (pipe exit (nil nil nil nil) (error \"Unknown stream\" other)) \
+             ((pipe . pty) exit (t nil t t) (error \"Unknown stream\" other)) \
+             ((pty . pipe) exit (t t nil nil) (error \"Unknown stream\" other)))"
+        );
+    });
+}
+
+#[test]
 fn make_process_stderr_buffer_creates_the_linked_gnu_pipe_process() {
     run_with_large_stack(|| {
         assert_eq!(

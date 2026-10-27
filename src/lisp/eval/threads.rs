@@ -511,6 +511,15 @@ impl Interpreter {
             .and_then(|value| value.cons_values())
             .unwrap_or((Value::Nil, Value::Nil));
         let os_pid = runtime.as_ref().map(|runtime| runtime.child.id());
+        let tty = runtime.as_ref().and_then(|runtime| {
+            runtime.pty_slave_name.clone().map(|name| {
+                (
+                    name,
+                    runtime.pty_input.is_some(),
+                    runtime.pty_output.is_some(),
+                )
+            })
+        });
         let kind = if program.is_some() {
             ProcessKind::Real
         } else {
@@ -541,6 +550,7 @@ impl Interpreter {
             exit_code: None,
             exit_signal: None,
             os_pid,
+            tty,
             runtime,
             network: None,
             serial: None,
@@ -634,6 +644,7 @@ impl Interpreter {
             exit_code: None,
             exit_signal: None,
             os_pid: None,
+            tty: None,
             runtime: None,
             network,
             serial: None,
@@ -713,6 +724,7 @@ impl Interpreter {
             exit_code: None,
             exit_signal: None,
             os_pid: None,
+            tty: None,
             runtime: None,
             network: None,
             serial: Some(serial),
@@ -2166,21 +2178,18 @@ impl Interpreter {
         record_id: u64,
         stream: Option<&Value>,
     ) -> Option<String> {
+        // Fprocess_tty_name: p->tty_name, for stdin when p->pty_in, for
+        // stdout when p->pty_out, and for stderr when it is stdout's (no
+        // p->stderrproc), whether or not the child still runs.
         let process = self.find_process_state(record_id)?;
-        let runtime = process.runtime.as_ref()?;
+        let (name, pty_in, pty_out) = process.tty.as_ref()?;
         let stream_matches = match stream.and_then(|value| value.symbol_str()) {
-            Some("stdin") => runtime.pty_input.is_some(),
-            Some("stdout") => runtime.pty_output.is_some(),
-            // A separate :stderr destination is always a pipe.  Only merged
-            // stderr shares the output PTY and therefore has no Child handle.
-            Some("stderr") => runtime.pty_output.is_some() && runtime.child.stderr.is_none(),
-            _ => runtime.pty_input.is_some() || runtime.pty_output.is_some(),
+            Some("stdin") => *pty_in,
+            Some("stdout") => *pty_out,
+            Some("stderr") => *pty_out && process.stderr_process_id.is_none(),
+            _ => true,
         };
-        if stream_matches {
-            runtime.pty_slave_name.clone()
-        } else {
-            None
-        }
+        stream_matches.then(|| name.clone())
     }
 
     pub fn process_send_eof(&mut self, record_id: u64) -> Result<(Vec<u8>, Vec<u8>), LispError> {
