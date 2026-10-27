@@ -7684,6 +7684,21 @@ setup_process_coding_systems's check now refuses). A 13-form
   3K. A probe of both buffers with a 10K and a 6-byte file gives GNU
   30.2's buffers, sizes, point, undo lists, buffer-local values and
   modification ticks.
+- **Round 125: the gate profile leaves the dependencies' assertions
+  off.** The gate profile keeps debug assertions and overflow checks for
+  this crate's ported code; they were on for every dependency as well,
+  where they check the crates' own invariants (ropey re-sums each
+  child's text info on every edit, `combined_info' 676M instructions of
+  undo-tests' 15.41G under the frozen runner). `[profile.gate.package."*"]'
+  now turns them off for the dependencies only, as in the release
+  build: undo-tests takes 14.30G (the release build 10.22G, GNU 9.28G).
+  The frozen run times this profile.
+  Local validation of rounds 122 to 125, on one build: the full gate
+  across its ten groups with the documented local skips, all 3,264 tests
+  run passing (2 ignored; seven byte-compile tests failed when the disk
+  filled during the run and passed rerun); the seven integration
+  targets; clippy `-D warnings', rustfmt and `git diff --check'; and
+  each of the four commits builds alone.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's

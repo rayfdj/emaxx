@@ -113,3 +113,11 @@ debug-assertions = true
 overflow-checks = true
 lto = "thin"
 codegen-units = 16
+
+# Those safety nets are for this crate's ported code.  The dependencies'
+# own invariant checks stay off, as in the release build: ropey's re-sum
+# every child's text info on each edit, half of a checked build's cost
+# of inserting into a buffer.
+[profile.gate.package."*"]
+debug-assertions = false
+overflow-checks = false
