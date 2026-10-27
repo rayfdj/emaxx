@@ -241,7 +241,7 @@ enum Object<'t> {
     /// Compiling: no text.
     None,
     Buffer {
-        rope: ropey::RopeSlice<'t>,
+        rope: crate::lisp::regex_emacs::RopeRange<'t>,
         /// BEGV, the position of the text's first character.
         begv: usize,
         /// Point's byte offset in the text.
@@ -914,9 +914,13 @@ impl BufferSnapshot {
         let rope = buffer.text_rope();
         let (begv, zv, point) = (buffer.point_min(), buffer.point_max(), buffer.point());
         let ascii = rope.len_bytes() == rope.len_chars();
-        // The buffer's conversions, which know its ends and the positions
-        // converted since its last edit before them.
+        // An ASCII text's bytes are its characters; otherwise the buffer's
+        // conversions, which know its ends and the positions converted
+        // since its last edit before them.
         let byte = |pos: usize| {
+            if ascii {
+                return pos - 1;
+            }
             buffer
                 .storage_byte_position(pos)
                 .expect("an accessible position")
@@ -938,6 +942,16 @@ impl BufferSnapshot {
 
     fn slice(&self) -> ropey::RopeSlice<'_> {
         self.rope.byte_slice(self.begv_byte..self.zv_byte)
+    }
+
+    /// The accessible text as the matcher reads it, with no RopeSlice built.
+    fn range(&self) -> crate::lisp::regex_emacs::RopeRange<'_> {
+        crate::lisp::regex_emacs::RopeRange::new(
+            &self.rope,
+            self.begv_byte,
+            self.zv_byte,
+            self.begv - 1,
+        )
     }
 
     /// The text offset of buffer position POS.
@@ -972,7 +986,7 @@ impl BufferSnapshot {
     }
 
     /// The matcher's object for the text TEXT, this snapshot's `slice'.
-    fn object<'s>(&'s self, text: ropey::RopeSlice<'s>) -> Object<'s> {
+    fn object<'s>(&'s self, text: crate::lisp::regex_emacs::RopeRange<'s>) -> Object<'s> {
         Object::Buffer {
             rope: text,
             begv: self.begv,
@@ -1045,7 +1059,7 @@ pub(super) fn looking_at_1(
         release_pattern(entry);
         return Err(error);
     }
-    let slice = snapshot.slice();
+    let slice = snapshot.range();
     let text = Text::from_rope(slice, snapshot.multibyte, snapshot.side)
         .with_latin1_bytes(!snapshot.multibyte && !snapshot.ascii);
     menv.object = snapshot.object(slice);
@@ -1317,7 +1331,7 @@ fn search_buffer_re(
     let snapshot = BufferSnapshot::take(interp);
     let mut menv = LispMatchEnv::new(interp, env, case_table);
     let mut entry = compile_pattern(&mut menv, regexp, posix)?;
-    let slice = snapshot.slice();
+    let slice = snapshot.range();
     let text = Text::from_rope(slice, snapshot.multibyte, snapshot.side)
         .with_latin1_bytes(!snapshot.multibyte && !snapshot.ascii);
     menv.object = snapshot.object(slice);
@@ -1585,7 +1599,7 @@ pub(crate) fn fast_looking_at(
 ) -> Result<Option<usize>, LispError> {
     if string.is_nil() {
         let snapshot = BufferSnapshot::take(interp);
-        let slice = snapshot.slice();
+        let slice = snapshot.range();
         let text = Text::from_rope(slice, snapshot.multibyte, snapshot.side)
             .with_latin1_bytes(!snapshot.multibyte && !snapshot.ascii);
         let mut menv = LispMatchEnv::new(interp, env, None);

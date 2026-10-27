@@ -340,7 +340,58 @@ pub(crate) struct Text<'a> {
 #[derive(Clone, Copy)]
 pub(super) enum TextSource<'a> {
     Str(&'a str),
-    Rope(ropey::RopeSlice<'a>),
+    Rope(RopeRange<'a>),
+}
+
+/// Bytes START to START + LEN of a rope, BEGV_BYTE to ZV_BYTE of a buffer's
+/// text: read a chunk at a time as re_search_2 reads the buffer's two
+/// halves in place, with no ropey::RopeSlice built for it (whose
+/// construction counts the characters and lines of the leaf it lands in).
+#[derive(Clone, Copy)]
+pub(crate) struct RopeRange<'a> {
+    rope: &'a ropey::Rope,
+    start: usize,
+    len: usize,
+    /// The character index of START.
+    start_char: usize,
+}
+
+impl<'a> RopeRange<'a> {
+    /// Bytes START..END of ROPE, START being the character START_CHAR.
+    pub(crate) fn new(rope: &'a ropey::Rope, start: usize, end: usize, start_char: usize) -> Self {
+        debug_assert!(start <= end && end <= rope.len_bytes());
+        RopeRange {
+            rope,
+            start,
+            len: end - start,
+            start_char,
+        }
+    }
+
+    #[inline]
+    pub(crate) fn len_bytes(&self) -> usize {
+        self.len
+    }
+
+    /// The chunk holding byte D of the range, cut to the range, and the
+    /// range offset its first byte has.
+    #[inline]
+    pub(crate) fn chunk_at_byte(&self, d: usize) -> (&'a [u8], usize) {
+        let (chunk, chunk_start, _, _) = self.rope.chunk_at_byte(self.start + d);
+        let bytes = chunk.as_bytes();
+        let low = self.start.max(chunk_start);
+        let high = (self.start + self.len).min(chunk_start + bytes.len());
+        (
+            &bytes[low - chunk_start..high - chunk_start],
+            low - self.start,
+        )
+    }
+
+    /// The character offset of byte offset D from the range's start.
+    #[inline]
+    pub(crate) fn byte_to_char(&self, d: usize) -> usize {
+        self.rope.byte_to_char(self.start + d) - self.start_char
+    }
 }
 
 impl<'a> Text<'a> {
@@ -354,11 +405,7 @@ impl<'a> Text<'a> {
         }
     }
 
-    pub(crate) fn from_rope(
-        rope: ropey::RopeSlice<'a>,
-        multibyte: bool,
-        has_side_table: bool,
-    ) -> Self {
+    pub(crate) fn from_rope(rope: RopeRange<'a>, multibyte: bool, has_side_table: bool) -> Self {
         Text {
             size: rope.len_bytes(),
             source: TextSource::Rope(rope),

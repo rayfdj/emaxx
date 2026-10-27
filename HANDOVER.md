@@ -7358,6 +7358,21 @@ setup_process_coding_systems's check now refuses). A 13-form
   failed once more under a loaded machine and passes alone), and the
   seven integration targets; clippy `-D warnings', rustfmt and `git
   diff --check' pass.
+- **Round 114: the matcher reads the buffer in place.** search.c hands
+  re_search_2 the buffer's two halves from BEGV_BYTE to ZV_BYTE. Each
+  `looking-at', `re-search-forward' and `looking-back' built a
+  ropey::RopeSlice of the accessible text, and ropey counts the
+  characters, UTF-16 surrogates and line breaks of the leaf a slice
+  lands in when it builds one (255M instructions for semantic-utest-ia's
+  doublens test, 754K `looking-at' calls, a few hundred bytes of buffer
+  counted each time). The matcher now reads a `RopeRange' (the rope and
+  the byte bounds, each chunk `chunk_at_byte' gives cut to them), and
+  its character offsets come from the rope less BEGV's. The snapshot of
+  an ASCII buffer takes its byte positions as its character positions,
+  where each was a rope conversion, and EXACTN tests the first byte
+  before comparing the rest (GNU's byte loop; nearly every attempt fails
+  there, and the slice comparison was a memcmp call). The doublens test
+  went from 7,358M instructions to about 6,986M (GNU 6,320M).
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -8190,6 +8205,13 @@ failing with a `jsonrpc-error' from rust-analyzer while Emaxx passed (the
 recorded oracle flake), and was rerun once. Its timings: setup 75.9 s
 against 60.9 s (1.246), test bodies 257.3 s against 261.5 s (0.984), in
 all 1.031.
+**On `567e435`** (round 112): full Rust gate passed (run 40498190677),
+frozen passed on its first attempt (run 40498193942).
+**On `f90aebd`** (round 113): full Rust gate passed (run 40506738663),
+frozen passed on its first attempt (run 40506742345). Its timings: setup
+72.0 s against 57.6 s (1.250), test bodies 254.4 s against 251.8 s
+(1.010), in all 1.054; erc-sasl-tests and gnutls-tests are no longer
+among the larger excesses.
 
 **Findings recorded, not fixed:**
 - **The frozen run times the gate profile (round 112).** The frozen
