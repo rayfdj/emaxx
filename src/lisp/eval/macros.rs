@@ -30,28 +30,29 @@ fn prepare_closure_literal(
 }
 
 /// The reader's view of the Lisp world as `read' and `load' read: symbols
-/// interned in OBARRAY, literal objects built as their syntax closes.
+/// interned in the current obarray, literal objects built as their syntax
+/// closes.
 pub(crate) struct LispReadContext<'i> {
     pub(crate) interp: &'i mut Interpreter,
-    pub(crate) obarray: Value,
     pub(crate) env: &'i mut Env,
 }
 
 impl<'i> LispReadContext<'i> {
-    /// The context of a read now: the current `obarray'.
+    /// The context of a read now.
     pub(crate) fn current(interp: &'i mut Interpreter, env: &'i mut Env) -> Self {
-        let obarray = interp.lookup_var("obarray", env).unwrap_or(Value::Nil);
-        Self {
-            interp,
-            obarray,
-            env,
-        }
+        Self { interp, env }
     }
 }
 
 impl crate::lisp::reader::ReadContext for LispReadContext<'_> {
     fn intern(&mut self, name: &str) -> Result<Value, LispError> {
-        crate::lisp::primitives::intern_in_obarray(self.interp, &self.obarray, name)
+        // read0 interns each symbol in `check_obarray (Vobarray)', read
+        // as the symbol is: Lisp run in the middle of a read can bind it.
+        let obarray = self
+            .interp
+            .symbol_value_key(cached_symbol!("obarray"))
+            .unwrap_or(Value::Nil);
+        crate::lisp::primitives::intern_in_obarray(self.interp, &obarray, name)
     }
 
     fn build(&mut self, form: ReaderForm) -> Result<Value, LispError> {

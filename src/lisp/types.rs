@@ -599,6 +599,32 @@ impl SymbolName {
         Self::find_interned(text)
     }
 
+    /// Fintern in the initial obarray of host TEXT: oblookup, then on a
+    /// miss intern_driver, which files a new symbol named by the string
+    /// MAKE_NAME makes in the bucket the lookup ended at.  A marked key
+    /// (a private obarray's or an uninterned symbol's) takes the general
+    /// path.
+    pub(crate) fn intern_initial_with(text: &str, make_name: impl FnOnce() -> Value) -> Self {
+        use obarray::Buckets;
+        let bytes = text.as_bytes();
+        let chars = if obarray::plain_ascii(bytes) {
+            bytes.len()
+        } else if !is_visible_symbol_name(text) {
+            return Self::intern_with_lisp_name(text.to_owned(), Some(make_name()));
+        } else {
+            text.chars().count()
+        };
+        INTERNED_SYMBOL_NAMES.with_borrow_mut(|names| {
+            let index = match names.lookup(bytes, chars) {
+                Ok(symbol) => return symbol,
+                Err(index) => index,
+            };
+            let symbol = Self::allocate(text.to_owned(), make_name());
+            Self::file_initial(names, symbol, index);
+            symbol
+        })
+    }
+
     /// oblookup in the initial obarray of the Lisp string NAME; None for
     /// no string.
     pub(crate) fn lookup_initial(name: Value) -> Option<Result<Self, usize>> {

@@ -6935,6 +6935,29 @@ setup_process_coding_systems's check now refuses). A 13-form
   343.8M); its total is 542.6M (GNU 508.1M). Local validation: the
   full gate across its ten groups with the documented local skips;
   clippy `-D warnings', rustfmt and `git diff --check' pass.
+- **Round 102: read0's symbols and lists.** The reader interns each
+  symbol in `check_obarray (Vobarray)' read as the symbol is, as read0
+  does, where the read's context took `obarray' once when the read
+  began: Lisp run in the middle of a read (`char-from-name' for a
+  `\N{NAME}' escape, here advised to set `obarray') now redirects the
+  symbols after it, as in GNU. Interning in the initial obarray is one
+  probe, the name string made only on a miss and the new symbol filed
+  in the bucket the probe ended at (intern_driver), with no check of a
+  legacy vector obarray first. A list's elements are consed onto its
+  tail as each is read (RE_list_start, RE_list), the list rooted in its
+  elements' place from the first one on, where they were collected in a
+  host vector and consed at the close. After a dotted pair's last datum
+  the reader skips to the next character, signalling `end-of-file' at
+  the end, and reads it before signalling "expected )" (RE_list_dot):
+  `(read "(a . b")' was `invalid-read-syntax', and a buffer read's
+  error position was a character short. A 30-line probe gives GNU
+  30.2's output byte for byte and a batch test pins seven of its cases.
+  The reader's intern of a symbol took 365 instructions and now about
+  325 (GNU's oblookup about 118: the probe itself is 103 here); the
+  cal-french-tests.el setup's total went from 542.6M to 541.4M. Local
+  validation: the full gate across its ten groups with the documented
+  local skips; clippy `-D warnings', rustfmt and `git diff --check'
+  pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -7729,8 +7752,31 @@ rounds 91 to 98 into main (`2b01388`).
 frozen passed on its first attempt (run 40415814171).
 **On `2d968ce`** (round 100): full Rust gate passed (run 40421848778),
 frozen passed on its first attempt (run 40421854122).
+**On `f587724`** (round 101): full Rust gate passed (run 40426750729),
+frozen passed on its first attempt (run 40426753917).
 
 **Findings recorded, not fixed:**
+- **A test file's setup in wall time, and what the instruction count
+  misses (round 102).** With the frozen runner's command line,
+  cal-french-tests.el's setup takes 137 to 148 ms against GNU's 118 to
+  120 ms (best of five, interleaved), 1.16 to 1.23 times, where the
+  instructions are 1.07 times (541.4M against 507.6M). Callgrind's cache
+  and branch simulation of the same setup: I1 misses 2.12M against
+  0.31M (6.8 times; the largest single function, glibc's `_int_malloc',
+  33.6K, then a long tail of a few thousand to 28K each), last-level
+  misses 715K against 486K, D1 misses 4.03M against 4.56M, mispredicted
+  branches 5.04M against 4.50M. A cycle model of instructions plus 10
+  an I1 or D1 miss, 100 a last-level miss and 15 a mispredict gives
+  749M against 674M, the measured ratio. The text segment is 13.4 MB
+  against GNU's 3.4 MB. The image is 25.5 MB against GNU's 17.7 MB: its
+  relocation table is 7.2 MB (597,441 entries of 12 bytes: the field,
+  the code and an object number), where pdumper.c's `struct dump_reloc'
+  is 4 bytes (a 28-bit offset and the type, the target being the word
+  itself), and its 133 cons blocks hold 177,409 conses in 4.36 MB (the
+  conses are 2.84 MB). The object number is needed while symbols and
+  the other numbered objects are rebuilt rather than mapped; mapping
+  the symbols in place is the step that lets the table shrink to
+  GNU's form.
 - **Where a test file's setup goes, mutator and collector apart (round
   100).** With the frozen runner's command line, each stage's
   instructions less its collections (`garbage_collect' in GNU,

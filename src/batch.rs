@@ -2964,6 +2964,62 @@ mod tests {
     }
 
     #[test]
+    fn reader_interns_in_each_symbols_obarray_and_closes_dotted_lists_as_read0() {
+        // lread.c read0: each symbol is interned in `check_obarray
+        // (Vobarray)' as it is read, so Lisp run in the middle of a read
+        // (here `char-from-name', for `\N{NAME}') can redirect the rest;
+        // RE_list_dot skips to the next character, signalling at the end,
+        // and reads it before "expected )".
+        run_with_large_stack(|| {
+            let emacs_repo = compat::project_root().join("../emacs");
+            let options = BatchRunOptions {
+                load_path: compat::emaxx_upstream_load_path(&emacs_repo)
+                    .expect("upstream load path"),
+                ..Default::default()
+            };
+            let mut interpreter =
+                initialize_batch_interpreter(&options).expect("init batch interpreter");
+            let form = Reader::new(
+                r#"(prin1-to-string
+                    (let* ((orig obarray)
+                           (ob (obarray-make))
+                           (switch (lambda (&rest _) (setq obarray ob)))
+                           (form (progn
+                                   (advice-add 'char-from-name :after switch)
+                                   (unwind-protect
+                                       (car (read-from-string
+                                             "(r102-a ?\\N{LATIN SMALL LETTER A} r102-b . r102-c)"))
+                                     (advice-remove 'char-from-name switch)
+                                     (setq obarray orig)))))
+                      (list (eq (nth 0 form) 'r102-a)
+                            (eq (nth 2 form) (intern-soft "r102-b" ob))
+                            (intern-soft "r102-c")
+                            (nth 1 form)
+                            (condition-case e (read "(a . b") (error (car e)))
+                            (condition-case e (read "(a . b c)") (error e))
+                            (with-temp-buffer
+                              (insert "(a\n . b c)")
+                              (goto-char (point-min))
+                              (condition-case e (read (current-buffer))
+                                (error (list e (point))))))))"#,
+            )
+            .read_all()
+            .expect("read obarray probe")
+            .remove(0);
+            let printed = interpreter
+                .eval(&form, &mut crate::lisp::types::Env::new())
+                .expect("evaluate obarray probe");
+            assert_eq!(
+                lisp::primitives::string_like(&printed)
+                    .expect("printed")
+                    .text,
+                "(t t nil 97 end-of-file (invalid-read-syntax \"expected )\") \
+                 ((invalid-read-syntax \"expected )\" 2 6) 10))"
+            );
+        });
+    }
+
+    #[test]
     fn batch_runtime_preloads_the_complete_tabulated_list_state() {
         run_with_large_stack(|| {
             let emacs_repo = compat::project_root().join("../emacs");

@@ -1062,8 +1062,13 @@ impl<'a> Reader<'a> {
 
     fn read_list(&mut self) -> Result<Option<Value>, LispError> {
         self.advance()?; // consume '('
-        let mut items = Vec::new();
-        let mut dotted_end: Option<Value> = None;
+        // read0's RE_list_start and RE_list: each element is consed onto
+        // the list's tail as soon as it is read, the list rooted in its
+        // elements' place from the first one on.
+        let roots = read_roots_depth();
+        let mut head = Value::Nil;
+        let mut tail: Option<(Value, usize)> = None;
+        let mut dotted = false;
 
         loop {
             self.skip_whitespace_and_comments()?;
@@ -1074,54 +1079,64 @@ impl<'a> Reader<'a> {
                     break;
                 }
                 _ => {
-                    if self.peek()? == Some(b'.') {
+                    let val = if self.peek()? == Some(b'.') {
                         if self.read_dot_separator()? {
-                            if items.is_empty() {
+                            let Some((last, _)) = tail else {
                                 return Err(LispError::ReadError(".".into()));
-                            }
+                            };
                             let val = self.read()?.ok_or(LispError::EndOfInput())?;
-                            dotted_end = Some(val);
+                            last.cons_cells().expect("a list cell").1.set(val);
+                            dotted = true;
+                            // RE_list_dot: skip_space_and_comments, which
+                            // signals at the end, then the character read.
                             self.skip_whitespace_and_comments()?;
                             self.input.unread_lookahead()?;
-                            if self.peek()? == Some(b')') {
-                                self.advance()?;
-                                break;
+                            match self.read_code()? {
+                                Some(0x29) => break,
+                                None => return Err(LispError::EndOfInput()),
+                                Some(_) => {
+                                    return Err(LispError::ReadError("expected )".into()));
+                                }
                             }
-                            return Err(LispError::ReadError(
-                                "expected ')' after dotted pair".into(),
-                            ));
                         }
-                        // The dot lookahead has already happened. Read this
-                        // atom directly, retaining it across later callbacks
-                        // just as the ordinary recursive read would.
-                        let roots = read_roots_depth();
-                        let val = self.read_atom()?.ok_or(LispError::EndOfInput())?;
-                        root_read_result(roots, Some(val));
-                        items.push(val);
+                        // The dot lookahead has already happened: this
+                        // atom is read directly.
+                        self.read_atom()?.ok_or(LispError::EndOfInput())?
                     } else {
-                        let val = self.read()?.ok_or(LispError::EndOfInput())?;
-                        items.push(val);
-                    }
+                        self.read()?.ok_or(LispError::EndOfInput())?
+                    };
+                    let cell = Value::cons(val, Value::Nil);
+                    tail = Some(match tail {
+                        None => {
+                            head = cell;
+                            root_read_result(roots, Some(head));
+                            (cell, 1)
+                        }
+                        Some((last, count)) => {
+                            last.cons_cells().expect("a list cell").1.set(cell);
+                            (cell, count + 1)
+                        }
+                    });
                 }
             }
         }
 
         // read0's RE_list_dot hack: (#$ . FIXNUM) is the doc string it
         // names at once when `load-force-doc-strings' is set.
-        let lazy_head = (items.len() == 1
-            && !items[0].is_nil()
-            && dotted_end.is_some_and(|end| matches!(end.kind(), Kind::Integer(_))))
-        .then(|| items[0]);
-        let mut result = dotted_end.unwrap_or(Value::Nil);
-        for item in items.into_iter().rev() {
-            result = Value::cons(item, result);
-        }
+        let result = head;
+        let lazy_head = result.cons_values().and_then(|(first, end)| {
+            (dotted
+                && tail.is_some_and(|(_, count)| count == 1)
+                && !first.is_nil()
+                && matches!(end.kind(), Kind::Integer(_)))
+            .then_some(first)
+        });
         if let Some(head) = lazy_head
             && self.read_context().is_some_and(|context| {
                 context.force_doc_strings() && context.load_file_name().eq_value(head)
             })
         {
-            result = self.get_lazy_string(result)?;
+            return self.get_lazy_string(result).map(Some);
         }
         Ok(Some(result))
     }

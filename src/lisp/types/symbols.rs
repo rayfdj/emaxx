@@ -297,6 +297,7 @@ const KEY_NAMES: &[&str] = &[
     "defun",
     "face-alias",
     "circular-list",
+    "obarray",
 ];
 
 struct Symbols {
