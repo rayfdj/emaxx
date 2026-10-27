@@ -7443,8 +7443,8 @@ setup_process_coding_systems's check now refuses). A 13-form
   `format-time-string', `current-time-string', `decode-time' and
   `encode-time' over 34 values gives GNU 30.2's output, except that
   `current-time-zone''s name for zone t is "UTC" where GNU's is "GMT"
-  (tzlookup's utc_tz is a null zone, so glibc's gmtime names it; see the
-  time zone finding below).
+  (tzlookup's utc_tz is a null zone, so glibc's gmtime names it;
+  round 117 ports that layer).
   Local validation of rounds 114 to 116, on one build: the full gate
   across its ten groups with the documented local skips, 3,254 of the
   3,256 tests run passing (2 ignored), the two failures the
@@ -7455,6 +7455,45 @@ setup_process_coding_systems's check now refuses). A 13-form
   `message' to emit before "ready" (GNU's standard error has it too);
   clippy `-D warnings', rustfmt and `git diff --check'; and each of the
   three commits builds alone.
+- **Round 117: glibc's time zones and mktime, and gnulib's nstrftime.**
+  timefns.c makes every zone a TZ string (tzlookup: an integer offset is
+  "<+HH[MM[SS]]>-H:MM:SS", `(OFFSET ABBR)' "<ABBR>-H:MM:SS", t and 0 the
+  null zone gmtime serves) and hands it to glibc through gnulib's
+  time_rz (tzalloc, localtime_rz, mktime_z). Emaxx parsed POSIX strings
+  itself and converted with chrono: a zone file name fell back to UTC
+  (`"America/New_York"', `"Asia/Tehran"'), as did a quoted `"<+05>-5"',
+  `wall' as ZONE was an error, t was named "UTC" where gmtime names it
+  "GMT", `encode-time' refused out-of-range fields where mktime
+  normalizes them, years stopped at 262,143, and the directives were an
+  approximation of strftime's (`%_Od', `%10a', `%#Z', `%::::z', "%5%", a
+  trailing "%", `%c''s year). tz.rs ports glibc 2.39's tzset.c (the TZ
+  value: "" is "Universal", a leading colon is dropped, a data file
+  under TZDIR is tried first, else parse_tzname, parse_offset and
+  parse_rule read the POSIX syntax, and a daylight name with no rule
+  takes posixrules' transitions), tzfile.c (TZif with its 64-bit data,
+  the TZ string after it for times past the last transition, and leap
+  seconds), offtime.c (any year an int holds) and mktime.c
+  (__mktime_internal's probes, the spring-forward gap and the tm_isdst
+  search, with glibc's carried offset guesses; timegm sets tm_isdst to
+  0), and gnulib's time_rz. strftime.rs is gnulib's __strftime_internal
+  as Emacs builds it (HAVE_TZNAME unset, so %Z is tm_zone; %s through
+  mktime_z), with the C library's items (%a, %b, %c, %p, %r, %x, %X and
+  the E and O alternatives) from a port of glibc 2.39's own strftime in
+  the C locale, whose numbers are not gnulib's (`%c' of the year 68 ends
+  "68" where gnulib's `%Y' gives "0068", and its int year wraps past
+  2^31 - 1901). `decode-time', `encode-time' (Fencode_time's argument
+  checks and DST rule), `format-time-string' (TIME before FORMAT,
+  `locale-coding-system''s encoding, NUL bytes kept),
+  `current-time-string', `current-time-zone' (a numeric name for an
+  empty abbreviation) and `set-time-zone-rule' (the local rule kept as
+  its TZ string, `wall' or t) are timefns.c's over them. Probes of
+  `decode-time', `format-time-string', `current-time-zone' and
+  `current-time-string' over 35 zones (zone files, POSIX rules, offsets,
+  quoted and nameless strings, `wall', invalid zones) and 14 times, of 9
+  format strings holding 101 directive variants over 15 times in two
+  zones, and of `encode-time' over 11 zones, 20 broken-down times and
+  the three DST values give GNU 30.2's output, apart from `encode-time'
+  with a nil SEC, which reads the clock.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -8296,17 +8335,6 @@ frozen passed on its first attempt (run 40506742345). Its timings: setup
 among the larger excesses.
 
 **Findings recorded, not fixed:**
-- **Time zones and broken-down time are chrono's (round 116).** GNU's
-  timefns.c hands TZ strings to glibc (tzalloc, localtime_rz, mktime_z);
-  Emaxx parses POSIX TZ strings itself and converts with chrono. A zone
-  file name (`"Asia/Tehran"', `"America/New_York"', as timezone and
-  time-stamp tests use) falls back to UTC, as do a quoted `"<+05>-5"', a
-  name glibc keeps with offset zero (`"garbage zone"' formats "%Z" as
-  "garbage") and `wall' as a ZONE argument (an error here); zone t and 0
-  name the zone "UTC" where glibc's gmtime names it "GMT"; `encode-time'
-  refuses a field outside its range where mktime normalizes it (`(61 59
-  23 31 12 1999 ...)' is the first second of 2000); and chrono's years
-  stop at 262,143 where glibc's run to an int `tm_year'.
 - **The frozen run times the gate profile (round 112).** The frozen
   workflow's harness builds the Emaxx it runs with `--profile gate'
   (thin LTO, 16 codegen units, debug assertions and overflow checks;

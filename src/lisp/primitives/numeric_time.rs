@@ -1,5 +1,7 @@
+use super::tz::{TimeZone, Tm, localtime_rz, mktime_z};
 use super::*;
 use crate::lisp::types::Kind;
+use std::rc::Rc;
 
 pub(crate) fn wait_duration(args: &[Value]) -> Result<Duration, LispError> {
     let seconds = args
@@ -751,31 +753,6 @@ impl ExactTimeValue {
     }
 }
 
-#[derive(Clone, Debug)]
-pub(crate) struct ZoneSpec {
-    offset_seconds: i32,
-    abbreviation: String,
-    is_dst: bool,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct PosixTransitionRule {
-    month: u32,
-    week: u32,
-    weekday: u32,
-    seconds: u32,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct PosixTimeZone {
-    std_abbr: String,
-    std_offset: i32,
-    dst_abbr: String,
-    dst_offset: i32,
-    start: PosixTransitionRule,
-    end: PosixTransitionRule,
-}
-
 /// timefns.c's lisp_time: TICKS over HZ as given.  decode_ticks_hz only
 /// checks that HZ is positive; nothing reduces the fraction, so
 /// `(time-convert '(4 . 8) t)' is (4 . 8), and `time-add' keeps a common
@@ -1209,918 +1186,207 @@ pub(crate) fn exact_time_less(left: &ExactTimeValue, right: &ExactTimeValue) -> 
     left.ticks.clone() * &right.hz < right.ticks.clone() * &left.hz
 }
 
-fn posix_time_zone_from_value(value: &Value) -> Option<PosixTimeZone> {
-    string_text(value)
-        .ok()
-        .and_then(|text| parse_posix_tz(&text))
+/// timefns.c:invalid_time_zone_specification.
+fn invalid_time_zone_specification(zone: Value) -> LispError {
+    LispError::SignalValue(Value::list([
+        Value::symbol("error"),
+        Value::string("Invalid time zone specification"),
+        zone,
+    ]))
 }
 
-pub(crate) fn local_zone_spec(interp: &Interpreter, time: Option<&ExactTimeValue>) -> ZoneSpec {
-    if let Some(posix) = posix_time_zone_from_value(&interp.local_time_zone_rule)
-        && let Some(time) = time
-    {
-        return posix.zone_for_instant(time);
+/// timefns.c:tzlookup's zone string for an integer offset ZONE (and the
+/// abbreviation ABBR of a `(OFFSET ABBR)' list): "<+HH[MM[SS]]>-H:MM:SS",
+/// a POSIX TZ string for the fixed offset.
+fn offset_zone_string(offset: i64, abbr: Option<&str>) -> String {
+    let abszone = offset.unsigned_abs();
+    let hour = abszone / (60 * 60);
+    let hour_remainder = abszone % (60 * 60);
+    let (min, sec) = (hour_remainder / 60, hour_remainder % 60);
+    // The TZ string's offset is west of Greenwich, so its sign is
+    // opposite.
+    let trailing = format!(
+        "{}{hour}:{min:02}:{sec:02}",
+        if offset < 0 { "" } else { "-" }
+    );
+    match abbr {
+        Some(abbr) => format!("<{abbr}>{trailing}"),
+        None => {
+            let (mut prec, mut numzone) = (2usize, hour);
+            if hour_remainder != 0 {
+                prec += 2;
+                numzone = 100 * numzone + min;
+                if sec != 0 {
+                    prec += 2;
+                    numzone = 100 * numzone + sec;
+                }
+            }
+            // "%+.*d": the sign, and at least PREC digits.
+            let sign = if offset < 0 { '-' } else { '+' };
+            format!("<{sign}{numzone:0prec$}>{trailing}")
+        }
     }
-    if !local_time_zone_rule_is_wall(&interp.local_time_zone_rule)
-        && let Ok(zone) = explicit_zone_spec_from_value(&interp.local_time_zone_rule, time)
-    {
-        return zone;
-    }
-    system_wall_zone_spec(time)
 }
 
-fn system_wall_zone_spec(time: Option<&ExactTimeValue>) -> ZoneSpec {
-    let offset_seconds = time
-        .and_then(|value| {
-            let (whole_seconds, _) = time_floor_parts(value);
-            whole_seconds.to_i64()
+/// The local time zone rule as `set-time-zone-rule' and init_timefns
+/// record it: t for utc_tz, `wall' for TZ unset, else the TZ string.
+fn local_tz(interp: &Interpreter) -> TimeZone {
+    let rule = interp.local_time_zone_rule;
+    match rule.kind() {
+        Kind::T => TimeZone::Utc,
+        _ if rule.is_string() => TimeZone::Tz(Some(Rc::from(
+            string_text(&rule).unwrap_or_default().as_str(),
+        ))),
+        _ => TimeZone::Tz(None),
+    }
+}
+
+/// timefns.c:tzlookup (ZONE, false): ZONE as a timezone_t, nil being
+/// Emacs local time, t and 0 Universal Time (the null zone that gmtime
+/// serves), `wall' the system wall clock, a string a TZ setting, and an
+/// integer or `(OFFSET ABBR)' a fixed offset.
+pub(crate) fn tzlookup(interp: &Interpreter, zone: &Value) -> Result<TimeZone, LispError> {
+    if zone.is_nil() {
+        return Ok(local_tz(interp));
+    }
+    let zone = super::values::bare_symbol(interp, *zone);
+    match zone.kind() {
+        Kind::T | Kind::Integer(0) => Ok(TimeZone::Utc),
+        Kind::Symbol(symbol) if symbol == "wall" => Ok(TimeZone::Tz(None)),
+        _ if zone.is_string() => Ok(TimeZone::Tz(Some(Rc::from(string_text(&zone)?.as_str())))),
+        Kind::Integer(offset) => Ok(TimeZone::Tz(Some(Rc::from(
+            offset_zone_string(offset, None).as_str(),
+        )))),
+        Kind::Cons(cell)
+            if cell.car.get().fixnum().is_some() && cell.cdr.get().cons_ref().is_some() =>
+        {
+            let offset = cell.car.get().fixnum().unwrap_or_default();
+            let abbr = cell.cdr.get().cons_ref().map(|abbr| abbr.car.get());
+            let abbr = zone_abbreviation_text(interp, abbr.unwrap_or(Value::Nil))?;
+            Ok(TimeZone::Tz(Some(Rc::from(
+                offset_zone_string(offset, Some(&abbr)).as_str(),
+            ))))
+        }
+        _ => Err(invalid_time_zone_specification(zone)),
+    }
+}
+
+/// The text concat3 makes of a `(OFFSET ABBR)' zone's ABBR after
+/// ENCODE_SYSTEM: a string's own (encoding needs a string unless
+/// `locale-coding-system' is nil), else a sequence of characters.
+fn zone_abbreviation_text(interp: &Interpreter, abbr: Value) -> Result<String, LispError> {
+    if abbr.is_string() {
+        return string_text(&abbr);
+    }
+    let coding = interp
+        .lookup_var("locale-coding-system", &crate::lisp::types::Env::new())
+        .unwrap_or(Value::Nil);
+    if !coding.is_nil() {
+        return Err(LispError::WrongTypeArgument("stringp".into(), abbr));
+    }
+    let elements = match abbr.kind() {
+        Kind::Nil => Vec::new(),
+        Kind::Cons(_) => abbr.to_vec()?,
+        Kind::Vector(_) => vector_items(&abbr)?,
+        _ => return Err(LispError::WrongTypeArgument("sequencep".into(), abbr)),
+    };
+    elements
+        .iter()
+        .map(|element| {
+            element
+                .fixnum()
+                .and_then(|code| u32::try_from(code).ok())
+                .and_then(char::from_u32)
+                .ok_or_else(|| LispError::WrongTypeArgument("characterp".into(), *element))
         })
-        .and_then(|seconds| Local.timestamp_opt(seconds, 0).single())
-        .map(|datetime| datetime.offset().local_minus_utc())
-        .unwrap_or_else(|| Local::now().offset().local_minus_utc());
-    ZoneSpec {
-        offset_seconds,
-        abbreviation: format_numeric_zone_name(offset_seconds),
-        is_dst: false,
-    }
+        .collect()
 }
 
-pub(crate) fn local_zone_spec_for_civil(
-    interp: &Interpreter,
-    year: i32,
-    month: u32,
-    day: u32,
-    hour: u32,
-    minute: u32,
-    second: u32,
-) -> ZoneSpec {
-    if let Some(posix) = posix_time_zone_from_value(&interp.local_time_zone_rule) {
-        return posix.zone_for_civil(year, month, day, hour, minute, second);
+/// timefns.c:emacs_localtime_rz, failing as time_error does.
+fn emacs_localtime_rz(tz: &TimeZone, seconds: i64) -> Result<Tm, LispError> {
+    localtime_rz(tz, seconds).map_err(|_| time_overflow())
+}
+
+/// timefns.c:check_tm_member: OBJ less OFFSET as an int.
+fn check_tm_member(obj: &Value, offset: i32) -> Result<i32, LispError> {
+    let Some(n) = obj.fixnum() else {
+        return Err(LispError::WrongTypeArgument("fixnump".into(), *obj));
+    };
+    n.checked_sub(i64::from(offset))
+        .and_then(|i| i32::try_from(i).ok())
+        .ok_or_else(time_overflow)
+}
+
+/// A Lisp string's bytes as code_convert_string_norecord encodes it with
+/// `locale-coding-system' (nil: the string's own bytes).
+fn locale_encoded_bytes(
+    interp: &mut Interpreter,
+    string: &Value,
+    env: &mut Env,
+) -> Result<Vec<u8>, LispError> {
+    let coding = interp
+        .lookup_var("locale-coding-system", env)
+        .unwrap_or(Value::Nil);
+    let source = if coding.is_nil() {
+        *string
+    } else {
+        call(
+            interp,
+            "encode-coding-string",
+            &[*string, coding, Value::T],
+            env,
+        )?
+    };
+    Ok(match source.kind() {
+        Kind::StringObject(state) => state.borrow().bytes().to_vec(),
+        _ => string_text(&source)?.into_bytes(),
+    })
+}
+
+/// format_time_string's result: BYTES decoded with `locale-coding-system'
+/// (nil: no-conversion, whose ASCII text is a multibyte string and whose
+/// other text is the bytes themselves).
+fn locale_decoded_string(
+    interp: &mut Interpreter,
+    bytes: &[u8],
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let coding = interp
+        .lookup_var("locale-coding-system", env)
+        .unwrap_or(Value::Nil);
+    if bytes.is_ascii() {
+        return Ok(string_like_value_with_multibyte(
+            String::from_utf8_lossy(bytes).into_owned(),
+            Vec::new(),
+            true,
+        ));
     }
-    if !local_time_zone_rule_is_wall(&interp.local_time_zone_rule)
-        && let Ok(zone) = explicit_zone_spec_from_value(&interp.local_time_zone_rule, None)
-    {
-        return zone;
+    let raw = super::coding::bytes_to_unibyte_value(bytes);
+    if coding.is_nil() {
+        return Ok(raw);
     }
-    // A local civil time must be resolved with the offset that applied on
-    // that date, not today's offset.  Historical timezone changes can
-    // otherwise move midnight into the previous day when encode-time is
-    // followed by decode-time (icalendar's anniversary import does exactly
-    // that).  For an ambiguous or skipped wall time, use Chrono's earliest
-    // representable side; GNU likewise normalizes rather than substituting
-    // the current offset.
-    let local = chrono::NaiveDate::from_ymd_opt(year, month, day)
-        .and_then(|date| date.and_hms_opt(hour, minute, second))
-        .and_then(|civil| {
-            let resolved = Local.from_local_datetime(&civil);
-            resolved
-                .single()
-                .or_else(|| resolved.earliest())
-                .or_else(|| resolved.latest())
-        });
-    local.map_or_else(
-        || system_wall_zone_spec(None),
-        |datetime| ZoneSpec {
-            offset_seconds: datetime.offset().local_minus_utc(),
-            abbreviation: datetime.format("%Z").to_string(),
-            is_dst: false,
-        },
+    call(
+        interp,
+        "decode-coding-string",
+        &[raw, coding, Value::T],
+        env,
     )
 }
 
-pub(crate) fn normalize_decoded_civil_time(
-    year: i32,
-    month: i32,
-    day: i32,
-    hour: i32,
-    minute: i32,
-    second: i64,
-) -> Result<chrono::NaiveDateTime, LispError> {
-    let total_months = i64::from(year)
-        .checked_mul(12)
-        .and_then(|value| value.checked_add(i64::from(month) - 1))
-        .ok_or_else(|| LispError::Signal("Invalid decoded time".into()))?;
-    let normalized_year = total_months.div_euclid(12);
-    let normalized_month = total_months.rem_euclid(12) + 1;
-    let normalized_year = i32::try_from(normalized_year)
-        .map_err(|_| LispError::Signal("Invalid decoded time".into()))?;
-    let base_date = chrono::NaiveDate::from_ymd_opt(normalized_year, normalized_month as u32, 1)
-        .ok_or_else(|| LispError::Signal("Invalid decoded time".into()))?;
-    let base_time = base_date
-        .and_hms_opt(0, 0, 0)
-        .ok_or_else(|| LispError::Signal("Invalid decoded time".into()))?;
-    let day_offset = chrono::Duration::days(i64::from(day) - 1);
-    let second_offset = chrono::Duration::seconds(
-        i64::from(hour)
-            .checked_mul(3600)
-            .and_then(|value| value.checked_add(i64::from(minute) * 60))
-            .and_then(|value| value.checked_add(second))
-            .ok_or_else(|| LispError::Signal("Invalid decoded time".into()))?,
-    );
-    base_time
-        .checked_add_signed(day_offset)
-        .and_then(|value| value.checked_add_signed(second_offset))
-        .ok_or_else(|| LispError::Signal("Invalid decoded time".into()))
-}
-
-pub(crate) fn format_numeric_zone_name(offset_seconds: i32) -> String {
-    let sign = if offset_seconds < 0 { '-' } else { '+' };
-    let abs = offset_seconds.abs();
-    let hours = abs / 3600;
-    let minutes = (abs % 3600) / 60;
-    let seconds = abs % 60;
-    if seconds != 0 {
-        format!("{sign}{hours:02}{minutes:02}{seconds:02}")
-    } else if minutes != 0 {
-        format!("{sign}{hours:02}{minutes:02}")
-    } else {
-        format!("{sign}{hours:02}")
-    }
-}
-
-pub(crate) fn parse_posix_zone_string(value: &str) -> Option<ZoneSpec> {
-    let abbr_end = value
-        .char_indices()
-        .find_map(|(index, ch)| (!ch.is_ascii_alphabetic()).then_some(index))
-        .unwrap_or(value.len());
-    let abbreviation = value[..abbr_end].to_string();
-    if abbreviation.is_empty() {
-        return None;
-    }
-    let rest = &value[abbr_end..];
-    if rest.is_empty() {
-        return Some(ZoneSpec {
-            offset_seconds: 0,
-            abbreviation,
-            is_dst: false,
-        });
-    }
-    let (sign, digits) = match rest.chars().next() {
-        Some('+') | Some('-') => (rest.chars().next()?, &rest[1..]),
-        Some(_) => ('+', rest),
-        None => ('+', ""),
-    };
-    let mut parts = digits.split(':');
-    let hours = parts.next()?.parse::<i32>().ok()?;
-    let minutes = parts
-        .next()
-        .map_or(Some(0), |part| part.parse::<i32>().ok())?;
-    let seconds = parts
-        .next()
-        .map_or(Some(0), |part| part.parse::<i32>().ok())?;
-    if parts.next().is_some() {
-        return None;
-    }
-    let magnitude = hours * 3600 + minutes * 60 + seconds;
-    let offset_seconds = if sign == '-' { magnitude } else { -magnitude };
-    Some(ZoneSpec {
-        offset_seconds,
-        abbreviation,
-        is_dst: false,
-    })
-}
-
-pub(crate) fn parse_posix_abbr(input: &str) -> Option<(&str, &str)> {
-    let end = input
-        .char_indices()
-        .find_map(|(index, ch)| (!ch.is_ascii_alphabetic()).then_some(index))
-        .unwrap_or(input.len());
-    (end > 0).then_some((&input[..end], &input[end..]))
-}
-
-pub(crate) fn parse_posix_offset(input: &str) -> Option<(i32, &str)> {
-    let sign_len = usize::from(matches!(input.as_bytes().first(), Some(b'+') | Some(b'-')));
-    let digit_end = input[sign_len..]
-        .char_indices()
-        .find_map(|(index, ch)| (!ch.is_ascii_digit() && ch != ':').then_some(sign_len + index))
-        .unwrap_or(input.len());
-    if digit_end == sign_len {
-        return None;
-    }
-    let raw = &input[..digit_end];
-    let (sign, digits) = match raw.chars().next() {
-        Some('+') => (1, &raw[1..]),
-        Some('-') => (-1, &raw[1..]),
-        _ => (1, raw),
-    };
-    let mut parts = digits.split(':');
-    let hours = parts.next()?.parse::<i32>().ok()?;
-    let minutes = parts
-        .next()
-        .map_or(Some(0), |part| part.parse::<i32>().ok())?;
-    let seconds = parts
-        .next()
-        .map_or(Some(0), |part| part.parse::<i32>().ok())?;
-    if parts.next().is_some() {
-        return None;
-    }
-    let magnitude = hours * 3600 + minutes * 60 + seconds;
-    Some((-sign * magnitude, &input[digit_end..]))
-}
-
-pub(crate) fn parse_posix_rule(input: &str) -> Option<PosixTransitionRule> {
-    let input = input.strip_prefix('M')?;
-    let mut parts = input.splitn(2, '/');
-    let date = parts.next()?;
-    let seconds = parts
-        .next()
-        .and_then(parse_posix_offset)
-        .and_then(|(offset, rest)| rest.is_empty().then_some(offset.unsigned_abs()))
-        .unwrap_or(2 * 3600);
-    let mut date_parts = date.split('.');
-    let month = date_parts.next()?.parse::<u32>().ok()?;
-    let week = date_parts.next()?.parse::<u32>().ok()?;
-    let weekday = date_parts.next()?.parse::<u32>().ok()?;
-    if date_parts.next().is_some()
-        || !(1..=12).contains(&month)
-        || !(1..=5).contains(&week)
-        || weekday > 6
-        || seconds >= 24 * 3600
-    {
-        return None;
-    }
-    Some(PosixTransitionRule {
-        month,
-        week,
-        weekday,
-        seconds,
-    })
-}
-
-pub(crate) fn parse_posix_tz(value: &str) -> Option<PosixTimeZone> {
-    let (std_abbr, rest) = parse_posix_abbr(value)?;
-    let (std_offset, rest) = parse_posix_offset(rest)?;
-    let (dst_abbr, rest) = parse_posix_abbr(rest)?;
-    let (dst_offset, rest) = if let Some((offset, rest)) = parse_posix_offset(rest) {
-        (offset, rest)
-    } else {
-        (std_offset + 3600, rest)
-    };
-    let rest = rest.strip_prefix(',')?;
-    let (start, end) = rest.split_once(',')?;
-    Some(PosixTimeZone {
-        std_abbr: std_abbr.to_string(),
-        std_offset,
-        dst_abbr: dst_abbr.to_string(),
-        dst_offset,
-        start: parse_posix_rule(start)?,
-        end: parse_posix_rule(end)?,
-    })
-}
-
-pub(crate) fn transition_date(year: i32, rule: &PosixTransitionRule) -> Option<chrono::NaiveDate> {
-    let first = chrono::NaiveDate::from_ymd_opt(year, rule.month, 1)?;
-    let first_weekday = first.weekday().num_days_from_sunday();
-    let delta = (rule.weekday + 7 - first_weekday) % 7;
-    let day = if rule.week < 5 {
-        1 + delta + 7 * (rule.week - 1)
-    } else {
-        let (next_year, next_month) = if rule.month == 12 {
-            (year + 1, 1)
-        } else {
-            (year, rule.month + 1)
-        };
-        let next_month_first = chrono::NaiveDate::from_ymd_opt(next_year, next_month, 1)?;
-        let last = next_month_first.pred_opt()?;
-        let last_weekday = last.weekday().num_days_from_sunday();
-        last.day() - ((last_weekday + 7 - rule.weekday) % 7)
-    };
-    chrono::NaiveDate::from_ymd_opt(year, rule.month, day)
-}
-
-pub(crate) fn transition_utc_timestamp(
-    year: i32,
-    rule: &PosixTransitionRule,
-    offset_before: i32,
-) -> Option<i64> {
-    let date = transition_date(year, rule)?;
-    let local = date.and_hms_opt(
-        rule.seconds / 3600,
-        (rule.seconds % 3600) / 60,
-        rule.seconds % 60,
-    )?;
-    Some(local.and_utc().timestamp() - i64::from(offset_before))
-}
-
-impl PosixTimeZone {
-    fn zone_for_instant(&self, time: &ExactTimeValue) -> ZoneSpec {
-        let (whole_seconds, _) = time_floor_parts(time);
-        let seconds = whole_seconds.to_i64().unwrap_or(0);
-        let utc = Utc
-            .timestamp_opt(seconds, 0)
-            .single()
-            .unwrap_or_else(Utc::now);
-        let year = utc.year();
-        let start = transition_utc_timestamp(year, &self.start, self.std_offset);
-        let end = transition_utc_timestamp(year, &self.end, self.dst_offset);
-        let is_dst = match (start, end) {
-            (Some(start), Some(end)) if start <= end => seconds >= start && seconds < end,
-            (Some(start), Some(end)) => seconds >= start || seconds < end,
-            _ => false,
-        };
-        self.zone(is_dst)
-    }
-
-    fn zone_for_civil(
-        &self,
-        year: i32,
-        month: u32,
-        day: u32,
-        hour: u32,
-        minute: u32,
-        second: u32,
-    ) -> ZoneSpec {
-        let Some(local) = chrono::NaiveDate::from_ymd_opt(year, month, day)
-            .and_then(|date| date.and_hms_opt(hour, minute, second))
-        else {
-            return self.zone(false);
-        };
-        let std_seconds = local.and_utc().timestamp() - i64::from(self.std_offset);
-        let time = ExactTimeValue {
-            ticks: BigInt::from(std_seconds),
-            hz: BigInt::from(1u8),
-        };
-        self.zone_for_instant(&time)
-    }
-
-    fn zone(&self, is_dst: bool) -> ZoneSpec {
-        if is_dst {
-            ZoneSpec {
-                offset_seconds: self.dst_offset,
-                abbreviation: self.dst_abbr.clone(),
-                is_dst: true,
-            }
-        } else {
-            ZoneSpec {
-                offset_seconds: self.std_offset,
-                abbreviation: self.std_abbr.clone(),
-                is_dst: false,
-            }
-        }
-    }
-}
-
-fn local_time_zone_rule_is_wall(rule: &Value) -> bool {
-    rule.is_nil() || matches!(rule.kind(), Kind::Symbol(symbol) if symbol == "wall")
-}
-
-pub(crate) fn zone_spec_from_value(
-    interp: &Interpreter,
+/// timefns.c:format_time_string: FORMAT's bytes formatted for the
+/// timespec SECONDS, NANOSECONDS in ZONE, and the broken-down time.
+fn format_time_string(
+    interp: &mut Interpreter,
+    format: &[u8],
+    seconds: i64,
+    nanoseconds: u32,
     zone: &Value,
-    time: Option<&ExactTimeValue>,
-) -> Result<ZoneSpec, LispError> {
-    match zone.kind() {
-        Kind::Nil => Ok(local_zone_spec(interp, time)),
-        Kind::Symbol(symbol) if symbol == "-" => Ok(local_zone_spec(interp, time)),
-        _ => explicit_zone_spec_from_value(zone, time),
-    }
-}
-
-fn explicit_zone_spec_from_value(
-    zone: &Value,
-    time: Option<&ExactTimeValue>,
-) -> Result<ZoneSpec, LispError> {
-    match zone.kind() {
-        Kind::T => Ok(ZoneSpec {
-            offset_seconds: 0,
-            abbreviation: "UTC".into(),
-            is_dst: false,
-        }),
-        Kind::Integer(value) => Ok(ZoneSpec {
-            offset_seconds: value as i32,
-            abbreviation: format_numeric_zone_name(value as i32),
-            is_dst: false,
-        }),
-        Kind::BigInteger(value) => {
-            let offset = value
-                .to_i32()
-                .ok_or_else(|| LispError::WrongTypeArgument("integerp".into(), *zone))?;
-            Ok(ZoneSpec {
-                offset_seconds: offset,
-                abbreviation: format_numeric_zone_name(offset),
-                is_dst: false,
-            })
-        }
-        _ if zone.is_string() => {
-            let text = string_text(zone)?;
-            if let Some(posix) = parse_posix_tz(&text)
-                && let Some(time) = time
-            {
-                return Ok(posix.zone_for_instant(time));
-            }
-            Ok(parse_posix_zone_string(&text).unwrap_or(ZoneSpec {
-                offset_seconds: 0,
-                abbreviation: "UTC".into(),
-                is_dst: false,
-            }))
-        }
-        Kind::Cons(_) => {
-            let items = zone.to_vec()?;
-            if items.is_empty() {
-                return Err(LispError::TypeError("time-zone".into(), zone.type_name()));
-            }
-            let offset = match items[0].kind() {
-                Kind::Integer(value) => value as i32,
-                Kind::BigInteger(value) => value
-                    .to_i32()
-                    .ok_or_else(|| LispError::WrongTypeArgument("integerp".into(), items[0]))?,
-                _ => {
-                    return Err(LispError::WrongTypeArgument("integerp".into(), items[0]));
-                }
-            };
-            let abbreviation = items
-                .get(1)
-                .and_then(|value| string_text(value).ok())
-                .unwrap_or_else(|| format_numeric_zone_name(offset));
-            Ok(ZoneSpec {
-                offset_seconds: offset,
-                abbreviation,
-                is_dst: false,
-            })
-        }
-        _ => Err(LispError::TypeError("time-zone".into(), zone.type_name())),
-    }
-}
-
-pub(crate) fn zone_offset(zone: &ZoneSpec) -> Result<FixedOffset, LispError> {
-    FixedOffset::east_opt(zone.offset_seconds)
-        .ok_or_else(|| LispError::Signal("Invalid time zone".into()))
-}
-
-pub(crate) fn time_local_datetime(
-    time: &ExactTimeValue,
-    zone: &ZoneSpec,
-) -> Result<(chrono::DateTime<FixedOffset>, BigInt), LispError> {
-    let (whole_seconds, fractional_ticks) = time_floor_parts(time);
-    let whole_seconds = whole_seconds.to_i64().ok_or_else(time_overflow)?;
-    let offset = zone_offset(zone)?;
-    let utc = Utc
-        .timestamp_opt(whole_seconds, 0)
-        .single()
-        .ok_or_else(time_overflow)?;
-    Ok((utc.with_timezone(&offset), fractional_ticks))
-}
-
-pub(crate) fn fraction_picoseconds(time: &ExactTimeValue) -> BigInt {
-    let (_, fractional_ticks) = time_floor_parts(time);
-    (&fractional_ticks * BigInt::from(1_000_000_000_000u64)) / &time.hz
-}
-
-pub(crate) fn format_fraction_digits(picoseconds: &BigInt, width: usize) -> String {
-    let base = format!("{:012}", picoseconds.to_u64().unwrap_or(0));
-    if width <= 12 {
-        base[..width].to_string()
-    } else {
-        format!("{base}{}", "0".repeat(width - 12))
-    }
-}
-
-pub(crate) fn trim_trailing_zeros(text: &str) -> String {
-    let trimmed = text.trim_end_matches('0');
-    if trimmed.is_empty() {
-        "0".into()
-    } else {
-        trimmed.into()
-    }
-}
-
-pub(crate) fn strip_leading_zeros(text: &str) -> String {
-    let trimmed = text.trim_start_matches('0');
-    if trimmed.is_empty() {
-        "0".into()
-    } else {
-        trimmed.into()
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct TimeFormatSpec {
-    minimal: bool,
-    pad: Option<char>,
-    colons: usize,
-    width: Option<usize>,
-    uppercase: bool,
-    opposite_case: bool,
-    force_sign: bool,
-    modifier: Option<char>,
-    conversion: char,
-}
-
-pub(crate) fn parse_time_format_spec(spec: &[char], index: &mut usize) -> TimeFormatSpec {
-    let mut minimal = false;
-    let mut pad = None;
-    let mut colons = 0usize;
-    let mut uppercase = false;
-    let mut opposite_case = false;
-    let mut force_sign = false;
-    while *index < spec.len() {
-        match spec[*index] {
-            '-' => {
-                minimal = true;
-                *index += 1;
-            }
-            '_' => {
-                pad = Some(' ');
-                *index += 1;
-            }
-            '0' => {
-                pad = Some('0');
-                *index += 1;
-            }
-            '+' => {
-                force_sign = true;
-                *index += 1;
-            }
-            '^' => {
-                uppercase = true;
-                *index += 1;
-            }
-            '#' => {
-                opposite_case = true;
-                *index += 1;
-            }
-            ':' => {
-                colons += 1;
-                *index += 1;
-            }
-            _ => break,
-        }
-    }
-    let width_start = *index;
-    while *index < spec.len() && spec[*index].is_ascii_digit() {
-        *index += 1;
-    }
-    let width = if *index > width_start {
-        spec[width_start..*index]
-            .iter()
-            .collect::<String>()
-            .parse::<usize>()
-            .ok()
-    } else {
-        None
-    };
-    let modifier = spec
-        .get(*index)
-        .copied()
-        .filter(|ch| matches!(ch, 'E' | 'O'));
-    if modifier.is_some() {
-        *index += 1;
-    }
-    let conversion = spec.get(*index).copied().unwrap_or('%');
-    TimeFormatSpec {
-        minimal,
-        pad,
-        colons,
-        width,
-        uppercase,
-        opposite_case,
-        force_sign,
-        modifier,
-        conversion,
-    }
-}
-
-fn pad_time_field(mut field: String, width: usize, pad: char) -> String {
-    if field.len() >= width {
-        return field;
-    }
-    let padding = width - field.len();
-    if pad == '0' && matches!(field.as_bytes().first(), Some(b'+' | b'-')) {
-        let sign = field.remove(0);
-        format!("{sign}{}{field}", "0".repeat(padding))
-    } else {
-        format!("{}{field}", pad.to_string().repeat(padding))
-    }
-}
-
-fn numeric_time_field(
-    value: i64,
-    default_width: usize,
-    default_pad: char,
-    spec: TimeFormatSpec,
-) -> String {
-    let field = value.to_string();
-    if spec.minimal {
-        field
-    } else {
-        pad_time_field(
-            field,
-            spec.width.unwrap_or(default_width),
-            spec.pad.unwrap_or(default_pad),
-        )
-    }
-}
-
-fn year_time_field(year: i32, spec: TimeFormatSpec) -> String {
-    let field = if spec.force_sign && year > 9_999 {
-        format!("+{year}")
-    } else {
-        year.to_string()
-    };
-    if spec.minimal {
-        field
-    } else {
-        pad_time_field(field, spec.width.unwrap_or(4), spec.pad.unwrap_or('0'))
-    }
-}
-
-fn present_time_field(mut field: String, spec: TimeFormatSpec) -> String {
-    if spec.uppercase {
-        field = field.to_uppercase();
-    } else if spec.opposite_case {
-        field = if field.chars().any(char::is_lowercase) {
-            field.to_uppercase()
-        } else {
-            field.to_lowercase()
-        };
-    }
-    if !spec.minimal
-        && let Some(width) = spec.width
-    {
-        field = pad_time_field(field, width, spec.pad.unwrap_or(' '));
-    }
-    field
-}
-
-pub(crate) fn format_zone_offset(
-    offset_seconds: i32,
-    colons: usize,
-    minimal: bool,
-    pad: char,
-    width: Option<usize>,
-) -> String {
-    let sign = if offset_seconds < 0 { '-' } else { '+' };
-    let abs = offset_seconds.abs();
-    let hours = abs / 3600;
-    let minutes = (abs % 3600) / 60;
-    let seconds = abs % 60;
-    let canonical_digits = if seconds != 0 {
-        format!("{hours:02}{minutes:02}{seconds:02}")
-    } else {
-        format!("{hours:02}{minutes:02}")
-    };
-    let minimal_digits = strip_leading_zeros(&canonical_digits);
-    let mut rendered = if colons == 1 {
-        format!("{sign}{hours:02}:{minutes:02}")
-    } else if colons == 2 {
-        format!("{sign}{hours:02}:{minutes:02}:{seconds:02}")
-    } else if colons == 3 {
-        let body = if seconds != 0 {
-            format!("{hours:02}:{minutes:02}:{seconds:02}")
-        } else if minutes != 0 {
-            format!("{hours:02}:{minutes:02}")
-        } else {
-            format!("{hours:02}")
-        };
-        format!("{sign}{body}")
-    } else {
-        let use_minimal =
-            minimal || width.is_some_and(|target| target < canonical_digits.len() + 1);
-        format!(
-            "{sign}{}",
-            if use_minimal {
-                minimal_digits
-            } else {
-                canonical_digits
-            }
-        )
-    };
-    if let Some(target_width) = width
-        && rendered.len() < target_width
-    {
-        let padding = target_width - rendered.len();
-        rendered = if pad == ' ' {
-            format!("{}{}", " ".repeat(padding), rendered)
-        } else if colons == 0 {
-            format!("{sign}{}{}", "0".repeat(padding), &rendered[1..])
-        } else {
-            format!("{}{}", "0".repeat(padding), rendered)
-        };
-    }
-    rendered
-}
-
-pub(crate) fn weekday_name(datetime: &chrono::DateTime<FixedOffset>, abbrev: bool) -> String {
-    let names = [
-        "Sunday",
-        "Monday",
-        "Tuesday",
-        "Wednesday",
-        "Thursday",
-        "Friday",
-        "Saturday",
-    ];
-    let n = chrono::Datelike::weekday(datetime).num_days_from_sunday() as usize;
-    if abbrev {
-        names[n][..3].to_string()
-    } else {
-        names[n].to_string()
-    }
-}
-
-pub(crate) fn month_name(datetime: &chrono::DateTime<FixedOffset>, abbrev: bool) -> String {
-    let names = [
-        "January",
-        "February",
-        "March",
-        "April",
-        "May",
-        "June",
-        "July",
-        "August",
-        "September",
-        "October",
-        "November",
-        "December",
-    ];
-    let n = (chrono::Datelike::month(datetime) as usize) - 1;
-    if abbrev {
-        names[n][..3].to_string()
-    } else {
-        names[n].to_string()
-    }
-}
-
-pub(crate) fn twelve_hour(hour: u32) -> u32 {
-    let h = hour % 12;
-    if h == 0 { 12 } else { h }
-}
-
-pub(crate) fn format_time_string_value(
-    interp: &Interpreter,
-    format: &str,
-    time: &ExactTimeValue,
-    zone: &ZoneSpec,
-) -> Result<String, LispError> {
-    let _ = interp;
-    let (datetime, _) = time_local_datetime(time, zone)?;
-    let picoseconds = fraction_picoseconds(time);
-    let chars = format.chars().collect::<Vec<_>>();
-    let mut result = String::new();
-    let mut index = 0usize;
-    while index < chars.len() {
-        if chars[index] != '%' {
-            result.push(chars[index]);
-            index += 1;
-            continue;
-        }
-        let format_start = index;
-        index += 1;
-        if index >= chars.len() {
-            break;
-        }
-        if chars[index] == '%' {
-            result.push('%');
-            index += 1;
-            continue;
-        }
-        let spec = parse_time_format_spec(&chars, &mut index);
-        if index >= chars.len() {
-            result.extend(chars[format_start..].iter());
-            break;
-        }
-        // Alternative locale representations collapse to the ordinary C
-        // locale representation used by the compatibility harness.  Parsing
-        // the modifier is nevertheless essential so E/O are not mistaken
-        // for conversion characters.
-        let _modifier = spec.modifier;
-        let field = match spec.conversion {
-            'Y' => year_time_field(datetime.year(), spec),
-            'G' => year_time_field(datetime.iso_week().year(), spec),
-            'g' => numeric_time_field(
-                datetime.iso_week().year().rem_euclid(100) as i64,
-                2,
-                '0',
-                spec,
-            ),
-            'F' => format!(
-                "{:04}-{:02}-{:02}",
-                datetime.year(),
-                datetime.month(),
-                datetime.day()
-            ),
-            'm' => numeric_time_field(datetime.month() as i64, 2, '0', spec),
-            'd' => numeric_time_field(datetime.day() as i64, 2, '0', spec),
-            'e' => numeric_time_field(datetime.day() as i64, 2, ' ', spec),
-            'a' => weekday_name(&datetime, true),
-            'A' => weekday_name(&datetime, false),
-            'b' | 'h' => month_name(&datetime, true),
-            'B' => month_name(&datetime, false),
-            'y' => numeric_time_field(datetime.year().rem_euclid(100) as i64, 2, '0', spec),
-            'C' => numeric_time_field(datetime.year().div_euclid(100) as i64, 2, '0', spec),
-            'j' => numeric_time_field(chrono::Datelike::ordinal(&datetime) as i64, 3, '0', spec),
-            'u' => {
-                let n = chrono::Datelike::weekday(&datetime).num_days_from_sunday();
-                numeric_time_field(if n == 0 { 7 } else { n } as i64, 1, '0', spec)
-            }
-            'w' => numeric_time_field(
-                chrono::Datelike::weekday(&datetime).num_days_from_sunday() as i64,
-                1,
-                '0',
-                spec,
-            ),
-            'U' => {
-                let week =
-                    (datetime.ordinal0() + 7 - datetime.weekday().num_days_from_sunday()) / 7;
-                numeric_time_field(week as i64, 2, '0', spec)
-            }
-            'W' => {
-                let week =
-                    (datetime.ordinal0() + 7 - datetime.weekday().num_days_from_monday()) / 7;
-                numeric_time_field(week as i64, 2, '0', spec)
-            }
-            'V' => numeric_time_field(datetime.iso_week().week() as i64, 2, '0', spec),
-            'q' => numeric_time_field(((datetime.month() - 1) / 3 + 1) as i64, 1, '0', spec),
-            'D' => format!(
-                "{:02}/{:02}/{:02}",
-                datetime.month(),
-                datetime.day(),
-                datetime.year().rem_euclid(100)
-            ),
-            'x' => format!(
-                "{:02}/{:02}/{:02}",
-                datetime.month(),
-                datetime.day(),
-                datetime.year().rem_euclid(100)
-            ),
-            'X' => format!(
-                "{:02}:{:02}:{:02}",
-                datetime.hour(),
-                datetime.minute(),
-                datetime.second()
-            ),
-            'R' => format!("{:02}:{:02}", datetime.hour(), datetime.minute()),
-            'I' => numeric_time_field(twelve_hour(datetime.hour()) as i64, 2, '0', spec),
-            'l' => numeric_time_field(twelve_hour(datetime.hour()) as i64, 2, ' ', spec),
-            'p' => if datetime.hour() < 12 { "AM" } else { "PM" }.to_string(),
-            'P' => if datetime.hour() < 12 { "am" } else { "pm" }.to_string(),
-            'r' => format!(
-                "{:02}:{:02}:{:02} {}",
-                twelve_hour(datetime.hour()),
-                datetime.minute(),
-                datetime.second(),
-                if datetime.hour() < 12 { "AM" } else { "PM" }
-            ),
-            'c' => format!(
-                "{} {} {:2} {:02}:{:02}:{:02} {}",
-                weekday_name(&datetime, true),
-                month_name(&datetime, true),
-                datetime.day(),
-                datetime.hour(),
-                datetime.minute(),
-                datetime.second(),
-                datetime.year()
-            ),
-            's' => {
-                let (whole_seconds, _) = time_floor_parts(time);
-                whole_seconds.to_string()
-            }
-            'n' => "\n".to_string(),
-            't' => "\t".to_string(),
-            'H' => numeric_time_field(datetime.hour() as i64, 2, '0', spec),
-            'k' => numeric_time_field(datetime.hour() as i64, 2, ' ', spec),
-            'M' => numeric_time_field(datetime.minute() as i64, 2, '0', spec),
-            'S' => numeric_time_field(datetime.second() as i64, 2, '0', spec),
-            'T' => format!(
-                "{:02}:{:02}:{:02}",
-                datetime.hour(),
-                datetime.minute(),
-                datetime.second()
-            ),
-            'Z' => zone.abbreviation.clone(),
-            'z' => format_zone_offset(
-                zone.offset_seconds,
-                spec.colons,
-                spec.minimal,
-                spec.pad.unwrap_or('0'),
-                spec.width,
-            ),
-            'N' => {
-                let width = spec.width.unwrap_or(9);
-                let digits = format_fraction_digits(&picoseconds, width);
-                if spec.minimal {
-                    trim_trailing_zeros(&digits)
-                } else if spec.pad == Some(' ') {
-                    let trimmed = trim_trailing_zeros(&digits);
-                    format!(
-                        "{}{}",
-                        trimmed,
-                        " ".repeat(width.saturating_sub(trimmed.len()))
-                    )
-                } else {
-                    digits
-                }
-            }
-            _ => {
-                result.extend(chars[format_start..=index].iter());
-                index += 1;
-                continue;
-            }
-        };
-        result.push_str(&present_time_field(field, spec));
-        index += 1;
-    }
-    Ok(result)
+    env: &mut Env,
+) -> Result<(Value, Tm), LispError> {
+    let tz = tzlookup(interp, zone)?;
+    let tm = emacs_localtime_rz(&tz, seconds)?;
+    let bytes = super::strftime::nmemftime(format, &tm, &tz, nanoseconds as i32);
+    Ok((locale_decoded_string(interp, &bytes, env)?, tm))
 }
 
 /// Fdecode_time's list for TIME (whose timespec's seconds are SECONDS)
@@ -2128,50 +1394,106 @@ pub(crate) fn format_time_string_value(
 /// 1, when it is (TICKS . HZ) with TICKS = HZ * SEC + mod (TIME's ticks,
 /// HZ).
 pub(crate) fn decode_time_value(
+    interp: &Interpreter,
     time: &ExactTimeValue,
     seconds: i64,
-    zone: &ZoneSpec,
+    zone: &Value,
     form: &Value,
 ) -> Result<Value, LispError> {
-    let whole = ExactTimeValue {
-        ticks: BigInt::from(seconds),
-        hz: BigInt::from(1u8),
-    };
-    let (datetime, _) = time_local_datetime(&whole, zone)?;
+    let tz = tzlookup(interp, zone)?;
+    let tm = emacs_localtime_rz(&tz, seconds)?;
     let second_field = if time.hz == BigInt::from(1u8) || !matches!(form.kind(), Kind::T) {
-        Value::Integer(i64::from(datetime.second()))
+        Value::Integer(i64::from(tm.sec))
     } else {
         let (_, fractional_ticks) = time_floor_parts(time);
         Value::cons(
-            normalize_bigint_value(BigInt::from(datetime.second()) * &time.hz + fractional_ticks),
+            normalize_bigint_value(BigInt::from(tm.sec) * &time.hz + fractional_ticks),
             normalize_bigint_value(time.hz.clone()),
         )
     };
     Ok(Value::list([
         second_field,
-        Value::Integer(datetime.minute() as i64),
-        Value::Integer(datetime.hour() as i64),
-        Value::Integer(datetime.day() as i64),
-        Value::Integer(datetime.month() as i64),
-        Value::Integer(datetime.year() as i64),
-        Value::Integer(datetime.weekday().num_days_from_sunday() as i64),
-        if zone.is_dst { Value::T } else { Value::Nil },
-        Value::Integer(zone.offset_seconds as i64),
+        Value::Integer(i64::from(tm.min)),
+        Value::Integer(i64::from(tm.hour)),
+        Value::Integer(i64::from(tm.mday)),
+        Value::Integer(i64::from(tm.mon) + 1),
+        Value::Integer(i64::from(tm.year) + 1900),
+        Value::Integer(i64::from(tm.wday)),
+        match tm.isdst {
+            isdst if isdst < 0 => Value::Integer(-1),
+            0 => Value::Nil,
+            _ => Value::T,
+        },
+        Value::Integer(tm.gmtoff),
     ]))
 }
 
-pub(crate) fn integer_field(interp: &Interpreter, value: &Value) -> Result<i32, LispError> {
-    integer_like_bigint(interp, value)?
-        .to_i32()
-        .ok_or_else(|| LispError::WrongTypeArgument("integerp".into(), *value))
-}
-
-pub(crate) fn value_is_unspecified(value: Option<&Value>) -> bool {
-    match value.map(|v| v.kind()) {
-        None | Some(Kind::Nil) => true,
-        Some(Kind::Symbol(symbol)) if symbol == "-" => true,
-        _ => false,
+/// timefns.c:Fencode_time: (encode-time TIME) with TIME a list (SEC MINUTE
+/// HOUR DAY MONTH YEAR [IGNORED DST ZONE]), or the obsolescent (encode-time
+/// SEC MINUTE HOUR DAY MONTH YEAR [... ZONE]).  SEC is any time value;
+/// mktime_z normalizes out-of-range fields.
+fn encode_time(interp: &Interpreter, args: &[Value]) -> Result<Value, LispError> {
+    let mut zone = Value::Nil;
+    let mut isdst = -1;
+    let consp = |tail: Value| LispError::WrongTypeArgument("consp".into(), tail);
+    let fields: [Value; 6] = if let [time] = args {
+        let mut tail = *time;
+        let mut fields = [Value::Nil; 6];
+        for field in &mut fields {
+            let cell = tail.cons_ref().ok_or_else(|| consp(tail))?;
+            *field = cell.car.get();
+            tail = cell.cdr.get();
+        }
+        if !tail.is_nil() {
+            // The ignored day of the week, then DST and ZONE.
+            tail = tail.cons_ref().ok_or_else(|| consp(tail))?.cdr.get();
+            let cell = tail.cons_ref().ok_or_else(|| consp(tail))?;
+            let dstflag = cell.car.get();
+            tail = cell.cdr.get();
+            zone = tail.cons_ref().ok_or_else(|| consp(tail))?.car.get();
+            if dstflag.is_symbol() && zone.fixnum().is_none() && zone.cons_ref().is_none() {
+                isdst = i32::from(!dstflag.is_nil());
+            }
+        }
+        fields
+    } else if args.len() < 6 {
+        return Err(LispError::WrongNumberOfArgs(
+            "encode-time".into(),
+            args.len(),
+        ));
+    } else {
+        if args.len() > 6 {
+            zone = args[args.len() - 1];
+        }
+        [args[0], args[1], args[2], args[3], args[4], args[5]]
+    };
+    // SEC = floor (TICKS / HZ), with SUBSECTICKS the remainder.
+    let seconds = lisp_time_struct(&fields[0])?;
+    let (sec, subsecticks) = floor_div_mod(&seconds.ticks, &seconds.hz);
+    let mut tm = Tm {
+        sec: check_tm_member(&normalize_bigint_value(sec), 0)?,
+        min: check_tm_member(&fields[1], 0)?,
+        hour: check_tm_member(&fields[2], 0)?,
+        mday: check_tm_member(&fields[3], 0)?,
+        mon: check_tm_member(&fields[4], 1)?,
+        year: check_tm_member(&fields[5], 1900)?,
+        isdst,
+        wday: -1,
+        ..Tm::default()
+    };
+    let tz = tzlookup(interp, &zone)?;
+    let value = mktime_z(&tz, &mut tm).map_err(|_| time_overflow())?;
+    if seconds.hz == BigInt::from(1u8) {
+        return Ok(if current_time_list_is_set(interp) {
+            Value::list([Value::Integer(value >> 16), Value::Integer(value & 0xffff)])
+        } else {
+            Value::Integer(value)
+        });
     }
+    Ok(exact_time_to_tick_pair(&ExactTimeValue {
+        ticks: BigInt::from(value) * &seconds.hz + subsecticks,
+        hz: seconds.hz,
+    }))
 }
 
 /// timefns.c's `current_time_list': the DEFVAR_BOOL that chooses the
@@ -2366,15 +1688,17 @@ define_dispatch!(
         match name {
             "set-time-zone-rule" => {
                 need_args(name, args, 1)?;
-                let rule = if args[0].is_nil() {
-                    Value::Symbol("wall".into())
+                // Fset_time_zone_rule: tzlookup (nil means `wall', SETTZ).
+                let zone = if args[0].is_nil() {
+                    Value::symbol("wall")
                 } else {
                     args[0]
                 };
-                if !local_time_zone_rule_is_wall(&rule) {
-                    let _ = explicit_zone_spec_from_value(&rule, Some(&current_time_value()?))?;
-                }
-                interp.local_time_zone_rule = rule;
+                interp.local_time_zone_rule = match tzlookup(interp, &zone)? {
+                    TimeZone::Utc => Value::T,
+                    TimeZone::Tz(None) => Value::symbol("wall"),
+                    TimeZone::Tz(Some(tz)) => Value::String((*tz).into()),
+                };
                 Ok(Value::Nil)
             }
             "current-time" => {
@@ -2397,22 +1721,24 @@ define_dispatch!(
                 // Fcurrent_time_string: the whole seconds alone, in ctime's
                 // layout without its newline or its four-digit year limit.
                 let seconds = lisp_seconds_argument(args.first().unwrap_or(&Value::Nil))?;
-                let time = ExactTimeValue {
-                    ticks: BigInt::from(seconds),
-                    hz: BigInt::from(1u8),
-                };
-                let zone =
-                    zone_spec_from_value(interp, args.get(1).unwrap_or(&Value::Nil), Some(&time))?;
-                let (datetime, _) = time_local_datetime(&time, &zone)?;
-                Ok(string_like_value_with_multibyte(
-                    format!(
-                        "{} {}",
-                        datetime.format("%a %b %e %H:%M:%S"),
-                        datetime.year()
-                    ),
-                    Vec::new(),
-                    false,
-                ))
+                let tz = tzlookup(interp, args.get(1).unwrap_or(&Value::Nil))?;
+                let tm = emacs_localtime_rz(&tz, seconds)?;
+                const WDAY_NAME: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+                const MON_NAME: [&str; 12] = [
+                    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov",
+                    "Dec",
+                ];
+                let text = format!(
+                    "{} {}{:3} {:02}:{:02}:{:02} {}",
+                    WDAY_NAME[tm.wday as usize],
+                    MON_NAME[tm.mon as usize],
+                    tm.mday,
+                    tm.hour,
+                    tm.min,
+                    tm.sec,
+                    i64::from(tm.year) + 1900
+                );
+                Ok(super::coding::bytes_to_unibyte_value(text.as_bytes()))
             }
             "time-add" | "time-subtract" => {
                 need_args(name, args, 2)?;
@@ -2523,121 +1849,86 @@ define_dispatch!(
                 need_arg_range(name, args, 0, 3)?;
                 let time = lisp_time_struct(args.first().unwrap_or(&Value::Nil))?;
                 let (seconds, _) = lisp_to_timespec(&time).ok_or_else(time_overflow)?;
-                let zone =
-                    zone_spec_from_value(interp, args.get(1).unwrap_or(&Value::Nil), Some(&time))?;
                 let form = args.get(2).unwrap_or(&Value::Nil);
-                decode_time_value(&time, seconds, &zone, form)
+                decode_time_value(
+                    interp,
+                    &time,
+                    seconds,
+                    args.get(1).unwrap_or(&Value::Nil),
+                    form,
+                )
             }
             "encode-time" => {
-                need_arg_range(name, args, 1, 9)?;
-                let list_form = args.len() == 1;
-                let fields = if list_form {
-                    args[0].to_vec()?
-                } else {
-                    args.to_vec()
-                };
-                if fields.len() < 6 || fields.len() > 9 {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), fields.len()));
+                if args.is_empty() {
+                    return Err(LispError::WrongNumberOfArgs(name.into(), 0));
                 }
-                // Fencode_time: SEC is any time value (nil the clock).
-                let seconds = lisp_time_struct(&fields[0])?;
-                let (whole_seconds, fractional_ticks) = time_floor_parts(&seconds);
-                let second = whole_seconds
-                    .to_i64()
-                    .ok_or_else(|| LispError::Signal("Invalid decoded time".into()))?;
-                if !(0..=59).contains(&second) {
-                    return Err(LispError::Signal("Invalid decoded time".into()));
-                }
-                let minute = integer_field(interp, &fields[1])?;
-                let hour = integer_field(interp, &fields[2])?;
-                let day = integer_field(interp, &fields[3])?;
-                let month = integer_field(interp, &fields[4])?;
-                let year = integer_field(interp, &fields[5])?;
-                let time = normalize_decoded_civil_time(year, month, day, hour, minute, second)?;
-                let zone_value = if list_form {
-                    fields.get(8)
-                } else {
-                    fields.get(6..).and_then(|extra| extra.last())
-                };
-                let zone = if value_is_unspecified(zone_value) {
-                    local_zone_spec_for_civil(
-                        interp,
-                        time.year(),
-                        time.month(),
-                        time.day(),
-                        time.hour(),
-                        time.minute(),
-                        time.second(),
-                    )
-                } else if let Some(zone_text) = zone_value.filter(|value| value.is_string()) {
-                    let text = string_text(zone_text)?;
-                    if let Some(posix) = parse_posix_tz(&text) {
-                        posix.zone_for_civil(
-                            time.year(),
-                            time.month(),
-                            time.day(),
-                            time.hour(),
-                            time.minute(),
-                            time.second(),
-                        )
-                    } else {
-                        zone_spec_from_value(interp, zone_text, None)?
-                    }
-                } else {
-                    zone_spec_from_value(interp, zone_value.unwrap_or(&Value::Nil), None)?
-                };
-                let offset = zone_offset(&zone)?;
-                let local = offset
-                    .from_local_datetime(&time)
-                    .single()
-                    .ok_or_else(|| LispError::Signal("Invalid decoded time".into()))?;
-                // An integer clock gives (HI LO) under `current-time-list'
-                // and the integer otherwise; any other gives (TICKS . HZ).
-                if seconds.hz == BigInt::from(1u8) {
-                    let value = local.timestamp();
-                    return Ok(if current_time_list_is_set(interp) {
-                        Value::list([Value::Integer(value >> 16), Value::Integer(value & 0xffff)])
-                    } else {
-                        Value::Integer(value)
-                    });
-                }
-                Ok(exact_time_to_tick_pair(&ExactTimeValue {
-                    ticks: BigInt::from(local.timestamp()) * &seconds.hz + fractional_ticks,
-                    hz: seconds.hz,
-                }))
+                encode_time(interp, args)
             }
             "format-time-string" => {
                 need_arg_range(name, args, 1, 3)?;
-                let format = string_text(&args[0])?;
-                // Fformat_time_string formats the timespec: the time floored
-                // to whole nanoseconds.
+                // Fformat_time_string decodes TIME before checking FORMAT.
                 let (seconds, nanoseconds) =
                     lisp_time_argument(args.get(1).unwrap_or(&Value::Nil))?;
-                let time = ExactTimeValue::from_timespec(seconds, nanoseconds);
-                let zone =
-                    zone_spec_from_value(interp, args.get(2).unwrap_or(&Value::Nil), Some(&time))?;
-                Ok(string_like_value_with_multibyte(
-                    format_time_string_value(interp, &format, &time, &zone)?,
-                    Vec::new(),
-                    true,
-                ))
+                if !args[0].is_string() {
+                    return Err(LispError::WrongTypeArgument("stringp".into(), args[0]));
+                }
+                let format = locale_encoded_bytes(interp, &args[0], _env)?;
+                let (string, _) = format_time_string(
+                    interp,
+                    &format,
+                    seconds,
+                    nanoseconds,
+                    args.get(2).unwrap_or(&Value::Nil),
+                    _env,
+                )?;
+                Ok(string)
             }
             "current-time-zone" => {
                 need_arg_range(name, args, 0, 2)?;
-                // Fcurrent_time_zone: the zone at the whole seconds of TIME
-                // (the clock for nil), which must have a local time.
+                // Fcurrent_time_zone: the offset and "%Z" name at the whole
+                // seconds of TIME (the clock for nil).
                 let seconds = lisp_seconds_argument(args.first().unwrap_or(&Value::Nil))?;
-                let time = ExactTimeValue {
-                    ticks: BigInt::from(seconds),
-                    hz: BigInt::from(1u8),
+                let (zone_name, tm) = format_time_string(
+                    interp,
+                    b"%Z",
+                    seconds,
+                    0,
+                    args.get(1).unwrap_or(&Value::Nil),
+                    _env,
+                )?;
+                let offset = tm.gmtoff;
+                let zone_name = if string_text(&zone_name)?.is_empty() {
+                    // No local time zone name: the numeric zone instead,
+                    // "%c%.2ld%.*d%.*d".
+                    let hour = offset / 3600;
+                    let min_sec = offset % 3600;
+                    let amin_sec = min_sec.abs();
+                    let (min, sec) = (amin_sec / 60, amin_sec % 60);
+                    let precision = |prec: bool, value: i64| {
+                        if prec {
+                            format!("{value:02}")
+                        } else if value == 0 {
+                            String::new()
+                        } else {
+                            value.to_string()
+                        }
+                    };
+                    let hour = if hour < 0 {
+                        format!("-{:02}", -hour)
+                    } else {
+                        format!("{hour:02}")
+                    };
+                    let text = format!(
+                        "{}{hour}{}{}",
+                        if offset < 0 { '-' } else { '+' },
+                        precision(min_sec != 0, min),
+                        precision(sec != 0, sec)
+                    );
+                    super::coding::bytes_to_unibyte_value(text.as_bytes())
+                } else {
+                    zone_name
                 };
-                let zone =
-                    zone_spec_from_value(interp, args.get(1).unwrap_or(&Value::Nil), Some(&time))?;
-                time_local_datetime(&time, &zone)?;
-                Ok(Value::list([
-                    Value::Integer(zone.offset_seconds as i64),
-                    Value::String(zone.abbreviation.into()),
-                ]))
+                Ok(Value::list([Value::Integer(offset), zone_name]))
             }
         }
     }

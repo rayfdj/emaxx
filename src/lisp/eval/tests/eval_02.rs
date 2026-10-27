@@ -4651,7 +4651,7 @@ fn format_time_string_supports_case_flags_widths_and_calendar_fields() {
                         "%Ec" "%Od")
                       "|"))"#,
             ),
-            "MONDAY|MONDAY|pm|utc|  Mon|00Mon|Mon|  Mon|001|  1|1|\
+            "MONDAY|MONDAY|pm|gmt|  Mon|00Mon|Mon|  Mon|001|  1|1|\
              01|01|01|2006|06|1|15| 3|Mon Jan  2 15:04:05 2006|02",
         );
     });
