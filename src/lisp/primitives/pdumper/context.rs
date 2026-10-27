@@ -122,6 +122,26 @@ fn runtime_word(word: u64) -> u64 {
     value.word() as u64
 }
 
+/// The state of a symbol the image maps in place, or None for one it
+/// writes as a record: a symbol of the initial obarray under its name, not
+/// builtin (an image names those, which exist before it loads), whose name
+/// is a string of the string blocks and whose state is its cell's
+/// (`SymbolCell::image_state').
+fn mapped_symbol_state(
+    interp: &Interpreter,
+    symbol: &crate::lisp::types::SymbolName,
+) -> Option<u16> {
+    let state = symbol.cell().image_state()?;
+    let name = symbol.lisp_name();
+    let Kind::StringObject(string) = name.kind() else {
+        return None;
+    };
+    (!string.is_empty_singleton()
+        && interp.standard_obarray_contains_object(symbol)
+        && interp.variable_watchers(symbol.as_str()).is_empty())
+    .then_some(state)
+}
+
 // The serialized native-subr discriminator is retained for image compatibility.
 // It never names a RecordKind or installs a detached runtime record.
 pub(crate) const NATIVE_SUBR_CODE: u32 = 15;
@@ -524,11 +544,21 @@ pub(crate) struct DumpContext {
     vector_cells: crate::lisp::alloc::vectors::ImageVectorWriter,
     /// The first vector block's offset, once the vectors are written.
     vector_blocks: Option<u32>,
+    /// The words and key text of each symbol the image maps in place, in
+    /// the order they were dumped: written as the image's symbol blocks
+    /// with the other blocks, each until then at its offset there plus
+    /// `SYMBOL_PROVISIONAL'.
+    symbol_cells: Vec<([u64; 8], String)>,
+    /// The first symbol block's offset, once the symbols are written.
+    symbol_blocks: Option<u32>,
 }
 
 /// The base of a cons's offset until the cons blocks are placed: above
 /// every offset the rest of the image takes.
 const CONS_PROVISIONAL: u32 = 1 << 30;
+/// The base of a mapped symbol's offset until the symbol blocks are
+/// placed: above every cons's provisional offset.
+const SYMBOL_PROVISIONAL: u32 = CONS_PROVISIONAL + (1 << 29);
 /// The base of a string's offset until the string blocks are placed:
 /// above every cons's provisional offset.
 const STRING_PROVISIONAL: u32 = 1 << 31;
@@ -581,6 +611,8 @@ impl DumpContext {
             string_blocks: None,
             vector_cells: Default::default(),
             vector_blocks: None,
+            symbol_cells: Vec::new(),
+            symbol_blocks: None,
         }
     }
 
@@ -1177,7 +1209,7 @@ impl DumpContext {
         let start = CONS_PROVISIONAL
             + u32::try_from(crate::lisp::alloc::image_cons_offset(index))
                 .ok()
-                .filter(|offset| *offset < CONS_PROVISIONAL)
+                .filter(|offset| *offset < SYMBOL_PROVISIONAL - CONS_PROVISIONAL)
                 .ok_or_else(|| LispError::Signal("dump file too large".into()))?;
         let mut words = [0_u64; 2];
         let car = Value::Cons(*cell).car()?;
@@ -1213,7 +1245,8 @@ impl DumpContext {
         assert!(
             self.cons_blocks.is_none()
                 && self.string_blocks.is_none()
-                && self.vector_blocks.is_none(),
+                && self.vector_blocks.is_none()
+                && self.symbol_blocks.is_none(),
             "cell blocks written twice"
         );
         let count = self.cons_cells.len();
@@ -1280,6 +1313,33 @@ impl DumpContext {
             offset: large_vectors,
             nr_entries: u32::try_from(large_count).expect("vector count fits a word"),
         };
+
+        // The mapped symbols' cells, then their key texts, each cell's
+        // first word the offset of its key (a raw pointer once relocated).
+        let cells = std::mem::take(&mut self.symbol_cells);
+        let count = cells.len();
+        self.align_output(64)?;
+        let symbols = self.offset;
+        let blocks_bytes = crate::lisp::alloc::image_symbol_bytes(count);
+        let mut blocks = vec![0_u8; blocks_bytes];
+        let mut keys = Vec::new();
+        for (index, (mut words, key)) in cells.into_iter().enumerate() {
+            let at = crate::lisp::alloc::image_symbol_offset(index);
+            let key_offset = symbols as usize + blocks_bytes + keys.len();
+            words[0] = key_offset as u64;
+            keys.extend_from_slice(key.as_bytes());
+            for (word, value) in words.iter().enumerate() {
+                blocks[at + 8 * word..at + 8 * (word + 1)].copy_from_slice(&value.to_le_bytes());
+            }
+            self.push_dump_reloc(symbols + at as u32, DumpRelocKind::DumpToDumpPtrRaw, None);
+        }
+        self.write(&blocks)?;
+        self.write(&keys)?;
+        self.symbol_blocks = Some(symbols);
+        self.header.symbol_blocks = TableLocator {
+            offset: symbols,
+            nr_entries: u32::try_from(count).expect("symbol count fits a word"),
+        };
         let placed = |offset: u32| {
             if offset >= LARGE_VECTOR_PROVISIONAL {
                 large_vectors + (offset - LARGE_VECTOR_PROVISIONAL)
@@ -1287,6 +1347,8 @@ impl DumpContext {
                 vectors + (offset - VECTOR_PROVISIONAL)
             } else if offset >= STRING_PROVISIONAL {
                 strings + (offset - STRING_PROVISIONAL)
+            } else if offset >= SYMBOL_PROVISIONAL {
+                symbols + (offset - SYMBOL_PROVISIONAL)
             } else if offset >= CONS_PROVISIONAL {
                 start + (offset - CONS_PROVISIONAL)
             } else {
@@ -1442,6 +1504,9 @@ impl DumpContext {
         let Kind::Symbol(symbol) = object.kind() else {
             unreachable!()
         };
+        if let Some(state) = mapped_symbol_state(interp, &symbol) {
+            return self.dump_symbol_cell(interp, &symbol, state);
+        }
         let cell = interp.dump_symbol_cell(&symbol);
         let function = interp
             .raw_function_binding_symbol(&symbol, &crate::lisp::types::Env::new())
@@ -1503,6 +1568,64 @@ impl DumpContext {
             words[at + index] = u64::from_le_bytes(word);
         }
         self.object_finish(&words)
+    }
+
+    /// A symbol the image maps in place (`mapped_symbol_state'): the next
+    /// cell of the image's symbol blocks, its name, function, plist and
+    /// value or alias words as `alloc::image_cell_words' lays them out,
+    /// waiting in `symbol_cells' with its key text until the blocks are
+    /// written after the other hot objects; until then its offset is
+    /// provisional (see `SYMBOL_PROVISIONAL').
+    fn dump_symbol_cell(
+        &mut self,
+        interp: &Interpreter,
+        symbol: &crate::lisp::types::SymbolName,
+        state: u16,
+    ) -> Result<u32, DumpError> {
+        assert_eq!(self.obj_offset, 0, "nested dump_object_start");
+        assert!(
+            self.symbol_blocks.is_none() || !self.flags.dump_object_contents,
+            "a symbol dumped after the symbol blocks were written"
+        );
+        let start = SYMBOL_PROVISIONAL
+            + u32::try_from(crate::lisp::alloc::image_symbol_offset(
+                self.symbol_cells.len(),
+            ))
+            .ok()
+            .filter(|offset| *offset < STRING_PROVISIONAL - SYMBOL_PROVISIONAL)
+            .ok_or_else(|| LispError::Signal("dump file too large".into()))?;
+        let cell = interp.dump_symbol_cell(symbol);
+        let function = interp
+            .raw_function_binding_symbol(symbol, &crate::lisp::types::Env::new())
+            .unwrap_or(Value::Nil);
+        let plist = interp.symbol_plist_symbol(symbol);
+        let val = match &cell.alias {
+            Some(target) => Value::Symbol(*target),
+            None => cell.value.unwrap_or(Value::Unbound),
+        };
+        let mut words = [0_u64; 8];
+        self.obj_offset = start;
+        self.field_lv(start, &mut words, 2, &symbol.lisp_name(), WEIGHT_STRONG);
+        self.field_lv(start, &mut words, 3, &function, WEIGHT_NORMAL);
+        self.field_lv(start, &mut words, 4, &plist, WEIGHT_NORMAL);
+        self.field_lv(start, &mut words, 5, &val, WEIGHT_NORMAL);
+        self.obj_offset = 0;
+        if self.flags.dump_object_contents {
+            let lisp = std::array::from_fn(|index| {
+                let word = words[2 + index];
+                if word == FIXUP_PLACEHOLDER {
+                    word
+                } else {
+                    runtime_word(word)
+                }
+            });
+            let key = symbol.as_str();
+            self.symbol_cells.push((
+                crate::lisp::alloc::image_cell_words((0, key.len()), lisp, cell.flags, state),
+                key.to_owned(),
+            ));
+        }
+        Ok(start)
     }
 
     /// dump_vectorlike_generic for an ordinary vector: its slots.  The

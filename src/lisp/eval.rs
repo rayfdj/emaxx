@@ -2902,6 +2902,9 @@ impl ImageGraphCopier {
             .set_trapped_write(symbol.cell().is_trapped_write());
         copied.cell().set_c_slot(symbol.cell().has_c_slot());
         copied.cell().set_plain_store(symbol.cell().plain_store());
+        if symbol.cell().is_builtin() {
+            copied.cell().mark_builtin();
+        }
         copied
             .cell()
             .set_function_definition(symbol.cell().has_function_definition());
@@ -7705,6 +7708,15 @@ impl Interpreter {
             SymbolName::intern_str(name).cell().set_constant(true);
         }
         crate::lisp::native_comp::initialize_runtime(&mut interp);
+        // lisp.h's lispsym: every symbol interned when construction ends,
+        // the cached keys' among them, is builtin. An image refers to such
+        // a symbol by name, which a process that loads it has made by now
+        // (`for_image' makes a part of what `new' makes); it maps the
+        // others where it holds them.
+        crate::lisp::types::symbols::intern_all_keys();
+        for symbol in interp.globals.names() {
+            symbol.cell().mark_builtin();
+        }
         interp
     }
 

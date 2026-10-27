@@ -361,6 +361,7 @@ pub(crate) fn load_permanent_image(
         conses: ImageConses::default(),
         strings: ImageStrings::default(),
         vectors: ImageVectors::default(),
+        symbols: ImageSymbols::default(),
         subrs: HashMap::default(),
         reader,
         image,
@@ -555,6 +556,8 @@ struct Loader<'a> {
     strings: ImageStrings,
     /// The image's vector blocks and large vectors, once adopted.
     vectors: ImageVectors,
+    /// The image's symbol blocks, once adopted.
+    symbols: ImageSymbols,
     /// The subr each copied record of the Emacs image names.
     subrs: HashMap<
         u32,
@@ -662,6 +665,72 @@ impl ImageStrings {
     }
 }
 
+/// The code of RELOC_DUMP_TO_DUMP_LV naming a symbol, which names a cell
+/// of the symbol blocks when it numbers no object.
+pub(super) const SYMBOL_LV: u32 = 0x100 | DumpType::Symbol as u32;
+
+/// The image's symbol blocks where the image is mapped: BASE the image's
+/// address, START the first block's offset, COUNT the symbols, END past
+/// the last cell, from START.
+#[derive(Default)]
+struct ImageSymbols {
+    base: usize,
+    start: usize,
+    count: usize,
+    end: usize,
+}
+
+/// The offsets in a mapped symbol cell of its words a relocation names:
+/// the key text, the name, then the function, plist and value words.
+const SYMBOL_CELL_KEY: usize = 0;
+const SYMBOL_CELL_NAME: usize = 16;
+const SYMBOL_CELL_FUNCTION: usize = 24;
+const SYMBOL_CELL_VALUE: usize = 40;
+
+impl ImageSymbols {
+    /// True when OFFSET is the start of one of the cells.
+    #[inline(always)]
+    fn holds(&self, offset: u32) -> bool {
+        let at = (offset as usize).wrapping_sub(self.start);
+        at < self.end && at.is_multiple_of(crate::lisp::alloc::SYMBOL_CELL_BYTES)
+    }
+
+    /// The symbol whose cell is at OFFSET, which must be one of them.
+    #[inline(always)]
+    fn symbol_at(&self, offset: u32) -> Result<Value, LoadError> {
+        if !self.holds(offset) {
+            return Err(LoadError::Error(format!(
+                "symbol at {offset} is not a cell of the symbol blocks"
+            )));
+        }
+        Ok(Value::Symbol(self.symbol(offset as usize)))
+    }
+
+    /// The symbol whose cell is at OFFSET, a cell of the blocks.
+    fn symbol(&self, offset: usize) -> SymbolName {
+        // SAFETY: an adopted cell, by the caller's check.
+        SymbolName::from_ref(unsafe {
+            crate::lisp::alloc::SymbolRef::from_raw(
+                (self.base + offset) as *mut crate::lisp::alloc::SymbolCell,
+            )
+        })
+    }
+
+    /// The word at OFFSET, which must be a word of a cell a relocation
+    /// may name, and that word's place in its cell.
+    #[inline(always)]
+    fn field(&self, offset: u32) -> Result<(*mut u64, usize), LoadError> {
+        let at = (offset as usize).wrapping_sub(self.start);
+        let word = at % crate::lisp::alloc::SYMBOL_CELL_BYTES;
+        if at >= self.end || !matches!(word, 0 | 16 | 24 | 32 | 40) {
+            return Err(LoadError::Error(format!(
+                "relocation at {offset} is not a word of a symbol"
+            )));
+        }
+        Ok(((self.base + offset as usize) as *mut u64, word))
+    }
+}
+
 /// The codes of RELOC_DUMP_TO_DUMP_LV naming a vector of the vector
 /// blocks or the large vectors, by its kind.
 pub(super) const VECTOR_LV: u32 = 0x100 | DumpType::Vector as u32;
@@ -715,6 +784,9 @@ impl Loader<'_> {
         self.conses = self.adopt_cons_blocks(&header)?;
         let string_props = self.adopt_string_blocks(&header)?;
         self.adopt_vectors(&header)?;
+        // The mapped symbols are the initial obarray's before anything is
+        // interned by name.
+        self.adopt_symbol_blocks(&header)?;
         // Each object's type, and the objects by the phases that build
         // them, each list in image order: the objects that need only their
         // own bytes, and the rest; a cons is where its block holds it.
@@ -960,6 +1032,7 @@ impl Loader<'_> {
         let mut obarray = Vec::new();
         self.relocate_conses()?;
         self.relocate_vectors()?;
+        self.relocate_symbols()?;
         for &number in &other_objects {
             let number = number as usize;
             let kind = kinds[number];
@@ -1246,6 +1319,7 @@ impl Loader<'_> {
                 .cons_at(offset)
                 .or_else(|_| self.strings.string_at(offset))
                 .or_else(|_| self.vectors.vector_at(offset))
+                .or_else(|_| self.symbols.symbol_at(offset))
                 .ok(),
         }
     }
@@ -1526,6 +1600,155 @@ impl Loader<'_> {
         Ok(())
     }
 
+    /// The image's symbol blocks (`DumpHeader::symbol_blocks'), made the
+    /// heap's image blocks where the image holds them once their place in
+    /// the hot section is checked, and each of their symbols filed in the
+    /// initial obarray, as pdumper.c's dumped obarray holds its symbols:
+    /// each cell's key text (the image's address and the word's offset,
+    /// RELOC_DUMP_TO_DUMP_PTR_RAW, checked to lie in the image and be
+    /// UTF-8) and its name (a string of the string blocks) are relocated
+    /// first, its other words once every object they can name exists
+    /// (`relocate_symbols').  The obarray is the dumped one: a builtin
+    /// symbol another is filed under the name of was not in the dumping
+    /// process's obarray (Funintern leaves a lispsym symbol where it is),
+    /// and is uninterned; a name another symbol already has is an image
+    /// this executable did not write.
+    fn adopt_symbol_blocks(&mut self, header: &DumpHeader) -> Result<(), LoadError> {
+        let start = header.symbol_blocks.offset as usize;
+        let count = header.symbol_blocks.nr_entries as usize;
+        self.symbols = ImageSymbols {
+            base: self.image.address.as_ptr() as usize,
+            start,
+            count,
+            end: count * crate::lisp::alloc::SYMBOL_CELL_BYTES,
+        };
+        if count == 0 {
+            return Ok(());
+        }
+        let bytes = crate::lisp::alloc::image_symbol_bytes(count);
+        if !start.is_multiple_of(64)
+            || start < HEADER_LEN
+            || start + bytes > header.discardable_start as usize
+            || start + bytes > self.image.len
+        {
+            return Err(LoadError::Error(format!(
+                "the symbol blocks at {start} are not in the hot section"
+            )));
+        }
+        let (first_field, last_field) = (start as u32, (start + self.symbols.end) as u32);
+        let first = self.relocs.rank_from(0, first_field);
+        let last = self.relocs.rank_from(first, last_field);
+        let (mut keys, mut names) = (0, 0);
+        for index in first..last {
+            let entry = &self.relocs.entries[index];
+            let (slot, word) = self.symbols.field(entry_word(entry, 0))?;
+            let code = entry_word(entry, 4);
+            // SAFETY: a word of a cell of the blocks, inside the image.
+            let value = unsafe { slot.read() };
+            match word {
+                SYMBOL_CELL_KEY => {
+                    // SAFETY: the next word of the same cell.
+                    let len = unsafe { slot.add(1).read() } as usize;
+                    let text = usize::try_from(value)
+                        .ok()
+                        .filter(|_| code == DumpRelocKind::DumpToDumpPtrRaw.to_u32())
+                        .and_then(|at| self.image.bytes().get(at..at.checked_add(len)?))
+                        .filter(|text| {
+                            crate::lisp::types::obarray::plain_ascii(text)
+                                || std::str::from_utf8(text).is_ok()
+                        })
+                        .ok_or_else(|| {
+                            LoadError::Error(format!(
+                                "invalid symbol key at {}",
+                                entry_word(entry, 0)
+                            ))
+                        })?;
+                    // SAFETY: as above; the cell's key is the image's text.
+                    unsafe { slot.write(text.as_ptr() as u64) };
+                    keys += 1;
+                }
+                SYMBOL_CELL_NAME => {
+                    let name = match code {
+                        STRING_LV => self.strings.string_at(value as u32)?,
+                        _ => {
+                            return Err(LoadError::Error(format!(
+                                "symbol name at {} is not a string of the blocks",
+                                entry_word(entry, 0)
+                            )));
+                        }
+                    };
+                    // SAFETY: as above.
+                    unsafe { slot.write(name.word() as u64) };
+                    names += 1;
+                }
+                _ => {}
+            }
+        }
+        if keys != count || names != count {
+            return Err(LoadError::Error(
+                "a mapped symbol lacks its key or name".into(),
+            ));
+        }
+        // SAFETY: the blocks are inside the image by the check above, the
+        // image is aligned to a block and stays for the life of the
+        // process; the dumper wrote the cells' layout and their keys and
+        // names are relocated.
+        unsafe {
+            crate::lisp::alloc::adopt_image_symbol_blocks(self.image.at(start).as_ptr(), count)
+        };
+        for index in 0..count {
+            let symbol = self
+                .symbols
+                .symbol(start + crate::lisp::alloc::image_symbol_offset(index));
+            let filed = SymbolName::file_image(symbol).or_else(|existing| {
+                if !existing.cell().is_builtin() {
+                    return Err(existing);
+                }
+                self.interp
+                    .unintern_standard_symbol(existing.lisp_name(), Some(existing));
+                SymbolName::file_image(symbol)
+            });
+            if let Err(existing) = filed {
+                return Err(LoadError::Error(format!(
+                    "image symbol `{}' is already a symbol of this process",
+                    existing.as_str()
+                )));
+            }
+        }
+        self.reloc_last = u32::MAX;
+        Ok(())
+    }
+
+    /// The mapped symbols' function, plist and value words: pdumper.c's
+    /// relocation of the dump where it is mapped, each relocation in the
+    /// symbol blocks that `adopt_symbol_blocks' left applied to the word it
+    /// names, in order.
+    fn relocate_symbols(&mut self) -> Result<(), LoadError> {
+        if self.symbols.count == 0 {
+            return Ok(());
+        }
+        let first_field = self.symbols.start as u32;
+        let last_field = (self.symbols.start + self.symbols.end) as u32;
+        let first = self.relocs.rank_from(0, first_field);
+        let last = self.relocs.rank_from(first, last_field);
+        for index in first..last {
+            let entry = &self.relocs.entries[index];
+            let field = entry_word(entry, 0);
+            let (slot, word) = self.symbols.field(field)?;
+            if !(SYMBOL_CELL_FUNCTION..=SYMBOL_CELL_VALUE).contains(&word) {
+                continue;
+            }
+            // SAFETY: a word of an adopted cell, read where it is.
+            let value = unsafe { slot.read() };
+            let value =
+                self.reloc_value(field, entry_word(entry, 4), entry_word(entry, 8), value)?;
+            // SAFETY: a word of an adopted cell, which nothing has read.
+            unsafe { slot.write(value.word() as u64) };
+        }
+        self.reloc_last = u32::MAX;
+        Ok(())
+    }
+
     /// Phase 3 for the conses: pdumper.c's relocation of the dump where it
     /// is mapped, each relocation in the cons blocks applied to the word it
     /// names, in order; the other words are the heap's as the dumper wrote
@@ -1660,6 +1883,7 @@ impl Loader<'_> {
         match code {
             CONS_LV => self.conses.cons_at(word as u32),
             STRING_LV => self.strings.string_at(word as u32),
+            SYMBOL_LV => self.symbols.symbol_at(word as u32),
             VECTOR_LV | CLOSURE_LV | LISP_RECORD_LV | CHAR_TABLE_LV | SUB_CHAR_TABLE_LV => {
                 self.vectors.vector_at(word as u32)
             }
@@ -1714,6 +1938,9 @@ impl Loader<'_> {
                 let number = self.relocs.target(reloc.expect("a relocation")) as usize;
                 if let Some(value) = self.object(number) {
                     return Ok(value);
+                }
+                if self.symbols.holds(target) {
+                    return self.symbols.symbol_at(target);
                 }
                 let flags = self.reader.word(target)?;
                 let name = self.value_at(target + 8)?;

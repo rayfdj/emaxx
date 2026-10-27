@@ -21,7 +21,7 @@ pub(crate) const FINGERPRINT_LEN: usize = 32;
 pub(crate) const DUMP_ALIGNMENT: usize = 8;
 /// `dump_off' is `int_least32_t'.
 pub(crate) const DUMP_OFF_MAX: usize = i32::MAX as usize;
-pub(crate) const HEADER_LEN: usize = 132;
+pub(crate) const HEADER_LEN: usize = 140;
 pub(crate) const RELOC_NUM_PHASES: usize = 3;
 pub(crate) const EARLY_RELOCS: usize = 0;
 /// pdumper.c:reloc_phase: the native compilation units are loaded in
@@ -130,6 +130,9 @@ pub(crate) struct DumpHeader {
     /// The first large vector's offset, just past the vector blocks, and
     /// the number of large vectors.
     pub(crate) large_vectors: TableLocator,
+    /// The first symbol block's offset, past the large vectors, and the
+    /// number of symbols mapped in place.
+    pub(crate) symbol_blocks: TableLocator,
 }
 
 impl DumpHeader {
@@ -149,6 +152,7 @@ impl DumpHeader {
             string_blocks: TableLocator::default(),
             vector_blocks: TableLocator::default(),
             large_vectors: TableLocator::default(),
+            symbol_blocks: TableLocator::default(),
         }
     }
 
@@ -180,6 +184,8 @@ impl DumpHeader {
         put(self.vector_blocks.nr_entries);
         put(self.large_vectors.offset);
         put(self.large_vectors.nr_entries);
+        put(self.symbol_blocks.offset);
+        put(self.symbol_blocks.nr_entries);
         out
     }
 
@@ -230,6 +236,10 @@ impl DumpHeader {
             offset: get(),
             nr_entries: get(),
         };
+        let symbol_blocks = TableLocator {
+            offset: get(),
+            nr_entries: get(),
+        };
         Some(Self {
             magic,
             fingerprint,
@@ -243,6 +253,7 @@ impl DumpHeader {
             string_blocks,
             vector_blocks,
             large_vectors,
+            symbol_blocks,
         })
     }
 }

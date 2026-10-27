@@ -479,6 +479,26 @@ impl SymbolName {
         names.insert(name, index);
     }
 
+    /// pdumper's symbol of the initial obarray, mapped where the image
+    /// holds it: filed in the bucket the lookup of its name ends at, as
+    /// intern_sym files a new one.  Err with the symbol that already has
+    /// the name.
+    pub(crate) fn file_image(symbol: Self) -> Result<(), Self> {
+        use obarray::Buckets;
+        INTERNED_SYMBOL_NAMES.with_borrow_mut(|names| {
+            match names
+                .lookup_name(symbol.lisp_name())
+                .expect("a string name")
+            {
+                Ok(existing) => Err(existing),
+                Err(index) => {
+                    names.insert(symbol, index);
+                    Ok(())
+                }
+            }
+        })
+    }
+
     /// The image loader's intern in the initial obarray: the symbol the
     /// Lisp string NAME names there, or a new one keeping KEY, text of the
     /// permanent image, as its host text.

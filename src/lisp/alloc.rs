@@ -46,7 +46,10 @@ pub use symbols::{SymbolCell, SymbolRef};
 /// The actual header cells this allocator holds, as charged to collection.
 pub(crate) const SYMBOL_CELL_BYTES: usize = symbols::SYMBOL_CELL_SIZE;
 pub(crate) const STRING_CELL_BYTES: usize = strings::STRING_CELL_SIZE;
-pub(crate) use symbols::{SymbolText, allocate_symbol, live_symbols, sweep_symbols};
+pub(crate) use symbols::{
+    SymbolText, adopt_image_symbol_blocks, allocate_symbol, image_cell_words, image_symbol_bytes,
+    image_symbol_offset, live_symbols, sweep_symbols,
+};
 pub use vectors::{ClosureRef, VectorHeader, VectorRef, VectorTag, VectorlikeRef};
 pub(crate) use vectors::{
     FreedRecord, live_record_census, live_vector_census, sweep_vectors, take_freed_records,

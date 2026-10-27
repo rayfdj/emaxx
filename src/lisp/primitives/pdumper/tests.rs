@@ -832,28 +832,41 @@ fn image_records_symbol_cells_from_the_interpreter() {
             .unwrap_or_else(|| panic!("no record for {name}"))
             .clone()
     };
-    let special = record("zz-dump-special");
-    assert_eq!(
-        special.flags & super::context::FLAG_DECLARED_SPECIAL,
-        super::context::FLAG_DECLARED_SPECIAL
+    // The symbols but the watched one are mapped where the image holds
+    // them, each the initial obarray's symbol of its name once the image
+    // loads.
+    let loaded = image
+        .roots
+        .iter()
+        .find(|(slot, _)| *slot == RootSlot::LoadPath)
+        .and_then(|(_, value)| value.to_vec().ok())
+        .expect("the root list");
+    let mapped = |index: usize, name: &str| {
+        assert!(
+            image.symbols.iter().all(|symbol| symbol.symbol != name),
+            "{name} is mapped, not a record"
+        );
+        assert_eq!(loaded[index], Value::symbol(name), "{name} is interned");
+        let Kind::Symbol(symbol) = loaded[index].kind() else {
+            panic!("{name} is a symbol")
+        };
+        symbol
+    };
+    let special = mapped(0, "zz-dump-special");
+    assert_ne!(
+        special.cell().flags.get() & crate::lisp::eval::symbol_cell_flags::SPECIAL,
+        0
     );
     assert_eq!(
-        special.value.as_ref().and_then(|value| value.to_vec().ok()),
+        special.cell().value().and_then(|value| value.to_vec().ok()),
         Some(vec![
             Value::Integer(1),
             Value::Integer(2),
             Value::Integer(3)
         ])
     );
-    let alias = record("zz-dump-alias");
-    assert_eq!(
-        alias.flags & super::context::SYMBOL_REDIRECT_MASK,
-        super::context::SYMBOL_VARALIAS
-    );
-    assert_eq!(
-        alias.alias.as_ref().map(SymbolName::as_str),
-        Some("zz-dump-special")
-    );
+    let alias = mapped(1, "zz-dump-alias");
+    assert_eq!(alias.cell().alias(), Some(special));
     let plain = record("zz-dump-plain");
     assert_eq!(plain.value, Some(Value::Integer(7)));
     assert_eq!(
@@ -862,9 +875,9 @@ fn image_records_symbol_cells_from_the_interpreter() {
     );
     assert_eq!(plain.watchers, vec![Value::symbol("ignore")]);
     assert_eq!(plain.plist.to_vec().ok().map(|plist| plist.len()), Some(2));
-    let function = record("zz-dump-fn");
-    assert_eq!(function.function, Value::symbol("car"));
-    assert_eq!(record("zz-dump-void").value, None);
+    let function = mapped(3, "zz-dump-fn");
+    assert_eq!(function.cell().function.get(), Value::symbol("car"));
+    assert_eq!(mapped(4, "zz-dump-void").cell().value(), None);
     assert!(image.obarray.is_empty(), "explicit roots dump no obarray");
 }
 

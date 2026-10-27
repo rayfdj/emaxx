@@ -6958,6 +6958,38 @@ setup_process_coding_systems's check now refuses). A 13-form
   validation: the full gate across its ten groups with the documented
   local skips; clippy `-D warnings', rustfmt and `git diff --check'
   pass.
+- **Round 103: the image's symbols mapped in place.** A symbol of the
+  initial obarray that is not builtin (interned when the interpreter's
+  construction ends, as GNU's lispsym symbols exist before a dump
+  loads) and whose state is its cell's (not a C variable, not watched,
+  not uninterned) is written as a cell of the image's symbol blocks,
+  laid out as the heap's cells are (key text, name, function, plist,
+  value or alias word, flags and state), and the loader makes those
+  blocks the heap's where the image holds them, relocates their words
+  and files each symbol in the initial obarray, as pdumper.c relocates
+  its dumped symbols and obarray in place; it was a record the loader
+  interned again by name and copied field by field. The dumped obarray
+  is the loaded one: a builtin symbol that the image files another
+  under the name of was not in the dumping process's obarray and is
+  uninterned. A template clone's copy of a symbol keeps the builtin
+  mark. After a load the initial frame this process made is
+  `terminal-frame' (window.c's init_window_once_for_pdumper), where it
+  was the image's frame, dead. A probe printing every symbol's
+  specialness, binding, alias, default value, function and plist in
+  the process that built and dumped the loadup state and in one that
+  loaded the image differs only in the allocation counters, this
+  process's paths and the main thread's address (and, before the fix,
+  `terminal-frame'); a batch test pins GNU 30.2's output for a
+  preloaded symbol's cells across a collection, its `unintern' and
+  `terminal-frame'. The image maps 14,195 symbols; 3,974 remain
+  records. With the frozen runner's command line startup went from
+  158.1M instructions to 146.7M (GNU 98.5M): the loader from 82.8M to
+  76.5M, the records' symbols from 7.3M to 1.6M and their installation
+  from 5.0M to 1.2M, the filing of the mapped ones 2.4M. The
+  cal-french-tests.el setup's total went from 541.4M to 530.1M (GNU
+  507.6M). Local validation: the full gate across its ten groups with
+  the documented local skips; clippy `-D warnings', rustfmt and `git
+  diff --check' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -7754,6 +7786,8 @@ frozen passed on its first attempt (run 40415814171).
 frozen passed on its first attempt (run 40421854122).
 **On `f587724`** (round 101): full Rust gate passed (run 40426750729),
 frozen passed on its first attempt (run 40426753917).
+**On `daf859c`** (round 102): full Rust gate passed (run 40433085141),
+frozen passed on its first attempt (run 40433088195).
 
 **Findings recorded, not fixed:**
 - **A test file's setup in wall time, and what the instruction count

@@ -25,6 +25,7 @@ use std::sync::atomic::{AtomicI64, AtomicPtr, AtomicUsize, Ordering};
 /// cell owns and frees with it, or text of the permanent image, which
 /// lives as long as the process.  Two words: the text's address, and its
 /// length with the top bit set when the box is the cell's.
+#[repr(C)]
 pub(crate) struct SymbolText {
     text: NonNull<u8>,
     len: usize,
@@ -141,6 +142,11 @@ const BUFFER_SLOT: u16 = 8192;
 // Set with C_SLOT on the C variables whose store converts the value beyond
 // its slot kind's conversion (`STORE_CONVERTING_VARIABLES').
 const STORE_CONVERTS: u16 = 16384;
+// lisp.h's builtin_lisp_symbol_p: the symbol was interned when the
+// interpreter's construction ended, as GNU's lispsym symbols exist before
+// its dump loads. An image refers to such a symbol by name; it maps the
+// others where it holds them.
+const BUILTIN: u16 = 32768;
 
 /// `buffer-undo-list' (the buffer's history) and `text-conversion-style'
 /// (its field): C variables whose value the current buffer holds.
@@ -537,6 +543,123 @@ impl SymbolCell {
         } else {
             self.state.get() & !CONSTANT
         });
+    }
+
+    /// Note that the symbol was interned when its interpreter's
+    /// construction ended (`image_state' leaves it out).
+    pub(crate) fn mark_builtin(&self) {
+        self.state.set(self.state.get() | BUILTIN);
+    }
+
+    pub(crate) fn is_builtin(&self) -> bool {
+        self.state.get() & BUILTIN != 0
+    }
+
+    /// The state an image keeps for a symbol it maps in place, or None for
+    /// a symbol whose state is more than its cell's: a builtin one, one of
+    /// `nil' and `t', an uninterned one, a C variable (its slot, counter,
+    /// terminal or buffer field is this process's) or a watched one (its
+    /// watchers are the interpreter's).  A learned plain store is learned
+    /// again.
+    pub(crate) fn image_state(&self) -> Option<u16> {
+        let state = self.state.get();
+        (state
+            & (BUILTIN
+                | BUILTIN_NIL
+                | BUILTIN_T
+                | UNINTERNED
+                | C_SLOT
+                | INT_FORWARD
+                | KBOARD_FORWARD
+                | STORE_EFFECT
+                | BUFFER_SLOT
+                | STORE_CONVERTS
+                | TRAPPED_WRITE)
+            == 0)
+            .then_some(state & !PLAIN_STORE)
+    }
+}
+
+// The cell's layout, which an image's symbol blocks hold (`image_cell_words').
+const _: () = {
+    use std::mem::offset_of;
+    assert!(offset_of!(SymbolCell, internal) == 0);
+    assert!(offset_of!(SymbolText, text) == 0 && offset_of!(SymbolText, len) == 8);
+    assert!(offset_of!(SymbolCell, lisp_name) == 16);
+    assert!(offset_of!(SymbolCell, function) == 24);
+    assert!(offset_of!(SymbolCell, plist) == 32);
+    assert!(offset_of!(SymbolCell, payload) == 40);
+    assert!(offset_of!(SymbolCell, next) == 48);
+    assert!(offset_of!(SymbolCell, flags) == 56);
+    assert!(offset_of!(SymbolCell, image) == 57);
+    assert!(offset_of!(SymbolCell, state) == 58);
+    assert!(offset_of!(SymbolCell, mark) == 60);
+};
+
+/// The words of a symbol cell an image maps: the key text's offset in the
+/// image and its length, the name, function, plist and value words, no
+/// next symbol (the loader files the symbol), and the flags, the image
+/// byte and STATE, the mark the loader's.  The offsets and the Lisp words
+/// are the image's, made the process's by relocations.
+pub(crate) fn image_cell_words(
+    key: (u64, usize),
+    lisp: [u64; 4],
+    flags: u8,
+    state: u16,
+) -> [u64; 8] {
+    [
+        key.0,
+        key.1 as u64,
+        lisp[0],
+        lisp[1],
+        lisp[2],
+        lisp[3],
+        0,
+        u64::from(flags) | 1 << 8 | u64::from(state) << 16,
+    ]
+}
+
+/// The offset of the image's INDEXth symbol cell from its first block:
+/// the blocks follow one another, each `SYMBOLS_PER_BLOCK' cells, whose
+/// bytes keep a block's alignment.
+pub(crate) const fn image_symbol_offset(index: usize) -> usize {
+    index * SYMBOL_CELL_SIZE
+}
+
+/// The bytes of the blocks holding COUNT image symbols.
+pub(crate) const fn image_symbol_bytes(count: usize) -> usize {
+    count.div_ceil(SYMBOLS_PER_BLOCK) * SYMBOLS_PER_BLOCK * SYMBOL_CELL_SIZE
+}
+
+const _: () = assert!((SYMBOLS_PER_BLOCK * SYMBOL_CELL_SIZE).is_multiple_of(64));
+
+/// pdumper's mapped symbols: the image's symbol blocks made the heap's
+/// image blocks where they lie, their COUNT cells marked in the current
+/// epoch, the last block's other cells free (on no free list: the image's
+/// blocks are never allocated from or given back).
+///
+/// # Safety
+/// START, aligned to a cache line, begins blocks of COUNT cells laid out
+/// as `image_cell_words' lays them out and relocated, which stay for the
+/// life of the process and nothing else uses.
+pub(crate) unsafe fn adopt_image_symbol_blocks(start: *mut u8, count: usize) {
+    let start = start as usize;
+    assert!(start.is_multiple_of(64), "unaligned image symbols");
+    let epoch = super::super::types::current_mark_epoch();
+    let block_bytes = SYMBOLS_PER_BLOCK * SYMBOL_CELL_SIZE;
+    for block in 0..count.div_ceil(SYMBOLS_PER_BLOCK) {
+        let base = start + block * block_bytes;
+        let cells = (count - block * SYMBOLS_PER_BLOCK).min(SYMBOLS_PER_BLOCK);
+        for index in 0..SYMBOLS_PER_BLOCK {
+            let cell = (base + index * SYMBOL_CELL_SIZE) as *mut SymbolCell;
+            // SAFETY: inside the block; the mark word is written as a word.
+            unsafe {
+                std::ptr::addr_of_mut!((*cell).mark)
+                    .cast::<u32>()
+                    .write(if index < cells { epoch } else { FREE_MARK })
+            };
+        }
+        super::register_block_of(base, block_bytes, BlockKind::Symbol, true, true);
     }
 }
 

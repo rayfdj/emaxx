@@ -137,6 +137,10 @@ impl Interpreter {
         };
         self.set_global_binding("initial-environment", environment());
         self.set_global_binding("process-environment", environment());
+        // window.c:init_window_once_for_pdumper, which pdumper runs after
+        // the load: the image's frames are nilled, and the initial frame
+        // this process made is Vterminal_frame.
+        self.set_global_binding("terminal-frame", Value::Frame(self.selected_frame_id));
         // editfns.c:init_editfns, which emacs.c:main runs in every process
         // after load_pdump: the user names are this process's.
         self.init_editfns();

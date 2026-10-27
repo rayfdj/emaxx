@@ -2964,6 +2964,56 @@ mod tests {
     }
 
     #[test]
+    fn image_symbols_are_the_obarrays_and_the_initial_frame_is_terminal_frame() {
+        // pdumper.c maps the dumped symbols where the image holds them:
+        // a preloaded symbol is the obarray's, its cells are traced by the
+        // collector and Funintern leaves it whole.  window.c's
+        // init_window_once_for_pdumper makes the new process's initial
+        // frame Vterminal_frame.
+        run_with_large_stack(|| {
+            let emacs_repo = compat::project_root().join("../emacs");
+            let options = BatchRunOptions {
+                load_path: compat::emaxx_upstream_load_path(&emacs_repo)
+                    .expect("upstream load path"),
+                ..Default::default()
+            };
+            let mut interpreter =
+                initialize_batch_interpreter(&options).expect("init batch interpreter");
+            let form = Reader::new(
+                r#"(prin1-to-string
+                    (list (eq terminal-frame (selected-frame))
+                          (eq (intern-soft "cl-incf") 'cl-incf)
+                          (car-safe (symbol-function 'cl-incf))
+                          (progn (put 'cl-incf 'r103-prop (list 1 2 (make-string 3 ?x)))
+                                 (setq cl-incf (list 'a (copy-sequence "b")))
+                                 (garbage-collect)
+                                 (list (get 'cl-incf 'r103-prop) cl-incf))
+                          (let ((old 'cl-incf))
+                            (list (unintern "cl-incf" obarray)
+                                  (progn (garbage-collect) (intern-soft "cl-incf"))
+                                  (eq old (intern "cl-incf"))
+                                  (symbol-name old)
+                                  (get old 'r103-prop)
+                                  (car-safe (symbol-function old))
+                                  (intern-soft old)))))"#,
+            )
+            .read_all()
+            .expect("read image symbol probe")
+            .remove(0);
+            let printed = interpreter
+                .eval(&form, &mut crate::lisp::types::Env::new())
+                .expect("evaluate image symbol probe");
+            assert_eq!(
+                lisp::primitives::string_like(&printed)
+                    .expect("printed")
+                    .text,
+                "(t t autoload ((1 2 \"xxx\") (a \"b\")) \
+                 (t nil nil \"cl-incf\" (1 2 \"xxx\") autoload nil))"
+            );
+        });
+    }
+
+    #[test]
     fn reader_interns_in_each_symbols_obarray_and_closes_dotted_lists_as_read0() {
         // lread.c read0: each symbol is interned in `check_obarray
         // (Vobarray)' as it is read, so Lisp run in the middle of a read

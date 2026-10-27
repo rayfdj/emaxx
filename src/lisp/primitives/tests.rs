@@ -4685,7 +4685,10 @@ fn dump_emacs_portable_restores_context_and_reports_native_image_limit() {
             .iter()
             .any(|(slot, _)| *slot == RootSlot::Obarray)
     );
-    assert!(image.symbols.len() >= image.obarray.len());
+    // Each symbol of the obarray is a record or a cell of the symbol blocks.
+    assert!(
+        image.symbols.len() + image.header.symbol_blocks.nr_entries as usize >= image.obarray.len()
+    );
     assert_eq!(image.native_units.is_empty(), !has_native_functions);
     assert_eq!(image.native_functions.is_empty(), !has_native_functions);
     drop(target);

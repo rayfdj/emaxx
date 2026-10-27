@@ -627,6 +627,14 @@ impl SymbolKey {
     }
 }
 
+/// Intern every cached key's symbol now, where `SymbolKey::with' would
+/// on its first use.
+pub(crate) fn intern_all_keys() {
+    for index in 0..KEY_NAMES.len() {
+        SymbolKey(index).with(|_| ());
+    }
+}
+
 /// Qsymbol references belong to each editor, like GNU's process references.
 /// The existing terminal forwarding adapter consumes these until keyboard
 /// bindings use an allocated Lisp_Fwd redirect. No symbol-id lookup is needed.
