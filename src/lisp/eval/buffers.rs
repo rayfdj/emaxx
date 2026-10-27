@@ -42,11 +42,11 @@ impl Interpreter {
         related: &[u64],
         pos: usize,
         s: &str,
+        nchars: usize,
         props: Option<Vec<(crate::lisp::types::PropertyName, Value)>>,
         before_markers: bool,
     ) {
         let current_id = self.current_buffer_id();
-        let nchars = s.chars().count();
         for buffer_id in related {
             if *buffer_id == current_id {
                 continue;
@@ -153,54 +153,57 @@ impl Interpreter {
 
     pub fn insert_current_buffer(&mut self, s: &str) {
         let pos = self.buffer.borrow().point();
-        let nchars = s.chars().count();
         let related = self.related_buffer_ids(self.current_buffer_id());
-        self.buffer.borrow_mut().insert(s);
+        // The buffer counts the characters it inserts; point moves past them.
+        let nchars = self.buffer.borrow_mut().insert(s) - pos;
         self.adjust_markers_for_insert(self.current_buffer_id(), pos, nchars, false);
-        self.mirror_insert_to_related_buffers(&related, pos, s, None, false);
+        self.mirror_insert_to_related_buffers(&related, pos, s, nchars, None, false);
     }
 
     pub fn insert_current_buffer_and_inherit(&mut self, s: &str) {
         let pos = self.buffer.borrow().point();
-        let nchars = s.chars().count();
         let related = self.related_buffer_ids(self.current_buffer_id());
         let defaults = self.lookup_var("text-property-default-nonsticky", &Env::new());
         let props = self
             .buffer
             .borrow()
             .inherited_text_properties(pos, defaults.as_ref());
-        self.buffer
+        let nchars = self
+            .buffer
             .borrow_mut()
-            .insert_with_properties(s, Some(props.clone()));
+            .insert_with_properties(s, Some(props.clone()))
+            - pos;
         self.adjust_markers_for_insert(self.current_buffer_id(), pos, nchars, false);
-        self.mirror_insert_to_related_buffers(&related, pos, s, Some(props), false);
+        self.mirror_insert_to_related_buffers(&related, pos, s, nchars, Some(props), false);
     }
 
     pub fn insert_current_buffer_before_markers(&mut self, s: &str) {
         let pos = self.buffer.borrow().point();
-        let nchars = s.chars().count();
         let related = self.related_buffer_ids(self.current_buffer_id());
-        self.buffer
+        let nchars = self
+            .buffer
             .borrow_mut()
-            .insert_with_properties_and_markers(s, None, true);
+            .insert_with_properties_and_markers(s, None, true)
+            - pos;
         self.adjust_markers_for_insert(self.current_buffer_id(), pos, nchars, true);
-        self.mirror_insert_to_related_buffers(&related, pos, s, None, true);
+        self.mirror_insert_to_related_buffers(&related, pos, s, nchars, None, true);
     }
 
     pub fn insert_current_buffer_before_markers_and_inherit(&mut self, s: &str) {
         let pos = self.buffer.borrow().point();
-        let nchars = s.chars().count();
         let related = self.related_buffer_ids(self.current_buffer_id());
         let defaults = self.lookup_var("text-property-default-nonsticky", &Env::new());
         let props = self
             .buffer
             .borrow()
             .inherited_text_properties(pos, defaults.as_ref());
-        self.buffer
-            .borrow_mut()
-            .insert_with_properties_and_markers(s, Some(props.clone()), true);
+        let nchars = self.buffer.borrow_mut().insert_with_properties_and_markers(
+            s,
+            Some(props.clone()),
+            true,
+        ) - pos;
         self.adjust_markers_for_insert(self.current_buffer_id(), pos, nchars, true);
-        self.mirror_insert_to_related_buffers(&related, pos, s, Some(props), true);
+        self.mirror_insert_to_related_buffers(&related, pos, s, nchars, Some(props), true);
     }
 
     /// Attach non-Unicode GNU character codes to text just inserted into the

@@ -715,30 +715,43 @@ fn detect_charset(
 }
 
 /// The ISO-2022 categories' representatives, as detect_coding_iso_2022
-/// consults them.
-struct IsoCategories {
-    attrs: [Option<IsoAttributes>; 6],
+/// consults them: each one's attributes are set up the first time that
+/// detector asks, which it does only for text holding an escape or an
+/// eight-bit byte.
+struct IsoCategories<'a> {
+    interp: &'a Interpreter,
+    representatives: [Option<String>; 6],
+    attrs: [std::cell::OnceCell<Option<IsoAttributes>>; 6],
 }
 
-impl IsoCategories {
-    fn new(interp: &Interpreter, categories: &Categories) -> Self {
+impl<'a> IsoCategories<'a> {
+    fn new(interp: &'a Interpreter, categories: &Categories) -> Self {
         IsoCategories {
-            attrs: std::array::from_fn(|category| {
-                categories
-                    .representative(category)
-                    .and_then(|coding| iso_attributes(interp, coding))
+            interp,
+            representatives: std::array::from_fn(|category| {
+                categories.representative(category).map(str::to_string)
             }),
+            attrs: Default::default(),
         }
     }
 
-    fn safe(&self, category: usize, charset: &str) -> bool {
+    fn attrs(&self, category: usize) -> Option<&IsoAttributes> {
         self.attrs[category]
+            .get_or_init(|| {
+                self.representatives[category]
+                    .as_deref()
+                    .and_then(|coding| iso_attributes(self.interp, coding))
+            })
             .as_ref()
+    }
+
+    fn safe(&self, category: usize, charset: &str) -> bool {
+        self.attrs(category)
             .is_some_and(|attrs| attrs.safe.contains_key(charset))
     }
 
     fn flags(&self, category: usize) -> u32 {
-        self.attrs[category].as_ref().map_or(0, |attrs| attrs.flags)
+        self.attrs(category).map_or(0, |attrs| attrs.flags)
     }
 }
 
@@ -746,7 +759,7 @@ fn detect_iso_2022(
     interp: &Interpreter,
     src: &DetectSource,
     head_ascii: usize,
-    iso: &IsoCategories,
+    iso: &IsoCategories<'_>,
     inhibit_iso_escape_detection: bool,
     latin_extra: &Option<Vec<Value>>,
     info: &mut DetectInfo,
@@ -1005,7 +1018,7 @@ fn sjis_max_first_byte(interp: &Interpreter, coding: &str) -> i32 {
 struct Detector<'a> {
     interp: &'a Interpreter,
     categories: Categories,
-    iso: IsoCategories,
+    iso: IsoCategories<'a>,
     latin_extra: Option<Vec<Value>>,
     inhibit_iso_escape_detection: bool,
 }

@@ -7609,6 +7609,28 @@ setup_process_coding_systems's check now refuses). A 13-form
   tests run passing (2 ignored), the load-sensitive two among them; the
   seven integration targets; clippy `-D warnings', rustfmt and `git diff
   --check'; and each of the three commits builds alone.
+- **Round 122: what `insert-file-contents' spends outside the decode.**
+  Three costs that GNU does not have, measured on the release build. An
+  insertion counted its characters three times (insert_1_both is given
+  them, and the rope already counts what it grows by): once to move the
+  markers, once for each indirect buffer, and once more in the buffer
+  itself; it now counts them once, in the rope. The coding detector set
+  up the attributes of all six ISO-2022 categories' representatives
+  (their charsets, flags and safe tables, through the coding system
+  properties) before every detection, where detect_coding_iso_2022 reads
+  them only for text holding an escape or an eight-bit byte; they are now
+  set up the first time that detector asks. And a search in a unibyte
+  buffer holding a byte above 0x7F converted each chunk of the text back
+  to its bytes before matching, though such a byte is stored as two
+  bytes neither of which is ASCII: an ASCII pattern whose case
+  equivalents are ASCII (the Boyer-Moore condition) matches exactly
+  where it matches the stored text, which the search now reads in place.
+  sgml-html-meta's `(search-forward "</head>" nil t)' over the 2.6 MB
+  raw-text work buffer of a file took 15 ms, now 9.7. Reading a small
+  file into a buffer took about 200 us, now 97 to 118 (GNU 106 to 171);
+  a 2.6 MB file 41 to 61 ms, now 33 to 37 (GNU 9 to 11, which still
+  decodes in the visiting buffer itself and does not validate valid
+  UTF-8 twice).
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
