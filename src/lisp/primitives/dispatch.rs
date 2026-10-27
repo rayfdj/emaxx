@@ -16,7 +16,7 @@ mod frames;
 pub(crate) use frames::frame_display_parameter;
 pub(crate) mod gnutls;
 mod gui_actions;
-mod lists;
+pub(super) mod lists;
 pub(super) mod misc;
 pub(crate) use misc::set_internal_symbol;
 pub(crate) use misc::unibyte_doc_string;

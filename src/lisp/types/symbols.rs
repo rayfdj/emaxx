@@ -287,6 +287,16 @@ const KEY_NAMES: &[&str] = &[
     "`",
     ",",
     ",@",
+    "inhibit-file-name-operation",
+    "inhibit-file-name-handlers",
+    "file-name-handler-alist",
+    "load",
+    "file-exists-p",
+    "expand-file-name",
+    "require",
+    "defun",
+    "face-alias",
+    "circular-list",
 ];
 
 struct Symbols {

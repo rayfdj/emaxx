@@ -1959,7 +1959,8 @@ pub(super) fn direct_member_family(
     Ok(Value::Nil)
 }
 
-pub(super) fn direct_memq(
+/// The `memq' primitive, callable directly (fns.c:Fmemq).
+pub(in crate::lisp::primitives) fn direct_memq(
     interp: &mut Interpreter,
     args: &[Value],
     env: &mut crate::lisp::types::Env,

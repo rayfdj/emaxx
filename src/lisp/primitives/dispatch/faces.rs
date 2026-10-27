@@ -3,23 +3,49 @@ use crate::lisp::eval::LFACE_VECTOR_SIZE;
 use crate::lisp::reader::Reader;
 use crate::lisp::types::Kind;
 
-fn resolve_face_name(interp: &Interpreter, value: &Value) -> Result<String, LispError> {
-    let mut name = match value.kind() {
-        Kind::Symbol(name) => name.to_string(),
-        Kind::StringObject(_) => string_text(value)?,
+/// xfaces.c:resolve_face_name (FACE, true): a string names the symbol it
+/// interns; the `face-alias' chain is followed to its last symbol, the hare
+/// two links to the tortoise's one, and a chain that comes round again
+/// signals `circular-list' with the face.
+fn resolve_face_name(interp: &mut Interpreter, value: &Value) -> Result<String, LispError> {
+    let face = match value.kind() {
+        Kind::Symbol(symbol) => Value::Symbol(symbol),
+        Kind::StringObject(_) => Value::Symbol(crate::lisp::types::SymbolName::intern_str(
+            &string_text(value)?,
+        )),
         _ => return Err(wrong_type_argument("symbolp", *value)),
     };
-    let mut seen = HashSet::new();
-    while seen.insert(name.clone()) {
-        let Some(alias) = interp
-            .get_symbol_property(&name, "face-alias")
-            .and_then(|value| value.symbol_str().map(str::to_string))
-        else {
+    let property = cached_symbol!("face-alias").with(|symbol| Value::Symbol(*symbol));
+    // Fget (SYMBOL, Qface_alias), and whether it is a symbol other than nil.
+    let alias = |interp: &mut Interpreter, symbol: Value| -> Result<Option<Value>, LispError> {
+        let alias = super::misc::direct_get(interp, &[symbol, property], &mut Env::new())?;
+        Ok(matches!(alias.kind(), Kind::Symbol(_) | Kind::T).then_some(alias))
+    };
+    let (mut hare, mut tortoise) = (face, face);
+    let mut face_name;
+    loop {
+        face_name = hare;
+        let Some(next) = alias(interp, hare)? else {
             break;
         };
-        name = alias;
+        hare = next;
+        face_name = hare;
+        let Some(next) = alias(interp, hare)? else {
+            break;
+        };
+        hare = next;
+        tortoise = super::misc::direct_get(interp, &[tortoise, property], &mut Env::new())?;
+        if hare.eq_value(tortoise) {
+            return Err(LispError::SignalValue(Value::list([
+                cached_symbol!("circular-list").with(|symbol| Value::Symbol(*symbol)),
+                face,
+            ])));
+        }
     }
-    Ok(name)
+    Ok(face_name
+        .symbol_str()
+        .expect("a face name is a symbol")
+        .to_string())
 }
 
 fn face_vector(items: impl IntoIterator<Item = Value>) -> Value {

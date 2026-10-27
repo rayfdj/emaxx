@@ -2356,12 +2356,9 @@ pub(crate) fn map_keymap_own_entries(
         map
     };
     let mut roots = crate::lisp::alloc::RootedVec::from_vec(vec![map, tail, Value::Nil]);
-    let mut seen = HashSet::new();
+    // GNU walks the cells as they are, with no test for a circular list.
     while let Some((entry, _)) = tail.cons_values() {
         if entry.eq_value(keymap_symbol()) || is_keymap_value(interp, &entry) {
-            break;
-        }
-        if !seen.insert(tail.word()) {
             break;
         }
         roots[2] = entry;

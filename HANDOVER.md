@@ -6903,6 +6903,38 @@ setup_process_coding_systems's check now refuses). A 13-form
   costs 3.0M here. Local validation: the full gate, 3,243 passed across
   its ten groups with the documented local skips (the batch tests 52,
   one new); clippy `-D warnings', rustfmt and `git diff --check' pass.
+- **Round 101: file-name handlers, face aliases, source hashes and
+  load-history as fileio.c, xfaces.c, comp.c and lread.c.**
+  `find_file_name_handler' is Ffind_file_name_handler: the three
+  variables are read as C reads them, a symbol handler's `operations'
+  property through `get' and the operation through `memq', each regexp
+  matched with fast_string_match (no case folding) on the file name,
+  the entry matching latest kept, a handler `inhibit-file-name-handlers'
+  names passed over only while OPERATION is
+  `inhibit-file-name-operation' (identity, both lists unvalidated until
+  reached), `maybe_quit' between entries; a nil handler that matched
+  latest still leaves the caller on its no-handler path. The old walk
+  copied the alist and compiled each regexp afresh through the general
+  matcher. `resolve_face_name' is xfaces.c's: a string names the symbol
+  it interns, the `face-alias' chain is followed through `get' with the
+  hare two links to the tortoise's one, and a chain that comes round
+  again signals `(circular-list FACE)' where the old walk stopped at the
+  first repeat. comp.c's source hash streams the file through
+  md5-stream.c's md5_stream 32,768 bytes at a time (a .gz file's
+  uncompressed bytes) instead of reading it whole. `map-keymap' walks a
+  keymap's cells as keymap.c does, with no set of visited cells.
+  `current-load-list' is read and stored as Vcurrent_load_list, by its
+  symbol, and the `require' and `defun' entries' heads are their
+  symbols, not names interned again. A 26-line probe of handlers (an
+  operations list, inhibition, a dotted entry, a later-matching nil
+  handler, a non-list entry) and face aliases (strings, chains, a
+  two-face cycle) gives GNU 30.2's output byte for byte; a batch test
+  pins seven of its cases. With the runner's command line, startup's
+  mutator (instructions less collections) went from 162.1M to 158.2M
+  and the cal-french-tests.el setup's from 491.1M to 470.7M (GNU
+  343.8M); its total is 542.6M (GNU 508.1M). Local validation: the
+  full gate across its ten groups with the documented local skips;
+  clippy `-D warnings', rustfmt and `git diff --check' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -7695,6 +7727,8 @@ frozen passed on its first attempt (run 40322787666); PR #109 merged
 rounds 91 to 98 into main (`2b01388`).
 **On `7130092`** (round 99): full Rust gate passed (run 40415810583),
 frozen passed on its first attempt (run 40415814171).
+**On `2d968ce`** (round 100): full Rust gate passed (run 40421848778),
+frozen passed on its first attempt (run 40421854122).
 
 **Findings recorded, not fixed:**
 - **Where a test file's setup goes, mutator and collector apart (round

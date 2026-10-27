@@ -255,15 +255,38 @@ pub(crate) fn md5_buffer(buffer: &[u8]) -> [u8; 16] {
     ctx.finish()
 }
 
+/// md5-stream.c's BLOCKSIZE: the bytes md5_stream reads at a time.
+const BLOCKSIZE: usize = 32768;
+
+/// md5-stream.c:md5_stream: the digest of what STREAM yields, read a
+/// block at a time into one buffer, never the whole of it at once.
+pub(crate) fn md5_stream(stream: &mut impl std::io::Read) -> std::io::Result<[u8; 16]> {
+    let mut ctx = Md5Ctx::new();
+    let mut buffer = vec![0; BLOCKSIZE];
+    loop {
+        match stream.read(&mut buffer) {
+            Ok(0) => return Ok(ctx.finish()),
+            Ok(count) => ctx.process_bytes(&buffer[..count]),
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 /// The digest's 32 lowercase hexadecimal digits, as hexbuf_digest
 /// writes them.
-pub(crate) fn md5_hex(buffer: &[u8]) -> String {
+pub(crate) fn hex_digest(digest: [u8; 16]) -> String {
     let mut hex = String::with_capacity(32);
-    for byte in md5_buffer(buffer) {
+    for byte in digest {
         hex.push(char::from(b"0123456789abcdef"[usize::from(byte >> 4)]));
         hex.push(char::from(b"0123456789abcdef"[usize::from(byte & 15)]));
     }
     hex
+}
+
+/// `hex_digest' of BUFFER's digest.
+pub(crate) fn md5_hex(buffer: &[u8]) -> String {
+    hex_digest(md5_buffer(buffer))
 }
 
 #[cfg(test)]

@@ -2907,6 +2907,63 @@ mod tests {
     }
 
     #[test]
+    fn file_name_handlers_and_face_aliases_follow_fileio_c_and_xfaces_c() {
+        // fileio.c Ffind_file_name_handler: the latest match among the
+        // entries whose handler's `operations' lists the operation (Fmemq,
+        // which signals on a dotted list), the inhibited handlers passed
+        // over, case never folded.  xfaces.c resolve_face_name: an alias
+        // chain that comes round again signals `circular-list'.
+        run_with_large_stack(|| {
+            let emacs_repo = compat::project_root().join("../emacs");
+            let options = BatchRunOptions {
+                load_path: compat::emaxx_upstream_load_path(&emacs_repo)
+                    .expect("upstream load path"),
+                ..Default::default()
+            };
+            let mut interpreter =
+                initialize_batch_interpreter(&options).expect("init batch interpreter");
+            let form = Reader::new(
+                r#"(prin1-to-string
+                    (progn
+                      (defun r101-h1 (&rest _) 'h1)
+                      (defun r101-h2 (&rest _) 'h2)
+                      (put 'r101-h2 'operations '(file-exists-p load))
+                      (put 'r101-c 'face-alias 'r101-d)
+                      (put 'r101-d 'face-alias 'r101-c)
+                      (let ((file-name-handler-alist
+                             '(("\\.foo\\'" . r101-h1) ("foo" . r101-h2) (7 . r101-h1))))
+                        (list (find-file-name-handler "/a/b.foo" 'load)
+                              (find-file-name-handler "/a/b.foo" 'expand-file-name)
+                              (find-file-name-handler "/a/foo.c" 'expand-file-name)
+                              (let ((inhibit-file-name-operation 'load)
+                                    (inhibit-file-name-handlers '(r101-h2)))
+                                (find-file-name-handler "/a/foo.c" 'load))
+                              (let ((case-fold-search t))
+                                (find-file-name-handler "/A/B.FOO" 'load))
+                              (progn (put 'r101-h2 'operations '(load . bad))
+                                     (condition-case err
+                                         (find-file-name-handler "/a/foo.c" 'expand-file-name)
+                                       (error err)))
+                              (condition-case err (internal-lisp-face-p 'r101-c)
+                                (error err))))))"#,
+            )
+            .read_all()
+            .expect("read file-name-handler probe")
+            .remove(0);
+            let printed = interpreter
+                .eval(&form, &mut crate::lisp::types::Env::new())
+                .expect("evaluate file-name-handler probe");
+            assert_eq!(
+                lisp::primitives::string_like(&printed)
+                    .expect("printed")
+                    .text,
+                "(r101-h2 r101-h1 nil nil nil (wrong-type-argument listp (load . bad)) \
+                 (circular-list r101-c))"
+            );
+        });
+    }
+
+    #[test]
     fn batch_runtime_preloads_the_complete_tabulated_list_state() {
         run_with_large_stack(|| {
             let emacs_repo = compat::project_root().join("../emacs");
