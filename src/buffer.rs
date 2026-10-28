@@ -1871,6 +1871,13 @@ impl Buffer {
         self.text.rope()
     }
 
+    /// The stored text's characters and UTF-8 bytes, which the buffer
+    /// keeps: a rope of one leaf (a small text's) counts its text anew for
+    /// each length or chunk query.
+    pub fn text_counts(&self) -> (usize, usize) {
+        (self.text.len_chars(), self.text.len_bytes())
+    }
+
     pub fn full_buffer_string(&self) -> String {
         self.text.whole_string()
     }

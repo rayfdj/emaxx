@@ -8010,6 +8010,60 @@ setup_process_coding_systems's check now refuses). A 13-form
   documented local skips, all 3,281 tests run passing (2 ignored); the
   seven integration targets; clippy `-D warnings', rustfmt and `git diff
   --check'.
+- **Round 138: what reading `\N{NAME}' costs a file's setup.** The
+  frozen run's setup is where Emaxx stays furthest from GNU (82.8 s
+  against 66.3 s on 06df172), and seven of the files whose setup lags
+  most (textsec-tests, subr-tests, print-tests, elisp-mode-tests,
+  python-tests, arc-mode-tests and tar-mode-tests, 0.11 to 0.17 s
+  each) read a `\N{NAME}' escape, so their load runs `char-from-name'
+  and with it `ucs-names', which builds the table of 43,000 names:
+  118,000 calls of `get-char-code-property', each with its
+  `unicode-property-table-internal', `char-table-extra-slot',
+  `functionp' and `aref' of the name table, then the byte-code name
+  decoder, and a `string-match' of "\\<LAMDA\\>" for each name.
+  print-tests' setup took 2.72G instructions in the gate profile
+  against GNU's 1.53G, and a batch run of `(ucs-names)' 1.86G against
+  0.98G. regex-emacs.c tests a word boundary with category.h's
+  WORD_BOUNDARY_P, which asks category.c's word_boundary_p only when
+  either character is past Latin-1; Emaxx asked it for every pair of
+  word constituents (86,000 calls at 623 instructions there), and so,
+  with a category in `word-separating-categories', found a `\b', `\<'
+  or `\>' between two ASCII or Latin-1 letters where GNU finds none.
+  The matcher now tests as the macro does (syntax.c's scan_words asks
+  for every pair, as before). lisp.h's CHAR_TABLE_REF reads an ASCII
+  character through the table's ASCII slot and any other through the
+  tree, up the parents while nil: Emaxx's read classified each slot it
+  passed through the general type switch and named the uniprop purpose
+  by interning it, 212 instructions a read in the gate build; each slot
+  is now read in place and tested by tag and header, the bottom
+  subtable's element directly, and UNIPROP_TABLE_P compares the purpose
+  with the symbol itself (180 instructions in the gate build, 143 in the
+  release build, the regexp matcher's syntax and category lookups
+  included). chartab.c's uniprop_table and the fallback of
+  `unicode-property-table-internal' call Fassq on
+  `char-code-property-alist', which signals for a dotted or circular
+  alist; Emaxx's own walk returned nil for the first and never ended
+  for the second, and the subr's walk is now called (1,049 instructions
+  in the gate build where the plain walk took 670, which the checked
+  build pays mostly in its liveness tests; Fassq now reads each cons
+  once for its car and its cdr, a test fewer an element). Native code's
+  `aref' of a char-table (CHECK_CHARACTER, then CHAR_TABLE_REF),
+  `char-table-extra-slot' and `functionp' have entries of their own in
+  the native subr table: 284, 38 and 93 instructions in the gate build
+  where the generic entry took 699, 234 and 239 (GNU 91, 26 and 41). A
+  buffer text of one rope leaf (every text up to SMALL_TEXT) cost the
+  syntax scanner and the search snapshot a count of the whole leaf for
+  each length, position or chunk query, as ropey counts a leaf anew
+  each time it is asked (291,000 counts in electric-tests' setup, 62M
+  instructions); they take the counts the buffer keeps now, and the
+  scanner reads a one-leaf text in place (97,000 counts left).
+  print-tests' setup takes 2.55G instructions in the gate profile, and
+  `(ucs-names)' 1.70G; in the release build 1.81G and 1.17G (GNU 1.53G
+  and 0.98G), electric-tests' setup 3.79G (3.83G before, GNU 3.36G).
+  Local validation: the full gate across its ten groups with the
+  documented local skips, all 3,284 tests run passing (2 ignored); the
+  seven integration targets; clippy `-D warnings', rustfmt and `git diff
+  --check'.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -8926,6 +8980,12 @@ semantic-utest-ia took 4.57 s against 2.63, where the release build
 runs 1.04 times GNU's instructions and the gate profile 1.60 (its
 `assq' walks of long alists, 5.4G instructions in the gate build
 against 1.9G, are mostly the liveness test of each cons; round 131).
+
+**On `06df172`** (round 137): full Rust gate passed (run 40658627662);
+frozen (run 40658631429) matched all 7,928 outcomes on its first
+attempt. Its timings: setup 82.8 s against 66.3 s (1.249), test bodies
+258.7 s against 267.1 s (0.969), in all 1.010. Rounds 111 to 137 were
+merged into main with it (PR 111).
 
 **Findings recorded, not fixed:**
 - **What the checked build costs (round 131).** mule-tests under the

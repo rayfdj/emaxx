@@ -1925,8 +1925,12 @@ pub(super) fn direct_assq_family(
     let want_car = name == "assq";
     let key = args[0];
     let mut tail = args[1];
+    let key_vectorlike = key.is_vectorlike();
     let mut walk = crate::lisp::types::TailWalk::new(tail);
-    while let Some(cell) = tail.cons_ref() {
+    while let Some(cons) = tail.cons_ref() {
+        // The cell once for its car and its cdr, as XCAR and XCDR read
+        // one object.
+        let cell: &crate::lisp::types::ConsCell = &cons;
         let item = cell.car.get();
         if let Some(entry) = item.cons_ref() {
             let entry_key = if want_car {
@@ -1937,7 +1941,7 @@ pub(super) fn direct_assq_family(
             // lisp.h:EQ: the words, or a symbol with position (always
             // vectorlike) against its symbol.
             if entry_key.word() == key.word()
-                || ((entry_key.is_vectorlike() || key.is_vectorlike())
+                || ((key_vectorlike || entry_key.is_vectorlike())
                     && values_eq_in_env(interp, &entry_key, &key, env))
             {
                 return Ok(item);

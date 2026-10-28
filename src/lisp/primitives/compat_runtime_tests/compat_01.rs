@@ -2153,6 +2153,68 @@ fn byte_code_memq_compares_by_eq_with_symbols_with_pos_enabled() {
     assert_eq!(value.to_string(), "(nil (2 t) (foo) nil (b) nil)");
 }
 
+#[test]
+fn regexp_word_boundaries_skip_word_boundary_p_for_two_single_byte_characters() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let value = crate::test_support::eval_lisp(
+        &mut interp,
+        &mut env,
+        r#"(with-temp-buffer
+             (let ((table (copy-category-table)))
+               (define-category ?X "probe" table)
+               (dolist (c '(?b ?β ?é)) (modify-category-entry c ?X table))
+               (set-category-table table)
+               (let ((word-separating-categories '((nil . ?X))))
+                 (list (string-match "a\\b" "ab")
+                       (string-match "a\\>" "ab")
+                       (string-match "\\<b" "ab")
+                       (string-match "a\\B" "ab")
+                       (string-match "a\\b" "aé")
+                       (string-match "α\\b" "αβ")
+                       (string-match "α\\>" "αβ")
+                       (string-match "\\<β" "αβ")
+                       (string-match "α\\B" "αβ")
+                       (progn (insert "ab αβ")
+                              (goto-char (point-min))
+                              (list (forward-word) (point) (forward-word) (point)))))))"#,
+    )
+    .expect("word boundaries under a separating category");
+    // GNU 30.2: regex-emacs.c tests category.h's WORD_BOUNDARY_P, which
+    // asks word_boundary_p only when either character is past Latin-1;
+    // syntax.c's scan_words asks it for every pair.
+    assert_eq!(value.to_string(), "(nil nil nil 0 nil 0 0 1 nil (t 2 t 3))");
+}
+
+#[test]
+fn unicode_property_table_internal_walks_the_alist_as_fassq() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let value = crate::test_support::eval_lisp(
+        &mut interp,
+        &mut env,
+        r#"(mapcar
+            (lambda (alist)
+              (condition-case err
+                  (let ((char-code-property-alist alist))
+                    (unicode-property-table-internal 'zz))
+                (circular-list (car err))
+                (error err)))
+            (list 'foo
+                  (cons (cons 'x 1) 'foo)
+                  (let ((l (list (cons 'x 1) (cons 'y 2)))) (setcdr (cdr l) l) l)
+                  (list 'junk (cons 'zz 7))
+                  (list (cons 'zz "no-such-uni-file"))))"#,
+    )
+    .expect("unicode-property-table-internal");
+    // GNU 30.2: chartab.c:uniprop_table and the subr's own fallback call
+    // Fassq, which signals for a dotted or circular alist.
+    assert_eq!(
+        value.to_string(),
+        r#"((wrong-type-argument listp foo) (wrong-type-argument listp ((x . 1) . foo)) circular-list 7 "no-such-uni-file")"#
+    );
+}
+
 // Finding 34 re-hosts: the originals ran on the bare interpreter against
 // native facades and were deleted with them; GNU's own test tree covers
 // none of these, so the coverage lives here on the full dumped image,

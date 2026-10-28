@@ -135,7 +135,13 @@ fn fixnum_coerce_marker(interp: &Interpreter, value: &Value) -> Result<i64, Lisp
 /// read it, one rope chunk at a time.  Positions are 1-based like GNU's.
 struct Text<'r> {
     rope: &'r ropey::Rope,
+    /// The rope's characters and bytes, as the buffer counts them.
+    chars: usize,
     len: usize,
+    /// The whole text when the rope is one chunk (a small buffer's), read
+    /// in place: ropey counts a one-leaf rope's text anew for each length,
+    /// position or chunk query.
+    whole: Option<&'r str>,
     ascii: bool,
     /// The buffer is unibyte, holding the bytes 0x80 to 0xFF as U+0080 to
     /// U+00FF: those read as raw-byte characters.
@@ -147,26 +153,36 @@ struct Text<'r> {
 }
 
 impl<'r> Text<'r> {
-    fn new(rope: &'r ropey::Rope, multibyte: bool, extended: Vec<(usize, u32)>) -> Self {
-        let len = rope.len_bytes();
+    /// ROPE's text, of CHARS characters in LEN bytes.
+    fn new(
+        rope: &'r ropey::Rope,
+        (chars, len): (usize, usize),
+        multibyte: bool,
+        extended: Vec<(usize, u32)>,
+    ) -> Self {
+        let (first, _, _, _) = rope.chunk_at_byte(0);
         Text {
             rope,
+            chars,
             len,
-            ascii: len == rope.len_chars(),
+            whole: (first.len() == len).then_some(first),
+            ascii: len == chars,
             unibyte: !multibyte,
             extended,
-            chunk: &[],
+            chunk: first.as_bytes(),
             chunk_start: 0,
         }
     }
 
     /// CHAR_TO_BYTE.  The text's ends need no walk of the rope.
     fn char_to_byte(&self, charpos: usize) -> usize {
-        let index = (charpos - 1).min(self.rope.len_chars());
+        let index = (charpos - 1).min(self.chars);
         if self.ascii || index == 0 {
             charpos
-        } else if index == self.rope.len_chars() {
+        } else if index == self.chars {
             self.len + 1
+        } else if let Some(text) = self.whole {
+            ropey::str_utils::char_to_byte_idx(text, index) + 1
         } else {
             self.rope.char_to_byte(index) + 1
         }
@@ -234,7 +250,10 @@ impl<'r> Text<'r> {
             };
         }
         if ch == rx::EXTENDED_PLACEHOLDER && !self.extended.is_empty() {
-            let charpos = self.rope.byte_to_char(index) + 1;
+            let charpos = match self.whole {
+                Some(text) => ropey::str_utils::byte_to_char_idx(text, index),
+                None => self.rope.byte_to_char(index),
+            } + 1;
             if let Ok(found) = self
                 .extended
                 .binary_search_by_key(&charpos, |(pos, _)| *pos)
@@ -896,6 +915,7 @@ impl<'a, 'r> Scanner<'a, 'r> {
     fn new(interp: &'a mut Interpreter, env: &'a mut Env, rope: &'r ropey::Rope) -> Self {
         let buffer = interp.buffer.borrow();
         let multibyte = buffer.is_multibyte();
+        let counts = buffer.text_counts();
         let z = buffer.size_total() + 1;
         let extended = if buffer.has_extended_chars_in(1, z) {
             buffer
@@ -911,7 +931,7 @@ impl<'a, 'r> Scanner<'a, 'r> {
         let mut scanner = Scanner {
             interp,
             env,
-            text: Text::new(rope, multibyte, extended),
+            text: Text::new(rope, counts, multibyte, extended),
             gl,
             begv: 0,
             begv_byte: 0,

@@ -923,7 +923,10 @@ impl BufferSnapshot {
         let buffer = interp.buffer.borrow();
         let rope = buffer.text_rope();
         let (begv, zv, point) = (buffer.point_min(), buffer.point_max(), buffer.point());
-        let ascii = rope.len_bytes() == rope.len_chars();
+        // The counts the buffer keeps, where a one-leaf rope would count
+        // its text twice.
+        let (chars, bytes) = buffer.text_counts();
+        let ascii = chars == bytes;
         // An ASCII text's bytes are its characters; otherwise the buffer's
         // conversions, which know its ends and the positions converted
         // since its last edit before them.

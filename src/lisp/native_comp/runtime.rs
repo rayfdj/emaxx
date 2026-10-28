@@ -2686,6 +2686,7 @@ static FUNCALL_SUBR_INDEX: OnceLock<usize> = OnceLock::new();
 static LENGTH_SUBR_INDEX: OnceLock<usize> = OnceLock::new();
 static FBOUNDP_SUBR_INDEX: OnceLock<usize> = OnceLock::new();
 static AREF_SUBR_INDEX: OnceLock<usize> = OnceLock::new();
+static CHAR_TABLE_EXTRA_SLOT_SUBR_INDEX: OnceLock<usize> = OnceLock::new();
 static ASET_SUBR_INDEX: OnceLock<usize> = OnceLock::new();
 static AUTOLOAD_DO_LOAD_SUBR_INDEX: OnceLock<usize> = OnceLock::new();
 static SYMBOL_FUNCTION_SUBR_INDEX: OnceLock<usize> = OnceLock::new();
@@ -2729,6 +2730,41 @@ pub(super) extern "C" fn direct_native_fboundp(symbol: NativeWord) -> NativeWord
         Some(function) => native_boolean(function != 0),
         None => slow_unary_subr(&FBOUNDP_SUBR_INDEX, "fboundp", symbol),
     }
+}
+
+/// eval.c:Ffunctionp: FUNCTIONP, which neither signals nor allocates, so
+/// the handlers need not be brought up to date for it.
+pub(super) extern "C" fn direct_native_functionp(object: NativeWord) -> NativeWord {
+    with_active(|active| {
+        // SAFETY: the caller's argument word is live.
+        let object = unsafe { Value::from_word(object) };
+        native_boolean(crate::lisp::primitives::function_value_p(
+            unsafe { &*active.interpreter },
+            &object,
+            unsafe { &*active.environment.get() },
+        ))
+    })
+}
+
+/// chartab.c:Fchar_table_extra_slot of a char-table at a fixnum within
+/// its extras, read in place; anything else takes the subr's own path,
+/// which signals.
+pub(super) extern "C" fn direct_native_char_table_extra_slot(
+    table: NativeWord,
+    n: NativeWord,
+) -> NativeWord {
+    // SAFETY: the caller's argument word is live.
+    if let Some(char_table) = unsafe { Value::from_word(table) }.char_table_ref()
+        && let Some(value) = decode_fixnum(n)
+            .and_then(|n| usize::try_from(n).ok())
+            .and_then(|slot| char_table.extra(slot))
+    {
+        return value.word();
+    }
+    invoke_subr(
+        subr_index(&CHAR_TABLE_EXTRA_SLOT_SUBR_INDEX, "char-table-extra-slot"),
+        &[table, n],
+    )
 }
 
 /// data.c:Fsymbol_function, as `direct_native_fboundp' reads the cell.
@@ -2829,13 +2865,21 @@ pub(super) extern "C" fn direct_native_type_of(value: NativeWord) -> NativeWord 
 }
 
 /// data.c:Faref's AREF of a vector or a record at a fixnum index within
-/// it, read in place; any other array or index takes the subr's own path.
+/// it, and its CHAR_TABLE_REF of a char-table at a character, read in
+/// place; any other array or index takes the subr's own path.
 pub(super) extern "C" fn direct_native_aref(array: NativeWord, index: NativeWord) -> NativeWord {
-    if let Some(slot) = decode_fixnum(index).and_then(|index| usize::try_from(index).ok()) {
+    if let Some(index) = decode_fixnum(index) {
+        let slot = usize::try_from(index).ok();
         // SAFETY: the caller's argument word is live.
         let value = match unsafe { Value::from_word(array) }.kind() {
-            Kind::Vector(vector) => vector.get(slot),
-            Kind::LispRecord(record) => record.get(slot),
+            Kind::Vector(vector) => slot.and_then(|slot| vector.get(slot)),
+            Kind::LispRecord(record) => slot.and_then(|slot| record.get(slot)),
+            Kind::CharTable(table) => u32::try_from(index)
+                .ok()
+                .filter(|&character| {
+                    character <= crate::lisp::alloc::vectors::char_tables::CHAR_TABLE_MAX_CHAR
+                })
+                .map(|character| table.get(character)),
             _ => None,
         };
         if let Some(value) = value {
@@ -13128,6 +13172,167 @@ mod tests {
                 Value::Integer(5)
             ])
         );
+    }
+
+    #[test]
+    fn native_char_table_reads_and_functionp_answer_as_their_subrs() {
+        // What generated code calls for `aref' of a char-table,
+        // `char-table-extra-slot' and `functionp': the table's entries.
+        // CHAR_TABLE_REF falls to the default and the parent for an ASCII
+        // and another character alike; FUNCTIONP follows the symbol's
+        // function cell.  A bad character or slot takes each subr's own
+        // entry, which signals.
+        fn entry(name: &str) -> *mut c_void {
+            native_subr_address(
+                super::super::abi::native_subrs()
+                    .iter()
+                    .position(|subroutine| subroutine.name == name)
+                    .expect("the subr belongs to the configured GNU ABI"),
+            )
+        }
+        unsafe extern "C" fn probe(table: NativeWord) -> NativeWord {
+            // SAFETY: each entry's own fixed arity.
+            let aref: extern "C" fn(NativeWord, NativeWord) -> NativeWord =
+                unsafe { std::mem::transmute(entry("aref")) };
+            let extra_slot: extern "C" fn(NativeWord, NativeWord) -> NativeWord =
+                unsafe { std::mem::transmute(entry("char-table-extra-slot")) };
+            let functionp: extern "C" fn(NativeWord) -> NativeWord =
+                unsafe { std::mem::transmute(entry("functionp")) };
+            let fixnum = |n: i64| Value::Integer(n).word();
+            let lambda = Value::list([Value::symbol("lambda"), Value::Nil]);
+            let results = [
+                aref(table, fixnum(i64::from(b'a'))),
+                aref(table, fixnum(0x3b1)),
+                aref(table, fixnum(i64::from(b'b'))),
+                aref(table, fixnum(0x4e00)),
+                extra_slot(table, fixnum(1)),
+                extra_slot(table, fixnum(0)),
+                functionp(Value::symbol("car").word()),
+                functionp(lambda.word()),
+                functionp(Value::symbol("when").word()),
+                functionp(fixnum(3)),
+            ];
+            invoke_subr(
+                super::super::abi::native_subrs()
+                    .iter()
+                    .position(|subroutine| subroutine.name == "list")
+                    .expect("list"),
+                &results,
+            )
+        }
+        unsafe extern "C" fn bad_slot(table: NativeWord) -> NativeWord {
+            // SAFETY: `char-table-extra-slot' takes two fixed arguments.
+            let extra_slot: extern "C" fn(NativeWord, NativeWord) -> NativeWord =
+                unsafe { std::mem::transmute(entry("char-table-extra-slot")) };
+            extra_slot(table, Value::Integer(2).word())
+        }
+        unsafe extern "C" fn bad_character(table: NativeWord) -> NativeWord {
+            // SAFETY: `aref' takes two fixed arguments.
+            let aref: extern "C" fn(NativeWord, NativeWord) -> NativeWord =
+                unsafe { std::mem::transmute(entry("aref")) };
+            aref(table, Value::Integer(-1).word())
+        }
+
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let mut runtime = NativeRuntime::default();
+        let call = |interpreter: &mut Interpreter, environment: &mut Env, name, args: &[Value]| {
+            crate::lisp::primitives::call(interpreter, name, args, environment).expect(name)
+        };
+        let purpose = Value::symbol("probe-char-table");
+        call(
+            &mut interpreter,
+            &mut environment,
+            "put",
+            &[
+                purpose,
+                Value::symbol("char-table-extra-slots"),
+                Value::Integer(2),
+            ],
+        );
+        let table = call(
+            &mut interpreter,
+            &mut environment,
+            "make-char-table",
+            &[purpose, Value::Nil],
+        );
+        let parent = call(
+            &mut interpreter,
+            &mut environment,
+            "make-char-table",
+            &[purpose, Value::symbol("inherited")],
+        );
+        call(
+            &mut interpreter,
+            &mut environment,
+            "set-char-table-parent",
+            &[table, parent],
+        );
+        for (character, value) in [(i64::from(b'a'), "ascii"), (0x3b1, "alpha")] {
+            call(
+                &mut interpreter,
+                &mut environment,
+                "aset",
+                &[table, Value::Integer(character), Value::symbol(value)],
+            );
+        }
+        call(
+            &mut interpreter,
+            &mut environment,
+            "set-char-table-extra-slot",
+            &[table, Value::Integer(1), Value::symbol("extra")],
+        );
+        let returned = runtime
+            .invoke(
+                &mut interpreter,
+                &mut environment,
+                probe as *const c_void,
+                NativeCallingConvention::Fixed,
+                &[table],
+            )
+            .expect("native char-table and functionp probes");
+        assert_eq!(
+            returned.to_vec().expect("a proper list"),
+            [
+                Value::symbol("ascii"),
+                Value::symbol("alpha"),
+                Value::symbol("inherited"),
+                Value::symbol("inherited"),
+                Value::symbol("extra"),
+                Value::Nil,
+                Value::T,
+                Value::T,
+                Value::Nil,
+                Value::Nil,
+            ]
+        );
+
+        let bad: [(unsafe extern "C" fn(NativeWord) -> NativeWord, Value); 2] = [
+            (
+                bad_slot,
+                Value::list([Value::symbol("args-out-of-range"), table, Value::Integer(2)]),
+            ),
+            (
+                bad_character,
+                Value::list([
+                    Value::symbol("wrong-type-argument"),
+                    Value::symbol("characterp"),
+                    Value::Integer(-1),
+                ]),
+            ),
+        ];
+        for (probe, expected) in bad {
+            let error = runtime
+                .invoke(
+                    &mut interpreter,
+                    &mut environment,
+                    probe as *const c_void,
+                    NativeCallingConvention::Fixed,
+                    &[table],
+                )
+                .expect_err("the subr's own entry signals");
+            assert_eq!(crate::lisp::eval::error_condition_value(&error), expected);
+        }
     }
 
     #[test]

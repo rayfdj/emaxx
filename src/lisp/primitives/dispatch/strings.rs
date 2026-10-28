@@ -956,7 +956,7 @@ define_dispatch!(
                 match uniprop_table_or_entry(interp, args[0], env)? {
                     Ok(table) => Ok(Value::CharTable(table)),
                     Err(Some(entry)) => Ok(entry.cdr.get()),
-                    Err(None) => Ok(char_code_property_entry(interp, args[0])
+                    Err(None) => Ok(char_code_property_entry(interp, args[0], env)?
                         .map_or(Value::Nil, |entry| entry.cdr.get())),
                 }
             }
@@ -1019,28 +1019,23 @@ pub(crate) fn uniprop_table_ref(
         .filter(|value| !value.is_nil())
 }
 
-/// Fassq (PROP, Vchar_code_property_alist): the entry, read from the
-/// C-owned symbol value cell (by the symbol held here, as the C global
-/// is), so a caller's same-named lexical binding is not part of this
-/// state.  The entries are compared with `eq' in place.
+/// Fassq (PROP, Vchar_code_property_alist): the entry, the alist read
+/// from the C-owned symbol value cell (by the symbol held here, as the C
+/// global is), so a caller's same-named lexical binding is not part of
+/// this state.  Fassq's own walk, which signals for a circular or dotted
+/// alist.
 fn char_code_property_entry(
-    interp: &Interpreter,
+    interp: &mut Interpreter,
     prop: Value,
-) -> Option<crate::lisp::alloc::ConsRef> {
-    let mut tail = cached_symbol!("char-code-property-alist")
+    env: &mut Env,
+) -> Result<Option<crate::lisp::alloc::ConsRef>, LispError> {
+    let Ok(alist) = cached_symbol!("char-code-property-alist")
         .with(|symbol| interp.symbol_value_cell_symbol(symbol))
-        .ok()?;
-    loop {
-        let Kind::Cons(cell) = tail.kind() else {
-            return None;
-        };
-        if let Kind::Cons(entry) = cell.car.get().kind()
-            && entry.car.get().word() == prop.word()
-        {
-            return Some(entry);
-        }
-        tail = cell.cdr.get();
-    }
+    else {
+        return Ok(None);
+    };
+    let entry = super::lists::direct_assq_family(interp, &[prop, alist], env, "assq")?;
+    Ok(entry.cons_ref())
 }
 
 /// chartab.c's UNIPROP_TABLE_P: a `char-code-property-table' with its
@@ -1073,7 +1068,7 @@ fn uniprop_table_or_entry(
     prop: Value,
     env: &mut Env,
 ) -> Result<Result<CharTableRef, Option<crate::lisp::alloc::ConsRef>>, LispError> {
-    let Some(entry) = char_code_property_entry(interp, prop) else {
+    let Some(entry) = char_code_property_entry(interp, prop, env)? else {
         return Ok(Err(None));
     };
     let mut loaded = false;

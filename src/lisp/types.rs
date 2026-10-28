@@ -2739,6 +2739,36 @@ impl Value {
         }
     }
 
+    /// CHAR_TABLE_P, by the tag and the header alone.
+    #[inline(always)]
+    pub(crate) fn char_table_ref(self) -> Option<CharTableRef> {
+        if self.0 & TAG_MASK != TAG_VECTORLIKE {
+            return None;
+        }
+        let header = (self.0 & !TAG_MASK) as *mut crate::lisp::alloc::VectorHeader;
+        // SAFETY: as `kind's vectorlike arm.
+        unsafe {
+            (crate::lisp::alloc::vectors::header_tag(header)
+                == crate::lisp::alloc::VectorTag::CharTable)
+                .then(|| CharTableRef::from_raw(header))
+        }
+    }
+
+    /// SUB_CHAR_TABLE_P, by the tag and the header alone.
+    #[inline(always)]
+    pub(crate) fn sub_char_table_ref(self) -> Option<SubCharTableRef> {
+        if self.0 & TAG_MASK != TAG_VECTORLIKE {
+            return None;
+        }
+        let header = (self.0 & !TAG_MASK) as *mut crate::lisp::alloc::VectorHeader;
+        // SAFETY: as `kind's vectorlike arm.
+        unsafe {
+            (crate::lisp::alloc::vectors::header_tag(header)
+                == crate::lisp::alloc::VectorTag::SubCharTable)
+                .then(|| SubCharTableRef::from_raw(header))
+        }
+    }
+
     /// NATIVE_COMP_FUNCTIONP: a subr allocated for native code, by the tag
     /// and the header alone.
     #[inline(always)]
