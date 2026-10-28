@@ -4480,6 +4480,7 @@ impl Interpreter {
             mark(value);
         }
         mark(&self.local_time_zone_rule);
+        mark(&self.signaling_function);
         for (_, watchers) in &self.variable_watchers {
             for watcher in watchers {
                 mark(watcher);
@@ -4926,6 +4927,7 @@ impl Interpreter {
                 *value = c.copy(value);
             }
             clone.local_time_zone_rule = c.copy(&clone.local_time_zone_rule.clone());
+            clone.signaling_function = c.copy(&clone.signaling_function);
             for (symbol, watchers) in &mut clone.variable_watchers {
                 *symbol = c.copy_symbol(*symbol);
                 for watcher in watchers {
@@ -5354,6 +5356,15 @@ pub struct InterpreterState {
     /// those refreshes it (`refresh_call_depth_gate').
     call_depth_gate: i64,
     debug_on_next_call: bool,
+    /// eval.c's Vsignaling_function: the function signal_or_quit found
+    /// below `signal''s frame (and `error''s), for cmd_error to report.
+    pub(crate) signaling_function: Value,
+    /// macros.c's C `executing_kbd_macro', the macro most recently started:
+    /// unlike `executing-kbd-macro' it outlives an error that unwinds the
+    /// macro, so cmd_error can say how far the macro got.
+    pub(crate) executing_kbd_macro: bool,
+    /// macros.c's executing_kbd_macro_iterations.
+    pub(crate) kbd_macro_iterations: i64,
     /// data.c's forwarded C boolean, also read through comp.c's native
     /// relocation. The box keeps its address stable if the interpreter moves;
     /// Cell permits same-thread FFI reads while Rust updates the live slot.
@@ -6187,6 +6198,9 @@ impl Interpreter {
             max_lisp_eval_depth: 1600,
             call_depth_gate: if core::profiling() { i64::MIN } else { 1600 },
             debug_on_next_call: false,
+            signaling_function: Value::Nil,
+            executing_kbd_macro: false,
+            kbd_macro_iterations: 0,
             symbols_with_positions_enabled: Box::new(Cell::new(false)),
             lisp_eval_depth: 0,
             garbage_collection_inhibited: 0,

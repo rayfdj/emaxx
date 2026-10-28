@@ -1187,7 +1187,7 @@ fn write_prepared_printer_output(
                     .map_err(|error| LispError::Signal(error.to_string()))?;
                 interp.batch_stdout_need_newline = true;
             } else {
-                crate::lisp::primitives::echo_area_print(&text);
+                crate::lisp::primitives::echo_area_print_logged(interp, &text, env);
             }
             Ok(())
         }

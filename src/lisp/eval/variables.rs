@@ -3653,6 +3653,19 @@ impl Interpreter {
                 return (next, false);
             }
         }
+        // Remember from where signal was called: the frame below the
+        // innermost (`signal''s own), or below `error''s when that called
+        // `signal'.
+        self.signaling_function = {
+            let mut frames = self.backtrace_frames.iter().rev().skip(1);
+            let mut frame = frames.next();
+            if frame.is_some_and(|frame| {
+                matches!(frame.function_snapshot().kind(), Kind::Symbol(name) if name == "error")
+            }) {
+                frame = frames.next();
+            }
+            frame.map_or(Value::Nil, |frame| frame.function_snapshot())
+        };
         let identity = error.identity();
         let mut error = match self.dispatch_handler_bindings(error, env) {
             Err(error) => error,

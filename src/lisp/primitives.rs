@@ -271,7 +271,7 @@ pub(crate) use dispatch::render_mode_line_glass;
 pub(crate) use dispatch::set_internal_symbol;
 pub(crate) use dispatch::unibyte_doc_string;
 pub(crate) use dispatch::{
-    EchoSpans, echo_area_message_tick, echo_area_print, echo_display_message,
+    EchoSpans, echo_area_message_tick, echo_area_print_logged, echo_display_message,
     expire_echo_area_message, set_echo_area_message, set_echo_area_message_with_spans,
     string_face_spans,
 };

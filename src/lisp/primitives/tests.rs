@@ -7144,6 +7144,10 @@ fn read_coding_system_matches_the_gnu_coding_primitive_contract() {
         );
     }
 
+    // No keyboard macro is executing when the command loop reports an
+    // error (cmd_error clears it first): with one, the reporter's
+    // bitch_at_user would end it with a `user-error', as GNU's does.
+    interp.set_global_binding("executing-kbd-macro", Value::Nil);
     assert_eq!(
         call(
             &mut interp,
@@ -24306,7 +24310,20 @@ fn tty_event_reader_quit_signals_gnu_quit() {
     let Err(LispErrorKind::SignalValue(data)) = event.as_ref().map_err(LispError::kind) else {
         panic!("C-g from the tty reader must signal, got {event:?}");
     };
-    assert_eq!(*data, Value::Symbol("quit".into()));
+    // keyboard.c signal_quit: Fsignal (Qquit, Qnil), whose error object
+    // is the list (quit).
+    assert_eq!(*data, Value::list([Value::symbol("quit")]));
+    set_tty_event_reader(Some(Box::new(|_| None)));
+    let caught = crate::test_support::eval_lisp(
+        &mut interp,
+        &mut env,
+        "(condition-case err (read-event) (quit (list 'quit err)) (error (list 'error err)))",
+    );
+    set_tty_event_reader(None);
+    assert_eq!(
+        caught.expect("condition-case handles the quit"),
+        Value::list([Value::symbol("quit"), Value::list([Value::symbol("quit")])])
+    );
 }
 
 #[test]
@@ -24873,7 +24890,7 @@ fn tty_minibuffer_quit_signals_gnu_quit() {
     let Err(LispErrorKind::SignalValue(data)) = result.as_ref().map_err(LispError::kind) else {
         panic!("C-g from the minibuffer loop must signal, got {result:?}");
     };
-    assert_eq!(*data, Value::Symbol("quit".into()));
+    assert_eq!(*data, Value::list([Value::symbol("quit")]));
 }
 
 #[test]

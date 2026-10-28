@@ -43,6 +43,9 @@ thread_local! {
     /// further prints append (GNU's echo buffer accumulates a print
     /// sequence) while any `message' replaces it and resets this.
     static ECHO_FROM_PRINT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// xdisp.c's message_log_need_newline: the log's last line was
+    /// written by printing to the echo area and is not finished.
+    static MESSAGE_LOG_NEED_NEWLINE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Monotonic count of message emissions.  GNU's message3 repaints
     /// the echo area directly (display_echo_area) even while a tty menu
     /// holds redisplay frozen, whereas read_char's input-arrival
@@ -287,11 +290,26 @@ pub(crate) fn message_with_string(
         message_to_stderr(interp, Some(&message), env)?;
         return Ok(());
     }
+    let log = string_text(&message)?;
+    message3(interp, message, &log, env)
+}
+
+/// xdisp.c:message3 of MESSAGE in the echo area, logged in *Messages* as
+/// LOG (print_error_message logs the signalling function before the text
+/// it shows).
+pub(crate) fn message3(
+    interp: &mut Interpreter,
+    message: Value,
+    log: &str,
+    env: &mut Env,
+) -> Result<(), LispError> {
     // The interactive message3 path can run redisplay callbacks. Keep the
     // formatted object rooted across those calls using the existing stack roots.
     interp.with_lisp_stack_roots(&message, |interp| {
         clear_message(interp, env, true, true)?;
-        log_message_text(interp, &string_text(&message)?, env);
+        // First flush out any partial line written with print.
+        message_log_maybe_newline(interp, env);
+        log_message_text(interp, log, env);
         if interp
             .forwarded_c_value("inhibit-message", &Env::new())
             .is_some_and(|value| value.is_truthy())
@@ -339,6 +357,7 @@ pub(crate) fn message1(
     if !batch {
         return message_with_string(interp, "%s", Value::string(text), env);
     }
+    message_log_maybe_newline(interp, env);
     log_message_text(interp, text, env);
     if interp
         .forwarded_c_value("inhibit-message", &Env::new())
@@ -349,7 +368,38 @@ pub(crate) fn message1(
     message_to_stderr(interp, Some(&Value::string(text)), env)
 }
 
-pub(crate) fn log_message_text(interp: &mut Interpreter, text: &str, _env: &Env) {
+/// xdisp.c message_dolog of TEXT with NLFLAG: a line of its own (after a
+/// partial printed line it is that line's end, as add_to_log's is).
+pub(crate) fn log_message_text(interp: &mut Interpreter, text: &str, env: &Env) {
+    log_message_dolog(interp, text, true, env);
+}
+
+/// xdisp.c message_log_maybe_newline: end the log line printing left open.
+pub(crate) fn message_log_maybe_newline(interp: &mut Interpreter, env: &Env) {
+    if MESSAGE_LOG_NEED_NEWLINE.with(std::cell::Cell::get) {
+        log_message_dolog(interp, "", true, env);
+    }
+}
+
+/// xdisp.c message_dolog of TEXT without NLFLAG: the log line left open
+/// (print_error_message logs the signalling function this way).
+pub(crate) fn log_message_partial(interp: &mut Interpreter, text: &str, env: &Env) {
+    log_message_dolog(interp, text, false, env);
+}
+
+/// print.c's output to the echo area (PRINTCHARFUN t, interactive):
+/// setup_echo_area_for_printing, which first ends the log line printing
+/// left open when a message has held the echo area since, then
+/// message_dolog of TEXT, its line left open, and TEXT in the echo area.
+pub(crate) fn echo_area_print_logged(interp: &mut Interpreter, text: &str, env: &Env) {
+    if !ECHO_FROM_PRINT.with(std::cell::Cell::get) {
+        message_log_maybe_newline(interp, env);
+    }
+    log_message_partial(interp, text, env);
+    echo_area_print(text);
+}
+
+fn log_message_dolog(interp: &mut Interpreter, text: &str, nlflag: bool, _env: &Env) {
     // message_dolog reads the two C variables (DEFVAR_LISP, so never
     // lexically bound) by their symbols.
     let buffer_name = interp
@@ -374,16 +424,22 @@ pub(crate) fn log_message_text(interp: &mut Interpreter, text: &str, _env: &Env)
         buffer.disable_undo();
         // FIXNATP: any other non-nil value keeps every line.
         let max_lines = log_max.fixnum().and_then(|max| usize::try_from(max).ok());
-        message_dolog(&mut buffer, text, max_lines);
+        message_dolog(&mut buffer, text, nlflag, max_lines);
     }
+    MESSAGE_LOG_NEED_NEWLINE.with(|flag| flag.set(!nlflag));
 }
 
-/// Append TEXT and a newline at the end of the widened log buffer, fold the
-/// line into an identical previous one (" [N times]") or replace a previous
-/// "...", and keep at most MAX_LINES lines. Point, BEGV and ZV are restored
-/// as GNU's insertion-type-nil markers leave them, and point or ZV at the
-/// end stays at the end.
-fn message_dolog(buffer: &mut crate::buffer::Buffer, text: &str, max_lines: Option<usize>) {
+/// Append TEXT at the end of the widened log buffer; with NLFLAG a newline
+/// after it, the line folded into an identical previous one (" [N times]")
+/// or replacing a previous "...", and at most MAX_LINES lines kept. Point,
+/// BEGV and ZV are restored as GNU's insertion-type-nil markers leave
+/// them, and point or ZV at the end stays at the end.
+fn message_dolog(
+    buffer: &mut crate::buffer::Buffer,
+    text: &str,
+    nlflag: bool,
+    max_lines: Option<usize>,
+) {
     fn after_delete(position: &mut usize, from: usize, to: usize) {
         if *position > to {
             *position -= to - from;
@@ -399,6 +455,14 @@ fn message_dolog(buffer: &mut crate::buffer::Buffer, text: &str, max_lines: Opti
     let mut saved = [buffer.point(), begv, zv];
     buffer.widen();
     buffer.goto_char(end);
+    if !nlflag {
+        buffer.insert(text);
+        let end = buffer.size_total() + 1;
+        let [point, begv, zv] = saved;
+        buffer.restore_restriction(begv, if zv_at_end { end } else { zv });
+        buffer.goto_char(if point_at_end { end } else { point });
+        return;
+    }
     let mut line = String::with_capacity(text.len() + 1);
     line.push_str(text);
     line.push('\n');
@@ -3897,6 +3961,9 @@ define_dispatch!(
                         .first()
                         .and_then(|format| with_string_text(format, |text| !text.is_empty()))
                         .unwrap_or(true);
+                // message3: first flush out any partial line written with
+                // print, whatever the message.
+                message_log_maybe_newline(interp, env);
                 if capturable {
                     log_message_text(interp, &text, env);
                     interp.append_message_capture(&text, true, env);
@@ -4104,6 +4171,18 @@ define_dispatch!(
             }
             "command-error-default-function" => {
                 need_args(name, args, 3)?;
+                let conditions = match args[0].cons_ref() {
+                    Some(cell) => super::call(
+                        interp,
+                        "get",
+                        &[cell.car.get(), Value::symbol("error-conditions")],
+                        env,
+                    )?,
+                    None => Value::Nil,
+                };
+                let minibuffer_quit = conditions.to_vec().unwrap_or_default().iter().any(
+                    |condition| matches!(condition.kind(), Kind::Symbol(name) if name == "minibuffer-quit"),
+                );
                 let context = string_text(&args[1])?;
                 // keyboard.c command-error-default-function, noninteractive
                 // branch: print CONTEXT plus the error to stderr and
@@ -4112,22 +4191,35 @@ define_dispatch!(
                 // into a clean exit (2026-08-23 audit finding 80).
                 let message = super::call(interp, "error-message-string", &[args[0]], env)?;
                 let rendered = string_text(&message).unwrap_or_default();
-                if interp
-                    .lookup_var_key(cached_symbol!("noninteractive"), env)
-                    .is_some_and(|value| value.is_truthy())
+                if !minibuffer_quit
+                    && interp
+                        .lookup_var_key(cached_symbol!("noninteractive"), env)
+                        .is_some_and(|value| value.is_truthy())
                 {
                     use std::io::Write;
                     let _ = writeln!(std::io::stderr(), "{context}{rendered}");
                     return super::call(interp, "kill-emacs", &[Value::Integer(-1)], env);
                 }
-                // Interactive frames echo instead; emaxx's tty loop reads the
-                // echo area, so route the text there via `message'.
-                super::call(
-                    interp,
-                    "message",
-                    &[Value::String(format!("{context}{rendered}").into())],
-                    env,
-                )?;
+                // clear_message (1, 0), then bitch_at_user (or `ding' with
+                // ARG t for a minibuffer-quit), then print_error_message to
+                // the echo area: CONTEXT and the message shown, the
+                // signalling function before the message in *Messages*.
+                clear_message(interp, env, true, false)?;
+                message_log_maybe_newline(interp, env);
+                if minibuffer_quit {
+                    super::call(interp, "ding", &[Value::T], env)?;
+                } else {
+                    super::call(interp, "ding", &[], env)?;
+                }
+                // print_error_message (data, Qt, context, signal): printed
+                // to the echo area (CONTEXT, empty or not, first), the
+                // signalling function only logged.
+                echo_area_print_logged(interp, &context, env);
+                if let Kind::Symbol(caller) = args[2].kind() {
+                    log_message_partial(interp, caller.as_ref(), env);
+                    log_message_partial(interp, ": ", env);
+                }
+                echo_area_print_logged(interp, &rendered, env);
                 Ok(Value::Nil)
             }
             "ding" => {

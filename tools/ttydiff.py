@@ -546,6 +546,23 @@ def gnu_no_window_setup(lisp_dir):
     )
 
 
+def private_lock_setup(editor):
+    """Keep each editor's lock files out of the other's sight.
+
+    Both editors visit the shared target at once, and the first to modify
+    it holds a live lock the second must then ask about -- as a second GNU
+    session would.  Locking still happens, each editor seeing only its own
+    locks, in a directory of its own under the scenario's TMPDIR.
+    """
+    directory = json.dumps(f"{editor}-locks/")
+    return (
+        f"(let ((directory (expand-file-name {directory} temporary-file-directory))) "
+        "(make-directory directory t) "
+        "(setq lock-file-name-transforms "
+        "(list (list \"\\\\`.*\\\\'\" directory t))))"
+    )
+
+
 def find_mode_line(lines):
     """Both editors draw a dash-heavy mode line above the echo area."""
     for index in range(len(lines) - 1, -1, -1):
@@ -4976,6 +4993,42 @@ SCENARIOS += [
     ),
 ]
 
+# A failing command and an undefined key re-enter command_loop_1: the pre-
+# and post-command hooks run around each (`this-command' still the failing
+# command when the post-command hooks run), `undefined' runs for the nil
+# command, and *Messages* logs the function that signalled before each
+# error (cmd_error, print_error_message).
+SCENARIOS += [
+    (
+        "command-loop-reentry-after-errors",
+        "alpha\nbeta\n",
+        [
+            action("setup-loop", reader_setup(
+                "(progn (setq loop-log nil loop-on nil) "
+                "(add-hook 'pre-command-hook (lambda () "
+                "(when loop-on (push (list 'pre this-command) loop-log)))) "
+                "(add-hook 'post-command-hook (lambda () (when loop-on "
+                "(push (list 'post this-command (current-message)) loop-log)))) "
+                "(defun loop-boom () (interactive) (error \"Boom %d\" 1)) "
+                "(defun loop-dump () (interactive) (setq loop-on nil) "
+                "(let ((messages (with-current-buffer (messages-buffer) (buffer-string)))) "
+                "(switch-to-buffer (get-buffer-create \"loop-log\")) (erase-buffer) "
+                "(insert (format \"%S\\n%S\\n\" (reverse loop-log) last-command) messages))) "
+                "(global-set-key (kbd \"C-c b\") #'loop-boom) "
+                "(global-set-key (kbd \"C-c d\") #'loop-dump) "
+                "(with-current-buffer (messages-buffer) "
+                "(let ((inhibit-read-only t)) (erase-buffer))) "
+                "(setq loop-on t) (message \"loop ready\"))"
+            ), require_text="loop ready"),
+            action("top", b"\x1b<"),
+            action("edge-error", b"\x10", require_text="Beginning of buffer"),
+            action("command-error", b"\x03b", require_text="Boom 1"),
+            action("undefined", b"\x03\x18\x1a", require_text="C-c C-x C-z is undefined"),
+            action("dump", b"\x03d"),
+        ],
+    ),
+]
+
 
 def select_scenarios(names):
     """Return built-in scenarios, or the named subset in command-line order.
@@ -5380,8 +5433,23 @@ def main():
             ok = compare(
                 name,
                 keys,
-                [gnu_binary, "-nw", "-Q", "--eval", gnu_setup, gnu_path],
-                [emaxx_binary, "-Q", emaxx_path],
+                [
+                    gnu_binary,
+                    "-nw",
+                    "-Q",
+                    "--eval",
+                    gnu_setup,
+                    "--eval",
+                    private_lock_setup("gnu"),
+                    gnu_path,
+                ],
+                [
+                    emaxx_binary,
+                    "-Q",
+                    "--eval",
+                    private_lock_setup("emaxx"),
+                    emaxx_path,
+                ],
                 gnu_env,
                 emaxx_env,
                 # Cold Lisp loading can exceed twenty seconds on a busy CI

@@ -8264,6 +8264,70 @@ setup_process_coding_systems's check now refuses). A 13-form
   across its ten groups with the documented local skips, all 3,289 tests
   run passing (2 ignored); the seven integration targets; clippy `-D
   warnings', rustfmt and `git diff --check'.
+- **Round 147: cmd_error, and command_loop_1 entered again after it.**
+  In GNU every command loop (the top level, a recursive edit, a keyboard
+  macro's iterations) runs command_loop_1 under command_loop_2's
+  internal_condition_case, whose handler, cmd_error, reports a command's
+  error; command_loop_1 is then entered again, its entry running
+  `post-command-hook' with `this-command' still the command that failed
+  and setting `last-command' from it. Emaxx's terminal command loop and
+  its minibuffer loop echoed the error text themselves, ran no
+  post-command hook after a failing command, called no
+  `command-error-function' and logged nothing in *Messages*; an
+  undefined key was echoed without running `pre-command-hook',
+  `undefined' or `post-command-hook'; and the keyboard macro loop had its
+  own reporter. All three now go through cmd_error (cmd_error_internal's
+  `command-error-function' with the context "After N kbd macro
+  iterations: " that macros.c's iteration count and C
+  `executing_kbd_macro' give, and the function that signalled, which
+  signal_or_quit now records as eval.c's Vsignaling_function: the frame
+  below `signal''s, or below `error''s), then command_loop_1's entry
+  (`command_loop_entry'). `command-error-default-function''s
+  interactive branch clears the message, rings the bell (`ding' with t
+  for a minibuffer-quit) and shows the error as print_error_message does,
+  the signalling function before it in *Messages* only
+  ("previous-line: Beginning of buffer"), and a minibuffer-quit no
+  longer takes its batch branch. A command whose `this-command' is nil
+  after `pre-command-hook' runs `undefined', as command_loop_1 calls it,
+  where Emaxx fell back to the binding. The command boundary's own Lisp
+  calls (`undo-auto--add-boundary', `deactivate-mark',
+  `undo-auto--undoable-change', `pre-command-hook' and
+  `post-command-hook''s non-local exits) no longer drop their errors.
+  C-g read by `read-event' or the minibuffer signalled the bare symbol
+  `quit', which `condition-case' took for an `error' (a handler's
+  condition is the car of the error object) and `error-message-string'
+  printed as "quit"; it signals Fsignal (Qquit, Qnil)'s (quit) now.
+  ttydiff's new `command-loop-reentry-after-errors' journey (C-p at the
+  beginning of a buffer, a command that signals, an undefined key, then
+  a dump of the hooks' log, `last-command' and *Messages*) shows the
+  same screen as GNU 30.2's, and a tty test replays it. Still
+  different: C-g typed while the minibuffer reads is a quit at once in
+  Emaxx, where GNU reads it as an event and runs `abort-minibuffers'.
+- **Round 148: *Messages* lines a print to the echo area leaves open.**
+  xdisp.c's message_dolog appends without a newline when its NLFLAG is
+  false, and leaves `message_log_need_newline' set so that the next
+  message, or the next print to the echo area, starts a line first
+  (message_log_maybe_newline); only a whole line is checked against the
+  one before it for a repeat, or trimmed to `message-log-max'. Emaxx
+  logged every piece as a line of its own: print_error_message's
+  context, the signalling function and its ": ", then the message, so
+  "previous-line: Beginning of buffer" took three lines. strout to the
+  echo area (`princ' or `prin1' with t as the stream, interactive) and
+  command-error-default-function's pieces now append to the open line,
+  and message3, `message' and the batch message path start a line
+  first.
+  ttydiff's two editors visit one shared target at once, so since round
+  110 (filelock.c) any journey that modifies it showed Emaxx asking
+  about GNU's live lock, as a second GNU would: thirty of the first
+  fifty-eight journeys diverged that way, some losing the keys the lock
+  prompt read. Each editor
+  now keeps its locks in a directory of its own under the journey's
+  TMPDIR (`lock-file-name-transforms'), so neither sees the other's.
+  Local validation of rounds 147 and 148, on one build: the full gate
+  across its ten groups with the documented local skips, all 3,290 tests
+  run passing (2 ignored); the seven integration targets; clippy `-D
+  warnings', rustfmt and `git diff --check'. ttydiff's whole suite on
+  this build is recorded with round 149.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -9230,6 +9294,14 @@ setup 61.1 s against 52.6 s (1.162), test bodies 218.6 s against 230.5 s
 frozen (run 40706974076) matched all 7,928 outcomes on its first
 attempt. Its timings: setup 59.7 s against 50.7 s (1.177), test bodies
 218.3 s against 233.9 s (0.933), in all 0.991.
+
+**On `173d421`** (rounds 145 and 146): full Rust gate passed (run
+40715042037); frozen (run 40715048423) matched all 7,928 outcomes on its
+first attempt. Its timings: setup 80.1 s against 65.9 s (1.215), test
+bodies 258.9 s against 268.4 s (0.965), in all 0.999. multisession-tests'
+bodies took 575 ms against 582 (`multi-test-sqlite-busy' 206 against
+204, where e98ff8a's run had 922 against 204), and xml-tests'
+`xml-print-invalid-cdata' 11.7 ms against 5.2 (122 against 2.7 before).
 
 **Findings recorded, not fixed:**
 - **What the checked build costs (round 131).** mule-tests under the

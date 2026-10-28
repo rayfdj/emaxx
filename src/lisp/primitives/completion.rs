@@ -2552,7 +2552,14 @@ pub(crate) fn interactive_minibuffer_command_loop(
                 .expect("active key reader")
                 .read_event(interp, event, env)?
             {
-                crate::lisp::primitives::KeyResolution::Command(binding) => {
+                resolution @ (crate::lisp::primitives::KeyResolution::Command(_)
+                | crate::lisp::primitives::KeyResolution::Undefined) => {
+                    // An undefined key sequence is a nil command, run as
+                    // `undefined'.
+                    let binding = match resolution {
+                        crate::lisp::primitives::KeyResolution::Command(binding) => binding,
+                        _ => Value::Nil,
+                    };
                     let keys = reader
                         .take()
                         .expect("completed key reader")
@@ -2577,23 +2584,19 @@ pub(crate) fn interactive_minibuffer_command_loop(
                             return Err(LispError::from(error));
                         }
                         Err(error) => {
-                            // GNU prints the error in the echo area and
-                            // keeps reading; any input restores the
+                            // The recursive edit's command_loop_2 handler,
+                            // cmd_error, reports the error in the echo area,
+                            // and command_loop_1 is entered again; reading
+                            // goes on, and any input restores the
                             // minibuffer display.
-                            let text = crate::lisp::primitives::command_error_echo_text(
-                                interp,
-                                env,
-                                &LispError::from(error.clone()),
-                            );
-                            super::set_echo_area_message(Some(text));
+                            let error = LispError::from(error);
+                            crate::lisp::primitives::cmd_error(interp, env, &error)?;
+                            crate::lisp::primitives::command_loop_entry(interp, env)?;
                             hold_echo = true;
                         }
                     }
                 }
                 crate::lisp::primitives::KeyResolution::Prefix => {}
-                crate::lisp::primitives::KeyResolution::Undefined => {
-                    reader = None;
-                }
             }
         }
     })(interp, env);

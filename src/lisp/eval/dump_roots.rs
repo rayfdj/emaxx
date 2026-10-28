@@ -149,6 +149,10 @@ pub(crate) const ROOTS_RESET_AFTER_LOAD: &[(&str, &str)] = &[
         "standard_obarray_id",
         "the obarray root (RootSlot::Obarray)",
     ),
+    (
+        "signaling_function",
+        "eval.c's Vsignaling_function, staticpro'd but nil outside the report of a signal; init_eval_once leaves it nil",
+    ),
 ];
 
 /// The interpreter's remaining fields, none of them a Lisp root, each
@@ -186,6 +190,14 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
     (
         "debug_on_next_call",
         "the forwarded C slot of debug-on-next-call, refilled likewise",
+    ),
+    (
+        "executing_kbd_macro",
+        "macros.c's C executing_kbd_macro, nil when no macro runs; Fdump_emacs_portable runs from loadup.el with none",
+    ),
+    (
+        "kbd_macro_iterations",
+        "macros.c's executing_kbd_macro_iterations, a count Fexecute_kbd_macro resets",
     ),
     (
         "symbols_with_positions_enabled",

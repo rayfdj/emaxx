@@ -40,7 +40,7 @@ pub(crate) use display::{
     window_render_layout, window_text_area_columns, window_total_columns,
 };
 pub(crate) use display::{
-    clear_message, echo_area_message, echo_area_message_tick, echo_area_print,
+    clear_message, echo_area_message, echo_area_message_tick, echo_area_print_logged,
     echo_display_message, expire_echo_area_message, set_echo_area_message,
     set_echo_area_message_with_spans,
 };

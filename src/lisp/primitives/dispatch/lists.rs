@@ -81,8 +81,11 @@ fn execute_kbd_macro(
         interp.set_current_buffer_id(interp.selected_window_buffer_id())?;
 
         let mut result = Ok(());
+        let mut success_count = 0;
+        interp.kbd_macro_iterations = 0;
         loop {
             interp.set_variable("executing-kbd-macro", roots[0], env);
+            interp.executing_kbd_macro = true;
             interp.set_variable("executing-kbd-macro-index", Value::Integer(0), env);
             interp.set_variable("prefix-arg", Value::Nil, env);
             interp.set_variable("last-prefix-arg", Value::Nil, env);
@@ -106,8 +109,10 @@ fn execute_kbd_macro(
                 interp.push_condition_case_handler(vec![Value::Symbol("minibuffer-quit".into())]);
             // command_loop_2 enters command_loop_1 afresh for each
             // iteration.
-            crate::lisp::primitives::command_loop_entry(interp, env);
-            let iteration = match run_kbd_macro_events(interp, env).map_err(LispError::into_kind) {
+            let iteration = match crate::lisp::primitives::command_loop_entry(interp, env)
+                .and_then(|()| run_kbd_macro_events(interp, env))
+                .map_err(LispError::into_kind)
+            {
                 // GNU's outermost command loop catches `top-level`, terminating
                 // the keyboard macro without propagating an error.
                 Err(LispErrorKind::Throw(tag, _)) if matches!(tag.kind(), Kind::Symbol(symbol) if symbol == "top-level") => {
@@ -120,6 +125,8 @@ fn execute_kbd_macro(
                 result = Err(LispError::from(error));
                 break;
             }
+            success_count += 1;
+            interp.kbd_macro_iterations = success_count;
 
             if repeat != 0 {
                 repeat = repeat.saturating_sub(1);
@@ -135,6 +142,9 @@ fn execute_kbd_macro(
             }
         }
 
+        if result.is_ok() {
+            interp.executing_kbd_macro = false;
+        }
         let (previous_macro, tail) = roots[2].cons_values().expect("saved macro pair");
         let (previous_index, previous_real_this_command) =
             tail.cons_values().expect("saved macro index and command");
@@ -245,7 +255,7 @@ fn finish_kbd_macro_command_cycle(
         .lookup_var("current-prefix-arg", env)
         .unwrap_or(Value::Nil);
     interp.set_variable("last-prefix-arg", current_prefix, env);
-    crate::lisp::primitives::run_post_command_hooks(interp, env);
+    crate::lisp::primitives::run_post_command_hooks(interp, env)?;
     let final_this_command = interp
         .lookup_var("this-command", env)
         .filter(|value| !value.is_nil())
@@ -612,13 +622,8 @@ fn run_recursive_kbd_command_loop(
             Err(error)
                 if error_matches_condition(interp, &LispError::from(error.clone()), "error") =>
             {
-                report_kbd_command_error(interp, &LispError::from(error.clone()), env)?;
-                safe_run_named_hooks(
-                    interp,
-                    "post-command-hook",
-                    env,
-                    Some(interp.current_buffer_id()),
-                )?;
+                crate::lisp::primitives::cmd_error(interp, env, &LispError::from(error.clone()))?;
+                crate::lisp::primitives::command_loop_entry(interp, env)?;
                 let resumed = interp
                     .lookup_var("executing-kbd-macro", env)
                     .is_some_and(|value| value.is_truthy());
@@ -662,7 +667,7 @@ fn execute_kbd_macro_resolved_command(
     // into their own undo group (viper's undo tests observe the grouping)
     // and lets a run of self-inserts amalgamate.
     if !dispatched_command.is_nil() {
-        crate::lisp::primitives::add_command_undo_boundary(interp, env);
+        crate::lisp::primitives::add_command_undo_boundary(interp, env)?;
     }
     let command_result = if dispatched_command.is_nil() {
         call_function_value(interp, &Value::symbol("undefined"), &[], env)
@@ -697,44 +702,12 @@ fn execute_kbd_macro_resolved_command(
         {
             return Err(error);
         }
-        report_kbd_command_error(interp, &error, env)?;
+        crate::lisp::primitives::cmd_error(interp, env, &error)?;
     }
     // GNU copies `this-command' into `last-command' at the end of the
     // cycle, so a command that rewrites this-command (viper-undo-more sets
     // it to viper-undo) steers the next dispatch.
     finish_kbd_macro_command_cycle(interp, command, dispatched_command, env)?;
-    Ok(())
-}
-
-fn report_kbd_command_error(
-    interp: &mut Interpreter,
-    error: &LispError,
-    env: &mut Env,
-) -> Result<(), LispError> {
-    // GNU's cmd_error stops an executing macro for ordinary errors, but a
-    // `minibuffer-quit' is allowed to return to the same macro.  Assign the
-    // active dynamic binding: Edebug deliberately rebinds this variable
-    // around its recursive edit.
-    if !error_matches_condition(interp, error, "minibuffer-quit") {
-        interp.set_variable("executing-kbd-macro", Value::Nil, env);
-    }
-    let error_function = interp
-        .lookup_var("command-error-function", env)
-        .unwrap_or(Value::Nil);
-    if !error_function.is_nil() {
-        with_cmd_error_print_limits(interp, |interp| {
-            interp.call_function_value(
-                error_function,
-                None,
-                &[
-                    crate::lisp::eval::error_condition_value(error),
-                    Value::String(String::new().into()),
-                    Value::Nil,
-                ],
-                env,
-            )
-        })?;
-    }
     Ok(())
 }
 
