@@ -4359,6 +4359,7 @@ define_dispatch!(
                 }
                 interp.set_variable("unread-command-events", Value::Nil, env);
                 interp.set_variable("defining-kbd-macro", Value::Nil, env);
+                crate::lisp::primitives::discard_tty_input();
                 Ok(Value::Nil)
             }
             "prin1" => {

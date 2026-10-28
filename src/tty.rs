@@ -516,6 +516,11 @@ fn run_owned(
         let queue = queue.clone();
         move || queue.input_pending()
     })));
+    // keyboard.c's Fdiscard_input: the keyboard buffer empties.
+    crate::lisp::primitives::set_tty_input_discard(Some(Box::new({
+        let queue = queue.clone();
+        move || queue.discard()
+    })));
     // keyboard.c:command_loop enters top_level_1 after terminal input is
     // available, then the editing loop. Do not replay Lisp startup actions.
     // emacs.c runs after-pdump-load-hook after init_display. Hook code can
@@ -542,6 +547,7 @@ fn run_owned(
     crate::lisp::primitives::set_tty_event_reader(None);
     crate::lisp::primitives::set_tty_event_poller(None);
     crate::lisp::primitives::set_tty_input_pending_check(None);
+    crate::lisp::primitives::set_tty_input_discard(None);
     crate::lisp::primitives::set_tty_menu_executor(None);
     crate::lisp::primitives::set_interactive_window_metrics(None);
     drop(guard);
@@ -595,6 +601,18 @@ impl SharedEventQueue {
     fn input_pending(&self) -> bool {
         !self.0.borrow().is_empty()
             || event::poll(std::time::Duration::from_millis(0)).unwrap_or(false)
+    }
+
+    /// Drop every event already read from the terminal: the queued ones
+    /// and those the terminal has ready, which read_avail_input would
+    /// already hold in GNU's keyboard buffer.
+    fn discard(&self) {
+        self.0.borrow_mut().clear();
+        while event::poll(std::time::Duration::from_millis(0)).unwrap_or(false) {
+            if event::read().is_err() {
+                break;
+            }
+        }
     }
 
     /// Pop an event without blocking: a queued one, or whatever the

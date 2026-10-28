@@ -1520,6 +1520,7 @@ define_dispatch!(
                 if string_like(&prompt).is_none() {
                     return Err(wrong_type_argument("stringp", prompt));
                 }
+                crate::lisp::primitives::check_recursive_minibuffer(interp, env)?;
                 let local_map = (name == "read-from-minibuffer")
                     .then(|| args.get(2).filter(|map| !map.is_nil()).cloned())
                     .flatten()

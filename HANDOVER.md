@@ -8388,6 +8388,34 @@ setup_process_coding_systems's check now refuses). A 13-form
   the seven integration targets; clippy `-D warnings', rustfmt and `git
   diff --check'. ttydiff's whole suite on this build is recorded with
   round 150.
+- **Round 150: read_minibuf's guard against a recursive read, and
+  discard-input.** minibuf.c's read_minibuf refuses a read while a
+  minibuffer is active unless `enable-recursive-minibuffers' is set: from
+  the minibuffer window it signals `user-error' "Command attempted to use
+  minibuffer while in minibuffer", from any other window it throws that
+  message to `exit', and the active read's recursive_edit_1 signals it as
+  an error. Emaxx had no such guard, so M-: typed in M-x's minibuffer
+  opened a second one. `read-from-minibuffer', `read-string' and the
+  native `completing-read' check it now, and call-interactively binds
+  `enable-recursive-minibuffers' while it reads a string spec's arguments
+  for a command whose property of that name is set (callint.c).
+  keyboard.c's Fdiscard_input also empties the keyboard buffer, the input
+  already read from the terminal; Emaxx's emptied only
+  `unread-command-events', so the keys typed after an error that
+  `minibuffer-error-function' discards went on to run. The terminal
+  frontend's queue, and what the terminal has ready, are dropped now.
+  supersession-accept-revisit's "[Command attempted to use minibuffer
+  while in minibuffer]" matches GNU now, and ttydiff's new
+  `minibuffer-recursive-read-refused' journey covers the guard and the
+  discarded keys; a batch test checks the three cases against GNU 30.2
+  (the minibuffer window, `enable-recursive-minibuffers', another window).
+  ttydiff on 5c48b0f's build (round 149): 228 journeys, all matching GNU but
+  submenu-cycle-options (the X build's `system-font-setting', above)
+  and supersession-accept-revisit (this round).
+  Local validation: the full gate across its ten groups with
+  the documented local skips, all 3,292 tests run passing (2 ignored);
+  the seven integration targets; clippy `-D warnings', rustfmt and `git
+  diff --check'.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -9367,6 +9395,11 @@ bodies took 575 ms against 582 (`multi-test-sqlite-busy' 206 against
 40732921377); frozen (run 40732938635) matched all 7,928 outcomes on its
 first attempt. Its timings: setup 67.8 s against 57.3 s (1.182), test
 bodies 236.1 s against 255.3 s (0.925), in all 0.979.
+
+**On `5c48b0f`** (round 149): full Rust gate passed (run 40745847583);
+frozen (run 40745852161) matched all 7,928 outcomes on its first
+attempt. Its timings: setup 52.4 s against 44.8 s (1.172), test bodies
+202.4 s against 227.5 s (0.890), in all 0.934.
 
 **Findings recorded, not fixed:**
 - **What the checked build costs (round 131).** mule-tests under the

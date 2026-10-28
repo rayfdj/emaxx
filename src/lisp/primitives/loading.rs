@@ -197,7 +197,23 @@ fn call_interactively_bound(
         Some(keys) => Some(interp.bind_special_variable("this-command-keys-vector", *keys, env)?),
         None => None,
     };
+    // A command whose `enable-recursive-minibuffers' property is set reads
+    // its string spec's arguments with recursive minibuffers enabled.
+    let recursive_binding = match args[0].symbol_str() {
+        Some(symbol)
+            if string_spec
+                && interp
+                    .get_symbol_property(symbol, "enable-recursive-minibuffers")
+                    .is_some_and(|value| value.is_truthy()) =>
+        {
+            Some(interp.bind_special_variable("enable-recursive-minibuffers", Value::T, env)?)
+        }
+        _ => None,
+    };
     let interactive_args = collect_interactive_args(interp, &func, env);
+    if let Some(restore) = recursive_binding {
+        interp.restore_special_binding(restore, env)?;
+    }
     if let Some(restore) = keys_binding {
         interp.restore_special_binding(restore, env)?;
     }

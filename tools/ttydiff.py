@@ -5063,6 +5063,22 @@ SCENARIOS += [
     ),
 ]
 
+# read_minibuf refuses a read while a minibuffer is active: M-: typed in
+# M-x's minibuffer is a user error, shown by `minibuffer-error-function'
+# at the end of the minibuffer, and `discard-input' drops the keys typed
+# after it.
+SCENARIOS += [
+    (
+        "minibuffer-recursive-read-refused",
+        "alpha\nbeta\n",
+        [
+            action("open-m-x", b"\x1bx", require_text="M-x"),
+            action("type", b"fo"),
+            action("eval-in-minibuffer", b"\x1b:(+ 1 2)\r"),
+        ],
+    ),
+]
+
 
 def select_scenarios(names):
     """Return built-in scenarios, or the named subset in command-line order.

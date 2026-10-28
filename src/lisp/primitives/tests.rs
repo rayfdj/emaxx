@@ -21031,6 +21031,40 @@ fn minibuffer_c_g_runs_abort_minibuffers_and_recursive_edit_1_exits() {
 }
 
 #[test]
+fn read_minibuf_refuses_a_recursive_read_unless_enabled() {
+    // minibuf.c:read_minibuf: with `enable-recursive-minibuffers' nil, a
+    // read while a minibuffer is active is a user error from the
+    // minibuffer window and, from another window, a throw of the message
+    // to `exit' that ends the active read with it as an error.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let* ((map (make-sparse-keymap))
+                  (inner nil)
+                  (outer (lambda (events &optional recursive)
+                           (setq inner nil)
+                           (list (condition-case err
+                                     (let ((executing-kbd-macro t)
+                                           (enable-recursive-minibuffers recursive)
+                                           (unread-command-events events))
+                                       (read-from-minibuffer "Outer: " nil map))
+                                   (error (list 'outer-error err)))
+                                 inner))))
+             (set-keymap-parent map minibuffer-local-map)
+             (define-key map "z"
+               (lambda () (interactive)
+                 (setq inner (condition-case err (read-string "Inner: ") (error (list 'inner-error err))))))
+             (define-key map "w"
+               (lambda () (interactive)
+                 (select-window (frame-first-window))
+                 (setq inner (read-string "Inner: "))))
+             (list (funcall outer (list ?a ?z 13))
+                   (funcall outer (list ?a ?z ?b 13 13) t)
+                   (funcall outer (list ?a ?w 13))))"#,
+        r#"(("a" (inner-error (user-error "Command attempted to use minibuffer while in minibuffer"))) ("a" "b") ((outer-error (error "Command attempted to use minibuffer while in minibuffer")) nil))"#,
+        "recursive minibuffer",
+    );
+}
+
+#[test]
 fn native_minibuffer_stack_queries_match_gnu_minibuf_c() {
     let inactive = r#"(let ((buffer (window-buffer (minibuffer-window))))
                         (list

@@ -1443,6 +1443,7 @@ pub(crate) fn completing_read(
         return call_function_value(interp, &function, args, env);
     }
 
+    check_recursive_minibuffer(interp, env)?;
     if executing_kbd_macro_p(interp, env) {
         crate::lisp::primitives::dispatch::prepare_kbd_macro_minibuffer_entry(interp, env)?;
     }
@@ -1752,6 +1753,33 @@ pub(crate) fn activate_minibuffer(
     }
     interp.set_buffer_local_value(buffer_id, "current-local-map", local_map);
     Ok(active)
+}
+
+/// minibuf.c:read_minibuf's guard: without `enable-recursive-minibuffers'
+/// a read while a minibuffer is active is a user error when the minibuffer
+/// window is selected, and from any other window cancels the active read
+/// (its recursive edit signals the thrown string as an error).
+pub(crate) fn check_recursive_minibuffer(interp: &Interpreter, env: &Env) -> Result<(), LispError> {
+    if interp.minibuffer_depth() == 0
+        || interp
+            .lookup_var("enable-recursive-minibuffers", env)
+            .is_some_and(|value| value.is_truthy())
+    {
+        return Ok(());
+    }
+    let message = Value::string("Command attempted to use minibuffer while in minibuffer");
+    let in_minibuffer_window = matches!(
+        interp.minibuffer_window_value().kind(),
+        Kind::Record(window) if window.id == interp.selected_window_id()
+    );
+    if in_minibuffer_window {
+        Err(LispError::SignalValue(Value::list([
+            Value::symbol("user-error"),
+            message,
+        ])))
+    } else {
+        Err(LispError::Throw(Value::symbol("exit"), message))
+    }
 }
 
 /// minibuf.c:this_minibuffer_depth: BUFFER's depth among the active

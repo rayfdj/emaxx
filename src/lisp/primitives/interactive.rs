@@ -2126,6 +2126,26 @@ pub(crate) fn tty_input_pending() -> bool {
     TTY_INPUT_PENDING.with_borrow(|slot| slot.as_ref().is_some_and(|check| check()))
 }
 
+// keyboard.c's Fdiscard_input empties the keyboard buffer (kbd_fetch_ptr =
+// kbd_store_ptr): the frontend drops the input it has read from the
+// terminal.
+thread_local! {
+    static TTY_INPUT_DISCARD: std::cell::RefCell<Option<Box<dyn Fn()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+pub(crate) fn set_tty_input_discard(discard: Option<Box<dyn Fn()>>) {
+    TTY_INPUT_DISCARD.with_borrow_mut(|slot| *slot = discard);
+}
+
+pub(crate) fn discard_tty_input() {
+    TTY_INPUT_DISCARD.with_borrow(|slot| {
+        if let Some(discard) = slot.as_ref() {
+            discard();
+        }
+    });
+}
+
 pub(crate) fn has_tty_event_poller() -> bool {
     TTY_EVENT_POLLER.with_borrow(|slot| slot.is_some())
 }
