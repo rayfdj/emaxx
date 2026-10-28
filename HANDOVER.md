@@ -7798,6 +7798,25 @@ setup_process_coding_systems's check now refuses). A 13-form
   path of its own, the others the old body out of line (electric-
   tests' repeated python-mode test: 2.279M instructions a run, now
   2.263M).
+- **Round 131: the checked build's liveness test, inlined.** In the
+  gate profile, which the frozen run times, every use of a cons or a
+  float asserts its cell is still allocated (GC_CHECK_MARKED_OBJECTS'
+  spirit: a reference the collector could not see is caught at its
+  first use). The test's helpers, `cons_mark' with a stray second
+  `#[inline]' and `ConsRef::mark_bit' with none, were outlined there
+  (thin LTO, sixteen codegen units): two calls on every cons deref,
+  1.6G instructions of mule-tests' 36.9G under the frozen runner. They
+  are now always inlined, the alignment arithmetic wraps where its
+  operands cannot overflow (the range assertion stays), and
+  `with_active', native code's access to its call, is inlined as the
+  release build already inlined it. mule-tests in the gate profile:
+  36.9G instructions, now 34.7G (the release build 22.8G); the release
+  build is unchanged.
+  Local validation of rounds 130 and 131, on one build: the full gate
+  across its ten groups with the documented local skips, all 3,270
+  tests run passing (2 ignored); the seven integration targets; clippy
+  `-D warnings', rustfmt and `git diff --check'; and each commit builds
+  alone.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -8669,6 +8688,16 @@ on its first attempt, the mismatch the recorded eglot oracle flake
 268.4 s against 267.6 s (1.003), in all 1.047.
 
 **Findings recorded, not fixed:**
+- **What the checked build costs (round 131).** mule-tests under the
+  frozen runner takes 34.7G instructions in the gate profile against
+  22.8G in the release build. Of the 11.9G, 4.4G is the liveness
+  assertion on each cons and float use (alloc.rs's lines inlined into
+  every walker: 1.1G of it in `char_code_property_entry's walk of
+  `char-code-property-alist', which GNU walks with Fassq at the same
+  seven instructions an element the release build takes); the rest is
+  overflow checks and the other debug assertions, spread thin. They
+  are the gate's safety nets and stay; a frozen run of the release
+  build would time what a user runs, which is the project's call.
 - **Pipe processes hold no descriptors (round 119).** Fmake_pipe_process
   opens two pipes, four descriptors, at once, and every process channel
   at or above FD_SETSIZE (1024) is EMFILE ("Creating pipe", "Opening

@@ -432,7 +432,7 @@ pub(crate) struct FloatMark<'a> {
 }
 
 impl FloatMark<'_> {
-    #[inline]
+    #[inline(always)]
     fn bit(&self) -> (usize, usize) {
         (
             self.index / usize::BITS as usize,
@@ -440,7 +440,7 @@ impl FloatMark<'_> {
         )
     }
 
-    #[inline]
+    #[inline(always)]
     fn allocated(&self) -> bool {
         let (word, mask) = self.bit();
         self.block.allocated[word].get() & mask != 0
@@ -480,7 +480,7 @@ impl FloatMark<'_> {
 /// CELL is a slot of an allocated FloatBlock. It may be on its free list.
 /// The caller must keep the block allocated for the returned borrow;
 /// its metadata remains initialized until the entire block is released.
-#[inline]
+#[inline(always)]
 unsafe fn float_mark<'a>(cell: *const FloatCell) -> FloatMark<'a> {
     let address = cell as usize;
     let base = address & !(FLOAT_BLOCK_ALIGN - 1);
@@ -499,6 +499,7 @@ unsafe fn float_mark<'a>(cell: *const FloatCell) -> FloatMark<'a> {
 pub struct FloatRef(NonNull<FloatCell>);
 
 impl FloatRef {
+    #[inline(always)]
     fn cell(&self) -> &FloatCell {
         // SAFETY: a `FloatRef' names an allocated cell (see `ConsRef').
         let cell = unsafe { self.0.as_ref() };
@@ -509,6 +510,7 @@ impl FloatRef {
         cell
     }
 
+    #[inline]
     pub fn get(&self) -> f64 {
         self.cell().value
     }
@@ -531,6 +533,7 @@ impl FloatRef {
         self.0 == other.0
     }
 
+    #[inline(always)]
     pub(crate) fn mark_bit(&self) -> FloatMark<'_> {
         // SAFETY: a reachable FloatRef keeps its containing block allocated.
         unsafe { float_mark(self.0.as_ptr()) }
@@ -1430,15 +1433,16 @@ impl ConsMark<'_> {
         self.slot - CONS_FIRST_SLOT
     }
 
-    #[inline]
+    // cons_mark checked the slot's range: the word index cannot wrap.
+    #[inline(always)]
     fn bit(&self) -> (usize, usize) {
         (
-            self.slot / usize::BITS as usize - CONS_FIRST_WORD,
+            (self.slot / usize::BITS as usize).wrapping_sub(CONS_FIRST_WORD),
             1 << (self.slot % usize::BITS as usize),
         )
     }
 
-    #[inline]
+    #[inline(always)]
     fn allocated(&self) -> bool {
         let (word, mask) = self.bit();
         self.block.allocated[word].get() & mask != 0
@@ -1550,11 +1554,12 @@ impl ConsMark<'_> {
 /// CELL is a slot in a still-allocated ConsBlock. Its metadata stays
 /// initialized until the whole block is released. No registry lookup is
 /// needed for the mark of a reached cons or for an allocation from a block.
-#[inline]
+#[inline(always)]
 unsafe fn cons_mark<'a>(cell: *const ConsCell) -> ConsMark<'a> {
     let address = cell as usize;
     let base = address & !(CONS_BLOCK_ALIGN - 1);
-    let slot = (address - base) / CELL_SIZE;
+    // BASE is ADDRESS with its low bits cleared.
+    let slot = address.wrapping_sub(base) / CELL_SIZE;
     debug_assert!((CONS_FIRST_SLOT..CONS_FIRST_SLOT + CELLS_PER_BLOCK).contains(&slot));
     let block = unsafe { &*std::ptr::addr_of!((*(base as *const ConsBlock)).metadata) };
     ConsMark { block, slot }
@@ -1593,6 +1598,7 @@ impl ConsRef {
         Self(unsafe { NonNull::new_unchecked(cell.cast_mut()) })
     }
 
+    #[inline(always)]
     pub(crate) fn mark_bit(&self) -> ConsMark<'_> {
         // SAFETY: this reached handle keeps its containing block allocated.
         unsafe { cons_mark(self.0.as_ptr()) }

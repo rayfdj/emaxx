@@ -807,6 +807,7 @@ fn with_active_heap<R>(body: impl FnOnce(&mut NativeHeap) -> R) -> R {
     body(unsafe { &mut *heap })
 }
 
+#[inline(always)]
 fn with_active<R>(body: impl FnOnce(&ActiveCall) -> R) -> R {
     ACTIVE_CALL.with(|active| {
         let active = active.get();
