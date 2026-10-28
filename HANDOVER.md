@@ -8452,6 +8452,50 @@ setup_process_coding_systems's check now refuses). A 13-form
   the documented local skips, all 3,294 tests run passing (2 ignored);
   the seven integration targets; clippy `-D warnings', rustfmt and `git
   diff --check'.
+- **Round 152: ENCODE_FILE and DECODE_FILE.** coding.c's
+  encode_file_name is what a file primitive hands the system: a unibyte
+  name's bytes unchanged, a multibyte one encoded with
+  `file-name-coding-system', else `default-file-name-coding-system'
+  (`utf-8-unix' in batch, either locale), else its internal
+  representation, and a NUL in the result a `filenamep' error. Emaxx
+  handed the host the UTF-8 of the name's text view, where a raw byte
+  is a private-use character (U+E080 to U+E0FF), so `(write-region ""
+  nil "/tmp/a\357")' made a + EE 83 AF where GNU makes a + EF (round
+  110's finding, which this entry replaces). system.rs's
+  `encode_file_name' and `host_file_name' (a text-view name to host
+  bytes, unibyte when every character is ASCII or a raw byte, the
+  `utf-8' family encoded in place, any other coding through
+  `encode_text_bytes') now stand between the
+  resolved name and the host in the file predicates, `file-attributes',
+  copy, rename, delete, link, directory, modes, times and file-system
+  primitives, `write-region', `insert-file-contents' and its auto-coding
+  sample, openp's candidates, `call-process''s program, files and
+  directory, `make-process', lock file names, `sqlite-open', the dump
+  file and `comp-el-to-eln-rel-filename''s realpath. decode_file_name
+  brings names back: `decode_file_name' gives a unibyte string without
+  a coding system or for ASCII bytes (code_convert_string's shortcut),
+  else decodes through decode_coding_object, an invalid byte a raw byte
+  and a charset decoder's runs with their `charset' property; it serves
+  `directory-files' (a full name is concat2 of the directory and the
+  decoded name), `file-name-all-completions', `file-symlink-p',
+  `file-attributes'' link target, the realpath above and the visited
+  truename, which all read the host's names with `to_string_lossy'
+  before. A NUL in a file name is `(wrong-type-argument filenamep NAME)'
+  (lisp.h:CHECK_STRING_NULL_BYTES) where Emaxx signalled
+  `wrong-type-argument string', and `file-attributes' answers nil for
+  one, as its catch-all around expand-file-name does. A batch test
+  checks raw-byte, Latin-1 and UTF-8 names against GNU 30.2: the host
+  bytes (read back with no coding system), the decoded names, the
+  predicates, a symlink's target, completions, the NUL error and a
+  `latin-1' `file-name-coding-system'. Still reading names without
+  DECODE_FILE: the file-notify emulation's event names and watch paths
+  (eval/threads.rs), `default-directory' from getcwd at startup and
+  expand-file-name's home directory; and `file-name-all-completions'
+  sorts its result where GNU returns readdir's order.
+  Local validation: the full gate across its ten groups with
+  the documented local skips, all 3,295 tests run passing (2 ignored);
+  the seven integration targets; clippy `-D warnings', rustfmt and `git
+  diff --check'.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -9443,6 +9487,11 @@ attempt. Its timings: setup 63.1 s against 52.5 s (1.203), test bodies
 226.0 s against 250.4 s (0.903), in all 0.973. Rounds 138 to 150 were
 merged into main with it (PR 112, `ed7729d`).
 
+**On `6a3ad68`** (round 151): full Rust gate passed (run 40768859973);
+frozen (run 40768864272) matched all 7,928 outcomes on its first
+attempt. Its timings: setup 56.6 s against 48.2 s (1.174), test bodies
+211.5 s against 236.3 s (0.895), in all 0.942.
+
 **Findings recorded, not fixed:**
 - **What the checked build costs (round 131).** mule-tests under the
   frozen runner takes 34.7G instructions in the gate profile against
@@ -9527,13 +9576,6 @@ merged into main with it (PR 112, `ed7729d`).
   1,186; bytecomp-tests 768, 797, 733; ruby-mode-tests 190, 196, 183.
   The frozen run's gate profile is a plain build; whether timed builds
   are profile-guided is the project's call.
-- **A unibyte file name's raw bytes (round 110).** A Lisp file name
-  reaches the host through its text, in which a raw byte 128-255 is a
-  private-use character, so `(write-region "" nil "/tmp/a\\357")'
-  makes a file named a + EE 83 AF where GNU's ENCODE_FILE passes a
-  unibyte string's bytes through (a + EF); `make-directory' and
-  `make-symbolic-link''s target do the same. Every file primitive that
-  takes the name as text shares this.
 - **A test file's setup by stage, collections apart (round 106).** With
   the frozen runner's command line (scratchpad `phases100.sh', and
   startup with no file loaded), each stage's cumulative instructions,

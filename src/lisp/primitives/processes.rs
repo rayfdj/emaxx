@@ -102,7 +102,9 @@ pub(crate) fn locate_program_for_exec(
     make_process: bool,
 ) -> Result<String, LispError> {
     if make_process && program.starts_with('/') {
-        if fs::metadata(program).is_ok_and(|metadata| metadata.is_dir()) {
+        if fs::metadata(host_file_name(interp, env, program)?)
+            .is_ok_and(|metadata| metadata.is_dir())
+        {
             return Err(LispError::Signal(
                 "Specified program for new process is a directory".into(),
             ));
@@ -193,7 +195,7 @@ unsafe impl Sync for ExecImage {}
 #[cfg(unix)]
 fn exec_like_gnu(
     command: &mut Command,
-    program: &str,
+    program: &std::ffi::OsStr,
     argv: &[Vec<u8>],
     environment: Vec<Vec<u8>>,
     pty: bool,
@@ -216,12 +218,12 @@ fn exec_like_gnu(
 impl ExecImage {
     /// PROGRAM, ARGV and the environment ENVIRONMENT as execve takes them;
     /// None when one holds a NUL.
-    fn new(program: &str, argv: &[Vec<u8>], environment: Vec<Vec<u8>>) -> Option<Self> {
+    fn new(program: &std::ffi::OsStr, argv: &[Vec<u8>], environment: Vec<Vec<u8>>) -> Option<Self> {
         use std::ffi::CString;
         use std::os::unix::ffi::OsStrExt;
 
         let mut strings = Vec::with_capacity(argv.len() + 1);
-        strings.push(CString::new(program).ok()?);
+        strings.push(CString::new(program.as_bytes()).ok()?);
         for arg in argv {
             strings.push(CString::new(c_string_bytes(arg)).ok()?);
         }
@@ -712,7 +714,7 @@ pub(crate) fn create_temp_file(
 
 /// A file call_process opens for the child to write: O_WRONLY | O_CREAT
 /// | O_TRUNC with default_output_mode, close-on-exec.
-fn open_child_output_file(path: &str) -> std::io::Result<fs::File> {
+fn open_child_output_file(path: &Path) -> std::io::Result<fs::File> {
     fs::OpenOptions::new()
         .write(true)
         .create(true)
@@ -767,6 +769,7 @@ pub(crate) fn call_process(
     }
     let directory = process_current_directory(interp, env)?;
     let program = locate_program_for_exec(interp, env, &program, false)?;
+    let program = host_file_name(interp, env, &program)?.into_os_string();
     let discard_output = no_wait || (buffer.is_nil() && output_path.is_none());
     let (output_read, output) = if discard_output {
         let output = fs::OpenOptions::new()
@@ -780,7 +783,7 @@ pub(crate) fn call_process(
             })?;
         (None, output)
     } else if let Some(path) = &output_path {
-        let output = open_child_output_file(path)
+        let output = open_child_output_file(&host_file_name(interp, env, path)?)
             .map_err(|error| file_operation_error("Opening process output file", &error, path))?;
         (None, output)
     } else {
@@ -795,13 +798,13 @@ pub(crate) fn call_process(
     let error = if error_path.is_some() || (error_file.is_nil() && !discard_output) {
         let path = error_path.as_deref().unwrap_or(NULL_DEVICE);
         Some(
-            open_child_output_file(path)
+            open_child_output_file(&host_file_name(interp, env, path)?)
                 .map_err(|error| file_operation_error("Cannot redirect stderr", &error, path))?,
         )
     } else {
         None
     };
-    let environment = child_environment(interp, env, directory);
+    let environment = child_environment(interp, env, directory)?;
     #[cfg(unix)]
     let _ = child_signal_read_fd();
     let mut child = spawn_call_process(
@@ -1014,7 +1017,7 @@ fn wait_for_termination(
 /// directory and environment, reading STDIN and writing STDOUT and STDERR
 /// (one descriptor when standard error goes with the output).
 fn spawn_call_process(
-    program: &str,
+    program: &std::ffi::OsStr,
     argv: &[Vec<u8>],
     environment: ChildEnvironment,
     stdin: &fs::File,
@@ -1070,7 +1073,7 @@ pub(crate) fn configure_external_command(
     command: &mut Command,
 ) -> Result<ChildEnvironment, LispError> {
     let directory = process_current_directory(interp, env)?;
-    let environment = child_environment(interp, env, directory);
+    let environment = child_environment(interp, env, directory)?;
     set_command_environment(command, &environment);
     Ok(environment)
 }
@@ -1111,7 +1114,7 @@ pub(crate) fn process_current_directory(
         .map(|directory| directory.text)
         .unwrap_or_else(|| "~".into());
     let directory = expand_file_name_in_env(interp, env, &unhandled, None);
-    let metadata = fs::metadata(&directory).map_err(|error| {
+    let metadata = fs::metadata(host_file_name(interp, env, &directory)?).map_err(|error| {
         LispError::SignalValue(file_operation_error_value(
             "Setting current directory",
             &error,
@@ -1135,8 +1138,11 @@ fn child_environment(
     interp: &mut Interpreter,
     env: &mut Env,
     directory: Option<String>,
-) -> ChildEnvironment {
-    let directory = directory.map(String::into_bytes);
+) -> Result<ChildEnvironment, LispError> {
+    // callproc.c encode_current_directory: ENCODE_FILE.
+    let directory = directory
+        .map(|directory| encode_file_name(interp, env, &directory))
+        .transpose()?;
     let current_dir = directory.clone().unwrap_or_else(|| {
         let directory = std::env::current_dir().unwrap_or_default();
         #[cfg(unix)]
@@ -1148,7 +1154,7 @@ fn child_environment(
         directory.to_string_lossy().into_owned().into_bytes()
     });
     let block = make_environment_block(interp, env, &current_dir);
-    (block, directory)
+    Ok((block, directory))
 }
 
 /// COMMAND started in ENVIRONMENT's directory, with (where the exec does
@@ -1180,7 +1186,7 @@ fn set_command_environment(command: &mut Command, environment: &ChildEnvironment
 
 pub(crate) fn spawn_persistent_process(
     interp: &mut Interpreter,
-    program: &str,
+    program: &std::ffi::OsStr,
     argv: &[Vec<u8>],
     env: &mut Env,
     connection_type: Option<&Value>,
@@ -1502,7 +1508,7 @@ fn emacs_posix_spawn(
 /// pty that fails, whose report the vfork path's child makes.
 #[cfg(target_os = "linux")]
 fn posix_spawn_process(
-    program: &str,
+    program: &std::ffi::OsStr,
     argv: &[Vec<u8>],
     environment: &[Vec<u8>],
     directory: Option<Vec<u8>>,

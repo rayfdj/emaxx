@@ -602,7 +602,7 @@ define_dispatch!(
                 let Some(path) = buffer.file.as_deref() else {
                     return Ok(Value::T);
                 };
-                let current = file_modtime(path)?;
+                let current = file_modtime(interp, env, path)?;
                 let visited = buffer.visited_file_modtime();
                 // GNU's unknown timestamp sentinel means there is nothing to
                 // verify, so the file is considered unchanged.
@@ -625,7 +625,7 @@ define_dispatch!(
                 let modtime = match args.first().map(|v| v.kind()) {
                     None | Some(Kind::Nil) => {
                         if let Some(path) = interp.buffer.borrow().file.clone() {
-                            file_modtime(&path)?
+                            file_modtime(interp, env, &path)?
                         } else {
                             None
                         }
@@ -935,18 +935,18 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 let requested = string_text(&args[0])?;
                 let path = resolve_file_name_in_env(interp, env, &requested);
-                validate_file_name(&path)?;
+                let host = host_file_name(interp, env, &path)?;
                 let directory = if name == "file-directory-p" {
-                    fs::metadata(&path).is_ok_and(|metadata| metadata.is_dir())
+                    fs::metadata(&host).is_ok_and(|metadata| metadata.is_dir())
                 } else {
-                    accessible_directory(&encode_internal_multibyte_bytes(&path)?).is_ok()
+                    accessible_directory(host.as_os_str().as_encoded_bytes()).is_ok()
                 };
                 Ok(if directory { Value::T } else { Value::Nil })
             }
             "file-readable-p" => {
                 need_args(name, args, 1)?;
                 let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
-                Ok(if file_readable_p(&path) {
+                Ok(if file_readable_p(&host_file_name(interp, env, &path)?) {
                     Value::T
                 } else {
                     Value::Nil
@@ -956,7 +956,7 @@ define_dispatch!(
                 need_args(name, args, 2)?;
                 let requested = string_text(&args[0])?;
                 let path = resolve_file_name_in_env(interp, env, &requested);
-                if file_readable_p(&path) {
+                if file_readable_p(&host_file_name(interp, env, &path)?) {
                     Ok(Value::Nil)
                 } else {
                     Err(LispError::SignalValue(file_error_with_detail_value(
@@ -970,7 +970,7 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
                 Ok(
-                    if fs::metadata(&path)
+                    if fs::metadata(host_file_name(interp, env, &path)?)
                         .map(|metadata| metadata.is_file())
                         .unwrap_or(false)
                     {
@@ -983,7 +983,7 @@ define_dispatch!(
             "file-writable-p" => {
                 need_args(name, args, 1)?;
                 let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
-                Ok(if file_writable_p(&path) {
+                Ok(if file_writable_p(&host_file_name(interp, env, &path)?) {
                     Value::T
                 } else {
                     Value::Nil
@@ -992,17 +992,18 @@ define_dispatch!(
             "file-exists-p" => {
                 need_args(name, args, 1)?;
                 let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
-                validate_file_name(&path)?;
-                Ok(if fs::metadata(path).is_ok() {
-                    Value::T
-                } else {
-                    Value::Nil
-                })
+                Ok(
+                    if fs::metadata(host_file_name(interp, env, &path)?).is_ok() {
+                        Value::T
+                    } else {
+                        Value::Nil
+                    },
+                )
             }
             "file-executable-p" => {
                 need_args(name, args, 1)?;
                 let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
-                Ok(if file_executable_p(&path) {
+                Ok(if file_executable_p(&host_file_name(interp, env, &path)?) {
                     Value::T
                 } else {
                     Value::Nil
@@ -1017,8 +1018,13 @@ define_dispatch!(
                     return Ok(Value::Nil);
                 }
                 let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
-                validate_file_name(&path)?;
-                let metadata = match fs::symlink_metadata(&path) {
+                // Ffile_attributes expands the name under a catch-all:
+                // a name expand-file-name refuses has no attributes.
+                if path.contains('\0') {
+                    return Ok(Value::Nil);
+                }
+                let host = host_file_name(interp, env, &path)?;
+                let metadata = match fs::symlink_metadata(&host) {
                     Ok(metadata) => metadata,
                     Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Value::Nil),
                     Err(error) => return Err(LispError::Signal(error.to_string())),
@@ -1027,10 +1033,10 @@ define_dispatch!(
                 let type_value = if file_type.is_dir() {
                     Value::T
                 } else if file_type.is_symlink() {
-                    fs::read_link(&path)
-                        .ok()
-                        .map(|target| Value::String(target.to_string_lossy().into_owned().into()))
-                        .unwrap_or(Value::String(path.clone().into()))
+                    match fs::read_link(&host) {
+                        Ok(target) => decode_host_file_name(interp, env, &target)?,
+                        Err(_) => Value::String(path.clone().into()),
+                    }
                 } else {
                     Value::Nil
                 };
@@ -1151,8 +1157,8 @@ define_dispatch!(
                 need_args(name, args, 2)?;
                 let first = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
                 let second = resolve_file_name_in_env(interp, env, &string_text(&args[1])?);
-                validate_file_name(&first)?;
-                validate_file_name(&second)?;
+                let first = host_file_name(interp, env, &first)?;
+                let second = host_file_name(interp, env, &second)?;
                 let Ok(first_modified) =
                     fs::metadata(first).and_then(|metadata| metadata.modified())
                 else {
@@ -1201,7 +1207,9 @@ define_dispatch!(
                 if directory_name_p(&target) {
                     target = file_name_concat(&[target, file_name_nondirectory(&source)]);
                 }
-                let target_existed = fs::symlink_metadata(&target).is_ok();
+                let host_source = host_file_name(interp, env, &source)?;
+                let host_target = host_file_name(interp, env, &target)?;
+                let target_existed = fs::symlink_metadata(&host_target).is_ok();
                 if target_existed && args.get(2).is_none_or(Value::is_nil) {
                     return Err(file_operation_error(
                         "Copying file",
@@ -1209,9 +1217,9 @@ define_dispatch!(
                         &target,
                     ));
                 }
-                fs::copy(&source, &target).map_err(|error| {
+                fs::copy(&host_source, &host_target).map_err(|error| {
                     let path = if error.kind() == ErrorKind::NotFound
-                        && fs::symlink_metadata(&source).is_err()
+                        && fs::symlink_metadata(&host_source).is_err()
                     {
                         &source
                     } else {
@@ -1223,7 +1231,7 @@ define_dispatch!(
                 // last-modified (and access) time as the original.  Dired's
                 // default `dired-copy-preserve-time' rides on this.
                 if args.get(3).is_some_and(Value::is_truthy)
-                    && let Ok(metadata) = fs::metadata(&source)
+                    && let Ok(metadata) = fs::metadata(&host_source)
                 {
                     let mut times = fs::FileTimes::new();
                     if let Ok(modified) = metadata.modified() {
@@ -1234,7 +1242,7 @@ define_dispatch!(
                     }
                     // fileio.c only warns ("Cannot set file date") when this
                     // fails; the copy itself already succeeded.
-                    if let Ok(file) = fs::File::options().write(true).open(&target) {
+                    if let Ok(file) = fs::File::options().write(true).open(&host_target) {
                         let _ = file.set_times(times);
                     }
                 }
@@ -1253,7 +1261,9 @@ define_dispatch!(
                 if directory_name_p(&target) {
                     target = file_name_concat(&[target, file_name_nondirectory(&source)]);
                 }
-                let target_metadata = fs::symlink_metadata(&target);
+                let host_source = host_file_name(interp, env, &source)?;
+                let host_target = host_file_name(interp, env, &target)?;
+                let target_metadata = fs::symlink_metadata(&host_target);
                 if target_metadata.is_ok() && args.get(2).is_none_or(Value::is_nil) {
                     return Err(file_operation_error(
                         "Renaming file",
@@ -1261,9 +1271,9 @@ define_dispatch!(
                         &target,
                     ));
                 }
-                fs::rename(&source, &target).map_err(|error| {
+                fs::rename(&host_source, &host_target).map_err(|error| {
                     let path = if error.kind() == ErrorKind::NotFound
-                        && fs::symlink_metadata(&source).is_err()
+                        && fs::symlink_metadata(&host_source).is_err()
                     {
                         &source
                     } else {
@@ -1278,8 +1288,7 @@ define_dispatch!(
             "system-move-file-to-trash" => {
                 need_args(name, args, 1)?;
                 let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
-                validate_file_name(&path)?;
-                if let Err(error) = fs::symlink_metadata(&path) {
+                if let Err(error) = fs::symlink_metadata(host_file_name(interp, env, &path)?) {
                     return Err(removing_old_name_error(&path, &error));
                 }
                 move_to_system_trash(&path).map_err(|error| {
@@ -1296,13 +1305,12 @@ define_dispatch!(
             "delete-file-internal" => {
                 need_args(name, args, 1)?;
                 let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
-                validate_file_name(&path)?;
                 // Fdelete_file_internal: `unlink' failing with anything but
                 // ENOENT is report_file_error ("Removing old name", filename)
                 // -- the errno's own condition (`permission-denied' for
                 // EACCES, which url-cache's pruner and callers handling
                 // `file-error' expect), not a plain `error'.
-                let removed = match fs::remove_file(&path) {
+                let removed = match fs::remove_file(host_file_name(interp, env, &path)?) {
                     Ok(()) => true,
                     Err(error) if error.kind() == ErrorKind::NotFound => false,
                     Err(error) => {
@@ -1318,10 +1326,9 @@ define_dispatch!(
             "delete-directory-internal" => {
                 need_args(name, args, 1)?;
                 let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
-                validate_file_name(&path)?;
                 // Fdelete_directory_internal: report_file_error ("Removing
                 // directory", directory) on `rmdir' failure.
-                fs::remove_dir(&path)
+                fs::remove_dir(host_file_name(interp, env, &path)?)
                     .map_err(|error| file_operation_error("Removing directory", &error, &path))?;
                 interp.queue_directory_deletion_notification(&path);
                 interp.invalidate_file_notify_watches_for_path(&path);
@@ -1331,8 +1338,8 @@ define_dispatch!(
             "make-directory-internal" => {
                 need_args(name, args, 1)?;
                 let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
-                validate_file_name(&path)?;
-                fs::create_dir(&path).map_err(|error| LispError::Signal(error.to_string()))?;
+                fs::create_dir(host_file_name(interp, env, &path)?)
+                    .map_err(|error| LispError::Signal(error.to_string()))?;
                 dispatch_file_notification(interp, env, &path, "created")?;
                 Ok(Value::Nil)
             }
@@ -1343,7 +1350,9 @@ define_dispatch!(
                 if directory_name_p(&target) {
                     target = file_name_concat(&[target, file_name_nondirectory(&source)]);
                 }
-                if fs::symlink_metadata(&target).is_ok() {
+                let host_source = host_file_name(interp, env, &source)?;
+                let host_target = host_file_name(interp, env, &target)?;
+                if fs::symlink_metadata(&host_target).is_ok() {
                     let accept_existing = match args.get(2).map(|v| v.kind()) {
                         Some(Kind::Integer(_)) => call_named_function(
                             interp,
@@ -1366,7 +1375,7 @@ define_dispatch!(
                         &target,
                     ));
                 }
-                fs::hard_link(&source, &target)
+                fs::hard_link(&host_source, &host_target)
                     .map_err(|error| file_operation_error("Adding new name", &error, &target))?;
                 Ok(Value::Nil)
             }
@@ -1377,7 +1386,8 @@ define_dispatch!(
                 validate_file_name(&prefix)?;
                 validate_file_name(&suffix)?;
                 Ok(Value::String(
-                    make_temp_file_internal(&prefix, &args[1], &suffix, args.get(3))?.into(),
+                    make_temp_file_internal(interp, env, &prefix, &args[1], &suffix, args.get(3))?
+                        .into(),
                 ))
             }
             "file-locked-p" => {
@@ -1488,7 +1498,7 @@ define_dispatch!(
                 // kqueue.c signals file-missing before registering anything;
                 // Emaxx accepted any path and returned a live descriptor
                 // (finding 13's "never fails" half, per the second audit).
-                if let Err(error) = fs::metadata(&path) {
+                if let Err(error) = fs::metadata(host_file_name(interp, env, &path)?) {
                     return Err(file_operation_error("File does not exist", &error, &path));
                 }
                 let flags = args[1]
@@ -1575,7 +1585,7 @@ define_dispatch!(
             "file-modes" => {
                 need_arg_range(name, args, 1, 2)?;
                 let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
-                validate_file_name(&path)?;
+                let path = host_file_name(interp, env, &path)?;
                 #[cfg(unix)]
                 {
                     let metadata = if args.get(1).is_some_and(Value::is_truthy) {
@@ -1620,15 +1630,15 @@ define_dispatch!(
             "set-file-modes" => {
                 need_args(name, args, 2)?;
                 let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
-                validate_file_name(&path)?;
+                let host = host_file_name(interp, env, &path)?;
                 let mode = args[1].as_integer()?;
                 #[cfg(unix)]
                 {
-                    let mut permissions = fs::metadata(&path)
+                    let mut permissions = fs::metadata(&host)
                         .map_err(|error| file_operation_error("Setting file modes", &error, &path))?
                         .permissions();
                     permissions.set_mode(mode as u32);
-                    fs::set_permissions(&path, permissions).map_err(|error| {
+                    fs::set_permissions(&host, permissions).map_err(|error| {
                         file_operation_error("Setting file modes", &error, &path)
                     })?;
                 }
@@ -1643,26 +1653,37 @@ define_dispatch!(
                 // candidates.  Returning those entries for a directory that
                 // cannot be opened misleads partial completion into treating a
                 // nonexistent component as an exact directory.
-                let entries = std::fs::read_dir(&directory).map_err(|error| {
-                    let rendered = error.to_string();
-                    let detail = rendered
-                        .split_once(" (os error")
-                        .map(|(detail, _)| detail)
-                        .unwrap_or(rendered.as_str());
-                    LispError::SignalValue(Value::list([
-                        Value::Symbol(
-                            if error.kind() == ErrorKind::NotFound {
-                                "file-missing"
-                            } else {
-                                "file-error"
-                            }
-                            .into(),
-                        ),
-                        Value::String("Opening directory".into()),
-                        Value::String(detail.into()),
-                        Value::String(directory.clone().into()),
-                    ]))
-                })?;
+                let entries = std::fs::read_dir(host_file_name(interp, env, &directory)?).map_err(
+                    |error| {
+                        let rendered = error.to_string();
+                        let detail = rendered
+                            .split_once(" (os error")
+                            .map(|(detail, _)| detail)
+                            .unwrap_or(rendered.as_str());
+                        LispError::SignalValue(Value::list([
+                            Value::Symbol(
+                                if error.kind() == ErrorKind::NotFound {
+                                    "file-missing"
+                                } else {
+                                    "file-error"
+                                }
+                                .into(),
+                            ),
+                            Value::String("Opening directory".into()),
+                            Value::String(detail.into()),
+                            Value::String(directory.clone().into()),
+                        ]))
+                    },
+                )?;
+                // dired.c: each name read is DECODE_FILE'd before it is
+                // matched.
+                let entries = entries
+                    .flatten()
+                    .map(|entry| {
+                        decode_host_file_name_text(interp, env, &entry.file_name())
+                            .map(|(name, multibyte)| (name, multibyte, entry.path()))
+                    })
+                    .collect::<Result<Vec<_>, LispError>>()?;
                 let ignore_case = completion_ignores_case(interp, env);
                 let regexp_list = interp
                     .lookup_var("completion-regexp-list", env)
@@ -1681,31 +1702,33 @@ define_dispatch!(
                     }
                     Ok(true)
                 };
-                let mut names: Vec<String> = Vec::new();
+                let mut names: Vec<(String, bool)> = Vec::new();
                 for (candidate, rendered) in [(".", "./"), ("..", "../")] {
                     if matches(candidate)? {
-                        names.push(rendered.to_string());
+                        names.push((rendered.to_string(), false));
                     }
                 }
-                for entry in entries.flatten() {
-                    let file_name = entry.file_name().to_string_lossy().into_owned();
+                for (file_name, multibyte, host_path) in entries {
                     if !matches(&file_name)? {
                         continue;
                     }
                     // Directories (following symlinks) get a trailing slash.
-                    let is_directory = fs::metadata(entry.path())
+                    let is_directory = fs::metadata(host_path)
                         .map(|metadata| metadata.is_dir())
                         .unwrap_or(false);
-                    names.push(if is_directory {
-                        format!("{file_name}/")
-                    } else {
-                        file_name
-                    });
+                    names.push((
+                        if is_directory {
+                            format!("{file_name}/")
+                        } else {
+                            file_name
+                        },
+                        multibyte,
+                    ));
                 }
                 names.sort();
-                Ok(Value::list(
-                    names.into_iter().map(|value| Value::String(value.into())),
-                ))
+                Ok(Value::list(names.into_iter().map(|(text, multibyte)| {
+                    make_shared_string_value_with_multibyte(text, Vec::new(), multibyte)
+                })))
             }
             "file-name-completion" => {
                 need_arg_range(name, args, 2, 3)?;
@@ -1795,12 +1818,17 @@ define_dispatch!(
             "set-file-times" => {
                 need_arg_range(name, args, 1, 3)?;
                 let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
-                validate_file_name(&path)?;
+                let host = host_file_name(interp, env, &path)?;
                 let modified = match args.get(1).map(|v| v.kind()) {
                     None | Some(Kind::Nil) => SystemTime::now(),
                     Some(value) => file_modtime_from_value(interp, &value.value())?.modified,
                 };
-                set_file_times_path(&path, modified, args.get(2).is_some_and(Value::is_truthy))?;
+                set_file_times_path(
+                    &path,
+                    &host,
+                    modified,
+                    args.get(2).is_some_and(Value::is_truthy),
+                )?;
                 dispatch_file_notification(interp, env, &path, "attribute-changed")?;
                 Ok(Value::T)
             }
@@ -1809,10 +1837,10 @@ define_dispatch!(
             "file-system-info" => {
                 need_args(name, args, 1)?;
                 let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
-                validate_file_name(&path)?;
+                let path = encode_file_name(interp, env, &path)?;
                 #[cfg(unix)]
                 {
-                    let path = CString::new(path.as_bytes())
+                    let path = CString::new(path)
                         .map_err(|_| LispError::TypeError("string".into(), "nul-byte".into()))?;
                     // SAFETY: `statvfs` initializes the pointed-to structure on
                     // success, and `path` is a live NUL-terminated C string.
@@ -1844,14 +1872,16 @@ define_dispatch!(
             "file-symlink-p" => {
                 need_args(name, args, 1)?;
                 let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
-                validate_file_name(&path)?;
+                let path = host_file_name(interp, env, &path)?;
+                // fileio.c emacs_readlinkat: the link's contents DECODE_FILE'd.
                 let target = fs::symlink_metadata(&path)
                     .ok()
                     .filter(|metadata| metadata.file_type().is_symlink())
                     .and_then(|_| fs::read_link(&path).ok());
-                Ok(target
-                    .map(|path| Value::String(path.to_string_lossy().into_owned().into()))
-                    .unwrap_or(Value::Nil))
+                match target {
+                    Some(target) => decode_host_file_name(interp, env, &target),
+                    None => Ok(Value::Nil),
+                }
             }
             "make-symbolic-link" => {
                 if args.len() < 2 || args.len() > 3 {
@@ -1862,9 +1892,9 @@ define_dispatch!(
                 if directory_name_p(&link) {
                     link = file_name_concat(&[link, file_name_nondirectory(&target)]);
                 }
-                validate_file_name(&target)?;
-                validate_file_name(&link)?;
-                if fs::symlink_metadata(&link).is_ok() {
+                let host_target = host_file_name(interp, env, &target)?;
+                let host_link = host_file_name(interp, env, &link)?;
+                if fs::symlink_metadata(&host_link).is_ok() {
                     let replace = match args.get(2).map(|v| v.kind()) {
                         Some(Kind::Integer(_)) => call_named_function(
                             interp,
@@ -1885,13 +1915,13 @@ define_dispatch!(
                             &link,
                         ));
                     }
-                    fs::remove_file(&link).map_err(|error| {
+                    fs::remove_file(&host_link).map_err(|error| {
                         file_operation_error("Removing old name", &error, &link)
                     })?;
                 }
                 #[cfg(unix)]
                 {
-                    symlink(&target, &link).map_err(|error| {
+                    symlink(&host_target, &host_link).map_err(|error| {
                         file_operation_error("Making symbolic link", &error, &link)
                     })?;
                     Ok(Value::Nil)
@@ -1917,9 +1947,10 @@ define_dispatch!(
                     None => NULL_DEVICE.to_string(),
                 };
                 let infile = unquote_local_file_name(&infile).unwrap_or(infile);
-                let filefd = fs::File::open(&infile).map_err(|error| {
-                    file_operation_error("Opening process input file", &error, &infile)
-                })?;
+                let filefd =
+                    fs::File::open(host_file_name(interp, env, &infile)?).map_err(|error| {
+                        file_operation_error("Opening process input file", &error, &infile)
+                    })?;
                 call_process(interp, env, args, filefd, None)
             }
             "make-process" | "make-pipe-process" => make_process_value(interp, env, args),
@@ -2785,7 +2816,8 @@ define_dispatch!(
                             .get_buffer_by_id(id)
                             .and_then(|buffer| buffer.file.clone());
                         if let Some(path) = auto_save_path.as_ref()
-                            && fs::metadata(path).is_ok()
+                            && let Ok(host) = host_file_name(interp, env, path)
+                            && fs::metadata(&host).is_ok()
                             && visited_path.as_ref() != Some(path)
                             && interp
                                 .lookup_var("kill-buffer-delete-auto-save-files", env)
@@ -2804,7 +2836,7 @@ define_dispatch!(
                                 env,
                             )?;
                             if delete.is_truthy() {
-                                let _ = fs::remove_file(path);
+                                let _ = fs::remove_file(host);
                             }
                         }
                     }
@@ -3066,7 +3098,10 @@ fn make_process_value(
     // process.c finds the executable before forking; `process-command'
     // keeps the name the caller gave.
     let executable = match parsed.program.as_deref() {
-        Some(program) => Some(locate_program_for_exec(interp, env, program, true)?),
+        Some(program) => {
+            let program = locate_program_for_exec(interp, env, program, true)?;
+            Some(host_file_name(interp, env, &program)?.into_os_string())
+        }
         None => None,
     };
     let arguments = if executable.is_some() {

@@ -7969,6 +7969,51 @@ fn file_name_path_helpers_match_core_unix_cases() {
 }
 
 #[test]
+fn file_names_reach_the_host_through_encode_file_and_return_through_decode_file() {
+    // coding.c:encode_file_name and decode_file_name: a unibyte name's
+    // bytes pass unchanged, a multibyte one is encoded with
+    // `file-name-coding-system' or `default-file-name-coding-system',
+    // and names read back are decoded with it (raw bytes for invalid
+    // input, unibyte without a coding system); a NUL is `filenamep'.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let* ((d (file-name-as-directory (make-temp-file "emaxx-fname-" t)))
+               (bytes (lambda ()
+                        (let ((default-file-name-coding-system nil))
+                          (mapcar #'string-to-list (directory-files d nil "^[a-z]"))))))
+          (unwind-protect
+              (progn
+                (write-region "" nil (concat d "a\357"))
+                (write-region "" nil (concat d "bé"))
+                (write-region "" nil (concat d (string ?c (unibyte-char-to-multibyte #xe9))))
+                (make-directory (concat d "d\351"))
+                (make-symbolic-link "t\351" (concat d "l\351"))
+                (copy-file (concat d "a\357") (concat d "e\351"))
+                (rename-file (concat d "e\351") (concat d "fé\351"))
+                (list (funcall bytes)
+                      (mapcar (lambda (f) (list (multibyte-string-p f) (string-to-list f)))
+                              (directory-files d nil "^[a-z]"))
+                      (list (file-exists-p (concat d "a\357"))
+                            (file-exists-p (concat d "aï"))
+                            (file-directory-p (concat d "d\351"))
+                            (file-readable-p (concat d "bé")))
+                      (let ((link (file-symlink-p (concat d "l\351"))))
+                        (list link (multibyte-string-p link)))
+                      (sort (mapcar (lambda (f) (list f (multibyte-string-p f)))
+                                    (file-name-all-completions "" d))
+                            (lambda (a b) (string< (car a) (car b))))
+                      (condition-case err (file-exists-p "/tmp/a\0b") (error (list (car err) (cadr err))))
+                      (file-attributes "/tmp/a\0b")
+                      (let ((file-name-coding-system 'latin-1))
+                        (write-region "" nil (concat d "gé"))
+                        (directory-files d nil "^g"))
+                      (assq ?g (funcall bytes))))
+            (delete-directory d t)))"#,
+        r#"(((97 239) (98 195 169) (99 233) (100 233) (102 195 169 233) (108 233)) ((t (97 4194287)) (t (98 233)) (t (99 4194281)) (t (100 4194281)) (t (102 233 4194281)) (t (108 4194281))) (t nil t t) ("t\351" t) (("../" nil) ("./" nil) ("a\357" t) ("bé" t) ("c\351" t) ("d\351/" t) ("fé\351" t) ("l\351" t)) (wrong-type-argument filenamep) nil (#("gé" 0 2 (charset iso-8859-1))) (103 233))"#,
+        "file name coding",
+    );
+}
+
+#[test]
 fn directory_files_returns_mutable_sorted_names_with_dot_entries() {
     let unique = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

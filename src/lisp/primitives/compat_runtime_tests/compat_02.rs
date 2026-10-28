@@ -634,7 +634,7 @@ fn rename_visited_file_moves_disk_file_and_updates_buffer_path() {
     interp
         .buffer
         .borrow_mut()
-        .set_visited_file_modtime(file_modtime(&old_path).expect("source modtime"));
+        .set_visited_file_modtime(file_modtime(&interp, &env, &old_path).expect("source modtime"));
 
     crate::test_support::call_lisp_function(
         &mut interp,
@@ -650,7 +650,8 @@ fn rename_visited_file_moves_disk_file_and_updates_buffer_path() {
         interp.buffer.borrow().file.as_deref(),
         Some(new_path.as_str())
     );
-    let canonical_new_path = canonical_file_name(&new_path);
+    let canonical_new_path =
+        canonical_file_name(&interp, &env, &new_path).expect("canonical file name");
     assert_eq!(
         interp.buffer.borrow().file_truename.as_deref(),
         Some(canonical_new_path.as_str())
@@ -677,7 +678,7 @@ fn revert_buffer_reloads_non_utf8_file_as_raw_text() {
     interp
         .buffer
         .borrow_mut()
-        .set_visited_file_modtime(file_modtime(&path).expect("source modtime"));
+        .set_visited_file_modtime(file_modtime(&interp, &env, &path).expect("source modtime"));
 
     // A bare revert-buffer call with no NOCONFIRM asks "(yes or no)" and,
     // in batch, signals end-of-file at EOF -- probed identical on both
@@ -750,11 +751,11 @@ fn write_region_checks_supersession_when_lockfile_creation_is_disabled() {
     *interp.buffer.borrow_mut() =
         crate::buffer::Buffer::from_text("*lock-supersession*", "local bytes\n");
     interp.buffer.borrow_mut().file = Some(path.clone());
-    interp.buffer.borrow_mut().file_truename = Some(canonical_file_name(&path));
-    interp
-        .buffer
-        .borrow_mut()
-        .set_visited_file_modtime(file_modtime(&path).expect("initial visited modtime"));
+    interp.buffer.borrow_mut().file_truename =
+        Some(canonical_file_name(&interp, &env, &path).expect("canonical file name"));
+    interp.buffer.borrow_mut().set_visited_file_modtime(
+        file_modtime(&interp, &env, &path).expect("initial visited modtime"),
+    );
 
     std::fs::write(&path, "external bytes\n").expect("replace visited file externally");
     std::fs::File::open(&path)
@@ -792,7 +793,7 @@ fn write_region_checks_supersession_when_lockfile_creation_is_disabled() {
         .expect("supersession observer records the visited file");
     assert_eq!(
         string_text(&observed).expect("supersession observer receives a file name"),
-        canonical_file_name(&path)
+        canonical_file_name(&interp, &env, &path).expect("canonical file name")
     );
     assert_eq!(
         std::fs::read_to_string(&path).expect("read supersession write"),
@@ -817,7 +818,7 @@ fn buffer_stale_default_detects_clean_file_modtime_changes() {
     interp
         .buffer
         .borrow_mut()
-        .set_visited_file_modtime(file_modtime(&path).expect("source modtime"));
+        .set_visited_file_modtime(file_modtime(&interp, &env, &path).expect("source modtime"));
 
     std::fs::write(&path, "changed").expect("update file contents");
     interp.buffer.borrow_mut().set_unmodified();

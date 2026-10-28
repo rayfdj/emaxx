@@ -177,10 +177,12 @@ pub(super) fn openp_search(
                     return Ok((Some(SearchMatch { name, file: None }), last_errno));
                 }
             } else {
+                // lread.c openp: the candidate ENCODE_FILE'd for the host.
+                let host = host_file_name(interp, env, &text)?;
                 let opened = if let Some(mask) = mask {
-                    locate_file_access_probe(mask, &text).map(|()| None)
+                    locate_file_access_probe(mask, &host).map(|()| None)
                 } else {
-                    open_local_candidate(&text).map(Some)
+                    open_local_candidate(&host).map(Some)
                 };
                 match opened {
                     Ok(Some((file, modified))) if newer => {
@@ -227,7 +229,7 @@ pub(super) fn openp_search(
     Ok((None, last_errno))
 }
 
-fn open_local_candidate(path: &str) -> Result<(fs::File, std::time::SystemTime), i32> {
+fn open_local_candidate(path: &Path) -> Result<(fs::File, std::time::SystemTime), i32> {
     let errno = |error: std::io::Error| error.raw_os_error().unwrap_or(libc::EIO);
     let file = fs::File::open(path).map_err(errno)?;
     let metadata = file.metadata().map_err(errno)?;

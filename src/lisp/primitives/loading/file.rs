@@ -100,7 +100,8 @@ pub(crate) fn load_file(
         let path = PathBuf::from(string_text(&found.name)?);
         let native = maybe_swap_for_native(interp, &requested, &path, env)?;
         if native != path
-            && let Ok(file) = fs::File::open(&native)
+            && let Ok(file) =
+                fs::File::open(host_file_name(interp, env, &native.to_string_lossy())?)
         {
             found.name = Value::string(&native.display().to_string());
             found.file = Some(file);
