@@ -7872,6 +7872,42 @@ setup_process_coding_systems's check now refuses). A 13-form
   tests run passing (2 ignored); the seven integration targets; clippy
   `-D warnings', rustfmt and `git diff --check'; and each commit builds
   alone.
+- **Round 134: buffer-local queries by symbol, a name cache that keeps
+  its literal names, and indent.c's column cache.** A major mode makes
+  dozens of variables local, and electric-tests' setup runs ruby-mode,
+  js-mode, python-mode and c-mode for each test it defines:
+  `make-local-variable' took 2,319 instructions a call there, finding
+  the variable's name again for its ALWAYS_LOCAL flag, its buffer cell,
+  its default value and its new cell, where data.c works on the symbol.
+  It now asks the symbol, as `local-variable-p',
+  `local-variable-if-set-p', `variable-binding-locus' (which now take a
+  symbol with position while `symbols-with-pos-enabled' is set, as
+  CHECK_SYMBOL does) and `use-local-map' do, and
+  `kill-all-local-variables' reads each variable's `permanent-local'
+  property by identity: 959 instructions a call, and
+  `kill-all-local-variables' 15.6K where it took 22K. A primitive
+  naming a symbol by its literal text found it through a table keyed by
+  the text's address that was emptied whenever 8,192 texts had filled
+  it, and texts built at run time (each resolved alias name, each
+  `format'ted one) filled it, so the literal names were hashed again and
+  again. The table is now direct-mapped, 4,096 slots each answering for
+  one key and checked against the symbol's own name (a reused address
+  only misses), in front of every lookup of an interned name; the column
+  scan reads `tab-width', `ctl-arrow', `selective-display' and the
+  display tables through held symbols. indent.c's current_column answers
+  last_known_column while point and the buffer's MODIFF are what they
+  were when it was recorded (by current_column, `indent-to' and
+  `move-to-column'), and a buffer switch, `widen', `narrow-to-region' and
+  a `save-restriction''s restore invalidate it; Emaxx scanned on every
+  call, so after a change of `tab-width' at the same point and MODIFF it
+  answered the new width's column where GNU answers the recorded one. It
+  now keeps the same record. electric-tests' setup under the frozen
+  runner (release build): 4.05G instructions, now 3.95G (GNU 3.36G, of
+  which its collector takes about 0.55G).
+  Local validation: the full gate across its ten groups with the
+  documented local skips, all 3,275 tests run passing (2 ignored); the
+  seven integration targets; clippy `-D warnings', rustfmt and `git diff
+  --check'.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -8755,6 +8791,14 @@ all 7,928 on its rerun. The first attempt's timings: setup 58.8 s
 against 49.5 s (1.188), test bodies 213.8 s against 229.3 s (0.933), in
 all 0.988; the rerun's: setup 67.5 s against 56.1 s (1.204), test
 bodies 232.6 s against 242.6 s (0.958), in all 1.010.
+**On `63dd90b`** (rounds 132 and 133): full Rust gate passed (run
+40632416575); frozen (run 40632419185) matched all 7,928 outcomes on
+its first attempt. Its timings: setup 74.9 s against 59.7 s (1.253),
+test bodies 244.7 s against 255.9 s (0.956), in all 1.013.
+proced-tests took 0.34 s against 0.31 s (1.09; 1.99 on `786b170`'s
+rerun) and emacs-module-tests 2.53 s against 2.38 s (1.06; 1.35), its
+four aborting `module--test-assertions' tests 0.38 to 0.52 s against
+0.35 to 0.42 s.
 
 **Findings recorded, not fixed:**
 - **What the checked build costs (round 131).** mule-tests under the

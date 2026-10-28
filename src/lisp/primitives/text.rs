@@ -286,16 +286,19 @@ pub(crate) fn buffer_display_table(
     interp: &Interpreter,
     env: &Env,
 ) -> Option<crate::lisp::types::CharTableRef> {
-    ["buffer-display-table", "standard-display-table"]
-        .into_iter()
-        .find_map(|name| match interp.lookup_var(name, env)?.kind() {
-            Kind::CharTable(table)
-                if table.has_purpose("display-table") && table.extra_count() == 6 =>
-            {
-                Some(table)
-            }
-            _ => None,
-        })
+    [
+        cached_symbol!("buffer-display-table"),
+        cached_symbol!("standard-display-table"),
+    ]
+    .into_iter()
+    .find_map(|key| match interp.lookup_var_key(key, env)?.kind() {
+        Kind::CharTable(table)
+            if table.has_purpose("display-table") && table.extra_count() == 6 =>
+        {
+            Some(table)
+        }
+        _ => None,
+    })
 }
 
 /// character.c char_width: CHARACTER_WIDTH of C, or, when the display

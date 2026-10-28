@@ -648,8 +648,8 @@ define_dispatch!(
                 // A native always-local slot (buffer-file-name, mode-name,
                 // default-directory, ...) is already local by construction
                 // (a buffer_local_flags index of -1 returns at once).
-                if !interp.is_always_buffer_local_special(&symbol)
-                    && !interp.has_buffer_local_binding(buffer_id, &symbol)
+                if !interp.is_always_buffer_local_symbol(&symbol)
+                    && !interp.has_buffer_local_binding_symbol(buffer_id, &symbol)
                 {
                     if interp.let_shadows_buffer_binding(&symbol) {
                         call_named_function(
@@ -662,8 +662,10 @@ define_dispatch!(
                             env,
                         )?;
                     }
-                    let value = interp.symbol_value_cell(&symbol).unwrap_or(Value::Unbound);
-                    interp.set_buffer_local_value(buffer_id, &symbol, value);
+                    let value = interp
+                        .symbol_value_cell_symbol(&symbol)
+                        .unwrap_or(Value::Unbound);
+                    interp.set_buffer_local_value_symbol(buffer_id, &symbol, value);
                 }
                 Ok(Value::Symbol(symbol))
             }

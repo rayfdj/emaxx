@@ -1265,15 +1265,15 @@ pub(crate) fn scan_for_column(
     let goal = goal.unwrap_or(usize::MAX);
     // SANE_TAB_WIDTH.
     let tab_width = interp
-        .lookup_var("tab-width", env)
+        .lookup_var_key(cached_symbol!("tab-width"), env)
         .and_then(|value| value.integer_value())
         .filter(|width| (1..=1000).contains(width))
         .unwrap_or(8) as usize;
     let ctl_arrow = interp
-        .lookup_var("ctl-arrow", env)
+        .lookup_var_key(cached_symbol!("ctl-arrow"), env)
         .is_some_and(|value| value.is_truthy());
     let selective_display = interp
-        .lookup_var("selective-display", env)
+        .lookup_var_key(cached_symbol!("selective-display"), env)
         .is_some_and(|value| matches!(value.kind(), Kind::T));
     let multibyte = interp.buffer.borrow().is_multibyte();
     let display_table = buffer_display_table(interp, env);

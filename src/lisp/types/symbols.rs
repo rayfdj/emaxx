@@ -10,7 +10,7 @@ use super::obarray::{Buckets, StandardBuckets, text_key};
 use super::{ProcessTable, SymbolName, Value};
 use crate::lisp::alloc::vectors::hash_tables::DescriptorPool;
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::rc::Rc;
 
 /// Not GNU: the symbols of private obarrays and abbrev tables by their
@@ -19,9 +19,48 @@ use std::rc::Rc;
 /// when one table held every interned key.
 type PrivateNames = HashSet<NameEntry, ObarrayBuildHasher>;
 /// Host text's address with its length in the high bits a user-space
-/// address leaves clear (`SymbolName::interned_cached'), hashed by one
-/// multiply.
-type AddressNames = HashMap<usize, SymbolName, super::IdentityBuildHasher>;
+/// address leaves clear (`SymbolName::find_interned'), each in the slot
+/// one multiply picks: the symbol last found for a text there.  A slot
+/// answers only for its key and is checked against the symbol's own name,
+/// so a runtime-built text whose storage is reused merely misses; a
+/// table that filled with such texts and was emptied when full (every
+/// name built with `format', every resolved alias) lost the literal names
+/// with them.
+pub(super) struct AddressNames(Box<[(usize, Option<SymbolName>)]>);
+
+const ADDRESS_SLOT_BITS: u32 = 12;
+
+impl Default for AddressNames {
+    fn default() -> Self {
+        Self(vec![(0, None); 1 << ADDRESS_SLOT_BITS].into_boxed_slice())
+    }
+}
+
+impl AddressNames {
+    #[inline]
+    fn slot(key: usize) -> usize {
+        key.wrapping_mul(0x9e37_79b9_7f4a_7c15) >> (usize::BITS - ADDRESS_SLOT_BITS)
+    }
+
+    #[inline]
+    pub(super) fn get(&self, key: usize) -> Option<SymbolName> {
+        match self.0[Self::slot(key)] {
+            (found, symbol) if found == key => symbol,
+            _ => None,
+        }
+    }
+
+    pub(super) fn insert(&mut self, key: usize, symbol: SymbolName) {
+        self.0[Self::slot(key)] = (key, Some(symbol));
+    }
+
+    /// Funintern: no slot answers with SYMBOL any more.
+    fn forget(&mut self, symbol: SymbolName) {
+        for slot in self.0.iter_mut().filter(|slot| slot.1 == Some(symbol)) {
+            *slot = (0, None);
+        }
+    }
+}
 
 /// The obarray's hash of a name: fns.c's `hash_string', which oblookup
 /// takes of the name's bytes -- the length, then a word at a time (at most
@@ -311,6 +350,13 @@ const KEY_NAMES: &[&str] = &[
     "event-symbol-elements",
     "modifier-cache",
     "event-kind",
+    "current-local-map",
+    "tab-width",
+    "ctl-arrow",
+    "selective-display",
+    "buffer-display-table",
+    "standard-display-table",
+    "permanent-local",
 ];
 
 struct Symbols {
@@ -477,10 +523,7 @@ impl SymbolOwner {
     /// The uninterned state of a symbol Funintern unlinked.
     fn forget(&self, symbol: SymbolName) {
         symbol.cell().mark_uninterned();
-        self.0
-            .by_address
-            .borrow_mut()
-            .retain(|_, cached| *cached != symbol);
+        self.0.by_address.borrow_mut().forget(symbol);
     }
 
     /// The initial obarray's symbols in DOOBARRAY's order, then the

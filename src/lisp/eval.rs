@@ -5686,6 +5686,11 @@ pub struct InterpreterState {
     pub last_match_data: Option<Vec<Option<(usize, usize)>>>,
     /// Source buffer for buffer-origin match data; string searches leave this unset.
     pub last_match_data_buffer_id: Option<u64>,
+    /// indent.c's last_known_column, last_known_column_point and
+    /// last_known_column_modified: the column `current-column' answers
+    /// while point and the buffer's modiff stay as they were (a point of
+    /// 0, no position, when invalid).
+    pub(crate) last_known_column: (usize, usize, crate::buffer::ModCount),
     /// The matcher's registers in text offsets (search.c's search_regs
     /// before a search converts them to positions), held between searches
     /// so their allocation serves every search.
@@ -6428,6 +6433,7 @@ impl Interpreter {
             pending_termination: None,
             last_match_data: None,
             last_match_data_buffer_id: None,
+            last_known_column: (0, 0, 0),
             search_registers: Default::default(),
             profiler_memory_running: false,
             profiler_memory_log_pending: false,

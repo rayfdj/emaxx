@@ -438,6 +438,16 @@ impl Interpreter {
         self.buffer_local_binding(buffer_id, name).is_some()
     }
 
+    /// `has_buffer_local_binding' for a symbol in hand: no name to find.
+    pub(crate) fn has_buffer_local_binding_symbol(
+        &self,
+        buffer_id: u64,
+        symbol: &SymbolName,
+    ) -> bool {
+        self.buffer_local_binding_symbol(buffer_id, symbol)
+            .is_some()
+    }
+
     pub fn set_buffer_local_value(&mut self, buffer_id: u64, name: &str, value: Value) {
         if self.has_native_text_conversion_style(name) {
             if let Some(mut buffer) = self.get_buffer_by_id_mut(buffer_id) {
@@ -701,6 +711,10 @@ impl Interpreter {
         self.globals.has_flag_by_name(name, LOCAL_IF_SET)
     }
 
+    pub(crate) fn is_auto_buffer_local_symbol(&self, symbol: &SymbolName) -> bool {
+        self.globals.has_flag(symbol, LOCAL_IF_SET)
+    }
+
     /// Define a global value cell and its dynamic-binding contract together.
     /// Native DEFVAR-style startup state must never require two coordinated
     /// calls at the definition site.
@@ -747,6 +761,10 @@ impl Interpreter {
 
     pub fn is_always_buffer_local_special(&self, name: &str) -> bool {
         self.globals.has_flag_by_name(name, ALWAYS_LOCAL)
+    }
+
+    pub(crate) fn is_always_buffer_local_symbol(&self, symbol: &SymbolName) -> bool {
+        self.globals.has_flag(symbol, ALWAYS_LOCAL)
     }
 
     /// data.c:let_shadows_buffer_binding_p: a SPECPDL_LET_DEFAULT

@@ -518,11 +518,10 @@ define_dispatch!(
                 } else {
                     get_keymap(interp, args[0], true, true, env)?
                 };
-                interp.set_buffer_local_value(
-                    interp.current_buffer_id(),
-                    "current-local-map",
-                    keymap,
-                );
+                let buffer_id = interp.current_buffer_id();
+                cached_symbol!("current-local-map").with(|symbol| {
+                    interp.set_buffer_local_value_symbol(buffer_id, symbol, keymap);
+                });
                 Ok(Value::Nil)
             }
             "use-global-map" => {
@@ -1426,8 +1425,8 @@ define_dispatch!(
                         continue;
                     }
                     let preserve = !kill_permanent
-                        && interp
-                            .get_symbol_property(name, "permanent-local")
+                        && cached_symbol!("permanent-local")
+                            .with(|property| interp.get_symbol_property_of(name, property))
                             .is_some_and(|value| value.is_truthy());
                     interp.notify_variable_watchers(
                         name,
@@ -1448,7 +1447,7 @@ define_dispatch!(
                     interp.clear_buffer_local_state_for_mode_change(buffer_id);
                 }
                 for (name, value) in permanent {
-                    interp.set_buffer_local_value(buffer_id, &name, value);
+                    interp.set_buffer_local_value_symbol(buffer_id, &name, value);
                 }
                 interp.reset_major_mode_slots(buffer_id);
                 Ok(Value::Nil)

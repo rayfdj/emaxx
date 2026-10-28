@@ -573,6 +573,14 @@ impl SymbolName {
     #[inline]
     fn find_interned(text: &str) -> Option<Self> {
         use obarray::Buckets;
+        // A primitive naming a symbol by its literal text presents the same
+        // address on every call: the text is hashed once, not each time.
+        let key = (text.as_ptr() as usize) ^ (text.len() << 48);
+        if let Some(symbol) = symbols::with_address_names(|cache| cache.get(key))
+            && symbol.as_str() == text
+        {
+            return Some(symbol);
+        }
         let bytes = text.as_bytes();
         let chars = if obarray::plain_ascii(bytes) {
             bytes.len()
@@ -585,7 +593,9 @@ impl SymbolName {
         } else {
             text.chars().count()
         };
-        INTERNED_SYMBOL_NAMES.with_borrow(|names| names.lookup(bytes, chars).ok())
+        let symbol = INTERNED_SYMBOL_NAMES.with_borrow(|names| names.lookup(bytes, chars).ok())?;
+        symbols::with_address_names_mut(|cache| cache.insert(key, symbol));
+        Some(symbol)
     }
 
     /// oblookup in the initial obarray of host TEXT; None for a marked key.
@@ -652,36 +662,12 @@ impl SymbolName {
         INTERNED_SYMBOL_NAMES.with_borrow(|names| names.lookup_name(name))
     }
 
-    /// The interned symbol named TEXT, through a cache keyed by the text's
-    /// address and length and verified by the text itself: a primitive
-    /// reading a variable by its literal name presents the same address on
-    /// every call, so the name is hashed once, not on each read.  A text
-    /// that is not an interned symbol's is not cached (None: the caller
-    /// keeps its by-name path, which may still know the name).
+    /// The symbol named TEXT, interned or a live uninterned one, through
+    /// `find_interned's address-keyed cache.  None for a text that is no
+    /// symbol's (the caller keeps its by-name path, which may still know
+    /// the name).
     pub(crate) fn interned_cached(text: &str) -> Option<Self> {
-        // The text's address and length in one word: a user-space address
-        // fits in 48 bits.  A longer text's key may collide, and the text
-        // check below sends any entry that is not this text's to the table.
-        let key = (text.as_ptr() as usize) ^ (text.len() << 48);
-        if let Some(symbol) = symbols::with_address_names(|cache| cache.get(&key).cloned())
-            && symbol.as_str() == text
-        {
-            return Some(symbol);
-        }
-        if text.contains(UNINTERNED_SYMBOL_MARKER_CHAR) {
-            return Self::live_uninterned(text);
-        }
-        let symbol = Self::find_interned(text)?;
-        symbols::with_address_names_mut(|cache| {
-            // A bounded cache: a runtime-built name whose storage is freed
-            // and reused would otherwise pin a stale entry (the text check
-            // above keeps such an entry from ever answering wrongly).
-            if cache.len() >= 8192 {
-                cache.clear();
-            }
-            cache.insert(key, symbol);
-        });
-        Some(symbol)
+        Self::find(text)
     }
 
     fn live_uninterned(text: &str) -> Option<Self> {

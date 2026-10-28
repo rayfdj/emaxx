@@ -1921,6 +1921,122 @@ fn rust_callers_reach_byte_code_closures_given_named_or_aliased_as_funcall_does(
     );
 }
 
+#[test]
+fn buffer_local_queries_take_the_variable_as_a_symbol_as_data_c_does() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let value = crate::test_support::eval_lisp(
+        &mut interp,
+        &mut env,
+        r#"(progn
+(defvar r134-var 'global)
+(defvaralias 'r134-alias 'r134-var)
+(defvar r134-void)
+(defvar-local r134-auto 'auto)
+(put 'r134-perm 'permanent-local t)
+(defvar r134-perm 'p)
+(with-temp-buffer
+   (list
+    (make-local-variable 'r134-alias)
+    (local-variable-p 'r134-var) (local-variable-p 'r134-alias)
+    (local-variable-if-set-p 'r134-alias) (local-variable-if-set-p 'r134-auto)
+    (local-variable-if-set-p 'r134-void)
+    (progn (setq r134-alias 'local) (list r134-var (default-value 'r134-var)))
+    (make-local-variable 'r134-void)
+    (condition-case err (symbol-value 'r134-void) (void-variable err))
+    (local-variable-p 'r134-void)
+    (make-local-variable 'mode-name) (local-variable-p 'mode-name)
+    (local-variable-p 'tab-width) (local-variable-p 'fill-column)
+    (condition-case err (make-local-variable nil) (error err))
+    (condition-case err (make-local-variable 3) (error err))
+    (condition-case err (local-variable-p "x") (error err))
+    (local-variable-p nil) (local-variable-p t)
+    (eq (variable-binding-locus 'r134-alias) (current-buffer))
+    (variable-binding-locus 'r134-perm)
+    (progn (make-local-variable 'r134-perm) (setq r134-perm 'kept)
+           (setq-local r134-auto 'mine)
+           (kill-all-local-variables)
+           (list r134-perm (local-variable-p 'r134-perm) r134-auto
+                 (local-variable-p 'r134-var) r134-var))
+    (progn (use-local-map (make-sparse-keymap)) (keymapp (current-local-map)))
+    (progn (use-local-map nil) (current-local-map))
+    (progn (insert "a\tb") (list (current-column)
+                                 (let ((tab-width 4)) (current-column))
+                                 (progn (setq-local tab-width 3) (current-column))))
+    (progn (erase-buffer) (insert "x" (propertize "y" 'display '(space :width 5)) "z")
+           (current-column))
+    (progn (erase-buffer) (insert "\C-a") (list (current-column)
+                                                (let ((ctl-arrow nil)) (current-column))))
+    (let ((sym (intern "r134-fresh")))
+      (unintern "r134-fresh" obarray)
+      (list (intern-soft "r134-fresh") (eq sym (intern "r134-fresh")))))))"#,
+    )
+    .expect("buffer-local queries");
+    // GNU 30.2: an alias's binding is its target's, a void default stays
+    // void, a constant refuses, a permanent local survives
+    // `kill-all-local-variables'; `current-column' answers from
+    // indent.c's cache while point and the modiff stay.
+    assert_eq!(
+        value.to_string(),
+        r#"(r134-var t t t t nil (local global) r134-void (void-variable r134-void) t mode-name t nil nil (setting-constant nil) (wrong-type-argument symbolp 3) (wrong-type-argument symbolp "x") nil nil t nil (kept t auto nil global) t nil (9 9 9) 7 (2 2) (nil nil))"#
+    );
+}
+
+#[test]
+fn current_column_answers_from_its_cache_until_point_modiff_or_buffer_change() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let value = crate::test_support::eval_lisp(
+        &mut interp,
+        &mut env,
+        r#"(with-temp-buffer
+   (let ((other (generate-new-buffer " other")) r)
+     (insert "a\tbc")
+     (push (current-column) r)                                  ; 10
+     (setq-local tab-width 4)
+     (push (current-column) r)                                  ; cached 10
+     (with-current-buffer other (ignore))
+     (push (current-column) r)                                  ; switched: 6
+     (setq-local tab-width 2)
+     (push (current-column) r)                                  ; cached
+     (narrow-to-region 1 3) (widen)
+     (push (current-column) r)                                  ; recomputed
+     (setq-local tab-width 8)
+     (save-restriction (narrow-to-region 2 5))
+     (push (current-column) r)
+     (setq-local tab-width 4)
+     (push (indent-to 12) r)
+     (setq-local tab-width 8)
+     (push (current-column) r)                                  ; indent-to recorded 12
+     (goto-char 2) (push (current-column) r) (goto-char (point-max))
+     (push (current-column) r)
+     (setq-local tab-width 3)
+     (push (move-to-column 3) r) (push (current-column) r)
+     (setq-local tab-width 8)
+     (push (current-column) r)
+     (put-text-property 1 2 'face 'bold)
+     (push (current-column) r)
+     (setq-local tab-width 3)
+     (push (current-column) r)
+     (with-silent-modifications (put-text-property 1 2 'face 'italic))
+     (push (current-column) r)
+     (setq-local tab-width 8)
+     (set-buffer-modified-p nil)
+     (push (current-column) r)
+     (kill-buffer other)
+     (nreverse r)))"#,
+    )
+    .expect("column cache");
+    // GNU 30.2: indent.c's last_known_column answers while point and
+    // MODIFF are unchanged; a buffer switch, widening, narrowing and a
+    // restriction's restore invalidate it; `indent-to' and
+    // `move-to-column' record the column they reach.
+    assert_eq!(
+        value.to_string(),
+        "(10 10 6 6 2 8 12 12 1 18 3 3 3 8 8 3 3)"
+    );
+}
+
 // Finding 34 re-hosts: the originals ran on the bare interpreter against
 // native facades and were deleted with them; GNU's own test tree covers
 // none of these, so the coverage lives here on the full dumped image,

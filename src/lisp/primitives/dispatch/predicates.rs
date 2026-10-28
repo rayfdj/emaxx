@@ -451,7 +451,8 @@ define_dispatch!(
             }
             "local-variable-p" => {
                 need_arg_range(name, args, 1, 2)?;
-                let symbol = interp.resolve_variable_name(args[0].as_symbol()?)?;
+                let symbol = interp
+                    .resolve_variable_symbol(&checked_symbol_identity(interp, &args[0], env)?)?;
                 let buffer_id = if let Some(buffer) = args.get(1).filter(|value| !value.is_nil()) {
                     interp.resolve_buffer_id(buffer)?
                 } else {
@@ -460,8 +461,8 @@ define_dispatch!(
                 // data.c:Flocal_variable_p: an alist cell, bound or void,
                 // or a per-buffer slot that is local in every buffer.
                 Ok(
-                    if interp.has_buffer_local_binding(buffer_id, &symbol)
-                        || interp.is_always_buffer_local_special(&symbol)
+                    if interp.has_buffer_local_binding_symbol(buffer_id, &symbol)
+                        || interp.is_always_buffer_local_symbol(&symbol)
                     {
                         Value::T
                     } else {
@@ -471,15 +472,16 @@ define_dispatch!(
             }
             "local-variable-if-set-p" => {
                 need_arg_range(name, args, 1, 2)?;
-                let symbol = interp.resolve_variable_name(args[0].as_symbol()?)?;
+                let symbol = interp
+                    .resolve_variable_symbol(&checked_symbol_identity(interp, &args[0], env)?)?;
                 let buffer_id = if let Some(buffer) = args.get(1).filter(|value| !value.is_nil()) {
                     interp.resolve_buffer_id(buffer)?
                 } else {
                     interp.current_buffer_id()
                 };
                 Ok(
-                    if interp.has_buffer_local_binding(buffer_id, &symbol)
-                        || interp.is_auto_buffer_local(&symbol)
+                    if interp.has_buffer_local_binding_symbol(buffer_id, &symbol)
+                        || interp.is_auto_buffer_local_symbol(&symbol)
                     {
                         Value::T
                     } else {
@@ -489,11 +491,12 @@ define_dispatch!(
             }
             "variable-binding-locus" => {
                 need_args(name, args, 1)?;
-                let symbol = interp.resolve_variable_name(args[0].as_symbol()?)?;
+                let symbol = interp
+                    .resolve_variable_symbol(&checked_symbol_identity(interp, &args[0], env)?)?;
                 // data.c:Fvariable_binding_locus asks Flocal_variable_p: a
                 // binding cell, bound or void, names the buffer.
                 Ok(interp
-                    .has_buffer_local_binding(interp.current_buffer_id(), &symbol)
+                    .has_buffer_local_binding_symbol(interp.current_buffer_id(), &symbol)
                     .then(|| interp.buffer_identity_value(interp.current_buffer_id()))
                     .flatten()
                     .unwrap_or(Value::Nil))
