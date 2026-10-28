@@ -554,6 +554,11 @@ const EXACT_NATIVE_C_FAST_PATHS: &[NativeCFastPathContract] = &[
         contract_test: "native_string_length_and_fixnum_extrema_answer_as_their_subrs",
     },
     NativeCFastPathContract {
+        primitive: "nconc",
+        owner: "fns.c:Fnconc",
+        contract_test: "native_nconc_follows_fns_c_nconc",
+    },
+    NativeCFastPathContract {
         primitive: "nlistp",
         owner: "data.c:Fnlistp",
         contract_test: "direct_word_subrs_use_the_gnu_c_fast_and_error_paths",

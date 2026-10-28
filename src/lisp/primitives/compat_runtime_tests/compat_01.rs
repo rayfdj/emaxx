@@ -2073,6 +2073,60 @@ fn charset_maps_read_as_read_hex_does_and_map_charset_chars_takes_nil_codes() {
     );
 }
 
+#[test]
+fn functionp_is_eval_c_functionp_fset_of_nil_signals_and_nconc_follows_fnconc() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let value = crate::test_support::eval_lisp(
+        &mut interp,
+        &mut env,
+        r#"(progn
+           (defmacro p136-mac (x) x)
+           (defalias 'p136-alias-mac 'p136-mac)
+           (defun p136-fun (x) x)
+           (defalias 'p136-alias-fun 'p136-fun)
+           (defalias 'p136-alias-if 'if)
+           (fset 'p136-auto-f '(autoload "p136"))
+           (fset 'p136-auto-m '(autoload "p136" nil nil macro))
+           (fset 'p136-auto-short '(autoload))
+           (fset 'p136-auto-dotted '(autoload "p136" nil nil . macro))
+           (fset 'p136-lambda '(lambda))
+           (let ((head (list 1)) (cycle (list 'c)))
+             (setcdr cycle cycle)
+             (list
+              (mapcar #'functionp
+                      (list 'car 'if 'p136-mac 'p136-alias-mac 'p136-fun 'p136-alias-fun
+                            'p136-alias-if 'p136-auto-f 'p136-auto-m 'p136-auto-short
+                            'p136-auto-dotted 'p136-lambda 'p136-unbound nil t
+                            (symbol-function 'if) (symbol-function 'setq) (symbol-function 'car)
+                            '(lambda) '(lambda . 1) '(lambda (x) x) '(closure (t) (x) x)
+                            '(macro . car) (lambda (x) x) "car" 1))
+              (let ((symbols-with-pos-enabled t))
+                (list (functionp (position-symbol 'car 5))
+                      (functionp (list (position-symbol 'lambda 3) nil))))
+              (functionp (position-symbol 'car 5))
+              (condition-case err (fset nil 'car) (error err))
+              (condition-case err (defalias nil 'car) (error err))
+              (fset nil nil)
+              (nconc nil (list 1) nil (list 2) nil)
+              (nconc (list 1) 2)
+              (nconc nil 5)
+              (condition-case err (nconc head 2 (list 3)) (error err))
+              head
+              (condition-case err (nconc cycle (list 1)) (error (car err))))))"#,
+    )
+    .expect("functionp, fset and nconc");
+    // GNU 30.2: eval.c:FUNCTIONP follows the function cell (an alias of a
+    // special form, an autoload of any length, `(lambda)' and a special
+    // form's subr object included), Ffset and Fdefalias of nil signal
+    // `setting-constant', and Fnconc stores each argument into the last
+    // cons before it as it goes, a nil one standing for that cons.
+    assert_eq!(
+        value.to_string(),
+        "((t nil nil nil t t nil t nil t t t nil nil nil nil nil t t t t nil nil t nil nil) (t t) nil (setting-constant nil) (setting-constant nil) nil (1 2) (1 . 2) 5 (wrong-type-argument consp 2) (1 . 2) circular-list)"
+    );
+}
+
 // Finding 34 re-hosts: the originals ran on the bare interpreter against
 // native facades and were deleted with them; GNU's own test tree covers
 // none of these, so the coverage lives here on the full dumped image,

@@ -2328,13 +2328,18 @@ impl Interpreter {
     /// nothing done otherwise.
     #[inline]
     pub(crate) fn unbind_plain_special_id(&mut self, binding_id: u64) -> bool {
-        if !self.active_special_restores.last().is_some_and(|restore| {
-            restore.binding_id == binding_id && self.is_plain_restore(restore)
-        }) {
+        let Some(restore) = self.active_special_restores.last() else {
+            return false;
+        };
+        if restore.binding_id != binding_id || !self.is_plain_restore(restore) {
             return false;
         }
-        let restore = self.active_special_restores.pop().expect("checked last");
-        self.store_plain_restore(restore);
+        // The record is read in place and dropped there, as specpdl_ptr
+        // moves back over its entry, not moved out first.
+        let (name, previous) = (restore.name, restore.previous);
+        let depth = self.active_special_restores.len() - 1;
+        self.active_special_restores.truncate(depth);
+        self.store_plain_value(&name, previous);
         true
     }
 
@@ -2344,7 +2349,7 @@ impl Interpreter {
     /// slot holds, and it has no watcher to hear `unlet'.
     #[inline]
     fn is_plain_restore(&self, restore: &SpecialBindingRestore) -> bool {
-        restore.scope == SpecialBindingScope::Global
+        matches!(restore.scope, SpecialBindingScope::Global)
             && restore.previous_undo_state.is_none()
             && restore.keyboard_terminal_id.is_none()
             && (self.globals.plain_store(&restore.name)
@@ -2354,13 +2359,20 @@ impl Interpreter {
     /// The store of a restore `is_plain_restore' accepts.
     #[inline]
     fn store_plain_restore(&mut self, restore: SpecialBindingRestore) {
-        match restore.previous {
+        self.store_plain_value(&restore.name, restore.previous);
+    }
+
+    /// `store_plain_restore's store of PREVIOUS, the value a plain binding
+    /// of NAME saved (None for a void one), back into NAME's cell.
+    #[inline]
+    fn store_plain_value(&mut self, name: &SymbolName, previous: Option<Value>) {
+        match previous {
             Some(value) => {
-                if !self.globals.replace_bound_value(&restore.name, value) {
-                    self.globals.insert(&restore.name, value);
+                if !self.globals.replace_bound_value(name, value) {
+                    self.globals.insert(name, value);
                 }
             }
-            None => self.remove_global_binding_symbol(&restore.name),
+            None => self.remove_global_binding_symbol(name),
         }
     }
 

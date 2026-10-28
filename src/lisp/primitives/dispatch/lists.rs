@@ -819,7 +819,7 @@ define_dispatch!(
             }
             // alloc.c:Flist conses the arguments from the last back.
             "list" => Ok(Value::list_of(args)),
-            "nconc" => nconc_values(args),
+            "nconc" => nconc_values(args, || interp.maybe_quit(env)),
             "append" => {
                 let mut items: Vec<Value> = Vec::new();
                 for (i, a) in args.iter().enumerate() {
@@ -942,7 +942,7 @@ define_dispatch!(
                 need_args(name, args, 2)?;
                 let mut mapped = crate::lisp::alloc::RootedVec::new();
                 map_sequence(interp, &args[0], &args[1], env, Some(&mut mapped))?;
-                nconc_values(&mapped)
+                nconc_values(&mapped, || interp.maybe_quit(env))
             }
             "mapc" => {
                 need_args(name, args, 2)?;
@@ -1068,6 +1068,13 @@ define_dispatch!(
                 need_args(name, args, 2)?;
                 // GNU 30.2 data.c:Ffset uses CHECK_SYMBOL/XSYMBOL.
                 let symbol = checked_symbol_identity(interp, &args[0], env)?;
+                // Ffset: `NILP (symbol) && !NILP (definition)' signals.
+                if args[0].is_nil() && !args[1].is_nil() {
+                    return Err(LispError::SignalValue(Value::list([
+                        Value::symbol("setting-constant"),
+                        args[0],
+                    ])));
+                }
                 interp.fset_function_symbol(&symbol, args[1], env)
             }
             "fmakunbound" => {

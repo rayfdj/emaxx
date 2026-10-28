@@ -399,6 +399,13 @@ impl Interpreter {
             // a literal nil binding here would hide any dumped autoload and
             // turn the next call into `(invalid-function nil)'.
             if !function.is_nil() || !self.defer_unloaded_defsubst(&name, env) {
+                // Ffset: `NILP (symbol) && !NILP (definition)' signals.
+                if args[0].is_nil() && !function.is_nil() {
+                    return Err(LispError::SignalValue(Value::list([
+                        Value::symbol("setting-constant"),
+                        args[0],
+                    ])));
+                }
                 self.fset_function(&name, function, env)?;
             }
         }

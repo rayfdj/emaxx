@@ -196,6 +196,7 @@ const KEY_NAMES: &[&str] = &[
     "words-include-escapes",
     "describe-bindings-check-shadowing-in-ranges",
     "autoload",
+    "lambda",
     "menu-item",
     ":filter",
     "meta-prefix-char",

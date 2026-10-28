@@ -2182,7 +2182,11 @@ impl NativeRuntime {
                 interpreter.restore_special_dynamic(*restore, environment)
             }
             UnwindAction::SpecialId(binding_id) => {
-                interpreter.unbind_special_id(binding_id, environment)
+                if interpreter.unbind_plain_special_id(binding_id) {
+                    Ok(())
+                } else {
+                    interpreter.unbind_special_id(binding_id, environment)
+                }
             }
             UnwindAction::Excursion(saved) => {
                 interpreter.restore_excursion_state(saved);
@@ -2680,6 +2684,8 @@ static SYMBOL_VALUE_SUBR_INDEX: OnceLock<usize> = OnceLock::new();
 static NREVERSE_SUBR_INDEX: OnceLock<usize> = OnceLock::new();
 static FUNCALL_SUBR_INDEX: OnceLock<usize> = OnceLock::new();
 static LENGTH_SUBR_INDEX: OnceLock<usize> = OnceLock::new();
+static FBOUNDP_SUBR_INDEX: OnceLock<usize> = OnceLock::new();
+static SYMBOL_FUNCTION_SUBR_INDEX: OnceLock<usize> = OnceLock::new();
 
 pub(super) extern "C" fn direct_native_null(value: NativeWord) -> NativeWord {
     native_boolean(value == 0)
@@ -2695,6 +2701,37 @@ pub(super) extern "C" fn direct_native_atom(value: NativeWord) -> NativeWord {
 
 pub(super) extern "C" fn direct_native_bare_symbol_p(value: NativeWord) -> NativeWord {
     native_boolean(value & TAG_MASK == TAG_SYMBOL)
+}
+
+/// data.c:Fsymbolp: lisp.h:SYMBOLP's bare symbol, or while
+/// `symbols-with-pos-enabled' is set a symbol with position, which is
+/// vectorlike; every other tag answers from the word.
+pub(super) extern "C" fn direct_native_symbolp(value: NativeWord) -> NativeWord {
+    if value & TAG_MASK != TAG_VECTORLIKE {
+        return native_boolean(value & TAG_MASK == TAG_SYMBOL);
+    }
+    with_active(|active| match native_symbolp(active, value) {
+        Ok(is_symbol) => native_boolean(is_symbol),
+        Err(error) => {
+            remember_helper_error(active, error);
+            0
+        }
+    })
+}
+
+/// data.c:Ffboundp on a symbol cell's function, read in place; nil, t, a
+/// symbol with position and a wrong type take the subr's own path.
+pub(super) extern "C" fn direct_native_fboundp(symbol: NativeWord) -> NativeWord {
+    match symbol_function_cell(symbol) {
+        Some(function) => native_boolean(function != 0),
+        None => slow_unary_subr(&FBOUNDP_SUBR_INDEX, "fboundp", symbol),
+    }
+}
+
+/// data.c:Fsymbol_function, as `direct_native_fboundp' reads the cell.
+pub(super) extern "C" fn direct_native_symbol_function(symbol: NativeWord) -> NativeWord {
+    symbol_function_cell(symbol)
+        .unwrap_or_else(|| slow_unary_subr(&SYMBOL_FUNCTION_SUBR_INDEX, "symbol-function", symbol))
 }
 
 pub(super) extern "C" fn direct_native_car(value: NativeWord) -> NativeWord {
@@ -2782,6 +2819,17 @@ pub(super) extern "C" fn direct_native_type_of(value: NativeWord) -> NativeWord 
 }
 
 pub(super) extern "C" fn direct_native_symbol_value(symbol: NativeWord) -> NativeWord {
+    // data.c:find_symbol_value's SYMBOL_PLAINVAL case: a bound symbol cell
+    // that is no alias, no forwarded or buffer-held variable and localized
+    // in no buffer holds its value, which needs neither the handlers nor
+    // the interpreter.
+    // SAFETY: the caller's argument word is live.
+    if let Some(value) = unsafe { Value::from_word(symbol) }
+        .symbol_cell()
+        .and_then(|symbol| symbol.cell().unlocalized_value())
+    {
+        return value.word();
+    }
     with_active(|active| {
         if let Err(error) =
             unsafe { &mut *active.runtime }.sync_handlers(unsafe { &mut *active.interpreter })
@@ -2861,6 +2909,44 @@ pub(super) unsafe extern "C" fn direct_native_list(
             .iter()
             .rev()
             .fold(0, |tail, value| heap.cons(*value, tail))
+    })
+}
+
+/// fns.c:Fnconc at the MANY ABI, without the subr's own entry.
+pub(super) unsafe extern "C" fn direct_native_nconc(
+    argument_count: isize,
+    arguments: *const NativeWord,
+) -> NativeWord {
+    let count = usize::try_from(argument_count).unwrap_or(0);
+    if count != 0 && arguments.is_null() {
+        return invoke_subr_error("native subroutine arguments are null");
+    }
+    let values: &[NativeWord] = if count == 0 {
+        &[]
+    } else {
+        // SAFETY: generated code supplies the GNU MANY count/pointer pair;
+        // the nonempty pointer was checked above.
+        unsafe { std::slice::from_raw_parts(arguments, count) }
+    };
+    with_active(|active| {
+        if let Err(error) =
+            unsafe { &mut *active.runtime }.sync_handlers(unsafe { &mut *active.interpreter })
+        {
+            remember_helper_error(active, error);
+            return 0;
+        }
+        // SAFETY: generated code passes live Lisp_Object words.
+        let values = unsafe { live_values(values) };
+        match crate::lisp::primitives::nconc_values(values, || {
+            unsafe { &mut *active.interpreter }
+                .maybe_quit(unsafe { &mut *active.environment.get() })
+        }) {
+            Ok(value) => value.word(),
+            Err(error) => {
+                remember_helper_error(active, error);
+                0
+            }
+        }
     })
 }
 
@@ -3872,18 +3958,47 @@ fn native_remove_symbol_position(word: NativeWord) -> NativeWord {
 }
 
 fn native_eq(active: &ActiveCall, left: NativeWord, right: NativeWord) -> Result<bool, LispError> {
+    Ok(native_eq_word(active, left, right))
+}
+
+/// lisp.h:EQ: one word is one object, and while `symbols-with-pos-enabled'
+/// is set a symbol with position (vectorlike) is its bare symbol.
+#[inline(always)]
+fn native_eq_word(active: &ActiveCall, left: NativeWord, right: NativeWord) -> bool {
     if left == right {
-        return Ok(true);
+        return true;
     }
     if !unsafe { &*active.interpreter }.symbols_with_positions_enabled() {
-        return Ok(false);
+        return false;
     }
     if left & TAG_MASK != TAG_VECTORLIKE && right & TAG_MASK != TAG_VECTORLIKE {
-        return Ok(false);
+        return false;
     }
-    let left = native_remove_symbol_position(left);
-    let right = native_remove_symbol_position(right);
-    Ok(left == right)
+    native_remove_symbol_position(left) == native_remove_symbol_position(right)
+}
+
+/// eval.c:circular_list at TAIL, for a native walk to return from.
+#[cold]
+#[inline(never)]
+fn native_circular_list(active: &ActiveCall, tail: NativeWord) -> NativeWord {
+    let error = decode_word(active, tail)
+        .map(|tail| LispError::SignalValue(Value::list([Value::symbol("circular-list"), tail])));
+    remember_helper_error(active, error.unwrap_or_else(|error| error));
+    0
+}
+
+/// data.c:wrong_type_argument (PREDICATE, OBJECT), for a native walk to
+/// return from.
+#[cold]
+#[inline(never)]
+fn native_wrong_type_argument(
+    active: &ActiveCall,
+    predicate: &'static str,
+    object: NativeWord,
+) -> NativeWord {
+    let error = decode_word(active, object).map(|object| wrong_type_argument(predicate, object));
+    remember_helper_error(active, error.unwrap_or_else(|error| error));
+    0
 }
 
 /// fns.c:Feql only inspects float and bignum payloads; every other object
@@ -3934,16 +4049,8 @@ fn native_assq(active: &ActiveCall, key: NativeWord, alist: NativeWord) -> Nativ
 
     while native_consp(tail) {
         let entry = unsafe { native_car(tail) };
-        if native_consp(entry) {
-            let entry_key = unsafe { native_car(entry) };
-            match native_eq(active, entry_key, key) {
-                Ok(true) => return entry,
-                Ok(false) => {}
-                Err(error) => {
-                    remember_helper_error(active, error);
-                    return 0;
-                }
-            }
+        if native_consp(entry) && native_eq_word(active, unsafe { native_car(entry) }, key) {
+            return entry;
         }
 
         tail = unsafe { native_cdr(tail) };
@@ -3961,17 +4068,12 @@ fn native_assq(active: &ActiveCall, key: NativeWord, alist: NativeWord) -> Nativ
             n >>= u16::BITS;
             tortoise = tail;
         } else if tail == tortoise {
-            let error = decode_word(active, tail).map(|tail| {
-                LispError::SignalValue(Value::list([Value::symbol("circular-list"), tail]))
-            });
-            remember_helper_error(active, error.unwrap_or_else(|error| error));
-            return 0;
+            return native_circular_list(active, tail);
         }
     }
 
     if tail != 0 {
-        let error = decode_word(active, alist).map(|alist| wrong_type_argument("listp", alist));
-        remember_helper_error(active, error.unwrap_or_else(|error| error));
+        return native_wrong_type_argument(active, "listp", alist);
     }
     0
 }
@@ -3979,11 +4081,7 @@ fn native_assq(active: &ActiveCall, key: NativeWord, alist: NativeWord) -> Nativ
 /// fns.c:plist_get and lisp.h:FOR_EACH_TAIL_SAFE on native Lisp_Object
 /// words.  A malformed tail or a cycle returns nil without signaling or
 /// checking for quit, exactly as the C helper does.
-fn native_plist_get(
-    active: &ActiveCall,
-    mut tail: NativeWord,
-    property: NativeWord,
-) -> Result<NativeWord, LispError> {
+fn native_plist_get(active: &ActiveCall, mut tail: NativeWord, property: NativeWord) -> NativeWord {
     let mut tortoise = tail;
     let mut max = 2_isize;
     let mut n = 0_isize;
@@ -3994,8 +4092,8 @@ fn native_plist_get(
         if !native_consp(rest) {
             break;
         }
-        if native_eq(active, unsafe { native_car(tail) }, property)? {
-            return Ok(unsafe { native_car(rest) });
+        if native_eq_word(active, unsafe { native_car(tail) }, property) {
+            return unsafe { native_car(rest) };
         }
 
         // plist_get advances once in its loop body and FOR_EACH_TAIL_SAFE
@@ -4014,10 +4112,10 @@ fn native_plist_get(
             n >>= u16::BITS;
             tortoise = tail;
         } else if tail == tortoise {
-            return Ok(0);
+            return 0;
         }
     }
-    Ok(0)
+    0
 }
 
 /// fns.c:Fplist_member/plist_member and lisp.h:FOR_EACH_TAIL.  The current
@@ -4143,47 +4241,31 @@ fn invoke_native_get(active: &ActiveCall, symbol: NativeWord, property: NativeWo
         }
     };
 
-    let overriding = unsafe { &*active.interpreter }.overriding_plist_environment_value();
-    let overriding = match unsafe { &mut *active.runtime }.heap.encode(&overriding) {
-        Ok(word) => word,
-        Err(error) => {
-            remember_helper_error(active, super::lisp::native_ice(&error));
+    let interpreter = unsafe { &*active.interpreter };
+    if !interpreter.overriding_plist_environment_is_nil() {
+        let entry = native_assq(
+            active,
+            symbol,
+            interpreter.overriding_plist_environment_value().word(),
+        );
+        if native_call_has_pending_error(active) {
             return 0;
         }
-    };
-    let entry = native_assq(active, symbol, overriding);
-    if native_call_has_pending_error(active) {
-        return 0;
-    }
-    let overriding_plist = if native_consp(entry) {
-        unsafe { native_cdr(entry) }
-    } else {
-        0
-    };
-    match native_plist_get(active, overriding_plist, property) {
-        Ok(value) if value != 0 => return value,
-        Ok(_) => {}
-        Err(error) => {
-            remember_helper_error(active, error);
-            return 0;
-        }
-    }
-
-    let plist = unsafe { &*active.interpreter }.symbol_plist_symbol(&symbol_name);
-    let plist = match unsafe { &mut *active.runtime }.heap.encode(&plist) {
-        Ok(word) => word,
-        Err(error) => {
-            remember_helper_error(active, super::lisp::native_ice(&error));
-            return 0;
-        }
-    };
-    match native_plist_get(active, plist, property) {
-        Ok(value) => value,
-        Err(error) => {
-            remember_helper_error(active, error);
+        let overriding_plist = if native_consp(entry) {
+            unsafe { native_cdr(entry) }
+        } else {
             0
+        };
+        let value = native_plist_get(active, overriding_plist, property);
+        if value != 0 {
+            return value;
         }
     }
+    native_plist_get(
+        active,
+        interpreter.symbol_plist_symbol(&symbol_name).word(),
+        property,
+    )
 }
 
 /// Rust translation of fns.c:Fmemq and lisp.h:FOR_EACH_TAIL.
@@ -4195,14 +4277,8 @@ fn native_memq(active: &ActiveCall, element: NativeWord, list: NativeWord) -> Na
     let mut q = 2_u16;
 
     while native_consp(tail) {
-        let item = unsafe { native_car(tail) };
-        match native_eq(active, item, element) {
-            Ok(true) => return tail,
-            Ok(false) => {}
-            Err(error) => {
-                remember_helper_error(active, error);
-                return 0;
-            }
+        if native_eq_word(active, unsafe { native_car(tail) }, element) {
+            return tail;
         }
 
         tail = unsafe { native_cdr(tail) };
@@ -4220,17 +4296,12 @@ fn native_memq(active: &ActiveCall, element: NativeWord, list: NativeWord) -> Na
             n >>= u16::BITS;
             tortoise = tail;
         } else if tail == tortoise {
-            let error = decode_word(active, tail).map(|tail| {
-                LispError::SignalValue(Value::list([Value::symbol("circular-list"), tail]))
-            });
-            remember_helper_error(active, error.unwrap_or_else(|error| error));
-            return 0;
+            return native_circular_list(active, tail);
         }
     }
 
     if tail != 0 {
-        let error = decode_word(active, list).map(|list| wrong_type_argument("listp", list));
-        remember_helper_error(active, error.unwrap_or_else(|error| error));
+        return native_wrong_type_argument(active, "listp", list);
     }
     0
 }
@@ -4491,8 +4562,10 @@ extern "C" fn runtime_record_unwind_protect_excursion() {
 extern "C" fn runtime_unbind_n(count: NativeWord) -> NativeWord {
     with_active(|active| {
         let result = (|| {
-            let decoded = decode_word(active, count)?;
-            let count = decoded.as_integer()?;
+            let count = match decode_fixnum(count) {
+                Some(count) => count,
+                None => decode_word(active, count)?.as_integer()?,
+            };
             let count = usize::try_from(count).map_err(|_| {
                 super::lisp::native_ice("native byte-unbind received a negative count")
             })?;
@@ -4662,6 +4735,20 @@ extern "C" fn runtime_unwind_protect(value: NativeWord) {
 
 extern "C" fn runtime_specbind(symbol: NativeWord, value: NativeWord) {
     with_active(|active| {
+        // eval.c:specbind's plain SPECPDL_LET of a symbol cell: the old
+        // value saved in the binding stack's record and the new one stored,
+        // nothing notified or run (`Interpreter::specbind_plain').
+        // SAFETY: generated code passes live Lisp_Object words.
+        if let Some(name) = unsafe { Value::from_word(symbol) }.symbol_cell() {
+            let interpreter = unsafe { &mut *active.interpreter };
+            if let Some(binding_id) =
+                interpreter.specbind_plain(&name, unsafe { Value::from_word(value) })
+            {
+                unsafe { &mut *active.runtime }
+                    .record_unwind(interpreter, UnwindAction::SpecialId(binding_id));
+                return;
+            }
+        }
         let result = (|| {
             let symbol = decode_word(active, symbol)?;
             let value = decode_word(active, value)?;
@@ -6917,6 +7004,53 @@ mod tests {
                 .expect("non-list sequences use the ordinary Fmapcar path"),
             Value::list([Value::Integer(4), Value::Integer(5)])
         );
+    }
+
+    #[test]
+    fn native_nconc_follows_fns_c_nconc() {
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let mut runtime = NativeRuntime::default();
+        let mut nconc = |arguments: &[Value]| {
+            runtime.invoke(
+                &mut interpreter,
+                &mut environment,
+                direct_native_nconc as *const c_void,
+                NativeCallingConvention::Many,
+                arguments,
+            )
+        };
+
+        // A nil argument stands for the cons before it in its turn.
+        let first = Value::list([Value::Integer(1)]);
+        let second = Value::list([Value::Integer(2)]);
+        let joined = nconc(&[Value::Nil, first, Value::Nil, second]).expect("lists");
+        assert_eq!(joined.word(), first.word());
+        assert_eq!(
+            joined.to_vec().expect("joined proper list"),
+            vec![Value::Integer(1), Value::Integer(2)]
+        );
+        // The last argument is stored as it is, list or not.
+        let dotted = nconc(&[Value::list([Value::Integer(1)]), Value::Integer(2)]).expect("dotted");
+        assert_eq!(dotted.cons_values().expect("cons").1, Value::Integer(2));
+        assert_eq!(
+            nconc(&[Value::Nil, Value::Integer(5)]).expect("atom"),
+            Value::Integer(5)
+        );
+        assert_eq!(nconc(&[]).expect("no arguments"), Value::Nil);
+
+        // An argument before the last must be a cons; the cons before it
+        // already holds it when CHECK_CONS signals.
+        let head = Value::list([Value::Integer(1)]);
+        let error = nconc(&[head, Value::Integer(2), Value::list([Value::Integer(3)])])
+            .expect_err("a middle atom");
+        assert_eq!(error.condition_type(), "wrong-type-argument");
+        assert_eq!(head.cons_values().expect("head").1, Value::Integer(2));
+
+        let cycle = Value::cons(Value::symbol("cycle"), Value::Nil);
+        cycle.set_cdr(cycle).expect("create self cycle");
+        let error = nconc(&[cycle, Value::Nil]).expect_err("a circular argument");
+        assert_eq!(error.condition_type(), "circular-list");
     }
 
     #[test]
@@ -12578,6 +12712,32 @@ mod tests {
             ];
             invoke_subr(subr("list"), &results)
         }
+        // The same calls through the table's entries, which generated code
+        // calls (the subrs' own direct targets).
+        unsafe extern "C" fn table_probe(
+            defined: NativeWord,
+            void: NativeWord,
+            cons: NativeWord,
+        ) -> NativeWord {
+            let entry = |name: &str| -> extern "C" fn(NativeWord) -> NativeWord {
+                // SAFETY: each of these subrs takes one fixed argument.
+                unsafe { std::mem::transmute(native_subr_address(subr(name))) }
+            };
+            let (symbolp, function, fboundp) =
+                (entry("symbolp"), entry("symbol-function"), entry("fboundp"));
+            let results = [
+                symbolp(defined),
+                symbolp(cons),
+                symbolp(Value::Integer(3).word()),
+                symbolp(0),
+                function(defined),
+                function(void),
+                fboundp(defined),
+                fboundp(void),
+                fboundp(0),
+            ];
+            invoke_subr(subr("list"), &results)
+        }
 
         let mut interpreter = Interpreter::new();
         let mut environment = Env::new();
@@ -12610,6 +12770,47 @@ mod tests {
         let (t, nil) = (Value::T.word(), Value::Nil.word());
         let car = Value::symbol("car").word();
         assert_eq!(words, [t, nil, nil, t, car, nil, t, nil, nil]);
+
+        let returned = runtime
+            .invoke(
+                &mut interpreter,
+                &mut environment,
+                table_probe as *const c_void,
+                NativeCallingConvention::Fixed,
+                &[defined, void, cons],
+            )
+            .expect("native symbol tests through the table");
+        let words: Vec<NativeWord> = returned
+            .to_vec()
+            .expect("a proper list")
+            .iter()
+            .map(|value| value.word())
+            .collect();
+        assert_eq!(words, [t, nil, nil, t, car, nil, t, nil, nil]);
+        // A wrong type takes the subr's own entry, which signals.
+        unsafe extern "C" fn fboundp_of(value: NativeWord) -> NativeWord {
+            let fboundp: extern "C" fn(NativeWord) -> NativeWord =
+                // SAFETY: `fboundp' takes one fixed argument.
+                unsafe { std::mem::transmute(native_subr_address(subr("fboundp"))) };
+            fboundp(value)
+        }
+        let error = runtime
+            .invoke(
+                &mut interpreter,
+                &mut environment,
+                fboundp_of as *const c_void,
+                NativeCallingConvention::Fixed,
+                &[Value::Integer(3)],
+            )
+            .expect_err("fboundp of an integer signals");
+        assert_eq!(
+            crate::lisp::eval::error_condition_value(&error),
+            Value::list([
+                Value::symbol("wrong-type-argument"),
+                Value::symbol("symbolp"),
+                Value::Integer(3),
+            ])
+        );
     }
 
     #[test]

@@ -950,12 +950,6 @@ impl Interpreter {
         }
     }
 
-    pub fn has_macro_binding(&self, name: &str) -> bool {
-        self.macro_position_function(name, &Env::new())
-            .and_then(|function| function.cons_values())
-            .is_some_and(|(head, _)| matches!(head.kind(), Kind::Symbol(name) if name == "macro"))
-    }
-
     pub fn known_symbol_names(&self) -> Vec<String> {
         self.known_symbols_shared()
             .iter()

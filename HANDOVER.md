@@ -7940,6 +7940,48 @@ setup_process_coding_systems's check now refuses). A 13-form
   while the target's 25 tests ran together, and the target passed
   whole when rerun); clippy `-D warnings', rustfmt and `git diff
   --check'.
+- **Round 136: native code's calls of the commonest subrs, and
+  eval.c's FUNCTIONP.** tramp-tests' setup under the frozen runner
+  (release build) took 3.16G instructions against GNU's 2.45G, with the
+  .eln code's own work equal (178.7M each): the gap was the calls the
+  native code makes, each GNU's through its function relocation array
+  straight into the C function. `symbolp' (1.1M calls there),
+  `fboundp' and `symbol-function' (half a million each) went through
+  the generic subr entry, its kind table and its handler
+  synchronization, at 76, 53 and 48 instructions a call against GNU's
+  6, 9 and 6; each now has an entry of its own in the native subr table
+  (the generator's direct targets) answering a symbol cell's word in
+  place (11, 16 and 13), anything else taking the subr's own path.
+  `symbol-value' reads a plain symbol cell's value before it
+  synchronizes the handlers (74, now 21; GNU 28), `get' skips a nil
+  `overriding-plist-environment' (239, now 193; GNU 147), and native
+  code's `let' of a plain special variable binds and unbinds as the
+  byte-code VM's does, the record unbound in place (146 and 215
+  instructions, now 114 and 168; GNU 55 and 81). fns.c's Fnconc stores
+  each argument into the last cons of the one before it as it goes, a
+  nil argument standing for that cons in its turn, and FOR_EACH_TAIL
+  checks for quit and a cycle: Emaxx stored only once it had the next
+  non-nil argument, so `(nconc (list 1) 2 (list 3))' signalled with the
+  first cons unchanged where GNU's has 2 in its cdr; it is now that
+  loop (`mapcan' too), with an entry of its own (154 instructions,
+  now 89; GNU 49). eval.c's FUNCTIONP follows the symbol's function
+  cell and asks the subr its arity: Emaxx asked by name whether the
+  symbol named a special form or a macro, and needed a proper `(lambda
+  ARGS ...)' and a well-formed autoload, so an alias of `if' and `if''s
+  own subr object were functions, and `(lambda)', `(lambda . 1)' and
+  the symbol of a short or dotted autoload were not; it is now that
+  test (1,114 instructions a call, now 191; GNU 69). Ffset and
+  Fdefalias of nil to a non-nil definition signal `setting-constant',
+  which Emaxx let through. tramp-tests' setup takes 2.78G instructions
+  (GNU 2.45G, its collector 0.48G of it against Emaxx's 0.24G), and
+  cal-french-tests' 575M (GNU 566M).
+  Local validation: the full gate across its ten groups with the
+  documented local skips, all 3,278 tests run passing (2 ignored); the
+  seven integration targets (cli's
+  `batch_exit_terminates_owned_children_like_gnu' failed on its GNU half
+  again, as in round 135, while a release build ran alongside, and the
+  target passed whole when rerun); clippy `-D warnings', rustfmt and
+  `git diff --check'.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -8840,6 +8882,12 @@ own total rose from 330.8 s to 350.4 s. comp-tests leads the test-time
 excess (18.12 s against 14.73), then tramp-tests (21.24 against 18.68),
 semantic-utest-ia (4.36 against 2.60) and mule-tests (3.74 against
 2.00).
+
+**On `098bf1c`** (round 135): full Rust gate passed (run 40644254410);
+frozen (run 40644257948) matched all 7,928 outcomes on its first
+attempt. Its timings: setup 85.1 s against 68.6 s (1.241), test bodies
+262.1 s against 269.7 s (0.972), in all 1.013 (GNU's total 356.9 s).
+comp-tests took 17.87 s against 14.76 (1.21; 1.23 on `ae649a0`).
 
 **Findings recorded, not fixed:**
 - **What the checked build costs (round 131).** mule-tests under the

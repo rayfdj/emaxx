@@ -1313,38 +1313,46 @@ pub(crate) fn remove_equal(
     }
 }
 
-pub(crate) fn nconc_values(args: &[Value]) -> Result<Value, LispError> {
-    if args.is_empty() {
-        return Ok(Value::Nil);
-    }
-
-    let mut head: Option<Value> = None;
-    let mut tail: Option<Value> = None;
-
-    for (index, value) in args.iter().enumerate() {
-        let is_last = index + 1 == args.len();
-        if is_last {
-            if let Some(tail_cell) = tail {
-                tail_cell.set_cdr(*value)?;
-                return Ok(head.unwrap_or(*value));
-            }
-            return Ok(*value);
-        }
-
-        if value.is_nil() {
+/// fns.c:Fnconc: each argument but the last, unless nil, has its last cons
+/// (FOR_EACH_TAIL's, QUIT where it calls maybe_quit) set to the next
+/// argument, and a nil next argument stands for that cons in its turn.
+pub(crate) fn nconc_values(
+    args: &[Value],
+    mut quit: impl FnMut() -> Result<(), LispError>,
+) -> Result<Value, LispError> {
+    let mut val = Value::Nil;
+    // `if (NILP (tem)) args[argnum + 1] = tail;'
+    let mut carried = None;
+    for (argnum, arg) in args.iter().enumerate() {
+        let tem = carried.take().unwrap_or(*arg);
+        if tem.is_nil() {
             continue;
         }
-
-        let last_cell = last_nconc_cell(value)?;
-        if let Some(tail_cell) = &tail {
-            tail_cell.set_cdr(*value)?;
-        } else {
-            head = Some(*value);
+        if val.is_nil() {
+            val = tem;
         }
-        tail = Some(last_cell);
+        let Some(next) = args.get(argnum + 1) else {
+            break;
+        };
+        if !tem.is_cons() {
+            return Err(LispError::WrongTypeArgument("consp".into(), tem));
+        }
+        let mut tail = tem;
+        let mut cursor = tem;
+        let mut walk = crate::lisp::types::TailWalk::new(tem);
+        while let Some(cell) = cursor.cons_ref() {
+            tail = cursor;
+            cursor = cell.cdr.get();
+            if walk.cycled(cursor, &mut quit)? {
+                return Err(crate::lisp::types::circular_list(cursor));
+            }
+        }
+        tail.set_cdr(*next)?;
+        if next.is_nil() {
+            carried = Some(tail);
+        }
     }
-
-    Ok(head.unwrap_or(Value::Nil))
+    Ok(val)
 }
 
 pub(crate) fn copy_alist_value(value: &Value) -> Result<Value, LispError> {
@@ -1408,23 +1416,6 @@ pub(crate) fn parse_remote_file_name(path: &str) -> Option<RemoteFileNameParts> 
 
 /// fns.c:Fnconc's walk of one argument: CHECK_CONS, then the last cons
 /// FOR_EACH_TAIL reaches.
-pub(crate) fn last_nconc_cell(value: &Value) -> Result<Value, LispError> {
-    if !value.is_cons() {
-        return Err(LispError::WrongTypeArgument("consp".into(), *value));
-    }
-    let mut tem = *value;
-    let mut tail = tem;
-    let mut walk = crate::lisp::types::TailWalk::new(tem);
-    while let Some(cell) = tem.cons_ref() {
-        tail = tem;
-        tem = cell.cdr.get();
-        if walk.cycled_no_quit(tem) {
-            return Err(crate::lisp::types::circular_list(tem));
-        }
-    }
-    Ok(tail)
-}
-
 /// fns.c:bool_vector_cmp: the lexicographic order of the bits, the equal
 /// words skipped, a proper prefix first.
 fn bool_vector_cmp(
@@ -1523,27 +1514,61 @@ pub(crate) fn callable_value_p(interp: &Interpreter, value: &Value, env: &Env) -
         )
 }
 
-/// GNU's internal FUNCTIONP predicate.  Native callers use this helper
-/// directly so redefining the Lisp symbol `functionp' cannot change C-level
-/// argument validation.
+/// eval.c:FUNCTIONP.  Native callers use this helper directly so
+/// redefining the Lisp symbol `functionp' cannot change C-level argument
+/// validation.
 pub(crate) fn function_value_p(interp: &Interpreter, value: &Value, env: &Env) -> bool {
-    let symbol_value = if symbols_with_pos_enabled(interp, env) {
-        symbol_with_pos_parts(interp, value)
-            .map(|(symbol, _)| symbol)
-            .unwrap_or_else(|| *value)
+    let mut object = *value;
+    // SYMBOLP (object) && !NILP (Ffboundp (object)): CHECK_SYMBOL and
+    // XSYMBOL take a symbol with position, while `symbols-with-pos-enabled'
+    // makes it a symbol, as its bare symbol.
+    let symbol = if object.is_symbol() {
+        Some(object)
+    } else if symbols_with_pos_enabled(interp, env) {
+        symbol_with_pos_parts(interp, &object).map(|(symbol, _)| symbol)
     } else {
-        *value
+        None
     };
-    let symbol = symbol_value.symbol_str();
-    if symbol
-        .is_some_and(|symbol| name_facts(symbol).special_form || interp.has_macro_binding(symbol))
-    {
-        return false;
+    if let Some(symbol) = symbol {
+        // Findirect_function: nil for a void cell, so for an unbound
+        // symbol, and for a chain that ends in one.
+        object = match symbol.kind() {
+            Kind::Symbol(name) => interp.lookup_function_symbol(&name, env),
+            Kind::T => interp
+                .lookup_function_symbol(&crate::lisp::types::symbols::builtin_boolean(true), env),
+            _ => Ok(Value::Nil),
+        }
+        .unwrap_or(Value::Nil);
+        let autoload = cached_symbol!("autoload").with(|symbol| Value::Symbol(*symbol));
+        if let Some((head, _)) = object.cons_values()
+            && values_eq_in_env(interp, &head, &autoload, env)
+        {
+            // Autoloaded symbols are functions, except if they load
+            // macros or keymaps.
+            for _ in 0..4 {
+                let Some((_, tail)) = object.cons_values() else {
+                    break;
+                };
+                object = tail;
+            }
+            return !object.cons_values().is_some_and(|(kind, _)| !kind.is_nil());
+        }
     }
-    let resolved = resolve_callable(interp, value, env).unwrap_or(*value);
-    let autoloaded_function =
-        symbol.is_some() && autoload_parts(&resolved).is_some_and(|(_, _, kind)| kind.is_nil());
-    callable_value_p(interp, &resolved, env) || autoloaded_function
+    match object.kind() {
+        Kind::BuiltinFunc(subr) => !matches!(
+            subr.descriptor().max_args(),
+            crate::lisp::native_comp::abi::NativeMaxArgs::Unevalled
+        ),
+        Kind::NativeFunction(_) | Kind::Closure(_) => true,
+        Kind::Record(id) => interp.find_record(id).is_some_and(|record| {
+            matches!(record.kind, crate::lisp::eval::RecordKind::ModuleFunction)
+        }),
+        Kind::Cons(cell) => {
+            let lambda = cached_symbol!("lambda").with(|symbol| Value::Symbol(*symbol));
+            values_eq_in_env(interp, &cell.car.get(), &lambda, env)
+        }
+        _ => false,
+    }
 }
 
 pub(crate) fn invoke_function_value(
