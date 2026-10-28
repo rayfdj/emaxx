@@ -2357,6 +2357,62 @@ fn signals_enter_the_debugger_as_signal_or_quit_decides() {
 }
 
 #[test]
+fn internal_catches_keep_hook_errors_from_the_debugger_and_handler_bind() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let value = crate::test_support::eval_lisp(
+        &mut interp,
+        &mut env,
+        r#"(progn
+             (defun d144-run (thunk)
+               (setq internal-when-entered-debugger -1)
+               (catch 'd144
+                 (let ((debug-on-error t)
+                       (debugger (lambda (&rest args) (throw 'd144 (list 'debugged (car args))))))
+                   (funcall thunk))))
+             (list
+              (d144-run (lambda ()
+                          (with-temp-buffer
+                            (setq-local syntax-propertize-function
+                                        (lambda (_s _e) (error "propertize boom")))
+                            (insert "(a b) c")
+                            (goto-char 1)
+                            (forward-sexp)
+                            (point))))
+              (d144-run (lambda ()
+                          (let ((post-gc-hook (list (lambda () (error "gc boom")))))
+                            (garbage-collect)
+                            'collected)))
+              (d144-run (lambda ()
+                          (with-temp-buffer
+                            (let ((post-command-hook (list (lambda () (error "pch boom")))))
+                              (execute-kbd-macro "a")
+                              'post-ran))))
+              (d144-run (lambda ()
+                          (with-temp-buffer
+                            (let ((pre-command-hook (list (lambda () (error "prech boom")))))
+                              (execute-kbd-macro "b")
+                              'pre-ran))))
+              (let ((log nil))
+                (list (handler-bind ((error (lambda (e) (push e log))))
+                        (with-temp-buffer
+                          (let ((pre-command-hook (list (lambda () (error "hb boom")))))
+                            (execute-kbd-macro "c")
+                            'hb-ran)))
+                      log))))"#,
+    )
+    .expect("internal catches");
+    // GNU 30.2: safe_call (syntax-propertize), safe_run_hooks (post-gc-hook,
+    // the command hooks) and the finalizers catch with
+    // internal_condition_case and Qt: the handler search stops there, so
+    // neither the debugger nor an outer handler-bind sees the error.
+    assert_eq!(
+        value.to_string(),
+        "(6 collected post-ran pre-ran (hb-ran nil))"
+    );
+}
+
+#[test]
 fn unicode_property_table_internal_walks_the_alist_as_fassq() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = crate::lisp::types::Env::new();

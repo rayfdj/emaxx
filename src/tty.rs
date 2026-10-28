@@ -4146,12 +4146,15 @@ fn run_fontification_functions(
                     break;
                 };
                 if !matches!(global_fn.kind(), Kind::T) {
+                    let handlers = interpreter
+                        .push_internal_condition_case(crate::lisp::eval::InternalHandlers::All);
                     let _ = interpreter.call_function_value(
                         global_fn,
                         None,
                         std::slice::from_ref(&pos_value),
                         env,
                     );
+                    interpreter.pop_handler_bindings(handlers);
                 }
                 let Ok(next) = globals.cdr() else {
                     break;
@@ -4159,12 +4162,16 @@ fn run_fontification_functions(
                 globals = next;
             }
         } else {
+            // safe_call1: internal_condition_case_n with Qt.
+            let handlers =
+                interpreter.push_internal_condition_case(crate::lisp::eval::InternalHandlers::All);
             let _ = interpreter.call_function_value(
                 function,
                 None,
                 std::slice::from_ref(&pos_value),
                 env,
             );
+            interpreter.pop_handler_bindings(handlers);
         }
         let Ok(next) = rest.cdr() else {
             break;

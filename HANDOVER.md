@@ -8189,6 +8189,23 @@ setup_process_coding_systems's check now refuses). A 13-form
   --check'; and the 45 test files that bind `debug-on-error' (process,
   callproc, the eshell unload test, edebug, ert and the erc scenarios)
   under the frozen runner, every outcome GNU's.
+- **Round 144: the C core's catch-alls around hooks and callbacks.**
+  safe_run_hooks runs each hook function under internal_condition_case
+  with t (safe_run_hook_funcall), as alloc.c runs `post-gc-hook' and each
+  finalizer, syntax.c `internal--syntax-propertize' (safe_call1) and
+  xdisp.c each of `fontification-functions'; Emaxx caught those errors
+  itself, after the handler search had run past them, so under
+  `debug-on-error' an error in `pre-command-hook' entered the debugger,
+  an outer `handler-bind' saw it, and the batch backtrace was printed
+  for an error GNU never shows. They now register the C core's
+  catch-all (`InternalHandlers::All'), and `post-gc-hook' runs through
+  safe_run_hooks (each function caught, the error messaged as
+  safe_run_hooks_error does, a throw passing) where it was one
+  `run-hooks' whose errors were dropped.
+  Local validation: the full gate across its ten groups with the
+  documented local skips, all 3,288 tests run passing (2 ignored); the
+  seven integration targets; and clippy `-D warnings', rustfmt and `git
+  diff --check'.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -9143,6 +9160,13 @@ attempt. Its timings: setup 84.7 s against 68.1 s (1.243), test bodies
 frozen (run 40693062448) matched all 7,928 outcomes on its first
 attempt. Its timings: setup 76.5 s against 62.6 s (1.221), test bodies
 252.4 s against 260.4 s (0.969), in all 1.006.
+
+**On `46cb7bc`** (round 143): full Rust gate passed (run 40700786753);
+frozen (run 40700791680) matched all 7,928 outcomes on its first
+attempt. Its timings, on a runner faster for both (GNU's setup 52.6 s):
+setup 61.1 s against 52.6 s (1.162), test bodies 218.6 s against 230.5 s
+(0.949), in all 0.996. multisession-tests' bodies took 1.18 s against
+0.56 (`multi-test-sqlite-busy' 922 ms against 204).
 
 **Findings recorded, not fixed:**
 - **What the checked build costs (round 131).** mule-tests under the

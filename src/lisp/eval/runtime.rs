@@ -1286,7 +1286,9 @@ impl Interpreter {
             object.set_function(Value::Nil);
             self.finalizers_run += 1;
             let restore = self.bind_special_dynamic("inhibit-quit", Value::T, env)?;
+            let handlers = self.push_internal_condition_case(super::InternalHandlers::All);
             let result = self.call_function_value(function, None, &[], env);
+            self.pop_handler_bindings(handlers);
             match result.map_err(LispError::into_kind) {
                 Ok(_) => {}
                 Err(error @ (LispErrorKind::Throw(_, _) | LispErrorKind::Terminate(_))) => {

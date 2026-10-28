@@ -527,13 +527,18 @@ impl GlState {
                 return Ok(());
             }
             let modiffs = interp.buffer.borrow().chars_modified_tick();
-            // safe_calln: an error in the propertizer is not the scan's.
+            // safe_calln: an error in the propertizer is not the scan's,
+            // and its internal_condition_case_n with Qt keeps it from
+            // handler-bind handlers and the debugger.
+            let handlers =
+                interp.push_internal_condition_case(crate::lisp::eval::InternalHandlers::All);
             let _ = interp.call_function_value(
                 Value::Symbol("internal--syntax-propertize".into()),
                 Some("internal--syntax-propertize"),
                 &[Value::Integer(zv.min(1 + pos))],
                 env,
             );
+            interp.pop_handler_bindings(handlers);
             self.ran_lisp = true;
             if modiffs != interp.buffer.borrow().chars_modified_tick() {
                 return Err(error("internal--syntax-propertize modified the buffer!"));
