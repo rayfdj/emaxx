@@ -2187,6 +2187,36 @@ fn regexp_word_boundaries_skip_word_boundary_p_for_two_single_byte_characters() 
 }
 
 #[test]
+fn current_column_skips_the_invisible_text_of_the_line_it_scans() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let value = crate::test_support::eval_lisp(
+        &mut interp,
+        &mut env,
+        r#"(with-temp-buffer
+             (insert "abcdef\nxyzλwv\n" (propertize "hid" 'invisible t) "den\n" "tab\there\n")
+             (let ((o (make-overlay 9 11)))
+               (overlay-put o 'invisible t))
+             (list
+              (progn (goto-char 6) (current-column))
+              (progn (goto-char 14) (current-column))
+              (progn (goto-char 20) (current-column))
+              (progn (goto-char 22) (current-column))
+              (progn (goto-char 28) (current-column))
+              (progn (goto-char 15) (move-to-column 2) (point))
+              (let ((buffer-invisibility-spec nil)) (goto-char 20) (current-column))
+              (let ((buffer-invisibility-spec '(foo))) (goto-char 14) (current-column))
+              (progn (put-text-property 1 3 'invisible 'foo) (goto-char 6) (current-column))
+              (let ((buffer-invisibility-spec '(foo))) (goto-char 6) (current-column))))"#,
+    )
+    .expect("current-column over invisible text");
+    // GNU 30.2: indent.c's scan_for_column skips, through skip_invisible,
+    // the invisible text and overlays of the line it scans, as the
+    // buffer's invisibility spec reads them.
+    assert_eq!(value.to_string(), "(5 4 2 0 10 20 2 6 3 3)");
+}
+
+#[test]
 fn unicode_property_table_internal_walks_the_alist_as_fassq() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = crate::lisp::types::Env::new();

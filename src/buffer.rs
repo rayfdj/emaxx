@@ -874,6 +874,10 @@ impl Iterator for RopeChars<'_> {
     }
 }
 
+/// The characters `char_at' decodes before the one asked for, and in all.
+const CHAR_CACHE_BEHIND: usize = 64;
+const CHAR_CACHE_WINDOW: usize = 256;
+
 #[derive(Clone, Default)]
 struct RopeCharCache {
     start: usize,
@@ -2071,10 +2075,35 @@ impl Buffer {
         }
     }
 
+    /// `has_text_property_named' for the spans meeting FROM to TO.
+    pub fn has_text_property_named_in(&self, property: &str, from: usize, to: usize) -> bool {
+        let Some(symbol) = crate::lisp::types::SymbolName::find(property) else {
+            return false;
+        };
+        let name = PropertyName::new(Value::Symbol(symbol));
+        let lo = self
+            .text_properties
+            .partition_point(|span| span.end <= from);
+        let hi = self.text_properties.partition_point(|span| span.start < to);
+        self.text_properties
+            .get(lo..hi)
+            .unwrap_or_default()
+            .iter()
+            .any(|span| span.props.iter().any(|(candidate, _)| *candidate == name))
+    }
+
     pub fn has_text_property_named(&self, property: &str) -> bool {
+        // The symbol PROPERTY names, found once (no symbol has that name
+        // when none exists): each stored name is then the same symbol or
+        // not, as EQ compares them, where comparing each name's text took
+        // a call of memcmp a property.
+        let Some(symbol) = crate::lisp::types::SymbolName::find(property) else {
+            return false;
+        };
+        let name = PropertyName::new(Value::Symbol(symbol));
         self.text_properties
             .iter()
-            .any(|span| span.props.iter().any(|(name, _)| name == property))
+            .any(|span| span.props.iter().any(|(candidate, _)| *candidate == name))
     }
 
     /// Rewrite every Lisp value stored in this buffer through COPY
@@ -2369,15 +2398,29 @@ impl Buffer {
             return None;
         }
         let index = pos - 1;
+        // An ASCII text's character is its byte, read in place as
+        // FETCH_CHAR reads it, with no chunk decoded into the cache.
+        if self.text.len_chars() == self.text.len_bytes() {
+            let (chunk, chunk_byte, _, _) = self.text.chunk_at_byte(index);
+            return Some(char::from(chunk.as_bytes()[index - chunk_byte]));
+        }
         if let Some(ch) = self.char_cache.borrow().character(index) {
             return Some(ch);
         }
 
+        // A window of the chunk around INDEX, decoded once for the reads
+        // near it (a scan's next characters or its previous ones), where
+        // decoding the whole chunk cost each column count after an edit
+        // a pass over up to a kilobyte.
         let (chunk, _, chunk_start, _) = self.text.chunk_at_char(index);
+        let first = index.saturating_sub(CHAR_CACHE_BEHIND).max(chunk_start);
+        let byte = ropey::str_utils::char_to_byte_idx(chunk, first - chunk_start);
         let mut cache = self.char_cache.borrow_mut();
-        cache.start = chunk_start;
+        cache.start = first;
         cache.chars.clear();
-        cache.chars.extend(chunk.chars());
+        cache
+            .chars
+            .extend(chunk[byte..].chars().take(CHAR_CACHE_WINDOW));
         cache.valid = true;
         cache.character(index)
     }

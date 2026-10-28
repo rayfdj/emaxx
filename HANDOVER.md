@@ -8093,6 +8093,27 @@ setup_process_coding_systems's check now refuses). A 13-form
   documented local skips, all 3,284 tests run passing (2 ignored); the
   seven integration targets; clippy `-D warnings', rustfmt and `git diff
   --check'.
+- **Round 140: what `current-column' cost.** keymap-tests (its bodies
+  1.73 times GNU's in the frozen run) took 2.89G instructions in the
+  release build against GNU's 1.95G, 0.66G of it deciding, once for each
+  of its 8,614 column counts, whether the buffer had any invisible text
+  at all: Emaxx compared each text property's name with "invisible" as
+  a string, about 2,900 names a call in the help buffers, so a count
+  cost 99,000 instructions where GNU's scan_for_column takes 14,300 in
+  all. indent.c's scan_for_column asks skip_invisible about the text it
+  passes; Emaxx now looks for an `invisible' property or overlay only in
+  the range the scan covers, comparing names by symbol (as any test of a
+  buffer's properties by name now does), and its per-position test
+  answers at once for a spec that hides nothing. Buffer::char_at
+  decoded the whole chunk around a position (up to a kilobyte) into its
+  cache after every edit; an ASCII text's character is now its byte,
+  read in place, and another text's cache holds the 256 characters
+  around the position. A count takes 14,800 instructions, and
+  keymap-tests 2.09G.
+  Local validation: the full gate across its ten groups with the
+  documented local skips, all 3,285 tests run passing (2 ignored); the
+  seven integration targets; clippy `-D warnings', rustfmt and `git diff
+  --check'.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -9023,6 +9044,12 @@ attempt. Its timings: setup 83.4 s against 67.4 s (1.237), test bodies
 reading `\N{NAME}' moved toward GNU's: print-tests 0.325 s against
 0.210 (0.357 against 0.208 on 06df172), textsec-tests 0.410 against
 0.273 (0.438 against 0.267).
+
+**On `a1b658f`** (round 139): full Rust gate passed (run 40676262256);
+frozen (run 40676265825) matched all 7,928 outcomes on its first
+attempt. Its timings, on a runner faster for both (GNU's setup 46.0 s
+where it had taken 66 to 67): setup 53.0 s against 46.0 s (1.151), test
+bodies 206.2 s against 220.9 s (0.933), in all 0.971.
 
 **Findings recorded, not fixed:**
 - **What the checked build costs (round 131).** mule-tests under the

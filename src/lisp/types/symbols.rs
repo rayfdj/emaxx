@@ -198,6 +198,7 @@ const KEY_NAMES: &[&str] = &[
     "autoload",
     "lambda",
     "macro",
+    "invisible",
     "menu-item",
     ":filter",
     "meta-prefix-char",

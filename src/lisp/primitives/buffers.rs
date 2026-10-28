@@ -1283,11 +1283,17 @@ pub(crate) fn scan_for_column(
         .is_some_and(|value| matches!(value.kind(), Kind::T));
     let multibyte = interp.buffer.borrow().is_multibyte();
     let display_table = buffer_display_table(interp, env);
+    let end = end.min(interp.buffer.borrow().point_max());
     let spec = {
         let buffer = interp.buffer.borrow();
-        resolve_buffer_invisibility(interp, &buffer, interp.current_buffer_id())
+        crate::lisp::primitives::resolve_buffer_invisibility_in(
+            interp,
+            &buffer,
+            interp.current_buffer_id(),
+            line_start,
+            end,
+        )
     };
-    let end = end.min(interp.buffer.borrow().point_max());
     let tab = |col: usize| (col + tab_width) / tab_width * tab_width;
     let mut col = 0usize;
     let mut prev_col = 0usize;

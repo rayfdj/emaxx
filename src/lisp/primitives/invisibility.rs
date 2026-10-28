@@ -63,6 +63,45 @@ pub(crate) fn resolve_buffer_invisibility(
     invisibility_spec_of(spec)
 }
 
+/// `resolve_buffer_invisibility' for the positions FROM to TO alone, as
+/// indent.c's skip_invisible looks only at the text a scan passes: an
+/// `invisible' property or overlay there makes the spec active.  Overlay
+/// strings are not that text.
+pub(crate) fn resolve_buffer_invisibility_in(
+    interpreter: &Interpreter,
+    buffer: &Buffer,
+    buffer_id: u64,
+    from: usize,
+    to: usize,
+) -> InvisibilitySpec {
+    let invisible = cached_symbol!("invisible").with(|symbol| Value::Symbol(*symbol));
+    // The overlays meeting the range, widened by a position each way.
+    let has_source = buffer.has_text_property_named_in("invisible", from, to)
+        || buffer
+            .overlays
+            .intersecting(
+                from as isize - 1,
+                to as isize + 1,
+                crate::overlay::Traversal::Ascending,
+            )
+            .any(|overlay| {
+                !overlay.is_dead()
+                    && overlay
+                        .get_prop(&invisible)
+                        .is_some_and(|value| !value.is_nil())
+            });
+    if !has_source {
+        return InvisibilitySpec::default();
+    }
+    let spec = interpreter
+        .buffer_local_value(buffer_id, "buffer-invisibility-spec")
+        .or_else(|| {
+            interpreter.lookup_var("buffer-invisibility-spec", &crate::lisp::types::Env::new())
+        })
+        .unwrap_or(Value::T);
+    invisibility_spec_of(spec)
+}
+
 /// TEXT_PROP_MEANS_INVISIBLE's reading of a `buffer-invisibility-spec'
 /// value, for text (a mode-line string) whatever its source.
 pub(crate) fn invisibility_spec_of(spec: Value) -> InvisibilitySpec {
@@ -149,6 +188,11 @@ pub(crate) fn invisible_value_class(spec: &InvisibilitySpec, value: &Value) -> u
 /// covering overlay with the highest priority wins over the text
 /// property.
 pub(crate) fn invisible_class_at(buffer: &Buffer, spec: &InvisibilitySpec, pos: usize) -> u8 {
+    // An inactive spec (no `invisible' source, or a nil spec) hides
+    // nothing: no overlay or property at POS needs reading.
+    if !spec.active {
+        return 0;
+    }
     let mut best: Option<(i64, u8)> = None;
     for overlay in &buffer.overlays {
         if overlay.is_dead() || pos < overlay.beg() || pos >= overlay.end() {
