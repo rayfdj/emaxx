@@ -1518,7 +1518,10 @@ impl Interpreter {
                     self.refresh_call_depth_gate();
                 }
             }
-            "debug-on-next-call" => self.debug_on_next_call = value.is_truthy(),
+            "debug-on-next-call" => {
+                self.debug_on_next_call = value.is_truthy();
+                self.refresh_call_depth_gate();
+            }
             "symbols-with-pos-enabled" => {
                 self.symbols_with_positions_enabled.set(value.is_truthy());
             }
@@ -1630,7 +1633,21 @@ impl Interpreter {
     /// eval.c:call_debugger clears the forwarded C flag before invoking the
     /// debugger, so the debugger itself does not immediately re-enter.
     pub(crate) fn clear_debug_on_next_call(&mut self) {
-        self.debug_on_next_call = false;
+        // The C variable is the Lisp value: the store goes through the
+        // symbol's current binding, as process_quit_flag's of quit-flag,
+        // unless the symbol was detached from it.
+        if !self.debug_on_next_call {
+            return;
+        }
+        if self
+            .detached_forwarded_variables
+            .contains_key("debug-on-next-call")
+        {
+            self.debug_on_next_call = false;
+            self.refresh_call_depth_gate();
+        } else {
+            self.set_symbol_value_cell("debug-on-next-call", Value::Nil);
+        }
     }
 
     pub(crate) fn global_binding_value(&self, name: &str) -> Option<Value> {
@@ -3093,6 +3110,23 @@ impl InterpreterState {
         self.lisp_eval_depth -= 1;
     }
 
+    /// eval.c:backtrace_debug_on_exit of the frame a call recorded at
+    /// DEPTH (its index), which `backtrace-debug' or do_debug_on_call
+    /// marked.
+    #[inline(always)]
+    pub(crate) fn frame_debug_on_exit(&self, depth: usize) -> bool {
+        self.backtrace_frames
+            .get(depth)
+            .is_some_and(|frame| frame.debug_on_exit())
+    }
+
+    /// eval.c:set_backtrace_debug_on_exit of the frame at DEPTH.
+    pub(crate) fn set_frame_debug_on_exit(&mut self, depth: usize, enabled: bool) {
+        if let Some(frame) = self.backtrace_frames.get_mut(depth) {
+            frame.set_debug_on_exit(enabled);
+        }
+    }
+
     /// Pop frames down to LEN.  The bytecode VM records a signaling byte
     /// op as a frame (bytecode.c's record_in_backtrace) that outlives the
     /// op itself; the VM balances the stack with this once the signal has
@@ -3133,12 +3167,6 @@ impl InterpreterState {
 }
 
 impl Interpreter {
-    pub fn set_current_backtrace_debug(&mut self, enabled: bool) {
-        if let Some(frame) = self.backtrace_frames.last_mut() {
-            frame.set_debug_on_exit(enabled);
-        }
-    }
-
     /// eval.c:backtrace_debug_on_exit reads the flag on the active
     /// Ffuncall frame after the callee returns.
     pub(crate) fn current_backtrace_debug_on_exit(&self) -> bool {
@@ -3174,24 +3202,23 @@ impl Interpreter {
             .collect()
     }
 
-    /// eval.c:get_backtrace_frame: the frame NFRAMES out from the one
-    /// get_backtrace_starting_at finds for BASE -- the innermost for nil,
-    /// else the innermost whose function, through INDIRECT
-    /// (Findirect_function), is BASE's, then OFFSET more frames out -- as
-    /// backtrace_frame_apply reads it: (EVALD FUNCTION ARGS DEBUG-ON-EXIT).
-    /// None past the outermost frame.  Only that frame's arguments are read.
-    pub(crate) fn backtrace_frame_at(
+    /// eval.c:get_backtrace_frame: the index of the frame NFRAMES out
+    /// from the one get_backtrace_starting_at finds for BASE -- the
+    /// innermost for nil, else the innermost whose function, through
+    /// INDIRECT (Findirect_function), is BASE's, then OFFSET more frames
+    /// out.  None past the outermost frame.
+    pub(crate) fn backtrace_frame_index(
         &self,
         nframes: usize,
         base: Value,
         offset: i64,
         indirect: impl Fn(Value) -> Value,
-    ) -> Option<(bool, Value, Value, bool)> {
-        let mut frames = self.backtrace_frames.iter().rev().peekable();
+    ) -> Option<usize> {
+        let mut frames = self.backtrace_frames.iter().enumerate().rev().peekable();
         if !base.is_nil() {
             let base = indirect(base);
             while frames
-                .next_if(|frame| !indirect(frame.function_snapshot()).eq_value(base))
+                .next_if(|(_, frame)| !indirect(frame.function_snapshot()).eq_value(base))
                 .is_some()
             {}
             let mut offset = offset;
@@ -3199,7 +3226,21 @@ impl Interpreter {
                 offset -= 1;
             }
         }
-        let frame = frames.nth(nframes)?;
+        frames.nth(nframes).map(|(index, _)| index)
+    }
+
+    /// `backtrace_frame_index's frame as backtrace_frame_apply reads it:
+    /// (EVALD FUNCTION ARGS DEBUG-ON-EXIT).  Only that frame's arguments
+    /// are read.
+    pub(crate) fn backtrace_frame_at(
+        &self,
+        nframes: usize,
+        base: Value,
+        offset: i64,
+        indirect: impl Fn(Value) -> Value,
+    ) -> Option<(bool, Value, Value, bool)> {
+        let frame =
+            &self.backtrace_frames[self.backtrace_frame_index(nframes, base, offset, indirect)?];
         Some((
             frame.evald(),
             frame.function_snapshot(),

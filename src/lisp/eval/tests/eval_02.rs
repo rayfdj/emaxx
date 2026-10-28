@@ -5358,16 +5358,16 @@ fn set_default_watchers_match_gnu_operation_and_original_newval() {
             eval_str(
                 "(let* ((watch-data nil)
                             (watcher (lambda (&rest args) (setq watch-data args)))
-                            (old (default-value 'debug-on-next-call)))
-                       (add-variable-watcher 'debug-on-next-call watcher)
+                            (old (default-value 'debug-on-quit)))
+                       (add-variable-watcher 'debug-on-quit watcher)
                        (unwind-protect
                            (progn
-                             (set-default 'debug-on-next-call 'sentinel)
+                             (set-default 'debug-on-quit 'sentinel)
                              (list (nth 1 watch-data)
                                    (nth 2 watch-data)
-                                   (default-value 'debug-on-next-call)))
-                         (remove-variable-watcher 'debug-on-next-call watcher)
-                         (set-default 'debug-on-next-call old)))"
+                                   (default-value 'debug-on-quit)))
+                         (remove-variable-watcher 'debug-on-quit watcher)
+                         (set-default 'debug-on-quit old)))"
             ),
             Value::list([
                 Value::Symbol("sentinel".into()),

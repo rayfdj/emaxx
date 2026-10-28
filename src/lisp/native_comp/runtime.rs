@@ -3508,9 +3508,9 @@ fn plain_native_funcall(active: &ActiveCall, arguments: &[NativeWord]) -> Option
 /// eval.c:Ffuncall of a native function (FUNCTION, or the one in its
 /// function cell) when nothing else happens on the way in: maybe_quit
 /// finds no quit and no fatal signal, the depth stays within
-/// max-lisp-eval-depth, no termination is pending, Edebug is not entered,
-/// calls are not profiled (`plain_bcall_entry'), the debugger is not to
-/// stop at this call and no collection is due.  The frame is recorded and
+/// max-lisp-eval-depth, no termination is pending, the debugger is not to
+/// stop at this call, Edebug is not entered, calls are not profiled
+/// (`plain_bcall_entry') and no collection is due.  The frame is recorded and
 /// the function called with ARGUMENTS as the full path below would call
 /// it.  None, with nothing changed, when any of that does not hold or the
 /// function does not take this many arguments.
@@ -3532,7 +3532,6 @@ fn invoke_plain_native_funcall(
     let native = RegisteredNative(callee.native_function_ref()?);
     if !native.admits(arguments.len())
         || !interpreter.plain_bcall_entry(name)
-        || interpreter.debug_on_next_call()
         || crate::lisp::primitives::fatal_signal_pending()
         || !runtime.heap.collection_cannot_be_due()
     {
@@ -3570,8 +3569,7 @@ fn native_funcall_exit_debugger(
         .heap
         .decode(word)
         .map_err(|error| super::lisp::native_ice(&error))?;
-    let argument = Value::list([Value::symbol("exit"), value]);
-    let value = interpreter.call_debugger(argument, environment)?;
+    let value = interpreter.call_exit_debugger(value, environment)?;
     runtime
         .heap
         .encode(&value)
@@ -9062,20 +9060,27 @@ mod tests {
         let previous_debugger = interpreter
             .symbol_value_cell("debugger")
             .expect("the debugger variable has a default value");
-        interpreter.set_global_binding("debugger", Value::BuiltinFunc("identity".into()));
+        interpreter.set_global_binding("debugger", Value::BuiltinFunc("list".into()));
 
+        // (funcall 'backtrace-debug 0 t) marks its own frame, the native
+        // Ffuncall's, which enters the debugger with (exit t) on its way
+        // out: (list 'exit t), apply1's spread, is the call's value.
         let result = runtime
             .invoke(
                 &mut interpreter,
                 &mut environment,
                 call_funcall_two as *const c_void,
                 NativeCallingConvention::Fixed,
-                &[Value::symbol("backtrace-debug"), Value::Nil, Value::T],
+                &[
+                    Value::symbol("backtrace-debug"),
+                    Value::Integer(0),
+                    Value::T,
+                ],
             )
             .expect("backtrace-debug marks the active native Ffuncall frame");
 
         interpreter.set_global_binding("debugger", previous_debugger);
-        assert_eq!(result, Value::list([Value::symbol("exit"), Value::Nil]));
+        assert_eq!(result, Value::list([Value::symbol("exit"), Value::T]));
         assert_eq!(interpreter.backtrace_frames_len(), 0);
         assert_eq!(interpreter.lisp_eval_depth, 0);
     }

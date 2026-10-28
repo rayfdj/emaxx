@@ -2217,6 +2217,73 @@ fn current_column_skips_the_invisible_text_of_the_line_it_scans() {
 }
 
 #[test]
+fn debugger_frames_enter_on_exit_and_at_the_next_call() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let value = crate::test_support::eval_lisp(
+        &mut interp,
+        &mut env,
+        r#"(progn
+             (defvar dbg-log nil)
+             (defun dbg-debugger (&rest args)
+               (setq dbg-log (cons args dbg-log))
+               (if (eq (car args) 'exit)
+                   (if (numberp (cadr args)) (+ (cadr args) 1000) (list 'wrapped (cadr args)))
+                 'ignored))
+             (defun dbg-run (thunk)
+               (setq dbg-log nil)
+               (let* ((debugger 'dbg-debugger)
+                      (value (funcall thunk)))
+                 (list value (reverse dbg-log))))
+             (defun dbg-marked (x) (backtrace-debug 0 t 'dbg-marked) (* x 2))
+             (defun dbg-plain (x) (* x 3))
+             (defun dbg-bc-marked (x) (backtrace-debug 0 t 'dbg-bc-marked) (* x 5))
+             (byte-compile 'dbg-bc-marked)
+             (defun dbg-bc-caller (x) (list (dbg-bc-marked x) (dbg-marked x)))
+             (byte-compile 'dbg-bc-caller)
+             (defun dbg-bc-next (x) (setq debug-on-next-call t) (dbg-plain x))
+             (byte-compile 'dbg-bc-next)
+             (defun dbg-level1 () (backtrace-debug 1 t 'dbg-level1) 10)
+             (defun dbg-outer () (+ (dbg-level1) 1))
+             (defun dbg-count-frames (base)
+               (let ((n 0)) (mapbacktrace (lambda (&rest _) (setq n (1+ n))) base) (> n 0)))
+             (defalias 'dbg-count-alias 'dbg-count-frames)
+             (list
+              (dbg-run (lambda () (list (backtrace-debug 0 'flag) (backtrace-debug 1 nil))))
+              (condition-case err (backtrace-debug 'x t) (error err))
+              (condition-case err (backtrace-debug -1 t) (error err))
+              (dbg-run (lambda () (eval '(dbg-marked 3))))
+              (dbg-run (lambda () (funcall 'dbg-marked 4)))
+              (dbg-run (lambda () (apply 'dbg-marked '(5))))
+              (dbg-run (lambda () (dbg-bc-caller 2)))
+              (dbg-run (lambda () (mapcar 'dbg-bc-marked '(1 2))))
+              (dbg-run (lambda () (dbg-outer)))
+              (dbg-run (lambda () (eval '(progn (setq debug-on-next-call t) (dbg-plain 2)))))
+              (dbg-run (lambda () (dbg-bc-next 4)))
+              (list (dbg-count-alias 'dbg-count-alias) (dbg-count-frames 'dbg-count-alias)
+                    (dbg-count-frames '(0 . dbg-count-frames)) (dbg-count-frames 'no-such-frame))
+              (list (backtrace-frame 0 '(x . print)) (car (backtrace-frame 0 '(0 . dbg-run))))))"#,
+    )
+    .expect("debugger frame protocol");
+    // GNU 30.2: Fbacktrace_debug marks the frame LEVEL out from BASE's
+    // (get_backtrace_frame, which mapbacktrace and backtrace-frame share:
+    // (OFFSET . BASE) only for a fixnum car, BASE through
+    // Findirect_function) and returns FLAG; eval_sub, Ffuncall,
+    // apply_lambda, Bcall and Breturn enter the debugger with (exit VALUE)
+    // for a marked frame and return its value; debug-on-next-call's
+    // do_debug_on_call enters it with (t) from eval_sub, (lambda) from
+    // Bcall and Ffuncall, and marks the call's frame.
+    assert_eq!(
+        value.to_string(),
+        "((((wrapped flag) nil) ((exit flag))) (wrong-type-argument fixnump x) \
+         (wrong-type-argument wholenump -1) (1006 ((exit 6))) (1008 ((exit 8))) \
+         (1010 ((exit 10))) ((1010 1004) ((exit 10) (exit 4))) \
+         ((1005 1010) ((exit 5) (exit 10))) (1011 ((exit 11))) (1006 ((t) (exit 6))) \
+         (1012 ((lambda) (exit 12))) (t t t nil) (nil nil))"
+    );
+}
+
+#[test]
 fn unicode_property_table_internal_walks_the_alist_as_fassq() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = crate::lisp::types::Env::new();

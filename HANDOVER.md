@@ -8127,6 +8127,34 @@ setup_process_coding_systems's check now refuses). A 13-form
   documented local skips, all 3,285 tests run passing (2 ignored); the
   seven integration targets; clippy `-D warnings', rustfmt and `git diff
   --check'.
+- **Round 142: the debugger's frame protocol.** `backtrace-debug' set
+  the flag of the innermost frame, its own (popped at once), whatever
+  LEVEL and BASE said, and returned nil; only native code's Ffuncall
+  read the flag on exit; `debug-on-next-call' was never acted on; and
+  call_debugger passed its argument list to the debugger as one
+  argument where apply1 spreads it. So `debug-on-entry' never reported
+  a function's exit, and the *Backtrace* buffer's `b', `j' and `d' had
+  no effect. eval.c's Fbacktrace_debug marks the frame LEVEL out from
+  BASE's (get_backtrace_frame, which `backtrace-frame' already followed;
+  `mapbacktrace' now follows it too: BASE through Findirect_function,
+  and (OFFSET . BASE) read only for a fixnum car, where a cons with any
+  other car signalled) and returns FLAG. eval_sub, Ffuncall,
+  apply_lambda, Bcall and Breturn enter the debugger with (exit VALUE)
+  when the call's frame is marked, after the call's depth count drops,
+  and return the debugger's value; eval_sub (with t), Bcall and Ffuncall
+  (with `lambda') run do_debug_on_call when `debug-on-next-call' is set,
+  marking the call's frame first. The flag is part of the call gate, so
+  the plain entries leave such a call to the full ones; the frame eval_sub
+  recorded, when the general call replaces it, passes its mark on; and
+  quote's frameless shortcut is not taken while the flag is set. Two
+  tests assumed the flag inert and now follow GNU: a let-binding of
+  `debug-on-next-call' enters the debugger at the next call, and the
+  forwarded-boolean watcher test watches `debug-on-quit' instead.
+  edebug-tests takes 5.10G instructions where it took 5.08G.
+  Local validation: the full gate across its ten groups with the
+  documented local skips, all 3,286 tests run passing (2 ignored); the
+  seven integration targets; clippy `-D warnings', rustfmt and `git diff
+  --check'.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -9070,6 +9098,12 @@ attempt. Its timings, on a runner slower for both (GNU's setup 69.1 s):
 setup 84.1 s against 69.1 s (1.217), test bodies 265.5 s against 271.2 s
 (0.979), in all 1.019. keymap-tests' bodies took 1.42 times GNU's (1.49
 on a1b658f).
+
+**On `df73d20`** (round 141): full Rust gate passed (run 40686498127);
+frozen (run 40686502210) matched all 7,928 outcomes on its first
+attempt. Its timings: setup 84.7 s against 68.1 s (1.243), test bodies
+268.9 s against 276.0 s (0.974), in all 1.020. edebug-tests' bodies took
+1.44 times GNU's (1.58 on cdde60b).
 
 **Findings recorded, not fixed:**
 - **What the checked build costs (round 131).** mule-tests under the

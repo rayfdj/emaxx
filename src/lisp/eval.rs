@@ -5348,8 +5348,10 @@ pub struct InterpreterState {
     max_lisp_eval_depth: i64,
     /// Ffuncall's depth bound for a call that does nothing else on its way
     /// in (`plain_bcall_entry'): MAX_LISP_EVAL_DEPTH, or below every depth
-    /// while a quit or a termination is pending or calls are profiled.
-    /// Every store of those refreshes it (`refresh_call_depth_gate').
+    /// while a quit or a termination is pending, calls are profiled or
+    /// the debugger is to be entered at the next call (debug_on_next_call,
+    /// which the full entries' do_debug_on_call answers).  Every store of
+    /// those refreshes it (`refresh_call_depth_gate').
     call_depth_gate: i64,
     debug_on_next_call: bool,
     /// data.c's forwarded C boolean, also read through comp.c's native
