@@ -23909,6 +23909,26 @@ fn native_subprocess_job_control_uses_child_groups_and_reaps_signal_states() {
     }
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn list_system_processes_lists_procs_numeric_names_in_directory_order() {
+    // sysdep.c:list_system_processes reads only /proc's names, matching
+    // "[0-9]+", in readdir's order: ascending process IDs.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let* ((pid (emacs-pid)) (ids (list-system-processes)))
+             (list (and (memq pid ids) t)
+                   (and (seq-every-p #'natnump ids) t)
+                   (equal ids (sort (copy-sequence ids) #'<))
+                   (and (memq pid (mapcar #'string-to-number
+                                          (directory-files "/proc" nil "[0-9]+" t)))
+                        t)
+                   (let ((default-directory "/"))
+                     (and (memq pid (list-system-processes)) t))))"#,
+        "(t t t t t)",
+        "list-system-processes",
+    );
+}
+
 #[test]
 fn native_system_process_inventory_and_attributes_share_the_host_snapshot() {
     let program = r#"(let* ((pid (emacs-pid))

@@ -540,6 +540,7 @@ pub(crate) fn emacs_pid_value() -> i64 {
     i64::from(std::process::id())
 }
 
+#[cfg(any(test, not(target_os = "linux")))]
 fn process_inventory(processes: sysinfo::ProcessesToUpdate<'_>) -> sysinfo::System {
     let mut system = sysinfo::System::new();
     system.refresh_processes_specifics(
@@ -550,10 +551,35 @@ fn process_inventory(processes: sysinfo::ProcessesToUpdate<'_>) -> sysinfo::Syst
     system
 }
 
-pub(crate) fn list_system_processes_value() -> Value {
+/// sysdep.c:list_system_processes with procfs: the names in /proc that
+/// match "[0-9]+", each through `string-to-number', in the directory's
+/// order (directory_files_internal with NOSORT, its reversed list then
+/// reversed).  Reading every process's files to list them, as the
+/// inventory below does, made a listing cost as much as asking every
+/// process for its attributes.
+#[cfg(target_os = "linux")]
+pub(crate) fn list_system_processes_value() -> Result<Value, LispError> {
+    let directory = "/proc";
+    let entries = fs::read_dir(directory)
+        .map_err(|error| file_operation_error("Opening directory", &error, directory))?;
+    let mut pids = Vec::new();
+    for entry in entries {
+        let entry =
+            entry.map_err(|error| file_operation_error("Reading directory", &error, directory))?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.bytes().any(|byte| byte.is_ascii_digit()) {
+            pids.push(parse_string_to_number_value(&name, None)?);
+        }
+    }
+    Ok(Value::list(pids))
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn list_system_processes_value() -> Result<Value, LispError> {
     #[cfg(target_os = "macos")]
     if !darwin_process_inventory_available() {
-        return Value::Nil;
+        return Ok(Value::Nil);
     }
     let system = process_inventory(sysinfo::ProcessesToUpdate::All);
     let mut pids = system
@@ -562,7 +588,7 @@ pub(crate) fn list_system_processes_value() -> Value {
         .map(|pid| i64::from(pid.as_u32()))
         .collect::<Vec<_>>();
     pids.sort_unstable();
-    Value::list(pids.into_iter().map(Value::Integer))
+    Ok(Value::list(pids.into_iter().map(Value::Integer)))
 }
 
 #[cfg(target_os = "macos")]

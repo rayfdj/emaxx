@@ -1611,11 +1611,12 @@ impl Interpreter {
         result
     }
 
-    /// eval.c:funcall_general's first test: a symbol whose live function
+    /// eval.c:funcall_general's first tests: a symbol whose live function
     /// cell is a subr (or a native-compiled function) is called through
-    /// funcall_subr at once. Anything else (an alias, an autoload, a special
-    /// form, a lambda, a void cell) takes `call_function_body', which
-    /// reaches the same calls for these two after its general checks.
+    /// funcall_subr at once, and a closure, given or in that cell, through
+    /// funcall_lambda. Anything else (an alias, an autoload, a special
+    /// form, a lambda list, a void cell) takes `call_function_body', which
+    /// reaches the same calls for these after its general checks.
     #[inline(always)]
     fn call_subr_directly(
         &mut self,
@@ -1631,12 +1632,13 @@ impl Interpreter {
         // The callee and its function cell are tested by tag and header,
         // as funcall_general's SUBRP and CLOSUREP tests are.
         let Some(name) = func.symbol_cell() else {
-            // funcall_lambda for an interpreted closure called as a value.
+            // funcall_lambda for a closure called as a value.
             return match func.closure_ref() {
-                Some(closure) if !closure.is_bytecode() => {
-                    Some(self.funcall_interpreted_lambda(*func, original_name, args, env))
+                Some(closure) if closure.is_bytecode() => {
+                    Some(self.funcall_bytecode_closure(closure, args, env))
                 }
-                _ => None,
+                Some(_) => Some(self.funcall_interpreted_lambda(*func, original_name, args, env)),
+                None => None,
             };
         };
         let function = self.globals.function(&name)?;
@@ -1654,7 +1656,10 @@ impl Interpreter {
             ));
         }
         match function.closure_ref() {
-            Some(closure) if !closure.is_bytecode() => {
+            Some(closure) if closure.is_bytecode() => {
+                Some(self.funcall_bytecode_closure(closure, args, env))
+            }
+            Some(_) => {
                 let name = CallName::Symbol(&name);
                 Some(self.funcall_interpreted_lambda(
                     function,
@@ -1663,8 +1668,23 @@ impl Interpreter {
                     env,
                 ))
             }
-            _ => None,
+            None => None,
         }
+    }
+
+    /// funcall_lambda's exec_byte_code branch for a byte-code closure
+    /// found by `call_subr_directly', out of line: `mapatoms', `mapcar'
+    /// and every other call from Rust reach the VM here, where they went
+    /// on through `call_function_body' and `call_function_value_inner',
+    /// whose tests this one had already made.
+    #[inline(never)]
+    fn funcall_bytecode_closure(
+        &mut self,
+        closure: crate::lisp::types::ClosureRef,
+        args: &[Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        self.execute_bytecode_funcall_body(closure, args, env)
     }
 
     /// eval.c:funcall_subr: a subr (not a special form) found in the live

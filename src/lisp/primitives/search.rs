@@ -175,8 +175,12 @@ impl StringText<'_> {
         // unibyte one is in place when it is; otherwise the scan is
         // remembered while the string holds the cache, as a search
         // repeated from later starts (`split-string') matches one string
-        // again and again.
+        // again and again.  A short unibyte string is scanned at once,
+        // for less than the cache costs: `apropos-internal' matches each
+        // symbol's name once.
+        const SHORT: usize = 64;
         if (multibyte && bytes.len() == chars)
+            || (!multibyte && bytes.len() <= SHORT && bytes.is_ascii())
             || state
                 .borrow()
                 .stored_text_in_place(|bytes| stored_form_in_place(bytes, multibyte))

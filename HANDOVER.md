@@ -7832,6 +7832,46 @@ setup_process_coding_systems's check now refuses). A 13-form
   `symbols-with-pos-enabled' first, as lisp.h does, before it looks
   into the object, and its walk of two lists tests the cons tags
   without decoding each object's kind.
+- **Round 133: `list-system-processes' reads /proc's names; an abort's
+  core leaves the unused stack out; a funcall from Rust enters byte
+  code at once.** sysdep.c's list_system_processes with procfs lists
+  the names in /proc that match "[0-9]+", each through
+  `string-to-number', in readdir's order. Emaxx asked the `sysinfo'
+  crate for a full process inventory, which reads every process's
+  status, stat, exe, cmdline, environ, cwd, root, statm and io (and
+  keeps its stat file open), so a listing cost as much as asking every
+  process for its attributes: Proced's list-then-attributes walk made
+  2.1 times GNU's system calls (172K against 82K over 20 walks of 83
+  processes), and proced-tests took 2.00 times GNU's time in the frozen
+  run and 1.15 times locally; now 0.94 locally, with GNU's calls.
+  emacs-module-tests' four `module--test-assertions' tests each run a
+  child Emacs that a module assertion aborts, dumping core: in the
+  frozen run each took 0.48 to 0.64 s against GNU's 0.32 to 0.41 s,
+  where locally either child takes 0.04 s. Emaxx's core was 190 MB, 33
+  MB of it data, against GNU's 44 MB; the rest is the batch stack's 128
+  MB reservation, which a run barely touches but which a core written
+  to a pipe (a crash collector, as on the CI runners) carries whole as
+  zeros, where the process stack GNU runs on is mapped only as deep as
+  it has been used. Before the abort (emacs-module.c's module_abort,
+  then emacs_abort) the owned stack below the live frames is now
+  marked MADV_DONTDUMP: the core is 56 MB, 34 MB of it data. A crash
+  by a signal still dumps the whole stack. A Rust caller's funcall of
+  a byte-code closure (`mapatoms', `mapcar', `sort', a hook) now
+  reaches the VM from `call_subr_directly', where it went on through
+  `call_function_body' and `call_function_value_inner', which repeated
+  the tests already made; and a unibyte ASCII string of at most 64
+  bytes is matched in place at once, without its cached in-place test.
+  `apropos-internal' over the 19.8K symbols, which both frozen runners
+  call twice for every test file, took 55.9M instructions and now 54.4M
+  (GNU 42.8M). Of the remaining 590 instructions a symbol, about 250
+  are the entry from Rust into byte code (GNU's Ffuncall, funcall_lambda and
+  exec_byte_code's prologue take about 180), 100 `string-match' and
+  100 the two byte-code bodies.
+  Local validation of rounds 132 and 133, on one build: the full gate
+  across its ten groups with the documented local skips, all 3,273
+  tests run passing (2 ignored); the seven integration targets; clippy
+  `-D warnings', rustfmt and `git diff --check'; and each commit builds
+  alone.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -8708,6 +8748,13 @@ all 7,928 on its rerun. The first attempt's timings: setup 56.1 s
 against 47.3 s (1.186), test bodies 213.1 s against 227.0 s (0.939), in
 all 0.980; the rerun's: setup 82.0 s against 64.6 s (1.269), test
 bodies 263.0 s against 265.6 s (0.990), in all 1.024.
+**On `786b170`** (rounds 130 and 131): full Rust gate passed (run
+40623198526); frozen (run 40623201218) matched 7,927 of 7,928 outcomes
+on its first attempt, the mismatch the recorded eglot oracle flake, and
+all 7,928 on its rerun. The first attempt's timings: setup 58.8 s
+against 49.5 s (1.188), test bodies 213.8 s against 229.3 s (0.933), in
+all 0.988; the rerun's: setup 67.5 s against 56.1 s (1.204), test
+bodies 232.6 s against 242.6 s (0.958), in all 1.010.
 
 **Findings recorded, not fixed:**
 - **What the checked build costs (round 131).** mule-tests under the

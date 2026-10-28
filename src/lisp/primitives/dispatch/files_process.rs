@@ -2008,7 +2008,7 @@ define_dispatch!(
             }
             "list-system-processes" => {
                 need_args(name, args, 0)?;
-                Ok(list_system_processes_value())
+                list_system_processes_value()
             }
             "process-coding-system" => {
                 need_args(name, args, 1)?;

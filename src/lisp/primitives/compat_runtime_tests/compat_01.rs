@@ -1862,6 +1862,65 @@ fn equal_compares_strings_by_chars_bytes_and_contents_as_internal_equal() {
     );
 }
 
+#[test]
+fn rust_callers_reach_byte_code_closures_given_named_or_aliased_as_funcall_does() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let value = crate::test_support::eval_lisp(
+        &mut interp,
+        &mut env,
+        r#"(let (results)
+             (defvar rust-caller-bc-seen nil)
+             (dolist (lex '(nil t))
+               (setq lexical-binding lex)
+               (let* ((f (byte-compile
+                          '(lambda (x)
+                             (if (eq x 'boom) (signal 'error (list x))
+                               (list x (string-match "b" (symbol-name x)))))))
+                      (g (byte-compile '(lambda (a b) (+ a b)))))
+                 (defalias 'rust-caller-bc-f f)
+                 (defalias 'rust-caller-bc-alias 'rust-caller-bc-f)
+                 (push (list (mapcar f '(abc bcd))
+                             (mapcar 'rust-caller-bc-f '(xb))
+                             (mapcar 'rust-caller-bc-alias '(b))
+                             (funcall 'rust-caller-bc-alias 'ab)
+                             (condition-case err (mapcar f '(ok boom)) (error err))
+                             (condition-case err (funcall g 1)
+                               (wrong-number-of-arguments
+                                (cons (if (eq (cadr err) g) 'self (cadr err)) (cddr err))))
+                             (condition-case err (mapcar g '(1))
+                               (wrong-number-of-arguments
+                                (cons (if (eq (cadr err) g) 'self (cadr err)) (cddr err))))
+                             (sort (list 3 1 2) (byte-compile '(lambda (a b) (< a b))))
+                             (progn
+                               (setq rust-caller-bc-seen nil)
+                               (mapatoms (byte-compile
+                                          '(lambda (s)
+                                             (when (eq s 'rust-caller-bc-f)
+                                               (push s rust-caller-bc-seen)))))
+                               rust-caller-bc-seen)
+                             (string-match "b" (string-to-unibyte "abc"))
+                             (let ((s (string-to-unibyte "ab")))
+                               (aset s 0 ?\377)
+                               (list (string-match "b" s) (string-match "\377" s)))
+                             (let ((case-fold-search t))
+                               (string-match "B" (string-to-unibyte "xab"))))
+                       results)))
+             (nreverse results))"#,
+    )
+    .expect("byte-code closures called from Rust");
+    // GNU 30.2: the same values and signals whether `mapcar', `sort' or
+    // `mapatoms' calls the closure or `funcall' names it; a dynamic
+    // closure's arity error names the closure, a lexical one its arity.
+    assert_eq!(
+        value.to_string(),
+        "((((abc 1) (bcd 0)) ((xb 1)) ((b 0)) (ab 1) (error boom) (self 1) (self 1) \
+         (1 2 3) (rust-caller-bc-f) 1 (1 0) 2) \
+         (((abc 1) (bcd 0)) ((xb 1)) ((b 0)) (ab 1) (error boom) ((2 . 2) 1) ((2 . 2) 1) \
+         (1 2 3) (rust-caller-bc-f) 1 (1 0) 2))"
+    );
+}
+
 // Finding 34 re-hosts: the originals ran on the bare interpreter against
 // native facades and were deleted with them; GNU's own test tree covers
 // none of these, so the coverage lives here on the full dumped image,
