@@ -7817,6 +7817,21 @@ setup_process_coding_systems's check now refuses). A 13-form
   tests run passing (2 ignored); the seven integration targets; clippy
   `-D warnings', rustfmt and `git diff --check'; and each commit builds
   alone.
+- **Round 132: a Bcall stays plain while Edebug is loaded but not
+  entered.** A byte-code call enters its callee's frame in place when
+  nothing else happens on the way in (`plain_bcall_entry'); recording
+  the frame's lexical context for Edebug is one of those things, and
+  the test for it was that `edebug-entered' is special, so once edebug
+  was loaded every Bcall of the session went through the full call,
+  222 instructions each. It now asks whether `edebug-entered''s cell
+  holds nil in place (a localized or redirected value still takes the
+  full call, which reads it as find_symbol_value does).
+  edebug-tests under the frozen runner (release build): 2.1M of its
+  Bcalls took the full call, now 38K; 6.06G instructions, now 5.52G
+  (GNU 4.11G). `equal''s symbol-with-position test reads
+  `symbols-with-pos-enabled' first, as lisp.h does, before it looks
+  into the object, and its walk of two lists tests the cons tags
+  without decoding each object's kind.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -8686,6 +8701,13 @@ on its first attempt, the mismatch the recorded eglot oracle flake
 69.3 s (1.262), test bodies 271.0 s against 285.2 s (0.950), in all
 1.006; the rerun's: setup 85.6 s against 65.7 s (1.303), test bodies
 268.4 s against 267.6 s (1.003), in all 1.047.
+**On `0bb5507`** (rounds 126 to 129): full Rust gate passed (run
+40616382094); frozen (run 40616385231) matched 7,927 of 7,928 outcomes
+on its first attempt, the mismatch the recorded eglot oracle flake, and
+all 7,928 on its rerun. The first attempt's timings: setup 56.1 s
+against 47.3 s (1.186), test bodies 213.1 s against 227.0 s (0.939), in
+all 0.980; the rerun's: setup 82.0 s against 64.6 s (1.269), test
+bodies 263.0 s against 265.6 s (0.990), in all 1.024.
 
 **Findings recorded, not fixed:**
 - **What the checked build costs (round 131).** mule-tests under the

@@ -2231,7 +2231,7 @@ impl InterpreterState {
     /// The entry tests of a Bcall when nothing else happens on the way
     /// in: Ffuncall's maybe_quit finds no quit, the depth stays within
     /// max-lisp-eval-depth, no termination is pending, no debugger context
-    /// is captured (edebug is not loaded and the callee is not
+    /// is captured (Edebug is not entered and the callee is not
     /// `backtrace-eval'), and calls are not being profiled. NAME is the
     /// callee's symbol, if it is one. Reads only: the full Call arm takes
     /// every other case from the same state.
@@ -2241,8 +2241,20 @@ impl InterpreterState {
         // eval_sub's compare); the gate holds the quit, termination and
         // profiler tests.
         (self.lisp_eval_depth as i64) < self.call_depth_gate
-            && !self.globals.edebug_is_special()
+            && !self.edebug_may_be_entered()
             && name.is_none_or(|name| !is_backtrace_eval_name(name.as_str()))
+    }
+
+    /// Whether a call may have to record its frame's lexical context for
+    /// Edebug: `edebug-entered' is special (edebug is loaded) and its cell
+    /// does not hold nil in place.  A localized or redirected value counts
+    /// as maybe; the full Call arm reads it as find_symbol_value does.
+    #[inline(always)]
+    fn edebug_may_be_entered(&self) -> bool {
+        self.globals.edebug_is_special()
+            && cached_symbol!("edebug-entered")
+                .with(|symbol| symbol.cell().unlocalized_value())
+                .is_none_or(|value| !value.is_nil())
     }
 
     /// `call_depth_gate' after a store of the quit flag, a pending

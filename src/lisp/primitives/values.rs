@@ -89,10 +89,15 @@ impl ForEachTail {
 
 /// maybe_remove_pos_from_symbol: the bare symbol of a symbol with
 /// position while `symbols-with-pos-enabled' is set.
-#[inline]
+#[inline(always)]
 pub(crate) fn bare_symbol(interp: &Interpreter, value: Value) -> Value {
+    // The flag first, as lisp.h tests symbols_with_pos_enabled before
+    // SYMBOL_WITH_POS_P: no object is looked into while it is off.
+    if !interp.symbols_with_positions_enabled() || !value.is_vectorlike() {
+        return value;
+    }
     match value.kind() {
-        Kind::SymbolWithPos(symbol) if interp.symbols_with_positions_enabled() => symbol.symbol(),
+        Kind::SymbolWithPos(symbol) => symbol.symbol(),
         _ => value,
     }
 }
@@ -171,39 +176,32 @@ fn internal_equal_1(
         if o1.eq_value(o2) {
             return Ok(true);
         }
-        match (o1.kind(), o2.kind()) {
-            (Kind::Cons(_), Kind::Cons(_)) => {
-                let mut tail = ForEachTail::new(o1);
-                while let Kind::Cons(cell) = o1.kind() {
-                    let Kind::Cons(other) = o2.kind() else {
-                        return Ok(false);
-                    };
-                    if !internal_equal(
-                        interp,
-                        cell.car.get(),
-                        other.car.get(),
-                        kind,
-                        depth + 1,
-                        ht,
-                    )? {
-                        return Ok(false);
-                    }
-                    o2 = other.cdr.get();
-                    o1 = cell.cdr.get();
-                    // EQ (XCDR (o1), o2).
-                    if o1.eq_value(o2) || bare_symbol(interp, o1).eq_value(bare_symbol(interp, o2))
-                    {
-                        return Ok(true);
-                    }
-                    if tail.step(o1) {
-                        return Err(LispError::SignalValue(Value::list([
-                            Value::Symbol("circular-list".into()),
-                            o1,
-                        ])));
-                    }
+        if o1.is_cons() && o2.is_cons() {
+            let mut tail = ForEachTail::new(o1);
+            while let Some(cell) = o1.cons_ref() {
+                let Some(other) = o2.cons_ref() else {
+                    return Ok(false);
+                };
+                if !internal_equal(interp, cell.car.get(), other.car.get(), kind, depth + 1, ht)? {
+                    return Ok(false);
                 }
-                depth += 1;
+                o2 = other.cdr.get();
+                o1 = cell.cdr.get();
+                // EQ (XCDR (o1), o2).
+                if o1.eq_value(o2) || bare_symbol(interp, o1).eq_value(bare_symbol(interp, o2)) {
+                    return Ok(true);
+                }
+                if tail.step(o1) {
+                    return Err(LispError::SignalValue(Value::list([
+                        Value::Symbol("circular-list".into()),
+                        o1,
+                    ])));
+                }
             }
+            depth += 1;
+            continue;
+        }
+        match (o1.kind(), o2.kind()) {
             (Kind::Overlay(left), Kind::Overlay(right)) => {
                 if !overlay_extents_equal(left, right) {
                     return Ok(false);
