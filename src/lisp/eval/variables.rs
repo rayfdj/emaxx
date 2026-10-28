@@ -97,12 +97,16 @@ impl Interpreter {
     ) -> MinibufferRuntimeState {
         let previous = self.minibuffer_runtime.clone();
         self.minibuffer_activation_count = self.minibuffer_activation_count.saturating_add(1);
+        // read_minibuf's Vcommand_loop_level_list.
+        let mut command_loop_levels = previous.command_loop_levels.clone();
+        command_loop_levels.push(self.command_loop_recursion_depth);
         self.minibuffer_runtime = MinibufferRuntimeState {
             active_buffer_id: Some(buffer_id),
             active_window_id: Some(window_id),
             activation_id: Some(self.minibuffer_activation_count),
             depth: previous.depth.saturating_add(1),
             prompt: Some(prompt),
+            command_loop_levels,
         };
         previous
     }
@@ -128,6 +132,15 @@ impl Interpreter {
 
     pub(crate) fn minibuffer_depth(&self) -> usize {
         self.minibuffer_runtime.depth
+    }
+
+    /// minibuf.c:minibuf_c_loop_level: the command loop level the
+    /// minibuffer at DEPTH was read from.
+    pub(crate) fn minibuffer_command_loop_level(&self, depth: usize) -> Option<usize> {
+        depth
+            .checked_sub(1)
+            .and_then(|index| self.minibuffer_runtime.command_loop_levels.get(index))
+            .copied()
     }
 
     pub(crate) fn minibuffer_prompt_text(&self) -> Option<&str> {

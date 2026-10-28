@@ -344,6 +344,8 @@ fn read_minibuffer_queued_commands(
     interp: &mut Interpreter,
     env: &mut Env,
 ) -> Result<Option<String>, LispError> {
+    // recursive_edit_1 enters command_loop_1.
+    crate::lisp::primitives::command_loop_entry(interp, env)?;
     let mut reader: Option<KeySequenceReader> = None;
     while let Some(event) = next_kbd_command_event(interp, env)? {
         if reader.is_none() {
@@ -367,9 +369,10 @@ fn read_minibuffer_queued_commands(
         interp.pop_catch_tag();
         match dispatch.map_err(LispError::into_kind) {
             Ok(()) => {}
-            Err(LispErrorKind::Throw(tag, _)) if tag.eq_value(Value::symbol("exit")) => {
+            Err(LispErrorKind::Throw(tag, value)) if tag.eq_value(Value::symbol("exit")) => {
                 // The submitting command leaves before its post-command
                 // phase; the prompting command resumes that outer cycle.
+                recursive_edit_exit_value(interp, env, value)?;
                 return active_minibuffer_text(interp, env).map(Some);
             }
             Err(error) => return Err(LispError::from(error)),
@@ -585,20 +588,39 @@ fn recursive_edit(interp: &mut Interpreter, env: &mut Env) -> Result<Value, Lisp
         })
     });
     interp.pop_handler_bindings(handler_start);
-    interp.command_loop_recursion_depth -= 1;
-    match result.map_err(LispError::into_kind) {
+    let outcome = match result.map_err(LispError::into_kind) {
         Err(LispErrorKind::Throw(tag, value)) if matches!(tag.kind(), Kind::Symbol(symbol) if symbol == "exit") => {
-            if value.is_truthy() {
-                Err(LispError::SignalValue(Value::list([Value::Symbol(
-                    "quit".into(),
-                )])))
-            } else {
-                Ok(Value::Nil)
-            }
+            recursive_edit_exit_value(interp, env, value)
         }
         Err(error) => Err(LispError::from(error)),
-        Ok(()) => Ok(Value::Nil),
+        Ok(()) => Ok(()),
+    };
+    interp.command_loop_recursion_depth -= 1;
+    outcome.map(|()| Value::Nil)
+}
+
+/// keyboard.c:recursive_edit_1 on the value thrown to `exit' (by
+/// `exit-recursive-edit', `abort-recursive-edit', `exit-minibuffer' and
+/// minibuffer.el's `minibuffer-quit-recursive-edit'): t quits, a string is
+/// an error's message, and a function is called.
+pub(crate) fn recursive_edit_exit_value(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    value: Value,
+) -> Result<(), LispError> {
+    if matches!(value.kind(), Kind::T) {
+        return Err(LispError::SignalValue(Value::list([Value::symbol("quit")])));
     }
+    if value.is_string() {
+        return Err(LispError::SignalValue(Value::list([
+            Value::symbol("error"),
+            value,
+        ])));
+    }
+    if crate::lisp::primitives::function_value_p(interp, &value, env) {
+        interp.call_function_value(value, None, &[], env)?;
+    }
+    Ok(())
 }
 
 /// Run the command loop used by a recursive edit.
@@ -652,6 +674,7 @@ fn execute_kbd_macro_resolved_command(
     interp.set_variable("last-input-event", event, env);
     interp.set_variable("this-original-command", original_command, env);
     interp.set_variable("this-command", command, env);
+    interp.set_variable("real-this-command", command, env);
     increment_num_input_keys(interp, env);
     safe_run_named_hooks(
         interp,
@@ -1300,8 +1323,11 @@ define_dispatch!(
             }
             "exit-recursive-edit" | "abort-recursive-edit" => {
                 need_args(name, args, 0)?;
-                if interp.command_loop_recursion_depth == 0 {
-                    return Err(LispError::Signal("No recursive edit is in progress".into()));
+                if interp.command_loop_recursion_depth == 0 && interp.minibuffer_depth() == 0 {
+                    return Err(LispError::SignalValue(Value::list([
+                        Value::symbol("user-error"),
+                        Value::string("No recursive edit is in progress"),
+                    ])));
                 }
                 Err(LispError::Throw(
                     Value::Symbol("exit".into()),
@@ -1314,7 +1340,9 @@ define_dispatch!(
             }
             "recursion-depth" => {
                 need_args(name, args, 0)?;
-                Ok(Value::Integer(interp.command_loop_recursion_depth as i64))
+                Ok(Value::Integer(
+                    (interp.command_loop_recursion_depth + interp.minibuffer_depth()) as i64,
+                ))
             }
             "top-level" => {
                 need_args(name, args, 0)?;

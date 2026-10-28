@@ -662,7 +662,24 @@ define_dispatch!(
                     .map(|prompt| Value::String(prompt.into()))
                     .unwrap_or(Value::Nil))
             }
-            "innermost-minibuffer-p" | "minibuffer-innermost-command-loop-p" => {
+            "minibuffer-innermost-command-loop-p" => {
+                need_arg_range(name, args, 0, 1)?;
+                let buffer = match args.first().map(|v| v.kind()) {
+                    None | Some(Kind::Nil) => interp
+                        .buffer_identity_value(interp.current_buffer_id())
+                        .unwrap_or(Value::Nil),
+                    Some(value) => value.value(),
+                };
+                Ok(
+                    if crate::lisp::primitives::minibuffer_innermost_command_loop_p(interp, &buffer)
+                    {
+                        Value::T
+                    } else {
+                        Value::Nil
+                    },
+                )
+            }
+            "innermost-minibuffer-p" => {
                 need_arg_range(name, args, 0, 1)?;
                 let target = match args.first().map(|v| v.kind()) {
                     None | Some(Kind::Nil) => interp
@@ -674,9 +691,7 @@ define_dispatch!(
                     .active_minibuffer_buffer_id()
                     .and_then(|buffer_id| interp.buffer_identity_value(buffer_id))
                     .unwrap_or(Value::Nil);
-                let matches = if name == "minibuffer-innermost-command-loop-p" {
-                    !active.is_nil() && values_equal(interp, &target, &active)?
-                } else if active.is_nil() {
+                let matches = if active.is_nil() {
                     match interp
                         .find_buffer(" *Minibuf-0*")
                         .and_then(|(id, _)| interp.buffer_identity_value(id))
@@ -690,13 +705,47 @@ define_dispatch!(
                 Ok(if matches { Value::T } else { Value::Nil })
             }
             "abort-minibuffers" => {
+                // minibuf.c:Fabort_minibuffers.
                 need_args(name, args, 0)?;
-                if interp.active_minibuffer_buffer_id().is_none() {
+                let buffer = interp
+                    .buffer_identity_value(interp.current_buffer_id())
+                    .unwrap_or(Value::Nil);
+                let depth = crate::lisp::primitives::this_minibuffer_depth(interp, &buffer);
+                if depth == 0 {
                     return Err(LispError::Signal("Not in a minibuffer".into()));
                 }
-                Err(LispError::SignalValue(Value::list([Value::symbol(
-                    "minibuffer-quit",
-                )])))
+                if !crate::lisp::primitives::minibuffer_innermost_command_loop_p(interp, &buffer) {
+                    return Err(LispError::Signal("Not in most nested command loop".into()));
+                }
+                let level = interp.minibuffer_depth();
+                if depth < level {
+                    let levels = Value::Integer((level - depth + 1) as i64);
+                    let prompt = super::super::call(
+                        interp,
+                        "format",
+                        &[Value::string("Abort %s minibuffer levels? "), levels],
+                        env,
+                    )?;
+                    if super::super::call(interp, "yes-or-no-p", &[prompt], env)?.is_truthy() {
+                        // The current minibuffer is in the most nested
+                        // command loop, so no non-minibuffer recursive edits
+                        // are aborted with it.
+                        interp.call_function_value(
+                            Value::symbol("minibuffer-quit-recursive-edit"),
+                            Some("minibuffer-quit-recursive-edit"),
+                            &[levels],
+                            env,
+                        )?;
+                    }
+                } else {
+                    interp.call_function_value(
+                        Value::symbol("minibuffer-quit-recursive-edit"),
+                        Some("minibuffer-quit-recursive-edit"),
+                        &[],
+                        env,
+                    )?;
+                }
+                Ok(Value::Nil)
             }
 
             "natnump" => {

@@ -5029,6 +5029,40 @@ SCENARIOS += [
     ),
 ]
 
+# C-g typed while the minibuffer reads is a key (read_key_sequence): the
+# minibuffer's map runs `abort-minibuffers' as a command, with the pre-
+# command hooks, and its `minibuffer-quit' ends the read; `recursion-depth'
+# counts the minibuffer.
+SCENARIOS += [
+    (
+        "minibuffer-quit-is-a-command",
+        "alpha\nbeta\n",
+        [
+            action("setup-quit", reader_setup(
+                "(progn (setq quit-log nil quit-on nil) "
+                "(add-hook 'pre-command-hook (lambda () (when quit-on "
+                "(push (list 'pre this-command (recursion-depth) (minibuffer-depth)) "
+                "quit-log)))) "
+                "(add-hook 'post-command-hook (lambda () (when quit-on "
+                "(push (list 'post this-command) quit-log)))) "
+                "(defun quit-dump () (interactive) (setq quit-on nil) "
+                "(let ((messages (with-current-buffer (messages-buffer) (buffer-string)))) "
+                "(switch-to-buffer (get-buffer-create \"quit-log\")) (erase-buffer) "
+                "(insert (format \"%S\\n%S %S\\n\" (reverse quit-log) last-command "
+                "(recursion-depth)) messages))) "
+                "(global-set-key (kbd \"C-c d\") #'quit-dump) "
+                "(with-current-buffer (messages-buffer) "
+                "(let ((inhibit-read-only t)) (erase-buffer))) "
+                "(setq quit-on t) (message \"quit ready\"))"
+            ), require_text="quit ready"),
+            action("open-m-x", b"\x1bx", require_text="M-x"),
+            action("type", b"ab"),
+            action("quit", b"\x07", require_text="Quit"),
+            action("dump", b"\x03d"),
+        ],
+    ),
+]
+
 
 def select_scenarios(names):
     """Return built-in scenarios, or the named subset in command-line order.

@@ -682,8 +682,8 @@ impl SharedEventQueue {
 /// Blocking single-event reader for command code that pulls events itself.
 /// The echo area is repainted before blocking so a prompt just issued with
 /// `message' (y-or-n-p's protocol) is visible while the terminal waits.
-/// C-g answers `None' and becomes GNU's `quit' signal at the consuming
-/// primitive.
+/// C-g is answered as the event it is: read_char's caller decides whether
+/// it quits.
 fn make_event_reader(
     queue: SharedEventQueue,
     state: std::rc::Rc<std::cell::RefCell<TtyState>>,
@@ -696,7 +696,7 @@ fn make_event_reader(
                 state.note_input();
             }
             if let Some(event) = input.into_lisp(interpreter) {
-                return (event != Value::Integer(7)).then_some(event);
+                return Some(event);
             }
         }
     })
@@ -1117,6 +1117,7 @@ fn command_loop(
             }
         };
         let active = reader.as_ref().expect("active key reader");
+        let original = active.command_binding();
         debug_log(&format!(
             "keys {:?} -> {}",
             describe_keys(active.keys()),
@@ -1153,6 +1154,7 @@ fn command_loop(
         let command_error = match crate::lisp::primitives::execute_read_key_command_binding(
             interpreter,
             env,
+            original,
             binding,
             &keys,
             last_event,

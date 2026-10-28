@@ -14707,6 +14707,12 @@ fn assert_linux_inotify_contract(program: &str, expected: &str, label: &str) {
 /// text.
 fn assert_oracle_contract_matches_interpreter(program: &str, expected: &str, label: &str) {
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+    assert_interpreter_prints(program, expected, label);
+}
+
+/// The second half of `assert_oracle_contract_matches_interpreter': the
+/// upstream batch interpreter's prin1 of PROGRAM's value is EXPECTED.
+fn assert_interpreter_prints(program: &str, expected: &str, label: &str) {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = crate::lisp::types::Env::new();
     let form = crate::lisp::read_next_load_form(&mut interp, program, &mut 0, &mut env)
@@ -20983,6 +20989,48 @@ fn native_serial_process_validation_matches_gnu_process_c() {
 }
 
 #[test]
+fn minibuffer_c_g_runs_abort_minibuffers_and_recursive_edit_1_exits() {
+    // C-g read in the minibuffer is a key (read_key_sequence clears
+    // quit-flag): its map runs `abort-minibuffers' between the command
+    // hooks, minibuffer.el's `minibuffer-quit-recursive-edit' throws a
+    // function to `exit', and recursive_edit_1 calls it, signalling
+    // `minibuffer-quit'.  Each recursive command loop enters through
+    // command_loop_1's post-command hooks; `this-command' is left as the
+    // last command set it; `recursion-depth' counts the minibuffers.
+    let program = r#"(progn
+             (defvar mbq-log nil)
+             (defalias 'mbq-pre (lambda () (push (list 'pre this-command (recursion-depth) (minibuffer-depth)) mbq-log)))
+             (defalias 'mbq-post (lambda () (push (list 'post this-command) mbq-log)))
+             (defalias 'mbq-read
+               (lambda (prompt events &optional recursive)
+                 (setq mbq-log nil this-command nil)
+                 (list (condition-case err
+                           (let ((executing-kbd-macro t)
+                                 (enable-recursive-minibuffers recursive)
+                                 (unread-command-events events))
+                             (read-from-minibuffer prompt))
+                         (quit (list 'quit err)))
+                       (reverse mbq-log)
+                       (list this-command real-this-command last-command))))
+             (add-hook 'pre-command-hook 'mbq-pre)
+             (add-hook 'post-command-hook 'mbq-post)
+             (unwind-protect
+                 (list (mbq-read "C-g: " (list ?a 7))
+                       (mbq-read "Nested: " (list ?a ?\M-x 7 ?y ?e ?s 13) t)
+                       (mbq-read "RET: " (list ?a 13))
+                       (recursion-depth)
+                       (condition-case err (abort-recursive-edit) (error err))
+                       (condition-case err (exit-recursive-edit) (error err)))
+               (remove-hook 'pre-command-hook 'mbq-pre)
+               (remove-hook 'post-command-hook 'mbq-post)))"#;
+    let expected = r#"(((quit (minibuffer-quit)) ((post nil) (pre self-insert-command 1 1) (post self-insert-command) (pre abort-minibuffers 1 1)) (abort-minibuffers abort-minibuffers self-insert-command)) ("ayes" ((post nil) (pre self-insert-command 1 1) (post self-insert-command) (pre execute-extended-command 1 1) (post execute-extended-command) (pre abort-minibuffers 2 2) (post abort-minibuffers) (pre self-insert-command 1 1) (post self-insert-command) (pre self-insert-command 1 1) (post self-insert-command) (pre self-insert-command 1 1) (post self-insert-command) (pre exit-minibuffer 1 1)) (exit-minibuffer exit-minibuffer self-insert-command)) ("a" ((post nil) (pre self-insert-command 1 1) (post self-insert-command) (pre exit-minibuffer 1 1)) (exit-minibuffer exit-minibuffer self-insert-command)) 0 (user-error "No recursive edit is in progress") (user-error "No recursive edit is in progress"))"#;
+    // The nested read's minibuffer-quit reaches cmd_error, whose
+    // `(ding t)' writes GNU's batch bell to stdout before the result.
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), &format!("\u{7}{expected}"));
+    assert_interpreter_prints(program, expected, "minibuffer C-g");
+}
+
+#[test]
 fn native_minibuffer_stack_queries_match_gnu_minibuf_c() {
     let inactive = r#"(let ((buffer (window-buffer (minibuffer-window))))
                         (list
@@ -24560,35 +24608,38 @@ fn timed_tty_event_read_pumps_process_output_and_deferred_callbacks() {
 }
 
 #[test]
-fn live_minibuffer_recursive_commands_restore_the_outer_command_identity() {
+fn live_minibuffer_leaves_its_last_command_and_call_interactively_restores() {
+    // read_minibuf restores none of the command identities: its recursive
+    // command loop leaves `this-command' and its companions as its last
+    // command, `exit-minibuffer', set them.  callint.c saves them before
+    // reading a command's arguments and restores them before the call,
+    // `current-minibuffer-command' bound meanwhile (GNU 30.2 in batch,
+    // the minibuffer read through `executing-kbd-macro').
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = crate::lisp::types::Env::new();
     interp.set_variable("noninteractive", Value::Nil, &mut env);
-    interp.set_variable(
-        "this-command",
-        Value::Symbol("outer-command".into()),
-        &mut env,
-    );
-    interp.set_variable(
-        "real-this-command",
-        Value::Symbol("outer-real-command".into()),
-        &mut env,
-    );
-    interp.set_variable(
-        "this-original-command",
-        Value::Symbol("outer-original-command".into()),
-        &mut env,
-    );
-    let script = std::rc::Rc::new(std::cell::RefCell::new(
-        "answer\r"
-            .chars()
-            .rev()
-            .map(|ch| Value::Integer(ch as i64))
-            .collect::<Vec<_>>(),
-    ));
-    let feed = std::rc::Rc::clone(&script);
-    set_tty_event_reader(Some(Box::new(move |_| feed.borrow_mut().pop())));
+    let outer = |interp: &mut Interpreter, env: &mut crate::lisp::types::Env| {
+        for (name, value) in [
+            ("this-command", "outer-command"),
+            ("real-this-command", "outer-real-command"),
+            ("this-original-command", "outer-original-command"),
+            ("last-command", "outer-last-command"),
+        ] {
+            interp.set_variable(name, Value::symbol(value), env);
+        }
+    };
+    let feed = |text: &str| {
+        let script = std::rc::Rc::new(std::cell::RefCell::new(
+            text.chars()
+                .rev()
+                .map(|ch| Value::Integer(ch as i64))
+                .collect::<Vec<_>>(),
+        ));
+        set_tty_event_reader(Some(Box::new(move |_| script.borrow_mut().pop())));
+    };
 
+    outer(&mut interp, &mut env);
+    feed("answer\r");
     let result = call(
         &mut interp,
         "read-from-minibuffer",
@@ -24596,22 +24647,40 @@ fn live_minibuffer_recursive_commands_restore_the_outer_command_identity() {
         &mut env,
     );
     set_tty_event_reader(None);
-
     assert_eq!(
         result.expect("live minibuffer submits"),
         Value::String("answer".into())
     );
-    assert_eq!(
-        interp.lookup_var("this-command", &env),
-        Some(Value::Symbol("outer-command".into()))
+    for name in ["this-command", "real-this-command", "this-original-command"] {
+        assert_eq!(
+            interp.lookup_var(name, &env),
+            Some(Value::symbol("exit-minibuffer")),
+            "{name}"
+        );
+    }
+
+    outer(&mut interp, &mut env);
+    feed("a\rb\r");
+    let seen = crate::test_support::eval_lisp(
+        &mut interp,
+        &mut env,
+        r#"(list (call-interactively
+                  (lambda (s)
+                    (interactive "sInput: ")
+                    (list s this-command real-this-command this-original-command
+                          last-command current-minibuffer-command)))
+                 (call-interactively
+                  (lambda (s)
+                    (interactive (list (read-string "Input: ")))
+                    (list s this-command current-minibuffer-command))))"#,
     );
+    set_tty_event_reader(None);
+    let seen = seen.expect("the commands run");
+    let printed = call(&mut interp, "prin1-to-string", &[seen], &mut env).expect("print");
     assert_eq!(
-        interp.lookup_var("real-this-command", &env),
-        Some(Value::Symbol("outer-real-command".into()))
-    );
-    assert_eq!(
-        interp.lookup_var("this-original-command", &env),
-        Some(Value::Symbol("outer-original-command".into()))
+        string_like(&printed).expect("a string").text,
+        "((\"a\" outer-command outer-real-command outer-original-command outer-last-command nil) \
+         (\"b\" outer-command outer-command))"
     );
 }
 
@@ -25011,17 +25080,24 @@ fn tty_real_minibuffer_loop_runs_the_lisp_minibuffer_commands() {
         &mut env,
     );
     set_tty_event_reader(None);
-    // TAB ran minibuffer.el's `minibuffer-complete' (the common prefix of
-    // the two candidates), and RET exited through `exit-minibuffer's
-    // throw — the keymap-dispatched command is what last-command records.
+    // TAB completed through the map's `completion-at-point' (the common
+    // prefix of the two candidates), and RET exited through
+    // `exit-minibuffer''s throw, which leaves command_loop_1 before the
+    // cycle's end: `this-command' stays exit-minibuffer and `last-command'
+    // the command before it (GNU 30.2 in batch, through
+    // `executing-kbd-macro').
     assert_eq!(
         result.expect("the real minibuffer loop submits"),
         Value::String("alpha".into())
     );
     assert_eq!(
-        interp.lookup_var("last-command", &env),
+        interp.lookup_var("this-command", &env),
         Some(Value::Symbol("exit-minibuffer".into())),
         "RET must dispatch minibuffer.el's exit-minibuffer"
+    );
+    assert_eq!(
+        interp.lookup_var("last-command", &env),
+        Some(Value::Symbol("completion-at-point".into()))
     );
 }
 

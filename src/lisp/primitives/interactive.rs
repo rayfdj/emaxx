@@ -844,8 +844,8 @@ pub(crate) fn parse_interactive_string(
 
 // Terminal-driven event input, installed by the tty frontend for the
 // duration of an interactive session.  The reader blocks on the terminal
-// and returns one event, or `None' for C-g; without a reader the
-// queued-events contract below is unchanged.
+// and returns one event, or `None' when the terminal is gone; without a
+// reader the queued-events contract below is unchanged.
 thread_local! {
     static TTY_EVENT_READER: std::cell::RefCell<Option<TtyEventReader>> =
         const { std::cell::RefCell::new(None) };
@@ -1099,7 +1099,7 @@ pub(crate) fn execute_command_binding(
     last_event: Value,
 ) -> Result<(), LispError> {
     set_command_key_state(interp, keys.to_vec(), keys.to_vec(), env);
-    execute_command_binding_inner(interp, env, binding, keys, last_event, true)
+    execute_command_binding_inner(interp, env, binding, binding, keys, last_event, true)
 }
 
 /// The terminal reader already published the translated and raw sequences.
@@ -1107,11 +1107,12 @@ pub(crate) fn execute_command_binding(
 pub(crate) fn execute_read_key_command_binding(
     interp: &mut Interpreter,
     env: &mut Env,
+    original: Value,
     binding: Value,
     keys: &[Value],
     last_event: Value,
 ) -> Result<(), LispError> {
-    execute_command_binding_inner(interp, env, binding, keys, last_event, true)
+    execute_command_binding_inner(interp, env, original, binding, keys, last_event, true)
 }
 
 /// Execute a command whose input events were already recorded by a recursive
@@ -1121,11 +1122,12 @@ pub(crate) fn execute_read_key_command_binding(
 pub(crate) fn execute_recorded_input_command_binding(
     interp: &mut Interpreter,
     env: &mut Env,
+    original: Value,
     binding: Value,
     keys: &[Value],
     last_event: Value,
 ) -> Result<(), LispError> {
-    execute_command_binding_inner(interp, env, binding, keys, last_event, false)
+    execute_command_binding_inner(interp, env, original, binding, keys, last_event, false)
 }
 
 /// keyboard.c:1537, as a command is about to run: boundaries for the LAST
@@ -1156,9 +1158,12 @@ pub(crate) fn add_command_undo_boundary(
     Ok(())
 }
 
+/// ORIGINAL is the key sequence's binding before command remapping,
+/// BINDING the command that runs.
 fn execute_command_binding_inner(
     interp: &mut Interpreter,
     env: &mut Env,
+    original: Value,
     binding: Value,
     keys: &[Value],
     last_event: Value,
@@ -1183,7 +1188,11 @@ fn execute_command_binding_inner(
         Value::vector(keys.iter().cloned()),
         env,
     );
+    // command_loop_1: Vthis_original_command is the binding before
+    // remapping; Vthis_command = cmd; Vreal_this_command = cmd.
+    interp.set_variable("this-original-command", original, env);
     interp.set_variable("this-command", binding, env);
+    interp.set_variable("real-this-command", binding, env);
     // read_char records terminal events as they arrive while a keyboard
     // macro is being defined.  The command's end keys are deliberately
     // provisional: `end-kbd-macro' truncates back to the last command
@@ -1328,6 +1337,10 @@ fn execute_command_binding_inner(
     if signalled {
         return result;
     }
+    // A throw leaves command_loop_1 for its catch here: neither
+    // `last-command' nor `this-command' is touched (exit-minibuffer and
+    // abort-minibuffers leave themselves in `this-command').
+    result?;
     let last_command = interp
         .lookup_var("this-command", env)
         .filter(|command| !command.is_nil())
@@ -1347,10 +1360,9 @@ fn execute_command_binding_inner(
         .lookup_var("current-prefix-arg", env)
         .unwrap_or(Value::Nil);
     interp.set_variable("last-prefix-arg", last_prefix, env);
-    if result.is_ok()
-        && interp
-            .lookup_var("defining-kbd-macro", env)
-            .is_some_and(|value| value.is_truthy())
+    if interp
+        .lookup_var("defining-kbd-macro", env)
+        .is_some_and(|value| value.is_truthy())
     {
         interp.kbd_macro_committed_len = interp.kbd_macro_definition.len();
     }
@@ -1361,7 +1373,7 @@ fn execute_command_binding_inner(
     interp.set_variable("this-command", Value::Nil, env);
     interp.set_variable("real-this-command", Value::Nil, env);
     interp.set_variable("this-original-command", Value::Nil, env);
-    result
+    Ok(())
 }
 
 // keyboard.c's timer_check in miniature: while the command loop waits
@@ -1602,9 +1614,32 @@ pub(crate) fn pop_pending_input_event_value(
     crate::lisp::primitives::dispatch::next_kbd_macro_event(interp, env)
 }
 
+/// read_char for `read-event' and its kin: C-g typed while it waits
+/// leaves `quit-flag' set, so the read quits.
 pub(crate) fn pop_unread_command_event_value(
     interp: &mut Interpreter,
     env: &mut Env,
+) -> Result<Value, LispError> {
+    read_command_event(interp, env, false)
+}
+
+/// read_char under read_key_sequence: handle_interrupt's longjmp makes
+/// read_char return C-g as an event, and read_key_sequence clears
+/// `quit-flag' after each key it reads, so C-g is looked up like any key
+/// (`keyboard-quit', the minibuffer's `abort-minibuffers').
+pub(crate) fn read_key_sequence_event(
+    interp: &mut Interpreter,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let event = read_command_event(interp, env, true)?;
+    interp.set_c_variable("quit-flag", Value::Nil);
+    Ok(event)
+}
+
+fn read_command_event(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    quit_char_is_event: bool,
 ) -> Result<Value, LispError> {
     if let Some(event) = pop_pending_input_event_value(interp, env)? {
         return Ok(event);
@@ -1620,7 +1655,7 @@ pub(crate) fn pop_unread_command_event_value(
         match step {
             None => return Err(LispError::SignalValue(Value::list([Value::symbol("quit")]))),
             Some(Some(event)) => {
-                if event == Value::Integer(7) {
+                if event == Value::Integer(7) && !quit_char_is_event {
                     return Err(LispError::SignalValue(Value::list([Value::symbol("quit")])));
                 }
                 record_external_input_event(interp, &event, env);
@@ -1652,11 +1687,11 @@ pub(crate) fn pop_unread_command_event_value(
     }
     if let Some(read) = read_via_tty_event_reader(interp, cursor_in_echo_area) {
         return match read {
-            Some(event) => {
+            Some(event) if event != Value::Integer(7) || quit_char_is_event => {
                 record_external_input_event(interp, &event, env);
                 Ok(event)
             }
-            None => Err(LispError::SignalValue(Value::list([Value::symbol("quit")]))),
+            _ => Err(LispError::SignalValue(Value::list([Value::symbol("quit")]))),
         };
     }
     Err(LispError::Signal(

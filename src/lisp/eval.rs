@@ -230,6 +230,8 @@ const STARTUP_FEATURES: &[StartupFeature] = &[
     StartupFeature::new("lcms2"),
     StartupFeature::new("make-network-process").with_subfeatures(make_network_process_subfeatures),
     StartupFeature::new("md5"),
+    // terminal.c:syms_of_terminal, in every build.
+    StartupFeature::new("multi-tty"),
     // GNU provides this when its comp.c backend is built, independently of
     // whether libgccjit can be opened at runtime.  This build contains the
     // corresponding Rust backend; `native-comp-available-p' performs the
@@ -2929,6 +2931,9 @@ pub(crate) struct MinibufferRuntimeState {
     activation_id: Option<u64>,
     depth: usize,
     prompt: Option<String>,
+    /// The command loop level each active minibuffer was read from, the
+    /// outermost first.
+    command_loop_levels: Vec<usize>,
 }
 
 /// The interpreter state: holds the global environment, the current buffer,

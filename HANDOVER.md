@@ -8328,6 +8328,66 @@ setup_process_coding_systems's check now refuses). A 13-form
   run passing (2 ignored); the seven integration targets; clippy `-D
   warnings', rustfmt and `git diff --check'. ttydiff's whole suite on
   this build is recorded with round 149.
+- **Round 149: C-g read as a key, recursive_edit_1's exits, and the
+  command identities.** keyboard.c's handle_interrupt longjmps back into
+  read_char, which returns C-g as an event, and read_key_sequence clears
+  `quit-flag' after each key it reads: in the command loop C-g is looked
+  up like any key, `keyboard-quit' at top level and the minibuffer maps'
+  `abort-minibuffers' (`read-event' and `read-char' still quit). Emaxx's
+  readers signalled `quit' for C-g everywhere, so the minibuffer quit
+  without running a command. The key-sequence reads (the minibuffer loop,
+  `read-key-sequence', `read-key') now take C-g as event 7.
+  `abort-minibuffers' is minibuf.c's (this_minibuffer_depth,
+  `minibuffer-innermost-command-loop-p' through minibuf_c_loop_level, the
+  "Abort N minibuffer levels? " question, minibuffer.el's
+  `minibuffer-quit-recursive-edit'), where Emaxx signalled
+  `minibuffer-quit' itself; the three loops that stand for
+  recursive_edit_1 (a recursive edit, the terminal minibuffer, a keyboard
+  macro's minibuffer) act on the value thrown to `exit' as it does: t
+  quits, a string is an error, a function is called (the minibuffer.el
+  function signals `minibuffer-quit'). `recursion-depth' counts the
+  active minibuffers, as Frecursion_depth adds minibuf_level, and
+  `exit-recursive-edit' and `abort-recursive-edit' throw from a
+  minibuffer and signal `user-error' outside any, where Emaxx signalled
+  `error' from a top-level minibuffer.
+  The command identities follow keyboard.c and callint.c: each command
+  cycle sets `this-original-command' (the binding before remapping),
+  `this-command' and `real-this-command'; a command that leaves by
+  `throw' (`exit-minibuffer', `abort-minibuffers') leaves the cycle
+  before `last-command' is set or `this-command' cleared; each
+  recursive command loop enters through command_loop_1's post-command
+  hooks and `last-command'. read_minibuf restores none of them, where
+  Emaxx restored the outer command's after every minibuffer read;
+  Fcall_interactively saves `this-command', `this-original-command',
+  `real-this-command' and `last-command' before reading a command's
+  arguments and restores them before the call, binding
+  `current-minibuffer-command' until the arguments are read for a string
+  spec and through the call for a Lisp form's.
+  xfns.c's `x-uses-old-gtk-dialog', listed but unimplemented, answers nil
+  without a window system (the File menu's Open File called it), and
+  terminal.c's `multi-tty' feature is provided, as in every GNU build.
+  A batch test drives the minibuffer through `executing-kbd-macro' as
+  GNU 30.2 does (C-g in a minibuffer and in a nested one, then RET), and
+  ttydiff's new `minibuffer-quit-is-a-command' journey shows GNU's
+  screen and hook log.
+  ttydiff on 23a43e6's build (rounds 147 and 148): 227 journeys, all
+  matching GNU but five. f10-select called the missing
+  `x-uses-old-gtk-dialog' (matches now). submenu-cycle-options lacks
+  GNU's "Use System Font" item: the oracle is an X build, whose
+  xsettings.c provides `system-font-setting', and menu-bar.el shows the
+  item only then; Emaxx provides no window-system feature (nor `x',
+  `cairo', `font-render-setting', `dynamic-setting', `move-toolbar').
+  supersession-accept-revisit lacks GNU's "[Command attempted to use
+  minibuffer while in minibuffer]": Emaxx had no read_minibuf guard
+  (round 150). dired-open-and-return's free-space figure moved while
+  builds wrote to the disk, and an eglot journey's diagnostics arrived
+  late; both match when rerun. 173d421's build diverges on the same
+  journeys, f10-select included.
+  Local validation: the full gate across its ten groups with
+  the documented local skips, all 3,291 tests run passing (2 ignored);
+  the seven integration targets; clippy `-D warnings', rustfmt and `git
+  diff --check'. ttydiff's whole suite on this build is recorded with
+  round 150.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -9302,6 +9362,11 @@ bodies 258.9 s against 268.4 s (0.965), in all 0.999. multisession-tests'
 bodies took 575 ms against 582 (`multi-test-sqlite-busy' 206 against
 204, where e98ff8a's run had 922 against 204), and xml-tests'
 `xml-print-invalid-cdata' 11.7 ms against 5.2 (122 against 2.7 before).
+
+**On `23a43e6`** (rounds 147 and 148): full Rust gate passed (run
+40732921377); frozen (run 40732938635) matched all 7,928 outcomes on its
+first attempt. Its timings: setup 67.8 s against 57.3 s (1.182), test
+bodies 236.1 s against 255.3 s (0.925), in all 0.979.
 
 **Findings recorded, not fixed:**
 - **What the checked build costs (round 131).** mule-tests under the

@@ -499,7 +499,7 @@ fn wait_for_sequence_event(interp: &mut Interpreter, env: &mut Env) -> Result<Va
         .lookup_var("timer-idle-list", env)
         .is_some_and(|value| value.is_truthy());
     if queued || has_tty_event_poller() || executing_kbd_macro_p(interp, env) || !idle_timers {
-        return pop_unread_command_event_value(interp, env);
+        return read_key_sequence_event(interp, env);
     }
     let previous = interp.set_waiting_for_user_input(true);
     tty_note_idle_start(interp, env);
@@ -511,7 +511,7 @@ fn wait_for_sequence_event(interp: &mut Interpreter, env: &mut Env) -> Result<Va
                 .lookup_var("unread-command-events", env)
                 .is_some_and(|v| v.cons_values().is_some())
             {
-                return pop_unread_command_event_value(interp, env);
+                return read_key_sequence_event(interp, env);
             }
             interp.maybe_quit(env)?;
             std::thread::sleep(std::time::Duration::from_millis(1));

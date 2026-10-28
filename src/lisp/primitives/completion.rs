@@ -1464,30 +1464,9 @@ pub(crate) fn run_active_minibuffer<T>(
     // vanishes when the read finishes, on every exit path, quits
     // included, and the pre-read window selection returns.
     let saved_windows = minibuffer.saved_windows.clone();
-    // read_minibuf enters a recursive command loop, whose per-command
-    // bookkeeping must not erase the command that opened the minibuffer.
-    // In particular, execute-extended-command deliberately publishes the
-    // invoked command through `real-this-command'; its delayed key-binding
-    // suggestion checks that value after nested regexp/replacement prompts
-    // return.  Restore all three outer command identities on every path.
-    let saved_command_state = [
-        (
-            "this-command",
-            interp.lookup_var("this-command", env).unwrap_or(Value::Nil),
-        ),
-        (
-            "real-this-command",
-            interp
-                .lookup_var("real-this-command", env)
-                .unwrap_or(Value::Nil),
-        ),
-        (
-            "this-original-command",
-            interp
-                .lookup_var("this-original-command", env)
-                .unwrap_or(Value::Nil),
-        ),
-    ];
+    // The recursive command loop leaves `this-command' and its companions
+    // as its last command set them; call-interactively, not read_minibuf,
+    // restores the outer command's once its arguments are read.
     let result = (|| {
         // GNU minibuf.c:read_minibuf runs `minibuffer-setup-hook' with the
         // minibuffer already current (the next statement there is
@@ -1520,9 +1499,6 @@ pub(crate) fn run_active_minibuffer<T>(
     // read_minibuf_unwind.
     let exit = run_exit_minibuf_hook(interp, minibuffer.buffer_id, env);
     restore_active_minibuffer(interp, minibuffer, env);
-    for (name, value) in saved_command_state {
-        interp.set_variable(name, value, env);
-    }
     if interp
         .lookup_var("read-minibuffer-restore-windows", env)
         .is_none_or(|restore| restore.is_truthy())
@@ -1776,6 +1752,31 @@ pub(crate) fn activate_minibuffer(
     }
     interp.set_buffer_local_value(buffer_id, "current-local-map", local_map);
     Ok(active)
+}
+
+/// minibuf.c:this_minibuffer_depth: BUFFER's depth among the active
+/// minibuffers, or 0 when it is none of them.
+pub(crate) fn this_minibuffer_depth(interp: &Interpreter, buffer: &Value) -> usize {
+    let Kind::Buffer(buffer) = buffer.kind() else {
+        return 0;
+    };
+    if !interp
+        .buffer_object(buffer.id)
+        .is_some_and(|live| live.ptr_eq(&buffer))
+    {
+        return 0;
+    }
+    (1..=interp.minibuffer_depth())
+        .find(|depth| interp.find_buffer_id(&format!(" *Minibuf-{depth}*")) == Some(buffer.id))
+        .unwrap_or(0)
+}
+
+/// minibuf.c:Fminibuffer_innermost_command_loop_p: BUFFER is an active
+/// minibuffer read at the current command loop level.
+pub(crate) fn minibuffer_innermost_command_loop_p(interp: &Interpreter, buffer: &Value) -> bool {
+    let depth = this_minibuffer_depth(interp, buffer);
+    depth != 0
+        && interp.minibuffer_command_loop_level(depth) == Some(interp.command_loop_recursion_depth)
 }
 
 /// minibuf.c:get_minibuffer: the DEPTHth minibuffer and whether it was
@@ -2502,23 +2503,16 @@ pub(crate) fn interactive_minibuffer_command_loop(
     // recursive-edit shape: registering the tag makes `throw' from
     // `exit-minibuffer' arrive here instead of signaling `no-catch'.
     interp.push_active_catch_tag(Value::Symbol("exit".into()));
-    let loop_outcome = (|interp: &mut Interpreter, env: &mut Env| -> Result<(), LispError> {
+    let loop_outcome = (|interp: &mut Interpreter, env: &mut Env| -> Result<Value, LispError> {
         let mut reader: Option<super::KeySequenceReader> = None;
         // A command error or an undefined key echoes its message until
         // the next keystroke, GNU's transient echo.
         let mut hold_echo = false;
-        // read_minibuf enters its recursive command loop through the same
-        // initial command-loop boundary as GNU keyboard.c: local
-        // post-command hooks run once before the first input wait.  Vertico
-        // deliberately uses that boundary to compute and display its first
-        // candidate set, before the user presses a key.
-        crate::lisp::primitives::safe_run_named_hooks(
-            interp,
-            "post-command-hook",
-            env,
-            Some(buffer_id),
-        )
-        .unwrap_or(());
+        // read_minibuf's recursive_edit_1 enters command_loop_1, whose entry
+        // runs the post-command hooks once before the first input wait
+        // (Vertico computes and displays its first candidate set there)
+        // and sets `last-command'.
+        crate::lisp::primitives::command_loop_entry(interp, env)?;
         loop {
             if reader.is_none() {
                 if !hold_echo {
@@ -2541,8 +2535,9 @@ pub(crate) fn interactive_minibuffer_command_loop(
                 // key blocks.
                 crate::lisp::primitives::run_tty_frame_redraw(interp, env);
             }
-            // C-g propagates as GNU's quit out of the recursive edit.
-            let event = crate::lisp::primitives::pop_unread_command_event_value(interp, env)?;
+            // read_key_sequence reads C-g as a key: the minibuffer's maps
+            // bind it to `abort-minibuffers'.
+            let event = crate::lisp::primitives::read_key_sequence_event(interp, env)?;
             hold_echo = false;
             if reader.is_none() {
                 reader = Some(super::KeySequenceReader::new(interp, Value::Nil, env)?);
@@ -2560,20 +2555,24 @@ pub(crate) fn interactive_minibuffer_command_loop(
                         crate::lisp::primitives::KeyResolution::Command(binding) => binding,
                         _ => Value::Nil,
                     };
+                    let original = reader
+                        .as_ref()
+                        .expect("completed key reader")
+                        .command_binding();
                     let keys = reader
                         .take()
                         .expect("completed key reader")
                         .finish(interp, false, env);
                     let last_event = keys.last().cloned().unwrap_or(Value::Nil);
                     match crate::lisp::primitives::execute_recorded_input_command_binding(
-                        interp, env, binding, &keys, last_event,
+                        interp, env, original, binding, &keys, last_event,
                     )
                     .map_err(LispError::into_kind)
                     {
                         Ok(()) => {}
-                        Err(LispErrorKind::Throw(tag, _value)) if matches!(tag.kind(), Kind::Symbol(name) if name == "exit") =>
+                        Err(LispErrorKind::Throw(tag, value)) if matches!(tag.kind(), Kind::Symbol(name) if name == "exit") =>
                         {
-                            return Ok(());
+                            return Ok(value);
                         }
                         Err(LispErrorKind::Terminate(termination)) => {
                             return Err(LispError::Terminate(termination));
@@ -2601,6 +2600,12 @@ pub(crate) fn interactive_minibuffer_command_loop(
         }
     })(interp, env);
     interp.pop_active_catch_tag();
+    // recursive_edit_1 then acts on the value thrown to `exit', outside
+    // the catch: `abort-minibuffers' throws a function that signals
+    // `minibuffer-quit'.
+    let loop_outcome = loop_outcome.and_then(|value| {
+        crate::lisp::primitives::dispatch::recursive_edit_exit_value(interp, env, value)
+    });
     // The contents are read before read_minibuf unwinds: the caller's
     // `run_active_minibuffer' then runs the exit hook, erases the
     // minibuffer and restores the window configuration, on every exit
