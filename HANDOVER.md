@@ -7718,6 +7718,19 @@ setup_process_coding_systems's check now refuses). A 13-form
   name); it reads the symbol's value by key now, as find_symbol_value
   does. edebug-tests under the frozen runner: 7.18G instructions, now
   6.21G (GNU 4.11G).
+- **Round 127: a unibyte string's search text is remembered as a
+  multibyte one's is.** A search in a string reads its bytes in place
+  when they are ASCII (or, multibyte, UTF-8 the matcher reads as
+  stored), and the string's char-byte cache remembers that scan for a
+  multibyte string; a unibyte one was scanned again at every search.
+  `split-string' matches its separator from each later start of one
+  string, so proced-tests' `split-string's of each process's
+  attribute lines scanned the whole line once a field: under the
+  frozen runner it took 5.04G instructions, now 4.32G (GNU 3.48G).
+  Both kinds now keep the scan in the cache, and Faset's unibyte byte
+  stores, which keep the string's size and so its cache, now forget
+  it as its multibyte stores do (a test aset's a non-ASCII byte into
+  a string already searched, and searches again, as GNU 30.2 answers).
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's

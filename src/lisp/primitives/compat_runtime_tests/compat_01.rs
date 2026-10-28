@@ -1719,6 +1719,29 @@ fn coding_system_lists_record_each_definition_as_coding_c_does() {
     );
 }
 
+#[test]
+fn unibyte_string_searches_see_each_byte_aset_stores() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let value = crate::test_support::eval_lisp(
+        &mut interp,
+        &mut env,
+        r#"(let ((s (string-to-unibyte "abc abc")))
+             (list (string-match "b" s 0)
+                   (string-match "b" s 2)
+                   (progn (aset s 1 200) (string-match "\310" s 0))
+                   (string-match "b" s 0)
+                   (string-match "[^[:ascii:]]" s 0)
+                   (progn (aset s 1 ?b) (string-match "[^[:ascii:]]" s 0))
+                   (string-match "b" s 0)
+                   (split-string s " ")))"#,
+    )
+    .expect("unibyte searches");
+    // GNU 30.2: a search after each store reads the string's bytes as
+    // they now are.
+    assert_eq!(value.to_string(), r#"(1 5 1 5 1 nil 1 ("abc" "abc"))"#);
+}
+
 // Finding 34 re-hosts: the originals ran on the bare interpreter against
 // native facades and were deleted with them; GNU's own test tree covers
 // none of these, so the coverage lives here on the full dumped image,

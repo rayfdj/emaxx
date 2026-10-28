@@ -173,13 +173,13 @@ impl StringText<'_> {
         };
         // A multibyte string of a byte a character is ASCII, and a
         // unibyte one is in place when it is; otherwise the scan is
-        // remembered while the string holds the cache.
+        // remembered while the string holds the cache, as a search
+        // repeated from later starts (`split-string') matches one string
+        // again and again.
         if (multibyte && bytes.len() == chars)
-            || (!multibyte && bytes.is_ascii())
-            || (multibyte
-                && state
-                    .borrow()
-                    .stored_text_in_place(|bytes| stored_form_in_place(bytes, true)))
+            || state
+                .borrow()
+                .stored_text_in_place(|bytes| stored_form_in_place(bytes, multibyte))
         {
             // SAFETY: stored_form_in_place found the bytes UTF-8.
             return Some(StringText::InPlace(

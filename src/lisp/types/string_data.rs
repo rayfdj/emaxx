@@ -937,6 +937,7 @@ impl SharedStringState {
                 return false;
             }
             self.bytes_mut()[index] = code as u8;
+            self.forget_char_byte_cache();
             return true;
         }
         let Ok((encoded, width)) = encode_character(code) else {
@@ -960,6 +961,7 @@ impl SharedStringState {
         assert!(index < self.len() && code <= 0x3f_ffff);
         if !self.is_multibyte() && code <= 255 {
             self.bytes_mut()[index] = code as u8;
+            self.forget_char_byte_cache();
             return Ok(true);
         }
         let (offset, old_width) = if self.is_multibyte() {
