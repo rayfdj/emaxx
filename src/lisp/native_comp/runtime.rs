@@ -2448,7 +2448,8 @@ fn invoke_word_level_subr(index: usize, kind: DirectSubr, arguments: &[NativeWor
             // GNU native code enters Ffuncall directly. After synchronizing
             // handlers, use the same call path before unrelated primitive checks.
             if kind == DirectSubr::Funcall
-                && let Some(result) = invoke_native_funcall(active, arguments)
+                && let Some(result) = plain_native_funcall(active, arguments)
+                    .or_else(|| invoke_native_funcall(active, arguments))
             {
                 return result;
             }
@@ -2686,6 +2687,7 @@ static FUNCALL_SUBR_INDEX: OnceLock<usize> = OnceLock::new();
 static LENGTH_SUBR_INDEX: OnceLock<usize> = OnceLock::new();
 static FBOUNDP_SUBR_INDEX: OnceLock<usize> = OnceLock::new();
 static AREF_SUBR_INDEX: OnceLock<usize> = OnceLock::new();
+static CHAR_TABLE_EXTRA_SLOT_SUBR_INDEX: OnceLock<usize> = OnceLock::new();
 static ASET_SUBR_INDEX: OnceLock<usize> = OnceLock::new();
 static AUTOLOAD_DO_LOAD_SUBR_INDEX: OnceLock<usize> = OnceLock::new();
 static SYMBOL_FUNCTION_SUBR_INDEX: OnceLock<usize> = OnceLock::new();
@@ -2729,6 +2731,41 @@ pub(super) extern "C" fn direct_native_fboundp(symbol: NativeWord) -> NativeWord
         Some(function) => native_boolean(function != 0),
         None => slow_unary_subr(&FBOUNDP_SUBR_INDEX, "fboundp", symbol),
     }
+}
+
+/// eval.c:Ffunctionp: FUNCTIONP, which neither signals nor allocates, so
+/// the handlers need not be brought up to date for it.
+pub(super) extern "C" fn direct_native_functionp(object: NativeWord) -> NativeWord {
+    with_active(|active| {
+        // SAFETY: the caller's argument word is live.
+        let object = unsafe { Value::from_word(object) };
+        native_boolean(crate::lisp::primitives::function_value_p(
+            unsafe { &*active.interpreter },
+            &object,
+            unsafe { &*active.environment.get() },
+        ))
+    })
+}
+
+/// chartab.c:Fchar_table_extra_slot of a char-table at a fixnum within
+/// its extras, read in place; anything else takes the subr's own path,
+/// which signals.
+pub(super) extern "C" fn direct_native_char_table_extra_slot(
+    table: NativeWord,
+    n: NativeWord,
+) -> NativeWord {
+    // SAFETY: the caller's argument word is live.
+    if let Some(char_table) = unsafe { Value::from_word(table) }.char_table_ref()
+        && let Some(value) = decode_fixnum(n)
+            .and_then(|n| usize::try_from(n).ok())
+            .and_then(|slot| char_table.extra(slot))
+    {
+        return value.word();
+    }
+    invoke_subr(
+        subr_index(&CHAR_TABLE_EXTRA_SLOT_SUBR_INDEX, "char-table-extra-slot"),
+        &[table, n],
+    )
 }
 
 /// data.c:Fsymbol_function, as `direct_native_fboundp' reads the cell.
@@ -2829,13 +2866,21 @@ pub(super) extern "C" fn direct_native_type_of(value: NativeWord) -> NativeWord 
 }
 
 /// data.c:Faref's AREF of a vector or a record at a fixnum index within
-/// it, read in place; any other array or index takes the subr's own path.
+/// it, and its CHAR_TABLE_REF of a char-table at a character, read in
+/// place; any other array or index takes the subr's own path.
 pub(super) extern "C" fn direct_native_aref(array: NativeWord, index: NativeWord) -> NativeWord {
-    if let Some(slot) = decode_fixnum(index).and_then(|index| usize::try_from(index).ok()) {
+    if let Some(index) = decode_fixnum(index) {
+        let slot = usize::try_from(index).ok();
         // SAFETY: the caller's argument word is live.
         let value = match unsafe { Value::from_word(array) }.kind() {
-            Kind::Vector(vector) => vector.get(slot),
-            Kind::LispRecord(record) => record.get(slot),
+            Kind::Vector(vector) => slot.and_then(|slot| vector.get(slot)),
+            Kind::LispRecord(record) => slot.and_then(|slot| record.get(slot)),
+            Kind::CharTable(table) => u32::try_from(index)
+                .ok()
+                .filter(|&character| {
+                    character <= crate::lisp::alloc::vectors::char_tables::CHAR_TABLE_MAX_CHAR
+                })
+                .map(|character| table.get(character)),
             _ => None,
         };
         if let Some(value) = value {
@@ -3032,7 +3077,7 @@ pub(super) unsafe extern "C" fn direct_native_funcall(
                 remember_helper_error(active, error);
                 return Some(0);
             }
-            invoke_native_funcall(active, words)
+            plain_native_funcall(active, words).or_else(|| invoke_native_funcall(active, words))
         });
         if let Some(result) = direct {
             return result;
@@ -3439,11 +3484,104 @@ fn funcall_function_cell(
     }
 }
 
+/// `invoke_plain_native_funcall' for the words of a native Ffuncall call,
+/// the function first: the call's word, or the error remembered and 0.
+/// None, with nothing changed, for `invoke_native_funcall'.
+#[inline(always)]
+fn plain_native_funcall(active: &ActiveCall, arguments: &[NativeWord]) -> Option<NativeWord> {
+    let (&function_word, call_arguments) = arguments.split_first()?;
+    // SAFETY: the activation's pointees outlive this call.
+    let result = invoke_plain_native_funcall(
+        unsafe { &mut *active.interpreter },
+        unsafe { &mut *active.runtime },
+        unsafe { &mut *active.environment.get() },
+        // SAFETY: the caller's live word.
+        unsafe { Value::from_word(function_word) },
+        call_arguments,
+    )?;
+    Some(result.unwrap_or_else(|error| {
+        remember_helper_error(active, error);
+        0
+    }))
+}
+
+/// eval.c:Ffuncall of a native function (FUNCTION, or the one in its
+/// function cell) when nothing else happens on the way in: maybe_quit
+/// finds no quit and no fatal signal, the depth stays within
+/// max-lisp-eval-depth, no termination is pending, the debugger is not to
+/// stop at this call, Edebug is not entered, calls are not profiled
+/// (`plain_bcall_entry') and no collection is due.  The frame is recorded and
+/// the function called with ARGUMENTS as the full path below would call
+/// it.  None, with nothing changed, when any of that does not hold or the
+/// function does not take this many arguments.
+#[inline(always)]
+fn invoke_plain_native_funcall(
+    interpreter: &mut Interpreter,
+    runtime: &mut NativeRuntime,
+    environment: &mut Env,
+    function: Value,
+    arguments: &[NativeWord],
+) -> Option<Result<NativeWord, LispError>> {
+    let name = function.symbol_cell();
+    // funcall_general's read of the live cell; a native function is never
+    // a symbol, so an alias or a void cell is not one.
+    let callee = match name {
+        Some(name) => name.cell().function.get(),
+        None => function,
+    };
+    let native = RegisteredNative(callee.native_function_ref()?);
+    if !native.admits(arguments.len())
+        || !interpreter.plain_bcall_entry(name)
+        || crate::lisp::primitives::fatal_signal_pending()
+        || !runtime.heap.collection_cannot_be_due()
+    {
+        return None;
+    }
+    let depth = interpreter.enter_plain_native_funcall(function, arguments);
+    // SAFETY: the register counts admit this many arguments for the native
+    // function's fixed-arity target.
+    let word = unsafe { native.call(arguments) };
+    let result = if interpreter.current_backtrace_debug_on_exit() {
+        native_funcall_exit_debugger(interpreter, runtime, environment, word)
+    } else {
+        Ok(word)
+    };
+    if let Err(error) = &result {
+        interpreter.capture_batch_error_backtrace(error, environment);
+    }
+    interpreter.leave_plain_funcall(depth);
+    Some(result)
+}
+
+/// eval.c:Ffuncall's call_debugger with (exit VALUE) before it drops its
+/// backtrace record, when backtrace-debug marked the frame.  The native
+/// word stays live until the debugger receives the same Lisp object; the
+/// debugger's return value is the call's.
+#[cold]
+#[inline(never)]
+fn native_funcall_exit_debugger(
+    interpreter: &mut Interpreter,
+    runtime: &mut NativeRuntime,
+    environment: &mut Env,
+    word: NativeWord,
+) -> Result<NativeWord, LispError> {
+    let value = runtime
+        .heap
+        .decode(word)
+        .map_err(|error| super::lisp::native_ice(&error))?;
+    let value = interpreter.call_exit_debugger(value, environment)?;
+    runtime
+        .heap
+        .encode(&value)
+        .map_err(|error| super::lisp::native_ice(&error))
+}
+
 /// eval.c:Ffuncall -> funcall_general -> funcall_subr for targets whose
 /// argument vector can remain in GNU's machine-word ABI.  Unsupported
 /// callable classes take the ordinary evaluator path; supported builtins and
 /// non-dynamic native subrs are called directly in the current activation,
 /// with the same optional-argument rules as their C counterparts.
+#[inline(never)]
 fn invoke_native_funcall(active: &ActiveCall, arguments: &[NativeWord]) -> Option<NativeWord> {
     let (&function_word, call_arguments) = arguments.split_first()?;
     let runtime = unsafe { &mut *active.runtime };
@@ -3509,41 +3647,14 @@ fn invoke_native_funcall(active: &ActiveCall, arguments: &[NativeWord]) -> Optio
                 }
             },
         };
-        let result = match result.map_err(LispError::into_kind) {
+        // The error keeps its box: signal_or_quit marks a signal it has
+        // settled there.
+        let result = match result {
             Ok(word) if interpreter.current_backtrace_debug_on_exit() => {
-                // eval.c:Ffuncall calls call_debugger with (exit VALUE) before
-                // dropping its backtrace record when backtrace-debug marked the
-                // frame.  Keep the native word live until the debugger receives
-                // the same Lisp object, then encode the debugger's return value.
-                let value = runtime
-                    .heap
-                    .decode(word)
-                    .map_err(|error| super::lisp::native_ice(&error));
-                value.and_then(|value| {
-                    let argument = Value::list([Value::symbol("exit"), value]);
-                    interpreter
-                        .call_debugger(argument, environment)
-                        .and_then(|value| {
-                            runtime
-                                .heap
-                                .encode(&value)
-                                .map_err(|error| super::lisp::native_ice(&error))
-                        })
-                })
+                native_funcall_exit_debugger(interpreter, runtime, environment, word)
             }
             Ok(word) => Ok(word),
-            Err(error @ (LispErrorKind::Throw(_, _) | LispErrorKind::Terminate(_))) => {
-                Err(LispError::from(error))
-            }
-            Err(error) => {
-                match interpreter.dispatch_handler_bindings(LispError::from(error), environment) {
-                    Ok(value) => runtime
-                        .heap
-                        .encode(&value)
-                        .map_err(|error| super::lisp::native_ice(&error)),
-                    Err(error) => Err(error),
-                }
-            }
+            Err(error) => Err(interpreter.signal_or_quit(error, environment)),
         };
         if let Err(error) = &result {
             interpreter.capture_batch_error_backtrace(error, environment);
@@ -3602,7 +3713,8 @@ fn invoke_native_apply(active: &ActiveCall, arguments: &[NativeWord]) -> Option<
 
     let runtime = unsafe { &mut *active.runtime };
     runtime.push_ephemeral_root_range(funcall_arguments.as_ptr(), funcall_arguments.len());
-    let result = invoke_native_funcall(active, &funcall_arguments);
+    let result = plain_native_funcall(active, &funcall_arguments)
+        .or_else(|| invoke_native_funcall(active, &funcall_arguments));
     unsafe { &mut *active.runtime }.pop_ephemeral_root_range(funcall_arguments.len());
     result
 }
@@ -3649,7 +3761,9 @@ fn invoke_native_mapcar(active: &ActiveCall, arguments: &[NativeWord]) -> Option
                 remember_helper_error(active, error);
                 0
             }
-            Ok(()) => match invoke_native_funcall(active, &words) {
+            Ok(()) => match plain_native_funcall(active, &words)
+                .or_else(|| invoke_native_funcall(active, &words))
+            {
                 Some(result) => result,
                 None => invoke_subr(funcall, &words),
             },
@@ -4595,10 +4709,7 @@ fn remember_helper_error(active: &ActiveCall, error: LispError) {
     let interpreter = unsafe { &mut *active.interpreter };
     let environment = unsafe { &mut *active.environment.get() };
     let error = match unsafe { &mut *active.runtime }.sync_handlers(interpreter) {
-        Ok(()) => match interpreter.dispatch_handler_bindings(error, environment) {
-            Err(error) => error,
-            Ok(_) => unreachable!("handler-bind handlers return to signal"),
-        },
+        Ok(()) => interpreter.signal_or_quit(error, environment),
         Err(error) => error,
     };
     interpreter.capture_batch_error_backtrace(&error, environment);
@@ -8937,20 +9048,27 @@ mod tests {
         let previous_debugger = interpreter
             .symbol_value_cell("debugger")
             .expect("the debugger variable has a default value");
-        interpreter.set_global_binding("debugger", Value::BuiltinFunc("identity".into()));
+        interpreter.set_global_binding("debugger", Value::BuiltinFunc("list".into()));
 
+        // (funcall 'backtrace-debug 0 t) marks its own frame, the native
+        // Ffuncall's, which enters the debugger with (exit t) on its way
+        // out: (list 'exit t), apply1's spread, is the call's value.
         let result = runtime
             .invoke(
                 &mut interpreter,
                 &mut environment,
                 call_funcall_two as *const c_void,
                 NativeCallingConvention::Fixed,
-                &[Value::symbol("backtrace-debug"), Value::Nil, Value::T],
+                &[
+                    Value::symbol("backtrace-debug"),
+                    Value::Integer(0),
+                    Value::T,
+                ],
             )
             .expect("backtrace-debug marks the active native Ffuncall frame");
 
         interpreter.set_global_binding("debugger", previous_debugger);
-        assert_eq!(result, Value::list([Value::symbol("exit"), Value::Nil]));
+        assert_eq!(result, Value::list([Value::symbol("exit"), Value::T]));
         assert_eq!(interpreter.backtrace_frames_len(), 0);
         assert_eq!(interpreter.lisp_eval_depth, 0);
     }
@@ -13128,6 +13246,167 @@ mod tests {
                 Value::Integer(5)
             ])
         );
+    }
+
+    #[test]
+    fn native_char_table_reads_and_functionp_answer_as_their_subrs() {
+        // What generated code calls for `aref' of a char-table,
+        // `char-table-extra-slot' and `functionp': the table's entries.
+        // CHAR_TABLE_REF falls to the default and the parent for an ASCII
+        // and another character alike; FUNCTIONP follows the symbol's
+        // function cell.  A bad character or slot takes each subr's own
+        // entry, which signals.
+        fn entry(name: &str) -> *mut c_void {
+            native_subr_address(
+                super::super::abi::native_subrs()
+                    .iter()
+                    .position(|subroutine| subroutine.name == name)
+                    .expect("the subr belongs to the configured GNU ABI"),
+            )
+        }
+        unsafe extern "C" fn probe(table: NativeWord) -> NativeWord {
+            // SAFETY: each entry's own fixed arity.
+            let aref: extern "C" fn(NativeWord, NativeWord) -> NativeWord =
+                unsafe { std::mem::transmute(entry("aref")) };
+            let extra_slot: extern "C" fn(NativeWord, NativeWord) -> NativeWord =
+                unsafe { std::mem::transmute(entry("char-table-extra-slot")) };
+            let functionp: extern "C" fn(NativeWord) -> NativeWord =
+                unsafe { std::mem::transmute(entry("functionp")) };
+            let fixnum = |n: i64| Value::Integer(n).word();
+            let lambda = Value::list([Value::symbol("lambda"), Value::Nil]);
+            let results = [
+                aref(table, fixnum(i64::from(b'a'))),
+                aref(table, fixnum(0x3b1)),
+                aref(table, fixnum(i64::from(b'b'))),
+                aref(table, fixnum(0x4e00)),
+                extra_slot(table, fixnum(1)),
+                extra_slot(table, fixnum(0)),
+                functionp(Value::symbol("car").word()),
+                functionp(lambda.word()),
+                functionp(Value::symbol("when").word()),
+                functionp(fixnum(3)),
+            ];
+            invoke_subr(
+                super::super::abi::native_subrs()
+                    .iter()
+                    .position(|subroutine| subroutine.name == "list")
+                    .expect("list"),
+                &results,
+            )
+        }
+        unsafe extern "C" fn bad_slot(table: NativeWord) -> NativeWord {
+            // SAFETY: `char-table-extra-slot' takes two fixed arguments.
+            let extra_slot: extern "C" fn(NativeWord, NativeWord) -> NativeWord =
+                unsafe { std::mem::transmute(entry("char-table-extra-slot")) };
+            extra_slot(table, Value::Integer(2).word())
+        }
+        unsafe extern "C" fn bad_character(table: NativeWord) -> NativeWord {
+            // SAFETY: `aref' takes two fixed arguments.
+            let aref: extern "C" fn(NativeWord, NativeWord) -> NativeWord =
+                unsafe { std::mem::transmute(entry("aref")) };
+            aref(table, Value::Integer(-1).word())
+        }
+
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let mut runtime = NativeRuntime::default();
+        let call = |interpreter: &mut Interpreter, environment: &mut Env, name, args: &[Value]| {
+            crate::lisp::primitives::call(interpreter, name, args, environment).expect(name)
+        };
+        let purpose = Value::symbol("probe-char-table");
+        call(
+            &mut interpreter,
+            &mut environment,
+            "put",
+            &[
+                purpose,
+                Value::symbol("char-table-extra-slots"),
+                Value::Integer(2),
+            ],
+        );
+        let table = call(
+            &mut interpreter,
+            &mut environment,
+            "make-char-table",
+            &[purpose, Value::Nil],
+        );
+        let parent = call(
+            &mut interpreter,
+            &mut environment,
+            "make-char-table",
+            &[purpose, Value::symbol("inherited")],
+        );
+        call(
+            &mut interpreter,
+            &mut environment,
+            "set-char-table-parent",
+            &[table, parent],
+        );
+        for (character, value) in [(i64::from(b'a'), "ascii"), (0x3b1, "alpha")] {
+            call(
+                &mut interpreter,
+                &mut environment,
+                "aset",
+                &[table, Value::Integer(character), Value::symbol(value)],
+            );
+        }
+        call(
+            &mut interpreter,
+            &mut environment,
+            "set-char-table-extra-slot",
+            &[table, Value::Integer(1), Value::symbol("extra")],
+        );
+        let returned = runtime
+            .invoke(
+                &mut interpreter,
+                &mut environment,
+                probe as *const c_void,
+                NativeCallingConvention::Fixed,
+                &[table],
+            )
+            .expect("native char-table and functionp probes");
+        assert_eq!(
+            returned.to_vec().expect("a proper list"),
+            [
+                Value::symbol("ascii"),
+                Value::symbol("alpha"),
+                Value::symbol("inherited"),
+                Value::symbol("inherited"),
+                Value::symbol("extra"),
+                Value::Nil,
+                Value::T,
+                Value::T,
+                Value::Nil,
+                Value::Nil,
+            ]
+        );
+
+        let bad: [(unsafe extern "C" fn(NativeWord) -> NativeWord, Value); 2] = [
+            (
+                bad_slot,
+                Value::list([Value::symbol("args-out-of-range"), table, Value::Integer(2)]),
+            ),
+            (
+                bad_character,
+                Value::list([
+                    Value::symbol("wrong-type-argument"),
+                    Value::symbol("characterp"),
+                    Value::Integer(-1),
+                ]),
+            ),
+        ];
+        for (probe, expected) in bad {
+            let error = runtime
+                .invoke(
+                    &mut interpreter,
+                    &mut environment,
+                    probe as *const c_void,
+                    NativeCallingConvention::Fixed,
+                    &[table],
+                )
+                .expect_err("the subr's own entry signals");
+            assert_eq!(crate::lisp::eval::error_condition_value(&error), expected);
+        }
     }
 
     #[test]

@@ -291,6 +291,14 @@ fn code_at<E: MatchEnv + ?Sized>(
     (code, len)
 }
 
+/// category.h's WORD_BOUNDARY_P: two single-byte (ASCII or Latin-1)
+/// word constituents never have a word boundary between them, and only
+/// another pair asks category.c's word_boundary_p.
+#[inline(always)]
+fn word_boundary<E: MatchEnv + ?Sized>(env: &mut E, c1: u32, c2: u32) -> bool {
+    !(c1 < 0x100 && c2 < 0x100) && env.word_boundary_p(c1, c2)
+}
+
 /// RE_STRING_CHAR for the text: the character at D, a unibyte text's as
 /// its byte.
 #[inline]
@@ -696,7 +704,7 @@ fn re_match_2_internal<E: MatchEnv + ?Sized>(
                         let (c2, _) = code_at(rd, d, has_side, env);
                         let s2 = env.syntax(c2, d);
                         if (s1 == syntax_code::WORD) != (s2 == syntax_code::WORD)
-                            || (s1 == syntax_code::WORD && env.word_boundary_p(c1, c2))
+                            || (s1 == syntax_code::WORD && word_boundary(env, c1, c2))
                         {
                             not = !not;
                         }
@@ -717,7 +725,7 @@ fn re_match_2_internal<E: MatchEnv + ?Sized>(
                         let before = rd.prev_start(d);
                         let (c1, _) = code_at(rd, before, has_side, env);
                         let s1 = env.syntax(c1, before);
-                        if s1 == syntax_code::WORD && !env.word_boundary_p(c1, c2) {
+                        if s1 == syntax_code::WORD && !word_boundary(env, c1, c2) {
                             break 'wordbeg Next::Fail;
                         }
                     }
@@ -737,7 +745,7 @@ fn re_match_2_internal<E: MatchEnv + ?Sized>(
                     if d != size {
                         let (c2, _) = code_at(rd, d, has_side, env);
                         let s2 = env.syntax(c2, d);
-                        if s2 == syntax_code::WORD && !env.word_boundary_p(c1, c2) {
+                        if s2 == syntax_code::WORD && !word_boundary(env, c1, c2) {
                             break 'wordend Next::Fail;
                         }
                     }

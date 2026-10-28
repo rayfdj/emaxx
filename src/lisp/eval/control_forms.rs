@@ -144,10 +144,10 @@ impl Interpreter {
         {
             Err(LispError::Throw(tag, value))
         } else {
-            self.dispatch_handler_bindings(
+            Err(self.signal_or_quit(
                 LispError::SignalValue(Value::list([Value::Symbol("no-catch".into()), tag, value])),
                 env,
-            )
+            ))
         }
     }
 

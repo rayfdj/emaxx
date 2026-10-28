@@ -242,6 +242,16 @@ fn record_external_input_event(interp: &mut Interpreter, event: &Value, env: &En
     if executing_kbd_macro_p(interp, env) {
         return;
     }
+    // record_char's `num_nonmacro_input_events++', which lets the
+    // debugger be entered again (maybe_call_debugger).
+    let events = interp
+        .global_binding_value("num-nonmacro-input-events")
+        .and_then(|value| value.as_integer().ok())
+        .unwrap_or(0);
+    interp.set_symbol_value_cell(
+        "num-nonmacro-input-events",
+        Value::Integer(events.saturating_add(1)),
+    );
     interp.keyboard_input.recent_keys.push(*event);
     let limit = interp.lossage_size.max(0) as usize;
     if interp.keyboard_input.recent_keys.len() > limit {
@@ -834,8 +844,8 @@ pub(crate) fn parse_interactive_string(
 
 // Terminal-driven event input, installed by the tty frontend for the
 // duration of an interactive session.  The reader blocks on the terminal
-// and returns one event, or `None' for C-g; without a reader the
-// queued-events contract below is unchanged.
+// and returns one event, or `None' when the terminal is gone; without a
+// reader the queued-events contract below is unchanged.
 thread_local! {
     static TTY_EVENT_READER: std::cell::RefCell<Option<TtyEventReader>> =
         const { std::cell::RefCell::new(None) };
@@ -1089,7 +1099,7 @@ pub(crate) fn execute_command_binding(
     last_event: Value,
 ) -> Result<(), LispError> {
     set_command_key_state(interp, keys.to_vec(), keys.to_vec(), env);
-    execute_command_binding_inner(interp, env, binding, keys, last_event, true)
+    execute_command_binding_inner(interp, env, binding, binding, keys, last_event, true)
 }
 
 /// The terminal reader already published the translated and raw sequences.
@@ -1097,11 +1107,12 @@ pub(crate) fn execute_command_binding(
 pub(crate) fn execute_read_key_command_binding(
     interp: &mut Interpreter,
     env: &mut Env,
+    original: Value,
     binding: Value,
     keys: &[Value],
     last_event: Value,
 ) -> Result<(), LispError> {
-    execute_command_binding_inner(interp, env, binding, keys, last_event, true)
+    execute_command_binding_inner(interp, env, original, binding, keys, last_event, true)
 }
 
 /// Execute a command whose input events were already recorded by a recursive
@@ -1111,11 +1122,12 @@ pub(crate) fn execute_read_key_command_binding(
 pub(crate) fn execute_recorded_input_command_binding(
     interp: &mut Interpreter,
     env: &mut Env,
+    original: Value,
     binding: Value,
     keys: &[Value],
     last_event: Value,
 ) -> Result<(), LispError> {
-    execute_command_binding_inner(interp, env, binding, keys, last_event, false)
+    execute_command_binding_inner(interp, env, original, binding, keys, last_event, false)
 }
 
 /// keyboard.c:1537, as a command is about to run: boundaries for the LAST
@@ -1125,32 +1137,39 @@ pub(crate) fn execute_recorded_input_command_binding(
 /// is refreshed whether or not a boundary was needed (without it, a motion
 /// between two edits leaves record_point the earlier edit's position).  A
 /// bare runtime without simple.el keeps the plain native boundary.
-pub(crate) fn add_command_undo_boundary(interp: &mut Interpreter, env: &mut Env) {
+pub(crate) fn add_command_undo_boundary(
+    interp: &mut Interpreter,
+    env: &mut Env,
+) -> Result<(), LispError> {
     if interp
         .lookup_function("undo-auto--add-boundary", env)
         .is_ok()
     {
-        let _ = interp.call_function_value(
+        interp.call_function_value(
             Value::Symbol("undo-auto--add-boundary".into()),
             Some("undo-auto--add-boundary"),
             &[],
             env,
-        );
+        )?;
     } else {
         interp.buffer.borrow_mut().push_undo_boundary();
     }
     interp.buffer.borrow_mut().note_undo_command_point();
+    Ok(())
 }
 
+/// ORIGINAL is the key sequence's binding before command remapping,
+/// BINDING the command that runs.
 fn execute_command_binding_inner(
     interp: &mut Interpreter,
     env: &mut Env,
+    original: Value,
     binding: Value,
     keys: &[Value],
     last_event: Value,
     record_keys: bool,
 ) -> Result<(), LispError> {
-    add_command_undo_boundary(interp, env);
+    add_command_undo_boundary(interp, env)?;
     // keyboard.c read_char wipes a lingering message when the next input
     // event arrives: the channel empties before the command runs, but the
     // glass only catches up at the next redisplay — so a command that
@@ -1169,7 +1188,11 @@ fn execute_command_binding_inner(
         Value::vector(keys.iter().cloned()),
         env,
     );
+    // command_loop_1: Vthis_original_command is the binding before
+    // remapping; Vthis_command = cmd; Vreal_this_command = cmd.
+    interp.set_variable("this-original-command", original, env);
     interp.set_variable("this-command", binding, env);
+    interp.set_variable("real-this-command", binding, env);
     // read_char records terminal events as they arrive while a keyboard
     // macro is being defined.  The command's end keys are deliberately
     // provisional: `end-kbd-macro' truncates back to the last command
@@ -1190,14 +1213,16 @@ fn execute_command_binding_inner(
         interp.buffer.borrow().chars_modified_tick(),
     );
     // pre-command-hook may rewrite `this-command' (isearch's exit path
-    // does); GNU executes whatever the hook left there.
+    // does); GNU executes whatever the hook left there, nil (an undefined
+    // key's command too) as `undefined'.
     let buffer_id = interp.current_buffer_id();
-    crate::lisp::primitives::safe_run_named_hooks(interp, "pre-command-hook", env, Some(buffer_id))
-        .unwrap_or(());
-    let dispatched = interp
-        .lookup_var("this-command", env)
-        .filter(|command| !command.is_nil())
-        .unwrap_or(binding);
+    crate::lisp::primitives::safe_run_named_hooks(
+        interp,
+        "pre-command-hook",
+        env,
+        Some(buffer_id),
+    )?;
+    let dispatched = interp.lookup_var("this-command", env).unwrap_or(Value::Nil);
     // keyboard.c command_loop_1 executes the command through simple.el's
     // `command-execute' (call1 (Qcommand_execute, Vthis_command)): the
     // prefix-arg handoff (current-prefix-arg takes prefix-arg, which
@@ -1205,7 +1230,12 @@ fn execute_command_binding_inner(
     // check routing to `disabled-command-function', and keyboard-macro
     // arrays all live there.  A bare runtime without simple.el keeps the
     // native equivalent of the prefix handoff plus call-interactively.
-    let result = if interp.lookup_function("command-execute", env).is_ok() {
+    let result = if dispatched.is_nil() {
+        // nil means key is undefined: call0 (Qundefined).
+        interp
+            .call_function_value(Value::symbol("undefined"), Some("undefined"), &[], env)
+            .map(|_| ())
+    } else if interp.lookup_function("command-execute", env).is_ok() {
         command_loop_call(
             interp,
             env,
@@ -1228,9 +1258,16 @@ fn execute_command_binding_inner(
     // A command that leaves through `throw' or another nonlocal exit never
     // reaches keyboard.c's command-completion boundary.  In particular,
     // exit-minibuffer must not run the minibuffer's post-command hooks a
-    // second time after its initial pre-input boundary.
+    // second time after its initial pre-input boundary.  A signal goes to
+    // command_loop_2's handler, cmd_error, and command_loop_1's entry then
+    // runs the post-command hooks with `this-command' still the command's
+    // (the caller's `cmd_error' and `command_loop_entry').
+    let signalled = matches!(&result, Err(error) if !matches!(
+        error.kind(),
+        LispErrorKind::Throw(_, _) | LispErrorKind::Terminate(_)
+    ));
     if result.is_ok() {
-        run_post_command_hooks(interp, env);
+        run_post_command_hooks(interp, env)?;
         // After post-command-hook GNU deactivates the mark when the command
         // asked for it (keyboard.c calls the real `deactivate-mark' so its
         // hook runs).  Buffer-modifying primitives are insdel.c's trigger
@@ -1247,12 +1284,12 @@ fn execute_command_binding_inner(
         if deactivate && mark_active {
             // `deactivate-mark' is GNU simple.el's; keyboard.c reaches it as
             // an ordinary Lisp call (call0), never through native dispatch.
-            let _ = interp.call_function_value(
+            interp.call_function_value(
                 Value::Symbol("deactivate-mark".into()),
                 Some("deactivate-mark"),
                 &[],
                 env,
-            );
+            )?;
         }
     }
     // GNU takes last-command from this-command AFTER the command ran: a
@@ -1276,26 +1313,34 @@ fn execute_command_binding_inner(
                 .get_buffer_by_id(modified_before.0)
                 .is_some_and(|buffer| buffer.chars_modified_tick() != modified_before.1);
         if current_changed {
-            let _ = interp.call_function_value(
+            interp.call_function_value(
                 Value::Symbol("undo-auto--undoable-change".into()),
                 Some("undo-auto--undoable-change"),
                 &[],
                 env,
-            );
+            )?;
         }
         if switched_and_changed {
             let here = interp.current_buffer_id();
             if interp.set_current_buffer_id(modified_before.0).is_ok() {
-                let _ = interp.call_function_value(
+                let reported = interp.call_function_value(
                     Value::Symbol("undo-auto--undoable-change".into()),
                     Some("undo-auto--undoable-change"),
                     &[],
                     env,
                 );
                 let _ = interp.set_current_buffer_id(here);
+                reported?;
             }
         }
     }
+    if signalled {
+        return result;
+    }
+    // A throw leaves command_loop_1 for its catch here: neither
+    // `last-command' nor `this-command' is touched (exit-minibuffer and
+    // abort-minibuffers leave themselves in `this-command').
+    result?;
     let last_command = interp
         .lookup_var("this-command", env)
         .filter(|command| !command.is_nil())
@@ -1315,10 +1360,9 @@ fn execute_command_binding_inner(
         .lookup_var("current-prefix-arg", env)
         .unwrap_or(Value::Nil);
     interp.set_variable("last-prefix-arg", last_prefix, env);
-    if result.is_ok()
-        && interp
-            .lookup_var("defining-kbd-macro", env)
-            .is_some_and(|value| value.is_truthy())
+    if interp
+        .lookup_var("defining-kbd-macro", env)
+        .is_some_and(|value| value.is_truthy())
     {
         interp.kbd_macro_committed_len = interp.kbd_macro_definition.len();
     }
@@ -1329,7 +1373,7 @@ fn execute_command_binding_inner(
     interp.set_variable("this-command", Value::Nil, env);
     interp.set_variable("real-this-command", Value::Nil, env);
     interp.set_variable("this-original-command", Value::Nil, env);
-    result
+    Ok(())
 }
 
 // keyboard.c's timer_check in miniature: while the command loop waits
@@ -1570,9 +1614,32 @@ pub(crate) fn pop_pending_input_event_value(
     crate::lisp::primitives::dispatch::next_kbd_macro_event(interp, env)
 }
 
+/// read_char for `read-event' and its kin: C-g typed while it waits
+/// leaves `quit-flag' set, so the read quits.
 pub(crate) fn pop_unread_command_event_value(
     interp: &mut Interpreter,
     env: &mut Env,
+) -> Result<Value, LispError> {
+    read_command_event(interp, env, false)
+}
+
+/// read_char under read_key_sequence: handle_interrupt's longjmp makes
+/// read_char return C-g as an event, and read_key_sequence clears
+/// `quit-flag' after each key it reads, so C-g is looked up like any key
+/// (`keyboard-quit', the minibuffer's `abort-minibuffers').
+pub(crate) fn read_key_sequence_event(
+    interp: &mut Interpreter,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let event = read_command_event(interp, env, true)?;
+    interp.set_c_variable("quit-flag", Value::Nil);
+    Ok(event)
+}
+
+fn read_command_event(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    quit_char_is_event: bool,
 ) -> Result<Value, LispError> {
     if let Some(event) = pop_pending_input_event_value(interp, env)? {
         return Ok(event);
@@ -1586,10 +1653,10 @@ pub(crate) fn pop_unread_command_event_value(
         .is_some_and(|value| value.is_truthy());
     while let Some(step) = poll_via_tty_event_poller(interp, cursor_in_echo_area) {
         match step {
-            None => return Err(LispError::SignalValue(Value::Symbol("quit".into()))),
+            None => return Err(LispError::SignalValue(Value::list([Value::symbol("quit")]))),
             Some(Some(event)) => {
-                if event == Value::Integer(7) {
-                    return Err(LispError::SignalValue(Value::Symbol("quit".into())));
+                if event == Value::Integer(7) && !quit_char_is_event {
+                    return Err(LispError::SignalValue(Value::list([Value::symbol("quit")])));
                 }
                 record_external_input_event(interp, &event, env);
                 return Ok(event);
@@ -1620,11 +1687,11 @@ pub(crate) fn pop_unread_command_event_value(
     }
     if let Some(read) = read_via_tty_event_reader(interp, cursor_in_echo_area) {
         return match read {
-            Some(event) => {
+            Some(event) if event != Value::Integer(7) || quit_char_is_event => {
                 record_external_input_event(interp, &event, env);
                 Ok(event)
             }
-            None => Err(LispError::SignalValue(Value::Symbol("quit".into()))),
+            _ => Err(LispError::SignalValue(Value::list([Value::symbol("quit")]))),
         };
     }
     Err(LispError::Signal(
@@ -2059,6 +2126,26 @@ pub(crate) fn tty_input_pending() -> bool {
     TTY_INPUT_PENDING.with_borrow(|slot| slot.as_ref().is_some_and(|check| check()))
 }
 
+// keyboard.c's Fdiscard_input empties the keyboard buffer (kbd_fetch_ptr =
+// kbd_store_ptr): the frontend drops the input it has read from the
+// terminal.
+thread_local! {
+    static TTY_INPUT_DISCARD: std::cell::RefCell<Option<Box<dyn Fn()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+pub(crate) fn set_tty_input_discard(discard: Option<Box<dyn Fn()>>) {
+    TTY_INPUT_DISCARD.with_borrow_mut(|slot| *slot = discard);
+}
+
+pub(crate) fn discard_tty_input() {
+    TTY_INPUT_DISCARD.with_borrow(|slot| {
+        if let Some(discard) = slot.as_ref() {
+            discard();
+        }
+    });
+}
+
 pub(crate) fn has_tty_event_poller() -> bool {
     TTY_EVENT_POLLER.with_borrow(|slot| slot.is_some())
 }
@@ -2101,10 +2188,10 @@ pub(crate) fn read_tty_event_with_timeout(
             return Ok(None);
         };
         match step {
-            None => return Err(LispError::SignalValue(Value::Symbol("quit".into()))),
+            None => return Err(LispError::SignalValue(Value::list([Value::symbol("quit")]))),
             Some(Some(event)) => {
                 if event == Value::Integer(7) {
-                    return Err(LispError::SignalValue(Value::Symbol("quit".into())));
+                    return Err(LispError::SignalValue(Value::list([Value::symbol("quit")])));
                 }
                 record_external_input_event(interp, &event, env);
                 return Ok(Some(event));
@@ -2315,15 +2402,19 @@ pub(crate) fn tty_menu_pane_from_keymap(
 /// keyboard.c command_loop_1 after a command (and on entry):
 /// `post-command-hook', then `delayed-warnings-hook' when warnings wait
 /// in `delayed-warnings-list'.
-pub(crate) fn run_post_command_hooks(interp: &mut Interpreter, env: &mut Env) {
+/// safe_run_hooks catches each function's signal; a throw or the end of
+/// the session goes on.
+pub(crate) fn run_post_command_hooks(
+    interp: &mut Interpreter,
+    env: &mut Env,
+) -> Result<(), LispError> {
     let buffer_id = interp.current_buffer_id();
     crate::lisp::primitives::safe_run_named_hooks(
         interp,
         "post-command-hook",
         env,
         Some(buffer_id),
-    )
-    .unwrap_or(());
+    )?;
     if interp
         .lookup_var("delayed-warnings-list", env)
         .is_some_and(|value| value.is_truthy())
@@ -2334,9 +2425,9 @@ pub(crate) fn run_post_command_hooks(interp: &mut Interpreter, env: &mut Env) {
             "delayed-warnings-hook",
             env,
             Some(buffer_id),
-        )
-        .unwrap_or(());
+        )?;
     }
+    Ok(())
 }
 
 /// keyboard.c command_loop_1's entry, each time a command loop starts
@@ -2344,8 +2435,8 @@ pub(crate) fn run_post_command_hooks(interp: &mut Interpreter, env: &mut Env) {
 /// after an error threw to top level): the post-command hooks, so they
 /// run after commands that exited nonlocally, then `last-command' and
 /// its companions from the command that ran last.
-pub(crate) fn command_loop_entry(interp: &mut Interpreter, env: &mut Env) {
-    run_post_command_hooks(interp, env);
+pub(crate) fn command_loop_entry(interp: &mut Interpreter, env: &mut Env) -> Result<(), LispError> {
+    run_post_command_hooks(interp, env)?;
     let this_command = interp.lookup_var("this-command", env).unwrap_or(Value::Nil);
     let real_this_command = interp
         .lookup_var("real-this-command", env)
@@ -2358,6 +2449,120 @@ pub(crate) fn command_loop_entry(interp: &mut Interpreter, env: &mut Env) {
     if !last_event_is_cons {
         interp.set_variable("last-repeatable-command", real_this_command, env);
     }
+    Ok(())
+}
+
+/// Whether the error DATA's symbol has CONDITION among its
+/// `error-conditions' (Fmemq of Fget).
+fn error_data_has_condition(interp: &Interpreter, data: &Value, condition: &str) -> bool {
+    let Some(symbol) = data.cons_ref().map(|cell| cell.car.get()) else {
+        return false;
+    };
+    let Kind::Symbol(name) = symbol.kind() else {
+        return false;
+    };
+    interp
+        .get_symbol_property(&name, "error-conditions")
+        .and_then(|conditions| conditions.to_vec().ok())
+        .is_some_and(|conditions| {
+            conditions
+                .iter()
+                .any(|entry| matches!(entry.kind(), Kind::Symbol(entry) if entry == condition))
+        })
+}
+
+/// keyboard.c cmd_error: command_loop_2's handler for the signal ERROR
+/// from a command, before command_loop_1 is entered again.
+pub(crate) fn cmd_error(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    error: &LispError,
+) -> Result<(), LispError> {
+    let data = crate::lisp::eval::error_condition_value(error);
+    let macroerror = if interp.executing_kbd_macro {
+        if interp.kbd_macro_iterations == 1 {
+            "After 1 kbd macro iteration: ".to_string()
+        } else {
+            format!(
+                "After {} kbd macro iterations: ",
+                interp.kbd_macro_iterations
+            )
+        }
+    } else {
+        String::new()
+    };
+    if !error_data_has_condition(interp, &data, "minibuffer-quit") {
+        interp.set_variable("executing-kbd-macro", Value::Nil, env);
+        interp.executing_kbd_macro = false;
+    } else if interp
+        .lookup_var("defining-kbd-macro", env)
+        .is_some_and(|value| value.is_truthy())
+    {
+        // An `M-x' command that signals a `minibuffer-quit' condition
+        // that's part of a kbd macro: finalize_kbd_macro_chars.
+        interp.kbd_macro_committed_len = interp.kbd_macro_definition.len();
+    }
+    let output = interp.bind_special_dynamic("standard-output", Value::T, env)?;
+    let input = match interp.bind_special_dynamic("standard-input", Value::T, env) {
+        Ok(input) => input,
+        Err(error) => {
+            interp.restore_special_dynamic(output, env)?;
+            return Err(error);
+        }
+    };
+    interp.set_variable("prefix-arg", Value::Nil, env);
+    interp.set_variable("last-prefix-arg", Value::Nil, env);
+    // Avoid unquittable loop if data contains a circular list.
+    let reported = interp.with_lisp_stack_roots(&data, |interp| {
+        crate::lisp::primitives::with_cmd_error_print_limits(interp, |interp| {
+            cmd_error_internal(interp, env, data, &macroerror)
+        })
+    });
+    interp.set_c_variable("quit-flag", Value::Nil);
+    interp.set_c_variable("inhibit-quit", Value::Nil);
+    interp.restore_special_dynamic(input, env)?;
+    interp.restore_special_dynamic(output, env)?;
+    reported
+}
+
+/// keyboard.c cmd_error_internal: `command-error-function' with DATA,
+/// CONTEXT (empty or ASCII) and the function that signalled.
+fn cmd_error_internal(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    data: Value,
+    context: &str,
+) -> Result<(), LispError> {
+    // The immediate context is not interesting for Quits, since they are
+    // asynchronous (signal_quit_p).
+    let quit = data.cons_ref().is_some_and(|cell| {
+        let symbol = cell.car.get();
+        matches!(symbol.kind(), Kind::Symbol(name) if name == "quit")
+    }) || error_data_has_condition(interp, &data, "quit");
+    if quit {
+        interp.signaling_function = Value::Nil;
+    }
+    interp.set_c_variable("quit-flag", Value::Nil);
+    interp.set_c_variable("inhibit-quit", Value::T);
+    // Use user's specified output function if any.
+    let function = interp
+        .lookup_var("command-error-function", env)
+        .unwrap_or(Value::Nil);
+    let result = if function.is_nil() {
+        Ok(())
+    } else {
+        let context = if context.is_empty() {
+            crate::lisp::primitives::bytes_to_shared_unibyte_value(b"")
+        } else {
+            Value::string(context)
+        };
+        let signal = interp.signaling_function;
+        interp
+            .call_function_value(function, None, &[data, context, signal], env)
+            .map(|_| ())
+    };
+    interp.signaling_function = Value::Nil;
+    result
 }
 
 /// keyboard.c command_loop_1 before read_key_sequence: no command is

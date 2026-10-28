@@ -168,9 +168,19 @@ impl CharTableRef {
         note_char_table_store();
     }
 
+    /// One of the slots below the extras, which every char-table has (the
+    /// dump loader and `new' admit no fewer), read in place as
+    /// XCHAR_TABLE's fields are, with no count to check it against.
+    #[inline(always)]
+    fn standard_slot(&self, index: usize) -> Value {
+        debug_assert!(index < CHAR_TABLE_STANDARD_SLOTS);
+        // SAFETY: INDEX is one of the table's initialized standard slots.
+        unsafe { (*payload(self.0.as_ptr()).cast::<Cell<Value>>().add(index)).get() }
+    }
+
     #[inline]
     pub(crate) fn default(&self) -> Value {
-        self.slot(DEFAULT)
+        self.standard_slot(DEFAULT)
     }
 
     #[inline]
@@ -180,10 +190,7 @@ impl CharTableRef {
 
     #[inline]
     pub(crate) fn parent(&self) -> Option<Self> {
-        match self.slot(PARENT).kind() {
-            Kind::CharTable(parent) => Some(parent),
-            _ => None,
-        }
+        self.standard_slot(PARENT).char_table_ref()
     }
 
     #[inline]
@@ -193,7 +200,7 @@ impl CharTableRef {
 
     #[inline]
     pub(crate) fn purpose(&self) -> Value {
-        self.slot(PURPOSE)
+        self.standard_slot(PURPOSE)
     }
 
     pub(crate) fn has_purpose(&self, name: &str) -> bool {
@@ -223,8 +230,12 @@ impl CharTableRef {
         true
     }
 
+    /// chartab.c's UNIPROP_TABLE_P: the purpose compared with the symbol
+    /// itself, as EQ with Qchar_code_property_table.
     pub(crate) fn is_uniprop(&self) -> bool {
-        self.extra_count() == 5 && self.has_purpose("char-code-property-table")
+        self.extra_count() == 5
+            && cached_symbol!("char-code-property-table")
+                .with(|symbol| self.purpose().word() == Value::Symbol(*symbol).word())
     }
 
     /// chartab.c:char_table_ascii. ASCII aliases the actual bottom subtable;
@@ -240,14 +251,19 @@ impl CharTableRef {
         self.set_slot(ASCII, value);
     }
 
-    /// CHAR_TABLE_REF_ASCII and char_table_ref: nil falls through this
-    /// table's default first, then its parent. INIT is also stored in every
+    /// lisp.h:CHAR_TABLE_REF: CHAR_TABLE_REF_ASCII for an ASCII
+    /// character, else char_table_ref.  Nil falls through this table's
+    /// default first, then its parent. INIT is also stored in every
     /// initial content slot, so replacing the default preserves INIT values.
+    #[inline]
     pub(crate) fn get(&self, character: u32) -> Value {
+        if character < 128 {
+            return self.ascii_get(character as usize);
+        }
         assert!(character <= CHAR_TABLE_MAX_CHAR);
         let mut table = *self;
         loop {
-            let mut value = table.explicit_get(character);
+            let mut value = table.contents_get(character);
             if value.is_nil() {
                 value = table.default();
             }
@@ -261,17 +277,47 @@ impl CharTableRef {
         }
     }
 
-    pub(crate) fn explicit_get(&self, character: u32) -> Value {
-        assert!(character <= CHAR_TABLE_MAX_CHAR);
-        if character < 128 {
-            let ascii = self.slot(ASCII);
-            return subtable(ascii).map_or(ascii, |sub| sub.slot(character as usize));
+    /// lisp.h:CHAR_TABLE_REF_ASCII: each table's ASCII slot, its default
+    /// for nil, up the parents while nil.
+    #[inline]
+    fn ascii_get(&self, index: usize) -> Value {
+        let mut table = *self;
+        loop {
+            let mut value = table.ascii_explicit_get(index);
+            if value.is_nil() {
+                value = table.default();
+            }
+            if !value.is_nil() {
+                return value;
+            }
+            let Some(parent) = table.parent() else {
+                return value;
+            };
+            table = parent;
         }
+    }
+
+    pub(crate) fn explicit_get(&self, character: u32) -> Value {
+        if character < 128 {
+            return self.ascii_explicit_get(character as usize);
+        }
+        assert!(character <= CHAR_TABLE_MAX_CHAR);
         self.contents_get(character)
     }
 
+    /// The ASCII slot's value for INDEX, below 128: its element when it
+    /// holds the bottom subtable (char_table_ascii stores no other).
+    #[inline(always)]
+    fn ascii_explicit_get(&self, index: usize) -> Value {
+        let ascii = self.standard_slot(ASCII);
+        match subtable(ascii) {
+            Some(sub) => sub.bottom_slot(index),
+            None => ascii,
+        }
+    }
+
     fn contents_get(&self, character: u32) -> Value {
-        let value = self.slot(CONTENTS + (character >> SHIFTS[0]) as usize);
+        let value = self.standard_slot(CONTENTS + (character >> SHIFTS[0]) as usize);
         subtable(value).map_or(value, |sub| sub.get(character, self.is_uniprop()))
     }
 
@@ -545,6 +591,25 @@ impl SubCharTableRef {
         self.cells()[index].get()
     }
 
+    /// Element INDEX of a bottom (depth 3) subtable's 128, read in place
+    /// as XSUB_CHAR_TABLE's contents are; another depth's checked slot.
+    #[inline(always)]
+    fn bottom_slot(&self, index: usize) -> Value {
+        if self.depth() == 3 && index < SIZES[3] {
+            // SAFETY: a depth-3 subtable's SIZES[3] initialized cells
+            // follow its packed word, INDEX among them.
+            unsafe {
+                (*payload(self.0.as_ptr())
+                    .add(8)
+                    .cast::<Cell<Value>>()
+                    .add(index))
+                .get()
+            }
+        } else {
+            self.slot(index)
+        }
+    }
+
     #[inline]
     pub(crate) fn set_slot(&self, index: usize, value: Value) {
         self.cells()[index].set(value);
@@ -726,11 +791,9 @@ impl SubCharTableRef {
     }
 }
 
+#[inline(always)]
 fn subtable(value: Value) -> Option<SubCharTableRef> {
-    match value.kind() {
-        Kind::SubCharTable(sub) => Some(sub),
-        _ => None,
-    }
+    value.sub_char_table_ref()
 }
 
 fn compressed(value: Value) -> bool {

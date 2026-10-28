@@ -230,6 +230,8 @@ const STARTUP_FEATURES: &[StartupFeature] = &[
     StartupFeature::new("lcms2"),
     StartupFeature::new("make-network-process").with_subfeatures(make_network_process_subfeatures),
     StartupFeature::new("md5"),
+    // terminal.c:syms_of_terminal, in every build.
+    StartupFeature::new("multi-tty"),
     // GNU provides this when its comp.c backend is built, independently of
     // whether libgccjit can be opened at runtime.  This build contains the
     // corresponding Rust backend; `native-comp-available-p' performs the
@@ -2929,6 +2931,9 @@ pub(crate) struct MinibufferRuntimeState {
     activation_id: Option<u64>,
     depth: usize,
     prompt: Option<String>,
+    /// The command loop level each active minibuffer was read from, the
+    /// outermost first.
+    command_loop_levels: Vec<usize>,
 }
 
 /// The interpreter state: holds the global environment, the current buffer,
@@ -4480,6 +4485,7 @@ impl Interpreter {
             mark(value);
         }
         mark(&self.local_time_zone_rule);
+        mark(&self.signaling_function);
         for (_, watchers) in &self.variable_watchers {
             for watcher in watchers {
                 mark(watcher);
@@ -4603,7 +4609,7 @@ impl Interpreter {
         }
         for handler in &self.active_handlers {
             match handler {
-                ActiveHandler::Module => {}
+                ActiveHandler::Module | ActiveHandler::Internal(_) => {}
                 ActiveHandler::Bind(_, function) => mark(function),
                 ActiveHandler::Case(heads) => {
                     for head in heads.iter() {
@@ -4926,6 +4932,7 @@ impl Interpreter {
                 *value = c.copy(value);
             }
             clone.local_time_zone_rule = c.copy(&clone.local_time_zone_rule.clone());
+            clone.signaling_function = c.copy(&clone.signaling_function);
             for (symbol, watchers) in &mut clone.variable_watchers {
                 *symbol = c.copy_symbol(*symbol);
                 for watcher in watchers {
@@ -5078,7 +5085,7 @@ impl Interpreter {
             }
             for handler in &mut clone.active_handlers {
                 match handler {
-                    ActiveHandler::Module => {}
+                    ActiveHandler::Module | ActiveHandler::Internal(_) => {}
                     ActiveHandler::Bind(_, function) => *function = c.copy(&function.clone()),
                     ActiveHandler::Case(heads) => {
                         *heads = heads.iter().map(|head| c.copy(head)).collect();
@@ -5348,10 +5355,21 @@ pub struct InterpreterState {
     max_lisp_eval_depth: i64,
     /// Ffuncall's depth bound for a call that does nothing else on its way
     /// in (`plain_bcall_entry'): MAX_LISP_EVAL_DEPTH, or below every depth
-    /// while a quit or a termination is pending or calls are profiled.
-    /// Every store of those refreshes it (`refresh_call_depth_gate').
+    /// while a quit or a termination is pending, calls are profiled or
+    /// the debugger is to be entered at the next call (debug_on_next_call,
+    /// which the full entries' do_debug_on_call answers).  Every store of
+    /// those refreshes it (`refresh_call_depth_gate').
     call_depth_gate: i64,
     debug_on_next_call: bool,
+    /// eval.c's Vsignaling_function: the function signal_or_quit found
+    /// below `signal''s frame (and `error''s), for cmd_error to report.
+    pub(crate) signaling_function: Value,
+    /// macros.c's C `executing_kbd_macro', the macro most recently started:
+    /// unlike `executing-kbd-macro' it outlives an error that unwinds the
+    /// macro, so cmd_error can say how far the macro got.
+    pub(crate) executing_kbd_macro: bool,
+    /// macros.c's executing_kbd_macro_iterations.
+    pub(crate) kbd_macro_iterations: i64,
     /// data.c's forwarded C boolean, also read through comp.c's native
     /// relocation. The box keeps its address stable if the interpreter moves;
     /// Cell permits same-thread FFI reads while Rust updates the live slot.
@@ -5853,6 +5871,20 @@ pub(crate) enum ActiveHandler {
     Bind(std::rc::Rc<[String]>, Value),
     /// The clause heads of an active `condition-case' (minus :success).
     Case(std::rc::Rc<[Value]>),
+    /// An internal_condition_case of the C core: HANDLERS that are no list
+    /// (find_handler_clause answers them for any condition), t or `error';
+    /// `error' lets the debugger in (signal_or_quit's `EQ (clause,
+    /// Qerror)').
+    Internal(InternalHandlers),
+}
+
+/// The two kinds of `ActiveHandler::Internal'.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum InternalHandlers {
+    /// Qt: the catch-all.
+    All,
+    /// Qerror: catches as Qt does, and lets the debugger in.
+    Error,
 }
 
 fn make_visual_line_mode_map(interp: &mut Interpreter) -> Value {
@@ -6171,6 +6203,9 @@ impl Interpreter {
             max_lisp_eval_depth: 1600,
             call_depth_gate: if core::profiling() { i64::MIN } else { 1600 },
             debug_on_next_call: false,
+            signaling_function: Value::Nil,
+            executing_kbd_macro: false,
+            kbd_macro_iterations: 0,
             symbols_with_positions_enabled: Box::new(Cell::new(false)),
             lisp_eval_depth: 0,
             garbage_collection_inhibited: 0,

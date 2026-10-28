@@ -385,13 +385,14 @@ pub(super) fn finish_garbage_collection(
         .is_some_and(|hook| hook.is_truthy())
     {
         interpreter.inhibit_garbage_collection();
-        let _ = crate::lisp::primitives::call(
+        let result = crate::lisp::primitives::safe_run_named_hooks(
             interpreter,
-            "run-hooks",
-            &[Value::symbol("post-gc-hook")],
+            "post-gc-hook",
             environment,
+            None,
         );
         interpreter.allow_garbage_collection();
+        result?;
     }
     Ok(census)
 }

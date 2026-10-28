@@ -2739,6 +2739,36 @@ impl Value {
         }
     }
 
+    /// CHAR_TABLE_P, by the tag and the header alone.
+    #[inline(always)]
+    pub(crate) fn char_table_ref(self) -> Option<CharTableRef> {
+        if self.0 & TAG_MASK != TAG_VECTORLIKE {
+            return None;
+        }
+        let header = (self.0 & !TAG_MASK) as *mut crate::lisp::alloc::VectorHeader;
+        // SAFETY: as `kind's vectorlike arm.
+        unsafe {
+            (crate::lisp::alloc::vectors::header_tag(header)
+                == crate::lisp::alloc::VectorTag::CharTable)
+                .then(|| CharTableRef::from_raw(header))
+        }
+    }
+
+    /// SUB_CHAR_TABLE_P, by the tag and the header alone.
+    #[inline(always)]
+    pub(crate) fn sub_char_table_ref(self) -> Option<SubCharTableRef> {
+        if self.0 & TAG_MASK != TAG_VECTORLIKE {
+            return None;
+        }
+        let header = (self.0 & !TAG_MASK) as *mut crate::lisp::alloc::VectorHeader;
+        // SAFETY: as `kind's vectorlike arm.
+        unsafe {
+            (crate::lisp::alloc::vectors::header_tag(header)
+                == crate::lisp::alloc::VectorTag::SubCharTable)
+                .then(|| SubCharTableRef::from_raw(header))
+        }
+    }
+
     /// NATIVE_COMP_FUNCTIONP: a subr allocated for native code, by the tag
     /// and the header alone.
     #[inline(always)]
@@ -3441,107 +3471,136 @@ impl fmt::Display for LispErrorKind {
 /// `Lisp_Object' does.  The constructors keep the variants' names; a
 /// site that reads the kind asks `kind' (a reference) or `into_kind'.
 #[derive(Clone)]
-pub struct LispError(Box<LispErrorKind>);
+pub struct LispError(Box<ErrorBox>);
+
+/// A `LispError's box: the kind, and whether signal_or_quit's work for the
+/// signal (`signal-hook-function', handler-bind, the debugger) is done --
+/// at the first frame boundary or catch it reaches, once.
+#[derive(Clone)]
+struct ErrorBox {
+    kind: LispErrorKind,
+    signaled: bool,
+}
 
 #[allow(non_snake_case)]
 impl LispError {
     #[inline]
+    fn boxed(kind: LispErrorKind) -> Self {
+        Self(Box::new(ErrorBox {
+            kind,
+            signaled: false,
+        }))
+    }
+
+    #[inline]
     pub fn kind(&self) -> &LispErrorKind {
-        &self.0
+        &self.0.kind
     }
 
     #[inline]
     pub fn kind_mut(&mut self) -> &mut LispErrorKind {
-        &mut self.0
+        &mut self.0.kind
     }
 
     #[inline]
     pub fn into_kind(self) -> LispErrorKind {
-        *self.0
+        self.0.kind
+    }
+
+    /// Whether signal_or_quit's once-per-signal work has been done for
+    /// this signal.
+    #[inline]
+    pub(crate) fn signaled(&self) -> bool {
+        self.0.signaled
+    }
+
+    #[inline]
+    pub(crate) fn mark_signaled(&mut self) {
+        self.0.signaled = true;
     }
 
     pub fn condition_type(&self) -> String {
-        self.0.condition_type()
+        self.0.kind.condition_type()
     }
 
     pub fn condition_symbol(&self) -> SymbolName {
-        self.0.condition_symbol()
+        self.0.kind.condition_symbol()
     }
 
     /// This error's box, which it keeps while it propagates.
     #[inline]
     pub(crate) fn identity(&self) -> usize {
-        &*self.0 as *const LispErrorKind as usize
+        &*self.0 as *const ErrorBox as usize
     }
 
     pub fn TypeError(a0: String, a1: String) -> Self {
-        Self(Box::new(LispErrorKind::TypeError(a0, a1)))
+        Self::boxed(LispErrorKind::TypeError(a0, a1))
     }
 
     pub fn WrongTypeArgument(a0: String, a1: Value) -> Self {
-        Self(Box::new(LispErrorKind::WrongTypeArgument(a0, a1)))
+        Self::boxed(LispErrorKind::WrongTypeArgument(a0, a1))
     }
 
     pub fn Void(a0: String) -> Self {
-        Self(Box::new(LispErrorKind::Void(a0)))
+        Self::boxed(LispErrorKind::Void(a0))
     }
 
     pub fn VoidFunction(a0: String) -> Self {
-        Self(Box::new(LispErrorKind::VoidFunction(a0)))
+        Self::boxed(LispErrorKind::VoidFunction(a0))
     }
 
     pub fn WrongNumberOfArgs(a0: String, a1: usize) -> Self {
-        Self(Box::new(LispErrorKind::WrongNumberOfArgs(a0, a1)))
+        Self::boxed(LispErrorKind::WrongNumberOfArgs(a0, a1))
     }
 
     pub fn Signal(a0: String) -> Self {
-        Self(Box::new(LispErrorKind::Signal(a0)))
+        Self::boxed(LispErrorKind::Signal(a0))
     }
 
     pub fn SignalValue(a0: Value) -> Self {
-        Self(Box::new(LispErrorKind::SignalValue(a0)))
+        Self::boxed(LispErrorKind::SignalValue(a0))
     }
 
     pub fn ErtTestFailed(a0: String) -> Self {
-        Self(Box::new(LispErrorKind::ErtTestFailed(a0)))
+        Self::boxed(LispErrorKind::ErtTestFailed(a0))
     }
 
     pub fn Throw(a0: Value, a1: Value) -> Self {
-        Self(Box::new(LispErrorKind::Throw(a0, a1)))
+        Self::boxed(LispErrorKind::Throw(a0, a1))
     }
 
     pub fn Terminate(a0: EmacsTermination) -> Self {
-        Self(Box::new(LispErrorKind::Terminate(a0)))
+        Self::boxed(LispErrorKind::Terminate(a0))
     }
 
     pub fn TestSkipped(a0: String) -> Self {
-        Self(Box::new(LispErrorKind::TestSkipped(a0)))
+        Self::boxed(LispErrorKind::TestSkipped(a0))
     }
 
     pub fn EndOfInput() -> Self {
-        Self(Box::new(LispErrorKind::EndOfInput))
+        Self::boxed(LispErrorKind::EndOfInput)
     }
 
     pub fn ReadError(a0: String) -> Self {
-        Self(Box::new(LispErrorKind::ReadError(a0)))
+        Self::boxed(LispErrorKind::ReadError(a0))
     }
 }
 
 impl From<LispErrorKind> for LispError {
     fn from(kind: LispErrorKind) -> Self {
-        Self(Box::new(kind))
+        Self::boxed(kind)
     }
 }
 
 impl fmt::Debug for LispError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Debug::fmt(&*self.0, f)
+        fmt::Debug::fmt(&self.0.kind, f)
     }
 }
 
 impl fmt::Display for LispError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(&*self.0, f)
+        fmt::Display::fmt(&self.0.kind, f)
     }
 }
 

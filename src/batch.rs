@@ -1104,7 +1104,8 @@ fn call_safe_hook_function(
     interpreter.with_lisp_stack_roots(function, |interpreter| {
         // internal_condition_case_n establishes its catch before funcall:
         // outer handler-bind handlers must not observe a handled signal.
-        let handlers = interpreter.push_condition_case_handler(vec![Value::T]);
+        let handlers =
+            interpreter.push_internal_condition_case(crate::lisp::eval::InternalHandlers::All);
         let depth = env.len();
         let result = interpreter.call_function_value(*function, None, args, env);
         interpreter.pop_handler_bindings(handlers);

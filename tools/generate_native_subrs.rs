@@ -226,6 +226,8 @@ fn direct_native_target(name: &str) -> Option<&'static str> {
         "nreverse" => "direct_native_nreverse",
         "nconc" => "direct_native_nconc",
         "aref" => "direct_native_aref",
+        "char-table-extra-slot" => "direct_native_char_table_extra_slot",
+        "functionp" => "direct_native_functionp",
         "aset" => "direct_native_aset",
         "autoload-do-load" => "direct_native_autoload_do_load",
         "gethash" => "direct_native_gethash",

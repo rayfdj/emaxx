@@ -484,6 +484,11 @@ const EXACT_NATIVE_C_FAST_PATHS: &[NativeCFastPathContract] = &[
         contract_test: "direct_word_subrs_use_the_gnu_c_fast_and_error_paths",
     },
     NativeCFastPathContract {
+        primitive: "char-table-extra-slot",
+        owner: "chartab.c:Fchar_table_extra_slot",
+        contract_test: "native_char_table_reads_and_functionp_answer_as_their_subrs",
+    },
+    NativeCFastPathContract {
         primitive: "cons",
         owner: "alloc.c:Fcons",
         contract_test: "native_cons_uses_one_two_word_body",
@@ -512,6 +517,11 @@ const EXACT_NATIVE_C_FAST_PATHS: &[NativeCFastPathContract] = &[
         primitive: "funcall",
         owner: "eval.c:Ffuncall",
         contract_test: "native_funcall_dispatches_builtin_on_the_word_abi",
+    },
+    NativeCFastPathContract {
+        primitive: "functionp",
+        owner: "eval.c:Ffunctionp",
+        contract_test: "native_char_table_reads_and_functionp_answer_as_their_subrs",
     },
     NativeCFastPathContract {
         primitive: "get",

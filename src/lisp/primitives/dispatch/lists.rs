@@ -81,8 +81,11 @@ fn execute_kbd_macro(
         interp.set_current_buffer_id(interp.selected_window_buffer_id())?;
 
         let mut result = Ok(());
+        let mut success_count = 0;
+        interp.kbd_macro_iterations = 0;
         loop {
             interp.set_variable("executing-kbd-macro", roots[0], env);
+            interp.executing_kbd_macro = true;
             interp.set_variable("executing-kbd-macro-index", Value::Integer(0), env);
             interp.set_variable("prefix-arg", Value::Nil, env);
             interp.set_variable("last-prefix-arg", Value::Nil, env);
@@ -106,8 +109,10 @@ fn execute_kbd_macro(
                 interp.push_condition_case_handler(vec![Value::Symbol("minibuffer-quit".into())]);
             // command_loop_2 enters command_loop_1 afresh for each
             // iteration.
-            crate::lisp::primitives::command_loop_entry(interp, env);
-            let iteration = match run_kbd_macro_events(interp, env).map_err(LispError::into_kind) {
+            let iteration = match crate::lisp::primitives::command_loop_entry(interp, env)
+                .and_then(|()| run_kbd_macro_events(interp, env))
+                .map_err(LispError::into_kind)
+            {
                 // GNU's outermost command loop catches `top-level`, terminating
                 // the keyboard macro without propagating an error.
                 Err(LispErrorKind::Throw(tag, _)) if matches!(tag.kind(), Kind::Symbol(symbol) if symbol == "top-level") => {
@@ -120,6 +125,8 @@ fn execute_kbd_macro(
                 result = Err(LispError::from(error));
                 break;
             }
+            success_count += 1;
+            interp.kbd_macro_iterations = success_count;
 
             if repeat != 0 {
                 repeat = repeat.saturating_sub(1);
@@ -135,6 +142,9 @@ fn execute_kbd_macro(
             }
         }
 
+        if result.is_ok() {
+            interp.executing_kbd_macro = false;
+        }
         let (previous_macro, tail) = roots[2].cons_values().expect("saved macro pair");
         let (previous_index, previous_real_this_command) =
             tail.cons_values().expect("saved macro index and command");
@@ -245,7 +255,7 @@ fn finish_kbd_macro_command_cycle(
         .lookup_var("current-prefix-arg", env)
         .unwrap_or(Value::Nil);
     interp.set_variable("last-prefix-arg", current_prefix, env);
-    crate::lisp::primitives::run_post_command_hooks(interp, env);
+    crate::lisp::primitives::run_post_command_hooks(interp, env)?;
     let final_this_command = interp
         .lookup_var("this-command", env)
         .filter(|value| !value.is_nil())
@@ -334,6 +344,8 @@ fn read_minibuffer_queued_commands(
     interp: &mut Interpreter,
     env: &mut Env,
 ) -> Result<Option<String>, LispError> {
+    // recursive_edit_1 enters command_loop_1.
+    crate::lisp::primitives::command_loop_entry(interp, env)?;
     let mut reader: Option<KeySequenceReader> = None;
     while let Some(event) = next_kbd_command_event(interp, env)? {
         if reader.is_none() {
@@ -357,9 +369,10 @@ fn read_minibuffer_queued_commands(
         interp.pop_catch_tag();
         match dispatch.map_err(LispError::into_kind) {
             Ok(()) => {}
-            Err(LispErrorKind::Throw(tag, _)) if tag.eq_value(Value::symbol("exit")) => {
+            Err(LispErrorKind::Throw(tag, value)) if tag.eq_value(Value::symbol("exit")) => {
                 // The submitting command leaves before its post-command
                 // phase; the prompting command resumes that outer cycle.
+                recursive_edit_exit_value(interp, env, value)?;
                 return active_minibuffer_text(interp, env).map(Some);
             }
             Err(error) => return Err(LispError::from(error)),
@@ -559,7 +572,8 @@ fn recursive_edit(interp: &mut Interpreter, env: &mut Env) -> Result<Value, Lisp
     // handler-bind scan at that frame, so a handler-bind OUTSIDE the
     // recursive edit (ert's test wrapper) must not fire for a command
     // error this loop is about to report itself.
-    let handler_start = interp.push_condition_case_handler(vec![Value::Symbol("error".into())]);
+    let handler_start =
+        interp.push_internal_condition_case(crate::lisp::eval::InternalHandlers::Error);
     let result = entry_hooks.and_then(|()| {
         crate::lisp::primitives::with_recursive_edit_bindings(interp, env, |interp, env| {
             run_recursive_kbd_command_loop(interp, env)
@@ -574,20 +588,39 @@ fn recursive_edit(interp: &mut Interpreter, env: &mut Env) -> Result<Value, Lisp
         })
     });
     interp.pop_handler_bindings(handler_start);
-    interp.command_loop_recursion_depth -= 1;
-    match result.map_err(LispError::into_kind) {
+    let outcome = match result.map_err(LispError::into_kind) {
         Err(LispErrorKind::Throw(tag, value)) if matches!(tag.kind(), Kind::Symbol(symbol) if symbol == "exit") => {
-            if value.is_truthy() {
-                Err(LispError::SignalValue(Value::list([Value::Symbol(
-                    "quit".into(),
-                )])))
-            } else {
-                Ok(Value::Nil)
-            }
+            recursive_edit_exit_value(interp, env, value)
         }
         Err(error) => Err(LispError::from(error)),
-        Ok(()) => Ok(Value::Nil),
+        Ok(()) => Ok(()),
+    };
+    interp.command_loop_recursion_depth -= 1;
+    outcome.map(|()| Value::Nil)
+}
+
+/// keyboard.c:recursive_edit_1 on the value thrown to `exit' (by
+/// `exit-recursive-edit', `abort-recursive-edit', `exit-minibuffer' and
+/// minibuffer.el's `minibuffer-quit-recursive-edit'): t quits, a string is
+/// an error's message, and a function is called.
+pub(crate) fn recursive_edit_exit_value(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    value: Value,
+) -> Result<(), LispError> {
+    if matches!(value.kind(), Kind::T) {
+        return Err(LispError::SignalValue(Value::list([Value::symbol("quit")])));
     }
+    if value.is_string() {
+        return Err(LispError::SignalValue(Value::list([
+            Value::symbol("error"),
+            value,
+        ])));
+    }
+    if crate::lisp::primitives::function_value_p(interp, &value, env) {
+        interp.call_function_value(value, None, &[], env)?;
+    }
+    Ok(())
 }
 
 /// Run the command loop used by a recursive edit.
@@ -611,13 +644,8 @@ fn run_recursive_kbd_command_loop(
             Err(error)
                 if error_matches_condition(interp, &LispError::from(error.clone()), "error") =>
             {
-                report_kbd_command_error(interp, &LispError::from(error.clone()), env)?;
-                safe_run_named_hooks(
-                    interp,
-                    "post-command-hook",
-                    env,
-                    Some(interp.current_buffer_id()),
-                )?;
+                crate::lisp::primitives::cmd_error(interp, env, &LispError::from(error.clone()))?;
+                crate::lisp::primitives::command_loop_entry(interp, env)?;
                 let resumed = interp
                     .lookup_var("executing-kbd-macro", env)
                     .is_some_and(|value| value.is_truthy());
@@ -646,6 +674,7 @@ fn execute_kbd_macro_resolved_command(
     interp.set_variable("last-input-event", event, env);
     interp.set_variable("this-original-command", original_command, env);
     interp.set_variable("this-command", command, env);
+    interp.set_variable("real-this-command", command, env);
     increment_num_input_keys(interp, env);
     safe_run_named_hooks(
         interp,
@@ -661,7 +690,7 @@ fn execute_kbd_macro_resolved_command(
     // into their own undo group (viper's undo tests observe the grouping)
     // and lets a run of self-inserts amalgamate.
     if !dispatched_command.is_nil() {
-        crate::lisp::primitives::add_command_undo_boundary(interp, env);
+        crate::lisp::primitives::add_command_undo_boundary(interp, env)?;
     }
     let command_result = if dispatched_command.is_nil() {
         call_function_value(interp, &Value::symbol("undefined"), &[], env)
@@ -696,44 +725,12 @@ fn execute_kbd_macro_resolved_command(
         {
             return Err(error);
         }
-        report_kbd_command_error(interp, &error, env)?;
+        crate::lisp::primitives::cmd_error(interp, env, &error)?;
     }
     // GNU copies `this-command' into `last-command' at the end of the
     // cycle, so a command that rewrites this-command (viper-undo-more sets
     // it to viper-undo) steers the next dispatch.
     finish_kbd_macro_command_cycle(interp, command, dispatched_command, env)?;
-    Ok(())
-}
-
-fn report_kbd_command_error(
-    interp: &mut Interpreter,
-    error: &LispError,
-    env: &mut Env,
-) -> Result<(), LispError> {
-    // GNU's cmd_error stops an executing macro for ordinary errors, but a
-    // `minibuffer-quit' is allowed to return to the same macro.  Assign the
-    // active dynamic binding: Edebug deliberately rebinds this variable
-    // around its recursive edit.
-    if !error_matches_condition(interp, error, "minibuffer-quit") {
-        interp.set_variable("executing-kbd-macro", Value::Nil, env);
-    }
-    let error_function = interp
-        .lookup_var("command-error-function", env)
-        .unwrap_or(Value::Nil);
-    if !error_function.is_nil() {
-        with_cmd_error_print_limits(interp, |interp| {
-            interp.call_function_value(
-                error_function,
-                None,
-                &[
-                    crate::lisp::eval::error_condition_value(error),
-                    Value::String(String::new().into()),
-                    Value::Nil,
-                ],
-                env,
-            )
-        })?;
-    }
     Ok(())
 }
 
@@ -1326,8 +1323,11 @@ define_dispatch!(
             }
             "exit-recursive-edit" | "abort-recursive-edit" => {
                 need_args(name, args, 0)?;
-                if interp.command_loop_recursion_depth == 0 {
-                    return Err(LispError::Signal("No recursive edit is in progress".into()));
+                if interp.command_loop_recursion_depth == 0 && interp.minibuffer_depth() == 0 {
+                    return Err(LispError::SignalValue(Value::list([
+                        Value::symbol("user-error"),
+                        Value::string("No recursive edit is in progress"),
+                    ])));
                 }
                 Err(LispError::Throw(
                     Value::Symbol("exit".into()),
@@ -1340,7 +1340,9 @@ define_dispatch!(
             }
             "recursion-depth" => {
                 need_args(name, args, 0)?;
-                Ok(Value::Integer(interp.command_loop_recursion_depth as i64))
+                Ok(Value::Integer(
+                    (interp.command_loop_recursion_depth + interp.minibuffer_depth()) as i64,
+                ))
             }
             "top-level" => {
                 need_args(name, args, 0)?;
@@ -1518,6 +1520,7 @@ define_dispatch!(
                 if string_like(&prompt).is_none() {
                     return Err(wrong_type_argument("stringp", prompt));
                 }
+                crate::lisp::primitives::check_recursive_minibuffer(interp, env)?;
                 let local_map = (name == "read-from-minibuffer")
                     .then(|| args.get(2).filter(|map| !map.is_nil()).cloned())
                     .flatten()
@@ -1925,8 +1928,12 @@ pub(super) fn direct_assq_family(
     let want_car = name == "assq";
     let key = args[0];
     let mut tail = args[1];
+    let key_vectorlike = key.is_vectorlike();
     let mut walk = crate::lisp::types::TailWalk::new(tail);
-    while let Some(cell) = tail.cons_ref() {
+    while let Some(cons) = tail.cons_ref() {
+        // The cell once for its car and its cdr, as XCAR and XCDR read
+        // one object.
+        let cell: &crate::lisp::types::ConsCell = &cons;
         let item = cell.car.get();
         if let Some(entry) = item.cons_ref() {
             let entry_key = if want_car {
@@ -1937,7 +1944,7 @@ pub(super) fn direct_assq_family(
             // lisp.h:EQ: the words, or a symbol with position (always
             // vectorlike) against its symbol.
             if entry_key.word() == key.word()
-                || ((entry_key.is_vectorlike() || key.is_vectorlike())
+                || ((key_vectorlike || entry_key.is_vectorlike())
                     && values_eq_in_env(interp, &entry_key, &key, env))
             {
                 return Ok(item);

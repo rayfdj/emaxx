@@ -651,6 +651,10 @@ impl Interpreter {
     ) -> Result<Value, LispError> {
         let depth = self.backtrace_frames.len();
         self.push_unevaluated_backtrace_frame(source_form);
+        // eval_sub's do_debug_on_call (Qt) once its frame is recorded.
+        if let Err(error) = self.debug_on_call_entry(false, depth, env) {
+            return self.eval_call_argument_error(depth, true, error, env);
+        }
         let nargs = match self.short_list_length(original_args, env) {
             Ok(count) => count,
             Err(error) => return self.eval_call_argument_error(depth, true, error, env),
@@ -702,7 +706,7 @@ impl Interpreter {
                 env,
             ),
         };
-        let result = self.settle_frame_result(result, env);
+        let result = self.settle_call_result(depth, result, env);
         self.truncate_backtrace_frames(depth);
         result
     }
@@ -728,6 +732,10 @@ impl Interpreter {
         let maximum = native.max_args_word() as usize;
         let depth = self.backtrace_frames.len();
         self.push_unevaluated_backtrace_frame(source_form);
+        // eval_sub's do_debug_on_call (Qt) once its frame is recorded.
+        if let Err(error) = self.debug_on_call_entry(false, depth, env) {
+            return self.eval_call_argument_error(depth, true, error, env);
+        }
         let nargs = match self.short_list_length(original_args, env) {
             Ok(count) => count,
             Err(error) => return self.eval_call_argument_error(depth, true, error, env),
@@ -766,7 +774,7 @@ impl Interpreter {
         self.set_backtrace_args(Value::symbol_of_cell(name), &argvals[..nargs]);
         self.capture_current_backtrace_context(Some(name.as_str()), env, None);
         let result = crate::lisp::native_comp::call_function_inline(self, env, native, argvals);
-        let result = self.settle_frame_result(result, env);
+        let result = self.settle_call_result(depth, result, env);
         self.truncate_backtrace_frames(depth);
         result
     }
@@ -793,6 +801,10 @@ impl Interpreter {
     ) -> Result<Value, LispError> {
         let depth = self.backtrace_frames.len();
         self.push_unevaluated_backtrace_frame(source_form);
+        // eval_sub's do_debug_on_call (Qt) once its frame is recorded.
+        if let Err(error) = self.debug_on_call_entry(false, depth, env) {
+            return self.eval_call_argument_error(depth, true, error, env);
+        }
         let nargs = match self.short_list_length(original_args, env) {
             Ok(count) => count,
             Err(error) => return self.eval_call_argument_error(depth, true, error, env),
@@ -840,7 +852,7 @@ impl Interpreter {
                 env,
             ),
         };
-        let result = self.settle_frame_result(result, env);
+        let result = self.settle_call_result(depth, result, env);
         self.truncate_backtrace_frames(depth);
         result
     }
@@ -860,8 +872,10 @@ impl Interpreter {
     ) -> Result<Value, LispError> {
         // Fquote of its one argument, and Ffunction of one that is no
         // lambda list, return it and run nothing: no frame of theirs can
-        // be seen, so none is recorded, and one argument needs no count.
+        // be seen, so none is recorded, and one argument needs no count --
+        // unless the debugger is to be entered at this call, on its frame.
         if matches!(native_form, NativeForm::Quote | NativeForm::Function)
+            && !self.debug_on_next_call()
             && let Some(args) = original_args.cons_ref()
             && args.cdr.get().is_nil()
         {
@@ -872,6 +886,10 @@ impl Interpreter {
         }
         let depth = self.backtrace_frames.len();
         self.push_unevaluated_backtrace_frame(source_form);
+        // eval_sub's do_debug_on_call (Qt) once its frame is recorded.
+        if let Err(error) = self.debug_on_call_entry(false, depth, env) {
+            return self.eval_call_argument_error(depth, true, error, env);
+        }
         let nargs = match self.short_list_length(original_args, env) {
             Ok(count) => count,
             Err(error) => return self.eval_call_argument_error(depth, true, error, env),
@@ -885,7 +903,7 @@ impl Interpreter {
             return self.eval_call_argument_error(depth, true, error, env);
         }
         let result = self.eval_native_form(native_form, &original_args, env);
-        let result = self.settle_frame_result(result, env);
+        let result = self.settle_call_result(depth, result, env);
         self.truncate_backtrace_frames(depth);
         result
     }
@@ -981,6 +999,9 @@ impl Interpreter {
         let unevald_frame = callable_name.is_some();
         if unevald_frame {
             self.push_unevaluated_backtrace_frame(source_form);
+            if let Err(error) = self.debug_on_call_entry(false, depth, env) {
+                return self.eval_call_argument_error(depth, true, error, env);
+            }
         }
         let original_args = args_list.map_or(Value::Nil, Value::Cons);
         let prepared = loop {
@@ -1045,7 +1066,7 @@ impl Interpreter {
                             },
                         );
                         let result = result.and_then(|expanded| self.eval(&expanded, env));
-                        let result = self.settle_frame_result(result, env);
+                        let result = self.settle_call_result(depth, result, env);
                         self.truncate_backtrace_frames(depth);
                         return result;
                     }
@@ -1110,7 +1131,7 @@ impl Interpreter {
                 && let Some(native_form) = subr.facts().native_form
             {
                 let result = self.eval_native_form(native_form, &original_args, env);
-                let result = self.settle_frame_result(result, env);
+                let result = self.settle_call_result(depth, result, env);
                 self.truncate_backtrace_frames(depth);
                 return result;
             }
@@ -1209,7 +1230,7 @@ impl Interpreter {
         } else {
             unreachable!("a native-compiled or byte-code function")
         };
-        let result = self.settle_frame_result(result, env);
+        let result = self.settle_call_result(depth, result, env);
         self.truncate_backtrace_frames(depth);
         result
     }
@@ -1346,7 +1367,7 @@ impl Interpreter {
                 primitives::call_with_facts(self, subr.as_str(), facts, args, env)
             }
             .map_err(|error| Self::builtin_call_error(original_name, backtrace_argc, false, error));
-            let result = self.settle_frame_result(result, env);
+            let result = self.settle_call_result(depth, result, env);
             self.truncate_backtrace_frames(depth);
             return result;
         }
@@ -1363,7 +1384,7 @@ impl Interpreter {
                 self.capture_current_backtrace_context(Some(name.as_str()), env, None);
                 let result =
                     self.funcall_interpreted_lambda(func, Some(CallName::Symbol(name)), args, env);
-                let result = self.settle_frame_result(result, env);
+                let result = self.settle_call_result(depth, result, env);
                 self.truncate_backtrace_frames(depth);
                 result
             }
@@ -1382,11 +1403,15 @@ impl Interpreter {
                 self.eval_call_compiled(depth, name, func, args, env)
             }
             (Some(name), FunctionResolution::Resolved(func)) => {
+                // The call's own frame takes the place of eval_sub's, and
+                // the debug-on-exit mark do_debug_on_call left on it.
+                let marked = self.frame_debug_on_exit(depth);
                 self.pop_backtrace_frame();
-                self.call_function_value_named(func, Some(CallName::Symbol(name)), args, env, false)
+                let name = Some(CallName::Symbol(name));
+                self.call_function_value_named(func, name, args, env, false, marked)
             }
             (None, FunctionResolution::Resolved(func)) => {
-                self.call_function_value_named(func, None, args, env, false)
+                self.call_function_value_named(func, None, args, env, false, false)
             }
             (_, FunctionResolution::DirectBuiltin(_)) => {
                 unreachable!("subrs were dispatched above")
@@ -1401,15 +1426,61 @@ impl Interpreter {
         args: &[Value],
         env: &mut Env,
     ) -> Result<Value, LispError> {
+        if original_name.is_none()
+            && let Some(result) = self.plain_funcall_closure(func, args, env)
+        {
+            return result;
+        }
         self.begin_funcall(env)?;
         let result = match original_name {
             None => self.funcall_unnamed(func, args, env),
-            Some(name) => {
-                self.call_function_value_named(func, Some(CallName::Text(name)), args, env, true)
-            }
+            Some(name) => self.call_function_value_named(
+                func,
+                Some(CallName::Text(name)),
+                args,
+                env,
+                true,
+                false,
+            ),
         };
         self.end_funcall();
         result
+    }
+
+    /// Ffuncall of a byte-code closure (FUNC, or the one in its function
+    /// cell) from Rust when nothing else happens on the way in, as Bcall's
+    /// `enter_closure_frame' finds it: `plain_bcall_entry' (whose gate
+    /// holds the debugger's stop at the next call), no fatal signal for
+    /// maybe_quit and no collection due.
+    /// The frame is recorded and the closure run at once, as
+    /// `funcall_unnamed' would reach it; None, with nothing changed, for
+    /// any other case.
+    #[inline(always)]
+    fn plain_funcall_closure(
+        &mut self,
+        func: Value,
+        args: &[Value],
+        env: &mut Env,
+    ) -> Option<Result<Value, LispError>> {
+        let name = func.symbol_cell();
+        let function = match name {
+            Some(name) => name.cell().function.get(),
+            None => func,
+        };
+        let closure = function
+            .closure_ref()
+            .filter(|closure| closure.is_bytecode())?;
+        if !self.plain_bcall_entry(name)
+            || primitives::fatal_signal_pending()
+            || !crate::lisp::native_comp::collection_cannot_be_due(self)
+        {
+            return None;
+        }
+        let depth = self.enter_plain_funcall(func, args);
+        let result = crate::lisp::bytecode::vm::funcall_closure(self, closure, args, env);
+        let result = self.settle_call_result(depth, result, env);
+        self.leave_plain_funcall(depth);
+        Some(result)
     }
 
     /// Ffuncall with no call name to record (mapcar, apply, sort and
@@ -1434,11 +1505,14 @@ impl Interpreter {
         self.push_backtrace_frame_borrowed(func, args);
         self.capture_current_backtrace_context(None, env, None);
         crate::lisp::native_comp::maybe_gc(self, env);
-        let result = match self.call_subr_directly(&func, None, args, env, true) {
-            Some(result) => result,
-            None => self.call_function_body(func, None, args, env, true),
+        let result = match self.debug_on_call_entry(true, depth, env) {
+            Err(error) => Err(error),
+            Ok(()) => match self.call_subr_directly(&func, None, args, env, true) {
+                Some(result) => result,
+                None => self.call_function_body(func, None, args, env, true),
+            },
         };
-        let result = self.settle_frame_result(result, env);
+        let result = self.settle_call_result(depth, result, env);
         self.truncate_backtrace_frames(depth);
         result
     }
@@ -1454,17 +1528,129 @@ impl Interpreter {
         env: &mut Env,
     ) -> Result<Value, LispError> {
         self.begin_funcall(env)?;
-        let result =
-            self.call_function_value_named(func, Some(CallName::Symbol(name)), args, env, true);
+        let result = self.call_function_value_named(
+            func,
+            Some(CallName::Symbol(name)),
+            args,
+            env,
+            true,
+            false,
+        );
         self.end_funcall();
         result
     }
 
+    /// The debugger a marked frame enters as its call returns VALUE: the
+    /// call's `lisp_eval_depth--' comes first, and the debugger's value
+    /// is the call's (`val = call_debugger (list2 (Qexit, val))').
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn call_exit_debugger(
+        &mut self,
+        value: Value,
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        let depth = self.lisp_eval_depth;
+        self.lisp_eval_depth = depth.saturating_sub(1);
+        let result = self.call_debugger(Value::list([Value::symbol("exit"), value]), env);
+        self.lisp_eval_depth = depth;
+        result
+    }
+
+    /// eval.c's `if (debug_on_next_call) do_debug_on_call (code, count)'
+    /// once a call has recorded its frame at DEPTH: eval_sub's code is t,
+    /// Ffuncall's and Bcall's `lambda'.  The gate sends every call to the
+    /// entries that make this test while the flag is set
+    /// (`refresh_call_depth_gate').
+    #[inline(always)]
+    pub(crate) fn debug_on_call_entry(
+        &mut self,
+        funcall: bool,
+        depth: usize,
+        env: &mut Env,
+    ) -> Result<(), LispError> {
+        if self.debug_on_next_call() {
+            return self.do_debug_on_call(funcall, depth, env);
+        }
+        Ok(())
+    }
+
+    /// eval.c:do_debug_on_call: the flag cleared, the call's frame marked
+    /// to enter the debugger again on exit, and the debugger entered with
+    /// (CODE); its value is ignored.
+    #[cold]
+    #[inline(never)]
+    fn do_debug_on_call(
+        &mut self,
+        funcall: bool,
+        depth: usize,
+        env: &mut Env,
+    ) -> Result<(), LispError> {
+        self.clear_debug_on_next_call();
+        self.set_frame_debug_on_exit(depth, true);
+        let code = if funcall {
+            Value::symbol("lambda")
+        } else {
+            Value::T
+        };
+        self.call_debugger(Value::list([code]), env).map(drop)
+    }
+
+    /// eval.c:max_ensure_room: ROOM more levels below max-lisp-eval-depth
+    /// for F, taken from lisp-eval-depth-reserve and given back after it
+    /// (restore_stack_limits).
+    pub(crate) fn with_ensured_room<T>(&mut self, room: i64, f: impl FnOnce(&mut Self) -> T) -> T {
+        let integer = |interp: &Self, name: &str| {
+            interp
+                .global_binding_value(name)
+                .and_then(|value| value.as_integer().ok())
+                .unwrap_or(0)
+        };
+        let old_depth = self.max_lisp_eval_depth_value();
+        let reserve = integer(self, "lisp-eval-depth-reserve");
+        let sum = (self.lisp_eval_depth as i64).saturating_add(room);
+        let diff = (sum - old_depth).min(reserve);
+        if diff <= 0 {
+            return f(self);
+        }
+        self.store_stack_limits(old_depth + diff, reserve - diff);
+        let result = f(self);
+        let reserve = integer(self, "lisp-eval-depth-reserve");
+        let raised = self.max_lisp_eval_depth_value();
+        self.store_stack_limits(old_depth, reserve + raised - old_depth);
+        result
+    }
+
+    /// max-lisp-eval-depth and lisp-eval-depth-reserve stored as the C
+    /// core's assignments do.
+    fn store_stack_limits(&mut self, depth: i64, reserve: i64) {
+        if self
+            .detached_forwarded_variables
+            .contains_key("max-lisp-eval-depth")
+        {
+            self.max_lisp_eval_depth = depth;
+            self.refresh_call_depth_gate();
+        } else {
+            self.set_symbol_value_cell("max-lisp-eval-depth", Value::Integer(depth));
+        }
+        self.set_symbol_value_cell("lisp-eval-depth-reserve", Value::Integer(reserve));
+    }
+
     /// eval.c:call_debugger.  The C path specbinds the debugger control
     /// variables around apply1(Vdebugger, arg); keep those bindings in the
-    /// same dynamic scope for native Ffuncall exits.
+    /// same dynamic scope for native Ffuncall exits.  The debugger gets
+    /// room for its printing (max_ensure_room (100)), and the input event
+    /// count it was entered at is kept (`internal-when-entered-debugger').
     pub(crate) fn call_debugger(&mut self, arg: Value, env: &mut Env) -> Result<Value, LispError> {
+        self.with_ensured_room(100, |interp| interp.call_debugger_with_room(arg, env))
+    }
+
+    fn call_debugger_with_room(&mut self, arg: Value, env: &mut Env) -> Result<Value, LispError> {
         self.clear_debug_on_next_call();
+        let events = self
+            .lookup_var("num-nonmacro-input-events", env)
+            .unwrap_or(Value::Integer(0));
+        self.set_variable("internal-when-entered-debugger", events, env);
         let mut restores = Vec::with_capacity(4);
         for (name, value) in [
             ("debugger-may-continue", Value::T),
@@ -1484,7 +1670,10 @@ impl Interpreter {
         }
 
         let debugger = self.lookup_var("debugger", env).unwrap_or(Value::Nil);
-        let result = self.call_function_value(debugger, None, &[arg], env);
+        // apply1 (Vdebugger, arg): ARG's elements are the debugger's
+        // arguments, as debug.el's (debug &rest ARGS) reads them.
+        let args: smallvec::SmallVec<[Value; 4]> = list_forms(&arg).collect();
+        let result = self.call_function_value(debugger, None, &args, env);
         for restore in restores.into_iter().rev() {
             self.restore_special_dynamic(restore, env)?;
         }
@@ -1569,7 +1758,13 @@ impl Interpreter {
         if primitives::values_eq_in_env(self, &throw_on_input, &flag, env) {
             Err(LispError::Throw(throw_on_input, Value::T))
         } else {
-            Err(LispError::SignalValue(Value::list([Value::symbol("quit")])))
+            // quit's signal_or_quit (Qquit, Qnil, true): a quit the
+            // debugger was entered for goes on where it was noticed.
+            let quit = LispError::SignalValue(Value::list([Value::symbol("quit")]));
+            match self.signal_or_quit_entering(quit, env) {
+                (_, true) => Ok(()),
+                (error, false) => Err(error),
+            }
         }
     }
 
@@ -1581,6 +1776,7 @@ impl Interpreter {
         args: &[Value],
         env: &mut Env,
         funcall: bool,
+        marked: bool,
     ) -> Result<Value, LispError> {
         if self.pending_termination().is_some() {
             return Err(LispError::Terminate(
@@ -1596,17 +1792,27 @@ impl Interpreter {
         let depth = self.backtrace_frames.len();
         self.push_backtrace_frame_borrowed(backtrace_function, args);
         self.capture_current_backtrace_context(original_name.map(CallName::as_str), env, None);
-        // eval.c:Ffuncall records the unresolved callee and its arguments,
-        // then collects before looking at the live function cell. Source
-        // evaluation already collected before evaluating its arguments.
-        if funcall {
-            crate::lisp::native_comp::maybe_gc(self, env);
+        if marked {
+            self.set_frame_debug_on_exit(depth, true);
         }
-        let result = match self.call_subr_directly(&func, original_name, args, env, funcall) {
-            Some(result) => result,
-            None => self.call_function_body(func, original_name, args, env, funcall),
+        // eval.c:Ffuncall records the unresolved callee and its arguments,
+        // then collects before looking at the live function cell, and then
+        // makes the debug-on-next-call test. Source evaluation already
+        // collected before evaluating its arguments.
+        let entry = if funcall {
+            crate::lisp::native_comp::maybe_gc(self, env);
+            self.debug_on_call_entry(true, depth, env)
+        } else {
+            Ok(())
         };
-        let result = self.settle_frame_result(result, env);
+        let result = match entry {
+            Err(error) => Err(error),
+            Ok(()) => match self.call_subr_directly(&func, original_name, args, env, funcall) {
+                Some(result) => result,
+                None => self.call_function_body(func, original_name, args, env, funcall),
+            },
+        };
+        let result = self.settle_call_result(depth, result, env);
         self.truncate_backtrace_frames(depth);
         result
     }
@@ -1833,6 +2039,24 @@ impl Interpreter {
         }
     }
 
+    /// The end of a call whose frame is still recorded at DEPTH: eval.c's
+    /// `if (backtrace_debug_on_exit (pdl)) val = call_debugger (list2
+    /// (Qexit, val))' for a value the call returns (eval_sub, Ffuncall,
+    /// apply_lambda, Bcall), then `settle_frame_result'.
+    #[inline(always)]
+    pub(crate) fn settle_call_result(
+        &mut self,
+        depth: usize,
+        result: Result<Value, LispError>,
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        let result = match result {
+            Ok(value) if self.frame_debug_on_exit(depth) => self.call_exit_debugger(value, env),
+            result => result,
+        };
+        self.settle_frame_result(result, env)
+    }
+
     #[cold]
     #[inline(never)]
     pub(crate) fn settle_frame_error(
@@ -1840,14 +2064,9 @@ impl Interpreter {
         error: LispError,
         env: &mut Env,
     ) -> Result<Value, LispError> {
-        let result = match error.kind() {
-            LispErrorKind::Throw(_, _) | LispErrorKind::Terminate(_) => Err(error),
-            _ => self.dispatch_handler_bindings(error, env),
-        };
-        if let Err(error) = &result {
-            self.capture_batch_error_backtrace(error, env);
-        }
-        result
+        let error = self.signal_or_quit(error, env);
+        self.capture_batch_error_backtrace(&error, env);
+        Err(error)
     }
 
     /// eval.c:funcall_lambda's direct `exec_byte_code' branch.  The caller
@@ -1862,11 +2081,17 @@ impl Interpreter {
     ) -> Result<Value, LispError> {
         // Byte code reads variables with Fsymbol_value, never through the
         // interpreter environment (bytecode.c's Bvarref); a nil frame keeps
-        // the caller's lexical bindings out of the VM's reads.
+        // the caller's lexical bindings out of the VM's reads, and is
+        // needed only over another environment, as funcall_lambda
+        // specbinds only a changed one.
         let depth = env.len();
-        env.push(EnvFrame::dynamic());
+        if crate::lisp::types::current_environment(env).is_some() {
+            env.push(EnvFrame::dynamic());
+        }
         let result = crate::lisp::bytecode::vm::execute_closure(self, closure, args, env);
-        env.truncate(depth);
+        if env.len() > depth {
+            env.truncate(depth);
+        }
         result
     }
 
@@ -2250,7 +2475,8 @@ impl InterpreterState {
 
     /// The entry tests of a Bcall when nothing else happens on the way
     /// in: Ffuncall's maybe_quit finds no quit, the depth stays within
-    /// max-lisp-eval-depth, no termination is pending, no debugger context
+    /// max-lisp-eval-depth, no termination is pending, the debugger is not
+    /// to be entered at this call (debug_on_next_call), no debugger context
     /// is captured (Edebug is not entered and the callee is not
     /// `backtrace-eval'), and calls are not being profiled. NAME is the
     /// callee's symbol, if it is one. Reads only: the full Call arm takes
@@ -2258,8 +2484,8 @@ impl InterpreterState {
     #[inline(always)]
     pub(crate) fn plain_bcall_entry(&self, name: Option<SymbolName>) -> bool {
         // The depth counts frames on this stack, far below i64::MAX (as
-        // eval_sub's compare); the gate holds the quit, termination and
-        // profiler tests.
+        // eval_sub's compare); the gate holds the quit, termination,
+        // debug-on-next-call and profiler tests.
         (self.lisp_eval_depth as i64) < self.call_depth_gate
             && !self.edebug_may_be_entered()
             && name.is_none_or(|name| !is_backtrace_eval_name(name.as_str()))
@@ -2271,21 +2497,21 @@ impl InterpreterState {
     /// as maybe; the full Call arm reads it as find_symbol_value does.
     #[inline(always)]
     fn edebug_may_be_entered(&self) -> bool {
-        self.globals.edebug_is_special()
-            && cached_symbol!("edebug-entered")
-                .with(|symbol| symbol.cell().unlocalized_value())
-                .is_none_or(|value| !value.is_nil())
+        self.globals.edebug_may_be_entered()
     }
 
     /// `call_depth_gate' after a store of the quit flag, a pending
-    /// termination or max-lisp-eval-depth.
+    /// termination, max-lisp-eval-depth or debug-on-next-call.
     pub(crate) fn refresh_call_depth_gate(&mut self) {
-        self.call_depth_gate =
-            if !self.quit_flag.is_nil() || self.pending_termination.is_some() || profiling() {
-                i64::MIN
-            } else {
-                self.max_lisp_eval_depth
-            };
+        self.call_depth_gate = if !self.quit_flag.is_nil()
+            || self.pending_termination.is_some()
+            || self.debug_on_next_call
+            || profiling()
+        {
+            i64::MIN
+        } else {
+            self.max_lisp_eval_depth
+        };
     }
 }
 

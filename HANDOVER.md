@@ -8010,6 +8010,412 @@ setup_process_coding_systems's check now refuses). A 13-form
   documented local skips, all 3,281 tests run passing (2 ignored); the
   seven integration targets; clippy `-D warnings', rustfmt and `git diff
   --check'.
+- **Round 138: what reading `\N{NAME}' costs a file's setup.** The
+  frozen run's setup is where Emaxx stays furthest from GNU (82.8 s
+  against 66.3 s on 06df172), and seven of the files whose setup lags
+  most (textsec-tests, subr-tests, print-tests, elisp-mode-tests,
+  python-tests, arc-mode-tests and tar-mode-tests, 0.11 to 0.17 s
+  each) read a `\N{NAME}' escape, so their load runs `char-from-name'
+  and with it `ucs-names', which builds the table of 43,000 names:
+  118,000 calls of `get-char-code-property', each with its
+  `unicode-property-table-internal', `char-table-extra-slot',
+  `functionp' and `aref' of the name table, then the byte-code name
+  decoder, and a `string-match' of "\\<LAMDA\\>" for each name.
+  print-tests' setup took 2.72G instructions in the gate profile
+  against GNU's 1.53G, and a batch run of `(ucs-names)' 1.86G against
+  0.98G. regex-emacs.c tests a word boundary with category.h's
+  WORD_BOUNDARY_P, which asks category.c's word_boundary_p only when
+  either character is past Latin-1; Emaxx asked it for every pair of
+  word constituents (86,000 calls at 623 instructions there), and so,
+  with a category in `word-separating-categories', found a `\b', `\<'
+  or `\>' between two ASCII or Latin-1 letters where GNU finds none.
+  The matcher now tests as the macro does (syntax.c's scan_words asks
+  for every pair, as before). lisp.h's CHAR_TABLE_REF reads an ASCII
+  character through the table's ASCII slot and any other through the
+  tree, up the parents while nil: Emaxx's read classified each slot it
+  passed through the general type switch and named the uniprop purpose
+  by interning it, 212 instructions a read in the gate build; each slot
+  is now read in place and tested by tag and header, the bottom
+  subtable's element directly, and UNIPROP_TABLE_P compares the purpose
+  with the symbol itself (180 instructions in the gate build, 143 in the
+  release build, the regexp matcher's syntax and category lookups
+  included). chartab.c's uniprop_table and the fallback of
+  `unicode-property-table-internal' call Fassq on
+  `char-code-property-alist', which signals for a dotted or circular
+  alist; Emaxx's own walk returned nil for the first and never ended
+  for the second, and the subr's walk is now called (1,049 instructions
+  in the gate build where the plain walk took 670, which the checked
+  build pays mostly in its liveness tests; Fassq now reads each cons
+  once for its car and its cdr, a test fewer an element). Native code's
+  `aref' of a char-table (CHECK_CHARACTER, then CHAR_TABLE_REF),
+  `char-table-extra-slot' and `functionp' have entries of their own in
+  the native subr table: 284, 38 and 93 instructions in the gate build
+  where the generic entry took 699, 234 and 239 (GNU 91, 26 and 41). A
+  buffer text of one rope leaf (every text up to SMALL_TEXT) cost the
+  syntax scanner and the search snapshot a count of the whole leaf for
+  each length, position or chunk query, as ropey counts a leaf anew
+  each time it is asked (291,000 counts in electric-tests' setup, 62M
+  instructions); they take the counts the buffer keeps now, and the
+  scanner reads a one-leaf text in place (97,000 counts left).
+  print-tests' setup takes 2.55G instructions in the gate profile, and
+  `(ucs-names)' 1.70G; in the release build 1.81G and 1.17G (GNU 1.53G
+  and 0.98G), electric-tests' setup 3.79G (3.83G before, GNU 3.36G).
+  Local validation: the full gate across its ten groups with the
+  documented local skips, all 3,284 tests run passing (2 ignored); the
+  seven integration targets; clippy `-D warnings', rustfmt and `git diff
+  --check'.
+- **Round 139: Ffuncall's plain entries from native code and from
+  Rust.** Native code calls a function that is not a primitive through
+  Ffuncall's relocation entry (erc-tests: 1.36M calls, nearly all of
+  native functions; electric-tests' setup 863,000), and each took
+  Ffuncall's whole sequence: maybe_quit, the depth test, the frame, the
+  Edebug context test, maybe_gc, the cell read, the call, the
+  debug-on-exit test and the frame's pop, about 214 instructions in the
+  release build where GNU's Ffuncall, funcall_general and funcall_subr
+  take about 152. When a call needs nothing on the way in (the depth
+  gate that the byte-code VM's Bcall reads, `plain_bcall_entry', finds
+  no quit, termination or profiler and the depth within its limit;
+  Edebug is not entered, no fatal signal is pending, the debugger is
+  not to stop at the call and no collection is due) and the callee is a
+  native function taking that many arguments, the frame is recorded and
+  the function called at once, the debug-on-exit test kept; every other
+  case takes the full path, now out of line. funcall's, `apply''s and
+  `mapcar''s entries take it too (179 instructions a call). Rust's
+  Ffuncall of a byte-code closure (`mapatoms', 1M calls in erc-tests)
+  has the same plain entry ahead of `funcall_unnamed' (141
+  instructions, now 112 before the VM's own entry). funcall_lambda
+  specbinds the interpreter environment only when it changes; Emaxx
+  pushed a nil frame for each byte-code call from Rust, and now pushes
+  one only over another environment. erc-tests takes 3.43G instructions
+  where it took 3.50G (GNU 2.99G), and electric-tests' setup 3.77G
+  (GNU 3.36G).
+  Local validation: the full gate across its ten groups with the
+  documented local skips, all 3,284 tests run passing (2 ignored); the
+  seven integration targets; clippy `-D warnings', rustfmt and `git diff
+  --check'.
+- **Round 140: what `current-column' cost.** keymap-tests (its bodies
+  1.73 times GNU's in the frozen run) took 2.89G instructions in the
+  release build against GNU's 1.95G, 0.66G of it deciding, once for each
+  of its 8,614 column counts, whether the buffer had any invisible text
+  at all: Emaxx compared each text property's name with "invisible" as
+  a string, about 2,900 names a call in the help buffers, so a count
+  cost 99,000 instructions where GNU's scan_for_column takes 14,300 in
+  all. indent.c's scan_for_column asks skip_invisible about the text it
+  passes; Emaxx now looks for an `invisible' property or overlay only in
+  the range the scan covers, comparing names by symbol (as any test of a
+  buffer's properties by name now does), and its per-position test
+  answers at once for a spec that hides nothing. Buffer::char_at
+  decoded the whole chunk around a position (up to a kilobyte) into its
+  cache after every edit; an ASCII text's character is now its byte,
+  read in place, and another text's cache holds the 256 characters
+  around the position. A count takes 14,800 instructions, and
+  keymap-tests 2.09G.
+  Local validation: the full gate across its ten groups with the
+  documented local skips, all 3,285 tests run passing (2 ignored); the
+  seven integration targets; clippy `-D warnings', rustfmt and `git diff
+  --check'.
+- **Round 141: Edebug's entry test through the held symbol.** Every
+  plain entry (`plain_bcall_entry') asks whether Edebug may have to
+  record the frame's lexical context: whether `edebug-entered' is
+  special and its cell holds something other than nil. The cell was
+  read by its cached-symbol key, a thread-local table's lookup on each
+  call, 82M instructions of edebug-tests' bodies in the release build;
+  the globals hold that symbol already, and the test now reads its cell
+  through it. edebug-tests takes 5.08G instructions where it took 5.17G
+  (GNU 4.11G).
+  Local validation: the full gate across its ten groups with the
+  documented local skips, all 3,285 tests run passing (2 ignored); the
+  seven integration targets; clippy `-D warnings', rustfmt and `git diff
+  --check'.
+- **Round 142: the debugger's frame protocol.** `backtrace-debug' set
+  the flag of the innermost frame, its own (popped at once), whatever
+  LEVEL and BASE said, and returned nil; only native code's Ffuncall
+  read the flag on exit; `debug-on-next-call' was never acted on; and
+  call_debugger passed its argument list to the debugger as one
+  argument where apply1 spreads it. So `debug-on-entry' never reported
+  a function's exit, and the *Backtrace* buffer's `b', `j' and `d' had
+  no effect. eval.c's Fbacktrace_debug marks the frame LEVEL out from
+  BASE's (get_backtrace_frame, which `backtrace-frame' already followed;
+  `mapbacktrace' now follows it too: BASE through Findirect_function,
+  and (OFFSET . BASE) read only for a fixnum car, where a cons with any
+  other car signalled) and returns FLAG. eval_sub, Ffuncall,
+  apply_lambda, Bcall and Breturn enter the debugger with (exit VALUE)
+  when the call's frame is marked, after the call's depth count drops,
+  and return the debugger's value; eval_sub (with t), Bcall and Ffuncall
+  (with `lambda') run do_debug_on_call when `debug-on-next-call' is set,
+  marking the call's frame first. The flag is part of the call gate, so
+  the plain entries leave such a call to the full ones; the frame eval_sub
+  recorded, when the general call replaces it, passes its mark on; and
+  quote's frameless shortcut is not taken while the flag is set. Two
+  tests assumed the flag inert and now follow GNU: a let-binding of
+  `debug-on-next-call' enters the debugger at the next call, and the
+  forwarded-boolean watcher test watches `debug-on-quit' instead.
+  edebug-tests takes 5.10G instructions where it took 5.08G.
+  Local validation: the full gate across its ten groups with the
+  documented local skips, all 3,286 tests run passing (2 ignored); the
+  seven integration targets; clippy `-D warnings', rustfmt and `git diff
+  --check'.
+- **Round 143: entering the debugger on a signal.** Emaxx never entered
+  the debugger for a signal: `debug-on-error', `debug-on-signal',
+  `debug-on-quit', a `(debug ...)' condition-case clause and
+  `debug-ignored-errors' did nothing, an uncaught error under
+  `debug-on-error' went straight to the top level, and
+  `signal-hook-function' was never called. eval.c's signal_or_quit now
+  runs, once for each signal (a flag in the error's box), where the
+  signal first reaches a frame boundary, a byte-code or interpreted
+  `condition-case', or native code's signal point, the handlers it met
+  still active: the hook with the signal's symbol and data, the
+  `handler-bind' handlers (as before), then the debugger when no clause
+  catches the signal, the catching clause lists `debug', the catch is
+  the C core's `error' handler, or `debug-on-signal' is set, and
+  maybe_call_debugger agrees (`inhibit-debugger' nil; `debug-on-error',
+  or for a quit `debug-on-quit', wanting the signal by wants_debugger;
+  skip_debugger finding it in no `debug-ignored-errors' entry, a
+  condition or a regexp matched against its message; and no debugger
+  entered since the last input event, record_char's
+  `num-nonmacro-input-events' now counted). A quit the debugger was
+  entered for goes on where it was noticed, as signal_or_quit's
+  continuable quit. The C core's internal_condition_case catches with t
+  or `error' (safe_call, safe_funcall, menu_item_eval_property, the
+  command loop's) were registered as condition-case clauses of those
+  conditions; they are now their own kind, catching every signal as
+  find_handler_clause has them do, `error' letting the debugger in.
+  call_debugger gives the debugger room (max_ensure_room (100), from
+  `lisp-eval-depth-reserve') and records the input event count it was
+  entered at.
+  Local validation: the full gate across its ten groups with the
+  documented local skips, all 3,287 tests run passing (2 ignored); the
+  seven integration targets; clippy `-D warnings', rustfmt and `git diff
+  --check'; and the 45 test files that bind `debug-on-error' (process,
+  callproc, the eshell unload test, edebug, ert and the erc scenarios)
+  under the frozen runner, every outcome GNU's.
+- **Round 144: the C core's catch-alls around hooks and callbacks.**
+  safe_run_hooks runs each hook function under internal_condition_case
+  with t (safe_run_hook_funcall), as alloc.c runs `post-gc-hook' and each
+  finalizer, syntax.c `internal--syntax-propertize' (safe_call1) and
+  xdisp.c each of `fontification-functions'; Emaxx caught those errors
+  itself, after the handler search had run past them, so under
+  `debug-on-error' an error in `pre-command-hook' entered the debugger,
+  an outer `handler-bind' saw it, and the batch backtrace was printed
+  for an error GNU never shows. They now register the C core's
+  catch-all (`InternalHandlers::All'), and `post-gc-hook' runs through
+  safe_run_hooks (each function caught, the error messaged as
+  safe_run_hooks_error does, a throw passing) where it was one
+  `run-hooks' whose errors were dropped.
+  Local validation: the full gate across its ten groups with the
+  documented local skips, all 3,288 tests run passing (2 ignored); the
+  seven integration targets; and clippy `-D warnings', rustfmt and `git
+  diff --check'.
+- **Round 145: sqlite.c on SQLite's C API.** Emaxx's SQLite primitives
+  went through rusqlite's connection layer, whose `Connection::open'
+  gives each connection a five-second busy timeout: where GNU's
+  `sqlite-open' sets no busy handler, so that a locked database is
+  `sqlite-locked-error' at once, Emaxx waited up to five seconds for the
+  lock (46cb7bc's frozen run timed multisession-tests'
+  `multi-test-sqlite-busy' at 922 ms against GNU's 204, its reads
+  waiting on the child's writes). The layer also diverged from sqlite.c
+  at most edges: `sqlite-open' did not expand FILE against
+  `default-directory' and signalled where GNU returns nil; every object
+  error ("Database closed", "Statement closed", "Invalid set object",
+  "Invalid database object") and bind_values' "invalid argument" and
+  "BLOB values must be unibyte" signalled plain `error'; a step's
+  failure carried sqlite_prepare_errdata's four-element list where
+  GNU's carries sqlite3_errmsg; `sqlite-execute' refused a second
+  statement where GNU runs the first, and returned nil for a statement
+  that gives no row where GNU returns sqlite3_changes; a bignum beyond
+  64 bits signalled where bignum_to_intmax binds 0; a TEXT column was
+  decoded lossily (U+FFFD for an invalid byte, no end-of-line
+  detection) where code_convert_string_norecord keeps raw bytes and
+  converts CR and CRLF; a BLOB came back multibyte; a set held every row
+  from the start, so `sqlite-more-p' went nil before the last
+  `sqlite-next' instead of after it; an empty statement signalled
+  SQLITE_MISUSE's data where GNU signals "not an error"; and the objects
+  printed as `#s(sqlite)' where print.c prints `#<sqlite db=... name=...>'.
+  The primitives are now sqlite.c's on the C API: sqlite3_open_v2 with
+  GNU's flags and in-memory names, prepare, bind_values' conversions,
+  step and sqlite3_exec as GNU calls them, a set stepping its statement
+  and the collector finalizing and closing as sqlite_free does
+  (`decode_coding_text' gained the NORECORD form it needed). A probe of
+  75 cases (opening, binding each type, errors of every kind, two
+  connections locking each other, sets, pragmas, transactions, closed
+  objects, printing) gives GNU 30.2's output, as do sqlite-tests and
+  multisession-tests under the frozen runner; `multi-test-sqlite-busy'
+  takes 205 to 208 ms here against GNU's 204 to 306 (294 before).
+  Local validation: with round 146's, below.
+- **Round 146: a process read's buffer, and RE_TRANSLATE beyond ASCII.**
+  Each poll of a process allocated a zeroed buffer of
+  `read-process-output-max' bytes (64 KB) for each of its channels
+  (stdout, stderr, a pty), where read_process_output reads into a
+  SAFE_ALLOCA nothing clears: tramp-tests' `tramp-test42-utf8' under
+  callgrind made 50,024 reads, 3.3G instructions of memset. A thread now
+  keeps one buffer for its reads (up to 1 MB of it between them). And
+  the matcher's case-folding table kept each character beyond ASCII's
+  translation in a SipHash map, 13.5M lookups in that test at about 150
+  instructions each, where char_table_translate reads the char-table;
+  it reads the char-table now. That map was also what made xml-tests'
+  `xml-print-invalid-cdata' 45 times GNU's in 46cb7bc's frozen run (122
+  ms against 2.7): `xml-invalid-characters-re' compiled under case
+  folding translates every character of its `\U00010000-\U0010FFFF'
+  range (SETUP_MULTIBYTE_RANGE, as GNU does), and each went into the map.
+  Its first compile took 110 ms here, now 6 ms (GNU 2.7). A process
+  polled 2,000 times by `accept-process-output' spent 263M instructions
+  in memset, now 1.4M.
+  Local validation of rounds 145 and 146, on one build: the full gate
+  across its ten groups with the documented local skips, all 3,289 tests
+  run passing (2 ignored); the seven integration targets; clippy `-D
+  warnings', rustfmt and `git diff --check'.
+- **Round 147: cmd_error, and command_loop_1 entered again after it.**
+  In GNU every command loop (the top level, a recursive edit, a keyboard
+  macro's iterations) runs command_loop_1 under command_loop_2's
+  internal_condition_case, whose handler, cmd_error, reports a command's
+  error; command_loop_1 is then entered again, its entry running
+  `post-command-hook' with `this-command' still the command that failed
+  and setting `last-command' from it. Emaxx's terminal command loop and
+  its minibuffer loop echoed the error text themselves, ran no
+  post-command hook after a failing command, called no
+  `command-error-function' and logged nothing in *Messages*; an
+  undefined key was echoed without running `pre-command-hook',
+  `undefined' or `post-command-hook'; and the keyboard macro loop had its
+  own reporter. All three now go through cmd_error (cmd_error_internal's
+  `command-error-function' with the context "After N kbd macro
+  iterations: " that macros.c's iteration count and C
+  `executing_kbd_macro' give, and the function that signalled, which
+  signal_or_quit now records as eval.c's Vsignaling_function: the frame
+  below `signal''s, or below `error''s), then command_loop_1's entry
+  (`command_loop_entry'). `command-error-default-function''s
+  interactive branch clears the message, rings the bell (`ding' with t
+  for a minibuffer-quit) and shows the error as print_error_message does,
+  the signalling function before it in *Messages* only
+  ("previous-line: Beginning of buffer"), and a minibuffer-quit no
+  longer takes its batch branch. A command whose `this-command' is nil
+  after `pre-command-hook' runs `undefined', as command_loop_1 calls it,
+  where Emaxx fell back to the binding. The command boundary's own Lisp
+  calls (`undo-auto--add-boundary', `deactivate-mark',
+  `undo-auto--undoable-change', `pre-command-hook' and
+  `post-command-hook''s non-local exits) no longer drop their errors.
+  C-g read by `read-event' or the minibuffer signalled the bare symbol
+  `quit', which `condition-case' took for an `error' (a handler's
+  condition is the car of the error object) and `error-message-string'
+  printed as "quit"; it signals Fsignal (Qquit, Qnil)'s (quit) now.
+  ttydiff's new `command-loop-reentry-after-errors' journey (C-p at the
+  beginning of a buffer, a command that signals, an undefined key, then
+  a dump of the hooks' log, `last-command' and *Messages*) shows the
+  same screen as GNU 30.2's, and a tty test replays it. Still
+  different: C-g typed while the minibuffer reads is a quit at once in
+  Emaxx, where GNU reads it as an event and runs `abort-minibuffers'.
+- **Round 148: *Messages* lines a print to the echo area leaves open.**
+  xdisp.c's message_dolog appends without a newline when its NLFLAG is
+  false, and leaves `message_log_need_newline' set so that the next
+  message, or the next print to the echo area, starts a line first
+  (message_log_maybe_newline); only a whole line is checked against the
+  one before it for a repeat, or trimmed to `message-log-max'. Emaxx
+  logged every piece as a line of its own: print_error_message's
+  context, the signalling function and its ": ", then the message, so
+  "previous-line: Beginning of buffer" took three lines. strout to the
+  echo area (`princ' or `prin1' with t as the stream, interactive) and
+  command-error-default-function's pieces now append to the open line,
+  and message3, `message' and the batch message path start a line
+  first.
+  ttydiff's two editors visit one shared target at once, so since round
+  110 (filelock.c) any journey that modifies it showed Emaxx asking
+  about GNU's live lock, as a second GNU would: thirty of the first
+  fifty-eight journeys diverged that way, some losing the keys the lock
+  prompt read. Each editor
+  now keeps its locks in a directory of its own under the journey's
+  TMPDIR (`lock-file-name-transforms'), so neither sees the other's.
+  Local validation of rounds 147 and 148, on one build: the full gate
+  across its ten groups with the documented local skips, all 3,290 tests
+  run passing (2 ignored); the seven integration targets; clippy `-D
+  warnings', rustfmt and `git diff --check'. ttydiff's whole suite on
+  this build is recorded with round 149.
+- **Round 149: C-g read as a key, recursive_edit_1's exits, and the
+  command identities.** keyboard.c's handle_interrupt longjmps back into
+  read_char, which returns C-g as an event, and read_key_sequence clears
+  `quit-flag' after each key it reads: in the command loop C-g is looked
+  up like any key, `keyboard-quit' at top level and the minibuffer maps'
+  `abort-minibuffers' (`read-event' and `read-char' still quit). Emaxx's
+  readers signalled `quit' for C-g everywhere, so the minibuffer quit
+  without running a command. The key-sequence reads (the minibuffer loop,
+  `read-key-sequence', `read-key') now take C-g as event 7.
+  `abort-minibuffers' is minibuf.c's (this_minibuffer_depth,
+  `minibuffer-innermost-command-loop-p' through minibuf_c_loop_level, the
+  "Abort N minibuffer levels? " question, minibuffer.el's
+  `minibuffer-quit-recursive-edit'), where Emaxx signalled
+  `minibuffer-quit' itself; the three loops that stand for
+  recursive_edit_1 (a recursive edit, the terminal minibuffer, a keyboard
+  macro's minibuffer) act on the value thrown to `exit' as it does: t
+  quits, a string is an error, a function is called (the minibuffer.el
+  function signals `minibuffer-quit'). `recursion-depth' counts the
+  active minibuffers, as Frecursion_depth adds minibuf_level, and
+  `exit-recursive-edit' and `abort-recursive-edit' throw from a
+  minibuffer and signal `user-error' outside any, where Emaxx signalled
+  `error' from a top-level minibuffer.
+  The command identities follow keyboard.c and callint.c: each command
+  cycle sets `this-original-command' (the binding before remapping),
+  `this-command' and `real-this-command'; a command that leaves by
+  `throw' (`exit-minibuffer', `abort-minibuffers') leaves the cycle
+  before `last-command' is set or `this-command' cleared; each
+  recursive command loop enters through command_loop_1's post-command
+  hooks and `last-command'. read_minibuf restores none of them, where
+  Emaxx restored the outer command's after every minibuffer read;
+  Fcall_interactively saves `this-command', `this-original-command',
+  `real-this-command' and `last-command' before reading a command's
+  arguments and restores them before the call, binding
+  `current-minibuffer-command' until the arguments are read for a string
+  spec and through the call for a Lisp form's.
+  xfns.c's `x-uses-old-gtk-dialog', listed but unimplemented, answers nil
+  without a window system (the File menu's Open File called it), and
+  terminal.c's `multi-tty' feature is provided, as in every GNU build.
+  A batch test drives the minibuffer through `executing-kbd-macro' as
+  GNU 30.2 does (C-g in a minibuffer and in a nested one, then RET), and
+  ttydiff's new `minibuffer-quit-is-a-command' journey shows GNU's
+  screen and hook log.
+  ttydiff on 23a43e6's build (rounds 147 and 148): 227 journeys, all
+  matching GNU but five. f10-select called the missing
+  `x-uses-old-gtk-dialog' (matches now). submenu-cycle-options lacks
+  GNU's "Use System Font" item: the oracle is an X build, whose
+  xsettings.c provides `system-font-setting', and menu-bar.el shows the
+  item only then; Emaxx provides no window-system feature (nor `x',
+  `cairo', `font-render-setting', `dynamic-setting', `move-toolbar').
+  supersession-accept-revisit lacks GNU's "[Command attempted to use
+  minibuffer while in minibuffer]": Emaxx had no read_minibuf guard
+  (round 150). dired-open-and-return's free-space figure moved while
+  builds wrote to the disk, and an eglot journey's diagnostics arrived
+  late; both match when rerun. 173d421's build diverges on the same
+  journeys, f10-select included.
+  Local validation: the full gate across its ten groups with
+  the documented local skips, all 3,291 tests run passing (2 ignored);
+  the seven integration targets; clippy `-D warnings', rustfmt and `git
+  diff --check'. ttydiff's whole suite on this build is recorded with
+  round 150.
+- **Round 150: read_minibuf's guard against a recursive read, and
+  discard-input.** minibuf.c's read_minibuf refuses a read while a
+  minibuffer is active unless `enable-recursive-minibuffers' is set: from
+  the minibuffer window it signals `user-error' "Command attempted to use
+  minibuffer while in minibuffer", from any other window it throws that
+  message to `exit', and the active read's recursive_edit_1 signals it as
+  an error. Emaxx had no such guard, so M-: typed in M-x's minibuffer
+  opened a second one. `read-from-minibuffer', `read-string' and the
+  native `completing-read' check it now, and call-interactively binds
+  `enable-recursive-minibuffers' while it reads a string spec's arguments
+  for a command whose property of that name is set (callint.c).
+  keyboard.c's Fdiscard_input also empties the keyboard buffer, the input
+  already read from the terminal; Emaxx's emptied only
+  `unread-command-events', so the keys typed after an error that
+  `minibuffer-error-function' discards went on to run. The terminal
+  frontend's queue, and what the terminal has ready, are dropped now.
+  supersession-accept-revisit's "[Command attempted to use minibuffer
+  while in minibuffer]" matches GNU now, and ttydiff's new
+  `minibuffer-recursive-read-refused' journey covers the guard and the
+  discarded keys; a batch test checks the three cases against GNU 30.2
+  (the minibuffer window, `enable-recursive-minibuffers', another window).
+  ttydiff on 5c48b0f's build (round 149): 228 journeys, all matching GNU but
+  submenu-cycle-options (the X build's `system-font-setting', above)
+  and supersession-accept-revisit (this round).
+  Local validation: the full gate across its ten groups with
+  the documented local skips, all 3,292 tests run passing (2 ignored);
+  the seven integration targets; clippy `-D warnings', rustfmt and `git
+  diff --check'.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -8926,6 +9332,74 @@ semantic-utest-ia took 4.57 s against 2.63, where the release build
 runs 1.04 times GNU's instructions and the gate profile 1.60 (its
 `assq' walks of long alists, 5.4G instructions in the gate build
 against 1.9G, are mostly the liveness test of each cons; round 131).
+
+**On `06df172`** (round 137): full Rust gate passed (run 40658627662);
+frozen (run 40658631429) matched all 7,928 outcomes on its first
+attempt. Its timings: setup 82.8 s against 66.3 s (1.249), test bodies
+258.7 s against 267.1 s (0.969), in all 1.010. Rounds 111 to 137 were
+merged into main with it (PR 111).
+
+**On `a883005`** (round 138): full Rust gate passed (run 40669421463);
+frozen (run 40669425691) matched all 7,928 outcomes on its first
+attempt. Its timings: setup 83.4 s against 67.4 s (1.237), test bodies
+263.1 s against 268.9 s (0.978), in all 1.019. The setup of the files
+reading `\N{NAME}' moved toward GNU's: print-tests 0.325 s against
+0.210 (0.357 against 0.208 on 06df172), textsec-tests 0.410 against
+0.273 (0.438 against 0.267).
+
+**On `a1b658f`** (round 139): full Rust gate passed (run 40676262256);
+frozen (run 40676265825) matched all 7,928 outcomes on its first
+attempt. Its timings, on a runner faster for both (GNU's setup 46.0 s
+where it had taken 66 to 67): setup 53.0 s against 46.0 s (1.151), test
+bodies 206.2 s against 220.9 s (0.933), in all 0.971.
+
+**On `cdde60b`** (round 140): full Rust gate passed (run 40682218697);
+frozen (run 40682221633) matched all 7,928 outcomes on its first
+attempt. Its timings, on a runner slower for both (GNU's setup 69.1 s):
+setup 84.1 s against 69.1 s (1.217), test bodies 265.5 s against 271.2 s
+(0.979), in all 1.019. keymap-tests' bodies took 1.42 times GNU's (1.49
+on a1b658f).
+
+**On `df73d20`** (round 141): full Rust gate passed (run 40686498127);
+frozen (run 40686502210) matched all 7,928 outcomes on its first
+attempt. Its timings: setup 84.7 s against 68.1 s (1.243), test bodies
+268.9 s against 276.0 s (0.974), in all 1.020. edebug-tests' bodies took
+1.44 times GNU's (1.58 on cdde60b).
+
+**On `fe5d827`** (round 142): full Rust gate passed (run 40693057231);
+frozen (run 40693062448) matched all 7,928 outcomes on its first
+attempt. Its timings: setup 76.5 s against 62.6 s (1.221), test bodies
+252.4 s against 260.4 s (0.969), in all 1.006.
+
+**On `46cb7bc`** (round 143): full Rust gate passed (run 40700786753);
+frozen (run 40700791680) matched all 7,928 outcomes on its first
+attempt. Its timings, on a runner faster for both (GNU's setup 52.6 s):
+setup 61.1 s against 52.6 s (1.162), test bodies 218.6 s against 230.5 s
+(0.949), in all 0.996. multisession-tests' bodies took 1.18 s against
+0.56 (`multi-test-sqlite-busy' 922 ms against 204).
+
+**On `e98ff8a`** (round 144): full Rust gate passed (run 40706967922);
+frozen (run 40706974076) matched all 7,928 outcomes on its first
+attempt. Its timings: setup 59.7 s against 50.7 s (1.177), test bodies
+218.3 s against 233.9 s (0.933), in all 0.991.
+
+**On `173d421`** (rounds 145 and 146): full Rust gate passed (run
+40715042037); frozen (run 40715048423) matched all 7,928 outcomes on its
+first attempt. Its timings: setup 80.1 s against 65.9 s (1.215), test
+bodies 258.9 s against 268.4 s (0.965), in all 0.999. multisession-tests'
+bodies took 575 ms against 582 (`multi-test-sqlite-busy' 206 against
+204, where e98ff8a's run had 922 against 204), and xml-tests'
+`xml-print-invalid-cdata' 11.7 ms against 5.2 (122 against 2.7 before).
+
+**On `23a43e6`** (rounds 147 and 148): full Rust gate passed (run
+40732921377); frozen (run 40732938635) matched all 7,928 outcomes on its
+first attempt. Its timings: setup 67.8 s against 57.3 s (1.182), test
+bodies 236.1 s against 255.3 s (0.925), in all 0.979.
+
+**On `5c48b0f`** (round 149): full Rust gate passed (run 40745847583);
+frozen (run 40745852161) matched all 7,928 outcomes on its first
+attempt. Its timings: setup 52.4 s against 44.8 s (1.172), test bodies
+202.4 s against 227.5 s (0.890), in all 0.934.
 
 **Findings recorded, not fixed:**
 - **What the checked build costs (round 131).** mule-tests under the

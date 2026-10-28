@@ -6246,6 +6246,10 @@ fn evaluator_debugger_policy_is_bound_and_dynamic_across_function_calls() {
                    (list debugger debug-on-error debug-on-quit debug-on-signal
                          debugger-may-continue debug-on-next-call
                          backtrace-on-error-noninteractive))
+                 ;; debug-on-next-call enters the debugger at the call
+                 ;; below, clearing the flag, and again with (exit VALUE)
+                 ;; as it returns, whose value is the call's.
+                 (defun emaxx-test-debugger (&rest args) (cadr args))
                  (list
                   (emaxx-test-active-debugger-policy)
                   (mapcar #'special-variable-p
@@ -6286,7 +6290,7 @@ fn evaluator_debugger_policy_is_bound_and_dynamic_across_function_calls() {
                 Value::T,
                 Value::T,
                 Value::Nil,
-                Value::T,
+                Value::Nil,
                 Value::Nil,
             ]),
         ])

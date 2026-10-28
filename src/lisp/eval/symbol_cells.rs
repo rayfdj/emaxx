@@ -311,6 +311,20 @@ impl SymbolCells {
         self.has_flag(&self.edebug_entered, SPECIAL)
     }
 
+    /// Whether a call may have to record its frame's lexical context for
+    /// Edebug: `edebug-entered' is special (edebug is loaded) and its cell,
+    /// read through the symbol held here, does not hold nil in place.  A
+    /// localized or redirected value counts as maybe.
+    #[inline(always)]
+    pub(crate) fn edebug_may_be_entered(&self) -> bool {
+        self.edebug_is_special()
+            && self
+                .edebug_entered
+                .cell()
+                .unlocalized_value()
+                .is_none_or(|value| !value.is_nil())
+    }
+
     pub(crate) fn has_flag_by_name(&self, name: &str, flag: u8) -> bool {
         SymbolName::find(name).is_some_and(|symbol| self.has_flag(&symbol, flag))
     }

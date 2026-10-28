@@ -236,7 +236,14 @@ pub(crate) fn safe_run_named_hooks(
     buffer_id: Option<u64>,
 ) -> Result<(), LispError> {
     for hook in hook_values(interp, hook_name, env, buffer_id) {
-        match call_function_value(interp, &hook, &[], env).map_err(LispError::into_kind) {
+        // safe_run_hook_funcall's internal_condition_case_n with Qt: the
+        // handler search stops here, so neither outer handler-bind
+        // handlers nor the debugger see the error.
+        let handlers =
+            interp.push_internal_condition_case(crate::lisp::eval::InternalHandlers::All);
+        let result = call_function_value(interp, &hook, &[], env);
+        interp.pop_handler_bindings(handlers);
+        match result.map_err(LispError::into_kind) {
             Ok(_) => {}
             Err(error @ (LispErrorKind::Throw(_, _) | LispErrorKind::Terminate(_))) => {
                 return Err(LispError::from(error));

@@ -546,6 +546,23 @@ def gnu_no_window_setup(lisp_dir):
     )
 
 
+def private_lock_setup(editor):
+    """Keep each editor's lock files out of the other's sight.
+
+    Both editors visit the shared target at once, and the first to modify
+    it holds a live lock the second must then ask about -- as a second GNU
+    session would.  Locking still happens, each editor seeing only its own
+    locks, in a directory of its own under the scenario's TMPDIR.
+    """
+    directory = json.dumps(f"{editor}-locks/")
+    return (
+        f"(let ((directory (expand-file-name {directory} temporary-file-directory))) "
+        "(make-directory directory t) "
+        "(setq lock-file-name-transforms "
+        "(list (list \"\\\\`.*\\\\'\" directory t))))"
+    )
+
+
 def find_mode_line(lines):
     """Both editors draw a dash-heavy mode line above the echo area."""
     for index in range(len(lines) - 1, -1, -1):
@@ -4976,6 +4993,92 @@ SCENARIOS += [
     ),
 ]
 
+# A failing command and an undefined key re-enter command_loop_1: the pre-
+# and post-command hooks run around each (`this-command' still the failing
+# command when the post-command hooks run), `undefined' runs for the nil
+# command, and *Messages* logs the function that signalled before each
+# error (cmd_error, print_error_message).
+SCENARIOS += [
+    (
+        "command-loop-reentry-after-errors",
+        "alpha\nbeta\n",
+        [
+            action("setup-loop", reader_setup(
+                "(progn (setq loop-log nil loop-on nil) "
+                "(add-hook 'pre-command-hook (lambda () "
+                "(when loop-on (push (list 'pre this-command) loop-log)))) "
+                "(add-hook 'post-command-hook (lambda () (when loop-on "
+                "(push (list 'post this-command (current-message)) loop-log)))) "
+                "(defun loop-boom () (interactive) (error \"Boom %d\" 1)) "
+                "(defun loop-dump () (interactive) (setq loop-on nil) "
+                "(let ((messages (with-current-buffer (messages-buffer) (buffer-string)))) "
+                "(switch-to-buffer (get-buffer-create \"loop-log\")) (erase-buffer) "
+                "(insert (format \"%S\\n%S\\n\" (reverse loop-log) last-command) messages))) "
+                "(global-set-key (kbd \"C-c b\") #'loop-boom) "
+                "(global-set-key (kbd \"C-c d\") #'loop-dump) "
+                "(with-current-buffer (messages-buffer) "
+                "(let ((inhibit-read-only t)) (erase-buffer))) "
+                "(setq loop-on t) (message \"loop ready\"))"
+            ), require_text="loop ready"),
+            action("top", b"\x1b<"),
+            action("edge-error", b"\x10", require_text="Beginning of buffer"),
+            action("command-error", b"\x03b", require_text="Boom 1"),
+            action("undefined", b"\x03\x18\x1a", require_text="C-c C-x C-z is undefined"),
+            action("dump", b"\x03d"),
+        ],
+    ),
+]
+
+# C-g typed while the minibuffer reads is a key (read_key_sequence): the
+# minibuffer's map runs `abort-minibuffers' as a command, with the pre-
+# command hooks, and its `minibuffer-quit' ends the read; `recursion-depth'
+# counts the minibuffer.
+SCENARIOS += [
+    (
+        "minibuffer-quit-is-a-command",
+        "alpha\nbeta\n",
+        [
+            action("setup-quit", reader_setup(
+                "(progn (setq quit-log nil quit-on nil) "
+                "(add-hook 'pre-command-hook (lambda () (when quit-on "
+                "(push (list 'pre this-command (recursion-depth) (minibuffer-depth)) "
+                "quit-log)))) "
+                "(add-hook 'post-command-hook (lambda () (when quit-on "
+                "(push (list 'post this-command) quit-log)))) "
+                "(defun quit-dump () (interactive) (setq quit-on nil) "
+                "(let ((messages (with-current-buffer (messages-buffer) (buffer-string)))) "
+                "(switch-to-buffer (get-buffer-create \"quit-log\")) (erase-buffer) "
+                "(insert (format \"%S\\n%S %S\\n\" (reverse quit-log) last-command "
+                "(recursion-depth)) messages))) "
+                "(global-set-key (kbd \"C-c d\") #'quit-dump) "
+                "(with-current-buffer (messages-buffer) "
+                "(let ((inhibit-read-only t)) (erase-buffer))) "
+                "(setq quit-on t) (message \"quit ready\"))"
+            ), require_text="quit ready"),
+            action("open-m-x", b"\x1bx", require_text="M-x"),
+            action("type", b"ab"),
+            action("quit", b"\x07", require_text="Quit"),
+            action("dump", b"\x03d"),
+        ],
+    ),
+]
+
+# read_minibuf refuses a read while a minibuffer is active: M-: typed in
+# M-x's minibuffer is a user error, shown by `minibuffer-error-function'
+# at the end of the minibuffer, and `discard-input' drops the keys typed
+# after it.
+SCENARIOS += [
+    (
+        "minibuffer-recursive-read-refused",
+        "alpha\nbeta\n",
+        [
+            action("open-m-x", b"\x1bx", require_text="M-x"),
+            action("type", b"fo"),
+            action("eval-in-minibuffer", b"\x1b:(+ 1 2)\r"),
+        ],
+    ),
+]
+
 
 def select_scenarios(names):
     """Return built-in scenarios, or the named subset in command-line order.
@@ -5380,8 +5483,23 @@ def main():
             ok = compare(
                 name,
                 keys,
-                [gnu_binary, "-nw", "-Q", "--eval", gnu_setup, gnu_path],
-                [emaxx_binary, "-Q", emaxx_path],
+                [
+                    gnu_binary,
+                    "-nw",
+                    "-Q",
+                    "--eval",
+                    gnu_setup,
+                    "--eval",
+                    private_lock_setup("gnu"),
+                    gnu_path,
+                ],
+                [
+                    emaxx_binary,
+                    "-Q",
+                    "--eval",
+                    private_lock_setup("emaxx"),
+                    emaxx_path,
+                ],
                 gnu_env,
                 emaxx_env,
                 # Cold Lisp loading can exceed twenty seconds on a busy CI

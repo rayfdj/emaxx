@@ -1003,11 +1003,11 @@ impl Printer {
                 rendered
             }
             RecordKind::WindowConfiguration => "#<window-configuration>".into(),
+            RecordKind::Sqlite => crate::lisp::sqlite::print_sqlite(interp, id.id),
             RecordKind::Font
             | RecordKind::TreeSitterParser
             | RecordKind::TreeSitterNode
-            | RecordKind::TreeSitterCompiledQuery
-            | RecordKind::Sqlite => {
+            | RecordKind::TreeSitterCompiledQuery => {
                 // Still printed by their record slots.
                 let fields = record_prin1_fields(interp, id.id).unwrap_or_default();
                 self.out.push_str("#s(");

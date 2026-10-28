@@ -1286,7 +1286,9 @@ impl Interpreter {
             object.set_function(Value::Nil);
             self.finalizers_run += 1;
             let restore = self.bind_special_dynamic("inhibit-quit", Value::T, env)?;
+            let handlers = self.push_internal_condition_case(super::InternalHandlers::All);
             let result = self.call_function_value(function, None, &[], env);
+            self.pop_handler_bindings(handlers);
             match result.map_err(LispError::into_kind) {
                 Ok(_) => {}
                 Err(error @ (LispErrorKind::Throw(_, _) | LispErrorKind::Terminate(_))) => {
@@ -2321,7 +2323,7 @@ impl Interpreter {
         env: &mut Env,
     ) -> Result<Value, LispError> {
         let restore = self.bind_special_dynamic("inhibit-redisplay", Value::T, env)?;
-        let handlers = self.push_condition_case_handler(vec![Value::symbol("error")]);
+        let handlers = self.push_internal_condition_case(super::InternalHandlers::Error);
         let depth = env.len();
         let result = crate::lisp::primitives::call(self, "eval", &[sexpr, Value::Nil], env);
         self.pop_handler_bindings(handlers);
@@ -2358,7 +2360,7 @@ impl Interpreter {
         env: &mut Env,
     ) -> Result<Value, LispError> {
         let restore = self.bind_special_dynamic("inhibit-redisplay", Value::T, env)?;
-        let handlers = self.push_condition_case_handler(vec![Value::T]);
+        let handlers = self.push_internal_condition_case(super::InternalHandlers::All);
         let depth = env.len();
         let result = self.call_function_value(function, None, args, env);
         self.pop_handler_bindings(handlers);

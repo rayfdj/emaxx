@@ -580,6 +580,20 @@ fn bytecode_call(
         None,
     );
     crate::lisp::native_comp::maybe_gc(interp, env);
+    // `if (debug_on_next_call) do_debug_on_call (Qlambda, count1)': a
+    // signal from the debugger leaves as the call's.
+    if let Err(error) = interp.debug_on_call_entry(true, backtrace_depth, env) {
+        let result = interp.settle_frame_result(Err(error), env);
+        interp.truncate_backtrace_frames(backtrace_depth);
+        interp.end_funcall();
+        let value = result?;
+        interp.bc_stack.truncate(args_start - 1);
+        interp.bc_stack.push_within_frame(value);
+        return Ok(CallOutcome::Returned(
+            interp.bc_stack.top,
+            interp.bc_stack.len(),
+        ));
+    }
     // Only now inspect the live cell/code slots, just as GNU's
     // packed-closure setup_frame branch does after maybe_gc.
     let callee = match interp.bcall_callee(&func) {
@@ -659,7 +673,7 @@ fn bytecode_call(
         crate::lisp::eval::BcallCallee::Subr(subr) => interp.call_subr(subr, call_args, env, true),
         _ => interp.funcall_body(func, call_args, env),
     };
-    let result = interp.settle_frame_result(result, env);
+    let result = interp.settle_call_result(backtrace_depth, result, env);
     interp.truncate_backtrace_frames(backtrace_depth);
     interp.end_funcall();
     let value = match result {
@@ -765,7 +779,7 @@ fn call_native_nested(
     // and TARGET takes at most six arguments, among them CALL_ARGS.
     let result =
         unsafe { runtime.invoke_nested_fixed(nested, interp, env, target, call_args, depths) };
-    let result = interp.settle_frame_result(result, env);
+    let result = interp.settle_call_result(backtrace_depth, result, env);
     interp.leave_plain_funcall(backtrace_depth);
     Some(result)
 }
@@ -855,7 +869,9 @@ fn call_plain(
             vm.interp.call_subr(subr, call_args, vm.env, true)
         }
     };
-    let result = vm.interp.settle_frame_result(result, vm.env);
+    let result = vm
+        .interp
+        .settle_call_result(backtrace_depth, result, vm.env);
     let state: &mut crate::lisp::eval::InterpreterState = vm.interp;
     state.leave_plain_funcall(backtrace_depth);
     Some(result.map(|value| {
@@ -935,7 +951,8 @@ fn enter_closure_frame(
 }
 
 /// Breturn into a byte-code caller when the callee left no specpdl
-/// entries above its watermark: the frame and its backtrace record are
+/// entries above its watermark and its backtrace record is not marked to
+/// enter the debugger on exit: the frame and its backtrace record are
 /// popped and the caller gets VALUE; the answer is the pc it resumes at,
 /// the stack's top, the frame's depth and whether the verified loop's
 /// call is still current (`BcFrame::code_changes').  Otherwise the full return path runs the
@@ -953,10 +970,9 @@ fn return_to_bytecode_frame(
     // frame moved out whole (`pop', an Option) was copied in pieces offset
     // by its argument list's tag byte, and the loop's next read of the
     // caller's constants spanned two of those stores.
-    let frame = state
-        .bc_frames
-        .last_above(vm.frames_base)
-        .filter(|frame| unwinds <= frame.unwinds_len)?;
+    let frame = state.bc_frames.last_above(vm.frames_base).filter(|frame| {
+        unwinds <= frame.unwinds_len && !state.frame_debug_on_exit(frame.backtrace_depth)
+    })?;
     let (backtrace_depth, base, program, op_error_frames, handlers_len, code_changes) = (
         frame.backtrace_depth,
         frame.base,
@@ -3827,9 +3843,10 @@ pub fn execute_closure(
 }
 
 /// Ffuncall of a byte-code closure from Rust (`mapatoms', `mapcar', a
-/// hook's function): `execute_closure' under the nil environment frame
-/// byte code runs in, with the entered frame set up in this one function
-/// rather than in `run_entered' below it.
+/// hook's function): `execute_closure' under the nil environment byte code
+/// runs in, with the entered frame set up in this one function rather
+/// than in `run_entered' below it.  A frame binds nil only over another
+/// environment, as funcall_lambda specbinds only a changed one.
 #[inline(never)]
 pub(crate) fn funcall_closure(
     interp: &mut Interpreter,
@@ -3838,7 +3855,9 @@ pub(crate) fn funcall_closure(
     env: &mut Env,
 ) -> Result<Value, LispError> {
     let depth = env.len();
-    env.push(crate::lisp::types::EnvFrame::dynamic());
+    if crate::lisp::types::current_environment(env).is_some() {
+        env.push(crate::lisp::types::EnvFrame::dynamic());
+    }
     let result = match super::verify::entry_program(closure) {
         // SAFETY: nothing runs Lisp or collects before the copy.
         Some(program) if unsafe { program.as_ref() }.takes(args.len()) => {
@@ -3848,7 +3867,9 @@ pub(crate) fn funcall_closure(
         _ => closure_program(closure)
             .and_then(|program| run(interp, program, Value::Closure(closure), args, env)),
     };
-    env.truncate(depth);
+    if env.len() > depth {
+        env.truncate(depth);
+    }
     result
 }
 
@@ -4315,6 +4336,20 @@ fn run_loop(
             let value = $value;
             match interp.bc_frames.pop_above(frames_base) {
                 Some(frame) => {
+                    // `if (backtrace_debug_on_exit (specpdl_ptr - 1)) val =
+                    // call_debugger (list2 (Qexit, val))', the callee's
+                    // frame still in place.
+                    let value = if interp.frame_debug_on_exit(frame.backtrace_depth) {
+                        match interp.call_exit_debugger(value, env) {
+                            Ok(value) => value,
+                            Err(error) => {
+                                interp.bc_frames.push(frame);
+                                return Err(error);
+                            }
+                        }
+                    } else {
+                        value
+                    };
                     if let Err(error) = leave_frame(interp, env, &frame) {
                         interp.bc_frames.push(frame);
                         return Err(error);
@@ -4556,7 +4591,10 @@ fn run_loop(
             Ok(value) => {
                 break 'run Ok(value);
             }
-            Err(mut error) => {
+            Err(error) => {
+                // signal_or_quit's work for a signal no boundary has
+                // settled, with this activation's handlers still active.
+                let mut error = interp.signal_or_quit(error, env);
                 // GNU's handler search: innermost first; Bpushcatch
                 // handles `throw' by tag eq, Bpushconditioncase handles
                 // signals whose condition list matches the clause head.
@@ -4720,7 +4758,7 @@ fn run_loop(
         {
             Err(error)
         }
-        Err(error) => interp.dispatch_handler_bindings(error, env),
+        Err(error) => Err(interp.signal_or_quit(error, env)),
         Ok(value) => Ok(value),
     }
 }

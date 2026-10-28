@@ -516,6 +516,11 @@ fn run_owned(
         let queue = queue.clone();
         move || queue.input_pending()
     })));
+    // keyboard.c's Fdiscard_input: the keyboard buffer empties.
+    crate::lisp::primitives::set_tty_input_discard(Some(Box::new({
+        let queue = queue.clone();
+        move || queue.discard()
+    })));
     // keyboard.c:command_loop enters top_level_1 after terminal input is
     // available, then the editing loop. Do not replay Lisp startup actions.
     // emacs.c runs after-pdump-load-hook after init_display. Hook code can
@@ -542,6 +547,7 @@ fn run_owned(
     crate::lisp::primitives::set_tty_event_reader(None);
     crate::lisp::primitives::set_tty_event_poller(None);
     crate::lisp::primitives::set_tty_input_pending_check(None);
+    crate::lisp::primitives::set_tty_input_discard(None);
     crate::lisp::primitives::set_tty_menu_executor(None);
     crate::lisp::primitives::set_interactive_window_metrics(None);
     drop(guard);
@@ -595,6 +601,18 @@ impl SharedEventQueue {
     fn input_pending(&self) -> bool {
         !self.0.borrow().is_empty()
             || event::poll(std::time::Duration::from_millis(0)).unwrap_or(false)
+    }
+
+    /// Drop every event already read from the terminal: the queued ones
+    /// and those the terminal has ready, which read_avail_input would
+    /// already hold in GNU's keyboard buffer.
+    fn discard(&self) {
+        self.0.borrow_mut().clear();
+        while event::poll(std::time::Duration::from_millis(0)).unwrap_or(false) {
+            if event::read().is_err() {
+                break;
+            }
+        }
     }
 
     /// Pop an event without blocking: a queued one, or whatever the
@@ -682,8 +700,8 @@ impl SharedEventQueue {
 /// Blocking single-event reader for command code that pulls events itself.
 /// The echo area is repainted before blocking so a prompt just issued with
 /// `message' (y-or-n-p's protocol) is visible while the terminal waits.
-/// C-g answers `None' and becomes GNU's `quit' signal at the consuming
-/// primitive.
+/// C-g is answered as the event it is: read_char's caller decides whether
+/// it quits.
 fn make_event_reader(
     queue: SharedEventQueue,
     state: std::rc::Rc<std::cell::RefCell<TtyState>>,
@@ -696,7 +714,7 @@ fn make_event_reader(
                 state.note_input();
             }
             if let Some(event) = input.into_lisp(interpreter) {
-                return (event != Value::Integer(7)).then_some(event);
+                return Some(event);
             }
         }
     })
@@ -970,7 +988,8 @@ fn command_loop(
     shared_state: &std::rc::Rc<std::cell::RefCell<TtyState>>,
 ) -> Result<i32, String> {
     let mut reader: Option<crate::lisp::primitives::KeySequenceReader> = None;
-    crate::lisp::primitives::command_loop_entry(interpreter, env);
+    crate::lisp::primitives::command_loop_entry(interpreter, env)
+        .map_err(|error| error.to_string())?;
     loop {
         // keyboard.c's command_loop_1 reselects the selected window's
         // buffer at the top of every command cycle.  A display action can
@@ -1116,6 +1135,7 @@ fn command_loop(
             }
         };
         let active = reader.as_ref().expect("active key reader");
+        let original = active.command_binding();
         debug_log(&format!(
             "keys {:?} -> {}",
             describe_keys(active.keys()),
@@ -1136,13 +1156,10 @@ fn command_loop(
                 }
                 continue;
             }
-            Resolution::Undefined => {
-                let mut state = shared_state.borrow_mut();
-                state.echo = format!("{} is undefined", describe_keys(active.keys()));
-                state.prefix_active = false;
-                reader = None;
-                continue;
-            }
+            // An undefined key sequence is a nil command, which
+            // command_loop_1 runs as `undefined' once `pre-command-hook'
+            // has run.
+            Resolution::Undefined => Value::Nil,
         };
         if !shared_state.borrow().prefix_active {
             shared_state.borrow_mut().echo.clear();
@@ -1155,6 +1172,7 @@ fn command_loop(
         let command_error = match crate::lisp::primitives::execute_read_key_command_binding(
             interpreter,
             env,
+            original,
             binding,
             &keys,
             last_event,
@@ -1174,11 +1192,10 @@ fn command_loop(
                         debug_log(&format!("  frame: {function} nargs={}", args.len()));
                     }
                 }
-                Some(command_error_text(
-                    interpreter,
-                    env,
-                    &LispError::from(error.clone()),
-                ))
+                match settle_command_error(interpreter, env, error) {
+                    Ok(text) => text,
+                    Err(termination) => return Ok(termination.exit_code),
+                }
             }
         };
         if let Some(termination) = interpreter.take_pending_termination() {
@@ -1207,6 +1224,44 @@ fn command_loop(
             // matrix; repaint it against fresh state next frame.
             state.painted_echo = Vec::new();
         }
+    }
+}
+
+/// keyboard.c's command_loop around a command that left with ERROR: a
+/// `top-level' throw re-enters command_loop_1; anything else (an
+/// unmatched throw's no-catch among them) goes to command_loop_2's
+/// handler, cmd_error, which reports it through `command-error-function',
+/// and command_loop_1 is then entered again: the post-command hooks with
+/// `this-command' still the command's, then `last-command'.  The text to
+/// echo when reporting failed in turn; the termination that ends the
+/// session.
+fn settle_command_error(
+    interpreter: &mut Interpreter,
+    env: &mut Env,
+    error: LispErrorKind,
+) -> Result<Option<String>, crate::lisp::types::EmacsTermination> {
+    let top_level = matches!(
+        &error,
+        LispErrorKind::Throw(tag, _)
+            if matches!(tag.kind(), Kind::Symbol(name) if name == "top-level")
+    );
+    let error = LispError::from(error);
+    let reported = if top_level {
+        Ok(())
+    } else {
+        crate::lisp::primitives::cmd_error(interpreter, env, &error)
+    };
+    match reported
+        .and_then(|()| crate::lisp::primitives::command_loop_entry(interpreter, env))
+        .map_err(LispError::into_kind)
+    {
+        Ok(()) => Ok(None),
+        Err(LispErrorKind::Terminate(termination)) => Err(termination),
+        Err(error) => Ok(Some(command_error_text(
+            interpreter,
+            env,
+            &LispError::from(error),
+        ))),
     }
 }
 
@@ -4146,12 +4201,15 @@ fn run_fontification_functions(
                     break;
                 };
                 if !matches!(global_fn.kind(), Kind::T) {
+                    let handlers = interpreter
+                        .push_internal_condition_case(crate::lisp::eval::InternalHandlers::All);
                     let _ = interpreter.call_function_value(
                         global_fn,
                         None,
                         std::slice::from_ref(&pos_value),
                         env,
                     );
+                    interpreter.pop_handler_bindings(handlers);
                 }
                 let Ok(next) = globals.cdr() else {
                     break;
@@ -4159,12 +4217,16 @@ fn run_fontification_functions(
                 globals = next;
             }
         } else {
+            // safe_call1: internal_condition_case_n with Qt.
+            let handlers =
+                interpreter.push_internal_condition_case(crate::lisp::eval::InternalHandlers::All);
             let _ = interpreter.call_function_value(
                 function,
                 None,
                 std::slice::from_ref(&pos_value),
                 env,
             );
+            interpreter.pop_handler_bindings(handlers);
         }
         let Ok(next) = rest.cdr() else {
             break;
@@ -8854,6 +8916,80 @@ mod tests {
     fn display_columns_match_tab_expansion() {
         let columns = layout::lay_out_visual_line(&test_visual_line("a\tb"), 80, false).columns;
         assert_eq!(columns, vec![0, 1, 8, 9]);
+    }
+
+    #[test]
+    fn command_errors_and_undefined_keys_reenter_command_loop_1() {
+        let options = crate::batch::BatchRunOptions {
+            load_path: crate::compat::emaxx_upstream_load_path(
+                &crate::compat::project_root().join("../emacs"),
+            )
+            .expect("upstream load path"),
+            ..Default::default()
+        };
+        let mut interpreter =
+            crate::batch::initialize_batch_interpreter(&options).expect("interpreter initializes");
+        let mut env: Env = crate::lisp::types::Env::new();
+        interpreter.set_variable("noninteractive", Value::Nil, &mut env);
+        crate::test_support::eval_lisp(
+            &mut interpreter,
+            &mut env,
+            r#"(progn
+                 (setq t147-log nil)
+                 (add-hook 'pre-command-hook (lambda () (push (list 'pre this-command) t147-log)))
+                 (add-hook 'post-command-hook
+                           (lambda () (push (list 'post this-command (current-message)) t147-log)))
+                 (defun t147-boom () (interactive) (error "Boom %d" 1))
+                 (global-set-key [f6] #'t147-boom)
+                 (erase-buffer)
+                 (insert "abc")
+                 (goto-char (point-min))
+                 (with-current-buffer (messages-buffer)
+                   (let ((inhibit-read-only t)) (erase-buffer))))"#,
+        )
+        .expect("setup");
+        for events in [
+            vec![Value::Integer(16)],
+            vec![Value::symbol("f6")],
+            vec![Value::symbol("f7")],
+        ] {
+            let binding = match resolve_pending(&mut interpreter, &mut env, &events) {
+                Resolution::Command(binding) => binding,
+                Resolution::Undefined => Value::Nil,
+                Resolution::Prefix => panic!("{events:?} is a whole key sequence"),
+            };
+            let last = *events.last().expect("an event");
+            if let Err(error) = execute_binding(&mut interpreter, &mut env, binding, &events, last)
+            {
+                let echoed = settle_command_error(&mut interpreter, &mut env, error.into_kind())
+                    .expect("no termination");
+                assert_eq!(echoed, None, "cmd_error reports the error itself");
+            }
+        }
+        let value = crate::test_support::eval_lisp(
+            &mut interpreter,
+            &mut env,
+            r#"(list (reverse t147-log)
+                     last-command
+                     (with-current-buffer (messages-buffer) (buffer-string)))"#,
+        )
+        .expect("state");
+        // GNU 30.2 under a terminal: the hooks run around the failing
+        // commands as around any other, `this-command' still set when the
+        // post-command hooks run after an error; `undefined' runs for the
+        // nil command; *Messages* logs the signalling function before each
+        // error.
+        let printed =
+            crate::lisp::primitives::call(&mut interpreter, "prin1-to-string", &[value], &mut env)
+                .expect("print");
+        assert_eq!(
+            crate::lisp::primitives::string_like(&printed)
+                .expect("a string")
+                .text,
+            "(((pre previous-line) (post previous-line \"Beginning of buffer\") (pre t147-boom) \
+             (post t147-boom \"Boom 1\") (pre nil) (post nil \"<f7> is undefined\")) nil \
+             \"previous-line: Beginning of buffer\nt147-boom: Boom 1\n<f7> is undefined\n\")"
+        );
     }
 
     #[test]

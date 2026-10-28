@@ -263,6 +263,18 @@ fn map_keymap_direct_value(
 }
 
 /// get_backtrace_frame's CHECK_FIXNAT (NFRAMES).
+/// eval.c:get_backtrace_starting_at's reading of BASE: (OFFSET . BASE)
+/// when its car is a fixnum, else BASE itself with no offset.
+fn backtrace_base(base: Value) -> (i64, Value) {
+    match base.cons_ref() {
+        Some(cell) => match cell.car.get().fixnum() {
+            Some(offset) => (offset, cell.cdr.get()),
+            None => (0, base),
+        },
+        None => (0, base),
+    }
+}
+
 fn backtrace_nframes(nframes: Value) -> Result<usize, LispError> {
     match nframes.kind() {
         Kind::Integer(count) if count >= 0 => Ok(count as usize),
@@ -1138,21 +1150,18 @@ define_dispatch!(
             "mapbacktrace" => {
                 need_arg_range(name, args, 1, 2)?;
                 let callback = resolve_callable(interp, &args[0], env)?;
-                let base = args.get(1).filter(|value| !value.is_nil());
+                let (offset, base) = backtrace_base(args.get(1).copied().unwrap_or(Value::Nil));
                 let frames = interp.backtrace_frames_snapshot();
-                let start = match base {
-                    Some(base) => {
-                        let Some(start) = frames
-                            .iter()
-                            .position(|(_, function, _, _)| function == base)
-                        else {
-                            // GNU get_backtrace_starting_at treats a base with
-                            // no live activation frame as an empty traversal.
-                            return Ok(Value::Nil);
-                        };
-                        start
-                    }
-                    None => 0,
+                // get_backtrace_starting_at's frame, innermost first in the
+                // snapshot; a base with no live activation frame is an
+                // empty traversal.
+                let Some(start) = interp
+                    .backtrace_frame_index(0, base, offset, |object| {
+                        crate::lisp::primitives::keymap::indirect_function(interp, object, env)
+                    })
+                    .map(|index| frames.len() - 1 - index)
+                else {
+                    return Ok(Value::Nil);
                 };
                 for (evald, function, frame_args, debug_on_exit) in frames.into_iter().skip(start) {
                     let flags = if debug_on_exit {
@@ -1176,10 +1185,7 @@ define_dispatch!(
                 // eval.c:get_backtrace_frame's CHECK_FIXNAT, then its walk
                 // from get_backtrace_starting_at's frame for BASE.
                 let nframes = backtrace_nframes(args[1])?;
-                let (offset, base) = match args[2].kind() {
-                    Kind::Cons(cell) => (cell.car.get().as_integer()?, cell.cdr.get()),
-                    _ => (0, args[2]),
-                };
+                let (offset, base) = backtrace_base(args[2]);
                 let frame = interp.backtrace_frame_at(nframes, base, offset, |object| {
                     crate::lisp::primitives::keymap::indirect_function(interp, object, env)
                 });
@@ -1201,8 +1207,21 @@ define_dispatch!(
             }
             "backtrace-debug" => {
                 need_arg_range(name, args, 2, 3)?;
-                interp.set_current_backtrace_debug(args[1].is_truthy());
-                Ok(Value::Nil)
+                // eval.c:Fbacktrace_debug: CHECK_FIXNUM, then
+                // get_backtrace_frame's CHECK_FIXNAT and walk; the flag is
+                // set on the frame found, and FLAG is the value.
+                if args[0].fixnum().is_none() {
+                    return Err(LispError::WrongTypeArgument("fixnump".into(), args[0]));
+                }
+                let nframes = backtrace_nframes(args[0])?;
+                let (offset, base) = backtrace_base(args.get(2).copied().unwrap_or(Value::Nil));
+                let index = interp.backtrace_frame_index(nframes, base, offset, |object| {
+                    crate::lisp::primitives::keymap::indirect_function(interp, object, env)
+                });
+                if let Some(index) = index {
+                    interp.set_frame_debug_on_exit(index, args[1].is_truthy());
+                }
+                Ok(args[1])
             }
             "backtrace-eval" => {
                 need_arg_range(name, args, 2, 3)?;

@@ -2153,6 +2153,294 @@ fn byte_code_memq_compares_by_eq_with_symbols_with_pos_enabled() {
     assert_eq!(value.to_string(), "(nil (2 t) (foo) nil (b) nil)");
 }
 
+#[test]
+fn regexp_word_boundaries_skip_word_boundary_p_for_two_single_byte_characters() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let value = crate::test_support::eval_lisp(
+        &mut interp,
+        &mut env,
+        r#"(with-temp-buffer
+             (let ((table (copy-category-table)))
+               (define-category ?X "probe" table)
+               (dolist (c '(?b ?β ?é)) (modify-category-entry c ?X table))
+               (set-category-table table)
+               (let ((word-separating-categories '((nil . ?X))))
+                 (list (string-match "a\\b" "ab")
+                       (string-match "a\\>" "ab")
+                       (string-match "\\<b" "ab")
+                       (string-match "a\\B" "ab")
+                       (string-match "a\\b" "aé")
+                       (string-match "α\\b" "αβ")
+                       (string-match "α\\>" "αβ")
+                       (string-match "\\<β" "αβ")
+                       (string-match "α\\B" "αβ")
+                       (progn (insert "ab αβ")
+                              (goto-char (point-min))
+                              (list (forward-word) (point) (forward-word) (point)))))))"#,
+    )
+    .expect("word boundaries under a separating category");
+    // GNU 30.2: regex-emacs.c tests category.h's WORD_BOUNDARY_P, which
+    // asks word_boundary_p only when either character is past Latin-1;
+    // syntax.c's scan_words asks it for every pair.
+    assert_eq!(value.to_string(), "(nil nil nil 0 nil 0 0 1 nil (t 2 t 3))");
+}
+
+#[test]
+fn current_column_skips_the_invisible_text_of_the_line_it_scans() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let value = crate::test_support::eval_lisp(
+        &mut interp,
+        &mut env,
+        r#"(with-temp-buffer
+             (insert "abcdef\nxyzλwv\n" (propertize "hid" 'invisible t) "den\n" "tab\there\n")
+             (let ((o (make-overlay 9 11)))
+               (overlay-put o 'invisible t))
+             (list
+              (progn (goto-char 6) (current-column))
+              (progn (goto-char 14) (current-column))
+              (progn (goto-char 20) (current-column))
+              (progn (goto-char 22) (current-column))
+              (progn (goto-char 28) (current-column))
+              (progn (goto-char 15) (move-to-column 2) (point))
+              (let ((buffer-invisibility-spec nil)) (goto-char 20) (current-column))
+              (let ((buffer-invisibility-spec '(foo))) (goto-char 14) (current-column))
+              (progn (put-text-property 1 3 'invisible 'foo) (goto-char 6) (current-column))
+              (let ((buffer-invisibility-spec '(foo))) (goto-char 6) (current-column))))"#,
+    )
+    .expect("current-column over invisible text");
+    // GNU 30.2: indent.c's scan_for_column skips, through skip_invisible,
+    // the invisible text and overlays of the line it scans, as the
+    // buffer's invisibility spec reads them.
+    assert_eq!(value.to_string(), "(5 4 2 0 10 20 2 6 3 3)");
+}
+
+#[test]
+fn debugger_frames_enter_on_exit_and_at_the_next_call() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let value = crate::test_support::eval_lisp(
+        &mut interp,
+        &mut env,
+        r#"(progn
+             (defvar dbg-log nil)
+             (defun dbg-debugger (&rest args)
+               (setq dbg-log (cons args dbg-log))
+               (if (eq (car args) 'exit)
+                   (if (numberp (cadr args)) (+ (cadr args) 1000) (list 'wrapped (cadr args)))
+                 'ignored))
+             (defun dbg-run (thunk)
+               (setq dbg-log nil)
+               (let* ((debugger 'dbg-debugger)
+                      (value (funcall thunk)))
+                 (list value (reverse dbg-log))))
+             (defun dbg-marked (x) (backtrace-debug 0 t 'dbg-marked) (* x 2))
+             (defun dbg-plain (x) (* x 3))
+             (defun dbg-bc-marked (x) (backtrace-debug 0 t 'dbg-bc-marked) (* x 5))
+             (byte-compile 'dbg-bc-marked)
+             (defun dbg-bc-caller (x) (list (dbg-bc-marked x) (dbg-marked x)))
+             (byte-compile 'dbg-bc-caller)
+             (defun dbg-bc-next (x) (setq debug-on-next-call t) (dbg-plain x))
+             (byte-compile 'dbg-bc-next)
+             (defun dbg-level1 () (backtrace-debug 1 t 'dbg-level1) 10)
+             (defun dbg-outer () (+ (dbg-level1) 1))
+             (defun dbg-count-frames (base)
+               (let ((n 0)) (mapbacktrace (lambda (&rest _) (setq n (1+ n))) base) (> n 0)))
+             (defalias 'dbg-count-alias 'dbg-count-frames)
+             (list
+              (dbg-run (lambda () (list (backtrace-debug 0 'flag) (backtrace-debug 1 nil))))
+              (condition-case err (backtrace-debug 'x t) (error err))
+              (condition-case err (backtrace-debug -1 t) (error err))
+              (dbg-run (lambda () (eval '(dbg-marked 3))))
+              (dbg-run (lambda () (funcall 'dbg-marked 4)))
+              (dbg-run (lambda () (apply 'dbg-marked '(5))))
+              (dbg-run (lambda () (dbg-bc-caller 2)))
+              (dbg-run (lambda () (mapcar 'dbg-bc-marked '(1 2))))
+              (dbg-run (lambda () (dbg-outer)))
+              (dbg-run (lambda () (eval '(progn (setq debug-on-next-call t) (dbg-plain 2)))))
+              (dbg-run (lambda () (dbg-bc-next 4)))
+              (list (dbg-count-alias 'dbg-count-alias) (dbg-count-frames 'dbg-count-alias)
+                    (dbg-count-frames '(0 . dbg-count-frames)) (dbg-count-frames 'no-such-frame))
+              (list (backtrace-frame 0 '(x . print)) (car (backtrace-frame 0 '(0 . dbg-run))))))"#,
+    )
+    .expect("debugger frame protocol");
+    // GNU 30.2: Fbacktrace_debug marks the frame LEVEL out from BASE's
+    // (get_backtrace_frame, which mapbacktrace and backtrace-frame share:
+    // (OFFSET . BASE) only for a fixnum car, BASE through
+    // Findirect_function) and returns FLAG; eval_sub, Ffuncall,
+    // apply_lambda, Bcall and Breturn enter the debugger with (exit VALUE)
+    // for a marked frame and return its value; debug-on-next-call's
+    // do_debug_on_call enters it with (t) from eval_sub, (lambda) from
+    // Bcall and Ffuncall, and marks the call's frame.
+    assert_eq!(
+        value.to_string(),
+        "((((wrapped flag) nil) ((exit flag))) (wrong-type-argument fixnump x) \
+         (wrong-type-argument wholenump -1) (1006 ((exit 6))) (1008 ((exit 8))) \
+         (1010 ((exit 10))) ((1010 1004) ((exit 10) (exit 4))) \
+         ((1005 1010) ((exit 5) (exit 10))) (1011 ((exit 11))) (1006 ((t) (exit 6))) \
+         (1012 ((lambda) (exit 12))) (t t t nil) (nil nil))"
+    );
+}
+
+#[test]
+fn signals_enter_the_debugger_as_signal_or_quit_decides() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let value = crate::test_support::eval_lisp(
+        &mut interp,
+        &mut env,
+        r#"(progn
+             (defvar d143-log nil)
+             (defun d143-debugger (&rest args)
+               (setq d143-log (cons args d143-log))
+               (throw 'd143 (list 'debugged (car args))))
+             (defun d143-run (thunk)
+               (setq d143-log nil)
+               (let ((value (catch 'd143
+                              (let ((debugger 'd143-debugger)
+                                    (debug-on-error t))
+                                (setq internal-when-entered-debugger -1)
+                                (funcall thunk)))))
+                 (list value (reverse d143-log))))
+             (defvar d143-hook-log nil)
+             (list
+              (d143-run (lambda () (car 1)))
+              (d143-run (lambda () (condition-case nil (car 1) (error 'caught))))
+              (d143-run (lambda () (condition-case nil (car 1) ((debug error) 'caught-debug))))
+              (d143-run (lambda () (let ((debug-on-signal t))
+                                     (condition-case nil (car 1) (error 'caught-signal)))))
+              (d143-run (lambda () (let ((debug-ignored-errors '(wrong-type-argument)))
+                                     (condition-case nil (car 1) ((debug error) 'ignored-symbol)))))
+              (d143-run (lambda () (let ((debug-ignored-errors '("^Wrong type")))
+                                     (condition-case nil (car 1) ((debug error) 'ignored-string)))))
+              (d143-run (lambda () (let ((inhibit-debugger t))
+                                     (condition-case nil (car 1) ((debug error) 'inhibited)))))
+              (d143-run (lambda () (let ((debug-on-error '(arith-error)))
+                                     (condition-case nil (car 1) ((debug error) 'not-wanted)))))
+              (d143-run (lambda () (let ((debug-on-error '(arith-error)))
+                                     (condition-case nil (/ 1 0) ((debug error) 'wanted)))))
+              (d143-run (lambda () (let ((debug-on-quit t))
+                                     (condition-case nil (signal 'quit nil) ((debug quit) 'quit-caught)))))
+              (d143-run (lambda () (let ((debug-on-quit nil))
+                                     (condition-case nil (signal 'quit nil) ((debug quit) 'quit-no-debug)))))
+              (d143-run (lambda () (condition-case nil (signal 'wrong-type-argument '(x)) ((debug error) 'once))
+                          (condition-case nil (car 1) ((debug error) 'twice))))
+              (d143-run (lambda () (catch 'other (car 1))))
+              (let ((d143-hook-log nil))
+                (list (condition-case err
+                          (let ((signal-hook-function
+                                 (lambda (sym data) (push (list sym data) d143-hook-log))))
+                            (condition-case nil (car 1) (error 'hooked))
+                            (condition-case nil (signal 'arith-error '(1 2)) (error 'hooked2)))
+                        (error err))
+                      (reverse d143-hook-log)))))"#,
+    )
+    .expect("debugger entry on signals");
+    // GNU 30.2: signal_or_quit calls `signal-hook-function' with the
+    // signal's symbol and data, and enters the debugger (with (error
+    // ERROR)) when no clause catches the signal, the catching clause
+    // lists `debug', or `debug-on-signal' is set -- if maybe_call_debugger
+    // agrees: `inhibit-debugger' nil, `debug-on-error' (or for a quit
+    // `debug-on-quit') wanting it, `debug-ignored-errors' not naming it.
+    assert_eq!(
+        value.to_string(),
+        "(((debugged error) ((error (wrong-type-argument listp 1)))) (caught nil) \
+         ((debugged error) ((error (wrong-type-argument listp 1)))) \
+         ((debugged error) ((error (wrong-type-argument listp 1)))) (ignored-symbol nil) \
+         (ignored-string nil) (inhibited nil) (not-wanted nil) \
+         ((debugged error) ((error (arith-error)))) ((debugged error) ((error (quit)))) \
+         (quit-no-debug nil) ((debugged error) ((error (wrong-type-argument x)))) \
+         ((debugged error) ((error (wrong-type-argument listp 1)))) \
+         (hooked2 ((wrong-type-argument (listp 1)) (arith-error (1 2)))))"
+    );
+}
+
+#[test]
+fn internal_catches_keep_hook_errors_from_the_debugger_and_handler_bind() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let value = crate::test_support::eval_lisp(
+        &mut interp,
+        &mut env,
+        r#"(progn
+             (defun d144-run (thunk)
+               (setq internal-when-entered-debugger -1)
+               (catch 'd144
+                 (let ((debug-on-error t)
+                       (debugger (lambda (&rest args) (throw 'd144 (list 'debugged (car args))))))
+                   (funcall thunk))))
+             (list
+              (d144-run (lambda ()
+                          (with-temp-buffer
+                            (setq-local syntax-propertize-function
+                                        (lambda (_s _e) (error "propertize boom")))
+                            (insert "(a b) c")
+                            (goto-char 1)
+                            (forward-sexp)
+                            (point))))
+              (d144-run (lambda ()
+                          (let ((post-gc-hook (list (lambda () (error "gc boom")))))
+                            (garbage-collect)
+                            'collected)))
+              (d144-run (lambda ()
+                          (with-temp-buffer
+                            (let ((post-command-hook (list (lambda () (error "pch boom")))))
+                              (execute-kbd-macro "a")
+                              'post-ran))))
+              (d144-run (lambda ()
+                          (with-temp-buffer
+                            (let ((pre-command-hook (list (lambda () (error "prech boom")))))
+                              (execute-kbd-macro "b")
+                              'pre-ran))))
+              (let ((log nil))
+                (list (handler-bind ((error (lambda (e) (push e log))))
+                        (with-temp-buffer
+                          (let ((pre-command-hook (list (lambda () (error "hb boom")))))
+                            (execute-kbd-macro "c")
+                            'hb-ran)))
+                      log))))"#,
+    )
+    .expect("internal catches");
+    // GNU 30.2: safe_call (syntax-propertize), safe_run_hooks (post-gc-hook,
+    // the command hooks) and the finalizers catch with
+    // internal_condition_case and Qt: the handler search stops there, so
+    // neither the debugger nor an outer handler-bind sees the error.
+    assert_eq!(
+        value.to_string(),
+        "(6 collected post-ran pre-ran (hb-ran nil))"
+    );
+}
+
+#[test]
+fn unicode_property_table_internal_walks_the_alist_as_fassq() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let value = crate::test_support::eval_lisp(
+        &mut interp,
+        &mut env,
+        r#"(mapcar
+            (lambda (alist)
+              (condition-case err
+                  (let ((char-code-property-alist alist))
+                    (unicode-property-table-internal 'zz))
+                (circular-list (car err))
+                (error err)))
+            (list 'foo
+                  (cons (cons 'x 1) 'foo)
+                  (let ((l (list (cons 'x 1) (cons 'y 2)))) (setcdr (cdr l) l) l)
+                  (list 'junk (cons 'zz 7))
+                  (list (cons 'zz "no-such-uni-file"))))"#,
+    )
+    .expect("unicode-property-table-internal");
+    // GNU 30.2: chartab.c:uniprop_table and the subr's own fallback call
+    // Fassq, which signals for a dotted or circular alist.
+    assert_eq!(
+        value.to_string(),
+        r#"((wrong-type-argument listp foo) (wrong-type-argument listp ((x . 1) . foo)) circular-list 7 "no-such-uni-file")"#
+    );
+}
+
 // Finding 34 re-hosts: the originals ran on the bare interpreter against
 // native facades and were deleted with them; GNU's own test tree covers
 // none of these, so the coverage lives here on the full dumped image,

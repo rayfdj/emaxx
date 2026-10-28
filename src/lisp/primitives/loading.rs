@@ -134,18 +134,61 @@ pub(crate) fn call_interactively_impl(
     }
     // callint.c requires an interactive form, including forms supplied by
     // the Lisp generic for closures and advice.
-    if !matches!(
-        (call(
-            interp,
-            "interactive-form",
-            std::slice::from_ref(&args[0]),
-            env
-        )?)
-        .kind(),
-        Kind::Cons(_)
-    ) {
+    let form = call(
+        interp,
+        "interactive-form",
+        std::slice::from_ref(&args[0]),
+        env,
+    )?;
+    if !matches!(form.kind(), Kind::Cons(_)) {
         return Err(wrong_type_argument("commandp", args[0]));
     }
+    let string_spec = form
+        .cdr()
+        .ok()
+        .and_then(|tail| tail.car().ok())
+        .is_some_and(|spec| spec.is_string());
+    // callint.c saves the command identities that reading the arguments
+    // through the minibuffer clobbers, restoring them once the arguments
+    // are read, and binds `current-minibuffer-command' so that minibuffer
+    // hooks can see which command asked: until the arguments are read for
+    // a string spec, through the call for a Lisp form's.
+    let saved_command_state = [
+        "this-command",
+        "this-original-command",
+        "real-this-command",
+        "last-command",
+    ]
+    .map(|name| (name, interp.lookup_var(name, env).unwrap_or(Value::Nil)));
+    let mut minibuffer_command = Some(interp.bind_special_variable(
+        "current-minibuffer-command",
+        saved_command_state[0].1,
+        env,
+    )?);
+    let result = call_interactively_bound(
+        interp,
+        args,
+        func,
+        &saved_command_state,
+        string_spec,
+        &mut minibuffer_command,
+        env,
+    );
+    if let Some(restore) = minibuffer_command {
+        interp.restore_special_binding(restore, env)?;
+    }
+    result
+}
+
+fn call_interactively_bound(
+    interp: &mut Interpreter,
+    args: &[Value],
+    func: Value,
+    saved_command_state: &[(&str, Value)],
+    string_spec: bool,
+    minibuffer_command: &mut Option<crate::lisp::eval::SpecialBindingRestore>,
+    env: &mut Env,
+) -> Result<Value, LispError> {
     // callint.c: a non-nil KEYS is the key sequence the spec codes (`e',
     // `k'...) read instead of the current command's keys -- how
     // `command-execute' hands a special event to its `special-event-map'
@@ -154,11 +197,33 @@ pub(crate) fn call_interactively_impl(
         Some(keys) => Some(interp.bind_special_variable("this-command-keys-vector", *keys, env)?),
         None => None,
     };
+    // A command whose `enable-recursive-minibuffers' property is set reads
+    // its string spec's arguments with recursive minibuffers enabled.
+    let recursive_binding = match args[0].symbol_str() {
+        Some(symbol)
+            if string_spec
+                && interp
+                    .get_symbol_property(symbol, "enable-recursive-minibuffers")
+                    .is_some_and(|value| value.is_truthy()) =>
+        {
+            Some(interp.bind_special_variable("enable-recursive-minibuffers", Value::T, env)?)
+        }
+        _ => None,
+    };
     let interactive_args = collect_interactive_args(interp, &func, env);
+    if let Some(restore) = recursive_binding {
+        interp.restore_special_binding(restore, env)?;
+    }
     if let Some(restore) = keys_binding {
         interp.restore_special_binding(restore, env)?;
     }
+    if string_spec && let Some(restore) = minibuffer_command.take() {
+        interp.restore_special_binding(restore, env)?;
+    }
     let interactive_args = interactive_args?;
+    for (name, value) in saved_command_state {
+        interp.set_variable(name, *value, env);
+    }
     interp.push_interactive_call();
     // The interactive dispatch frame is what `called-interactively-p's
     // backtrace walk stops at (GNU stops at funcall-interactively); the

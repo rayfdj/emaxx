@@ -10,7 +10,6 @@ use super::*;
 use crate::lisp::regex_emacs::{self as rx, MatchEnv, MatchError, Pattern, Registers, Text};
 use crate::lisp::types::{CharTableRef, Kind};
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::rc::Rc;
 
 mod non_re;
@@ -270,7 +269,6 @@ enum Object<'t> {
 struct Canon {
     table: CharTableRef,
     ascii: [u32; 128],
-    other: RefCell<HashMap<u32, u32>>,
 }
 
 impl Canon {
@@ -278,7 +276,6 @@ impl Canon {
         let mut this = Canon {
             table,
             ascii: [0; 128],
-            other: RefCell::new(HashMap::new()),
         };
         for c in 0..128u32 {
             this.ascii[c as usize] = this.compute(c);
@@ -303,15 +300,11 @@ impl Canon {
         self.get_other(c)
     }
 
-    #[cold]
+    /// RE_TRANSLATE of a character beyond ASCII: char_table_translate's
+    /// char_table_ref, which reads the table's tree directly.
     #[inline(never)]
     fn get_other(&self, c: u32) -> u32 {
-        if let Some(&value) = self.other.borrow().get(&c) {
-            return value;
-        }
-        let value = self.compute(c);
-        self.other.borrow_mut().insert(c, value);
-        value
+        self.compute(c)
     }
 }
 
@@ -923,7 +916,10 @@ impl BufferSnapshot {
         let buffer = interp.buffer.borrow();
         let rope = buffer.text_rope();
         let (begv, zv, point) = (buffer.point_min(), buffer.point_max(), buffer.point());
-        let ascii = rope.len_bytes() == rope.len_chars();
+        // The counts the buffer keeps, where a one-leaf rope would count
+        // its text twice.
+        let (chars, bytes) = buffer.text_counts();
+        let ascii = chars == bytes;
         // An ASCII text's bytes are its characters; otherwise the buffer's
         // conversions, which know its ends and the positions converted
         // since its last edit before them.

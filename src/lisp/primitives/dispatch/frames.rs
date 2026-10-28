@@ -599,7 +599,9 @@ define_dispatch!(
                     "Window system frame should be used".into(),
                 ))
             }
-            "x-display-list" | "x-hide-tip" => {
+            // Fx_uses_old_gtk_dialog: t only for a GTK file dialog on a
+            // window-system frame.
+            "x-display-list" | "x-hide-tip" | "x-uses-old-gtk-dialog" => {
                 need_args(name, args, 0)?;
                 Ok(Value::Nil)
             }

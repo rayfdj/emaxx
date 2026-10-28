@@ -40,13 +40,13 @@ pub(crate) use display::{
     window_render_layout, window_text_area_columns, window_total_columns,
 };
 pub(crate) use display::{
-    clear_message, echo_area_message, echo_area_message_tick, echo_area_print,
+    clear_message, echo_area_message, echo_area_message_tick, echo_area_print_logged,
     echo_display_message, expire_echo_area_message, set_echo_area_message,
     set_echo_area_message_with_spans,
 };
 pub(crate) use lists::{
     next_kbd_macro_event, prepare_kbd_macro_minibuffer_entry,
-    read_minibuffer_text_from_kbd_macro_inner,
+    read_minibuffer_text_from_kbd_macro_inner, recursive_edit_exit_value,
 };
 pub(crate) use misc_keymaps::{oclosure_type_of, restore_unicode_menu_case_table};
 mod overlays;

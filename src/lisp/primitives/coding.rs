@@ -3896,10 +3896,37 @@ pub(crate) fn decode_coding_text(
     dst_multibyte: Option<bool>,
     env: &mut Env,
 ) -> Result<Value, LispError> {
+    decode_coding_text_recording(
+        interp,
+        value,
+        coding,
+        nocopy,
+        buffer_conversion,
+        dst_multibyte,
+        true,
+        env,
+    )
+}
+
+/// `decode_coding_text', `last-coding-system-used' set only when
+/// RECORD_USED (code_convert_string's NORECORD false).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn decode_coding_text_recording(
+    interp: &mut Interpreter,
+    value: &Value,
+    coding: Option<&str>,
+    nocopy: bool,
+    buffer_conversion: bool,
+    dst_multibyte: Option<bool>,
+    record_used: bool,
+    env: &mut Env,
+) -> Result<Value, LispError> {
     let string =
         string_like(value).ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *value))?;
     let Some(coding) = coding else {
-        set_last_coding_system_used(interp, "no-conversion", env);
+        if record_used {
+            set_last_coding_system_used(interp, "no-conversion", env);
+        }
         return if nocopy {
             Ok(*value)
         } else {
@@ -3926,7 +3953,9 @@ pub(crate) fn decode_coding_text(
     if fast_path {
         // A copied result is a fresh, unpropertized multibyte ASCII string;
         // NOCOPY gives back the original object, properties and all.
-        set_last_coding_system_used(interp, coding, env);
+        if record_used {
+            set_last_coding_system_used(interp, coding, env);
+        }
         return Ok(if nocopy {
             *value
         } else {
@@ -3963,7 +3992,9 @@ pub(crate) fn decode_coding_text(
     let converted = run_coding_conversion(interp, &decoded, &post_read, false, env)?;
     // code_convert_string records CODING_ID_NAME once decode_coding_object,
     // post-read conversion included, has returned.
-    set_last_coding_system_used(interp, &actual_coding, env);
+    if record_used {
+        set_last_coding_system_used(interp, &actual_coding, env);
+    }
     // A post-read conversion rewrites the text, after which the decoder's
     // annotations cannot be placed.
     let props = if conversion_ran {

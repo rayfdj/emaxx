@@ -4322,6 +4322,70 @@ fn sqlite_values_are_a_list_or_a_vector() {
 }
 
 #[test]
+fn sqlite_primitives_follow_sqlite_c_on_the_c_api() {
+    // sqlite.c on SQLite's C API: a FILE expanded against
+    // `default-directory' and nil for one that cannot be opened; no busy
+    // handler, so a locked database is `sqlite-locked-error' at once (the
+    // five-second timeout of rusqlite's connections waited); only the first
+    // statement executed, and sqlite3_changes for one that returns no row;
+    // bind_values' own messages and bignum_to_intmax's 0; a BLOB unibyte; a
+    // TEXT column decoded as utf-8 (raw bytes kept, eol detected); a set
+    // stepped lazily, `sqlite-more-p' t until a step finds no row; every
+    // object error `sqlite-error'; and print.c's #<sqlite db=...>.
+    let program = r##"
+        (let* ((dir (make-temp-file "emaxx-sqlite-" t))
+               (default-directory (file-name-as-directory dir)))
+          (unwind-protect
+              (let* ((db (sqlite-open "t.db"))
+                     (db2 (sqlite-open "t.db"))
+                     (err (lambda (thunk) (condition-case e (funcall thunk) (error e)))))
+                (prog1
+                    (list
+                     (file-exists-p (expand-file-name "t.db" dir))
+                     (sqlite-open "/nonexistent-emaxx-dir/a.db")
+                     (sqlite-execute db "create table t (x)")
+                     (sqlite-execute db "insert into t values (1)")
+                     (sqlite-execute db "select * from t where 0")
+                     (sqlite-execute db "insert into t values (5); insert into t values (6)")
+                     (funcall err (lambda ()
+                                    (sqlite-execute db "create table u (x unique)")
+                                    (sqlite-execute db "insert into u values (1)")
+                                    (sqlite-execute db "insert into u values (1)")))
+                     (funcall err (lambda () (sqlite-execute db "insert into t values (?)" (list 'foo))))
+                     (funcall err (lambda ()
+                                    (sqlite-execute db "insert into t values (?)"
+                                                    (list (propertize "é" 'coding-system 'binary)))))
+                     (sqlite-select db "select ?, ?, ?, ?" (list (expt 2 70) t 'false nil))
+                     (let ((v (caar (sqlite-select db "select x'C3A9'")))) (list (append v nil) (multibyte-string-p v)))
+                     (append (caar (sqlite-select db "select cast(x'FF41' as text)")) nil)
+                     (append (caar (sqlite-select db "select 'a'||char(13)||char(10)||'b'")) nil)
+                     (let ((set (sqlite-select db "select x from t order by x" nil 'set)) r)
+                       (while (sqlite-more-p set) (push (sqlite-next set) r))
+                       (list (nreverse r)
+                             (funcall err (lambda () (sqlite-close set)))
+                             (sqlite-finalize set)
+                             (funcall err (lambda () (sqlite-next set)))))
+                     (progn
+                       (sqlite-transaction db)
+                       (sqlite-execute db "insert into t values (9)")
+                       (prog1 (funcall err (lambda () (sqlite-execute db2 "insert into t values (10)")))
+                         (sqlite-commit db)))
+                     (funcall err (lambda () (sqlite-execute db "")))
+                     (funcall err (lambda () (sqlite-execute 1 "select 1")))
+                     (progn
+                       (sqlite-close db)
+                       (list (funcall err (lambda () (sqlite-execute db "select 1")))
+                             (string-match-p "\\`#<sqlite db=(nil) name=/" (prin1-to-string db)))))
+                  (sqlite-close db2)))
+            (delete-directory dir t)))"##;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        r#"(t nil 0 1 1 1 (sqlite-error "UNIQUE constraint failed: u.x") (sqlite-error "invalid argument") (sqlite-error "BLOB values must be unibyte") ((0 1 0 nil)) ((195 169) nil) (4194303 65) (97 10 98) (((1) (5) nil) (sqlite-error "Invalid database object") t (sqlite-error "Statement closed")) (sqlite-locked-error "database is locked") (sqlite-error "not an error") (wrong-type-argument sqlitep 1) ((sqlite-error "Database closed") 0))"#,
+        "sqlite.c",
+    );
+}
+
+#[test]
 fn next_read_file_uses_dialog_p_follows_the_oracle_toolkit() {
     // fileio.c requires window_system_available(SELECTED_FRAME()). GNU's
     // initial batch frame is a terminal even in its graphical builds.
@@ -7080,6 +7144,10 @@ fn read_coding_system_matches_the_gnu_coding_primitive_contract() {
         );
     }
 
+    // No keyboard macro is executing when the command loop reports an
+    // error (cmd_error clears it first): with one, the reporter's
+    // bitch_at_user would end it with a `user-error', as GNU's does.
+    interp.set_global_binding("executing-kbd-macro", Value::Nil);
     assert_eq!(
         call(
             &mut interp,
@@ -14639,6 +14707,12 @@ fn assert_linux_inotify_contract(program: &str, expected: &str, label: &str) {
 /// text.
 fn assert_oracle_contract_matches_interpreter(program: &str, expected: &str, label: &str) {
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+    assert_interpreter_prints(program, expected, label);
+}
+
+/// The second half of `assert_oracle_contract_matches_interpreter': the
+/// upstream batch interpreter's prin1 of PROGRAM's value is EXPECTED.
+fn assert_interpreter_prints(program: &str, expected: &str, label: &str) {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = crate::lisp::types::Env::new();
     let form = crate::lisp::read_next_load_form(&mut interp, program, &mut 0, &mut env)
@@ -20915,6 +20989,82 @@ fn native_serial_process_validation_matches_gnu_process_c() {
 }
 
 #[test]
+fn minibuffer_c_g_runs_abort_minibuffers_and_recursive_edit_1_exits() {
+    // C-g read in the minibuffer is a key (read_key_sequence clears
+    // quit-flag): its map runs `abort-minibuffers' between the command
+    // hooks, minibuffer.el's `minibuffer-quit-recursive-edit' throws a
+    // function to `exit', and recursive_edit_1 calls it, signalling
+    // `minibuffer-quit'.  Each recursive command loop enters through
+    // command_loop_1's post-command hooks; `this-command' is left as the
+    // last command set it; `recursion-depth' counts the minibuffers.
+    let program = r#"(progn
+             (defvar mbq-log nil)
+             (defalias 'mbq-pre (lambda () (push (list 'pre this-command (recursion-depth) (minibuffer-depth)) mbq-log)))
+             (defalias 'mbq-post (lambda () (push (list 'post this-command) mbq-log)))
+             (defalias 'mbq-read
+               (lambda (prompt events &optional recursive)
+                 (setq mbq-log nil this-command nil)
+                 (list (condition-case err
+                           (let ((executing-kbd-macro t)
+                                 (enable-recursive-minibuffers recursive)
+                                 (unread-command-events events))
+                             (read-from-minibuffer prompt))
+                         (quit (list 'quit err)))
+                       (reverse mbq-log)
+                       (list this-command real-this-command last-command))))
+             (add-hook 'pre-command-hook 'mbq-pre)
+             (add-hook 'post-command-hook 'mbq-post)
+             (unwind-protect
+                 (list (mbq-read "C-g: " (list ?a 7))
+                       (mbq-read "Nested: " (list ?a ?\M-x 7 ?y ?e ?s 13) t)
+                       (mbq-read "RET: " (list ?a 13))
+                       (recursion-depth)
+                       (condition-case err (abort-recursive-edit) (error err))
+                       (condition-case err (exit-recursive-edit) (error err)))
+               (remove-hook 'pre-command-hook 'mbq-pre)
+               (remove-hook 'post-command-hook 'mbq-post)))"#;
+    let expected = r#"(((quit (minibuffer-quit)) ((post nil) (pre self-insert-command 1 1) (post self-insert-command) (pre abort-minibuffers 1 1)) (abort-minibuffers abort-minibuffers self-insert-command)) ("ayes" ((post nil) (pre self-insert-command 1 1) (post self-insert-command) (pre execute-extended-command 1 1) (post execute-extended-command) (pre abort-minibuffers 2 2) (post abort-minibuffers) (pre self-insert-command 1 1) (post self-insert-command) (pre self-insert-command 1 1) (post self-insert-command) (pre self-insert-command 1 1) (post self-insert-command) (pre exit-minibuffer 1 1)) (exit-minibuffer exit-minibuffer self-insert-command)) ("a" ((post nil) (pre self-insert-command 1 1) (post self-insert-command) (pre exit-minibuffer 1 1)) (exit-minibuffer exit-minibuffer self-insert-command)) 0 (user-error "No recursive edit is in progress") (user-error "No recursive edit is in progress"))"#;
+    // The nested read's minibuffer-quit reaches cmd_error, whose
+    // `(ding t)' writes GNU's batch bell to stdout before the result.
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), &format!("\u{7}{expected}"));
+    assert_interpreter_prints(program, expected, "minibuffer C-g");
+}
+
+#[test]
+fn read_minibuf_refuses_a_recursive_read_unless_enabled() {
+    // minibuf.c:read_minibuf: with `enable-recursive-minibuffers' nil, a
+    // read while a minibuffer is active is a user error from the
+    // minibuffer window and, from another window, a throw of the message
+    // to `exit' that ends the active read with it as an error.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let* ((map (make-sparse-keymap))
+                  (inner nil)
+                  (outer (lambda (events &optional recursive)
+                           (setq inner nil)
+                           (list (condition-case err
+                                     (let ((executing-kbd-macro t)
+                                           (enable-recursive-minibuffers recursive)
+                                           (unread-command-events events))
+                                       (read-from-minibuffer "Outer: " nil map))
+                                   (error (list 'outer-error err)))
+                                 inner))))
+             (set-keymap-parent map minibuffer-local-map)
+             (define-key map "z"
+               (lambda () (interactive)
+                 (setq inner (condition-case err (read-string "Inner: ") (error (list 'inner-error err))))))
+             (define-key map "w"
+               (lambda () (interactive)
+                 (select-window (frame-first-window))
+                 (setq inner (read-string "Inner: "))))
+             (list (funcall outer (list ?a ?z 13))
+                   (funcall outer (list ?a ?z ?b 13 13) t)
+                   (funcall outer (list ?a ?w 13))))"#,
+        r#"(("a" (inner-error (user-error "Command attempted to use minibuffer while in minibuffer"))) ("a" "b") ((outer-error (error "Command attempted to use minibuffer while in minibuffer")) nil))"#,
+        "recursive minibuffer",
+    );
+}
+
+#[test]
 fn native_minibuffer_stack_queries_match_gnu_minibuf_c() {
     let inactive = r#"(let ((buffer (window-buffer (minibuffer-window))))
                         (list
@@ -24242,7 +24392,20 @@ fn tty_event_reader_quit_signals_gnu_quit() {
     let Err(LispErrorKind::SignalValue(data)) = event.as_ref().map_err(LispError::kind) else {
         panic!("C-g from the tty reader must signal, got {event:?}");
     };
-    assert_eq!(*data, Value::Symbol("quit".into()));
+    // keyboard.c signal_quit: Fsignal (Qquit, Qnil), whose error object
+    // is the list (quit).
+    assert_eq!(*data, Value::list([Value::symbol("quit")]));
+    set_tty_event_reader(Some(Box::new(|_| None)));
+    let caught = crate::test_support::eval_lisp(
+        &mut interp,
+        &mut env,
+        "(condition-case err (read-event) (quit (list 'quit err)) (error (list 'error err)))",
+    );
+    set_tty_event_reader(None);
+    assert_eq!(
+        caught.expect("condition-case handles the quit"),
+        Value::list([Value::symbol("quit"), Value::list([Value::symbol("quit")])])
+    );
 }
 
 #[test]
@@ -24479,35 +24642,38 @@ fn timed_tty_event_read_pumps_process_output_and_deferred_callbacks() {
 }
 
 #[test]
-fn live_minibuffer_recursive_commands_restore_the_outer_command_identity() {
+fn live_minibuffer_leaves_its_last_command_and_call_interactively_restores() {
+    // read_minibuf restores none of the command identities: its recursive
+    // command loop leaves `this-command' and its companions as its last
+    // command, `exit-minibuffer', set them.  callint.c saves them before
+    // reading a command's arguments and restores them before the call,
+    // `current-minibuffer-command' bound meanwhile (GNU 30.2 in batch,
+    // the minibuffer read through `executing-kbd-macro').
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = crate::lisp::types::Env::new();
     interp.set_variable("noninteractive", Value::Nil, &mut env);
-    interp.set_variable(
-        "this-command",
-        Value::Symbol("outer-command".into()),
-        &mut env,
-    );
-    interp.set_variable(
-        "real-this-command",
-        Value::Symbol("outer-real-command".into()),
-        &mut env,
-    );
-    interp.set_variable(
-        "this-original-command",
-        Value::Symbol("outer-original-command".into()),
-        &mut env,
-    );
-    let script = std::rc::Rc::new(std::cell::RefCell::new(
-        "answer\r"
-            .chars()
-            .rev()
-            .map(|ch| Value::Integer(ch as i64))
-            .collect::<Vec<_>>(),
-    ));
-    let feed = std::rc::Rc::clone(&script);
-    set_tty_event_reader(Some(Box::new(move |_| feed.borrow_mut().pop())));
+    let outer = |interp: &mut Interpreter, env: &mut crate::lisp::types::Env| {
+        for (name, value) in [
+            ("this-command", "outer-command"),
+            ("real-this-command", "outer-real-command"),
+            ("this-original-command", "outer-original-command"),
+            ("last-command", "outer-last-command"),
+        ] {
+            interp.set_variable(name, Value::symbol(value), env);
+        }
+    };
+    let feed = |text: &str| {
+        let script = std::rc::Rc::new(std::cell::RefCell::new(
+            text.chars()
+                .rev()
+                .map(|ch| Value::Integer(ch as i64))
+                .collect::<Vec<_>>(),
+        ));
+        set_tty_event_reader(Some(Box::new(move |_| script.borrow_mut().pop())));
+    };
 
+    outer(&mut interp, &mut env);
+    feed("answer\r");
     let result = call(
         &mut interp,
         "read-from-minibuffer",
@@ -24515,22 +24681,40 @@ fn live_minibuffer_recursive_commands_restore_the_outer_command_identity() {
         &mut env,
     );
     set_tty_event_reader(None);
-
     assert_eq!(
         result.expect("live minibuffer submits"),
         Value::String("answer".into())
     );
-    assert_eq!(
-        interp.lookup_var("this-command", &env),
-        Some(Value::Symbol("outer-command".into()))
+    for name in ["this-command", "real-this-command", "this-original-command"] {
+        assert_eq!(
+            interp.lookup_var(name, &env),
+            Some(Value::symbol("exit-minibuffer")),
+            "{name}"
+        );
+    }
+
+    outer(&mut interp, &mut env);
+    feed("a\rb\r");
+    let seen = crate::test_support::eval_lisp(
+        &mut interp,
+        &mut env,
+        r#"(list (call-interactively
+                  (lambda (s)
+                    (interactive "sInput: ")
+                    (list s this-command real-this-command this-original-command
+                          last-command current-minibuffer-command)))
+                 (call-interactively
+                  (lambda (s)
+                    (interactive (list (read-string "Input: ")))
+                    (list s this-command current-minibuffer-command))))"#,
     );
+    set_tty_event_reader(None);
+    let seen = seen.expect("the commands run");
+    let printed = call(&mut interp, "prin1-to-string", &[seen], &mut env).expect("print");
     assert_eq!(
-        interp.lookup_var("real-this-command", &env),
-        Some(Value::Symbol("outer-real-command".into()))
-    );
-    assert_eq!(
-        interp.lookup_var("this-original-command", &env),
-        Some(Value::Symbol("outer-original-command".into()))
+        string_like(&printed).expect("a string").text,
+        "((\"a\" outer-command outer-real-command outer-original-command outer-last-command nil) \
+         (\"b\" outer-command outer-command))"
     );
 }
 
@@ -24809,7 +24993,7 @@ fn tty_minibuffer_quit_signals_gnu_quit() {
     let Err(LispErrorKind::SignalValue(data)) = result.as_ref().map_err(LispError::kind) else {
         panic!("C-g from the minibuffer loop must signal, got {result:?}");
     };
-    assert_eq!(*data, Value::Symbol("quit".into()));
+    assert_eq!(*data, Value::list([Value::symbol("quit")]));
 }
 
 #[test]
@@ -24930,17 +25114,24 @@ fn tty_real_minibuffer_loop_runs_the_lisp_minibuffer_commands() {
         &mut env,
     );
     set_tty_event_reader(None);
-    // TAB ran minibuffer.el's `minibuffer-complete' (the common prefix of
-    // the two candidates), and RET exited through `exit-minibuffer's
-    // throw — the keymap-dispatched command is what last-command records.
+    // TAB completed through the map's `completion-at-point' (the common
+    // prefix of the two candidates), and RET exited through
+    // `exit-minibuffer''s throw, which leaves command_loop_1 before the
+    // cycle's end: `this-command' stays exit-minibuffer and `last-command'
+    // the command before it (GNU 30.2 in batch, through
+    // `executing-kbd-macro').
     assert_eq!(
         result.expect("the real minibuffer loop submits"),
         Value::String("alpha".into())
     );
     assert_eq!(
-        interp.lookup_var("last-command", &env),
+        interp.lookup_var("this-command", &env),
         Some(Value::Symbol("exit-minibuffer".into())),
         "RET must dispatch minibuffer.el's exit-minibuffer"
+    );
+    assert_eq!(
+        interp.lookup_var("last-command", &env),
+        Some(Value::Symbol("completion-at-point".into()))
     );
 }
 

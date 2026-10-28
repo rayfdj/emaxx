@@ -2,26 +2,49 @@ use super::*;
 use crate::lisp::types::Kind;
 use crate::lisp::types::LispErrorKind;
 
+thread_local! {
+    /// The buffer a process read goes through: read_process_output's
+    /// SAFE_ALLOCA of readmax bytes, which nothing clears, kept for the
+    /// thread's next read where a fresh zeroed one cleared
+    /// `read-process-output-max' bytes each time a channel was polled.
+    static READ_BUFFER: std::cell::RefCell<Vec<u8>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The most a thread's read buffer keeps between reads.
+const READ_BUFFER_KEPT: usize = 1 << 20;
+
+/// F with a buffer of LEN bytes for one read.
+fn with_read_buffer<T>(len: usize, f: impl FnOnce(&mut [u8]) -> T) -> T {
+    READ_BUFFER.with(|cell| match cell.try_borrow_mut() {
+        Ok(mut buffer) if len <= READ_BUFFER_KEPT => {
+            if buffer.len() < len {
+                buffer.resize(len, 0);
+            }
+            f(&mut buffer[..len])
+        }
+        _ => f(&mut vec![0; len]),
+    })
+}
+
 /// Drain a non-blocking stream: bytes read plus whether the peer closed.
 /// emacs_read of at most LIMIT bytes from a nonblocking STREAM (retried
 /// when interrupted): the bytes read, or the end of the stream (an error
 /// other than EAGAIN counting as one).
 fn read_chunk<R: std::io::Read>(stream: &mut R, limit: usize) -> (Vec<u8>, bool) {
-    let mut chunk = vec![0u8; limit];
-    loop {
-        match stream.read(&mut chunk) {
-            Ok(0) => return (Vec::new(), true),
-            Ok(n) => {
-                chunk.truncate(n);
-                return (chunk, false);
+    with_read_buffer(limit, |chunk| {
+        loop {
+            match stream.read(chunk) {
+                Ok(0) => return (Vec::new(), true),
+                Ok(n) => return (chunk[..n].to_vec(), false),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    return (Vec::new(), false);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(_) => return (Vec::new(), true),
             }
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                return (Vec::new(), false);
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
-            Err(_) => return (Vec::new(), true),
         }
-    }
+    })
 }
 
 fn record_child_exit(process: &mut ProcessState, status: std::process::ExitStatus) {
@@ -4712,21 +4735,22 @@ fn read_nonblocking_pipe<T: Read>(
     output: &mut Vec<u8>,
     limit: Option<usize>,
 ) -> Result<bool, LispError> {
-    let mut buffer = vec![0u8; limit.unwrap_or(4096)];
-    loop {
-        match pipe.read(&mut buffer) {
-            Ok(0) => return Ok(true),
-            Ok(read) => {
-                output.extend_from_slice(&buffer[..read]);
-                if limit.is_some() {
-                    return Ok(false);
+    with_read_buffer(limit.unwrap_or(4096), |buffer| {
+        loop {
+            match pipe.read(buffer) {
+                Ok(0) => return Ok(true),
+                Ok(read) => {
+                    output.extend_from_slice(&buffer[..read]);
+                    if limit.is_some() {
+                        return Ok(false);
+                    }
                 }
+                Err(error) if error.kind() == ErrorKind::WouldBlock => return Ok(false),
+                Err(error) if error.kind() == ErrorKind::Interrupted => {}
+                #[cfg(unix)]
+                Err(error) if error.raw_os_error() == Some(libc::EIO) => return Ok(false),
+                Err(error) => return Err(LispError::Signal(error.to_string())),
             }
-            Err(error) if error.kind() == ErrorKind::WouldBlock => return Ok(false),
-            Err(error) if error.kind() == ErrorKind::Interrupted => {}
-            #[cfg(unix)]
-            Err(error) if error.raw_os_error() == Some(libc::EIO) => return Ok(false),
-            Err(error) => return Err(LispError::Signal(error.to_string())),
         }
-    }
+    })
 }
