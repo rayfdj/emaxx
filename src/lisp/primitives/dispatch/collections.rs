@@ -64,6 +64,125 @@ pub(super) fn plist_put_eq(
     }
 }
 
+/// fns.c's plist test: EQ without PREDICATE (plist_get, plist_put and
+/// plist_member), else `call2 (predicate, XCAR (tail), prop)'.
+fn plist_property_matches(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    property: Value,
+    prop: Value,
+    predicate: Value,
+) -> Result<bool, LispError> {
+    if predicate.is_nil() {
+        return Ok(values_eq_in_env(interp, &property, &prop, env));
+    }
+    Ok(call_function_value(interp, &predicate, &[property, prop], env)?.is_truthy())
+}
+
+/// fns.c:Fplist_get and plist_get: FOR_EACH_TAIL_SAFE two cells a step;
+/// a pair without a value, a non-list or a cycle ends it with nil.
+fn plist_get_value(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    plist: Value,
+    prop: Value,
+    predicate: Option<Value>,
+) -> Result<Value, LispError> {
+    let predicate = predicate.unwrap_or(Value::Nil);
+    let mut tail = plist;
+    let mut walk = crate::lisp::types::TailWalk::new(tail);
+    while let Some(cell) = tail.cons_ref() {
+        let Some(rest) = cell.cdr.get().cons_ref() else {
+            break;
+        };
+        if plist_property_matches(interp, env, cell.car.get(), prop, predicate)? {
+            return Ok(rest.car.get());
+        }
+        tail = rest.cdr.get();
+        if walk.cycled_no_quit(tail) {
+            break;
+        }
+    }
+    Ok(Value::Nil)
+}
+
+/// fns.c:Fplist_put with PREDICATE: FOR_EACH_TAIL two cells a step,
+/// storing into the value cell of the first matching property, else
+/// CHECK_TYPE (NILP (tail), Qplistp, plist) and a new pair at the end.
+fn plist_put_with_predicate(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    plist: Value,
+    prop: Value,
+    val: Value,
+    predicate: Value,
+) -> Result<Value, LispError> {
+    let mut prev = Value::Nil;
+    let mut tail = plist;
+    let mut walk = crate::lisp::types::TailWalk::new(tail);
+    while let Some(cell) = tail.cons_ref() {
+        let rest = cell.cdr.get();
+        let Some(value_cell) = rest.cons_ref() else {
+            break;
+        };
+        if plist_property_matches(interp, env, cell.car.get(), prop, predicate)? {
+            rest.set_car(val)?;
+            return Ok(plist);
+        }
+        prev = tail;
+        tail = value_cell.cdr.get();
+        if walk.cycled(tail, || interp.maybe_quit(env))? {
+            return Err(crate::lisp::types::circular_list(tail));
+        }
+    }
+    if !tail.is_nil() {
+        return Err(plist_type_error(&plist));
+    }
+    let rest = if prev.is_nil() {
+        plist
+    } else {
+        prev.cdr()?.cdr()?
+    };
+    let new_cell = Value::cons(prop, Value::cons(val, rest));
+    if prev.is_nil() {
+        return Ok(new_cell);
+    }
+    prev.cdr()?.set_cdr(new_cell)?;
+    Ok(plist)
+}
+
+/// fns.c:Fplist_member and plist_member: FOR_EACH_TAIL two cells a step
+/// to the tail whose property matches; CHECK_TYPE (NILP (tail), Qplistp,
+/// plist) when none does.
+pub(super) fn plist_member_value(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    plist: Value,
+    prop: Value,
+    predicate: Option<Value>,
+) -> Result<Value, LispError> {
+    let predicate = predicate.unwrap_or(Value::Nil);
+    let mut tail = plist;
+    let mut walk = crate::lisp::types::TailWalk::new(tail);
+    while let Some(cell) = tail.cons_ref() {
+        if plist_property_matches(interp, env, cell.car.get(), prop, predicate)? {
+            return Ok(tail);
+        }
+        tail = cell.cdr.get();
+        let Some(value_cell) = tail.cons_ref() else {
+            break;
+        };
+        tail = value_cell.cdr.get();
+        if walk.cycled(tail, || interp.maybe_quit(env))? {
+            return Err(crate::lisp::types::circular_list(tail));
+        }
+    }
+    if !tail.is_nil() {
+        return Err(plist_type_error(&plist));
+    }
+    Ok(Value::Nil)
+}
+
 pub(super) fn fixnum_index_arg(value: &Value) -> Result<i64, LispError> {
     match value.kind() {
         Kind::Integer(index) => Ok(index),
@@ -92,39 +211,36 @@ fn delete_from_list(
     env: &Env,
     comparison: DeleteListComparison,
 ) -> Result<Value, LispError> {
+    // fns.c:Fdelq and Fdelete's list case: FOR_EACH_TAIL, unlinking each
+    // match, then CHECK_LIST_END against the list as it now begins.
     let mut head = *list;
     let mut previous: Option<Value> = None;
     let mut tail = *list;
-    let mut seen = crate::lisp::types::CycleGuard::new();
-    loop {
-        match tail.kind() {
-            Kind::Nil => return Ok(head),
-            Kind::Cons(cell) => {
-                if seen.step(crate::lisp::types::ConsCell::identity(&cell)) {
-                    return Err(LispError::SignalValue(Value::list([
-                        Value::Symbol("circular-list".into()),
-                        Value::String("Circular list".into()),
-                    ])));
-                }
-                let next = cell.cdr.get();
-                let matches = match comparison {
-                    DeleteListComparison::Eq => values_eq_in_env(interp, &cell.car.get(), elt, env),
-                    DeleteListComparison::Equal => values_equal(interp, elt, &cell.car.get())?,
-                };
-                if matches {
-                    if let Some(previous) = &previous {
-                        previous.set_cdr(next)?;
-                    } else {
-                        head = next;
-                    }
-                } else {
-                    previous = Some(tail);
-                }
-                tail = next;
+    let mut walk = crate::lisp::types::TailWalk::new(tail);
+    while let Some(cell) = tail.cons_ref() {
+        let next = cell.cdr.get();
+        let matches = match comparison {
+            DeleteListComparison::Eq => values_eq_in_env(interp, &cell.car.get(), elt, env),
+            DeleteListComparison::Equal => values_equal(interp, elt, &cell.car.get())?,
+        };
+        if matches {
+            if let Some(previous) = &previous {
+                previous.set_cdr(next)?;
+            } else {
+                head = next;
             }
-            _ => return Err(wrong_type_argument("listp", head)),
+        } else {
+            previous = Some(tail);
+        }
+        tail = next;
+        if walk.cycled_no_quit(tail) {
+            return Err(crate::lisp::types::circular_list(tail));
         }
     }
+    if !tail.is_nil() {
+        return Err(wrong_type_argument("listp", head));
+    }
+    Ok(head)
 }
 
 fn current_category_table_id(interp: &mut Interpreter) -> CharTableRef {
@@ -608,133 +724,21 @@ define_dispatch!(
             // ── Plist operations ──
             "plist-get" => {
                 need_arg_range(name, args, 2, 3)?;
-                let plist = args[0];
-                let key = &args[1];
-                let testfn = args.get(2);
-                let mut current = plist;
-                let mut seen = crate::lisp::types::CycleGuard::new();
-                loop {
-                    match current.kind() {
-                        Kind::Nil => return Ok(Value::Nil),
-                        Kind::Cons(cons_cell) => {
-                            let car = &cons_cell.car;
-                            let cdr = &cons_cell.cdr;
-                            let cell_id = crate::lisp::types::ConsCell::identity(&cons_cell);
-                            if seen.step(cell_id) {
-                                return Ok(Value::Nil);
-                            }
-                            let property = car.get();
-                            if value_matches_with_test(interp, &property, key, testfn, env)? {
-                                return match cdr.get().kind() {
-                                    Kind::Cons(cell) => Ok(cell.car.get()),
-                                    _ => Ok(Value::Nil),
-                                };
-                            }
-                            match cdr.get().kind() {
-                                Kind::Cons(cell) => current = cell.cdr.get(),
-                                Kind::Nil => return Ok(Value::Nil),
-                                _ => return Ok(Value::Nil),
-                            }
-                        }
-                        _ => return Ok(Value::Nil),
-                    }
-                }
+                plist_get_value(interp, env, args[0], args[1], args.get(2).copied())
             }
 
             "plist-put" => {
                 need_arg_range(name, args, 3, 4)?;
-                let plist = args[0];
-                let key = &args[1];
-                let val = &args[2];
-                let testfn = args.get(3);
-                if testfn.is_none_or(|predicate| predicate.is_nil()) {
-                    return plist_put_eq(interp, plist, *key, *val, env);
+                let predicate = args.get(3).copied().unwrap_or(Value::Nil);
+                if predicate.is_nil() {
+                    return plist_put_eq(interp, args[0], args[1], args[2], env);
                 }
-                let mut current = plist;
-                let mut seen = crate::lisp::types::CycleGuard::new();
-                loop {
-                    match current.kind() {
-                        Kind::Nil => {
-                            let mut items = plist.to_vec()?;
-                            items.push(*key);
-                            items.push(*val);
-                            return Ok(Value::list(items));
-                        }
-                        Kind::Cons(cons_cell) => {
-                            let car = &cons_cell.car;
-                            let cdr = &cons_cell.cdr;
-                            let cell_id = crate::lisp::types::ConsCell::identity(&cons_cell);
-                            if seen.step(cell_id) {
-                                return Err(LispError::SignalValue(Value::list([
-                                    Value::Symbol("circular-list".into()),
-                                    Value::String("Circular list".into()),
-                                ])));
-                            }
-                            let property = car.get();
-                            if value_matches_with_test(interp, &property, key, testfn, env)? {
-                                return match cdr.get().kind() {
-                                    Kind::Cons(cons_cell) => {
-                                        let value = &cons_cell.car;
-                                        let _ = &cons_cell.cdr;
-                                        value.set(*val);
-                                        Ok(plist)
-                                    }
-                                    _ => Err(plist_type_error(&plist)),
-                                };
-                            }
-                            match cdr.get().kind() {
-                                Kind::Cons(cons_cell) => {
-                                    let _ = &cons_cell.car;
-                                    let next_cdr = &cons_cell.cdr;
-                                    let next = next_cdr.get();
-                                    if next.is_nil() {
-                                        next_cdr.set(Value::list([*key, *val]));
-                                        return Ok(plist);
-                                    }
-                                    current = next;
-                                }
-                                _ => return Err(plist_type_error(&plist)),
-                            }
-                        }
-                        _ => return Err(plist_type_error(&plist)),
-                    }
-                }
+                plist_put_with_predicate(interp, env, args[0], args[1], args[2], predicate)
             }
 
             "plist-member" => {
                 need_arg_range(name, args, 2, 3)?;
-                let plist = args[0];
-                let key = &args[1];
-                let testfn = args.get(2);
-                let mut current = plist;
-                let mut seen = crate::lisp::types::CycleGuard::new();
-                loop {
-                    match current.kind() {
-                        Kind::Nil => return Ok(Value::Nil),
-                        Kind::Cons(cons_cell) => {
-                            let car = &cons_cell.car;
-                            let cdr = &cons_cell.cdr;
-                            let cell_id = crate::lisp::types::ConsCell::identity(&cons_cell);
-                            if seen.step(cell_id) {
-                                return Err(LispError::SignalValue(Value::list([
-                                    Value::Symbol("circular-list".into()),
-                                    Value::String("Circular list".into()),
-                                ])));
-                            }
-                            let property = car.get();
-                            if value_matches_with_test(interp, &property, key, testfn, env)? {
-                                return Ok(Value::Cons(cons_cell));
-                            }
-                            // Skip the value
-                            match cdr.get().kind() {
-                                Kind::Cons(cell) => current = cell.cdr.get(),
-                                Kind::Nil => return Ok(Value::Nil),
-                                _ => return Err(plist_type_error(&plist)),
-                            }
-                        }
-                        _ => return Err(plist_type_error(&plist)),
-                    }
-                }
+                plist_member_value(interp, env, args[0], args[1], args.get(2).copied())
             }
 
             // ── Sort ──
@@ -886,6 +890,15 @@ define_dispatch!(
             "aref" => {
                 need_args(name, args, 2)?;
                 let raw_idx = fixnum_index_arg(&args[1])?;
+                if let Kind::StringObject(state) = args[0].kind() {
+                    // data.c:Faref: SREF of a unibyte string, STRING_CHAR at
+                    // string_char_to_byte of a multibyte one.
+                    return usize::try_from(raw_idx)
+                        .ok()
+                        .and_then(|idx| state.borrow().character_at(idx))
+                        .map(Value::Integer)
+                        .ok_or_else(|| args_out_of_range(&args[0], &args[1]));
+                }
                 let literal = record_literal_items(&args[0]);
                 // data.c:Faref exposes records and closures, but not the
                 // other pseudovectors kept in our internal Record storage.
@@ -916,14 +929,6 @@ define_dispatch!(
                     return record_literal_aref(&args[0], &items, idx, &args[1]);
                 }
                 match args[0].kind() {
-                    Kind::StringObject(_) => {
-                        match crate::lisp::primitives::strings::string_char_code_at_in_place(
-                            &args[0], idx,
-                        ) {
-                            Some(code) => Ok(Value::Integer(code)),
-                            None => Err(args_out_of_range(&args[0], &args[1])),
-                        }
-                    }
                     Kind::Closure(lambda) => lambda
                         .get(idx)
                         .ok_or_else(|| args_out_of_range(&args[0], &args[1])),
@@ -951,6 +956,13 @@ define_dispatch!(
             "aset" => {
                 need_args(name, args, 3)?;
                 let raw_idx = fixnum_index_arg(&args[1])?;
+                if let Kind::StringObject(_) = args[0].kind() {
+                    // data.c:Faset's string case: CHECK_IMPURE, the index,
+                    // then CHECK_CHARACTER of NEWELT.
+                    aset_string_value(&args[0], raw_idx, &args[2])
+                        .map_err(|error| string_storage_error(interp, env, error))?;
+                    return Ok(args[2]);
+                }
                 // data.c:Faset permits actual records as well as arrays;
                 // native functions and other opaque pseudovectors are neither.
                 if !args[0].is_string()
@@ -966,9 +978,6 @@ define_dispatch!(
                     && !(0..=0x3f_ffff).contains(&raw_idx)
                 {
                     return Err(LispError::WrongTypeArgument("characterp".into(), args[1]));
-                }
-                if let Kind::StringObject(state) = args[0].kind() {
-                    state.check_impure()?;
                 }
                 if raw_idx < 0 {
                     return Err(args_out_of_range(&args[0], &args[1]));
@@ -990,11 +999,6 @@ define_dispatch!(
                             return Err(args_out_of_range(&args[0], &args[1]));
                         }
                         vector.set(idx, args[2].is_truthy());
-                        Ok(args[2])
-                    }
-                    Kind::StringObject(_) => {
-                        aset_string_value(&args[0], idx, &args[2])
-                            .map_err(|error| string_storage_error(interp, env, error))?;
                         Ok(args[2])
                     }
                     Kind::LispRecord(record) => {
@@ -1700,6 +1704,9 @@ define_dispatch!(
                     return remove_equal(interp, elt, &args[1]);
                 }
 
+                if !args[1].is_nil() && !args[1].is_cons() {
+                    return Err(wrong_type_argument("sequencep", args[1]));
+                }
                 // GNU Fdelete reuses every retained cons cell.  This is
                 // observable through eq and is what subr.el's destructive
                 // delete-dups relies on; rebuilding a filtered list silently

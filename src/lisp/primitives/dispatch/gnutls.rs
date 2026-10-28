@@ -53,6 +53,7 @@ type ServerNameSet = unsafe extern "C" fn(*mut c_void, c_uint, *const c_void, us
 type CredentialsSet = unsafe extern "C" fn(*mut c_void, c_int, *mut c_void) -> c_int;
 type Handshake = unsafe extern "C" fn(*mut c_void) -> c_int;
 type RecordRecv = unsafe extern "C" fn(*mut c_void, *mut c_void, usize) -> isize;
+type RecordCheckPending = unsafe extern "C" fn(*mut c_void) -> usize;
 type RecordSend = unsafe extern "C" fn(*mut c_void, *const c_void, usize) -> isize;
 type SessionBye = unsafe extern "C" fn(*mut c_void, c_int) -> c_int;
 type CertificateAllocate = unsafe extern "C" fn(*mut *mut c_void) -> c_int;
@@ -109,6 +110,7 @@ struct GnuTlsApi {
     handshake: Handshake,
     record_recv: RecordRecv,
     record_send: RecordSend,
+    record_check_pending: RecordCheckPending,
     bye: SessionBye,
     certificate_allocate: CertificateAllocate,
     certificate_free: CertificateFree,
@@ -294,6 +296,7 @@ fn load_gnutls() -> Result<GnuTlsLibrary, LispError> {
                 handshake: load_symbol(&library, b"gnutls_handshake")?,
                 record_recv: load_symbol(&library, b"gnutls_record_recv")?,
                 record_send: load_symbol(&library, b"gnutls_record_send")?,
+                record_check_pending: load_symbol(&library, b"gnutls_record_check_pending")?,
                 bye: load_symbol(&library, b"gnutls_bye")?,
                 certificate_allocate: load_symbol(
                     &library,
@@ -1050,24 +1053,30 @@ fn safe_cdr(value: &Value) -> Value {
         .unwrap_or(Value::Nil)
 }
 
+/// gnutls.c's cryptographic inputs: a buffer or string is the spec
+/// `list1' makes of it, anything else must be a cons (CHECK_CONS), and
+/// the spec is fns.c:extract_data_from_object's (OBJECT START END
+/// CODING-SYSTEM NOERROR), each element read by CAR_SAFE.
 fn digest_input_bytes(interp: &mut Interpreter, input: &Value) -> Result<Vec<u8>, LispError> {
-    if input.is_string() || matches!(input.kind(), Kind::Buffer(_)) {
-        return secure_hash_source_bytes(interp, input, None, None);
-    }
-    if !input.is_cons() {
+    let mut spec = if input.is_string() || matches!(input.kind(), Kind::Buffer(_)) {
+        Value::list([*input])
+    } else if input.is_cons() {
+        *input
+    } else {
         return Err(wrong_type_argument("consp", *input));
+    };
+    let mut fields = [
+        safe_car(&spec),
+        Value::Nil,
+        Value::Nil,
+        Value::Nil,
+        Value::Nil,
+    ];
+    for field in &mut fields[1..] {
+        spec = safe_cdr(&spec);
+        *field = safe_car(&spec);
     }
-
-    let source = safe_car(input);
-    let tail = safe_cdr(input);
-    let start = safe_car(&tail);
-    let end = safe_car(&safe_cdr(&tail));
-    secure_hash_source_bytes(
-        interp,
-        &source,
-        (!start.is_nil()).then_some(&start),
-        (!end.is_nil()).then_some(&end),
-    )
+    crate::lisp::primitives::md5_source_bytes(interp, &fields, &mut crate::lisp::types::Env::new())
 }
 
 fn peer_status_warning_description(status: &str) -> Option<&'static str> {
@@ -1713,6 +1722,7 @@ fn gnutls_boot(
             credential_deinit: credential_free,
             record_recv: api.record_recv,
             record_send: api.record_send,
+            record_check_pending: api.record_check_pending,
             handshake: api.handshake,
             bye: api.bye,
             error_string: api.error_string,

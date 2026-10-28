@@ -262,6 +262,14 @@ fn map_keymap_direct_value(
     })
 }
 
+/// get_backtrace_frame's CHECK_FIXNAT (NFRAMES).
+fn backtrace_nframes(nframes: Value) -> Result<usize, LispError> {
+    match nframes.kind() {
+        Kind::Integer(count) if count >= 0 => Ok(count as usize),
+        _ => Err(LispError::WrongTypeArgument("wholenump".into(), nframes)),
+    }
+}
+
 fn vector_index_description(index: u32) -> Result<String, LispError> {
     key_sequence_binding_text(&Value::vector([Value::Integer(i64::from(index))]))
 }
@@ -510,11 +518,10 @@ define_dispatch!(
                 } else {
                     get_keymap(interp, args[0], true, true, env)?
                 };
-                interp.set_buffer_local_value(
-                    interp.current_buffer_id(),
-                    "current-local-map",
-                    keymap,
-                );
+                let buffer_id = interp.current_buffer_id();
+                cached_symbol!("current-local-map").with(|symbol| {
+                    interp.set_buffer_local_value_symbol(buffer_id, symbol, keymap);
+                });
                 Ok(Value::Nil)
             }
             "use-global-map" => {
@@ -535,22 +542,33 @@ define_dispatch!(
             }
             "widget-get" => {
                 need_args(name, args, 2)?;
-                widget_get(interp, &args[0], &args[1])
+                widget_get(interp, env, args[0], args[1])
             }
             "widget-put" => {
                 need_args(name, args, 3)?;
-                widget_put(interp, &args[0], &args[1], args[2])
+                // fns.c:Fwidget_put: CHECK_CONS, then plist_put on the cdr.
+                let Some(cell) = args[0].cons_ref() else {
+                    return Err(wrong_type_argument("consp", args[0]));
+                };
+                let plist = super::collections::plist_put_eq(
+                    interp,
+                    cell.cdr.get(),
+                    args[1],
+                    args[2],
+                    env,
+                )?;
+                cell.cdr.set(plist);
+                Ok(args[2])
             }
             "widget-apply" => {
                 need_arg_range(name, args, 2, usize::MAX)?;
-                let function = widget_get(interp, &args[0], &args[1])?;
-                if function.is_nil() {
-                    return Ok(Value::Nil);
-                }
-                let mut call_args = Vec::with_capacity(args.len());
+                // fns.c:Fwidget_apply: Fapply of the property's value, nil
+                // or not, to WIDGET and ARGS.
+                let function = widget_get(interp, env, args[0], args[1])?;
+                let mut call_args = Vec::with_capacity(args.len() - 1);
                 call_args.push(args[0]);
                 call_args.extend_from_slice(&args[2..]);
-                interp.call_function_value(function, args[1].symbol_str(), &call_args, env)
+                interp.call_function_value(function, None, &call_args, env)
             }
             "symbol-function" => direct_symbol_function(interp, args, env),
             "symbol-name" => direct_symbol_name(interp, args, env),
@@ -1155,38 +1173,17 @@ define_dispatch!(
             "backtrace-frame--internal" => {
                 need_args(name, args, 3)?;
                 let callback = resolve_callable(interp, &args[0], env)?;
-                let mut frame_offset = args[1].as_integer()?;
-                if frame_offset < 0 {
-                    return Err(LispError::SignalValue(Value::list([
-                        Value::Symbol("wrong-type-argument".into()),
-                        Value::Symbol("natnump".into()),
-                        args[1],
-                    ])));
-                }
-                let mut base = args[2];
-                if let Kind::Cons(cell) = base.kind() {
-                    frame_offset += cell.car.get().as_integer()?;
-                    let function = cell.cdr.get();
-                    base = function;
-                }
-                if frame_offset < 0 {
-                    return Ok(Value::Nil);
-                }
-                let frames = interp.backtrace_frames_snapshot();
-                let start = if base.is_nil() {
-                    0
-                } else {
-                    let Some(index) = frames
-                        .iter()
-                        .position(|(_, function, _, _)| function == &base)
-                    else {
-                        return Ok(Value::Nil);
-                    };
-                    index
+                // eval.c:get_backtrace_frame's CHECK_FIXNAT, then its walk
+                // from get_backtrace_starting_at's frame for BASE.
+                let nframes = backtrace_nframes(args[1])?;
+                let (offset, base) = match args[2].kind() {
+                    Kind::Cons(cell) => (cell.car.get().as_integer()?, cell.cdr.get()),
+                    _ => (0, args[2]),
                 };
-                let Some((evald, function, frame_args, debug_on_exit)) =
-                    frames.into_iter().nth(start + frame_offset as usize)
-                else {
+                let frame = interp.backtrace_frame_at(nframes, base, offset, |object| {
+                    crate::lisp::primitives::keymap::indirect_function(interp, object, env)
+                });
+                let Some((evald, function, frame_args, debug_on_exit)) = frame else {
                     return Ok(Value::Nil);
                 };
                 let flags = if debug_on_exit {
@@ -1198,7 +1195,7 @@ define_dispatch!(
                 interp.call_function_value(
                     callback,
                     None,
-                    &[evald, function, Value::list(frame_args), flags],
+                    &[evald, function, frame_args, flags],
                     env,
                 )
             }
@@ -1209,7 +1206,7 @@ define_dispatch!(
             }
             "backtrace-eval" => {
                 need_arg_range(name, args, 2, 3)?;
-                let index = usize::try_from(args[1].as_integer()?).unwrap_or(0);
+                let index = backtrace_nframes(args[1])?;
                 let base = args.get(2).filter(|value| !value.is_nil());
                 // The frame's environment is the alist itself: an
                 // assignment made here is a setcdr on the suspended
@@ -1219,15 +1216,7 @@ define_dispatch!(
             }
             "backtrace--locals" => {
                 need_args(name, args, 2)?;
-                let raw_index = args[0].as_integer()?;
-                if raw_index < 0 {
-                    return Err(LispError::SignalValue(Value::list([
-                        Value::Symbol("wrong-type-argument".into()),
-                        Value::Symbol("natnump".into()),
-                        args[0],
-                    ])));
-                }
-                let index = raw_index as usize;
+                let index = backtrace_nframes(args[0])?;
                 let base = args.get(1).filter(|value| !value.is_nil());
                 let locals = interp
                     .backtrace_frame_locals_snapshot_with_base(index, base)
@@ -1436,8 +1425,8 @@ define_dispatch!(
                         continue;
                     }
                     let preserve = !kill_permanent
-                        && interp
-                            .get_symbol_property(name, "permanent-local")
+                        && cached_symbol!("permanent-local")
+                            .with(|property| interp.get_symbol_property_of(name, property))
                             .is_some_and(|value| value.is_truthy());
                     interp.notify_variable_watchers(
                         name,
@@ -1458,7 +1447,7 @@ define_dispatch!(
                     interp.clear_buffer_local_state_for_mode_change(buffer_id);
                 }
                 for (name, value) in permanent {
-                    interp.set_buffer_local_value(buffer_id, &name, value);
+                    interp.set_buffer_local_value_symbol(buffer_id, &name, value);
                 }
                 interp.reset_major_mode_slots(buffer_id);
                 Ok(Value::Nil)
@@ -1611,126 +1600,37 @@ pub(crate) fn oclosure_type_of(value: &Value) -> Option<String> {
     (lambda.public_len() > 4).then(|| lambda.documentation()?.symbol_str().map(String::from))?
 }
 
-fn widget_get(interp: &Interpreter, widget: &Value, property: &Value) -> Result<Value, LispError> {
-    widget_get_inner(interp, widget, property, &mut HashSet::new())
-}
-
-fn widget_get_inner(
-    interp: &Interpreter,
-    widget: &Value,
-    property: &Value,
-    seen: &mut HashSet<String>,
+/// fns.c:Fwidget_get: PROPERTY's value in WIDGET's plist (plist_member),
+/// else in the widget its type's `widget-type' property names, until a
+/// nil widget or type; a widget neither nil nor a cons is CHECK_CONSed.
+fn widget_get(
+    interp: &mut Interpreter,
+    env: &mut crate::lisp::types::Env,
+    mut widget: Value,
+    property: Value,
 ) -> Result<Value, LispError> {
-    match widget.kind() {
-        Kind::Cons(cons_cell) => {
-            let car = &cons_cell.car;
-            let cdr = &cons_cell.cdr;
-            let widget_type = car.get();
-            if let Some(value) = plist_get_exact(&cdr.get().clone(), property)? {
-                return Ok(value);
-            }
-            widget_get_inner(interp, &widget_type, property, seen)
-        }
-        Kind::Symbol(symbol) => {
-            if !seen.insert(symbol.to_string()) {
-                return Ok(Value::Nil);
-            }
-            match interp.get_symbol_property(&symbol, "widget-type") {
-                Some(parent) => widget_get_inner(interp, &parent, property, seen),
-                None => Ok(Value::Nil),
-            }
-        }
-        _ => Ok(Value::Nil),
-    }
-}
-
-fn widget_put(
-    _interp: &mut Interpreter,
-    widget: &Value,
-    property: &Value,
-    value: Value,
-) -> Result<Value, LispError> {
-    let Some((_, cdr)) = (widget).cons_cells() else {
-        return Err(LispError::TypeError("widget".into(), widget.type_name()));
-    };
-    let plist = cdr.get();
-    let updated = plist_put_exact(plist, *property, value)?;
-    cdr.set(updated);
-    Ok(value)
-}
-
-fn plist_get_exact(plist: &Value, property: &Value) -> Result<Option<Value>, LispError> {
-    let mut current = *plist;
-    let mut seen = crate::lisp::types::CycleGuard::new();
     loop {
-        match current.kind() {
-            Kind::Nil => return Ok(None),
-            Kind::Cons(cons_cell) => {
-                let car = &cons_cell.car;
-                let cdr = &cons_cell.cdr;
-                let cell_id = crate::lisp::types::ConsCell::identity(&cons_cell);
-                if seen.step(cell_id) {
-                    return Ok(None);
-                }
-                if car.get() == *property {
-                    return match cdr.get().kind() {
-                        Kind::Cons(cell) => Ok(Some(cell.car.get())),
-                        _ => Ok(Some(Value::Nil)),
-                    };
-                }
-                match cdr.get().kind() {
-                    Kind::Cons(cell) => current = cell.cdr.get(),
-                    _ => return Ok(None),
-                }
-            }
-            _ => return Err(plist_type_error(plist)),
+        if widget.is_nil() {
+            return Ok(Value::Nil);
         }
-    }
-}
-
-fn plist_put_exact(plist: Value, property: Value, value: Value) -> Result<Value, LispError> {
-    let mut current = plist;
-    let mut seen = crate::lisp::types::CycleGuard::new();
-    loop {
-        match current.kind() {
-            Kind::Nil => return Ok(Value::list([property, value])),
-            Kind::Cons(cons_cell) => {
-                let car = &cons_cell.car;
-                let cdr = &cons_cell.cdr;
-                let cell_id = crate::lisp::types::ConsCell::identity(&cons_cell);
-                if seen.step(cell_id) {
-                    return Err(LispError::SignalValue(Value::list([
-                        Value::Symbol("circular-list".into()),
-                        Value::String("Circular list".into()),
-                    ])));
-                }
-                if car.get() == property {
-                    return match cdr.get().kind() {
-                        Kind::Cons(cons_cell) => {
-                            let existing = &cons_cell.car;
-                            let _ = &cons_cell.cdr;
-                            existing.set(value);
-                            Ok(plist)
-                        }
-                        _ => Err(plist_type_error(&plist)),
-                    };
-                }
-                match cdr.get().kind() {
-                    Kind::Cons(cons_cell) => {
-                        let _ = &cons_cell.car;
-                        let next = &cons_cell.cdr;
-                        let next_value = next.get();
-                        if next_value.is_nil() {
-                            next.set(Value::list([property, value]));
-                            return Ok(plist);
-                        }
-                        current = next_value;
-                    }
-                    _ => return Err(plist_type_error(&plist)),
-                }
-            }
-            _ => return Err(plist_type_error(&plist)),
+        let Some(cell) = widget.cons_ref() else {
+            return Err(wrong_type_argument("consp", widget));
+        };
+        let found =
+            super::collections::plist_member_value(interp, env, cell.cdr.get(), property, None)?;
+        if let Some(found) = found.cons_ref() {
+            return found.cdr.get().car();
         }
+        let widget_type = cell.car.get();
+        if widget_type.is_nil() {
+            return Ok(Value::Nil);
+        }
+        widget = crate::lisp::primitives::call(
+            interp,
+            "get",
+            &[widget_type, Value::symbol("widget-type")],
+            env,
+        )?;
     }
 }
 

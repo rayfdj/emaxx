@@ -2458,15 +2458,17 @@ impl Buffer {
         props: Option<Vec<(PropertyName, Value)>>,
         before_markers: bool,
     ) -> usize {
-        let nchars = s.chars().count();
-        if nchars == 0 {
+        if s.is_empty() {
             return self.pt;
         }
 
         let insert_at = self.pt;
         let idx0 = self.pt - 1; // 0-based
         self.record_point_for_undo(insert_at);
+        // The rope keeps its length; what it grew by is the insertion's.
+        let before = self.text.len_chars();
         self.text.insert(idx0, s);
+        let nchars = self.text.len_chars() - before;
         self.invalidate_char_cache();
 
         // Record undo
@@ -3269,6 +3271,10 @@ impl Buffer {
 
     pub fn set_modified_tick(&mut self, tick: ModCount) {
         self.modiff = tick;
+    }
+
+    pub(crate) fn set_chars_modified_tick(&mut self, tick: ModCount) {
+        self.chars_modiff = tick;
     }
 
     pub fn swap_text_state(&mut self, other: &mut Buffer) {

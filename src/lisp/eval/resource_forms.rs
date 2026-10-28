@@ -71,6 +71,9 @@ impl Interpreter {
     }
 
     pub(crate) fn restore_restriction_state(&mut self, saved: SavedRestriction) {
+        // editfns.c:save_restriction_restore_1: changing the bounds
+        // invalidates any recorded current column.
+        self.invalidate_current_column();
         let final_buffer_id = self.current_buffer_id();
         if self.has_buffer_id(saved.buffer_id) {
             if final_buffer_id != saved.buffer_id {

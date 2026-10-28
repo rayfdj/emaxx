@@ -573,6 +573,14 @@ impl SymbolName {
     #[inline]
     fn find_interned(text: &str) -> Option<Self> {
         use obarray::Buckets;
+        // A primitive naming a symbol by its literal text presents the same
+        // address on every call: the text is hashed once, not each time.
+        let key = (text.as_ptr() as usize) ^ (text.len() << 48);
+        if let Some(symbol) = symbols::with_address_names(|cache| cache.get(key))
+            && symbol.as_str() == text
+        {
+            return Some(symbol);
+        }
         let bytes = text.as_bytes();
         let chars = if obarray::plain_ascii(bytes) {
             bytes.len()
@@ -585,7 +593,9 @@ impl SymbolName {
         } else {
             text.chars().count()
         };
-        INTERNED_SYMBOL_NAMES.with_borrow(|names| names.lookup(bytes, chars).ok())
+        let symbol = INTERNED_SYMBOL_NAMES.with_borrow(|names| names.lookup(bytes, chars).ok())?;
+        symbols::with_address_names_mut(|cache| cache.insert(key, symbol));
+        Some(symbol)
     }
 
     /// oblookup in the initial obarray of host TEXT; None for a marked key.
@@ -652,36 +662,12 @@ impl SymbolName {
         INTERNED_SYMBOL_NAMES.with_borrow(|names| names.lookup_name(name))
     }
 
-    /// The interned symbol named TEXT, through a cache keyed by the text's
-    /// address and length and verified by the text itself: a primitive
-    /// reading a variable by its literal name presents the same address on
-    /// every call, so the name is hashed once, not on each read.  A text
-    /// that is not an interned symbol's is not cached (None: the caller
-    /// keeps its by-name path, which may still know the name).
+    /// The symbol named TEXT, interned or a live uninterned one, through
+    /// `find_interned's address-keyed cache.  None for a text that is no
+    /// symbol's (the caller keeps its by-name path, which may still know
+    /// the name).
     pub(crate) fn interned_cached(text: &str) -> Option<Self> {
-        // The text's address and length in one word: a user-space address
-        // fits in 48 bits.  A longer text's key may collide, and the text
-        // check below sends any entry that is not this text's to the table.
-        let key = (text.as_ptr() as usize) ^ (text.len() << 48);
-        if let Some(symbol) = symbols::with_address_names(|cache| cache.get(&key).cloned())
-            && symbol.as_str() == text
-        {
-            return Some(symbol);
-        }
-        if text.contains(UNINTERNED_SYMBOL_MARKER_CHAR) {
-            return Self::live_uninterned(text);
-        }
-        let symbol = Self::find_interned(text)?;
-        symbols::with_address_names_mut(|cache| {
-            // A bounded cache: a runtime-built name whose storage is freed
-            // and reused would otherwise pin a stale entry (the text check
-            // above keeps such an entry from ever answering wrongly).
-            if cache.len() >= 8192 {
-                cache.clear();
-            }
-            cache.insert(key, symbol);
-        });
-        Some(symbol)
+        Self::find(text)
     }
 
     fn live_uninterned(text: &str) -> Option<Self> {
@@ -1642,6 +1628,67 @@ impl Default for CycleGuard {
     fn default() -> Self {
         CycleGuard::new()
     }
+}
+
+/// lisp.h:FOR_EACH_TAIL_INTERNAL's iterator (`struct
+/// for_each_tail_internal'): Brent's teleporting tortoise on GNU's
+/// schedule, so a cycle is found at the cell where GNU finds it.
+pub(crate) struct TailWalk {
+    tortoise: Value,
+    max: isize,
+    n: isize,
+    q: u16,
+}
+
+impl TailWalk {
+    /// `{ tail, 2, 0, 2 }' for the walk from LIST.
+    #[inline]
+    pub(crate) fn new(list: Value) -> Self {
+        TailWalk {
+            tortoise: list,
+            max: 2,
+            n: 0,
+            q: 2,
+        }
+    }
+
+    /// The loop's step after `tail = XCDR (tail)': true when TAIL closes a
+    /// cycle.  QUIT runs where FOR_EACH_TAIL calls maybe_quit (the walk
+    /// FOR_EACH_TAIL_SAFE makes passes a no-op).
+    #[inline]
+    pub(crate) fn cycled(
+        &mut self,
+        tail: Value,
+        quit: impl FnOnce() -> Result<(), LispError>,
+    ) -> Result<bool, LispError> {
+        self.q = self.q.wrapping_sub(1);
+        let compare = self.q != 0 || {
+            quit()?;
+            self.n -= 1;
+            0 < self.n
+        };
+        if compare {
+            return Ok(tail.word() == self.tortoise.word());
+        }
+        self.max <<= 1;
+        self.n = self.max;
+        self.q = self.max as u16;
+        self.n >>= u16::BITS;
+        self.tortoise = tail;
+        Ok(false)
+    }
+
+    /// `cycled' for a walk that never quits.
+    #[inline]
+    pub(crate) fn cycled_no_quit(&mut self, tail: Value) -> bool {
+        self.cycled(tail, || Ok(()))
+            .expect("a walk without quit cannot fail")
+    }
+}
+
+/// eval.c:circular_list: `(circular-list TAIL)'.
+pub(crate) fn circular_list(tail: Value) -> LispError {
+    LispError::SignalValue(Value::list([Value::symbol("circular-list"), tail]))
 }
 
 /// Parser output that still needs an Interpreter to allocate its final Lisp
@@ -2614,6 +2661,22 @@ impl Value {
         self.0 == 0 || self.0 == Value::T.0 || self.0 & 3 == TAG_INT0
     }
 
+    /// lisp.h's XTYPE, with its two fixnum tags as one.
+    #[inline(always)]
+    pub(crate) fn xtype(self) -> usize {
+        if self.0 & 3 == TAG_INT0 {
+            TAG_INT0
+        } else {
+            self.0 & TAG_MASK
+        }
+    }
+
+    /// FIXNUMP: the tag alone.
+    #[inline(always)]
+    pub(crate) fn is_fixnum(self) -> bool {
+        self.0 & 3 == TAG_INT0
+    }
+
     /// `CONSP': the tag alone.
     #[inline(always)]
     pub fn is_cons(&self) -> bool {
@@ -2866,6 +2929,34 @@ impl Value {
         Ok(result)
     }
 
+    /// fns.c:concat_to_list's and Fcopy_sequence's walk of a list: its
+    /// first element, then FOR_EACH_TAIL from its cdr (where a cycle is
+    /// found from), and CHECK_LIST_END (tail, tail).
+    pub(crate) fn concat_list_elements(self) -> Result<Vec<Value>, LispError> {
+        let Some(cell) = self.cons_ref() else {
+            return if self.is_nil() {
+                Ok(Vec::new())
+            } else {
+                Err(LispError::WrongTypeArgument("listp".into(), self))
+            };
+        };
+        let mut items = vec![cell.car.get()];
+        let mut tail = cell.cdr.get();
+        let mut walk = TailWalk::new(tail);
+        while let Some(cell) = tail.cons_ref() {
+            items.push(cell.car.get());
+            tail = cell.cdr.get();
+            if walk.cycled_no_quit(tail) {
+                return Err(circular_list(tail));
+            }
+        }
+        if tail.is_nil() {
+            Ok(items)
+        } else {
+            Err(LispError::WrongTypeArgument("listp".into(), tail))
+        }
+    }
+
     /// Append the elements of a proper list to an existing value buffer.
     ///
     /// Source evaluation and other callers share this path so cycle and
@@ -2885,14 +2976,14 @@ impl Value {
         mut visit: impl FnMut(Value) -> Result<(), LispError>,
     ) -> Result<(), LispError> {
         let mut current = *self;
-        let mut seen = CycleGuard::new();
+        let mut walk = TailWalk::new(current);
         // CONSP and NILP by the word, as FOR_EACH_TAIL tests them.
         while let Some(cell) = current.cons_ref() {
-            if seen.step(ConsCell::identity(&cell)) {
-                return Err(circular_list_error());
-            }
             visit(cell.car.get())?;
             current = cell.cdr.get();
+            if walk.cycled_no_quit(current) {
+                return Err(circular_list(current));
+            }
         }
         if current.is_nil() {
             Ok(())
@@ -2955,13 +3046,6 @@ impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         format_value(self, f, &mut HashSet::new())
     }
-}
-
-fn circular_list_error() -> LispError {
-    LispError::SignalValue(Value::list([
-        Value::Symbol("circular-list".into()),
-        Value::String("Circular list".into()),
-    ]))
 }
 
 fn values_equal_recursive(

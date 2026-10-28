@@ -154,21 +154,24 @@ impl CasingContext {
         // GNU's upcase/downcase go on reading them.
         let _ = super::casetab::prepare_case_tables(interp);
         let capitalizing = matches!(action, CaseAction::Capitalize | CaseAction::UpcaseInitials);
-        let table = |interp: &mut Interpreter, property: &str, env: &mut Env| {
+        let table = |interp: &mut Interpreter,
+                     property: crate::lisp::types::symbols::SymbolKey,
+                     env: &mut Env| {
+            let property = property.with(|symbol| Value::Symbol(*symbol));
             crate::lisp::primitives::dispatch::strings::uniprop_table_id(interp, property, env)
         };
         Self {
             titlecase: capitalizing
-                .then(|| table(interp, "titlecase", env))
+                .then(|| table(interp, cached_symbol!("titlecase"), env))
                 .flatten(),
             special_upcase: (!matches!(action, CaseAction::Down))
-                .then(|| table(interp, "special-uppercase", env))
+                .then(|| table(interp, cached_symbol!("special-uppercase"), env))
                 .flatten(),
             special_downcase: (!matches!(action, CaseAction::Up))
-                .then(|| table(interp, "special-lowercase", env))
+                .then(|| table(interp, cached_symbol!("special-lowercase"), env))
                 .flatten(),
             special_titlecase: capitalizing
-                .then(|| table(interp, "special-titlecase", env))
+                .then(|| table(interp, cached_symbol!("special-titlecase"), env))
                 .flatten(),
         }
     }
@@ -508,10 +511,11 @@ pub(crate) fn casify_value(
                     };
                 if code < 128 && mapped >= 256 {
                     let property = if flag == CaseAction::Down {
-                        "lowercase"
+                        cached_symbol!("lowercase")
                     } else {
-                        "uppercase"
-                    };
+                        cached_symbol!("uppercase")
+                    }
+                    .with(|symbol| Value::Symbol(*symbol));
                     mapped = dispatch::strings::uniprop_table_id(interp, property, env)
                         .and_then(|table| interp.char_table_get(table, code))
                         .and_then(|value| value.integer_value())

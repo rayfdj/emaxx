@@ -7236,6 +7236,780 @@ setup_process_coding_systems's check now refuses). A 13-form
   give round 108's results. Local validation: the full gate across its
   ten groups with the documented local skips, and the seven integration
   targets; clippy `-D warnings', rustfmt and `git diff --check' pass.
+- **Round 111: chartab.c's Unicode property tables, and
+  `string-to-number''s base.** `unicode-property-table-internal' is
+  Funicode_property_table_internal over uniprop_table: the entry of
+  `char-code-property-alist' found by `eq' (it compared each key's
+  name as a string, so any non-symbol PROP signalled `symbolp' where
+  GNU gives nil), a file it names loaded as save_match_data_load does
+  (`international/' FILE with NOERROR, NOMESSAGE and NOSUFFIX: it
+  loaded strictly, signalling where GNU gives the entry's value), and
+  the table returned only when it is a property table (UNIPROP_TABLE_P:
+  the purpose and five extra slots) with a decoder uniprop_get_decoder
+  knows, else the entry's value; that entry is the one read unless a
+  load ran. `get-unicode-property-internal' and
+  `put-unicode-property-internal' check the character before the table
+  and the table as UNIPROP_TABLE_P, and decode as
+  uniprop_decode_value_run_length: a value in range indexes extra slot
+  4's vector, nil (whose word is 0) is index 0, anything else stands.
+  The decoder signalled on nil or a negative value, read a list as the
+  vector and copied the whole vector on each call. casefiddle.c's
+  special-casing and titlecase tables are read with CHAR_TABLE_REF, not
+  decoded. `string-to-number' checks BASE as Fstring_to_number does
+  (`fixnump', then `args-out-of-range' with the base; it signalled a
+  bare error), and accumulates digits in a machine word, making a
+  bignum only when they overflow (each digit was a bignum operation).
+  A 17-form probe of the property primitives and a 30-form probe of
+  number parsing give GNU 30.2's output. mule-tests.el's
+  `mule-cmds-tests--ucs-names-missing-names' (the `ucs-names' walk over
+  every character) went from 12.40G instructions to 11.98G (GNU 11.05G;
+  the alist lookup 762M to 458M). 167 of GNU's ERT files (3,756 tests)
+  give round 108's results. Local validation: the full gate across its
+  ten groups with the documented local skips (the process-timing test
+  `just_this_one_wait_still_notifies_an_exited_distractor' failed once
+  under a loaded machine and passes alone), and the seven integration
+  targets; clippy `-D warnings', rustfmt and `git diff --check' pass.
+- **Round 112: hashing a string's bytes, and strings in Faref, Faset
+  and byte-code's Baref and Baset.** fns.c:extract_data_from_object
+  hashes SSDATA: a string's own bytes, after code_convert_string when
+  it is multibyte, between endpoints into those bytes. `md5' and
+  `secure-hash' decoded the string into a text view three times (to
+  read the multibyte flag, the flag of the encoded string, and its
+  bytes, re-encoded from the view) where they now read the flag and
+  the bytes in place. hexbuf_digest writes two digits a byte from a
+  table, where each byte was a `format!'. data.c:Faref and Faset test
+  for a string first (the arms tested records, vectors, closures,
+  char-tables and bool vectors before it, and checked purity apart
+  from the store), and bytecode.c's Baref and Baset read and store a
+  string's character in the verified loop as the Faref and Faset they
+  call do: a unibyte byte, a multibyte character read at
+  string_char_to_byte, a store that keeps the string's size into
+  impure storage. Any other case, out-of-range index or NEWELT that
+  is not a character leaves the loop for the full `aref' or `aset',
+  so GNU's errors and promotions are unchanged. A 60-form probe of
+  `aref' and `aset' on unibyte, multibyte and raw-byte strings (from
+  byte-code and as functions), `md5' and `secure-hash' with endpoints,
+  coding systems, NOERROR, BINARY and buffer sources gives GNU 30.2's
+  output. erc-sasl-tests.el's
+  `erc-sasl-create-client--scram-sha-512--no-authzid' (rfc2104's
+  `aref' and `aset' loops over its pads, `secure-hash' of each
+  iteration) went from 1,962M instructions to 872M (GNU 972M), and
+  gnutls-tests.el's `test-gnutls-004-symmetric-ciphers' (its hex
+  comparisons and padding) takes 1,496M (GNU 1,630M).
+- **Round 112: gnutls's inputs are extract_data_from_object's specs.**
+  gnutls.c makes a buffer or string key, IV, input or AEAD datum the
+  spec `list1' gives, CHECK_CONSes anything else, and reads each with
+  extract_data_from_object, the function `md5' and `secure-hash' use.
+  A second reader of its own took only OBJECT, START and END, counted
+  the endpoints in characters of the unencoded string, encoded a
+  multibyte string as UTF-8 whatever CODING-SYSTEM said, ignored
+  NOERROR, and panicked on a START past END (`("abc" 2 1)' aborted the
+  process where GNU signals `args-out-of-range'). The specs now go to
+  the one port of extract_data_from_object; only `iv-auto''s random
+  bytes stay apart. A 30-form probe of `gnutls-hash-digest',
+  `gnutls-hash-mac' and `gnutls-symmetric-encrypt' with string, buffer,
+  endpoint, coding-system, NOERROR and `iv-auto' specs gives GNU 30.2's
+  output.
+  167 of GNU's ERT files (3,756 tests) give round 111's results.
+  Local validation: the full gate across its ten groups with the
+  documented local skips (`just_this_one_wait_still_notifies_an_exited_distractor'
+  again failed once under a loaded machine and passes alone), and the
+  seven integration targets; clippy `-D warnings', rustfmt and `git
+  diff --check' pass.
+- **Round 113: lisp.h's FOR_EACH_TAIL, and `assoc''s TESTFN.**
+  `TailWalk' is FOR_EACH_TAIL_INTERNAL's iterator (Brent's tortoise on
+  GNU's `{ tail, 2, 0, 2 }' schedule, maybe_quit where it quits), so a
+  cycle is found at the cell GNU finds it and `circular-list' carries
+  that tail: every list walker reported `(circular-list "Circular
+  list")' from its own schedule. `assq' and `rassq' (Fassq, Frassq)
+  test a cons element's car or cdr by the words (EQ), where each
+  element decoded three object kinds (483M instructions to 238M in
+  semantic-utest-ia's doublens test; GNU 224M), and CHECK_LIST_END
+  reports the alist, not its tail. `assoc' and `rassoc' are Fassoc
+  and Frassoc: an `eq'-comparable KEY without TESTFN is Fassq's walk,
+  EQ is tried before Fequal, and TESTFN is called with the element's
+  car and then KEY (it was called with KEY first: `(assoc 2 '((1 . a)
+  (3 . b)) #'<)' gave `(3 . b)', GNU `(1 . a)'). `plist-get' (both
+  FOR_EACH_TAIL_SAFE walks), `plist-put' and `plist-member' with and
+  without PREDICATE step two cells as fns.c does and call PREDICATE
+  with the property first; `widget-get', `widget-put' and
+  `widget-apply' are Fwidget_get (plist_member, then the `widget-type'
+  of the type by Fget, CHECK_CONS of anything else), Fwidget_put
+  (plist_put) and Fwidget_apply (Fapply of the value even when nil).
+  `safe-length' counts FOR_EACH_TAIL_SAFE's steps (it counted to a
+  different tortoise, so `last' of a circular list differed), and
+  `length<', `length>' and `length=' are length_internal: CHECK_FIXNUM
+  of LENGTH, a short LENGTH walked with no cycle check (`(length< l 3)'
+  on a dotted or circular list answers as GNU's does where it
+  signalled), its `int' truncation kept. `nreverse''s list case is
+  Fnreverse's (a cycle is a next cell that is SEQ again; CHECK_LIST_END
+  against SEQ; `arrayp' for a non-sequence), `copy-sequence' and
+  `append' walk a list from its cdr as Fcopy_sequence and
+  concat_to_list do, `nconc' is CHECK_CONS and FOR_EACH_TAIL, `delq'
+  and `delete' are FOR_EACH_TAIL with CHECK_LIST_END against the list
+  as it now begins (`delete' signals `sequencep' for a non-sequence),
+  and `elt' is CHECK_ARRAY (SEQUENCE, Qsequencep) before Faref. A
+  probe of 37 list functions over a proper, dotted, two- and
+  three-cell circular, circular alist and non-list input, `assoc' and
+  plist predicates, and the widget functions gives GNU 30.2's output.
+  167 of GNU's ERT files (3,756 tests) give round 112's results.
+  Local validation: the full gate across its ten groups with the
+  documented local skips (`just_this_one_wait_still_notifies_an_exited_distractor'
+  failed once more under a loaded machine and passes alone), and the
+  seven integration targets; clippy `-D warnings', rustfmt and `git
+  diff --check' pass.
+- **Round 114: the matcher reads the buffer in place.** search.c hands
+  re_search_2 the buffer's two halves from BEGV_BYTE to ZV_BYTE. Each
+  `looking-at', `re-search-forward' and `looking-back' built a
+  ropey::RopeSlice of the accessible text, and ropey counts the
+  characters, UTF-16 surrogates and line breaks of the leaf a slice
+  lands in when it builds one (255M instructions for semantic-utest-ia's
+  doublens test, 754K `looking-at' calls, a few hundred bytes of buffer
+  counted each time). The matcher now reads a `RopeRange' (the rope and
+  the byte bounds, each chunk `chunk_at_byte' gives cut to them), and
+  its character offsets come from the rope less BEGV's. The snapshot of
+  an ASCII buffer takes its byte positions as its character positions,
+  where each was a rope conversion, and EXACTN tests the first byte
+  before comparing the rest (GNU's byte loop; nearly every attempt fails
+  there, and the slice comparison was a memcmp call). The doublens test
+  went from 7,358M instructions to about 6,986M (GNU 6,320M).
+- **Round 115: fatal signals end Emacs through `kill-emacs'.**
+  sysdep.c:init_signals catches SIGHUP, SIGTERM and, in batch, SIGINT
+  (each unless inherited ignored), and emacs.c:terminate_due_to_signal
+  calls Fkill_emacs with the signal number: `kill-emacs-hook' runs, the
+  files are unlocked, standard output is flushed and the exit status is
+  the signal's number. Emaxx installed no handler and died by the signal
+  (status 143 for SIGTERM, nothing flushed, no hook). The handler now
+  records the signal and the next quit check runs `kill-emacs' with it,
+  whatever `inhibit-quit' says; process waits (`sleep-for',
+  `accept-process-output') check on each pass, and `while' calls
+  maybe_quit before each body as Fwhile does (it never checked, so an
+  interpreted `(while t)' could not be quit at all). Any later fatal
+  signal after the first has run is dropped, as GNU's handler runs with
+  every signal blocked. A second one while the first still waits for a
+  quit check takes the signal's default action, so a primitive that
+  never reaches one (a native walk of a circular list) cannot leave the
+  process running; GNU's handler would have run the hook there. (A
+  watchdog thread for that case broke emacs-tests' seccomp and bwrap
+  tests, whose filters refuse the clone a spawned thread makes.) A
+  probe of SIGTERM in interpreted and byte-compiled loops, `sleep-for',
+  `accept-process-output' and under `inhibit-quit', SIGINT, SIGHUP, and
+  a second SIGTERM while the hook loops gives GNU 30.2's exit statuses,
+  output and hook runs, and emacs-tests passes its 7 tests again.
+- **Round 116: timefns.c's decode_lisp_time, time_cmp and
+  `time-convert'.** Emaxx decoded a time value with its own rules: a
+  list had to be proper and of two to four elements, markers counted as
+  integers, and the errors were `(wrong-type-argument time-value
+  "symbol")', `(wrong-type-argument number-or-marker-p ...)', "Invalid
+  time resolution" and "Time out of range". decode_lisp_time reads a
+  list by its conses: `(HI LO US PS . REST)' ignores what follows PS,
+  `(HI LO . US)' and `(HI LO US . X)' are the microsecond form, `(TICKS
+  . HZ)' needs integer TICKS and a positive integer HZ, HIGH and LOW are
+  integers and US and PS fixnums; anything else is "Invalid time
+  specification", a NaN too, and an infinity is "Specified time is not
+  representable" (time_overflow, which the localtime failures and the
+  timespec range check also signal). `decode_lisp_time' is that, with
+  its form (time_arith keeps (TICKS . HZ) when either operand was of
+  that form, which a five-element list no longer counted as) and nil
+  reading the clock at each decode. `current-time-string' and
+  `current-time-zone' decode the seconds alone (lisp_seconds_argument:
+  `(0 1 1.5)' is a valid time there; the string's year is printed as
+  "%d", where chrono's "%Y" gave "+36812"), `format-time-string' formats
+  the time floored to nanoseconds, `decode-time' checks the timespec
+  range and gives an integer SEC unless FORM is t (it gave (TICKS . HZ)
+  for any time not on a 1 Hz clock: `(decode-time 1.5)' began with
+  `(6755399441055744 . 4503599627370496)', GNU 1), `encode-time' takes
+  any time value as SEC (nil the clock) and returns (HI LO) for an
+  integer clock under `current-time-list', `float-time' returns a float
+  argument itself (an infinity too), and `time-convert' is
+  Ftime_convert: a (TICKS . HZ) already on FORM's clock and an integer
+  for `integer' come back themselves, `4' is a clock and not `list', and
+  a FORM that is no positive integer is invalid_hz's `(error "Invalid
+  time frequency" FORM)'. time_cmp answers `eq' operands and `(X . Z)'
+  against `(Y . Z)' with fixnum X and Y before decoding either (so
+  `(time-less-p (cons 1 0) (cons 2 0))' is t where Emaxx signalled), and
+  `time-equal-p''s nil equals only nil. The comparison of two time
+  values whose parts are fixnums now cross-multiplies machine integers,
+  and `current-time' builds its value without a bignum while the ticks
+  fit a fixnum; the fast paths sit in the lifted arms, since a subr call
+  goes through `LIFTED_PRIMITIVES' and not through the module's dispatch
+  function. timer.el's `timer--time-less-p' made 378,015 `time-less-p'
+  calls in track-changes-tests' random test, each on two fresh (HI LO US
+  PS) lists: about 355 instructions a call now, and the test took 4,035M
+  instructions against 6,115M before (GNU 4,199M; the test draws a new
+  seed each run). A probe of `time-less-p' and `time-equal-p' over 27
+  values of every form, valid and not, and of `float-time',
+  `time-convert' with 12 forms, `time-add', `time-subtract',
+  `format-time-string', `current-time-string', `decode-time' and
+  `encode-time' over 34 values gives GNU 30.2's output, except that
+  `current-time-zone''s name for zone t is "UTC" where GNU's is "GMT"
+  (tzlookup's utc_tz is a null zone, so glibc's gmtime names it;
+  round 117 ports that layer).
+  Local validation of rounds 114 to 116, on one build: the full gate
+  across its ten groups with the documented local skips, 3,254 of the
+  3,256 tests run passing (2 ignored), the two failures the
+  load-sensitive `subprocess_exit_is_event_driven_and_notifies_newest_process_first_once'
+  and `just_this_one_wait_still_notifies_an_exited_distractor' (6 of 6
+  and 3 of 3 alone); the seven integration targets, where round 115's
+  SIGTERM test now reads the newline `princ' to standard output leaves
+  `message' to emit before "ready" (GNU's standard error has it too);
+  clippy `-D warnings', rustfmt and `git diff --check'; and each of the
+  three commits builds alone.
+- **Round 117: glibc's time zones and mktime, and gnulib's nstrftime.**
+  timefns.c makes every zone a TZ string (tzlookup: an integer offset is
+  "<+HH[MM[SS]]>-H:MM:SS", `(OFFSET ABBR)' "<ABBR>-H:MM:SS", t and 0 the
+  null zone gmtime serves) and hands it to glibc through gnulib's
+  time_rz (tzalloc, localtime_rz, mktime_z). Emaxx parsed POSIX strings
+  itself and converted with chrono: a zone file name fell back to UTC
+  (`"America/New_York"', `"Asia/Tehran"'), as did a quoted `"<+05>-5"',
+  `wall' as ZONE was an error, t was named "UTC" where gmtime names it
+  "GMT", `encode-time' refused out-of-range fields where mktime
+  normalizes them, years stopped at 262,143, and the directives were an
+  approximation of strftime's (`%_Od', `%10a', `%#Z', `%::::z', "%5%", a
+  trailing "%", `%c''s year). tz.rs ports glibc 2.39's tzset.c (the TZ
+  value: "" is "Universal", a leading colon is dropped, a data file
+  under TZDIR is tried first, else parse_tzname, parse_offset and
+  parse_rule read the POSIX syntax, and a daylight name with no rule
+  takes posixrules' transitions), tzfile.c (TZif with its 64-bit data,
+  the TZ string after it for times past the last transition, and leap
+  seconds), offtime.c (any year an int holds) and mktime.c
+  (__mktime_internal's probes, the spring-forward gap and the tm_isdst
+  search, with glibc's carried offset guesses; timegm sets tm_isdst to
+  0), and gnulib's time_rz. strftime.rs is gnulib's __strftime_internal
+  as Emacs builds it (HAVE_TZNAME unset, so %Z is tm_zone; %s through
+  mktime_z), with the C library's items (%a, %b, %c, %p, %r, %x, %X and
+  the E and O alternatives) from a port of glibc 2.39's own strftime in
+  the C locale, whose numbers are not gnulib's (`%c' of the year 68 ends
+  "68" where gnulib's `%Y' gives "0068", and its int year wraps past
+  2^31 - 1901). `decode-time', `encode-time' (Fencode_time's argument
+  checks and DST rule), `format-time-string' (TIME before FORMAT,
+  `locale-coding-system''s encoding, NUL bytes kept),
+  `current-time-string', `current-time-zone' (a numeric name for an
+  empty abbreviation) and `set-time-zone-rule' (the local rule kept as
+  its TZ string, `wall' or t) are timefns.c's over them. Probes of
+  `decode-time', `format-time-string', `current-time-zone' and
+  `current-time-string' over 35 zones (zone files, POSIX rules, offsets,
+  quoted and nameless strings, `wall', invalid zones) and 14 times, of 9
+  format strings holding 101 directive variants over 15 times in two
+  zones, and of `encode-time' over 11 zones, 20 broken-down times and
+  the three DST values give GNU 30.2's output, apart from `encode-time'
+  with a nil SEC, which reads the clock. Local validation: the full gate
+  across its ten groups with the documented local skips, 3,255 of the
+  3,257 tests run passing (2 ignored), the failures
+  `just_this_one_wait_still_notifies_an_exited_distractor' (3 of 3
+  alone) and eval_02's
+  `format_time_string_supports_case_flags_widths_and_calendar_fields',
+  which expected Emaxx's old "utc" for zone t (GNU's "gmt" now, and it
+  passes); the seven integration targets; clippy `-D warnings', rustfmt
+  and `git diff --check'.
+- **Round 116's `time-subtract' of `eq' operands.** Round 116's frozen
+  run mismatched one outcome, time-date-tests' `test-time-since':
+  `(time-since nil)' is `(time-subtract nil nil)', which round 116's
+  time_arith decoded by reading the clock twice, giving `(-1 65535
+  999999 539000)' where the test wants zero. Ftime_subtract returns
+  make_lisp_time of a zero timespec for `eq' operands before decoding
+  either, `(0 0 0 0)' under `current-time-list' and `(0 . 1000000000)'
+  without, so `(time-subtract 5 5)' and `(time-subtract 'foo 'foo)' are
+  that zero too (Emaxx gave 0 and signalled); `time-add' has no such
+  case. Round 116's time probe now covers these, as GNU 30.2 prints them.
+- **Round 118: the syntax table is a buffer slot.** BVAR (b,
+  syntax_table) is one word of the buffer; Emaxx kept a list of (buffer,
+  table) pairs that each `set-syntax-table' appended to and nothing
+  pruned, and read the current buffer's table by walking it backwards.
+  Every syntax lookup (`string-match', `re-search-forward',
+  `looking-at', `char-syntax', the word and sexp motions) paid for the
+  walk, and its length grew with every buffer that had ever set a table:
+  electric-tests makes a buffer per test, so its 80,733 `string-match'
+  calls took 837M instructions (GNU 96M) and its 38,525 searches 705M
+  (GNU 124M). The table is now a map by buffer, and
+  reset_buffer_local_variables's reset is ported: `kill-buffer' and
+  `kill-all-local-variables' (with or without KILL-PERMANENT, since the
+  slot's buffer_permanent_local_flags entry is 0) return the buffer to
+  the standard table, where Emaxx kept the old one through a major mode
+  change, and `make-indirect-buffer' with CLONE copies it as
+  clone_per_buffer_values does (Emaxx gave the clone the standard
+  table). electric-tests' 874 tests take 8,675M instructions against
+  10,001M (GNU 6,625M): `string-match' 166M, the searches 210M. A probe
+  of the table across `kill-all-local-variables', `kill-buffer', cloned
+  and plain indirect buffers, a major mode and the searches that read it
+  gives GNU 30.2's output. Local validation: the full gate across its
+  ten groups with the documented local skips, 3,256 of the 3,258 tests
+  run passing (2 ignored), the failures the load-sensitive
+  `subprocess_exit_is_event_driven_and_notifies_newest_process_first_once'
+  (5 of 6 alone, a stray process loading the machine) and
+  `just_this_one_wait_still_notifies_an_exited_distractor' (3 of 3
+  alone); the seven integration targets; clippy `-D warnings', rustfmt
+  and `git diff --check'.
+- **Round 119: the process wait blocks on its wait set and the child
+  signal pipe.** wait_reading_process_output selects on the processes'
+  channels (compute_non_keyboard_wait_mask, only WAIT_PROC's for
+  JUST-THIS-ONE) and on child_signal_read_fd, which handle_child_signal
+  writes a byte to, so output, a connection or a child's change of
+  status ends the wait as it happens. Emaxx slept between its passes, up
+  to 10 ms at a time (or until the deadline or the next timer), and saw
+  nothing in between: a wait for a child's output or exit ended up to 10
+  ms late, and for a child on a pty about 10 ms late every time, since
+  Emacs holds the pty's slave open, no hangup reaches the master, and
+  only the child's status says it ended. The wait now polls the
+  descriptors the next pass reads (the output pipes not yet at their
+  end, a read that finds a pipe's end now marking it; ptys; pipe
+  processes' readers; sockets, listeners and serial ports; a connecting
+  socket for writing) and a SIGCHLD pipe installed before the first
+  child is made (signal-hook's pipe handler is child_signal_notify's one
+  non-blocking write), still for at most 10 ms, and skips the wait for
+  output kept from an earlier read or a TLS session's buffered records
+  (gnutls_record_check_pending, now loaded), as GNU skips its select.
+  Two waits in a row that end early before passes that find nothing make
+  the next one a plain sleep, so a descriptor that stays ready cannot
+  make the loop spin (GNU's would, on a subprocess pipe at its end); one
+  such wake is allowed, as a pipe read to its end leaves the wait set
+  before the child signal that follows. Ten `cat's sent an EOF and
+  waited for in turn: each wait took about 10 ms on pipes and on ptys,
+  now 0.3 to 0.4 ms (GNU 0.3 to 0.4).
+- **Round 120: emacs_spawn's posix_spawn.** callproc.c:emacs_spawn
+  starts a child with posix_spawn (emacs_posix_spawn_init_actions and
+  _attributes: the three standard descriptors, the working directory, a
+  new session, SIGINT, SIGQUIT, SIGPROF and SIGPIPE at their defaults
+  and the caller's signal mask), and vforks a child on a pty, which
+  makes the pty its controlling terminal by opening it by name after
+  setsid. Emaxx forked through std's `Command' (its pre_exec hook rules
+  out std's own posix_spawn), so each child copied the page tables of
+  Emaxx's address space and tore them down again in execve: a traced
+  child spent 3.5 ms in copy-on-write faults before its first dup2 and
+  7.5 ms in its execve, and a `make-process' or `call-process' took 11
+  to 14 ms where GNU took 6 to 8 on the same loaded machine. On Linux
+  every child of `make-process' and `call-process' is now posix_spawned,
+  in 5.5 to 9.5 ms on that machine (GNU 6 to 8.6): a child on a pty
+  opens the slave by name in a file action after POSIX_SPAWN_SETSID,
+  which makes it the controlling terminal as GNU's reopen does (for a
+  pty on output alone too, where Emaxx set it only for input), and std's
+  `Child' gives way to SpawnedChild (the pid, the parent's ends, and the
+  status once waitpid reaps it, so a status the pump reaped is never
+  waited for again). A child with no :stderr writes its errors into its
+  output pipe (std_err < 0 means std_out), where Emaxx gave it a second
+  pipe whose bytes reached the filter after the output a pass read:
+  `printf a; printf b >&2; printf c' arrived as "acb", GNU's "abc".
+  `call-process' gives the child the null device for input when it has
+  none (callproc.c's NULL_DEVICE) and reads its output and errors
+  together. An argument holding a NUL, a pty without a name, an exec on
+  a pty that fails (the vfork child reports it: "emacs: PROGRAM: Exec
+  format error" and exit 126, which the fork path still produces), and
+  other systems keep the fork path. Exec failures, `default-directory',
+  a pty's controlling terminal and the foreground group on it give GNU
+  30.2's results.
+- **Round 121: a process's terminal name outlives the child.**
+  Fprocess_tty_name reads p->tty_name, p->pty_in and p->pty_out, which
+  the process keeps after its child exits: STREAM nil names the terminal
+  when any stream used one, `stdin' and `stdout' when theirs did, and
+  `stderr' when it was stdout's (no p->stderrproc). Emaxx read the live
+  runtime and answered nil for every stream once the child had exited. A
+  probe of the four connection types after the exit gives GNU 30.2's
+  output. Local validation of rounds 119 to 121, on one build: the full
+  gate across its ten groups with the documented local skips, all 3,261
+  tests run passing (2 ignored), the load-sensitive two among them; the
+  seven integration targets; clippy `-D warnings', rustfmt and `git diff
+  --check'; and each of the three commits builds alone.
+- **Round 122: what `insert-file-contents' spends outside the decode.**
+  Three costs that GNU does not have, measured on the release build. An
+  insertion counted its characters three times (insert_1_both is given
+  them, and the rope already counts what it grows by): once to move the
+  markers, once for each indirect buffer, and once more in the buffer
+  itself; it now counts them once, in the rope. The coding detector set
+  up the attributes of all six ISO-2022 categories' representatives
+  (their charsets, flags and safe tables, through the coding system
+  properties) before every detection, where detect_coding_iso_2022 reads
+  them only for text holding an escape or an eight-bit byte; they are now
+  set up the first time that detector asks. And a search in a unibyte
+  buffer holding a byte above 0x7F converted each chunk of the text back
+  to its bytes before matching, though such a byte is stored as two
+  bytes neither of which is ASCII: an ASCII pattern whose case
+  equivalents are ASCII (the Boyer-Moore condition) matches exactly
+  where it matches the stored text, which the search now reads in place.
+  sgml-html-meta's `(search-forward "</head>" nil t)' over the 2.6 MB
+  raw-text work buffer of a file took 15 ms, now 9.7. Reading a small
+  file into a buffer took about 200 us, now 97 to 118 (GNU 106 to 171);
+  a 2.6 MB file 41 to 61 ms, now 33 to 37 (GNU 9 to 11, which still
+  decodes in the visiting buffer itself and does not validate valid
+  UTF-8 twice).
+- **Round 123: call_process opens the child's descriptors.** callproc.c
+  call_process opens everything the child gets in Emacs: INFILE (the null
+  device for nil), expanded in the process's directory; the null device
+  for writing when the output is discarded (DESTINATION nil or a
+  number), `(:file FILE)''s file, created and truncated, or else a pipe
+  it reads into the buffer; and standard error goes with the output
+  unless STDERR-FILE names a file, or is nil for output that is kept,
+  which opens the null device. `call-process-region' writes its input
+  to a temporary file (create_temp_file: "emacsXXXXXX" in
+  `temporary-file-directory', removed when the call ends), a number as
+  DESTINATION returns nil without waiting (record_deleted_pid: the child
+  is reaped, and its input file removed, whenever it exits), and the
+  destination buffer is made before the program search. Emaxx read
+  INFILE into memory and named it from Emacs's own directory, piped the
+  output and the errors back whatever DESTINATION said and wrote the
+  files afterwards, piped the region in, and waited for a DESTINATION of
+  0. So `emacs-tests/seccomp/forbids-subprocess' failed after round
+  120: under its filter GNU's parent dies of SIGSYS opening the null
+  device for writing, where Emaxx's parent, its fork now a posix_spawn,
+  survived and only the child died at its exec; `(call-process "sleep"
+  nil 0 nil "2")' took 2 s (GNU none); and `call-process-region' of
+  300,000 characters through `cat' never returned, the region written
+  into a pipe while `cat''s output filled the other. call_process's
+  read and wait also now poll, so a fatal signal ends them, as GNU's
+  handler runs `kill-emacs' in the middle of either: a SIGTERM to a
+  batch Emaxx waiting in `call-process' did nothing until the child
+  ended. The wait polls a pidfd on Linux (the child signal pipe for at
+  most 100 ms elsewhere), as GNU's blocking waitpid needs no SIGCHLD
+  handler either: libgccjit's driver sets SIGCHLD to SIG_DFL when
+  `native-compile' runs in the process, and a wait on the pipe alone
+  then never ended. A probe of every DESTINATION shape, INFILE, the temporary file
+  (a regular file on the child's standard input), the error files, a
+  missing program and DESTINATION 0 gives GNU 30.2's results.
+- **Round 124: where `set-auto-coding-function' runs.** fileio.c
+  Finsert_file_contents decides the coding of a file read into a buffer
+  holding text before it reads: `set-auto-coding-function' sees the first
+  1K of a regular file and the 3K read after an lseek by the file's size
+  less 3K from there (SEEK_CUR, so the last 2K of a file larger than 4K),
+  or all of a smaller one, in the " *code-converting-work*" buffer, made
+  once (its hooks inhibited) and kept: its overlays deleted, the current
+  buffer's directory, writable, visiting nothing, undo off, erased and
+  unibyte. Read into an empty buffer, the file's bytes become the
+  buffer's own unibyte text, undo off, for the call, and
+  decide_coding_unwind takes them out again on any exit (markers,
+  overlays and point at the start, the properties gone) as the bytes to
+  decode, restoring the buffer's multibyteness and undo list; the
+  following find-operation-coding-system passes nil for REPLACE. Emaxx
+  copied all the bytes read into a new " *auto-coding-work*" buffer and
+  killed it, whichever the buffer: the function never saw the target
+  buffer's local variables and saw all of a large file where GNU shows
+  3K. A probe of both buffers with a 10K and a 6-byte file gives GNU
+  30.2's buffers, sizes, point, undo lists, buffer-local values and
+  modification ticks.
+- **Round 125: the gate profile leaves the dependencies' assertions
+  off.** The gate profile keeps debug assertions and overflow checks for
+  this crate's ported code; they were on for every dependency as well,
+  where they check the crates' own invariants (ropey re-sums each
+  child's text info on every edit, `combined_info' 676M instructions of
+  undo-tests' 15.41G under the frozen runner). `[profile.gate.package."*"]'
+  now turns them off for the dependencies only, as in the release
+  build: undo-tests takes 14.30G (the release build 10.22G, GNU 9.28G).
+  The frozen run times this profile.
+  Local validation of rounds 122 to 125, on one build: the full gate
+  across its ten groups with the documented local skips, all 3,264 tests
+  run passing (2 ignored; seven byte-compile tests failed when the disk
+  filled during the run and passed rerun); the seven integration
+  targets; clippy `-D warnings', rustfmt and `git diff --check'; and
+  each of the four commits builds alone.
+- **Round 126: `coding-system-list' is coding.c's variable, and a
+  funcall reads `edebug-entered' as C does.** Fdefine_coding_system_internal
+  and Fdefine_coding_system_alias push each name they define (an
+  undecided eol's three subsidiaries first, an alias's subsidiary
+  aliases before it) onto `coding-system-list', and onto
+  `coding-system-alist' as a list of its name unless an element already
+  holds it; syms_of_coding starts both from its two definitions,
+  `no-conversion' and `undecided'. Emaxx built both from its coding
+  system table at each read: 494 names in an order of its own (GNU 1,071,
+  newest first, an alias listed for every definition), a fresh list each
+  time (`(eq coding-system-list coding-system-list)' was nil), and
+  edebug-tests rebuilt it 148 times, 173M instructions. Both are now
+  real variables kept as coding.c keeps them, and print as GNU 30.2's.
+  The check every funcall makes for an active Edebug read the special
+  `edebug-entered' through the evaluator's lexical lookup by name (4.3
+  million times in edebug-tests, 500M instructions to resolve the
+  name); it reads the symbol's value by key now, as find_symbol_value
+  does. edebug-tests under the frozen runner: 7.18G instructions, now
+  6.21G (GNU 4.11G).
+- **Round 127: a unibyte string's search text is remembered as a
+  multibyte one's is.** A search in a string reads its bytes in place
+  when they are ASCII (or, multibyte, UTF-8 the matcher reads as
+  stored), and the string's char-byte cache remembers that scan for a
+  multibyte string; a unibyte one was scanned again at every search.
+  `split-string' matches its separator from each later start of one
+  string, so proced-tests' `split-string's of each process's
+  attribute lines scanned the whole line once a field: under the
+  frozen runner it took 5.04G instructions, now 4.32G (GNU 3.48G).
+  Both kinds now keep the scan in the cache, and Faset's unibyte byte
+  stores, which keep the string's size and so its cache, now forget
+  it as its multibyte stores do (a test aset's a non-ASCII byte into
+  a string already searched, and searches again, as GNU 30.2 answers).
+- **Round 128: a folding search's first-character test, once a
+  compile.** A search with a translation (`case-fold-search') skips
+  text by its characters' verdicts: each translated, then looked up in
+  the fastmap as re_search_2 does. Emaxx keeps the verdicts of the 128
+  ASCII characters with the pattern, and computed them as each new
+  pattern was first searched. icalendar-tests compiles as many
+  patterns as GNU does (164K, the twenty-cell cache cycling), so it
+  computed them 94K times: 12.1M calls through the generic per-
+  character test, with the translation's lookup out of line, 800M
+  instructions. The loop is now a plain one over the translation's
+  ASCII entries, with the lookup's ASCII path inline and the lead byte
+  of an ASCII character taken as itself. icalendar-tests under the
+  frozen runner (release build): 5.54G instructions, now 4.81G (GNU
+  4.70G); `string-match's search 1.59G, now 0.90G (GNU 0.77G).
+- **Round 129: three things an electric-pair test does per key.** One
+  of electric-tests' python-mode tests run 1,000 times took 2.52M
+  instructions a run, GNU 1.66M; three costs had no counterpart in GNU.
+  keyboard.c's parse_modifiers and apply_modifiers, which every
+  keymap lookup of a symbol event runs, read the symbol's
+  `event-symbol-element-mask', `modifier-cache' and `event-kind' with
+  Fget; Emaxx copied each symbol's name into a new string and looked
+  the properties up by name, interning it each time (91K a run). They
+  now read and write the symbol's own plist with keyed properties, as
+  the uncached parse does, so an uninterned event symbol keeps its
+  parse on itself as in GNU. fns.c:internal_equal returns false at
+  once for objects of two XTYPEs and for two symbols or fixnums that
+  are not EQ; Emaxx went through its whole switch, so `member' of a
+  function in a hook of closures cost 90 instructions an element
+  against GNU's 47 (130K a run, now 62K). The test of the type is
+  inlined ahead of the walk, which a fixnum and a vectorlike still
+  take (a bignum Emaxx did not normalize could hold one's value).
+  `backtrace-frame', which `called-interactively-p' calls once a frame
+  it walks, copied every frame of the stack, arguments and all, to
+  read one; it now walks to the frame as eval.c:get_backtrace_frame
+  does. The walk is GNU's in three more ways: the base matches each
+  frame's function through Findirect_function (an alias's frame for
+  its target), a negative base offset skips nothing, and a special
+  form's frame hands over its unevaluated argument list itself.
+  `backtrace-frame--internal', `backtrace-eval' and `backtrace--locals'
+  signal `wholenump' for a NFRAMES that is not one, where Emaxx
+  signalled `natnump' or `integerp' (or, for `backtrace-eval', took a
+  negative count as 0). The test now takes 2.28M instructions a run;
+  electric-tests' bodies under the frozen runner (release build), 724
+  ms, now about 680 (GNU about 425).
+  An Emaxx test pushed frames for functions it never defined and
+  expected the raw comparison; under Findirect_function each void
+  function is nil, so its three functions are now defined.
+  Local validation of rounds 126 to 129, on one build: the full gate
+  across its ten groups with the documented local skips, all 3,269
+  tests run passing (2 ignored; the primitives group run again after
+  that test's correction); the seven integration targets; clippy
+  `-D warnings', rustfmt and `git diff --check'; and each of the four
+  commits builds alone.
+- **Round 130: `equal' of two strings, and a subr call from native
+  code, at their own cost.** internal_equal's Lisp_String case compares
+  SCHARS, SBYTES and the bytes; Emaxx reached it through the whole walk
+  and its switch, 190 instructions an `equal' against GNU's 65, and
+  ruby-mode-tests' `assoc' of string keys (SMIE's tokens) makes 714K
+  of them. The string case now runs with round 129's type tests ahead
+  of the walk, but for `equal-including-properties' (93 instructions;
+  ruby-mode-tests 2.209G instructions under the frozen runner, release
+  build, now 2.136G, GNU 1.793G). Native code calls each subr through
+  `invoke_subr', whose word-level paths for some twenty subrs made its
+  prologue every call's: a subr without one (most of them) now takes a
+  path of its own, the others the old body out of line (electric-
+  tests' repeated python-mode test: 2.279M instructions a run, now
+  2.263M).
+- **Round 131: the checked build's liveness test, inlined.** In the
+  gate profile, which the frozen run times, every use of a cons or a
+  float asserts its cell is still allocated (GC_CHECK_MARKED_OBJECTS'
+  spirit: a reference the collector could not see is caught at its
+  first use). The test's helpers, `cons_mark' with a stray second
+  `#[inline]' and `ConsRef::mark_bit' with none, were outlined there
+  (thin LTO, sixteen codegen units): two calls on every cons deref,
+  1.6G instructions of mule-tests' 36.9G under the frozen runner. They
+  are now always inlined, the alignment arithmetic wraps where its
+  operands cannot overflow (the range assertion stays), and
+  `with_active', native code's access to its call, is inlined as the
+  release build already inlined it. mule-tests in the gate profile:
+  36.9G instructions, now 34.7G (the release build 22.8G); the release
+  build is unchanged.
+  Local validation of rounds 130 and 131, on one build: the full gate
+  across its ten groups with the documented local skips, all 3,270
+  tests run passing (2 ignored); the seven integration targets; clippy
+  `-D warnings', rustfmt and `git diff --check'; and each commit builds
+  alone.
+- **Round 132: a Bcall stays plain while Edebug is loaded but not
+  entered.** A byte-code call enters its callee's frame in place when
+  nothing else happens on the way in (`plain_bcall_entry'); recording
+  the frame's lexical context for Edebug is one of those things, and
+  the test for it was that `edebug-entered' is special, so once edebug
+  was loaded every Bcall of the session went through the full call,
+  222 instructions each. It now asks whether `edebug-entered''s cell
+  holds nil in place (a localized or redirected value still takes the
+  full call, which reads it as find_symbol_value does).
+  edebug-tests under the frozen runner (release build): 2.1M of its
+  Bcalls took the full call, now 38K; 6.06G instructions, now 5.52G
+  (GNU 4.11G). `equal''s symbol-with-position test reads
+  `symbols-with-pos-enabled' first, as lisp.h does, before it looks
+  into the object, and its walk of two lists tests the cons tags
+  without decoding each object's kind.
+- **Round 133: `list-system-processes' reads /proc's names; an abort's
+  core leaves the unused stack out; a funcall from Rust enters byte
+  code at once.** sysdep.c's list_system_processes with procfs lists
+  the names in /proc that match "[0-9]+", each through
+  `string-to-number', in readdir's order. Emaxx asked the `sysinfo'
+  crate for a full process inventory, which reads every process's
+  status, stat, exe, cmdline, environ, cwd, root, statm and io (and
+  keeps its stat file open), so a listing cost as much as asking every
+  process for its attributes: Proced's list-then-attributes walk made
+  2.1 times GNU's system calls (172K against 82K over 20 walks of 83
+  processes), and proced-tests took 2.00 times GNU's time in the frozen
+  run and 1.15 times locally; now 0.94 locally, with GNU's calls.
+  emacs-module-tests' four `module--test-assertions' tests each run a
+  child Emacs that a module assertion aborts, dumping core: in the
+  frozen run each took 0.48 to 0.64 s against GNU's 0.32 to 0.41 s,
+  where locally either child takes 0.04 s. Emaxx's core was 190 MB, 33
+  MB of it data, against GNU's 44 MB; the rest is the batch stack's 128
+  MB reservation, which a run barely touches but which a core written
+  to a pipe (a crash collector, as on the CI runners) carries whole as
+  zeros, where the process stack GNU runs on is mapped only as deep as
+  it has been used. Before the abort (emacs-module.c's module_abort,
+  then emacs_abort) the owned stack below the live frames is now
+  marked MADV_DONTDUMP: the core is 56 MB, 34 MB of it data. A crash
+  by a signal still dumps the whole stack. A Rust caller's funcall of
+  a byte-code closure (`mapatoms', `mapcar', `sort', a hook) now
+  reaches the VM from `call_subr_directly', where it went on through
+  `call_function_body' and `call_function_value_inner', which repeated
+  the tests already made; and a unibyte ASCII string of at most 64
+  bytes is matched in place at once, without its cached in-place test.
+  `apropos-internal' over the 19.8K symbols, which both frozen runners
+  call twice for every test file, took 55.9M instructions and now 54.4M
+  (GNU 42.8M). Of the remaining 590 instructions a symbol, about 250
+  are the entry from Rust into byte code (GNU's Ffuncall, funcall_lambda and
+  exec_byte_code's prologue take about 180), 100 `string-match' and
+  100 the two byte-code bodies.
+  Local validation of rounds 132 and 133, on one build: the full gate
+  across its ten groups with the documented local skips, all 3,273
+  tests run passing (2 ignored); the seven integration targets; clippy
+  `-D warnings', rustfmt and `git diff --check'; and each commit builds
+  alone.
+- **Round 134: buffer-local queries by symbol, a name cache that keeps
+  its literal names, and indent.c's column cache.** A major mode makes
+  dozens of variables local, and electric-tests' setup runs ruby-mode,
+  js-mode, python-mode and c-mode for each test it defines:
+  `make-local-variable' took 2,319 instructions a call there, finding
+  the variable's name again for its ALWAYS_LOCAL flag, its buffer cell,
+  its default value and its new cell, where data.c works on the symbol.
+  It now asks the symbol, as `local-variable-p',
+  `local-variable-if-set-p', `variable-binding-locus' (which now take a
+  symbol with position while `symbols-with-pos-enabled' is set, as
+  CHECK_SYMBOL does) and `use-local-map' do, and
+  `kill-all-local-variables' reads each variable's `permanent-local'
+  property by identity: 959 instructions a call, and
+  `kill-all-local-variables' 15.6K where it took 22K. A primitive
+  naming a symbol by its literal text found it through a table keyed by
+  the text's address that was emptied whenever 8,192 texts had filled
+  it, and texts built at run time (each resolved alias name, each
+  `format'ted one) filled it, so the literal names were hashed again and
+  again. The table is now direct-mapped, 4,096 slots each answering for
+  one key and checked against the symbol's own name (a reused address
+  only misses), in front of every lookup of an interned name; the column
+  scan reads `tab-width', `ctl-arrow', `selective-display' and the
+  display tables through held symbols. indent.c's current_column answers
+  last_known_column while point and the buffer's MODIFF are what they
+  were when it was recorded (by current_column, `indent-to' and
+  `move-to-column'), and a buffer switch, `widen', `narrow-to-region' and
+  a `save-restriction''s restore invalidate it; Emaxx scanned on every
+  call, so after a change of `tab-width' at the same point and MODIFF it
+  answered the new width's column where GNU answers the recorded one. It
+  now keeps the same record. electric-tests' setup under the frozen
+  runner (release build): 4.05G instructions, now 3.95G (GNU 3.36G, of
+  which its collector takes about 0.55G).
+  Local validation: the full gate across its ten groups with the
+  documented local skips, all 3,275 tests run passing (2 ignored); the
+  seven integration targets; clippy `-D warnings', rustfmt and `git diff
+  --check'.
+- **Round 135: charset maps read as read_hex reads them, and
+  `map-charset-chars' over the charset's own codes.** comp-tests'
+  compiles end in `select-safe-coding-system', whose first
+  `find-coding-systems-region' over a non-ASCII text loads the map of
+  every charset of every coding system it tries, about a hundred files
+  of etc/charsets: 327M instructions where GNU's first call takes 207M.
+  Emaxx read each file into a String (a file that is not UTF-8 lost
+  whole), split it into lines, cut each at `#' and split the rest on
+  whitespace. charset.c:load_charset_map_from_file reads the bytes with
+  read_hex, which scans to the next `0x' (a `#' skipping its line),
+  takes the hex digits after it and hands back the byte that ended them:
+  a `-' there reads TO, an entry the end of the file cuts short ends the
+  reading, and an entry whose number overflowed, whose FROM exceeds its
+  TO or whose character exceeds MAX_CHAR is skipped. The map reader is
+  now that loop over the file's bytes: the first call takes 95M. Every
+  map charset's `map-charset-chars' with TO-CODE omitted signalled
+  `(wrong-type-argument integerp nil)', and a FROM-CODE omitted started
+  at 0 where Fmap_charset_chars starts at CHARSET_MIN_CODE: both now
+  default to the charset's minimum and maximum code, and given codes are
+  clamped to them, so all 102 map charsets' ranges and decodings agree
+  with GNU's (a probe of every one, hashed). A Rust funcall of a
+  byte-code closure enters the VM through one function that pushes the
+  frame, checks the arity and runs the entry program in place, 34
+  instructions a call fewer.
+  Local validation: the full gate across its ten groups with the
+  documented local skips, all 3,276 tests run passing (2 ignored); the
+  seven integration targets (cli's
+  `batch_exit_terminates_owned_children_like_gnu' failed once on its GNU
+  half, the oracle's `sleep' child still running 5 s after its exit
+  while the target's 25 tests ran together, and the target passed
+  whole when rerun); clippy `-D warnings', rustfmt and `git diff
+  --check'.
+- **Round 136: native code's calls of the commonest subrs, and
+  eval.c's FUNCTIONP.** tramp-tests' setup under the frozen runner
+  (release build) took 3.16G instructions against GNU's 2.45G, with the
+  .eln code's own work equal (178.7M each): the gap was the calls the
+  native code makes, each GNU's through its function relocation array
+  straight into the C function. `symbolp' (1.1M calls there),
+  `fboundp' and `symbol-function' (half a million each) went through
+  the generic subr entry, its kind table and its handler
+  synchronization, at 76, 53 and 48 instructions a call against GNU's
+  6, 9 and 6; each now has an entry of its own in the native subr table
+  (the generator's direct targets) answering a symbol cell's word in
+  place (11, 16 and 13), anything else taking the subr's own path.
+  `symbol-value' reads a plain symbol cell's value before it
+  synchronizes the handlers (74, now 21; GNU 28), `get' skips a nil
+  `overriding-plist-environment' (239, now 193; GNU 147), and native
+  code's `let' of a plain special variable binds and unbinds as the
+  byte-code VM's does, the record unbound in place (146 and 215
+  instructions, now 114 and 168; GNU 55 and 81). fns.c's Fnconc stores
+  each argument into the last cons of the one before it as it goes, a
+  nil argument standing for that cons in its turn, and FOR_EACH_TAIL
+  checks for quit and a cycle: Emaxx stored only once it had the next
+  non-nil argument, so `(nconc (list 1) 2 (list 3))' signalled with the
+  first cons unchanged where GNU's has 2 in its cdr; it is now that
+  loop (`mapcan' too), with an entry of its own (154 instructions,
+  now 89; GNU 49). eval.c's FUNCTIONP follows the symbol's function
+  cell and asks the subr its arity: Emaxx asked by name whether the
+  symbol named a special form or a macro, and needed a proper `(lambda
+  ARGS ...)' and a well-formed autoload, so an alias of `if' and `if''s
+  own subr object were functions, and `(lambda)', `(lambda . 1)' and
+  the symbol of a short or dotted autoload were not; it is now that
+  test (1,114 instructions a call, now 191; GNU 69). Ffset and
+  Fdefalias of nil to a non-nil definition signal `setting-constant',
+  which Emaxx let through. tramp-tests' setup takes 2.78G instructions
+  (GNU 2.45G, its collector 0.48G of it against Emaxx's 0.24G), and
+  cal-french-tests' 575M (GNU 566M).
+  Local validation: the full gate across its ten groups with the
+  documented local skips, all 3,278 tests run passing (2 ignored); the
+  seven integration targets (cli's
+  `batch_exit_terminates_owned_children_like_gnu' failed on its GNU half
+  again, as in round 135, while a release build ran alongside, and the
+  target passed whole when rerun); clippy `-D warnings', rustfmt and
+  `git diff --check'.
+- **Round 137: what the comp pipeline's byte code and native code do
+  most.** comp-tests' setup natively compiles two test files, so it runs
+  comp.el's byte code (comp.elc; the redirected cache leaves only the
+  preloaded files native) and the native code it calls: 3.96G
+  instructions under the frozen runner (release build) against GNU's
+  3.18G. bytecode.c's Bmemq is Fmemq, whose lisp.h:EQ takes a symbol
+  with position as its bare symbol, on either side, while
+  `symbols-with-pos-enabled' is set; Emaxx's verified loop sent every
+  Bmemq to the op's full arm while it was set, as the byte compiler sets
+  it, where a name-keyed call of the primitive cost about 300
+  instructions (690,000 calls there). The loop now compares as EQ does
+  under either value of the variable: 184M instructions fewer. Of native
+  code's calls, `type-of' of a record (693,000) went through the subr's
+  generic entry at 233 instructions a call (GNU 41), `aref' of a vector
+  or record (462,000) at 193 (GNU 38), and `aset' at 186 (GNU 50); each
+  has an entry of its own in the native subr table now (57, 50 and 49),
+  a record's type read as Fcl_type_of's PVEC_RECORD case reads it (a
+  helper the general `cl-type-of' shares), any other case taking the
+  subr's own path. `autoload-do-load' returns a FUNDEF that is no
+  autoload form, and an autoload of a function asked for a macro, at
+  once, as Fautoload_do_load's first two tests do; `gethash' and
+  `puthash' make their lookup without the generic entry's dispatch.
+  comp-tests' setup takes 3.56G instructions, and tramp-tests' 2.75G
+  (2.78G after round 136).
+  Local validation: the full gate across its ten groups with the
+  documented local skips, all 3,281 tests run passing (2 ignored); the
+  seven integration targets; clippy `-D warnings', rustfmt and `git diff
+  --check'.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -8058,8 +8832,146 @@ passed (run 40465961198), frozen passed on its first attempt (run
 40465971582).
 **On `620f3c9`** (round 109): full Rust gate passed (run 40470123265),
 frozen passed on its first attempt (run 40470126251).
+**On `d2b6fb8`** (round 110): full Rust gate passed (run 40476730260),
+frozen passed on its first attempt (run 40476733898); PR #110 merged
+rounds 99 to 110 into main (`9ed0ceb`).
+**On `97c936a`** (round 111): full Rust gate passed (run 40491989407);
+frozen's first attempt (run 40491995199) matched 7,927 of 7,928 outcomes,
+the one mismatch GNU's `eglot-test-rust-completion-exit-function'
+failing with a `jsonrpc-error' from rust-analyzer while Emaxx passed (the
+recorded oracle flake), and was rerun once. Its timings: setup 75.9 s
+against 60.9 s (1.246), test bodies 257.3 s against 261.5 s (0.984), in
+all 1.031.
+**On `567e435`** (round 112): full Rust gate passed (run 40498190677),
+frozen passed on its first attempt (run 40498193942).
+**On `f90aebd`** (round 113): full Rust gate passed (run 40506738663),
+frozen passed on its first attempt (run 40506742345). Its timings: setup
+72.0 s against 57.6 s (1.250), test bodies 254.4 s against 251.8 s
+(1.010), in all 1.054; erc-sasl-tests and gnutls-tests are no longer
+among the larger excesses.
+**On `3b2fc92`** (rounds 114 to 116): full Rust gate passed (run
+40529919154); frozen (run 40529925443) matched 7,927 of 7,928 outcomes,
+the mismatch time-date-tests' `test-time-since', round 116's
+`time-subtract' of `eq' operands (fixed after round 117; not rerun). Its
+timings: setup 81.1 s against 63.0 s (1.289), test bodies 270.5 s
+against 263.2 s (1.028), in all 1.059.
+**On `6abdb55`** (round 117 and the `time-subtract' fix): full Rust gate
+passed (run 40547766615); frozen (run 40547770427) matched 7,927 of
+7,928 outcomes on both its attempts, the mismatch each time GNU's
+`eglot-test-rust-completion-exit-function' failing with a
+`jsonrpc-error' ("Timed out") from rust-analyzer while Emaxx passed (the
+recorded oracle flake), so the one rerun did not clear it. Its first
+attempt's timings: setup 64.6 s against 52.7 s (1.225), test bodies
+231.7 s against 242.1 s (0.957), in all 1.022.
+**On `7554397`** (rounds 118 to 121): full Rust gate passed (run
+40569915013); frozen (run 40569919988) matched 7,927 of 7,928 outcomes,
+the mismatch emacs-tests' `emacs-tests/seccomp/forbids-subprocess':
+under its filter GNU's parent dies of SIGSYS opening the null device for
+writing to discard the output, where round 120's posix_spawn left
+Emaxx's parent alive and only its child died at its exec (fixed in
+round 123). Its timings: setup 78.6 s against 58.1 s (1.352), test
+bodies 255.3 s against 254.9 s (1.002), in all 1.068.
+**On `3a4ead0`** (rounds 122 to 125): full Rust gate passed (run
+40601155303); frozen (run 40601158478) matched 7,927 of 7,928 outcomes
+on its first attempt, the mismatch the recorded eglot oracle flake
+(GNU's rust-analyzer exchange timing out while Emaxx passed), and all
+7,928 on its rerun. The first attempt's timings: setup 87.4 s against
+69.3 s (1.262), test bodies 271.0 s against 285.2 s (0.950), in all
+1.006; the rerun's: setup 85.6 s against 65.7 s (1.303), test bodies
+268.4 s against 267.6 s (1.003), in all 1.047.
+**On `0bb5507`** (rounds 126 to 129): full Rust gate passed (run
+40616382094); frozen (run 40616385231) matched 7,927 of 7,928 outcomes
+on its first attempt, the mismatch the recorded eglot oracle flake, and
+all 7,928 on its rerun. The first attempt's timings: setup 56.1 s
+against 47.3 s (1.186), test bodies 213.1 s against 227.0 s (0.939), in
+all 0.980; the rerun's: setup 82.0 s against 64.6 s (1.269), test
+bodies 263.0 s against 265.6 s (0.990), in all 1.024.
+**On `786b170`** (rounds 130 and 131): full Rust gate passed (run
+40623198526); frozen (run 40623201218) matched 7,927 of 7,928 outcomes
+on its first attempt, the mismatch the recorded eglot oracle flake, and
+all 7,928 on its rerun. The first attempt's timings: setup 58.8 s
+against 49.5 s (1.188), test bodies 213.8 s against 229.3 s (0.933), in
+all 0.988; the rerun's: setup 67.5 s against 56.1 s (1.204), test
+bodies 232.6 s against 242.6 s (0.958), in all 1.010.
+**On `63dd90b`** (rounds 132 and 133): full Rust gate passed (run
+40632416575); frozen (run 40632419185) matched all 7,928 outcomes on
+its first attempt. Its timings: setup 74.9 s against 59.7 s (1.253),
+test bodies 244.7 s against 255.9 s (0.956), in all 1.013.
+proced-tests took 0.34 s against 0.31 s (1.09; 1.99 on `786b170`'s
+rerun) and emacs-module-tests 2.53 s against 2.38 s (1.06; 1.35), its
+four aborting `module--test-assertions' tests 0.38 to 0.52 s against
+0.35 to 0.42 s.
+
+**On `ae649a0`** (round 134): full Rust gate passed (run 40637674457);
+frozen (run 40637677385) matched all 7,928 outcomes on its first
+attempt. Its timings: setup 82.5 s against 64.6 s (1.278), test bodies
+260.0 s against 266.3 s (0.976), in all 1.017, on a runner where GNU's
+own total rose from 330.8 s to 350.4 s. comp-tests leads the test-time
+excess (18.12 s against 14.73), then tramp-tests (21.24 against 18.68),
+semantic-utest-ia (4.36 against 2.60) and mule-tests (3.74 against
+2.00).
+
+**On `098bf1c`** (round 135): full Rust gate passed (run 40644254410);
+frozen (run 40644257948) matched all 7,928 outcomes on its first
+attempt. Its timings: setup 85.1 s against 68.6 s (1.241), test bodies
+262.1 s against 269.7 s (0.972), in all 1.013 (GNU's total 356.9 s).
+comp-tests took 17.87 s against 14.76 (1.21; 1.23 on `ae649a0`).
+
+**On `4ce2afe`** (round 136): full Rust gate passed (run 40652523567);
+frozen (run 40652526693) matched all 7,928 outcomes on its first
+attempt. Its timings: setup 81.2 s against 64.7 s (1.255), test bodies
+259.0 s against 264.3 s (0.980), in all 1.015. The test bodies with the
+larger excesses are those the checked build inflates most:
+semantic-utest-ia took 4.57 s against 2.63, where the release build
+runs 1.04 times GNU's instructions and the gate profile 1.60 (its
+`assq' walks of long alists, 5.4G instructions in the gate build
+against 1.9G, are mostly the liveness test of each cons; round 131).
 
 **Findings recorded, not fixed:**
+- **What the checked build costs (round 131).** mule-tests under the
+  frozen runner takes 34.7G instructions in the gate profile against
+  22.8G in the release build. Of the 11.9G, 4.4G is the liveness
+  assertion on each cons and float use (alloc.rs's lines inlined into
+  every walker: 1.1G of it in `char_code_property_entry's walk of
+  `char-code-property-alist', which GNU walks with Fassq at the same
+  seven instructions an element the release build takes); the rest is
+  overflow checks and the other debug assertions, spread thin. They
+  are the gate's safety nets and stay; a frozen run of the release
+  build would time what a user runs, which is the project's call.
+- **Pipe processes hold no descriptors (round 119).** Fmake_pipe_process
+  opens two pipes, four descriptors, at once, and every process channel
+  at or above FD_SETSIZE (1024) is EMFILE ("Creating pipe", "Opening
+  pty", the serial port, sockets, accept), with the soft RLIMIT_NOFILE
+  lowered to FD_SETSIZE at startup (init_process_emacs) and restored in
+  children (restore_nofile_limit). Emaxx's pipe process opens a pipe
+  only when a module asks for its channel, and nothing checks
+  FD_SETSIZE: process-tests' fd-setsize tests make 1,025 pipe processes
+  where GNU stops at its 255th ("Creating pipe" "Too many open files"),
+  and start all ten `cat's of each connection type where GNU starts one
+  or two, so the three tests take 1,067 ms against GNU's 352 here. A
+  child given a pipe process as :stderr then writes into that pipe
+  process's own pipe in GNU, where Emaxx reads a pipe of the child's and
+  hands the bytes to it.
+- **The frozen run times the gate profile (round 112).** The frozen
+  workflow's harness builds the Emaxx it runs with `--profile gate'
+  (thin LTO, 16 codegen units, debug assertions and overflow checks;
+  the checked build's collector also poisons dead conses, fills freed
+  vectors and walks every vector block a sweep). With the runner's
+  command line on erc-sasl-tests.el and no test selected, the gate
+  build takes 972M instructions against the release build's 776M
+  (1.25), and the SCRAM test's body 3,045M against 1,962M (1.55).
+  Round 110's frozen run (519 files, summary.json's timings): setup
+  78.4 s against GNU's 62.4 s (1.256), the test bodies 261.1 s against
+  260.4 s (1.003), in all 1.040; about the whole setup ratio is what
+  the checked build costs. The largest body excesses there:
+  comp-tests +3.5 s (1.25), tramp-tests +2.3 s (1.13),
+  semantic-utest-ia +2.2 s (1.85), mule-tests +1.8 s (1.97; its two
+  `ucs-names' walks), package-tests +1.1 s, edebug-tests +0.8 s,
+  mml-sec-tests +0.8 s, electric-tests +0.75 s (2.32), icalendar-tests
+  +0.7 s (2.78; it varies from run to run), emacs-module-tests +0.7 s,
+  epg-tests +0.7 s, undo-tests +0.6 s, erc-sasl-tests +0.5 s (2.78;
+  round 112) and gnutls-tests +0.3 s (2.68; round 112). Instruction
+  counts and timing pilots here use the release build.
 - **Setup's time at equal instructions (round 110).** The
   cal-french-tests.el setup with the frozen runner's command line takes
   507.9M instructions against GNU's 507.6M, but 0.19 s of user time

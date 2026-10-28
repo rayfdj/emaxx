@@ -48,7 +48,7 @@ enum ChildStatusEvent {
 }
 
 #[cfg(unix)]
-fn poll_child_status(child: &mut Child) -> std::io::Result<Option<ChildStatusEvent>> {
+fn poll_child_status(child: &mut SpawnedChild) -> std::io::Result<Option<ChildStatusEvent>> {
     use std::os::unix::process::ExitStatusExt;
 
     let mut status = 0;
@@ -81,14 +81,14 @@ fn poll_child_status(child: &mut Child) -> std::io::Result<Option<ChildStatusEve
         if libc::WIFCONTINUED(status) {
             return Ok(Some(ChildStatusEvent::Continued));
         }
-        return Ok(Some(ChildStatusEvent::Exited(
-            std::process::ExitStatus::from_raw(status),
-        )));
+        let status = std::process::ExitStatus::from_raw(status);
+        child.record_exit(status);
+        return Ok(Some(ChildStatusEvent::Exited(status)));
     }
 }
 
 #[cfg(not(unix))]
-fn poll_child_status(child: &mut Child) -> std::io::Result<Option<ChildStatusEvent>> {
+fn poll_child_status(child: &mut SpawnedChild) -> std::io::Result<Option<ChildStatusEvent>> {
     child
         .try_wait()
         .map(|status| status.map(ChildStatusEvent::Exited))
@@ -511,6 +511,15 @@ impl Interpreter {
             .and_then(|value| value.cons_values())
             .unwrap_or((Value::Nil, Value::Nil));
         let os_pid = runtime.as_ref().map(|runtime| runtime.child.id());
+        let tty = runtime.as_ref().and_then(|runtime| {
+            runtime.pty_slave_name.clone().map(|name| {
+                (
+                    name,
+                    runtime.pty_input.is_some(),
+                    runtime.pty_output.is_some(),
+                )
+            })
+        });
         let kind = if program.is_some() {
             ProcessKind::Real
         } else {
@@ -541,6 +550,7 @@ impl Interpreter {
             exit_code: None,
             exit_signal: None,
             os_pid,
+            tty,
             runtime,
             network: None,
             serial: None,
@@ -634,6 +644,7 @@ impl Interpreter {
             exit_code: None,
             exit_signal: None,
             os_pid: None,
+            tty: None,
             runtime: None,
             network,
             serial: None,
@@ -713,6 +724,7 @@ impl Interpreter {
             exit_code: None,
             exit_signal: None,
             os_pid: None,
+            tty: None,
             runtime: None,
             network: None,
             serial: Some(serial),
@@ -2166,21 +2178,18 @@ impl Interpreter {
         record_id: u64,
         stream: Option<&Value>,
     ) -> Option<String> {
+        // Fprocess_tty_name: p->tty_name, for stdin when p->pty_in, for
+        // stdout when p->pty_out, and for stderr when it is stdout's (no
+        // p->stderrproc), whether or not the child still runs.
         let process = self.find_process_state(record_id)?;
-        let runtime = process.runtime.as_ref()?;
+        let (name, pty_in, pty_out) = process.tty.as_ref()?;
         let stream_matches = match stream.and_then(|value| value.symbol_str()) {
-            Some("stdin") => runtime.pty_input.is_some(),
-            Some("stdout") => runtime.pty_output.is_some(),
-            // A separate :stderr destination is always a pipe.  Only merged
-            // stderr shares the output PTY and therefore has no Child handle.
-            Some("stderr") => runtime.pty_output.is_some() && runtime.child.stderr.is_none(),
-            _ => runtime.pty_input.is_some() || runtime.pty_output.is_some(),
+            Some("stdin") => *pty_in,
+            Some("stdout") => *pty_out,
+            Some("stderr") => *pty_out && process.stderr_process_id.is_none(),
+            _ => true,
         };
-        if stream_matches {
-            runtime.pty_slave_name.clone()
-        } else {
-            None
-        }
+        stream_matches.then(|| name.clone())
     }
 
     pub fn process_send_eof(&mut self, record_id: u64) -> Result<(Vec<u8>, Vec<u8>), LispError> {
@@ -2266,6 +2275,131 @@ impl Interpreter {
             .collect()
     }
 
+    /// process.c:wait_reading_process_output's wait set for this thread's
+    /// processes, as compute_non_keyboard_wait_mask builds it (only
+    /// WAIT_PROC's channels for JUST-THIS-ONE, none of a process whose
+    /// output is stopped): the output pipes and pty, a pipe process's
+    /// reader, a socket, a listener, a serial port, and the socket of a
+    /// connection still connecting (compute_write_mask).  True when a pass
+    /// finds input without waiting: output kept from an earlier read, or a
+    /// TLS session's buffered records (emacs_gnutls_record_check_pending),
+    /// for which GNU skips the select.
+    #[cfg(unix)]
+    pub(crate) fn process_wait_set(
+        &self,
+        only_process_id: Option<u64>,
+        fds: &mut Vec<libc::pollfd>,
+    ) -> bool {
+        use std::os::fd::AsRawFd;
+        let mut watch = |fd: std::os::fd::RawFd, events: libc::c_short| {
+            fds.push(libc::pollfd {
+                fd,
+                events,
+                revents: 0,
+            });
+        };
+        for process in &self.process_states {
+            if process
+                .thread_id
+                .is_some_and(|thread_id| thread_id != self.active_thread_id)
+                || only_process_id.is_some_and(|id| id != process.record_id)
+                || process.traffic_stopped
+                || process
+                    .filter
+                    .as_ref()
+                    .is_some_and(|filter| *filter == Value::T)
+            {
+                continue;
+            }
+            if !process.pending_stdout.is_empty() || !process.pending_stderr.is_empty() {
+                return true;
+            }
+            if let Some(runtime) = process.runtime.as_ref() {
+                if let Some(pipe) = runtime.child.stdout.as_ref()
+                    && !runtime.stdout_at_end
+                {
+                    watch(pipe.as_raw_fd(), libc::POLLIN);
+                }
+                if let Some(pipe) = runtime.child.stderr.as_ref()
+                    && !runtime.stderr_at_end
+                {
+                    watch(pipe.as_raw_fd(), libc::POLLIN);
+                }
+                if let Some(pty) = runtime.pty_output.as_ref() {
+                    watch(pty.as_raw_fd(), libc::POLLIN);
+                }
+            }
+            if let Some((reader, _)) = process.module_pipe.as_ref() {
+                watch(reader.as_raw_fd(), libc::POLLIN);
+            }
+            if process
+                .gnutls
+                .session
+                .as_ref()
+                .is_some_and(ProcessGnuTlsSession::has_pending_records)
+            {
+                return true;
+            }
+            let events = if matches!(process.status, ProcessStatus::Connect(_)) {
+                libc::POLLOUT
+            } else {
+                libc::POLLIN
+            };
+            match process.network.as_ref() {
+                Some(NetworkRuntime::Listener(listener)) => watch(listener.as_raw_fd(), events),
+                Some(NetworkRuntime::Stream(stream)) => watch(stream.as_raw_fd(), events),
+                Some(NetworkRuntime::Datagram { socket, .. }) => watch(socket.as_raw_fd(), events),
+                Some(NetworkRuntime::UnixListener(listener)) => watch(listener.as_raw_fd(), events),
+                Some(NetworkRuntime::UnixStream(stream)) => watch(stream.as_raw_fd(), events),
+                None => {}
+            }
+            if let Some(serial) = process.serial.as_ref() {
+                watch(serial.port.as_raw_fd(), libc::POLLIN);
+            }
+        }
+        false
+    }
+
+    /// The wait between two passes of wait_reading_process_output: its
+    /// pselect on the wait set and the child signal pipe for at most
+    /// DURATION, so output, a connection, or a child's change of status
+    /// ends it.  True when it ended before DURATION.  With other threads
+    /// to run, the scheduler's sleep stands in for it.
+    pub(crate) fn wait_current_thread_for_process_input(
+        &mut self,
+        env: &mut Env,
+        only_process_id: Option<u64>,
+        duration: std::time::Duration,
+    ) -> Result<bool, LispError> {
+        #[cfg(unix)]
+        if !continuations::can_suspend(self) {
+            let mut fds = Vec::new();
+            let mut woke = self.process_wait_set(only_process_id, &mut fds);
+            let child_signal_fd = crate::lisp::primitives::child_signal_read_fd();
+            if let Some(fd) = child_signal_fd {
+                fds.push(libc::pollfd {
+                    fd,
+                    events: libc::POLLIN,
+                    revents: 0,
+                });
+            }
+            if !woke {
+                let timeout = duration.as_micros().div_ceil(1000).min(i32::MAX as u128) as i32;
+                // SAFETY: FDS holds live descriptors this interpreter owns
+                // and the child signal pipe, which is never closed.
+                woke = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, timeout) }
+                    != 0;
+            }
+            if let Some(fd) = child_signal_fd {
+                crate::lisp::primitives::drain_child_signal_pipe(fd);
+            }
+            self.check_thread_signal()?;
+            return Ok(woke);
+        }
+        self.sleep_current_thread(env, duration)?;
+        Ok(false)
+    }
+
     /// Non-blocking read of a live process's pipes; marks the process
     /// exited once the pipes are drained and the child has finished.
     pub fn poll_process_output(&mut self, record_id: u64) -> Result<(Vec<u8>, Vec<u8>), LispError> {
@@ -2297,11 +2431,13 @@ impl Interpreter {
             && read_nonblocking_pipe(pipe, &mut stdout, readmax)?
         {
             process.stdout_eof = true;
+            runtime.stdout_at_end = true;
         }
         if let Some(pipe) = runtime.child.stderr.as_mut()
             && read_nonblocking_pipe(pipe, &mut stderr, readmax)?
         {
             process.stderr_eof = true;
+            runtime.stderr_at_end = true;
         }
         if let Some(pty) = runtime.pty_output.as_mut() {
             read_nonblocking_pipe(pty, &mut stdout, readmax)?;

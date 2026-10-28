@@ -443,18 +443,9 @@ impl Interpreter {
             "locale-coding-system" => Some(Value::Nil),
             "coding-system-for-read" => Some(Value::Nil),
             "coding-system-for-write" => Some(Value::Nil),
-            "coding-system-list" => Some(Value::list(
-                self.coding_system_list(false)
-                    .into_iter()
-                    .map(|value| Value::Symbol(value.into()))
-                    .collect::<Vec<_>>(),
-            )),
-            "coding-system-alist" => Some(Value::list(
-                self.coding_system_list(false)
-                    .into_iter()
-                    .map(|name| Value::list([Value::String(name.into())]))
-                    .collect::<Vec<_>>(),
-            )),
+            // coding.c syms_of_coding: nil, until the definitions push
+            // their names (`record_coding_system_name').
+            "coding-system-list" | "coding-system-alist" => Some(Value::Nil),
             "char-code-property-alist" => Some(Value::Nil),
             "set-auto-coding-function" => Some(Value::Nil),
             "file-coding-system-alist" => Some(Value::Nil),
@@ -957,12 +948,6 @@ impl Interpreter {
                 other => return Ok(other.value()),
             }
         }
-    }
-
-    pub fn has_macro_binding(&self, name: &str) -> bool {
-        self.macro_position_function(name, &Env::new())
-            .and_then(|function| function.cons_values())
-            .is_some_and(|(head, _)| matches!(head.kind(), Kind::Symbol(name) if name == "macro"))
     }
 
     pub fn known_symbol_names(&self) -> Vec<String> {

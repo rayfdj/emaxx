@@ -4,6 +4,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::{ErrorKind, Read, Write};
 use std::path::PathBuf;
+#[cfg(not(unix))]
 use std::process::Child;
 use std::rc::Rc;
 use std::time::{Duration, SystemTime};
@@ -2049,8 +2050,119 @@ impl std::fmt::Debug for SerialRuntime {
     }
 }
 
+/// A subprocess callproc.c:emacs_spawn started: its pid, the parent's ends
+/// of the pipes it was given, and its status once waitpid has reaped it.
+/// Unlike std's `Child', a status the process pump reaps (with waitpid's
+/// job-control flags) is kept, so the child is never waited for again.
+#[cfg(unix)]
+pub(crate) struct SpawnedChild {
+    pid: u32,
+    status: Option<std::process::ExitStatus>,
+    pub(crate) stdin: Option<fs::File>,
+    pub(crate) stdout: Option<fs::File>,
+    pub(crate) stderr: Option<fs::File>,
+}
+
+#[cfg(not(unix))]
+pub(crate) type SpawnedChild = Child;
+
+#[cfg(unix)]
+impl SpawnedChild {
+    pub(crate) fn new(
+        pid: u32,
+        stdin: Option<fs::File>,
+        stdout: Option<fs::File>,
+        stderr: Option<fs::File>,
+    ) -> Self {
+        Self {
+            pid,
+            status: None,
+            stdin,
+            stdout,
+            stderr,
+        }
+    }
+
+    /// A child std's `Command' started, reaped from here on by pid.
+    pub(crate) fn from_std(mut child: std::process::Child) -> Self {
+        use std::os::fd::OwnedFd;
+        let stdin = child
+            .stdin
+            .take()
+            .map(|pipe| fs::File::from(OwnedFd::from(pipe)));
+        let stdout = child
+            .stdout
+            .take()
+            .map(|pipe| fs::File::from(OwnedFd::from(pipe)));
+        let stderr = child
+            .stderr
+            .take()
+            .map(|pipe| fs::File::from(OwnedFd::from(pipe)));
+        // Dropping std's handle neither signals nor waits for the child.
+        Self::new(child.id(), stdin, stdout, stderr)
+    }
+
+    pub(crate) fn id(&self) -> u32 {
+        self.pid
+    }
+
+    /// The status the process pump's own waitpid reaped.
+    pub(crate) fn record_exit(&mut self, status: std::process::ExitStatus) {
+        self.status = Some(status);
+    }
+
+    fn reap(&mut self, options: libc::c_int) -> std::io::Result<Option<std::process::ExitStatus>> {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(status) = self.status {
+            return Ok(Some(status));
+        }
+        loop {
+            let mut raw = 0;
+            // SAFETY: the pid is this child's and has not been reaped; RAW
+            // is writable caller storage.
+            let result = unsafe { libc::waitpid(self.pid as libc::pid_t, &mut raw, options) };
+            if result == 0 {
+                return Ok(None);
+            }
+            if result < 0 {
+                let error = std::io::Error::last_os_error();
+                if error.kind() == ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(error);
+            }
+            let status = std::process::ExitStatus::from_raw(raw);
+            self.status = Some(status);
+            return Ok(Some(status));
+        }
+    }
+
+    pub(crate) fn try_wait(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        self.reap(libc::WNOHANG)
+    }
+
+    /// Close the child's input, as `Child::wait' does, and wait for it.
+    pub(crate) fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
+        drop(self.stdin.take());
+        self.reap(0)
+            .map(|status| status.expect("waitpid without WNOHANG reaps"))
+    }
+
+    /// SIGKILL, unless the child has been reaped (its pid may be reused).
+    pub(crate) fn kill(&mut self) -> std::io::Result<()> {
+        if self.status.is_some() {
+            return Ok(());
+        }
+        // SAFETY: a signal to this unreaped child's pid.
+        if unsafe { libc::kill(self.pid as libc::pid_t, libc::SIGKILL) } != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    }
+}
+
 pub(crate) struct RunningProcess {
-    pub(crate) child: Child,
+    pub(crate) child: SpawnedChild,
     /// Embedded owners terminate and reap children when dropped. A leaving
     /// Unix CLI instead sends GNU's SIGHUP and leaves reaping to the host.
     pub(crate) terminate_on_drop: bool,
@@ -2067,6 +2179,11 @@ pub(crate) struct RunningProcess {
     /// send path branches on it to route long lines through a temp file
     /// instead of overflowing the canonical 1024-byte line buffer.
     pub(crate) pty_slave_name: Option<String>,
+    /// A read of the output (stderr) pipe found its end: the pipe is no
+    /// longer waited on, as the child's exit, not more input, is what can
+    /// follow.
+    pub(crate) stdout_at_end: bool,
+    pub(crate) stderr_at_end: bool,
 }
 
 impl RunningProcess {
@@ -2173,6 +2290,7 @@ pub(crate) type GnuTlsRecordRecv =
     unsafe extern "C" fn(*mut std::ffi::c_void, *mut std::ffi::c_void, usize) -> isize;
 pub(crate) type GnuTlsRecordSend =
     unsafe extern "C" fn(*mut std::ffi::c_void, *const std::ffi::c_void, usize) -> isize;
+pub(crate) type GnuTlsRecordCheckPending = unsafe extern "C" fn(*mut std::ffi::c_void) -> usize;
 pub(crate) type GnuTlsHandshake = unsafe extern "C" fn(*mut std::ffi::c_void) -> std::ffi::c_int;
 pub(crate) type GnuTlsBye =
     unsafe extern "C" fn(*mut std::ffi::c_void, std::ffi::c_int) -> std::ffi::c_int;
@@ -2185,6 +2303,7 @@ pub(crate) struct GnuTlsSessionApi {
     pub(crate) credential_deinit: GnuTlsDeinit,
     pub(crate) record_recv: GnuTlsRecordRecv,
     pub(crate) record_send: GnuTlsRecordSend,
+    pub(crate) record_check_pending: GnuTlsRecordCheckPending,
     pub(crate) handshake: GnuTlsHandshake,
     pub(crate) bye: GnuTlsBye,
     pub(crate) error_string: GnuTlsErrorString,
@@ -2230,6 +2349,13 @@ impl ProcessGnuTlsSession {
         }
         .unwrap_or_else(|| code.to_string());
         LispError::Signal(format!("GnuTLS {operation} failed: {description}"))
+    }
+
+    /// gnutls.c:emacs_gnutls_record_check_pending: decrypted bytes GnuTLS
+    /// holds that no select on the socket would report.
+    pub(crate) fn has_pending_records(&self) -> bool {
+        // SAFETY: STATE is live until this owner is dropped.
+        self.ready && unsafe { (self.api.record_check_pending)(self.state) } > 0
     }
 
     pub(crate) fn handshake(&mut self, complete: bool) -> Result<std::ffi::c_int, LispError> {
@@ -2409,6 +2535,7 @@ impl Clone for ProcessState {
             exit_code: self.exit_code,
             exit_signal: self.exit_signal,
             os_pid: self.os_pid,
+            tty: self.tty.clone(),
             runtime: None,
             network: None,
             serial: None,
@@ -2471,6 +2598,9 @@ struct ProcessState {
     /// OS pid retained after the Child handle is reaped; nil for pipe and
     /// network process records.
     os_pid: Option<u32>,
+    /// p->tty_name with p->pty_in and p->pty_out: the terminal the child
+    /// was given and which of its streams use it, kept after it exits.
+    tty: Option<(String, bool, bool)>,
     runtime: Option<RunningProcess>,
     network: Option<NetworkRuntime>,
     serial: Option<SerialRuntime>,
@@ -4010,11 +4140,14 @@ impl Interpreter {
 
     /// BVAR (b, syntax_table) when the buffer has set one.
     pub(crate) fn buffer_syntax_table_id(&self, id: u64) -> Option<CharTableRef> {
-        self.buffer_syntax_tables
-            .iter()
-            .rev()
-            .find(|(buffer_id, _)| *buffer_id == id)
-            .map(|(_, table)| *table)
+        self.buffer_syntax_tables.get(&id).copied()
+    }
+
+    /// reset_buffer_local_variables's syntax table: BUFFER's slot returns
+    /// to buffer_defaults' (the standard table), which nothing then roots
+    /// for it.
+    pub(crate) fn reset_buffer_syntax_table(&mut self, id: u64) {
+        self.buffer_syntax_tables.remove(&id);
     }
 
     /// BUFFER's four case tables when they are not the standard ones.
@@ -4135,11 +4268,8 @@ impl Interpreter {
         }
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn install_buffer_syntax_table(&mut self, id: u64, table: CharTableRef) {
-        self.buffer_syntax_tables
-            .retain(|(buffer_id, _)| *buffer_id != id);
-        self.buffer_syntax_tables.push((id, table));
+        self.buffer_syntax_tables.insert(id, table);
     }
 
     pub(crate) fn install_buffer_case_tables(&mut self, id: u64, tables: coding::CaseTables) {
@@ -4378,7 +4508,7 @@ impl Interpreter {
         ) {
             mark(&Value::CharTable(table));
         }
-        for (_, table) in &self.buffer_syntax_tables {
+        for table in self.buffer_syntax_tables.values() {
             mark(&Value::CharTable(*table));
         }
         for (_, value) in &self.charset_plists {
@@ -4846,7 +4976,7 @@ impl Interpreter {
             clone.standard_case_tables = clone
                 .standard_case_tables
                 .map(|tables| tables.map(|table| copy_table(c, table)));
-            for (_, table) in clone.buffer_syntax_tables.iter_mut() {
+            for table in clone.buffer_syntax_tables.values_mut() {
                 *table = copy_table(c, *table);
             }
             for (_, tables) in &mut clone.buffer_case_tables {
@@ -5502,8 +5632,9 @@ pub struct InterpreterState {
     /// Each plain buffer-local variable's binding last read or stored, by
     /// buffer (data.c's blv `where' and `valcell').
     loaded_bindings: LoadedBindings,
-    /// Buffer-local syntax tables keyed by buffer id.
-    buffer_syntax_tables: Vec<(u64, CharTableRef)>,
+    /// BVAR (b, syntax_table) for each buffer whose table is not the
+    /// standard one (buffer_defaults'), keyed by buffer id.
+    buffer_syntax_tables: HashMap<u64, CharTableRef, crate::lisp::types::IdentityBuildHasher>,
     /// Active dynamic special bindings in stack order.
     active_special_restores: Vec<SpecialBindingRestore>,
     next_special_binding_id: u64,
@@ -5555,6 +5686,11 @@ pub struct InterpreterState {
     pub last_match_data: Option<Vec<Option<(usize, usize)>>>,
     /// Source buffer for buffer-origin match data; string searches leave this unset.
     pub last_match_data_buffer_id: Option<u64>,
+    /// indent.c's last_known_column, last_known_column_point and
+    /// last_known_column_modified: the column `current-column' answers
+    /// while point and the buffer's modiff stay as they were (a point of
+    /// 0, no position, when invalid).
+    pub(crate) last_known_column: (usize, usize, crate::buffer::ModCount),
     /// The matcher's registers in text offsets (search.c's search_regs
     /// before a search converts them to positions), held between searches
     /// so their allocation serves every search.
@@ -6272,7 +6408,7 @@ impl Interpreter {
             buffer_local_hooks: HashMap::default(),
             buffer_locals: HashMap::default(),
             loaded_bindings: LoadedBindings::default(),
-            buffer_syntax_tables: Vec::new(),
+            buffer_syntax_tables: HashMap::default(),
             active_special_restores: Vec::new(),
             next_special_binding_id: 1,
             labeled_restrictions: Vec::new(),
@@ -6297,6 +6433,7 @@ impl Interpreter {
             pending_termination: None,
             last_match_data: None,
             last_match_data_buffer_id: None,
+            last_known_column: (0, 0, 0),
             search_registers: Default::default(),
             profiler_memory_running: false,
             profiler_memory_log_pending: false,
@@ -6760,6 +6897,17 @@ impl Interpreter {
                 Value::symbol("no-conversion"),
                 &mut crate::lisp::types::Env::new(),
             );
+        }
+        // Its two Fdefine_coding_system_internal calls, for `no-conversion'
+        // and then `undecided' with its eol subsidiaries, record their names.
+        for name in [
+            "no-conversion",
+            "undecided-unix",
+            "undecided-dos",
+            "undecided-mac",
+            "undecided",
+        ] {
+            interp.record_coding_system_name(name);
         }
 
         for name in crate::lisp::eval::bindings::C_OWNED_DEFVAR_NAMES {

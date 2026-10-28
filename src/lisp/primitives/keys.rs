@@ -221,14 +221,15 @@ pub(crate) fn parse_event_symbol_modifiers(
     interp: &mut Interpreter,
     value: &Value,
 ) -> Result<Value, LispError> {
+    use crate::lisp::primitives::keymap::{symbol_get, symbol_put};
     let symbol = value.as_symbol()?;
-    if interp
-        .get_symbol_property(symbol, "event-symbol-element-mask")
-        .is_some_and(|value| value.cons_values().is_some())
+    let element_mask_key = cached_symbol!("event-symbol-element-mask");
+    let elements_key = cached_symbol!("event-symbol-elements");
+    if symbol_get(interp, *value, element_mask_key)
+        .cons_values()
+        .is_some()
     {
-        return Ok(interp
-            .get_symbol_property(symbol, "event-symbol-elements")
-            .unwrap_or(Value::Nil));
+        return Ok(symbol_get(interp, *value, elements_key));
     }
 
     let (modifiers, base) = event_symbol_name_modifiers(symbol);
@@ -236,8 +237,8 @@ pub(crate) fn parse_event_symbol_modifiers(
     let base = crate::lisp::types::interned_symbol_value(base.to_string());
     let element_mask = Value::list([base, Value::Integer(modifiers)]);
     let elements = Value::list(std::iter::once(base).chain(event_modifier_elements(modifiers)));
-    interp.put_symbol_property(symbol, "event-symbol-element-mask", element_mask);
-    interp.put_symbol_property(symbol, "event-symbol-elements", elements);
+    symbol_put(interp, *value, element_mask_key, element_mask);
+    symbol_put(interp, *value, elements_key, elements);
     Ok(elements)
 }
 

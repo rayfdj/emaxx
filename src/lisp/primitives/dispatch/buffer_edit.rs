@@ -286,7 +286,7 @@ fn internal_self_insert(
 
 /// editfns.c:Fwiden: the whole buffer accessible, or as much of it as the
 /// innermost labeled restriction allows.
-fn widen_current_buffer(interp: &Interpreter) {
+fn widen_current_buffer(interp: &mut Interpreter) {
     if let Some((start, end)) =
         interp.effective_labeled_restriction(interp.current_buffer_id(), None)
     {
@@ -294,6 +294,8 @@ fn widen_current_buffer(interp: &Interpreter) {
     } else {
         interp.buffer.borrow_mut().widen();
     }
+    // Changing the buffer bounds invalidates any recorded current column.
+    interp.invalidate_current_column();
 }
 
 fn character_byte_value(character: Option<char>, multibyte: bool) -> Result<Value, LispError> {
@@ -1017,17 +1019,7 @@ define_dispatch!(
                 interp.buffer.borrow_mut().goto_char(new_end);
                 Ok(Value::Nil)
             }
-            "current-column" => {
-                let pt = interp.buffer.borrow().point();
-                let bol = {
-                    let saved = interp.buffer.borrow().point();
-                    interp.buffer.borrow_mut().beginning_of_line();
-                    let bol = interp.buffer.borrow().point();
-                    interp.buffer.borrow_mut().goto_char(saved);
-                    bol
-                };
-                Ok(Value::Integer(column_at(interp, env, bol, pt) as i64))
-            }
+            "current-column" => Ok(Value::Integer(current_column(interp, env) as i64)),
             "current-indentation" => {
                 let saved = interp.buffer.borrow().point();
                 interp.buffer.borrow_mut().beginning_of_line();
@@ -1101,6 +1093,7 @@ define_dispatch!(
                     col = goal;
                     indent_to(interp, goal as i64, 0, env)?;
                 }
+                remember_current_column(interp, col);
                 Ok(Value::Integer(col as i64))
             }
             "line-number-at-pos" => {
@@ -1209,6 +1202,7 @@ define_dispatch!(
                     end = end.min(clamp_end);
                 }
                 interp.buffer.borrow_mut().narrow_to_region(start, end);
+                interp.invalidate_current_column();
                 Ok(Value::Nil)
             }
             "widen" => {
@@ -2632,17 +2626,41 @@ pub(super) fn direct_char_before(
 /// at least), tabs first under `indent-tabs-mode' and then spaces, each an
 /// insertion of its own that inherits the surrounding properties.  The
 /// column reached.
+/// indent.c:current_column: the column recorded for point while neither
+/// point nor the buffer's modiff has changed (nor the buffer, its
+/// restriction), else point's column scanned from its line's beginning,
+/// then recorded.
+fn current_column(interp: &mut Interpreter, env: &mut crate::lisp::types::Env) -> usize {
+    let (point, modiff) = {
+        let buffer = interp.buffer.borrow();
+        (buffer.point(), buffer.modified_tick())
+    };
+    let (column, known_point, known_modiff) = interp.last_known_column;
+    if point == known_point && modiff == known_modiff {
+        return column;
+    }
+    let bol = line_beginning_at(interp, point);
+    let column = column_at(interp, env, bol, point);
+    remember_current_column(interp, column);
+    column
+}
+
+/// last_known_column, last_known_column_point and
+/// last_known_column_modified set for point as it now is.
+fn remember_current_column(interp: &mut Interpreter, column: usize) {
+    let buffer = interp.buffer.borrow();
+    let known = (column, buffer.point(), buffer.modified_tick());
+    drop(buffer);
+    interp.last_known_column = known;
+}
+
 fn indent_to(
     interp: &mut Interpreter,
     column: i64,
     minimum: i64,
     env: &mut crate::lisp::types::Env,
 ) -> Result<i64, LispError> {
-    let saved = interp.buffer.borrow().point();
-    interp.buffer.borrow_mut().beginning_of_line();
-    let bol = interp.buffer.borrow().point();
-    interp.buffer.borrow_mut().goto_char(saved);
-    let mut from_col = column_at(interp, env, bol, saved) as i64;
+    let mut from_col = current_column(interp, env) as i64;
     let min_col = (from_col + minimum).max(column);
     if min_col == from_col {
         return Ok(min_col);
@@ -2673,6 +2691,7 @@ fn indent_to(
     }
     let spaces = (min_col - from_col).max(0) as usize;
     insert_text_with_hooks(interp, &" ".repeat(spaces), &[], &[], true, false, env)?;
+    remember_current_column(interp, min_col as usize);
     Ok(min_col)
 }
 

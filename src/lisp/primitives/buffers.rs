@@ -710,23 +710,37 @@ pub(crate) fn bool_vector_arg(
     }
 }
 
-/// O(1) element read for the VM's Baref: bytecode.c's fast case, a vector
-/// or a record (its type in slot zero, as PVSIZE counts it).  Strings,
-/// char-tables, closures, and out-of-range accesses return None so the
-/// caller takes the full `aref' path and preserves GNU's exact error
+/// Element read for the VM's Baref: bytecode.c's fast case, a vector or a
+/// record (its type in slot zero, as PVSIZE counts it), and the string case
+/// of the Faref it calls otherwise, which in range runs no Lisp and cannot
+/// signal.  Char-tables, closures, and out-of-range accesses return None so
+/// the caller takes the full `aref' path and preserves GNU's exact error
 /// behavior.
 pub(crate) fn vector_aref_fast(value: &Value, index: usize) -> Option<Value> {
     match value.kind() {
         Kind::Vector(vector) => vector.get(index),
         Kind::LispRecord(record) => record.get(index),
+        Kind::StringObject(state) => state.borrow().character_at(index).map(Value::Integer),
         _ => None,
     }
 }
 
-/// O(1) element write for the VM's Baset, same contract as
-/// [`vector_aref_fast`].
+/// Element write for the VM's Baset, same contract as [`vector_aref_fast`]:
+/// a string takes Faset's stores that keep its size, into impure storage.
 pub(crate) fn vector_aset_fast(value: &Value, index: usize, new_value: &Value) -> Option<()> {
     match value.kind() {
+        Kind::StringObject(state) => {
+            if state.is_pure() {
+                return None;
+            }
+            let code = new_value
+                .fixnum()
+                .filter(|code| (0..=0x3f_ffff).contains(code))? as u32;
+            state
+                .borrow_mut()
+                .store_character_in_place(index, code)
+                .then_some(())
+        }
         Kind::Vector(vector) => {
             if index >= vector.len() {
                 return None;
@@ -991,6 +1005,20 @@ pub(crate) fn ensure_standard_abbrev_tables(interp: &mut Interpreter) {
     }
 }
 
+/// data.c:Fcl_type_of's PVEC_RECORD case: the type name field of the
+/// class in slot 0 when that is a record of more than one slot, slot 0
+/// itself otherwise.
+#[inline]
+pub(crate) fn record_type_of(record: crate::lisp::types::LispRecordRef) -> Value {
+    let type_tag = record.type_tag();
+    if let Kind::LispRecord(descriptor) = type_tag.kind()
+        && let Some(name) = descriptor.get(1)
+    {
+        return name;
+    }
+    type_tag
+}
+
 pub(crate) fn cl_type_value(interp: &Interpreter, value: &Value) -> Result<Value, LispError> {
     // data.c:Fcl_type_of uses XTYPE/PSEUDOVECTOR_TYPE, not Lisp variable
     // values. Wide Integer values cross the native ABI as bignums; an
@@ -1031,15 +1059,7 @@ pub(crate) fn cl_type_value(interp: &Interpreter, value: &Value) -> Result<Value
         Kind::Terminal(_) => "terminal",
         Kind::SymbolWithPos(_) => "symbol-with-pos",
         Kind::BoolVector(_) => "bool-vector",
-        Kind::LispRecord(record) => {
-            let type_tag = record.type_tag();
-            if let Kind::LispRecord(descriptor) = type_tag.kind()
-                && let Some(name) = descriptor.get(1)
-            {
-                return Ok(name);
-            }
-            return Ok(type_tag);
-        }
+        Kind::LispRecord(record) => return Ok(record_type_of(record)),
         Kind::Record(id) => {
             let Some(record) = interp.find_record(id) else {
                 return Ok(Value::symbol("record"));
@@ -1251,15 +1271,15 @@ pub(crate) fn scan_for_column(
     let goal = goal.unwrap_or(usize::MAX);
     // SANE_TAB_WIDTH.
     let tab_width = interp
-        .lookup_var("tab-width", env)
+        .lookup_var_key(cached_symbol!("tab-width"), env)
         .and_then(|value| value.integer_value())
         .filter(|width| (1..=1000).contains(width))
         .unwrap_or(8) as usize;
     let ctl_arrow = interp
-        .lookup_var("ctl-arrow", env)
+        .lookup_var_key(cached_symbol!("ctl-arrow"), env)
         .is_some_and(|value| value.is_truthy());
     let selective_display = interp
-        .lookup_var("selective-display", env)
+        .lookup_var_key(cached_symbol!("selective-display"), env)
         .is_some_and(|value| matches!(value.kind(), Kind::T));
     let multibyte = interp.buffer.borrow().is_multibyte();
     let display_table = buffer_display_table(interp, env);

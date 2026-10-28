@@ -30,6 +30,7 @@ pub(super) struct ThreadContinuation {
     coroutine: Coroutine<EditorState, EditorState, ThreadCompletion>,
     yielder: Rc<Cell<*const ThreadYielder>>,
     stack_base: usize,
+    stack_limit: usize,
 }
 
 /// Each resume has its own scope on the driving stack. In particular, a
@@ -42,20 +43,64 @@ struct ResumeContext {
 thread_local! {
     static CURRENT_RESUME: Cell<*const ResumeContext> = const { Cell::new(std::ptr::null()) };
     static CURRENT_STACK_BASE: Cell<Option<*const usize>> = const { Cell::new(None) };
+    /// The lowest address of the owned stack running now, its guard page
+    /// included; 0 on the OS thread's own stack.
+    static CURRENT_STACK_LIMIT: Cell<usize> = const { Cell::new(0) };
 }
 
 struct ResumeGuard(*const ResumeContext);
-pub(crate) struct StackBaseGuard(Option<*const usize>);
+pub(crate) struct StackBaseGuard(Option<*const usize>, usize);
 
 impl StackBaseGuard {
+    /// A boundary on the OS thread's own stack, which the kernel maps only
+    /// as deep as it has been used.
     pub(crate) fn enter(base: usize) -> Self {
-        Self(CURRENT_STACK_BASE.replace(Some(base as *const usize)))
+        Self::enter_owned(base, 0)
+    }
+
+    /// An owned stack reserved from LIMIT up to BASE.
+    fn enter_owned(base: usize, limit: usize) -> Self {
+        Self(
+            CURRENT_STACK_BASE.replace(Some(base as *const usize)),
+            CURRENT_STACK_LIMIT.replace(limit),
+        )
     }
 }
 
 impl Drop for StackBaseGuard {
     fn drop(&mut self) {
         CURRENT_STACK_BASE.set(self.0);
+        CURRENT_STACK_LIMIT.set(self.1);
+    }
+}
+
+/// Before an abort's core dump: the owned stack's pages below the stack
+/// pointer are left out of it. The stack is a 128 MB reservation of which
+/// a run touches little, where the process stack GNU runs on is mapped
+/// only as deep as it has been used, and a core written to a pipe (a
+/// crash collector) carries every untouched page as zeros: a module
+/// assertion's core was 190 MB against GNU's 44 MB. A crash by a signal
+/// still dumps the whole stack.
+pub(crate) fn leave_unused_stack_out_of_core() {
+    #[cfg(target_os = "linux")]
+    {
+        let limit = CURRENT_STACK_LIMIT.get();
+        if limit == 0 {
+            return;
+        }
+        // SAFETY: sysconf reads a configuration value.
+        let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as usize;
+        // This call's frame and the red zone below it stay.
+        let end =
+            crate::lisp::alloc::approximate_stack_pointer().saturating_sub(page) & !(page - 1);
+        if end > limit {
+            // SAFETY: [LIMIT, END) lies in the running owned stack's
+            // mapping, below every live frame; MADV_DONTDUMP changes only
+            // what a core dump includes.
+            unsafe {
+                libc::madvise(limit as *mut libc::c_void, end - limit, libc::MADV_DONTDUMP);
+            }
+        }
     }
 }
 
@@ -93,10 +138,10 @@ fn with_driving_stack<R>(body: impl FnOnce() -> R) -> R {
 /// collection. The OS thread's pthread stack attributes describe its original
 /// stack, so they cannot be used while an alternate stack is active.
 pub(crate) fn on_stack<R>(stack: DefaultStack, body: impl FnOnce() -> R) -> R {
-    let base = stack.base().get();
+    let (base, limit) = (stack.base().get(), stack.limit().get());
     with_driving_stack(|| {
         corosensei::on_stack(stack, || {
-            let _guard = StackBaseGuard::enter(base);
+            let _guard = StackBaseGuard::enter_owned(base, limit);
             body()
         })
     })
@@ -119,7 +164,7 @@ impl ThreadContinuation {
         body: impl FnOnce(&mut Interpreter) -> Result<Value, LispError> + 'static,
     ) -> std::io::Result<Self> {
         let stack = DefaultStack::new(LISP_THREAD_STACK_BYTES)?;
-        let stack_base = stack.base().get();
+        let (stack_base, stack_limit) = (stack.base().get(), stack.limit().get());
         let yielder = Rc::new(Cell::new(std::ptr::null()));
         let entry_yielder = Rc::clone(&yielder);
         let coroutine = Coroutine::with_stack(stack, move |yielder, state| {
@@ -143,6 +188,7 @@ impl ThreadContinuation {
             coroutine,
             yielder,
             stack_base,
+            stack_limit,
         })
     }
 
@@ -157,7 +203,7 @@ impl ThreadContinuation {
         let _guard = ResumeGuard(CURRENT_RESUME.replace(std::ptr::from_ref(&context)));
         with_driving_stack(|| {
             crate::lisp::alloc::forget_parked_stack(self.stack_base);
-            let _stack_guard = StackBaseGuard::enter(self.stack_base);
+            let _stack_guard = StackBaseGuard::enter_owned(self.stack_base, self.stack_limit);
             self.coroutine.resume(state)
         })
     }
@@ -248,6 +294,49 @@ mod tests {
     use super::*;
     use crate::lisp::types::Kind;
     use crate::lisp::types::LispErrorKind;
+
+    /// The VmFlags of the mapping holding ADDRESS in /proc/self/smaps.
+    #[cfg(target_os = "linux")]
+    fn mapping_flags(address: usize) -> String {
+        let smaps = std::fs::read_to_string("/proc/self/smaps").expect("read smaps");
+        let mut inside = false;
+        for line in smaps.lines() {
+            if let Some((range, _)) = line.split_once(' ')
+                && let Some((start, end)) = range.split_once('-')
+                && let (Ok(start), Ok(end)) = (
+                    usize::from_str_radix(start, 16),
+                    usize::from_str_radix(end, 16),
+                )
+            {
+                inside = (start..end).contains(&address);
+            } else if inside && let Some(flags) = line.strip_prefix("VmFlags:") {
+                return flags.trim().to_string();
+            }
+        }
+        panic!("no mapping holds {address:#x}")
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_abort_leaves_the_owned_stack_below_its_frames_out_of_the_core() {
+        let stack = DefaultStack::new(8 * 1024 * 1024).expect("owned stack");
+        let limit = stack.limit().get();
+        let page = 4096;
+        on_stack(stack, || {
+            let frame = crate::lisp::alloc::approximate_stack_pointer();
+            leave_unused_stack_out_of_core();
+            let excluded = |address| mapping_flags(address).split(' ').any(|flag| flag == "dd");
+            // The untouched reservation, guard page included, is out of a
+            // dump; the live frames (and this one's) stay in it.
+            assert!(excluded(limit + page));
+            assert!(excluded(frame - 16 * page));
+            assert!(!excluded(frame));
+        });
+        // The OS thread's own stack is left as it is.
+        leave_unused_stack_out_of_core();
+        let frame = crate::lisp::alloc::approximate_stack_pointer();
+        assert!(!mapping_flags(frame).split(' ').any(|flag| flag == "dd"));
+    }
 
     #[test]
     fn alternate_stack_bounds_restore_after_nested_resume_and_panic() {

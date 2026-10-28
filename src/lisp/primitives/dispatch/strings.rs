@@ -389,9 +389,18 @@ define_dispatch!(
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
                 let s = string_text(&args[0])?;
+                // CHECK_FIXNUM (base), then xsignal1 (Qargs_out_of_range,
+                // base) outside 2 to 16.
                 let base = match args.get(1).map(|v| v.kind()) {
                     None | Some(Kind::Nil) => None,
-                    Some(value) => Some(value.value().as_integer()?),
+                    Some(Kind::Integer(base)) if (2..=16).contains(&base) => Some(base),
+                    Some(Kind::Integer(_)) => {
+                        return Err(LispError::SignalValue(Value::list([
+                            Value::symbol("args-out-of-range"),
+                            args[1],
+                        ])));
+                    }
+                    Some(_) => return Err(wrong_type_argument("fixnump", args[1])),
                 };
                 parse_string_to_number_value(&s, base)
             }
@@ -942,32 +951,35 @@ define_dispatch!(
             }
             "unicode-property-table-internal" => {
                 need_args(name, args, 1)?;
-                let property = args[0].as_symbol()?;
-                Ok(registered_unicode_property(interp, property, env)?.unwrap_or(Value::Nil))
+                // Funicode_property_table_internal: the table, else the
+                // entry's own value (a file that would not load).
+                match uniprop_table_or_entry(interp, args[0], env)? {
+                    Ok(table) => Ok(Value::CharTable(table)),
+                    Err(Some(entry)) => Ok(entry.cdr.get()),
+                    Err(None) => Ok(char_code_property_entry(interp, args[0])
+                        .map_or(Value::Nil, |entry| entry.cdr.get())),
+                }
             }
             "get-unicode-property-internal" => {
                 need_args(name, args, 2)?;
                 let Kind::CharTable(table_id) = args[0].kind() else {
                     return Err(LispError::WrongTypeArgument("char-table-p".into(), args[0]));
                 };
-                if !table_id.has_purpose("char-code-property-table") {
+                let character = unicode_property_character(&args[1])?;
+                if !uniprop_table_p(table_id) {
                     return Err(LispError::Signal("Invalid Unicode property table".into()));
                 }
-                let character = unicode_property_character(&args[1])?;
-                let value = interp
-                    .char_table_get(table_id, character)
-                    .unwrap_or(Value::Nil);
-                decode_unicode_property_value(interp, table_id, value)
+                Ok(get_unicode_property(interp, table_id, character))
             }
             "put-unicode-property-internal" => {
                 need_args(name, args, 3)?;
                 let Kind::CharTable(table_id) = args[0].kind() else {
                     return Err(LispError::WrongTypeArgument("char-table-p".into(), args[0]));
                 };
-                if !table_id.has_purpose("char-code-property-table") {
+                let character = unicode_property_character(&args[1])?;
+                if !uniprop_table_p(table_id) {
                     return Err(LispError::Signal("Invalid Unicode property table".into()));
                 }
-                let character = unicode_property_character(&args[1])?;
                 let encoded = encode_unicode_property_value(interp, table_id, &args[2])?;
                 interp.char_table_set(table_id, character, encoded)?;
                 Ok(Value::Nil)
@@ -982,65 +994,39 @@ define_dispatch!(
     }
 );
 
-/// casefiddle.c's `uniprop_table (Qtitlecase)' and friends: resolve a Unicode
-/// property char-table, loading its generated `uni-*.el' owner on demand.
-/// An unavailable property yields None exactly as GNU's nil table does, and
-/// the caller then falls back to the case table.
+/// casefiddle.c's `uniprop_table (Qtitlecase)' and friends: PROPERTY's
+/// Unicode property char-table, its generated `uni-*.el' loaded on
+/// demand; None for GNU's nil table, whereupon the caller falls back to
+/// the case table.
 pub(crate) fn uniprop_table_id(
     interp: &mut Interpreter,
-    property: &str,
+    property: Value,
     env: &mut Env,
 ) -> Option<CharTableRef> {
-    match (registered_unicode_property(interp, property, env).ok()??).kind() {
-        Kind::CharTable(table_id) => Some(table_id),
-        _ => None,
-    }
+    uniprop_table(interp, property, env).ok().flatten()
 }
 
-/// CHAR_TABLE_REF over a Unicode property table, decoding the compressed
-/// representation the generated `uni-*.el' tables use.
+/// CHAR_TABLE_REF of a Unicode property table, as casefiddle.c reads
+/// the special-casing and titlecase tables: the stored value, not
+/// decoded; None for nil.
 pub(crate) fn uniprop_table_ref(
     interp: &Interpreter,
     table_id: CharTableRef,
     code: u32,
 ) -> Option<Value> {
-    let raw = interp.char_table_get(table_id, code)?;
-    let decoded = decode_unicode_property_value(interp, table_id, raw).ok()?;
-    (!decoded.is_nil()).then_some(decoded)
+    interp
+        .char_table_get(table_id, code)
+        .filter(|value| !value.is_nil())
 }
 
-fn registered_unicode_property(
-    interp: &mut Interpreter,
-    property: &str,
-    env: &mut Env,
-) -> Result<Option<Value>, LispError> {
-    let Some(mut registered) = find_registered_unicode_property(interp, property) else {
-        return Ok(None);
-    };
-    let filename = match registered.kind() {
-        Kind::StringObject(_) => string_text(&registered)?,
-        _ => return Ok(Some(registered)),
-    };
-    let target = format!("international/{filename}");
-    let path = match resolve_load_target_in_env(interp, &target, env)? {
-        Some(path) => Some(path),
-        None => resolve_load_target_in_env(interp, &filename, env)?,
-    };
-    let Some(path) = path else {
-        return Ok(Some(registered));
-    };
-    crate::lisp::load_file_strict(interp, &path)?;
-    registered = find_registered_unicode_property(interp, property)
-        .unwrap_or(Value::String(filename.into()));
-    Ok(Some(registered))
-}
-
-fn find_registered_unicode_property(interp: &Interpreter, property: &str) -> Option<Value> {
-    // chartab.c:uniprop_table reads Vchar_code_property_alist, the C-owned
-    // symbol value cell (by the symbol held here, as the C global is).  A
-    // caller's same-named lexical binding is not part of this primitive's
-    // state.  Fassq: the entries read in place (a copy of each entry, key
-    // and value per step was a fifth of `get-char-code-property').
+/// Fassq (PROP, Vchar_code_property_alist): the entry, read from the
+/// C-owned symbol value cell (by the symbol held here, as the C global
+/// is), so a caller's same-named lexical binding is not part of this
+/// state.  The entries are compared with `eq' in place.
+fn char_code_property_entry(
+    interp: &Interpreter,
+    prop: Value,
+) -> Option<crate::lisp::alloc::ConsRef> {
     let mut tail = cached_symbol!("char-code-property-alist")
         .with(|symbol| interp.symbol_value_cell_symbol(symbol))
         .ok()?;
@@ -1049,13 +1035,109 @@ fn find_registered_unicode_property(interp: &Interpreter, property: &str) -> Opt
             return None;
         };
         if let Kind::Cons(entry) = cell.car.get().kind()
-            && entry.car.get().symbol_str() == Some(property)
+            && entry.car.get().word() == prop.word()
         {
-            return Some(entry.cdr.get());
+            return Some(entry);
         }
-        let rest = cell.cdr.get();
-        tail = rest;
+        tail = cell.cdr.get();
     }
+}
+
+/// chartab.c's UNIPROP_TABLE_P: a `char-code-property-table' with its
+/// five extra slots.
+fn uniprop_table_p(table: CharTableRef) -> bool {
+    cached_symbol!("char-code-property-table")
+        .with(|symbol| table.purpose().word() == Value::Symbol(*symbol).word())
+        && table.extra_count() == 5
+}
+
+/// chartab.c:uniprop_table: PROP's Unicode property table.  An entry
+/// naming a file loads `international/' FILE (save_match_data_load with
+/// NOERROR, NOMESSAGE and NOSUFFIX), which stores the table in the same
+/// entry.  None when PROP has no entry, the load fails, or the value is
+/// not a property table whose decoder (extra slot 1) is nil or one
+/// uniprop_get_decoder knows.
+fn uniprop_table(
+    interp: &mut Interpreter,
+    prop: Value,
+    env: &mut Env,
+) -> Result<Option<CharTableRef>, LispError> {
+    Ok(uniprop_table_or_entry(interp, prop, env)?.ok())
+}
+
+/// `uniprop_table', and where it gives nil, the entry
+/// Funicode_property_table_internal's Fassq would find again: the one
+/// read, unless a file was loaded (Lisp ran), when it is read anew (None).
+fn uniprop_table_or_entry(
+    interp: &mut Interpreter,
+    prop: Value,
+    env: &mut Env,
+) -> Result<Result<CharTableRef, Option<crate::lisp::alloc::ConsRef>>, LispError> {
+    let Some(entry) = char_code_property_entry(interp, prop) else {
+        return Ok(Err(None));
+    };
+    let mut loaded = false;
+    let mut table = entry.cdr.get();
+    if let Kind::StringObject(_) = table.kind() {
+        let file = Value::string(&format!("international/{}", string_text(&table)?));
+        let saved = crate::lisp::primitives::call(interp, "match-data", &[], env)?;
+        let held = vec![saved, file];
+        let result = interp.with_lisp_stack_roots(&held, |interp| {
+            crate::lisp::primitives::call(
+                interp,
+                "load",
+                &[file, Value::T, Value::T, Value::T, Value::T],
+                env,
+            )
+        });
+        crate::lisp::primitives::call(interp, "set-match-data", &[saved, Value::T], env)?;
+        if result?.is_nil() {
+            return Ok(Err(None));
+        }
+        loaded = true;
+        table = entry.cdr.get();
+    }
+    let fallback = Err((!loaded).then_some(entry));
+    let Kind::CharTable(table) = table.kind() else {
+        return Ok(fallback);
+    };
+    if !uniprop_table_p(table) {
+        return Ok(fallback);
+    }
+    match interp
+        .char_table_extra_slot(table, 1)
+        .map(|decoder| decoder.kind())
+    {
+        None | Some(Kind::Nil | Kind::Integer(0)) => Ok(Ok(table)),
+        _ => Ok(fallback),
+    }
+}
+
+/// chartab.c:get_unicode_property: TABLE's element for CODE, through the
+/// table's decoder: uniprop_decode_value_run_length when extra slot 1 is
+/// 0, which reads a value in range of extra slot 4's vector as an index
+/// into it.  XFIXNUM of nil, whose word is 0, is index 0; any other
+/// non-fixnum gives an index out of range and stands.
+fn get_unicode_property(interp: &Interpreter, table: CharTableRef, code: u32) -> Value {
+    let value = interp.char_table_get(table, code).unwrap_or(Value::Nil);
+    if interp.char_table_extra_slot(table, 1) != Some(Value::Integer(0)) {
+        return value;
+    }
+    let Some(Kind::Vector(values)) = interp
+        .char_table_extra_slot(table, 4)
+        .map(|values| values.kind())
+    else {
+        return value;
+    };
+    let index = match value.kind() {
+        Kind::Integer(index) => index,
+        Kind::Nil => 0,
+        _ => return value,
+    };
+    usize::try_from(index)
+        .ok()
+        .and_then(|index| values.get(index))
+        .unwrap_or(value)
 }
 
 fn unicode_property_character(value: &Value) -> Result<u32, LispError> {
@@ -1063,23 +1145,6 @@ fn unicode_property_character(value: &Value) -> Result<u32, LispError> {
         Kind::Integer(character) if (0..=0x3f_ffff).contains(&character) => Ok(character as u32),
         _ => Err(wrong_type_argument("characterp", *value)),
     }
-}
-
-pub(crate) fn decode_unicode_property_value(
-    interp: &Interpreter,
-    table_id: CharTableRef,
-    value: Value,
-) -> Result<Value, LispError> {
-    if interp.char_table_extra_slot(table_id, 1) != Some(Value::Integer(0)) {
-        return Ok(value);
-    }
-    let index = usize::try_from(value.as_integer()?)
-        .map_err(|_| LispError::Signal("Invalid Unicode property value".into()))?;
-    let Some(vector) = interp.char_table_extra_slot(table_id, 4) else {
-        return Ok(value);
-    };
-    let values = vector_or_list_items(&vector)?;
-    Ok(values.get(index).cloned().unwrap_or(value))
 }
 
 fn unicode_property_vector_values(value: &Value) -> Result<Vec<Value>, LispError> {

@@ -314,8 +314,10 @@ impl Drop for Activation {
     }
 }
 
+/// emacs-module.c:module_abort, then emacs_abort's core dump.
 fn abort(message: &str) -> ! {
     eprintln!("Emacs module assertion: {message}");
+    crate::lisp::eval::continuations::leave_unused_stack_out_of_core();
     std::process::abort()
 }
 

@@ -1533,7 +1533,7 @@ impl Interpreter {
         // lisp.h:maybe_quit first reads Vquit_flag directly and returns on
         // the overwhelmingly common nil case.  These are eval.c's forwarded
         // cells, not symbol-name lookups.
-        if self.quit_flag_is_nil() {
+        if self.quit_flag_is_nil() && !primitives::fatal_signal_pending() {
             return Ok(());
         }
         self.process_quit_flag(env)
@@ -1542,6 +1542,12 @@ impl Interpreter {
     /// eval.c:process_quit_flag, reached only with a non-nil quit-flag.
     #[cold]
     fn process_quit_flag(&mut self, env: &mut Env) -> Result<(), LispError> {
+        if primitives::fatal_signal_pending() {
+            primitives::run_pending_fatal_signal(self, env)?;
+            if self.quit_flag_is_nil() {
+                return Ok(());
+            }
+        }
         let flag = self.quit_flag_value();
         if self.inhibit_quit_is_truthy() {
             return Ok(());
@@ -1605,11 +1611,12 @@ impl Interpreter {
         result
     }
 
-    /// eval.c:funcall_general's first test: a symbol whose live function
+    /// eval.c:funcall_general's first tests: a symbol whose live function
     /// cell is a subr (or a native-compiled function) is called through
-    /// funcall_subr at once. Anything else (an alias, an autoload, a special
-    /// form, a lambda, a void cell) takes `call_function_body', which
-    /// reaches the same calls for these two after its general checks.
+    /// funcall_subr at once, and a closure, given or in that cell, through
+    /// funcall_lambda. Anything else (an alias, an autoload, a special
+    /// form, a lambda list, a void cell) takes `call_function_body', which
+    /// reaches the same calls for these after its general checks.
     #[inline(always)]
     fn call_subr_directly(
         &mut self,
@@ -1625,12 +1632,13 @@ impl Interpreter {
         // The callee and its function cell are tested by tag and header,
         // as funcall_general's SUBRP and CLOSUREP tests are.
         let Some(name) = func.symbol_cell() else {
-            // funcall_lambda for an interpreted closure called as a value.
+            // funcall_lambda for a closure called as a value.
             return match func.closure_ref() {
-                Some(closure) if !closure.is_bytecode() => {
-                    Some(self.funcall_interpreted_lambda(*func, original_name, args, env))
+                Some(closure) if closure.is_bytecode() => {
+                    Some(self.funcall_bytecode_closure(closure, args, env))
                 }
-                _ => None,
+                Some(_) => Some(self.funcall_interpreted_lambda(*func, original_name, args, env)),
+                None => None,
             };
         };
         let function = self.globals.function(&name)?;
@@ -1648,7 +1656,10 @@ impl Interpreter {
             ));
         }
         match function.closure_ref() {
-            Some(closure) if !closure.is_bytecode() => {
+            Some(closure) if closure.is_bytecode() => {
+                Some(self.funcall_bytecode_closure(closure, args, env))
+            }
+            Some(_) => {
                 let name = CallName::Symbol(&name);
                 Some(self.funcall_interpreted_lambda(
                     function,
@@ -1657,8 +1668,23 @@ impl Interpreter {
                     env,
                 ))
             }
-            _ => None,
+            None => None,
         }
+    }
+
+    /// funcall_lambda's exec_byte_code branch for a byte-code closure
+    /// found by `call_subr_directly': `mapatoms', `mapcar' and every
+    /// other call from Rust reach the VM here, where they went on through
+    /// `call_function_body' and `call_function_value_inner', whose tests
+    /// this one had already made.
+    #[inline(always)]
+    fn funcall_bytecode_closure(
+        &mut self,
+        closure: crate::lisp::types::ClosureRef,
+        args: &[Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        crate::lisp::bytecode::vm::funcall_closure(self, closure, args, env)
     }
 
     /// eval.c:funcall_subr: a subr (not a special form) found in the live
@@ -2225,7 +2251,7 @@ impl InterpreterState {
     /// The entry tests of a Bcall when nothing else happens on the way
     /// in: Ffuncall's maybe_quit finds no quit, the depth stays within
     /// max-lisp-eval-depth, no termination is pending, no debugger context
-    /// is captured (edebug is not loaded and the callee is not
+    /// is captured (Edebug is not entered and the callee is not
     /// `backtrace-eval'), and calls are not being profiled. NAME is the
     /// callee's symbol, if it is one. Reads only: the full Call arm takes
     /// every other case from the same state.
@@ -2235,8 +2261,20 @@ impl InterpreterState {
         // eval_sub's compare); the gate holds the quit, termination and
         // profiler tests.
         (self.lisp_eval_depth as i64) < self.call_depth_gate
-            && !self.globals.edebug_is_special()
+            && !self.edebug_may_be_entered()
             && name.is_none_or(|name| !is_backtrace_eval_name(name.as_str()))
+    }
+
+    /// Whether a call may have to record its frame's lexical context for
+    /// Edebug: `edebug-entered' is special (edebug is loaded) and its cell
+    /// does not hold nil in place.  A localized or redirected value counts
+    /// as maybe; the full Call arm reads it as find_symbol_value does.
+    #[inline(always)]
+    fn edebug_may_be_entered(&self) -> bool {
+        self.globals.edebug_is_special()
+            && cached_symbol!("edebug-entered")
+                .with(|symbol| symbol.cell().unlocalized_value())
+                .is_none_or(|value| !value.is_nil())
     }
 
     /// `call_depth_gate' after a store of the quit flag, a pending

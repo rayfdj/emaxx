@@ -74,6 +74,18 @@ impl BacktraceFrame {
         };
         tail.to_vec().unwrap_or_else(|_| vec![tail])
     }
+
+    /// backtrace_frame_apply's ARGS: an UNEVALLED frame's argument list
+    /// itself (the form's cdr), else a fresh list of the arguments.
+    pub(super) fn args_list(&self) -> Value {
+        if !self.evald()
+            && self.native_words().is_none()
+            && let Some(form) = self.source_form()
+        {
+            return form.cdr().unwrap_or(Value::Nil);
+        }
+        Value::list(self.args_snapshot())
+    }
 }
 
 impl Interpreter {
@@ -426,6 +438,16 @@ impl Interpreter {
         self.buffer_local_binding(buffer_id, name).is_some()
     }
 
+    /// `has_buffer_local_binding' for a symbol in hand: no name to find.
+    pub(crate) fn has_buffer_local_binding_symbol(
+        &self,
+        buffer_id: u64,
+        symbol: &SymbolName,
+    ) -> bool {
+        self.buffer_local_binding_symbol(buffer_id, symbol)
+            .is_some()
+    }
+
     pub fn set_buffer_local_value(&mut self, buffer_id: u64, name: &str, value: Value) {
         if self.has_native_text_conversion_style(name) {
             if let Some(mut buffer) = self.get_buffer_by_id_mut(buffer_id) {
@@ -530,6 +552,7 @@ impl Interpreter {
         self.remove_buffer_locals(buffer_id);
         self.buffer_local_hooks.remove(&buffer_id);
         crate::lisp::primitives::casetab::reset_buffer_case_tables(self, buffer_id);
+        self.reset_buffer_syntax_table(buffer_id);
     }
 
     /// Drop every local binding of BUFFER_ID. A current buffer's evaluator
@@ -568,6 +591,9 @@ impl Interpreter {
                 .insert(buffer_id, super::ordered_hooks(permanent_hooks));
         }
         crate::lisp::primitives::casetab::reset_buffer_case_tables(self, buffer_id);
+        // The syntax table's per-buffer index is not permanent
+        // (buffer_permanent_local_flags), so it returns to the default.
+        self.reset_buffer_syntax_table(buffer_id);
     }
 
     pub fn clone_buffer_local_state(&mut self, from_buffer_id: u64, to_buffer_id: u64) {
@@ -607,6 +633,10 @@ impl Interpreter {
 
         if let Some(tables) = self.buffer_case_tables(from_buffer_id) {
             self.install_buffer_case_tables(to_buffer_id, tables);
+        }
+        // clone_per_buffer_values copies BVAR (from, syntax_table) too.
+        if let Some(table) = self.buffer_syntax_table_id(from_buffer_id) {
+            self.install_buffer_syntax_table(to_buffer_id, table);
         }
     }
 
@@ -681,6 +711,10 @@ impl Interpreter {
         self.globals.has_flag_by_name(name, LOCAL_IF_SET)
     }
 
+    pub(crate) fn is_auto_buffer_local_symbol(&self, symbol: &SymbolName) -> bool {
+        self.globals.has_flag(symbol, LOCAL_IF_SET)
+    }
+
     /// Define a global value cell and its dynamic-binding contract together.
     /// Native DEFVAR-style startup state must never require two coordinated
     /// calls at the definition site.
@@ -727,6 +761,10 @@ impl Interpreter {
 
     pub fn is_always_buffer_local_special(&self, name: &str) -> bool {
         self.globals.has_flag_by_name(name, ALWAYS_LOCAL)
+    }
+
+    pub(crate) fn is_always_buffer_local_symbol(&self, symbol: &SymbolName) -> bool {
+        self.globals.has_flag(symbol, ALWAYS_LOCAL)
     }
 
     /// data.c:let_shadows_buffer_binding_p: a SPECPDL_LET_DEFAULT
@@ -2290,13 +2328,18 @@ impl Interpreter {
     /// nothing done otherwise.
     #[inline]
     pub(crate) fn unbind_plain_special_id(&mut self, binding_id: u64) -> bool {
-        if !self.active_special_restores.last().is_some_and(|restore| {
-            restore.binding_id == binding_id && self.is_plain_restore(restore)
-        }) {
+        let Some(restore) = self.active_special_restores.last() else {
+            return false;
+        };
+        if restore.binding_id != binding_id || !self.is_plain_restore(restore) {
             return false;
         }
-        let restore = self.active_special_restores.pop().expect("checked last");
-        self.store_plain_restore(restore);
+        // The record is read in place and dropped there, as specpdl_ptr
+        // moves back over its entry, not moved out first.
+        let (name, previous) = (restore.name, restore.previous);
+        let depth = self.active_special_restores.len() - 1;
+        self.active_special_restores.truncate(depth);
+        self.store_plain_value(&name, previous);
         true
     }
 
@@ -2306,7 +2349,7 @@ impl Interpreter {
     /// slot holds, and it has no watcher to hear `unlet'.
     #[inline]
     fn is_plain_restore(&self, restore: &SpecialBindingRestore) -> bool {
-        restore.scope == SpecialBindingScope::Global
+        matches!(restore.scope, SpecialBindingScope::Global)
             && restore.previous_undo_state.is_none()
             && restore.keyboard_terminal_id.is_none()
             && (self.globals.plain_store(&restore.name)
@@ -2316,13 +2359,20 @@ impl Interpreter {
     /// The store of a restore `is_plain_restore' accepts.
     #[inline]
     fn store_plain_restore(&mut self, restore: SpecialBindingRestore) {
-        match restore.previous {
+        self.store_plain_value(&restore.name, restore.previous);
+    }
+
+    /// `store_plain_restore's store of PREVIOUS, the value a plain binding
+    /// of NAME saved (None for a void one), back into NAME's cell.
+    #[inline]
+    fn store_plain_value(&mut self, name: &SymbolName, previous: Option<Value>) {
+        match previous {
             Some(value) => {
-                if !self.globals.replace_bound_value(&restore.name, value) {
-                    self.globals.insert(&restore.name, value);
+                if !self.globals.replace_bound_value(name, value) {
+                    self.globals.insert(name, value);
                 }
             }
-            None => self.remove_global_binding_symbol(&restore.name),
+            None => self.remove_global_binding_symbol(name),
         }
     }
 
@@ -2925,16 +2975,17 @@ impl Interpreter {
     /// `edebug-entered' can only carry a dynamic binding once edebug's
     /// defvar has marked it special, so until then a set-membership check
     /// replaces the full variable lookup (whose builtin-variable fallback
-    /// tables are a measurable per-call cost); with edebug loaded, defer
-    /// to the real lookup, buffer-local bindings included.
+    /// tables are a measurable per-call cost); with edebug loaded, the
+    /// special variable's value is read as find_symbol_value reads it,
+    /// buffer-local bindings included: no lexical binding can hold it.
     #[inline(always)]
-    fn edebug_entered_active(&self, env: &Env) -> bool {
+    fn edebug_entered_active(&self, _env: &Env) -> bool {
         // GNU's Qsymbol belongs to the editor that owns its value and
         // declared-special flag. Keep a direct reference in this owner;
         // neither a process-wide id nor a name/TLS lookup is needed here.
         self.globals.edebug_is_special()
             && self
-                .lookup_var("edebug-entered", env)
+                .symbol_value_key(cached_symbol!("edebug-entered"))
                 .is_some_and(|value| value.is_truthy())
     }
 
@@ -3106,6 +3157,40 @@ impl Interpreter {
                 )
             })
             .collect()
+    }
+
+    /// eval.c:get_backtrace_frame: the frame NFRAMES out from the one
+    /// get_backtrace_starting_at finds for BASE -- the innermost for nil,
+    /// else the innermost whose function, through INDIRECT
+    /// (Findirect_function), is BASE's, then OFFSET more frames out -- as
+    /// backtrace_frame_apply reads it: (EVALD FUNCTION ARGS DEBUG-ON-EXIT).
+    /// None past the outermost frame.  Only that frame's arguments are read.
+    pub(crate) fn backtrace_frame_at(
+        &self,
+        nframes: usize,
+        base: Value,
+        offset: i64,
+        indirect: impl Fn(Value) -> Value,
+    ) -> Option<(bool, Value, Value, bool)> {
+        let mut frames = self.backtrace_frames.iter().rev().peekable();
+        if !base.is_nil() {
+            let base = indirect(base);
+            while frames
+                .next_if(|frame| !indirect(frame.function_snapshot()).eq_value(base))
+                .is_some()
+            {}
+            let mut offset = offset;
+            while offset > 0 && frames.next().is_some() {
+                offset -= 1;
+            }
+        }
+        let frame = frames.nth(nframes)?;
+        Some((
+            frame.evald(),
+            frame.function_snapshot(),
+            frame.args_list(),
+            frame.debug_on_exit(),
+        ))
     }
 
     pub(crate) fn capture_batch_error_backtrace(&mut self, error: &LispError, env: &Env) {

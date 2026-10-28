@@ -32,6 +32,9 @@ fn tls_reads_wait_for_the_event_loop_to_finish_negotiation() {
     unsafe extern "C" fn error_is_fatal(_: c_int) -> c_int {
         1
     }
+    unsafe extern "C" fn check_pending(_: *mut c_void) -> usize {
+        0
+    }
 
     let mut transport = Transport::default();
     let mut session = ProcessGnuTlsSession::new(
@@ -43,6 +46,7 @@ fn tls_reads_wait_for_the_event_loop_to_finish_negotiation() {
             credential_deinit: deinit,
             record_recv: receive,
             record_send: send,
+            record_check_pending: check_pending,
             handshake,
             bye,
             error_string,
@@ -544,6 +548,129 @@ fn subprocess_exit_is_event_driven_and_notifies_newest_process_first_once() {
                 Value::Nil,
                 Value::T,
             ])
+        );
+    });
+}
+
+#[test]
+fn process_waits_end_on_output_and_on_a_child_signal_before_their_timeout() {
+    // process.c:wait_reading_process_output selects on the processes'
+    // channels and the child signal pipe: output arriving ends the wait,
+    // and so does a child's exit on a pty, whose slave Emacs keeps open so
+    // that no hangup reaches the master.  Each wait below may last five
+    // seconds; the whole exchange must not.
+    run_with_large_stack(|| {
+        let _permit = crate::test_support::acquire_host_test_permit();
+        let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+        let mut env = crate::lisp::types::Env::new();
+        let mut wait_until = |interp: &mut Interpreter, done: &str, what: &str| {
+            let start = std::time::Instant::now();
+            while !eval_str_with(interp, done).is_truthy() {
+                assert!(
+                    start.elapsed() < std::time::Duration::from_secs(4),
+                    "the wait for {what} lasted until its timeout"
+                );
+                interp
+                    .wait_current_thread_for_process_input(
+                        &mut env,
+                        None,
+                        std::time::Duration::from_secs(5),
+                    )
+                    .expect("wait for process input");
+            }
+        };
+        eval_str_with(
+            &mut interp,
+            r#"(setq emaxx-wait-exit
+                     (make-process :name "wait-exit"
+                                   :command (list (executable-find "sh") "-c" "sleep 0.2")
+                                   :connection-type 'pty :noquery t))"#,
+        );
+        wait_until(
+            &mut interp,
+            "(progn (accept-process-output nil 0) (not (process-live-p emaxx-wait-exit)))",
+            "a pty child's exit",
+        );
+        eval_str_with(
+            &mut interp,
+            r#"(setq emaxx-wait-output nil
+                     emaxx-wait-talker
+                     (make-process :name "wait-output"
+                                   :command (list (executable-find "sh") "-c"
+                                                  "sleep 0.2; printf x; sleep 30")
+                                   :connection-type 'pipe :noquery t
+                                   :filter (lambda (_process string)
+                                             (setq emaxx-wait-output string))))"#,
+        );
+        wait_until(
+            &mut interp,
+            "(progn (accept-process-output nil 0) emaxx-wait-output)",
+            "a child's output",
+        );
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                "(prog1 emaxx-wait-output (delete-process emaxx-wait-talker))"
+            ),
+            Value::string("x")
+        );
+    });
+}
+
+#[test]
+fn a_pipe_child_without_stderr_writes_its_errors_into_its_output_pipe() {
+    // callproc.c:emacs_spawn: with no :stderr the child's standard error is
+    // its standard output (std_err < 0), one pipe, so the filter sees the
+    // two streams in the order the child wrote them.
+    run_with_large_stack(|| {
+        assert_eq!(
+            eval_str_with_upstream_batch(
+                r#"(let* ((out "")
+                         (process
+                          (make-process
+                           :name "shared-output"
+                           :command (list (executable-find "sh") "-c"
+                                          "printf a; printf b >&2; printf c")
+                           :connection-type 'pipe :noquery t
+                           :filter (lambda (_process string)
+                                     (setq out (concat out string))))))
+                    (while (accept-process-output process))
+                    (list out (process-exit-status process)
+                          (process-tty-name process 'stderr)))"#,
+            ),
+            Value::list([Value::string("abc"), Value::Integer(0), Value::Nil])
+        );
+    });
+}
+
+#[test]
+fn process_tty_name_keeps_the_terminal_and_its_streams_after_the_exit() {
+    // process.c:Fprocess_tty_name reads p->tty_name, p->pty_in and
+    // p->pty_out, which outlive the child: an exited process still names
+    // the terminal of each stream that used one.
+    run_with_large_stack(|| {
+        let printed = eval_str_with_upstream_batch(
+            r#"(prin1-to-string
+                 (mapcar (lambda (type)
+                           (let ((p (make-process :name "t" :command '("true")
+                                                  :connection-type type :noquery t)))
+                             (while (accept-process-output p))
+                             (list type (process-status p)
+                                   (mapcar (lambda (stream)
+                                             (stringp (process-tty-name p stream)))
+                                           '(nil stdin stdout stderr))
+                                   (condition-case e (process-tty-name p 'other)
+                                     (error e)))))
+                         '(pty pipe (pipe . pty) (pty . pipe))))"#,
+        );
+        assert_eq!(
+            crate::lisp::primitives::string_like(&printed)
+                .expect("printed")
+                .text,
+            "((pty exit (t t t t) (error \"Unknown stream\" other)) \
+             (pipe exit (nil nil nil nil) (error \"Unknown stream\" other)) \
+             ((pipe . pty) exit (t nil t t) (error \"Unknown stream\" other)) \
+             ((pty . pipe) exit (t t nil nil) (error \"Unknown stream\" other)))"
         );
     });
 }

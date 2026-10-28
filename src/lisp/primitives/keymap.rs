@@ -77,7 +77,7 @@ fn bare_symbol(interp: &Interpreter, value: Value, env: &Env) -> Option<Value> {
 /// indirect_function: the end of SYMBOL's chain of function cells, nil when
 /// one is void.  A non-symbol is itself.
 #[inline]
-fn indirect_function(interp: &Interpreter, object: Value, env: &Env) -> Value {
+pub(crate) fn indirect_function(interp: &Interpreter, object: Value, env: &Env) -> Value {
     match object.symbol_cell() {
         Some(symbol) => interp
             .lookup_function_symbol(&symbol, env)
@@ -195,19 +195,50 @@ pub(crate) fn parse_modifiers(
     interp: &mut Interpreter,
     symbol: Value,
 ) -> Result<(Value, i64), LispError> {
-    let name = symbol.as_symbol()?.to_string();
-    if let Some(elements) = interp.get_symbol_property(&name, "event-symbol-element-mask")
-        && let Some((base, rest)) = elements.cons_values()
-    {
+    symbol.as_symbol()?;
+    let element_mask = cached_symbol!("event-symbol-element-mask");
+    if let Some((base, rest)) = symbol_get(interp, symbol, element_mask).cons_values() {
         let mask = rest.car_if_list().unwrap_or(Value::Nil);
         return Ok((base, mask.as_integer().unwrap_or(0)));
     }
     parse_event_symbol_modifiers(interp, &symbol)?;
-    let elements = interp
-        .get_symbol_property(&name, "event-symbol-element-mask")
-        .unwrap_or(Value::Nil);
+    let elements = symbol_get(interp, symbol, element_mask);
     let (base, rest) = elements.cons_values().expect("parsed modifiers");
     Ok((base, rest.car()?.as_integer()?))
+}
+
+/// Fget (SYMBOL, PROPERTY) as keyboard.c calls it: the symbol's own plist
+/// read by identity, with no name looked up (nil and t by their names).
+pub(crate) fn symbol_get(
+    interp: &Interpreter,
+    symbol: Value,
+    property: crate::lisp::types::symbols::SymbolKey,
+) -> Value {
+    match symbol.symbol_cell() {
+        Some(cell) => property.with(|property| interp.get_symbol_property_of(&cell, property)),
+        None => symbol
+            .as_symbol()
+            .ok()
+            .and_then(|name| interp.get_symbol_property(name, property.name())),
+    }
+    .unwrap_or(Value::Nil)
+}
+
+/// Fput (SYMBOL, PROPERTY, VALUE) on the symbol itself.
+pub(crate) fn symbol_put(
+    interp: &mut Interpreter,
+    symbol: Value,
+    property: crate::lisp::types::symbols::SymbolKey,
+    value: Value,
+) {
+    match symbol.symbol_cell() {
+        Some(cell) => interp.put_symbol_property_on(&cell, property.name(), value),
+        None => {
+            if let Ok(name) = symbol.as_symbol() {
+                interp.put_symbol_property(name, property.name(), value);
+            }
+        }
+    }
 }
 
 /// keyboard.c:apply_modifiers: BASE with MODIFIERS, through BASE's
@@ -222,10 +253,8 @@ fn apply_modifiers(
         return Ok(Value::Integer(code | modifiers));
     }
     const CLICK: i64 = 1 << 3;
-    let base_name = base.as_symbol()?.to_string();
-    let cache = interp
-        .get_symbol_property(&base_name, "modifier-cache")
-        .unwrap_or(Value::Nil);
+    let base_name = base.as_symbol()?;
+    let cache = symbol_get(interp, base, cached_symbol!("modifier-cache"));
     let index = Value::Integer(modifiers & !CLICK);
     let mut tail = cache;
     let mut cached = None;
@@ -241,24 +270,23 @@ fn apply_modifiers(
     let new_symbol = match cached {
         Some(symbol) => symbol,
         None => {
-            let symbol = Value::symbol(&modified_event_symbol_name(modifiers, &base_name));
-            interp.put_symbol_property(
-                &base_name,
-                "modifier-cache",
+            let symbol = Value::symbol(&modified_event_symbol_name(modifiers, base_name));
+            symbol_put(
+                interp,
+                base,
+                cached_symbol!("modifier-cache"),
                 Value::cons(Value::cons(index, symbol), cache),
             );
             symbol
         }
     };
-    let new_name = new_symbol.as_symbol()?.to_string();
-    if interp
-        .get_symbol_property(&new_name, "event-kind")
-        .is_none_or(|kind| kind.is_nil())
-        && let Some(kind) = interp
-            .get_symbol_property(&base_name, "event-kind")
-            .filter(|kind| !kind.is_nil())
-    {
-        interp.put_symbol_property(&new_name, "event-kind", kind);
+    new_symbol.as_symbol()?;
+    let event_kind = cached_symbol!("event-kind");
+    if symbol_get(interp, new_symbol, event_kind).is_nil() {
+        let kind = symbol_get(interp, base, event_kind);
+        if !kind.is_nil() {
+            symbol_put(interp, new_symbol, event_kind, kind);
+        }
     }
     Ok(new_symbol)
 }

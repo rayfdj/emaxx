@@ -434,6 +434,16 @@ const EXACT_NATIVE_C_FAST_PATHS: &[NativeCFastPathContract] = &[
         contract_test: "native_apply_spreads_the_final_list_into_funcall_words",
     },
     NativeCFastPathContract {
+        primitive: "aref",
+        owner: "data.c:Faref",
+        contract_test: "native_aref_aset_type_of_and_autoload_do_load_answer_as_their_subrs",
+    },
+    NativeCFastPathContract {
+        primitive: "aset",
+        owner: "data.c:Faset",
+        contract_test: "native_aref_aset_type_of_and_autoload_do_load_answer_as_their_subrs",
+    },
+    NativeCFastPathContract {
         primitive: "assq",
         owner: "fns.c:Fassq",
         contract_test: "native_assq_uses_the_fns_c_cons_walk",
@@ -442,6 +452,11 @@ const EXACT_NATIVE_C_FAST_PATHS: &[NativeCFastPathContract] = &[
         primitive: "atom",
         owner: "data.c:Fatom",
         contract_test: "direct_word_subrs_use_the_gnu_c_fast_and_error_paths",
+    },
+    NativeCFastPathContract {
+        primitive: "autoload-do-load",
+        owner: "eval.c:Fautoload_do_load",
+        contract_test: "native_aref_aset_type_of_and_autoload_do_load_answer_as_their_subrs",
     },
     NativeCFastPathContract {
         primitive: "bare-symbol-p",
@@ -504,6 +519,11 @@ const EXACT_NATIVE_C_FAST_PATHS: &[NativeCFastPathContract] = &[
         contract_test: "native_get_follows_fns_c_word_path",
     },
     NativeCFastPathContract {
+        primitive: "gethash",
+        owner: "fns.c:Fgethash",
+        contract_test: "native_gethash_and_puthash_use_the_subrs_own_lookup",
+    },
+    NativeCFastPathContract {
         primitive: "identity",
         owner: "fns.c:Fidentity",
         contract_test: "direct_word_subrs_use_the_gnu_c_fast_and_error_paths",
@@ -554,6 +574,11 @@ const EXACT_NATIVE_C_FAST_PATHS: &[NativeCFastPathContract] = &[
         contract_test: "native_string_length_and_fixnum_extrema_answer_as_their_subrs",
     },
     NativeCFastPathContract {
+        primitive: "nconc",
+        owner: "fns.c:Fnconc",
+        contract_test: "native_nconc_follows_fns_c_nconc",
+    },
+    NativeCFastPathContract {
         primitive: "nlistp",
         owner: "data.c:Fnlistp",
         contract_test: "direct_word_subrs_use_the_gnu_c_fast_and_error_paths",
@@ -572,6 +597,11 @@ const EXACT_NATIVE_C_FAST_PATHS: &[NativeCFastPathContract] = &[
         primitive: "plist-member",
         owner: "fns.c:Fplist_member",
         contract_test: "native_plist_member_follows_fns_c_pair_traversal",
+    },
+    NativeCFastPathContract {
+        primitive: "puthash",
+        owner: "fns.c:Fputhash",
+        contract_test: "native_gethash_and_puthash_use_the_subrs_own_lookup",
     },
     NativeCFastPathContract {
         primitive: "symbol-function",

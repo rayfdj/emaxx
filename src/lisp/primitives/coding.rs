@@ -30,47 +30,95 @@ fn charset_plist_property(interp: &Interpreter, charset: &str, property: &str) -
     })
 }
 
-fn parse_charset_map_number(value: &str) -> Option<u32> {
-    u32::from_str_radix(value.trim_start_matches("0x"), 16).ok()
+/// charset.c:read_hex over a map file's BYTES from *POS: LOOKAHEAD (or
+/// the next byte) starts a scan to the next `0x', a `#' skipping to the
+/// end of its line; the hex digits after it are the number, and the byte
+/// that ends them (None at the end of the file) is the terminator.
+/// OVERFLOW is set when a digit shifts a set bit out.
+fn read_charset_map_hex(
+    bytes: &[u8],
+    pos: &mut usize,
+    lookahead: Option<u8>,
+    overflow: &mut bool,
+) -> (u32, Option<u8>) {
+    let mut getc = || {
+        let byte = bytes.get(*pos).copied();
+        *pos += usize::from(byte.is_some());
+        byte
+    };
+    let mut c = lookahead.or_else(&mut getc);
+    while let Some(byte) = c {
+        if byte == b'#' {
+            c = getc();
+            while c.is_some_and(|byte| byte != b'\n') {
+                c = getc();
+            }
+        } else if byte == b'0' {
+            c = getc();
+            if c.is_none_or(|byte| byte == b'x') {
+                break;
+            }
+        }
+        if c.is_none() {
+            break;
+        }
+        c = getc();
+    }
+    let mut n = 0u32;
+    if c.is_some() {
+        loop {
+            c = getc();
+            let Some(digit) = c.and_then(|byte| char::from(byte).to_digit(16)) else {
+                break;
+            };
+            *overflow |= n >> 28 != 0;
+            n = (n << 4) + digit;
+        }
+    }
+    (n, c)
 }
 
-/// charset.c load_charset_map over a map file: a `FROM-TO C' line maps the
-/// codes whose code-space INDEX runs from FROM's to TO's onto the
+/// charset.c load_charset_map_from_file's reading, then load_charset_map
+/// over a map file: each `FROM[-TO] C' entry (read_hex's numbers, an entry
+/// whose number overflowed, whose FROM exceeds TO or whose C is no
+/// character skipped, and one the end of the file cuts short dropped) maps
+/// the codes whose code-space INDEX runs from FROM's to TO's onto the
 /// characters from C on, one per index (codes are not consecutive integers
 /// once a dimension has gaps: GB180304.map's `0x81308130-0x81308435 0x80'
-/// is 36 characters, not 774); a line whose codes fall outside the code
+/// is 36 characters, not 774); an entry whose codes fall outside the code
 /// space is skipped (`from_index < 0 || to_index < 0').
-fn parse_charset_map(contents: &str, bounds: &[(u32, u32)]) -> Vec<(u32, u32)> {
+fn parse_charset_map(contents: &[u8], bounds: &[(u32, u32)]) -> Vec<(u32, u32)> {
+    const MAX_CHAR: u32 = 0x3F_FFFF;
     let mut mappings = Vec::new();
-    for line in contents.lines() {
-        let mut fields = line
-            .split('#')
-            .next()
-            .unwrap_or_default()
-            .split_whitespace();
-        let (Some(code), Some(character)) = (fields.next(), fields.next()) else {
-            continue;
+    let mut pos = 0;
+    let mut ch = None;
+    loop {
+        let mut overflow = false;
+        let (code_start, terminator) = read_charset_map_hex(contents, &mut pos, ch, &mut overflow);
+        let Some(terminator) = terminator else {
+            break;
         };
-        let (code_start, code_end) = match code.split_once('-') {
-            Some((start, end)) => {
-                let (Some(start), Some(end)) = (
-                    parse_charset_map_number(start),
-                    parse_charset_map_number(end),
-                ) else {
-                    continue;
-                };
-                (start, end)
+        let code_end = if terminator == b'-' {
+            let (code_end, terminator) =
+                read_charset_map_hex(contents, &mut pos, None, &mut overflow);
+            if terminator.is_none() {
+                break;
             }
-            None => {
-                let Some(code) = parse_charset_map_number(code) else {
-                    continue;
-                };
-                (code, code)
-            }
+            ch = terminator;
+            code_end
+        } else {
+            ch = None;
+            code_start
         };
-        let Some(character_start) = parse_charset_map_number(character) else {
+        let (character_start, terminator) =
+            read_charset_map_hex(contents, &mut pos, ch.take(), &mut overflow);
+        if terminator.is_none() {
+            break;
+        }
+        ch = terminator;
+        if overflow || code_start > code_end || character_start > MAX_CHAR {
             continue;
-        };
+        }
         let (Some(from_index), Some(to_index)) = (
             code_point_to_raw_index(bounds, code_start),
             code_point_to_raw_index(bounds, code_end),
@@ -3932,7 +3980,7 @@ pub(crate) fn decode_coding_text(
 }
 
 /// charset.c CHARSET_MIN_CODE / CHARSET_MAX_CODE.
-fn charset_code_bounds(interp: &Interpreter, charset: &str) -> Option<(u32, u32)> {
+pub(crate) fn charset_code_bounds(interp: &Interpreter, charset: &str) -> Option<(u32, u32)> {
     charset_info(interp, charset)?.code_bounds
 }
 

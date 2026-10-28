@@ -1546,6 +1546,14 @@ fn read_from_lisp_source_raw(
     }
 }
 
+/// STRING_MULTIBYTE, or `None' for a non-string.
+fn string_multibyte_p(value: &Value) -> Option<bool> {
+    match value.kind() {
+        Kind::StringObject(state) => Some(state.borrow().is_multibyte()),
+        _ => None,
+    }
+}
+
 /// fns.c:extract_data_from_object's MD5 coding policy. String endpoints
 /// address the encoded string; buffer endpoints address the narrowed buffer.
 pub(crate) fn md5_source_bytes(
@@ -1674,9 +1682,9 @@ pub(crate) fn md5_source_bytes(
             interp.set_current_buffer_id(saved)?;
         }
         result?
-    } else if let Some(string) = string_like(source) {
+    } else if let Some(multibyte) = string_multibyte_p(source) {
         if coding.is_nil() {
-            coding = if string.multibyte {
+            coding = if multibyte {
                 interp
                     .coding_system_priority_list()
                     .first()
@@ -1689,17 +1697,12 @@ pub(crate) fn md5_source_bytes(
         coding = validate(interp, coding)?;
         *source
     } else if matches!(source.kind(), Kind::Symbol(name) if name == "iv-auto") {
-        if !matches!(start.kind(), Kind::Integer(number) if number >= 0) {
+        let Kind::Integer(length @ 0..) = start.kind() else {
             return Err(LispError::Signal(
                 "Without a length, `iv-auto' can't be used; see ELisp manual".into(),
             ));
-        }
-        return crate::lisp::primitives::text::secure_hash_source_bytes(
-            interp,
-            source,
-            Some(start),
-            Some(end),
-        );
+        };
+        return crate::lisp::primitives::text::iv_auto_bytes(length as usize);
     } else {
         return Err(LispError::SignalValue(Value::list([
             Value::symbol("error"),
@@ -1711,7 +1714,7 @@ pub(crate) fn md5_source_bytes(
             },
         ])));
     };
-    let object = if string_like(&object).expect("extracted string").multibyte {
+    let object = if string_multibyte_p(&object).expect("extracted string") {
         // Explicit buffer coding is checked by code_convert_string only
         // when the extracted string is multibyte. NOERROR does not alter
         // that check, and the requested alias is what gets recorded.
@@ -1731,11 +1734,13 @@ pub(crate) fn md5_source_bytes(
     } else {
         object
     };
-    let bytes = crate::lisp::primitives::text::internal_string_bytes(
-        &string_like(&object).expect("encoded string"),
-    )?;
+    let Kind::StringObject(state) = object.kind() else {
+        unreachable!("encoded string");
+    };
+    let state = state.borrow();
+    let bytes = state.bytes();
     if buffer_source {
-        return Ok(bytes);
+        return Ok(bytes.to_vec());
     }
     let endpoint = |value: &Value, default: i64| -> Result<i64, LispError> {
         match value.kind() {

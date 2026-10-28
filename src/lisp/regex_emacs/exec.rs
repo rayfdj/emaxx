@@ -20,7 +20,7 @@ const UNSET: isize = -1;
 struct Reader<'a> {
     /// The rope read a chunk at a time; None for a string, whose bytes
     /// are all of `chunk'.
-    rope: Option<ropey::RopeSlice<'a>>,
+    rope: Option<RopeRange<'a>>,
     chunk: &'a [u8],
     start: usize,
     /// Text::latin1_bytes.
@@ -55,8 +55,8 @@ impl<'a> Reader<'a> {
         let Some(rope) = self.rope else {
             return;
         };
-        let (chunk, start, _, _) = rope.chunk_at_byte(d);
-        self.chunk = chunk.as_bytes();
+        let (chunk, start) = rope.chunk_at_byte(d);
+        self.chunk = chunk;
         self.start = start;
     }
 
@@ -399,7 +399,10 @@ fn re_match_2_internal<E: MatchEnv + ?Sized>(
                         while !want.is_empty() {
                             let rest = rd.rest(at);
                             let n = rest.len().min(want.len());
-                            if rest[..n] != want[..n] {
+                            // GNU's byte loop: an attempt nearly always
+                            // fails at its first byte, tested here before
+                            // the rest is compared.
+                            if rest[0] != want[0] || rest[1..n] != want[1..n] {
                                 break 'exactn Next::Fail;
                             }
                             want = &want[n..];
@@ -1001,7 +1004,7 @@ fn fastmap_admits<E: MatchEnv + ?Sized>(
 }
 
 /// Whether character CODE of a text, translated, can start a match.
-#[inline]
+#[inline(always)]
 fn code_admits<E: MatchEnv + ?Sized>(
     pattern: &Pattern,
     code: u32,
@@ -1044,9 +1047,14 @@ fn ascii_admits<E: MatchEnv + ?Sized>(
     {
         return bits;
     }
-    let bits = (0..128u32)
-        .filter(|&c| code_admits(pattern, c, target_multibyte, env))
-        .fold(0u128, |bits, c| bits | 1 << c);
+    // A search cache miss compiles the pattern afresh, so this runs once
+    // a compile: a tight loop over the translation's ASCII entries.
+    let mut bits = 0u128;
+    for c in 0..128u32 {
+        if code_admits(pattern, c, target_multibyte, env) {
+            bits |= 1 << c;
+        }
+    }
     pattern.ascii_admits = Some((stamp, target_multibyte, bits));
     bits
 }

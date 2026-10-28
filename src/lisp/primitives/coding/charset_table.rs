@@ -444,7 +444,7 @@ fn load_charset_map_file(
     if let Some(map) = cache.lock().ok()?.get(&key).cloned() {
         return Some(map);
     }
-    let parsed = parse_charset_map(&fs::read_to_string(&key.0).ok()?, &key.1);
+    let parsed = parse_charset_map(&fs::read(&key.0).ok()?, &key.1);
     cache.lock().ok()?.insert(key, parsed.clone());
     Some(parsed)
 }

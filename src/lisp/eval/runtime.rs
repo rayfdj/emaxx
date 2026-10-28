@@ -393,6 +393,11 @@ impl Interpreter {
         self.show_buffer_in_selected_window(id)
     }
 
+    /// indent.c:invalidate_current_column: no recorded column answers.
+    pub(crate) fn invalidate_current_column(&mut self) {
+        self.last_known_column.1 = 0;
+    }
+
     /// Change the current buffer without displaying it in any window.
     pub fn set_current_buffer_id(&mut self, id: u64) -> Result<(), LispError> {
         if id == self.current_buffer_id {
@@ -403,6 +408,8 @@ impl Interpreter {
             .iter()
             .position(|(buffer_id, _)| *buffer_id == id)
             .ok_or_else(|| LispError::Signal(format!("No buffer with id {id}")))?;
+        // buffer.c:set_buffer_internal_2 invalidates the indentation cache.
+        self.invalidate_current_column();
         let current_id = self.current_buffer_id;
         let current_point = self.buffer.borrow().point();
         if self.selected_window_buffer_id() == current_id
@@ -1156,6 +1163,7 @@ impl Interpreter {
         self.buffer_local_hooks.remove(&id);
         self.buffer_case_tables
             .retain(|(buffer_id, _)| *buffer_id != id);
+        self.reset_buffer_syntax_table(id);
         self.labeled_restrictions
             .retain(|restriction| restriction.buffer_id != id);
         self.indirect_buffers

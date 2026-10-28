@@ -17,7 +17,7 @@ pub(crate) fn copy_sequence_value(
 
     match value.kind() {
         Kind::Nil => Ok(Value::Nil),
-        Kind::Cons(_) => Ok(Value::list(value.to_vec()?)),
+        Kind::Cons(_) => Ok(Value::list(value.concat_list_elements()?)),
         Kind::CharTable(id) => interp.clone_char_table(id),
         Kind::LispRecord(record) => Ok(Value::LispRecord(record.shallow_copy())),
         // fns.c:Fcopy_sequence: a new bool vector of the same bits.

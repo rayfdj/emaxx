@@ -1902,51 +1902,25 @@ define_dispatch!(
                 }
             }
             "call-process" => {
+                // callproc.c Fcall_process: INFILE (nil for the null device)
+                // expanded in the process's directory and opened before
+                // call_process runs.
                 if args.is_empty() {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let program = string_text(&args[0])?;
-                let input = match args.get(1) {
-                    Some(value) if !value.is_nil() => match value.kind() {
-                        Kind::Integer(0) => None,
-                        _ => {
-                            let requested_infile = string_text(value)?;
-                            let infile = unquote_local_file_name(&requested_infile)
-                                .unwrap_or(requested_infile);
-                            // GNU report_file_error: an unreadable INFILE is a
-                            // `file-error' (epg's tty probe catches those).
-                            Some(fs::read(&infile).map_err(|error| {
-                                LispError::SignalValue(
-                                    crate::lisp::primitives::file_io::file_error_value(
-                                        &error.to_string(),
-                                        &infile,
-                                    ),
-                                )
-                            })?)
-                        }
-                    },
-                    _ => None,
+                let infile = match args.get(1).filter(|infile| !infile.is_nil()) {
+                    Some(infile) => {
+                        let infile = string_text(infile)?;
+                        let directory = process_current_directory(interp, env)?;
+                        expand_file_name_in_env(interp, env, &infile, directory.as_deref())
+                    }
+                    None => NULL_DEVICE.to_string(),
                 };
-                let destination = args.get(2).unwrap_or(&Value::Nil);
-                let argv = call_process_arguments(interp, env, args, args.get(4..).unwrap_or(&[]))?;
-                let process_output = run_external_process(
-                    interp,
-                    &program,
-                    &argv,
-                    input.as_deref(),
-                    external_stderr_for_destination(destination),
-                    env,
-                )?;
-                write_process_output(
-                    interp,
-                    destination,
-                    &process_output.stdout,
-                    &process_output.stderr,
-                    "call-process",
-                    args,
-                    env,
-                )?;
-                Ok(call_process_status(&process_output.status))
+                let infile = unquote_local_file_name(&infile).unwrap_or(infile);
+                let filefd = fs::File::open(&infile).map_err(|error| {
+                    file_operation_error("Opening process input file", &error, &infile)
+                })?;
+                call_process(interp, env, args, filefd, None)
             }
             "make-process" | "make-pipe-process" => make_process_value(interp, env, args),
             "get-buffer-process" => {
@@ -2034,7 +2008,7 @@ define_dispatch!(
             }
             "list-system-processes" => {
                 need_args(name, args, 0)?;
-                Ok(list_system_processes_value())
+                list_system_processes_value()
             }
             "process-coding-system" => {
                 need_args(name, args, 1)?;
@@ -2688,9 +2662,16 @@ define_dispatch!(
                     end = Value::Integer(to as i64);
                     from == to
                 };
-                let input = if empty_input {
-                    None
+                let (filefd, infile, tempfile) = if empty_input {
+                    let filefd = fs::File::open(NULL_DEVICE).map_err(|error| {
+                        LispError::SignalValue(file_operation_error_value_without_file(
+                            "Opening null device",
+                            &error,
+                        ))
+                    })?;
+                    (filefd, Value::Nil, None)
                 } else {
+                    let (mut filefd, tempfile_name, tempfile) = create_temp_file(interp, env)?;
                     let coding = interp
                         .lookup_var("coding-system-for-write", env)
                         .unwrap_or(Value::Nil);
@@ -2707,9 +2688,16 @@ define_dispatch!(
                             .map_or(Value::Nil, |(_, encoding)| encoding)
                     };
                     let coding = complement_process_encoding_system(interp, env, coding)?;
-                    Some(crate::lisp::primitives::file_io::encode_process_input(
+                    let contents = crate::lisp::primitives::file_io::encode_process_input(
                         interp, start, end, coding, env,
-                    )?)
+                    )?;
+                    filefd.write_all(&contents).map_err(|error| {
+                        file_operation_error("Write error", &error, &tempfile_name)
+                    })?;
+                    std::io::Seek::rewind(&mut filefd).map_err(|error| {
+                        file_operation_error("Setting file position", &error, &tempfile_name)
+                    })?;
+                    (filefd, Value::string(&tempfile_name), Some(tempfile))
                 };
                 if args.get(3).is_some_and(Value::is_truthy) {
                     if start.is_nil() {
@@ -2727,37 +2715,15 @@ define_dispatch!(
                         delete_region_with_hooks(interp, from, to, env)?;
                     }
                 }
-                // PROGRAM INFILE BUFFER DISPLAY ARGS...
+                // PROGRAM INFILE BUFFER DISPLAY ARGS..., INFILE naming the
+                // input's file (a string only these arguments hold).
                 let call_args = std::iter::once(args[2])
-                    .chain(std::iter::once(Value::Nil))
+                    .chain(std::iter::once(infile))
                     .chain(args.get(4..).unwrap_or(&[]).iter().copied())
                     .collect::<Vec<_>>();
-                let program = string_text(&call_args[0])?;
-                let destination = call_args.get(2).copied().unwrap_or(Value::Nil);
-                let argv = call_process_arguments(
-                    interp,
-                    env,
-                    &call_args,
-                    call_args.get(4..).unwrap_or(&[]),
-                )?;
-                let process_output = run_external_process(
-                    interp,
-                    &program,
-                    &argv,
-                    input.as_deref(),
-                    external_stderr_for_destination(&destination),
-                    env,
-                )?;
-                write_process_output(
-                    interp,
-                    &destination,
-                    &process_output.stdout,
-                    &process_output.stderr,
-                    "call-process",
-                    &call_args,
-                    env,
-                )?;
-                Ok(call_process_status(&process_output.status))
+                interp.with_lisp_stack_roots(&call_args, |interp| {
+                    call_process(interp, env, &call_args, filefd, tempfile)
+                })
             }
             "kill-buffer" => {
                 need_arg_range(name, args, 0, 1)?;

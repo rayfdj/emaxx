@@ -41,6 +41,96 @@ pub(crate) fn install_user_signal_handlers() {
     }
 }
 
+/// The signal sysdep.c:init_signals' process_fatal_action caught (SIGHUP,
+/// SIGTERM, or SIGINT in batch) and the next quit check has not yet acted
+/// on; -1 once it has.  A fatal signal after that is dropped, as GNU's
+/// handler, running Fkill_emacs with every signal blocked (its sa_mask is
+/// full), never sees one.
+#[cfg(unix)]
+static PENDING_FATAL_SIGNAL: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+
+/// sysdep.c:init_signals' maybe_fatal_sig for SIGHUP and SIGTERM, and
+/// SIGINT when NONINTERACTIVE (keyboard.c takes it otherwise): a handler
+/// unless the signal was inherited ignored.  GNU's handler runs
+/// Fkill_emacs at once; this one records the signal for the next quit
+/// check (`maybe_quit', the waits' passes), which runs it.
+pub(crate) fn install_fatal_signal_handlers(noninteractive: bool) {
+    #[cfg(unix)]
+    for signal in [libc::SIGHUP, libc::SIGINT, libc::SIGTERM] {
+        if signal == libc::SIGINT && !noninteractive {
+            continue;
+        }
+        // SAFETY: querying the disposition writes only OLD.
+        let ignored = unsafe {
+            let mut old: libc::sigaction = std::mem::zeroed();
+            libc::sigaction(signal, std::ptr::null(), &mut old) != 0
+                || old.sa_sigaction == libc::SIG_IGN
+        };
+        if ignored {
+            continue;
+        }
+        // SAFETY: the callback performs an atomic compare-and-swap and, for
+        // a second signal, signal-hook's async-signal-safe default action.
+        let registered = unsafe {
+            signal_hook::low_level::register(signal, move || {
+                if let Err(previous) = PENDING_FATAL_SIGNAL.compare_exchange(
+                    0,
+                    signal,
+                    UserSignalOrdering::Relaxed,
+                    UserSignalOrdering::Relaxed,
+                ) && previous > 0
+                {
+                    // The first still waits for a quit check: a process
+                    // busy in a primitive that never reaches one (a native
+                    // walk of a circular list) ends at the second.
+                    let _ = signal_hook::low_level::emulate_default_handler(signal);
+                }
+            })
+        };
+        if let Err(error) = registered {
+            panic!("install the fatal signal handlers: {error}");
+        }
+    }
+}
+
+/// Whether a fatal signal waits for `run_pending_fatal_signal'.
+#[inline]
+pub(crate) fn fatal_signal_pending() -> bool {
+    #[cfg(unix)]
+    {
+        PENDING_FATAL_SIGNAL.load(UserSignalOrdering::Relaxed) > 0
+    }
+    #[cfg(not(unix))]
+    false
+}
+
+/// emacs.c:terminate_due_to_signal for SIGTERM, SIGHUP and SIGINT:
+/// Fkill_emacs with the signal number, whatever `inhibit-quit' says.
+#[cold]
+pub(crate) fn run_pending_fatal_signal(
+    interp: &mut Interpreter,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    #[cfg(unix)]
+    {
+        let signal = PENDING_FATAL_SIGNAL.swap(-1, UserSignalOrdering::Relaxed);
+        if signal > 0 {
+            return call(
+                interp,
+                "kill-emacs",
+                &[Value::Integer(i64::from(signal))],
+                env,
+            )
+            .map(drop);
+        }
+        if signal == 0 {
+            PENDING_FATAL_SIGNAL.store(0, UserSignalOrdering::Relaxed);
+        }
+    }
+    let _ = (interp, env);
+    Ok(())
+}
+
 #[cfg(unix)]
 fn take_pending_user_signal() -> Option<&'static str> {
     // GNU prepends each add_user_signal registration.  sysdep.c registers
@@ -1300,7 +1390,18 @@ fn decode_timer(interp: &Interpreter, timer: &Value) -> Option<ExactTimeValue> {
     if slots.len() != 10 || slots[0].is_truthy() || !matches!(slots[2].kind(), Kind::Integer(_)) {
         return None;
     }
-    exact_time_from_old_style(interp, &[slots[1], slots[2], slots[3], slots[8]]).ok()
+    let _ = interp;
+    let time = decode_time_components(
+        TimeForm::HiLoUsPs,
+        &slots[1],
+        &slots[2],
+        &slots[3],
+        &slots[8],
+    )?;
+    // lisp_to_timespec: the timer's time floored to whole nanoseconds,
+    // and valid.
+    let (seconds, nanoseconds) = lisp_to_timespec(&time)?;
+    Some(ExactTimeValue::from_timespec(seconds, nanoseconds))
 }
 
 /// timer_check's result: how long until the earliest timer on
@@ -1330,7 +1431,9 @@ pub(crate) fn run_due_timers(
         return Ok(false);
     }
     let wall_now = current_time_value().ok();
-    let idle_now = exact_time_from_float(idle_seconds).ok();
+    let idle_now = idle_seconds
+        .is_finite()
+        .then(|| decode_float_time(idle_seconds));
     let mut ran = false;
     for (list_name, idle) in [("timer-idle-list", true), ("timer-list", false)] {
         let Some(timers) = interp

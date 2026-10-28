@@ -1635,6 +1635,524 @@ fn insert_file_contents_preserves_embedded_cr_in_unix_files() {
     std::fs::remove_file(path).expect("cleanup fixture");
 }
 
+#[test]
+fn set_auto_coding_runs_where_insert_file_contents_decides() {
+    let directory = std::env::temp_dir().join(format!("emaxx-auto-coding-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).expect("scratch directory");
+    let big = format!(
+        "head line\n{}\n{}tail\n",
+        "x".repeat(100),
+        format!("middle coding: latin-1 {}\n", "y".repeat(80)).repeat(100)
+    );
+    std::fs::write(directory.join("big.txt"), big).expect("big fixture");
+    std::fs::write(directory.join("small.txt"), "hello\n").expect("small fixture");
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let source = format!(
+        r#"(let ((default-directory "{}/") log)
+             (let ((set-auto-coding-function
+                    (lambda (_file size)
+                      (push (list (buffer-name) size (buffer-size) (point)
+                                  enable-multibyte-characters buffer-undo-list
+                                  (and (boundp 'auto-coding-test-local)
+                                       auto-coding-test-local))
+                            log)
+                      nil)))
+               (dolist (file '("big.txt" "small.txt"))
+                 (with-temp-buffer
+                   (setq-local auto-coding-test-local 'target)
+                   (insert-file-contents file)
+                   (push (list (buffer-size) enable-multibyte-characters
+                               (buffer-modified-tick) (point))
+                         log))
+                 (with-temp-buffer
+                   (setq-local auto-coding-test-local 'target)
+                   (insert "pre")
+                   (insert-file-contents file))))
+             (list (nreverse log)
+                   (buffer-live-p (get-buffer " *code-converting-work*"))))"#,
+        directory.display()
+    );
+    let value = crate::test_support::eval_lisp(&mut interp, &mut env, &source)
+        .expect("insert-file-contents with set-auto-coding-function");
+    std::fs::remove_dir_all(&directory).expect("cleanup");
+    // GNU 30.2: an empty buffer decides in itself on every byte; one with
+    // text in the kept work buffer on 1K and the 2K the lseek leaves.
+    assert_eq!(
+        value.to_string(),
+        "(((\" *temp*\" 10516 10516 1 nil t target) (10516 t 15 1) \
+         (\" *code-converting-work*\" 3072 3072 1 nil t nil) \
+         (\" *temp*\" 6 6 1 nil t target) (6 t 4 1) \
+         (\" *code-converting-work*\" 6 6 1 nil t nil)) t)"
+    );
+}
+
+#[test]
+fn coding_system_lists_record_each_definition_as_coding_c_does() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let value = crate::test_support::eval_lisp(
+        &mut interp,
+        &mut env,
+        r#"(list (eq coding-system-list coding-system-list)
+                 (last coding-system-list 5)
+                 (progn (define-coding-system-alias 'emaxx-list-test-alias 'utf-8)
+                        (list (seq-take coding-system-list 5)
+                              (seq-take coding-system-alist 4)))
+                 (progn (define-coding-system-alias 'emaxx-list-test-alias 'latin-1)
+                        (list (seq-take coding-system-list 2)
+                              (seq-count (lambda (e) (equal e '("emaxx-list-test-alias")))
+                                         coding-system-alist))))"#,
+    )
+    .expect("coding system lists");
+    // GNU 30.2: syms_of_coding's two definitions end the list; every
+    // definition pushes its names, an alias's subsidiaries first, and the
+    // alist keeps one element a name.
+    assert_eq!(
+        value.to_string(),
+        "(t (undecided undecided-mac undecided-dos undecided-unix no-conversion) \
+         ((emaxx-list-test-alias emaxx-list-test-alias-mac emaxx-list-test-alias-dos \
+         emaxx-list-test-alias-unix georgian-academy) ((\"emaxx-list-test-alias\") \
+         (\"emaxx-list-test-alias-mac\") (\"emaxx-list-test-alias-dos\") \
+         (\"emaxx-list-test-alias-unix\"))) ((emaxx-list-test-alias \
+         emaxx-list-test-alias-mac) 1))"
+    );
+}
+
+#[test]
+fn unibyte_string_searches_see_each_byte_aset_stores() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let value = crate::test_support::eval_lisp(
+        &mut interp,
+        &mut env,
+        r#"(let ((s (string-to-unibyte "abc abc")))
+             (list (string-match "b" s 0)
+                   (string-match "b" s 2)
+                   (progn (aset s 1 200) (string-match "\310" s 0))
+                   (string-match "b" s 0)
+                   (string-match "[^[:ascii:]]" s 0)
+                   (progn (aset s 1 ?b) (string-match "[^[:ascii:]]" s 0))
+                   (string-match "b" s 0)
+                   (split-string s " ")))"#,
+    )
+    .expect("unibyte searches");
+    // GNU 30.2: a search after each store reads the string's bytes as
+    // they now are.
+    assert_eq!(value.to_string(), r#"(1 5 1 5 1 nil 1 ("abc" "abc"))"#);
+}
+
+#[test]
+fn case_fold_search_starts_at_ascii_text_folding_to_other_characters() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let value = crate::test_support::eval_lisp(
+        &mut interp,
+        &mut env,
+        r#"(let ((tbl (copy-case-table (standard-case-table))))
+             (set-case-syntax-pair ?I ?ı tbl)
+             (with-temp-buffer
+               (set-case-table tbl)
+               (let ((case-fold-search t) (m (string-to-multibyte "xxIyI")))
+                 (list (string-match "ı" m) (string-match "ıy" m)
+                       (string-match "[ı]" m) (string-match "q\\|ı" m)
+                       (string-match "ı" m 3) (string-match "y\\(ı\\)" m)
+                       (match-beginning 1)
+                       (let ((case-fold-search nil)) (string-match "ı" m))
+                       (string-match "ı" "xxI") (string-match "I" "xxı")
+                       (string-match "i" m)))))"#,
+    )
+    .expect("case-fold searches");
+    // GNU 30.2: re_search_2 skips to a multibyte text's `I', which folds
+    // to the pattern's `ı'; a unibyte text's `I' folds to no byte and
+    // stays itself.
+    assert_eq!(value.to_string(), "(2 2 2 2 4 3 4 nil nil nil nil)");
+}
+
+#[test]
+fn backtrace_frame_walks_out_from_its_base_as_get_backtrace_frame_does() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let value = crate::test_support::eval_lisp(
+        &mut interp,
+        &mut env,
+        r#"(progn
+             (defun bt-probe-a (n base) (bt-probe-b n base))
+             (defun bt-probe-b (n base)
+               (let ((f (backtrace-frame n base)))
+                 (list (car f) (nth 1 f) (nthcdr 2 f))))
+             (defalias 'bt-probe-alias 'bt-probe-a)
+             (list (bt-probe-a 0 'bt-probe-b) (bt-probe-a 1 'bt-probe-b)
+                   (bt-probe-a 0 '(1 . bt-probe-b)) (bt-probe-a 1 '(-1 . bt-probe-b))
+                   (bt-probe-alias 0 'bt-probe-alias) (bt-probe-alias 0 'bt-probe-a)
+                   (bt-probe-a 0 'no-such-function-here) (bt-probe-a 500 'bt-probe-b)
+                   (let ((x 1)) (if x (bt-probe-a 2 'bt-probe-a)))
+                   (condition-case e (backtrace-frame -1) (error e))
+                   (condition-case e (backtrace--locals -1) (error e))
+                   (condition-case e (backtrace-frame--internal #'list 'a nil)
+                     (error e))))"#,
+    )
+    .expect("backtrace frames");
+    // GNU 30.2: the base matches through Findirect_function (an alias's
+    // frame for its target), a negative base offset skips nothing, a
+    // special form's frame carries its unevaluated arguments, and NFRAMES
+    // must be a whole number.
+    assert_eq!(
+        value.to_string(),
+        "((t bt-probe-b (0 bt-probe-b)) (t bt-probe-a (1 bt-probe-b)) \
+         (t bt-probe-a (0 (1 . bt-probe-b))) (t bt-probe-a (1 (-1 . bt-probe-b))) \
+         (t bt-probe-alias (0 bt-probe-alias)) (t bt-probe-alias (0 bt-probe-a)) \
+         (nil nil nil) (nil nil nil) \
+         (nil let (((x 1)) (if x (bt-probe-a 2 'bt-probe-a)))) \
+         (wrong-type-argument wholenump -1) (wrong-type-argument wholenump -1) \
+         (wrong-type-argument wholenump a))"
+    );
+}
+
+#[test]
+fn keymap_events_reorder_modifiers_through_each_symbols_own_plist() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let value = crate::test_support::eval_lisp(
+        &mut interp,
+        &mut env,
+        r#"(let ((m (make-sparse-keymap)) (u (make-symbol "C-f9")))
+             (define-key m [M-C-f1] 'x)
+             (define-key m (vector u) 'y)
+             (list (lookup-key m [C-M-f1]) (lookup-key m [M-C-f1]) (lookup-key m [C-f9])
+                   (lookup-key m (vector u)) (lookup-key m (vector (make-symbol "M-C-f1")))
+                   (get 'C-M-f1 'event-symbol-element-mask)
+                   (get u 'event-symbol-element-mask)
+                   (event-modifiers u)))"#,
+    )
+    .expect("modified events");
+    // GNU 30.2: parse_modifiers caches on the symbol itself, an
+    // uninterned one included, and apply_modifiers interns the canonical
+    // name, so every spelling finds the one binding.
+    assert_eq!(
+        value.to_string(),
+        "(x x y y x (f1 201326592) (f9 67108864) (control))"
+    );
+}
+
+#[test]
+fn equal_compares_strings_by_chars_bytes_and_contents_as_internal_equal() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let value = crate::test_support::eval_lisp(
+        &mut interp,
+        &mut env,
+        r#"(list (equal "abc" (string-to-unibyte "abc"))
+                 (equal "é" (string-to-unibyte "\303\251"))
+                 (equal (propertize "a" 'face 'bold) "a")
+                 (equal-including-properties (propertize "a" 'face 'bold) "a")
+                 (equal-including-properties (propertize "a" 'face 'bold)
+                                             (propertize "a" 'face 'bold))
+                 (equal "" (make-string 0 ?x)) (equal "ab" "abc") (equal 1 1.0)
+                 (equal 'a "a") (assoc "end" '(("begin" . 1) ("end" . 2)))
+                 (member "b" '("a" "b")) (equal (list "x" 1) (list "x" 1))
+                 (equal [1 "a"] (vector 1 "a")))"#,
+    )
+    .expect("string comparisons");
+    // GNU 30.2: SCHARS, SBYTES and the bytes, whatever the multibyte flag;
+    // the text properties only for `equal-including-properties'.
+    assert_eq!(
+        value.to_string(),
+        r#"(t nil t nil t t nil nil nil ("end" . 2) ("b") t t)"#
+    );
+}
+
+#[test]
+fn rust_callers_reach_byte_code_closures_given_named_or_aliased_as_funcall_does() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let value = crate::test_support::eval_lisp(
+        &mut interp,
+        &mut env,
+        r#"(let (results)
+             (defvar rust-caller-bc-seen nil)
+             (dolist (lex '(nil t))
+               (setq lexical-binding lex)
+               (let* ((f (byte-compile
+                          '(lambda (x)
+                             (if (eq x 'boom) (signal 'error (list x))
+                               (list x (string-match "b" (symbol-name x)))))))
+                      (g (byte-compile '(lambda (a b) (+ a b)))))
+                 (defalias 'rust-caller-bc-f f)
+                 (defalias 'rust-caller-bc-alias 'rust-caller-bc-f)
+                 (push (list (mapcar f '(abc bcd))
+                             (mapcar 'rust-caller-bc-f '(xb))
+                             (mapcar 'rust-caller-bc-alias '(b))
+                             (funcall 'rust-caller-bc-alias 'ab)
+                             (condition-case err (mapcar f '(ok boom)) (error err))
+                             (condition-case err (funcall g 1)
+                               (wrong-number-of-arguments
+                                (cons (if (eq (cadr err) g) 'self (cadr err)) (cddr err))))
+                             (condition-case err (mapcar g '(1))
+                               (wrong-number-of-arguments
+                                (cons (if (eq (cadr err) g) 'self (cadr err)) (cddr err))))
+                             (sort (list 3 1 2) (byte-compile '(lambda (a b) (< a b))))
+                             (progn
+                               (setq rust-caller-bc-seen nil)
+                               (mapatoms (byte-compile
+                                          '(lambda (s)
+                                             (when (eq s 'rust-caller-bc-f)
+                                               (push s rust-caller-bc-seen)))))
+                               rust-caller-bc-seen)
+                             (string-match "b" (string-to-unibyte "abc"))
+                             (let ((s (string-to-unibyte "ab")))
+                               (aset s 0 ?\377)
+                               (list (string-match "b" s) (string-match "\377" s)))
+                             (let ((case-fold-search t))
+                               (string-match "B" (string-to-unibyte "xab"))))
+                       results)))
+             (nreverse results))"#,
+    )
+    .expect("byte-code closures called from Rust");
+    // GNU 30.2: the same values and signals whether `mapcar', `sort' or
+    // `mapatoms' calls the closure or `funcall' names it; a dynamic
+    // closure's arity error names the closure, a lexical one its arity.
+    assert_eq!(
+        value.to_string(),
+        "((((abc 1) (bcd 0)) ((xb 1)) ((b 0)) (ab 1) (error boom) (self 1) (self 1) \
+         (1 2 3) (rust-caller-bc-f) 1 (1 0) 2) \
+         (((abc 1) (bcd 0)) ((xb 1)) ((b 0)) (ab 1) (error boom) ((2 . 2) 1) ((2 . 2) 1) \
+         (1 2 3) (rust-caller-bc-f) 1 (1 0) 2))"
+    );
+}
+
+#[test]
+fn buffer_local_queries_take_the_variable_as_a_symbol_as_data_c_does() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let value = crate::test_support::eval_lisp(
+        &mut interp,
+        &mut env,
+        r#"(progn
+(defvar r134-var 'global)
+(defvaralias 'r134-alias 'r134-var)
+(defvar r134-void)
+(defvar-local r134-auto 'auto)
+(put 'r134-perm 'permanent-local t)
+(defvar r134-perm 'p)
+(with-temp-buffer
+   (list
+    (make-local-variable 'r134-alias)
+    (local-variable-p 'r134-var) (local-variable-p 'r134-alias)
+    (local-variable-if-set-p 'r134-alias) (local-variable-if-set-p 'r134-auto)
+    (local-variable-if-set-p 'r134-void)
+    (progn (setq r134-alias 'local) (list r134-var (default-value 'r134-var)))
+    (make-local-variable 'r134-void)
+    (condition-case err (symbol-value 'r134-void) (void-variable err))
+    (local-variable-p 'r134-void)
+    (make-local-variable 'mode-name) (local-variable-p 'mode-name)
+    (local-variable-p 'tab-width) (local-variable-p 'fill-column)
+    (condition-case err (make-local-variable nil) (error err))
+    (condition-case err (make-local-variable 3) (error err))
+    (condition-case err (local-variable-p "x") (error err))
+    (local-variable-p nil) (local-variable-p t)
+    (eq (variable-binding-locus 'r134-alias) (current-buffer))
+    (variable-binding-locus 'r134-perm)
+    (progn (make-local-variable 'r134-perm) (setq r134-perm 'kept)
+           (setq-local r134-auto 'mine)
+           (kill-all-local-variables)
+           (list r134-perm (local-variable-p 'r134-perm) r134-auto
+                 (local-variable-p 'r134-var) r134-var))
+    (progn (use-local-map (make-sparse-keymap)) (keymapp (current-local-map)))
+    (progn (use-local-map nil) (current-local-map))
+    (progn (insert "a\tb") (list (current-column)
+                                 (let ((tab-width 4)) (current-column))
+                                 (progn (setq-local tab-width 3) (current-column))))
+    (progn (erase-buffer) (insert "x" (propertize "y" 'display '(space :width 5)) "z")
+           (current-column))
+    (progn (erase-buffer) (insert "\C-a") (list (current-column)
+                                                (let ((ctl-arrow nil)) (current-column))))
+    (let ((sym (intern "r134-fresh")))
+      (unintern "r134-fresh" obarray)
+      (list (intern-soft "r134-fresh") (eq sym (intern "r134-fresh")))))))"#,
+    )
+    .expect("buffer-local queries");
+    // GNU 30.2: an alias's binding is its target's, a void default stays
+    // void, a constant refuses, a permanent local survives
+    // `kill-all-local-variables'; `current-column' answers from
+    // indent.c's cache while point and the modiff stay.
+    assert_eq!(
+        value.to_string(),
+        r#"(r134-var t t t t nil (local global) r134-void (void-variable r134-void) t mode-name t nil nil (setting-constant nil) (wrong-type-argument symbolp 3) (wrong-type-argument symbolp "x") nil nil t nil (kept t auto nil global) t nil (9 9 9) 7 (2 2) (nil nil))"#
+    );
+}
+
+#[test]
+fn current_column_answers_from_its_cache_until_point_modiff_or_buffer_change() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let value = crate::test_support::eval_lisp(
+        &mut interp,
+        &mut env,
+        r#"(with-temp-buffer
+   (let ((other (generate-new-buffer " other")) r)
+     (insert "a\tbc")
+     (push (current-column) r)                                  ; 10
+     (setq-local tab-width 4)
+     (push (current-column) r)                                  ; cached 10
+     (with-current-buffer other (ignore))
+     (push (current-column) r)                                  ; switched: 6
+     (setq-local tab-width 2)
+     (push (current-column) r)                                  ; cached
+     (narrow-to-region 1 3) (widen)
+     (push (current-column) r)                                  ; recomputed
+     (setq-local tab-width 8)
+     (save-restriction (narrow-to-region 2 5))
+     (push (current-column) r)
+     (setq-local tab-width 4)
+     (push (indent-to 12) r)
+     (setq-local tab-width 8)
+     (push (current-column) r)                                  ; indent-to recorded 12
+     (goto-char 2) (push (current-column) r) (goto-char (point-max))
+     (push (current-column) r)
+     (setq-local tab-width 3)
+     (push (move-to-column 3) r) (push (current-column) r)
+     (setq-local tab-width 8)
+     (push (current-column) r)
+     (put-text-property 1 2 'face 'bold)
+     (push (current-column) r)
+     (setq-local tab-width 3)
+     (push (current-column) r)
+     (with-silent-modifications (put-text-property 1 2 'face 'italic))
+     (push (current-column) r)
+     (setq-local tab-width 8)
+     (set-buffer-modified-p nil)
+     (push (current-column) r)
+     (kill-buffer other)
+     (nreverse r)))"#,
+    )
+    .expect("column cache");
+    // GNU 30.2: indent.c's last_known_column answers while point and
+    // MODIFF are unchanged; a buffer switch, widening, narrowing and a
+    // restriction's restore invalidate it; `indent-to' and
+    // `move-to-column' record the column they reach.
+    assert_eq!(
+        value.to_string(),
+        "(10 10 6 6 2 8 12 12 1 18 3 3 3 8 8 3 3)"
+    );
+}
+
+#[test]
+fn charset_maps_read_as_read_hex_does_and_map_charset_chars_takes_nil_codes() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let value = crate::test_support::eval_lisp(
+        &mut interp,
+        &mut env,
+        r#"(let ((ranges (lambda (charset &rest codes)
+                 (let (r)
+                   (apply #'map-charset-chars
+                          (lambda (range arg) (push (list (car range) (cdr range) arg) r))
+                          charset 'x codes)
+                   (nreverse r)))))
+   (list (funcall ranges 'cp1252)
+         (funcall ranges 'cp1252 nil nil)
+         (funcall ranges 'cp1252 #x80 #x9f)
+         (length (funcall ranges 'gb18030-4-byte-bmp))
+         (car (funcall ranges 'gb18030-4-byte-bmp))
+         (car (last (funcall ranges 'gb18030-4-byte-bmp)))
+         (funcall ranges 'gb18030-4-byte-bmp #x81308130 #x81308135)
+         (length (funcall ranges 'big5))
+         (mapcar (lambda (code) (decode-char 'big5 code)) '(#xa140 #xa3bf #xc6a1 #xf9d5 #xa3e1))
+         (mapcar (lambda (code) (decode-char 'gb18030-4-byte-bmp code))
+                 '(#x81308130 #x81308435 #x8431a439 #x8431a530))
+         (encode-char ?€ 'cp1252) (encode-char ?中 'big5)))"#,
+    )
+    .expect("charset maps");
+    // GNU 30.2: a map file's entries as charset.c's read_hex reads them;
+    // `map-charset-chars' with nil (or omitted) codes covers the charset's
+    // CHARSET_MIN_CODE to CHARSET_MAX_CODE, a 4-byte charset's included.
+    assert_eq!(
+        value.to_string(),
+        "(((0 127 x) (160 255 x) (338 339 x) (352 353 x) (376 376 x) (381 382 x) (402 402 x) (710 710 x) (732 732 x) (8211 8212 x) (8216 8218 x) (8220 8222 x) (8224 8226 x) (8230 8230 x) (8240 8240 x) (8249 8250 x) (8364 8364 x) (8482 8482 x)) ((0 127 x) (160 255 x) (338 339 x) (352 353 x) (376 376 x) (381 382 x) (402 402 x) (710 710 x) (732 732 x) (8211 8212 x) (8216 8218 x) (8220 8222 x) (8224 8226 x) (8230 8230 x) (8240 8240 x) (8249 8250 x) (8364 8364 x) (8482 8482 x)) ((338 339 x) (352 353 x) (376 376 x) (381 382 x) (402 402 x) (710 710 x) (732 732 x) (8211 8212 x) (8216 8218 x) (8220 8222 x) (8224 8226 x) (8230 8230 x) (8240 8240 x) (8249 8250 x) (8364 8364 x) (8482 8482 x)) 201 (128 163 x) (65510 65535 x) ((128 133 x)) 3805 (12288 715 63153 40856 8364) (128 163 65529 65530) 128 42148)"
+    );
+}
+
+#[test]
+fn functionp_is_eval_c_functionp_fset_of_nil_signals_and_nconc_follows_fnconc() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let value = crate::test_support::eval_lisp(
+        &mut interp,
+        &mut env,
+        r#"(progn
+           (defmacro p136-mac (x) x)
+           (defalias 'p136-alias-mac 'p136-mac)
+           (defun p136-fun (x) x)
+           (defalias 'p136-alias-fun 'p136-fun)
+           (defalias 'p136-alias-if 'if)
+           (fset 'p136-auto-f '(autoload "p136"))
+           (fset 'p136-auto-m '(autoload "p136" nil nil macro))
+           (fset 'p136-auto-short '(autoload))
+           (fset 'p136-auto-dotted '(autoload "p136" nil nil . macro))
+           (fset 'p136-lambda '(lambda))
+           (let ((head (list 1)) (cycle (list 'c)))
+             (setcdr cycle cycle)
+             (list
+              (mapcar #'functionp
+                      (list 'car 'if 'p136-mac 'p136-alias-mac 'p136-fun 'p136-alias-fun
+                            'p136-alias-if 'p136-auto-f 'p136-auto-m 'p136-auto-short
+                            'p136-auto-dotted 'p136-lambda 'p136-unbound nil t
+                            (symbol-function 'if) (symbol-function 'setq) (symbol-function 'car)
+                            '(lambda) '(lambda . 1) '(lambda (x) x) '(closure (t) (x) x)
+                            '(macro . car) (lambda (x) x) "car" 1))
+              (let ((symbols-with-pos-enabled t))
+                (list (functionp (position-symbol 'car 5))
+                      (functionp (list (position-symbol 'lambda 3) nil))))
+              (functionp (position-symbol 'car 5))
+              (condition-case err (fset nil 'car) (error err))
+              (condition-case err (defalias nil 'car) (error err))
+              (fset nil nil)
+              (nconc nil (list 1) nil (list 2) nil)
+              (nconc (list 1) 2)
+              (nconc nil 5)
+              (condition-case err (nconc head 2 (list 3)) (error err))
+              head
+              (condition-case err (nconc cycle (list 1)) (error (car err))))))"#,
+    )
+    .expect("functionp, fset and nconc");
+    // GNU 30.2: eval.c:FUNCTIONP follows the function cell (an alias of a
+    // special form, an autoload of any length, `(lambda)' and a special
+    // form's subr object included), Ffset and Fdefalias of nil signal
+    // `setting-constant', and Fnconc stores each argument into the last
+    // cons before it as it goes, a nil one standing for that cons.
+    assert_eq!(
+        value.to_string(),
+        "((t nil nil nil t t nil t nil t t t nil nil nil nil nil t t t t nil nil t nil nil) (t t) nil (setting-constant nil) (setting-constant nil) nil (1 2) (1 . 2) 5 (wrong-type-argument consp 2) (1 . 2) circular-list)"
+    );
+}
+
+#[test]
+fn byte_code_memq_compares_by_eq_with_symbols_with_pos_enabled() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let value = crate::test_support::eval_lisp(
+        &mut interp,
+        &mut env,
+        r#"(let* ((memq-fn (byte-compile (lambda (x l) (memq x l))))
+                (p (position-symbol 'foo 7))
+                (l (list 'a p 'b)))
+           (list (funcall memq-fn 'foo l)
+                 (let ((symbols-with-pos-enabled t))
+                   (let ((tail (funcall memq-fn 'foo l)))
+                     (list (length tail) (eq (car tail) p))))
+                 (let ((symbols-with-pos-enabled t)) (funcall memq-fn p (list 'x 'foo)))
+                 (funcall memq-fn p (list 'x 'foo))
+                 (funcall memq-fn 'b l)
+                 (let ((symbols-with-pos-enabled t)) (funcall memq-fn 'c l))))"#,
+    )
+    .expect("Bmemq");
+    // GNU 30.2: bytecode.c's Bmemq is Fmemq, whose lisp.h:EQ takes a
+    // symbol with position as its bare symbol, on either side, only while
+    // `symbols-with-pos-enabled' is set.
+    assert_eq!(value.to_string(), "(nil (2 t) (foo) nil (b) nil)");
+}
+
 // Finding 34 re-hosts: the originals ran on the bare interpreter against
 // native facades and were deleted with them; GNU's own test tree covers
 // none of these, so the coverage lives here on the full dumped image,

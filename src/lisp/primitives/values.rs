@@ -89,12 +89,54 @@ impl ForEachTail {
 
 /// maybe_remove_pos_from_symbol: the bare symbol of a symbol with
 /// position while `symbols-with-pos-enabled' is set.
-#[inline]
-fn bare_symbol(interp: &Interpreter, value: Value) -> Value {
+#[inline(always)]
+pub(crate) fn bare_symbol(interp: &Interpreter, value: Value) -> Value {
+    // The flag first, as lisp.h tests symbols_with_pos_enabled before
+    // SYMBOL_WITH_POS_P: no object is looked into while it is off.
+    if !interp.symbols_with_positions_enabled() || !value.is_vectorlike() {
+        return value;
+    }
     match value.kind() {
-        Kind::SymbolWithPos(symbol) if interp.symbols_with_positions_enabled() => symbol.symbol(),
+        Kind::SymbolWithPos(symbol) => symbol.symbol(),
         _ => value,
     }
+}
+
+/// fns.c:internal_equal's first tests, ahead of the walk below: above
+/// depth 10, where HT is not consulted yet, EQ objects are equal, and
+/// objects of two XTYPEs or two symbols or fixnums that are not EQ are
+/// not (the switch has no case for them).  A fixnum and a vectorlike go
+/// on, as a bignum Emaxx did not normalize could be one's value.  Two
+/// strings compare here too, but for `equal-including-properties'.
+#[inline(always)]
+fn internal_equal(
+    interp: &Interpreter,
+    o1: Value,
+    o2: Value,
+    kind: EqualKind,
+    depth: usize,
+    ht: &mut Option<EqualSeen>,
+) -> Result<bool, LispError> {
+    if depth <= 10 {
+        let (o1, o2) = (bare_symbol(interp, o1), bare_symbol(interp, o2));
+        if o1.eq_value(o2) {
+            return Ok(true);
+        }
+        let xtype = o1.xtype();
+        if xtype != o2.xtype() {
+            if !(o1.is_fixnum() && o2.is_vectorlike() || o2.is_fixnum() && o1.is_vectorlike()) {
+                return Ok(false);
+            }
+        } else if o1.is_symbol() || o1.is_fixnum() {
+            return Ok(false);
+        } else if kind == EqualKind::Plain
+            && let (Kind::StringObject(left), Kind::StringObject(right)) = (o1.kind(), o2.kind())
+        {
+            // The Lisp_String case: SCHARS, SBYTES and the bytes.
+            return Ok(left.borrow().contents_equal(&right.borrow()));
+        }
+    }
+    internal_equal_1(interp, o1, o2, kind, depth, ht)
 }
 
 /// fns.c:internal_equal: O1 and O2 compared DEPTH levels down.  Past
@@ -103,7 +145,7 @@ fn bare_symbol(interp: &Interpreter, value: Value) -> Value {
 /// loop that signals `circular-list' with the tail that closes a cycle;
 /// its last cdr, and an overlay's plist, are compared one level down by
 /// going round again (tail_recurse).
-fn internal_equal(
+fn internal_equal_1(
     interp: &Interpreter,
     mut o1: Value,
     mut o2: Value,
@@ -134,39 +176,32 @@ fn internal_equal(
         if o1.eq_value(o2) {
             return Ok(true);
         }
-        match (o1.kind(), o2.kind()) {
-            (Kind::Cons(_), Kind::Cons(_)) => {
-                let mut tail = ForEachTail::new(o1);
-                while let Kind::Cons(cell) = o1.kind() {
-                    let Kind::Cons(other) = o2.kind() else {
-                        return Ok(false);
-                    };
-                    if !internal_equal(
-                        interp,
-                        cell.car.get(),
-                        other.car.get(),
-                        kind,
-                        depth + 1,
-                        ht,
-                    )? {
-                        return Ok(false);
-                    }
-                    o2 = other.cdr.get();
-                    o1 = cell.cdr.get();
-                    // EQ (XCDR (o1), o2).
-                    if o1.eq_value(o2) || bare_symbol(interp, o1).eq_value(bare_symbol(interp, o2))
-                    {
-                        return Ok(true);
-                    }
-                    if tail.step(o1) {
-                        return Err(LispError::SignalValue(Value::list([
-                            Value::Symbol("circular-list".into()),
-                            o1,
-                        ])));
-                    }
+        if o1.is_cons() && o2.is_cons() {
+            let mut tail = ForEachTail::new(o1);
+            while let Some(cell) = o1.cons_ref() {
+                let Some(other) = o2.cons_ref() else {
+                    return Ok(false);
+                };
+                if !internal_equal(interp, cell.car.get(), other.car.get(), kind, depth + 1, ht)? {
+                    return Ok(false);
                 }
-                depth += 1;
+                o2 = other.cdr.get();
+                o1 = cell.cdr.get();
+                // EQ (XCDR (o1), o2).
+                if o1.eq_value(o2) || bare_symbol(interp, o1).eq_value(bare_symbol(interp, o2)) {
+                    return Ok(true);
+                }
+                if tail.step(o1) {
+                    return Err(LispError::SignalValue(Value::list([
+                        Value::Symbol("circular-list".into()),
+                        o1,
+                    ])));
+                }
             }
+            depth += 1;
+            continue;
+        }
+        match (o1.kind(), o2.kind()) {
             (Kind::Overlay(left), Kind::Overlay(right)) => {
                 if !overlay_extents_equal(left, right) {
                     return Ok(false);
@@ -533,25 +568,20 @@ pub(crate) fn plist_type_error(plist: &Value) -> LispError {
     ]))
 }
 
+/// fns.c:Fsafe_length: the steps FOR_EACH_TAIL_SAFE takes, which stops
+/// at a non-cons or where it finds a cycle.
 pub(crate) fn safe_list_length(list: &Value) -> i64 {
     let mut len = 0i64;
-    let mut current = *list;
-    let mut seen = crate::lisp::types::CycleGuard::new();
-    loop {
-        match current.kind() {
-            Kind::Cons(cons_cell) => {
-                let cdr = &cons_cell.cdr;
-                let cell_id = crate::lisp::types::ConsCell::identity(&cons_cell);
-                if seen.step(cell_id) {
-                    return len;
-                }
-                len += 1;
-                current = cdr.get();
-            }
-            Kind::Nil => return len,
-            _ => return len,
+    let mut tail = *list;
+    let mut walk = crate::lisp::types::TailWalk::new(tail);
+    while let Some(cell) = tail.cons_ref() {
+        len += 1;
+        tail = cell.cdr.get();
+        if walk.cycled_no_quit(tail) {
+            break;
         }
     }
+    len
 }
 
 pub(crate) fn nthcdr_value(
@@ -1283,38 +1313,46 @@ pub(crate) fn remove_equal(
     }
 }
 
-pub(crate) fn nconc_values(args: &[Value]) -> Result<Value, LispError> {
-    if args.is_empty() {
-        return Ok(Value::Nil);
-    }
-
-    let mut head: Option<Value> = None;
-    let mut tail: Option<Value> = None;
-
-    for (index, value) in args.iter().enumerate() {
-        let is_last = index + 1 == args.len();
-        if is_last {
-            if let Some(tail_cell) = tail {
-                tail_cell.set_cdr(*value)?;
-                return Ok(head.unwrap_or(*value));
-            }
-            return Ok(*value);
-        }
-
-        if value.is_nil() {
+/// fns.c:Fnconc: each argument but the last, unless nil, has its last cons
+/// (FOR_EACH_TAIL's, QUIT where it calls maybe_quit) set to the next
+/// argument, and a nil next argument stands for that cons in its turn.
+pub(crate) fn nconc_values(
+    args: &[Value],
+    mut quit: impl FnMut() -> Result<(), LispError>,
+) -> Result<Value, LispError> {
+    let mut val = Value::Nil;
+    // `if (NILP (tem)) args[argnum + 1] = tail;'
+    let mut carried = None;
+    for (argnum, arg) in args.iter().enumerate() {
+        let tem = carried.take().unwrap_or(*arg);
+        if tem.is_nil() {
             continue;
         }
-
-        let last_cell = last_nconc_cell(value)?;
-        if let Some(tail_cell) = &tail {
-            tail_cell.set_cdr(*value)?;
-        } else {
-            head = Some(*value);
+        if val.is_nil() {
+            val = tem;
         }
-        tail = Some(last_cell);
+        let Some(next) = args.get(argnum + 1) else {
+            break;
+        };
+        if !tem.is_cons() {
+            return Err(LispError::WrongTypeArgument("consp".into(), tem));
+        }
+        let mut tail = tem;
+        let mut cursor = tem;
+        let mut walk = crate::lisp::types::TailWalk::new(tem);
+        while let Some(cell) = cursor.cons_ref() {
+            tail = cursor;
+            cursor = cell.cdr.get();
+            if walk.cycled(cursor, &mut quit)? {
+                return Err(crate::lisp::types::circular_list(cursor));
+            }
+        }
+        tail.set_cdr(*next)?;
+        if next.is_nil() {
+            carried = Some(tail);
+        }
     }
-
-    Ok(head.unwrap_or(Value::Nil))
+    Ok(val)
 }
 
 pub(crate) fn copy_alist_value(value: &Value) -> Result<Value, LispError> {
@@ -1376,27 +1414,8 @@ pub(crate) fn parse_remote_file_name(path: &str) -> Option<RemoteFileNameParts> 
     })
 }
 
-pub(crate) fn last_nconc_cell(value: &Value) -> Result<Value, LispError> {
-    let mut current = *value;
-    let mut seen = crate::lisp::types::CycleGuard::new();
-    loop {
-        let Some((car, cdr)) = (current.clone()).cons_cells() else {
-            return Err(LispError::WrongTypeArgument("consp".into(), current));
-        };
-        let cell_id = car.cell_id();
-        if seen.step(cell_id) {
-            return Err(LispError::SignalValue(Value::list([
-                Value::symbol("circular-list"),
-                Value::string("Circular list"),
-            ])));
-        }
-        match cdr.get().kind() {
-            Kind::Cons(_) => current = cdr.get(),
-            _ => return Ok(current),
-        }
-    }
-}
-
+/// fns.c:Fnconc's walk of one argument: CHECK_CONS, then the last cons
+/// FOR_EACH_TAIL reaches.
 /// fns.c:bool_vector_cmp: the lexicographic order of the bits, the equal
 /// words skipped, a proper prefix first.
 fn bool_vector_cmp(
@@ -1495,58 +1514,60 @@ pub(crate) fn callable_value_p(interp: &Interpreter, value: &Value, env: &Env) -
         )
 }
 
-/// GNU's internal FUNCTIONP predicate.  Native callers use this helper
-/// directly so redefining the Lisp symbol `functionp' cannot change C-level
-/// argument validation.
+/// eval.c:FUNCTIONP.  Native callers use this helper directly so
+/// redefining the Lisp symbol `functionp' cannot change C-level argument
+/// validation.
 pub(crate) fn function_value_p(interp: &Interpreter, value: &Value, env: &Env) -> bool {
-    let symbol_value = if symbols_with_pos_enabled(interp, env) {
-        symbol_with_pos_parts(interp, value)
-            .map(|(symbol, _)| symbol)
-            .unwrap_or_else(|| *value)
+    let mut object = *value;
+    // SYMBOLP (object) && !NILP (Ffboundp (object)): CHECK_SYMBOL and
+    // XSYMBOL take a symbol with position, while `symbols-with-pos-enabled'
+    // makes it a symbol, as its bare symbol.
+    let symbol = if object.is_symbol() {
+        Some(object)
+    } else if symbols_with_pos_enabled(interp, env) {
+        symbol_with_pos_parts(interp, &object).map(|(symbol, _)| symbol)
     } else {
-        *value
+        None
     };
-    let symbol = symbol_value.symbol_str();
-    if symbol
-        .is_some_and(|symbol| name_facts(symbol).special_form || interp.has_macro_binding(symbol))
-    {
-        return false;
-    }
-    let resolved = resolve_callable(interp, value, env).unwrap_or(*value);
-    let autoloaded_function =
-        symbol.is_some() && autoload_parts(&resolved).is_some_and(|(_, _, kind)| kind.is_nil());
-    callable_value_p(interp, &resolved, env) || autoloaded_function
-}
-
-pub(crate) fn value_matches_with_test(
-    interp: &mut Interpreter,
-    left: &Value,
-    right: &Value,
-    testfn: Option<&Value>,
-    env: &mut Env,
-) -> Result<bool, LispError> {
-    match testfn.filter(|value| !value.is_nil()).map(|v| v.kind()) {
-        None => Ok(values_eq_in_env(interp, left, right, env)),
-        Some(kind @ (Kind::Symbol(_) | Kind::BuiltinFunc(_))) => {
-            let name = match &kind {
-                Kind::Symbol(name) => name.as_str(),
-                Kind::BuiltinFunc(subr) => subr.as_str(),
-                _ => unreachable!("a symbol or a subr"),
-            };
-            match name {
-                "eq" => Ok(values_eq_in_env(interp, left, right, env)),
-                "eql" => Ok(values_eql(left, right)),
-                "equal" => values_equal(interp, left, right),
-                _ => {
-                    let func = resolve_callable(interp, testfn.expect("checked Some"), env)?;
-                    Ok(invoke_function_value(interp, &func, &[*left, *right], env)?.is_truthy())
-                }
+    if let Some(symbol) = symbol {
+        // Findirect_function: nil for a void cell, so for an unbound
+        // symbol, and for a chain that ends in one.
+        object = match symbol.kind() {
+            Kind::Symbol(name) => interp.lookup_function_symbol(&name, env),
+            Kind::T => interp
+                .lookup_function_symbol(&crate::lisp::types::symbols::builtin_boolean(true), env),
+            _ => Ok(Value::Nil),
+        }
+        .unwrap_or(Value::Nil);
+        let autoload = cached_symbol!("autoload").with(|symbol| Value::Symbol(*symbol));
+        if let Some((head, _)) = object.cons_values()
+            && values_eq_in_env(interp, &head, &autoload, env)
+        {
+            // Autoloaded symbols are functions, except if they load
+            // macros or keymaps.
+            for _ in 0..4 {
+                let Some((_, tail)) = object.cons_values() else {
+                    break;
+                };
+                object = tail;
             }
+            return !object.cons_values().is_some_and(|(kind, _)| !kind.is_nil());
         }
-        Some(other) => {
-            let func = resolve_callable(interp, &other.value(), env)?;
-            Ok(invoke_function_value(interp, &func, &[*left, *right], env)?.is_truthy())
+    }
+    match object.kind() {
+        Kind::BuiltinFunc(subr) => !matches!(
+            subr.descriptor().max_args(),
+            crate::lisp::native_comp::abi::NativeMaxArgs::Unevalled
+        ),
+        Kind::NativeFunction(_) | Kind::Closure(_) => true,
+        Kind::Record(id) => interp.find_record(id).is_some_and(|record| {
+            matches!(record.kind, crate::lisp::eval::RecordKind::ModuleFunction)
+        }),
+        Kind::Cons(cell) => {
+            let lambda = cached_symbol!("lambda").with(|symbol| Value::Symbol(*symbol));
+            values_eq_in_env(interp, &cell.car.get(), &lambda, env)
         }
+        _ => false,
     }
 }
 

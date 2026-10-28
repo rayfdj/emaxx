@@ -819,7 +819,7 @@ define_dispatch!(
             }
             // alloc.c:Flist conses the arguments from the last back.
             "list" => Ok(Value::list_of(args)),
-            "nconc" => nconc_values(args),
+            "nconc" => nconc_values(args, || interp.maybe_quit(env)),
             "append" => {
                 let mut items: Vec<Value> = Vec::new();
                 for (i, a) in args.iter().enumerate() {
@@ -849,7 +849,10 @@ define_dispatch!(
                         items.extend(lambda.slots());
                         continue;
                     }
-                    items.extend(a.to_vec()?);
+                    if !a.is_nil() && !a.is_cons() {
+                        return Err(wrong_type_argument("sequencep", *a));
+                    }
+                    items.extend(a.concat_list_elements()?);
                 }
                 Ok(Value::list(items))
             }
@@ -863,12 +866,30 @@ define_dispatch!(
             }
             "length<" | "length>" | "length=" => {
                 need_args(name, args, 2)?;
-                let length = sequence_length_value(&args[0])?;
-                let target = args[1].as_integer()?;
-                let matches = match name {
-                    "length<" => length < target,
-                    "length>" => length > target,
-                    _ => length == target,
+                // fns.c:Flength_less, Flength_greater and Flength_equal:
+                // CHECK_FIXNUM, then length_internal on a cons and Flength
+                // on anything else.
+                let Some(len) = args[1].fixnum() else {
+                    return Err(wrong_type_argument("fixnump", args[1]));
+                };
+                if name == "length=" && len < 0 {
+                    return Ok(Value::Nil);
+                }
+                let matches = if args[0].is_cons() {
+                    match name {
+                        "length<" => length_internal(interp, env, args[0], len)? != -1,
+                        "length>" => {
+                            length_internal(interp, env, args[0], len.wrapping_add(1))? == -1
+                        }
+                        _ => length_internal(interp, env, args[0], len.wrapping_add(1))? == 1,
+                    }
+                } else {
+                    let length = sequence_length_value(&args[0])?;
+                    match name {
+                        "length<" => length < len,
+                        "length>" => length > len,
+                        _ => length == len,
+                    }
                 };
                 Ok(if matches { Value::T } else { Value::Nil })
             }
@@ -884,84 +905,12 @@ define_dispatch!(
             "assq" | "rassq" => direct_assq_family(interp, args, env, name),
             "rassoc" => {
                 need_args(name, args, 2)?;
-                let mut current = args[1];
-                let mut seen = crate::lisp::types::CycleGuard::new();
-                loop {
-                    match current.kind() {
-                        Kind::Nil => return Ok(Value::Nil),
-                        Kind::Cons(cons_cell) => {
-                            let car = &cons_cell.car;
-                            let cdr = &cons_cell.cdr;
-                            let cell_id = crate::lisp::types::ConsCell::identity(&cons_cell);
-                            if seen.step(cell_id) {
-                                return Err(LispError::SignalValue(Value::list([
-                                    Value::Symbol("circular-list".into()),
-                                    Value::String("Circular list".into()),
-                                ])));
-                            }
-                            let item = car.get();
-                            if matches!(item.kind(), Kind::Cons(_))
-                                && values_equal(interp, &item.cdr()?, &args[0])?
-                            {
-                                return Ok(item);
-                            }
-                            current = cdr.get();
-                        }
-                        other => {
-                            return Err(LispError::SignalValue(Value::list([
-                                Value::Symbol("wrong-type-argument".into()),
-                                Value::Symbol("listp".into()),
-                                other.value(),
-                            ])));
-                        }
-                    }
-                }
+                direct_assoc_family(interp, &[args[0], args[1], Value::Nil], env, false)
             }
             "assoc" => {
                 need_arg_range(name, args, 2, 3)?;
-                let mut current = args[1];
-                let mut seen = crate::lisp::types::CycleGuard::new();
-                loop {
-                    match current.kind() {
-                        Kind::Nil => return Ok(Value::Nil),
-                        Kind::Cons(cons_cell) => {
-                            let car = &cons_cell.car;
-                            let cdr = &cons_cell.cdr;
-                            let cell_id = crate::lisp::types::ConsCell::identity(&cons_cell);
-                            if seen.step(cell_id) {
-                                return Err(LispError::SignalValue(Value::list([
-                                    Value::Symbol("circular-list".into()),
-                                    Value::String("Circular list".into()),
-                                ])));
-                            }
-                            let item = car.get();
-                            if matches!(item.kind(), Kind::Cons(_))
-                                && if let Some(testfn) = args.get(2).filter(|value| !value.is_nil())
-                                {
-                                    call_function_value(
-                                        interp,
-                                        testfn,
-                                        &[args[0], item.car()?],
-                                        env,
-                                    )?
-                                    .is_truthy()
-                                } else {
-                                    values_equal(interp, &item.car()?, &args[0])?
-                                }
-                            {
-                                return Ok(item);
-                            }
-                            current = cdr.get();
-                        }
-                        other => {
-                            return Err(LispError::SignalValue(Value::list([
-                                Value::Symbol("wrong-type-argument".into()),
-                                Value::Symbol("listp".into()),
-                                other.value(),
-                            ])));
-                        }
-                    }
-                }
+                let testfn = args.get(2).copied().unwrap_or(Value::Nil);
+                direct_assoc_family(interp, &[args[0], args[1], testfn], env, true)
             }
             "assoc-string" => {
                 need_arg_range(name, args, 2, 3)?;
@@ -993,7 +942,7 @@ define_dispatch!(
                 need_args(name, args, 2)?;
                 let mut mapped = crate::lisp::alloc::RootedVec::new();
                 map_sequence(interp, &args[0], &args[1], env, Some(&mut mapped))?;
-                nconc_values(&mapped)
+                nconc_values(&mapped, || interp.maybe_quit(env))
             }
             "mapc" => {
                 need_args(name, args, 2)?;
@@ -1119,6 +1068,13 @@ define_dispatch!(
                 need_args(name, args, 2)?;
                 // GNU 30.2 data.c:Ffset uses CHECK_SYMBOL/XSYMBOL.
                 let symbol = checked_symbol_identity(interp, &args[0], env)?;
+                // Ffset: `NILP (symbol) && !NILP (definition)' signals.
+                if args[0].is_nil() && !args[1].is_nil() {
+                    return Err(LispError::SignalValue(Value::list([
+                        Value::symbol("setting-constant"),
+                        args[0],
+                    ])));
+                }
                 interp.fset_function_symbol(&symbol, args[1], env)
             }
             "fmakunbound" => {
@@ -1865,8 +1821,14 @@ pub(super) fn direct_elt(
     need_args(name, args, 2)?;
     if matches!(args[0].kind(), Kind::Nil | Kind::Cons(_)) {
         nth_list_element(interp, env, &args[0], &args[1])
-    } else {
+    } else if matches!(
+        args[0].kind(),
+        Kind::Vector(_) | Kind::StringObject(_) | Kind::CharTable(_) | Kind::BoolVector(_)
+    ) {
+        // fns.c:Felt: CHECK_ARRAY (SEQUENCE, Qsequencep) before Faref.
         super::call(interp, "aref", args, env)
+    } else {
+        Err(wrong_type_argument("sequencep", args[0]))
     }
 }
 
@@ -1901,11 +1863,8 @@ pub(super) fn direct_member_family(
         _ => MemTest::Eq,
     };
     let mut tail = args[1];
-    let mut tortoise = tail;
-    let mut maximum = 2_isize;
-    let mut remaining = 0_isize;
-    let mut quit_count = 2_u16;
-    while let Kind::Cons(cell) = tail.kind() {
+    let mut walk = crate::lisp::types::TailWalk::new(tail);
+    while let Some(cell) = tail.cons_ref() {
         let item = cell.car.get();
         let matches = match test {
             MemTest::Equal => values_equal(interp, &item, &args[0])?,
@@ -1915,29 +1874,9 @@ pub(super) fn direct_member_family(
         if matches {
             return Ok(tail);
         }
-        // lisp.h:FOR_EACH_TAIL advances after the comparison, then checks
-        // quit and Brent's tortoise at the same points as the native walk.
         tail = cell.cdr.get();
-        quit_count = quit_count.wrapping_sub(1);
-        let compare = if quit_count != 0 {
-            true
-        } else {
-            interp.maybe_quit(env)?;
-            remaining = remaining.wrapping_sub(1);
-            remaining > 0
-        };
-        if compare {
-            if tail.word() == tortoise.word() {
-                return Err(LispError::SignalValue(Value::list([
-                    Value::symbol("circular-list"),
-                    tail,
-                ])));
-            }
-        } else {
-            maximum = maximum.wrapping_shl(1);
-            quit_count = maximum as u16;
-            remaining = maximum >> u16::BITS;
-            tortoise = tail;
+        if walk.cycled(tail, || interp.maybe_quit(env))? {
+            return Err(crate::lisp::types::circular_list(tail));
         }
     }
     // CHECK_LIST_END(tail, list) reports the original list. An improper
@@ -1973,7 +1912,9 @@ pub(super) fn direct_member(
     direct_member_family(interp, args, env, "member")
 }
 
-/// `assq' and `rassq' by NAME.
+/// fns.c:Fassq and Frassq by NAME: FOR_EACH_TAIL over ALIST for an
+/// element that is a cons whose car (or cdr) is EQ to KEY, then
+/// CHECK_LIST_END, which reports ALIST itself.
 pub(super) fn direct_assq_family(
     interp: &mut Interpreter,
     args: &[Value],
@@ -1982,73 +1923,35 @@ pub(super) fn direct_assq_family(
 ) -> Result<Value, LispError> {
     need_args(name, args, 2)?;
     let want_car = name == "assq";
-    let key = &args[0];
-    let alist = &args[1];
-    let mut seen = crate::lisp::types::CycleGuard::new();
-    // Walk by cons cells rather than by cloned Values: one Rc
-    // bump per step and no whole-Value churn.
-    let mut cell = match alist.kind() {
-        Kind::Nil => return Ok(Value::Nil),
-        Kind::Cons(cell) => cell,
-        other => {
-            return Err(LispError::SignalValue(Value::list([
-                Value::Symbol("wrong-type-argument".into()),
-                Value::Symbol("listp".into()),
-                other.value(),
-            ])));
-        }
-    };
-    loop {
-        if seen.step(crate::lisp::types::ConsCell::identity(&cell)) {
-            return Err(LispError::SignalValue(Value::list([
-                Value::Symbol("circular-list".into()),
-                Value::String("Circular list".into()),
-            ])));
-        }
-        let matched = {
-            let item = cell.car.get();
-            match (item).kind() {
-                Kind::Cons(cons_cell) => {
-                    let item_car = &cons_cell.car;
-                    let item_cdr = &cons_cell.cdr;
-                    let slot = if want_car { item_car } else { item_cdr };
-                    let entry_key = slot.get();
-                    match ((entry_key).kind(), key.kind()) {
-                        (Kind::Integer(a), Kind::Integer(b)) => a == b,
-                        (Kind::Symbol(a), Kind::Symbol(b)) => a == b,
-                        (Kind::Nil, Kind::Nil) | (Kind::T, Kind::T) => true,
-                        (Kind::Nil | Kind::T, _)
-                        | (_, Kind::Nil | Kind::T)
-                        | (Kind::Integer(_), Kind::Symbol(_))
-                        | (Kind::Symbol(_), Kind::Integer(_)) => false,
-                        // GNU 30.2 fns.c implements assq/rassq
-                        // with EQ, whose lisp.h contract unwraps
-                        // symbol-with-position objects while the
-                        // dynamic mode is enabled.  Keep ordinary
-                        // scalar keys on the fast path above.
-                        (a, b) => values_eq_in_env(interp, &a.value(), &b.value(), env),
-                    }
-                }
-                _ => false,
+    let key = args[0];
+    let mut tail = args[1];
+    let mut walk = crate::lisp::types::TailWalk::new(tail);
+    while let Some(cell) = tail.cons_ref() {
+        let item = cell.car.get();
+        if let Some(entry) = item.cons_ref() {
+            let entry_key = if want_car {
+                entry.car.get()
+            } else {
+                entry.cdr.get()
+            };
+            // lisp.h:EQ: the words, or a symbol with position (always
+            // vectorlike) against its symbol.
+            if entry_key.word() == key.word()
+                || ((entry_key.is_vectorlike() || key.is_vectorlike())
+                    && values_eq_in_env(interp, &entry_key, &key, env))
+            {
+                return Ok(item);
             }
-        };
-        if matched {
-            return Ok(cell.car.get());
         }
-        let tail = cell.cdr.get();
-        let next = match (tail).kind() {
-            Kind::Nil => return Ok(Value::Nil),
-            Kind::Cons(next) => next,
-            other => {
-                return Err(LispError::SignalValue(Value::list([
-                    Value::Symbol("wrong-type-argument".into()),
-                    Value::Symbol("listp".into()),
-                    other.value(),
-                ])));
-            }
-        };
-        cell = next;
+        tail = cell.cdr.get();
+        if walk.cycled(tail, || interp.maybe_quit(env))? {
+            return Err(crate::lisp::types::circular_list(tail));
+        }
     }
+    if !tail.is_nil() {
+        return Err(wrong_type_argument("listp", args[1]));
+    }
+    Ok(Value::Nil)
 }
 
 pub(super) fn direct_assq(
@@ -2065,6 +1968,99 @@ pub(super) fn direct_rassq(
     env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
     direct_assq_family(interp, args, env, "rassq")
+}
+
+/// fns.c:eq_comparable_value: SYMBOLP or FIXNUMP, whose `equal' is `eq'.
+fn eq_comparable_value(interp: &Interpreter, value: &Value, env: &crate::lisp::types::Env) -> bool {
+    value.fixnum().is_some()
+        || matches!(value.kind(), Kind::Nil | Kind::T | Kind::Symbol(_))
+        || (matches!(value.kind(), Kind::SymbolWithPos(_))
+            && crate::lisp::primitives::symbols_with_pos_enabled(interp, env))
+}
+
+/// fns.c:Fassoc (CAR) and Frassoc: ARGS are KEY, ALIST and TESTFN
+/// (always nil for `rassoc').  An `eq'-comparable KEY with no TESTFN is
+/// Fassq's (Frassq's) walk; otherwise FOR_EACH_TAIL tests each cons
+/// element's car (cdr) by EQ or Fequal, or calls TESTFN with it and KEY.
+fn direct_assoc_family(
+    interp: &mut Interpreter,
+    args: &[Value; 3],
+    env: &mut crate::lisp::types::Env,
+    car: bool,
+) -> Result<Value, LispError> {
+    let [key, alist, testfn] = *args;
+    if testfn.is_nil() && eq_comparable_value(interp, &key, env) {
+        return direct_assq_family(
+            interp,
+            &[key, alist],
+            env,
+            if car { "assq" } else { "rassq" },
+        );
+    }
+    let mut tail = alist;
+    let mut walk = crate::lisp::types::TailWalk::new(tail);
+    while let Some(cell) = tail.cons_ref() {
+        let item = cell.car.get();
+        if let Some(entry) = item.cons_ref() {
+            let entry_key = if car {
+                entry.car.get()
+            } else {
+                entry.cdr.get()
+            };
+            let matched = if testfn.is_nil() {
+                values_eq_in_env(interp, &entry_key, &key, env)
+                    || values_equal(interp, &entry_key, &key)?
+            } else {
+                call_function_value(interp, &testfn, &[entry_key, key], env)?.is_truthy()
+            };
+            if matched {
+                return Ok(item);
+            }
+        }
+        tail = cell.cdr.get();
+        if walk.cycled(tail, || interp.maybe_quit(env))? {
+            return Err(crate::lisp::types::circular_list(tail));
+        }
+    }
+    if !tail.is_nil() {
+        return Err(wrong_type_argument("listp", alist));
+    }
+    Ok(Value::Nil)
+}
+
+/// fns.c:length_internal: LEN (an `int' there) less the conses of
+/// SEQUENCE, or -1 once that reaches zero; a short LEN walks without
+/// looking for a cycle, a long one with FOR_EACH_TAIL.
+fn length_internal(
+    interp: &mut Interpreter,
+    env: &mut crate::lisp::types::Env,
+    sequence: Value,
+    len: i64,
+) -> Result<i64, LispError> {
+    let mut len = len as i32;
+    let mut tail = sequence;
+    if len < 0xffff {
+        while let Some(cell) = tail.cons_ref() {
+            len = len.wrapping_sub(1);
+            if len <= 0 {
+                return Ok(-1);
+            }
+            tail = cell.cdr.get();
+        }
+    } else {
+        let mut walk = crate::lisp::types::TailWalk::new(tail);
+        while let Some(cell) = tail.cons_ref() {
+            len = len.wrapping_sub(1);
+            if len <= 0 {
+                return Ok(-1);
+            }
+            tail = cell.cdr.get();
+            if walk.cycled(tail, || interp.maybe_quit(env))? {
+                return Err(crate::lisp::types::circular_list(tail));
+            }
+        }
+    }
+    Ok(i64::from(len))
 }
 
 /// The subr behind `cons', by pointer (data.c/fns.c: called through

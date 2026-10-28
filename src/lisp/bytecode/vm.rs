@@ -2524,19 +2524,19 @@ fn run_verified(
                     *slot!(0) = if integerp { Value::T } else { Value::Nil };
                     at += 1;
                 }
-                // Bmemq: each element compared by lisp.h:EQ, which is
-                // BASE_EQ (`values_eq_plain') while `symbols-with-pos-enabled'
-                // is nil; the full arm takes the variable's other value.
+                // Bmemq: each element compared by lisp.h:EQ, BASE_EQ
+                // (`values_eq_plain') of the two objects with a symbol with
+                // position, which is vectorlike, taken as its bare symbol
+                // while `symbols-with-pos-enabled' is set (as the byte
+                // compiler sets it).
                 // FOR_EACH_TAIL's first quit check comes after the second
                 // element: nothing here can set `quit-flag', so one test
                 // there stands for every later one. A long or improper list
                 // takes the full arm, which checks for cycles and the list's
                 // end.
                 0o076 => {
-                    if vm.interp.symbols_with_positions_enabled() {
-                        slow!();
-                    }
-                    let element = *slot!(1);
+                    let positions = vm.interp.symbols_with_positions_enabled();
+                    let element = crate::lisp::primitives::bare_symbol(vm.interp, *slot!(1));
                     let mut tail = *slot!(0);
                     let mut steps = 0u32;
                     let found = loop {
@@ -2546,7 +2546,15 @@ fn run_verified(
                             }
                             slow!()
                         };
-                        if crate::lisp::primitives::values_eq_plain(&cell.car.get(), &element) {
+                        let item = cell.car.get();
+                        if crate::lisp::primitives::values_eq_plain(&item, &element)
+                            || (positions
+                                && item.is_vectorlike()
+                                && crate::lisp::primitives::values_eq_plain(
+                                    &crate::lisp::primitives::bare_symbol(vm.interp, item),
+                                    &element,
+                                ))
+                        {
                             break tail;
                         }
                         steps += 1;
@@ -3818,6 +3826,32 @@ pub fn execute_closure(
     run(interp, program, Value::Closure(closure), args, env)
 }
 
+/// Ffuncall of a byte-code closure from Rust (`mapatoms', `mapcar', a
+/// hook's function): `execute_closure' under the nil environment frame
+/// byte code runs in, with the entered frame set up in this one function
+/// rather than in `run_entered' below it.
+#[inline(never)]
+pub(crate) fn funcall_closure(
+    interp: &mut Interpreter,
+    closure: crate::lisp::types::ClosureRef,
+    args: &[Value],
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let depth = env.len();
+    env.push(crate::lisp::types::EnvFrame::dynamic());
+    let result = match super::verify::entry_program(closure) {
+        // SAFETY: nothing runs Lisp or collects before the copy.
+        Some(program) if unsafe { program.as_ref() }.takes(args.len()) => {
+            let program = unsafe { *program.as_ref() };
+            run_entered_inline(interp, program, Value::Closure(closure), args, env)
+        }
+        _ => closure_program(closure)
+            .and_then(|program| run(interp, program, Value::Closure(closure), args, env)),
+    };
+    env.truncate(depth);
+    result
+}
+
 /// Execute OBJECT with ARGS, returning the value of Breturn.
 #[cfg(test)]
 pub fn execute(
@@ -3864,6 +3898,17 @@ fn run(
 /// the entry frame finishes here; any other exit goes on in `run_loop'.
 #[inline(never)]
 fn run_entered(
+    interp: &mut Interpreter,
+    program: super::verify::EntryProgram,
+    function: Value,
+    args: &[Value],
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    run_entered_inline(interp, program, function, args, env)
+}
+
+#[inline(always)]
+fn run_entered_inline(
     interp: &mut Interpreter,
     program: super::verify::EntryProgram,
     function: Value,

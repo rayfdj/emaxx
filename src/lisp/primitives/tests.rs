@@ -18886,6 +18886,24 @@ fn font_lock_mode_declines_to_enable_in_a_batch_session() {
 fn backtrace_frame_internal_honors_depth_relative_to_base() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
+    // get_backtrace_starting_at compares the functions through
+    // Findirect_function, under which every void function is nil: each
+    // frame's function has a definition of its own.
+    for (index, function) in ["outer-frame", "base-frame", "inner-frame"]
+        .iter()
+        .enumerate()
+    {
+        call(
+            &mut interp,
+            "fset",
+            &[
+                Value::Symbol((*function).into()),
+                Value::Integer(index as i64),
+            ],
+            &mut env,
+        )
+        .expect("define the frame's function");
+    }
     let outer_args = [Value::Integer(7)];
     interp.push_backtrace_frame(Value::Symbol("outer-frame".into()), &outer_args);
     interp.push_backtrace_frame(Value::Symbol("base-frame".into()), &[]);
@@ -23889,6 +23907,26 @@ fn native_subprocess_job_control_uses_child_groups_and_reaps_signal_states() {
             Value::Integer(signal.into())
         );
     }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn list_system_processes_lists_procs_numeric_names_in_directory_order() {
+    // sysdep.c:list_system_processes reads only /proc's names, matching
+    // "[0-9]+", in readdir's order: ascending process IDs.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let* ((pid (emacs-pid)) (ids (list-system-processes)))
+             (list (and (memq pid ids) t)
+                   (and (seq-every-p #'natnump ids) t)
+                   (equal ids (sort (copy-sequence ids) #'<))
+                   (and (memq pid (mapcar #'string-to-number
+                                          (directory-files "/proc" nil "[0-9]+" t)))
+                        t)
+                   (let ((default-directory "/"))
+                     (and (memq pid (list-system-processes)) t))))"#,
+        "(t t t t t)",
+        "list-system-processes",
+    );
 }
 
 #[test]

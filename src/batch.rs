@@ -3296,6 +3296,594 @@ mod tests {
     }
 
     #[test]
+    fn unicode_property_tables_are_chartab_c_and_string_to_number_checks_base() {
+        // chartab.c: uniprop_table finds PROP's entry by `eq' and returns
+        // the table only when it is a property table with a known
+        // decoder; the run-length decoder reads nil as index 0.
+        // data.c:Fstring_to_number checks BASE as a fixnum in 2..16.
+        run_with_large_stack(|| {
+            let emacs_repo = compat::project_root().join("../emacs");
+            let options = BatchRunOptions {
+                load_path: compat::emaxx_upstream_load_path(&emacs_repo)
+                    .expect("upstream load path"),
+                ..Default::default()
+            };
+            let mut interpreter =
+                initialize_batch_interpreter(&options).expect("init batch interpreter");
+            let mut env = crate::lisp::types::Env::new();
+            let mut forms = Reader::new(
+                r#"(defmacro emaxx-probe-or-error (form)
+                     `(condition-case e ,form (error (list 'ERR e))))
+                   FORM"#
+                    .replace("FORM", r##"(prin1-to-string (list (let* ((name (unicode-property-table-internal 'name))
+       (gc (unicode-property-table-internal 'general-category))
+       (out nil))
+  (push (char-table-p name) out)
+  (push (unicode-property-table-internal 5) out)
+  (push (unicode-property-table-internal "name") out)
+  (push (unicode-property-table-internal 'no-such-prop) out)
+  (push (get-unicode-property-internal gc ?a) out)
+  (push (get-unicode-property-internal gc #x10FFFF) out)
+  (push (get-unicode-property-internal gc #x3FFF00) out)
+  (push (condition-case e (get-unicode-property-internal (make-char-table 'foo) ?a) (error e)) out)
+  (push (condition-case e (get-unicode-property-internal gc -1) (error e)) out)
+  (push (list (char-table-extra-slot gc 1) (length (char-table-extra-slot gc 4))) out)
+  (let ((tbl (make-char-table 'char-code-property-table)))
+    (push (char-table-extra-slot tbl 1) out)
+    (set-char-table-extra-slot tbl 1 0)
+    (set-char-table-extra-slot tbl 4 [a b c])
+    (aset tbl ?x 2) (aset tbl ?y nil) (aset tbl ?z 7) (aset tbl ?w 'sym) (aset tbl ?v -1)
+    (push (mapcar (lambda (c) (condition-case e (get-unicode-property-internal tbl c) (error e))) '(?x ?y ?z ?v ?u)) out))
+  (push (get-char-code-property ?A 'name) out)
+  (push (get-char-code-property ?a 'general-category) out)
+  (push (get-char-code-property ?\N{GREEK SMALL LETTER ALPHA} 'uppercase) out)
+  (push (upcase "ǆ") out)
+  (push (capitalize "ǆa") out)
+  (nreverse out)) (list (emaxx-probe-or-error (string-to-number "123")) (emaxx-probe-or-error (string-to-number "-123")) (emaxx-probe-or-error (string-to-number "ff" 16)) (emaxx-probe-or-error (string-to-number "-FF" 16))
+             (emaxx-probe-or-error (string-to-number "2305843009213693951")) (emaxx-probe-or-error (string-to-number "2305843009213693952")) (emaxx-probe-or-error (string-to-number "-2305843009213693952"))
+             (emaxx-probe-or-error (string-to-number "-2305843009213693953")) (emaxx-probe-or-error (string-to-number "18446744073709551615")) (emaxx-probe-or-error (string-to-number "18446744073709551616"))
+             (emaxx-probe-or-error (string-to-number "123456789012345678901234567890")) (emaxx-probe-or-error (string-to-number "-ZZZZZZZZZZZZZZZZ" 36)) (emaxx-probe-or-error (string-to-number "  +7")) (emaxx-probe-or-error (string-to-number "x"))
+             (emaxx-probe-or-error (string-to-number "1e3")) (emaxx-probe-or-error (string-to-number "0x10")) (emaxx-probe-or-error (string-to-number "777" 8)) (emaxx-probe-or-error (bignump (string-to-number "2305843009213693952")))
+             (emaxx-probe-or-error (string-to-number "12" 1)) (emaxx-probe-or-error (string-to-number "12" 17)) (emaxx-probe-or-error (string-to-number "12" 2.0)) (emaxx-probe-or-error (string-to-number "12" (expt 2 70)))
+             (emaxx-probe-or-error (string-to-number "-fffffffffffffffffffff" 16)) (emaxx-probe-or-error (string-to-number "1111111111111111111111111111111111111111111111111111111111111111111" 2))
+             #x1fffffffffffffff #x2000000000000000 #o7777777777777777777777 #b101 #24r1k (read "#x-10"))))"##)
+                    .as_str(),
+            )
+            .read_all()
+            .expect("read property probe");
+            let probe = forms.pop().expect("probe form");
+            interpreter
+                .eval(&forms[0], &mut env)
+                .expect("define the probe's macro");
+            let printed = interpreter
+                .eval(&probe, &mut env)
+                .expect("evaluate property probe");
+            assert_eq!(
+                lisp::primitives::string_like(&printed)
+                    .expect("printed")
+                    .text,
+                r##"((t nil nil nil Ll Cn Cn (error "Invalid Unicode property table") (wrong-type-argument characterp -1) (0 31) nil (c a 7 -1 a) "LATIN CAPITAL LETTER A" Ll 913 "Ǆ" "ǅa") (123 -123 255 -255 2305843009213693951 2305843009213693952 -2305843009213693952 -2305843009213693953 18446744073709551615 18446744073709551616 123456789012345678901234567890 (ERR (args-out-of-range 36)) 7 0 1000.0 0 511 t (ERR (args-out-of-range 1)) (ERR (args-out-of-range 17)) (ERR (wrong-type-argument fixnump 2.0)) (ERR (wrong-type-argument fixnump 1180591620717411303424)) -19342813113834066795298815 147573952589676412927 2305843009213693951 2305843009213693952 73786976294838206463 5 44 -16))"##
+            );
+        });
+    }
+
+    #[test]
+    fn string_aref_aset_and_hash_input_follow_data_c_and_fns_c() {
+        // data.c:Faref and Faset on unibyte and multibyte strings, from
+        // byte-code (bytecode.c's Baref and Baset) and as functions:
+        // CHECK_IMPURE, the index, then CHECK_CHARACTER of NEWELT.
+        // fns.c:extract_data_from_object hashes a string's bytes, encoded
+        // first when multibyte, between endpoints into those bytes.
+        run_with_large_stack(|| {
+            let emacs_repo = compat::project_root().join("../emacs");
+            let options = BatchRunOptions {
+                load_path: compat::emaxx_upstream_load_path(&emacs_repo)
+                    .expect("upstream load path"),
+                ..Default::default()
+            };
+            let mut interpreter =
+                initialize_batch_interpreter(&options).expect("init batch interpreter");
+            let mut env = crate::lisp::types::Env::new();
+            let mut forms = Reader::new(
+                r##"(defmacro emaxx-probe-or-error (form)
+                     `(condition-case e ,form (error (list 'ERR e))))
+FORM"##
+                    .replace(
+                        "FORM",
+                        r##"(let* ((get (byte-compile (lambda (s i) (aref s i))))
+       (put (byte-compile (lambda (s i v) (aset s i v))))
+       (u (string-to-unibyte "abc\377"))
+       (m (string ?a ?é ?b ?\x3fff80))
+       (out nil))
+  (dolist (fn (list get #'aref))
+    (dolist (args (list (list u 0) (list u 3) (list u 4) (list u -1) (list u 1.0)
+                        (list m 1) (list m 3) (list m 4) (list "" 0)))
+      (push (emaxx-probe-or-error (apply fn args)) out)))
+  (dolist (fn (list put #'aset))
+    (let ((s (copy-sequence u)))
+      (dolist (args '((0 ?z) (1 255) (2 ?é) (4 ?a) (-1 ?a) (0 -1) (0 x) (0 #x400000)))
+        (push (emaxx-probe-or-error
+               (list (apply fn s args) (string-to-list s) (multibyte-string-p s)))
+              out)))
+    (let ((s (copy-sequence "abcd")))
+      (dolist (args '((1 ?é) (1 ?x) (2 #x3fff80)))
+        (push (emaxx-probe-or-error
+               (list (apply fn s args) (string-to-list s) (multibyte-string-p s)
+                     (string-bytes s)))
+              out)))
+    (let ((s (copy-sequence m)))
+      (dolist (args '((1 ?è) (1 ?z) (0 ?€) (3 ?q)))
+        (push (emaxx-probe-or-error
+               (list (apply fn s args) (string-to-list s) (string-bytes s)))
+              out))))
+  (dolist (form '((md5 "abc") (md5 (string-to-unibyte "a\377")) (md5 "aé")
+                  (md5 "aé" nil nil 'latin-1) (md5 "aébc" 1 3) (md5 "abcdef" -3)
+                  (md5 "abc" 0 4) (md5 "abc" 2 1) (md5 "abc" 'x)
+                  (secure-hash 'sha256 "abc")
+                  (secure-hash 'sha1 (string-to-unibyte "\200\201") 0 1)
+                  (string-to-list (secure-hash 'md5 "é" nil nil t))
+                  (secure-hash 'md5 "abcdef" 1 -1) (secure-hash 'sha224 "aé" 1 2)
+                  (secure-hash 'sha224 "aé" 1 3) (md5 "x" nil nil 'no-such-coding)
+                  (md5 "x" nil nil 'no-such-coding t) (md5 "é" nil nil 'no-such-coding t)
+                  (md5 42)))
+    (push (emaxx-probe-or-error (eval form t)) out))
+  (with-temp-buffer
+    (insert "héllo")
+    (push (list (md5 (current-buffer)) (md5 (current-buffer) 2 4)
+                (secure-hash 'sha1 (current-buffer)) (buffer-hash))
+          out))
+  (prin1-to-string (nreverse out)))"##,
+                    )
+                    .as_str(),
+            )
+            .read_all()
+            .expect("read aref probe");
+            let probe = forms.pop().expect("probe form");
+            interpreter
+                .eval(&forms[0], &mut env)
+                .expect("define the probe's macro");
+            let printed = interpreter
+                .eval(&probe, &mut env)
+                .expect("evaluate aref probe");
+            assert_eq!(
+                lisp::primitives::string_like(&printed)
+                    .expect("printed")
+                    .text,
+                r##"(97 255 (ERR (args-out-of-range "abc\377" 4)) (ERR (args-out-of-range "abc\377" -1)) (ERR (wrong-type-argument fixnump 1.0)) 233 128 (ERR (args-out-of-range "aéb" 4)) (ERR (args-out-of-range "" 0)) 97 255 (ERR (args-out-of-range "abc\377" 4)) (ERR (args-out-of-range "abc\377" -1)) (ERR (wrong-type-argument fixnump 1.0)) 233 128 (ERR (args-out-of-range "aéb" 4)) (ERR (args-out-of-range "" 0)) (122 (122 98 99 255) nil) (255 (122 255 99 255) nil) (233 (122 255 233 255) nil) (ERR (args-out-of-range "z\377\351\377" 4)) (ERR (args-out-of-range "z\377\351\377" -1)) (ERR (wrong-type-argument characterp -1)) (ERR (wrong-type-argument characterp x)) (ERR (wrong-type-argument characterp 4194304)) (233 (97 233 99 100) nil 4) (120 (97 120 99 100) nil 4) (4194176 (97 120 4194176 100) t 5) (232 (97 232 98 128) 6) (122 (97 122 98 128) 5) (8364 (8364 122 98 128) 7) (113 (8364 122 98 113) 6) (122 (122 98 99 255) nil) (255 (122 255 99 255) nil) (233 (122 255 233 255) nil) (ERR (args-out-of-range "z\377\351\377" 4)) (ERR (args-out-of-range "z\377\351\377" -1)) (ERR (wrong-type-argument characterp -1)) (ERR (wrong-type-argument characterp x)) (ERR (wrong-type-argument characterp 4194304)) (233 (97 233 99 100) nil 4) (120 (97 120 99 100) nil 4) (4194176 (97 120 4194176 100) t 5) (232 (97 232 98 128) 6) (122 (97 122 98 128) 5) (8364 (8364 122 98 128) 7) (113 (8364 122 98 113) 6) "900150983cd24fb0d6963f7d28e17f72" "cc7bb99ae517c38d9547266ff7157071" "128fda53c8c07c8c66f2a4812187d92f" "784ca25d737cedf39d61866697e6ba7e" "66ddcd97cfdeabb2f6fb8a999b4bc76f" "4ed9407630eb1000c0f6b63842defa7d" (ERR (args-out-of-range "abc" 0 4)) (ERR (args-out-of-range "abc" 2 1)) (ERR (wrong-type-argument integerp x)) "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad" "c78ebd3c85a39a596d9f5cfd2b8d240bc1b9c125" (102 221 205 151 207 222 171 178 246 251 138 153 155 75 199 111) "e02cfbe5502b64aa5ae9f2d0d69eaa8d" "d82a2abcec72bf6f5b7085ac1e793c66ddc7102186c519b2fb019c97" "33dd9448e5538d16ddc6df32dd7f16240cac6cb5238c1c22cb33ae66" (ERR (coding-system-error no-such-coding)) "9dd4e461268c8034f5c8564e155c67a6" "66ddcd97cfdeabb2f6fb8a999b4bc76f" (ERR (error "Invalid object argument" 42)) ("be50e8478cf24ff3595bc7307fb91b50" "4fc48b7d17df5bbe6402fd375f558e0c" "35b5ea45c5e41f78b46a937cc74d41dfea920890" "35b5ea45c5e41f78b46a937cc74d41dfea920890"))"##
+            );
+        });
+    }
+
+    #[test]
+    fn gnutls_inputs_are_extract_data_from_object_specs() {
+        // gnutls.c makes a buffer or string input the spec `list1' gives,
+        // CHECK_CONSes the rest and reads every key, IV, input and AEAD
+        // datum with fns.c:extract_data_from_object: OBJECT, START, END,
+        // CODING-SYSTEM and NOERROR, endpoints into the encoded bytes.
+        run_with_large_stack(|| {
+            let emacs_repo = compat::project_root().join("../emacs");
+            let options = BatchRunOptions {
+                load_path: compat::emaxx_upstream_load_path(&emacs_repo)
+                    .expect("upstream load path"),
+                ..Default::default()
+            };
+            let mut interpreter =
+                initialize_batch_interpreter(&options).expect("init batch interpreter");
+            let mut env = crate::lisp::types::Env::new();
+            let mut forms = Reader::new(
+                r##"(defmacro emaxx-probe-or-error (form)
+                     `(condition-case e ,form (error (list 'ERR e))))
+FORM"##
+                    .replace("FORM", r##"(progn
+(require 'hex-util)
+(let ((out nil)
+      (h (lambda (in) (encode-hex-string (gnutls-hash-digest 'SHA256 in)))))
+  (dolist (in (list "abc" "é" (string-to-unibyte "\377") '("aé" 1 2) '("aé" 1 3) '("aé" 1)
+                    '("é" nil nil latin-1) '("é" nil nil no-such-coding)
+                    '("é" nil nil no-such-coding t) '("abcdef" -2) '("abc" 2 1)
+                    '("abc" 0 4) '("abc" x) '(nil) '(42) 42 nil '(iv-auto) '(iv-auto x)))
+    (push (emaxx-probe-or-error (funcall h in)) out))
+  (with-temp-buffer
+    (insert "héllo")
+    (dolist (in (list (current-buffer) (list (current-buffer) 2 4) (list (current-buffer) 4 2)
+                      (list (current-buffer) 1 99) (list (current-buffer) nil nil 'latin-1)))
+      (push (emaxx-probe-or-error (funcall h in)) out)))
+  (push (emaxx-probe-or-error (length (gnutls-hash-digest 'SHA256 '(iv-auto 5)))) out)
+  (push (emaxx-probe-or-error
+         (encode-hex-string (gnutls-hash-mac 'SHA256 (copy-sequence "key") '("aé" 1 3))))
+        out)
+  (push (emaxx-probe-or-error
+         (let ((k (copy-sequence "key")))
+           (gnutls-hash-mac 'SHA256 (list k) "x")
+           k))
+        out)
+  (push (emaxx-probe-or-error
+         (let* ((c (cdr (assq 'AES-128-CBC (gnutls-ciphers))))
+                (k (copy-sequence "0123456789abcdef"))
+                (r (gnutls-symmetric-encrypt c k '("0123456789abcdefXX" 0 16) '("aé" nil nil latin-1 t))))
+           r))
+        out)
+  (push (emaxx-probe-or-error
+         (let* ((c (cdr (assq 'AES-128-CBC (gnutls-ciphers))))
+                (k (copy-sequence "0123456789abcdef"))
+                (r (gnutls-symmetric-encrypt c k "0123456789abcdef" "0123456789abcdé")))
+           (list (mapcar #'encode-hex-string r) k)))
+        out)
+  (prin1-to-string (nreverse out))))"##)
+                    .as_str(),
+            )
+            .read_all()
+            .expect("read gnutls probe");
+            let probe = forms.pop().expect("probe form");
+            interpreter
+                .eval(&forms[0], &mut env)
+                .expect("define the probe's macro");
+            let printed = interpreter
+                .eval(&probe, &mut env)
+                .expect("evaluate gnutls probe");
+            assert_eq!(
+                lisp::primitives::string_like(&printed)
+                    .expect("printed")
+                    .text,
+                r##"("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad" "4a99557e4033c3539de2eb65472017cad5f9557f7a0625a09f1c3f6e2ba69c4c" "a8100ae6aa1940d0b663bb31cd466142ebbdbd5187131b92d93818987832eb89" "ae3f4619b0413d70d3004b9131c3752153074e45725be13b9a148978895e359e" "4a99557e4033c3539de2eb65472017cad5f9557f7a0625a09f1c3f6e2ba69c4c" "4a99557e4033c3539de2eb65472017cad5f9557f7a0625a09f1c3f6e2ba69c4c" "de2e331d891ae267a7009cb45b4e8830f170e0c937288ea2731a1941c7a53b0d" (ERR (coding-system-error no-such-coding)) "4a99557e4033c3539de2eb65472017cad5f9557f7a0625a09f1c3f6e2ba69c4c" "4ca669ac3713d1f4aea07dae8dcc0d1c9867d27ea82a3ba4e6158a42206f959b" (ERR (args-out-of-range "abc" 2 1)) (ERR (args-out-of-range "abc" 0 4)) (ERR (wrong-type-argument integerp x)) (ERR (error "Invalid object argument" "nil")) (ERR (error "Invalid object argument" 42)) (ERR (wrong-type-argument consp 42)) (ERR (wrong-type-argument consp nil)) (ERR (error "Without a length, `iv-auto' can't be used; see ELisp manual")) (ERR (error "Without a length, `iv-auto' can't be used; see ELisp manual")) "3c48591d8d098a4538f5e013dfcf406e948eac4d3277b10bf614e295d6068179" "018576b8030e53d8294d839a689d014d313f0170c07d0817670d2e2d9c3d3e73" "018576b8030e53d8294d839a689d014d313f0170c07d0817670d2e2d9c3d3e73" (ERR (args-out-of-range 1 99)) "c63c19ed1e0ee079f22ddb0d4112cfc799132c88684eb42324c62b9899b0c6c1" 32 "e5eb9b0a697f5df0e9c03ffdd759f4b6edb39204332904d5eb74735b54259255" "   " (ERR (error "GnuTLS cipher AES-128-CBC/encrypt input block length 2 is not a multiple of the required 16")) (("0750400a883b035762997c1160d05967" "30313233343536373839616263646566") "                "))"##
+            );
+        });
+    }
+
+    #[test]
+    fn list_walks_are_for_each_tail_and_assoc_calls_testfn_with_the_element_first() {
+        // lisp.h:FOR_EACH_TAIL's tortoise finds a cycle where GNU finds it
+        // and circular_list reports that tail; CHECK_LIST_END reports the
+        // list or tail each function names; FOR_EACH_TAIL_SAFE counts
+        // `safe-length'; length_internal answers `length<' without a cycle
+        // check for a short LENGTH.  fns.c calls an `assoc' TESTFN and a
+        // plist PREDICATE with the element first.
+        run_with_large_stack(|| {
+            let emacs_repo = compat::project_root().join("../emacs");
+            let options = BatchRunOptions {
+                load_path: compat::emaxx_upstream_load_path(&emacs_repo)
+                    .expect("upstream load path"),
+                ..Default::default()
+            };
+            let mut interpreter =
+                initialize_batch_interpreter(&options).expect("init batch interpreter");
+            let mut env = crate::lisp::types::Env::new();
+            let mut forms = Reader::new(
+                r##"(defmacro emaxx-probe-or-error (form)
+                     `(condition-case e ,form (error (list 'ERR e))))
+FORM"##
+                    .replace("FORM", r##"(let* ((out nil)
+       (circ (lambda (n) (let ((l (number-sequence 1 n))) (setcdr (last l) l) l)))
+       (circa (lambda (n) (let ((l (mapcar (lambda (i) (cons i i)) (number-sequence 1 n))))
+                            (setcdr (last l) l) l)))
+       (inputs (list (lambda () (list 1 2 3 4)) (lambda () (cons 1 (cons 2 3)))
+                     (lambda () (funcall circ 2)) (lambda () (funcall circ 3))
+                     (lambda () (funcall circa 3)) (lambda () 7)))
+       (fns (list (lambda (l) (assq 'z l)) (lambda (l) (rassq 'z l)) (lambda (l) (assoc 'z l))
+                  (lambda (l) (rassoc 'z l)) (lambda (l) (assoc "z" l)) (lambda (l) (assoc 'z l #'eq))
+                  (lambda (l) (memq 9 l)) (lambda (l) (memql 9 l)) (lambda (l) (member 9 l))
+                  (lambda (l) (delq 9 l)) (lambda (l) (remq 9 l)) (lambda (l) (delete 9 l))
+                  (lambda (l) (length l)) (lambda (l) (safe-length l)) (lambda (l) (proper-list-p l))
+                  (lambda (l) (nthcdr 10 l)) (lambda (l) (nth 10 l)) (lambda (l) (last l))
+                  (lambda (l) (reverse l)) (lambda (l) (copy-sequence l)) (lambda (l) (append l nil))
+                  (lambda (l) (mapcar #'identity l)) (lambda (l) (plist-get l 'z))
+                  (lambda (l) (plist-member l 'z)) (lambda (l) (plist-put l 'z 1))
+                  (lambda (l) (plist-get l 'z #'eq)) (lambda (l) (plist-member l 'z #'eq))
+                  (lambda (l) (plist-put l 'z 1 #'eq)) (lambda (l) (length< l 3))
+                  (lambda (l) (length> l 2)) (lambda (l) (length= l 4)) (lambda (l) (take 9 l))
+                  (lambda (l) (elt l 9)) (lambda (l) (nreverse l)) (lambda (l) (sort l #'<))
+                  (lambda (l) (alist-get 'z l)) (lambda (l) (nconc l (list 5))))))
+  (dolist (f fns)
+    (push (mapcar (lambda (mk) (emaxx-probe-or-error (funcall f (funcall mk)))) inputs) out))
+  (push (list (assoc 2 '((1 . a) (3 . b)) #'<)
+              (let (seen) (assoc 'k '((x . 1)) (lambda (a b) (push (list a b) seen) nil)) seen)
+              (let (seen) (plist-get '(a 1 b 2) 'b (lambda (a b) (push (list a b) seen) (eq a b)))
+                   seen)
+              (let (seen) (plist-member (list 'a 1 'b 2) 'b (lambda (a b) (push (list a b) seen) (eq a b)))
+                   seen)
+              (let ((l (list 'a 1 'b 2)))
+                (list (plist-put l 'b 9 #'equal) (plist-put l 'c 3 #'equal) l))
+              (emaxx-probe-or-error (plist-put (list 'a) 'b 1 #'equal))
+              (emaxx-probe-or-error (plist-put (list 'a 1 'b) 'c 1 #'equal))
+              (emaxx-probe-or-error (plist-put 7 'c 1 #'equal))
+              (plist-member (list 'a 1 'b) 'c #'equal)
+              (emaxx-probe-or-error (elt (record 'r 1) 0))
+              (emaxx-probe-or-error (length< '(1 2) 1.0))
+              (length< '(1 2) (expt 2 40))
+              (emaxx-probe-or-error (assq 'x '(a . b)))
+              (assq 1.0 (list (cons 1.0 'x)))
+              (let ((f 1.5)) (assq f (list (cons f 'x))))
+              (assq nil '(nil (nil . 2)))
+              (assq (expt 2 70) (list (cons (expt 2 70) 1))))
+        out)
+  (put 'emaxx-w1 'widget-type '(emaxx-w0 :p 1 :q 2))
+  (put 'emaxx-w2 'widget-type '(emaxx-w1 :q 3))
+  (push (list (widget-get '(emaxx-w2 :r 4) :r) (widget-get '(emaxx-w2) :q)
+              (widget-get '(emaxx-w2) :p) (widget-get '(emaxx-w2) :zz) (widget-get nil :a)
+              (emaxx-probe-or-error (widget-get 7 :a))
+              (emaxx-probe-or-error (widget-get '(7) :a))
+              (emaxx-probe-or-error (widget-get '(emaxx-w2 :a . 5) :a))
+              (emaxx-probe-or-error (widget-get '(emaxx-w2 :b . 5) :a))
+              (let ((w (list 'emaxx-w2 :a 1))) (list (widget-put w :a 2) (widget-put w :b 3) w))
+              (emaxx-probe-or-error (widget-put 7 :a 1))
+              (widget-apply '(emaxx-w2 :f list) :f 1 2)
+              (emaxx-probe-or-error (widget-apply '(emaxx-w2) :nof 1 2)))
+        out)
+  (prin1-to-string (nreverse out)))"##)
+                    .as_str(),
+            )
+            .read_all()
+            .expect("read list probe");
+            let probe = forms.pop().expect("probe form");
+            interpreter
+                .eval(&forms[0], &mut env)
+                .expect("define the probe's macro");
+            let printed = interpreter
+                .eval(&probe, &mut env)
+                .expect("evaluate list probe");
+            assert_eq!(
+                lisp::primitives::string_like(&printed)
+                    .expect("printed")
+                    .text,
+                r##"((nil (ERR (wrong-type-argument listp (1 2 . 3))) (ERR (circular-list (1 2 1 2 . #2))) (ERR (circular-list (3 1 2 3 1 . #2))) (ERR (circular-list ((3 . 3) (1 . 1) (2 . 2) (3 . 3) (1 . 1) . #2))) (ERR (wrong-type-argument listp 7))) (nil (ERR (wrong-type-argument listp (1 2 . 3))) (ERR (circular-list (1 2 1 2 . #2))) (ERR (circular-list (3 1 2 3 1 . #2))) (ERR (circular-list ((3 . 3) (1 . 1) (2 . 2) (3 . 3) (1 . 1) . #2))) (ERR (wrong-type-argument listp 7))) (nil (ERR (wrong-type-argument listp (1 2 . 3))) (ERR (circular-list (1 2 1 2 . #2))) (ERR (circular-list (3 1 2 3 1 . #2))) (ERR (circular-list ((3 . 3) (1 . 1) (2 . 2) (3 . 3) (1 . 1) . #2))) (ERR (wrong-type-argument listp 7))) (nil (ERR (wrong-type-argument listp (1 2 . 3))) (ERR (circular-list (1 2 1 2 . #2))) (ERR (circular-list (3 1 2 3 1 . #2))) (ERR (circular-list ((3 . 3) (1 . 1) (2 . 2) (3 . 3) (1 . 1) . #2))) (ERR (wrong-type-argument listp 7))) (nil (ERR (wrong-type-argument listp (1 2 . 3))) (ERR (circular-list (1 2 1 2 . #2))) (ERR (circular-list (3 1 2 3 1 . #2))) (ERR (circular-list ((3 . 3) (1 . 1) (2 . 2) (3 . 3) (1 . 1) . #2))) (ERR (wrong-type-argument listp 7))) (nil (ERR (wrong-type-argument listp (1 2 . 3))) (ERR (circular-list (1 2 1 2 . #2))) (ERR (circular-list (3 1 2 3 1 . #2))) (ERR (circular-list ((3 . 3) (1 . 1) (2 . 2) (3 . 3) (1 . 1) . #2))) (ERR (wrong-type-argument listp 7))) (nil (ERR (wrong-type-argument listp (1 2 . 3))) (ERR (circular-list (1 2 1 2 . #2))) (ERR (circular-list (3 1 2 3 1 . #2))) (ERR (circular-list ((3 . 3) (1 . 1) (2 . 2) (3 . 3) (1 . 1) . #2))) (ERR (wrong-type-argument listp 7))) (nil (ERR (wrong-type-argument listp (1 2 . 3))) (ERR (circular-list (1 2 1 2 . #2))) (ERR (circular-list (3 1 2 3 1 . #2))) (ERR (circular-list ((3 . 3) (1 . 1) (2 . 2) (3 . 3) (1 . 1) . #2))) (ERR (wrong-type-argument listp 7))) (nil (ERR (wrong-type-argument listp (1 2 . 3))) (ERR (circular-list (1 2 1 2 . #2))) (ERR (circular-list (3 1 2 3 1 . #2))) (ERR (circular-list ((3 . 3) (1 . 1) (2 . 2) (3 . 3) (1 . 1) . #2))) (ERR (wrong-type-argument listp 7))) ((1 2 3 4) (ERR (wrong-type-argument listp (1 2 . 3))) (ERR (circular-list (1 2 1 2 . #2))) (ERR (circular-list (3 1 2 3 1 . #2))) (ERR (circular-list ((3 . 3) (1 . 1) (2 . 2) (3 . 3) (1 . 1) . #2))) (ERR (wrong-type-argument listp 7))) ((1 2 3 4) (ERR (wrong-type-argument listp (1 2 . 3))) (ERR (circular-list (1 2 1 2 . #2))) (ERR (circular-list (3 1 2 3 1 . #2))) (ERR (circular-list ((3 . 3) (1 . 1) (2 . 2) (3 . 3) (1 . 1) . #2))) (ERR (wrong-type-argument listp 7))) ((1 2 3 4) (ERR (wrong-type-argument listp (1 2 . 3))) (ERR (circular-list (1 2 1 2 . #2))) (ERR (circular-list (3 1 2 3 1 . #2))) (ERR (circular-list ((3 . 3) (1 . 1) (2 . 2) (3 . 3) (1 . 1) . #2))) (ERR (wrong-type-argument sequencep 7))) (4 (ERR (wrong-type-argument listp 3)) (ERR (circular-list (1 2 1 2 . #2))) (ERR (circular-list (3 1 2 3 1 . #2))) (ERR (circular-list ((3 . 3) (1 . 1) (2 . 2) (3 . 3) (1 . 1) . #2))) (ERR (wrong-type-argument sequencep 7))) (4 2 4 5 5 0) (4 nil nil nil nil nil) (nil (ERR (wrong-type-argument listp (1 2 . 3))) (1 2 1 2 . #2) (2 3 1 2 3 . #2) ((2 . 2) (3 . 3) (1 . 1) (2 . 2) (3 . 3) . #2) (ERR (wrong-type-argument listp 7))) (nil (ERR (wrong-type-argument listp (1 2 . 3))) 1 2 (2 . 2) (ERR (wrong-type-argument listp 7))) ((4) (2 . 3) (2 1 2 1 . #2) (2 3 1 2 3 . #2) ((2 . 2) (3 . 3) (1 . 1) (2 . 2) (3 . 3) . #2) 7) ((4 3 2 1) (ERR (wrong-type-argument listp 3)) (ERR (circular-list (1 2 1 2 . #2))) (ERR (circular-list (3 1 2 3 1 . #2))) (ERR (circular-list ((3 . 3) (1 . 1) (2 . 2) (3 . 3) (1 . 1) . #2))) (ERR (wrong-type-argument sequencep 7))) ((1 2 3 4) (ERR (wrong-type-argument listp 3)) (ERR (circular-list (2 1 2 1 . #2))) (ERR (circular-list (1 2 3 1 2 . #2))) (ERR (circular-list ((1 . 1) (2 . 2) (3 . 3) (1 . 1) (2 . 2) . #2))) (ERR (wrong-type-argument sequencep 7))) ((1 2 3 4) (ERR (wrong-type-argument listp 3)) (ERR (circular-list (2 1 2 1 . #2))) (ERR (circular-list (1 2 3 1 2 . #2))) (ERR (circular-list ((1 . 1) (2 . 2) (3 . 3) (1 . 1) (2 . 2) . #2))) (ERR (wrong-type-argument sequencep 7))) ((1 2 3 4) (ERR (wrong-type-argument listp 3)) (ERR (circular-list (1 2 1 2 . #2))) (ERR (circular-list (3 1 2 3 1 . #2))) (ERR (circular-list ((3 . 3) (1 . 1) (2 . 2) (3 . 3) (1 . 1) . #2))) (ERR (wrong-type-argument sequencep 7))) (nil nil nil nil nil nil) (nil (ERR (wrong-type-argument plistp (1 2 . 3))) (ERR (circular-list (1 2 1 2 . #2))) (ERR (circular-list (2 3 1 2 3 . #2))) (ERR (circular-list ((2 . 2) (3 . 3) (1 . 1) (2 . 2) (3 . 3) . #2))) (ERR (wrong-type-argument plistp 7))) ((1 2 3 4 z 1) (ERR (wrong-type-argument plistp (1 2 . 3))) (ERR (circular-list (1 2 1 2 . #2))) (ERR (circular-list (2 3 1 2 3 . #2))) (ERR (circular-list ((2 . 2) (3 . 3) (1 . 1) (2 . 2) (3 . 3) . #2))) (ERR (wrong-type-argument plistp 7))) (nil nil nil nil nil nil) (nil (ERR (wrong-type-argument plistp (1 2 . 3))) (ERR (circular-list (1 2 1 2 . #2))) (ERR (circular-list (2 3 1 2 3 . #2))) (ERR (circular-list ((2 . 2) (3 . 3) (1 . 1) (2 . 2) (3 . 3) . #2))) (ERR (wrong-type-argument plistp 7))) ((1 2 3 4 z 1) (ERR (wrong-type-argument plistp (1 2 . 3))) (ERR (circular-list (1 2 1 2 . #2))) (ERR (circular-list (2 3 1 2 3 . #2))) (ERR (circular-list ((2 . 2) (3 . 3) (1 . 1) (2 . 2) (3 . 3) . #2))) (ERR (wrong-type-argument plistp 7))) (nil t nil nil nil (ERR (wrong-type-argument sequencep 7))) (t nil t t t (ERR (wrong-type-argument sequencep 7))) (t nil nil nil nil (ERR (wrong-type-argument sequencep 7))) ((1 2 3 4) (ERR (wrong-type-argument listp 3)) (1 2 1 2 1 2 1 2 1) (1 2 3 1 2 3 1 2 3) ((1 . 1) (2 . 2) (3 . 3) (1 . 1) (2 . 2) (3 . 3) (1 . 1) (2 . 2) (3 . 3)) (ERR (wrong-type-argument listp 7))) (nil (ERR (wrong-type-argument listp (1 2 . 3))) 2 1 (1 . 1) (ERR (wrong-type-argument sequencep 7))) ((4 3 2 1) (ERR (wrong-type-argument listp (1))) (ERR (circular-list (1))) (ERR (circular-list (1))) (ERR (circular-list ((1 . 1)))) (ERR (wrong-type-argument arrayp 7))) ((1 2 3 4) (ERR (wrong-type-argument listp 3)) (ERR (circular-list (1 2 1 2 . #2))) (ERR (circular-list (3 1 2 3 1 . #2))) (ERR (circular-list ((3 . 3) (1 . 1) (2 . 2) (3 . 3) (1 . 1) . #2))) (ERR (wrong-type-argument list-or-vector-p 7))) (nil (ERR (wrong-type-argument listp (1 2 . 3))) (ERR (circular-list (1 2 1 2 . #2))) (ERR (circular-list (3 1 2 3 1 . #2))) (ERR (circular-list ((3 . 3) (1 . 1) (2 . 2) (3 . 3) (1 . 1) . #2))) (ERR (wrong-type-argument listp 7))) ((1 2 3 4 5) (1 2 5) (ERR (circular-list (1 2 1 2 . #2))) (ERR (circular-list (3 1 2 3 1 . #2))) (ERR (circular-list ((3 . 3) (1 . 1) (2 . 2) (3 . 3) (1 . 1) . #2))) (ERR (wrong-type-argument consp 7))) ((1 . a) ((x k)) ((b b) (a b)) ((b b) (a b)) ((a 1 b 9 c 3) (a 1 b 9 c 3) (a 1 b 9 c 3)) (ERR (wrong-type-argument plistp (a))) (ERR (wrong-type-argument plistp (a 1 b))) (ERR (wrong-type-argument plistp 7)) nil (ERR (wrong-type-argument sequencep #s(r 1))) (ERR (wrong-type-argument fixnump 1.0)) nil (ERR (wrong-type-argument listp (a . b))) nil (1.5 . x) (nil . 2) nil) (4 3 1 nil nil (ERR (wrong-type-argument consp 7)) (ERR (wrong-type-argument symbolp 7)) (ERR (wrong-type-argument listp 5)) (ERR (wrong-type-argument plistp (:b . 5))) (2 3 (emaxx-w2 :a 2 :b 3)) (ERR (wrong-type-argument consp 7)) ((emaxx-w2 :f list) 1 2) (ERR (void-function nil))))"##
+            );
+        });
+    }
+
+    #[test]
+    fn time_values_decode_as_decode_lisp_time_and_compare_as_time_cmp() {
+        // timefns.c:decode_lisp_time classifies a list by its conses (a
+        // fifth element and a dotted tail are ignored, (HI LO . US) is
+        // the microsecond form), requires integer parts, and signals
+        // "Invalid time specification" for anything else, "Specified time
+        // is not representable" for an infinity.  time_cmp answers eq
+        // operands and (X . Z) against (Y . Z) without decoding them, as
+        // Ftime_subtract gives zero for eq operands; Ftime_equal_p's nil
+        // equals only nil.  Ftime_convert returns a
+        // (TICKS . HZ) already on FORM's clock itself and checks FORM as
+        // invalid_hz does; Ffloat_time returns a float as is; Fdecode_time's
+        // SEC is an integer unless FORM is t; Fencode_time's SEC is any
+        // time value, an integer clock giving (HI LO).
+        run_with_large_stack(|| {
+            let emacs_repo = compat::project_root().join("../emacs");
+            let options = BatchRunOptions {
+                load_path: compat::emaxx_upstream_load_path(&emacs_repo)
+                    .expect("upstream load path"),
+                ..Default::default()
+            };
+            let mut interpreter =
+                initialize_batch_interpreter(&options).expect("init batch interpreter");
+            let mut env = crate::lisp::types::Env::new();
+            let mut forms = Reader::new(
+                r##"(defmacro emaxx-probe-or-error (form)
+                     `(condition-case e ,form (error (list 'ERR e))))
+FORM"##
+                    .replace(
+                        "FORM",
+                        r##"(let* ((out nil)
+       (vals (list 0 1 -1 (expt 2 32) (expt 2 70) 1.5 -0.25 1e30 0.0 '(0 1) '(0 1 500000)
+                   '(0 1 500000 1) '(1 . 2) '(3 . 4) '(5 . 10) (cons (expt 2 62) 1) '(1 2 3 4)
+                   '(-1 65535 999999 999999) (list 0 (expt 2 40)) '(0 . 0) 'foo '(1 2 3 4 5) '(1)
+                   '(1 . -1) '(1 2 . 3) 1.0e+INF 0.0e+NaN))
+       (code (lambda (f) (condition-case nil (if (funcall f) "t" "-") (error "E")))))
+  (dolist (a vals)
+    (push (mapconcat (lambda (b)
+                       (concat (funcall code (lambda () (time-less-p a b)))
+                               (funcall code (lambda () (time-equal-p a b)))))
+                     vals "")
+          out))
+  (push (list (time-equal-p nil nil) (time-less-p nil nil) (time-equal-p nil 0) (time-equal-p 0 nil)
+              (time-less-p 0 nil) (time-less-p nil 0) (time-less-p '(0 1) nil)
+              (let ((z 0)) (time-less-p (cons 1 z) (cons 2 z)))
+              (let ((z 'bad)) (time-less-p (cons 2 z) (cons 1 z)))
+              (let ((x 0.0e+NaN)) (time-equal-p x x))
+              (let ((c (current-time))) (list (length c) (time-less-p c nil) (time-equal-p c c)))
+              (let ((current-time-list nil))
+                (let ((c (current-time))) (list (consp c) (cdr c) (time-less-p c nil)))))
+        out)
+  (dolist (a (list 7 (expt 2 70) 1.5 -0.25 '(0 1 500000) '(4 . 8) (cons (expt 2 62) 3)
+                   '(1 2 3 4) '(1 2 3 4 5) '(1 2 . 3) '(-1 65535 999999 999999) '(0 1 1.5)
+                   (list 1 2 (expt 2 70)) '(0 . 0) '(1 . 1.5) 'foo '(1) [1 2] 1.0e+INF 0.0e+NaN))
+    (push (list a
+                (emaxx-probe-or-error (float-time a))
+                (mapcar (lambda (f) (emaxx-probe-or-error (time-convert a f)))
+                        (list nil t 'integer 'list 4 1000 (expt 2 64) 0 'foo 1.5))
+                (emaxx-probe-or-error (time-add a 0))
+                (emaxx-probe-or-error (time-add a '(0 0 1)))
+                (emaxx-probe-or-error (time-subtract a '(1 . 3)))
+                (emaxx-probe-or-error (format-time-string "%s %N" a t))
+                (emaxx-probe-or-error (current-time-string a t))
+                (emaxx-probe-or-error (decode-time a t))
+                (emaxx-probe-or-error (decode-time a t t)))
+          out))
+  (let ((x '(5 . 7)) (b (expt 2 70)))
+    (push (list (eq (time-convert x t) x) (eq (time-convert x 7) x) (eq (time-convert 5 'integer) 5)
+                (eq (time-convert b 'integer) b) (emaxx-probe-or-error (float-time (point-marker)))
+                (encode-time (list 0 0 0 1 1 2000 nil nil t))
+                (encode-time (list 1.5 0 0 1 1 2000 nil nil t))
+                (encode-time (list '(7 . 4) 0 0 1 1 2000 nil nil t))
+                (encode-time (list '(0 1 2 3) 0 0 1 1 2000 nil nil t))
+                (let ((current-time-list nil))
+                  (list (encode-time (list 0 0 0 1 1 2000 nil nil t)) (time-add '(0 1 2 3) 0)
+                        (time-convert '(0 1 2 3) nil) (time-add '(1 . 2) '(0 1))))
+                (time-add '(0 1 2 3) '(0 1)) (time-add '(0 1 2 . 3) '(1 . 2))
+                (time-add '(0 1 2 3 4) 1.5) (time-convert '(0 1 2 3) nil))
+          out))
+  (let ((x 1.5) (c (cons 3 4)))
+    (push (list (time-subtract nil nil) (time-subtract 5 5) (time-subtract x x) (time-subtract c c)
+                (time-subtract 'foo 'foo) (let ((current-time-list nil)) (time-subtract nil nil))
+                (time-equal-p 0 (time-subtract nil nil)) (emaxx-probe-or-error (time-add 'foo 'foo))
+                (time-subtract 1.5 1.5))
+          out))
+  (prin1-to-string (nreverse out)))"##,
+                    )
+                    .as_str(),
+            )
+            .read_all()
+            .expect("read time probe");
+            let probe = forms.pop().expect("probe form");
+            interpreter
+                .eval(&forms[0], &mut env)
+                .expect("define the probe's macro");
+            let printed = interpreter
+                .eval(&probe, &mut env)
+                .expect("evaluate time probe");
+            assert_eq!(
+                lisp::primitives::string_like(&printed)
+                    .expect("printed")
+                    .text,
+                r##"("-tt---t-t-t---t--tt-t-t-t-t-t-t-t---t-EEEEt-EEEEt-EEEE" "---t--t-t-t---t----tt-t-------t-t---t-EEEEt-EEEEt-EEEE" "t-t--tt-t-t-t-t-t-t-t-t-t-t-t-t-t-t-t-EEEEt-EEEEt-EEEE" "-------tt-----t---------------t-----t-EEEE--EEEE--EEEE" "---------t----t-----------------------EEEE--EEEE--EEEE" "------t-t--t--t------tt-------t-t---t-EEEEt-EEEEt-EEEE" "t-t---t-t-t--tt-t-t-t-t-t-t-t-t-t-t-t-EEEEt-EEEEt-EEEE" "---------------t----------------------EEEE--EEEE--EEEE" "-tt---t-t-t---t--tt-t-t-t-t-t-t-t---t-EEEEt-EEEEt-EEEE" "---t--t-t-t---t----tt-t-------t-t---t-EEEEt-EEEEt-EEEE" "------t-t--t--t------tt-------t-t---t-EEEEt-EEEEt-EEEE" "------t-t-----t--------t------t-t---t-EEEEt-EEEEt-EEEE" "--t---t-t-t---t---t-t-t--tt--tt-t---t-EEEEt-EEEEt-EEEE" "--t---t-t-t---t---t-t-t----t--t-t---t-EEEEt-EEEEt-EEEE" "--t---t-t-t---t---t-t-t--tt--tt-t---t-EEEEt-EEEEt-EEEE" "--------t-----t----------------t------EEEE--EEEE--EEEE" "------t-t-----t---------------t--t--t-EEEE-tEEEE--EEEE" "t-t---t-t-t---t-t-t-t-t-t-t-t-t-t--tt-EEEEt-EEEEt-EEEE" "--------t-----t---------------t------tEEEE--EEEE--EEEE" "EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE-tEEEEEEEEEEEEEE" "EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE-tEEEEEEEEEEEE" "------t-t-----t---------------t--t--t-EEEE-tEEEE--EEEE" "EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE-tEEEEEEEE" "EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE-tEEEEEE" "------t-t-----t---------------t-t---t-EEEEt-EEEE-tEEEE" "EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE-tEE" "EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE-t" (t nil nil nil t nil t t nil t (4 t t) (t 1000000000 t)) (7 7.0 ((0 7 0 0) (7 . 1) 7 (0 7 0 0) (28 . 4) (7000 . 1000) (129127208515966861312 . 18446744073709551616) (ERR (error "Invalid time frequency" 0)) (ERR (error "Invalid time frequency" foo)) (ERR (error "Invalid time frequency" 1.5))) 7 (0 7 1 0) (20 . 3) "7 000000000" "Thu Jan  1 00:00:07 1970" (7 0 0 1 1 1970 4 nil 0) (7 0 0 1 1 1970 4 nil 0)) (1180591620717411303424 1.1805916207174113e+21 ((18014398509481984 0 0 0) (1180591620717411303424 . 1) 1180591620717411303424 (18014398509481984 0 0 0) (4722366482869645213696 . 4) (1180591620717411303424000 . 1000) (21778071482940061661655974875633165533184 . 18446744073709551616) (ERR (error "Invalid time frequency" 0)) (ERR (error "Invalid time frequency" foo)) (ERR (error "Invalid time frequency" 1.5))) 1180591620717411303424 (18014398509481984 0 1 0) (3541774862152233910271 . 3) (ERR (error "Specified time is not representable")) (ERR (error "Specified time is not representable")) (ERR (error "Specified time is not representable")) (ERR (error "Specified time is not representable"))) (1.5 1.5 ((0 1 500000 0) (6755399441055744 . 4503599627370496) 1 (0 1 500000 0) (6 . 4) (1500 . 1000) (27670116110564327424 . 18446744073709551616) (ERR (error "Invalid time frequency" 0)) (ERR (error "Invalid time frequency" foo)) (ERR (error "Invalid time frequency" 1.5))) (0 1 500000 0) (0 1 500001 0) (7 . 6) "1 500000000" "Thu Jan  1 00:00:01 1970" (1 0 0 1 1 1970 4 nil 0) ((6755399441055744 . 4503599627370496) 0 0 1 1 1970 4 nil 0)) (-0.25 -0.25 ((-1 65535 750000 0) (-4503599627370496 . 18014398509481984) -1 (-1 65535 750000 0) (-1 . 4) (-250 . 1000) (-4611686018427387904 . 18446744073709551616) (ERR (error "Invalid time frequency" 0)) (ERR (error "Invalid time frequency" foo)) (ERR (error "Invalid time frequency" 1.5))) (-1 65535 750000 0) (-1 65535 750001 0) (-7 . 12) "-1 750000000" "Wed Dec 31 23:59:59 1969" (59 59 23 31 12 1969 3 nil 0) ((1076360310941548544 . 18014398509481984) 59 23 31 12 1969 3 nil 0)) ((0 1 500000) 1.5 ((0 1 500000 0) (1500000 . 1000000) 1 (0 1 500000 0) (6 . 4) (1500 . 1000) (27670116110564327424 . 18446744073709551616) (ERR (error "Invalid time frequency" 0)) (ERR (error "Invalid time frequency" foo)) (ERR (error "Invalid time frequency" 1.5))) (0 1 500000 0) (0 1 500001 0) (7 . 6) "1 500000000" "Thu Jan  1 00:00:01 1970" (1 0 0 1 1 1970 4 nil 0) ((1500000 . 1000000) 0 0 1 1 1970 4 nil 0)) ((4 . 8) 0.5 ((0 0 500000 0) (4 . 8) 0 (0 0 500000 0) (2 . 4) (500 . 1000) (9223372036854775808 . 18446744073709551616) (ERR (error "Invalid time frequency" 0)) (ERR (error "Invalid time frequency" foo)) (ERR (error "Invalid time frequency" 1.5))) (1 . 2) (500001 . 1000000) (1 . 6) "0 500000000" "Thu Jan  1 00:00:00 1970" (0 0 0 1 1 1970 4 nil 0) ((4 . 8) 0 0 1 1 1970 4 nil 0)) ((4611686018427387904 . 3) 1.5372286728091292e+18 ((23456248059221 21845 333333 333333) (4611686018427387904 . 3) 1537228672809129301 (23456248059221 21845 333333 333333) (6148914691236517205 . 4) (1537228672809129301333 . 1000) (28356863910078205288614550619314017621 . 18446744073709551616) (ERR (error "Invalid time frequency" 0)) (ERR (error "Invalid time frequency" foo)) (ERR (error "Invalid time frequency" 1.5))) (4611686018427387904 . 3) (4611686018427387904000003 . 3000000) (4611686018427387903 . 3) (ERR (error "Specified time is not representable")) (ERR (error "Specified time is not representable")) (ERR (error "Specified time is not representable")) (ERR (error "Specified time is not representable"))) ((1 2 3 4) 65538.00000300001 ((1 2 3 4) (65538000003000004 . 1000000000000) 65538 (1 2 3 4) (262152 . 4) (65538000 . 1000) (1208962713158116899817512 . 18446744073709551616) (ERR (error "Invalid time frequency" 0)) (ERR (error "Invalid time frequency" foo)) (ERR (error "Invalid time frequency" 1.5))) (1 2 3 4) (1 2 4 4) (49153250002250003 . 750000000000) "65538 000003000" "Thu Jan  1 18:12:18 1970" (18 12 18 1 1 1970 4 nil 0) ((18000003000004 . 1000000000000) 12 18 1 1 1970 4 nil 0)) ((1 2 3 4 5) 65538.00000300001 ((1 2 3 4) (65538000003000004 . 1000000000000) 65538 (1 2 3 4) (262152 . 4) (65538000 . 1000) (1208962713158116899817512 . 18446744073709551616) (ERR (error "Invalid time frequency" 0)) (ERR (error "Invalid time frequency" foo)) (ERR (error "Invalid time frequency" 1.5))) (1 2 3 4) (1 2 4 4) (49153250002250003 . 750000000000) "65538 000003000" "Thu Jan  1 18:12:18 1970" (18 12 18 1 1 1970 4 nil 0) ((18000003000004 . 1000000000000) 12 18 1 1 1970 4 nil 0)) ((1 2 . 3) 65538.000003 ((1 2 3 0) (65538000003 . 1000000) 65538 (1 2 3 0) (262152 . 4) (65538000 . 1000) (1208962713158116826030536 . 18446744073709551616) (ERR (error "Invalid time frequency" 0)) (ERR (error "Invalid time frequency" foo)) (ERR (error "Invalid time frequency" 1.5))) (1 2 3 0) (1 2 4 0) (196613000009 . 3000000) "65538 000003000" "Thu Jan  1 18:12:18 1970" (18 12 18 1 1 1970 4 nil 0) ((18000003 . 1000000) 12 18 1 1 1970 4 nil 0)) ((-1 65535 999999 999999) -1e-12 ((-1 65535 999999 999999) (-1 . 1000000000000) -1 (-1 65535 999999 999999) (-1 . 4) (-1 . 1000) (-18446745 . 18446744073709551616) (ERR (error "Invalid time frequency" 0)) (ERR (error "Invalid time frequency" foo)) (ERR (error "Invalid time frequency" 1.5))) (-1 65535 999999 999999) (0 0 0 999999) (-1000000000003 . 3000000000000) "-1 999999999" "Wed Dec 31 23:59:59 1969" (59 59 23 31 12 1969 3 nil 0) ((59999999999999 . 1000000000000) 59 23 31 12 1969 3 nil 0)) ((0 1 1.5) (ERR (error "Invalid time specification")) ((ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification"))) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) "Thu Jan  1 00:00:01 1970" (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification"))) ((1 2 1180591620717411303424) (ERR (error "Invalid time specification")) ((ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification"))) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) "Thu Jan  1 18:12:18 1970" (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification"))) ((0 . 0) (ERR (error "Invalid time specification")) ((ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification"))) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification"))) ((1 . 1.5) (ERR (error "Invalid time specification")) ((ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification"))) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification"))) (foo (ERR (error "Invalid time specification")) ((ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification"))) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification"))) ((1) (ERR (error "Invalid time specification")) ((ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification"))) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification"))) ([1 2] (ERR (error "Invalid time specification")) ((ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification"))) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification"))) (1.0e+INF 1.0e+INF ((ERR (error "Specified time is not representable")) (ERR (error "Specified time is not representable")) (ERR (error "Specified time is not representable")) (ERR (error "Specified time is not representable")) (ERR (error "Specified time is not representable")) (ERR (error "Specified time is not representable")) (ERR (error "Specified time is not representable")) (ERR (error "Specified time is not representable")) (ERR (error "Specified time is not representable")) (ERR (error "Specified time is not representable"))) (ERR (error "Specified time is not representable")) (ERR (error "Specified time is not representable")) (ERR (error "Specified time is not representable")) (ERR (error "Specified time is not representable")) (ERR (error "Specified time is not representable")) (ERR (error "Specified time is not representable")) (ERR (error "Specified time is not representable"))) (0.0e+NaN 0.0e+NaN ((ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification"))) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification")) (ERR (error "Invalid time specification"))) (t t t t (ERR (error "Invalid time specification")) (14445 17280) (4263489319272711972716544 . 4503599627370496) (3786739207 . 4) (946684801000002000003 . 1000000000000) (946684800 (1000002000003 . 1000000000000) (1000002000003 . 1000000000000) (3 . 2)) (0 2 2 3) (750001 . 500000) (0 2 500002 3) (0 1 2 3)) ((0 0 0 0) (0 0 0 0) (0 0 0 0) (0 0 0 0) (0 0 0 0) (0 . 1000000000) t (ERR (error "Invalid time specification")) (0 . 4503599627370496)))"##
+            );
+        });
+    }
+
+    #[test]
+    fn time_zones_are_tz_strings_as_glibc_reads_them_and_formats_are_nstrftime() {
+        // timefns.c:tzlookup makes every zone a TZ string (an offset is
+        // "<+HH>-H:MM:SS", t and 0 the null zone gmtime serves, named
+        // "GMT"); glibc's tzset reads one as POSIX does (a quoted name, a
+        // name without an offset, J and day-of-year rules), localtime has
+        // no year limit short of an int's, mktime normalizes and resolves
+        // gaps and folds by tm_isdst, and gnulib's nstrftime formats with
+        // the C library's strftime for the locale's items.
+        run_with_large_stack(|| {
+            let emacs_repo = compat::project_root().join("../emacs");
+            let options = BatchRunOptions {
+                load_path: compat::emaxx_upstream_load_path(&emacs_repo)
+                    .expect("upstream load path"),
+                ..Default::default()
+            };
+            let mut interpreter =
+                initialize_batch_interpreter(&options).expect("init batch interpreter");
+            let mut env = crate::lisp::types::Env::new();
+            let mut forms = Reader::new(
+                r##"(defmacro emaxx-probe-or-error (form)
+                     `(condition-case e ,form (error (list 'ERR e))))
+FORM"##
+                    .replace("FORM", r##"(let* ((out nil)
+       (zones (list t 0 3600 -18000 19800 (list 3600 "ABC") "UTC0" "EET-2EEST,M3.5.0/3,M10.5.0/4"
+                    "<+05>-5" "garbage zone" "AAA3BBB,J60/2,J300/3" "CCC-4DDD,100,200" "+05"
+                    "STD+02DST-02,M11.1.0/0,M1.1.0/0"))
+       (times (list 0 1700000000 -1000000000 (expt 2 40) (- (expt 2 55)) 1711846800 1711843199
+                    1729990800 '(0 1 500000) 1.25)))
+  (dolist (z zones)
+    (push (list z (mapcar (lambda (time)
+                            (emaxx-probe-or-error
+                             (list (decode-time time z) (format-time-string "%FT%T%z %Z %s|%c" time z)
+                                   (current-time-zone time z) (current-time-string time z))))
+                          times))
+          out))
+  (dolist (time (list 1.5 -86400 951782400 -2208988800 (- (* 60 (expt 10 9))) 67768036191676799))
+    (push (mapcar (lambda (fmt) (emaxx-probe-or-error (format-time-string fmt time t)))
+                  (list "%a %A %b %B %h %c %C %d %D %e %F %g %G %H %I %j %k %l %m %M %N %p %P %q %r %R %s %S %T %u %U %V %w %W %x %X %y %Y %z %Z %%"
+                        "%10a|%^a|%#a|%#A|%^B|%#b|%-d|%_d|%0e|%+Y|%+4Y|%+6Y|%_5Y|%-Y|%010Y|%3d|%-3d|%_3d|%+3d"
+                        "%Ec|%EC|%Ex|%EX|%Ey|%EY|%Od|%Oe|%OH|%OI|%Om|%OM|%OS|%Ou|%OU|%OV|%Ow|%OW|%Oy|%OB|%Ob|%Op|%Ez|%Oz|%Ed|%EH|%OY|%OC|%Oj"
+                        "%:z|%::z|%:::z|%::::z|%5z|%-z|%_z|%010z|%+z|%#z|%^Z|%#Z|%10Z|%010Z"
+                        "%3N|%6N|%12N|%-N|%_N|%-3N|%_6N|%0N|%1N"
+                        "%10F|%_10F|%-F|%+F|%012F|%5T|%_12c|%012x|%#x|%^c|%^p|%#p|%10p|%-10p"
+                        "abc%|%5%|%-%|%_|%Q|%5Q|%E|%O|%EQ|%:|%:x|%::|x%" "%G-W%V-%u|%g|%U %W %j"))
+          out))
+  (dolist (z (list t 3600 "EET-2EEST,M3.5.0/3,M10.5.0/4" "AAA3BBB,J60/2,J300/3"))
+    (push (mapcar (lambda (d)
+                    (mapcar (lambda (dst)
+                              (emaxx-probe-or-error (encode-time (append d (list nil dst z)))))
+                            (list nil t -1)))
+                  (list '(0 0 0 1 1 2000) '(61 59 23 31 12 1999) '(0 0 0 1 13 2000) '(0 0 0 0 1 2000)
+                        '(-1 -1 -1 -1 -1 2000) '(0 0 0 1 1 -1000) '(0 30 3 31 3 2024)
+                        '(0 30 3 27 10 2024) '(0 0 0 1 1 2147485547) '(0 0 0 1 1 2147485548)
+                        '(1.5 0 0 1 1 2000) '((7 . 4) 0 0 1 1 2000) '(0 0 0 1 1 2000.0)))
+          out))
+  (push (list (emaxx-probe-or-error (encode-time '(0 0 0 1 1 2000 nil)))
+              (emaxx-probe-or-error (encode-time '(0 0 0 1 1)))
+              (emaxx-probe-or-error (encode-time 5))
+              (emaxx-probe-or-error (encode-time 0 0 0 1 1))
+              (encode-time 0 0 0 1 1 2000 nil nil 3600)
+              (encode-time (list 0 0 0 1 1 2000 nil 'yes t))
+              (emaxx-probe-or-error (encode-time (list (expt 2 70) 0 0 1 1 2000 nil nil t)))
+              (emaxx-probe-or-error (encode-time (list 0 0 0 1 1 'x nil nil t)))
+              (emaxx-probe-or-error (decode-time 0 'bogus))
+              (emaxx-probe-or-error (decode-time 0 (list 3600 5)))
+              (decode-time 0 (list 3600 (list 65 66 67)))
+              (let ((current-time-list nil)) (encode-time '(0 0 0 1 1 2000 nil nil t))))
+        out)
+  (prin1-to-string (nreverse out)))"##)
+                    .as_str(),
+            )
+            .read_all()
+            .expect("read time zone probe");
+            let probe = forms.pop().expect("probe form");
+            interpreter
+                .eval(&forms[0], &mut env)
+                .expect("define the probe's macro");
+            let printed = interpreter
+                .eval(&probe, &mut env)
+                .expect("evaluate time zone probe");
+            assert_eq!(
+                lisp::primitives::string_like(&printed)
+                    .expect("printed")
+                    .text,
+                r##"((t (((0 0 0 1 1 1970 4 nil 0) "1970-01-01T00:00:00+0000 GMT 0|Thu Jan  1 00:00:00 1970" (0 "GMT") "Thu Jan  1 00:00:00 1970") ((20 13 22 14 11 2023 2 nil 0) "2023-11-14T22:13:20+0000 GMT 1700000000|Tue Nov 14 22:13:20 2023" (0 "GMT") "Tue Nov 14 22:13:20 2023") ((20 13 22 24 4 1938 0 nil 0) "1938-04-24T22:13:20+0000 GMT -1000000000|Sun Apr 24 22:13:20 1938" (0 "GMT") "Sun Apr 24 22:13:20 1938") ((16 36 0 20 2 36812 1 nil 0) "+36812-02-20T00:36:16+0000 GMT 1099511627776|Mon Feb 20 00:36:16 36812" (0 "GMT") "Mon Feb 20 00:36:16 36812") ((52 33 17 20 7 -1141705158 0 nil 0) "-1141705158-07-20T17:33:52+0000 GMT -36028797018963968|Sun Jul 20 17:33:52 -1141705158" (0 "GMT") "Sun Jul 20 17:33:52 -1141705158") ((0 0 1 31 3 2024 0 nil 0) "2024-03-31T01:00:00+0000 GMT 1711846800|Sun Mar 31 01:00:00 2024" (0 "GMT") "Sun Mar 31 01:00:00 2024") ((59 59 23 30 3 2024 6 nil 0) "2024-03-30T23:59:59+0000 GMT 1711843199|Sat Mar 30 23:59:59 2024" (0 "GMT") "Sat Mar 30 23:59:59 2024") ((0 0 1 27 10 2024 0 nil 0) "2024-10-27T01:00:00+0000 GMT 1729990800|Sun Oct 27 01:00:00 2024" (0 "GMT") "Sun Oct 27 01:00:00 2024") ((1 0 0 1 1 1970 4 nil 0) "1970-01-01T00:00:01+0000 GMT 1|Thu Jan  1 00:00:01 1970" (0 "GMT") "Thu Jan  1 00:00:01 1970") ((1 0 0 1 1 1970 4 nil 0) "1970-01-01T00:00:01+0000 GMT 1|Thu Jan  1 00:00:01 1970" (0 "GMT") "Thu Jan  1 00:00:01 1970"))) (0 (((0 0 0 1 1 1970 4 nil 0) "1970-01-01T00:00:00+0000 GMT 0|Thu Jan  1 00:00:00 1970" (0 "GMT") "Thu Jan  1 00:00:00 1970") ((20 13 22 14 11 2023 2 nil 0) "2023-11-14T22:13:20+0000 GMT 1700000000|Tue Nov 14 22:13:20 2023" (0 "GMT") "Tue Nov 14 22:13:20 2023") ((20 13 22 24 4 1938 0 nil 0) "1938-04-24T22:13:20+0000 GMT -1000000000|Sun Apr 24 22:13:20 1938" (0 "GMT") "Sun Apr 24 22:13:20 1938") ((16 36 0 20 2 36812 1 nil 0) "+36812-02-20T00:36:16+0000 GMT 1099511627776|Mon Feb 20 00:36:16 36812" (0 "GMT") "Mon Feb 20 00:36:16 36812") ((52 33 17 20 7 -1141705158 0 nil 0) "-1141705158-07-20T17:33:52+0000 GMT -36028797018963968|Sun Jul 20 17:33:52 -1141705158" (0 "GMT") "Sun Jul 20 17:33:52 -1141705158") ((0 0 1 31 3 2024 0 nil 0) "2024-03-31T01:00:00+0000 GMT 1711846800|Sun Mar 31 01:00:00 2024" (0 "GMT") "Sun Mar 31 01:00:00 2024") ((59 59 23 30 3 2024 6 nil 0) "2024-03-30T23:59:59+0000 GMT 1711843199|Sat Mar 30 23:59:59 2024" (0 "GMT") "Sat Mar 30 23:59:59 2024") ((0 0 1 27 10 2024 0 nil 0) "2024-10-27T01:00:00+0000 GMT 1729990800|Sun Oct 27 01:00:00 2024" (0 "GMT") "Sun Oct 27 01:00:00 2024") ((1 0 0 1 1 1970 4 nil 0) "1970-01-01T00:00:01+0000 GMT 1|Thu Jan  1 00:00:01 1970" (0 "GMT") "Thu Jan  1 00:00:01 1970") ((1 0 0 1 1 1970 4 nil 0) "1970-01-01T00:00:01+0000 GMT 1|Thu Jan  1 00:00:01 1970" (0 "GMT") "Thu Jan  1 00:00:01 1970"))) (3600 (((0 0 1 1 1 1970 4 nil 3600) "1970-01-01T01:00:00+0100 +01 0|Thu Jan  1 01:00:00 1970" (3600 "+01") "Thu Jan  1 01:00:00 1970") ((20 13 23 14 11 2023 2 nil 3600) "2023-11-14T23:13:20+0100 +01 1700000000|Tue Nov 14 23:13:20 2023" (3600 "+01") "Tue Nov 14 23:13:20 2023") ((20 13 23 24 4 1938 0 nil 3600) "1938-04-24T23:13:20+0100 +01 -1000000000|Sun Apr 24 23:13:20 1938" (3600 "+01") "Sun Apr 24 23:13:20 1938") ((16 36 1 20 2 36812 1 nil 3600) "+36812-02-20T01:36:16+0100 +01 1099511627776|Mon Feb 20 01:36:16 36812" (3600 "+01") "Mon Feb 20 01:36:16 36812") ((52 33 18 20 7 -1141705158 0 nil 3600) "-1141705158-07-20T18:33:52+0100 +01 -36028797018963968|Sun Jul 20 18:33:52 -1141705158" (3600 "+01") "Sun Jul 20 18:33:52 -1141705158") ((0 0 2 31 3 2024 0 nil 3600) "2024-03-31T02:00:00+0100 +01 1711846800|Sun Mar 31 02:00:00 2024" (3600 "+01") "Sun Mar 31 02:00:00 2024") ((59 59 0 31 3 2024 0 nil 3600) "2024-03-31T00:59:59+0100 +01 1711843199|Sun Mar 31 00:59:59 2024" (3600 "+01") "Sun Mar 31 00:59:59 2024") ((0 0 2 27 10 2024 0 nil 3600) "2024-10-27T02:00:00+0100 +01 1729990800|Sun Oct 27 02:00:00 2024" (3600 "+01") "Sun Oct 27 02:00:00 2024") ((1 0 1 1 1 1970 4 nil 3600) "1970-01-01T01:00:01+0100 +01 1|Thu Jan  1 01:00:01 1970" (3600 "+01") "Thu Jan  1 01:00:01 1970") ((1 0 1 1 1 1970 4 nil 3600) "1970-01-01T01:00:01+0100 +01 1|Thu Jan  1 01:00:01 1970" (3600 "+01") "Thu Jan  1 01:00:01 1970"))) (-18000 (((0 0 19 31 12 1969 3 nil -18000) "1969-12-31T19:00:00-0500 -05 0|Wed Dec 31 19:00:00 1969" (-18000 "-05") "Wed Dec 31 19:00:00 1969") ((20 13 17 14 11 2023 2 nil -18000) "2023-11-14T17:13:20-0500 -05 1700000000|Tue Nov 14 17:13:20 2023" (-18000 "-05") "Tue Nov 14 17:13:20 2023") ((20 13 17 24 4 1938 0 nil -18000) "1938-04-24T17:13:20-0500 -05 -1000000000|Sun Apr 24 17:13:20 1938" (-18000 "-05") "Sun Apr 24 17:13:20 1938") ((16 36 19 19 2 36812 0 nil -18000) "+36812-02-19T19:36:16-0500 -05 1099511627776|Sun Feb 19 19:36:16 36812" (-18000 "-05") "Sun Feb 19 19:36:16 36812") ((52 33 12 20 7 -1141705158 0 nil -18000) "-1141705158-07-20T12:33:52-0500 -05 -36028797018963968|Sun Jul 20 12:33:52 -1141705158" (-18000 "-05") "Sun Jul 20 12:33:52 -1141705158") ((0 0 20 30 3 2024 6 nil -18000) "2024-03-30T20:00:00-0500 -05 1711846800|Sat Mar 30 20:00:00 2024" (-18000 "-05") "Sat Mar 30 20:00:00 2024") ((59 59 18 30 3 2024 6 nil -18000) "2024-03-30T18:59:59-0500 -05 1711843199|Sat Mar 30 18:59:59 2024" (-18000 "-05") "Sat Mar 30 18:59:59 2024") ((0 0 20 26 10 2024 6 nil -18000) "2024-10-26T20:00:00-0500 -05 1729990800|Sat Oct 26 20:00:00 2024" (-18000 "-05") "Sat Oct 26 20:00:00 2024") ((1 0 19 31 12 1969 3 nil -18000) "1969-12-31T19:00:01-0500 -05 1|Wed Dec 31 19:00:01 1969" (-18000 "-05") "Wed Dec 31 19:00:01 1969") ((1 0 19 31 12 1969 3 nil -18000) "1969-12-31T19:00:01-0500 -05 1|Wed Dec 31 19:00:01 1969" (-18000 "-05") "Wed Dec 31 19:00:01 1969"))) (19800 (((0 30 5 1 1 1970 4 nil 19800) "1970-01-01T05:30:00+0530 +0530 0|Thu Jan  1 05:30:00 1970" (19800 "+0530") "Thu Jan  1 05:30:00 1970") ((20 43 3 15 11 2023 3 nil 19800) "2023-11-15T03:43:20+0530 +0530 1700000000|Wed Nov 15 03:43:20 2023" (19800 "+0530") "Wed Nov 15 03:43:20 2023") ((20 43 3 25 4 1938 1 nil 19800) "1938-04-25T03:43:20+0530 +0530 -1000000000|Mon Apr 25 03:43:20 1938" (19800 "+0530") "Mon Apr 25 03:43:20 1938") ((16 6 6 20 2 36812 1 nil 19800) "+36812-02-20T06:06:16+0530 +0530 1099511627776|Mon Feb 20 06:06:16 36812" (19800 "+0530") "Mon Feb 20 06:06:16 36812") ((52 3 23 20 7 -1141705158 0 nil 19800) "-1141705158-07-20T23:03:52+0530 +0530 -36028797018963968|Sun Jul 20 23:03:52 -1141705158" (19800 "+0530") "Sun Jul 20 23:03:52 -1141705158") ((0 30 6 31 3 2024 0 nil 19800) "2024-03-31T06:30:00+0530 +0530 1711846800|Sun Mar 31 06:30:00 2024" (19800 "+0530") "Sun Mar 31 06:30:00 2024") ((59 29 5 31 3 2024 0 nil 19800) "2024-03-31T05:29:59+0530 +0530 1711843199|Sun Mar 31 05:29:59 2024" (19800 "+0530") "Sun Mar 31 05:29:59 2024") ((0 30 6 27 10 2024 0 nil 19800) "2024-10-27T06:30:00+0530 +0530 1729990800|Sun Oct 27 06:30:00 2024" (19800 "+0530") "Sun Oct 27 06:30:00 2024") ((1 30 5 1 1 1970 4 nil 19800) "1970-01-01T05:30:01+0530 +0530 1|Thu Jan  1 05:30:01 1970" (19800 "+0530") "Thu Jan  1 05:30:01 1970") ((1 30 5 1 1 1970 4 nil 19800) "1970-01-01T05:30:01+0530 +0530 1|Thu Jan  1 05:30:01 1970" (19800 "+0530") "Thu Jan  1 05:30:01 1970"))) ((3600 "ABC") (((0 0 1 1 1 1970 4 nil 3600) "1970-01-01T01:00:00+0100 ABC 0|Thu Jan  1 01:00:00 1970" (3600 "ABC") "Thu Jan  1 01:00:00 1970") ((20 13 23 14 11 2023 2 nil 3600) "2023-11-14T23:13:20+0100 ABC 1700000000|Tue Nov 14 23:13:20 2023" (3600 "ABC") "Tue Nov 14 23:13:20 2023") ((20 13 23 24 4 1938 0 nil 3600) "1938-04-24T23:13:20+0100 ABC -1000000000|Sun Apr 24 23:13:20 1938" (3600 "ABC") "Sun Apr 24 23:13:20 1938") ((16 36 1 20 2 36812 1 nil 3600) "+36812-02-20T01:36:16+0100 ABC 1099511627776|Mon Feb 20 01:36:16 36812" (3600 "ABC") "Mon Feb 20 01:36:16 36812") ((52 33 18 20 7 -1141705158 0 nil 3600) "-1141705158-07-20T18:33:52+0100 ABC -36028797018963968|Sun Jul 20 18:33:52 -1141705158" (3600 "ABC") "Sun Jul 20 18:33:52 -1141705158") ((0 0 2 31 3 2024 0 nil 3600) "2024-03-31T02:00:00+0100 ABC 1711846800|Sun Mar 31 02:00:00 2024" (3600 "ABC") "Sun Mar 31 02:00:00 2024") ((59 59 0 31 3 2024 0 nil 3600) "2024-03-31T00:59:59+0100 ABC 1711843199|Sun Mar 31 00:59:59 2024" (3600 "ABC") "Sun Mar 31 00:59:59 2024") ((0 0 2 27 10 2024 0 nil 3600) "2024-10-27T02:00:00+0100 ABC 1729990800|Sun Oct 27 02:00:00 2024" (3600 "ABC") "Sun Oct 27 02:00:00 2024") ((1 0 1 1 1 1970 4 nil 3600) "1970-01-01T01:00:01+0100 ABC 1|Thu Jan  1 01:00:01 1970" (3600 "ABC") "Thu Jan  1 01:00:01 1970") ((1 0 1 1 1 1970 4 nil 3600) "1970-01-01T01:00:01+0100 ABC 1|Thu Jan  1 01:00:01 1970" (3600 "ABC") "Thu Jan  1 01:00:01 1970"))) ("UTC0" (((0 0 0 1 1 1970 4 nil 0) "1970-01-01T00:00:00+0000 UTC 0|Thu Jan  1 00:00:00 1970" (0 "UTC") "Thu Jan  1 00:00:00 1970") ((20 13 22 14 11 2023 2 nil 0) "2023-11-14T22:13:20+0000 UTC 1700000000|Tue Nov 14 22:13:20 2023" (0 "UTC") "Tue Nov 14 22:13:20 2023") ((20 13 22 24 4 1938 0 nil 0) "1938-04-24T22:13:20+0000 UTC -1000000000|Sun Apr 24 22:13:20 1938" (0 "UTC") "Sun Apr 24 22:13:20 1938") ((16 36 0 20 2 36812 1 nil 0) "+36812-02-20T00:36:16+0000 UTC 1099511627776|Mon Feb 20 00:36:16 36812" (0 "UTC") "Mon Feb 20 00:36:16 36812") ((52 33 17 20 7 -1141705158 0 nil 0) "-1141705158-07-20T17:33:52+0000 UTC -36028797018963968|Sun Jul 20 17:33:52 -1141705158" (0 "UTC") "Sun Jul 20 17:33:52 -1141705158") ((0 0 1 31 3 2024 0 nil 0) "2024-03-31T01:00:00+0000 UTC 1711846800|Sun Mar 31 01:00:00 2024" (0 "UTC") "Sun Mar 31 01:00:00 2024") ((59 59 23 30 3 2024 6 nil 0) "2024-03-30T23:59:59+0000 UTC 1711843199|Sat Mar 30 23:59:59 2024" (0 "UTC") "Sat Mar 30 23:59:59 2024") ((0 0 1 27 10 2024 0 nil 0) "2024-10-27T01:00:00+0000 UTC 1729990800|Sun Oct 27 01:00:00 2024" (0 "UTC") "Sun Oct 27 01:00:00 2024") ((1 0 0 1 1 1970 4 nil 0) "1970-01-01T00:00:01+0000 UTC 1|Thu Jan  1 00:00:01 1970" (0 "UTC") "Thu Jan  1 00:00:01 1970") ((1 0 0 1 1 1970 4 nil 0) "1970-01-01T00:00:01+0000 UTC 1|Thu Jan  1 00:00:01 1970" (0 "UTC") "Thu Jan  1 00:00:01 1970"))) ("EET-2EEST,M3.5.0/3,M10.5.0/4" (((0 0 2 1 1 1970 4 nil 7200) "1970-01-01T02:00:00+0200 EET 0|Thu Jan  1 02:00:00 1970" (7200 "EET") "Thu Jan  1 02:00:00 1970") ((20 13 0 15 11 2023 3 nil 7200) "2023-11-15T00:13:20+0200 EET 1700000000|Wed Nov 15 00:13:20 2023" (7200 "EET") "Wed Nov 15 00:13:20 2023") ((20 13 0 25 4 1938 1 nil 7200) "1938-04-25T00:13:20+0200 EET -1000000000|Mon Apr 25 00:13:20 1938" (7200 "EET") "Mon Apr 25 00:13:20 1938") ((16 36 2 20 2 36812 1 nil 7200) "+36812-02-20T02:36:16+0200 EET 1099511627776|Mon Feb 20 02:36:16 36812" (7200 "EET") "Mon Feb 20 02:36:16 36812") ((52 33 19 20 7 -1141705158 0 nil 7200) "-1141705158-07-20T19:33:52+0200 EET -36028797018963968|Sun Jul 20 19:33:52 -1141705158" (7200 "EET") "Sun Jul 20 19:33:52 -1141705158") ((0 0 4 31 3 2024 0 t 10800) "2024-03-31T04:00:00+0300 EEST 1711846800|Sun Mar 31 04:00:00 2024" (10800 "EEST") "Sun Mar 31 04:00:00 2024") ((59 59 1 31 3 2024 0 nil 7200) "2024-03-31T01:59:59+0200 EET 1711843199|Sun Mar 31 01:59:59 2024" (7200 "EET") "Sun Mar 31 01:59:59 2024") ((0 0 3 27 10 2024 0 nil 7200) "2024-10-27T03:00:00+0200 EET 1729990800|Sun Oct 27 03:00:00 2024" (7200 "EET") "Sun Oct 27 03:00:00 2024") ((1 0 2 1 1 1970 4 nil 7200) "1970-01-01T02:00:01+0200 EET 1|Thu Jan  1 02:00:01 1970" (7200 "EET") "Thu Jan  1 02:00:01 1970") ((1 0 2 1 1 1970 4 nil 7200) "1970-01-01T02:00:01+0200 EET 1|Thu Jan  1 02:00:01 1970" (7200 "EET") "Thu Jan  1 02:00:01 1970"))) ("<+05>-5" (((0 0 5 1 1 1970 4 nil 18000) "1970-01-01T05:00:00+0500 +05 0|Thu Jan  1 05:00:00 1970" (18000 "+05") "Thu Jan  1 05:00:00 1970") ((20 13 3 15 11 2023 3 nil 18000) "2023-11-15T03:13:20+0500 +05 1700000000|Wed Nov 15 03:13:20 2023" (18000 "+05") "Wed Nov 15 03:13:20 2023") ((20 13 3 25 4 1938 1 nil 18000) "1938-04-25T03:13:20+0500 +05 -1000000000|Mon Apr 25 03:13:20 1938" (18000 "+05") "Mon Apr 25 03:13:20 1938") ((16 36 5 20 2 36812 1 nil 18000) "+36812-02-20T05:36:16+0500 +05 1099511627776|Mon Feb 20 05:36:16 36812" (18000 "+05") "Mon Feb 20 05:36:16 36812") ((52 33 22 20 7 -1141705158 0 nil 18000) "-1141705158-07-20T22:33:52+0500 +05 -36028797018963968|Sun Jul 20 22:33:52 -1141705158" (18000 "+05") "Sun Jul 20 22:33:52 -1141705158") ((0 0 6 31 3 2024 0 nil 18000) "2024-03-31T06:00:00+0500 +05 1711846800|Sun Mar 31 06:00:00 2024" (18000 "+05") "Sun Mar 31 06:00:00 2024") ((59 59 4 31 3 2024 0 nil 18000) "2024-03-31T04:59:59+0500 +05 1711843199|Sun Mar 31 04:59:59 2024" (18000 "+05") "Sun Mar 31 04:59:59 2024") ((0 0 6 27 10 2024 0 nil 18000) "2024-10-27T06:00:00+0500 +05 1729990800|Sun Oct 27 06:00:00 2024" (18000 "+05") "Sun Oct 27 06:00:00 2024") ((1 0 5 1 1 1970 4 nil 18000) "1970-01-01T05:00:01+0500 +05 1|Thu Jan  1 05:00:01 1970" (18000 "+05") "Thu Jan  1 05:00:01 1970") ((1 0 5 1 1 1970 4 nil 18000) "1970-01-01T05:00:01+0500 +05 1|Thu Jan  1 05:00:01 1970" (18000 "+05") "Thu Jan  1 05:00:01 1970"))) ("garbage zone" (((0 0 0 1 1 1970 4 nil 0) "1970-01-01T00:00:00+0000 garbage 0|Thu Jan  1 00:00:00 1970" (0 "garbage") "Thu Jan  1 00:00:00 1970") ((20 13 22 14 11 2023 2 nil 0) "2023-11-14T22:13:20+0000 garbage 1700000000|Tue Nov 14 22:13:20 2023" (0 "garbage") "Tue Nov 14 22:13:20 2023") ((20 13 22 24 4 1938 0 nil 0) "1938-04-24T22:13:20+0000 garbage -1000000000|Sun Apr 24 22:13:20 1938" (0 "garbage") "Sun Apr 24 22:13:20 1938") ((16 36 0 20 2 36812 1 nil 0) "+36812-02-20T00:36:16+0000 garbage 1099511627776|Mon Feb 20 00:36:16 36812" (0 "garbage") "Mon Feb 20 00:36:16 36812") ((52 33 17 20 7 -1141705158 0 nil 0) "-1141705158-07-20T17:33:52+0000 garbage -36028797018963968|Sun Jul 20 17:33:52 -1141705158" (0 "garbage") "Sun Jul 20 17:33:52 -1141705158") ((0 0 1 31 3 2024 0 nil 0) "2024-03-31T01:00:00+0000 garbage 1711846800|Sun Mar 31 01:00:00 2024" (0 "garbage") "Sun Mar 31 01:00:00 2024") ((59 59 23 30 3 2024 6 nil 0) "2024-03-30T23:59:59+0000 garbage 1711843199|Sat Mar 30 23:59:59 2024" (0 "garbage") "Sat Mar 30 23:59:59 2024") ((0 0 1 27 10 2024 0 nil 0) "2024-10-27T01:00:00+0000 garbage 1729990800|Sun Oct 27 01:00:00 2024" (0 "garbage") "Sun Oct 27 01:00:00 2024") ((1 0 0 1 1 1970 4 nil 0) "1970-01-01T00:00:01+0000 garbage 1|Thu Jan  1 00:00:01 1970" (0 "garbage") "Thu Jan  1 00:00:01 1970") ((1 0 0 1 1 1970 4 nil 0) "1970-01-01T00:00:01+0000 garbage 1|Thu Jan  1 00:00:01 1970" (0 "garbage") "Thu Jan  1 00:00:01 1970"))) ("AAA3BBB,J60/2,J300/3" (((0 0 21 31 12 1969 3 nil -10800) "1969-12-31T21:00:00-0300 AAA 0|Wed Dec 31 21:00:00 1969" (-10800 "AAA") "Wed Dec 31 21:00:00 1969") ((20 13 19 14 11 2023 2 nil -10800) "2023-11-14T19:13:20-0300 AAA 1700000000|Tue Nov 14 19:13:20 2023" (-10800 "AAA") "Tue Nov 14 19:13:20 2023") ((20 13 19 24 4 1938 0 nil -10800) "1938-04-24T19:13:20-0300 AAA -1000000000|Sun Apr 24 19:13:20 1938" (-10800 "AAA") "Sun Apr 24 19:13:20 1938") ((16 36 21 19 2 36812 0 nil -10800) "+36812-02-19T21:36:16-0300 AAA 1099511627776|Sun Feb 19 21:36:16 36812" (-10800 "AAA") "Sun Feb 19 21:36:16 36812") ((52 33 14 20 7 -1141705158 0 nil -10800) "-1141705158-07-20T14:33:52-0300 AAA -36028797018963968|Sun Jul 20 14:33:52 -1141705158" (-10800 "AAA") "Sun Jul 20 14:33:52 -1141705158") ((0 0 23 30 3 2024 6 t -7200) "2024-03-30T23:00:00-0200 BBB 1711846800|Sat Mar 30 23:00:00 2024" (-7200 "BBB") "Sat Mar 30 23:00:00 2024") ((59 59 21 30 3 2024 6 t -7200) "2024-03-30T21:59:59-0200 BBB 1711843199|Sat Mar 30 21:59:59 2024" (-7200 "BBB") "Sat Mar 30 21:59:59 2024") ((0 0 23 26 10 2024 6 t -7200) "2024-10-26T23:00:00-0200 BBB 1729990800|Sat Oct 26 23:00:00 2024" (-7200 "BBB") "Sat Oct 26 23:00:00 2024") ((1 0 21 31 12 1969 3 nil -10800) "1969-12-31T21:00:01-0300 AAA 1|Wed Dec 31 21:00:01 1969" (-10800 "AAA") "Wed Dec 31 21:00:01 1969") ((1 0 21 31 12 1969 3 nil -10800) "1969-12-31T21:00:01-0300 AAA 1|Wed Dec 31 21:00:01 1969" (-10800 "AAA") "Wed Dec 31 21:00:01 1969"))) ("CCC-4DDD,100,200" (((0 0 4 1 1 1970 4 nil 14400) "1970-01-01T04:00:00+0400 CCC 0|Thu Jan  1 04:00:00 1970" (14400 "CCC") "Thu Jan  1 04:00:00 1970") ((20 13 2 15 11 2023 3 nil 14400) "2023-11-15T02:13:20+0400 CCC 1700000000|Wed Nov 15 02:13:20 2023" (14400 "CCC") "Wed Nov 15 02:13:20 2023") ((20 13 2 25 4 1938 1 nil 14400) "1938-04-25T02:13:20+0400 CCC -1000000000|Mon Apr 25 02:13:20 1938" (14400 "CCC") "Mon Apr 25 02:13:20 1938") ((16 36 4 20 2 36812 1 nil 14400) "+36812-02-20T04:36:16+0400 CCC 1099511627776|Mon Feb 20 04:36:16 36812" (14400 "CCC") "Mon Feb 20 04:36:16 36812") ((52 33 21 20 7 -1141705158 0 nil 14400) "-1141705158-07-20T21:33:52+0400 CCC -36028797018963968|Sun Jul 20 21:33:52 -1141705158" (14400 "CCC") "Sun Jul 20 21:33:52 -1141705158") ((0 0 5 31 3 2024 0 nil 14400) "2024-03-31T05:00:00+0400 CCC 1711846800|Sun Mar 31 05:00:00 2024" (14400 "CCC") "Sun Mar 31 05:00:00 2024") ((59 59 3 31 3 2024 0 nil 14400) "2024-03-31T03:59:59+0400 CCC 1711843199|Sun Mar 31 03:59:59 2024" (14400 "CCC") "Sun Mar 31 03:59:59 2024") ((0 0 5 27 10 2024 0 nil 14400) "2024-10-27T05:00:00+0400 CCC 1729990800|Sun Oct 27 05:00:00 2024" (14400 "CCC") "Sun Oct 27 05:00:00 2024") ((1 0 4 1 1 1970 4 nil 14400) "1970-01-01T04:00:01+0400 CCC 1|Thu Jan  1 04:00:01 1970" (14400 "CCC") "Thu Jan  1 04:00:01 1970") ((1 0 4 1 1 1970 4 nil 14400) "1970-01-01T04:00:01+0400 CCC 1|Thu Jan  1 04:00:01 1970" (14400 "CCC") "Thu Jan  1 04:00:01 1970"))) ("+05" (((0 0 0 1 1 1970 4 nil 0) "1970-01-01T00:00:00+0000  0|Thu Jan  1 00:00:00 1970" (0 "+00") "Thu Jan  1 00:00:00 1970") ((20 13 22 14 11 2023 2 nil 0) "2023-11-14T22:13:20+0000  1700000000|Tue Nov 14 22:13:20 2023" (0 "+00") "Tue Nov 14 22:13:20 2023") ((20 13 22 24 4 1938 0 nil 0) "1938-04-24T22:13:20+0000  -1000000000|Sun Apr 24 22:13:20 1938" (0 "+00") "Sun Apr 24 22:13:20 1938") ((16 36 0 20 2 36812 1 nil 0) "+36812-02-20T00:36:16+0000  1099511627776|Mon Feb 20 00:36:16 36812" (0 "+00") "Mon Feb 20 00:36:16 36812") ((52 33 17 20 7 -1141705158 0 nil 0) "-1141705158-07-20T17:33:52+0000  -36028797018963968|Sun Jul 20 17:33:52 -1141705158" (0 "+00") "Sun Jul 20 17:33:52 -1141705158") ((0 0 1 31 3 2024 0 nil 0) "2024-03-31T01:00:00+0000  1711846800|Sun Mar 31 01:00:00 2024" (0 "+00") "Sun Mar 31 01:00:00 2024") ((59 59 23 30 3 2024 6 nil 0) "2024-03-30T23:59:59+0000  1711843199|Sat Mar 30 23:59:59 2024" (0 "+00") "Sat Mar 30 23:59:59 2024") ((0 0 1 27 10 2024 0 nil 0) "2024-10-27T01:00:00+0000  1729990800|Sun Oct 27 01:00:00 2024" (0 "+00") "Sun Oct 27 01:00:00 2024") ((1 0 0 1 1 1970 4 nil 0) "1970-01-01T00:00:01+0000  1|Thu Jan  1 00:00:01 1970" (0 "+00") "Thu Jan  1 00:00:01 1970") ((1 0 0 1 1 1970 4 nil 0) "1970-01-01T00:00:01+0000  1|Thu Jan  1 00:00:01 1970" (0 "+00") "Thu Jan  1 00:00:01 1970"))) ("STD+02DST-02,M11.1.0/0,M1.1.0/0" (((0 0 2 1 1 1970 4 t 7200) "1970-01-01T02:00:00+0200 DST 0|Thu Jan  1 02:00:00 1970" (7200 "DST") "Thu Jan  1 02:00:00 1970") ((20 13 0 15 11 2023 3 t 7200) "2023-11-15T00:13:20+0200 DST 1700000000|Wed Nov 15 00:13:20 2023" (7200 "DST") "Wed Nov 15 00:13:20 2023") ((20 13 0 25 4 1938 1 t 7200) "1938-04-25T00:13:20+0200 DST -1000000000|Mon Apr 25 00:13:20 1938" (7200 "DST") "Mon Apr 25 00:13:20 1938") ((16 36 22 19 2 36812 0 nil -7200) "+36812-02-19T22:36:16-0200 STD 1099511627776|Sun Feb 19 22:36:16 36812" (-7200 "STD") "Sun Feb 19 22:36:16 36812") ((52 33 19 20 7 -1141705158 0 t 7200) "-1141705158-07-20T19:33:52+0200 DST -36028797018963968|Sun Jul 20 19:33:52 -1141705158" (7200 "DST") "Sun Jul 20 19:33:52 -1141705158") ((0 0 23 30 3 2024 6 nil -7200) "2024-03-30T23:00:00-0200 STD 1711846800|Sat Mar 30 23:00:00 2024" (-7200 "STD") "Sat Mar 30 23:00:00 2024") ((59 59 21 30 3 2024 6 nil -7200) "2024-03-30T21:59:59-0200 STD 1711843199|Sat Mar 30 21:59:59 2024" (-7200 "STD") "Sat Mar 30 21:59:59 2024") ((0 0 23 26 10 2024 6 nil -7200) "2024-10-26T23:00:00-0200 STD 1729990800|Sat Oct 26 23:00:00 2024" (-7200 "STD") "Sat Oct 26 23:00:00 2024") ((1 0 2 1 1 1970 4 t 7200) "1970-01-01T02:00:01+0200 DST 1|Thu Jan  1 02:00:01 1970" (7200 "DST") "Thu Jan  1 02:00:01 1970") ((1 0 2 1 1 1970 4 t 7200) "1970-01-01T02:00:01+0200 DST 1|Thu Jan  1 02:00:01 1970" (7200 "DST") "Thu Jan  1 02:00:01 1970"))) ("Thu Thursday Jan January Jan Thu Jan  1 00:00:01 1970 19 01 01/01/70  1 1970-01-01 70 1970 00 12 001  0 12 01 00 500000000 AM am 1 12:00:01 AM 00:00 1 01 00:00:01 4 00 01 4 00 01/01/70 00:00:01 70 1970 +0000 GMT %" "       Thu|THU|THU|THURSDAY|JANUARY|JAN|1| 1|01|1970|1970|+01970| 1970|1970|0000001970|001|1|  1|001" "Thu Jan  1 00:00:01 1970|19|01/01/70|00:00:01|70|1970|01| 1|00|12|01|00|01|4|00|01|4|00|70|January|Jan|AM|+0000|+0000|%Ed|%EH|%OY|19|001" "+00:00|+00:00:00|+00|%::::z|+0000|+0|   +0|+000000000|+0000|+0000|GMT|gmt|       GMT|0000000GMT" "500|500000|500000000000|5|5        |5|5     |500000000|5" "1970-01-01|1970-01-01|1970-01-01|1970-01-01|001970-01-01|00:00:01|Thu Jan  1 00:00:01 1970|000001/01/70|01/01/70|THU JAN  1 00:00:01 1970|AM|am|        AM|AM" "abc%|   %5%|%-%|%_|%Q|  %5Q|%E|%O|%EQ|%:|%:x|%::|x%" "1970-W01-4|70|00 00 001") ("Wed Wednesday Dec December Dec Wed Dec 31 00:00:00 1969 19 31 12/31/69 31 1969-12-31 70 1970 00 12 365  0 12 12 00 000000000 AM am 4 12:00:00 AM 00:00 -86400 00 00:00:00 3 52 01 3 52 12/31/69 00:00:00 69 1969 +0000 GMT %" "       Wed|WED|WED|WEDNESDAY|DECEMBER|DEC|31|31|31|1969|1969|+01969| 1969|1969|0000001969|031|31| 31|031" "Wed Dec 31 00:00:00 1969|19|12/31/69|00:00:00|69|1969|31|31|00|12|12|00|00|3|52|01|3|52|69|December|Dec|AM|+0000|+0000|%Ed|%EH|%OY|19|365" "+00:00|+00:00:00|+00|%::::z|+0000|+0|   +0|+000000000|+0000|+0000|GMT|gmt|       GMT|0000000GMT" "000|000000|000000000000|0|0        |0|0     |000000000|0" "1969-12-31|1969-12-31|1969-12-31|1969-12-31|001969-12-31|00:00:00|Wed Dec 31 00:00:00 1969|000012/31/69|12/31/69|WED DEC 31 00:00:00 1969|AM|am|        AM|AM" "abc%|   %5%|%-%|%_|%Q|  %5Q|%E|%O|%EQ|%:|%:x|%::|x%" "1970-W01-3|70|52 52 365") ("Tue Tuesday Feb February Feb Tue Feb 29 00:00:00 2000 20 29 02/29/00 29 2000-02-29 00 2000 00 12 060  0 12 02 00 000000000 AM am 1 12:00:00 AM 00:00 951782400 00 00:00:00 2 09 09 2 09 02/29/00 00:00:00 00 2000 +0000 GMT %" "       Tue|TUE|TUE|TUESDAY|FEBRUARY|FEB|29|29|29|2000|2000|+02000| 2000|2000|0000002000|029|29| 29|029" "Tue Feb 29 00:00:00 2000|20|02/29/00|00:00:00|00|2000|29|29|00|12|02|00|00|2|09|09|2|09|00|February|Feb|AM|+0000|+0000|%Ed|%EH|%OY|20|060" "+00:00|+00:00:00|+00|%::::z|+0000|+0|   +0|+000000000|+0000|+0000|GMT|gmt|       GMT|0000000GMT" "000|000000|000000000000|0|0        |0|0     |000000000|0" "2000-02-29|2000-02-29|2000-02-29|2000-02-29|002000-02-29|00:00:00|Tue Feb 29 00:00:00 2000|000002/29/00|02/29/00|TUE FEB 29 00:00:00 2000|AM|am|        AM|AM" "abc%|   %5%|%-%|%_|%Q|  %5Q|%E|%O|%EQ|%:|%:x|%::|x%" "2000-W09-2|00|09 09 060") ("Mon Monday Jan January Jan Mon Jan  1 00:00:00 1900 19 01 01/01/00  1 1900-01-01 00 1900 00 12 001  0 12 01 00 000000000 AM am 1 12:00:00 AM 00:00 -2208988800 00 00:00:00 1 00 01 1 01 01/01/00 00:00:00 00 1900 +0000 GMT %" "       Mon|MON|MON|MONDAY|JANUARY|JAN|1| 1|01|1900|1900|+01900| 1900|1900|0000001900|001|1|  1|001" "Mon Jan  1 00:00:00 1900|19|01/01/00|00:00:00|00|1900|01| 1|00|12|01|00|00|1|00|01|1|01|00|January|Jan|AM|+0000|+0000|%Ed|%EH|%OY|19|001" "+00:00|+00:00:00|+00|%::::z|+0000|+0|   +0|+000000000|+0000|+0000|GMT|gmt|       GMT|0000000GMT" "000|000000|000000000000|0|0        |0|0     |000000000|0" "1900-01-01|1900-01-01|1900-01-01|1900-01-01|001900-01-01|00:00:00|Mon Jan  1 00:00:00 1900|000001/01/00|01/01/00|MON JAN  1 00:00:00 1900|AM|am|        AM|AM" "abc%|   %5%|%-%|%_|%Q|  %5Q|%E|%O|%EQ|%:|%:x|%::|x%" "1900-W01-1|00|00 01 001") ("Mon Monday Sep September Sep Mon Sep  3 13:20:00 68 00 03 09/03/68  3 0068-09-03 68 0068 13 01 247 13  1 09 20 000000000 PM pm 3 01:20:00 PM 13:20 -60000000000 00 13:20:00 1 36 36 1 36 09/03/68 13:20:00 68 0068 +0000 GMT %" "       Mon|MON|MON|MONDAY|SEPTEMBER|SEP|3| 3|03|0068|0068|+00068|   68|68|0000000068|003|3|  3|003" "Mon Sep  3 13:20:00 68|0|09/03/68|13:20:00|68|68|03| 3|13|01|09|20|00|1|36|36|1|36|68|September|Sep|PM|+0000|+0000|%Ed|%EH|%OY|0|247" "+00:00|+00:00:00|+00|%::::z|+0000|+0|   +0|+000000000|+0000|+0000|GMT|gmt|       GMT|0000000GMT" "000|000000|000000000000|0|0        |0|0     |000000000|0" "0068-09-03|  68-09-03|68-09-03|68-09-03|000068-09-03|13:20:00|Mon Sep  3 13:20:00 68|000009/03/68|09/03/68|MON SEP  3 13:20:00 68|PM|pm|        PM|PM" "abc%|   %5%|%-%|%_|%Q|  %5Q|%E|%O|%EQ|%:|%:x|%::|x%" "0068-W36-1|68|36 36 247") ("Wed Wednesday Dec December Dec Wed Dec 31 23:59:59 -2147481749 21474855 31 12/31/47 31 +2147485547-12-31 48 2147485548 23 11 365 23 11 12 59 000000000 PM pm 4 11:59:59 PM 23:59 67768036191676799 59 23:59:59 3 52 01 3 52 12/31/47 23:59:59 47 2147485547 +0000 GMT %" "       Wed|WED|WED|WEDNESDAY|DECEMBER|DEC|31|31|31|+2147485547|+2147485547|+2147485547|2147485547|2147485547|2147485547|031|31| 31|031" "Wed Dec 31 23:59:59 -2147481749|-21474818|12/31/47|23:59:59|47|-2147481749|31|31|23|11|12|59|59|3|52|01|3|52|47|December|Dec|PM|+0000|+0000|%Ed|%EH|%OY|-21474818|365" "+00:00|+00:00:00|+00|%::::z|+0000|+0|   +0|+000000000|+0000|+0000|GMT|gmt|       GMT|0000000GMT" "000|000000|000000000000|0|0        |0|0     |000000000|0" "2147485547-12-31|2147485547-12-31|2147485547-12-31|+2147485547-12-31|2147485547-12-31|23:59:59|Wed Dec 31 23:59:59 -2147481749|000012/31/47|12/31/47|WED DEC 31 23:59:59 -2147481749|PM|pm|        PM|PM" "abc%|   %5%|%-%|%_|%Q|  %5Q|%E|%O|%EQ|%:|%:x|%::|x%" "2147485548-W01-3|48|52 52 365") (((14445 17280) (14445 17280) (14445 17280)) ((14445 17281) (14445 17281) (14445 17281)) ((14927 51328) (14927 51328) (14927 51328)) ((14443 61952) (14443 61952) (14443 61952)) ((14362 9907) (14362 9907) (14362 9907)) ((-1430117 19712) (-1430117 19712) (-1430117 19712)) ((26120 55480) (26120 55480) (26120 55480)) ((26397 46008) (26397 46008) (26397 46008)) ((1034058168947 30208) (1034058168947 30208) (1034058168947 30208)) ((ERR (error "Specified time is not representable")) (ERR (error "Specified time is not representable")) (ERR (error "Specified time is not representable"))) ((4263489319272711972716544 . 4503599627370496) (4263489319272711972716544 . 4503599627370496) (4263489319272711972716544 . 4503599627370496)) ((3786739207 . 4) (3786739207 . 4) (3786739207 . 4)) ((ERR (wrong-type-argument fixnump 2000.0)) (ERR (wrong-type-argument fixnump 2000.0)) (ERR (wrong-type-argument fixnump 2000.0)))) (((14445 13680) (14445 13680) (14445 13680)) ((14445 13681) (14445 13681) (14445 13681)) ((14927 47728) (14927 47728) (14927 47728)) ((14443 58352) (14443 58352) (14443 58352)) ((14362 6307) (14362 6307) (14362 6307)) ((-1430117 16112) (-1430117 16112) (-1430117 16112)) ((26120 51880) (26120 51880) (26120 51880)) ((26397 42408) (26397 42408) (26397 42408)) ((1034058168947 26608) (1034058168947 26608) (1034058168947 26608)) ((ERR (error "Specified time is not representable")) (ERR (error "Specified time is not representable")) (ERR (error "Specified time is not representable"))) ((4263473106314053438930944 . 4503599627370496) (4263473106314053438930944 . 4503599627370496) (4263473106314053438930944 . 4503599627370496)) ((3786724807 . 4) (3786724807 . 4) (3786724807 . 4)) ((ERR (wrong-type-argument fixnump 2000.0)) (ERR (wrong-type-argument fixnump 2000.0)) (ERR (wrong-type-argument fixnump 2000.0)))) (((14445 10080) (14445 6480) (14445 10080)) ((14445 10081) (14445 6481) (14445 10081)) ((14927 44128) (14927 40528) (14927 44128)) ((14443 54752) (14443 51152) (14443 54752)) ((14362 2707) (14361 64643) (14361 64643)) ((-1430117 12512) (-1430117 8912) (-1430117 12512)) ((26120 48280) (26120 44680) (26120 48280)) ((26397 38808) (26397 35208) (26397 35208)) ((1034058168947 23008) (1034058168947 19408) (1034058168947 23008)) ((ERR (error "Specified time is not representable")) (ERR (error "Specified time is not representable")) (ERR (error "Specified time is not representable"))) ((4263456893355394905145344 . 4503599627370496) (4263440680396736371359744 . 4503599627370496) (4263456893355394905145344 . 4503599627370496)) ((3786710407 . 4) (3786696007 . 4) (3786710407 . 4)) ((ERR (wrong-type-argument fixnump 2000.0)) (ERR (wrong-type-argument fixnump 2000.0)) (ERR (wrong-type-argument fixnump 2000.0)))) (((14445 28080) (14445 24480) (14445 28080)) ((14445 28081) (14445 24481) (14445 28081)) ((14927 62128) (14927 58528) (14927 62128)) ((14444 7216) (14444 3616) (14444 7216)) ((14362 20707) (14362 17107) (14362 20707)) ((-1430117 30512) (-1430117 26912) (-1430117 30512)) ((26121 744) (26120 62680) (26120 62680)) ((26397 56808) (26397 53208) (26397 56808)) ((1034058168947 41008) (1034058168947 37408) (1034058168947 41008)) ((ERR (error "Specified time is not representable")) (ERR (error "Specified time is not representable")) (ERR (error "Specified time is not representable"))) ((4263537958148687574073344 . 4503599627370496) (4263521745190029040287744 . 4503599627370496) (4263537958148687574073344 . 4503599627370496)) ((3786782407 . 4) (3786768007 . 4) (3786782407 . 4)) ((ERR (wrong-type-argument fixnump 2000.0)) (ERR (wrong-type-argument fixnump 2000.0)) (ERR (wrong-type-argument fixnump 2000.0)))) ((ERR (wrong-type-argument consp nil)) (ERR (wrong-type-argument consp nil)) (ERR (wrong-type-argument consp 5)) (ERR (wrong-number-of-arguments encode-time 5)) (14445 13680) (14445 17280) (ERR (wrong-type-argument fixnump 1180591620717411303424)) (ERR (wrong-type-argument fixnump x)) (ERR (error "Invalid time zone specification" bogus)) (ERR (wrong-type-argument sequencep 5)) (0 0 1 1 1 1970 4 nil 3600) 946684800))"##
+            );
+        });
+    }
+
+    #[test]
+    fn syntax_tables_are_a_per_buffer_slot_reset_with_the_buffer_locals() {
+        // BVAR (b, syntax_table): reset_buffer_local_variables returns it
+        // to the standard table for `kill-all-local-variables' (it is not
+        // a permanent slot) and for `kill-buffer'; clone_per_buffer_values
+        // copies it into a cloned indirect buffer.
+        run_with_large_stack(|| {
+            let emacs_repo = compat::project_root().join("../emacs");
+            let options = BatchRunOptions {
+                load_path: compat::emaxx_upstream_load_path(&emacs_repo)
+                    .expect("upstream load path"),
+                ..Default::default()
+            };
+            let mut interpreter =
+                initialize_batch_interpreter(&options).expect("init batch interpreter");
+            let mut env = crate::lisp::types::Env::new();
+            let mut forms = Reader::new(r##"(let* ((tb (make-syntax-table))
+       (std (standard-syntax-table)))
+  (prin1-to-string
+   (list (with-temp-buffer (set-syntax-table tb) (kill-all-local-variables) (eq (syntax-table) std))
+         (with-temp-buffer (set-syntax-table tb) (kill-all-local-variables t) (eq (syntax-table) std))
+         (with-temp-buffer
+           (set-syntax-table tb)
+           (list (eq (syntax-table) tb)
+                 (with-current-buffer (make-indirect-buffer (current-buffer) "emaxx-ind-1" t)
+                   (prog1 (eq (syntax-table) tb) (kill-buffer)))
+                 (with-current-buffer (make-indirect-buffer (current-buffer) "emaxx-ind-2" nil)
+                   (prog1 (eq (syntax-table) std) (kill-buffer)))
+                 (with-temp-buffer (eq (syntax-table) std))))
+         (let ((b (generate-new-buffer "emaxx-syntax")))
+           (with-current-buffer b (set-syntax-table tb))
+           (kill-buffer b)
+           (list (buffer-live-p b) (with-current-buffer (get-buffer-create "emaxx-syntax-2")
+                                     (prog1 (eq (syntax-table) std) (kill-buffer)))))
+         (with-temp-buffer
+           (set-syntax-table tb)
+           (modify-syntax-entry ?x "w" tb)
+           (insert "axb")
+           (goto-char (point-min))
+           (list (string-match "\\<x" "a x") (re-search-forward "\\wx\\w" nil t) (char-syntax ?x)
+                 (progn (fundamental-mode) (eq (syntax-table) std)))))))"##)
+                .read_all()
+                .expect("read syntax table probe");
+            let probe = forms.pop().expect("probe form");
+            let printed = interpreter
+                .eval(&probe, &mut env)
+                .expect("evaluate syntax table probe");
+            assert_eq!(
+                lisp::primitives::string_like(&printed)
+                    .expect("printed")
+                    .text,
+                r##"(t t (t t t t) (nil t) (2 4 119 t))"##
+            );
+        });
+    }
+
+    #[test]
     fn image_symbols_are_the_obarrays_and_the_initial_frame_is_terminal_frame() {
         // pdumper.c maps the dumped symbols where the image holds them:
         // a preloaded symbol is the obarray's, its cells are traced by the

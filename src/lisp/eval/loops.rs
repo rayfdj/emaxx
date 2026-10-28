@@ -13,6 +13,7 @@ impl Interpreter {
             if cond.is_nil() {
                 break;
             }
+            self.maybe_quit(env)?;
             self.progn_list(&body, env)?;
         }
         Ok(Value::Nil)

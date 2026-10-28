@@ -358,7 +358,13 @@ pub(super) fn search_buffer_non_re(
 
     let slice = snapshot.slice();
     let size = slice.len_bytes();
-    let unibyte_bytes = !multibyte && !snapshot.ascii;
+    // A unibyte text's bytes above 0x7F are stored as two-byte sequences,
+    // none of whose bytes is ASCII.  An ASCII pattern whose characters'
+    // equivalents are all ASCII (boyer_moore's condition here) matches
+    // exactly where it matches the stored bytes, which boyer_moore then
+    // reads in place instead of each chunk converted back to its bytes.
+    let unibyte_bytes =
+        !multibyte && !snapshot.ascii && !(boyer_moore_ok && pat_bytes.iter().all(u8::is_ascii));
     let begv = snapshot.begv;
     let offset = |pos: usize| {
         if unibyte_bytes {

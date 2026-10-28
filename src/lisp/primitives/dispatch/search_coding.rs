@@ -976,6 +976,7 @@ define_dispatch!(
                     outermost,
                 )?;
                 interp.buffer.borrow_mut().narrow_to_region(start, end);
+                interp.invalidate_current_column();
                 Ok(Value::Nil)
             }
 
@@ -989,6 +990,7 @@ define_dispatch!(
                 } else {
                     interp.buffer.borrow_mut().widen();
                 }
+                interp.invalidate_current_column();
                 Ok(Value::Nil)
             }
 

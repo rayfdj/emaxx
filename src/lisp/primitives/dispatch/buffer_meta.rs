@@ -648,8 +648,8 @@ define_dispatch!(
                 // A native always-local slot (buffer-file-name, mode-name,
                 // default-directory, ...) is already local by construction
                 // (a buffer_local_flags index of -1 returns at once).
-                if !interp.is_always_buffer_local_special(&symbol)
-                    && !interp.has_buffer_local_binding(buffer_id, &symbol)
+                if !interp.is_always_buffer_local_symbol(&symbol)
+                    && !interp.has_buffer_local_binding_symbol(buffer_id, &symbol)
                 {
                     if interp.let_shadows_buffer_binding(&symbol) {
                         call_named_function(
@@ -662,8 +662,10 @@ define_dispatch!(
                             env,
                         )?;
                     }
-                    let value = interp.symbol_value_cell(&symbol).unwrap_or(Value::Unbound);
-                    interp.set_buffer_local_value(buffer_id, &symbol, value);
+                    let value = interp
+                        .symbol_value_cell_symbol(&symbol)
+                        .unwrap_or(Value::Unbound);
+                    interp.set_buffer_local_value_symbol(buffer_id, &symbol, value);
                 }
                 Ok(Value::Symbol(symbol))
             }
@@ -1162,17 +1164,22 @@ define_dispatch!(
                 let function = args[0];
                 let charset = args[1].as_symbol()?.to_string();
                 let arg = args.get(2).cloned().unwrap_or(Value::Nil);
-                let from = args
-                    .get(3)
-                    .filter(|from| from.is_truthy())
-                    .map(Value::as_integer)
-                    .transpose()?
-                    .unwrap_or(0);
-                let to = args
-                    .get(4)
-                    .map(Value::as_integer)
-                    .transpose()?
-                    .unwrap_or(charset_max_codepoint(&charset));
+                // Fmap_charset_chars: FROM-CODE and TO-CODE within
+                // CHARSET_MIN_CODE and CHARSET_MAX_CODE, a nil one (as a
+                // native caller passes an omitted one) standing for them.
+                let (min_code, max_code) =
+                    crate::lisp::primitives::coding::charset_code_bounds(interp, &charset)
+                        .map_or((0, charset_max_codepoint(&charset)), |(min, max)| {
+                            (i64::from(min), i64::from(max))
+                        });
+                let from = match args.get(3).filter(|from| !from.is_nil()) {
+                    Some(from) => from.as_integer()?.max(min_code),
+                    None => min_code,
+                };
+                let to = match args.get(4).filter(|to| !to.is_nil()) {
+                    Some(to) => to.as_integer()?.min(max_code),
+                    None => max_code,
+                };
                 let ranges = charset_ranges_for(&charset, from, to, interp)?;
                 for (start, end) in ranges {
                     call_function_value(

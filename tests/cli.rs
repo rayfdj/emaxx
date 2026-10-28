@@ -708,6 +708,55 @@ fn batch_top_level_error_kills_emacs_through_its_hook_and_unlocks_files() {
     assert!(!lock_left, "the modified buffer's lock survived the exit");
 }
 
+/// sysdep.c:init_signals and emacs.c:terminate_due_to_signal: SIGTERM ends
+/// a batch Emacs through `kill-emacs' with the signal's number, from an
+/// interpreted loop as from a wait, `call-process''s among them: the hook
+/// runs, standard output is flushed, and the status is 15.
+#[test]
+fn batch_sigterm_kills_emacs_through_its_hook() {
+    use std::io::BufRead;
+    for body in [
+        "(while t)",
+        "(sleep-for 60)",
+        // call_process's wait for the child, and its read of the output.
+        "(call-process \"sleep\" nil nil nil \"10\")",
+        "(call-process \"sleep\" nil t nil \"10\")",
+    ] {
+        let mut child = Command::new(common::emaxx(false))
+            .args([
+                "-Q",
+                "-batch",
+                "-eval",
+                &format!(
+                    "(progn (add-hook 'kill-emacs-hook (lambda () (message \"hook ran\"))) \
+                     (princ \"out\") (message \"ready\") {body})"
+                ),
+            ])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut stderr = std::io::BufReader::new(child.stderr.take().unwrap());
+        // `princ' to standard output leaves `message' a newline to emit
+        // first (noninteractive_need_newline).
+        let mut line = String::new();
+        stderr.read_line(&mut line).unwrap();
+        stderr.read_line(&mut line).unwrap();
+        assert_eq!(line, "\nready\n", "{body}");
+        let killed = Command::new("kill")
+            .args(["-TERM", &child.id().to_string()])
+            .status()
+            .unwrap();
+        assert!(killed.success());
+        let mut rest = String::new();
+        std::io::Read::read_to_string(&mut stderr, &mut rest).unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert_eq!(output.status.code(), Some(15), "{body}");
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "out", "{body}");
+        assert_eq!(rest, "hook ran\n", "{body}");
+    }
+}
+
 #[test]
 fn batch_accepts_gnu_quick_and_long_load_options() {
     let source = unique_temp_path("emaxx-cli-load").with_extension("el");

@@ -332,6 +332,10 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
     ("last_match_data_buffer_id", "as last_match_data"),
     ("search_registers", "a search's scratch registers"),
     (
+        "last_known_column",
+        "indent.c's last_known_column, last_known_column_point and last_known_column_modified are C statics pdumper.c does not write",
+    ),
+    (
         "bc_frames",
         "bytecode.c: the frames of byte-code activations live on bc_thread_state's stack, the running thread's and never written by pdumper.c; their programs are rooted by bc_stack's footers",
     ),
