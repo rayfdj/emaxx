@@ -1835,6 +1835,33 @@ fn keymap_events_reorder_modifiers_through_each_symbols_own_plist() {
     );
 }
 
+#[test]
+fn equal_compares_strings_by_chars_bytes_and_contents_as_internal_equal() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let value = crate::test_support::eval_lisp(
+        &mut interp,
+        &mut env,
+        r#"(list (equal "abc" (string-to-unibyte "abc"))
+                 (equal "é" (string-to-unibyte "\303\251"))
+                 (equal (propertize "a" 'face 'bold) "a")
+                 (equal-including-properties (propertize "a" 'face 'bold) "a")
+                 (equal-including-properties (propertize "a" 'face 'bold)
+                                             (propertize "a" 'face 'bold))
+                 (equal "" (make-string 0 ?x)) (equal "ab" "abc") (equal 1 1.0)
+                 (equal 'a "a") (assoc "end" '(("begin" . 1) ("end" . 2)))
+                 (member "b" '("a" "b")) (equal (list "x" 1) (list "x" 1))
+                 (equal [1 "a"] (vector 1 "a")))"#,
+    )
+    .expect("string comparisons");
+    // GNU 30.2: SCHARS, SBYTES and the bytes, whatever the multibyte flag;
+    // the text properties only for `equal-including-properties'.
+    assert_eq!(
+        value.to_string(),
+        r#"(t nil t nil t t nil nil nil ("end" . 2) ("b") t t)"#
+    );
+}
+
 // Finding 34 re-hosts: the originals ran on the bare interpreter against
 // native facades and were deleted with them; GNU's own test tree covers
 // none of these, so the coverage lives here on the full dumped image,

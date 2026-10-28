@@ -2395,27 +2395,51 @@ pub(crate) fn invoke_subr(index: usize, arguments: &[NativeWord]) -> NativeWord 
     if let Some(result) = invoke_context_free_kind(kind, arguments) {
         return result;
     }
+    // A subr with no word-level path is called at once, through a body
+    // small enough that its prologue is the call's and no more.
+    if kind == DirectSubr::Other {
+        return with_active(|active| match entered_subr(active, index) {
+            Some(subroutine) => invoke_subr_entry(active, subroutine, arguments),
+            None => 0,
+        });
+    }
+    invoke_word_level_subr(index, kind, arguments)
+}
+
+/// The subr at INDEX in the ABI's table, with the handlers brought to the
+/// ABI thread's state.  A generated handler pop updates that state first;
+/// the Rust-owned handler stack must match it before any C-subr behavior,
+/// including allocation and otherwise non-signaling word operations.
+/// Delaying this can retain dead handler roots across a collection, which
+/// GNU does not do.  None (the error remembered) for an index past the
+/// table or a failed synchronization.
+#[inline(always)]
+fn entered_subr(active: &ActiveCall, index: usize) -> Option<&'static super::abi::NativeSubr> {
+    let Some(subroutine) = super::abi::native_subrs().get(index) else {
+        remember_helper_error(
+            active,
+            super::lisp::native_ice("native subroutine index is outside the runtime ABI"),
+        );
+        return None;
+    };
+    if let Err(error) =
+        unsafe { &mut *active.runtime }.sync_handlers(unsafe { &mut *active.interpreter })
+    {
+        remember_helper_error(active, error);
+        return None;
+    }
+    Some(subroutine)
+}
+
+/// `invoke_subr' for a subr with word-level paths: each tried in turn,
+/// the subr's own entry last.
+#[inline(never)]
+fn invoke_word_level_subr(index: usize, kind: DirectSubr, arguments: &[NativeWord]) -> NativeWord {
     with_active(|active| {
-        let Some(subroutine) = super::abi::native_subrs().get(index) else {
-            remember_helper_error(
-                active,
-                super::lisp::native_ice("native subroutine index is outside the runtime ABI"),
-            );
+        let Some(subroutine) = entered_subr(active, index) else {
             return 0;
         };
-        // A generated handler pop updates the ABI thread state first.  Bring
-        // the Rust-owned handler stack to that exact state before any C-subr
-        // behavior, including allocation and otherwise non-signaling word
-        // operations.  Delaying this can retain dead handler roots across a
-        // collection, which GNU does not do.
-        if let Err(error) =
-            unsafe { &mut *active.runtime }.sync_handlers(unsafe { &mut *active.interpreter })
         {
-            remember_helper_error(active, error);
-            return 0;
-        }
-        // A subr with no word-level path below is called at once.
-        if kind != DirectSubr::Other {
             // GNU native code enters Ffuncall directly. After synchronizing
             // handlers, use the same call path before unrelated primitive checks.
             if kind == DirectSubr::Funcall

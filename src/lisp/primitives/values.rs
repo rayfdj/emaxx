@@ -101,7 +101,8 @@ pub(crate) fn bare_symbol(interp: &Interpreter, value: Value) -> Value {
 /// depth 10, where HT is not consulted yet, EQ objects are equal, and
 /// objects of two XTYPEs or two symbols or fixnums that are not EQ are
 /// not (the switch has no case for them).  A fixnum and a vectorlike go
-/// on, as a bignum Emaxx did not normalize could be one's value.
+/// on, as a bignum Emaxx did not normalize could be one's value.  Two
+/// strings compare here too, but for `equal-including-properties'.
 #[inline(always)]
 fn internal_equal(
     interp: &Interpreter,
@@ -123,6 +124,11 @@ fn internal_equal(
             }
         } else if o1.is_symbol() || o1.is_fixnum() {
             return Ok(false);
+        } else if kind == EqualKind::Plain
+            && let (Kind::StringObject(left), Kind::StringObject(right)) = (o1.kind(), o2.kind())
+        {
+            // The Lisp_String case: SCHARS, SBYTES and the bytes.
+            return Ok(left.borrow().contents_equal(&right.borrow()));
         }
     }
     internal_equal_1(interp, o1, o2, kind, depth, ht)

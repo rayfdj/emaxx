@@ -7784,6 +7784,20 @@ setup_process_coding_systems's check now refuses). A 13-form
   that test's correction); the seven integration targets; clippy
   `-D warnings', rustfmt and `git diff --check'; and each of the four
   commits builds alone.
+- **Round 130: `equal' of two strings, and a subr call from native
+  code, at their own cost.** internal_equal's Lisp_String case compares
+  SCHARS, SBYTES and the bytes; Emaxx reached it through the whole walk
+  and its switch, 190 instructions an `equal' against GNU's 65, and
+  ruby-mode-tests' `assoc' of string keys (SMIE's tokens) makes 714K
+  of them. The string case now runs with round 129's type tests ahead
+  of the walk, but for `equal-including-properties' (93 instructions;
+  ruby-mode-tests 2.209G instructions under the frozen runner, release
+  build, now 2.136G, GNU 1.793G). Native code calls each subr through
+  `invoke_subr', whose word-level paths for some twenty subrs made its
+  prologue every call's: a subr without one (most of them) now takes a
+  path of its own, the others the old body out of line (electric-
+  tests' repeated python-mode test: 2.279M instructions a run, now
+  2.263M).
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
