@@ -8064,6 +8064,35 @@ setup_process_coding_systems's check now refuses). A 13-form
   documented local skips, all 3,284 tests run passing (2 ignored); the
   seven integration targets; clippy `-D warnings', rustfmt and `git diff
   --check'.
+- **Round 139: Ffuncall's plain entries from native code and from
+  Rust.** Native code calls a function that is not a primitive through
+  Ffuncall's relocation entry (erc-tests: 1.36M calls, nearly all of
+  native functions; electric-tests' setup 863,000), and each took
+  Ffuncall's whole sequence: maybe_quit, the depth test, the frame, the
+  Edebug context test, maybe_gc, the cell read, the call, the
+  debug-on-exit test and the frame's pop, about 214 instructions in the
+  release build where GNU's Ffuncall, funcall_general and funcall_subr
+  take about 152. When a call needs nothing on the way in (the depth
+  gate that the byte-code VM's Bcall reads, `plain_bcall_entry', finds
+  no quit, termination or profiler and the depth within its limit;
+  Edebug is not entered, no fatal signal is pending, the debugger is
+  not to stop at the call and no collection is due) and the callee is a
+  native function taking that many arguments, the frame is recorded and
+  the function called at once, the debug-on-exit test kept; every other
+  case takes the full path, now out of line. funcall's, `apply''s and
+  `mapcar''s entries take it too (179 instructions a call). Rust's
+  Ffuncall of a byte-code closure (`mapatoms', 1M calls in erc-tests)
+  has the same plain entry ahead of `funcall_unnamed' (141
+  instructions, now 112 before the VM's own entry). funcall_lambda
+  specbinds the interpreter environment only when it changes; Emaxx
+  pushed a nil frame for each byte-code call from Rust, and now pushes
+  one only over another environment. erc-tests takes 3.43G instructions
+  where it took 3.50G (GNU 2.99G), and electric-tests' setup 3.77G
+  (GNU 3.36G).
+  Local validation: the full gate across its ten groups with the
+  documented local skips, all 3,284 tests run passing (2 ignored); the
+  seven integration targets; clippy `-D warnings', rustfmt and `git diff
+  --check'.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -8986,6 +9015,14 @@ frozen (run 40658631429) matched all 7,928 outcomes on its first
 attempt. Its timings: setup 82.8 s against 66.3 s (1.249), test bodies
 258.7 s against 267.1 s (0.969), in all 1.010. Rounds 111 to 137 were
 merged into main with it (PR 111).
+
+**On `a883005`** (round 138): full Rust gate passed (run 40669421463);
+frozen (run 40669425691) matched all 7,928 outcomes on its first
+attempt. Its timings: setup 83.4 s against 67.4 s (1.237), test bodies
+263.1 s against 268.9 s (0.978), in all 1.019. The setup of the files
+reading `\N{NAME}' moved toward GNU's: print-tests 0.325 s against
+0.210 (0.357 against 0.208 on 06df172), textsec-tests 0.410 against
+0.273 (0.438 against 0.267).
 
 **Findings recorded, not fixed:**
 - **What the checked build costs (round 131).** mule-tests under the

@@ -2448,7 +2448,8 @@ fn invoke_word_level_subr(index: usize, kind: DirectSubr, arguments: &[NativeWor
             // GNU native code enters Ffuncall directly. After synchronizing
             // handlers, use the same call path before unrelated primitive checks.
             if kind == DirectSubr::Funcall
-                && let Some(result) = invoke_native_funcall(active, arguments)
+                && let Some(result) = plain_native_funcall(active, arguments)
+                    .or_else(|| invoke_native_funcall(active, arguments))
             {
                 return result;
             }
@@ -3076,7 +3077,7 @@ pub(super) unsafe extern "C" fn direct_native_funcall(
                 remember_helper_error(active, error);
                 return Some(0);
             }
-            invoke_native_funcall(active, words)
+            plain_native_funcall(active, words).or_else(|| invoke_native_funcall(active, words))
         });
         if let Some(result) = direct {
             return result;
@@ -3483,11 +3484,106 @@ fn funcall_function_cell(
     }
 }
 
+/// `invoke_plain_native_funcall' for the words of a native Ffuncall call,
+/// the function first: the call's word, or the error remembered and 0.
+/// None, with nothing changed, for `invoke_native_funcall'.
+#[inline(always)]
+fn plain_native_funcall(active: &ActiveCall, arguments: &[NativeWord]) -> Option<NativeWord> {
+    let (&function_word, call_arguments) = arguments.split_first()?;
+    // SAFETY: the activation's pointees outlive this call.
+    let result = invoke_plain_native_funcall(
+        unsafe { &mut *active.interpreter },
+        unsafe { &mut *active.runtime },
+        unsafe { &mut *active.environment.get() },
+        // SAFETY: the caller's live word.
+        unsafe { Value::from_word(function_word) },
+        call_arguments,
+    )?;
+    Some(result.unwrap_or_else(|error| {
+        remember_helper_error(active, error);
+        0
+    }))
+}
+
+/// eval.c:Ffuncall of a native function (FUNCTION, or the one in its
+/// function cell) when nothing else happens on the way in: maybe_quit
+/// finds no quit and no fatal signal, the depth stays within
+/// max-lisp-eval-depth, no termination is pending, Edebug is not entered,
+/// calls are not profiled (`plain_bcall_entry'), the debugger is not to
+/// stop at this call and no collection is due.  The frame is recorded and
+/// the function called with ARGUMENTS as the full path below would call
+/// it.  None, with nothing changed, when any of that does not hold or the
+/// function does not take this many arguments.
+#[inline(always)]
+fn invoke_plain_native_funcall(
+    interpreter: &mut Interpreter,
+    runtime: &mut NativeRuntime,
+    environment: &mut Env,
+    function: Value,
+    arguments: &[NativeWord],
+) -> Option<Result<NativeWord, LispError>> {
+    let name = function.symbol_cell();
+    // funcall_general's read of the live cell; a native function is never
+    // a symbol, so an alias or a void cell is not one.
+    let callee = match name {
+        Some(name) => name.cell().function.get(),
+        None => function,
+    };
+    let native = RegisteredNative(callee.native_function_ref()?);
+    if !native.admits(arguments.len())
+        || !interpreter.plain_bcall_entry(name)
+        || interpreter.debug_on_next_call()
+        || crate::lisp::primitives::fatal_signal_pending()
+        || !runtime.heap.collection_cannot_be_due()
+    {
+        return None;
+    }
+    let depth = interpreter.enter_plain_native_funcall(function, arguments);
+    // SAFETY: the register counts admit this many arguments for the native
+    // function's fixed-arity target.
+    let word = unsafe { native.call(arguments) };
+    let result = if interpreter.current_backtrace_debug_on_exit() {
+        native_funcall_exit_debugger(interpreter, runtime, environment, word)
+    } else {
+        Ok(word)
+    };
+    if let Err(error) = &result {
+        interpreter.capture_batch_error_backtrace(error, environment);
+    }
+    interpreter.leave_plain_funcall(depth);
+    Some(result)
+}
+
+/// eval.c:Ffuncall's call_debugger with (exit VALUE) before it drops its
+/// backtrace record, when backtrace-debug marked the frame.  The native
+/// word stays live until the debugger receives the same Lisp object; the
+/// debugger's return value is the call's.
+#[cold]
+#[inline(never)]
+fn native_funcall_exit_debugger(
+    interpreter: &mut Interpreter,
+    runtime: &mut NativeRuntime,
+    environment: &mut Env,
+    word: NativeWord,
+) -> Result<NativeWord, LispError> {
+    let value = runtime
+        .heap
+        .decode(word)
+        .map_err(|error| super::lisp::native_ice(&error))?;
+    let argument = Value::list([Value::symbol("exit"), value]);
+    let value = interpreter.call_debugger(argument, environment)?;
+    runtime
+        .heap
+        .encode(&value)
+        .map_err(|error| super::lisp::native_ice(&error))
+}
+
 /// eval.c:Ffuncall -> funcall_general -> funcall_subr for targets whose
 /// argument vector can remain in GNU's machine-word ABI.  Unsupported
 /// callable classes take the ordinary evaluator path; supported builtins and
 /// non-dynamic native subrs are called directly in the current activation,
 /// with the same optional-argument rules as their C counterparts.
+#[inline(never)]
 fn invoke_native_funcall(active: &ActiveCall, arguments: &[NativeWord]) -> Option<NativeWord> {
     let (&function_word, call_arguments) = arguments.split_first()?;
     let runtime = unsafe { &mut *active.runtime };
@@ -3555,25 +3651,7 @@ fn invoke_native_funcall(active: &ActiveCall, arguments: &[NativeWord]) -> Optio
         };
         let result = match result.map_err(LispError::into_kind) {
             Ok(word) if interpreter.current_backtrace_debug_on_exit() => {
-                // eval.c:Ffuncall calls call_debugger with (exit VALUE) before
-                // dropping its backtrace record when backtrace-debug marked the
-                // frame.  Keep the native word live until the debugger receives
-                // the same Lisp object, then encode the debugger's return value.
-                let value = runtime
-                    .heap
-                    .decode(word)
-                    .map_err(|error| super::lisp::native_ice(&error));
-                value.and_then(|value| {
-                    let argument = Value::list([Value::symbol("exit"), value]);
-                    interpreter
-                        .call_debugger(argument, environment)
-                        .and_then(|value| {
-                            runtime
-                                .heap
-                                .encode(&value)
-                                .map_err(|error| super::lisp::native_ice(&error))
-                        })
-                })
+                native_funcall_exit_debugger(interpreter, runtime, environment, word)
             }
             Ok(word) => Ok(word),
             Err(error @ (LispErrorKind::Throw(_, _) | LispErrorKind::Terminate(_))) => {
@@ -3646,7 +3724,8 @@ fn invoke_native_apply(active: &ActiveCall, arguments: &[NativeWord]) -> Option<
 
     let runtime = unsafe { &mut *active.runtime };
     runtime.push_ephemeral_root_range(funcall_arguments.as_ptr(), funcall_arguments.len());
-    let result = invoke_native_funcall(active, &funcall_arguments);
+    let result = plain_native_funcall(active, &funcall_arguments)
+        .or_else(|| invoke_native_funcall(active, &funcall_arguments));
     unsafe { &mut *active.runtime }.pop_ephemeral_root_range(funcall_arguments.len());
     result
 }
@@ -3693,7 +3772,9 @@ fn invoke_native_mapcar(active: &ActiveCall, arguments: &[NativeWord]) -> Option
                 remember_helper_error(active, error);
                 0
             }
-            Ok(()) => match invoke_native_funcall(active, &words) {
+            Ok(()) => match plain_native_funcall(active, &words)
+                .or_else(|| invoke_native_funcall(active, &words))
+            {
                 Some(result) => result,
                 None => invoke_subr(funcall, &words),
             },

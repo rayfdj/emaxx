@@ -3069,6 +3069,21 @@ impl InterpreterState {
         (depth, lisp_eval_depth)
     }
 
+    /// `enter_plain_funcall' for native code's Ffuncall, whose frame holds
+    /// the caller's argument words (`push_native_backtrace_frame').
+    #[inline(always)]
+    pub(crate) fn enter_plain_native_funcall(&mut self, function: Value, args: &[usize]) -> usize {
+        self.lisp_eval_depth += 1;
+        let depth = self.backtrace_frames.len();
+        Interpreter::write_backtrace_frame(
+            &mut self.backtrace_frames,
+            function,
+            args.as_ptr(),
+            BacktraceFrame::shape(args.len(), true, true),
+        );
+        depth
+    }
+
     /// The frame pop and depth restore of a call's normal return.
     #[inline(always)]
     pub(crate) fn leave_plain_funcall(&mut self, backtrace_depth: usize) {

@@ -1401,6 +1401,11 @@ impl Interpreter {
         args: &[Value],
         env: &mut Env,
     ) -> Result<Value, LispError> {
+        if original_name.is_none()
+            && let Some(result) = self.plain_funcall_closure(func, args, env)
+        {
+            return result;
+        }
         self.begin_funcall(env)?;
         let result = match original_name {
             None => self.funcall_unnamed(func, args, env),
@@ -1410,6 +1415,42 @@ impl Interpreter {
         };
         self.end_funcall();
         result
+    }
+
+    /// Ffuncall of a byte-code closure (FUNC, or the one in its function
+    /// cell) from Rust when nothing else happens on the way in, as Bcall's
+    /// `enter_closure_frame' finds it: `plain_bcall_entry', no fatal signal
+    /// for maybe_quit, no debugger stop at this call and no collection due.
+    /// The frame is recorded and the closure run at once, as
+    /// `funcall_unnamed' would reach it; None, with nothing changed, for
+    /// any other case.
+    #[inline(always)]
+    fn plain_funcall_closure(
+        &mut self,
+        func: Value,
+        args: &[Value],
+        env: &mut Env,
+    ) -> Option<Result<Value, LispError>> {
+        let name = func.symbol_cell();
+        let function = match name {
+            Some(name) => name.cell().function.get(),
+            None => func,
+        };
+        let closure = function
+            .closure_ref()
+            .filter(|closure| closure.is_bytecode())?;
+        if !self.plain_bcall_entry(name)
+            || self.debug_on_next_call()
+            || primitives::fatal_signal_pending()
+            || !crate::lisp::native_comp::collection_cannot_be_due(self)
+        {
+            return None;
+        }
+        let depth = self.enter_plain_funcall(func, args);
+        let result = crate::lisp::bytecode::vm::funcall_closure(self, closure, args, env);
+        let result = self.settle_frame_result(result, env);
+        self.leave_plain_funcall(depth);
+        Some(result)
     }
 
     /// Ffuncall with no call name to record (mapcar, apply, sort and
@@ -1862,11 +1903,17 @@ impl Interpreter {
     ) -> Result<Value, LispError> {
         // Byte code reads variables with Fsymbol_value, never through the
         // interpreter environment (bytecode.c's Bvarref); a nil frame keeps
-        // the caller's lexical bindings out of the VM's reads.
+        // the caller's lexical bindings out of the VM's reads, and is
+        // needed only over another environment, as funcall_lambda
+        // specbinds only a changed one.
         let depth = env.len();
-        env.push(EnvFrame::dynamic());
+        if crate::lisp::types::current_environment(env).is_some() {
+            env.push(EnvFrame::dynamic());
+        }
         let result = crate::lisp::bytecode::vm::execute_closure(self, closure, args, env);
-        env.truncate(depth);
+        if env.len() > depth {
+            env.truncate(depth);
+        }
         result
     }
 

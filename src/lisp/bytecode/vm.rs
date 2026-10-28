@@ -3827,9 +3827,10 @@ pub fn execute_closure(
 }
 
 /// Ffuncall of a byte-code closure from Rust (`mapatoms', `mapcar', a
-/// hook's function): `execute_closure' under the nil environment frame
-/// byte code runs in, with the entered frame set up in this one function
-/// rather than in `run_entered' below it.
+/// hook's function): `execute_closure' under the nil environment byte code
+/// runs in, with the entered frame set up in this one function rather
+/// than in `run_entered' below it.  A frame binds nil only over another
+/// environment, as funcall_lambda specbinds only a changed one.
 #[inline(never)]
 pub(crate) fn funcall_closure(
     interp: &mut Interpreter,
@@ -3838,7 +3839,9 @@ pub(crate) fn funcall_closure(
     env: &mut Env,
 ) -> Result<Value, LispError> {
     let depth = env.len();
-    env.push(crate::lisp::types::EnvFrame::dynamic());
+    if crate::lisp::types::current_environment(env).is_some() {
+        env.push(crate::lisp::types::EnvFrame::dynamic());
+    }
     let result = match super::verify::entry_program(closure) {
         // SAFETY: nothing runs Lisp or collects before the copy.
         Some(program) if unsafe { program.as_ref() }.takes(args.len()) => {
@@ -3848,7 +3851,9 @@ pub(crate) fn funcall_closure(
         _ => closure_program(closure)
             .and_then(|program| run(interp, program, Value::Closure(closure), args, env)),
     };
-    env.truncate(depth);
+    if env.len() > depth {
+        env.truncate(depth);
+    }
     result
 }
 
