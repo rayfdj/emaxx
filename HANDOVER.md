@@ -8242,6 +8242,28 @@ setup_process_coding_systems's check now refuses). A 13-form
   multisession-tests under the frozen runner; `multi-test-sqlite-busy'
   takes 205 to 208 ms here against GNU's 204 to 306 (294 before).
   Local validation: with round 146's, below.
+- **Round 146: a process read's buffer, and RE_TRANSLATE beyond ASCII.**
+  Each poll of a process allocated a zeroed buffer of
+  `read-process-output-max' bytes (64 KB) for each of its channels
+  (stdout, stderr, a pty), where read_process_output reads into a
+  SAFE_ALLOCA nothing clears: tramp-tests' `tramp-test42-utf8' under
+  callgrind made 50,024 reads, 3.3G instructions of memset. A thread now
+  keeps one buffer for its reads (up to 1 MB of it between them). And
+  the matcher's case-folding table kept each character beyond ASCII's
+  translation in a SipHash map, 13.5M lookups in that test at about 150
+  instructions each, where char_table_translate reads the char-table;
+  it reads the char-table now. That map was also what made xml-tests'
+  `xml-print-invalid-cdata' 45 times GNU's in 46cb7bc's frozen run (122
+  ms against 2.7): `xml-invalid-characters-re' compiled under case
+  folding translates every character of its `\U00010000-\U0010FFFF'
+  range (SETUP_MULTIBYTE_RANGE, as GNU does), and each went into the map.
+  Its first compile took 110 ms here, now 6 ms (GNU 2.7). A process
+  polled 2,000 times by `accept-process-output' spent 263M instructions
+  in memset, now 1.4M.
+  Local validation of rounds 145 and 146, on one build: the full gate
+  across its ten groups with the documented local skips, all 3,289 tests
+  run passing (2 ignored); the seven integration targets; clippy `-D
+  warnings', rustfmt and `git diff --check'.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
