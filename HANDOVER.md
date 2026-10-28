@@ -7982,6 +7982,34 @@ setup_process_coding_systems's check now refuses). A 13-form
   again, as in round 135, while a release build ran alongside, and the
   target passed whole when rerun); clippy `-D warnings', rustfmt and
   `git diff --check'.
+- **Round 137: what the comp pipeline's byte code and native code do
+  most.** comp-tests' setup natively compiles two test files, so it runs
+  comp.el's byte code (comp.elc; the redirected cache leaves only the
+  preloaded files native) and the native code it calls: 3.96G
+  instructions under the frozen runner (release build) against GNU's
+  3.18G. bytecode.c's Bmemq is Fmemq, whose lisp.h:EQ takes a symbol
+  with position as its bare symbol, on either side, while
+  `symbols-with-pos-enabled' is set; Emaxx's verified loop sent every
+  Bmemq to the op's full arm while it was set, as the byte compiler sets
+  it, where a name-keyed call of the primitive cost about 300
+  instructions (690,000 calls there). The loop now compares as EQ does
+  under either value of the variable: 184M instructions fewer. Of native
+  code's calls, `type-of' of a record (693,000) went through the subr's
+  generic entry at 233 instructions a call (GNU 41), `aref' of a vector
+  or record (462,000) at 193 (GNU 38), and `aset' at 186 (GNU 50); each
+  has an entry of its own in the native subr table now (57, 50 and 49),
+  a record's type read as Fcl_type_of's PVEC_RECORD case reads it (a
+  helper the general `cl-type-of' shares), any other case taking the
+  subr's own path. `autoload-do-load' returns a FUNDEF that is no
+  autoload form, and an autoload of a function asked for a macro, at
+  once, as Fautoload_do_load's first two tests do; `gethash' and
+  `puthash' make their lookup without the generic entry's dispatch.
+  comp-tests' setup takes 3.56G instructions, and tramp-tests' 2.75G
+  (2.78G after round 136).
+  Local validation: the full gate across its ten groups with the
+  documented local skips, all 3,281 tests run passing (2 ignored); the
+  seven integration targets; clippy `-D warnings', rustfmt and `git diff
+  --check'.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -8888,6 +8916,16 @@ frozen (run 40644257948) matched all 7,928 outcomes on its first
 attempt. Its timings: setup 85.1 s against 68.6 s (1.241), test bodies
 262.1 s against 269.7 s (0.972), in all 1.013 (GNU's total 356.9 s).
 comp-tests took 17.87 s against 14.76 (1.21; 1.23 on `ae649a0`).
+
+**On `4ce2afe`** (round 136): full Rust gate passed (run 40652523567);
+frozen (run 40652526693) matched all 7,928 outcomes on its first
+attempt. Its timings: setup 81.2 s against 64.7 s (1.255), test bodies
+259.0 s against 264.3 s (0.980), in all 1.015. The test bodies with the
+larger excesses are those the checked build inflates most:
+semantic-utest-ia took 4.57 s against 2.63, where the release build
+runs 1.04 times GNU's instructions and the gate profile 1.60 (its
+`assq' walks of long alists, 5.4G instructions in the gate build
+against 1.9G, are mostly the liveness test of each cons; round 131).
 
 **Findings recorded, not fixed:**
 - **What the checked build costs (round 131).** mule-tests under the

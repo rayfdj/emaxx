@@ -2685,6 +2685,9 @@ static NREVERSE_SUBR_INDEX: OnceLock<usize> = OnceLock::new();
 static FUNCALL_SUBR_INDEX: OnceLock<usize> = OnceLock::new();
 static LENGTH_SUBR_INDEX: OnceLock<usize> = OnceLock::new();
 static FBOUNDP_SUBR_INDEX: OnceLock<usize> = OnceLock::new();
+static AREF_SUBR_INDEX: OnceLock<usize> = OnceLock::new();
+static ASET_SUBR_INDEX: OnceLock<usize> = OnceLock::new();
+static AUTOLOAD_DO_LOAD_SUBR_INDEX: OnceLock<usize> = OnceLock::new();
 static SYMBOL_FUNCTION_SUBR_INDEX: OnceLock<usize> = OnceLock::new();
 
 pub(super) extern "C" fn direct_native_null(value: NativeWord) -> NativeWord {
@@ -2814,8 +2817,173 @@ pub(super) extern "C" fn direct_native_eql(left: NativeWord, right: NativeWord) 
 }
 
 pub(super) extern "C" fn direct_native_type_of(value: NativeWord) -> NativeWord {
-    native_scalar_type_word(value)
-        .unwrap_or_else(|| slow_unary_subr(&TYPE_OF_SUBR_INDEX, "type-of", value))
+    if let Some(word) = native_scalar_type_word(value) {
+        return word;
+    }
+    // A record's type, Fcl_type_of's PVEC_RECORD case, read in place.
+    // SAFETY: the caller's argument word is live.
+    if let Kind::LispRecord(record) = unsafe { Value::from_word(value) }.kind() {
+        return crate::lisp::primitives::record_type_of(record).word();
+    }
+    slow_unary_subr(&TYPE_OF_SUBR_INDEX, "type-of", value)
+}
+
+/// data.c:Faref's AREF of a vector or a record at a fixnum index within
+/// it, read in place; any other array or index takes the subr's own path.
+pub(super) extern "C" fn direct_native_aref(array: NativeWord, index: NativeWord) -> NativeWord {
+    if let Some(slot) = decode_fixnum(index).and_then(|index| usize::try_from(index).ok()) {
+        // SAFETY: the caller's argument word is live.
+        let value = match unsafe { Value::from_word(array) }.kind() {
+            Kind::Vector(vector) => vector.get(slot),
+            Kind::LispRecord(record) => record.get(slot),
+            _ => None,
+        };
+        if let Some(value) = value {
+            return value.word();
+        }
+    }
+    invoke_subr(subr_index(&AREF_SUBR_INDEX, "aref"), &[array, index])
+}
+
+/// data.c:Faset's ASET of a vector or a record at a fixnum index within
+/// it, stored in place; any other array or index takes the subr's own
+/// path.
+pub(super) extern "C" fn direct_native_aset(
+    array: NativeWord,
+    index: NativeWord,
+    value: NativeWord,
+) -> NativeWord {
+    if let Some(slot) = decode_fixnum(index).and_then(|index| usize::try_from(index).ok()) {
+        // SAFETY: the caller's argument words are live.
+        let new_value = unsafe { Value::from_word(value) };
+        let stored = match unsafe { Value::from_word(array) }.kind() {
+            Kind::Vector(vector) if slot < vector.len() => {
+                vector.set(slot, new_value);
+                true
+            }
+            Kind::LispRecord(record) => record.set(slot, new_value),
+            _ => false,
+        };
+        if stored {
+            return value;
+        }
+    }
+    invoke_subr(subr_index(&ASET_SUBR_INDEX, "aset"), &[array, index, value])
+}
+
+/// fns.c:Fgethash at the native ABI: the subr's own lookup, with the
+/// handlers synchronized as its generic entry does them, without that
+/// entry's dispatch.
+pub(super) extern "C" fn direct_native_gethash(
+    key: NativeWord,
+    table: NativeWord,
+    default: NativeWord,
+) -> NativeWord {
+    with_active(|active| {
+        let interpreter = unsafe { &mut *active.interpreter };
+        let result = unsafe { &mut *active.runtime }
+            .sync_handlers(interpreter)
+            .and_then(|()| {
+                // SAFETY: the caller's argument words are live.
+                let table =
+                    crate::lisp::primitives::check_hash_table(&unsafe { Value::from_word(table) })?;
+                let (_, slot) = crate::lisp::primitives::hash_table_lookup(
+                    interpreter,
+                    table,
+                    &unsafe { Value::from_word(key) },
+                    unsafe { &mut *active.environment.get() },
+                )?;
+                Ok(slot
+                    .and_then(|slot| table.entry(slot))
+                    .map_or(default, |(_, value)| value.word()))
+            });
+        match result {
+            Ok(word) => word,
+            Err(error) => {
+                remember_helper_error(active, error);
+                0
+            }
+        }
+    })
+}
+
+/// fns.c:Fputhash at the native ABI, as `direct_native_gethash' is.
+pub(super) extern "C" fn direct_native_puthash(
+    key: NativeWord,
+    value: NativeWord,
+    table: NativeWord,
+) -> NativeWord {
+    with_active(|active| {
+        let interpreter = unsafe { &mut *active.interpreter };
+        let result = unsafe { &mut *active.runtime }
+            .sync_handlers(interpreter)
+            .and_then(|()| {
+                // SAFETY: the caller's argument words are live.
+                let table =
+                    crate::lisp::primitives::check_hash_table(&unsafe { Value::from_word(table) })?;
+                crate::lisp::primitives::hash_table_put(
+                    interpreter,
+                    table,
+                    unsafe { Value::from_word(key) },
+                    unsafe { Value::from_word(value) },
+                    unsafe { &mut *active.environment.get() },
+                )
+            });
+        match result {
+            Ok(()) => value,
+            Err(error) => {
+                remember_helper_error(active, error);
+                0
+            }
+        }
+    })
+}
+
+/// eval.c:Fautoload_do_load's first two tests: a FUNDEF that is no cons
+/// whose car is `autoload', and an autoload whose TYPE (Fnth 4) is neither
+/// t nor `macro' when MACRO-ONLY is `macro', are returned as they are.
+/// lisp.h:EQ makes another word of only a symbol with position, which is
+/// vectorlike and takes the subr's own path, as does an improper FUNDEF.
+pub(super) extern "C" fn direct_native_autoload_do_load(
+    fundef: NativeWord,
+    funname: NativeWord,
+    macro_only: NativeWord,
+) -> NativeWord {
+    if !native_consp(fundef) {
+        return fundef;
+    }
+    let head = unsafe { native_car(fundef) };
+    if head & TAG_MASK != TAG_VECTORLIKE
+        && head != cached_symbol!("autoload").with(|symbol| Value::Symbol(*symbol).word())
+    {
+        return fundef;
+    }
+    let macro_word = cached_symbol!("macro").with(|symbol| Value::Symbol(*symbol).word());
+    if head & TAG_MASK != TAG_VECTORLIKE && macro_only == macro_word {
+        let mut tail = fundef;
+        for _ in 0..4 {
+            if !native_consp(tail) {
+                break;
+            }
+            tail = unsafe { native_cdr(tail) };
+        }
+        let kind = if native_consp(tail) {
+            Some(unsafe { native_car(tail) })
+        } else {
+            (tail == 0).then_some(0)
+        };
+        if let Some(kind) = kind
+            && kind & TAG_MASK != TAG_VECTORLIKE
+            && kind != native_boolean(true)
+            && kind != macro_word
+        {
+            return fundef;
+        }
+    }
+    invoke_subr(
+        subr_index(&AUTOLOAD_DO_LOAD_SUBR_INDEX, "autoload-do-load"),
+        &[fundef, funname, macro_only],
+    )
 }
 
 pub(super) extern "C" fn direct_native_symbol_value(symbol: NativeWord) -> NativeWord {
@@ -12808,6 +12976,259 @@ mod tests {
             Value::list([
                 Value::symbol("wrong-type-argument"),
                 Value::symbol("symbolp"),
+                Value::Integer(3),
+            ])
+        );
+    }
+
+    #[test]
+    fn native_aref_aset_type_of_and_autoload_do_load_answer_as_their_subrs() {
+        // What generated code calls for `aref', `aset', `type-of' and
+        // `autoload-do-load': the table's entries.  A vector's or a
+        // record's slot is read and stored in place, a record's type
+        // is its class's name, and FUNDEF that is no autoload form is
+        // returned; the rest take each subr's own entry.
+        fn entry(name: &str) -> *mut c_void {
+            native_subr_address(
+                super::super::abi::native_subrs()
+                    .iter()
+                    .position(|subroutine| subroutine.name == name)
+                    .expect("the subr belongs to the configured GNU ABI"),
+            )
+        }
+        unsafe extern "C" fn probe(
+            vector: NativeWord,
+            record: NativeWord,
+            classed: NativeWord,
+            string: NativeWord,
+        ) -> NativeWord {
+            // SAFETY: each entry's own fixed arity.
+            let aref: extern "C" fn(NativeWord, NativeWord) -> NativeWord =
+                unsafe { std::mem::transmute(entry("aref")) };
+            let aset: extern "C" fn(NativeWord, NativeWord, NativeWord) -> NativeWord =
+                unsafe { std::mem::transmute(entry("aset")) };
+            let type_of: extern "C" fn(NativeWord) -> NativeWord =
+                unsafe { std::mem::transmute(entry("type-of")) };
+            let do_load: extern "C" fn(NativeWord, NativeWord, NativeWord) -> NativeWord =
+                unsafe { std::mem::transmute(entry("autoload-do-load")) };
+            let fixnum = |n: i64| Value::Integer(n).word();
+            let autoload = Value::list([Value::symbol("autoload"), Value::string("no-such-file")]);
+            let results = [
+                aref(vector, fixnum(1)),
+                aset(vector, fixnum(1), fixnum(9)),
+                aref(vector, fixnum(1)),
+                aref(record, fixnum(0)),
+                aset(record, fixnum(2), fixnum(7)),
+                aref(record, fixnum(2)),
+                aref(string, fixnum(1)),
+                type_of(record),
+                type_of(classed),
+                type_of(vector),
+                do_load(fixnum(3), 0, 0),
+                do_load(vector, 0, 0),
+                // An autoload of a function asked for a macro is returned
+                // unloaded by the subr's own entry.
+                do_load(
+                    autoload.word(),
+                    Value::symbol("probe").word(),
+                    Value::symbol("macro").word(),
+                ),
+            ];
+            invoke_subr(
+                super::super::abi::native_subrs()
+                    .iter()
+                    .position(|subroutine| subroutine.name == "list")
+                    .expect("list"),
+                &results,
+            )
+        }
+        unsafe extern "C" fn out_of_range(vector: NativeWord) -> NativeWord {
+            // SAFETY: `aref' takes two fixed arguments.
+            let aref: extern "C" fn(NativeWord, NativeWord) -> NativeWord =
+                unsafe { std::mem::transmute(entry("aref")) };
+            aref(vector, Value::Integer(5).word())
+        }
+
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let mut runtime = NativeRuntime::default();
+        let vector = Value::vector([Value::Integer(1), Value::Integer(2), Value::Integer(3)]);
+        let call = |interpreter: &mut Interpreter, environment: &mut Env, name, args: &[Value]| {
+            crate::lisp::primitives::call(interpreter, name, args, environment).expect(name)
+        };
+        let record = call(
+            &mut interpreter,
+            &mut environment,
+            "record",
+            &[
+                Value::symbol("probe-type"),
+                Value::Integer(1),
+                Value::Integer(2),
+            ],
+        );
+        let class = call(
+            &mut interpreter,
+            &mut environment,
+            "record",
+            &[Value::symbol("probe-class"), Value::symbol("probe-name")],
+        );
+        let classed = call(&mut interpreter, &mut environment, "record", &[class]);
+        let string = Value::string("abc");
+        let returned = runtime
+            .invoke(
+                &mut interpreter,
+                &mut environment,
+                probe as *const c_void,
+                NativeCallingConvention::Fixed,
+                &[vector, record, classed, string],
+            )
+            .expect("native array and type probes");
+        let items = returned.to_vec().expect("a proper list");
+        assert_eq!(
+            items[..7],
+            [
+                Value::Integer(2),
+                Value::Integer(9),
+                Value::Integer(9),
+                Value::symbol("probe-type"),
+                Value::Integer(7),
+                Value::Integer(7),
+                Value::Integer(i64::from(b'b')),
+            ]
+        );
+        assert_eq!(
+            items[7..10],
+            [
+                Value::symbol("probe-type"),
+                Value::symbol("probe-name"),
+                Value::symbol("vector"),
+            ]
+        );
+        assert_eq!(items[10], Value::Integer(3));
+        assert_eq!(items[11], vector);
+        assert_eq!(
+            items[12].to_vec().expect("the autoload form").first(),
+            Some(&Value::symbol("autoload"))
+        );
+
+        let error = runtime
+            .invoke(
+                &mut interpreter,
+                &mut environment,
+                out_of_range as *const c_void,
+                NativeCallingConvention::Fixed,
+                &[vector],
+            )
+            .expect_err("aref past the end signals");
+        assert_eq!(
+            crate::lisp::eval::error_condition_value(&error),
+            Value::list([
+                Value::symbol("args-out-of-range"),
+                vector,
+                Value::Integer(5)
+            ])
+        );
+    }
+
+    #[test]
+    fn native_gethash_and_puthash_use_the_subrs_own_lookup() {
+        fn entry(name: &str) -> *mut c_void {
+            native_subr_address(
+                super::super::abi::native_subrs()
+                    .iter()
+                    .position(|subroutine| subroutine.name == name)
+                    .expect("the subr belongs to the configured GNU ABI"),
+            )
+        }
+        unsafe extern "C" fn probe(table: NativeWord, key: NativeWord) -> NativeWord {
+            // SAFETY: both subrs take three fixed arguments.
+            let gethash: extern "C" fn(NativeWord, NativeWord, NativeWord) -> NativeWord =
+                unsafe { std::mem::transmute(entry("gethash")) };
+            let puthash: extern "C" fn(NativeWord, NativeWord, NativeWord) -> NativeWord =
+                unsafe { std::mem::transmute(entry("puthash")) };
+            let default = Value::symbol("missing").word();
+            let results = [
+                gethash(key, table, default),
+                puthash(key, Value::Integer(5).word(), table),
+                gethash(key, table, default),
+                gethash(key, table, 0),
+            ];
+            invoke_subr(
+                super::super::abi::native_subrs()
+                    .iter()
+                    .position(|subroutine| subroutine.name == "list")
+                    .expect("list"),
+                &results,
+            )
+        }
+        unsafe extern "C" fn not_a_table(value: NativeWord) -> NativeWord {
+            // SAFETY: `gethash' takes three fixed arguments.
+            let gethash: extern "C" fn(NativeWord, NativeWord, NativeWord) -> NativeWord =
+                unsafe { std::mem::transmute(entry("gethash")) };
+            gethash(value, value, 0)
+        }
+
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let mut runtime = NativeRuntime::default();
+        let table = crate::lisp::primitives::call(
+            &mut interpreter,
+            "make-hash-table",
+            &[Value::symbol(":test"), Value::symbol("equal")],
+            &mut environment,
+        )
+        .expect("make-hash-table");
+        // An `equal' key that is not the stored word.
+        let key = Value::string("key");
+        crate::lisp::primitives::call(
+            &mut interpreter,
+            "puthash",
+            &[Value::string("other"), Value::Integer(1), table],
+            &mut environment,
+        )
+        .expect("puthash");
+        let returned = runtime
+            .invoke(
+                &mut interpreter,
+                &mut environment,
+                probe as *const c_void,
+                NativeCallingConvention::Fixed,
+                &[table, key],
+            )
+            .expect("native hash table probes");
+        assert_eq!(
+            returned.to_vec().expect("a proper list"),
+            vec![
+                Value::symbol("missing"),
+                Value::Integer(5),
+                Value::Integer(5),
+                Value::Integer(5),
+            ]
+        );
+        assert_eq!(
+            crate::lisp::primitives::call(
+                &mut interpreter,
+                "gethash",
+                &[Value::string("key"), table],
+                &mut environment,
+            )
+            .expect("gethash"),
+            Value::Integer(5)
+        );
+        let error = runtime
+            .invoke(
+                &mut interpreter,
+                &mut environment,
+                not_a_table as *const c_void,
+                NativeCallingConvention::Fixed,
+                &[Value::Integer(3)],
+            )
+            .expect_err("gethash of a fixnum table signals");
+        assert_eq!(
+            crate::lisp::eval::error_condition_value(&error),
+            Value::list([
+                Value::symbol("wrong-type-argument"),
+                Value::symbol("hash-table-p"),
                 Value::Integer(3),
             ])
         );

@@ -6385,7 +6385,7 @@ pub(crate) static NATIVE_SUBRS: [NativeSubr; 1455] = [
         c"autoload-do-load",
         1,
         NativeMaxArgs::Fixed(3),
-        native_subr_0910 as *const std::ffi::c_void,
+        super::runtime::direct_native_autoload_do_load as *const std::ffi::c_void,
         910,
     ),
     NativeSubr::new(
@@ -8611,14 +8611,14 @@ pub(crate) static NATIVE_SUBRS: [NativeSubr; 1455] = [
         c"puthash",
         3,
         NativeMaxArgs::Fixed(3),
-        native_subr_1228 as *const std::ffi::c_void,
+        super::runtime::direct_native_puthash as *const std::ffi::c_void,
         1228,
     ),
     NativeSubr::new(
         c"gethash",
         2,
         NativeMaxArgs::Fixed(3),
-        native_subr_1229 as *const std::ffi::c_void,
+        super::runtime::direct_native_gethash as *const std::ffi::c_void,
         1229,
     ),
     NativeSubr::new(
@@ -9038,14 +9038,14 @@ pub(crate) static NATIVE_SUBRS: [NativeSubr; 1455] = [
         c"aset",
         3,
         NativeMaxArgs::Fixed(3),
-        native_subr_1289 as *const std::ffi::c_void,
+        super::runtime::direct_native_aset as *const std::ffi::c_void,
         1289,
     ),
     NativeSubr::new(
         c"aref",
         2,
         NativeMaxArgs::Fixed(2),
-        native_subr_1290 as *const std::ffi::c_void,
+        super::runtime::direct_native_aref as *const std::ffi::c_void,
         1290,
     ),
     NativeSubr::new(
@@ -15398,14 +15398,6 @@ extern "C" fn native_subr_0909(
     super::runtime::invoke_subr(909, &[arg_0, arg_1])
 }
 
-extern "C" fn native_subr_0910(
-    arg_0: super::runtime::NativeWord,
-    arg_1: super::runtime::NativeWord,
-    arg_2: super::runtime::NativeWord,
-) -> super::runtime::NativeWord {
-    super::runtime::invoke_subr(910, &[arg_0, arg_1, arg_2])
-}
-
 extern "C" fn native_subr_0911(
     arg_0: super::runtime::NativeWord,
     arg_1: super::runtime::NativeWord,
@@ -17274,22 +17266,6 @@ extern "C" fn native_subr_1227(
     super::runtime::invoke_subr(1227, &[arg_0, arg_1])
 }
 
-extern "C" fn native_subr_1228(
-    arg_0: super::runtime::NativeWord,
-    arg_1: super::runtime::NativeWord,
-    arg_2: super::runtime::NativeWord,
-) -> super::runtime::NativeWord {
-    super::runtime::invoke_subr(1228, &[arg_0, arg_1, arg_2])
-}
-
-extern "C" fn native_subr_1229(
-    arg_0: super::runtime::NativeWord,
-    arg_1: super::runtime::NativeWord,
-    arg_2: super::runtime::NativeWord,
-) -> super::runtime::NativeWord {
-    super::runtime::invoke_subr(1229, &[arg_0, arg_1, arg_2])
-}
-
 extern "C" fn native_subr_1230(arg_0: super::runtime::NativeWord) -> super::runtime::NativeWord {
     super::runtime::invoke_subr(1230, &[arg_0])
 }
@@ -17654,21 +17630,6 @@ extern "C" fn native_subr_1287(
 
 extern "C" fn native_subr_1288(arg_0: super::runtime::NativeWord) -> super::runtime::NativeWord {
     super::runtime::invoke_subr(1288, &[arg_0])
-}
-
-extern "C" fn native_subr_1289(
-    arg_0: super::runtime::NativeWord,
-    arg_1: super::runtime::NativeWord,
-    arg_2: super::runtime::NativeWord,
-) -> super::runtime::NativeWord {
-    super::runtime::invoke_subr(1289, &[arg_0, arg_1, arg_2])
-}
-
-extern "C" fn native_subr_1290(
-    arg_0: super::runtime::NativeWord,
-    arg_1: super::runtime::NativeWord,
-) -> super::runtime::NativeWord {
-    super::runtime::invoke_subr(1290, &[arg_0, arg_1])
 }
 
 extern "C" fn native_subr_1291(arg_0: super::runtime::NativeWord) -> super::runtime::NativeWord {

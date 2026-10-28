@@ -197,6 +197,7 @@ const KEY_NAMES: &[&str] = &[
     "describe-bindings-check-shadowing-in-ranges",
     "autoload",
     "lambda",
+    "macro",
     "menu-item",
     ":filter",
     "meta-prefix-char",

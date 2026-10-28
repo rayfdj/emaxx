@@ -2127,6 +2127,32 @@ fn functionp_is_eval_c_functionp_fset_of_nil_signals_and_nconc_follows_fnconc() 
     );
 }
 
+#[test]
+fn byte_code_memq_compares_by_eq_with_symbols_with_pos_enabled() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let value = crate::test_support::eval_lisp(
+        &mut interp,
+        &mut env,
+        r#"(let* ((memq-fn (byte-compile (lambda (x l) (memq x l))))
+                (p (position-symbol 'foo 7))
+                (l (list 'a p 'b)))
+           (list (funcall memq-fn 'foo l)
+                 (let ((symbols-with-pos-enabled t))
+                   (let ((tail (funcall memq-fn 'foo l)))
+                     (list (length tail) (eq (car tail) p))))
+                 (let ((symbols-with-pos-enabled t)) (funcall memq-fn p (list 'x 'foo)))
+                 (funcall memq-fn p (list 'x 'foo))
+                 (funcall memq-fn 'b l)
+                 (let ((symbols-with-pos-enabled t)) (funcall memq-fn 'c l))))"#,
+    )
+    .expect("Bmemq");
+    // GNU 30.2: bytecode.c's Bmemq is Fmemq, whose lisp.h:EQ takes a
+    // symbol with position as its bare symbol, on either side, only while
+    // `symbols-with-pos-enabled' is set.
+    assert_eq!(value.to_string(), "(nil (2 t) (foo) nil (b) nil)");
+}
+
 // Finding 34 re-hosts: the originals ran on the bare interpreter against
 // native facades and were deleted with them; GNU's own test tree covers
 // none of these, so the coverage lives here on the full dumped image,

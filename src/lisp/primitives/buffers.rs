@@ -1005,6 +1005,20 @@ pub(crate) fn ensure_standard_abbrev_tables(interp: &mut Interpreter) {
     }
 }
 
+/// data.c:Fcl_type_of's PVEC_RECORD case: the type name field of the
+/// class in slot 0 when that is a record of more than one slot, slot 0
+/// itself otherwise.
+#[inline]
+pub(crate) fn record_type_of(record: crate::lisp::types::LispRecordRef) -> Value {
+    let type_tag = record.type_tag();
+    if let Kind::LispRecord(descriptor) = type_tag.kind()
+        && let Some(name) = descriptor.get(1)
+    {
+        return name;
+    }
+    type_tag
+}
+
 pub(crate) fn cl_type_value(interp: &Interpreter, value: &Value) -> Result<Value, LispError> {
     // data.c:Fcl_type_of uses XTYPE/PSEUDOVECTOR_TYPE, not Lisp variable
     // values. Wide Integer values cross the native ABI as bignums; an
@@ -1045,15 +1059,7 @@ pub(crate) fn cl_type_value(interp: &Interpreter, value: &Value) -> Result<Value
         Kind::Terminal(_) => "terminal",
         Kind::SymbolWithPos(_) => "symbol-with-pos",
         Kind::BoolVector(_) => "bool-vector",
-        Kind::LispRecord(record) => {
-            let type_tag = record.type_tag();
-            if let Kind::LispRecord(descriptor) = type_tag.kind()
-                && let Some(name) = descriptor.get(1)
-            {
-                return Ok(name);
-            }
-            return Ok(type_tag);
-        }
+        Kind::LispRecord(record) => return Ok(record_type_of(record)),
         Kind::Record(id) => {
             let Some(record) = interp.find_record(id) else {
                 return Ok(Value::symbol("record"));
