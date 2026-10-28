@@ -7745,6 +7745,45 @@ setup_process_coding_systems's check now refuses). A 13-form
   of an ASCII character taken as itself. icalendar-tests under the
   frozen runner (release build): 5.54G instructions, now 4.81G (GNU
   4.70G); `string-match's search 1.59G, now 0.90G (GNU 0.77G).
+- **Round 129: three things an electric-pair test does per key.** One
+  of electric-tests' python-mode tests run 1,000 times took 2.52M
+  instructions a run, GNU 1.66M; three costs had no counterpart in GNU.
+  keyboard.c's parse_modifiers and apply_modifiers, which every
+  keymap lookup of a symbol event runs, read the symbol's
+  `event-symbol-element-mask', `modifier-cache' and `event-kind' with
+  Fget; Emaxx copied each symbol's name into a new string and looked
+  the properties up by name, interning it each time (91K a run). They
+  now read and write the symbol's own plist with keyed properties, as
+  the uncached parse does, so an uninterned event symbol keeps its
+  parse on itself as in GNU. fns.c:internal_equal returns false at
+  once for objects of two XTYPEs and for two symbols or fixnums that
+  are not EQ; Emaxx went through its whole switch, so `member' of a
+  function in a hook of closures cost 90 instructions an element
+  against GNU's 47 (130K a run, now 62K). The test of the type is
+  inlined ahead of the walk, which a fixnum and a vectorlike still
+  take (a bignum Emaxx did not normalize could hold one's value).
+  `backtrace-frame', which `called-interactively-p' calls once a frame
+  it walks, copied every frame of the stack, arguments and all, to
+  read one; it now walks to the frame as eval.c:get_backtrace_frame
+  does. The walk is GNU's in three more ways: the base matches each
+  frame's function through Findirect_function (an alias's frame for
+  its target), a negative base offset skips nothing, and a special
+  form's frame hands over its unevaluated argument list itself.
+  `backtrace-frame--internal', `backtrace-eval' and `backtrace--locals'
+  signal `wholenump' for a NFRAMES that is not one, where Emaxx
+  signalled `natnump' or `integerp' (or, for `backtrace-eval', took a
+  negative count as 0). The test now takes 2.28M instructions a run;
+  electric-tests' bodies under the frozen runner (release build), 724
+  ms, now about 680 (GNU about 425).
+  An Emaxx test pushed frames for functions it never defined and
+  expected the raw comparison; under Findirect_function each void
+  function is nil, so its three functions are now defined.
+  Local validation of rounds 126 to 129, on one build: the full gate
+  across its ten groups with the documented local skips, all 3,269
+  tests run passing (2 ignored; the primitives group run again after
+  that test's correction); the seven integration targets; clippy
+  `-D warnings', rustfmt and `git diff --check'; and each of the four
+  commits builds alone.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's

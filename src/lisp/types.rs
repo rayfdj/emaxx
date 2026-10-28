@@ -2675,6 +2675,22 @@ impl Value {
         self.0 == 0 || self.0 == Value::T.0 || self.0 & 3 == TAG_INT0
     }
 
+    /// lisp.h's XTYPE, with its two fixnum tags as one.
+    #[inline(always)]
+    pub(crate) fn xtype(self) -> usize {
+        if self.0 & 3 == TAG_INT0 {
+            TAG_INT0
+        } else {
+            self.0 & TAG_MASK
+        }
+    }
+
+    /// FIXNUMP: the tag alone.
+    #[inline(always)]
+    pub(crate) fn is_fixnum(self) -> bool {
+        self.0 & 3 == TAG_INT0
+    }
+
     /// `CONSP': the tag alone.
     #[inline(always)]
     pub fn is_cons(&self) -> bool {

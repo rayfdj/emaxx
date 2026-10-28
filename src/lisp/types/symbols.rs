@@ -307,6 +307,10 @@ const KEY_NAMES: &[&str] = &[
     "obarray",
     "face--new-frame-defaults",
     "edebug-entered",
+    "event-symbol-element-mask",
+    "event-symbol-elements",
+    "modifier-cache",
+    "event-kind",
 ];
 
 struct Symbols {

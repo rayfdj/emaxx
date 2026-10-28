@@ -74,6 +74,18 @@ impl BacktraceFrame {
         };
         tail.to_vec().unwrap_or_else(|_| vec![tail])
     }
+
+    /// backtrace_frame_apply's ARGS: an UNEVALLED frame's argument list
+    /// itself (the form's cdr), else a fresh list of the arguments.
+    pub(super) fn args_list(&self) -> Value {
+        if !self.evald()
+            && self.native_words().is_none()
+            && let Some(form) = self.source_form()
+        {
+            return form.cdr().unwrap_or(Value::Nil);
+        }
+        Value::list(self.args_snapshot())
+    }
 }
 
 impl Interpreter {
@@ -3115,6 +3127,40 @@ impl Interpreter {
                 )
             })
             .collect()
+    }
+
+    /// eval.c:get_backtrace_frame: the frame NFRAMES out from the one
+    /// get_backtrace_starting_at finds for BASE -- the innermost for nil,
+    /// else the innermost whose function, through INDIRECT
+    /// (Findirect_function), is BASE's, then OFFSET more frames out -- as
+    /// backtrace_frame_apply reads it: (EVALD FUNCTION ARGS DEBUG-ON-EXIT).
+    /// None past the outermost frame.  Only that frame's arguments are read.
+    pub(crate) fn backtrace_frame_at(
+        &self,
+        nframes: usize,
+        base: Value,
+        offset: i64,
+        indirect: impl Fn(Value) -> Value,
+    ) -> Option<(bool, Value, Value, bool)> {
+        let mut frames = self.backtrace_frames.iter().rev().peekable();
+        if !base.is_nil() {
+            let base = indirect(base);
+            while frames
+                .next_if(|frame| !indirect(frame.function_snapshot()).eq_value(base))
+                .is_some()
+            {}
+            let mut offset = offset;
+            while offset > 0 && frames.next().is_some() {
+                offset -= 1;
+            }
+        }
+        let frame = frames.nth(nframes)?;
+        Some((
+            frame.evald(),
+            frame.function_snapshot(),
+            frame.args_list(),
+            frame.debug_on_exit(),
+        ))
     }
 
     pub(crate) fn capture_batch_error_backtrace(&mut self, error: &LispError, env: &Env) {

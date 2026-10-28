@@ -262,6 +262,14 @@ fn map_keymap_direct_value(
     })
 }
 
+/// get_backtrace_frame's CHECK_FIXNAT (NFRAMES).
+fn backtrace_nframes(nframes: Value) -> Result<usize, LispError> {
+    match nframes.kind() {
+        Kind::Integer(count) if count >= 0 => Ok(count as usize),
+        _ => Err(LispError::WrongTypeArgument("wholenump".into(), nframes)),
+    }
+}
+
 fn vector_index_description(index: u32) -> Result<String, LispError> {
     key_sequence_binding_text(&Value::vector([Value::Integer(i64::from(index))]))
 }
@@ -1166,38 +1174,17 @@ define_dispatch!(
             "backtrace-frame--internal" => {
                 need_args(name, args, 3)?;
                 let callback = resolve_callable(interp, &args[0], env)?;
-                let mut frame_offset = args[1].as_integer()?;
-                if frame_offset < 0 {
-                    return Err(LispError::SignalValue(Value::list([
-                        Value::Symbol("wrong-type-argument".into()),
-                        Value::Symbol("natnump".into()),
-                        args[1],
-                    ])));
-                }
-                let mut base = args[2];
-                if let Kind::Cons(cell) = base.kind() {
-                    frame_offset += cell.car.get().as_integer()?;
-                    let function = cell.cdr.get();
-                    base = function;
-                }
-                if frame_offset < 0 {
-                    return Ok(Value::Nil);
-                }
-                let frames = interp.backtrace_frames_snapshot();
-                let start = if base.is_nil() {
-                    0
-                } else {
-                    let Some(index) = frames
-                        .iter()
-                        .position(|(_, function, _, _)| function == &base)
-                    else {
-                        return Ok(Value::Nil);
-                    };
-                    index
+                // eval.c:get_backtrace_frame's CHECK_FIXNAT, then its walk
+                // from get_backtrace_starting_at's frame for BASE.
+                let nframes = backtrace_nframes(args[1])?;
+                let (offset, base) = match args[2].kind() {
+                    Kind::Cons(cell) => (cell.car.get().as_integer()?, cell.cdr.get()),
+                    _ => (0, args[2]),
                 };
-                let Some((evald, function, frame_args, debug_on_exit)) =
-                    frames.into_iter().nth(start + frame_offset as usize)
-                else {
+                let frame = interp.backtrace_frame_at(nframes, base, offset, |object| {
+                    crate::lisp::primitives::keymap::indirect_function(interp, object, env)
+                });
+                let Some((evald, function, frame_args, debug_on_exit)) = frame else {
                     return Ok(Value::Nil);
                 };
                 let flags = if debug_on_exit {
@@ -1209,7 +1196,7 @@ define_dispatch!(
                 interp.call_function_value(
                     callback,
                     None,
-                    &[evald, function, Value::list(frame_args), flags],
+                    &[evald, function, frame_args, flags],
                     env,
                 )
             }
@@ -1220,7 +1207,7 @@ define_dispatch!(
             }
             "backtrace-eval" => {
                 need_arg_range(name, args, 2, 3)?;
-                let index = usize::try_from(args[1].as_integer()?).unwrap_or(0);
+                let index = backtrace_nframes(args[1])?;
                 let base = args.get(2).filter(|value| !value.is_nil());
                 // The frame's environment is the alist itself: an
                 // assignment made here is a setcdr on the suspended
@@ -1230,15 +1217,7 @@ define_dispatch!(
             }
             "backtrace--locals" => {
                 need_args(name, args, 2)?;
-                let raw_index = args[0].as_integer()?;
-                if raw_index < 0 {
-                    return Err(LispError::SignalValue(Value::list([
-                        Value::Symbol("wrong-type-argument".into()),
-                        Value::Symbol("natnump".into()),
-                        args[0],
-                    ])));
-                }
-                let index = raw_index as usize;
+                let index = backtrace_nframes(args[0])?;
                 let base = args.get(1).filter(|value| !value.is_nil());
                 let locals = interp
                     .backtrace_frame_locals_snapshot_with_base(index, base)

@@ -97,13 +97,44 @@ pub(crate) fn bare_symbol(interp: &Interpreter, value: Value) -> Value {
     }
 }
 
+/// fns.c:internal_equal's first tests, ahead of the walk below: above
+/// depth 10, where HT is not consulted yet, EQ objects are equal, and
+/// objects of two XTYPEs or two symbols or fixnums that are not EQ are
+/// not (the switch has no case for them).  A fixnum and a vectorlike go
+/// on, as a bignum Emaxx did not normalize could be one's value.
+#[inline(always)]
+fn internal_equal(
+    interp: &Interpreter,
+    o1: Value,
+    o2: Value,
+    kind: EqualKind,
+    depth: usize,
+    ht: &mut Option<EqualSeen>,
+) -> Result<bool, LispError> {
+    if depth <= 10 {
+        let (o1, o2) = (bare_symbol(interp, o1), bare_symbol(interp, o2));
+        if o1.eq_value(o2) {
+            return Ok(true);
+        }
+        let xtype = o1.xtype();
+        if xtype != o2.xtype() {
+            if !(o1.is_fixnum() && o2.is_vectorlike() || o2.is_fixnum() && o1.is_vectorlike()) {
+                return Ok(false);
+            }
+        } else if o1.is_symbol() || o1.is_fixnum() {
+            return Ok(false);
+        }
+    }
+    internal_equal_1(interp, o1, o2, kind, depth, ht)
+}
+
 /// fns.c:internal_equal: O1 and O2 compared DEPTH levels down.  Past
 /// depth 10 HT remembers the pairs compared; past depth 200 the walk
 /// signals instead of recursing further.  A list's cdrs are walked in a
 /// loop that signals `circular-list' with the tail that closes a cycle;
 /// its last cdr, and an overlay's plist, are compared one level down by
 /// going round again (tail_recurse).
-fn internal_equal(
+fn internal_equal_1(
     interp: &Interpreter,
     mut o1: Value,
     mut o2: Value,

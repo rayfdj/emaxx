@@ -18886,6 +18886,24 @@ fn font_lock_mode_declines_to_enable_in_a_batch_session() {
 fn backtrace_frame_internal_honors_depth_relative_to_base() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
+    // get_backtrace_starting_at compares the functions through
+    // Findirect_function, under which every void function is nil: each
+    // frame's function has a definition of its own.
+    for (index, function) in ["outer-frame", "base-frame", "inner-frame"]
+        .iter()
+        .enumerate()
+    {
+        call(
+            &mut interp,
+            "fset",
+            &[
+                Value::Symbol((*function).into()),
+                Value::Integer(index as i64),
+            ],
+            &mut env,
+        )
+        .expect("define the frame's function");
+    }
     let outer_args = [Value::Integer(7)];
     interp.push_backtrace_frame(Value::Symbol("outer-frame".into()), &outer_args);
     interp.push_backtrace_frame(Value::Symbol("base-frame".into()), &[]);

@@ -1769,6 +1769,72 @@ fn case_fold_search_starts_at_ascii_text_folding_to_other_characters() {
     assert_eq!(value.to_string(), "(2 2 2 2 4 3 4 nil nil nil nil)");
 }
 
+#[test]
+fn backtrace_frame_walks_out_from_its_base_as_get_backtrace_frame_does() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let value = crate::test_support::eval_lisp(
+        &mut interp,
+        &mut env,
+        r#"(progn
+             (defun bt-probe-a (n base) (bt-probe-b n base))
+             (defun bt-probe-b (n base)
+               (let ((f (backtrace-frame n base)))
+                 (list (car f) (nth 1 f) (nthcdr 2 f))))
+             (defalias 'bt-probe-alias 'bt-probe-a)
+             (list (bt-probe-a 0 'bt-probe-b) (bt-probe-a 1 'bt-probe-b)
+                   (bt-probe-a 0 '(1 . bt-probe-b)) (bt-probe-a 1 '(-1 . bt-probe-b))
+                   (bt-probe-alias 0 'bt-probe-alias) (bt-probe-alias 0 'bt-probe-a)
+                   (bt-probe-a 0 'no-such-function-here) (bt-probe-a 500 'bt-probe-b)
+                   (let ((x 1)) (if x (bt-probe-a 2 'bt-probe-a)))
+                   (condition-case e (backtrace-frame -1) (error e))
+                   (condition-case e (backtrace--locals -1) (error e))
+                   (condition-case e (backtrace-frame--internal #'list 'a nil)
+                     (error e))))"#,
+    )
+    .expect("backtrace frames");
+    // GNU 30.2: the base matches through Findirect_function (an alias's
+    // frame for its target), a negative base offset skips nothing, a
+    // special form's frame carries its unevaluated arguments, and NFRAMES
+    // must be a whole number.
+    assert_eq!(
+        value.to_string(),
+        "((t bt-probe-b (0 bt-probe-b)) (t bt-probe-a (1 bt-probe-b)) \
+         (t bt-probe-a (0 (1 . bt-probe-b))) (t bt-probe-a (1 (-1 . bt-probe-b))) \
+         (t bt-probe-alias (0 bt-probe-alias)) (t bt-probe-alias (0 bt-probe-a)) \
+         (nil nil nil) (nil nil nil) \
+         (nil let (((x 1)) (if x (bt-probe-a 2 'bt-probe-a)))) \
+         (wrong-type-argument wholenump -1) (wrong-type-argument wholenump -1) \
+         (wrong-type-argument wholenump a))"
+    );
+}
+
+#[test]
+fn keymap_events_reorder_modifiers_through_each_symbols_own_plist() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let value = crate::test_support::eval_lisp(
+        &mut interp,
+        &mut env,
+        r#"(let ((m (make-sparse-keymap)) (u (make-symbol "C-f9")))
+             (define-key m [M-C-f1] 'x)
+             (define-key m (vector u) 'y)
+             (list (lookup-key m [C-M-f1]) (lookup-key m [M-C-f1]) (lookup-key m [C-f9])
+                   (lookup-key m (vector u)) (lookup-key m (vector (make-symbol "M-C-f1")))
+                   (get 'C-M-f1 'event-symbol-element-mask)
+                   (get u 'event-symbol-element-mask)
+                   (event-modifiers u)))"#,
+    )
+    .expect("modified events");
+    // GNU 30.2: parse_modifiers caches on the symbol itself, an
+    // uninterned one included, and apply_modifiers interns the canonical
+    // name, so every spelling finds the one binding.
+    assert_eq!(
+        value.to_string(),
+        "(x x y y x (f1 201326592) (f9 67108864) (control))"
+    );
+}
+
 // Finding 34 re-hosts: the originals ran on the bare interpreter against
 // native facades and were deleted with them; GNU's own test tree covers
 // none of these, so the coverage lives here on the full dumped image,
