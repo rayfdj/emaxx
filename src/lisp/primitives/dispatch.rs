@@ -45,7 +45,7 @@ pub(crate) use display::{
     set_echo_area_message_with_spans,
 };
 pub(crate) use lists::{
-    next_kbd_macro_event, prepare_kbd_macro_minibuffer_entry,
+    event_array, next_kbd_macro_event, prepare_kbd_macro_minibuffer_entry,
     read_minibuffer_text_from_kbd_macro_inner, recursive_edit_exit_value,
 };
 pub(crate) use misc_keymaps::{oclosure_type_of, restore_unicode_menu_case_table};

@@ -21031,6 +21031,30 @@ fn minibuffer_c_g_runs_abort_minibuffers_and_recursive_edit_1_exits() {
 }
 
 #[test]
+fn key_sequences_read_as_make_event_array_and_callint_k_specs() {
+    // keyboard.c:make_event_array: a unibyte string when every event is a
+    // character in 0...127 apart from the meta bit (M-x is "\370"), else
+    // a vector (233 is [233]); callint.c's `k' reads a whole key sequence
+    // with Fread_key_sequence and `K' a vector.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((keys (lambda (events &optional vector)
+                         (let* ((unread-command-events events)
+                                (k (if vector (read-key-sequence-vector "") (read-key-sequence ""))))
+                           (list (type-of k) (and (stringp k) (multibyte-string-p k)) (append k nil))))))
+             (list (funcall keys (list ?\C-x ?\C-f))
+                   (funcall keys (list ?\M-x))
+                   (funcall keys (list 233))
+                   (funcall keys (list ?a) t)
+                   (let ((unread-command-events (list ?\C-x ?\C-f ?A)))
+                     (mapcar (lambda (k) (list (type-of k) (append k nil)))
+                             (call-interactively
+                              (lambda (a b) (interactive "kKey: \nKKey %s: ") (list a b)))))))"#,
+        r#"((string nil (24 6)) (string nil (248)) (vector nil (233)) (vector nil (97)) ((string (24 6)) (vector (65))))"#,
+        "key sequence arrays",
+    );
+}
+
+#[test]
 fn read_minibuf_refuses_a_recursive_read_unless_enabled() {
     // minibuf.c:read_minibuf: with `enable-recursive-minibuffers' nil, a
     // read while a minibuffer is active is a user error from the
@@ -21061,6 +21085,37 @@ fn read_minibuf_refuses_a_recursive_read_unless_enabled() {
                    (funcall outer (list ?a ?w 13))))"#,
         r#"(("a" (inner-error (user-error "Command attempted to use minibuffer while in minibuffer"))) ("a" "b") ((outer-error (error "Command attempted to use minibuffer while in minibuffer")) nil))"#,
         "recursive minibuffer",
+    );
+}
+
+#[test]
+fn read_minibuf_places_point_at_a_cons_initial_inputs_position() {
+    // minibuf.c:read_minibuf: INITIAL (STRING . POSITION) puts point at
+    // one-indexed POSITION, below 1 at the start and past the end an
+    // `end-of-buffer'; completing-read-default turns its zero-indexed
+    // POSITION into that one.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((read (lambda (fn initial)
+                         (condition-case err
+                             (let ((executing-kbd-macro t)
+                                   (unread-command-events (list ?X ?\r)))
+                               (funcall fn initial))
+                           (error err)))))
+             (list (funcall read (lambda (i) (read-from-minibuffer "x: " i)) '("abc" . 2))
+                   (funcall read (lambda (i) (read-from-minibuffer "x: " i)) '("abc" . 0))
+                   (funcall read (lambda (i) (read-from-minibuffer "x: " i)) '("abc" . 4))
+                   (funcall read (lambda (i) (read-from-minibuffer "x: " i)) '("abc"))
+                   (funcall read (lambda (i) (read-string "x: " i)) '("abc" . 1))
+                   (funcall read (lambda (i) (completing-read "x: " '("abXc") nil nil i)) '("abc" . 2))
+                   (funcall read (lambda (i) (completing-read "x: " nil nil nil i)) '("abc" . 0))
+                   (funcall read (lambda (i) (read-from-minibuffer "x: " i)) '("abc" . 5))
+                   (funcall read (lambda (i) (read-from-minibuffer "x: " i)) '("abc" . x))
+                   (funcall read (lambda (i) (read-from-minibuffer "x: " i)) '(abc . 1))
+                   (funcall read (lambda (i) (read-from-minibuffer "x: " i)) '(nil))
+                   (funcall read (lambda (i) (read-from-minibuffer "x: " i)) 5)
+                   (funcall read (lambda (i) (completing-read "x: " nil nil nil i)) '("abc" . x))))"#,
+        r#"("aXbc" "Xabc" "abcX" "abcX" "Xabc" "abXc" "Xabc" (end-of-buffer) (wrong-type-argument fixnump x) (wrong-type-argument stringp abc) (wrong-type-argument stringp nil) (wrong-type-argument stringp 5) (wrong-type-argument number-or-marker-p x))"#,
+        "cons initial input",
     );
 }
 

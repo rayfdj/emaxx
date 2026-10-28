@@ -580,6 +580,9 @@ pub(crate) fn parse_interactive_string(
             Ok(mark)
         };
     let mut values = Vec::new();
+    // The up-event a `k' or `K' sequence ending in a down-event left, for
+    // a later `U'.
+    let mut up_event = Value::Nil;
     // GNU formats each prompt with `format-message' against the
     // arguments read so far (callint.c builds callint_message from the
     // visargs); a later prompt's %s shows the earlier answer.
@@ -714,8 +717,45 @@ pub(crate) fn parse_interactive_string(
                 }
             }
             'k' | 'K' => {
-                let ch = unread_command_event_char(&pop_unread_command_event_value(interp, env)?)?;
-                values.push(Value::String(ch.to_string().into()));
+                // callint.c: Fread_key_sequence, or for K
+                // Fread_key_sequence_vector without downcasing the last
+                // event, the prompt in `minibuffer-prompt' face and
+                // `cursor-in-echo-area' bound to t.
+                let message = formatted_prompt(interp, env, &visible)?;
+                let message = call1(
+                    interp,
+                    env,
+                    "propertize",
+                    &[
+                        message,
+                        Value::symbol("face"),
+                        Value::symbol("minibuffer-prompt"),
+                    ],
+                )?;
+                let cursor = interp.bind_special_variable("cursor-in-echo-area", Value::T, env)?;
+                let events = read_key_sequence_events(interp, message, code == 'K', env);
+                interp.restore_special_binding(cursor, env)?;
+                let events = events?;
+                let keys = crate::lisp::primitives::dispatch::event_array(&events, code == 'K');
+                seen = call1(interp, env, "key-description", &[keys])?;
+                // A sequence ending in a down-event: its up-event follows,
+                // read and kept for `U'.
+                let last = events.last().copied().unwrap_or(Value::Nil);
+                let head = last.car_if_list().unwrap_or(last);
+                if let Kind::Symbol(name) = head.kind()
+                    && interp
+                        .get_symbol_property(&name, "event-symbol-elements")
+                        .and_then(|elements| elements.cdr().ok())
+                        .and_then(|modifiers| modifiers.to_vec().ok())
+                        .is_some_and(|modifiers| {
+                            modifiers
+                                .iter()
+                                .any(|modifier| modifier.symbol_str() == Some("down"))
+                        })
+                {
+                    up_event = call1(interp, env, "read-event", &[])?;
+                }
+                values.push(keys);
             }
             'm' => {
                 let mark = check_mark(interp, env, false)?;
@@ -790,9 +830,16 @@ pub(crate) fn parse_interactive_string(
                 ));
             }
             'U' => {
-                // The up-event recorded by a preceding k/K; the keyboard
-                // frontend records none, exactly like GNU without one.
-                values.push(Value::Nil);
+                // The up-event a preceding k or K read, as a vector, used
+                // once.
+                if up_event.is_nil() {
+                    values.push(Value::Nil);
+                } else {
+                    let keys = Value::vector([up_event]);
+                    up_event = Value::Nil;
+                    seen = call1(interp, env, "key-description", &[keys])?;
+                    values.push(keys);
+                }
             }
             'v' => {
                 let message = formatted_prompt(interp, env, &visible)?;

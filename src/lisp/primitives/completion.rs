@@ -1534,11 +1534,15 @@ fn activate_completing_read_minibuffer(
     if string_like(prompt).is_none() {
         return Err(LispError::TypeError("string".into(), prompt.type_name()));
     }
-    let initial_input = Value::String(
-        completing_read_initial_input(args)
-            .unwrap_or_default()
-            .into(),
-    );
+    // completing-read-default: a cons INITIAL-INPUT's zero-indexed
+    // position becomes read-from-minibuffer's one-indexed one.
+    let initial_input = match args.get(4).copied().unwrap_or(Value::Nil) {
+        initial if initial.is_cons() => Value::cons(
+            initial.car()?,
+            super::call(interp, "1+", &[initial.cdr()?], env)?,
+        ),
+        initial => initial,
+    };
     let require_match = args.get(3).is_some_and(Value::is_truthy);
     let map_name = if require_match {
         "minibuffer-local-must-match-map"
@@ -1572,6 +1576,39 @@ fn activate_completing_read_minibuffer(
     Ok(active)
 }
 
+/// minibuf.c:read_minibuf's INITIAL: a string, or (STRING . POSITION)
+/// with point at one-indexed POSITION in STRING (at its start for any
+/// POSITION below 1).  Returns the string and the `forward-char' from
+/// its end that places point; past the end is `end-of-buffer'.
+pub(crate) fn minibuffer_initial_input(initial: &Value) -> Result<(Value, i64), LispError> {
+    let (string, backup) = match initial.kind() {
+        Kind::Cons(_) => (initial.car()?, initial.cdr()?),
+        _ if initial.is_nil() => return Ok((Value::Nil, 0)),
+        _ => (*initial, Value::Nil),
+    };
+    let Some(text) = string_like(&string) else {
+        return Err(wrong_type_argument("stringp", string));
+    };
+    if backup.is_nil() {
+        return Ok((string, 0));
+    }
+    let Kind::Integer(position) = backup.kind() else {
+        return Err(wrong_type_argument("fixnump", backup));
+    };
+    let length = text.text.chars().count() as i64;
+    let pos = if position < 1 {
+        -length
+    } else {
+        position.saturating_sub(1).saturating_sub(length)
+    };
+    if pos > 0 {
+        return Err(LispError::SignalValue(Value::list([Value::symbol(
+            "end-of-buffer",
+        )])));
+    }
+    Ok((string, pos))
+}
+
 pub(crate) fn activate_minibuffer(
     interp: &mut Interpreter,
     prompt: &Value,
@@ -1582,6 +1619,8 @@ pub(crate) fn activate_minibuffer(
     let prompt_string =
         string_like(prompt).ok_or_else(|| wrong_type_argument("stringp", *prompt))?;
     let prompt_length = prompt_string.text.chars().count();
+    let (initial_input, initial_backup) = minibuffer_initial_input(initial_input)?;
+    let initial_input = &initial_input;
     let initial_string = string_like(initial_input).unwrap_or_else(|| StringLike {
         text: String::new(),
         props: Vec::new(),
@@ -1711,7 +1750,7 @@ pub(crate) fn activate_minibuffer(
     {
         let mut buffer = interp.buffer.borrow_mut();
         let position = buffer.point_max();
-        buffer.goto_char(position);
+        buffer.goto_char(position.saturating_sub(initial_backup.unsigned_abs() as usize));
     }
 
     // Select the minibuffer window for the read, GNU's read_minibuf: the

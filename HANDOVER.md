@@ -8416,6 +8416,42 @@ setup_process_coding_systems's check now refuses). A 13-form
   the documented local skips, all 3,292 tests run passing (2 ignored);
   the seven integration targets; clippy `-D warnings', rustfmt and `git
   diff --check'.
+- **Round 151: callint.c's `k', `K' and `U', make_event_array, and
+  read_minibuf's (STRING . POSITION).** call-interactively reads a `k'
+  argument with `read-key-sequence' and a `K' with
+  `read-key-sequence-vector' (its DONT-DOWNCASE-LAST t), the prompt
+  propertized in `minibuffer-prompt' face and `cursor-in-echo-area'
+  bound to t; the visible argument is the sequence's `key-description'.
+  Emaxx read one event and made a one-character string of it, so C-x
+  C-f gave "\C-x" and left C-f unread, and a function key was an error.
+  A sequence that ends in a down-event reads its up-event too, and a
+  later `U' gets it as a vector, once (nil without one). keyboard.c's
+  make_event_array, behind `read-key-sequence', `this-command-keys' and
+  the `k' argument, makes a unibyte string only when every event is a
+  character whose bits below the meta bit are under 128, the meta bit
+  moving to the byte's 0200; anything else is a vector. Emaxx made a
+  multibyte string of any Unicode characters and a vector of the rest,
+  so M-x read as [134217848] where GNU gives "\370" and e-acute as "é"
+  where GNU gives [233]. read_minibuf also takes INITIAL as (STRING .
+  POSITION), point at one-indexed POSITION in STRING (at its start below
+  1, `end-of-buffer' past its end), checked before the recursive-read
+  guard, and `completing-read-default' turns its zero-indexed POSITION
+  into that. Emaxx took a cons for no initial input, so `read-file-name',
+  which passes the directory and the initial name that way, opened an
+  empty minibuffer: C-x C-v showed no file name, and its C-a C-k
+  signalled `end-of-buffer'. ttydiff's find-alternate-file journeys
+  type C-a C-k and the new name ahead, and matched GNU only while the
+  error left the typed keys in place; round 150's `discard-input' drops
+  them as GNU does, and the four journeys diverged on its build. Batch
+  tests check the key sequences and the initial inputs against GNU 30.2.
+  ttydiff on e958b4a's build (round 150): 229 journeys, all matching GNU but
+  submenu-cycle-options (the X build's `system-font-setting', above), the
+  four find-alternate-file journeys (this round) and three-way-cycle,
+  which ran beside the gate and matched when run again alone.
+  Local validation: the full gate across its ten groups with
+  the documented local skips, all 3,294 tests run passing (2 ignored);
+  the seven integration targets; clippy `-D warnings', rustfmt and `git
+  diff --check'.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -9401,6 +9437,12 @@ frozen (run 40745852161) matched all 7,928 outcomes on its first
 attempt. Its timings: setup 52.4 s against 44.8 s (1.172), test bodies
 202.4 s against 227.5 s (0.890), in all 0.934.
 
+**On `e958b4a`** (round 150): full Rust gate passed (run 40753376682);
+frozen (run 40753381086) matched all 7,928 outcomes on its first
+attempt. Its timings: setup 63.1 s against 52.5 s (1.203), test bodies
+226.0 s against 250.4 s (0.903), in all 0.973. Rounds 138 to 150 were
+merged into main with it (PR 112, `ed7729d`).
+
 **Findings recorded, not fixed:**
 - **What the checked build costs (round 131).** mule-tests under the
   frozen runner takes 34.7G instructions in the gate profile against
@@ -9463,6 +9505,28 @@ attempt. Its timings: setup 52.4 s against 44.8 s (1.172), test bodies
   `ordinary-samples' perf run of the file (run 40471735423) samples at
   199 Hz and so gives the 142 ms setup about 28 samples: too few to
   place it.
+- **electric-tests' bodies at nearly equal instructions, and a
+  profile-guided build (round 150).** In the release build electric-tests'
+  bodies take 1.43 times GNU's time (674 ms against 471, the files'
+  summed `duration_ns'), the largest ratio among the slowest files,
+  where `electric-pair-.*-in-c-mode' takes 5.07G instructions against
+  GNU's 4.39G (1.15) but 49.2M first-level instruction-cache misses
+  against 10.9M (4.5 times). The misses are spread over hundreds of
+  functions (the most, a native-compiled `c-full-pp-to-literal', 0.4
+  percent), the source files they fall in led by types.rs (3.0M), the
+  native runtime (2.7M) and syntax_scan.rs (1.9M): the 13.4 MB text's
+  layout again, as in the setup finding above. A profile-guided build
+  (an instrumented release build trained on 27 of GNU's test files
+  under ERT, electric-tests among them; `tools/pgo-build.sh' does the
+  same with its own training set) takes the same selection to 4.23G
+  instructions and 31.7M misses, and the `electric-pair-' tests to
+  0.579 to 0.687 s against the plain build's 0.675 to 0.756 and GNU's
+  0.434 to 0.486 (five runs each). Files outside its training set move
+  by 3 to 8 percent (bodies in ms, profile-guided, plain, GNU):
+  semantic-utest-ia 2,097, 2,182, 2,132; em-pred-tests 1,214, 1,319,
+  1,186; bytecomp-tests 768, 797, 733; ruby-mode-tests 190, 196, 183.
+  The frozen run's gate profile is a plain build; whether timed builds
+  are profile-guided is the project's call.
 - **A unibyte file name's raw bytes (round 110).** A Lisp file name
   reaches the host through its text, in which a raw byte 128-255 is a
   private-use character, so `(write-region "" nil "/tmp/a\\357")'
