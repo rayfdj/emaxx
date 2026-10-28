@@ -1457,7 +1457,8 @@ define_dispatch!(
                     .collect::<Result<Vec<_>, _>>()?;
                 interp.validate_inotify_aspects(&flags)?;
                 let path = string_text(&args[0])?;
-                interp.register_inotify_file_notify_watch(path, flags, args[2])
+                let encoded = encode_file_name(interp, env, &path)?;
+                interp.register_inotify_file_notify_watch(path, encoded, flags, args[2])
             }
             #[cfg(target_os = "linux")]
             "inotify-rm-watch" => {

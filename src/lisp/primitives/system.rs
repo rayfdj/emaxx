@@ -368,6 +368,18 @@ pub(crate) fn default_directory() -> String {
     path_to_directory_string(&cwd)
 }
 
+/// buffer.c:init_buffer's directory: the working directory's bytes and a
+/// slash, kept unibyte until startup knows how to decode them.
+pub(crate) fn default_directory_bytes() -> Vec<u8> {
+    use std::os::unix::ffi::OsStringExt;
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let mut bytes = normalize_path(&cwd).into_os_string().into_vec();
+    if bytes.last() != Some(&b'/') {
+        bytes.push(b'/');
+    }
+    bytes
+}
+
 /// Return GNU Emacs's `system-type' spelling for a Rust target OS.
 ///
 /// GNU derives this value in configure.ac rather than exposing the platform's

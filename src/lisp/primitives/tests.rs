@@ -15630,6 +15630,38 @@ fn inotify_error_data_follows_report_file_notify_error() {
 
 #[cfg(target_os = "linux")]
 #[test]
+fn inotify_watches_encode_their_file_name_and_decode_event_names() {
+    // inotify.c: Finotify_add_watch hands inotify_add_watch the
+    // ENCODE_FILE'd name (a NUL is `filenamep'), and inotifyevent_to_event
+    // DECODE_FILEs an event's name: a raw byte comes back as one.
+    assert_linux_inotify_contract(
+        r#"(let* ((d (make-temp-file "emaxx-notify-" t))
+               (create-lockfiles nil)
+               (events nil)
+               (desc (inotify-add-watch d '(create) (lambda (e) (push e events)))))
+          (unwind-protect
+              (progn
+                (write-region "" nil (concat d "/n\351"))
+                (write-region "" nil (concat d "/mé"))
+                (let ((n 0))
+                  (while (and (< (length events) 2) (< n 50))
+                    (read-event nil nil 0.1)
+                    (setq n (1+ n))))
+                (list (mapcar (lambda (e)
+                                (let ((name (nth 2 e)))
+                                  (list (multibyte-string-p name) (string-to-list name))))
+                              (reverse events))
+                      (condition-case err (inotify-add-watch "/tmp/a\0b" '(create) #'ignore)
+                        (error (list (car err) (cadr err))))))
+            (inotify-rm-watch desc)
+            (delete-directory d t)))"#,
+        r#"(((t (110 4194281)) (t (109 233))) (wrong-type-argument filenamep))"#,
+        "inotify file names",
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
 fn inotify_events_reach_lisp_only_through_keyboard_reads() {
     // process.c registers the inotify descriptor with
     // add_keyboard_wait_descriptor, so a READ_KBD 0 wait such as

@@ -8496,6 +8496,34 @@ setup_process_coding_systems's check now refuses). A 13-form
   the documented local skips, all 3,295 tests run passing (2 ignored);
   the seven integration targets; clippy `-D warnings', rustfmt and `git
   diff --check'.
+- **Round 153: a raw-byte environment and working directory, and
+  inotify's names.** Emaxx read the startup environment with
+  `std::env::vars', which panics on a name or value that is not valid
+  UTF-8: started in a directory with a raw byte in its name, the
+  inherited PWD aborted it before the first form ("batch runtime
+  panicked"). `initial_process_environment' keeps the host's entries,
+  and `initial_environment_list' makes `process-environment' and
+  `initial-environment' as callproc.c's set_initial_environment does,
+  each NAME=VALUE through build_string (make_string: multibyte for valid
+  multibyte text, unibyte for anything else); the compat harness's
+  EMAXX_ strip reads `vars_os' too. buffer.c's init_buffer keeps the
+  working directory's bytes as a unibyte `default-directory' for
+  startup.el's decode (`default_directory_bytes'), where Emaxx took them
+  through `display()'. `inotify-add-watch' passes the ENCODE_FILE'd name
+  (a NUL is `filenamep' now, as Finotify_add_watch's ENCODE_FILE makes
+  it) and each event's name is DECODE_FILE'd (inotify.c
+  inotifyevent_to_event), where Emaxx read it with
+  `String::from_utf8_lossy'. A CLI test starts both editors in a
+  raw-byte directory with a raw-byte variable and compares
+  `process-environment', `getenv' and `default-directory'; a batch test
+  compares inotify's event names and the NUL refusal with GNU 30.2.
+  `~' already matched GNU with a raw-byte HOME. The macOS kqueue
+  emulation's paths and names still go through text (its code is not
+  built here).
+  Local validation: the full gate across its ten groups with
+  the documented local skips, all 3,296 tests run passing (2 ignored);
+  the seven integration targets; clippy `-D warnings', rustfmt and `git
+  diff --check'.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
