@@ -4322,6 +4322,70 @@ fn sqlite_values_are_a_list_or_a_vector() {
 }
 
 #[test]
+fn sqlite_primitives_follow_sqlite_c_on_the_c_api() {
+    // sqlite.c on SQLite's C API: a FILE expanded against
+    // `default-directory' and nil for one that cannot be opened; no busy
+    // handler, so a locked database is `sqlite-locked-error' at once (the
+    // five-second timeout of rusqlite's connections waited); only the first
+    // statement executed, and sqlite3_changes for one that returns no row;
+    // bind_values' own messages and bignum_to_intmax's 0; a BLOB unibyte; a
+    // TEXT column decoded as utf-8 (raw bytes kept, eol detected); a set
+    // stepped lazily, `sqlite-more-p' t until a step finds no row; every
+    // object error `sqlite-error'; and print.c's #<sqlite db=...>.
+    let program = r##"
+        (let* ((dir (make-temp-file "emaxx-sqlite-" t))
+               (default-directory (file-name-as-directory dir)))
+          (unwind-protect
+              (let* ((db (sqlite-open "t.db"))
+                     (db2 (sqlite-open "t.db"))
+                     (err (lambda (thunk) (condition-case e (funcall thunk) (error e)))))
+                (prog1
+                    (list
+                     (file-exists-p (expand-file-name "t.db" dir))
+                     (sqlite-open "/nonexistent-emaxx-dir/a.db")
+                     (sqlite-execute db "create table t (x)")
+                     (sqlite-execute db "insert into t values (1)")
+                     (sqlite-execute db "select * from t where 0")
+                     (sqlite-execute db "insert into t values (5); insert into t values (6)")
+                     (funcall err (lambda ()
+                                    (sqlite-execute db "create table u (x unique)")
+                                    (sqlite-execute db "insert into u values (1)")
+                                    (sqlite-execute db "insert into u values (1)")))
+                     (funcall err (lambda () (sqlite-execute db "insert into t values (?)" (list 'foo))))
+                     (funcall err (lambda ()
+                                    (sqlite-execute db "insert into t values (?)"
+                                                    (list (propertize "é" 'coding-system 'binary)))))
+                     (sqlite-select db "select ?, ?, ?, ?" (list (expt 2 70) t 'false nil))
+                     (let ((v (caar (sqlite-select db "select x'C3A9'")))) (list (append v nil) (multibyte-string-p v)))
+                     (append (caar (sqlite-select db "select cast(x'FF41' as text)")) nil)
+                     (append (caar (sqlite-select db "select 'a'||char(13)||char(10)||'b'")) nil)
+                     (let ((set (sqlite-select db "select x from t order by x" nil 'set)) r)
+                       (while (sqlite-more-p set) (push (sqlite-next set) r))
+                       (list (nreverse r)
+                             (funcall err (lambda () (sqlite-close set)))
+                             (sqlite-finalize set)
+                             (funcall err (lambda () (sqlite-next set)))))
+                     (progn
+                       (sqlite-transaction db)
+                       (sqlite-execute db "insert into t values (9)")
+                       (prog1 (funcall err (lambda () (sqlite-execute db2 "insert into t values (10)")))
+                         (sqlite-commit db)))
+                     (funcall err (lambda () (sqlite-execute db "")))
+                     (funcall err (lambda () (sqlite-execute 1 "select 1")))
+                     (progn
+                       (sqlite-close db)
+                       (list (funcall err (lambda () (sqlite-execute db "select 1")))
+                             (string-match-p "\\`#<sqlite db=(nil) name=/" (prin1-to-string db)))))
+                  (sqlite-close db2)))
+            (delete-directory dir t)))"##;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        r#"(t nil 0 1 1 1 (sqlite-error "UNIQUE constraint failed: u.x") (sqlite-error "invalid argument") (sqlite-error "BLOB values must be unibyte") ((0 1 0 nil)) ((195 169) nil) (4194303 65) (97 10 98) (((1) (5) nil) (sqlite-error "Invalid database object") t (sqlite-error "Statement closed")) (sqlite-locked-error "database is locked") (sqlite-error "not an error") (wrong-type-argument sqlitep 1) ((sqlite-error "Database closed") 0))"#,
+        "sqlite.c",
+    );
+}
+
+#[test]
 fn next_read_file_uses_dialog_p_follows_the_oracle_toolkit() {
     // fileio.c requires window_system_available(SELECTED_FRAME()). GNU's
     // initial batch frame is a terminal even in its graphical builds.

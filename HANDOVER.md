@@ -8206,6 +8206,42 @@ setup_process_coding_systems's check now refuses). A 13-form
   documented local skips, all 3,288 tests run passing (2 ignored); the
   seven integration targets; and clippy `-D warnings', rustfmt and `git
   diff --check'.
+- **Round 145: sqlite.c on SQLite's C API.** Emaxx's SQLite primitives
+  went through rusqlite's connection layer, whose `Connection::open'
+  gives each connection a five-second busy timeout: where GNU's
+  `sqlite-open' sets no busy handler, so that a locked database is
+  `sqlite-locked-error' at once, Emaxx waited up to five seconds for the
+  lock (46cb7bc's frozen run timed multisession-tests'
+  `multi-test-sqlite-busy' at 922 ms against GNU's 204, its reads
+  waiting on the child's writes). The layer also diverged from sqlite.c
+  at most edges: `sqlite-open' did not expand FILE against
+  `default-directory' and signalled where GNU returns nil; every object
+  error ("Database closed", "Statement closed", "Invalid set object",
+  "Invalid database object") and bind_values' "invalid argument" and
+  "BLOB values must be unibyte" signalled plain `error'; a step's
+  failure carried sqlite_prepare_errdata's four-element list where
+  GNU's carries sqlite3_errmsg; `sqlite-execute' refused a second
+  statement where GNU runs the first, and returned nil for a statement
+  that gives no row where GNU returns sqlite3_changes; a bignum beyond
+  64 bits signalled where bignum_to_intmax binds 0; a TEXT column was
+  decoded lossily (U+FFFD for an invalid byte, no end-of-line
+  detection) where code_convert_string_norecord keeps raw bytes and
+  converts CR and CRLF; a BLOB came back multibyte; a set held every row
+  from the start, so `sqlite-more-p' went nil before the last
+  `sqlite-next' instead of after it; an empty statement signalled
+  SQLITE_MISUSE's data where GNU signals "not an error"; and the objects
+  printed as `#s(sqlite)' where print.c prints `#<sqlite db=... name=...>'.
+  The primitives are now sqlite.c's on the C API: sqlite3_open_v2 with
+  GNU's flags and in-memory names, prepare, bind_values' conversions,
+  step and sqlite3_exec as GNU calls them, a set stepping its statement
+  and the collector finalizing and closing as sqlite_free does
+  (`decode_coding_text' gained the NORECORD form it needed). A probe of
+  75 cases (opening, binding each type, errors of every kind, two
+  connections locking each other, sets, pragmas, transactions, closed
+  objects, printing) gives GNU 30.2's output, as do sqlite-tests and
+  multisession-tests under the frozen runner; `multi-test-sqlite-busy'
+  takes 205 to 208 ms here against GNU's 204 to 306 (294 before).
+  Local validation: with round 146's, below.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -9167,6 +9203,11 @@ attempt. Its timings, on a runner faster for both (GNU's setup 52.6 s):
 setup 61.1 s against 52.6 s (1.162), test bodies 218.6 s against 230.5 s
 (0.949), in all 0.996. multisession-tests' bodies took 1.18 s against
 0.56 (`multi-test-sqlite-busy' 922 ms against 204).
+
+**On `e98ff8a`** (round 144): full Rust gate passed (run 40706967922);
+frozen (run 40706974076) matched all 7,928 outcomes on its first
+attempt. Its timings: setup 59.7 s against 50.7 s (1.177), test bodies
+218.3 s against 233.9 s (0.933), in all 0.991.
 
 **Findings recorded, not fixed:**
 - **What the checked build costs (round 131).** mule-tests under the
