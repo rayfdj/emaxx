@@ -2318,10 +2318,7 @@ impl InterpreterState {
     /// as maybe; the full Call arm reads it as find_symbol_value does.
     #[inline(always)]
     fn edebug_may_be_entered(&self) -> bool {
-        self.globals.edebug_is_special()
-            && cached_symbol!("edebug-entered")
-                .with(|symbol| symbol.cell().unlocalized_value())
-                .is_none_or(|value| !value.is_nil())
+        self.globals.edebug_may_be_entered()
     }
 
     /// `call_depth_gate' after a store of the quit flag, a pending

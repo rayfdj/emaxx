@@ -8114,6 +8114,19 @@ setup_process_coding_systems's check now refuses). A 13-form
   documented local skips, all 3,285 tests run passing (2 ignored); the
   seven integration targets; clippy `-D warnings', rustfmt and `git diff
   --check'.
+- **Round 141: Edebug's entry test through the held symbol.** Every
+  plain entry (`plain_bcall_entry') asks whether Edebug may have to
+  record the frame's lexical context: whether `edebug-entered' is
+  special and its cell holds something other than nil. The cell was
+  read by its cached-symbol key, a thread-local table's lookup on each
+  call, 82M instructions of edebug-tests' bodies in the release build;
+  the globals hold that symbol already, and the test now reads its cell
+  through it. edebug-tests takes 5.08G instructions where it took 5.17G
+  (GNU 4.11G).
+  Local validation: the full gate across its ten groups with the
+  documented local skips, all 3,285 tests run passing (2 ignored); the
+  seven integration targets; clippy `-D warnings', rustfmt and `git diff
+  --check'.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -9050,6 +9063,13 @@ frozen (run 40676265825) matched all 7,928 outcomes on its first
 attempt. Its timings, on a runner faster for both (GNU's setup 46.0 s
 where it had taken 66 to 67): setup 53.0 s against 46.0 s (1.151), test
 bodies 206.2 s against 220.9 s (0.933), in all 0.971.
+
+**On `cdde60b`** (round 140): full Rust gate passed (run 40682218697);
+frozen (run 40682221633) matched all 7,928 outcomes on its first
+attempt. Its timings, on a runner slower for both (GNU's setup 69.1 s):
+setup 84.1 s against 69.1 s (1.217), test bodies 265.5 s against 271.2 s
+(0.979), in all 1.019. keymap-tests' bodies took 1.42 times GNU's (1.49
+on a1b658f).
 
 **Findings recorded, not fixed:**
 - **What the checked build costs (round 131).** mule-tests under the
