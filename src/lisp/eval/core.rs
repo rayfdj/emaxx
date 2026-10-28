@@ -1673,18 +1673,18 @@ impl Interpreter {
     }
 
     /// funcall_lambda's exec_byte_code branch for a byte-code closure
-    /// found by `call_subr_directly', out of line: `mapatoms', `mapcar'
-    /// and every other call from Rust reach the VM here, where they went
-    /// on through `call_function_body' and `call_function_value_inner',
-    /// whose tests this one had already made.
-    #[inline(never)]
+    /// found by `call_subr_directly': `mapatoms', `mapcar' and every
+    /// other call from Rust reach the VM here, where they went on through
+    /// `call_function_body' and `call_function_value_inner', whose tests
+    /// this one had already made.
+    #[inline(always)]
     fn funcall_bytecode_closure(
         &mut self,
         closure: crate::lisp::types::ClosureRef,
         args: &[Value],
         env: &mut Env,
     ) -> Result<Value, LispError> {
-        self.execute_bytecode_funcall_body(closure, args, env)
+        crate::lisp::bytecode::vm::funcall_closure(self, closure, args, env)
     }
 
     /// eval.c:funcall_subr: a subr (not a special form) found in the live

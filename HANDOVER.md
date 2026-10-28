@@ -7908,6 +7908,38 @@ setup_process_coding_systems's check now refuses). A 13-form
   documented local skips, all 3,275 tests run passing (2 ignored); the
   seven integration targets; clippy `-D warnings', rustfmt and `git diff
   --check'.
+- **Round 135: charset maps read as read_hex reads them, and
+  `map-charset-chars' over the charset's own codes.** comp-tests'
+  compiles end in `select-safe-coding-system', whose first
+  `find-coding-systems-region' over a non-ASCII text loads the map of
+  every charset of every coding system it tries, about a hundred files
+  of etc/charsets: 327M instructions where GNU's first call takes 207M.
+  Emaxx read each file into a String (a file that is not UTF-8 lost
+  whole), split it into lines, cut each at `#' and split the rest on
+  whitespace. charset.c:load_charset_map_from_file reads the bytes with
+  read_hex, which scans to the next `0x' (a `#' skipping its line),
+  takes the hex digits after it and hands back the byte that ended them:
+  a `-' there reads TO, an entry the end of the file cuts short ends the
+  reading, and an entry whose number overflowed, whose FROM exceeds its
+  TO or whose character exceeds MAX_CHAR is skipped. The map reader is
+  now that loop over the file's bytes: the first call takes 95M. Every
+  map charset's `map-charset-chars' with TO-CODE omitted signalled
+  `(wrong-type-argument integerp nil)', and a FROM-CODE omitted started
+  at 0 where Fmap_charset_chars starts at CHARSET_MIN_CODE: both now
+  default to the charset's minimum and maximum code, and given codes are
+  clamped to them, so all 102 map charsets' ranges and decodings agree
+  with GNU's (a probe of every one, hashed). A Rust funcall of a
+  byte-code closure enters the VM through one function that pushes the
+  frame, checks the arity and runs the entry program in place, 34
+  instructions a call fewer.
+  Local validation: the full gate across its ten groups with the
+  documented local skips, all 3,276 tests run passing (2 ignored); the
+  seven integration targets (cli's
+  `batch_exit_terminates_owned_children_like_gnu' failed once on its GNU
+  half, the oracle's `sleep' child still running 5 s after its exit
+  while the target's 25 tests ran together, and the target passed
+  whole when rerun); clippy `-D warnings', rustfmt and `git diff
+  --check'.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -8799,6 +8831,15 @@ proced-tests took 0.34 s against 0.31 s (1.09; 1.99 on `786b170`'s
 rerun) and emacs-module-tests 2.53 s against 2.38 s (1.06; 1.35), its
 four aborting `module--test-assertions' tests 0.38 to 0.52 s against
 0.35 to 0.42 s.
+
+**On `ae649a0`** (round 134): full Rust gate passed (run 40637674457);
+frozen (run 40637677385) matched all 7,928 outcomes on its first
+attempt. Its timings: setup 82.5 s against 64.6 s (1.278), test bodies
+260.0 s against 266.3 s (0.976), in all 1.017, on a runner where GNU's
+own total rose from 330.8 s to 350.4 s. comp-tests leads the test-time
+excess (18.12 s against 14.73), then tramp-tests (21.24 against 18.68),
+semantic-utest-ia (4.36 against 2.60) and mule-tests (3.74 against
+2.00).
 
 **Findings recorded, not fixed:**
 - **What the checked build costs (round 131).** mule-tests under the

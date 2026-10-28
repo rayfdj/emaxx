@@ -2037,6 +2037,42 @@ fn current_column_answers_from_its_cache_until_point_modiff_or_buffer_change() {
     );
 }
 
+#[test]
+fn charset_maps_read_as_read_hex_does_and_map_charset_chars_takes_nil_codes() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let value = crate::test_support::eval_lisp(
+        &mut interp,
+        &mut env,
+        r#"(let ((ranges (lambda (charset &rest codes)
+                 (let (r)
+                   (apply #'map-charset-chars
+                          (lambda (range arg) (push (list (car range) (cdr range) arg) r))
+                          charset 'x codes)
+                   (nreverse r)))))
+   (list (funcall ranges 'cp1252)
+         (funcall ranges 'cp1252 nil nil)
+         (funcall ranges 'cp1252 #x80 #x9f)
+         (length (funcall ranges 'gb18030-4-byte-bmp))
+         (car (funcall ranges 'gb18030-4-byte-bmp))
+         (car (last (funcall ranges 'gb18030-4-byte-bmp)))
+         (funcall ranges 'gb18030-4-byte-bmp #x81308130 #x81308135)
+         (length (funcall ranges 'big5))
+         (mapcar (lambda (code) (decode-char 'big5 code)) '(#xa140 #xa3bf #xc6a1 #xf9d5 #xa3e1))
+         (mapcar (lambda (code) (decode-char 'gb18030-4-byte-bmp code))
+                 '(#x81308130 #x81308435 #x8431a439 #x8431a530))
+         (encode-char ?€ 'cp1252) (encode-char ?中 'big5)))"#,
+    )
+    .expect("charset maps");
+    // GNU 30.2: a map file's entries as charset.c's read_hex reads them;
+    // `map-charset-chars' with nil (or omitted) codes covers the charset's
+    // CHARSET_MIN_CODE to CHARSET_MAX_CODE, a 4-byte charset's included.
+    assert_eq!(
+        value.to_string(),
+        "(((0 127 x) (160 255 x) (338 339 x) (352 353 x) (376 376 x) (381 382 x) (402 402 x) (710 710 x) (732 732 x) (8211 8212 x) (8216 8218 x) (8220 8222 x) (8224 8226 x) (8230 8230 x) (8240 8240 x) (8249 8250 x) (8364 8364 x) (8482 8482 x)) ((0 127 x) (160 255 x) (338 339 x) (352 353 x) (376 376 x) (381 382 x) (402 402 x) (710 710 x) (732 732 x) (8211 8212 x) (8216 8218 x) (8220 8222 x) (8224 8226 x) (8230 8230 x) (8240 8240 x) (8249 8250 x) (8364 8364 x) (8482 8482 x)) ((338 339 x) (352 353 x) (376 376 x) (381 382 x) (402 402 x) (710 710 x) (732 732 x) (8211 8212 x) (8216 8218 x) (8220 8222 x) (8224 8226 x) (8230 8230 x) (8240 8240 x) (8249 8250 x) (8364 8364 x) (8482 8482 x)) 201 (128 163 x) (65510 65535 x) ((128 133 x)) 3805 (12288 715 63153 40856 8364) (128 163 65529 65530) 128 42148)"
+    );
+}
+
 // Finding 34 re-hosts: the originals ran on the bare interpreter against
 // native facades and were deleted with them; GNU's own test tree covers
 // none of these, so the coverage lives here on the full dumped image,
