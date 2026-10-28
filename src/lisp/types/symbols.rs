@@ -306,6 +306,7 @@ const KEY_NAMES: &[&str] = &[
     "circular-list",
     "obarray",
     "face--new-frame-defaults",
+    "edebug-entered",
 ];
 
 struct Symbols {

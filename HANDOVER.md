@@ -7699,6 +7699,25 @@ setup_process_coding_systems's check now refuses). A 13-form
   filled during the run and passed rerun); the seven integration
   targets; clippy `-D warnings', rustfmt and `git diff --check'; and
   each of the four commits builds alone.
+- **Round 126: `coding-system-list' is coding.c's variable, and a
+  funcall reads `edebug-entered' as C does.** Fdefine_coding_system_internal
+  and Fdefine_coding_system_alias push each name they define (an
+  undecided eol's three subsidiaries first, an alias's subsidiary
+  aliases before it) onto `coding-system-list', and onto
+  `coding-system-alist' as a list of its name unless an element already
+  holds it; syms_of_coding starts both from its two definitions,
+  `no-conversion' and `undecided'. Emaxx built both from its coding
+  system table at each read: 494 names in an order of its own (GNU 1,071,
+  newest first, an alias listed for every definition), a fresh list each
+  time (`(eq coding-system-list coding-system-list)' was nil), and
+  edebug-tests rebuilt it 148 times, 173M instructions. Both are now
+  real variables kept as coding.c keeps them, and print as GNU 30.2's.
+  The check every funcall makes for an active Edebug read the special
+  `edebug-entered' through the evaluator's lexical lookup by name (4.3
+  million times in edebug-tests, 500M instructions to resolve the
+  name); it reads the symbol's value by key now, as find_symbol_value
+  does. edebug-tests under the frozen runner: 7.18G instructions, now
+  6.21G (GNU 4.11G).
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's

@@ -1687,6 +1687,38 @@ fn set_auto_coding_runs_where_insert_file_contents_decides() {
     );
 }
 
+#[test]
+fn coding_system_lists_record_each_definition_as_coding_c_does() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let value = crate::test_support::eval_lisp(
+        &mut interp,
+        &mut env,
+        r#"(list (eq coding-system-list coding-system-list)
+                 (last coding-system-list 5)
+                 (progn (define-coding-system-alias 'emaxx-list-test-alias 'utf-8)
+                        (list (seq-take coding-system-list 5)
+                              (seq-take coding-system-alist 4)))
+                 (progn (define-coding-system-alias 'emaxx-list-test-alias 'latin-1)
+                        (list (seq-take coding-system-list 2)
+                              (seq-count (lambda (e) (equal e '("emaxx-list-test-alias")))
+                                         coding-system-alist))))"#,
+    )
+    .expect("coding system lists");
+    // GNU 30.2: syms_of_coding's two definitions end the list; every
+    // definition pushes its names, an alias's subsidiaries first, and the
+    // alist keeps one element a name.
+    assert_eq!(
+        value.to_string(),
+        "(t (undecided undecided-mac undecided-dos undecided-unix no-conversion) \
+         ((emaxx-list-test-alias emaxx-list-test-alias-mac emaxx-list-test-alias-dos \
+         emaxx-list-test-alias-unix georgian-academy) ((\"emaxx-list-test-alias\") \
+         (\"emaxx-list-test-alias-mac\") (\"emaxx-list-test-alias-dos\") \
+         (\"emaxx-list-test-alias-unix\"))) ((emaxx-list-test-alias \
+         emaxx-list-test-alias-mac) 1))"
+    );
+}
+
 // Finding 34 re-hosts: the originals ran on the bare interpreter against
 // native facades and were deleted with them; GNU's own test tree covers
 // none of these, so the coverage lives here on the full dumped image,

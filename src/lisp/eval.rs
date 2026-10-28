@@ -6892,6 +6892,17 @@ impl Interpreter {
                 &mut crate::lisp::types::Env::new(),
             );
         }
+        // Its two Fdefine_coding_system_internal calls, for `no-conversion'
+        // and then `undecided' with its eol subsidiaries, record their names.
+        for name in [
+            "no-conversion",
+            "undecided-unix",
+            "undecided-dos",
+            "undecided-mac",
+            "undecided",
+        ] {
+            interp.record_coding_system_name(name);
+        }
 
         for name in crate::lisp::eval::bindings::C_OWNED_DEFVAR_NAMES {
             if let Some(value) = interp.builtin_var_value(name) {

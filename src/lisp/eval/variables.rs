@@ -2933,16 +2933,17 @@ impl Interpreter {
     /// `edebug-entered' can only carry a dynamic binding once edebug's
     /// defvar has marked it special, so until then a set-membership check
     /// replaces the full variable lookup (whose builtin-variable fallback
-    /// tables are a measurable per-call cost); with edebug loaded, defer
-    /// to the real lookup, buffer-local bindings included.
+    /// tables are a measurable per-call cost); with edebug loaded, the
+    /// special variable's value is read as find_symbol_value reads it,
+    /// buffer-local bindings included: no lexical binding can hold it.
     #[inline(always)]
-    fn edebug_entered_active(&self, env: &Env) -> bool {
+    fn edebug_entered_active(&self, _env: &Env) -> bool {
         // GNU's Qsymbol belongs to the editor that owns its value and
         // declared-special flag. Keep a direct reference in this owner;
         // neither a process-wide id nor a name/TLS lookup is needed here.
         self.globals.edebug_is_special()
             && self
-                .lookup_var("edebug-entered", env)
+                .symbol_value_key(cached_symbol!("edebug-entered"))
                 .is_some_and(|value| value.is_truthy())
     }
 

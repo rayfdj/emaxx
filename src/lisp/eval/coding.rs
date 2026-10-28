@@ -514,6 +514,10 @@ impl Interpreter {
         // ALIAS-dos and ALIAS-mac are defined as aliases of the corresponding
         // subsidiary.  Without this, `euc-jp' resolves but `euc-jp-unix' does
         // not, though GNU has both.
+        let subsidiaries = ["unix", "dos", "mac"].map(|suffix| {
+            self.coding_system_canonical_name(&format!("{canonical}-{suffix}"))
+                .is_some()
+        }) == [true; 3];
         for suffix in ["unix", "dos", "mac"] {
             let alias_variant = format!("{alias}-{suffix}");
             let target_variant = format!("{canonical}-{suffix}");
@@ -528,6 +532,13 @@ impl Interpreter {
                 self.coding_aliases.push((alias_variant, target_variant));
             }
         }
+        // Each recursion records its subsidiary alias before ALIAS itself.
+        if subsidiaries {
+            for suffix in ["unix", "dos", "mac"] {
+                self.record_coding_system_name(&format!("{alias}-{suffix}"));
+            }
+        }
+        self.record_coding_system_name(alias);
         Ok(())
     }
 
@@ -911,7 +922,49 @@ impl Interpreter {
         if !self.coding_priority.iter().any(|existing| existing == name) {
             self.coding_priority.push(name.to_string());
         }
+        if eol_type.is_none() && name != "no-conversion" {
+            for suffix in ["unix", "dos", "mac"] {
+                self.record_coding_system_name(&format!("{name}-{suffix}"));
+            }
+        }
+        self.record_coding_system_name(name);
         Ok(())
+    }
+
+    /// Fdefine_coding_system_internal's and Fdefine_coding_system_alias's
+    /// record of a name they define: pushed onto `coding-system-list'
+    /// every time, and onto `coding-system-alist' as a list of the
+    /// symbol's name unless an element already holds that name.
+    pub(super) fn record_coding_system_name(&mut self, name: &str) {
+        let mut env = Env::new();
+        let symbol = Value::Symbol(name.into());
+        let list = self
+            .lookup_var("coding-system-list", &env)
+            .unwrap_or(Value::Nil);
+        self.set_variable("coding-system-list", Value::cons(symbol, list), &mut env);
+        let alist = self
+            .lookup_var("coding-system-alist", &env)
+            .unwrap_or(Value::Nil);
+        let mut tail = alist;
+        while let Some((element, rest)) = tail.cons_values() {
+            if element
+                .cons_values()
+                .and_then(|(key, _)| crate::lisp::primitives::string_like(&key))
+                .is_some_and(|key| key.text == name)
+            {
+                return;
+            }
+            tail = rest;
+        }
+        let symbol_name = match symbol.kind() {
+            Kind::Symbol(symbol) => symbol.lisp_name(),
+            _ => Value::string(name),
+        };
+        self.set_variable(
+            "coding-system-alist",
+            Value::cons(Value::list([symbol_name]), alist),
+            &mut env,
+        );
     }
 
     pub fn terminal_coding_system(&self) -> Option<String> {
