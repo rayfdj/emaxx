@@ -1004,7 +1004,7 @@ fn fastmap_admits<E: MatchEnv + ?Sized>(
 }
 
 /// Whether character CODE of a text, translated, can start a match.
-#[inline]
+#[inline(always)]
 fn code_admits<E: MatchEnv + ?Sized>(
     pattern: &Pattern,
     code: u32,
@@ -1047,9 +1047,14 @@ fn ascii_admits<E: MatchEnv + ?Sized>(
     {
         return bits;
     }
-    let bits = (0..128u32)
-        .filter(|&c| code_admits(pattern, c, target_multibyte, env))
-        .fold(0u128, |bits, c| bits | 1 << c);
+    // A search cache miss compiles the pattern afresh, so this runs once
+    // a compile: a tight loop over the translation's ASCII entries.
+    let mut bits = 0u128;
+    for c in 0..128u32 {
+        if code_admits(pattern, c, target_multibyte, env) {
+            bits |= 1 << c;
+        }
+    }
     pattern.ascii_admits = Some((stamp, target_multibyte, bits));
     bits
 }

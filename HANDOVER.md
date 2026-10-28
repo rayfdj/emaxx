@@ -7731,6 +7731,20 @@ setup_process_coding_systems's check now refuses). A 13-form
   stores, which keep the string's size and so its cache, now forget
   it as its multibyte stores do (a test aset's a non-ASCII byte into
   a string already searched, and searches again, as GNU 30.2 answers).
+- **Round 128: a folding search's first-character test, once a
+  compile.** A search with a translation (`case-fold-search') skips
+  text by its characters' verdicts: each translated, then looked up in
+  the fastmap as re_search_2 does. Emaxx keeps the verdicts of the 128
+  ASCII characters with the pattern, and computed them as each new
+  pattern was first searched. icalendar-tests compiles as many
+  patterns as GNU does (164K, the twenty-cell cache cycling), so it
+  computed them 94K times: 12.1M calls through the generic per-
+  character test, with the translation's lookup out of line, 800M
+  instructions. The loop is now a plain one over the translation's
+  ASCII entries, with the lookup's ASCII path inline and the lead byte
+  of an ASCII character taken as itself. icalendar-tests under the
+  frozen runner (release build): 5.54G instructions, now 4.81G (GNU
+  4.70G); `string-match's search 1.59G, now 0.90G (GNU 0.77G).
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -8592,6 +8606,14 @@ writing to discard the output, where round 120's posix_spawn left
 Emaxx's parent alive and only its child died at its exec (fixed in
 round 123). Its timings: setup 78.6 s against 58.1 s (1.352), test
 bodies 255.3 s against 254.9 s (1.002), in all 1.068.
+**On `3a4ead0`** (rounds 122 to 125): full Rust gate passed (run
+40601155303); frozen (run 40601158478) matched 7,927 of 7,928 outcomes
+on its first attempt, the mismatch the recorded eglot oracle flake
+(GNU's rust-analyzer exchange timing out while Emaxx passed), and all
+7,928 on its rerun. The first attempt's timings: setup 87.4 s against
+69.3 s (1.262), test bodies 271.0 s against 285.2 s (0.950), in all
+1.006; the rerun's: setup 85.6 s against 65.7 s (1.303), test bodies
+268.4 s against 267.6 s (1.003), in all 1.047.
 
 **Findings recorded, not fixed:**
 - **Pipe processes hold no descriptors (round 119).** Fmake_pipe_process

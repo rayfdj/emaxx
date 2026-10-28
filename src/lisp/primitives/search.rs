@@ -296,6 +296,12 @@ impl Canon {
         if c < 128 {
             return self.ascii[c as usize];
         }
+        self.get_other(c)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn get_other(&self, c: u32) -> u32 {
         if let Some(&value) = self.other.borrow().get(&c) {
             return value;
         }

@@ -1742,6 +1742,33 @@ fn unibyte_string_searches_see_each_byte_aset_stores() {
     assert_eq!(value.to_string(), r#"(1 5 1 5 1 nil 1 ("abc" "abc"))"#);
 }
 
+#[test]
+fn case_fold_search_starts_at_ascii_text_folding_to_other_characters() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let value = crate::test_support::eval_lisp(
+        &mut interp,
+        &mut env,
+        r#"(let ((tbl (copy-case-table (standard-case-table))))
+             (set-case-syntax-pair ?I ?ı tbl)
+             (with-temp-buffer
+               (set-case-table tbl)
+               (let ((case-fold-search t) (m (string-to-multibyte "xxIyI")))
+                 (list (string-match "ı" m) (string-match "ıy" m)
+                       (string-match "[ı]" m) (string-match "q\\|ı" m)
+                       (string-match "ı" m 3) (string-match "y\\(ı\\)" m)
+                       (match-beginning 1)
+                       (let ((case-fold-search nil)) (string-match "ı" m))
+                       (string-match "ı" "xxI") (string-match "I" "xxı")
+                       (string-match "i" m)))))"#,
+    )
+    .expect("case-fold searches");
+    // GNU 30.2: re_search_2 skips to a multibyte text's `I', which folds
+    // to the pattern's `ı'; a unibyte text's `I' folds to no byte and
+    // stays itself.
+    assert_eq!(value.to_string(), "(2 2 2 2 4 3 4 nil nil nil nil)");
+}
+
 // Finding 34 re-hosts: the originals ran on the bare interpreter against
 // native facades and were deleted with them; GNU's own test tree covers
 // none of these, so the coverage lives here on the full dumped image,

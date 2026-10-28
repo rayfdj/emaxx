@@ -262,6 +262,9 @@ pub(crate) fn stored_char_of(c: u32) -> Option<char> {
 /// the byte the fastmap is indexed by.
 #[inline]
 pub(crate) fn leading_byte(c: u32) -> u8 {
+    if c < 0x80 {
+        return c as u8;
+    }
     let stored = match stored_char_of(c) {
         Some(ch) => ch,
         None if c > 0x10_FFFF => EXTENDED_PLACEHOLDER,
