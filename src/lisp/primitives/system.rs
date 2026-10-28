@@ -2152,6 +2152,59 @@ pub(crate) fn dispatch_file_name_handler(
     Ok(FileNameDispatch::Native(normalized))
 }
 
+/// dired.c's open_directory and read_dirent loop: DIRECTORY's entry
+/// names in the order the system returns them, "." and ".." among them.
+/// An error names the step that failed ("Opening directory" or "Reading
+/// directory").
+pub(crate) fn read_directory_names(
+    directory: &Path,
+) -> Result<Vec<std::ffi::OsString>, (&'static str, std::io::Error)> {
+    use std::os::unix::ffi::{OsStrExt, OsStringExt};
+    let path = std::ffi::CString::new(directory.as_os_str().as_bytes()).map_err(|_| {
+        (
+            "Opening directory",
+            std::io::Error::from_raw_os_error(libc::EINVAL),
+        )
+    })?;
+    // SAFETY: PATH is a NUL-terminated string for the call's duration.
+    let stream = unsafe { libc::opendir(path.as_ptr()) };
+    if stream.is_null() {
+        return Err(("Opening directory", std::io::Error::last_os_error()));
+    }
+    let mut names = Vec::new();
+    let result = loop {
+        // readdir signals an error only through errno; clear it first.
+        // SAFETY: errno is this thread's own.
+        unsafe {
+            #[cfg(target_os = "linux")]
+            {
+                *libc::__errno_location() = 0;
+            }
+            #[cfg(target_os = "macos")]
+            {
+                *libc::__error() = 0;
+            }
+        }
+        // SAFETY: STREAM is the open stream from opendir above.
+        let entry = unsafe { libc::readdir(stream) };
+        if entry.is_null() {
+            let error = std::io::Error::last_os_error();
+            break if error.raw_os_error().unwrap_or(0) == 0 {
+                Ok(())
+            } else {
+                Err(("Reading directory", error))
+            };
+        }
+        // SAFETY: ENTRY points at the dirent readdir returned, whose
+        // d_name is NUL-terminated and stays valid until the next call.
+        let name = unsafe { std::ffi::CStr::from_ptr((*entry).d_name.as_ptr()) };
+        names.push(std::ffi::OsString::from_vec(name.to_bytes().to_vec()));
+    };
+    // SAFETY: STREAM is open and closed exactly once.
+    unsafe { libc::closedir(stream) };
+    result.map(|()| names)
+}
+
 pub(crate) fn directory_files(
     interp: &mut Interpreter,
     directory: &str,
@@ -2161,67 +2214,69 @@ pub(crate) fn directory_files(
     count: Option<usize>,
     env: &Env,
 ) -> Result<Value, LispError> {
-    let directory = resolve_file_name_in_env(interp, env, directory);
-    // Each name as its text (for matching and sorting) and its string.
-    let mut entries = vec![
-        (".".to_string(), Value::String(".".into())),
-        ("..".to_string(), Value::String("..".into())),
-    ];
-    let iter = fs::read_dir(host_file_name(interp, env, &directory)?)
-        .map_err(|error| file_operation_error("Opening directory", &error, &directory))?;
-    for entry in iter {
-        let entry =
-            entry.map_err(|error| file_operation_error("Reading directory", &error, &directory))?;
-        // dired.c directory_files_internal: each name DECODE_FILE'd.
-        let name = decode_host_file_name(interp, env, Path::new(&entry.file_name()))?;
-        entries.push((string_text(&name)?, name));
+    use std::os::unix::ffi::OsStrExt;
+    if let Some(matcher) = matcher
+        && !matcher.is_string()
+    {
+        return Err(LispError::WrongTypeArgument("stringp".into(), *matcher));
     }
-    if let Some(matcher) = matcher {
-        if !matcher.is_string() {
-            return Err(LispError::WrongTypeArgument("stringp".into(), *matcher));
+    let directory = resolve_file_name_in_env(interp, env, directory);
+    let names = read_directory_names(&host_file_name(interp, env, &directory)?)
+        .map_err(|(step, error)| file_operation_error(step, &error, &directory))?;
+    // dired.c directory_files_internal: each name read is DECODE_FILE'd
+    // and matched, up to COUNT matches are kept in the order read, and a
+    // FULL name is the directory's text and the name's (concatenated
+    // bytes, so without the name's text properties), multibyte when
+    // either is.
+    let prefix = file_name_as_directory(&directory);
+    let directory_multibyte = prefix
+        .chars()
+        .any(|ch| !is_raw_byte_regex_char(ch) && (ch as u32) > 0x7f);
+    // dired.c: fast_string_match_internal, case-sensitive off Windows.
+    let mut match_env = env.clone();
+    let mut entries = Vec::new();
+    for host_name in names {
+        if count.is_some_and(|count| entries.len() >= count) {
+            break;
         }
-        // dired.c: fast_string_match_internal, case-sensitive off Windows.
-        let mut match_env = env.clone();
-        let mut filtered = Vec::new();
-        for entry in entries {
-            if search::fast_text_match(
+        let name = decode_file_name(interp, env, host_name.as_bytes())?;
+        let text = string_text(&name)?;
+        if let Some(matcher) = matcher
+            && search::fast_text_match(
                 interp,
                 &mut match_env,
                 matcher,
-                &entry.0,
+                &text,
                 &[],
                 true,
                 None,
                 false,
             )?
-            .is_some()
-            {
-                filtered.push(entry);
-            }
+            .is_none()
+        {
+            continue;
         }
-        entries = filtered;
+        let name = if full {
+            let multibyte =
+                directory_multibyte || string_like(&name).is_some_and(|string| string.multibyte);
+            make_shared_string_value_with_multibyte(
+                format!("{prefix}{text}"),
+                Vec::new(),
+                multibyte,
+            )
+        } else {
+            name
+        };
+        entries.push((text, name));
     }
-    if !nosort {
+    // The list is consed up in reading order, so NOSORT gives it last
+    // read first; otherwise it is sorted with string-lessp.
+    if nosort {
+        entries.reverse();
+    } else {
         entries.sort_by(|left, right| left.0.cmp(&right.0));
     }
-    if let Some(count) = count {
-        entries.truncate(count);
-    }
-    // A full name is concat2 of the directory as a directory and the
-    // decoded name.
-    let directory = Value::String(file_name_as_directory(&directory).into());
-    let mut concat_env = env.clone();
-    let names = entries
-        .into_iter()
-        .map(|(_, name)| {
-            if full {
-                super::call(interp, "concat", &[directory, name], &mut concat_env)
-            } else {
-                Ok(name)
-            }
-        })
-        .collect::<Result<Vec<_>, LispError>>()?;
-    Ok(Value::list(names))
+    Ok(Value::list(entries.into_iter().map(|(_, name)| name)))
 }
 
 pub(crate) fn default_charset_plist(name: &str, interp: &Interpreter) -> Option<Value> {

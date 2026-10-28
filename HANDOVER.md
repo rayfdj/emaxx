@@ -8524,6 +8524,29 @@ setup_process_coding_systems's check now refuses). A 13-form
   the documented local skips, all 3,296 tests run passing (2 ignored);
   the seven integration targets; clippy `-D warnings', rustfmt and `git
   diff --check'.
+- **Round 154: readdir's order.** dired.c reads a directory's stream,
+  "." and ".." wherever the system puts them, and conses each match up
+  as it is read: `directory-files'' COUNT keeps the first matches read
+  (then sorts them), NOSORT returns the matches last read first, and
+  `file-name-all-completions' never sorts. Emaxx read the directory with
+  `std::fs::read_dir', which leaves "." and ".." out, put those two
+  first, sorted the completions and cut COUNT from the sorted list: in a
+  directory read as b . c e .. a d, `(directory-files dir nil nil nil 3)'
+  gave ("." ".." "a") where GNU gives ("." "b" "c"), and NOSORT gave read
+  order where GNU gives its reverse. system.rs's `read_directory_names'
+  reads the stream with opendir and readdir (an error names "Opening
+  directory" or "Reading directory", as dired.c's report_file_error
+  does); `directory_files' and `file-name-all-completions' use it. A FULL
+  name is the directory's text and the name's, as
+  directory_files_internal copies the bytes, so it carries no text
+  properties (round 152's concat kept a decoded name's `charset'). A
+  batch test checks the relations GNU 30.2 keeps whatever the
+  filesystem's order: COUNT against the NOSORT list, completions against
+  it, and the FULL name's properties.
+  Local validation: the full gate across its ten groups with
+  the documented local skips, all 3,297 tests run passing (2 ignored);
+  the seven integration targets; clippy `-D warnings', rustfmt and `git
+  diff --check'.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -9519,6 +9542,19 @@ merged into main with it (PR 112, `ed7729d`).
 frozen (run 40768864272) matched all 7,928 outcomes on its first
 attempt. Its timings: setup 56.6 s against 48.2 s (1.174), test bodies
 211.5 s against 236.3 s (0.895), in all 0.942.
+
+**On `a3f371b`** (round 152): full Rust gate passed (run 40776874336);
+frozen (run 40776877869) failed its first attempt on the known oracle
+flake, GNU's `eglot-test-rust-completion-exit-function' ending in a
+`jsonrpc-error' where Emaxx passed, and matched all 7,928 outcomes on
+its one rerun. The rerun's timings: setup 49.9 s against 42.7 s
+(1.168), test bodies 201.1 s against 215.0 s (0.935), in all 0.974.
+
+**On `5218323`** (round 153): full Rust gate passed (run 40781907793);
+frozen (run 40781910835) matched all 7,928 outcomes on its first
+attempt. Its timings: setup 79.6 s against 63.6 s (1.251), test bodies
+258.5 s against 267.3 s (0.967), in all 1.022 (a slower runner: GNU's
+setup took 63.6 s where the run before's took 42.7).
 
 **Findings recorded, not fixed:**
 - **What the checked build costs (round 131).** mule-tests under the

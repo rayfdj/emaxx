@@ -8014,6 +8014,40 @@ fn file_names_reach_the_host_through_encode_file_and_return_through_decode_file(
 }
 
 #[test]
+fn directory_listings_keep_readdirs_order_as_dired_c_does() {
+    // dired.c reads the directory's stream ("." and ".." among it) and
+    // conses each match up as it is read: COUNT keeps the first matches
+    // read, NOSORT returns them last read first, file-name-all-completions
+    // never sorts, and a FULL name is the directory's bytes and the
+    // name's, without the name's text properties.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((d (make-temp-file "emaxx-readdir-" t)))
+          (unwind-protect
+              (progn
+                (dolist (name '("b" "a" "d" "c" "f")) (write-region "" nil (expand-file-name name d)))
+                (make-directory (expand-file-name "e" d))
+                (let ((read (directory-files d nil "^[a-z]" t)))
+                  (list (length read)
+                        (equal (directory-files d nil "^[a-z]" t 2) (last read 2))
+                        (equal (directory-files d nil "^[a-z]" nil 2) (sort (copy-sequence (last read 2)) #'string<))
+                        (equal (directory-files d nil "^[a-z]") (sort (copy-sequence read) #'string<))
+                        (equal (mapcar #'directory-file-name (file-name-all-completions "" d))
+                               (directory-files d nil nil t))
+                        (equal (length (directory-files d nil nil nil 3)) 3)
+                        (let ((file-name-coding-system 'latin-1))
+                          (write-region "" nil (expand-file-name "gé" d))
+                          (let ((short (car (directory-files d nil "^g")))
+                                (full (car (directory-files d t "^g"))))
+                            (list (get-text-property 0 'charset short)
+                                  (text-properties-at (1- (length full)) full)
+                                  (string-suffix-p "/gé" full)))))))
+            (delete-directory d t)))"#,
+        r#"(6 t t t t t (iso-8859-1 nil t))"#,
+        "readdir order",
+    );
+}
+
+#[test]
 fn directory_files_returns_mutable_sorted_names_with_dot_entries() {
     let unique = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

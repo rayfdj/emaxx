@@ -1650,12 +1650,11 @@ define_dispatch!(
                 need_args(name, args, 2)?;
                 let prefix = string_text(&args[0])?;
                 let directory = resolve_file_name_in_env(interp, env, &string_text(&args[1])?);
-                // GNU opens the directory before synthesizing its `./' and `../'
-                // candidates.  Returning those entries for a directory that
-                // cannot be opened misleads partial completion into treating a
-                // nonexistent component as an exact directory.
-                let entries = std::fs::read_dir(host_file_name(interp, env, &directory)?).map_err(
-                    |error| {
+                // dired.c file_name_completion reads the directory's stream,
+                // "." and ".." among its entries: a directory that cannot be
+                // opened answers no candidates at all.
+                let entries = read_directory_names(&host_file_name(interp, env, &directory)?)
+                    .map_err(|(step, error)| {
                         let rendered = error.to_string();
                         let detail = rendered
                             .split_once(" (os error")
@@ -1670,19 +1669,19 @@ define_dispatch!(
                                 }
                                 .into(),
                             ),
-                            Value::String("Opening directory".into()),
+                            Value::String(step.into()),
                             Value::String(detail.into()),
                             Value::String(directory.clone().into()),
                         ]))
-                    },
-                )?;
-                // dired.c: each name read is DECODE_FILE'd before it is
-                // matched.
+                    })?;
+                // Each name read is DECODE_FILE'd before it is matched.
+                let host_directory = host_file_name(interp, env, &directory)?;
                 let entries = entries
-                    .flatten()
+                    .into_iter()
                     .map(|entry| {
-                        decode_host_file_name_text(interp, env, &entry.file_name())
-                            .map(|(name, multibyte)| (name, multibyte, entry.path()))
+                        let host_path = host_directory.join(&entry);
+                        decode_host_file_name_text(interp, env, &entry)
+                            .map(|(name, multibyte)| (name, multibyte, host_path))
                     })
                     .collect::<Result<Vec<_>, LispError>>()?;
                 let ignore_case = completion_ignores_case(interp, env);
@@ -1704,11 +1703,6 @@ define_dispatch!(
                     Ok(true)
                 };
                 let mut names: Vec<(String, bool)> = Vec::new();
-                for (candidate, rendered) in [(".", "./"), ("..", "../")] {
-                    if matches(candidate)? {
-                        names.push((rendered.to_string(), false));
-                    }
-                }
                 for (file_name, multibyte, host_path) in entries {
                     if !matches(&file_name)? {
                         continue;
@@ -1726,10 +1720,12 @@ define_dispatch!(
                         multibyte,
                     ));
                 }
-                names.sort();
-                Ok(Value::list(names.into_iter().map(|(text, multibyte)| {
-                    make_shared_string_value_with_multibyte(text, Vec::new(), multibyte)
-                })))
+                // The matches are consed up as they are read: last read first.
+                Ok(Value::list(names.into_iter().rev().map(
+                    |(text, multibyte)| {
+                        make_shared_string_value_with_multibyte(text, Vec::new(), multibyte)
+                    },
+                )))
             }
             "file-name-completion" => {
                 need_arg_range(name, args, 2, 3)?;
