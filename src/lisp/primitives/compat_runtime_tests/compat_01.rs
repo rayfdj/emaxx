@@ -2284,6 +2284,79 @@ fn debugger_frames_enter_on_exit_and_at_the_next_call() {
 }
 
 #[test]
+fn signals_enter_the_debugger_as_signal_or_quit_decides() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let value = crate::test_support::eval_lisp(
+        &mut interp,
+        &mut env,
+        r#"(progn
+             (defvar d143-log nil)
+             (defun d143-debugger (&rest args)
+               (setq d143-log (cons args d143-log))
+               (throw 'd143 (list 'debugged (car args))))
+             (defun d143-run (thunk)
+               (setq d143-log nil)
+               (let ((value (catch 'd143
+                              (let ((debugger 'd143-debugger)
+                                    (debug-on-error t))
+                                (setq internal-when-entered-debugger -1)
+                                (funcall thunk)))))
+                 (list value (reverse d143-log))))
+             (defvar d143-hook-log nil)
+             (list
+              (d143-run (lambda () (car 1)))
+              (d143-run (lambda () (condition-case nil (car 1) (error 'caught))))
+              (d143-run (lambda () (condition-case nil (car 1) ((debug error) 'caught-debug))))
+              (d143-run (lambda () (let ((debug-on-signal t))
+                                     (condition-case nil (car 1) (error 'caught-signal)))))
+              (d143-run (lambda () (let ((debug-ignored-errors '(wrong-type-argument)))
+                                     (condition-case nil (car 1) ((debug error) 'ignored-symbol)))))
+              (d143-run (lambda () (let ((debug-ignored-errors '("^Wrong type")))
+                                     (condition-case nil (car 1) ((debug error) 'ignored-string)))))
+              (d143-run (lambda () (let ((inhibit-debugger t))
+                                     (condition-case nil (car 1) ((debug error) 'inhibited)))))
+              (d143-run (lambda () (let ((debug-on-error '(arith-error)))
+                                     (condition-case nil (car 1) ((debug error) 'not-wanted)))))
+              (d143-run (lambda () (let ((debug-on-error '(arith-error)))
+                                     (condition-case nil (/ 1 0) ((debug error) 'wanted)))))
+              (d143-run (lambda () (let ((debug-on-quit t))
+                                     (condition-case nil (signal 'quit nil) ((debug quit) 'quit-caught)))))
+              (d143-run (lambda () (let ((debug-on-quit nil))
+                                     (condition-case nil (signal 'quit nil) ((debug quit) 'quit-no-debug)))))
+              (d143-run (lambda () (condition-case nil (signal 'wrong-type-argument '(x)) ((debug error) 'once))
+                          (condition-case nil (car 1) ((debug error) 'twice))))
+              (d143-run (lambda () (catch 'other (car 1))))
+              (let ((d143-hook-log nil))
+                (list (condition-case err
+                          (let ((signal-hook-function
+                                 (lambda (sym data) (push (list sym data) d143-hook-log))))
+                            (condition-case nil (car 1) (error 'hooked))
+                            (condition-case nil (signal 'arith-error '(1 2)) (error 'hooked2)))
+                        (error err))
+                      (reverse d143-hook-log)))))"#,
+    )
+    .expect("debugger entry on signals");
+    // GNU 30.2: signal_or_quit calls `signal-hook-function' with the
+    // signal's symbol and data, and enters the debugger (with (error
+    // ERROR)) when no clause catches the signal, the catching clause
+    // lists `debug', or `debug-on-signal' is set -- if maybe_call_debugger
+    // agrees: `inhibit-debugger' nil, `debug-on-error' (or for a quit
+    // `debug-on-quit') wanting it, `debug-ignored-errors' not naming it.
+    assert_eq!(
+        value.to_string(),
+        "(((debugged error) ((error (wrong-type-argument listp 1)))) (caught nil) \
+         ((debugged error) ((error (wrong-type-argument listp 1)))) \
+         ((debugged error) ((error (wrong-type-argument listp 1)))) (ignored-symbol nil) \
+         (ignored-string nil) (inhibited nil) (not-wanted nil) \
+         ((debugged error) ((error (arith-error)))) ((debugged error) ((error (quit)))) \
+         (quit-no-debug nil) ((debugged error) ((error (wrong-type-argument x)))) \
+         ((debugged error) ((error (wrong-type-argument listp 1)))) \
+         (hooked2 ((wrong-type-argument (listp 1)) (arith-error (1 2)))))"
+    );
+}
+
+#[test]
 fn unicode_property_table_internal_walks_the_alist_as_fassq() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = crate::lisp::types::Env::new();

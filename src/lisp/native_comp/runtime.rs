@@ -3647,23 +3647,14 @@ fn invoke_native_funcall(active: &ActiveCall, arguments: &[NativeWord]) -> Optio
                 }
             },
         };
-        let result = match result.map_err(LispError::into_kind) {
+        // The error keeps its box: signal_or_quit marks a signal it has
+        // settled there.
+        let result = match result {
             Ok(word) if interpreter.current_backtrace_debug_on_exit() => {
                 native_funcall_exit_debugger(interpreter, runtime, environment, word)
             }
             Ok(word) => Ok(word),
-            Err(error @ (LispErrorKind::Throw(_, _) | LispErrorKind::Terminate(_))) => {
-                Err(LispError::from(error))
-            }
-            Err(error) => {
-                match interpreter.dispatch_handler_bindings(LispError::from(error), environment) {
-                    Ok(value) => runtime
-                        .heap
-                        .encode(&value)
-                        .map_err(|error| super::lisp::native_ice(&error)),
-                    Err(error) => Err(error),
-                }
-            }
+            Err(error) => Err(interpreter.signal_or_quit(error, environment)),
         };
         if let Err(error) = &result {
             interpreter.capture_batch_error_backtrace(error, environment);
@@ -4718,10 +4709,7 @@ fn remember_helper_error(active: &ActiveCall, error: LispError) {
     let interpreter = unsafe { &mut *active.interpreter };
     let environment = unsafe { &mut *active.environment.get() };
     let error = match unsafe { &mut *active.runtime }.sync_handlers(interpreter) {
-        Ok(()) => match interpreter.dispatch_handler_bindings(error, environment) {
-            Err(error) => error,
-            Ok(_) => unreachable!("handler-bind handlers return to signal"),
-        },
+        Ok(()) => interpreter.signal_or_quit(error, environment),
         Err(error) => error,
     };
     interpreter.capture_batch_error_backtrace(&error, environment);

@@ -242,6 +242,16 @@ fn record_external_input_event(interp: &mut Interpreter, event: &Value, env: &En
     if executing_kbd_macro_p(interp, env) {
         return;
     }
+    // record_char's `num_nonmacro_input_events++', which lets the
+    // debugger be entered again (maybe_call_debugger).
+    let events = interp
+        .global_binding_value("num-nonmacro-input-events")
+        .and_then(|value| value.as_integer().ok())
+        .unwrap_or(0);
+    interp.set_symbol_value_cell(
+        "num-nonmacro-input-events",
+        Value::Integer(events.saturating_add(1)),
+    );
     interp.keyboard_input.recent_keys.push(*event);
     let limit = interp.lossage_size.max(0) as usize;
     if interp.keyboard_input.recent_keys.len() > limit {

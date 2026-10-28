@@ -173,7 +173,8 @@ fn redisplay_safe_call(
         return Ok(Value::Nil);
     }
     let restore = interp.bind_special_dynamic("inhibit-redisplay", Value::T, env)?;
-    let handler_start = interp.push_condition_case_handler(vec![Value::T]);
+    let handler_start =
+        interp.push_internal_condition_case(crate::lisp::eval::InternalHandlers::All);
     if with_backtrace {
         interp
             .push_handler_bindings(&[(vec!["error".into()], Value::symbol("debug-early--muted"))]);
@@ -3167,7 +3168,8 @@ fn window_change_safe_call(
     args: &[Value],
     env: &mut Env,
 ) -> Result<(), LispError> {
-    let handler_start = interp.push_condition_case_handler(vec![Value::T]);
+    let handler_start =
+        interp.push_internal_condition_case(crate::lisp::eval::InternalHandlers::All);
     let depth = env.len();
     let result = interp.call_function_value(function, None, args, env);
     interp.pop_handler_bindings(handler_start);

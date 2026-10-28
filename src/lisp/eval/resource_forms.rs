@@ -175,7 +175,11 @@ impl Interpreter {
         }
         let handler_start = self.push_condition_case_handler(clause_heads);
         let depth = env.len();
-        let body_result = self.eval(&bodyform, env);
+        // A signal no frame boundary settled (a variable's, say) has
+        // signal_or_quit's work done while these clauses are active.
+        let body_result = self
+            .eval(&bodyform, env)
+            .map_err(|error| self.signal_or_quit(error, env));
         self.pop_handler_bindings(handler_start);
         // An error unwinds any binding frames the body pushed before
         // signaling, like GNU's unbind_to at the handler point.

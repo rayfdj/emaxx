@@ -3389,6 +3389,16 @@ impl Interpreter {
         start
     }
 
+    /// internal_condition_case's catch of the C core with HANDLERS t
+    /// (`InternalHandlers::All') or `error' (`InternalHandlers::Error'):
+    /// every signal stops the handler search here.
+    pub(crate) fn push_internal_condition_case(&mut self, handlers: InternalHandlers) -> usize {
+        let start = self.active_handlers.len();
+        self.handler_generation += 1;
+        self.active_handlers.push(ActiveHandler::Internal(handlers));
+        start
+    }
+
     pub(crate) fn push_module_handler(&mut self) -> usize {
         let start = self.active_handlers.len();
         self.handler_generation += 1;
@@ -3511,7 +3521,7 @@ impl Interpreter {
         let error_type = error.condition_type();
         let condition_list = self.error_condition_names(&error_type);
         self.active_handlers.iter().any(|handler| match handler {
-            ActiveHandler::Module => true,
+            ActiveHandler::Module | ActiveHandler::Internal(_) => true,
             ActiveHandler::Case(heads) => heads
                 .iter()
                 .any(|head| Self::clause_head_matches(head, &error_type, &condition_list)),
@@ -3526,7 +3536,7 @@ impl Interpreter {
         if !self
             .active_handlers
             .iter()
-            .any(|handler| matches!(handler, ActiveHandler::Case(_)))
+            .any(|handler| matches!(handler, ActiveHandler::Case(_) | ActiveHandler::Internal(_)))
         {
             return false;
         }
@@ -3557,6 +3567,10 @@ impl Interpreter {
         for (index, entry) in self.active_handlers.iter().enumerate().rev() {
             let matches = match entry {
                 ActiveHandler::Module => true,
+                ActiveHandler::Internal(_) => {
+                    catching_case = Some(index);
+                    true
+                }
                 ActiveHandler::Case(heads) => {
                     let catches = heads
                         .iter()
@@ -3587,6 +3601,218 @@ impl Interpreter {
         };
         self.handler_search_memo = Some(search);
         search
+    }
+
+    /// eval.c:signal_or_quit's work for a signal, done once
+    /// (`LispError::signaled') where the signal first reaches a frame
+    /// boundary or a catch, the handlers it met still active:
+    /// `signal-hook-function', the `handler-bind' handlers the search
+    /// meets before the catching clause (`dispatch_handler_bindings'), and
+    /// the debugger when that clause lets it in (`signal_debugger').  A
+    /// signal or throw out of any of them leaves in place of this one.
+    pub(crate) fn signal_or_quit(&mut self, error: LispError, env: &mut Env) -> LispError {
+        self.signal_or_quit_entering(error, env).0
+    }
+
+    /// `signal_or_quit', with whether the debugger was entered for the
+    /// signal (signal_or_quit's `debugger_called', which continues a quit).
+    pub(crate) fn signal_or_quit_entering(
+        &mut self,
+        mut error: LispError,
+        env: &mut Env,
+    ) -> (LispError, bool) {
+        // A signal inside a handler-bind handler is settled at the
+        // boundaries outside the handler (`dispatch_handler_bindings').
+        if error.signaled()
+            || self.handler_dispatch_depth > 0
+            || matches!(
+                error.kind(),
+                LispErrorKind::Throw(_, _) | LispErrorKind::Terminate(_)
+            )
+        {
+            return (error, false);
+        }
+        error.mark_signaled();
+        // `if (! NILP (Vsignal_hook_function) && !oom)': edebug's hook,
+        // with room for it on the stack.
+        let hook = self
+            .lookup_var("signal-hook-function", env)
+            .unwrap_or(Value::Nil);
+        if !hook.is_nil() {
+            let object = super::error_condition_value(&error);
+            let (symbol, data) = match object.cons_ref() {
+                Some(cell) => (cell.car.get(), cell.cdr.get()),
+                None => (object, Value::Nil),
+            };
+            let result = self.with_lisp_stack_roots(&object, |interp| {
+                interp.with_ensured_room(20, |interp| {
+                    interp.call_function_value(hook, None, &[symbol, data], env)
+                })
+            });
+            if let Err(next) = result {
+                return (next, false);
+            }
+        }
+        let identity = error.identity();
+        let mut error = match self.dispatch_handler_bindings(error, env) {
+            Err(error) => error,
+            Ok(_) => unreachable!("handler-bind handlers return to signal"),
+        };
+        // A handler's own signal was settled as its own.
+        if error.identity() != identity && error.signaled() {
+            return (error, false);
+        }
+        error.mark_signaled();
+        match self.signal_debugger(&error, env) {
+            Ok(entered) => (error, entered),
+            Err(next) => (next, false),
+        }
+    }
+
+    /// signal_or_quit's test of the clause that catches ERROR, then
+    /// maybe_call_debugger: `debug-on-signal', no catching clause, a
+    /// `debug' among its conditions, or the C core's `error' handler.
+    fn signal_debugger(&mut self, error: &LispError, env: &mut Env) -> Result<bool, LispError> {
+        let clause = self.catching_clause(error);
+        let debug_on_signal = self
+            .lookup_var("debug-on-signal", env)
+            .is_some_and(|value| value.is_truthy());
+        if !debug_on_signal
+            && !matches!(
+                clause,
+                CatchingClause::None | CatchingClause::Debug | CatchingClause::CoreError
+            )
+        {
+            return Ok(false);
+        }
+        self.maybe_call_debugger(error, env)
+    }
+
+    /// The clause the handler search (signal_or_quit's loop) stops at for
+    /// ERROR: the innermost condition-case clause matching it (the first
+    /// of a `condition-case''s clauses), a catch-all, or none.
+    fn catching_clause(&mut self, error: &LispError) -> CatchingClause {
+        let error_symbol = error.condition_symbol();
+        let error_type = error_symbol.as_str();
+        let condition_list = self.error_condition_names_of(&error_symbol);
+        for entry in self.active_handlers.iter().rev() {
+            match entry {
+                ActiveHandler::Module => return CatchingClause::All,
+                ActiveHandler::Internal(InternalHandlers::All) => return CatchingClause::All,
+                ActiveHandler::Internal(InternalHandlers::Error) => {
+                    return CatchingClause::CoreError;
+                }
+                ActiveHandler::Case(heads) => {
+                    if let Some(head) = heads
+                        .iter()
+                        .find(|head| Self::clause_head_matches(head, error_type, &condition_list))
+                    {
+                        let debug = head.to_vec().is_ok_and(|items| {
+                            items.iter().any(|item| {
+                                item.symbol_cell()
+                                    .is_some_and(|symbol| symbol.as_str() == "debug")
+                            })
+                        });
+                        return if debug {
+                            CatchingClause::Debug
+                        } else {
+                            CatchingClause::All
+                        };
+                    }
+                }
+                ActiveHandler::Bind(..) => {}
+            }
+        }
+        CatchingClause::None
+    }
+
+    /// eval.c:maybe_call_debugger: the debugger entered with (error ERROR)
+    /// when `inhibit-debugger' is nil, `debug-on-quit' (for a quit) or
+    /// `debug-on-error' wants this signal (wants_debugger), it is not one
+    /// of `debug-ignored-errors' (skip_debugger), and no debugger was
+    /// entered since the last input event.  Whether it was entered.
+    fn maybe_call_debugger(&mut self, error: &LispError, env: &mut Env) -> Result<bool, LispError> {
+        if self
+            .lookup_var("inhibit-debugger", env)
+            .is_some_and(|value| value.is_truthy())
+        {
+            return Ok(false);
+        }
+        let object = super::error_condition_value(error);
+        let error_symbol = error.condition_symbol();
+        let conditions = self.error_condition_names_of(&error_symbol);
+        let quit = error_symbol.as_str() == "quit"
+            || conditions.iter().any(|name| name.as_str() == "quit");
+        let wanted = if quit {
+            self.lookup_var("debug-on-quit", env)
+                .is_some_and(|value| value.is_truthy())
+        } else {
+            let list = self.lookup_var("debug-on-error", env).unwrap_or(Value::Nil);
+            wants_debugger(list, &conditions)
+        };
+        if !wanted || self.skip_debugger(&conditions, object, env)? {
+            return Ok(false);
+        }
+        let integer = |interp: &mut Self, name: &str, env: &mut Env| {
+            interp
+                .lookup_var(name, env)
+                .and_then(|value| value.as_integer().ok())
+                .unwrap_or(0)
+        };
+        let entered = integer(self, "internal-when-entered-debugger", env);
+        let events = integer(self, "num-nonmacro-input-events", env);
+        if entered >= events {
+            return Ok(false);
+        }
+        self.call_debugger(Value::list([Value::symbol("error"), object]), env)?;
+        Ok(true)
+    }
+
+    /// eval.c:skip_debugger: whether `debug-ignored-errors' names one of
+    /// CONDITIONS or holds a regexp matching the error's message.
+    fn skip_debugger(
+        &mut self,
+        conditions: &[SymbolName],
+        object: Value,
+        env: &mut Env,
+    ) -> Result<bool, LispError> {
+        let ignored = self
+            .lookup_var("debug-ignored-errors", env)
+            .unwrap_or(Value::Nil);
+        let mut message = None;
+        let mut tail = ignored;
+        while let Some(cell) = tail.cons_ref() {
+            let item = cell.car.get();
+            tail = cell.cdr.get();
+            if item.is_string() {
+                let message = match message {
+                    Some(message) => message,
+                    None => {
+                        let string = crate::lisp::primitives::call(
+                            self,
+                            "error-message-string",
+                            &[object],
+                            env,
+                        )?;
+                        message = Some(string);
+                        string
+                    }
+                };
+                if crate::lisp::primitives::fast_string_match(
+                    self, env, &item, &message, None, false,
+                )?
+                .is_some()
+                {
+                    return Ok(true);
+                }
+            } else if item
+                .symbol_cell()
+                .is_some_and(|symbol| conditions.contains(&symbol))
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     pub(crate) fn dispatch_handler_bindings(
@@ -3643,7 +3869,7 @@ impl Interpreter {
         let snapshot = self.active_handlers.clone();
         for (index, entry) in snapshot[..=innermost].iter().enumerate().rev() {
             match entry {
-                ActiveHandler::Module => break,
+                ActiveHandler::Module | ActiveHandler::Internal(_) => break,
                 // A matching `condition-case' between the signal point and
                 // any outer `handler-bind' handles the error itself; stop
                 // searching like GNU's signal_or_quit.
@@ -3915,6 +4141,40 @@ fn buffer_field_slot(name: &str) -> Option<BufferFieldSlot> {
         "enable-multibyte-characters" => Some(BufferFieldSlot::Multibyte),
         _ => None,
     }
+}
+
+/// What the handler search stops at for a signal (`catching_clause').
+enum CatchingClause {
+    /// No handler catches it.
+    None,
+    /// A clause that keeps the debugger out: a condition-case clause with
+    /// no `debug', the C core's catch-all t, a module boundary.
+    All,
+    /// A condition-case clause whose conditions include `debug'.
+    Debug,
+    /// The C core's internal_condition_case with `error'.
+    CoreError,
+}
+
+/// eval.c:wants_debugger: LIST non-nil and no list, or a list holding one
+/// of CONDITIONS.
+fn wants_debugger(list: Value, conditions: &[SymbolName]) -> bool {
+    if list.is_nil() {
+        return false;
+    }
+    if !list.is_cons() {
+        return true;
+    }
+    conditions.iter().any(|condition| {
+        let mut tail = list;
+        while let Some(cell) = tail.cons_ref() {
+            if cell.car.get().symbol_cell() == Some(*condition) {
+                return true;
+            }
+            tail = cell.cdr.get();
+        }
+        false
+    })
 }
 
 #[cfg(test)]

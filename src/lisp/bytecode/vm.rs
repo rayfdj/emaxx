@@ -4591,7 +4591,10 @@ fn run_loop(
             Ok(value) => {
                 break 'run Ok(value);
             }
-            Err(mut error) => {
+            Err(error) => {
+                // signal_or_quit's work for a signal no boundary has
+                // settled, with this activation's handlers still active.
+                let mut error = interp.signal_or_quit(error, env);
                 // GNU's handler search: innermost first; Bpushcatch
                 // handles `throw' by tag eq, Bpushconditioncase handles
                 // signals whose condition list matches the clause head.
@@ -4755,7 +4758,7 @@ fn run_loop(
         {
             Err(error)
         }
-        Err(error) => interp.dispatch_handler_bindings(error, env),
+        Err(error) => Err(interp.signal_or_quit(error, env)),
         Ok(value) => Ok(value),
     }
 }

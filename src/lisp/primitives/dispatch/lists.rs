@@ -559,7 +559,8 @@ fn recursive_edit(interp: &mut Interpreter, env: &mut Env) -> Result<Value, Lisp
     // handler-bind scan at that frame, so a handler-bind OUTSIDE the
     // recursive edit (ert's test wrapper) must not fire for a command
     // error this loop is about to report itself.
-    let handler_start = interp.push_condition_case_handler(vec![Value::Symbol("error".into())]);
+    let handler_start =
+        interp.push_internal_condition_case(crate::lisp::eval::InternalHandlers::Error);
     let result = entry_hooks.and_then(|()| {
         crate::lisp::primitives::with_recursive_edit_bindings(interp, env, |interp, env| {
             run_recursive_kbd_command_loop(interp, env)

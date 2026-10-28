@@ -286,6 +286,7 @@ pub(crate) use dispatch::{
 pub use dispatch::{call, is_builtin};
 pub(crate) use dispatch::{call_with_facts, call_with_facts_arity_checked};
 pub(crate) use search::category_member;
+pub(crate) use search::fast_string_match;
 #[cfg(test)]
 pub(crate) use search::{elisp_regex_compile_count, reset_elisp_regex_compile_count};
 

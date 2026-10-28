@@ -8155,6 +8155,40 @@ setup_process_coding_systems's check now refuses). A 13-form
   documented local skips, all 3,286 tests run passing (2 ignored); the
   seven integration targets; clippy `-D warnings', rustfmt and `git diff
   --check'.
+- **Round 143: entering the debugger on a signal.** Emaxx never entered
+  the debugger for a signal: `debug-on-error', `debug-on-signal',
+  `debug-on-quit', a `(debug ...)' condition-case clause and
+  `debug-ignored-errors' did nothing, an uncaught error under
+  `debug-on-error' went straight to the top level, and
+  `signal-hook-function' was never called. eval.c's signal_or_quit now
+  runs, once for each signal (a flag in the error's box), where the
+  signal first reaches a frame boundary, a byte-code or interpreted
+  `condition-case', or native code's signal point, the handlers it met
+  still active: the hook with the signal's symbol and data, the
+  `handler-bind' handlers (as before), then the debugger when no clause
+  catches the signal, the catching clause lists `debug', the catch is
+  the C core's `error' handler, or `debug-on-signal' is set, and
+  maybe_call_debugger agrees (`inhibit-debugger' nil; `debug-on-error',
+  or for a quit `debug-on-quit', wanting the signal by wants_debugger;
+  skip_debugger finding it in no `debug-ignored-errors' entry, a
+  condition or a regexp matched against its message; and no debugger
+  entered since the last input event, record_char's
+  `num-nonmacro-input-events' now counted). A quit the debugger was
+  entered for goes on where it was noticed, as signal_or_quit's
+  continuable quit. The C core's internal_condition_case catches with t
+  or `error' (safe_call, safe_funcall, menu_item_eval_property, the
+  command loop's) were registered as condition-case clauses of those
+  conditions; they are now their own kind, catching every signal as
+  find_handler_clause has them do, `error' letting the debugger in.
+  call_debugger gives the debugger room (max_ensure_room (100), from
+  `lisp-eval-depth-reserve') and records the input event count it was
+  entered at.
+  Local validation: the full gate across its ten groups with the
+  documented local skips, all 3,287 tests run passing (2 ignored); the
+  seven integration targets; clippy `-D warnings', rustfmt and `git diff
+  --check'; and the 45 test files that bind `debug-on-error' (process,
+  callproc, the eshell unload test, edebug, ert and the erc scenarios)
+  under the frozen runner, every outcome GNU's.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -9104,6 +9138,11 @@ frozen (run 40686502210) matched all 7,928 outcomes on its first
 attempt. Its timings: setup 84.7 s against 68.1 s (1.243), test bodies
 268.9 s against 276.0 s (0.974), in all 1.020. edebug-tests' bodies took
 1.44 times GNU's (1.58 on cdde60b).
+
+**On `fe5d827`** (round 142): full Rust gate passed (run 40693057231);
+frozen (run 40693062448) matched all 7,928 outcomes on its first
+attempt. Its timings: setup 76.5 s against 62.6 s (1.221), test bodies
+252.4 s against 260.4 s (0.969), in all 1.006.
 
 **Findings recorded, not fixed:**
 - **What the checked build costs (round 131).** mule-tests under the

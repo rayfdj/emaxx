@@ -1596,11 +1596,61 @@ impl Interpreter {
         self.call_debugger(Value::list([code]), env).map(drop)
     }
 
+    /// eval.c:max_ensure_room: ROOM more levels below max-lisp-eval-depth
+    /// for F, taken from lisp-eval-depth-reserve and given back after it
+    /// (restore_stack_limits).
+    pub(crate) fn with_ensured_room<T>(&mut self, room: i64, f: impl FnOnce(&mut Self) -> T) -> T {
+        let integer = |interp: &Self, name: &str| {
+            interp
+                .global_binding_value(name)
+                .and_then(|value| value.as_integer().ok())
+                .unwrap_or(0)
+        };
+        let old_depth = self.max_lisp_eval_depth_value();
+        let reserve = integer(self, "lisp-eval-depth-reserve");
+        let sum = (self.lisp_eval_depth as i64).saturating_add(room);
+        let diff = (sum - old_depth).min(reserve);
+        if diff <= 0 {
+            return f(self);
+        }
+        self.store_stack_limits(old_depth + diff, reserve - diff);
+        let result = f(self);
+        let reserve = integer(self, "lisp-eval-depth-reserve");
+        let raised = self.max_lisp_eval_depth_value();
+        self.store_stack_limits(old_depth, reserve + raised - old_depth);
+        result
+    }
+
+    /// max-lisp-eval-depth and lisp-eval-depth-reserve stored as the C
+    /// core's assignments do.
+    fn store_stack_limits(&mut self, depth: i64, reserve: i64) {
+        if self
+            .detached_forwarded_variables
+            .contains_key("max-lisp-eval-depth")
+        {
+            self.max_lisp_eval_depth = depth;
+            self.refresh_call_depth_gate();
+        } else {
+            self.set_symbol_value_cell("max-lisp-eval-depth", Value::Integer(depth));
+        }
+        self.set_symbol_value_cell("lisp-eval-depth-reserve", Value::Integer(reserve));
+    }
+
     /// eval.c:call_debugger.  The C path specbinds the debugger control
     /// variables around apply1(Vdebugger, arg); keep those bindings in the
-    /// same dynamic scope for native Ffuncall exits.
+    /// same dynamic scope for native Ffuncall exits.  The debugger gets
+    /// room for its printing (max_ensure_room (100)), and the input event
+    /// count it was entered at is kept (`internal-when-entered-debugger').
     pub(crate) fn call_debugger(&mut self, arg: Value, env: &mut Env) -> Result<Value, LispError> {
+        self.with_ensured_room(100, |interp| interp.call_debugger_with_room(arg, env))
+    }
+
+    fn call_debugger_with_room(&mut self, arg: Value, env: &mut Env) -> Result<Value, LispError> {
         self.clear_debug_on_next_call();
+        let events = self
+            .lookup_var("num-nonmacro-input-events", env)
+            .unwrap_or(Value::Integer(0));
+        self.set_variable("internal-when-entered-debugger", events, env);
         let mut restores = Vec::with_capacity(4);
         for (name, value) in [
             ("debugger-may-continue", Value::T),
@@ -1708,7 +1758,13 @@ impl Interpreter {
         if primitives::values_eq_in_env(self, &throw_on_input, &flag, env) {
             Err(LispError::Throw(throw_on_input, Value::T))
         } else {
-            Err(LispError::SignalValue(Value::list([Value::symbol("quit")])))
+            // quit's signal_or_quit (Qquit, Qnil, true): a quit the
+            // debugger was entered for goes on where it was noticed.
+            let quit = LispError::SignalValue(Value::list([Value::symbol("quit")]));
+            match self.signal_or_quit_entering(quit, env) {
+                (_, true) => Ok(()),
+                (error, false) => Err(error),
+            }
         }
     }
 
@@ -2008,14 +2064,9 @@ impl Interpreter {
         error: LispError,
         env: &mut Env,
     ) -> Result<Value, LispError> {
-        let result = match error.kind() {
-            LispErrorKind::Throw(_, _) | LispErrorKind::Terminate(_) => Err(error),
-            _ => self.dispatch_handler_bindings(error, env),
-        };
-        if let Err(error) = &result {
-            self.capture_batch_error_backtrace(error, env);
-        }
-        result
+        let error = self.signal_or_quit(error, env);
+        self.capture_batch_error_backtrace(&error, env);
+        Err(error)
     }
 
     /// eval.c:funcall_lambda's direct `exec_byte_code' branch.  The caller

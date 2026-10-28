@@ -4603,7 +4603,7 @@ impl Interpreter {
         }
         for handler in &self.active_handlers {
             match handler {
-                ActiveHandler::Module => {}
+                ActiveHandler::Module | ActiveHandler::Internal(_) => {}
                 ActiveHandler::Bind(_, function) => mark(function),
                 ActiveHandler::Case(heads) => {
                     for head in heads.iter() {
@@ -5078,7 +5078,7 @@ impl Interpreter {
             }
             for handler in &mut clone.active_handlers {
                 match handler {
-                    ActiveHandler::Module => {}
+                    ActiveHandler::Module | ActiveHandler::Internal(_) => {}
                     ActiveHandler::Bind(_, function) => *function = c.copy(&function.clone()),
                     ActiveHandler::Case(heads) => {
                         *heads = heads.iter().map(|head| c.copy(head)).collect();
@@ -5855,6 +5855,20 @@ pub(crate) enum ActiveHandler {
     Bind(std::rc::Rc<[String]>, Value),
     /// The clause heads of an active `condition-case' (minus :success).
     Case(std::rc::Rc<[Value]>),
+    /// An internal_condition_case of the C core: HANDLERS that are no list
+    /// (find_handler_clause answers them for any condition), t or `error';
+    /// `error' lets the debugger in (signal_or_quit's `EQ (clause,
+    /// Qerror)').
+    Internal(InternalHandlers),
+}
+
+/// The two kinds of `ActiveHandler::Internal'.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum InternalHandlers {
+    /// Qt: the catch-all.
+    All,
+    /// Qerror: catches as Qt does, and lets the debugger in.
+    Error,
 }
 
 fn make_visual_line_mode_map(interp: &mut Interpreter) -> Value {
