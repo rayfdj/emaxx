@@ -2190,6 +2190,32 @@ impl Interpreter {
     /// Recorded on the cell after a full assignment has run once, read by
     /// the fast paths of `set_internal_symbol', `bind_special_symbol' and
     /// `restore_special_binding'.
+    /// data.c:set_default_internal of SYMBOL to VALUE when it has nothing
+    /// to signal or notify: no alias, constant or watcher, a value the
+    /// slot's kind takes (converted as it converts it), and a store that
+    /// reaches the default cell alone (no C variable whose store does
+    /// more).  `set_default_internal_symbol''s store; false, with nothing
+    /// changed, for any other case.
+    pub(crate) fn store_default_value(&mut self, symbol: &SymbolName, value: Value) -> bool {
+        let cell = symbol.cell();
+        if cell.alias().is_some()
+            || cell.is_constant()
+            || cell.is_trapped_write()
+            || (cell.has_c_slot() && cell.has_store_effect())
+        {
+            return false;
+        }
+        let Ok(stored) = self.prepare_forwarded_assignment_symbol(symbol, value) else {
+            return false;
+        };
+        self.set_global_binding_resolved(symbol, stored);
+        // A C variable's slot is never plain (`learn_plain_store').
+        if !cell.plain_store() && !cell.has_c_slot() {
+            self.learn_plain_store(symbol);
+        }
+        true
+    }
+
     pub(crate) fn learn_plain_store(&mut self, symbol: &SymbolName) {
         let name = symbol.as_str();
         let plain = self.globals.alias(symbol).is_none()

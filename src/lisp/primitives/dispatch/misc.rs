@@ -388,6 +388,9 @@ fn set_default_internal_symbol(
     value: Value,
     env: &mut Env,
 ) -> Result<(), LispError> {
+    if interp.store_default_value(symbol, value) {
+        return Ok(());
+    }
     if interp.check_constant_assignment_symbol(symbol, value)? {
         return Ok(());
     }

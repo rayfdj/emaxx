@@ -324,17 +324,34 @@ impl Interpreter {
             resolved_owned = self.resolve_variable_symbol(name)?;
             &resolved_owned
         };
+        self.resolved_dynamic_value(resolved)
+            .ok_or_else(|| LispError::Void(resolved.as_str().to_owned()))
+    }
+
+    /// data.c:find_symbol_value of NAME's alias chain's end with no
+    /// lexical environment: Fboundp's answer, None for a void variable,
+    /// without the error `symbol-value' makes of that.
+    pub(crate) fn dynamic_value_symbol(
+        &self,
+        name: &SymbolName,
+    ) -> Result<Option<Value>, LispError> {
+        if self.globals.alias(name).is_none() {
+            return Ok(self.resolved_dynamic_value(name));
+        }
+        let resolved = self.resolve_variable_symbol(name)?;
+        Ok(self.resolved_dynamic_value(&resolved))
+    }
+
+    fn resolved_dynamic_value(&self, resolved: &SymbolName) -> Option<Value> {
         if (!resolved.cell().has_c_slot() || resolved.as_str() != "buffer-undo-list")
             && !self.globals.has_flag(resolved, LOCALIZED)
         {
             return self
                 .global_binding_value_symbol(resolved)
-                .or_else(|| self.builtin_symbol_value(resolved))
-                .ok_or_else(|| LispError::Void(resolved.as_str().to_owned()));
+                .or_else(|| self.builtin_symbol_value(resolved));
         }
         // No lexical environment: the dynamic value, as Fsymbol_value.
         self.find_symbol_value_resolved(resolved.as_str(), Some(resolved))
-            .ok_or_else(|| LispError::Void(resolved.as_str().to_owned()))
     }
 
     /// C readers keep using the C slot even after `makunbound' disconnects

@@ -8683,6 +8683,37 @@ setup_process_coding_systems's check now refuses). A 13-form
   the documented local skips, all 3,305 tests run passing (2 ignored);
   the seven integration targets; clippy `-D warnings', rustfmt and `git
   diff --check'.
+- **Round 159: the variable predicates of C and buffer-local
+  variables.** Round 158's native path answered a plain variable only;
+  edebug-tests' hooks are mostly C variables (`kill-buffer-hook', the
+  change functions) or buffer-local ones, whose calls still took the
+  subr's entry and its dispatch by name. `native_variable_subr' answers
+  `boundp', `default-boundp', `default-value', `local-variable-p' (of
+  the current buffer) and `set-default' of any symbol that is no alias,
+  after the handlers are synced, by the lookups the subrs make
+  (find_symbol_value, default_value, the buffer's binding, the
+  always-local flag) and set_default_internal's store when it has nothing
+  to signal, convert badly or notify (`store_default_value', which the
+  subr's own path now tries first too); the symbol is read once, by its
+  tag. Fboundp of a void variable built a `void-variable' error (a name
+  string, then its drop) to answer nil: across edebug-tests 705,744
+  times, 33M instructions beside the lookup's 102M. The lookup now
+  answers an option (`dynamic_value_symbol'), about 37 instructions a
+  call where it took about 150. edebug-tests takes 4,809M where round 158
+  left 4,914M (GNU 4,113M), `remove-hook' 85M where it took 97M (GNU
+  31M). Left of the gap: each native subr call's own path, about 150
+  instructions for these against GNU's 25 to 50, and the closure entry
+  of `mapatoms' (#304): `comp--all-classes', which `advice-add''s
+  trampoline compilation runs again and again over every symbol, is
+  130M of the file's 700M excess. A batch test runs the five subrs over
+  void, plain, buffer-local, automatically local, aliased, watched,
+  keyword and C variables (a hook, a DEFVAR_INT and a DEFVAR_BOOL), from
+  Lisp and through native `add-hook' and `remove-hook', against GNU
+  30.2.
+  Local validation: the full gate across its ten groups with
+  the documented local skips, all 3,306 tests run passing (2 ignored);
+  the seven integration targets; clippy `-D warnings', rustfmt and `git
+  diff --check'.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -9712,6 +9743,12 @@ frozen (run 40806930470) matched all 7,928 outcomes on its first
 attempt. Its timings, on a slower runner (GNU's own setup 73.3 s where
 round 156's took 61.6 s): setup 88.4 s against 73.3 s (1.205), test
 bodies 275.9 s against 291.0 s (0.948), in all 1.000.
+
+**On `330b0ab`** (round 158): full Rust gate passed (run 40817222210);
+frozen (run 40817224490) matched all 7,928 outcomes on its first
+attempt. Its timings: setup 63.2 s against 52.4 s (1.206), test bodies
+225.2 s against 240.0 s (0.938), in all 1.003. Rounds 151 to 158 were
+merged into main with it (PR 113, `9f883d2`).
 
 **Findings recorded, not fixed:**
 - **What the gate profile adds to a file's setup (round 157).**

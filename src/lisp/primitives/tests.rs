@@ -8210,6 +8210,82 @@ fn hook_variables_and_member_agree_through_native_calls() {
 }
 
 #[test]
+fn variable_predicates_agree_for_c_and_buffer_local_variables() {
+    // boundp, default-boundp, default-value, local-variable-p and
+    // set-default of void, plain, buffer-local, automatically local,
+    // aliased, watched, keyword and C variables (a hook, a DEFVAR_INT and a
+    // DEFVAR_BOOL), from Lisp and through native add-hook and remove-hook.
+    // GNU 30.2's values.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let (out)
+          (defvar r159-local nil)
+          (defvar r159-auto 1)
+          (make-variable-buffer-local 'r159-auto)
+          (defvaralias 'r159-alias 'r159-local)
+          (defvar r159-watched 0)
+          (add-variable-watcher 'r159-watched
+                                (lambda (&rest args) (push (list 'watch (nth 1 args) (nth 2 args)) out)))
+          (push (list (boundp 'r159-void) (boundp 'r159-local) (boundp 'pre-command-hook)
+                      (boundp 'fill-column) (boundp 'r159-alias) (boundp :kw) (boundp nil) (boundp t)
+                      (default-boundp 'r159-void) (default-boundp 'fill-column)
+                      (default-boundp 'r159-auto) (default-boundp 'r159-alias))
+                out)
+          (with-temp-buffer
+            (setq-local r159-local 'here)
+            (setq r159-auto 2)
+            (push (list r159-local (default-value 'r159-local) (local-variable-p 'r159-local)
+                        (local-variable-p 'r159-local (current-buffer)) r159-auto
+                        (default-value 'r159-auto) (local-variable-p 'r159-auto)
+                        (local-variable-p 'fill-column) (local-variable-p 'buffer-file-name)
+                        (local-variable-p 'r159-alias) (default-value 'r159-alias))
+                  out)
+            (set-default 'r159-local 'default)
+            (set-default 'r159-auto 3)
+            (push (list r159-local (default-value 'r159-local) r159-auto (default-value 'r159-auto))
+                  out)
+            (makunbound 'r159-local)
+            (push (list (boundp 'r159-local) (default-boundp 'r159-local)
+                        (condition-case err r159-local (error err)))
+                  out))
+          (push (list r159-local r159-auto (boundp 'r159-local)) out)
+          (let ((old (default-value 'kill-buffer-hook)))
+            (set-default 'kill-buffer-hook '(ignore))
+            (push (list kill-buffer-hook (default-value 'kill-buffer-hook)) out)
+            (set-default 'kill-buffer-hook old))
+          (set-default 'r159-watched 5)
+          (push (list r159-watched (default-value 'r159-watched)) out)
+          (push (condition-case err (set-default 'gc-cons-threshold 'x) (error err)) out)
+          (push (condition-case err (set-default nil 1) (error err)) out)
+          (push (condition-case err (set-default :kw :kw) (error err)) out)
+          (push (condition-case err (set-default :kw 1) (error err)) out)
+          (push (condition-case err (default-value 'r159-void) (error err)) out)
+          (push (condition-case err (boundp 1) (error err)) out)
+          (push (list (set-default 'indent-tabs-mode 'yes) indent-tabs-mode
+                      (default-value 'indent-tabs-mode))
+                out)
+          (set-default 'indent-tabs-mode t)
+          (with-temp-buffer
+            (let ((old (default-value 'kill-buffer-hook)))
+              (add-hook 'kill-buffer-hook 'r159-f nil t)
+              (add-hook 'after-change-functions 'r159-g)
+              (add-hook 'r159-new-hook 'r159-h)
+              (push (list kill-buffer-hook (equal (default-value 'kill-buffer-hook) old)
+                          (local-variable-p 'kill-buffer-hook)
+                          (and (memq 'r159-g after-change-functions) t) r159-new-hook)
+                    out)
+              (remove-hook 'kill-buffer-hook 'r159-f t)
+              (remove-hook 'after-change-functions 'r159-g)
+              (remove-hook 'r159-new-hook 'r159-h)
+              (push (list (equal kill-buffer-hook old) (local-variable-p 'kill-buffer-hook)
+                          (memq 'r159-g (default-value 'after-change-functions)) r159-new-hook)
+                    out)))
+          (nreverse out))"#,
+        r#"((nil t t t t t t t nil t t t) (here nil t t 2 1 t nil t t nil) (here default 2 3) (nil t (void-variable r159-local)) (default 3 t) ((ignore) (ignore)) (watch 5 set) (5 5) (wrong-type-argument integerp x) (setting-constant nil) :kw (setting-constant :kw) (void-variable r159-void) (wrong-type-argument symbolp 1) (yes t t) ((r159-f t) t t t (r159-h)) (t nil nil nil))"#,
+        "variable predicates",
+    );
+}
+
+#[test]
 fn directory_files_returns_mutable_sorted_names_with_dot_entries() {
     let unique = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
