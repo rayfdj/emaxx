@@ -368,6 +368,18 @@ pub(crate) fn default_directory() -> String {
     path_to_directory_string(&cwd)
 }
 
+/// buffer.c:init_buffer's directory: the working directory's bytes and a
+/// slash, kept unibyte until startup knows how to decode them.
+pub(crate) fn default_directory_bytes() -> Vec<u8> {
+    use std::os::unix::ffi::OsStringExt;
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let mut bytes = normalize_path(&cwd).into_os_string().into_vec();
+    if bytes.last() != Some(&b'/') {
+        bytes.push(b'/');
+    }
+    bytes
+}
+
 /// Return GNU Emacs's `system-type' spelling for a Rust target OS.
 ///
 /// GNU derives this value in configure.ac rather than exposing the platform's
@@ -1188,9 +1200,22 @@ pub(crate) fn resolve_file_name_in_env(interp: &Interpreter, env: &Env, path: &s
 /// `/var' -> `/private/var' symlink.  If the final component does not exist,
 /// retain the expanded name, matching `file-truename' at our current host
 /// abstraction boundary.
-pub(crate) fn canonical_file_name(path: &str) -> String {
+pub(crate) fn canonical_file_name(
+    interp: &Interpreter,
+    env: &Env,
+    path: &str,
+) -> Result<String, LispError> {
     let preserve_directory_syntax = path.ends_with(std::path::MAIN_SEPARATOR);
-    let mut candidate = normalize_path(Path::new(path));
+    let mut candidate = normalize_path(&host_file_name(interp, env, path)?);
+    // The resolved host name, DECODE_FILE'd back to its text.
+    let render = |candidate: &Path| -> Result<String, LispError> {
+        let (text, _) = decode_host_file_name_text(interp, env, candidate.as_os_str())?;
+        Ok(if preserve_directory_syntax {
+            file_name_as_directory(&text)
+        } else {
+            text
+        })
+    };
 
     // `std::fs::canonicalize' gives up as soon as the final target is
     // missing.  GNU file-truename instead resolves every existing symlinked
@@ -1227,21 +1252,12 @@ pub(crate) fn canonical_file_name(path: &str) -> String {
             break;
         }
         let Some(resolved) = replacement else {
-            let rendered = candidate.to_string_lossy().into_owned();
-            return if preserve_directory_syntax {
-                path_to_directory_string(&candidate)
-            } else {
-                rendered
-            };
+            return render(&candidate);
         };
         candidate = resolved;
     }
 
-    if preserve_directory_syntax {
-        path_to_directory_string(&candidate)
-    } else {
-        candidate.to_string_lossy().into_owned()
-    }
+    render(&candidate)
 }
 
 pub(crate) fn unquote_local_file_name(path: &str) -> Option<String> {
@@ -1572,12 +1588,176 @@ pub(crate) fn file_name_concat(parts: &[String]) -> String {
     result
 }
 
+/// lisp.h:CHECK_STRING_NULL_BYTES on a file name: no system takes a NUL
+/// in one.
 pub(crate) fn validate_file_name(path: &str) -> Result<(), LispError> {
     if path.contains('\0') {
-        Err(LispError::TypeError("string".into(), path.to_string()))
+        Err(LispError::WrongTypeArgument(
+            "filenamep".into(),
+            Value::String(path.into()),
+        ))
     } else {
         Ok(())
     }
+}
+
+/// The coding system file names are converted with:
+/// `file-name-coding-system', else `default-file-name-coding-system'
+/// (coding.c:encode_file_name_1 and decode_file_name), checked as
+/// code_convert_string checks it.
+fn file_name_coding(interp: &Interpreter, env: &Env) -> Result<Option<String>, LispError> {
+    for variable in ["file-name-coding-system", "default-file-name-coding-system"] {
+        if let Some(coding) = interp
+            .lookup_var(variable, env)
+            .filter(|value| !value.is_nil())
+        {
+            return super::checked_coding_name(interp, &coding);
+        }
+    }
+    Ok(None)
+}
+
+/// coding.c:encode_file_name, ENCODE_FILE: the bytes the host gets for
+/// NAME, a file name in its text view.  A unibyte name (ASCII and raw
+/// bytes) passes as its bytes; a multibyte one is encoded with
+/// `file_name_coding', or with neither variable set is its internal
+/// representation.  A NUL in the result is a `filenamep' error, the
+/// datum the encoded name.
+pub(crate) fn encode_file_name(
+    interp: &Interpreter,
+    env: &Env,
+    name: &str,
+) -> Result<Vec<u8>, LispError> {
+    let bytes = if name.is_ascii() {
+        name.as_bytes().to_vec()
+    } else if name
+        .chars()
+        .all(|ch| ch.is_ascii() || is_raw_byte_regex_char(ch))
+    {
+        name.chars()
+            .map(|ch| raw_byte_from_regex_char(ch).unwrap_or(ch as u8))
+            .collect()
+    } else {
+        match file_name_coding(interp, env)?.as_deref() {
+            None => internal_multibyte_name_bytes(name),
+            Some("utf-8" | "utf-8-unix") => super::encode_internal_multibyte_bytes(name)?,
+            Some(coding) => super::encode_text_bytes(
+                interp,
+                &StringLike {
+                    text: name.to_string(),
+                    props: Vec::new(),
+                    multibyte: true,
+                    extended_chars: Vec::new(),
+                },
+                coding,
+                false,
+                false,
+                &[],
+            )?,
+        }
+    };
+    if bytes.contains(&0) {
+        return Err(LispError::WrongTypeArgument(
+            "filenamep".into(),
+            super::bytes_to_unibyte_value(&bytes),
+        ));
+    }
+    Ok(bytes)
+}
+
+/// NAME's internal multibyte representation: UTF-8, a raw byte as its
+/// two-byte C0/C1 form (character.h CHAR_STRING of a byte8 char).
+fn internal_multibyte_name_bytes(name: &str) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(name.len());
+    for ch in name.chars() {
+        if let Some(byte) = raw_byte_from_regex_char(ch) {
+            bytes.extend([0xC0 | ((byte >> 6) & 1), 0x80 | (byte & 0x3F)]);
+        } else {
+            let mut encoded = [0u8; 4];
+            bytes.extend_from_slice(ch.encode_utf8(&mut encoded).as_bytes());
+        }
+    }
+    bytes
+}
+
+/// ENCODE_FILE of NAME as a host path.
+pub(crate) fn host_file_name(
+    interp: &Interpreter,
+    env: &Env,
+    name: &str,
+) -> Result<PathBuf, LispError> {
+    use std::os::unix::ffi::OsStringExt;
+    Ok(PathBuf::from(std::ffi::OsString::from_vec(
+        encode_file_name(interp, env, name)?,
+    )))
+}
+
+/// coding.c:decode_file_name, DECODE_FILE: the Lisp file name for the
+/// host's BYTES.  Without a coding system the bytes as a unibyte string;
+/// ASCII bytes stay unibyte (code_convert_string's ASCII shortcut);
+/// anything else decoded into a multibyte string, an invalid byte a raw
+/// byte.
+pub(crate) fn decode_file_name(
+    interp: &Interpreter,
+    env: &Env,
+    bytes: &[u8],
+) -> Result<Value, LispError> {
+    let Some(coding) = file_name_coding(interp, env)? else {
+        return Ok(super::bytes_to_unibyte_value(bytes));
+    };
+    let unix = coding.ends_with("-unix");
+    if bytes.is_ascii()
+        && super::coding_system_is_ascii_compatible(interp, &coding)
+        && (unix || !bytes.contains(&b'\r'))
+    {
+        return Ok(super::bytes_to_unibyte_value(bytes));
+    }
+    if coding == "utf-8-unix" || (coding == "utf-8" && !bytes.contains(&b'\r')) {
+        return Ok(make_shared_string_value_with_multibyte(
+            super::decode_utf8_bytes(bytes),
+            Vec::new(),
+            true,
+        ));
+    }
+    // decode_coding_object: a charset decoder's runs keep their
+    // `charset' property.
+    let decoded = super::decode_coding_object(
+        interp,
+        env,
+        super::DecodeSource::Bytes(bytes),
+        &coding,
+        None,
+    )?
+    .decoded;
+    let props = super::charset_spans_to_props(decoded.charsets, &decoded.text, None);
+    Ok(make_shared_string_value_with_extended_chars(
+        decoded.text,
+        props,
+        true,
+        decoded.extended,
+    ))
+}
+
+/// DECODE_FILE of a host NAME as its text and whether it is multibyte.
+pub(crate) fn decode_host_file_name_text(
+    interp: &Interpreter,
+    env: &Env,
+    name: &std::ffi::OsStr,
+) -> Result<(String, bool), LispError> {
+    use std::os::unix::ffi::OsStrExt;
+    let value = decode_file_name(interp, env, name.as_bytes())?;
+    let string = string_like(&value).expect("a decoded file name is a string");
+    Ok((string.text, string.multibyte))
+}
+
+/// DECODE_FILE of a host path.
+pub(crate) fn decode_host_file_name(
+    interp: &Interpreter,
+    env: &Env,
+    path: &Path,
+) -> Result<Value, LispError> {
+    use std::os::unix::ffi::OsStrExt;
+    decode_file_name(interp, env, path.as_os_str().as_bytes())
 }
 
 /// Qexpand_file_name.
@@ -1972,6 +2152,59 @@ pub(crate) fn dispatch_file_name_handler(
     Ok(FileNameDispatch::Native(normalized))
 }
 
+/// dired.c's open_directory and read_dirent loop: DIRECTORY's entry
+/// names in the order the system returns them, "." and ".." among them.
+/// An error names the step that failed ("Opening directory" or "Reading
+/// directory").
+pub(crate) fn read_directory_names(
+    directory: &Path,
+) -> Result<Vec<std::ffi::OsString>, (&'static str, std::io::Error)> {
+    use std::os::unix::ffi::{OsStrExt, OsStringExt};
+    let path = std::ffi::CString::new(directory.as_os_str().as_bytes()).map_err(|_| {
+        (
+            "Opening directory",
+            std::io::Error::from_raw_os_error(libc::EINVAL),
+        )
+    })?;
+    // SAFETY: PATH is a NUL-terminated string for the call's duration.
+    let stream = unsafe { libc::opendir(path.as_ptr()) };
+    if stream.is_null() {
+        return Err(("Opening directory", std::io::Error::last_os_error()));
+    }
+    let mut names = Vec::new();
+    let result = loop {
+        // readdir signals an error only through errno; clear it first.
+        // SAFETY: errno is this thread's own.
+        unsafe {
+            #[cfg(target_os = "linux")]
+            {
+                *libc::__errno_location() = 0;
+            }
+            #[cfg(target_os = "macos")]
+            {
+                *libc::__error() = 0;
+            }
+        }
+        // SAFETY: STREAM is the open stream from opendir above.
+        let entry = unsafe { libc::readdir(stream) };
+        if entry.is_null() {
+            let error = std::io::Error::last_os_error();
+            break if error.raw_os_error().unwrap_or(0) == 0 {
+                Ok(())
+            } else {
+                Err(("Reading directory", error))
+            };
+        }
+        // SAFETY: ENTRY points at the dirent readdir returned, whose
+        // d_name is NUL-terminated and stays valid until the next call.
+        let name = unsafe { std::ffi::CStr::from_ptr((*entry).d_name.as_ptr()) };
+        names.push(std::ffi::OsString::from_vec(name.to_bytes().to_vec()));
+    };
+    // SAFETY: STREAM is open and closed exactly once.
+    unsafe { libc::closedir(stream) };
+    result.map(|()| names)
+}
+
 pub(crate) fn directory_files(
     interp: &mut Interpreter,
     directory: &str,
@@ -1981,61 +2214,69 @@ pub(crate) fn directory_files(
     count: Option<usize>,
     env: &Env,
 ) -> Result<Value, LispError> {
-    let directory = resolve_file_name_in_env(interp, env, directory);
-    validate_file_name(&directory)?;
-    let mut entries = vec![".".to_string(), "..".to_string()];
-    let iter = fs::read_dir(&directory)
-        .map_err(|error| file_operation_error("Opening directory", &error, &directory))?;
-    for entry in iter {
-        let entry =
-            entry.map_err(|error| file_operation_error("Reading directory", &error, &directory))?;
-        entries.push(entry.file_name().to_string_lossy().into_owned());
+    use std::os::unix::ffi::OsStrExt;
+    if let Some(matcher) = matcher
+        && !matcher.is_string()
+    {
+        return Err(LispError::WrongTypeArgument("stringp".into(), *matcher));
     }
-    if let Some(matcher) = matcher {
-        if !matcher.is_string() {
-            return Err(LispError::WrongTypeArgument("stringp".into(), *matcher));
+    let directory = resolve_file_name_in_env(interp, env, directory);
+    let names = read_directory_names(&host_file_name(interp, env, &directory)?)
+        .map_err(|(step, error)| file_operation_error(step, &error, &directory))?;
+    // dired.c directory_files_internal: each name read is DECODE_FILE'd
+    // and matched, up to COUNT matches are kept in the order read, and a
+    // FULL name is the directory's text and the name's (concatenated
+    // bytes, so without the name's text properties), multibyte when
+    // either is.
+    let prefix = file_name_as_directory(&directory);
+    let directory_multibyte = prefix
+        .chars()
+        .any(|ch| !is_raw_byte_regex_char(ch) && (ch as u32) > 0x7f);
+    // dired.c: fast_string_match_internal, case-sensitive off Windows.
+    let mut match_env = env.clone();
+    let mut entries = Vec::new();
+    for host_name in names {
+        if count.is_some_and(|count| entries.len() >= count) {
+            break;
         }
-        // dired.c: fast_string_match_internal, case-sensitive off Windows.
-        let mut match_env = env.clone();
-        let mut filtered = Vec::new();
-        for entry in entries {
-            if search::fast_text_match(
+        let name = decode_file_name(interp, env, host_name.as_bytes())?;
+        let text = string_text(&name)?;
+        if let Some(matcher) = matcher
+            && search::fast_text_match(
                 interp,
                 &mut match_env,
                 matcher,
-                &entry,
+                &text,
                 &[],
                 true,
                 None,
                 false,
             )?
-            .is_some()
-            {
-                filtered.push(entry);
-            }
+            .is_none()
+        {
+            continue;
         }
-        entries = filtered;
-    }
-    if !nosort {
-        entries.sort();
-    }
-    if let Some(count) = count {
-        entries.truncate(count);
-    }
-    Ok(Value::list(entries.into_iter().map(|entry| {
-        let text = if full {
-            Path::new(&directory)
-                .join(&entry)
-                .to_string_lossy()
-                .into_owned()
+        let name = if full {
+            let multibyte =
+                directory_multibyte || string_like(&name).is_some_and(|string| string.multibyte);
+            make_shared_string_value_with_multibyte(
+                format!("{prefix}{text}"),
+                Vec::new(),
+                multibyte,
+            )
         } else {
-            entry
+            name
         };
-        let multibyte = text
-            .chars()
-            .any(|ch| !is_raw_byte_regex_char(ch) && (ch as u32) > 0x7f);
-        make_shared_string_value_with_multibyte(text, Vec::new(), multibyte)
-    })))
+        entries.push((text, name));
+    }
+    // The list is consed up in reading order, so NOSORT gives it last
+    // read first; otherwise it is sorted with string-lessp.
+    if nosort {
+        entries.reverse();
+    } else {
+        entries.sort_by(|left, right| left.0.cmp(&right.0));
+    }
+    Ok(Value::list(entries.into_iter().map(|(_, name)| name)))
 }
 
 pub(crate) fn default_charset_plist(name: &str, interp: &Interpreter) -> Option<Value> {
@@ -2175,7 +2416,7 @@ pub(crate) fn path_to_directory_string(path: &Path) -> String {
     rendered
 }
 
-pub(crate) fn file_readable_p(path: &str) -> bool {
+pub(crate) fn file_readable_p(path: &Path) -> bool {
     fs::File::open(path).is_ok()
 }
 
@@ -2216,10 +2457,11 @@ pub(crate) fn accessible_directory(path: &[u8]) -> std::io::Result<()> {
 /// fileio.c:Ffile_writable_p past its handler, for the expanded PATH:
 /// file_access_p with W_OK, and for a file that does not exist, with
 /// W_OK | X_OK on its directory, where it would be created.
-pub(crate) fn file_writable_p(path: &str) -> bool {
+pub(crate) fn file_writable_p(path: &Path) -> bool {
     #[cfg(unix)]
     {
-        let access = |name: &str, mode: libc::c_int| {
+        use std::os::unix::ffi::OsStrExt;
+        let access = |name: &[u8], mode: libc::c_int| {
             let Ok(name) = std::ffi::CString::new(name) else {
                 return Err(libc::EINVAL);
             };
@@ -2232,10 +2474,14 @@ pub(crate) fn file_writable_p(path: &str) -> bool {
                 Err(std::io::Error::last_os_error().raw_os_error().unwrap_or(0))
             }
         };
+        let path = path.as_os_str().as_bytes();
         match access(path, libc::W_OK) {
             Ok(()) => true,
             Err(libc::ENOENT) => {
-                let directory = path.rfind('/').map_or("./", |slash| &path[..=slash]);
+                let directory = path
+                    .iter()
+                    .rposition(|byte| *byte == b'/')
+                    .map_or(&b"./"[..], |slash| &path[..=slash]);
                 access(directory, libc::W_OK | libc::X_OK).is_ok()
             }
             Err(_) => false,
@@ -2247,17 +2493,18 @@ pub(crate) fn file_writable_p(path: &str) -> bool {
         // file in an existing directory.
         match fs::metadata(path) {
             Ok(metadata) => !metadata.permissions().readonly(),
-            Err(_) => Path::new(path).parent().is_some_and(Path::is_dir),
+            Err(_) => path.parent().is_some_and(Path::is_dir),
         }
     }
 }
 
 /// fileio.c Ffile_executable_p is `file_access_p (name, X_OK)': a plain
 /// `faccessat' with AT_EACCESS, so a searchable directory is executable too.
-pub(crate) fn file_executable_p(path: &str) -> bool {
+pub(crate) fn file_executable_p(path: &Path) -> bool {
     #[cfg(unix)]
     {
-        let Ok(path) = std::ffi::CString::new(path) else {
+        use std::os::unix::ffi::OsStrExt;
+        let Ok(path) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
             return false;
         };
         // SAFETY: `path' is a valid NUL-terminated string for the call.

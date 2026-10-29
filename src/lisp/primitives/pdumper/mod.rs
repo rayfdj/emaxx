@@ -84,8 +84,6 @@ fn dump_with_context(
         return Err(LispError::WrongTypeArgument("stringp".into(), *filename));
     };
     let filename = super::system::expand_file_name_runtime(interp, env, &name, None)?;
-    // ENCODE_FILE: the host receives the expanded name as the same UTF-8
-    // bytes every other file primitive hands it.
     // record_unwind_protect_ptr (dump_unwind_cleanup, ctx); block_input ():
     // Emaxx has no asynchronous input handler to block.
     let context = DumpContextVariables::enter(interp);
@@ -157,7 +155,8 @@ fn write_dump(
             .create(true)
             .truncate(true)
             .mode(0o666)
-            .open(filename)
+            // ENCODE_FILE.
+            .open(super::system::host_file_name(interp, env, filename)?)
     }
     .map_err(|error| {
         LispError::SignalValue(super::file_io::file_operation_error_value(

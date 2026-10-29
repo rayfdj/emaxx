@@ -127,16 +127,8 @@ impl Interpreter {
         // callproc.c:set_initial_environment fills both lists from
         // environ (Fdump_emacs_portable dumped `process-environment' as
         // nil for exactly this).
-        let environment = || {
-            Value::list(
-                initial_process_environment()
-                    .iter()
-                    .map(|(name, value)| Value::String(format!("{name}={value}").into()))
-                    .collect::<Vec<_>>(),
-            )
-        };
-        self.set_global_binding("initial-environment", environment());
-        self.set_global_binding("process-environment", environment());
+        self.set_global_binding("initial-environment", initial_environment_list());
+        self.set_global_binding("process-environment", initial_environment_list());
         // xfaces.c:init_xfaces: lface_id_to_name from the loaded
         // face--new-frame-defaults.
         self.rebuild_lface_id_to_name();
@@ -156,7 +148,7 @@ impl Interpreter {
             .unwrap_or_else(|| self.create_buffer("*scratch*").0);
         self.set_current_buffer_id(scratch)?;
         let mut directory =
-            primitives::bytes_to_shared_unibyte_value(primitives::default_directory().as_bytes());
+            primitives::bytes_to_shared_unibyte_value(&primitives::default_directory_bytes());
         let handler = primitives::call(
             self,
             "find-file-name-handler",

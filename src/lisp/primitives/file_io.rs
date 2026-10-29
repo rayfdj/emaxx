@@ -41,9 +41,13 @@ pub(crate) fn props_at_string_offset(
         .unwrap_or_default()
 }
 
-pub(crate) fn file_modtime(path: &str) -> Result<Option<crate::buffer::FileModTime>, LispError> {
+pub(crate) fn file_modtime(
+    interp: &Interpreter,
+    env: &Env,
+    path: &str,
+) -> Result<Option<crate::buffer::FileModTime>, LispError> {
     let local_path = unquote_local_file_name(path).unwrap_or_else(|| path.to_string());
-    match fs::metadata(local_path) {
+    match fs::metadata(host_file_name(interp, env, &local_path)?) {
         Ok(metadata) => Ok(Some(crate::buffer::FileModTime {
             modified: metadata
                 .modified()
@@ -147,12 +151,13 @@ fn system_time_to_timespec(time: SystemTime) -> libc::timespec {
 
 pub(crate) fn set_file_times_path(
     path: &str,
+    host: &Path,
     modified: SystemTime,
     nofollow: bool,
 ) -> Result<(), LispError> {
     #[cfg(unix)]
     {
-        let c_path = CString::new(Path::new(path).as_os_str().as_bytes())
+        let c_path = CString::new(host.as_os_str().as_bytes())
             .map_err(|_| LispError::Signal("File name contains nul byte".into()))?;
         let timestamp = system_time_to_timespec(modified);
         // fileio.c Fset_file_times: utimensat with both atime and mtime at
@@ -177,7 +182,7 @@ pub(crate) fn set_file_times_path(
     #[cfg(not(unix))]
     {
         let _ = (modified, nofollow);
-        fs::metadata(path)
+        fs::metadata(host)
             .map(|_| ())
             .map_err(|error| file_operation_error("Setting file times", &error, path))
     }
@@ -281,6 +286,8 @@ pub(crate) fn is_circular_list_value(value: &Value) -> bool {
 }
 
 pub(crate) fn make_temp_file_internal(
+    interp: &Interpreter,
+    env: &Env,
     prefix: &str,
     dir_flag: &Value,
     suffix: &str,
@@ -296,7 +303,7 @@ pub(crate) fn make_temp_file_internal(
             "{prefix}{}{suffix}",
             crate::lisp::primitives::coding::random_temp_suffix()
         );
-        let candidate = PathBuf::from(&path);
+        let candidate = host_file_name(interp, env, &path)?;
         last = path;
         if matches!(dir_flag.kind(), Kind::Integer(0)) {
             if candidate.exists() {
@@ -362,13 +369,13 @@ pub(crate) fn make_temp_file_internal(
 
 pub(crate) fn read_insert_file_bytes(
     path: &str,
+    host: &Path,
     start: Option<usize>,
     end: Option<usize>,
 ) -> Result<Vec<u8>, LispError> {
-    validate_file_name(path)?;
     let input_error =
         |error: std::io::Error| LispError::SignalValue(file_input_error_value(&error, path));
-    let metadata = fs::metadata(path).map_err(input_error)?;
+    let metadata = fs::metadata(host).map_err(input_error)?;
     if metadata.is_dir() {
         return Err(LispError::SignalValue(file_error_with_detail_value(
             "Read error",
@@ -377,7 +384,7 @@ pub(crate) fn read_insert_file_bytes(
         )));
     }
     if metadata.file_type().is_file() {
-        let mut bytes = fs::read(path).map_err(input_error)?;
+        let mut bytes = fs::read(host).map_err(input_error)?;
         let start = start.unwrap_or(0).min(bytes.len());
         let end = end.unwrap_or(bytes.len()).clamp(start, bytes.len());
         bytes.truncate(end);
@@ -392,7 +399,7 @@ pub(crate) fn read_insert_file_bytes(
         )));
     }
     let limit = end.unwrap_or(8192);
-    let mut file = fs::File::open(path).map_err(input_error)?;
+    let mut file = fs::File::open(host).map_err(input_error)?;
     let mut buffer = vec![0; limit];
     let read = file.read(&mut buffer).map_err(input_error)?;
     buffer.truncate(read);
@@ -618,8 +625,7 @@ pub(crate) fn write_region_value_with_logical_path(
     }
     let requested_path = string_text(&args[2])?;
     let path = resolve_file_name_in_env(interp, env, &requested_path);
-    validate_file_name(&path)?;
-    let existed_before_write = fs::symlink_metadata(&path).is_ok();
+    let existed_before_write = fs::symlink_metadata(host_file_name(interp, env, &path)?).is_ok();
     if normalized[6].is_truthy()
         && normalized[6].symbol_str() != Some("excl")
         && existed_before_write
@@ -817,10 +823,11 @@ fn write_region_with_coding(
     // lock_file asks about a supersession threat even when
     // `create-lockfiles' makes no lock), Funlock_file once it is written.
     flock_file(interp, env, Value::String(lock_path.clone().into()))?;
+    let host = host_file_name(interp, env, path)?;
     let write_result = (|| {
         let exclusive = args[6].symbol_str() == Some("excl");
         if args[3].is_nil() && !exclusive {
-            return fs::write(path, &bytes).map_err(|error| file_output_error(path, &error));
+            return fs::write(&host, &bytes).map_err(|error| file_output_error(path, &error));
         }
         let offset = args
             .get(3)
@@ -833,7 +840,7 @@ fn write_region_with_coding(
             .truncate(args[3].is_nil())
             .append(append)
             .write(true)
-            .open(path)
+            .open(&host)
             .map_err(|error| {
                 if exclusive && error.kind() == ErrorKind::AlreadyExists {
                     file_operation_error("Opening output file", &error, logical_path)
@@ -881,7 +888,7 @@ fn write_region_with_coding(
         interp
             .buffer
             .borrow_mut()
-            .set_visited_file_modtime(file_modtime(path)?);
+            .set_visited_file_modtime(file_modtime(interp, env, path)?);
         interp.buffer.borrow_mut().set_unmodified();
     }
     if interp
@@ -1476,7 +1483,8 @@ fn auto_coding_for_file(
         }
         auto_coding_in_empty_buffer(interp, env, function, bytes, filename, decided_bytes)?
     } else {
-        let Some(head_and_tail) = auto_coding_file_sample(filename)? else {
+        let host = host_file_name(interp, env, filename)?;
+        let Some(head_and_tail) = auto_coding_file_sample(filename, &host)? else {
             return Ok(None);
         };
         auto_coding_in_work_buffer(interp, env, function, &head_and_tail, filename)?
@@ -1488,18 +1496,18 @@ fn auto_coding_for_file(
 /// buffer holding text: none for a file that is not regular, all of one
 /// of 4K or less, else its first 1K and what a read of 3K after
 /// `lseek (fd, st_size - 3K, SEEK_CUR)' finds.
-fn auto_coding_file_sample(path: &str) -> Result<Option<Vec<u8>>, LispError> {
+fn auto_coding_file_sample(path: &str, host: &Path) -> Result<Option<Vec<u8>>, LispError> {
     use std::io::{Seek, SeekFrom};
     let read_error = |error: std::io::Error| {
         LispError::SignalValue(file_operation_error_value("Read error", &error, path))
     };
-    let Ok(metadata) = fs::metadata(path) else {
+    let Ok(metadata) = fs::metadata(host) else {
         return Ok(None);
     };
     if !metadata.is_file() {
         return Ok(None);
     }
-    let mut file = fs::File::open(path).map_err(read_error)?;
+    let mut file = fs::File::open(host).map_err(read_error)?;
     let size = metadata.len();
     let mut sample = Vec::with_capacity(4096);
     if size <= 4096 {
@@ -1808,7 +1816,9 @@ pub(crate) fn insert_file_contents(
     {
         let _ = checked_coding_symbol(interp, &coding)?;
     }
-    let bytes = match read_insert_file_bytes(&path, start, end) {
+    let bytes = match host_file_name(interp, env, &path)
+        .and_then(|host| read_insert_file_bytes(&path, &host, start, end))
+    {
         Ok(bytes) => bytes,
         Err(error) => {
             // GNU completes the visiting part of `insert-file-contents'
@@ -2021,11 +2031,11 @@ pub(crate) fn insert_file_contents(
     restore_result?;
     if visit {
         interp.buffer.borrow_mut().file = Some(path.clone());
-        interp.buffer.borrow_mut().file_truename = Some(canonical_file_name(&path));
+        interp.buffer.borrow_mut().file_truename = Some(canonical_file_name(interp, env, &path)?);
         interp
             .buffer
             .borrow_mut()
-            .set_visited_file_modtime(file_modtime(&path)?);
+            .set_visited_file_modtime(file_modtime(interp, env, &path)?);
         interp.buffer.borrow_mut().set_unmodified();
         // GNU restores the pre-read undo list when visiting (fileio.c keeps
         // it aside around the insertion), so the very first interactive undo

@@ -581,9 +581,11 @@ fn make_lock_file_name(
     if name.is_nil() {
         return Ok(None);
     }
-    CString::new(string_text(&name)?)
-        .map(Some)
-        .map_err(|_| LispError::Signal("File name contains nul byte".into()))
+    // ENCODE_FILE, which refuses a NUL.
+    let name = encode_file_name(interp, env, &string_text(&name)?)?;
+    Ok(Some(
+        CString::new(name).expect("an encoded file name holds no NUL"),
+    ))
 }
 
 /// filelock.c:lock_file: FILE locked, serving notice on the world that it

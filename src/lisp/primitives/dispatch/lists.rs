@@ -7,19 +7,23 @@ fn event_vector(events: impl IntoIterator<Item = Value>) -> Value {
     Value::vector(events)
 }
 
-fn event_array(events: &[Value], force_vector: bool) -> Value {
+/// keyboard.c:make_event_array: a unibyte string when every event is a
+/// character in 0...127 once the meta bit and the bits above it are
+/// dropped (meta moves to the string byte's 0200 bit), else a vector.
+pub(crate) fn event_array(events: &[Value], force_vector: bool) -> Value {
+    const CHAR_META: i64 = 0x0800_0000;
     if !force_vector {
-        let characters = events
+        let bytes = events
             .iter()
-            .map(|event| {
-                let Kind::Integer(code) = event.kind() else {
-                    return None;
-                };
-                u32::try_from(code).ok().and_then(char::from_u32)
+            .map(|event| match event.kind() {
+                Kind::Integer(code) if code & (CHAR_META - 1) < 0o200 => {
+                    Some((code & 0o177) as u8 | if code & CHAR_META != 0 { 0o200 } else { 0 })
+                }
+                _ => None,
             })
-            .collect::<Option<String>>();
-        if let Some(characters) = characters {
-            return Value::String(characters.into());
+            .collect::<Option<Vec<u8>>>();
+        if let Some(bytes) = bytes {
+            return crate::lisp::primitives::bytes_to_unibyte_value(&bytes);
         }
     }
     event_vector(events.iter().cloned())
@@ -1513,13 +1517,17 @@ define_dispatch!(
                 }
                 ensure_interaction_allowed(interp, env)?;
                 let initial_value = args.get(1).cloned().unwrap_or(Value::Nil);
-                let initial = string_like(&initial_value)
-                    .map(|string| string.text)
-                    .unwrap_or_default();
                 let prompt = args[0];
                 if string_like(&prompt).is_none() {
                     return Err(wrong_type_argument("stringp", prompt));
                 }
+                // read_minibuf checks INITIAL, a string or (STRING .
+                // POSITION), before the recursive-read guard.
+                let (initial_string, _) =
+                    crate::lisp::primitives::minibuffer_initial_input(&initial_value)?;
+                let initial = string_like(&initial_string)
+                    .map(|string| string.text)
+                    .unwrap_or_default();
                 crate::lisp::primitives::check_recursive_minibuffer(interp, env)?;
                 let local_map = (name == "read-from-minibuffer")
                     .then(|| args.get(2).filter(|map| !map.is_nil()).cloned())
@@ -1857,11 +1865,22 @@ pub(super) fn direct_member_family(
     #[derive(Clone, Copy)]
     enum MemTest {
         Equal,
+        // An ELT (A . B) of two fixnums or bare symbols, whose `equal'
+        // elements are the conses of an A and a B they are EQ to.
+        AtomPair(Value, Value),
         Eql,
         Eq,
     }
+    let atom = |value: Value| value.is_fixnum() || value.is_symbol();
     let test = match name {
-        "member" => MemTest::Equal,
+        // Fmember: an eq-comparable ELT is Fmemq's.
+        "member" if eq_comparable_value(interp, &args[0], env) => MemTest::Eq,
+        "member" => match args[0].cons_ref() {
+            Some(pair) if atom(pair.car.get()) && atom(pair.cdr.get()) => {
+                MemTest::AtomPair(pair.car.get(), pair.cdr.get())
+            }
+            _ => MemTest::Equal,
+        },
         "memql" => MemTest::Eql,
         _ => MemTest::Eq,
     };
@@ -1871,6 +1890,21 @@ pub(super) fn direct_member_family(
         let item = cell.car.get();
         let matches = match test {
             MemTest::Equal => values_equal(interp, &item, &args[0])?,
+            // internal_equal of a cons and anything else is false; of two
+            // conses, the cars' and then the cdrs', each EQ for atoms like
+            // these, unless a part of ITEM is vectorlike (a positioned
+            // symbol, a bignum), which the full walk compares.
+            MemTest::AtomPair(car, cdr) => match item.cons_ref() {
+                None => false,
+                Some(pair) => {
+                    let (left, right) = (pair.car.get(), pair.cdr.get());
+                    if left.is_vectorlike() || right.is_vectorlike() {
+                        values_equal(interp, &item, &args[0])?
+                    } else {
+                        left.eq_value(car) && right.eq_value(cdr)
+                    }
+                }
+            },
             MemTest::Eql => values_eql(&item, &args[0]),
             MemTest::Eq => values_eq_in_env(interp, &item, &args[0], env),
         };

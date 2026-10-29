@@ -176,6 +176,17 @@ fn internal_equal_1(
         if o1.eq_value(o2) {
             return Ok(true);
         }
+        // XTYPE at tail_recurse, at any depth: objects of two types are
+        // not equal, nor two symbols or two fixnums that are not EQ (the
+        // switch has no case for them), so a list's last cdr is settled
+        // here; a fixnum and a vectorlike go on, as in `internal_equal'.
+        if o1.xtype() != o2.xtype() {
+            if !(o1.is_fixnum() && o2.is_vectorlike() || o2.is_fixnum() && o1.is_vectorlike()) {
+                return Ok(false);
+            }
+        } else if o1.is_symbol() || o1.is_fixnum() {
+            return Ok(false);
+        }
         if o1.is_cons() && o2.is_cons() {
             let mut tail = ForEachTail::new(o1);
             while let Some(cell) = o1.cons_ref() {

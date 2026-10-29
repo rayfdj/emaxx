@@ -265,7 +265,7 @@ fn sqlite_open(
         // ENCODE_FILE (Fexpand_file_name (file, Qnil)).
         let expanded =
             super::primitives::call(interp, "expand-file-name", std::slice::from_ref(&file), env)?;
-        string_text(&expanded)?.into_bytes()
+        crate::lisp::primitives::encode_file_name(interp, env, &string_text(&expanded)?)?
     } else {
         // In-memory databases have to have different names to refer to
         // different databases.

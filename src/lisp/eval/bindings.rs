@@ -295,6 +295,27 @@ impl Interpreter {
         self.global_binding_value_symbol(name)
     }
 
+    /// The value of NAME while it is a plain variable (SYMBOL_PLAINVAL: no
+    /// alias, buffer-local or let-local flag and no forwarding, which each
+    /// clear `plain_store'), None when it is void or anything else.  For
+    /// such a symbol `boundp' and `default-boundp' are t, `default-value'
+    /// is this value and `local-variable-p' is nil.
+    pub(crate) fn plain_variable_value(&self, name: &SymbolName) -> Option<Value> {
+        if !self.globals.plain_store(name) || name.cell().is_kboard_forwarded() {
+            return None;
+        }
+        self.globals.value(name)
+    }
+
+    /// Store VALUE into NAME's value cell while it is a plain, bound
+    /// variable, as `setq_variable_symbol''s plain store does; false, with
+    /// nothing changed, for any other variable.
+    pub(crate) fn store_plain_variable(&self, name: &SymbolName, value: Value) -> bool {
+        self.globals.plain_store(name)
+            && !name.cell().is_kboard_forwarded()
+            && name.cell().replace_bound_value(value)
+    }
+
     pub(crate) fn symbol_value_cell_symbol(&self, name: &SymbolName) -> Result<Value, LispError> {
         let resolved_owned;
         let resolved = if self.globals.alias(name).is_none() {

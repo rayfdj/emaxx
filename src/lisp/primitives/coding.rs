@@ -1390,17 +1390,7 @@ fn decode_coding_raw_text_block(bytes: &[u8], block: &mut DecodeBlock) -> Decode
         bytes.len()
     };
     let mut out = DecodedText::new();
-    out.text.reserve(bytes.len());
-    let mut rest = &bytes[..end];
-    while !rest.is_empty() {
-        let ascii = ascii_prefix_len(rest);
-        out.push_ascii(&rest[..ascii]);
-        rest = &rest[ascii..];
-        if let Some((&byte, after)) = rest.split_first() {
-            out.push_byte(byte);
-            rest = after;
-        }
-    }
+    out.push_raw_bytes(&bytes[..end]);
     block.finish(&mut out, bytes, end);
     out
 }
@@ -2202,6 +2192,32 @@ impl DecodedText {
             self.text.push_str(run);
             self.chars += run.chars().count();
         }
+    }
+
+    /// Store each byte of RUN as `push_byte' does, writing the UTF-8 of
+    /// a non-ASCII byte's character, U+E080..U+E0FF, as its three bytes.
+    pub(crate) fn push_raw_bytes(&mut self, run: &[u8]) {
+        let high: usize = run
+            .chunks(1 << 20)
+            .map(|chunk| chunk.iter().map(|&byte| u32::from(byte >> 7)).sum::<u32>() as usize)
+            .sum();
+        self.text.reserve(run.len() + 2 * high);
+        // SAFETY: only ASCII bytes and the whole sequences EE 82 80 to
+        // EE 83 BF go in.
+        let out = unsafe { self.text.as_mut_vec() };
+        let mut rest = run;
+        while !rest.is_empty() {
+            let ascii = ascii_prefix_len(rest);
+            out.extend_from_slice(&rest[..ascii]);
+            rest = &rest[ascii..];
+            while let Some((&byte, after)) = rest.split_first()
+                && byte >= 0x80
+            {
+                out.extend_from_slice(&[0xEE, 0x80 | (byte >> 6), 0x80 | (byte & 0x3F)]);
+                rest = after;
+            }
+        }
+        self.chars += run.len();
     }
 
     /// Store the ASCII run RUN.

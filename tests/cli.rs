@@ -180,6 +180,52 @@ fn linux_entrypoint_preserves_arguments_environment_and_exit_status() {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn a_raw_byte_environment_and_working_directory_start_like_gnu() {
+    // callproc.c:set_initial_environment makes each entry with
+    // build_string, unibyte for bytes that are not valid multibyte text,
+    // and buffer.c:init_buffer keeps the working directory's bytes
+    // unibyte; std::env::vars panicked on the first of them.
+    use std::os::unix::ffi::OsStrExt;
+    let oracle = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../emacs/src/emacs");
+    let root = unique_temp_path("emaxx-raw-byte-cwd");
+    let directory = root.join(std::ffi::OsStr::from_bytes(b"x\xe9y"));
+    std::fs::create_dir_all(&directory).unwrap();
+    for binary in [oracle.as_path(), common::emaxx(false)] {
+        let result = Command::new(binary)
+            .args([
+                "-Q",
+                "--batch",
+                "--eval",
+                "(prin1 (list (append (seq-find (lambda (s) (string-prefix-p \"RAWBYTE_VAR=\" s)) \
+                 process-environment) nil) (append (getenv \"RAWBYTE_VAR\") nil) \
+                 (multibyte-string-p default-directory) (last (append default-directory nil) 4) \
+                 (file-directory-p default-directory)))",
+            ])
+            .current_dir(&directory)
+            .env("PWD", &directory)
+            .env("LC_ALL", "C")
+            .env("LANG", "C")
+            .env("RAWBYTE_VAR", std::ffi::OsStr::from_bytes(b"a\xe9"))
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}: {:?}",
+            binary.display(),
+            result
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&result.stdout),
+            "((82 65 87 66 89 84 69 95 86 65 82 61 97 233) (97 233) nil (120 233 121 47) t)",
+            "{}",
+            binary.display()
+        );
+    }
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 #[test]
 fn linux_batch_entrypoint_preserves_inherited_sigpipe() {

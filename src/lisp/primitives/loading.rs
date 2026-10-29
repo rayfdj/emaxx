@@ -991,11 +991,14 @@ pub(crate) fn maybe_swap_for_native(
         return Ok(resolved.to_path_buf());
     }
 
+    // The names here are Lisp file names' text; each reaches the host
+    // ENCODE_FILE'd, as lread.c's maybe_swap_for_eln passes them.
+    let host = |path: &Path| host_file_name(interp, env, &path.to_string_lossy());
     let mut source = resolved.to_path_buf();
     source.set_extension("el");
-    if !fs::is_regular_file(&source) {
+    if !fs::is_regular_file(host(&source)?) {
         let compressed = PathBuf::from(format!("{}.gz", source.display()));
-        if !fs::is_regular_file(&compressed) {
+        if !fs::is_regular_file(host(&compressed)?) {
             return Ok(resolved.to_path_buf());
         }
         source = compressed;
@@ -1020,7 +1023,7 @@ pub(crate) fn maybe_swap_for_native(
     let invocation_directory = interp
         .lookup_var("invocation-directory", env)
         .and_then(|value| string_like(&value).map(|string| PathBuf::from(string.text)));
-    let resolved_mtime = fs::metadata(resolved)
+    let resolved_mtime = fs::metadata(host_file_name(interp, env, &resolved.to_string_lossy())?)
         .and_then(|metadata| metadata.modified())
         .ok();
 
@@ -1039,7 +1042,8 @@ pub(crate) fn maybe_swap_for_native(
         };
         system_directory = Some(directory.clone());
         let candidate = directory.join(&version).join(&relative);
-        if native_candidate_is_current(&candidate, resolved_mtime) {
+        let host = host_file_name(interp, env, &candidate.to_string_lossy())?;
+        if native_candidate_is_current(&host, resolved_mtime) {
             record_native_source(interp, &candidate, &source, env)?;
             return Ok(candidate);
         }
@@ -1049,7 +1053,8 @@ pub(crate) fn maybe_swap_for_native(
     // native directory after all ordinary cache directories.
     if let Some(directory) = system_directory {
         let candidate = directory.join(version).join("preloaded").join(relative);
-        if native_candidate_is_current(&candidate, resolved_mtime) {
+        let host = host_file_name(interp, env, &candidate.to_string_lossy())?;
+        if native_candidate_is_current(&host, resolved_mtime) {
             record_native_source(interp, &candidate, &source, env)?;
             return Ok(candidate);
         }
@@ -1228,8 +1233,9 @@ pub(crate) fn locate_file_search(
 /// openp's access check for a fixnum predicate: `faccessat' with the mask
 /// and AT_EACCESS, then an accessible directory counts as EISDIR rather
 /// than a match.  The error is the errno openp records.
-pub(crate) fn locate_file_access_probe(mask: i64, candidate: &str) -> Result<(), i32> {
-    let Ok(path) = std::ffi::CString::new(candidate) else {
+pub(crate) fn locate_file_access_probe(mask: i64, candidate: &Path) -> Result<(), i32> {
+    use std::os::unix::ffi::OsStrExt;
+    let Ok(path) = std::ffi::CString::new(candidate.as_os_str().as_bytes()) else {
         return Err(libc::ENOENT);
     };
     let Ok(mode) = libc::c_int::try_from(mask) else {
@@ -1245,7 +1251,7 @@ pub(crate) fn locate_file_access_probe(mask: i64, candidate: &str) -> Result<(),
     }
     // fileio.c:file_directory_p's generic POSIX branch. A failed directory
     // probe is a match only for ENOENT/ENOTDIR, not every metadata error.
-    let directory_error = match accessible_directory(candidate.as_bytes()) {
+    let directory_error = match accessible_directory(candidate.as_os_str().as_bytes()) {
         Ok(()) => return Err(libc::EISDIR),
         Err(error) => error.raw_os_error().unwrap_or(libc::EIO),
     };

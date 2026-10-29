@@ -7969,6 +7969,247 @@ fn file_name_path_helpers_match_core_unix_cases() {
 }
 
 #[test]
+fn file_names_reach_the_host_through_encode_file_and_return_through_decode_file() {
+    // coding.c:encode_file_name and decode_file_name: a unibyte name's
+    // bytes pass unchanged, a multibyte one is encoded with
+    // `file-name-coding-system' or `default-file-name-coding-system',
+    // and names read back are decoded with it (raw bytes for invalid
+    // input, unibyte without a coding system); a NUL is `filenamep'.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let* ((d (file-name-as-directory (make-temp-file "emaxx-fname-" t)))
+               (bytes (lambda ()
+                        (let ((default-file-name-coding-system nil))
+                          (mapcar #'string-to-list (directory-files d nil "^[a-z]"))))))
+          (unwind-protect
+              (progn
+                (write-region "" nil (concat d "a\357"))
+                (write-region "" nil (concat d "bé"))
+                (write-region "" nil (concat d (string ?c (unibyte-char-to-multibyte #xe9))))
+                (make-directory (concat d "d\351"))
+                (make-symbolic-link "t\351" (concat d "l\351"))
+                (copy-file (concat d "a\357") (concat d "e\351"))
+                (rename-file (concat d "e\351") (concat d "fé\351"))
+                (list (funcall bytes)
+                      (mapcar (lambda (f) (list (multibyte-string-p f) (string-to-list f)))
+                              (directory-files d nil "^[a-z]"))
+                      (list (file-exists-p (concat d "a\357"))
+                            (file-exists-p (concat d "aï"))
+                            (file-directory-p (concat d "d\351"))
+                            (file-readable-p (concat d "bé")))
+                      (let ((link (file-symlink-p (concat d "l\351"))))
+                        (list link (multibyte-string-p link)))
+                      (sort (mapcar (lambda (f) (list f (multibyte-string-p f)))
+                                    (file-name-all-completions "" d))
+                            (lambda (a b) (string< (car a) (car b))))
+                      (condition-case err (file-exists-p "/tmp/a\0b") (error (list (car err) (cadr err))))
+                      (file-attributes "/tmp/a\0b")
+                      (let ((file-name-coding-system 'latin-1))
+                        (write-region "" nil (concat d "gé"))
+                        (directory-files d nil "^g"))
+                      (assq ?g (funcall bytes))))
+            (delete-directory d t)))"#,
+        r#"(((97 239) (98 195 169) (99 233) (100 233) (102 195 169 233) (108 233)) ((t (97 4194287)) (t (98 233)) (t (99 4194281)) (t (100 4194281)) (t (102 233 4194281)) (t (108 4194281))) (t nil t t) ("t\351" t) (("../" nil) ("./" nil) ("a\357" t) ("bé" t) ("c\351" t) ("d\351/" t) ("fé\351" t) ("l\351" t)) (wrong-type-argument filenamep) nil (#("gé" 0 2 (charset iso-8859-1))) (103 233))"#,
+        "file name coding",
+    );
+}
+
+#[test]
+fn directory_listings_keep_readdirs_order_as_dired_c_does() {
+    // dired.c reads the directory's stream ("." and ".." among it) and
+    // conses each match up as it is read: COUNT keeps the first matches
+    // read, NOSORT returns them last read first, file-name-all-completions
+    // never sorts, and a FULL name is the directory's bytes and the
+    // name's, without the name's text properties.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((d (make-temp-file "emaxx-readdir-" t)))
+          (unwind-protect
+              (progn
+                (dolist (name '("b" "a" "d" "c" "f")) (write-region "" nil (expand-file-name name d)))
+                (make-directory (expand-file-name "e" d))
+                (let ((read (directory-files d nil "^[a-z]" t)))
+                  (list (length read)
+                        (equal (directory-files d nil "^[a-z]" t 2) (last read 2))
+                        (equal (directory-files d nil "^[a-z]" nil 2) (sort (copy-sequence (last read 2)) #'string<))
+                        (equal (directory-files d nil "^[a-z]") (sort (copy-sequence read) #'string<))
+                        (equal (mapcar #'directory-file-name (file-name-all-completions "" d))
+                               (directory-files d nil nil t))
+                        (equal (length (directory-files d nil nil nil 3)) 3)
+                        (let ((file-name-coding-system 'latin-1))
+                          (write-region "" nil (expand-file-name "gé" d))
+                          (let ((short (car (directory-files d nil "^g")))
+                                (full (car (directory-files d t "^g"))))
+                            (list (get-text-property 0 'charset short)
+                                  (text-properties-at (1- (length full)) full)
+                                  (string-suffix-p "/gé" full)))))))
+            (delete-directory d t)))"#,
+        r#"(6 t t t t t (iso-8859-1 nil t))"#,
+        "readdir order",
+    );
+}
+
+#[test]
+fn match_positions_agree_in_large_and_small_multibyte_buffers() {
+    // A multibyte buffer of many rope chunks converts each register's
+    // byte offset from the last one converted; a small buffer's searches
+    // read a copy of its text, edited between them. GNU 30.2's positions.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let (out)
+          (with-temp-buffer
+            (dotimes (i 3000) (insert (format "é%dλ%s\n" i (make-string (% i 7) ?ü))))
+            (goto-char (point-min))
+            (while (re-search-forward "λ\\(ü+\\)$" nil t)
+              (push (list (match-beginning 0) (match-end 1) (point)) out))
+            (goto-char 5000)
+            (push (list (looking-at "[^\n]*\n\\(é\\)\\([0-9]+\\)") (match-beginning 1) (match-end 2)) out)
+            (goto-char (point-max))
+            (push (list (re-search-backward "é\\([0-9]+\\)λ" nil t) (match-end 1)) out)
+            (narrow-to-region 2000 9000)
+            (goto-char 4000)
+            (push (list (re-search-forward "\\(ü\\)\\(ü\\)" nil t) (match-beginning 2) (match-end 0)) out))
+          (with-temp-buffer
+            (insert "aé\nλüx\n")
+            (dotimes (_ 3)
+              (goto-char (point-min))
+              (push (list (re-search-forward "\\(ü\\)x" nil t) (match-beginning 1)
+                          (progn (goto-char 2) (looking-at "é\n\\(λ\\)")) (match-end 1))
+                    out)
+              (goto-char 3) (insert "ö")))
+          (list (length out) (sxhash-equal out) (seq-take out 4)))"#,
+        r#"(2577 2829254130172192 ((9 7 nil 8) (8 6 nil 7) (7 5 t 5) (4006 4005 4006)))"#,
+        "match positions",
+    );
+}
+
+#[test]
+fn raw_bytes_read_from_a_file_keep_their_codes_through_edits() {
+    // A file of raw bytes past the small-text size read literally (the
+    // unibyte decision's raw text, then the buffer's), decoded, after
+    // text, and as utf-8, then edited: GNU 30.2's characters.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((f (make-temp-file "emaxx-raw-")))
+          (unwind-protect
+              (progn
+                (with-temp-buffer
+                  (set-buffer-multibyte nil)
+                  (dotimes (i 3000) (insert (logand (* i 7) 255)))
+                  (let ((coding-system-for-write 'no-conversion))
+                    (write-region nil nil f)))
+                (list
+                 (with-temp-buffer
+                   (insert-file-contents-literally f)
+                   (list (buffer-size) enable-multibyte-characters
+                         (append (buffer-substring 20 40) nil)
+                         (progn (delete-region 1 1500) (list (buffer-size) (char-after 1) (char-before (point-max))))
+                         (progn (goto-char 700) (insert "\351x") (append (buffer-substring 695 705) nil))
+                         (progn (erase-buffer) (buffer-size))))
+                 (with-temp-buffer
+                   (insert-file-contents f)
+                   (list (buffer-size) last-coding-system-used
+                         (append (buffer-substring 100 112) nil)
+                         (progn (delete-region 1 (point-max)) (buffer-size))))
+                 (with-temp-buffer
+                   (insert "abc")
+                   (insert-file-contents-literally f)
+                   (list (buffer-size) (append (buffer-substring 1 8) nil)
+                         (append (buffer-substring 2990 3003) nil)))
+                 (with-temp-buffer
+                   (let ((coding-system-for-read 'utf-8))
+                     (insert-file-contents f))
+                   (list (buffer-size) (append (buffer-substring 1 10) nil)
+                         (string-to-list (encode-coding-string (buffer-substring 1 6) 'utf-8))))))
+            (delete-file f)))"#,
+        r#"((3000 t (4194181 4194188 4194195 4194202 4194209 4194216 4194223 4194230 4194237 4194244 4194251 4194258 4194265 4194272 4194279 4194286 4194293 4194300 3 10) (1501 4194301 1) (4194295 4194302 5 12 19 4194281 120 26 33 40) 0) (3000 no-conversion (4194229 4194236 4194243 4194250 4194257 4194264 4194271 4194278 4194285 4194292 4194299 2) 0) (3003 (97 98 99 0 7 14 21) (4194214 4194221 4194228 4194235 4194242 4194249 4194256 4194263 4194270 4194277 4194284 4194291 4194298)) (3000 (0 7 14 21 28 35 42 49 56) (0 7 14 21 28)))"#,
+        "raw bytes read",
+    );
+}
+
+#[test]
+fn counted_searches_convert_their_registers_through_the_buffer() {
+    // A multibyte buffer of many rope chunks searched with counts both
+    // ways, within a bound, after an edit and with a group left unset:
+    // each match's registers and end converted by the buffer's own
+    // position cache. GNU 30.2's positions.
+    assert_oracle_contract_matches_interpreter(
+        r#"(list
+          (with-temp-buffer
+            (insert (make-string 2000 ?é) "abcλdef" (make-string 3000 ?ü))
+            (goto-char 1)
+            (list (re-search-forward "c\\(λ\\)d" nil t) (match-beginning 0) (match-end 1)
+                  (re-search-forward "ü\\{3\\}" nil t 5) (point)
+                  (re-search-backward "\\(b\\)c" nil t) (butlast (match-data t))
+                  (re-search-backward "é\\{2\\}" nil t 3) (point)
+                  (progn (goto-char 1) (re-search-forward "\\(é\\)\\(é\\)" nil t 700)) (butlast (match-data t))
+                  (progn (goto-char (point-max)) (re-search-backward "\\(ü\\)" 4900 t 50)) (butlast (match-data t))
+                  (progn (goto-char 3000) (re-search-forward "zz" nil t 2))
+                  (progn (goto-char 10) (insert "λ") (goto-char 1) (re-search-forward "λ" nil t)) (butlast (match-data t))))
+          (with-temp-buffer
+            (insert "αβγ\nδεζ\n")
+            (goto-char 1)
+            (list (re-search-forward "\\(β\\)\\|\\(ε\\)" nil t 2) (butlast (match-data t))
+                  (looking-at "ζ") (butlast (match-data t)))))"#,
+        r#"((2006 2003 2005 2023 2023 2002 (2002 2004 2002 2003) 1995 1995 1401 (1399 1401 1399 1400 1400 1401) 4958 (4958 4959 4958 4959) nil 11 (10 11)) (7 (6 7 nil nil 6 7) t (7 8)))"#,
+        "counted searches",
+    );
+}
+
+#[test]
+fn hook_variables_and_member_agree_through_native_calls() {
+    // add-hook and remove-hook, native code calling boundp, default-boundp,
+    // default-value, local-variable-p, set-default and member: plain hook
+    // variables, a buffer-local, an alias, a watched and an unbound one;
+    // member's and equal's cases beside. GNU 30.2's values.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let (out)
+          (defvar r158-plain-hook nil)
+          (defvar r158-watched-hook nil)
+          (defvar r158-target-hook nil)
+          (defvaralias 'r158-alias-hook 'r158-target-hook)
+          (let ((seen nil))
+            (add-variable-watcher 'r158-watched-hook
+                                  (lambda (sym new op where) (push (list sym new op (and where t)) seen)))
+            (dotimes (i 3)
+              (add-hook 'r158-plain-hook (intern (format "r158-f%d" i)))
+              (add-hook 'r158-watched-hook (intern (format "r158-f%d" i)) 90)
+              (add-hook 'r158-alias-hook (intern (format "r158-f%d" i)) t))
+            (remove-hook 'r158-plain-hook 'r158-f1)
+            (remove-hook 'r158-watched-hook 'r158-f0)
+            (remove-hook 'r158-alias-hook 'r158-f2)
+            (with-temp-buffer
+              (add-hook 'r158-plain-hook 'r158-local nil t)
+              (push (list r158-plain-hook (default-value 'r158-plain-hook)
+                          (local-variable-p 'r158-plain-hook))
+                    out)
+              (remove-hook 'r158-plain-hook 'r158-local t)
+              (push (list r158-plain-hook (local-variable-p 'r158-plain-hook)) out))
+            (push (list r158-plain-hook r158-watched-hook r158-target-hook r158-alias-hook
+                        (length seen) (car seen))
+                  out))
+          (makunbound 'r158-plain-hook)
+          (push (list (boundp 'r158-plain-hook) (default-boundp 'r158-plain-hook)
+                      (condition-case err (remove-hook 'r158-plain-hook 'x) (error err))
+                      (boundp 'r158-plain-hook))
+                out)
+          (push (list (member 'b '(a b c)) (member 3 '(1 2 3 4)) (member "b" '("a" "b"))
+                      (member '(x . 1) '((x . 2) (x . 1) y)) (member 1.0 '(1 1.0))
+                      (equal '(a b . c) '(a b . c)) (equal '(a b . c) '(a b . d))
+                      (equal '(defun . f) '(defun . g)) (equal '(1 2) '(1 2 . 3))
+                      (condition-case err (member 'z '(a . b)) (error err)))
+                out)
+          (push (list (member '(1 . a) '((1.0 . a) (1 . b) (1 . a) z))
+                      (let ((symbols-with-pos-enabled t))
+                        (and (member '(a . 1) (list (cons (position-symbol 'a 5) 1))) t))
+                      (and (member '(a . 1) (list (cons (position-symbol 'a 5) 1))) t)
+                      (member (cons 1 (1+ most-positive-fixnum))
+                              (list (cons 1 (1+ most-positive-fixnum))))
+                      (member '(nil . t) '((nil) (nil . t))))
+                out)
+          out)"#,
+        r#"((((1 . a) z) t nil ((1 . 2305843009213693952)) ((nil . t))) ((b c) (3 4) ("b") ((x . 1) y) (1.0) t nil nil nil (wrong-type-argument listp (a . b))) (nil nil nil t) ((r158-f2 r158-f0) (r158-f1 r158-f2) (r158-f0 r158-f1) (r158-f0 r158-f1) 4 (r158-watched-hook (r158-f1 r158-f2) set nil)) ((r158-f2 r158-f0) nil) ((r158-local t) (r158-f2 r158-f0) t))"#,
+        "hook variables",
+    );
+}
+
+#[test]
 fn directory_files_returns_mutable_sorted_names_with_dot_entries() {
     let unique = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -15585,6 +15826,38 @@ fn inotify_error_data_follows_report_file_notify_error() {
 
 #[cfg(target_os = "linux")]
 #[test]
+fn inotify_watches_encode_their_file_name_and_decode_event_names() {
+    // inotify.c: Finotify_add_watch hands inotify_add_watch the
+    // ENCODE_FILE'd name (a NUL is `filenamep'), and inotifyevent_to_event
+    // DECODE_FILEs an event's name: a raw byte comes back as one.
+    assert_linux_inotify_contract(
+        r#"(let* ((d (make-temp-file "emaxx-notify-" t))
+               (create-lockfiles nil)
+               (events nil)
+               (desc (inotify-add-watch d '(create) (lambda (e) (push e events)))))
+          (unwind-protect
+              (progn
+                (write-region "" nil (concat d "/n\351"))
+                (write-region "" nil (concat d "/mé"))
+                (let ((n 0))
+                  (while (and (< (length events) 2) (< n 50))
+                    (read-event nil nil 0.1)
+                    (setq n (1+ n))))
+                (list (mapcar (lambda (e)
+                                (let ((name (nth 2 e)))
+                                  (list (multibyte-string-p name) (string-to-list name))))
+                              (reverse events))
+                      (condition-case err (inotify-add-watch "/tmp/a\0b" '(create) #'ignore)
+                        (error (list (car err) (cadr err))))))
+            (inotify-rm-watch desc)
+            (delete-directory d t)))"#,
+        r#"(((t (110 4194281)) (t (109 233))) (wrong-type-argument filenamep))"#,
+        "inotify file names",
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
 fn inotify_events_reach_lisp_only_through_keyboard_reads() {
     // process.c registers the inotify descriptor with
     // add_keyboard_wait_descriptor, so a READ_KBD 0 wait such as
@@ -21031,6 +21304,30 @@ fn minibuffer_c_g_runs_abort_minibuffers_and_recursive_edit_1_exits() {
 }
 
 #[test]
+fn key_sequences_read_as_make_event_array_and_callint_k_specs() {
+    // keyboard.c:make_event_array: a unibyte string when every event is a
+    // character in 0...127 apart from the meta bit (M-x is "\370"), else
+    // a vector (233 is [233]); callint.c's `k' reads a whole key sequence
+    // with Fread_key_sequence and `K' a vector.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((keys (lambda (events &optional vector)
+                         (let* ((unread-command-events events)
+                                (k (if vector (read-key-sequence-vector "") (read-key-sequence ""))))
+                           (list (type-of k) (and (stringp k) (multibyte-string-p k)) (append k nil))))))
+             (list (funcall keys (list ?\C-x ?\C-f))
+                   (funcall keys (list ?\M-x))
+                   (funcall keys (list 233))
+                   (funcall keys (list ?a) t)
+                   (let ((unread-command-events (list ?\C-x ?\C-f ?A)))
+                     (mapcar (lambda (k) (list (type-of k) (append k nil)))
+                             (call-interactively
+                              (lambda (a b) (interactive "kKey: \nKKey %s: ") (list a b)))))))"#,
+        r#"((string nil (24 6)) (string nil (248)) (vector nil (233)) (vector nil (97)) ((string (24 6)) (vector (65))))"#,
+        "key sequence arrays",
+    );
+}
+
+#[test]
 fn read_minibuf_refuses_a_recursive_read_unless_enabled() {
     // minibuf.c:read_minibuf: with `enable-recursive-minibuffers' nil, a
     // read while a minibuffer is active is a user error from the
@@ -21061,6 +21358,37 @@ fn read_minibuf_refuses_a_recursive_read_unless_enabled() {
                    (funcall outer (list ?a ?w 13))))"#,
         r#"(("a" (inner-error (user-error "Command attempted to use minibuffer while in minibuffer"))) ("a" "b") ((outer-error (error "Command attempted to use minibuffer while in minibuffer")) nil))"#,
         "recursive minibuffer",
+    );
+}
+
+#[test]
+fn read_minibuf_places_point_at_a_cons_initial_inputs_position() {
+    // minibuf.c:read_minibuf: INITIAL (STRING . POSITION) puts point at
+    // one-indexed POSITION, below 1 at the start and past the end an
+    // `end-of-buffer'; completing-read-default turns its zero-indexed
+    // POSITION into that one.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((read (lambda (fn initial)
+                         (condition-case err
+                             (let ((executing-kbd-macro t)
+                                   (unread-command-events (list ?X ?\r)))
+                               (funcall fn initial))
+                           (error err)))))
+             (list (funcall read (lambda (i) (read-from-minibuffer "x: " i)) '("abc" . 2))
+                   (funcall read (lambda (i) (read-from-minibuffer "x: " i)) '("abc" . 0))
+                   (funcall read (lambda (i) (read-from-minibuffer "x: " i)) '("abc" . 4))
+                   (funcall read (lambda (i) (read-from-minibuffer "x: " i)) '("abc"))
+                   (funcall read (lambda (i) (read-string "x: " i)) '("abc" . 1))
+                   (funcall read (lambda (i) (completing-read "x: " '("abXc") nil nil i)) '("abc" . 2))
+                   (funcall read (lambda (i) (completing-read "x: " nil nil nil i)) '("abc" . 0))
+                   (funcall read (lambda (i) (read-from-minibuffer "x: " i)) '("abc" . 5))
+                   (funcall read (lambda (i) (read-from-minibuffer "x: " i)) '("abc" . x))
+                   (funcall read (lambda (i) (read-from-minibuffer "x: " i)) '(abc . 1))
+                   (funcall read (lambda (i) (read-from-minibuffer "x: " i)) '(nil))
+                   (funcall read (lambda (i) (read-from-minibuffer "x: " i)) 5)
+                   (funcall read (lambda (i) (completing-read "x: " nil nil nil i)) '("abc" . x))))"#,
+        r#"("aXbc" "Xabc" "abcX" "abcX" "Xabc" "abXc" "Xabc" (end-of-buffer) (wrong-type-argument fixnump x) (wrong-type-argument stringp abc) (wrong-type-argument stringp nil) (wrong-type-argument stringp 5) (wrong-type-argument number-or-marker-p x))"#,
+        "cons initial input",
     );
 }
 

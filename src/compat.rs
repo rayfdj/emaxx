@@ -559,8 +559,8 @@ pub fn configure_upstream_like_env_with_home(
     // whatever knobs exist.)  An operator's exported variable must not reach
     // a measured run; the harness sets the few it needs explicitly, after
     // this point.
-    for (key, _) in std::env::vars() {
-        if key.starts_with("EMAXX_") {
+    for (key, _) in std::env::vars_os() {
+        if key.to_str().is_some_and(|key| key.starts_with("EMAXX_")) {
             command.env_remove(key);
         }
     }

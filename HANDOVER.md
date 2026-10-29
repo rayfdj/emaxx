@@ -8416,6 +8416,273 @@ setup_process_coding_systems's check now refuses). A 13-form
   the documented local skips, all 3,292 tests run passing (2 ignored);
   the seven integration targets; clippy `-D warnings', rustfmt and `git
   diff --check'.
+- **Round 151: callint.c's `k', `K' and `U', make_event_array, and
+  read_minibuf's (STRING . POSITION).** call-interactively reads a `k'
+  argument with `read-key-sequence' and a `K' with
+  `read-key-sequence-vector' (its DONT-DOWNCASE-LAST t), the prompt
+  propertized in `minibuffer-prompt' face and `cursor-in-echo-area'
+  bound to t; the visible argument is the sequence's `key-description'.
+  Emaxx read one event and made a one-character string of it, so C-x
+  C-f gave "\C-x" and left C-f unread, and a function key was an error.
+  A sequence that ends in a down-event reads its up-event too, and a
+  later `U' gets it as a vector, once (nil without one). keyboard.c's
+  make_event_array, behind `read-key-sequence', `this-command-keys' and
+  the `k' argument, makes a unibyte string only when every event is a
+  character whose bits below the meta bit are under 128, the meta bit
+  moving to the byte's 0200; anything else is a vector. Emaxx made a
+  multibyte string of any Unicode characters and a vector of the rest,
+  so M-x read as [134217848] where GNU gives "\370" and e-acute as "é"
+  where GNU gives [233]. read_minibuf also takes INITIAL as (STRING .
+  POSITION), point at one-indexed POSITION in STRING (at its start below
+  1, `end-of-buffer' past its end), checked before the recursive-read
+  guard, and `completing-read-default' turns its zero-indexed POSITION
+  into that. Emaxx took a cons for no initial input, so `read-file-name',
+  which passes the directory and the initial name that way, opened an
+  empty minibuffer: C-x C-v showed no file name, and its C-a C-k
+  signalled `end-of-buffer'. ttydiff's find-alternate-file journeys
+  type C-a C-k and the new name ahead, and matched GNU only while the
+  error left the typed keys in place; round 150's `discard-input' drops
+  them as GNU does, and the four journeys diverged on its build. Batch
+  tests check the key sequences and the initial inputs against GNU 30.2.
+  ttydiff on e958b4a's build (round 150): 229 journeys, all matching GNU but
+  submenu-cycle-options (the X build's `system-font-setting', above), the
+  four find-alternate-file journeys (this round) and three-way-cycle,
+  which ran beside the gate and matched when run again alone.
+  Local validation: the full gate across its ten groups with
+  the documented local skips, all 3,294 tests run passing (2 ignored);
+  the seven integration targets; clippy `-D warnings', rustfmt and `git
+  diff --check'.
+- **Round 152: ENCODE_FILE and DECODE_FILE.** coding.c's
+  encode_file_name is what a file primitive hands the system: a unibyte
+  name's bytes unchanged, a multibyte one encoded with
+  `file-name-coding-system', else `default-file-name-coding-system'
+  (`utf-8-unix' in batch, either locale), else its internal
+  representation, and a NUL in the result a `filenamep' error. Emaxx
+  handed the host the UTF-8 of the name's text view, where a raw byte
+  is a private-use character (U+E080 to U+E0FF), so `(write-region ""
+  nil "/tmp/a\357")' made a + EE 83 AF where GNU makes a + EF (round
+  110's finding, which this entry replaces). system.rs's
+  `encode_file_name' and `host_file_name' (a text-view name to host
+  bytes, unibyte when every character is ASCII or a raw byte, the
+  `utf-8' family encoded in place, any other coding through
+  `encode_text_bytes') now stand between the
+  resolved name and the host in the file predicates, `file-attributes',
+  copy, rename, delete, link, directory, modes, times and file-system
+  primitives, `write-region', `insert-file-contents' and its auto-coding
+  sample, openp's candidates, `call-process''s program, files and
+  directory, `make-process', lock file names, `sqlite-open', the dump
+  file and `comp-el-to-eln-rel-filename''s realpath. decode_file_name
+  brings names back: `decode_file_name' gives a unibyte string without
+  a coding system or for ASCII bytes (code_convert_string's shortcut),
+  else decodes through decode_coding_object, an invalid byte a raw byte
+  and a charset decoder's runs with their `charset' property; it serves
+  `directory-files' (a full name is concat2 of the directory and the
+  decoded name), `file-name-all-completions', `file-symlink-p',
+  `file-attributes'' link target, the realpath above and the visited
+  truename, which all read the host's names with `to_string_lossy'
+  before. A NUL in a file name is `(wrong-type-argument filenamep NAME)'
+  (lisp.h:CHECK_STRING_NULL_BYTES) where Emaxx signalled
+  `wrong-type-argument string', and `file-attributes' answers nil for
+  one, as its catch-all around expand-file-name does. A batch test
+  checks raw-byte, Latin-1 and UTF-8 names against GNU 30.2: the host
+  bytes (read back with no coding system), the decoded names, the
+  predicates, a symlink's target, completions, the NUL error and a
+  `latin-1' `file-name-coding-system'. Still reading names without
+  DECODE_FILE: the file-notify emulation's event names and watch paths
+  (eval/threads.rs), `default-directory' from getcwd at startup and
+  expand-file-name's home directory; and `file-name-all-completions'
+  sorts its result where GNU returns readdir's order.
+  Local validation: the full gate across its ten groups with
+  the documented local skips, all 3,295 tests run passing (2 ignored);
+  the seven integration targets; clippy `-D warnings', rustfmt and `git
+  diff --check'.
+- **Round 153: a raw-byte environment and working directory, and
+  inotify's names.** Emaxx read the startup environment with
+  `std::env::vars', which panics on a name or value that is not valid
+  UTF-8: started in a directory with a raw byte in its name, the
+  inherited PWD aborted it before the first form ("batch runtime
+  panicked"). `initial_process_environment' keeps the host's entries,
+  and `initial_environment_list' makes `process-environment' and
+  `initial-environment' as callproc.c's set_initial_environment does,
+  each NAME=VALUE through build_string (make_string: multibyte for valid
+  multibyte text, unibyte for anything else); the compat harness's
+  EMAXX_ strip reads `vars_os' too. buffer.c's init_buffer keeps the
+  working directory's bytes as a unibyte `default-directory' for
+  startup.el's decode (`default_directory_bytes'), where Emaxx took them
+  through `display()'. `inotify-add-watch' passes the ENCODE_FILE'd name
+  (a NUL is `filenamep' now, as Finotify_add_watch's ENCODE_FILE makes
+  it) and each event's name is DECODE_FILE'd (inotify.c
+  inotifyevent_to_event), where Emaxx read it with
+  `String::from_utf8_lossy'. A CLI test starts both editors in a
+  raw-byte directory with a raw-byte variable and compares
+  `process-environment', `getenv' and `default-directory'; a batch test
+  compares inotify's event names and the NUL refusal with GNU 30.2.
+  `~' already matched GNU with a raw-byte HOME. The macOS kqueue
+  emulation's paths and names still go through text (its code is not
+  built here).
+  Local validation: the full gate across its ten groups with
+  the documented local skips, all 3,296 tests run passing (2 ignored);
+  the seven integration targets; clippy `-D warnings', rustfmt and `git
+  diff --check'.
+- **Round 154: readdir's order.** dired.c reads a directory's stream,
+  "." and ".." wherever the system puts them, and conses each match up
+  as it is read: `directory-files'' COUNT keeps the first matches read
+  (then sorts them), NOSORT returns the matches last read first, and
+  `file-name-all-completions' never sorts. Emaxx read the directory with
+  `std::fs::read_dir', which leaves "." and ".." out, put those two
+  first, sorted the completions and cut COUNT from the sorted list: in a
+  directory read as b . c e .. a d, `(directory-files dir nil nil nil 3)'
+  gave ("." ".." "a") where GNU gives ("." "b" "c"), and NOSORT gave read
+  order where GNU gives its reverse. system.rs's `read_directory_names'
+  reads the stream with opendir and readdir (an error names "Opening
+  directory" or "Reading directory", as dired.c's report_file_error
+  does); `directory_files' and `file-name-all-completions' use it. A FULL
+  name is the directory's text and the name's, as
+  directory_files_internal copies the bytes, so it carries no text
+  properties (round 152's concat kept a decoded name's `charset'). A
+  batch test checks the relations GNU 30.2 keeps whatever the
+  filesystem's order: COUNT against the NOSORT list, completions against
+  it, and the FULL name's properties.
+  Local validation: the full gate across its ten groups with
+  the documented local skips, all 3,297 tests run passing (2 ignored);
+  the seven integration targets; clippy `-D warnings', rustfmt and `git
+  diff --check'.
+- **Round 155: a small buffer's scan text, and match positions by
+  distance.** The expensive-test sweep (below) put ucs-normalize-tests
+  at the largest ratio, part1 1.64 and part2 1.48 times GNU's wall
+  time. Part2 parses 1,844 lines of the 2.6 MB NormalizationTest.txt
+  with `looking-at' and normalizes each line's columns twenty times in
+  a small buffer, erased and refilled before each. Every search took
+  search.rs's `BufferSnapshot', whose rope view of the buffer each
+  insertion invalidates, so each search of a buffer holding a few bytes
+  rebuilt a rope first. A small buffer's text
+  (TextStore::Small, at most 1K bytes) is copied as a string now
+  (buffer.rs `ScanText'), and the matcher, `looking-at' and the
+  non-regexp search read it in place. set_search_regs converted each
+  register's byte offset to a character position from the start of the
+  buffer's rope; the snapshot's `positions' now converts it from the
+  last register converted, or from point, inside the same rope chunk,
+  so a match's registers cost the distance between them. Under
+  callgrind part2 takes 6,193M instructions where it took 6,705M (GNU
+  4,640M): `looking-at' 625M where it took 792M (GNU 342M), the
+  register conversion 72M where it took 235M. A batch test compares
+  2,577 match positions in a 3,000-line multibyte buffer, narrowed and
+  not, and in a small buffer edited between searches, with GNU 30.2.
+  Local validation: the full gate across its ten groups with
+  the documented local skips, all 3,298 tests run passing (2 ignored);
+  the seven integration targets; clippy `-D warnings' (its
+  type-complexity lint named the conversion's state, a struct now,
+  after which the gate's search, match, looking-at and regexp tests ran
+  again), rustfmt and `git diff --check'.
+- **Round 156: a file read into an empty buffer.** Finsert_file_contents
+  reads a file into an empty buffer as unibyte text for
+  `set-auto-coding-function', then (decide_coding_unwind) moves it back
+  into the gap and decodes it there. Emaxx makes that text, inserts it
+  and deletes it (round 125's port), and reading NormalizationTest.txt
+  (2.6 MB, 600,034 of its bytes non-ASCII) took 232M instructions in
+  `insert-file-contents' against GNU's 68M: the raw-text decoding 40M,
+  the insertion 51M, the deletion 36M. A unibyte buffer holds a
+  non-ASCII byte as U+E080..U+E0FF (EE 82 xx or EE 83 xx), and the
+  text's count of them stopped at each EE (memchr), 16M of the insertion
+  and 16M of the deletion; buffer.rs's `count_raw_markers' tests every
+  byte pair from the first EE on, 32 pairs a block in byte-wide sums the
+  compiler vectorizes, and the deletion of the whole text counts
+  nothing. The raw-text decoder writes a non-ASCII byte's three bytes
+  into a string sized for them (`push_raw_bytes'), where it pushed a
+  char at a time, and a small text that outgrows its string builds the
+  rope from the pieces instead of copying the inserted text into the
+  string first. The read now takes 299M instructions where it took 359M
+  (GNU 219M), `insert-file-contents' 172M; ucs-normalize-part2 6,073M
+  where round 155 left 6,193M (GNU 4,640M), its `insert-file-contents'
+  349M where it took 469M (GNU 139M). Left of the 172M: the detection
+  71M (GNU's 64M), the utf-8 decoding and insertion that GNU skips by
+  inserting the bytes in place, the rope's construction and the
+  deleted text's copy. A unit test checks the block count against a
+  byte-at-a-time count over every offset and length around the blocks;
+  a batch test reads a 3,000-byte file of raw bytes literally, decoded,
+  after text and as utf-8 and edits it, against GNU 30.2.
+  Local validation: the full gate across its ten groups with
+  the documented local skips, all 3,300 tests run passing (2 ignored);
+  the seven integration targets; clippy `-D warnings', rustfmt and `git
+  diff --check'.
+- **Round 157: a search's positions through the buffer's own
+  conversion.** Round 155's snapshot converted a match's registers in
+  its own rope, walking the rope's tree to the chunk of the first, and
+  the matcher walked it again to read its first byte: in a loop of
+  58,000 `looking-at's over NormalizationTest.txt, 43M instructions of
+  `get_chunk_at_byte'. GNU's BYTE_TO_CHAR scans from the positions
+  buf_bytepos_to_charpos converted last, and re_match_2 reads the
+  buffer's two halves in place. The buffer's own conversion already
+  starts in the chunk its last walk reached and from the positions it
+  converted, and the snapshot's conversion of point leaves
+  both at point: set_search_regs now converts through the buffer while
+  its text is the snapshot's (`BufferSnapshot::position_in', checked by
+  the chars-modified tick), and `BufferText::byte_to_char' records a
+  conversion from a byte that starts its character, as
+  buf_bytepos_to_charpos remembers the last it made, so each register
+  counts from the one before. A counted `re-search-forward' converts
+  its end once, after the last match, where it converted each match's.
+  The snapshot takes the chunk holding point (`Buffer::scan_hint', the
+  leaf the rope's clone shares) for the matcher's first read
+  (`RopeRange::with_chunk'), and the non-regexp search converts its
+  match through the buffer as well. The matcher's PUSH_NUMBER, the one
+  failure-stack push left out of line, is inlined. The loop takes 355M
+  instructions where it took 436M (GNU 273M): the matcher 117M where it
+  took 172M (GNU 113M), the register conversion 47M where it took 65M
+  (GNU's set_search_regs and buf_bytepos_to_charpos 52M);
+  ucs-normalize-part2 5,996M where round 156 left 6,073M (GNU 4,640M),
+  its `looking-at' 544M where it took 625M (GNU 342M). A unit test
+  converts bytes of a many-chunk rope in and out of order, in the middle
+  of characters and after edits; a batch test compares counted searches
+  both ways, within a bound, after an edit and with a group unset with
+  GNU 30.2.
+  Local validation: the full gate across its ten groups with
+  the documented local skips, all 3,302 tests run passing (2 ignored);
+  the seven integration targets; clippy `-D warnings', rustfmt and `git
+  diff --check'.
+- **Round 158: hook variables and `member' from native code.**
+  edebug-tests' profile put `symbol-file' at 271M instructions against
+  GNU's 141M and `remove-hook' at 110M against 31M over about the same
+  67,000 calls. Both are native-compiled (loadhist's `symbol-file', which
+  looks each definition up with `member' of a (defun . NAME) pair, and
+  subr.el), and their calls of `boundp', `default-boundp',
+  `default-value', `local-variable-p', `set-default' and `member' took
+  the native ABI's generic subr entry (the handlers brought up to date,
+  the subr's dispatch by name, its argument checks): 157 to 277
+  instructions a call where GNU's compiled code calls the C function at
+  once. data.c answers the four predicates of a SYMBOL_PLAINVAL symbol
+  from its value cell, and set_default_internal stores into it;
+  `invoke_variable_subr' does the same for a plain variable (no alias,
+  buffer-local, let-local or forwarding flag: the symbol bit
+  `plain_store'), before the handlers are synced, as the context-free
+  kinds are, and any other variable takes the subr's own entry.
+  `set-default' now learns `plain_store' as `set' and `setq' do, so a
+  hook only ever set by `add-hook' is plain. Fmember of an eq-comparable
+  ELT (a fixnum or a bare symbol, or a positioned one under
+  `symbols-with-pos-enabled') is Fmemq's walk, from native code and from
+  the dispatcher, and an ELT that is a cons of two such atoms compares
+  each element's car and cdr by EQ, the full walk only for a part that
+  is vectorlike (a positioned symbol, a bignum). internal_equal's XTYPE
+  test at tail_recurse ends a comparison of two objects of different
+  types, and of two symbols or fixnums that are not EQ, at any depth,
+  where the walk went on to the type switch. For a plain variable the
+  predicates take about 95 instructions a call, `set-default' 88;
+  `member' 173 where it took 263. edebug-tests takes 4,914M where it
+  took 5,117M (GNU 4,113M): `symbol-file' 80M, `remove-hook' 97M. Most
+  of edebug-tests' hooks are C variables or buffer-local ones
+  (`pre-command-hook', `kill-buffer-hook', the change functions), which
+  the plain path leaves to the subrs' entries. A batch test runs
+  `add-hook' and `remove-hook' over plain, buffer-local, aliased, watched
+  and unbound hook variables, and `member' and `equal' over symbols,
+  fixnums, floats, strings, atom pairs, positioned symbols and bignums,
+  against GNU 30.2; two runtime tests call the six subrs through the
+  native ABI (void, plain and buffer-local variables, a constant, a
+  non-symbol, improper lists), and the audit of native fast paths lists
+  them with their data.c and fns.c owners.
+  Local validation: the full gate across its ten groups with
+  the documented local skips, all 3,305 tests run passing (2 ignored);
+  the seven integration targets; clippy `-D warnings', rustfmt and `git
+  diff --check'.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -9401,7 +9668,78 @@ frozen (run 40745852161) matched all 7,928 outcomes on its first
 attempt. Its timings: setup 52.4 s against 44.8 s (1.172), test bodies
 202.4 s against 227.5 s (0.890), in all 0.934.
 
+**On `e958b4a`** (round 150): full Rust gate passed (run 40753376682);
+frozen (run 40753381086) matched all 7,928 outcomes on its first
+attempt. Its timings: setup 63.1 s against 52.5 s (1.203), test bodies
+226.0 s against 250.4 s (0.903), in all 0.973. Rounds 138 to 150 were
+merged into main with it (PR 112, `ed7729d`).
+
+**On `6a3ad68`** (round 151): full Rust gate passed (run 40768859973);
+frozen (run 40768864272) matched all 7,928 outcomes on its first
+attempt. Its timings: setup 56.6 s against 48.2 s (1.174), test bodies
+211.5 s against 236.3 s (0.895), in all 0.942.
+
+**On `a3f371b`** (round 152): full Rust gate passed (run 40776874336);
+frozen (run 40776877869) failed its first attempt on the known oracle
+flake, GNU's `eglot-test-rust-completion-exit-function' ending in a
+`jsonrpc-error' where Emaxx passed, and matched all 7,928 outcomes on
+its one rerun. The rerun's timings: setup 49.9 s against 42.7 s
+(1.168), test bodies 201.1 s against 215.0 s (0.935), in all 0.974.
+
+**On `5218323`** (round 153): full Rust gate passed (run 40781907793);
+frozen (run 40781910835) matched all 7,928 outcomes on its first
+attempt. Its timings: setup 79.6 s against 63.6 s (1.251), test bodies
+258.5 s against 267.3 s (0.967), in all 1.022 (a slower runner: GNU's
+setup took 63.6 s where the run before's took 42.7).
+
+**On `3bf169f`** (round 154): full Rust gate passed (run 40786422667);
+frozen (run 40786426183) matched all 7,928 outcomes on its first
+attempt. Its timings: setup 85.3 s against 70.9 s (1.203), test bodies
+264.7 s against 277.6 s (0.954), in all 0.998.
+
+**On `65ba943`** (round 155): full Rust gate passed (run 40795727606);
+frozen (run 40795738362) matched all 7,928 outcomes on its first
+attempt. Its timings: setup 83.5 s against 65.8 s (1.269), test bodies
+263.1 s against 269.8 s (0.975), in all 1.018.
+
+**On `70e5b36`** (round 156): full Rust gate passed (run 40801459309);
+frozen (run 40801470850) matched all 7,928 outcomes on its first
+attempt. Its timings: setup 72.8 s against 61.6 s (1.180), test bodies
+244.4 s against 267.8 s (0.913), in all 0.956.
+
+**On `f97c263`** (round 157): full Rust gate passed (run 40806919766);
+frozen (run 40806930470) matched all 7,928 outcomes on its first
+attempt. Its timings, on a slower runner (GNU's own setup 73.3 s where
+round 156's took 61.6 s): setup 88.4 s against 73.3 s (1.205), test
+bodies 275.9 s against 291.0 s (0.948), in all 1.000.
+
 **Findings recorded, not fixed:**
+- **What the gate profile adds to a file's setup (round 157).**
+  cal-french-tests.el's setup under the frozen runner's command line
+  takes 576M instructions in the release build, 726M in the gate profile
+  the frozen run times, and 565.7M in GNU 30.2; in wall time (four cores
+  under load) 180 ms, 210 ms and 160 ms. Of the gate's 150M, the
+  byte-code loop's checks are 24M and most of the rest is small
+  functions the thin-LTO, 16-unit build calls where the release build
+  inlines them (search.rs's `string_bytes', the search buffers'
+  thread-local access, `compile_pattern''s cache comparison,
+  `is_ascii', the collector's `mark_bit' and sweeps). Startup alone is
+  146M against the release build's 125M and GNU's 151M, and in wall time
+  the release build starts in 64.5 ms against GNU's 68.5 (best of 15).
+  The profile is the gate's, kept for its safety nets and its build
+  time; which build the frozen run times stays the project's call.
+- **The expensive tests (round 155).** 111 tests tagged
+  `:expensive-test' in 83 files, run with the frozen runner in both
+  editors: no outcome differs. tramp-tests' expensive set ran past 900
+  s in GNU as one file, so its 51 tests ran one a process: all agree but
+  `tramp-test45-asynchronous-requests', which failed in the sweep's
+  loaded Emaxx run (a `file-attributes' of one of its processes' files
+  read nil). It is a race in the test: six copies at once failed it once
+  in either editor (GNU's a nil, Emaxx's a file not yet removed), and
+  each passes it alone. The slowest against GNU:
+  ucs-normalize-tests part1 1.64 and part2 1.48 times (round 155),
+  `info-xref-test-emacs-manuals' 1.42, `eglot-test-tramp-test' 5.25 s
+  against 1.38 s; `comp-tests-bootstrap' takes 39 s against 376 s.
 - **What the checked build costs (round 131).** mule-tests under the
   frozen runner takes 34.7G instructions in the gate profile against
   22.8G in the release build. Of the 11.9G, 4.4G is the liveness
@@ -9463,13 +9801,28 @@ attempt. Its timings: setup 52.4 s against 44.8 s (1.172), test bodies
   `ordinary-samples' perf run of the file (run 40471735423) samples at
   199 Hz and so gives the 142 ms setup about 28 samples: too few to
   place it.
-- **A unibyte file name's raw bytes (round 110).** A Lisp file name
-  reaches the host through its text, in which a raw byte 128-255 is a
-  private-use character, so `(write-region "" nil "/tmp/a\\357")'
-  makes a file named a + EE 83 AF where GNU's ENCODE_FILE passes a
-  unibyte string's bytes through (a + EF); `make-directory' and
-  `make-symbolic-link''s target do the same. Every file primitive that
-  takes the name as text shares this.
+- **electric-tests' bodies at nearly equal instructions, and a
+  profile-guided build (round 150).** In the release build electric-tests'
+  bodies take 1.43 times GNU's time (674 ms against 471, the files'
+  summed `duration_ns'), the largest ratio among the slowest files,
+  where `electric-pair-.*-in-c-mode' takes 5.07G instructions against
+  GNU's 4.39G (1.15) but 49.2M first-level instruction-cache misses
+  against 10.9M (4.5 times). The misses are spread over hundreds of
+  functions (the most, a native-compiled `c-full-pp-to-literal', 0.4
+  percent), the source files they fall in led by types.rs (3.0M), the
+  native runtime (2.7M) and syntax_scan.rs (1.9M): the 13.4 MB text's
+  layout again, as in the setup finding above. A profile-guided build
+  (an instrumented release build trained on 27 of GNU's test files
+  under ERT, electric-tests among them; `tools/pgo-build.sh' does the
+  same with its own training set) takes the same selection to 4.23G
+  instructions and 31.7M misses, and the `electric-pair-' tests to
+  0.579 to 0.687 s against the plain build's 0.675 to 0.756 and GNU's
+  0.434 to 0.486 (five runs each). Files outside its training set move
+  by 3 to 8 percent (bodies in ms, profile-guided, plain, GNU):
+  semantic-utest-ia 2,097, 2,182, 2,132; em-pred-tests 1,214, 1,319,
+  1,186; bytecomp-tests 768, 797, 733; ruby-mode-tests 190, 196, 183.
+  The frozen run's gate profile is a plain build; whether timed builds
+  are profile-guided is the project's call.
 - **A test file's setup by stage, collections apart (round 106).** With
   the frozen runner's command line (scratchpad `phases100.sh', and
   startup with no file loaded), each stage's cumulative instructions,

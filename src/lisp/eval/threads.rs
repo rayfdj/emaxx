@@ -2880,6 +2880,7 @@ impl Interpreter {
     pub(crate) fn register_inotify_file_notify_watch(
         &mut self,
         path: String,
+        encoded: Vec<u8>,
         flags: Vec<String>,
         callback: Value,
     ) -> Result<Value, LispError> {
@@ -2911,18 +2912,8 @@ impl Interpreter {
                 return Err(error);
             }
         };
-        let encoded = match std::ffi::CString::new(path.as_bytes()) {
-            Ok(encoded) => encoded,
-            Err(_) => {
-                let error = std::io::Error::from_raw_os_error(libc::EINVAL);
-                self.close_empty_inotify_queue();
-                return Err(file_notify_host_error(
-                    "Could not add watch for file",
-                    Some(path.as_str()),
-                    &error,
-                ));
-            }
-        };
+        // ENCODE_FILE refused a NUL before the queue was made.
+        let encoded = std::ffi::CString::new(encoded).expect("an encoded file name holds no NUL");
         // GNU combines masks for callers that watch the same inode and then
         // filters each callback with the mask stored on its logical watch.
         // SAFETY: QUEUE is live and ENCODED is NUL-terminated.
@@ -3411,7 +3402,12 @@ impl Interpreter {
                         .iter()
                         .position(|byte| *byte == 0)
                         .unwrap_or(bytes.len());
-                    Some(String::from_utf8_lossy(&bytes[..end]).into_owned())
+                    // inotify.c inotifyevent_to_event: the name DECODE_FILE'd.
+                    Some(primitives::decode_file_name(
+                        self,
+                        &Env::new(),
+                        &bytes[..end],
+                    )?)
                 };
 
                 let mut recipients = self
@@ -3424,8 +3420,7 @@ impl Interpreter {
                             && watch.host_mask & event.mask != 0
                     })
                     .filter_map(|watch| {
-                        name.clone()
-                            .or_else(|| watch.path.clone())
+                        name.or_else(|| watch.path.clone().map(|path| Value::String(path.into())))
                             .map(|event_name| (watch.descriptor, watch.callback, event_name))
                     })
                     .collect::<Vec<_>>();
@@ -3443,7 +3438,7 @@ impl Interpreter {
                     let raw_event = Value::list([
                         descriptor,
                         inotify_aspects(event.mask),
-                        Value::String(event_name.into()),
+                        event_name,
                         Value::Integer(i64::from(event.cookie)),
                     ]);
                     self.pending_file_notifications

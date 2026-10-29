@@ -115,8 +115,10 @@ pub(crate) fn comp_el_to_eln_rel_filename(
     string_argument(filename)?;
     // Use the realpath so that any symlink always compares equal (bug#44701).
     let expanded = c_primitive(interp, env, "expand-file-name", &[*filename, Value::Nil])?;
-    let mut filename = match fs::canonicalize(string_argument(&expanded)?) {
-        Ok(canonical) => canonical.display().to_string(),
+    // realpath of the ENCODE_FILE'd name, DECODE_FILE'd back.
+    let host = host_file_name(interp, env, &string_argument(&expanded)?)?;
+    let mut filename = match fs::canonicalize(host) {
+        Ok(canonical) => decode_host_file_name_text(interp, env, canonical.as_os_str())?.0,
         Err(_) => string_argument(&expanded)?,
     };
     if !c_primitive(interp, env, "file-exists-p", &[Value::string(&filename)])?.is_truthy() {

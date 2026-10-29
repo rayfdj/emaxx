@@ -357,6 +357,9 @@ pub(crate) struct RopeRange<'a> {
     len: usize,
     /// The character index of START.
     start_char: usize,
+    /// A chunk of the rope already found and its first byte, read without
+    /// walking the tree (see `with_chunk').
+    known: Option<(&'a [u8], usize)>,
 }
 
 impl<'a> RopeRange<'a> {
@@ -368,6 +371,16 @@ impl<'a> RopeRange<'a> {
             start,
             len: end - start,
             start_char,
+            known: None,
+        }
+    }
+
+    /// The range with CHUNK of its rope, starting at the rope's byte
+    /// CHUNK_START, known: a read inside it walks no tree.
+    pub(crate) fn with_chunk(self, chunk: &'a str, chunk_start: usize) -> Self {
+        RopeRange {
+            known: Some((chunk.as_bytes(), chunk_start)),
+            ..self
         }
     }
 
@@ -380,8 +393,16 @@ impl<'a> RopeRange<'a> {
     /// range offset its first byte has.
     #[inline]
     pub(crate) fn chunk_at_byte(&self, d: usize) -> (&'a [u8], usize) {
-        let (chunk, chunk_start, _, _) = self.rope.chunk_at_byte(self.start + d);
-        let bytes = chunk.as_bytes();
+        let at = self.start + d;
+        let (bytes, chunk_start) = match self.known {
+            Some((bytes, chunk_start)) if at >= chunk_start && at < chunk_start + bytes.len() => {
+                (bytes, chunk_start)
+            }
+            _ => {
+                let (chunk, chunk_start, _, _) = self.rope.chunk_at_byte(at);
+                (chunk.as_bytes(), chunk_start)
+            }
+        };
         let low = self.start.max(chunk_start);
         let high = (self.start + self.len).min(chunk_start + bytes.len());
         (

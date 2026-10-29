@@ -3949,9 +3949,32 @@ impl LiveObjectCensus {
 /// Keep host strings rather than Lisp objects so each interpreter owns its
 /// ordinary mutable lists, without inheriting later library driver changes.
 /// Low-level compiler users also capture this before entering libgccjit.
-pub(crate) fn initial_process_environment() -> &'static [(String, String)] {
-    static INITIAL: std::sync::OnceLock<Vec<(String, String)>> = std::sync::OnceLock::new();
-    INITIAL.get_or_init(|| std::env::vars().collect())
+pub(crate) fn initial_process_environment() -> &'static [(std::ffi::OsString, std::ffi::OsString)] {
+    static INITIAL: std::sync::OnceLock<Vec<(std::ffi::OsString, std::ffi::OsString)>> =
+        std::sync::OnceLock::new();
+    INITIAL.get_or_init(|| std::env::vars_os().collect())
+}
+
+/// The startup environment as callproc.c:set_initial_environment lists
+/// it: each NAME=VALUE entry through build_string, whose make_string
+/// makes a multibyte string of valid multibyte text and a unibyte one of
+/// anything else.
+pub(crate) fn initial_environment_list() -> Value {
+    use std::os::unix::ffi::OsStrExt;
+    Value::list(
+        initial_process_environment()
+            .iter()
+            .map(|(name, value)| {
+                let mut entry = name.as_bytes().to_vec();
+                entry.push(b'=');
+                entry.extend_from_slice(value.as_bytes());
+                match std::str::from_utf8(&entry) {
+                    Ok(text) => Value::String(text.into()),
+                    Err(_) => primitives::bytes_to_unibyte_value(&entry),
+                }
+            })
+            .collect::<Vec<_>>(),
+    )
 }
 
 impl Interpreter {
@@ -6060,24 +6083,8 @@ impl Interpreter {
                 // exactly as GNU's do.  (A fresh list synthesized on every
                 // lookup broke that sharing: python-tests' unset-inside-let
                 // reverted on unwind where GNU's stays spliced out.)
-                (
-                    "initial-environment".into(),
-                    Value::list(
-                        initial_process_environment()
-                            .iter()
-                            .map(|(name, value)| Value::String(format!("{name}={value}").into()))
-                            .collect::<Vec<_>>(),
-                    ),
-                ),
-                (
-                    "process-environment".into(),
-                    Value::list(
-                        initial_process_environment()
-                            .iter()
-                            .map(|(name, value)| Value::String(format!("{name}={value}").into()))
-                            .collect::<Vec<_>>(),
-                    ),
-                ),
+                ("initial-environment".into(), initial_environment_list()),
+                ("process-environment".into(), initial_environment_list()),
                 ("cpp-font-lock-keywords".into(), Value::Nil),
                 ("current-load-list".into(), Value::Nil),
                 ("load-history".into(), Value::Nil),
