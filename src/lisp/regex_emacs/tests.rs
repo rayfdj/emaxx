@@ -408,3 +408,56 @@ fn rope_chunks_are_read_in_place() {
     assert_eq!(found.regs[1], Some((0, 5000)));
     assert_eq!(found.regs[2], Some((5006, 10006)));
 }
+
+#[test]
+fn bracket_classes_admit_the_ascii_characters_re_iswctype_does() {
+    for &class in &compile::WC_TYPES {
+        let mut env = TestEnv::default();
+        for c in 0..0x80u32 {
+            if let Some(fixed) = compile::ascii_class_fixed(class, c) {
+                assert_eq!(
+                    compile::ASCII_CLASS_MASKS[class as usize] & (1 << c) != 0,
+                    fixed,
+                    "{class:?} {c:#x}"
+                );
+                assert_eq!(fixed, compile::re_iswctype(&mut env, c, class));
+            }
+        }
+    }
+    for name in [
+        "alnum",
+        "alpha",
+        "word",
+        "graph",
+        "print",
+        "lower",
+        "upper",
+        "punct",
+        "cntrl",
+        "digit",
+        "xdigit",
+        "blank",
+        "space",
+        "multibyte",
+        "nonascii",
+        "ascii",
+        "unibyte",
+    ] {
+        let (class, _) =
+            compile::re_wctype_parse(&codes(&format!("[:{name}:]")), 0).expect("a class name");
+        for c in 0..0x80u32 {
+            let text = char::from_u32(c).expect("ASCII").to_string();
+            let expected = compile::re_iswctype(&mut TestEnv::default(), c, class);
+            assert_eq!(
+                search_with(&format!("[[:{name}:]]"), &text, false, false).is_some(),
+                expected,
+                "[:{name}:] {c:#x}"
+            );
+            assert_eq!(
+                search_with(&format!("[^[:{name}:]]"), &text, false, false).is_some(),
+                !expected,
+                "[^[:{name}:]] {c:#x}"
+            );
+        }
+    }
+}

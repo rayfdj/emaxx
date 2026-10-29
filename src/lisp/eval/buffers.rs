@@ -64,7 +64,11 @@ impl Interpreter {
 
     pub fn related_buffer_ids(&self, buffer_id: u64) -> smallvec::SmallVec<[u64; 4]> {
         if self.indirect_buffers.is_empty() {
-            // Every buffer is its own root: BUFFER_ID's text is its own.
+            // Every buffer is its own root: BUFFER_ID's text is its own,
+            // and the current buffer is live.
+            if buffer_id == self.current_buffer_id {
+                return smallvec::smallvec![buffer_id];
+            }
             return self
                 .buffer_list
                 .iter()

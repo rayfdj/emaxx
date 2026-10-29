@@ -9,7 +9,7 @@
 use super::*;
 use crate::lisp::regex_emacs::{self as rx, MatchEnv, MatchError, Pattern, Registers, Text};
 use crate::lisp::types::{CharTableRef, Kind};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 mod non_re;
@@ -251,6 +251,10 @@ enum Object<'t> {
         point: usize,
         /// The text is ASCII: byte offsets are character offsets.
         ascii: bool,
+        /// A byte offset and its character offset, point's to begin with
+        /// and then the one converted last: the position
+        /// buf_bytepos_to_charpos counts a nearby one from.
+        known: Cell<(usize, usize)>,
     },
     String {
         /// The string's data, read in place.
@@ -386,12 +390,16 @@ impl<'a, 't> LispMatchEnv<'a, 't> {
     fn charpos(&self, at: usize) -> usize {
         match &self.object {
             Object::Buffer {
-                text, begv, ascii, ..
+                text,
+                begv,
+                ascii,
+                known,
+                ..
             } => {
                 if *ascii {
                     begv + at
                 } else {
-                    begv + text.byte_to_char(at)
+                    begv + text.char_offset_from(known, at)
                 }
             }
             Object::String {
@@ -617,6 +625,12 @@ impl MatchEnv for LispMatchEnv<'_, '_> {
 
     fn buffer_syntax(&mut self, c: u32) -> u8 {
         self.plain_class(c)
+    }
+
+    fn buffer_syntax_ascii(&mut self) -> [u8; 128] {
+        self.syntax_table
+            .ascii_get_all()
+            .map(|entry| (super::syntax_scan::entry_flags(entry) & 0xff) as u8)
     }
 
     fn has_category(&mut self, c: u32, category: u8) -> bool {
@@ -924,12 +938,54 @@ enum SnapshotRange<'t> {
     Str(&'t str),
 }
 
+/// How far in bytes from the offset it knows `char_offset_from' counts
+/// characters rather than asking the text: a rope's conversion counts
+/// within the leaf it lands in, after walking to it.
+const CHAR_COUNT_DISTANCE: usize = 1024;
+
 impl SnapshotRange<'_> {
     /// The character offset of byte offset AT from the range's start.
     fn byte_to_char(&self, at: usize) -> usize {
         match self {
             SnapshotRange::Rope(rope) => rope.byte_to_char(at),
             SnapshotRange::Str(text) => ropey::str_utils::byte_to_char_idx(text, at),
+        }
+    }
+
+    /// The character offset of byte offset AT, counted from KNOWN's offset
+    /// when AT is near it, as buf_bytepos_to_charpos counts from the
+    /// nearest position it knows; AT is then the one known.
+    fn char_offset_from(&self, known: &Cell<(usize, usize)>, at: usize) -> usize {
+        let (byte, char) = known.get();
+        let offset = if at.abs_diff(byte) > CHAR_COUNT_DISTANCE {
+            self.byte_to_char(at)
+        } else if at >= byte {
+            char + self.chars_in(byte, at)
+        } else {
+            char - self.chars_in(at, byte)
+        };
+        known.set((at, offset));
+        offset
+    }
+
+    /// The characters bytes FROM..TO of the range begin.
+    fn chars_in(&self, from: usize, to: usize) -> usize {
+        fn starts(bytes: &[u8]) -> usize {
+            bytes.iter().filter(|&&byte| byte & 0xC0 != 0x80).count()
+        }
+        match self {
+            SnapshotRange::Str(text) => starts(&text.as_bytes()[from..to]),
+            SnapshotRange::Rope(rope) => {
+                let mut count = 0;
+                let mut at = from;
+                while at < to {
+                    let (chunk, chunk_start) = rope.chunk_at_byte(at);
+                    let end = (chunk_start + chunk.len()).min(to);
+                    count += starts(&chunk[at - chunk_start..end - chunk_start]);
+                    at = end;
+                }
+                count
+            }
         }
     }
 }
@@ -1078,11 +1134,13 @@ impl BufferSnapshot {
 
     /// The matcher's object for this snapshot's text.
     fn object(&self) -> Object<'_> {
+        let point = self.offset(self.point);
         Object::Buffer {
             text: self.range(),
             begv: self.begv,
-            point: self.offset(self.point),
+            point,
             ascii: self.ascii,
+            known: Cell::new((point, self.point - self.begv)),
         }
     }
 }

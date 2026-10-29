@@ -8975,6 +8975,48 @@ setup_process_coding_systems's check now refuses). A 13-form
   the documented local skips, all 3,313 tests run passing (2 ignored);
   the seven integration targets; clippy `-D warnings', rustfmt and `git
   diff --check'.
+- **Round 167: bracket classes read the syntax table once a
+  compilation, and syntax-aware matching counts characters from where
+  it last converted.** regex_compile sets the bits of the ASCII
+  characters a `[:CLASS:]' admits by calling re_iswctype for each of
+  the 128 in turn, and `[:space:]' and `[:word:]' read BUFFER_SYNTAX
+  for each; Emaxx did the same through the match environment, each
+  read a call down to CHAR_TABLE_REF_ASCII's walk up the table's
+  parents. In cperl-mode-tests the 5,288 patterns compiled made 1.15M
+  such reads, 136M instructions of the file's 2.26G (GNU's re_iswctype,
+  inlining its lookups, took 100M of 1.94G). The classes that read no
+  table at ASCII now take their bits from masks the compiler computes
+  from the same predicates re_iswctype applies (ISALNUM, ISGRAPH,
+  ISPUNCT and the rest, shared with it), `[:lower:]' and `[:upper:]'
+  still ask the case table character by character, and `[:space:]'
+  and `[:word:]' come from one pass over the buffer's syntax table the
+  first time a pattern needs either (CharTableRef::ascii_get_all: each
+  table up the parents answers the characters its children left nil,
+  as CHAR_TABLE_REF_ASCII does for one). No Lisp runs while a pattern
+  compiles, so the table read is the one each character would have
+  found; without case folding the class's bits go into the bitmap at
+  once, with it each admitted character and its translation as
+  before. A syntax-aware match converts each byte offset it looks up
+  syntax at (RE_SYNTAX_TABLE_BYTE_TO_CHAR for UPDATE_SYNTAX_TABLE) to a
+  character position; in a buffer with non-ASCII text that was the
+  rope's conversion, a tree walk and a count within the leaf, some
+  1,470 instructions each in cperl-mode-tests. It now counts from the
+  offset it converted last (point's to begin with) when the new one is
+  within 1 KB of it, as buf_bytepos_to_charpos counts from the nearest
+  position it knows. related_buffer_ids, which every edit asks for the
+  buffers sharing its text, returns the current buffer at once when no
+  indirect buffer exists. cperl-mode-tests now takes 2.089G
+  instructions (GNU 1.936G; it was 1.169 times GNU's, now 1.079).
+  Tests: a unit test checks every class's mask against re_iswctype for
+  each ASCII character and that `[[:CLASS:]]' and `[^[:CLASS:]]' admit
+  exactly the characters re_iswctype does; a batch test compares
+  bracket classes against GNU 30.2 through a two-level parent chain of
+  syntax tables (entries of the child over the parent's, nil falling
+  through), beside other classes and case folding, and after the
+  tables change. Local validation: the full gate across its ten groups
+  with the documented local skips, all 3,315 tests run passing (2
+  ignored); the seven integration targets; clippy `-D warnings',
+  rustfmt and `git diff --check'.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -10055,7 +10097,27 @@ frozen (run 40894367851) matched all 7,928 outcomes on its first
 attempt. Its timings: setup 84.3 s against 68.4 s (1.232), test bodies
 264.2 s against 274.7 s (0.962), in all 1.008.
 
+**On `d93228a`** (round 166): full Rust gate passed (run 40912227825);
+frozen (run 40912248646) matched all 7,928 outcomes on its first
+attempt. Its timings: setup 52.6 s against 44.6 s (1.179), test bodies
+203.3 s against 217.6 s (0.934), in all 0.965.
+
 **Findings recorded, not fixed:**
+- **A call from Rust into byte code costs about 240 instructions more
+  than GNU's (round 167).** `mapatoms' over 18,663 symbols with a
+  byte-compiled callback takes 596 instructions a symbol in the release
+  build against GNU's 435: funcall_closure 241, call_function_value 124,
+  the callee's run_verified 111 and `mapatoms' itself 26, where GNU
+  spends Ffuncall 61, funcall_general 47, funcall_lambda 40 and
+  exec_byte_code 154. The excess is spread over the entry's steps, none
+  more than a few dozen instructions: the frame-entry cache lookup and
+  its epoch checks, the copy of the cached program, the activation's
+  entry marks and their restoring, the frame and argument pushes, the
+  verified loop's frame record, and the backtrace frame and debugger
+  gates around it. It is most of what separates comp-cstr-tests (4.44G
+  against 3.65G; its 3.85M `mapatoms' callbacks), edebug-tests (4.78G
+  against 4.11G) and em-pred-tests (2.83G against 2.53G; 937K byte-code
+  callbacks) from GNU.
 - **comp-tests' time is the instruction rate (round 166).** In the
   release build a `comp-tests-ret-type-spec-*' test takes about 330 ms
   of wall time against GNU's 267 ms and a third more user time, but

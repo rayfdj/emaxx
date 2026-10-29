@@ -94,19 +94,49 @@ pub(super) fn re_wctype_parse(pattern: &[u32], p: usize) -> Option<(WcType, usiz
 
 /// IS_REAL_ASCII.
 #[inline]
-fn is_real_ascii(c: u32) -> bool {
+const fn is_real_ascii(c: u32) -> bool {
     c < 0o200
 }
 
 /// SINGLE_BYTE_CHAR_P.
 #[inline]
-fn single_byte_char_p(c: u32) -> bool {
+const fn single_byte_char_p(c: u32) -> bool {
     c < 0x100
+}
+
+/// ISALNUM of a real ASCII character.
+const fn ascii_alnum(c: u32) -> bool {
+    matches!(c, 0x61..=0x7a | 0x41..=0x5a | 0x30..=0x39)
+}
+
+/// ISALPHA of a real ASCII character.
+const fn ascii_alpha(c: u32) -> bool {
+    matches!(c, 0x61..=0x7a | 0x41..=0x5a)
+}
+
+/// ISBLANK of a real ASCII character.
+const fn ascii_blank(c: u32) -> bool {
+    c == 0x20 || c == 0x09
+}
+
+/// ISGRAPH of a single-byte character.
+const fn unibyte_graph(c: u32) -> bool {
+    c > 0x20 && !matches!(c, 0o177..=0o240)
+}
+
+/// ISPRINT of a single-byte character.
+const fn unibyte_print(c: u32) -> bool {
+    c >= 0x20 && !matches!(c, 0o177..=0o237)
+}
+
+/// ISPUNCT of a real ASCII character.
+const fn ascii_punct(c: u32) -> bool {
+    c > 0x20 && c < 0o177 && !ascii_alnum(c)
 }
 
 pub(super) fn isalnum<E: MatchEnv + ?Sized>(env: &mut E, c: u32) -> bool {
     if is_real_ascii(c) {
-        matches!(c, 0x61..=0x7a | 0x41..=0x5a | 0x30..=0x39)
+        ascii_alnum(c)
     } else {
         env.alphanumericp(c)
     }
@@ -114,7 +144,7 @@ pub(super) fn isalnum<E: MatchEnv + ?Sized>(env: &mut E, c: u32) -> bool {
 
 pub(super) fn isalpha<E: MatchEnv + ?Sized>(env: &mut E, c: u32) -> bool {
     if is_real_ascii(c) {
-        matches!(c, 0x61..=0x7a | 0x41..=0x5a)
+        ascii_alpha(c)
     } else {
         env.alphabeticp(c)
     }
@@ -122,7 +152,7 @@ pub(super) fn isalpha<E: MatchEnv + ?Sized>(env: &mut E, c: u32) -> bool {
 
 pub(super) fn isblank<E: MatchEnv + ?Sized>(env: &mut E, c: u32) -> bool {
     if is_real_ascii(c) {
-        c == 0x20 || c == 0x09
+        ascii_blank(c)
     } else {
         env.blankp(c)
     }
@@ -130,7 +160,7 @@ pub(super) fn isblank<E: MatchEnv + ?Sized>(env: &mut E, c: u32) -> bool {
 
 pub(super) fn isgraph<E: MatchEnv + ?Sized>(env: &mut E, c: u32) -> bool {
     if single_byte_char_p(c) {
-        c > 0x20 && !(0o177..=0o240).contains(&c)
+        unibyte_graph(c)
     } else {
         env.graphicp(c)
     }
@@ -138,7 +168,7 @@ pub(super) fn isgraph<E: MatchEnv + ?Sized>(env: &mut E, c: u32) -> bool {
 
 pub(super) fn isprint<E: MatchEnv + ?Sized>(env: &mut E, c: u32) -> bool {
     if single_byte_char_p(c) {
-        c >= 0x20 && !(0o177..=0o237).contains(&c)
+        unibyte_print(c)
     } else {
         env.printablep(c)
     }
@@ -146,7 +176,7 @@ pub(super) fn isprint<E: MatchEnv + ?Sized>(env: &mut E, c: u32) -> bool {
 
 pub(super) fn ispunct<E: MatchEnv + ?Sized>(env: &mut E, c: u32) -> bool {
     if is_real_ascii(c) {
-        c > 0x20 && c < 0o177 && !matches!(c, 0x61..=0x7a | 0x41..=0x5a | 0x30..=0x39)
+        ascii_punct(c)
     } else {
         env.buffer_syntax(c) != syntax_code::WORD
     }
@@ -161,9 +191,73 @@ pub(super) fn isword<E: MatchEnv + ?Sized>(env: &mut E, c: u32) -> bool {
 }
 
 /// ISXDIGIT (char_hexdigit).
-fn isxdigit(c: u32) -> bool {
+const fn isxdigit(c: u32) -> bool {
     matches!(c, 0x30..=0x39 | 0x41..=0x46 | 0x61..=0x66)
 }
+
+/// re_iswctype of the ASCII character C for a CLASS that reads no table
+/// there; None for `[:lower:]', `[:upper:]', `[:space:]' and `[:word:]',
+/// which read the case or syntax table.
+pub(super) const fn ascii_class_fixed(class: WcType, c: u32) -> Option<bool> {
+    Some(match class {
+        WcType::Alnum => ascii_alnum(c),
+        WcType::Alpha => ascii_alpha(c),
+        WcType::Blank => ascii_blank(c),
+        WcType::Cntrl => c < 0x20,
+        WcType::Digit => matches!(c, 0x30..=0x39),
+        WcType::Graph => unibyte_graph(c),
+        WcType::Print => unibyte_print(c),
+        WcType::Punct => ascii_punct(c),
+        WcType::XDigit => isxdigit(c),
+        WcType::Ascii => is_real_ascii(c),
+        WcType::NonAscii => !is_real_ascii(c),
+        WcType::Unibyte => single_byte_char_p(c),
+        WcType::Multibyte => !single_byte_char_p(c),
+        WcType::Error => false,
+        WcType::Lower | WcType::Upper | WcType::Space | WcType::Word => return None,
+    })
+}
+
+/// Every class, for the tables below.
+pub(super) const WC_TYPES: [WcType; 18] = [
+    WcType::Error,
+    WcType::Alnum,
+    WcType::Alpha,
+    WcType::Word,
+    WcType::Graph,
+    WcType::Print,
+    WcType::Lower,
+    WcType::Upper,
+    WcType::Punct,
+    WcType::Cntrl,
+    WcType::Digit,
+    WcType::XDigit,
+    WcType::Blank,
+    WcType::Space,
+    WcType::Multibyte,
+    WcType::NonAscii,
+    WcType::Ascii,
+    WcType::Unibyte,
+];
+
+/// The ASCII characters of each class `ascii_class_fixed' answers, bit C
+/// for character C, by the class's discriminant.
+pub(super) const ASCII_CLASS_MASKS: [u128; 18] = {
+    let mut masks = [0; 18];
+    let mut i = 0;
+    while i < WC_TYPES.len() {
+        let class = WC_TYPES[i];
+        let mut c = 0;
+        while c < 0x80 {
+            if let Some(true) = ascii_class_fixed(class, c) {
+                masks[class as usize] |= 1 << c;
+            }
+            c += 1;
+        }
+        i += 1;
+    }
+    masks
+};
 
 /// re_iswctype: whether CH is in class CC.
 pub(super) fn re_iswctype<E: MatchEnv + ?Sized>(env: &mut E, ch: u32, cc: WcType) -> bool {
@@ -292,9 +386,38 @@ struct Compiler<'e> {
     multibyte: bool,
     re_nsub: i64,
     used_syntax: bool,
+    /// The ASCII characters of `[:space:]' and `[:word:]', from the
+    /// buffer's syntax table when a class first needs them: no Lisp runs
+    /// while a pattern compiles, so the table stays the one read.
+    ascii_syntax_masks: Option<(u128, u128)>,
 }
 
 impl Compiler<'_> {
+    /// The ASCII characters re_iswctype admits for CLASS, bit C for
+    /// character C.
+    fn ascii_class_mask(&mut self, class: WcType) -> u128 {
+        if !matches!(class, WcType::Space | WcType::Word) {
+            if matches!(class, WcType::Lower | WcType::Upper) {
+                return (0..0x80u32)
+                    .filter(|&c| re_iswctype(self.env, c, class))
+                    .fold(0, |mask, c| mask | 1 << c);
+            }
+            return ASCII_CLASS_MASKS[class as usize];
+        }
+        let (space, word) = *self.ascii_syntax_masks.get_or_insert_with(|| {
+            let mut masks = (0, 0);
+            for (c, code) in self.env.buffer_syntax_ascii().into_iter().enumerate() {
+                if code == syntax_code::WHITESPACE {
+                    masks.0 |= 1 << c;
+                } else if code == syntax_code::WORD {
+                    masks.1 |= 1 << c;
+                }
+            }
+            masks
+        });
+        if class == WcType::Space { space } else { word }
+    }
+
     #[inline]
     fn translate(&mut self, c: u32) -> u32 {
         if self.translate {
@@ -524,6 +647,7 @@ pub(crate) fn compile(
         multibyte,
         re_nsub: 0,
         used_syntax: false,
+        ascii_syntax_masks: None,
     };
     regex_compile(&mut cc, pattern, posix, whitespace)?;
     Ok(Pattern {
@@ -791,18 +915,27 @@ fn regex_compile(
                         if p == pend {
                             return Err(RegError::EBrack);
                         }
-                        for ch in 0..0x80u32 {
-                            if re_iswctype(cc.env, ch, class) {
-                                cc.set_list_bit(map, ch);
-                                let c1 = cc.translate(ch);
-                                if c1 == ch {
-                                    continue;
-                                }
-                                if c1 < 0x80 {
-                                    cc.set_list_bit(map, c1);
-                                } else if let Some(byte) = char_to_unibyte(c1) {
-                                    cc.set_list_bit(map, byte);
-                                }
+                        // Each ASCII character of the class, with its
+                        // translation; without one, the class's bits alone.
+                        let mut admitted = cc.ascii_class_mask(class);
+                        if !cc.translate {
+                            for (offset, bits) in admitted.to_le_bytes().into_iter().enumerate() {
+                                cc.b[map + offset] |= bits;
+                            }
+                            admitted = 0;
+                        }
+                        while admitted != 0 {
+                            let ch = admitted.trailing_zeros();
+                            admitted &= admitted - 1;
+                            cc.set_list_bit(map, ch);
+                            let c1 = cc.translate(ch);
+                            if c1 == ch {
+                                continue;
+                            }
+                            if c1 < 0x80 {
+                                cc.set_list_bit(map, c1);
+                            } else if let Some(byte) = char_to_unibyte(c1) {
+                                cc.set_list_bit(map, byte);
                             }
                         }
                         range_table_work.bits |= re_wctype_to_bit(class);

@@ -297,6 +297,40 @@ impl CharTableRef {
         }
     }
 
+    /// CHAR_TABLE_REF_ASCII of every ASCII character, character C's value
+    /// at index C, read in one walk up the parents: each table answers the
+    /// characters its children left nil.
+    pub(crate) fn ascii_get_all(&self) -> [Value; 128] {
+        let mut values = [Value::Nil; 128];
+        let mut unanswered = u128::MAX;
+        let mut table = *self;
+        loop {
+            let ascii = table.standard_slot(ASCII);
+            let bottom = subtable(ascii);
+            let default = table.default();
+            let mut rest = unanswered;
+            while rest != 0 {
+                let index = rest.trailing_zeros() as usize;
+                rest &= rest - 1;
+                let mut value = bottom.map_or(ascii, |sub| sub.bottom_slot(index));
+                if value.is_nil() {
+                    value = default;
+                }
+                if !value.is_nil() {
+                    values[index] = value;
+                    unanswered &= !(1 << index);
+                }
+            }
+            if unanswered == 0 {
+                return values;
+            }
+            let Some(parent) = table.parent() else {
+                return values;
+            };
+            table = parent;
+        }
+    }
+
     pub(crate) fn explicit_get(&self, character: u32) -> Value {
         if character < 128 {
             return self.ascii_explicit_get(character as usize);
