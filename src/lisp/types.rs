@@ -1526,6 +1526,13 @@ pub trait PropertyKey: Copy {
     fn names(self, name: &PropertyName) -> bool {
         self.is(name.0)
     }
+
+    /// The object this key is EQ to, when it is one: a walk of a plist
+    /// then compares each name with it, read once.
+    #[inline]
+    fn object(self) -> Option<Value> {
+        None
+    }
 }
 
 impl PropertyKey for PropertyName {
@@ -1537,6 +1544,11 @@ impl PropertyKey for PropertyName {
     #[inline]
     fn is_named(self, text: &str) -> bool {
         self == *text
+    }
+
+    #[inline]
+    fn object(self) -> Option<Value> {
+        Some(self.0)
     }
 }
 
@@ -1562,6 +1574,11 @@ impl PropertyKey for symbols::SymbolKey {
     #[inline]
     fn is_named(self, text: &str) -> bool {
         self.with(|symbol| symbol.as_str() == text)
+    }
+
+    #[inline]
+    fn object(self) -> Option<Value> {
+        Some(self.with(|symbol| Value::Symbol(*symbol)))
     }
 }
 

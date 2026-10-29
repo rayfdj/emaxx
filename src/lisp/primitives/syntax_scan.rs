@@ -322,8 +322,10 @@ pub(super) struct GlState {
     b_property: usize,
     e_property: usize,
     e_property_truncated: bool,
-    forward_i: Option<(usize, usize)>,
-    backward_i: Option<(usize, usize)>,
+    /// The intervals held, by their bounds and the count of spans before
+    /// them (where a step looks first).
+    forward_i: Option<(usize, usize, usize)>,
+    backward_i: Option<(usize, usize, usize)>,
     /// The buffer's own syntax table (BVAR (current_buffer, syntax_table)).
     buffer_table: CharTableRef,
     /// parse_sexp_lookup_properties.
@@ -643,17 +645,18 @@ impl GlState {
             } else {
                 self.backward_i
             };
-            let (Some((held_start, _)), Some(intervals)) = (held, intervals.as_ref()) else {
+            let (Some((held_start, _, held_index)), Some(intervals)) = (held, intervals.as_ref())
+            else {
                 return Err(error(
                     "Error in syntax_table logic for to-the-end intervals",
                 ));
             };
-            i = intervals.find(held_start);
+            i = intervals.find_near(held_start, held_index);
             if charpos < i.start {
                 if count > 0 {
                     return Err(error("Error in syntax_table logic for intervals <-"));
                 }
-                i = intervals.find(charpos);
+                i = intervals.find_near(charpos, i.index());
                 if i.end != self.b_property {
                     invalidate = false;
                     self.forward_i = bounds_of(&i);
@@ -663,7 +666,7 @@ impl GlState {
                 if count < 0 {
                     return Err(error("Error in syntax_table logic for intervals ->"));
                 }
-                i = intervals.find(charpos);
+                i = intervals.find_near(charpos, i.index());
                 if i.start != self.e_property {
                     invalidate = false;
                     self.backward_i = bounds_of(&i);
@@ -672,7 +675,10 @@ impl GlState {
             }
         }
 
-        let tmp_table = textget(interp, i.plist);
+        // No Lisp runs in this update: the variables textget reads are read
+        // once for its intervals.
+        let mut variables = Default::default();
+        let tmp_table = textget(interp, i.plist, &mut variables);
 
         if invalidate {
             invalidate = tmp_table.word() != self.old_prop.word();
@@ -710,7 +716,7 @@ impl GlState {
         let mut cnt = 0;
         let mut walk = Some(i);
         while let Some(i) = walk {
-            if cnt != 0 && textget(interp, i.plist).word() != tmp_table.word() {
+            if cnt != 0 && textget(interp, i.plist, &mut variables).word() != tmp_table.word() {
                 if count > 0 {
                     self.e_property = i.start;
                     self.forward_i = bounds_of(&i);
@@ -824,16 +830,21 @@ fn string_chars(string: &Value) -> usize {
 }
 
 /// An interval as gl_state holds it.
-fn bounds_of(i: &PropertyInterval<'_>) -> Option<(usize, usize)> {
-    Some((i.start, i.end))
+fn bounds_of(i: &PropertyInterval<'_>) -> Option<(usize, usize, usize)> {
+    Some((i.start, i.end, i.index()))
 }
 
 /// textget of `syntax-table' in an interval's plist.
-fn textget(interp: &Interpreter, plist: &[(crate::lisp::types::PropertyName, Value)]) -> Value {
-    crate::lisp::primitives::strings::property_from_props_with_category(
+fn textget(
+    interp: &Interpreter,
+    plist: &[(crate::lisp::types::PropertyName, Value)],
+    variables: &mut crate::lisp::primitives::strings::TextPropertyVariables,
+) -> Value {
+    crate::lisp::primitives::strings::property_from_props_reading(
         interp,
         plist,
         cached_symbol!("syntax-table"),
+        variables,
     )
     .unwrap_or(Value::Nil)
 }

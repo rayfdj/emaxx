@@ -1237,6 +1237,17 @@ pub(crate) struct PropertyInterval<'a> {
     pub(crate) start: usize,
     pub(crate) end: usize,
     pub(crate) plist: &'a [(PropertyName, Value)],
+    /// How many spans start at or before the interval's start: where the
+    /// next and previous intervals are looked for.
+    index: usize,
+}
+
+impl PropertyInterval<'_> {
+    /// The count of spans starting at or before the interval, for a later
+    /// `find_near' of a position near it.
+    pub(crate) fn index(&self) -> usize {
+        self.index
+    }
 }
 
 /// An object's interval tree as textprop.c walks it: the whole text
@@ -1260,9 +1271,35 @@ impl<'a, S: PropertySpan> PropertyIntervals<'a, S> {
     /// intervals.c:find_interval: the interval holding POS, the last one
     /// for POS at the end of the text.
     pub(crate) fn find(&self, pos: usize) -> PropertyInterval<'a> {
-        let spans: &'a [S] = self.spans;
         let pos = pos.clamp(self.beg, self.end - 1);
-        let index = spans.partition_point(|span| span.bounds().0 <= pos);
+        let index = self.spans.partition_point(|span| span.bounds().0 <= pos);
+        self.interval_at(pos, index)
+    }
+
+    /// `find' from INDEX, the count of spans starting at or before a
+    /// position near POS: the count for POS stepped to from it, as
+    /// next_interval follows the tree from where it is, and searched for
+    /// only when it lies further off.
+    pub(crate) fn find_near(&self, pos: usize, index: usize) -> PropertyInterval<'a> {
+        let spans = self.spans;
+        let pos = pos.clamp(self.beg, self.end - 1);
+        let mut index = index.min(spans.len());
+        for _ in 0..4 {
+            if spans.get(index).is_some_and(|span| span.bounds().0 <= pos) {
+                index += 1;
+            } else if index > 0 && spans[index - 1].bounds().0 > pos {
+                index -= 1;
+            } else {
+                return self.interval_at(pos, index);
+            }
+        }
+        self.find(pos)
+    }
+
+    /// The interval holding POS, of which INDEX spans start at or before
+    /// it.
+    fn interval_at(&self, pos: usize, index: usize) -> PropertyInterval<'a> {
+        let spans: &'a [S] = self.spans;
         let before = index.checked_sub(1).map(|index| &spans[index]);
         if let Some(span) = before
             && pos < span.bounds().1
@@ -1272,23 +1309,25 @@ impl<'a, S: PropertySpan> PropertyIntervals<'a, S> {
                 start,
                 end,
                 plist: span.plist(),
+                index,
             };
         }
         PropertyInterval {
             start: before.map_or(self.beg, |span| span.bounds().1),
             end: spans.get(index).map_or(self.end, |span| span.bounds().0),
             plist: &[],
+            index,
         }
     }
 
     /// next_interval.
     pub(crate) fn next(&self, interval: &PropertyInterval<'_>) -> Option<PropertyInterval<'a>> {
-        (interval.end < self.end).then(|| self.find(interval.end))
+        (interval.end < self.end).then(|| self.find_near(interval.end, interval.index))
     }
 
     /// previous_interval.
     pub(crate) fn previous(&self, interval: &PropertyInterval<'_>) -> Option<PropertyInterval<'a>> {
-        (interval.start > self.beg).then(|| self.find(interval.start - 1))
+        (interval.start > self.beg).then(|| self.find_near(interval.start - 1, interval.index))
     }
 }
 

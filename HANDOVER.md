@@ -8796,6 +8796,33 @@ setup_process_coding_systems's check now refuses). A 13-form
   the documented local skips, all 3,308 tests run passing (2 ignored);
   the seven integration targets; clippy `-D warnings', rustfmt and `git
   diff --check'.
+- **Round 162: text properties under syntax scans.** csharp-mode's
+  indentation test (cc-mode with `parse-sexp-lookup-properties') took
+  436M instructions against GNU's 257M. Its 42,344 `update_syntax_table'
+  calls cost 1,500 instructions each against GNU's 450; each reads the
+  `syntax-table' property of five intervals or so, at 165 instructions
+  a read where GNU's textget walks the plist with EQ. A read resolved
+  its key's symbol through a thread-local at each plist entry, compared
+  each name with `category' by its text in a second walk, and read
+  `char-property-alias-alist' and `default-text-properties' each time
+  the plist lacked the property. It now walks the plist once by EQ,
+  the key and `category' resolved once, as lookup_char_property does,
+  and the scan's update reads those two variables once for all its
+  intervals (no Lisp runs within it), each only at its first need; a
+  nil alist or plist returns before its walk. Each step to the next or
+  previous interval was a binary search of the spans where GNU's
+  next_interval follows a pointer: an interval now carries the count
+  of spans before it, from which a step looks first, and gl_state holds
+  that count with the interval's bounds. A read takes 95 instructions,
+  a step 56 where a search took 93, an update 1,112; the test takes 421M.
+  A batch test scans sexps and reads string states over `syntax-table'
+  properties in many intervals, some through a `category' symbol, and
+  reads `char-property-alias-alist' and `default-text-properties',
+  against GNU 30.2.
+  Local validation: the full gate across its ten groups with
+  the documented local skips, all 3,309 tests run passing (2 ignored);
+  the seven integration targets; clippy `-D warnings', rustfmt and `git
+  diff --check'.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -9844,7 +9871,25 @@ attempt, the first losing one to the known oracle flake (GNU failing
 against 62.9 s (1.273), test bodies 256.0 s against 265.5 s (0.965), in
 all 1.007.
 
+**On `9984036`** (round 161): full Rust gate passed (run 40841140779);
+frozen (run 40841144438) matched all 7,928 outcomes on its second
+attempt, the first again losing `eglot-test-rust-completion-exit-function'
+to the oracle. Its timings: setup 90.8 s against 65.8 s (1.381), test
+bodies 264.6 s against 272.3 s (0.972), in all 1.039. The setup's rise
+is every file's (the median file's 14 % against GNU's 3 %); in the
+release build a file's setup takes about what it did (time-stamp-tests
+1,213M instructions against GNU's 1,157M), the code round 161 changed
+under 1M of it, so the next run's setup tells a slower runner from a
+change in the gate profile.
+
 **Findings recorded, not fixed:**
+- **Building `ucs-names' (round 162).** editfns-tests'
+  `replace-buffer-contents-bug31837' calls `char-from-name', whose
+  table of 42,943 names takes 1,024M instructions against GNU's 818M:
+  the byte-code loop and the calls it makes 335M against
+  exec_byte_code's and Ffuncall's 269M, `concat' 1,155 instructions a
+  call against concat_to_string's 834, `string-match' 2,130 against
+  1,920, the collector's marking 41M against 50M.
 - **What reading a large file still costs (round 161).** Of the 102M
   instructions `insert-file-contents' of NormalizationTest.txt takes
   (GNU 67M), the unibyte text for `set-auto-coding-function' is 24.7M

@@ -1231,26 +1231,85 @@ pub(crate) fn property_from_props_with_category(
     props: &[(PropertyName, Value)],
     prop: impl PropertyKey,
 ) -> Option<Value> {
-    if let Some((_, value)) = props.iter().find(|(name, _)| prop.names(name)) {
-        return Some(*value);
+    property_from_props_reading(interp, props, prop, &mut TextPropertyVariables::default())
+}
+
+/// The variables lookup_char_property reads where a plist has no PROP,
+/// each read at its first need: `char-property-alias-alist' and
+/// `default-text-properties'.
+#[derive(Default)]
+pub(crate) struct TextPropertyVariables {
+    aliases: Option<Value>,
+    defaults: Option<Value>,
+}
+
+impl TextPropertyVariables {
+    fn aliases(&mut self, interp: &Interpreter) -> Value {
+        *self.aliases.get_or_insert_with(|| {
+            interp
+                .symbol_value_key(cached_symbol!("char-property-alias-alist"))
+                .unwrap_or(Value::Nil)
+        })
     }
+
+    fn defaults(&mut self, interp: &Interpreter) -> Value {
+        *self.defaults.get_or_insert_with(|| {
+            interp
+                .symbol_value_key(cached_symbol!("default-text-properties"))
+                .unwrap_or(Value::Nil)
+        })
+    }
+}
+
+/// `property_from_props_with_category' for a caller reading many plists
+/// with no Lisp run between them: VARIABLES, each read once, serve them
+/// all.
+pub(crate) fn property_from_props_reading(
+    interp: &Interpreter,
+    props: &[(PropertyName, Value)],
+    prop: impl PropertyKey,
+    variables: &mut TextPropertyVariables,
+) -> Option<Value> {
+    let from_category = match prop.object() {
+        // lookup_char_property's walk: PROP's value by EQ, the `category'
+        // entry read in the same walk.
+        Some(key) => {
+            let category = cached_symbol!("category").with(|symbol| Value::Symbol(*symbol));
+            let mut found = None;
+            for (name, value) in props {
+                let name = name.value().word();
+                if name == key.word() {
+                    return Some(*value);
+                }
+                if name == category.word() && found.is_none() {
+                    found = Some(*value);
+                }
+            }
+            // A category's symbol gives every property but `category'.
+            found
+                .filter(|_| key.word() != category.word())
+                .and_then(|symbol| {
+                    symbol
+                        .symbol_str()
+                        .and_then(|name| interp.get_symbol_property_by(name, prop))
+                })
+        }
+        None => {
+            if let Some((_, value)) = props.iter().find(|(name, _)| prop.names(name)) {
+                return Some(*value);
+            }
+            property_from_category_symbol(interp, props, prop)
+        }
+    };
     if !props.is_empty() {
-        if let Some(value) =
-            property_from_category_symbol(interp, props, prop).filter(|value| !value.is_nil())
-        {
+        if let Some(value) = from_category.filter(|value| !value.is_nil()) {
             return Some(value);
         }
-        let aliases = interp
-            .symbol_value_key(cached_symbol!("char-property-alias-alist"))
-            .unwrap_or(Value::Nil);
-        if let Some(value) = alias_property(props, prop, aliases) {
+        if let Some(value) = alias_property(props, prop, variables.aliases(interp)) {
             return Some(value);
         }
     }
-    let defaults = interp
-        .symbol_value_key(cached_symbol!("default-text-properties"))
-        .unwrap_or(Value::Nil);
-    Some(lisp_plist_get(defaults, prop)).filter(|value| !value.is_nil())
+    Some(lisp_plist_get(variables.defaults(interp), prop)).filter(|value| !value.is_nil())
 }
 
 /// lookup_char_property's alternatives: `Fassq' of PROP in ALIASES, then
@@ -1260,6 +1319,9 @@ fn alias_property(
     prop: impl PropertyKey,
     aliases: Value,
 ) -> Option<Value> {
+    if !aliases.is_cons() {
+        return None;
+    }
     let mut seen = crate::lisp::types::CycleGuard::new();
     let mut tail = aliases;
     let names = loop {
@@ -1295,6 +1357,9 @@ fn alias_property(
 
 /// fns.c:plist_get of PROP in the Lisp property list PLIST.
 fn lisp_plist_get(plist: Value, prop: impl PropertyKey) -> Value {
+    if !plist.is_cons() {
+        return Value::Nil;
+    }
     let mut seen = crate::lisp::types::CycleGuard::new();
     let mut tail = plist;
     while let Kind::Cons(cell) = tail.kind() {

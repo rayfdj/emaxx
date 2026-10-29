@@ -8382,6 +8382,52 @@ fn file_reads_searches_and_unread_deletions_agree_with_gnu() {
 }
 
 #[test]
+fn syntax_table_properties_category_and_aliases_read_as_gnu_does() {
+    // `syntax-table' properties over many intervals, some through a
+    // `category' symbol and some among other properties, read by sexp
+    // scans and `parse-partial-sexp' with `parse-sexp-lookup-properties';
+    // `char-property-alias-alist' and `default-text-properties'.  GNU
+    // 30.2's values.
+    assert_oracle_contract_matches_interpreter(
+        r#"(with-temp-buffer
+           (setq-local parse-sexp-lookup-properties t)
+           (dotimes (i 200)
+             (insert (format "(a%d \"s|t\" b) " i)))
+           ;; `|' a string fence over many intervals, some through a category.
+           (put 'r162-fence 'syntax-table (string-to-syntax "|"))
+           (goto-char (point-min))
+           (let ((n 0))
+             (while (search-forward "|" nil t)
+               (setq n (1+ n))
+               (if (= 0 (% n 3))
+                   (put-text-property (1- (point)) (point) 'category 'r162-fence)
+                 (put-text-property (1- (point)) (point) 'syntax-table
+                                    (string-to-syntax "|")))
+               (when (= 0 (% n 5))
+                 (put-text-property (- (point) 3) (- (point) 2) 'face 'bold))))
+           (setq-local char-property-alias-alist '((r162-alias r162-real)))
+           (put-text-property 1 3 'r162-real 'from-alias)
+           (setq-local default-text-properties '(r162-default yes))
+           (list
+            (progn (goto-char (point-min)) (forward-sexp 30) (point))
+            (progn (goto-char (point-max)) (backward-sexp 25) (point))
+            (mapcar (lambda (p) (nth 3 (parse-partial-sexp (point-min) p)))
+                    '(6 7 8 9 10 11 12 510 511 512 513 514 515 516 2700 2701 2702 2703 2704 2705))
+            (mapcar (lambda (p) (nth 8 (parse-partial-sexp (point-min) p)))
+                    '(9 10 513 514 2702 2703))
+            (get-text-property 1 'r162-alias)
+            (get-text-property 5 'r162-default)
+            (get-text-property 10 'syntax-table)
+            (get-text-property 33 'syntax-table)
+            (get-char-property 33 'category)
+            (scan-lists 1 5 0)
+            (scan-lists (point-max) -3 0)))"#,
+        r#"(410 2516 (34 34 34 34 nil nil nil nil nil nil nil nil 34 34 nil nil nil 34 34 34) (5 nil nil nil nil 2702) from-alias yes nil (15) r162-fence 65 2846)"#,
+        "syntax-table properties",
+    );
+}
+
+#[test]
 fn directory_files_returns_mutable_sorted_names_with_dot_entries() {
     let unique = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
