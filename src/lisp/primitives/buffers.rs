@@ -567,7 +567,7 @@ fn replace_characters_unsignalled(
     }
     let point = interp.buffer.borrow().point();
     interp
-        .delete_region_current_buffer(from, to)
+        .delete_region_current_buffer_unreturned(from, to)
         .map_err(|e| LispError::Signal(e.to_string()))?;
     interp.buffer.borrow_mut().goto_char(from);
     interp.insert_current_buffer(&text);

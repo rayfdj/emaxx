@@ -245,9 +245,25 @@ fn inhibit_flag(attribute: Option<&Value>, variable: bool) -> bool {
 
 // --- The detectors -------------------------------------------------------
 
+/// The index of the first of UNITS from FROM on that SKIP does not hold
+/// for, or their end: sixteen at a time while all of them do.
+#[inline]
+fn next_unit_outside(units: &[i32], from: usize, skip: impl Fn(i32) -> bool) -> usize {
+    let mut i = from;
+    while let Some(block) = units.get(i..i + 16) {
+        if !block.iter().fold(true, |all, &c| all & skip(c)) {
+            break;
+        }
+        i += 16;
+    }
+    while i < units.len() && skip(units[i]) {
+        i += 1;
+    }
+    i
+}
+
 fn detect_utf_8(src: &DetectSource, head_ascii: usize, info: &mut DetectInfo) -> bool {
     let units = &src.units;
-    let end = units.len();
     let mut p = head_ascii;
     let mut nchars = head_ascii;
     let mut bom_found = false;
@@ -259,20 +275,17 @@ fn detect_utf_8(src: &DetectSource, head_ascii: usize, info: &mut DetectInfo) ->
     }
     let src_base;
     loop {
+        // An ASCII byte (or a multibyte source's character) is a
+        // character, a CR before an LF one as well.
+        let run_end = next_unit_outside(units, p, |c| c < 0x80);
+        nchars += run_end - p;
+        p = run_end;
         let base = p;
         let Some(&c) = units.get(p) else {
             src_base = base;
             break;
         };
         p += 1;
-        if c < 0 || c < 0x80 {
-            nchars += 1;
-            if c == i32::from(b'\r') && p < end && units[p] == i32::from(b'\n') {
-                p += 1;
-                nchars += 1;
-            }
-            continue;
-        }
         let extra = |c: i32| c >= 0 && (c & 0xC0) == 0x80;
         let Some(&c1) = units.get(p) else {
             src_base = base;
@@ -1113,13 +1126,17 @@ impl<'a> Detector<'a> {
             if (0x20..0x80).contains(&c) {
                 // A run of printable ASCII changes nothing but head_ascii.
                 let start = i;
-                i += 1;
-                while i < units.len() && (0x20..0x80).contains(&units[i]) {
-                    i += 1;
-                }
+                i = next_unit_outside(units, i + 1, |c| (c as u32).wrapping_sub(0x20) < 0x60);
                 if !eight_bit_found {
                     head_ascii += i - start;
                 }
+                continue;
+            }
+            if eight_bit_found && (c as u32) >= 0x20 {
+                // After an 8-bit byte (and no null byte, or the scan would
+                // have stopped there) only a control character changes
+                // anything.
+                i = next_unit_outside(units, i + 1, |c| (c as u32) >= 0x20);
                 continue;
             }
             if c < 0 || c & 0x80 != 0 {

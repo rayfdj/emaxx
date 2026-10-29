@@ -1618,7 +1618,10 @@ fn auto_coding_in_empty_buffer(
     };
     interp.buffer.borrow_mut().set_multibyte(false);
     interp.set_variable("buffer-undo-list", Value::T, &mut decide_env);
-    interp.insert_current_buffer(&decode_raw_text_bytes(bytes));
+    {
+        let (text, counts) = decode_raw_text_counted(bytes);
+        interp.insert_current_buffer_counted(&text, counts);
+    }
     let inserted_tick = {
         let mut buffer = interp.buffer.borrow_mut();
         buffer.goto_char(1);
@@ -1651,7 +1654,7 @@ fn auto_coding_in_empty_buffer(
             *decided_bytes = Some(encode_raw_text_bytes(&text)?);
         }
         interp
-            .delete_region_current_buffer(1, z)
+            .delete_region_current_buffer_unreturned(1, z)
             .map_err(|error| LispError::Signal(error.to_string()))?;
         let mut buffer = interp.buffer.borrow_mut();
         buffer.goto_char(1);

@@ -550,7 +550,7 @@ fn apply_buffer_replacement_hunks(
                         let to = target_start + hunk.old_end;
                         if from < to {
                             interp
-                                .delete_region_current_buffer(from, to)
+                                .delete_region_current_buffer_unreturned(from, to)
                                 .map_err(|error| LispError::Signal(error.to_string()))?;
                         }
                         if hunk.new_start < hunk.new_end {
@@ -1050,10 +1050,10 @@ define_dispatch!(
                         .map_err(|e| LispError::Signal(e.to_string()))?;
                     let gap_len = gap.chars().count();
                     interp
-                        .delete_region_current_buffer(start2, end2)
+                        .delete_region_current_buffer_unreturned(start2, end2)
                         .map_err(|e| LispError::Signal(e.to_string()))?;
                     interp
-                        .delete_region_current_buffer(start1, end1)
+                        .delete_region_current_buffer_unreturned(start1, end1)
                         .map_err(|e| LispError::Signal(e.to_string()))?;
                     interp.buffer.borrow_mut().goto_char(start1);
                     interp.insert_current_buffer(&region2_text);

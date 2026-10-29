@@ -456,6 +456,15 @@ impl Default for TextStore {
 /// The longest text kept as one string: about ropey's leaf size.
 const SMALL_TEXT: usize = 1024;
 
+/// What the maker of a text to insert already counted of it: its
+/// characters and its raw-byte markers (`count_raw_markers'), which the
+/// buffer then need not scan it for.
+#[derive(Clone, Copy, Debug)]
+pub struct TextCounts {
+    pub chars: usize,
+    pub raw_markers: usize,
+}
+
 /// The raw-byte markers U+E080..U+E0FF (EE 82 80 .. EE 83 BF) in BYTES,
 /// which hold whole characters.  From the first EE on, every pair of
 /// bytes is tested, 32 pairs a block in byte-wide counts the compiler
@@ -827,7 +836,27 @@ impl BufferText {
     }
 
     fn insert(&mut self, char_index: usize, text: &str) {
-        let added = ropey::str_utils::byte_to_char_idx(text, text.len());
+        self.insert_counted(char_index, text, None);
+    }
+
+    /// `insert' of a TEXT whose COUNTS its maker already has.
+    fn insert_counted(&mut self, char_index: usize, text: &str, counts: Option<TextCounts>) {
+        let (added, raw_markers) = match counts {
+            Some(counts) => {
+                debug_assert_eq!(
+                    (counts.chars, counts.raw_markers),
+                    (
+                        ropey::str_utils::byte_to_char_idx(text, text.len()),
+                        count_raw_markers(text.as_bytes())
+                    )
+                );
+                (counts.chars, counts.raw_markers)
+            }
+            None => (
+                ropey::str_utils::byte_to_char_idx(text, text.len()),
+                count_raw_markers(text.as_bytes()),
+            ),
+        };
         let ascii = self.chars == self.bytes;
         let grown = match &mut self.store {
             TextStore::Small(small) => {
@@ -863,13 +892,17 @@ impl BufferText {
         *self.chunk.get_mut() = None;
         self.chars += added;
         self.bytes += text.len();
-        self.raw_markers += count_raw_markers(text.as_bytes());
+        self.raw_markers += raw_markers;
         *self.rope_view.get_mut() = None;
         self.check_counts();
     }
 
     fn remove(&mut self, range: std::ops::Range<usize>) {
-        self.raw_markers -= self.raw_markers_in(range.clone());
+        self.raw_markers -= if range.len() == self.chars {
+            self.raw_markers
+        } else {
+            self.raw_markers_in(range.clone())
+        };
         let bytes = match &mut self.store {
             TextStore::Small(_) if self.chars == self.bytes => range.len(),
             TextStore::Small(text) => {
@@ -2632,11 +2665,26 @@ impl Buffer {
         self.insert_with_properties_and_markers(s, props, false)
     }
 
+    /// `insert' of a text whose COUNTS its maker already has.
+    pub fn insert_counted(&mut self, s: &str, counts: TextCounts) -> usize {
+        self.insert_text(s, None, false, Some(counts))
+    }
+
     pub(crate) fn insert_with_properties_and_markers(
         &mut self,
         s: &str,
         props: Option<Vec<(PropertyName, Value)>>,
         before_markers: bool,
+    ) -> usize {
+        self.insert_text(s, props, before_markers, None)
+    }
+
+    fn insert_text(
+        &mut self,
+        s: &str,
+        props: Option<Vec<(PropertyName, Value)>>,
+        before_markers: bool,
+        counts: Option<TextCounts>,
     ) -> usize {
         if s.is_empty() {
             return self.pt;
@@ -2647,7 +2695,7 @@ impl Buffer {
         self.record_point_for_undo(insert_at);
         // The rope keeps its length; what it grew by is the insertion's.
         let before = self.text.len_chars();
-        self.text.insert(idx0, s);
+        self.text.insert_counted(idx0, s, counts);
         let nchars = self.text.len_chars() - before;
         self.invalidate_char_cache();
 
@@ -2671,8 +2719,12 @@ impl Buffer {
                 }
             }
             BufferMark::Object { owner, .. } => {
-                let nbytes =
-                    crate::lisp::primitives::lisp_string_storage_byte_len(s, self.multibyte, &[]);
+                // A unibyte buffer's character is a byte.
+                let nbytes = if self.multibyte {
+                    crate::lisp::primitives::lisp_string_storage_byte_len(s, true, &[])
+                } else {
+                    nchars
+                };
                 for marker in owner.markers() {
                     let position = marker.last_position();
                     if position > insert_at || (position == insert_at && marker.insertion_type()) {
@@ -2873,10 +2925,27 @@ impl Buffer {
 
     /// Delete characters in the range [from, to) (1-based). Returns deleted text.
     pub fn delete_region(&mut self, from: usize, to: usize) -> Result<String, BufferError> {
+        self.delete_region_1(from, to, true)
+            .map(Option::unwrap_or_default)
+    }
+
+    /// `delete_region' for a caller that has no use for the deleted text,
+    /// which is then read only for the undo list (del_range_1 without
+    /// RET_STRING).
+    pub fn delete_region_unreturned(&mut self, from: usize, to: usize) -> Result<(), BufferError> {
+        self.delete_region_1(from, to, false).map(drop)
+    }
+
+    fn delete_region_1(
+        &mut self,
+        from: usize,
+        to: usize,
+        ret_string: bool,
+    ) -> Result<Option<String>, BufferError> {
         let from = from.max(self.begv);
         let to = to.min(self.zv);
         if from >= to {
-            return Ok(String::new());
+            return Ok(ret_string.then(String::new));
         }
 
         let from0 = from - 1;
@@ -2884,17 +2953,26 @@ impl Buffer {
 
         // Grab text for undo before deleting, with the byte offsets of its
         // ends in the same walk.
-        let (deleted, from_stored, to_stored) = self.text_range_with_bytes(from0, to0);
-        let deleted_props = self.substring_property_spans(from, to);
-        let deleted_extended_chars = self.substring_extended_chars(from, to);
+        let (deleted, from_stored, to_stored) = if ret_string || !self.undo_disabled {
+            let (deleted, from_stored, to_stored) = self.text_range_with_bytes(from0, to0);
+            (Some(deleted), from_stored, to_stored)
+        } else {
+            (
+                None,
+                self.text.char_to_byte(from0),
+                self.text.char_to_byte(to0),
+            )
+        };
         let nchars = to - from;
 
         if !self.undo_disabled {
+            let deleted_props = self.substring_property_spans(from, to);
+            let deleted_extended_chars = self.substring_extended_chars(from, to);
             self.record_point_for_undo(from);
             self.push_undo_entry(UndoEntry::Delete {
                 pos: from,
                 point_after: self.pt == to,
-                text: deleted.clone(),
+                text: deleted.clone().unwrap_or_default(),
                 props: deleted_props,
                 extended_chars: deleted_extended_chars,
                 markers: Vec::new(),
@@ -2903,7 +2981,10 @@ impl Buffer {
 
         let from_byte = self.byte_position_at_stored(from, from_stored);
         let to_byte = self.byte_position_at_stored(to, to_stored);
-        self.text.remove_text(from0..to0, &deleted);
+        match &deleted {
+            Some(deleted) => self.text.remove_text(from0..to0, deleted),
+            None => self.text.remove(from0..to0),
+        }
         self.invalidate_char_cache();
 
         // Adjust point

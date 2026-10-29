@@ -8321,6 +8321,67 @@ fn pipe_processes_hold_their_pipes_within_fd_setsize() {
 }
 
 #[test]
+fn file_reads_searches_and_unread_deletions_agree_with_gnu() {
+    // Boyer-Moore over a rope's chunks forward and backward, folding case
+    // and in a unibyte buffer of raw bytes; a deletion with undo off,
+    // whose text nothing reads; files read through the decision buffer
+    // (a dos eol, latin-1, a null byte).  GNU 30.2's values.
+    assert_oracle_contract_matches_interpreter(
+        r#"(list
+          ;; Boyer-Moore across a rope's chunks, forward and backward, folding case.
+          (with-temp-buffer
+            (dotimes (i 3000) (insert (format "line %d Äbc xyz\n" i)))
+            (let ((case-fold-search t) (n 0) (m 0))
+              (goto-char (point-min))
+              (while (search-forward "äBC XYZ" nil t) (setq n (1+ n)))
+              (goto-char (point-max))
+              (while (search-backward "LINE 29" nil t) (setq m (1+ m)))
+              (list n m (point)
+                    (progn (goto-char (point-min)) (search-forward "line 2999 " nil t))
+                    (progn (goto-char (point-max)) (search-backward "line 1 Ä" nil t))
+                    (let ((case-fold-search nil))
+                      (goto-char (point-min))
+                      (search-forward "LINE" nil t)))))
+          ;; A unibyte buffer of raw bytes.
+          (with-temp-buffer
+            (set-buffer-multibyte nil)
+            (dotimes (i 2000) (insert "\377\200abc\201"))
+            (let ((n 0))
+              (goto-char (point-min))
+              (while (search-forward "c\201\377" nil t) (setq n (1+ n)))
+              (list n (point) (progn (goto-char (point-max)) (search-backward "\200abc" nil t)))))
+          ;; Deletion with undo off: markers and byte positions.
+          (with-temp-buffer
+            (buffer-disable-undo)
+            (dotimes (i 500) (insert "été \377 "))
+            (let ((m1 (copy-marker 10)) (m2 (copy-marker 3000)) (m3 (copy-marker 1500 t)))
+              (delete-region 20 2000)
+              (list (marker-position m1) (marker-position m2) (marker-position m3)
+                    (position-bytes m2) (buffer-size) (position-bytes (point-max))
+                    (delete-and-extract-region 1 6))))
+          ;; Files read through the decision buffer.
+          (let ((file (make-temp-file "r161")))
+            (unwind-protect
+                (mapcar
+                 (lambda (bytes)
+                   (let ((coding-system-for-write 'no-conversion))
+                     (write-region bytes nil file nil 'silent))
+                   (with-temp-buffer
+                     (insert-file-contents file)
+                     (list (string-to-list (buffer-substring (- (point-max) 12) (point-max)))
+                           (string-to-list (buffer-substring (min 2999 (point-max)) (min 3004 (point-max))))
+                           last-coding-system-used (buffer-size)
+                           (position-bytes (point-max)))))
+                 (list (concat (make-string 3000 ?a) "\303\251\r\n" (make-string 40 ?b) "\r\n")
+                       (concat "abc\351\350\n" (make-string 5000 ?x) "\n")
+                       (concat (make-string 100 ?z) "\342\202\254\n\000\n")))
+              (delete-file file))))"#,
+        r#"((3000 111 455 52883 16 nil) (1999 11996 11996) (10 1020 20 1530 1020 1531 "été \377") (((98 98 98 98 98 98 98 98 98 98 98 10) (97 97 233 10 98) utf-8-dos 3043 3045) ((120 120 120 120 120 120 120 120 120 120 120 10) (120 120 120 120 120) iso-latin-1-unix 5007 5010) ((122 122 122 122 122 122 4194274 4194178 4194220 10 0 10) nil no-conversion 106 110)))"#,
+        "file reads, searches and deletions",
+    );
+}
+
+#[test]
 fn directory_files_returns_mutable_sorted_names_with_dot_entries() {
     let unique = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

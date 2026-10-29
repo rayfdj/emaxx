@@ -8759,6 +8759,43 @@ setup_process_coding_systems's check now refuses). A 13-form
   and its group passed run again alone);
   the seven integration targets; clippy `-D warnings', rustfmt and `git
   diff --check'.
+- **Round 161: reading a large file, and Boyer-Moore in place.**
+  ucs-normalize-tests' part0 reads admin/unidata/NormalizationTest.txt
+  (2.6 MB, 600,034 bytes above 0x7F) with `insert-file-contents',
+  which took 172M instructions where GNU's Finsert_file_contents takes
+  67M. The detection that decode_coding_gap runs first was 71M (GNU's
+  detect_coding and detect_coding_utf_8 64M): its head scan stepped a
+  byte at a time where, after the first 8-bit byte, only a control
+  character changes anything, and detect_coding_utf_8 stepped a byte
+  at a time over ASCII; both now skip such bytes sixteen at a time, 24M
+  in all, with the same head_ascii, eol bits and character count.
+  decide_coding_unwind's emptying of the unibyte text
+  `set-auto-coding-function' read copied that text out as the deleted
+  string (10M) though nothing reads it: a deletion now makes the
+  deleted string only for the undo list or a caller that returns it,
+  del_range_1's RET_STRING, and the callers that drop it ask for none;
+  removing the whole text takes its raw-byte count without a walk. The
+  unibyte text goes in with the counts the raw decode made (a character
+  a byte, a raw-byte character each byte above 0x7F), and a marker's
+  byte position in a unibyte buffer moves by the characters inserted,
+  where both were counted again. sgml-html-meta-auto-coding-function's
+  `(search-forward "</head>")' over the whole unibyte text, and every
+  other `search-forward' over a large buffer, ran boyer_moore's strides
+  through a byte reader that checked its chunk at each stride and found
+  each chunk from the rope's root: the strides now run over a chunk's
+  bytes in place, as GNU's pointer runs to BUFFER_CEILING_OF, and a
+  forward scan takes the next chunk from the rope's chunk iterator.
+  Thirty searches over a 2.2M-character buffer take 48.9M instructions
+  where they took 82.5M (GNU 170M, 134.6M of it buf_bytepos_to_charpos).
+  The read takes 102M, part0 150M where it took 220M (GNU 101M). A
+  batch test searches forward and backward across a rope's chunks,
+  folding case and in a unibyte buffer of raw bytes, deletes with undo
+  off and reads a dos-eol UTF-8, a latin-1 and a binary file, against
+  GNU 30.2.
+  Local validation: the full gate across its ten groups with
+  the documented local skips, all 3,308 tests run passing (2 ignored);
+  the seven integration targets; clippy `-D warnings', rustfmt and `git
+  diff --check'.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -9800,7 +9837,25 @@ frozen (run 40823293223) matched all 7,928 outcomes on its first
 attempt. Its timings: setup 81.5 s against 65.5 s (1.245), test bodies
 260.6 s against 269.3 s (0.968), in all 1.005.
 
+**On `5bd3816`** (round 160): full Rust gate passed (run 40829616127);
+frozen (run 40829626295) matched all 7,928 outcomes on its second
+attempt, the first losing one to the known oracle flake (GNU failing
+`eglot-test-rust-completion-exit-function'). Its timings: setup 80.1 s
+against 62.9 s (1.273), test bodies 256.0 s against 265.5 s (0.965), in
+all 1.007.
+
 **Findings recorded, not fixed:**
+- **What reading a large file still costs (round 161).** Of the 102M
+  instructions `insert-file-contents' of NormalizationTest.txt takes
+  (GNU 67M), the unibyte text for `set-auto-coding-function' is 24.7M
+  to write (U+E080..U+E0FF for each byte above 0x7F, three bytes where
+  GNU's gap holds one) and about 11M to build into the rope, and the
+  decoded text 11M to validate as UTF-8 (detect_coding_utf_8 accepts
+  overlong sequences and surrogates, so its verdict does not stand for
+  `from_utf8''s) and about 8M to build; GNU decodes in the gap and
+  inserts nothing twice. Writing the raw text a byte at a time without
+  a branch, or eight at a time into the reserved bytes, measured no
+  faster than the ASCII-run loop it has.
 - **A child's standard error and its stderr pipe process (round
   160).** GNU's create_process gives the child the stderr pipe
   process's SUBPROCESS_STDOUT as its standard error and closes the

@@ -160,6 +160,19 @@ impl Interpreter {
         self.mirror_insert_to_related_buffers(&related, pos, s, nchars, None, false);
     }
 
+    /// `insert_current_buffer' of a text whose COUNTS its maker has.
+    pub(crate) fn insert_current_buffer_counted(
+        &mut self,
+        s: &str,
+        counts: crate::buffer::TextCounts,
+    ) {
+        let pos = self.buffer.borrow().point();
+        let related = self.related_buffer_ids(self.current_buffer_id());
+        let nchars = self.buffer.borrow_mut().insert_counted(s, counts) - pos;
+        self.adjust_markers_for_insert(self.current_buffer_id(), pos, nchars, false);
+        self.mirror_insert_to_related_buffers(&related, pos, s, nchars, None, false);
+    }
+
     pub fn insert_current_buffer_and_inherit(&mut self, s: &str) {
         let pos = self.buffer.borrow().point();
         let related = self.related_buffer_ids(self.current_buffer_id());
@@ -275,6 +288,27 @@ impl Interpreter {
         from: usize,
         to: usize,
     ) -> Result<String, crate::buffer::BufferError> {
+        self.delete_region_current_buffer_1(from, to, true)
+            .map(Option::unwrap_or_default)
+    }
+
+    /// `delete_region_current_buffer' for a caller that has no use for the
+    /// deleted text (del_range_1 without RET_STRING).
+    pub fn delete_region_current_buffer_unreturned(
+        &mut self,
+        from: usize,
+        to: usize,
+    ) -> Result<(), crate::buffer::BufferError> {
+        self.delete_region_current_buffer_1(from, to, false)
+            .map(drop)
+    }
+
+    fn delete_region_current_buffer_1(
+        &mut self,
+        from: usize,
+        to: usize,
+        ret_string: bool,
+    ) -> Result<Option<String>, crate::buffer::BufferError> {
         let from = from.max(self.buffer.borrow().point_min());
         let to = to.min(self.buffer.borrow().point_max());
         let affected_markers = self.affected_markers_for_delete(self.current_buffer_id(), from, to);
@@ -308,7 +342,14 @@ impl Interpreter {
                 Vec::new()
             };
         let related = self.related_buffer_ids(self.current_buffer_id());
-        let deleted = self.buffer.borrow_mut().delete_region(from, to)?;
+        let deleted = if ret_string {
+            Some(self.buffer.borrow_mut().delete_region(from, to)?)
+        } else {
+            self.buffer
+                .borrow_mut()
+                .delete_region_unreturned(from, to)?;
+            None
+        };
         self.buffer
             .borrow_mut()
             .splice_undo_entries_before_last(marker_adjustments);

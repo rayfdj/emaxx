@@ -2624,7 +2624,7 @@ define_dispatch!(
 
                     let saved_point = interp.buffer.borrow().point();
                     interp
-                        .delete_region_current_buffer(start, end)
+                        .delete_region_current_buffer_unreturned(start, end)
                         .map_err(|error| LispError::Signal(error.to_string()))?;
                     interp.buffer.borrow_mut().goto_char(start);
                     let text = decode_raw_text_bytes(&output);
