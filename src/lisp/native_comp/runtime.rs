@@ -2270,6 +2270,12 @@ enum DirectSubr {
     Fboundp,
     Min,
     Max,
+    Boundp,
+    DefaultBoundp,
+    DefaultValue,
+    LocalVariableP,
+    SetDefault,
+    Member,
 }
 
 impl DirectSubr {
@@ -2315,6 +2321,12 @@ impl DirectSubr {
             "fboundp" => Self::Fboundp,
             "min" => Self::Min,
             "max" => Self::Max,
+            "boundp" => Self::Boundp,
+            "default-boundp" => Self::DefaultBoundp,
+            "default-value" => Self::DefaultValue,
+            "local-variable-p" => Self::LocalVariableP,
+            "set-default" => Self::SetDefault,
+            "member" => Self::Member,
             _ => Self::Other,
         }
     }
@@ -2400,6 +2412,16 @@ pub(crate) fn invoke_subr(index: usize, arguments: &[NativeWord]) -> NativeWord 
     if let Some(result) = invoke_context_free_kind(kind, arguments) {
         return result;
     }
+    if matches!(
+        kind,
+        DirectSubr::Boundp
+            | DirectSubr::DefaultBoundp
+            | DirectSubr::DefaultValue
+            | DirectSubr::LocalVariableP
+            | DirectSubr::SetDefault
+    ) {
+        return invoke_variable_subr(index, kind, arguments);
+    }
     // A subr with no word-level path is called at once, through a body
     // small enough that its prologue is the call's and no more.
     if kind == DirectSubr::Other {
@@ -2409,6 +2431,50 @@ pub(crate) fn invoke_subr(index: usize, arguments: &[NativeWord]) -> NativeWord 
         });
     }
     invoke_word_level_subr(index, kind, arguments)
+}
+
+/// Fboundp, Fdefault_boundp, Fdefault_value and Flocal_variable_p (of the
+/// current buffer) for a plain variable, whose value cell answers them all
+/// as data.c's SYMBOL_PLAINVAL cases do, and Fset_default's store into it:
+/// nothing allocated or signalled, so before the handlers are brought up
+/// to date, as the context-free kinds are.  Any other variable takes the
+/// subr's own entry.
+#[inline(never)]
+fn invoke_variable_subr(index: usize, kind: DirectSubr, arguments: &[NativeWord]) -> NativeWord {
+    with_active(|active| {
+        let plain = match (kind, arguments) {
+            (DirectSubr::SetDefault, _) => None,
+            (_, [symbol] | [symbol, 0]) => native_plain_variable_value(active, *symbol),
+            _ => None,
+        };
+        match (kind, plain) {
+            (DirectSubr::DefaultValue, Some(value)) if arguments.len() == 1 => {
+                return value.word();
+            }
+            (DirectSubr::Boundp | DirectSubr::DefaultBoundp, Some(_)) if arguments.len() == 1 => {
+                return native_boolean(true);
+            }
+            (DirectSubr::LocalVariableP, Some(_)) => return native_boolean(false),
+            _ => {}
+        }
+        // Fset_default of a plain variable is set_internal's store alone,
+        // as `setq''s is (no watcher, constant, alias or forwarding).
+        if kind == DirectSubr::SetDefault
+            && let [symbol, value] = arguments
+            && *symbol & TAG_MASK == TAG_SYMBOL
+            && *symbol != 0
+            && *symbol != native_boolean(true)
+            && let Some(name) = unsafe { (&*active.runtime).heap.bare_symbol_value_state(*symbol) }
+            && unsafe { &*active.interpreter }
+                .store_plain_variable(&name, unsafe { Value::from_word(*value) })
+        {
+            return *value;
+        }
+        match entered_subr(active, index) {
+            Some(subroutine) => invoke_subr_entry(active, subroutine, arguments),
+            None => 0,
+        }
+    })
 }
 
 /// The subr at INDEX in the ABI's table, with the handlers brought to the
@@ -2603,6 +2669,13 @@ fn invoke_word_level_subr(index: usize, kind: DirectSubr, arguments: &[NativeWor
             let direct = match (kind, arguments) {
                 (DirectSubr::Assq, [key, list]) => Some(native_assq(active, *key, *list)),
                 (DirectSubr::Memq, [element, list]) => Some(native_memq(active, *element, *list)),
+                // Fmember: an eq-comparable ELT (a fixnum or a bare symbol)
+                // is Fmemq's.
+                (DirectSubr::Member, [element, list])
+                    if *element & TAG_MASK == TAG_SYMBOL || decode_fixnum(*element).is_some() =>
+                {
+                    Some(native_memq(active, *element, *list))
+                }
                 (DirectSubr::Get, [symbol, property]) => {
                     Some(invoke_native_get(active, *symbol, *property))
                 }
@@ -4157,6 +4230,17 @@ fn native_scalar_type_word(word: NativeWord) -> Option<NativeWord> {
         }
     };
     Some(native_type_symbol_word(type_index))
+}
+
+/// The value of the symbol WORD names while it is a plain variable
+/// (`Interpreter::plain_variable_value'); None for any other word, a
+/// positioned symbol's included, and any other variable.
+fn native_plain_variable_value(active: &ActiveCall, word: NativeWord) -> Option<Value> {
+    if word & TAG_MASK != TAG_SYMBOL || word == 0 || word == native_boolean(true) {
+        return None;
+    }
+    let symbol = unsafe { (&*active.runtime).heap.bare_symbol_value_state(word) }?;
+    unsafe { &*active.interpreter }.plain_variable_value(&symbol)
 }
 
 /// data.c:Fsymbol_value reads the global symbol value cell, not the current
@@ -6456,7 +6540,7 @@ mod tests {
             );
         }
         assert_eq!(DirectSubr::of_index(subrs.len()), DirectSubr::Other);
-        // Each of the 40 kinds names exactly one subr of the ABI, so no
+        // Each of the 46 kinds names exactly one subr of the ABI, so no
         // direct path is left unreachable by a name the table lacks.
         let mut kinds: Vec<u8> = subrs
             .iter()
@@ -6467,7 +6551,7 @@ mod tests {
         let named = kinds.len();
         kinds.sort_unstable();
         kinds.dedup();
-        assert_eq!((named, kinds.len()), (40, 40));
+        assert_eq!((named, kinds.len()), (46, 46));
     }
 
     #[test]
@@ -6825,6 +6909,38 @@ mod tests {
 
     extern "C" fn call_symbol_value(symbol: NativeWord) -> NativeWord {
         direct_native_symbol_value(symbol)
+    }
+
+    fn call_named_subr(name: &str, arguments: &[NativeWord]) -> NativeWord {
+        let index = super::super::abi::native_subrs()
+            .iter()
+            .position(|subroutine| subroutine.name == name)
+            .expect("the subr belongs to the native ABI");
+        invoke_subr(index, arguments)
+    }
+
+    extern "C" fn call_boundp(symbol: NativeWord) -> NativeWord {
+        call_named_subr("boundp", &[symbol])
+    }
+
+    extern "C" fn call_default_boundp(symbol: NativeWord) -> NativeWord {
+        call_named_subr("default-boundp", &[symbol])
+    }
+
+    extern "C" fn call_default_value(symbol: NativeWord) -> NativeWord {
+        call_named_subr("default-value", &[symbol])
+    }
+
+    extern "C" fn call_local_variable_p(symbol: NativeWord) -> NativeWord {
+        call_named_subr("local-variable-p", &[symbol])
+    }
+
+    extern "C" fn call_set_default(symbol: NativeWord, value: NativeWord) -> NativeWord {
+        call_named_subr("set-default", &[symbol, value])
+    }
+
+    extern "C" fn call_member(element: NativeWord, list: NativeWord) -> NativeWord {
+        call_named_subr("member", &[element, list])
     }
 
     extern "C" fn call_symbol_value_by_subr(symbol: NativeWord) -> NativeWord {
@@ -8189,6 +8305,175 @@ mod tests {
                 )
                 .expect("non-fixnums use data.c's general number path"),
             Value::T
+        );
+    }
+
+    #[test]
+    fn native_variable_subrs_answer_as_data_c_does() {
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let mut runtime = NativeRuntime::default();
+        let mut call = |function: *const c_void, arguments: &[Value]| {
+            runtime.invoke(
+                &mut interpreter,
+                &mut environment,
+                function,
+                NativeCallingConvention::Fixed,
+                arguments,
+            )
+        };
+        let plain = Value::symbol("native-variable-plain");
+        let void = Value::symbol("native-variable-void");
+        let value = Value::list([Value::Integer(1), Value::symbol("two")]);
+        // Fset_default of a void variable binds it, and the store teaches
+        // the symbol its plain cell, which the predicates then read.
+        for _ in 0..2 {
+            assert_eq!(
+                call(call_set_default as *const c_void, &[plain, value]).expect("set-default"),
+                value
+            );
+            assert_eq!(
+                call(call_default_value as *const c_void, &[plain]).expect("default-value"),
+                value
+            );
+            for predicate in [
+                call_boundp as *const c_void,
+                call_default_boundp as *const c_void,
+            ] {
+                assert_eq!(call(predicate, &[plain]).expect("bound"), Value::T);
+            }
+            assert_eq!(
+                call(call_local_variable_p as *const c_void, &[plain]).expect("local"),
+                Value::Nil
+            );
+        }
+        for predicate in [
+            call_boundp as *const c_void,
+            call_default_boundp as *const c_void,
+        ] {
+            assert_eq!(call(predicate, &[void]).expect("void"), Value::Nil);
+        }
+        let error = call(call_default_value as *const c_void, &[void])
+            .expect_err("Fdefault_value signals for a void variable");
+        let LispErrorKind::SignalValue(data) = error.kind() else {
+            panic!("default-value returned the wrong error: {error:?}");
+        };
+        assert_eq!(*data, Value::list([Value::symbol("void-variable"), void]));
+        let error = call(call_set_default as *const c_void, &[Value::Nil, value])
+            .expect_err("nil is a constant");
+        let LispErrorKind::SignalValue(data) = error.kind() else {
+            panic!("set-default returned the wrong error: {error:?}");
+        };
+        assert_eq!(
+            *data,
+            Value::list([Value::symbol("setting-constant"), Value::Nil])
+        );
+        let error =
+            call(call_boundp as *const c_void, &[Value::Integer(1)]).expect_err("CHECK_SYMBOL");
+        let LispErrorKind::WrongTypeArgument(predicate, original) = error.kind() else {
+            panic!("boundp returned the wrong error: {error:?}");
+        };
+        assert_eq!(
+            (predicate.as_str(), *original),
+            ("symbolp", Value::Integer(1))
+        );
+        // A buffer-local binding: the default stays the cell's, the current
+        // buffer's binding is local.
+        let buffer = interpreter.current_buffer_id();
+        interpreter.set_buffer_local_value(buffer, "native-variable-plain", Value::symbol("here"));
+        let mut call = |function: *const c_void, arguments: &[Value]| {
+            runtime.invoke(
+                &mut interpreter,
+                &mut environment,
+                function,
+                NativeCallingConvention::Fixed,
+                arguments,
+            )
+        };
+        assert_eq!(
+            call(call_local_variable_p as *const c_void, &[plain]).expect("local"),
+            Value::T
+        );
+        assert_eq!(
+            call(call_default_value as *const c_void, &[plain]).expect("default"),
+            value
+        );
+        assert_eq!(
+            call(call_boundp as *const c_void, &[plain]).expect("bound"),
+            Value::T
+        );
+        let replacement = Value::symbol("replacement");
+        assert_eq!(
+            call(call_set_default as *const c_void, &[plain, replacement]).expect("set-default"),
+            replacement
+        );
+        assert_eq!(
+            call(call_default_value as *const c_void, &[plain]).expect("default"),
+            replacement
+        );
+        assert_eq!(
+            interpreter.buffer_local_binding(buffer, "native-variable-plain"),
+            Some(Some(Value::symbol("here")))
+        );
+    }
+
+    #[test]
+    fn native_member_follows_the_fns_c_walks() {
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let mut runtime = NativeRuntime::default();
+        let mut member = |element: Value, list: Value| {
+            runtime.invoke(
+                &mut interpreter,
+                &mut environment,
+                call_member as *const c_void,
+                NativeCallingConvention::Fixed,
+                &[element, list],
+            )
+        };
+        let pair = |car: Value, cdr: Value| Value::cons(car, cdr);
+        let string = |text: &str| Value::string(text);
+        // An eq-comparable ELT is Fmemq's walk; any other is Fequal's, a
+        // cons of two atoms by its car and cdr.
+        let symbols = Value::list([Value::symbol("a"), Value::symbol("b")]);
+        let found = member(Value::symbol("b"), symbols).expect("member of a symbol");
+        assert_eq!(found, Value::list([Value::symbol("b")]));
+        let numbers = Value::list([Value::float(1.0), Value::Integer(1)]);
+        assert_eq!(
+            member(Value::Integer(1), numbers).expect("member of a fixnum"),
+            Value::list([Value::Integer(1)])
+        );
+        let strings = Value::list([string("a"), string("b")]);
+        assert_eq!(
+            member(string("b"), strings).expect("member of a string"),
+            Value::list([string("b")])
+        );
+        let pairs = Value::list([
+            pair(Value::symbol("x"), Value::Integer(2)),
+            pair(Value::float(1.0), Value::symbol("y")),
+            pair(Value::symbol("x"), Value::Integer(1)),
+            Value::symbol("z"),
+        ]);
+        assert_eq!(
+            member(pair(Value::symbol("x"), Value::Integer(1)), pairs).expect("member of a pair"),
+            Value::list([
+                pair(Value::symbol("x"), Value::Integer(1)),
+                Value::symbol("z")
+            ])
+        );
+        let improper = pair(Value::symbol("a"), Value::symbol("b"));
+        let error = member(pair(Value::symbol("q"), Value::Integer(1)), improper)
+            .expect_err("FOR_EACH_TAIL rejects an improper list");
+        let LispErrorKind::SignalValue(data) = error.kind() else {
+            panic!("member returned the wrong error: {error:?}");
+        };
+        assert_eq!(
+            *data,
+            Value::list([
+                Value::symbol("wrong-type-argument"),
+                Value::symbol("listp"),
+                improper
+            ])
         );
     }
 

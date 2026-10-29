@@ -8153,6 +8153,63 @@ fn counted_searches_convert_their_registers_through_the_buffer() {
 }
 
 #[test]
+fn hook_variables_and_member_agree_through_native_calls() {
+    // add-hook and remove-hook, native code calling boundp, default-boundp,
+    // default-value, local-variable-p, set-default and member: plain hook
+    // variables, a buffer-local, an alias, a watched and an unbound one;
+    // member's and equal's cases beside. GNU 30.2's values.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let (out)
+          (defvar r158-plain-hook nil)
+          (defvar r158-watched-hook nil)
+          (defvar r158-target-hook nil)
+          (defvaralias 'r158-alias-hook 'r158-target-hook)
+          (let ((seen nil))
+            (add-variable-watcher 'r158-watched-hook
+                                  (lambda (sym new op where) (push (list sym new op (and where t)) seen)))
+            (dotimes (i 3)
+              (add-hook 'r158-plain-hook (intern (format "r158-f%d" i)))
+              (add-hook 'r158-watched-hook (intern (format "r158-f%d" i)) 90)
+              (add-hook 'r158-alias-hook (intern (format "r158-f%d" i)) t))
+            (remove-hook 'r158-plain-hook 'r158-f1)
+            (remove-hook 'r158-watched-hook 'r158-f0)
+            (remove-hook 'r158-alias-hook 'r158-f2)
+            (with-temp-buffer
+              (add-hook 'r158-plain-hook 'r158-local nil t)
+              (push (list r158-plain-hook (default-value 'r158-plain-hook)
+                          (local-variable-p 'r158-plain-hook))
+                    out)
+              (remove-hook 'r158-plain-hook 'r158-local t)
+              (push (list r158-plain-hook (local-variable-p 'r158-plain-hook)) out))
+            (push (list r158-plain-hook r158-watched-hook r158-target-hook r158-alias-hook
+                        (length seen) (car seen))
+                  out))
+          (makunbound 'r158-plain-hook)
+          (push (list (boundp 'r158-plain-hook) (default-boundp 'r158-plain-hook)
+                      (condition-case err (remove-hook 'r158-plain-hook 'x) (error err))
+                      (boundp 'r158-plain-hook))
+                out)
+          (push (list (member 'b '(a b c)) (member 3 '(1 2 3 4)) (member "b" '("a" "b"))
+                      (member '(x . 1) '((x . 2) (x . 1) y)) (member 1.0 '(1 1.0))
+                      (equal '(a b . c) '(a b . c)) (equal '(a b . c) '(a b . d))
+                      (equal '(defun . f) '(defun . g)) (equal '(1 2) '(1 2 . 3))
+                      (condition-case err (member 'z '(a . b)) (error err)))
+                out)
+          (push (list (member '(1 . a) '((1.0 . a) (1 . b) (1 . a) z))
+                      (let ((symbols-with-pos-enabled t))
+                        (and (member '(a . 1) (list (cons (position-symbol 'a 5) 1))) t))
+                      (and (member '(a . 1) (list (cons (position-symbol 'a 5) 1))) t)
+                      (member (cons 1 (1+ most-positive-fixnum))
+                              (list (cons 1 (1+ most-positive-fixnum))))
+                      (member '(nil . t) '((nil) (nil . t))))
+                out)
+          out)"#,
+        r#"((((1 . a) z) t nil ((1 . 2305843009213693952)) ((nil . t))) ((b c) (3 4) ("b") ((x . 1) y) (1.0) t nil nil nil (wrong-type-argument listp (a . b))) (nil nil nil t) ((r158-f2 r158-f0) (r158-f1 r158-f2) (r158-f0 r158-f1) (r158-f0 r158-f1) 4 (r158-watched-hook (r158-f1 r158-f2) set nil)) ((r158-f2 r158-f0) nil) ((r158-local t) (r158-f2 r158-f0) t))"#,
+        "hook variables",
+    );
+}
+
+#[test]
 fn directory_files_returns_mutable_sorted_names_with_dot_entries() {
     let unique = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

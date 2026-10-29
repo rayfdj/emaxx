@@ -633,6 +633,36 @@ const EXACT_NATIVE_C_FAST_PATHS: &[NativeCFastPathContract] = &[
         owner: "data.c:Ftype_of",
         contract_test: "native_symbol_value_and_type_of_follow_data_c",
     },
+    NativeCFastPathContract {
+        primitive: "boundp",
+        owner: "data.c:Fboundp",
+        contract_test: "native_variable_subrs_answer_as_data_c_does",
+    },
+    NativeCFastPathContract {
+        primitive: "default-boundp",
+        owner: "data.c:Fdefault_boundp",
+        contract_test: "native_variable_subrs_answer_as_data_c_does",
+    },
+    NativeCFastPathContract {
+        primitive: "default-value",
+        owner: "data.c:Fdefault_value",
+        contract_test: "native_variable_subrs_answer_as_data_c_does",
+    },
+    NativeCFastPathContract {
+        primitive: "local-variable-p",
+        owner: "data.c:Flocal_variable_p",
+        contract_test: "native_variable_subrs_answer_as_data_c_does",
+    },
+    NativeCFastPathContract {
+        primitive: "set-default",
+        owner: "data.c:Fset_default",
+        contract_test: "native_variable_subrs_answer_as_data_c_does",
+    },
+    NativeCFastPathContract {
+        primitive: "member",
+        owner: "fns.c:Fmember",
+        contract_test: "native_member_follows_the_fns_c_walks",
+    },
 ];
 
 /// Deliberate semantic differences from GNU C require Ray's explicit approval

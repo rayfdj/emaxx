@@ -395,6 +395,11 @@ fn set_default_internal_symbol(
     let stored = interp.prepare_forwarded_assignment_symbol(&resolved, value)?;
     interp.notify_variable_watchers_symbol(&resolved, value, "set", None, env)?;
     interp.set_global_binding_resolved(&resolved, stored);
+    // A plain variable's default store is set_internal's (data.c's
+    // set_default_internal for SYMBOL_PLAINVAL), learned as that is.
+    if resolved == *symbol && !symbol.cell().plain_store() {
+        interp.learn_plain_store(symbol);
+    }
     Ok(())
 }
 

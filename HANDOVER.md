@@ -8640,6 +8640,49 @@ setup_process_coding_systems's check now refuses). A 13-form
   the documented local skips, all 3,302 tests run passing (2 ignored);
   the seven integration targets; clippy `-D warnings', rustfmt and `git
   diff --check'.
+- **Round 158: hook variables and `member' from native code.**
+  edebug-tests' profile put `symbol-file' at 271M instructions against
+  GNU's 141M and `remove-hook' at 110M against 31M over about the same
+  67,000 calls. Both are native-compiled (loadhist's `symbol-file', which
+  looks each definition up with `member' of a (defun . NAME) pair, and
+  subr.el), and their calls of `boundp', `default-boundp',
+  `default-value', `local-variable-p', `set-default' and `member' took
+  the native ABI's generic subr entry (the handlers brought up to date,
+  the subr's dispatch by name, its argument checks): 157 to 277
+  instructions a call where GNU's compiled code calls the C function at
+  once. data.c answers the four predicates of a SYMBOL_PLAINVAL symbol
+  from its value cell, and set_default_internal stores into it;
+  `invoke_variable_subr' does the same for a plain variable (no alias,
+  buffer-local, let-local or forwarding flag: the symbol bit
+  `plain_store'), before the handlers are synced, as the context-free
+  kinds are, and any other variable takes the subr's own entry.
+  `set-default' now learns `plain_store' as `set' and `setq' do, so a
+  hook only ever set by `add-hook' is plain. Fmember of an eq-comparable
+  ELT (a fixnum or a bare symbol, or a positioned one under
+  `symbols-with-pos-enabled') is Fmemq's walk, from native code and from
+  the dispatcher, and an ELT that is a cons of two such atoms compares
+  each element's car and cdr by EQ, the full walk only for a part that
+  is vectorlike (a positioned symbol, a bignum). internal_equal's XTYPE
+  test at tail_recurse ends a comparison of two objects of different
+  types, and of two symbols or fixnums that are not EQ, at any depth,
+  where the walk went on to the type switch. For a plain variable the
+  predicates take about 95 instructions a call, `set-default' 88;
+  `member' 173 where it took 263. edebug-tests takes 4,914M where it
+  took 5,117M (GNU 4,113M): `symbol-file' 80M, `remove-hook' 97M. Most
+  of edebug-tests' hooks are C variables or buffer-local ones
+  (`pre-command-hook', `kill-buffer-hook', the change functions), which
+  the plain path leaves to the subrs' entries. A batch test runs
+  `add-hook' and `remove-hook' over plain, buffer-local, aliased, watched
+  and unbound hook variables, and `member' and `equal' over symbols,
+  fixnums, floats, strings, atom pairs, positioned symbols and bignums,
+  against GNU 30.2; two runtime tests call the six subrs through the
+  native ABI (void, plain and buffer-local variables, a constant, a
+  non-symbol, improper lists), and the audit of native fast paths lists
+  them with their data.c and fns.c owners.
+  Local validation: the full gate across its ten groups with
+  the documented local skips, all 3,305 tests run passing (2 ignored);
+  the seven integration targets; clippy `-D warnings', rustfmt and `git
+  diff --check'.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -9663,6 +9706,12 @@ attempt. Its timings: setup 83.5 s against 65.8 s (1.269), test bodies
 frozen (run 40801470850) matched all 7,928 outcomes on its first
 attempt. Its timings: setup 72.8 s against 61.6 s (1.180), test bodies
 244.4 s against 267.8 s (0.913), in all 0.956.
+
+**On `f97c263`** (round 157): full Rust gate passed (run 40806919766);
+frozen (run 40806930470) matched all 7,928 outcomes on its first
+attempt. Its timings, on a slower runner (GNU's own setup 73.3 s where
+round 156's took 61.6 s): setup 88.4 s against 73.3 s (1.205), test
+bodies 275.9 s against 291.0 s (0.948), in all 1.000.
 
 **Findings recorded, not fixed:**
 - **What the gate profile adds to a file's setup (round 157).**

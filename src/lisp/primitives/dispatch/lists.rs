@@ -1865,11 +1865,22 @@ pub(super) fn direct_member_family(
     #[derive(Clone, Copy)]
     enum MemTest {
         Equal,
+        // An ELT (A . B) of two fixnums or bare symbols, whose `equal'
+        // elements are the conses of an A and a B they are EQ to.
+        AtomPair(Value, Value),
         Eql,
         Eq,
     }
+    let atom = |value: Value| value.is_fixnum() || value.is_symbol();
     let test = match name {
-        "member" => MemTest::Equal,
+        // Fmember: an eq-comparable ELT is Fmemq's.
+        "member" if eq_comparable_value(interp, &args[0], env) => MemTest::Eq,
+        "member" => match args[0].cons_ref() {
+            Some(pair) if atom(pair.car.get()) && atom(pair.cdr.get()) => {
+                MemTest::AtomPair(pair.car.get(), pair.cdr.get())
+            }
+            _ => MemTest::Equal,
+        },
         "memql" => MemTest::Eql,
         _ => MemTest::Eq,
     };
@@ -1879,6 +1890,21 @@ pub(super) fn direct_member_family(
         let item = cell.car.get();
         let matches = match test {
             MemTest::Equal => values_equal(interp, &item, &args[0])?,
+            // internal_equal of a cons and anything else is false; of two
+            // conses, the cars' and then the cdrs', each EQ for atoms like
+            // these, unless a part of ITEM is vectorlike (a positioned
+            // symbol, a bignum), which the full walk compares.
+            MemTest::AtomPair(car, cdr) => match item.cons_ref() {
+                None => false,
+                Some(pair) => {
+                    let (left, right) = (pair.car.get(), pair.cdr.get());
+                    if left.is_vectorlike() || right.is_vectorlike() {
+                        values_equal(interp, &item, &args[0])?
+                    } else {
+                        left.eq_value(car) && right.eq_value(cdr)
+                    }
+                }
+            },
             MemTest::Eql => values_eql(&item, &args[0]),
             MemTest::Eq => values_eq_in_env(interp, &item, &args[0], env),
         };
