@@ -2982,25 +2982,36 @@ impl Value {
     /// first element, then FOR_EACH_TAIL from its cdr (where a cycle is
     /// found from), and CHECK_LIST_END (tail, tail).
     pub(crate) fn concat_list_elements(self) -> Result<Vec<Value>, LispError> {
+        let mut items = Vec::new();
+        self.visit_concat_list_elements(|item| items.push(item))?;
+        Ok(items)
+    }
+
+    /// `concat_list_elements` handing each element to VISIT as it is read.
+    #[inline]
+    pub(crate) fn visit_concat_list_elements(
+        self,
+        mut visit: impl FnMut(Value),
+    ) -> Result<(), LispError> {
         let Some(cell) = self.cons_ref() else {
             return if self.is_nil() {
-                Ok(Vec::new())
+                Ok(())
             } else {
                 Err(LispError::WrongTypeArgument("listp".into(), self))
             };
         };
-        let mut items = vec![cell.car.get()];
+        visit(cell.car.get());
         let mut tail = cell.cdr.get();
         let mut walk = TailWalk::new(tail);
         while let Some(cell) = tail.cons_ref() {
-            items.push(cell.car.get());
+            visit(cell.car.get());
             tail = cell.cdr.get();
             if walk.cycled_no_quit(tail) {
                 return Err(circular_list(tail));
             }
         }
         if tail.is_nil() {
-            Ok(items)
+            Ok(())
         } else {
             Err(LispError::WrongTypeArgument("listp".into(), tail))
         }

@@ -822,40 +822,54 @@ define_dispatch!(
             "list" => Ok(Value::list_of(args)),
             "nconc" => nconc_values(args, || interp.maybe_quit(env)),
             "append" => {
-                let mut items: Vec<Value> = Vec::new();
-                for (i, a) in args.iter().enumerate() {
-                    let is_last = i == args.len() - 1;
-                    if is_last {
-                        // `append` copies all preceding args and reuses the
-                        // last one verbatim as the tail — even when it is a
-                        // string or vector: (append '(2) "b") => (2 . "b").
-                        let mut result = *a;
-                        for item in items.into_iter().rev() {
-                            result = Value::cons(item, result);
-                        }
-                        return Ok(result);
+                // fns.c:Fappend's concat_to_list: the elements of every
+                // argument but the last in new conses as they are read, and
+                // the last argument the tail as it is, even a string or a
+                // vector: (append '(2) "b") => (2 . "b").
+                let Some((&last_tail, leading)) = args.split_last() else {
+                    return Ok(Value::Nil);
+                };
+                let mut head = Value::Nil;
+                let mut last: Option<crate::lisp::types::SharedCons> = None;
+                let mut store = |item: Value| {
+                    let node = Value::cons(item, Value::Nil);
+                    match &last {
+                        Some(cell) => cell.cdr.set(node),
+                        None => head = node,
                     }
+                    last = node.cons_ref();
+                };
+                for a in leading {
                     if let Some(string) = sequence_string_like(a) {
-                        items.extend(string_sequence_values(&string));
+                        string_sequence_values(&string)
+                            .into_iter()
+                            .for_each(&mut store);
                         continue;
                     }
                     if is_vector_like_value(a) {
-                        items.extend(sequence_values(a)?);
+                        sequence_values(a)?.into_iter().for_each(&mut store);
                         continue;
                     }
-                    // fns.c concat_to_list: CLOSUREP args flatten to their
-                    // slots (edebug-unwrap* rebuilds compiled closures with
-                    // `(nthcdr 3 (append fn ()))').
+                    // CLOSUREP args flatten to their slots (edebug-unwrap*
+                    // rebuilds compiled closures with `(nthcdr 3 (append fn
+                    // ()))').
                     if let Kind::Closure(lambda) = a.kind() {
-                        items.extend(lambda.slots());
+                        lambda.slots().for_each(&mut store);
                         continue;
                     }
                     if !a.is_nil() && !a.is_cons() {
                         return Err(wrong_type_argument("sequencep", *a));
                     }
-                    items.extend(a.concat_list_elements()?);
+                    // FOR_EACH_TAIL from the cdr and CHECK_LIST_END.
+                    a.visit_concat_list_elements(&mut store)?;
                 }
-                Ok(Value::list(items))
+                Ok(match last {
+                    Some(cell) => {
+                        cell.cdr.set(last_tail);
+                        head
+                    }
+                    None => last_tail,
+                })
             }
             "nth" => direct_nth(interp, args, env),
             "elt" => direct_elt(interp, args, env),
@@ -958,20 +972,61 @@ define_dispatch!(
                 if args.len() < 2 || args.len() > 3 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let list = super::call(interp, "mapcar", &args[..2], env)?.to_vec()?;
-                // fns.c:Fmapconcat collects all mapped values before
-                // Fconcat validates them. Keep the actual Lisp sequences:
-                // projecting strings through Rust text loses extended
-                // characters, encoding and shared property values.
+                // fns.c:Fmapconcat: every value mapped before Fconcat
+                // validates them, as the actual Lisp sequences (projecting
+                // strings through Rust text loses extended characters,
+                // encoding and shared property values).
+                let (function, sequence) = (args[0], args[1]);
+                let length = usize::try_from(sequence_length_value(&sequence)?).unwrap_or(0);
+                if matches!(sequence.kind(), Kind::CharTable(_)) {
+                    return Err(LispError::WrongTypeArgument("listp".into(), sequence));
+                }
+                let mut mapped = crate::lisp::alloc::RootedVec::new();
+                mapped.reserve(length);
+                let identity = function
+                    .symbol_cell()
+                    .is_some_and(|symbol| cached_symbol!("identity").with(|key| symbol == *key));
+                match sequence.kind() {
+                    // The fast path when no function call is necessary.
+                    Kind::Cons(_) if identity => {
+                        let mut tail = sequence;
+                        while let Some(cell) = tail.cons_ref() {
+                            mapped.push(cell.car.get());
+                            tail = cell.cdr.get();
+                        }
+                    }
+                    Kind::Vector(vector) if identity => {
+                        for index in 0..length {
+                            mapped.push(vector.get(index).unwrap_or(Value::Nil));
+                        }
+                    }
+                    _ => map_sequence_of(
+                        interp,
+                        &function,
+                        &sequence,
+                        length,
+                        env,
+                        Some(&mut mapped),
+                    )?,
+                }
+                // A nil or empty SEPARATOR is no argument of Fconcat's.
                 let separator = args.get(2).copied().unwrap_or(Value::Nil);
-                let mut parts = Vec::with_capacity(list.len().saturating_mul(2).saturating_sub(1));
-                for (index, item) in list.into_iter().enumerate() {
-                    if index > 0 {
+                let separated = !separator.is_nil()
+                    && !matches!(separator.kind(), Kind::StringObject(state) if state.borrow().len() == 0);
+                let mut parts = Vec::with_capacity(if separated {
+                    mapped.len().saturating_mul(2).saturating_sub(1)
+                } else {
+                    mapped.len()
+                });
+                for (index, item) in mapped.iter().enumerate() {
+                    if separated && index > 0 {
                         parts.push(separator);
                     }
-                    parts.push(item);
+                    parts.push(*item);
                 }
-                super::call(interp, "concat", &parts, env)
+                StringObjectRef::concatenate(&parts)
+                    .map(Value::StringObject)
+                    .map_err(|error| string_storage_error(interp, env, error))
             }
             "position-symbol" => {
                 need_args(name, args, 2)?;
@@ -2154,10 +2209,23 @@ fn map_sequence(
     function: &Value,
     sequence: &Value,
     env: &mut crate::lisp::types::Env,
+    results: Option<&mut crate::lisp::alloc::RootedVec<Value>>,
+) -> Result<(), LispError> {
+    // Fmapcar's `XFIXNAT (Flength (sequence))'.
+    let length = usize::try_from(sequence_length_value(sequence)?).unwrap_or(0);
+    map_sequence_of(interp, function, sequence, length, env, results)
+}
+
+/// fns.c:mapcar1: FUNCTION called on each of SEQUENCE's LENGTH elements,
+/// its values pushed onto RESULTS when there are any.
+fn map_sequence_of(
+    interp: &mut Interpreter,
+    function: &Value,
+    sequence: &Value,
+    length: usize,
+    env: &mut crate::lisp::types::Env,
     mut results: Option<&mut crate::lisp::alloc::RootedVec<Value>>,
 ) -> Result<(), LispError> {
-    let length = super::call(interp, "length", std::slice::from_ref(sequence), env)?;
-    let length = usize::try_from(length.as_integer()?).unwrap_or(0);
     // mapcar1's SAFE_ALLOCA_LISP array: the results' room is taken once.
     if let Some(results) = results.as_deref_mut() {
         results.reserve(length);

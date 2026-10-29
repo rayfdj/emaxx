@@ -9017,6 +9017,52 @@ setup_process_coding_systems's check now refuses). A 13-form
   with the documented local skips, all 3,315 tests run passing (2
   ignored); the seven integration targets; clippy `-D warnings',
   rustfmt and `git diff --check'.
+- **Round 168: primitives call what their C counterparts call.** A
+  benchmark of 49 primitives in byte-compiled loops (scratchpad
+  r167pb/bench.el, each against GNU 30.2) found several reaching other
+  primitives by name, each such call a lookup of the name's facts
+  where the C function calls the other directly. `mapcar', `mapc',
+  `mapcan' and `mapconcat' took the sequence's length through the
+  `length' primitive by name and now read it as Flength does;
+  `mapconcat' called `mapcar' and then `concat' by name and is now
+  Fmapconcat, with its fast path for `identity' over a list or a
+  vector (no call at all) and a nil or empty SEPARATOR left out of
+  Fconcat's arguments, where Emaxx passed an empty multibyte separator
+  and so made `(mapconcat #'identity '("a" "b") (string-to-multibyte
+  ""))' multibyte, as GNU's is not. `sort' resolved its predicate
+  through `indirect-function' by name and now reads the function cell
+  as resolve_fun does, and the subr it finds is called as
+  funcall_general calls a subr, where a subr object (not a symbol)
+  called from Rust went through the whole general call. `regexp-quote'
+  copied its argument through `copy-sequence' by name when nothing
+  needed quoting; Fregexp_quote returns STRING itself then, which
+  Emaxx's copy was not. `intern' and `intern-soft' of a string in the
+  initial obarray with no `read-symbol-shorthands' now look the
+  string's own text up, as oblookup does, where Emaxx converted the
+  string to a Rust string, rewrote it for shorthands into another, and
+  looked the name up three times. `append' conses its copies directly
+  as concat_to_list does, without gathering the elements in a vector
+  first, each list's walk starting its tortoise at the cdr as
+  concat_to_list's FOR_EACH_TAIL does (so a circular argument is
+  reported at the tail GNU reports, which the list-walk batch test
+  checks), and `string-to-number' parses the string's data in place.
+  Per call against GNU: `regexp-quote' 1,280 instructions to 484 (GNU
+  496), `intern' 1,640 to 723 (547), `append' of two short lists 940
+  to 568 (456), `mapconcat' over three strings 3,515 to 1,862 (1,127),
+  `sort' of three numbers 4,227 to 3,693 (1,694), `string-to-number'
+  1,250 to 1,063 (557). A batch test compares these primitives'
+  results and errors against GNU 30.2: `mapconcat' over lists,
+  vectors, strings and character lists with nil, empty, multibyte and
+  list separators and its errors, `mapcar', `mapc' and `mapcan' over
+  each sequence type, `append' with strings, vectors, bool-vectors and
+  a shared last argument, `string-to-number' with bases and their
+  errors, `intern' and `intern-soft' in the initial obarray, another,
+  through `read-symbol-shorthands' and with `obarray' rebound, `sort'
+  with an alias predicate, and `regexp-quote' of strings needing no
+  quoting. Local validation: the full gate across its ten groups with
+  the documented local skips, all 3,316 tests run passing (2
+  ignored); the seven integration targets; clippy `-D warnings',
+  rustfmt and `git diff --check'.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -10102,7 +10148,39 @@ frozen (run 40912248646) matched all 7,928 outcomes on its first
 attempt. Its timings: setup 52.6 s against 44.6 s (1.179), test bodies
 203.3 s against 217.6 s (0.934), in all 0.965.
 
+**On `917d16d`** (round 167): full Rust gate passed (run 40928962779);
+frozen (run 40928968255) matched all 7,928 outcomes on its first
+attempt. Its timings: setup 81.0 s against 65.0 s (1.248), test bodies
+258.3 s against 267.4 s (0.966), in all 1.004. The test bodies furthest
+behind GNU's in seconds: comp-tests (+2.8 s), tramp-tests (+2.6 s),
+semantic-utest-ia (1.57 times), mule-tests (1.63), package-tests,
+electric-tests (2.12), undo-tests (1.64) and edebug-tests (1.47).
+
 **Findings recorded, not fixed:**
+- **Where the frozen run's gate build spends past the release build
+  (round 168).** The frozen run times the gate profile (debug
+  assertions, overflow checks, the checked collector), which in
+  electric-tests runs 10.12G instructions where the release build runs
+  7.34G and GNU 6.62G: the verified loop's checks (+405M), `assq'
+  through `assq_in_place' (+157M), the collector's sweeps and mark bits
+  (about +250M), each cons out of line (+181M, 46 instructions a cons)
+  and the closures `with_active' and the record and char-table maps no
+  longer inline. mule-tests runs 21.2G instructions in the release
+  build against GNU's 21.3G, nearly all of it in the interpreter, and
+  32.1G in the gate build, which is the 1.63 times GNU's time the
+  frozen run shows: every dereference of a cons there tests the cell's
+  allocation bit (`ConsRef''s debug assertion), so the 2.56 million
+  `assq' calls over `char-code-property-alist' cost 1,316 instructions
+  each against the release build's 625, and the interpreter's own
+  environment walks (`assq_binding', `environment_declares_special')
+  come out of line at another 1.9G.
+- **Every edit walks the windows (round 168).**
+  `adjust_window_marker_slots' looks the window records up by type
+  name and then each by id on every insertion and deletion, to move
+  the start and point of the windows showing the buffer; GNU keeps
+  those as markers on the buffer's chain, which an edit of a buffer no
+  window shows does not visit. In electric-tests the walk is some 150
+  instructions an edit over 155,000 edits.
 - **A call from Rust into byte code costs about 240 instructions more
   than GNU's (round 167).** `mapatoms' over 18,663 symbols with a
   byte-compiled callback takes 596 instructions a symbol in the release

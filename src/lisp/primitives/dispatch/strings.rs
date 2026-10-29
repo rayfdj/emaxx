@@ -368,7 +368,10 @@ define_dispatch!(
                 if args.is_empty() || args.len() > 2 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let s = string_text(&args[0])?;
+                // CHECK_STRING (string).
+                if !args[0].is_string() {
+                    return Err(LispError::WrongTypeArgument("stringp".into(), args[0]));
+                }
                 // CHECK_FIXNUM (base), then xsignal1 (Qargs_out_of_range,
                 // base) outside 2 to 16.
                 let base = match args.get(1).map(|v| v.kind()) {
@@ -382,7 +385,10 @@ define_dispatch!(
                     }
                     Some(_) => return Err(wrong_type_argument("fixnump", args[1])),
                 };
-                parse_string_to_number_value(&s, base)
+                // The string's data read in place, as SSDATA, when it is
+                // its text.
+                with_string_text(&args[0], |text| parse_string_to_number_value(text, base))
+                    .unwrap_or_else(|| parse_string_to_number_value(&string_text(&args[0])?, base))
             }
             "number-to-string" => {
                 need_args(name, args, 1)?;

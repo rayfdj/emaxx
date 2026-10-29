@@ -1395,25 +1395,27 @@ define_dispatch!(
             "regexp-quote" => {
                 // search.c Fregexp_quote: a backslash before each special
                 // byte of STRING's data, the result as multibyte as STRING
-                // (without properties); a copy of STRING when none needs one.
+                // (without properties); STRING itself when none needs one.
                 need_args(name, args, 1)?;
                 let Kind::StringObject(state) = args[0].kind() else {
                     return Err(LispError::WrongTypeArgument("stringp".into(), args[0]));
                 };
+                let special = |byte: &u8| {
+                    matches!(byte, b'[' | b'*' | b'.' | b'\\' | b'?' | b'+' | b'^' | b'$')
+                };
                 let (quoted, characters, multibyte) = {
                     let state = state.borrow();
-                    let mut quoted = Vec::with_capacity(state.bytes().len());
-                    for &byte in state.bytes() {
-                        if matches!(byte, b'[' | b'*' | b'.' | b'\\' | b'?' | b'+' | b'^' | b'$') {
+                    if !state.bytes().iter().any(special) {
+                        return Ok(args[0]);
+                    }
+                    let mut quoted = Vec::with_capacity(state.bytes().len() * 2);
+                    for byte in state.bytes() {
+                        if special(byte) {
                             quoted.push(b'\\');
                         }
-                        quoted.push(byte);
+                        quoted.push(*byte);
                     }
                     let added = quoted.len() - state.bytes().len();
-                    if added == 0 {
-                        drop(state);
-                        return super::call(interp, "copy-sequence", args, env);
-                    }
                     (quoted, state.len() + added, state.is_multibyte())
                 };
                 StringObjectRef::from_storage(quoted, characters, multibyte)

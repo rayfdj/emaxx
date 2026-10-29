@@ -61,7 +61,9 @@ fn resolve_sort_function(
     if !function.is_symbol() {
         return Ok(function);
     }
-    let resolved = call(interp, "indirect-function", &[function], env)?;
+    // fns.c:resolve_fun reads the function cell, and indirect_function
+    // past an alias.
+    let resolved = crate::lisp::primitives::keymap::indirect_function(interp, function, env);
     Ok(
         if resolved.is_nil() || autoload_parts(&resolved).is_some() {
             function

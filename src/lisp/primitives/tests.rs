@@ -8798,6 +8798,69 @@ fn bracket_classes_read_the_buffer_syntax_table_through_its_parents() {
 }
 
 #[test]
+fn mapping_appending_interning_and_quoting_follow_fns_c_and_lread_c() {
+    // Fmapconcat (identity's fast path, a nil or empty separator left out
+    // of Fconcat), mapcar's Flength and mapcar1, Fappend's concat_to_list,
+    // Fstring_to_number on the string's own data, Fintern and
+    // Fintern_soft in the initial obarray, another or through
+    // `read-symbol-shorthands', sort's resolve_fun of an alias, and
+    // Fregexp_quote, which returns a string needing no quoting itself.
+    assert_oracle_contract_matches_interpreter(
+        r#"(list
+ (list (mapconcat #'identity '("a" "b" "c") ",")
+       (mapconcat #'identity ["x" "y"] "")
+       (mapconcat #'identity nil ",")
+       (multibyte-string-p (mapconcat #'identity '("a" "b") (string-to-multibyte "")))
+       (multibyte-string-p (mapconcat #'identity '("a" "b") (string-to-multibyte "-")))
+       (mapconcat #'identity '((?a ?b) [?c]) "-")
+       (mapconcat #'symbol-name '(foo bar) " ")
+       (mapconcat #'char-to-string "ab" ".")
+       (mapconcat #'identity '("a" "b") '(?: ?:))
+       (condition-case e (mapconcat #'identity '("a" . "b") ",") (error e))
+       (condition-case e (mapconcat #'identity (make-char-table 'x) ",") (error e))
+       (condition-case e (mapconcat #'identity '("a" 1) ",") (error e))
+       (condition-case e (mapconcat #'identity "ab" "") (error e))
+       (let ((n 0)) (list (mapconcat (lambda (s) (setq n (1+ n)) s) '("p" "q") "+") n)))
+ (list (mapcar #'1+ '(1 2 3)) (mapcar #'1+ [1 2]) (mapcar #'identity "ab")
+       (mapcar #'not (make-bool-vector 2 t))
+       (condition-case e (mapcar #'identity '(1 . 2)) (error e))
+       (condition-case e (mapcar #'identity 5) (error e))
+       (let (r) (mapc (lambda (x) (push x r)) '(1 2)) r)
+       (mapcan (lambda (x) (list x x)) '(1 2)))
+ (list (append '(1 2) '(3)) (append) (append nil) (append '(1) nil) (append '(1) 2)
+       (append "ab" nil) (append [1 2] '(3)) (append '(2) "b") (append nil nil '(5))
+       (append (make-bool-vector 2 t) nil)
+       (condition-case e (append '(1 . 2) nil) (error e))
+       (condition-case e (append 3 nil) (error e))
+       (let ((l (list 1 2))) (eq (cdr (append '(0) l)) l)))
+ (list (string-to-number "12") (string-to-number "  12") (string-to-number "12.5")
+       (string-to-number "1e3") (string-to-number "ff" 16) (string-to-number "-7")
+       (string-to-number "") (string-to-number "abc") (string-to-number "1.")
+       (string-to-number (string-to-multibyte "42")) (string-to-number "é42")
+       (condition-case e (string-to-number 5) (error e))
+       (condition-case e (string-to-number "1" 17) (error e))
+       (condition-case e (string-to-number "1" 'x) (error e)))
+ (list (eq (intern "car") 'car) (intern-soft "car") (intern-soft "r168-no-such-symbol")
+       (eq (intern "r168-fresh") (intern "r168-fresh"))
+       (let ((ob (obarray-make))) (list (eq (intern "car" ob) 'car) (intern-soft "car" ob)))
+       (let ((read-symbol-shorthands '(("r1-" . "r168-long-")))) (intern "r1-x"))
+       (let ((obarray (obarray-make))) (eq (intern "car") 'car))
+       (condition-case e (intern 5) (error e))
+       (intern-soft 'car) (intern-soft (make-symbol "car")))
+ (list (sort '(3 1 2) #'<) (sort (list "b" "a") #'string<) (sort [3 1 2] #'>)
+       (progn (defalias 'r168-less #'<) (sort (list 2 1 3) 'r168-less))
+       (sort (list 2 1) (lambda (a b) (< a b))))
+ (list (regexp-quote "a.b*c") (regexp-quote "plain") (regexp-quote "")
+       (let ((s "plain")) (eq (regexp-quote s) s))
+       (regexp-quote (propertize "x.y" 'face 'bold))
+       (multibyte-string-p (regexp-quote (string-to-multibyte "ab")))
+       (regexp-quote "[^$]")))"#,
+        r#"(("a,b,c" "xy" "" nil t "ab-c" "foo bar" "a.b" "a::b" (wrong-type-argument listp "b") (wrong-type-argument listp #^[nil nil x nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil]) (wrong-type-argument sequencep 1) (wrong-type-argument sequencep 97) ("p+q" 2)) ((2 3 4) (2 3) (97 98) (nil nil) (wrong-type-argument listp 2) (wrong-type-argument sequencep 5) (2 1) (1 1 2 2)) ((1 2 3) nil nil (1) (1 . 2) (97 98) (1 2 3) (2 . "b") (5) (t t) (wrong-type-argument listp 2) (wrong-type-argument sequencep 3) t) (12 12 12.5 1000.0 255 -7 0 0 1 42 0 (wrong-type-argument stringp 5) (args-out-of-range 17) (wrong-type-argument fixnump x)) (t car nil t (nil car) r168-long-x nil (wrong-type-argument stringp 5) car nil) ((1 2 3) ("a" "b") [3 2 1] (1 2 3) (1 2)) ("a\\.b\\*c" "plain" "" t "x\\.y" t "\\[\\^\\$]"))"#,
+        "fns_lread_direct_calls",
+    );
+}
+
+#[test]
 fn directory_files_returns_mutable_sorted_names_with_dot_entries() {
     let unique = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

@@ -349,6 +349,8 @@ const KEY_NAMES: &[&str] = &[
     "face-alias",
     "circular-list",
     "obarray",
+    "read-symbol-shorthands",
+    "identity",
     "face--new-frame-defaults",
     "edebug-entered",
     "event-symbol-element-mask",

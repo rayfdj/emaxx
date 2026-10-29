@@ -1838,13 +1838,23 @@ impl Interpreter {
         // The callee and its function cell are tested by tag and header,
         // as funcall_general's SUBRP and CLOSUREP tests are.
         let Some(name) = func.symbol_cell() else {
-            // funcall_lambda for a closure called as a value.
+            // funcall_lambda for a closure called as a value, and
+            // funcall_general's funcall_subr for a subr (`sort's
+            // predicate after resolve_fun).
             return match func.closure_ref() {
                 Some(closure) if closure.is_bytecode() => {
                     Some(self.funcall_bytecode_closure(closure, args, env))
                 }
                 Some(_) => Some(self.funcall_interpreted_lambda(*func, original_name, args, env)),
-                None => None,
+                None => match func.builtin_ref() {
+                    Some(subr)
+                        if subr.descriptor().max_args()
+                            != crate::lisp::native_comp::abi::NativeMaxArgs::Unevalled =>
+                    {
+                        Some(self.call_subr(subr, args, env, funcall))
+                    }
+                    _ => None,
+                },
             };
         };
         let function = self.globals.function(&name)?;
