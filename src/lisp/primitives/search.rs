@@ -897,16 +897,6 @@ fn release_cell(cell: u8, entry: Option<Box<CacheEntry>>) {
 
 /// The buffer's accessible text, a snapshot the matcher reads without
 /// holding the buffer: the buffer's rope, or a small text's own copy.
-/// What `BufferSnapshot::positions' last reached: the rope chunk, its
-/// first byte, and the (byte, char) offsets converted last in it.
-#[derive(Clone, Copy)]
-struct ConvertedIn<'t> {
-    chunk: &'t str,
-    chunk_byte: usize,
-    byte: usize,
-    char: usize,
-}
-
 struct BufferSnapshot {
     text: crate::buffer::ScanText,
     begv: usize,
@@ -919,6 +909,12 @@ struct BufferSnapshot {
     multibyte: bool,
     side: bool,
     ascii: bool,
+    /// The buffer's chars-modified tick when taken: its text is the
+    /// snapshot's while the tick stays.
+    tick: crate::buffer::ModCount,
+    /// The rope leaf holding point, as the buffer's conversion of point
+    /// left it.
+    hint: Option<crate::buffer::ChunkHint>,
 }
 
 /// A snapshot's accessible text as the matcher's object reads it.
@@ -959,16 +955,19 @@ impl BufferSnapshot {
                 .expect("an accessible position")
                 - 1
         };
+        let point_byte = byte(point);
         BufferSnapshot {
             begv,
             begv_byte: byte(begv),
             zv,
             zv_byte: byte(zv),
             point,
-            point_byte: byte(point),
+            point_byte,
+            hint: buffer.scan_hint(point_byte),
             multibyte: buffer.is_multibyte(),
             side: buffer.has_extended_chars_in(begv, zv),
             ascii,
+            tick: buffer.chars_modified_tick(),
             text,
         }
     }
@@ -986,12 +985,20 @@ impl BufferSnapshot {
     fn range(&self) -> SnapshotRange<'_> {
         match &self.text {
             crate::buffer::ScanText::Rope(rope) => {
-                SnapshotRange::Rope(crate::lisp::regex_emacs::RopeRange::new(
+                let range = crate::lisp::regex_emacs::RopeRange::new(
                     rope,
                     self.begv_byte,
                     self.zv_byte,
                     self.begv - 1,
-                ))
+                );
+                SnapshotRange::Rope(match self.hint {
+                    Some(hint) => {
+                        // SAFETY: `take' took the hint with this rope.
+                        let (chunk, start) = unsafe { hint.chunk(rope) };
+                        range.with_chunk(chunk, start)
+                    }
+                    None => range,
+                })
             }
             crate::buffer::ScanText::Small(text) => {
                 SnapshotRange::Str(&text[self.begv_byte..self.zv_byte])
@@ -1050,61 +1057,23 @@ impl BufferSnapshot {
         }
     }
 
-    /// POSITION for a run of offsets, the match data's: in a rope's
-    /// non-ASCII text each counts the characters from the position last
-    /// converted (point at first) within the chunk holding both, as GNU's
-    /// buf_bytepos_to_charpos scans from the nearest position it knows,
-    /// and walks the tree only for an offset outside that chunk.
-    fn positions(&self) -> impl Fn(usize) -> usize + '_ {
-        let known: std::cell::Cell<Option<ConvertedIn<'_>>> = std::cell::Cell::new(None);
-        move |offset| {
-            let byte = self.begv_byte + offset;
-            let crate::buffer::ScanText::Rope(rope) = &self.text else {
-                return self.position(offset);
-            };
-            if self.ascii || byte == self.point_byte || byte == self.zv_byte || offset == 0 {
-                return self.position(offset);
-            }
-            let from = match known.get() {
-                Some(view)
-                    if byte >= view.chunk_byte && byte <= view.chunk_byte + view.chunk.len() =>
-                {
-                    view
-                }
-                _ => {
-                    let (chunk, chunk_byte, chunk_char, _) = rope.chunk_at_byte(byte);
-                    let (byte, char) = if self.point_byte >= chunk_byte
-                        && self.point_byte <= chunk_byte + chunk.len()
-                    {
-                        (self.point_byte, self.point - 1)
-                    } else {
-                        (chunk_byte, chunk_char)
-                    };
-                    ConvertedIn {
-                        chunk,
-                        chunk_byte,
-                        byte,
-                        char,
-                    }
-                }
-            };
-            let text = from.chunk;
-            let char = if byte >= from.byte {
-                from.char
-                    + ropey::str_utils::byte_to_char_idx(
-                        &text[from.byte - from.chunk_byte..],
-                        byte - from.byte,
-                    )
-            } else {
-                from.char
-                    - ropey::str_utils::byte_to_char_idx(
-                        &text[byte - from.chunk_byte..],
-                        from.byte - byte,
-                    )
-            };
-            known.set(Some(ConvertedIn { byte, char, ..from }));
-            char + 1
+    /// POSITION through BUFFER, the buffer this snapshot was taken of,
+    /// while its text is the snapshot's: the buffer's own conversion
+    /// (BYTE_TO_CHAR), which starts from the chunk and the positions it
+    /// converted last (point's, which `take' converted, then each
+    /// register's), where the snapshot's rope would walk its tree for
+    /// each offset.
+    fn position_in(&self, buffer: &crate::buffer::Buffer, offset: usize) -> usize {
+        let byte = self.begv_byte + offset;
+        if self.ascii || buffer.chars_modified_tick() != self.tick {
+            return self.position(offset);
         }
+        if byte == self.point_byte {
+            return self.point;
+        }
+        buffer
+            .storage_byte_to_position(byte + 1)
+            .unwrap_or_else(|| self.position(offset))
     }
 
     /// The matcher's object for this snapshot's text.
@@ -1142,6 +1111,32 @@ fn set_search_regs(
     );
     interp.last_match_data = Some(match_data);
     interp.last_match_data_buffer_id = buffer;
+}
+
+/// set_search_regs for REGISTERS, offsets in SNAPSHOT's text, the current
+/// buffer's when it was taken: converted by the buffer (see
+/// `BufferSnapshot::position_in').
+fn set_buffer_search_regs(
+    interp: &mut Interpreter,
+    registers: &Registers,
+    snapshot: &BufferSnapshot,
+    buffer_id: u64,
+) {
+    let buffer = interp.buffer;
+    let buffer = buffer.borrow();
+    let same = interp.current_buffer_id() == buffer_id;
+    set_search_regs(
+        interp,
+        registers,
+        |offset| {
+            if same {
+                snapshot.position_in(&buffer, offset)
+            } else {
+                snapshot.position(offset)
+            }
+        },
+        Some(buffer_id),
+    );
 }
 
 /// search.c's `&search_regs' argument to the matcher: the held register
@@ -1201,7 +1196,7 @@ pub(super) fn looking_at_1(
         (None, Ok(end)) => Ok(end.is_some()),
     };
     if let (Ok(true), Some(registers)) = (&found, &registers) {
-        set_search_regs(interp, registers, snapshot.positions(), Some(buffer_id));
+        set_buffer_search_regs(interp, registers, &snapshot, buffer_id);
     }
     give_back_registers(interp, registers);
     Ok(if found? { Value::T } else { Value::Nil })
@@ -1450,13 +1445,14 @@ fn search_buffer_re(
     menv.object = snapshot.object();
     let lim_byte = snapshot.offset(lim);
     let mut pos_byte = snapshot.offset(pos);
-    let mut pos = pos;
     // search_regs, or search_regs_1 when the match data is to stay: each
     // match needs its group 0 to go on from.
     let mut registers = std::mem::take(&mut menv.interp.search_registers);
     let mut found_any = false;
 
-    let outcome = (|| -> Result<i64, LispError> {
+    // The count left, or (every match found) the last match's end, to
+    // convert once the matching is done.
+    let outcome = (|| -> Result<Result<i64, usize>, LispError> {
         menv.maybe_quit()?;
         while n < 0 {
             let found = rx::re_search(
@@ -1471,10 +1467,9 @@ fn search_buffer_re(
             )
             .map_err(match_error)?;
             if found.is_none() {
-                return Ok(n);
+                return Ok(Ok(n));
             }
             pos_byte = registers.regs[0].expect("group 0").0;
-            pos = snapshot.position(pos_byte);
             found_any = true;
             n += 1;
             menv.maybe_quit()?;
@@ -1491,28 +1486,38 @@ fn search_buffer_re(
             )
             .map_err(match_error)?;
             if found.is_none() {
-                return Ok(-n);
+                return Ok(Ok(-n));
             }
             pos_byte = registers.regs[0].expect("group 0").1;
-            pos = snapshot.position(pos_byte);
             found_any = true;
             n -= 1;
             menv.maybe_quit()?;
         }
-        Ok(pos as i64)
+        Ok(Err(pos_byte))
     })();
     let pending = menv.error.take();
     drop(menv);
     release_pattern(entry);
     // Each match found updated the match data, the last one standing.
     if preserve_match_data && found_any {
-        set_search_regs(interp, &registers, snapshot.positions(), Some(buffer_id));
+        set_buffer_search_regs(interp, &registers, &snapshot, buffer_id);
     }
     interp.search_registers = registers;
     if let Some(error) = pending {
         return Err(error);
     }
-    outcome
+    Ok(match outcome? {
+        Ok(count) => count,
+        Err(end) => {
+            let buffer = interp.buffer;
+            let position = if interp.current_buffer_id() == buffer_id {
+                snapshot.position_in(&buffer.borrow(), end)
+            } else {
+                snapshot.position(end)
+            };
+            position as i64
+        }
+    })
 }
 
 /// re--describe-compiled: the compiled form of REGEXP, its bytes when RAW;

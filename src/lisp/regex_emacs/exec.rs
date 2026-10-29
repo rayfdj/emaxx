@@ -221,11 +221,11 @@ impl MatchState {
     }
 
     /// PUSH_NUMBER: set the counter at AT to VALUE, restored on backtrack.
+    #[inline(always)]
     fn push_number(&mut self, buf: &mut [u8], at: usize, value: i32) -> Result<(), MatchError> {
         self.ensure(3)?;
-        self.stack.push(extract_number(buf, at) as isize);
-        self.stack.push(at as isize);
-        self.stack.push(-1);
+        self.stack
+            .extend_from_slice(&[extract_number(buf, at) as isize, at as isize, -1]);
         store_number(buf, at, value);
         Ok(())
     }

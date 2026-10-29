@@ -8605,6 +8605,41 @@ setup_process_coding_systems's check now refuses). A 13-form
   the documented local skips, all 3,300 tests run passing (2 ignored);
   the seven integration targets; clippy `-D warnings', rustfmt and `git
   diff --check'.
+- **Round 157: a search's positions through the buffer's own
+  conversion.** Round 155's snapshot converted a match's registers in
+  its own rope, walking the rope's tree to the chunk of the first, and
+  the matcher walked it again to read its first byte: in a loop of
+  58,000 `looking-at's over NormalizationTest.txt, 43M instructions of
+  `get_chunk_at_byte'. GNU's BYTE_TO_CHAR scans from the positions
+  buf_bytepos_to_charpos converted last, and re_match_2 reads the
+  buffer's two halves in place. The buffer's own conversion already
+  starts in the chunk its last walk reached and from the positions it
+  converted, and the snapshot's conversion of point leaves
+  both at point: set_search_regs now converts through the buffer while
+  its text is the snapshot's (`BufferSnapshot::position_in', checked by
+  the chars-modified tick), and `BufferText::byte_to_char' records a
+  conversion from a byte that starts its character, as
+  buf_bytepos_to_charpos remembers the last it made, so each register
+  counts from the one before. A counted `re-search-forward' converts
+  its end once, after the last match, where it converted each match's.
+  The snapshot takes the chunk holding point (`Buffer::scan_hint', the
+  leaf the rope's clone shares) for the matcher's first read
+  (`RopeRange::with_chunk'), and the non-regexp search converts its
+  match through the buffer as well. The matcher's PUSH_NUMBER, the one
+  failure-stack push left out of line, is inlined. The loop takes 355M
+  instructions where it took 436M (GNU 273M): the matcher 117M where it
+  took 172M (GNU 113M), the register conversion 47M where it took 65M
+  (GNU's set_search_regs and buf_bytepos_to_charpos 52M);
+  ucs-normalize-part2 5,996M where round 156 left 6,073M (GNU 4,640M),
+  its `looking-at' 544M where it took 625M (GNU 342M). A unit test
+  converts bytes of a many-chunk rope in and out of order, in the middle
+  of characters and after edits; a batch test compares counted searches
+  both ways, within a bound, after an edit and with a group unset with
+  GNU 30.2.
+  Local validation: the full gate across its ten groups with
+  the documented local skips, all 3,302 tests run passing (2 ignored);
+  the seven integration targets; clippy `-D warnings', rustfmt and `git
+  diff --check'.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -9619,7 +9654,31 @@ frozen (run 40786426183) matched all 7,928 outcomes on its first
 attempt. Its timings: setup 85.3 s against 70.9 s (1.203), test bodies
 264.7 s against 277.6 s (0.954), in all 0.998.
 
+**On `65ba943`** (round 155): full Rust gate passed (run 40795727606);
+frozen (run 40795738362) matched all 7,928 outcomes on its first
+attempt. Its timings: setup 83.5 s against 65.8 s (1.269), test bodies
+263.1 s against 269.8 s (0.975), in all 1.018.
+
+**On `70e5b36`** (round 156): full Rust gate passed (run 40801459309);
+frozen (run 40801470850) matched all 7,928 outcomes on its first
+attempt. Its timings: setup 72.8 s against 61.6 s (1.180), test bodies
+244.4 s against 267.8 s (0.913), in all 0.956.
+
 **Findings recorded, not fixed:**
+- **What the gate profile adds to a file's setup (round 157).**
+  cal-french-tests.el's setup under the frozen runner's command line
+  takes 576M instructions in the release build, 726M in the gate profile
+  the frozen run times, and 565.7M in GNU 30.2; in wall time (four cores
+  under load) 180 ms, 210 ms and 160 ms. Of the gate's 150M, the
+  byte-code loop's checks are 24M and most of the rest is small
+  functions the thin-LTO, 16-unit build calls where the release build
+  inlines them (search.rs's `string_bytes', the search buffers'
+  thread-local access, `compile_pattern''s cache comparison,
+  `is_ascii', the collector's `mark_bit' and sweeps). Startup alone is
+  146M against the release build's 125M and GNU's 151M, and in wall time
+  the release build starts in 64.5 ms against GNU's 68.5 (best of 15).
+  The profile is the gate's, kept for its safety nets and its build
+  time; which build the frozen run times stays the project's call.
 - **The expensive tests (round 155).** 111 tests tagged
   `:expensive-test' in 83 files, run with the frozen runner in both
   editors: no outcome differs. tramp-tests' expensive set ran past 900

@@ -8124,6 +8124,35 @@ fn raw_bytes_read_from_a_file_keep_their_codes_through_edits() {
 }
 
 #[test]
+fn counted_searches_convert_their_registers_through_the_buffer() {
+    // A multibyte buffer of many rope chunks searched with counts both
+    // ways, within a bound, after an edit and with a group left unset:
+    // each match's registers and end converted by the buffer's own
+    // position cache. GNU 30.2's positions.
+    assert_oracle_contract_matches_interpreter(
+        r#"(list
+          (with-temp-buffer
+            (insert (make-string 2000 ?é) "abcλdef" (make-string 3000 ?ü))
+            (goto-char 1)
+            (list (re-search-forward "c\\(λ\\)d" nil t) (match-beginning 0) (match-end 1)
+                  (re-search-forward "ü\\{3\\}" nil t 5) (point)
+                  (re-search-backward "\\(b\\)c" nil t) (butlast (match-data t))
+                  (re-search-backward "é\\{2\\}" nil t 3) (point)
+                  (progn (goto-char 1) (re-search-forward "\\(é\\)\\(é\\)" nil t 700)) (butlast (match-data t))
+                  (progn (goto-char (point-max)) (re-search-backward "\\(ü\\)" 4900 t 50)) (butlast (match-data t))
+                  (progn (goto-char 3000) (re-search-forward "zz" nil t 2))
+                  (progn (goto-char 10) (insert "λ") (goto-char 1) (re-search-forward "λ" nil t)) (butlast (match-data t))))
+          (with-temp-buffer
+            (insert "αβγ\nδεζ\n")
+            (goto-char 1)
+            (list (re-search-forward "\\(β\\)\\|\\(ε\\)" nil t 2) (butlast (match-data t))
+                  (looking-at "ζ") (butlast (match-data t)))))"#,
+        r#"((2006 2003 2005 2023 2023 2002 (2002 2004 2002 2003) 1995 1995 1401 (1399 1401 1399 1400 1400 1401) 4958 (4958 4959 4958 4959) nil 11 (10 11)) (7 (6 7 nil nil 6 7) t (7 8)))"#,
+        "counted searches",
+    );
+}
+
+#[test]
 fn directory_files_returns_mutable_sorted_names_with_dot_entries() {
     let unique = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

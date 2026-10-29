@@ -373,11 +373,12 @@ pub(super) fn search_buffer_non_re(
             snapshot.offset(pos)
         }
     };
+    let buffer_ref = interp.buffer;
     let position = |offset: usize| {
         if unibyte_bytes {
             begv + offset
         } else {
-            snapshot.position(offset)
+            snapshot.position_in(&buffer_ref.borrow(), offset)
         }
     };
     let (pos_byte, lim_byte) = (offset(pos), offset(lim));

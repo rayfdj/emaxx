@@ -415,6 +415,38 @@ pub enum ScanText {
     Rope(Rope),
 }
 
+/// The rope leaf the buffer's last walk reached, as `Buffer::scan_hint'
+/// hands it to a scan of a `ScanText::Rope' taken with it: the leaf's
+/// address and length, and its first byte in the text.
+#[derive(Clone, Copy)]
+pub struct ChunkHint {
+    text: usize,
+    len: usize,
+    byte: usize,
+}
+
+impl ChunkHint {
+    /// The leaf's text and its first byte.
+    ///
+    /// # Safety
+    ///
+    /// ROPE is the `ScanText::Rope' taken from the buffer under the same
+    /// borrow as the hint.  A clone of a rope shares its leaves, and ropey
+    /// copies a shared leaf before an edit changes it, so the leaf stays
+    /// where it was, unchanged, while ROPE lives.
+    pub unsafe fn chunk<'r>(&self, _rope: &'r Rope) -> (&'r str, usize) {
+        // SAFETY: the caller's guarantee; the leaf is a chunk of the rope,
+        // valid UTF-8.
+        let text = unsafe {
+            std::str::from_utf8_unchecked(std::slice::from_raw_parts(
+                self.text as *const u8,
+                self.len,
+            ))
+        };
+        (text, self.byte)
+    }
+}
+
 impl Default for TextStore {
     fn default() -> Self {
         TextStore::Small(String::new())
@@ -654,9 +686,7 @@ impl BufferText {
                 if byte == self.bytes {
                     return self.chars;
                 }
-                // A byte in the middle of a character names no position of
-                // its own, so only conversions from chars are recorded.
-                let positions = self.positions.get();
+                let mut positions = self.positions.get();
                 if let Some(index) = positions.by_byte(byte) {
                     return index;
                 }
@@ -669,10 +699,20 @@ impl BufferText {
                     });
                 // SAFETY: the view is of this unchanged rope.
                 let text = unsafe { view.text() };
-                from + ropey::str_utils::byte_to_char_idx(
-                    &text[from_byte - view.byte..],
-                    byte - from_byte,
-                )
+                let index = from
+                    + ropey::str_utils::byte_to_char_idx(
+                        &text[from_byte - view.byte..],
+                        byte - from_byte,
+                    );
+                // A byte that starts its character is that character's
+                // position, remembered as buf_bytepos_to_charpos remembers
+                // the last it converted (a match's registers then count
+                // from each other); one in the middle names none.
+                if text.is_char_boundary(byte - view.byte) {
+                    positions.record(index, byte);
+                    self.positions.set(positions);
+                }
+                index
             }
         }
     }
@@ -748,6 +788,22 @@ impl BufferText {
             },
             TextStore::Rope(rope) => ScanText::Rope(rope.clone()),
         }
+    }
+
+    /// The chunk the last walk of the rope reached, when it holds byte
+    /// offset BYTE.
+    fn scan_hint(&self, byte: usize) -> Option<ChunkHint> {
+        let TextStore::Rope(_) = &self.store else {
+            return None;
+        };
+        self.chunk
+            .get()
+            .filter(|view| view.holds_byte(byte))
+            .map(|view| ChunkHint {
+                text: view.text,
+                len: view.len,
+                byte: view.byte,
+            })
     }
 
     /// The text as a rope that never changes (a small text's is built
@@ -1939,6 +1995,14 @@ impl Buffer {
     /// text's copy.
     pub fn scan_text(&self) -> ScanText {
         self.text.scan_text()
+    }
+
+    /// The rope leaf holding the stored text's byte offset BYTE when the
+    /// buffer's last walk reached it (point's, after a conversion of
+    /// point), for a scan of `scan_text''s rope taken under the same
+    /// borrow to start in without walking the tree (see `ChunkHint').
+    pub fn scan_hint(&self, byte: usize) -> Option<ChunkHint> {
+        self.text.scan_hint(byte)
     }
 
     /// The stored text's characters and UTF-8 bytes, which the buffer
@@ -4291,6 +4355,39 @@ mod tests {
         }
         assert_eq!(count_raw_markers(&[0xEE]), 0);
         assert_eq!(count_raw_markers(&[0xEE, 0x81, 0x80]), 0);
+    }
+
+    #[test]
+    fn byte_conversions_remember_only_character_starts() {
+        // A rope of many chunks converted byte by byte, in and out of order
+        // and in the middle of characters, after edits: the conversions a
+        // character's first byte records must not answer for another byte.
+        let mut buf = Buffer::from_text("test", &"aé€𝄞\n".repeat(600));
+        for round in 0..2 {
+            let text = buf.buffer_string();
+            let len = text.len();
+            let order: Vec<usize> = (0..len)
+                .step_by(7)
+                .chain((0..len).rev().step_by(13))
+                .chain([0, len, len / 2, len / 2 + 1, len / 2 + 2, len / 2 + 1])
+                .collect();
+            for byte in order {
+                // The character a byte lies in: a middle byte answers the
+                // character it is part of.
+                let start = (0..=byte)
+                    .rev()
+                    .find(|&at| text.is_char_boundary(at))
+                    .unwrap();
+                assert_eq!(
+                    buf.storage_byte_to_position(byte + 1),
+                    Some(text[..start].chars().count() + 1),
+                    "round {round} byte {byte}"
+                );
+            }
+            buf.goto_char(700);
+            buf.insert("λ𝄞");
+            buf.delete_region(50, 53).unwrap();
+        }
     }
 
     // -- Tests derived from Emacs test/src/editfns-tests.el --
