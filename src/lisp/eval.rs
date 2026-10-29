@@ -2033,6 +2033,14 @@ pub(crate) enum NetworkRuntime {
     UnixStream(std::os::unix::net::UnixStream),
 }
 
+/// What server_accept_connection found on a listener.
+pub(crate) enum AcceptedConnection {
+    /// A connection, with its peer's address for an inet listener.
+    Stream(NetworkRuntime, Option<std::net::SocketAddr>),
+    /// An accept that failed with this errno.
+    Failed(i32),
+}
+
 impl std::fmt::Debug for NetworkRuntime {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("NetworkRuntime").finish_non_exhaustive()
@@ -2542,6 +2550,7 @@ impl Clone for ProcessState {
             network: None,
             serial: None,
             module_pipe: None,
+            pipe_input: None,
             contact_host: self.contact_host.clone(),
             contact_service: self.contact_service,
             remote: self.remote.clone(),
@@ -2606,7 +2615,13 @@ struct ProcessState {
     runtime: Option<RunningProcess>,
     network: Option<NetworkRuntime>,
     serial: Option<SerialRuntime>,
+    /// A pipe process's channels (Fmake_pipe_process): the pipe it reads
+    /// (READ_FROM_SUBPROCESS, SUBPROCESS_STDOUT), which a module's
+    /// `open-channel' writes into, and the one its sends go to
+    /// (SUBPROCESS_STDIN, WRITE_TO_SUBPROCESS), which create_process
+    /// closes once the process is another's standard error.
     module_pipe: Option<(fs::File, fs::File)>,
+    pipe_input: Option<(fs::File, fs::File)>,
     /// Network :host/:service as given at creation (process-contact).
     contact_host: Option<String>,
     contact_service: Option<i64>,

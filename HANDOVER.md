@@ -8714,6 +8714,51 @@ setup_process_coding_systems's check now refuses). A 13-form
   the documented local skips, all 3,306 tests run passing (2 ignored);
   the seven integration targets; clippy `-D warnings', rustfmt and `git
   diff --check'.
+- **Round 160: FD_SETSIZE.** process.c refuses a channel that `pselect'
+  could not watch: create_process, Fmake_pipe_process, create_pty,
+  Fmake_serial_process, connect_network_socket and
+  server_accept_connection fail with EMFILE when the descriptor lies at
+  or above FD_SETSIZE (glibc's 1024; the contracted macOS build is
+  configured with 10000). Emaxx checked none of them, and its pipe
+  processes held no descriptors at all (a module's `open-channel' made a
+  pipe on demand), so process-tests' fd-setsize tests, which make pipe
+  processes until one fails with EMFILE and then try each kind of
+  process, made all 1,025 where GNU stops at about 254, and then started
+  every `cat' and `sleep' GNU refuses: `make-process' 174 ms against
+  45, `make-serial-process' 141 against 21, `make-pipe-process' 42
+  against 16. A pipe process now opens Fmake_pipe_process's two pipes
+  (the one it reads, which `open-channel' writes into, and the one its
+  sends go to) and is refused, its pipes closed, when either channel
+  lies beyond FD_SETSIZE; a `:stderr' buffer's pipe process is made
+  before the child is spawned, and a pipe process that becomes a
+  process's standard error loses its input pipe, as create_process
+  closes it. make-process checks the channel it reads and the one it
+  writes, pipe or pty, before the spawn; the fork path makes its pipes
+  itself for that, where it left them to the spawn. create_pty refuses
+  its master ("Opening pty"), Fmake_serial_process its port ("Opening
+  serial port", which serial_open's failure now reports as GNU does, a
+  `file-error' naming the port), and a client socket, TCP or local, is
+  refused before it connects ("make client process failed"), a server
+  or datagram socket once it is made ("make server process failed"),
+  an accepted one once accepted. server_accept_connection's failed
+  accept, this refusal among them, now goes to the server's log
+  function as "accept failed with code" and the errno, where Emaxx
+  signalled; a blocking connect a signal interrupts is waited for and
+  read back through SO_ERROR, as connect_network_socket does. The three
+  tests take 55.5, 44.0 and 15.3 ms (GNU 56.7, 24.3, 15.5), all of
+  process-tests 1,750 ms where it took 1,831 (GNU 1,687), every outcome
+  GNU's. A child's standard error still reaches its stderr pipe process
+  through a pipe of the child's own rather than that process's
+  SUBPROCESS_STDOUT (recorded below). A batch test makes pipe processes
+  until one fails, deletes two, makes one again and more until one
+  fails again, against GNU 30.2.
+  Local validation: the full gate across its ten groups with
+  the documented local skips, all 3,307 tests run passing (2 ignored;
+  eval_01's `subprocess_exit_is_event_driven_and_notifies_newest_process_first_once'
+  failed once with the machine loaded, as round 159's build does there,
+  and its group passed run again alone);
+  the seven integration targets; clippy `-D warnings', rustfmt and `git
+  diff --check'.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -9750,7 +9795,43 @@ attempt. Its timings: setup 63.2 s against 52.4 s (1.206), test bodies
 225.2 s against 240.0 s (0.938), in all 1.003. Rounds 151 to 158 were
 merged into main with it (PR 113, `9f883d2`).
 
+**On `8849bbd`** (round 159): full Rust gate passed (run 40823290025);
+frozen (run 40823293223) matched all 7,928 outcomes on its first
+attempt. Its timings: setup 81.5 s against 65.5 s (1.245), test bodies
+260.6 s against 269.3 s (0.968), in all 1.005.
+
 **Findings recorded, not fixed:**
+- **A child's standard error and its stderr pipe process (round
+  160).** GNU's create_process gives the child the stderr pipe
+  process's SUBPROCESS_STDOUT as its standard error and closes the
+  parent's copy, so the pipe process reads the child's errors on its own
+  READ_FROM_SUBPROCESS and turns (exit 0) at their end. Emaxx gives the
+  child a pipe of its own, delivers what it reads there to the stderr
+  process, and sets that process's status from the child's exit; the
+  pipe process keeps both ends of the pipe it reads, two descriptors
+  where GNU's keeps one while the child runs.
+- **The closure entry from Rust (#304, rounds 159 and 160).** The
+  callback of `mapatoms' in `comp--all-classes' (18,539 symbols) costs
+  807 instructions a symbol against GNU's 639. The byte-code bodies are
+  even (`run_verified' 343 against exec_byte_code's 321); the entry is
+  not: `call_function_value' 118 and `funcall_closure' 215 against
+  mapatoms_1, Ffuncall and funcall_lambda's 100 or so.
+  `funcall_closure''s share is spread over a dozen steps of 10 to 28
+  instructions (finish_activation 28, enter_frame 22, the arguments'
+  push 21, the entry program's lookup 14, the loop's frame record 13,
+  the code bytes' fetch 12, the entry marks 10), none of them most of
+  it; resolving the closure and its entry program once for a Rust loop
+  that calls the same closure would save about 45 a call. In
+  edebug-tests that callback is 130M instructions of the file's 700M
+  excess, in comp-cstr-tests most of it.
+- **The frozen run's slowest files and the gate profile (round 160).**
+  In the release build electric-tests takes 7.73G instructions against
+  GNU's 6.63G, mule-tests 22.6G against 21.3G, semantic-utest-ia 20.2G
+  against 19.3G, undo-tests 10.2G against 9.3G, and comp-tests runs in
+  1.10 times GNU's wall time; the gate profile the frozen run builds
+  makes electric-tests 10.66G (its byte-code loop 74% more), so their
+  frozen ratios (2.26, 1.74, 1.70, 1.67) are mostly the profile's, as
+  the setup's are (round 157's finding).
 - **What the gate profile adds to a file's setup (round 157).**
   cal-french-tests.el's setup under the frozen runner's command line
   takes 576M instructions in the release build, 726M in the gate profile

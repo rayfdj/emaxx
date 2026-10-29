@@ -8286,6 +8286,41 @@ fn variable_predicates_agree_for_c_and_buffer_local_variables() {
 }
 
 #[test]
+fn pipe_processes_hold_their_pipes_within_fd_setsize() {
+    // Fmake_pipe_process opens two pipes, and a channel at or above
+    // FD_SETSIZE fails with EMFILE: pipe processes made until one fails,
+    // two deleted, one made again, then more until one fails again.
+    // GNU 30.2's values.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((processes nil) (err nil))
+          (unwind-protect
+              (progn
+                (condition-case e
+                    (dotimes (i 2000)
+                      (push (make-pipe-process :name (format "r160-%d" i) :noquery t) processes))
+                  (file-error (setq err e)))
+                (let ((count (length processes)))
+                  (delete-process (pop processes))
+                  (delete-process (pop processes))
+                  (let ((again (make-pipe-process :name "r160-again" :noquery t)))
+                    (push again processes)
+                    (list (car err) (cadr err) (caddr err)
+                          (< 100 count 300)
+                          (process-status again)
+                          (condition-case e
+                              (progn
+                                (dotimes (i 10)
+                                  (push (make-pipe-process :name (format "r160-more-%d" i) :noquery t)
+                                        processes))
+                                'no-error)
+                            (file-error (list (car e) (cadr e) (caddr e))))))))
+            (mapc #'delete-process processes)))"#,
+        r#"(file-error "Creating pipe" "Too many open files" t open (file-error "Creating pipe" "Too many open files"))"#,
+        "fd setsize",
+    );
+}
+
+#[test]
 fn directory_files_returns_mutable_sorted_names_with_dot_entries() {
     let unique = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
