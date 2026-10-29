@@ -8428,6 +8428,62 @@ fn syntax_table_properties_category_and_aliases_read_as_gnu_does() {
 }
 
 #[test]
+fn compiled_catches_and_condition_cases_run_as_gnu_runs_them() {
+    // Bpushcatch, Bpushconditioncase and Bpophandler: clauses by
+    // condition, `:success', throws through a handler to an outer catch,
+    // errors from a subr, from `signal' and from a called function, a
+    // handler per iteration of a loop, and `handler-bind' outside them.
+    // GNU 30.2's values.
+    assert_oracle_contract_matches_interpreter(
+        r#"(progn
+        (defun r163-inner (x)
+          (condition-case err
+              (cond ((eq x 'arith) (/ 1 0))
+                    ((eq x 'throw) (throw 'r163-out 'thrown))
+                    ((eq x 'signal) (signal 'wrong-type-argument (list 'r163 x)))
+                    ((eq x 'user) (error "user %s" x))
+                    (t (list 'ok x)))
+            (arith-error (list 'arith (car err)))
+            (wrong-type-argument (list 'wta (cdr err)))
+            (:success (list 'success err))))
+        (defun r163-outer (x)
+          (catch 'r163-out
+            (catch 'r163-other
+              (condition-case nil
+                  (r163-inner x)
+                (error 'outer-error)))))
+        (defun r163-nested (n)
+          (let ((acc nil))
+            (dotimes (i n)
+              (push (catch 'k
+                      (condition-case e
+                          (progn (when (= (% i 3) 0) (throw 'k (list 'caught i)))
+                                 (when (= (% i 3) 1) (ignore (car i)))
+                                 i)
+                        (wrong-type-argument (list 'wta i (car e)))))
+                    acc))
+            (nreverse acc)))
+        (defun r163-bind ()
+          (let ((seen nil))
+            (list
+             (condition-case e
+                 (handler-bind ((error (lambda (err) (push (car err) seen))))
+                   (condition-case nil
+                       (/ 1 0)
+                     (wrong-type-argument 'not-this)))
+               (arith-error (list 'outer (car e))))
+             seen)))
+        (dolist (f '(r163-inner r163-outer r163-nested r163-bind)) (byte-compile f))
+        (list (mapcar #'r163-outer '(arith throw signal user other))
+               (r163-nested 7)
+               (r163-bind)
+               (condition-case e (r163-inner 'user) (error (list 'escaped (cadr e))))))"#,
+        r#"(((arith arith-error) thrown (wta (r163 signal)) outer-error (success (ok other))) ((caught 0) (wta 1 wrong-type-argument) 2 (caught 3) (wta 4 wrong-type-argument) 5 (caught 6)) ((outer arith-error) (arith-error)) (escaped "user user"))"#,
+        "compiled handlers",
+    );
+}
+
+#[test]
 fn directory_files_returns_mutable_sorted_names_with_dot_entries() {
     let unique = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

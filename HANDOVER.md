@@ -8823,6 +8823,26 @@ setup_process_coding_systems's check now refuses). A 13-form
   the documented local skips, all 3,309 tests run passing (2 ignored);
   the seven integration targets; clippy `-D warnings', rustfmt and `git
   diff --check'.
+- **Round 163: handlers in the verified byte-code loop.** In a compiled
+  loop each `condition-case' (Bpushconditioncase and Bpophandler) cost
+  728 instructions an iteration against GNU's 386, and each `catch'
+  (Bpushcatch) 523 against 364. The three handler opcodes left the
+  verified loop for the general op_in_place path, about 160 instructions
+  an op for its decode and exec_op's prologue, and each push copied the
+  conditions into a fresh Rc<[Value]>. The verified loop now runs them as
+  exec_byte_code does, the handler's stack depth counted from the frame's
+  base as `bc_stack.len()' counts it, and a handler with one condition
+  holds it without an allocation; the helpers stay out of line, since
+  inlined they slowed the loop's other ops by 7.6 %. An iteration of the
+  condition-case loop takes 264 instructions, of the catch loop 219. A
+  batch test throws and signals through nested compiled handlers
+  (conditions alone and in lists, `:success', `handler-bind' around an
+  inner handler that does not match, errors escaping to an interpreted
+  handler) against GNU 30.2.
+  Local validation: the full gate across its ten groups with
+  the documented local skips, all 3,310 tests run passing (2 ignored);
+  the seven integration targets; clippy `-D warnings', rustfmt and `git
+  diff --check'.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -9881,6 +9901,12 @@ release build a file's setup takes about what it did (time-stamp-tests
 1,213M instructions against GNU's 1,157M), the code round 161 changed
 under 1M of it, so the next run's setup tells a slower runner from a
 change in the gate profile.
+
+**On `14fdfeb`** (round 162): full Rust gate passed (run 40853801437);
+frozen (run 40853805986) matched all 7,928 outcomes on its first
+attempt. Its timings: setup 87.0 s against 70.2 s (1.239), test bodies
+267.6 s against 275.7 s (0.971), in all 1.020: the setup back near
+round 160's, so `9984036''s 1.381 was the runner's.
 
 **Findings recorded, not fixed:**
 - **Building `ucs-names' (round 162).** editfns-tests'

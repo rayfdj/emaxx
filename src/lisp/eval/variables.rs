@@ -3421,7 +3421,10 @@ impl Interpreter {
         start
     }
 
-    pub(crate) fn push_condition_case_handler(&mut self, heads: Vec<Value>) -> usize {
+    pub(crate) fn push_condition_case_handler(
+        &mut self,
+        heads: impl Into<crate::lisp::eval::CaseHeads>,
+    ) -> usize {
         let start = self.active_handlers.len();
         self.handler_generation += 1;
         self.active_handlers.push(ActiveHandler::Case(heads.into()));

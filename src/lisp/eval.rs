@@ -5908,12 +5908,49 @@ pub(crate) enum ActiveHandler {
     /// handlers may change, and a copy costs a count each.
     Bind(std::rc::Rc<[String]>, Value),
     /// The clause heads of an active `condition-case' (minus :success).
-    Case(std::rc::Rc<[Value]>),
+    Case(CaseHeads),
     /// An internal_condition_case of the C core: HANDLERS that are no list
     /// (find_handler_clause answers them for any condition), t or `error';
     /// `error' lets the debugger in (signal_or_quit's `EQ (clause,
     /// Qerror)').
     Internal(InternalHandlers),
+}
+
+/// The clause heads of an active `condition-case': the one of a
+/// Bpushconditioncase handler, held as it is, or an interpreted form's,
+/// shared as `signal''s copy of the stack shares them.
+#[derive(Clone, Debug)]
+pub(crate) enum CaseHeads {
+    One(Value),
+    Many(std::rc::Rc<[Value]>),
+}
+
+impl std::ops::Deref for CaseHeads {
+    type Target = [Value];
+
+    fn deref(&self) -> &[Value] {
+        match self {
+            Self::One(head) => std::slice::from_ref(head),
+            Self::Many(heads) => heads,
+        }
+    }
+}
+
+impl From<Vec<Value>> for CaseHeads {
+    fn from(heads: Vec<Value>) -> Self {
+        Self::Many(heads.into())
+    }
+}
+
+impl FromIterator<Value> for CaseHeads {
+    fn from_iter<I: IntoIterator<Item = Value>>(heads: I) -> Self {
+        let mut heads = heads.into_iter().collect::<Vec<_>>();
+        if heads.len() == 1 {
+            Self::One(heads.pop().expect("one head"))
+        } else {
+            heads.into()
+        }
+    }
 }
 
 /// The two kinds of `ActiveHandler::Internal'.
