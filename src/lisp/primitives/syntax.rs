@@ -349,14 +349,7 @@ pub(super) fn syntax_entry_for_code(
     }
 }
 
-pub(super) fn current_syntax_word_char(
-    interp: &Interpreter,
-    code: u32,
-    include_symbols: bool,
-) -> bool {
-    let class = syntax_entry_for_code(interp, interp.current_syntax_table_id(), code).class;
-    class == SyntaxClass::Word || (include_symbols && class == SyntaxClass::Symbol)
-}
+pub(super) use super::syntax_scan::current_syntax_word_char;
 
 fn syntax_entry_from_value(value: &Value) -> Option<SyntaxEntry> {
     match value.kind() {

@@ -9063,6 +9063,51 @@ setup_process_coding_systems's check now refuses). A 13-form
   the documented local skips, all 3,316 tests run passing (2
   ignored); the seven integration targets; clippy `-D warnings',
   rustfmt and `git diff --check'.
+- **Round 169: syntax scans, word boundaries and casing do what their C
+  functions do.** The primitive benchmark (scratchpad r167pb/bench.el,
+  now with `forward-word', `skip-syntax-forward', `forward-sexp' and
+  `capitalize' over a six-character buffer) found these two to three
+  times GNU's cost, the scan loops themselves near GNU's and the rest
+  in setting a scan up. Each scan built its gl_state afresh, a
+  structure whose ASCII syntax cache is 512 bytes, zeroed it and
+  copied it by value into the scanner, and read the scan's variables
+  twice; scans and regexp matches now take the one gl_state kept, set
+  up again in place (the cache forgotten by its known-bits word rather
+  than cleared), and give it back when they are done, as GNU keeps
+  its one gl_state, and the variables are read once a scan. A small
+  buffer, whose text is a string until it grows, builds its rope on
+  demand; the rope's single leaf is now kept with it, so a scan starts
+  in that chunk rather than finding it through the rope each time.
+  `forward-word' called `constrain-to-field' by name, through its
+  function cell, and now calls it as Fforward_word calls
+  Fconstrain_to_field. In a buffer with no overlays, each
+  `get-char-property' sorted an empty list of overlays, which now
+  returns at once. CHAR_TABLE_REF's ASCII case, a few loads up the
+  parents, now inlines where it is used, the rest of the walk staying
+  a function, and word_boundary_p tests a category set's bit as
+  CATEGORY_MEMBER does, where Emaxx classified the set's whole type for
+  each of up to sixteen tests a character, and walks the separating and
+  combining lists by CONSP. Casing reads `case-symbols-as-words' as
+  the DEFVAR_BOOL it is, through its symbol, where Emaxx looked its
+  name up as a lexical variable each operation, and tests a word
+  character by the syntax entry's class bits, where it decoded the
+  whole entry. Per call against GNU: `forward-word' 7,485
+  instructions to 5,532 (GNU 2,658), `skip-syntax-forward' 2,942 to
+  2,268 (1,046), `forward-sexp' 3,357 to 2,782 (1,554), `upcase' 6,739
+  to 4,183 (2,054), `capitalize' 6,130 to 5,720 (2,777). What remains
+  in `forward-word' is spread: the three `get-char-property' lookups
+  `constrain-to-field' makes, about 450 instructions each against
+  GNU's 250, the scan's buffer-local variables, some 80 a read, and
+  word_boundary_p's four table reads a character. A batch test compares
+  `case-symbols-as-words' against GNU 30.2: `capitalize' and
+  `upcase-initials' with it let-bound and not, buffer-local in a
+  region command, a syntax table making `_' a word constituent,
+  `capitalize-word' backwards, `replace-match''s case conversion of
+  initial capitals and all capitals, and `forward-word' with it bound.
+  Local validation: the full gate across its ten groups with the
+  documented local skips, all 3,317 tests run passing (2
+  ignored); the seven integration targets; clippy `-D warnings',
+  rustfmt and `git diff --check'.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -10155,6 +10200,23 @@ attempt. Its timings: setup 81.0 s against 65.0 s (1.248), test bodies
 behind GNU's in seconds: comp-tests (+2.8 s), tramp-tests (+2.6 s),
 semantic-utest-ia (1.57 times), mule-tests (1.63), package-tests,
 electric-tests (2.12), undo-tests (1.64) and edebug-tests (1.47).
+
+**On `a479b12`** (round 168): full Rust gate passed (run 40945644215);
+frozen (run 40945657957) matched all 7,928 outcomes on its first
+attempt. Its timings: setup 59.2 s against 50.3 s (1.176), test bodies 214.9 s
+against 230.7 s (0.932), in all 0.987. The test bodies furthest behind
+GNU's in seconds: comp-tests (+1.8 s), tramp-tests (+1.4 s),
+semantic-utest-ia (1.50 times), mule-tests (1.65), electric-tests
+(1.88), undo-tests (1.51) and edebug-tests (1.40); in the release
+build semantic-utest-ia runs 19.10G instructions against GNU's 19.28G,
+undo-tests 10.00G against 9.28G and edebug-tests 4.78G against 4.11G,
+the rest the gate build's (below). The setup gap is the gate build's
+too: the setup of xfaces-tests (Emacs started, ERT and the file
+loaded, no test run), 83 ms against 67 here, takes 520M instructions
+in the release build, 524M in GNU and 660M in the gate build, the
+excess spread over the helpers the release build inlines and the gate
+build's 16 code generation units leave out of line (thread-local
+accessors, `string_bytes', `Value::cons') and its checks.
 
 **Findings recorded, not fixed:**
 - **Where the frozen run's gate build spends past the release build

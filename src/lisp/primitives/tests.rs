@@ -8861,6 +8861,66 @@ fn mapping_appending_interning_and_quoting_follow_fns_c_and_lread_c() {
 }
 
 #[test]
+fn casing_reads_case_symbols_as_words_as_casefiddle_c_does() {
+    // casefiddle.c's case_ch_is_word: a symbol constituent is part of a
+    // word when the DEFVAR_BOOL `case-symbols-as-words' is non-nil, let
+    // bound or buffer-local, for `capitalize', `upcase-initials', the
+    // region and word commands and `replace-match''s case conversion,
+    // with the buffer's syntax table deciding what a word is.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((rep (lambda (text from to &optional symbols)
+             (with-temp-buffer
+               (insert text)
+               (goto-char 1)
+               (let ((case-symbols-as-words symbols))
+                 (re-search-forward from)
+                 (replace-match to))
+               (buffer-string)))))
+  (list
+   (capitalize "foo_bar baz-qux")
+   (let ((case-symbols-as-words t)) (capitalize "foo_bar baz-qux"))
+   (upcase-initials "foo_bar baz")
+   (let ((case-symbols-as-words t)) (upcase-initials "foo_bar baz"))
+   (with-temp-buffer
+     (setq-local case-symbols-as-words t)
+     (insert "foo_bar x-y")
+     (capitalize-region (point-min) (point-max))
+     (list (buffer-string) case-symbols-as-words
+           (with-temp-buffer case-symbols-as-words)))
+   (with-temp-buffer
+     (insert "foo_bar x-y")
+     (capitalize-region (point-min) (point-max))
+     (buffer-string))
+   (with-temp-buffer
+     (let ((table (make-syntax-table)))
+       (modify-syntax-entry 95 "w" table)
+       (set-syntax-table table)
+       (insert "foo_bar x-y")
+       (capitalize-region (point-min) (point-max))
+       (buffer-string)))
+   (with-temp-buffer
+     (insert "foo_bar baz")
+     (capitalize-word -2)
+     (list (buffer-string) (point)))
+   (funcall rep "Foo_bar baz" "Foo_bar" "xyz_abc")
+   (funcall rep "Foo_bar baz" "Foo_bar" "xyz_abc" t)
+   (funcall rep "Foo_Bar baz" "Foo_Bar" "xyz_abc")
+   (funcall rep "Foo_Bar baz" "Foo_Bar" "xyz_abc" t)
+   (funcall rep "FOO_BAR baz" "FOO_BAR" "xyz_abc" t)
+   (funcall rep "foo_Bar baz" "foo_Bar" "xyz_abc")
+   (funcall rep "foo_Bar baz" "foo_Bar" "xyz_abc" t)
+   (with-temp-buffer
+     (insert "abc_def ghi")
+     (goto-char 1)
+     (list (progn (forward-word 1) (point))
+           (let ((case-symbols-as-words t)) (forward-word 1) (point))
+           (progn (forward-symbol -1) (point))))))"#,
+        r#"("Foo_Bar Baz-Qux" "Foo_bar Baz-qux" "Foo_Bar Baz" "Foo_bar Baz" ("Foo_bar X-y" t nil) "Foo_Bar X-Y" "Foo_bar X-Y" ("foo_Bar Baz" 12) "xyz_abc baz" "Xyz_abc baz" "Xyz_Abc baz" "Xyz_abc baz" "XYZ_ABC baz" "xyz_abc baz" "xyz_abc baz" (4 8 1))"#,
+        "case_symbols_as_words",
+    );
+}
+
+#[test]
 fn directory_files_returns_mutable_sorted_names_with_dot_entries() {
     let unique = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

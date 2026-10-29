@@ -260,6 +260,13 @@ impl CharTableRef {
         if character < 128 {
             return self.ascii_get(character as usize);
         }
+        self.get_non_ascii(character)
+    }
+
+    /// CHAR_TABLE_REF of a character past ASCII: down this tree, its
+    /// default for nil, up the parents while nil.
+    #[inline(never)]
+    fn get_non_ascii(&self, character: u32) -> Value {
         assert!(character <= CHAR_TABLE_MAX_CHAR);
         let mut table = *self;
         loop {

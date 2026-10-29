@@ -231,6 +231,10 @@ struct BufferText {
     /// A small text's rope for `text_rope', built when a scan asks for
     /// one and dropped by the next change.
     rope_view: RefCell<Option<Rope>>,
+    /// The leaf of `rope_view' when that rope is the one leaf, found when
+    /// it is built: a scan of it reads that chunk throughout, which
+    /// ropey's own lookups count afresh at each bounds check.
+    rope_leaf: Cell<Option<ChunkHint>>,
     /// Recent char/byte conversions of a rope's text.
     positions: Cell<PositionCache>,
     /// The rope's chunk the last walk reached.
@@ -458,6 +462,7 @@ impl BufferText {
             bytes: text.len(),
             raw_markers: count_raw_markers(text.as_bytes()),
             rope_view: RefCell::new(None),
+            rope_leaf: Cell::new(None),
             positions: Cell::default(),
             chunk: Cell::new(None),
         }
@@ -754,7 +759,9 @@ impl BufferText {
     /// offset BYTE.
     fn scan_hint(&self, byte: usize) -> Option<ChunkHint> {
         let TextStore::Rope(_) = &self.store else {
-            return None;
+            // A small text's rope, `scan_text''s when it has one, of one
+            // leaf holds every byte.
+            return self.rope_leaf();
         };
         self.chunk
             .get()
@@ -773,9 +780,28 @@ impl BufferText {
             TextStore::Small(text) => self
                 .rope_view
                 .borrow_mut()
-                .get_or_insert_with(|| Rope::from_str(text))
+                .get_or_insert_with(|| {
+                    let rope = Rope::from_str(text);
+                    let (leaf, _, _, _) = rope.chunk_at_byte(0);
+                    self.rope_leaf
+                        .set((leaf.len() == text.len()).then_some(ChunkHint {
+                            text: leaf.as_ptr() as usize,
+                            len: leaf.len(),
+                            byte: 0,
+                        }));
+                    rope
+                })
                 .clone(),
             TextStore::Rope(rope) => rope.clone(),
+        }
+    }
+
+    /// The single leaf of the rope `rope' answers, for a small text whose
+    /// rope is one (see `rope_leaf').
+    fn rope_leaf(&self) -> Option<ChunkHint> {
+        match &self.store {
+            TextStore::Small(_) if self.rope_view.borrow().is_some() => self.rope_leaf.get(),
+            _ => None,
         }
     }
 
@@ -1896,6 +1922,13 @@ impl Buffer {
     /// characters by index without holding the buffer borrowed.
     pub fn text_rope(&self) -> Rope {
         self.text.rope()
+    }
+
+    /// `text_rope' with its leaf when it is a single one (a small text's),
+    /// which `ChunkHint::chunk' reads without asking the rope.
+    pub fn text_rope_and_leaf(&self) -> (Rope, Option<ChunkHint>) {
+        let rope = self.text.rope();
+        (rope, self.text.rope_leaf())
     }
 
     /// The text for a scan apart from the buffer: the rope, or a small
@@ -4021,6 +4054,19 @@ mod tests {
             assert_eq!(buf.full_buffer_string(), expected);
             assert_eq!(buf.size_total(), expected.chars().count());
             assert_eq!(String::from(&buf.text_rope()), expected);
+            // A small text's rope of one leaf comes with that leaf, its
+            // whole text.
+            let (rope, leaf) = buf.text_rope_and_leaf();
+            match leaf {
+                Some(leaf) => {
+                    // SAFETY: the rope and its leaf were taken together.
+                    assert_eq!(unsafe { leaf.chunk(&rope) }, (expected, 0));
+                    assert!(matches!(buf.text.store, TextStore::Small(_)));
+                }
+                None => assert!(
+                    matches!(buf.text.store, TextStore::Rope(_)) || rope.chunks().count() > 1
+                ),
+            }
             let lines: Vec<&str> = expected.split('\n').collect();
             assert_eq!(buf.text.len_lines(), lines.len());
             assert_eq!(buf.lines_from(2, 1), vec![lines[1].to_string()]);

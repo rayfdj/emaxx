@@ -121,6 +121,9 @@ pub(crate) fn sort_overlays(
     overlays: &mut Vec<crate::overlay::OverlayRef>,
     window_id: Option<u64>,
 ) {
+    if overlays.is_empty() {
+        return;
+    }
     // buffer.c:compare_overlays combines interval nesting with secondary
     // priority; crossing intervals can make this relation non-transitive.
     // Rust's sort_by requires a total order and can panic here. Use the same

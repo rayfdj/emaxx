@@ -1,12 +1,8 @@
 use super::*;
 use crate::lisp::types::Kind;
 
-fn replacement_case_action(
-    interp: &Interpreter,
-    matched: &str,
-    env: &crate::lisp::types::Env,
-) -> Option<CaseAction> {
-    let case_symbols_as_words = case_symbols_as_words_enabled(interp, env);
+fn replacement_case_action(interp: &Interpreter, matched: &str) -> Option<CaseAction> {
+    let case_symbols_as_words = case_symbols_as_words_enabled(interp);
     let mut previous_is_word = false;
     let mut some_multiletter_word = false;
     let mut some_lowercase = false;
@@ -142,7 +138,7 @@ fn replace_match(
                 .buffer_substring(sub_start, sub_end)
                 .map_err(|error| LispError::Signal(error.to_string()))?,
         };
-        replacement_case_action(interp, &matched, env)
+        replacement_case_action(interp, &matched)
     };
 
     if let Some(source) = source {

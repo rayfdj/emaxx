@@ -357,7 +357,7 @@ pub(super) struct LispMatchEnv<'a, 't> {
 impl Drop for LispMatchEnv<'_, '_> {
     fn drop(&mut self) {
         if let Some(gl) = self.gl.take() {
-            super::syntax_scan::GlState::release_for_regexp(gl);
+            super::syntax_scan::GlState::release(gl);
         }
     }
 }
@@ -442,10 +442,8 @@ pub(super) fn current_category_table(interp: &mut Interpreter) -> CharTableRef {
 
 /// CATEGORY_MEMBER of a category set (a bool-vector).
 pub(crate) fn category_member(set: &Value, category: u8) -> bool {
-    match set.kind() {
-        Kind::BoolVector(set) => set.get(usize::from(category)) == Some(true),
-        _ => false,
-    }
+    set.bool_vector_ref()
+        .is_some_and(|set| set.get(usize::from(category)) == Some(true))
 }
 
 /// The variables category.c's word_boundary_p reads:
@@ -512,10 +510,9 @@ pub(super) fn word_boundary_p_with(
             .map(|code| code as u8)
     };
     let mut tail = tail;
-    while let Ok(elt) = tail.car() {
-        if let (Ok(first), Ok(second)) = (elt.car(), elt.cdr())
-            && elt.is_cons()
-        {
+    while let Some(cell) = tail.cons_ref() {
+        if let Some(elt) = cell.car.get().cons_ref() {
+            let (first, second) = (elt.car.get(), elt.cdr.get());
             let first_ok = first.is_nil()
                 || category(first)
                     .is_some_and(|cat| category_member(&set1, cat) && !category_member(&set2, cat));
@@ -526,11 +523,7 @@ pub(super) fn word_boundary_p_with(
                 return !default_result;
             }
         }
-        let Ok(next) = tail.cdr() else { break };
-        if !next.is_cons() {
-            break;
-        }
-        tail = next;
+        tail = cell.cdr.get();
     }
     default_result
 }
@@ -576,7 +569,7 @@ impl MatchEnv for LispMatchEnv<'_, '_> {
     fn setup_syntax(&mut self, at: usize) {
         use super::syntax_scan::{GlObject, GlState};
         if let Some(gl) = self.gl.take() {
-            GlState::release_for_regexp(gl);
+            GlState::release(gl);
         }
         let object = match &self.object {
             Object::Buffer { .. } => GlObject::Buffer,

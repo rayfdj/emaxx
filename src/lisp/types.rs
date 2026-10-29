@@ -2773,6 +2773,21 @@ impl Value {
         }
     }
 
+    /// BOOL_VECTOR_P, by the tag and the header alone.
+    #[inline(always)]
+    pub(crate) fn bool_vector_ref(self) -> Option<BoolVectorRef> {
+        if self.0 & TAG_MASK != TAG_VECTORLIKE {
+            return None;
+        }
+        let header = (self.0 & !TAG_MASK) as *mut crate::lisp::alloc::VectorHeader;
+        // SAFETY: as `kind's vectorlike arm.
+        unsafe {
+            (crate::lisp::alloc::vectors::header_tag(header)
+                == crate::lisp::alloc::VectorTag::BoolVector)
+                .then(|| BoolVectorRef::from_raw(header))
+        }
+    }
+
     /// SUB_CHAR_TABLE_P, by the tag and the header alone.
     #[inline(always)]
     pub(crate) fn sub_char_table_ref(self) -> Option<SubCharTableRef> {

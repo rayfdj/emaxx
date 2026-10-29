@@ -351,6 +351,7 @@ const KEY_NAMES: &[&str] = &[
     "obarray",
     "read-symbol-shorthands",
     "identity",
+    "case-symbols-as-words",
     "face--new-frame-defaults",
     "edebug-entered",
     "event-symbol-element-mask",
