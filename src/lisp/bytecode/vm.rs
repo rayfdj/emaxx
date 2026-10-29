@@ -2595,6 +2595,37 @@ fn run_verified(
                     drop_values!(1);
                     at += 1;
                 }
+                // Bnth's fast case (`nth_in_place'): a list it walks below
+                // SMALL_LIST_LEN_MAX; any other, in the full arm.
+                0o070 => {
+                    let Some(value) = nth_in_place(*slot!(1), *slot!(0)) else {
+                        slow!()
+                    };
+                    *slot!(1) = value;
+                    drop_values!(1);
+                    at += 1;
+                }
+                // Belt's: Bnth's with the operands reversed, for a cons.
+                0o234 => {
+                    let list = *slot!(1);
+                    if !list.is_cons() {
+                        slow!()
+                    }
+                    let Some(value) = nth_in_place(*slot!(0), list) else {
+                        slow!()
+                    };
+                    *slot!(1) = value;
+                    drop_values!(1);
+                    at += 1;
+                }
+                // Blength (Flength) of what it counts without signaling.
+                0o107 => {
+                    let Ok(length) = primitives::sequence_length_value(slot!(0)) else {
+                        slow!()
+                    };
+                    *slot!(0) = Value::Integer(length);
+                    at += 1;
+                }
                 // Bget of two bare symbols (`get_plain').
                 0o116 => {
                     let Some(value) = get_plain(vm.interp, *slot!(1), *slot!(0)) else {
@@ -2810,15 +2841,14 @@ fn run_verified(
                 // brought back the range check and sent constants and
                 // calls through branches before the table.
                 0o000 | 0o050 | 0o052 | 0o053 | 0o054 | 0o055 | 0o056 | 0o057 | 0o063 | 0o064
-                | 0o065 | 0o066 | 0o067 | 0o070 | 0o107 | 0o112 | 0o113 | 0o114 | 0o115 | 0o117
-                | 0o120 | 0o121 | 0o122 | 0o135 | 0o136 | 0o143 | 0o146 | 0o147 | 0o150 | 0o151
-                | 0o152 | 0o153 | 0o154 | 0o155 | 0o156 | 0o157 | 0o163 | 0o164 | 0o165 | 0o166
-                | 0o167 | 0o170 | 0o171 | 0o172 | 0o173 | 0o174 | 0o175 | 0o176 | 0o177 | 0o200
-                | 0o212 | 0o213 | 0o214 | 0o215 | 0o216 | 0o217 | 0o220 | 0o221 | 0o222 | 0o223
-                | 0o224 | 0o225 | 0o226 | 0o227 | 0o230 | 0o231 | 0o232 | 0o233 | 0o234 | 0o235
-                | 0o237 | 0o244 | 0o251 | 0o252 | 0o253 | 0o254 | 0o255 | 0o256 | 0o257 | 0o260
-                | 0o261 | 0o264 | 0o265 | 0o270 | 0o271 | 0o272 | 0o273 | 0o274 | 0o275 | 0o276
-                | 0o277 => slow!(),
+                | 0o065 | 0o066 | 0o067 | 0o112 | 0o113 | 0o114 | 0o115 | 0o117 | 0o120 | 0o121
+                | 0o122 | 0o135 | 0o136 | 0o143 | 0o146 | 0o147 | 0o150 | 0o151 | 0o152 | 0o153
+                | 0o154 | 0o155 | 0o156 | 0o157 | 0o163 | 0o164 | 0o165 | 0o166 | 0o167 | 0o170
+                | 0o171 | 0o172 | 0o173 | 0o174 | 0o175 | 0o176 | 0o177 | 0o200 | 0o212 | 0o213
+                | 0o214 | 0o215 | 0o216 | 0o217 | 0o220 | 0o221 | 0o222 | 0o223 | 0o224 | 0o225
+                | 0o226 | 0o227 | 0o230 | 0o231 | 0o232 | 0o233 | 0o235 | 0o237 | 0o244 | 0o251
+                | 0o252 | 0o253 | 0o254 | 0o255 | 0o256 | 0o257 | 0o260 | 0o261 | 0o264 | 0o265
+                | 0o270 | 0o271 | 0o272 | 0o273 | 0o274 | 0o275 | 0o276 | 0o277 => slow!(),
             }
         };
         if let FastExit::Continued(new_top) = exit {
@@ -3116,6 +3146,32 @@ fn op_in_place(vm: &mut VmFrames<'_>, offset: usize, top: usize, pc: &mut usize)
             FastExit::Switched(state.bc_stack.top, state.bc_stack.len())
         }
         Err(error) => FastExit::Raised(instr, error),
+    }
+}
+
+/// bytecode.c's SMALL_LIST_LEN_MAX: the indices Bnth and Belt walk a list
+/// to themselves.
+const SMALL_LIST_LEN_MAX: i64 = 127;
+
+/// The fast case of Bnth (and Belt's, operands reversed): the car of
+/// LIST's Nth tail for N a fixnum in [0, SMALL_LIST_LEN_MAX], nil for a
+/// list that ends first; None for any other N or a tail that is neither a
+/// cons nor nil, which the full arm signals.
+#[inline]
+fn nth_in_place(n: Value, list: Value) -> Option<Value> {
+    let mut n = n
+        .fixnum()
+        .filter(|n| (0..=SMALL_LIST_LEN_MAX).contains(n))?;
+    let mut tail = list;
+    while n > 0
+        && let Some(cell) = tail.cons_ref()
+    {
+        tail = cell.cdr.get();
+        n -= 1;
+    }
+    match tail.cons_ref() {
+        Some(cell) => Some(cell.car.get()),
+        None => tail.is_nil().then_some(Value::Nil),
     }
 }
 

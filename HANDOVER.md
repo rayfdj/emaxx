@@ -9143,6 +9143,26 @@ setup_process_coding_systems's check now refuses). A 13-form
   documented local skips, all 3,319 tests run passing (2
   ignored); the seven integration targets; clippy `-D warnings',
   rustfmt and `git diff --check'.
+- **Round 171: Bnth, Belt and Blength in the verified loop.** bytecode.c
+  gives Bnth and Belt a fast case, a list walked in the loop for an
+  index up to SMALL_LIST_LEN_MAX, and calls Flength for Blength;
+  Emaxx left all three to the op's full arm (`op_in_place'), which
+  decoded the instruction again and called the primitive by name, some
+  220 instructions before the primitive's own work. The verified loop
+  now runs Bnth's and Belt's fast case and Blength's count itself, any
+  other operands going to the full arm as before, which signals and
+  records the backtrace frame as bytecode.c does. Flet's test of a
+  locally special variable (`environment_declares_special') walks the
+  lexical environment by CONSP rather than classifying each tail's
+  whole type, and it, `assq_binding' and `Value::cons' are marked
+  inline, as the gate build's sixteen code generation units otherwise
+  call them out of line (mule-tests spent 1.2G and 0.7G instructions in
+  the first two there). Per call against GNU, the loop around each
+  included: `nth' of a variable's list 422 instructions to 169 (GNU
+  236), `length' of a list 358 to 231 (279) and of a string 272 to 145
+  (190); `mapcar' of a byte-compiled lambda over 50 strings 35,707 to
+  29,409 (17,252), the rest of that gap the call into the lambda.
+  Local validation with round 170 (above).
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's

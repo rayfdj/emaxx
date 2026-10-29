@@ -2311,6 +2311,7 @@ pub(crate) fn environment_is_lexical(env: &Env) -> bool {
 /// binding cons whose car is SYMBOL (by identity), entries that are not
 /// conses passed over.  An improper alist signals `listp' and a circular
 /// one `circular-list', as Fassq's FOR_EACH_TAIL does.
+#[inline]
 pub(crate) fn assq_binding(
     environment: &Value,
     symbol: &SymbolName,
@@ -2392,22 +2393,17 @@ fn improper_environment(environment: &Value, circular: bool) -> LispError {
 /// special.
 /// Flet's `Fmemq (var, Vinternal_interpreter_environment)': whether SYMBOL
 /// itself (EQ, its word) is declared special in the lexical environment.
+#[inline]
 pub(crate) fn environment_declares_special(environment: &Value, symbol: &SymbolName) -> bool {
     let target = symbol.identity_ptr() | TAG_SYMBOL;
-    let mut tail = match environment.kind() {
-        Kind::Cons(cell) => cell,
-        _ => return false,
-    };
-    loop {
-        if tail.car.get().word() == target {
+    let mut tail = *environment;
+    while let Some(cell) = tail.cons_ref() {
+        if cell.car.get().word() == target {
             return true;
         }
-        let next = match tail.cdr.get().kind() {
-            Kind::Cons(cell) => cell,
-            _ => return false,
-        };
-        tail = next;
+        tail = cell.cdr.get();
     }
+    false
 }
 
 pub(crate) fn make_uninterned_symbol_name(base: &str, id: u64) -> String {
@@ -2571,6 +2567,7 @@ impl Value {
         Value::Symbol(s.into())
     }
 
+    #[inline]
     pub fn cons(car: Value, cdr: Value) -> Self {
         Value::Cons(crate::lisp::alloc::allocate_cons(ConsCell::new(car, cdr)))
     }
