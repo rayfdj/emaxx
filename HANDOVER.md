@@ -9108,6 +9108,41 @@ setup_process_coding_systems's check now refuses). A 13-form
   documented local skips, all 3,317 tests run passing (2
   ignored); the seven integration targets; clippy `-D warnings',
   rustfmt and `git diff --check'.
+- **Round 170: compiling a regexp as regex_compile does.**
+  semantic-utest-ia's lexers try some twenty regexps at each token,
+  more than the twenty cells of the pattern cache hold, so both
+  implementations compile about 265,000 patterns; each compilation
+  cost Emaxx about 6,000 instructions where GNU's re_compile_pattern
+  takes 2,700. A benchmark of the C lexer's 21 regexps in rotation
+  (scratchpad r170/bench.el, every `looking-at' a compilation) showed
+  where: GNU compiles into the cache cell's own buffer (`cp->buf'),
+  where Emaxx allocated a new pattern, a new entry and a copy of the
+  regexp each time and freed the evicted cell's; insert_op1 and
+  insert_op2 move the bytes after LOC up with a loop where Emaxx used
+  `Vec::splice' (123 instructions an insertion against 18); a
+  bracket expression's bitmap lived in the growing buffer, each bit
+  set through a bounds-checked index and its trailing zero bytes
+  counted one at a time. The compiler now compiles into the storage of
+  the pattern the cell held, keeps its compile stack, range table and
+  pattern codes for the next compilation, opens room for an inserted
+  jump in place, stores an op and its operands in one write, builds a
+  bracket expression's bitmap apart and copies it in without its
+  trailing zero bytes (counted a word at a time), and appends an
+  exactn character's bytes directly; a cache hit no longer compares
+  the pattern a second time. In the benchmark `compile_pattern' falls
+  from 5,243 instructions a call to 4,172 (GNU 3,365), and in
+  semantic-utest-ia from 1.93G instructions to 1.53G, the file from
+  19.10G to 18.52G (GNU 19.28G; with round 171). A unit test pins
+  the programs regex_compile writes for repetitions, intervals,
+  alternatives, groups, multibyte characters and bracket expressions,
+  and another checks that compiling into a used buffer gives what
+  compiling afresh does; before the change, the 138 compilations of 46
+  patterns (the C lexer's and others, plain, folding and POSIX) were
+  dumped from the old compiler and found byte-identical in the new.
+  Local validation: the full gate across its ten groups with the
+  documented local skips, all 3,319 tests run passing (2
+  ignored); the seven integration targets; clippy `-D warnings',
+  rustfmt and `git diff --check'.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's

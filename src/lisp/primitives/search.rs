@@ -86,6 +86,9 @@ impl std::ops::DerefMut for LentPattern {
 
 thread_local! {
     static SEARCHBUFS: RefCell<SearchBufs> = RefCell::new(SearchBufs::default());
+    /// The character codes of the pattern compiled last, kept for the
+    /// next compilation to read its pattern's into.
+    static PATTERN_CODES: Cell<Vec<u32>> = const { Cell::new(Vec::new()) };
     /// The canonicalization tables last read, with the char-table store
     /// epoch they were read at: a search folding case reads the
     /// case_canon_table and its case_eqv_table.
@@ -129,10 +132,19 @@ fn string_bytes(value: &Value) -> Option<(&[u8], bool, usize)> {
 /// The character codes of a pattern string: a multibyte string's
 /// characters, a unibyte string's bytes.
 fn pattern_codes(bytes: &[u8], multibyte: bool) -> Vec<u32> {
+    let mut codes = Vec::new();
+    pattern_codes_into(bytes, multibyte, &mut codes);
+    codes
+}
+
+/// `pattern_codes' into CODES, which it empties first.
+fn pattern_codes_into(bytes: &[u8], multibyte: bool, codes: &mut Vec<u32>) {
+    codes.clear();
     if !multibyte || bytes.is_ascii() {
-        return bytes.iter().map(|&byte| u32::from(byte)).collect();
+        codes.extend(bytes.iter().map(|&byte| u32::from(byte)));
+        return;
     }
-    let mut codes = Vec::with_capacity(bytes.len());
+    codes.reserve(bytes.len());
     let mut offset = 0;
     while offset < bytes.len() {
         let (code, width) = crate::lisp::types::string_data::decode_character(&bytes[offset..])
@@ -140,7 +152,6 @@ fn pattern_codes(bytes: &[u8], multibyte: bool) -> Vec<u32> {
         codes.push(code);
         offset += width;
     }
-    codes
 }
 
 /// A string's text in the matcher's stored form: its own bytes when they
@@ -779,8 +790,8 @@ fn compile_pattern(
             }
     };
     // The cell found or to compile into, marked busy and moved to the
-    // front; with it, its pattern when it holds this one.  None when
-    // every cell is busy.
+    // front; with it, what it held and whether that is this pattern.
+    // None when every cell is busy.
     let lent = SEARCHBUFS.with(|cache| {
         let mut cache = cache.borrow_mut();
         let cache = &mut *cache;
@@ -803,20 +814,20 @@ fn compile_pattern(
             if !cell.busy {
                 match &cell.entry {
                     None => {
-                        chosen = Some((previous, index));
+                        chosen = Some((previous, index, false));
                         break;
                     }
                     Some(entry) if matches(entry) => {
-                        chosen = Some((previous, index));
+                        chosen = Some((previous, index, true));
                         break;
                     }
-                    Some(_) => least_recent = Some((previous, index)),
+                    Some(_) => least_recent = Some((previous, index, false)),
                 }
             }
             previous = current;
             current = cell.next;
         }
-        let (previous, index) = chosen.or(least_recent)?;
+        let (previous, index, found) = chosen.or(least_recent)?;
         if let Some(previous) = previous {
             cache.cells[usize::from(previous)].next = cache.cells[usize::from(index)].next;
             cache.cells[usize::from(index)].next = cache.head;
@@ -824,46 +835,72 @@ fn compile_pattern(
         }
         let cell = &mut cache.cells[usize::from(index)];
         cell.busy = true;
-        Some((index, cell.entry.take().filter(|entry| matches(entry))))
+        Some((index, cell.entry.take(), found))
     });
-    let Some((cell, found)) = lent else {
+    let Some((cell, held, found)) = lent else {
         return Err(LispError::Signal("Too much matching reentrancy".into()));
     };
-    if let Some(entry) = found {
-        return Ok(LentPattern {
-            entry: std::mem::ManuallyDrop::new(entry),
-            cell,
-        });
-    }
+    let mut held = match held {
+        Some(entry) if found => {
+            return Ok(LentPattern {
+                entry: std::mem::ManuallyDrop::new(entry),
+                cell,
+            });
+        }
+        held => held,
+    };
 
     #[cfg(test)]
     COMPILES.with(|count| count.set(count.get() + 1));
-    let codes = pattern_codes(bytes, multibyte);
+    // compile_pattern_1 compiles into the cell's own buffer, as this
+    // compiles into the storage of the pattern the cell held.
+    let mut codes = PATTERN_CODES.take();
+    pattern_codes_into(bytes, multibyte, &mut codes);
     let whitespace_codes =
         whitespace_bytes.map(|(bytes, multibyte)| pattern_codes(bytes, multibyte));
-    let pattern = rx::compile(
+    let buffer = held
+        .as_mut()
+        .map(|entry| std::mem::take(&mut entry.pattern.buffer))
+        .unwrap_or_default();
+    let compiled = rx::compile(
         &codes,
         multibyte,
         posix,
         whitespace_codes.as_deref(),
         fold,
         menv,
-    )
-    .map_err(|error| {
+        buffer,
+    );
+    PATTERN_CODES.set(codes);
+    let pattern = compiled.map_err(|error| {
         // compile_pattern_1 leaves the cell empty.
         release_cell(cell, None);
         invalid_regexp(error.message())
     })?;
-    let used_syntax = pattern.used_syntax;
-    let entry = Box::new(CacheEntry {
-        regexp: bytes.to_vec(),
-        multibyte,
-        translate,
-        posix,
-        whitespace: whitespace_bytes.map(|(bytes, multibyte)| (bytes.to_vec(), multibyte)),
-        syntax_table: used_syntax.then_some(syntax_table),
-        pattern,
-    });
+    let syntax_table = pattern.used_syntax.then_some(syntax_table);
+    let whitespace = whitespace_bytes.map(|(bytes, multibyte)| (bytes.to_vec(), multibyte));
+    let entry = match held {
+        Some(mut entry) => {
+            entry.regexp.clear();
+            entry.regexp.extend_from_slice(bytes);
+            entry.multibyte = multibyte;
+            entry.translate = translate;
+            entry.posix = posix;
+            entry.whitespace = whitespace;
+            entry.syntax_table = syntax_table;
+            entry.pattern = pattern;
+            entry
+        }
+        None => Box::new(CacheEntry {
+            regexp: bytes.to_vec(),
+            multibyte,
+            translate,
+            posix,
+            whitespace,
+            syntax_table,
+            pattern,
+        }),
+    };
     Ok(LentPattern {
         entry: std::mem::ManuallyDrop::new(entry),
         cell,
