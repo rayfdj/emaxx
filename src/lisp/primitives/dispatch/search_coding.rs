@@ -927,8 +927,20 @@ define_dispatch!(
                         return Ok((None, ()));
                     };
                     codes.truncate(last + 1);
-                    for code in &mut codes {
+                    let mut buffer = interp.buffer.borrow_mut();
+                    // modify_text at the first change, from it to the
+                    // region's end, then record_change for each character
+                    // replaced (none under NOUNDO).
+                    if noundo {
+                        buffer.modify_text_unrecorded(changed, to);
+                    } else {
+                        buffer.modify_text(changed, to);
+                    }
+                    for (offset, code) in codes.iter_mut().enumerate() {
                         if *code == fromc {
+                            if !noundo {
+                                buffer.record_change(changed + offset, 1);
+                            }
                             *code = toc;
                         }
                     }
@@ -937,13 +949,8 @@ define_dispatch!(
                     // GNU substitutes characters IN PLACE: text properties
                     // and markers in the region are untouched (fill-region's
                     // newline→space pass must keep erc-button's props intact).
-                    interp.buffer.borrow_mut().replace_region_in_place(
-                        changed,
-                        last_changed,
-                        &replaced,
-                        &extended,
-                        noundo,
-                    );
+                    buffer.replace_text_in_place(changed, last_changed, &replaced, &extended);
+                    drop(buffer);
                     let length = last_changed - changed;
                     Ok((Some(AfterChange::new(changed, length, length)), ()))
                 })?;

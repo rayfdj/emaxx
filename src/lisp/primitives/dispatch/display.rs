@@ -421,7 +421,7 @@ fn log_message_dolog(interp: &mut Interpreter, text: &str, nlflag: bool, _env: &
     cached_symbol!("cache-long-scans")
         .with(|symbol| interp.set_buffer_local_value_symbol(buffer_id, symbol, Value::Nil));
     if let Some(mut buffer) = interp.get_buffer_by_id_mut(buffer_id) {
-        buffer.disable_undo();
+        buffer.set_undo_list(Value::T);
         // FIXNATP: any other non-nil value keeps every line.
         let max_lines = log_max.fixnum().and_then(|max| usize::try_from(max).ok());
         message_dolog(&mut buffer, text, nlflag, max_lines);

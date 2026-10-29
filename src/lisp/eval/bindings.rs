@@ -1211,39 +1211,8 @@ impl Interpreter {
             return;
         }
         if resolved == "buffer-undo-list" {
-            if value.is_nil() {
-                self.buffer.borrow_mut().enable_undo();
-                self.buffer.borrow_mut().clear_undo_history();
-            } else if matches!(value.kind(), Kind::T) {
-                self.buffer.borrow_mut().disable_undo();
-            } else if let Some((head, tail)) = value.cons_values()
-                && crate::lisp::primitives::values_eql(
-                    &tail,
-                    &crate::lisp::primitives::buffer_undo_list_value(&self.buffer.borrow()),
-                )
-            {
-                self.buffer.borrow_mut().enable_undo();
-                let entry = buffer_undo_head_to_entry(&head);
-                self.buffer.borrow_mut().push_undo_entry(entry);
-                self.buffer.borrow().set_undo_list_view(value);
-            } else {
-                // A structural replacement (undo truncation after
-                // cancel-change-group, boundary removal by
-                // undo-amalgamate-change-group, ...): rebuild the native undo
-                // state from the assigned list so the Lisp view round-trips.
-                if let Ok(items) = value.to_vec() {
-                    self.buffer.borrow_mut().enable_undo();
-                    self.buffer.borrow_mut().clear_undo_history();
-                    // The Lisp view is newest-first; the native list is
-                    // oldest-first.
-                    for item in items.into_iter().rev() {
-                        self.buffer
-                            .borrow_mut()
-                            .push_undo_entry(buffer_undo_head_to_entry(&item));
-                    }
-                    self.buffer.borrow().set_undo_list_view(value);
-                }
-            }
+            // BVAR (current_buffer, undo_list) itself.
+            self.buffer.borrow_mut().set_undo_list(value);
             return;
         }
         if let Some(scope) = self.assignment_scope_symbol(symbol) {

@@ -767,40 +767,29 @@ define_dispatch!(
                 }
 
                 let original = interp.buffer.borrow().full_buffer_string();
-                let saved = interp.buffer.borrow().saved_text().to_string();
                 let preserve_utf8_sequences = matches!(args[0].kind(), Kind::T);
                 let (converted, positions) = if enabled {
                     multibyte_buffer_text(&original, preserve_utf8_sequences)
                 } else {
                     unibyte_buffer_text(&original)
                 };
-                let converted_saved = if enabled {
-                    multibyte_buffer_text(&saved, preserve_utf8_sequences).0
-                } else {
-                    unibyte_buffer_text(&saved).0
-                };
-                // The deletions already recorded keep the strings they were
-                // recorded with, multibyte as the buffer was then.
-                if interp.buffer.borrow().undo_enabled() {
-                    interp.buffer.borrow().undo_list_value();
-                }
-                interp.buffer.borrow_mut().set_multibyte_representation(
-                    enabled,
-                    converted,
-                    converted_saved,
-                    &positions,
-                );
-                if interp.buffer.borrow().undo_enabled() {
+                interp
+                    .buffer
+                    .borrow_mut()
+                    .set_multibyte_representation(enabled, converted, &positions);
+                // The conversion is not recorded; a list kept for undo
+                // takes one entry for it instead.
+                let old_undo = interp.buffer.borrow().undo_list();
+                if !matches!(old_undo.kind(), Kind::T) {
+                    let entry = Value::list([
+                        Value::Symbol(cached_symbol!("apply").with(Clone::clone)),
+                        Value::Symbol(cached_symbol!("set-buffer-multibyte").with(Clone::clone)),
+                        if enabled { Value::Nil } else { Value::T },
+                    ]);
                     interp
                         .buffer
                         .borrow_mut()
-                        .push_undo_entry(crate::buffer::UndoEntry::Opaque(Value::list([
-                            Value::Symbol(cached_symbol!("apply").with(Clone::clone)),
-                            Value::Symbol(
-                                cached_symbol!("set-buffer-multibyte").with(Clone::clone),
-                            ),
-                            if enabled { Value::Nil } else { Value::T },
-                        ])));
+                        .set_undo_list(Value::cons(entry, old_undo));
                 }
                 Ok(args[0])
             }

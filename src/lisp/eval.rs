@@ -1564,10 +1564,6 @@ pub(crate) struct SpecialBindingRestore {
     binding_buffer_id: Option<u64>,
     keyboard_terminal_id: Option<u64>,
     previous: Option<Value>,
-    /// Boxed: a binding of buffer-undo-list holds the buffer's whole undo
-    /// state, and every other binding's record is moved by `memcpy' at
-    /// its size.
-    previous_undo_state: Option<Box<crate::buffer::UndoState>>,
     /// eval.c's SPECPDL_LET_DEFAULT: the symbol was localized (or a
     /// per-buffer one) without a cell in the binding buffer, so the
     /// binding wrote the default and the unbind writes it back through
@@ -4675,9 +4671,6 @@ impl Interpreter {
             if let Some(value) = &restore.previous {
                 mark(value);
             }
-            if let Some(state) = &restore.previous_undo_state {
-                state.visit_lisp_roots(&mut mark);
-            }
         }
         // editfns.c keeps a buffer's labeled restrictions (`with-restriction'
         // with a label) in `labeled_restrictions', an alist of the buffer,
@@ -5747,6 +5740,10 @@ pub struct InterpreterState {
     /// while point and the buffer's modiff stay as they were (a point of
     /// 0, no position, when invalid).
     pub(crate) last_known_column: (usize, usize, crate::buffer::ModCount),
+    /// keyboard.c's buffer_before_last_command_or_undo: the buffer whose
+    /// point the last command or `undo-boundary' recorded, which alone
+    /// holds that point (`point_before_last_command_or_undo').
+    pub(crate) buffer_before_last_command_or_undo: Option<u64>,
     /// The matcher's registers in text offsets (search.c's search_regs
     /// before a search converts them to positions), held between searches
     /// so their allocation serves every search.
@@ -6528,6 +6525,7 @@ impl Interpreter {
             last_match_data: None,
             last_match_data_buffer_id: None,
             last_known_column: (0, 0, 0),
+            buffer_before_last_command_or_undo: None,
             search_registers: Default::default(),
             profiler_memory_running: false,
             profiler_memory_log_pending: false,
@@ -8217,23 +8215,6 @@ pub(crate) fn error_condition_value(error: &LispError) -> Value {
             unreachable!("process termination cannot be converted to a Lisp condition")
         }
         LispErrorKind::SignalValue(value) => *value,
-    }
-}
-
-fn buffer_undo_head_to_entry(value: &Value) -> crate::buffer::UndoEntry {
-    match value.kind() {
-        Kind::Nil => crate::buffer::UndoEntry::Boundary,
-        Kind::Cons(_) => match value.cons_values().map(|(a0, a1)| (a0.kind(), a1.kind())) {
-            // GNU records an insertion as (BEG . END).
-            Some((Kind::Integer(beg), Kind::Integer(end))) if beg >= 0 && end >= beg => {
-                crate::buffer::UndoEntry::Insert {
-                    pos: beg as usize,
-                    len: (end - beg) as usize,
-                }
-            }
-            _ => crate::buffer::UndoEntry::Opaque(*value),
-        },
-        _ => crate::buffer::UndoEntry::Opaque(*value),
     }
 }
 

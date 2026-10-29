@@ -11075,7 +11075,7 @@ mod tests {
                 );
                 state.file = Some("/tmp/retained-dead-buffer.el".into());
                 state.put_text_property(1, 2, "retained-property".into(), property);
-                state.set_undo_list_view(undo);
+                state.set_undo_list(undo);
                 state.text_conversion_style = style;
             }
             let value = Value::Buffer(buffer);
@@ -11113,9 +11113,7 @@ mod tests {
             interpreter.kill_buffer_id(id);
             let state = buffer.borrow();
             assert!(state.full_buffer_string().is_empty());
-            assert!(state.saved_text().is_empty());
-            assert!(state.undo_entries().is_empty());
-            assert!(state.undo_list_value().is_nil());
+            assert!(state.undo_list().is_nil());
             assert!(state.full_property_spans().is_empty());
             assert!(state.text_conversion_style.is_nil());
             assert!(!state.text_conversion_style_is_local);

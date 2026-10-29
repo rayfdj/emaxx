@@ -348,6 +348,10 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
         "indent.c's last_known_column, last_known_column_point and last_known_column_modified are C statics pdumper.c does not write",
     ),
     (
+        "buffer_before_last_command_or_undo",
+        "keyboard.c's buffer_before_last_command_or_undo is a C static pdumper.c does not write",
+    ),
+    (
         "bc_frames",
         "bytecode.c: the frames of byte-code activations live on bc_thread_state's stack, the running thread's and never written by pdumper.c; their programs are rooted by bc_stack's footers",
     ),

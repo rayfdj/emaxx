@@ -8645,6 +8645,107 @@ fn string_reverse_compiled_assq_and_buffer_local_variables_follow_gnu() {
 }
 
 #[test]
+fn buffer_undo_list_records_follow_undo_c() {
+    // undo.c's records in `buffer-undo-list' itself: insertions merged in
+    // place, the first change's (t . 0), deletions with their properties
+    // and a negative position when point was at their end, marker
+    // adjustments under the deletion, point recorded after a boundary in
+    // the buffer that laid it, `undo-boundary' and its errors, the
+    // records of replace-match, subst-char-in-region, upcase-region,
+    // set-buffer-multibyte and a property change, and the list's identity
+    // through `let', `setq' and `buffer-enable-undo'.
+    assert_oracle_contract_matches_interpreter(
+        r#"(progn
+  (defun r166-show (list)
+    (mapcar (lambda (e)
+              (if (and (consp e) (markerp (car e)))
+                  (list 'marker (marker-insertion-type (car e)) (cdr e))
+                e))
+            list))
+  (list
+   (with-temp-buffer
+     (buffer-enable-undo) (insert "ab") (insert "cd") (goto-char 2) (insert "X")
+     buffer-undo-list)
+   (with-temp-buffer
+     (buffer-enable-undo)
+     (insert (propertize "abc" 'face 'bold) "def")
+     (set-buffer-modified-p nil) (undo-boundary)
+     (goto-char 3) (delete-char 1) (goto-char 5) (delete-char -2)
+     buffer-undo-list)
+   (with-temp-buffer
+     (buffer-enable-undo) (insert "0123456789")
+     (let ((m1 (copy-marker 4)) (m2 (copy-marker 6 t)) (m3 (copy-marker 8)))
+       (undo-boundary) (delete-region 3 9)
+       (list (r166-show buffer-undo-list) (marker-position m1)
+             (marker-position m2) (marker-position m3))))
+   (with-temp-buffer
+     (buffer-enable-undo)
+     (let ((r nil))
+       (setq undo-auto--last-boundary-cause nil)
+       (undo-boundary)
+       (push buffer-undo-list r) (push undo-auto--last-boundary-cause r)
+       (insert "a") (undo-boundary) (undo-boundary)
+       (push (length buffer-undo-list) r)
+       (setq buffer-undo-list 5)
+       (push (condition-case e (undo-boundary) (error e)) r)
+       (setq buffer-undo-list t)
+       (push (undo-boundary) r) (push buffer-undo-list r)
+       (nreverse r)))
+   (with-temp-buffer
+     (buffer-enable-undo) (insert "ab") (set-buffer-multibyte nil)
+     (list (car buffer-undo-list) (length buffer-undo-list)))
+   (with-temp-buffer
+     (buffer-enable-undo) (insert "foo bar") (undo-boundary)
+     (goto-char 1) (re-search-forward "o+") (replace-match "0")
+     (goto-char 1) (re-search-forward "x*") (replace-match "Y")
+     (list (buffer-string) buffer-undo-list))
+   (with-temp-buffer
+     (buffer-enable-undo) (insert "abc") (undo-boundary)
+     (put-text-property 1 3 'face 'bold)
+     buffer-undo-list)
+   (with-temp-buffer
+     (buffer-enable-undo) (insert "a")
+     (let ((before buffer-undo-list))
+       (list (let ((buffer-undo-list nil)) (insert "b") buffer-undo-list)
+             (eq before buffer-undo-list) buffer-undo-list)))
+   (with-temp-buffer
+     (buffer-enable-undo) (insert "hello world") (undo-boundary)
+     (goto-char 7) (delete-char 5) (insert "there") (undo-boundary)
+     (let ((after (buffer-string)))
+       (primitive-undo 1 (cdr buffer-undo-list))
+       (list after (buffer-string) (point))))
+   (with-temp-buffer
+     (buffer-enable-undo) (insert "abcdef") (goto-char 3) (undo-boundary)
+     (goto-char 5) (insert "Z") buffer-undo-list)
+   (with-temp-buffer
+     (list buffer-undo-list (progn (insert "x") buffer-undo-list)
+           (progn (buffer-enable-undo) buffer-undo-list)
+           (progn (insert "y") buffer-undo-list)
+           (progn (buffer-disable-undo) buffer-undo-list)))
+   (let ((b (generate-new-buffer "r166-named")))
+     (prog1 (with-current-buffer b
+              (insert "q") (list buffer-undo-list
+                                 (car (buffer-local-variables))))
+       (kill-buffer b)))
+   (with-temp-buffer
+     (buffer-enable-undo) (insert "abcabc") (set-buffer-modified-p nil)
+     (undo-boundary) (subst-char-in-region 1 7 ?b ?X)
+     (list (buffer-string) buffer-undo-list))
+   (with-temp-buffer
+     (buffer-enable-undo) (insert "Abc") (undo-boundary) (upcase-region 1 4)
+     (list (buffer-string) buffer-undo-list))
+   (with-temp-buffer
+     (buffer-enable-undo) (insert "abc")
+     (let ((l buffer-undo-list))
+       (setq buffer-undo-list (cons 'x l))
+       (insert "d")
+       (list (eq (cddr buffer-undo-list) l) buffer-undo-list)))))"#,
+        r#"(((2 . 3) (1 . 5) (t . 0)) (("de" . -3) (#("c" 0 1 (face bold)) . 3) 7 (t . 0) nil (1 . 7) (t . 0)) ((("234567" . 3) (marker nil -1) (marker t 3) (marker nil -5) 11 nil (1 . 11) (t . 0)) 3 3 3) (nil explicit 3 (wrong-type-argument listp 5) nil t) ((apply set-buffer-multibyte t) 3) ("Yf0 bar" (("" . -1) (1 . 2) ("oo" . -2) (4 . 5) 8 nil (1 . 8) (t . 0))) ((nil face nil 1 . 3) nil (1 . 4) (t . 0)) (((2 . 3)) t ((1 . 2) (t . 0))) ("hello there" "hello world" 12) ((5 . 6) 3 nil (1 . 7) (t . 0)) (t t nil ((2 . 3)) t) (((1 . 2) (t . 0)) (buffer-undo-list (1 . 2) (t . 0))) ("aXcaXc" ((5 . 6) ("b" . 5) (2 . 3) ("b" . 2) (t . 0) nil (1 . 7) (t . 0))) ("ABC" ((1 . 4) ("Abc" . -1) 4 nil (1 . 4) (t . 0))) (t ((4 . 5) x (1 . 4) (t . 0))))"#,
+        "buffer_undo_list",
+    );
+}
+
+#[test]
 fn directory_files_returns_mutable_sorted_names_with_dot_entries() {
     let unique = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -27274,7 +27375,7 @@ fn undo_file_marker_records_the_visited_modtime() {
     )
     .expect("find-file");
     call(&mut interp, "delete-char", &[Value::Integer(3)], &mut env).expect("delete-char");
-    let undo_list = interp.buffer.borrow().undo_list_value();
+    let undo_list = interp.buffer.borrow().undo_list();
     let marker = undo_list
         .to_vec()
         .expect("undo list is a list")
@@ -27379,12 +27480,12 @@ fn interactive_undo_restores_the_unmodified_state() {
     };
 
     // One command cycle: boundary, then the edit.
-    interp.buffer.borrow_mut().push_undo_boundary();
+    interp.undo_boundary(&mut env).expect("undo-boundary");
     run(&mut interp, &mut env, "(kill-line)");
     assert!(interp.buffer.borrow().is_modified(), "kill-line modifies");
 
     // Next command cycle: boundary, then undo.
-    interp.buffer.borrow_mut().push_undo_boundary();
+    interp.undo_boundary(&mut env).expect("undo-boundary");
     run(&mut interp, &mut env, "(undo)");
 
     let text = interp

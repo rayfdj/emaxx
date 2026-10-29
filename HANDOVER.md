@@ -8925,6 +8925,56 @@ setup_process_coding_systems's check now refuses). A 13-form
   the documented local skips, all 3,312 tests run passing (2 ignored);
   the seven integration targets; clippy `-D warnings', rustfmt and `git
   diff --check'.
+- **Round 166: `buffer-undo-list' as undo.c keeps it.** A buffer kept
+  its undo history as native entries (insertions, deletions with their
+  text, property spans and markers, boundaries, opaque Lisp values)
+  beside a Lisp view of them, rebuilt at the next read whenever Lisp had
+  assigned a list the native side had not extended: a `setq' of anything
+  but one new head converted the whole list back into entries, a `let'
+  of the variable set the buffer's whole undo state aside, and the
+  entries carried a replay of their own (`Buffer::undo') that only
+  tests ran. `buffer-undo-list' is now BVAR (b, undo_list) itself, an
+  always-local slot on the buffer record that reads, sets and binds as
+  `buffer-file-name' does, and the buffer's changes push onto it as
+  undo.c's record_point, record_insert (into the newest insertion when
+  that ends where the new one begins, its END changed in place),
+  record_delete (the text as make_buffer_string makes it, at -BEG when
+  point is at its end), record_marker_adjustments (under the deletion),
+  record_change, record_first_change and record_property_change do.
+  `undo-boundary' is Fundo_boundary: it signals for a list that is not
+  one and sets `undo-auto--last-boundary-cause' to `explicit', which
+  Emaxx's did not, and keyboard.c's point_before_last_command_or_undo is
+  the session's, held by the one buffer it names, where each buffer had
+  kept its own. replace_range records its insertion and its deletion
+  whenever undo is kept, either of them empty; subst-char-in-region
+  records each character it replaces after modify_text's first change,
+  where Emaxx recorded the span from the first to the last;
+  set-buffer-multibyte conses
+  its `(apply set-buffer-multibyte FLAG)' onto the list it had; a
+  visiting insert-file-contents empties the list only when it was nil
+  and the buffer empty (fileio.c's empty_undo_list_p), where Emaxx
+  emptied it on every visit; an indirect buffer takes its base's list
+  when it is made and when it becomes current, and gives it back when
+  another does (set_buffer_internal_2), and the edits Emaxx copies into
+  the other members of an indirect family are not recorded there. The
+  copy of a buffer's text made whenever it was marked unmodified
+  (`saved_text'), which nothing read but set-buffer-multibyte and the
+  dump, is gone; the image dumps the list as one of the buffer's Lisp
+  fields and the point pair not at all, as pdumper.c does. undo-tests
+  still takes 10.10G instructions (GNU 9.28G), its cost the insertions
+  round 165 found. A batch test
+  compares fifteen undo lists against GNU 30.2: merged and separate
+  insertions, propertized deletions and their signs, marker adjustments,
+  point after a boundary, `undo-boundary' and its error, replace-match,
+  subst-char-in-region, upcase-region, set-buffer-multibyte, a property
+  change, `let', `setq' and `buffer-enable-undo' of the list, and
+  `primitive-undo' over it; buffer, editfns, subr, simple, electric,
+  dabbrev, files, cl-macs, fileio, cc-mode, kmacro, replace, casefiddle
+  and fill tests keep GNU's outcomes.
+  Local validation: the full gate across its ten groups with
+  the documented local skips, all 3,313 tests run passing (2 ignored);
+  the seven integration targets; clippy `-D warnings', rustfmt and `git
+  diff --check'.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -10000,7 +10050,27 @@ frozen (run 40878076220) matched all 7,928 outcomes on its first
 attempt. Its timings: setup 68.7 s against 57.6 s (1.192), test bodies
 232.7 s against 248.2 s (0.937), in all 0.988.
 
+**On `a61a7c4`** (round 165): full Rust gate passed (run 40894350990);
+frozen (run 40894367851) matched all 7,928 outcomes on its first
+attempt. Its timings: setup 84.3 s against 68.4 s (1.232), test bodies
+264.2 s against 274.7 s (0.962), in all 1.008.
+
 **Findings recorded, not fixed:**
+- **comp-tests' time is the instruction rate (round 166).** In the
+  release build a `comp-tests-ret-type-spec-*' test takes about 330 ms
+  of wall time against GNU's 267 ms and a third more user time, but
+  setup and `comp-tests-ret-type-spec-27' together take 3.66G
+  instructions in process against GNU's 3.30G, and neither runs
+  libgccjit for them: the gap is the instructions per cycle the setup
+  finding below measures, not work Emaxx does that GNU does not.
+- **What undo.c does that Emaxx's undo list does not (round 166).**
+  Garbage collection does not run alloc.c's compact_buffer, so no
+  truncate_undo_list cuts a list past `undo-limit' and
+  `undo-strong-limit' or calls `undo-outer-limit-function' for one
+  command's records past `undo-outer-limit': a long session's lists
+  grow without bound (where GNU truncates depends on when it collects,
+  so no test compares it). record_point does not consult
+  `undo-inhibit-record-point', which nothing in the tree sets.
 - **undo-tests' million insertions (round 165).** In the release build
   undo-tests takes 10.10G instructions against GNU's 9.28G, most of it
   `undo-test4''s interpreted `dotimes' of 1,048,576 `insert's at the
@@ -10013,12 +10083,7 @@ attempt. Its timings: setup 68.7 s against 57.6 s (1.192), test bodies
   and deletion adjusts by walking every window (284 instructions an
   insertion, where GNU's window markers are on the buffer's chain), and
   `related_buffer_ids' walks the buffer list for a buffer with no
-  indirect relatives (115). The undo list itself is Emaxx's: native
-  entries with a Lisp view rebuilt when Lisp assigns a list it did not
-  extend, a snapshot of the buffer's text copied whenever it is marked
-  unmodified (`saved_text', read by nothing but set-buffer-multibyte and
-  the dump), the record_point pair kept per buffer where GNU keeps one
-  for the session, and no truncate_undo_list at garbage collection.
+  indirect relatives (115). (Round 166 made the undo list GNU's.)
 - **A string's intervals are merged where GNU keeps them (round 164).**
   Emaxx's string properties merge adjacent spans with equal plists after
   every change, where textprop.c leaves the intervals a change made:

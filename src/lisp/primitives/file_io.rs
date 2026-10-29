@@ -1776,6 +1776,12 @@ pub(crate) fn insert_file_contents(
         .map(|value| value.as_integer().map(|value| value.max(0) as usize))
         .transpose()?;
     let replace = args.get(4).is_some_and(Value::is_truthy);
+    // "If the undo log only contains the insertion, there's no point
+    // keeping it": a visit into an empty buffer whose list is nil.
+    let empty_undo_list_p = visit && {
+        let buffer = interp.buffer.borrow();
+        buffer.undo_list().is_nil() && buffer.size_total() == 0
+    };
     if let Some(coding) = interp.lookup_var("coding-system-for-read", env)
         && !coding.is_nil()
     {
@@ -2002,10 +2008,9 @@ pub(crate) fn insert_file_contents(
             .borrow_mut()
             .set_visited_file_modtime(file_modtime(interp, env, &path)?);
         interp.buffer.borrow_mut().set_unmodified();
-        // GNU restores the pre-read undo list when visiting (fileio.c keeps
-        // it aside around the insertion), so the very first interactive undo
-        // must not remove the file's own contents.
-        interp.buffer.borrow_mut().clear_undo();
+        if empty_undo_list_p {
+            interp.buffer.borrow_mut().set_undo_list(Value::Nil);
+        }
     }
     // Finsert_file_contents records the coding decode_coding_gap settled
     // on; mule.el's after-insert-file-set-coding, run below, derives

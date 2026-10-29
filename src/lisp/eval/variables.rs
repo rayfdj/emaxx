@@ -257,6 +257,7 @@ impl Interpreter {
                     Value::Nil
                 }
             }
+            BufferFieldSlot::UndoList => buffer.undo_list(),
         })
     }
 
@@ -279,6 +280,7 @@ impl Interpreter {
             BufferFieldSlot::FileTruename => buffer.file_truename = text(),
             BufferFieldSlot::MarkActive => buffer.set_mark_active_value(value),
             BufferFieldSlot::Multibyte => {}
+            BufferFieldSlot::UndoList => buffer.set_undo_list(value),
         }
     }
 
@@ -2406,7 +2408,6 @@ impl Interpreter {
     #[inline]
     fn is_plain_restore(&self, restore: &SpecialBindingRestore) -> bool {
         matches!(restore.scope, SpecialBindingScope::Global)
-            && restore.previous_undo_state.is_none()
             && restore.keyboard_terminal_id.is_none()
             && (self.globals.plain_store(&restore.name)
                 || (restore.previous.is_some() && restore.name.cell().is_plain_c_slot()))
@@ -2490,7 +2491,6 @@ impl Interpreter {
             binding_buffer_id: None,
             keyboard_terminal_id: None,
             previous,
-            previous_undo_state: None,
             let_default: false,
             local_binding_killed: false,
         });
@@ -2520,7 +2520,6 @@ impl Interpreter {
         if resolved.cell().has_c_slot() && name == "buffer-undo-list" {
             let previous = crate::lisp::primitives::buffer_undo_list_value(&self.buffer.borrow());
             self.notify_variable_watchers(name, value, "let", Some(buffer_id), env)?;
-            let previous_undo_state = self.buffer.borrow_mut().take_undo_state();
             self.set_symbol_value_cell_resolved(&resolved, value);
             let restore = SpecialBindingRestore {
                 binding_id,
@@ -2529,7 +2528,6 @@ impl Interpreter {
                 binding_buffer_id: None,
                 keyboard_terminal_id: None,
                 previous: Some(previous),
-                previous_undo_state: Some(Box::new(previous_undo_state)),
                 let_default: false,
                 local_binding_killed: false,
             };
@@ -2549,7 +2547,6 @@ impl Interpreter {
                 binding_buffer_id: None,
                 keyboard_terminal_id: None,
                 previous,
-                previous_undo_state: None,
                 let_default: false,
                 local_binding_killed: false,
             }
@@ -2603,7 +2600,6 @@ impl Interpreter {
                 scope: SpecialBindingScope::Global,
                 binding_buffer_id,
                 previous,
-                previous_undo_state: None,
                 let_default,
                 local_binding_killed: false,
             }
@@ -2704,17 +2700,6 @@ impl Interpreter {
             }
             match record.scope {
                 SpecialBindingScope::Global => {
-                    if let Some(mut undo_state) = record.previous_undo_state.take() {
-                        // buffer-undo-list binds through the buffer's undo
-                        // machinery rather than a value cell.
-                        let buffer_id = self.current_buffer_id();
-                        if let Some(mut buffer) = self.get_buffer_by_id_mut(buffer_id) {
-                            let current = buffer.take_undo_state();
-                            buffer.restore_undo_state(std::mem::replace(&mut *undo_state, current));
-                        }
-                        record.previous_undo_state = Some(undo_state);
-                        continue;
-                    }
                     let current = self.global_value(&record.name);
                     match record.previous.take() {
                         Some(value) => self.set_global_binding(&record.name, value),
@@ -2725,14 +2710,6 @@ impl Interpreter {
                     record.previous = current;
                 }
                 SpecialBindingScope::BufferLocal(buffer_id) => {
-                    if let Some(mut undo_state) = record.previous_undo_state.take() {
-                        if let Some(mut buffer) = self.get_buffer_by_id_mut(buffer_id) {
-                            let current = buffer.take_undo_state();
-                            buffer.restore_undo_state(std::mem::replace(&mut *undo_state, current));
-                        }
-                        record.previous_undo_state = Some(undo_state);
-                        continue;
-                    }
                     let current = self.buffer_local_value(buffer_id, &record.name);
                     match record.previous.take() {
                         Some(value) => self.set_buffer_local_value(buffer_id, &record.name, value),
@@ -2792,23 +2769,6 @@ impl Interpreter {
             && matches!(restore.scope, SpecialBindingScope::BufferLocal(buffer_id)
                 if self.buffer_local_value(buffer_id, &restore.name).is_none())
         {
-            return Ok(());
-        }
-        if let Some(previous_undo_state) = restore.previous_undo_state {
-            let buffer_id = match restore.scope {
-                SpecialBindingScope::BufferLocal(buffer_id) => buffer_id,
-                SpecialBindingScope::Global => self.current_buffer_id(),
-            };
-            self.notify_variable_watchers(
-                &restore.name,
-                restore.previous.unwrap_or(Value::Nil),
-                "unlet",
-                Some(buffer_id),
-                env,
-            )?;
-            if let Some(mut buffer) = self.get_buffer_by_id_mut(buffer_id) {
-                buffer.restore_undo_state(*previous_undo_state);
-            }
             return Ok(());
         }
         match restore.scope {
@@ -4186,6 +4146,7 @@ enum BufferFieldSlot {
     FileTruename,
     MarkActive,
     Multibyte,
+    UndoList,
 }
 
 fn buffer_field_slot(name: &str) -> Option<BufferFieldSlot> {
@@ -4194,6 +4155,7 @@ fn buffer_field_slot(name: &str) -> Option<BufferFieldSlot> {
         "buffer-file-truename" => Some(BufferFieldSlot::FileTruename),
         "mark-active" => Some(BufferFieldSlot::MarkActive),
         "enable-multibyte-characters" => Some(BufferFieldSlot::Multibyte),
+        "buffer-undo-list" => Some(BufferFieldSlot::UndoList),
         _ => None,
     }
 }

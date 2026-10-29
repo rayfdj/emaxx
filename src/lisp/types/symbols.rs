@@ -315,6 +315,7 @@ const KEY_NAMES: &[&str] = &[
     "find-word-boundary-function-table",
     "apply",
     "set-buffer-multibyte",
+    "explicit",
     "features",
     "current-load-list",
     "internal--text-quoting-flag",

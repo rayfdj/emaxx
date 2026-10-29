@@ -1610,10 +1610,7 @@ define_dispatch!(
                 translate_region_internal(interp, from, to, table, env)
             }
 
-            "undo-boundary" => {
-                interp.buffer.borrow_mut().push_undo_boundary();
-                Ok(Value::Nil)
-            }
+            "undo-boundary" => interp.undo_boundary(env),
 
             "take" | "ntake" => {
                 need_args(name, args, 2)?;

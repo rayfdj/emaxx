@@ -1488,9 +1488,7 @@ pub(crate) fn run_active_minibuffer<T>(
         if interp.has_buffer_id(minibuffer.buffer_id) {
             interp.set_current_buffer_id(minibuffer.buffer_id)?;
             // "Don't allow the user to undo past this point."
-            let mut buffer = interp.buffer.borrow_mut();
-            buffer.enable_undo();
-            buffer.clear_undo_history();
+            interp.buffer.borrow_mut().set_undo_list(Value::Nil);
         }
 
         // read_minibuf's recursive_edit_1.
