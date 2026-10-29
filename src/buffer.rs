@@ -425,11 +425,33 @@ impl Default for TextStore {
 const SMALL_TEXT: usize = 1024;
 
 /// The raw-byte markers U+E080..U+E0FF (EE 82 80 .. EE 83 BF) in BYTES,
-/// which hold whole characters.
+/// which hold whole characters.  From the first EE on, every pair of
+/// bytes is tested, 32 pairs a block in byte-wide counts the compiler
+/// vectorizes, where a stop at each EE made a text of many raw bytes (a
+/// unibyte buffer's non-ASCII file) cost a stop a byte.
 fn count_raw_markers(bytes: &[u8]) -> usize {
-    memchr::memchr_iter(0xEE, bytes)
-        .filter(|&at| matches!(bytes.get(at + 1), Some(0x82 | 0x83)))
-        .count()
+    let Some(first) = memchr::memchr(0xEE, bytes) else {
+        return 0;
+    };
+    let bytes = &bytes[first..];
+    let marker = |lead: u8, next: u8| (lead == 0xEE) & (next & 0xFE == 0x82);
+    let pairs = bytes.len() - 1;
+    let mut count = 0;
+    let mut at = 0;
+    while at + 32 <= pairs {
+        let leads: &[u8; 32] = bytes[at..at + 32].try_into().expect("32 bytes");
+        let nexts: &[u8; 32] = bytes[at + 1..at + 33].try_into().expect("32 bytes");
+        let mut block = 0u8;
+        for (&lead, &next) in leads.iter().zip(nexts) {
+            block = block.wrapping_add(u8::from(marker(lead, next)));
+        }
+        count += usize::from(block);
+        at += 32;
+    }
+    count
+        + (at..pairs)
+            .filter(|&k| marker(bytes[k], bytes[k + 1]))
+            .count()
 }
 
 impl BufferText {
@@ -751,19 +773,33 @@ impl BufferText {
     fn insert(&mut self, char_index: usize, text: &str) {
         let added = ropey::str_utils::byte_to_char_idx(text, text.len());
         let ascii = self.chars == self.bytes;
-        match &mut self.store {
+        let grown = match &mut self.store {
             TextStore::Small(small) => {
                 let byte = if ascii {
                     char_index
                 } else {
                     ropey::str_utils::char_to_byte_idx(small, char_index)
                 };
-                small.insert_str(byte, text);
                 if self.bytes + text.len() > SMALL_TEXT {
-                    self.store = TextStore::Rope(Rope::from_str(small));
+                    // The rope is built from the pieces, the text not
+                    // copied into the string first.
+                    let mut builder = ropey::RopeBuilder::new();
+                    builder.append(&small[..byte]);
+                    builder.append(text);
+                    builder.append(&small[byte..]);
+                    Some(builder.finish())
+                } else {
+                    small.insert_str(byte, text);
+                    None
                 }
             }
-            TextStore::Rope(rope) => rope.insert(char_index, text),
+            TextStore::Rope(rope) => {
+                rope.insert(char_index, text);
+                None
+            }
+        };
+        if let Some(rope) = grown {
+            self.store = TextStore::Rope(rope);
         }
         self.positions
             .get_mut()
@@ -799,7 +835,11 @@ impl BufferText {
 
     /// `remove' for a caller that already holds the removed text.
     fn remove_text(&mut self, range: std::ops::Range<usize>, removed: &str) {
-        self.raw_markers -= count_raw_markers(removed.as_bytes());
+        self.raw_markers -= if range.len() == self.chars {
+            self.raw_markers
+        } else {
+            count_raw_markers(removed.as_bytes())
+        };
         self.remove_bytes(range, removed.len());
     }
 
@@ -4231,6 +4271,27 @@ fn byte_to_position_in_text(text: &str, byte: usize) -> Option<usize> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn raw_markers_are_counted_across_block_edges() {
+        // Every length and offset around the 32-pair blocks, against the
+        // markers counted one place at a time; a lone EE, and one before a
+        // byte that leads no raw byte, count nothing.
+        let unit = "a\u{E080}\u{E0FF}é\u{E07F}\u{E100}b\u{E0C3}";
+        let text = unit.repeat(9);
+        let bytes = text.as_bytes();
+        for start in 0..40 {
+            for end in start..bytes.len().min(start + 120) {
+                let run = &bytes[start..end];
+                let expected = (0..run.len().saturating_sub(1))
+                    .filter(|&k| run[k] == 0xEE && matches!(run[k + 1], 0x82 | 0x83))
+                    .count();
+                assert_eq!(count_raw_markers(run), expected, "{start}..{end}");
+            }
+        }
+        assert_eq!(count_raw_markers(&[0xEE]), 0);
+        assert_eq!(count_raw_markers(&[0xEE, 0x81, 0x80]), 0);
+    }
 
     // -- Tests derived from Emacs test/src/editfns-tests.el --
 

@@ -8574,6 +8574,37 @@ setup_process_coding_systems's check now refuses). A 13-form
   type-complexity lint named the conversion's state, a struct now,
   after which the gate's search, match, looking-at and regexp tests ran
   again), rustfmt and `git diff --check'.
+- **Round 156: a file read into an empty buffer.** Finsert_file_contents
+  reads a file into an empty buffer as unibyte text for
+  `set-auto-coding-function', then (decide_coding_unwind) moves it back
+  into the gap and decodes it there. Emaxx makes that text, inserts it
+  and deletes it (round 125's port), and reading NormalizationTest.txt
+  (2.6 MB, 600,034 of its bytes non-ASCII) took 232M instructions in
+  `insert-file-contents' against GNU's 68M: the raw-text decoding 40M,
+  the insertion 51M, the deletion 36M. A unibyte buffer holds a
+  non-ASCII byte as U+E080..U+E0FF (EE 82 xx or EE 83 xx), and the
+  text's count of them stopped at each EE (memchr), 16M of the insertion
+  and 16M of the deletion; buffer.rs's `count_raw_markers' tests every
+  byte pair from the first EE on, 32 pairs a block in byte-wide sums the
+  compiler vectorizes, and the deletion of the whole text counts
+  nothing. The raw-text decoder writes a non-ASCII byte's three bytes
+  into a string sized for them (`push_raw_bytes'), where it pushed a
+  char at a time, and a small text that outgrows its string builds the
+  rope from the pieces instead of copying the inserted text into the
+  string first. The read now takes 299M instructions where it took 359M
+  (GNU 219M), `insert-file-contents' 172M; ucs-normalize-part2 6,073M
+  where round 155 left 6,193M (GNU 4,640M), its `insert-file-contents'
+  349M where it took 469M (GNU 139M). Left of the 172M: the detection
+  71M (GNU's 64M), the utf-8 decoding and insertion that GNU skips by
+  inserting the bytes in place, the rope's construction and the
+  deleted text's copy. A unit test checks the block count against a
+  byte-at-a-time count over every offset and length around the blocks;
+  a batch test reads a 3,000-byte file of raw bytes literally, decoded,
+  after text and as utf-8 and edits it, against GNU 30.2.
+  Local validation: the full gate across its ten groups with
+  the documented local skips, all 3,300 tests run passing (2 ignored);
+  the seven integration targets; clippy `-D warnings', rustfmt and `git
+  diff --check'.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's

@@ -8081,6 +8081,49 @@ fn match_positions_agree_in_large_and_small_multibyte_buffers() {
 }
 
 #[test]
+fn raw_bytes_read_from_a_file_keep_their_codes_through_edits() {
+    // A file of raw bytes past the small-text size read literally (the
+    // unibyte decision's raw text, then the buffer's), decoded, after
+    // text, and as utf-8, then edited: GNU 30.2's characters.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((f (make-temp-file "emaxx-raw-")))
+          (unwind-protect
+              (progn
+                (with-temp-buffer
+                  (set-buffer-multibyte nil)
+                  (dotimes (i 3000) (insert (logand (* i 7) 255)))
+                  (let ((coding-system-for-write 'no-conversion))
+                    (write-region nil nil f)))
+                (list
+                 (with-temp-buffer
+                   (insert-file-contents-literally f)
+                   (list (buffer-size) enable-multibyte-characters
+                         (append (buffer-substring 20 40) nil)
+                         (progn (delete-region 1 1500) (list (buffer-size) (char-after 1) (char-before (point-max))))
+                         (progn (goto-char 700) (insert "\351x") (append (buffer-substring 695 705) nil))
+                         (progn (erase-buffer) (buffer-size))))
+                 (with-temp-buffer
+                   (insert-file-contents f)
+                   (list (buffer-size) last-coding-system-used
+                         (append (buffer-substring 100 112) nil)
+                         (progn (delete-region 1 (point-max)) (buffer-size))))
+                 (with-temp-buffer
+                   (insert "abc")
+                   (insert-file-contents-literally f)
+                   (list (buffer-size) (append (buffer-substring 1 8) nil)
+                         (append (buffer-substring 2990 3003) nil)))
+                 (with-temp-buffer
+                   (let ((coding-system-for-read 'utf-8))
+                     (insert-file-contents f))
+                   (list (buffer-size) (append (buffer-substring 1 10) nil)
+                         (string-to-list (encode-coding-string (buffer-substring 1 6) 'utf-8))))))
+            (delete-file f)))"#,
+        r#"((3000 t (4194181 4194188 4194195 4194202 4194209 4194216 4194223 4194230 4194237 4194244 4194251 4194258 4194265 4194272 4194279 4194286 4194293 4194300 3 10) (1501 4194301 1) (4194295 4194302 5 12 19 4194281 120 26 33 40) 0) (3000 no-conversion (4194229 4194236 4194243 4194250 4194257 4194264 4194271 4194278 4194285 4194292 4194299 2) 0) (3003 (97 98 99 0 7 14 21) (4194214 4194221 4194228 4194235 4194242 4194249 4194256 4194263 4194270 4194277 4194284 4194291 4194298)) (3000 (0 7 14 21 28 35 42 49 56) (0 7 14 21 28)))"#,
+        "raw bytes read",
+    );
+}
+
+#[test]
 fn directory_files_returns_mutable_sorted_names_with_dot_entries() {
     let unique = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
