@@ -244,7 +244,7 @@ enum Object<'t> {
     /// Compiling: no text.
     None,
     Buffer {
-        rope: crate::lisp::regex_emacs::RopeRange<'t>,
+        text: SnapshotRange<'t>,
         /// BEGV, the position of the text's first character.
         begv: usize,
         /// Point's byte offset in the text.
@@ -386,12 +386,12 @@ impl<'a, 't> LispMatchEnv<'a, 't> {
     fn charpos(&self, at: usize) -> usize {
         match &self.object {
             Object::Buffer {
-                rope, begv, ascii, ..
+                text, begv, ascii, ..
             } => {
                 if *ascii {
                     begv + at
                 } else {
-                    begv + rope.byte_to_char(at)
+                    begv + text.byte_to_char(at)
                 }
             }
             Object::String {
@@ -896,9 +896,19 @@ fn release_cell(cell: u8, entry: Option<Box<CacheEntry>>) {
 }
 
 /// The buffer's accessible text, a snapshot the matcher reads without
-/// holding the buffer.
+/// holding the buffer: the buffer's rope, or a small text's own copy.
+/// What `BufferSnapshot::positions' last reached: the rope chunk, its
+/// first byte, and the (byte, char) offsets converted last in it.
+#[derive(Clone, Copy)]
+struct ConvertedIn<'t> {
+    chunk: &'t str,
+    chunk_byte: usize,
+    byte: usize,
+    char: usize,
+}
+
 struct BufferSnapshot {
-    rope: ropey::Rope,
+    text: crate::buffer::ScanText,
     begv: usize,
     begv_byte: usize,
     zv: usize,
@@ -911,10 +921,27 @@ struct BufferSnapshot {
     ascii: bool,
 }
 
+/// A snapshot's accessible text as the matcher's object reads it.
+#[derive(Clone, Copy)]
+enum SnapshotRange<'t> {
+    Rope(crate::lisp::regex_emacs::RopeRange<'t>),
+    Str(&'t str),
+}
+
+impl SnapshotRange<'_> {
+    /// The character offset of byte offset AT from the range's start.
+    fn byte_to_char(&self, at: usize) -> usize {
+        match self {
+            SnapshotRange::Rope(rope) => rope.byte_to_char(at),
+            SnapshotRange::Str(text) => ropey::str_utils::byte_to_char_idx(text, at),
+        }
+    }
+}
+
 impl BufferSnapshot {
     fn take(interp: &Interpreter) -> Self {
         let buffer = interp.buffer.borrow();
-        let rope = buffer.text_rope();
+        let text = buffer.scan_text();
         let (begv, zv, point) = (buffer.point_min(), buffer.point_max(), buffer.point());
         // The counts the buffer keeps, where a one-leaf rope would count
         // its text twice.
@@ -942,22 +969,43 @@ impl BufferSnapshot {
             multibyte: buffer.is_multibyte(),
             side: buffer.has_extended_chars_in(begv, zv),
             ascii,
-            rope,
+            text,
         }
     }
 
     fn slice(&self) -> ropey::RopeSlice<'_> {
-        self.rope.byte_slice(self.begv_byte..self.zv_byte)
+        match &self.text {
+            crate::buffer::ScanText::Rope(rope) => rope.byte_slice(self.begv_byte..self.zv_byte),
+            crate::buffer::ScanText::Small(text) => {
+                ropey::RopeSlice::from(&text[self.begv_byte..self.zv_byte])
+            }
+        }
     }
 
     /// The accessible text as the matcher reads it, with no RopeSlice built.
-    fn range(&self) -> crate::lisp::regex_emacs::RopeRange<'_> {
-        crate::lisp::regex_emacs::RopeRange::new(
-            &self.rope,
-            self.begv_byte,
-            self.zv_byte,
-            self.begv - 1,
-        )
+    fn range(&self) -> SnapshotRange<'_> {
+        match &self.text {
+            crate::buffer::ScanText::Rope(rope) => {
+                SnapshotRange::Rope(crate::lisp::regex_emacs::RopeRange::new(
+                    rope,
+                    self.begv_byte,
+                    self.zv_byte,
+                    self.begv - 1,
+                ))
+            }
+            crate::buffer::ScanText::Small(text) => {
+                SnapshotRange::Str(&text[self.begv_byte..self.zv_byte])
+            }
+        }
+    }
+
+    /// The matcher's text for this snapshot's accessible text.
+    fn matcher_text(&self) -> Text<'_> {
+        let text = match self.range() {
+            SnapshotRange::Rope(rope) => Text::from_rope(rope, self.multibyte, self.side),
+            SnapshotRange::Str(text) => Text::from_str(text, self.multibyte, self.side),
+        };
+        text.with_latin1_bytes(!self.multibyte && !self.ascii)
     }
 
     /// The text offset of buffer position POS.
@@ -971,7 +1019,13 @@ impl BufferSnapshot {
         } else if pos == self.begv {
             0
         } else {
-            self.rope.char_to_byte(pos - 1) - self.begv_byte
+            let byte = match &self.text {
+                crate::buffer::ScanText::Rope(rope) => rope.char_to_byte(pos - 1),
+                crate::buffer::ScanText::Small(text) => {
+                    ropey::str_utils::char_to_byte_idx(text, pos - 1)
+                }
+            };
+            byte - self.begv_byte
         }
     }
 
@@ -987,14 +1041,76 @@ impl BufferSnapshot {
         } else if offset == 0 {
             self.begv
         } else {
-            self.rope.byte_to_char(byte) + 1
+            match &self.text {
+                crate::buffer::ScanText::Rope(rope) => rope.byte_to_char(byte) + 1,
+                crate::buffer::ScanText::Small(text) => {
+                    ropey::str_utils::byte_to_char_idx(text, byte) + 1
+                }
+            }
         }
     }
 
-    /// The matcher's object for the text TEXT, this snapshot's `slice'.
-    fn object<'s>(&'s self, text: crate::lisp::regex_emacs::RopeRange<'s>) -> Object<'s> {
+    /// POSITION for a run of offsets, the match data's: in a rope's
+    /// non-ASCII text each counts the characters from the position last
+    /// converted (point at first) within the chunk holding both, as GNU's
+    /// buf_bytepos_to_charpos scans from the nearest position it knows,
+    /// and walks the tree only for an offset outside that chunk.
+    fn positions(&self) -> impl Fn(usize) -> usize + '_ {
+        let known: std::cell::Cell<Option<ConvertedIn<'_>>> = std::cell::Cell::new(None);
+        move |offset| {
+            let byte = self.begv_byte + offset;
+            let crate::buffer::ScanText::Rope(rope) = &self.text else {
+                return self.position(offset);
+            };
+            if self.ascii || byte == self.point_byte || byte == self.zv_byte || offset == 0 {
+                return self.position(offset);
+            }
+            let from = match known.get() {
+                Some(view)
+                    if byte >= view.chunk_byte && byte <= view.chunk_byte + view.chunk.len() =>
+                {
+                    view
+                }
+                _ => {
+                    let (chunk, chunk_byte, chunk_char, _) = rope.chunk_at_byte(byte);
+                    let (byte, char) = if self.point_byte >= chunk_byte
+                        && self.point_byte <= chunk_byte + chunk.len()
+                    {
+                        (self.point_byte, self.point - 1)
+                    } else {
+                        (chunk_byte, chunk_char)
+                    };
+                    ConvertedIn {
+                        chunk,
+                        chunk_byte,
+                        byte,
+                        char,
+                    }
+                }
+            };
+            let text = from.chunk;
+            let char = if byte >= from.byte {
+                from.char
+                    + ropey::str_utils::byte_to_char_idx(
+                        &text[from.byte - from.chunk_byte..],
+                        byte - from.byte,
+                    )
+            } else {
+                from.char
+                    - ropey::str_utils::byte_to_char_idx(
+                        &text[byte - from.chunk_byte..],
+                        from.byte - byte,
+                    )
+            };
+            known.set(Some(ConvertedIn { byte, char, ..from }));
+            char + 1
+        }
+    }
+
+    /// The matcher's object for this snapshot's text.
+    fn object(&self) -> Object<'_> {
         Object::Buffer {
-            rope: text,
+            text: self.range(),
             begv: self.begv,
             point: self.offset(self.point),
             ascii: self.ascii,
@@ -1065,10 +1181,8 @@ pub(super) fn looking_at_1(
         release_pattern(entry);
         return Err(error);
     }
-    let slice = snapshot.range();
-    let text = Text::from_rope(slice, snapshot.multibyte, snapshot.side)
-        .with_latin1_bytes(!snapshot.multibyte && !snapshot.ascii);
-    menv.object = snapshot.object(slice);
+    let text = snapshot.matcher_text();
+    menv.object = snapshot.object();
     let pos = snapshot.offset(snapshot.point);
     let mut registers = take_registers(menv.interp, modify_match_data);
     let result = rx::re_match(
@@ -1087,12 +1201,7 @@ pub(super) fn looking_at_1(
         (None, Ok(end)) => Ok(end.is_some()),
     };
     if let (Ok(true), Some(registers)) = (&found, &registers) {
-        set_search_regs(
-            interp,
-            registers,
-            |offset| snapshot.position(offset),
-            Some(buffer_id),
-        );
+        set_search_regs(interp, registers, snapshot.positions(), Some(buffer_id));
     }
     give_back_registers(interp, registers);
     Ok(if found? { Value::T } else { Value::Nil })
@@ -1337,10 +1446,8 @@ fn search_buffer_re(
     let snapshot = BufferSnapshot::take(interp);
     let mut menv = LispMatchEnv::new(interp, env, case_table);
     let mut entry = compile_pattern(&mut menv, regexp, posix)?;
-    let slice = snapshot.range();
-    let text = Text::from_rope(slice, snapshot.multibyte, snapshot.side)
-        .with_latin1_bytes(!snapshot.multibyte && !snapshot.ascii);
-    menv.object = snapshot.object(slice);
+    let text = snapshot.matcher_text();
+    menv.object = snapshot.object();
     let lim_byte = snapshot.offset(lim);
     let mut pos_byte = snapshot.offset(pos);
     let mut pos = pos;
@@ -1399,12 +1506,7 @@ fn search_buffer_re(
     release_pattern(entry);
     // Each match found updated the match data, the last one standing.
     if preserve_match_data && found_any {
-        set_search_regs(
-            interp,
-            &registers,
-            |offset| snapshot.position(offset),
-            Some(buffer_id),
-        );
+        set_search_regs(interp, &registers, snapshot.positions(), Some(buffer_id));
     }
     interp.search_registers = registers;
     if let Some(error) = pending {
@@ -1605,12 +1707,10 @@ pub(crate) fn fast_looking_at(
 ) -> Result<Option<usize>, LispError> {
     if string.is_nil() {
         let snapshot = BufferSnapshot::take(interp);
-        let slice = snapshot.range();
-        let text = Text::from_rope(slice, snapshot.multibyte, snapshot.side)
-            .with_latin1_bytes(!snapshot.multibyte && !snapshot.ascii);
+        let text = snapshot.matcher_text();
         let mut menv = LispMatchEnv::new(interp, env, None);
         let mut entry = compile_pattern(&mut menv, regexp, false)?;
-        menv.object = snapshot.object(slice);
+        menv.object = snapshot.object();
         let start = snapshot.offset(pos);
         let result = rx::re_match(
             &mut entry.pattern,

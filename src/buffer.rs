@@ -408,6 +408,13 @@ enum TextStore {
     Rope(Rope),
 }
 
+/// A buffer's text as a scan reads it apart from the buffer (see
+/// `Buffer::scan_text').
+pub enum ScanText {
+    Small(String),
+    Rope(Rope),
+}
+
 impl Default for TextStore {
     fn default() -> Self {
         TextStore::Small(String::new())
@@ -705,6 +712,19 @@ impl BufferText {
         match &self.store {
             TextStore::Small(text) => ropey::str_utils::char_to_line_idx(text, index),
             TextStore::Rope(rope) => rope.char_to_line(index),
+        }
+    }
+
+    /// The text for a scan that must not hold the buffer: a rope's shared
+    /// tree, or a small text's own copy, which costs less than the rope
+    /// `rope' would build of it after each change.
+    fn scan_text(&self) -> ScanText {
+        match &self.store {
+            TextStore::Small(text) => match self.rope_view.borrow().as_ref() {
+                Some(rope) => ScanText::Rope(rope.clone()),
+                None => ScanText::Small(text.clone()),
+            },
+            TextStore::Rope(rope) => ScanText::Rope(rope.clone()),
         }
     }
 
@@ -1873,6 +1893,12 @@ impl Buffer {
     /// characters by index without holding the buffer borrowed.
     pub fn text_rope(&self) -> Rope {
         self.text.rope()
+    }
+
+    /// The text for a scan apart from the buffer: the rope, or a small
+    /// text's copy.
+    pub fn scan_text(&self) -> ScanText {
+        self.text.scan_text()
     }
 
     /// The stored text's characters and UTF-8 bytes, which the buffer

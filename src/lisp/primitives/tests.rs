@@ -8048,6 +8048,39 @@ fn directory_listings_keep_readdirs_order_as_dired_c_does() {
 }
 
 #[test]
+fn match_positions_agree_in_large_and_small_multibyte_buffers() {
+    // A multibyte buffer of many rope chunks converts each register's
+    // byte offset from the last one converted; a small buffer's searches
+    // read a copy of its text, edited between them. GNU 30.2's positions.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let (out)
+          (with-temp-buffer
+            (dotimes (i 3000) (insert (format "é%dλ%s\n" i (make-string (% i 7) ?ü))))
+            (goto-char (point-min))
+            (while (re-search-forward "λ\\(ü+\\)$" nil t)
+              (push (list (match-beginning 0) (match-end 1) (point)) out))
+            (goto-char 5000)
+            (push (list (looking-at "[^\n]*\n\\(é\\)\\([0-9]+\\)") (match-beginning 1) (match-end 2)) out)
+            (goto-char (point-max))
+            (push (list (re-search-backward "é\\([0-9]+\\)λ" nil t) (match-end 1)) out)
+            (narrow-to-region 2000 9000)
+            (goto-char 4000)
+            (push (list (re-search-forward "\\(ü\\)\\(ü\\)" nil t) (match-beginning 2) (match-end 0)) out))
+          (with-temp-buffer
+            (insert "aé\nλüx\n")
+            (dotimes (_ 3)
+              (goto-char (point-min))
+              (push (list (re-search-forward "\\(ü\\)x" nil t) (match-beginning 1)
+                          (progn (goto-char 2) (looking-at "é\n\\(λ\\)")) (match-end 1))
+                    out)
+              (goto-char 3) (insert "ö")))
+          (list (length out) (sxhash-equal out) (seq-take out 4)))"#,
+        r#"(2577 2829254130172192 ((9 7 nil 8) (8 6 nil 7) (7 5 t 5) (4006 4005 4006)))"#,
+        "match positions",
+    );
+}
+
+#[test]
 fn directory_files_returns_mutable_sorted_names_with_dot_entries() {
     let unique = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

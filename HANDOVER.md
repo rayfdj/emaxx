@@ -8547,6 +8547,33 @@ setup_process_coding_systems's check now refuses). A 13-form
   the documented local skips, all 3,297 tests run passing (2 ignored);
   the seven integration targets; clippy `-D warnings', rustfmt and `git
   diff --check'.
+- **Round 155: a small buffer's scan text, and match positions by
+  distance.** The expensive-test sweep (below) put ucs-normalize-tests
+  at the largest ratio, part1 1.64 and part2 1.48 times GNU's wall
+  time. Part2 parses 1,844 lines of the 2.6 MB NormalizationTest.txt
+  with `looking-at' and normalizes each line's columns twenty times in
+  a small buffer, erased and refilled before each. Every search took
+  search.rs's `BufferSnapshot', whose rope view of the buffer each
+  insertion invalidates, so each search of a buffer holding a few bytes
+  rebuilt a rope first. A small buffer's text
+  (TextStore::Small, at most 1K bytes) is copied as a string now
+  (buffer.rs `ScanText'), and the matcher, `looking-at' and the
+  non-regexp search read it in place. set_search_regs converted each
+  register's byte offset to a character position from the start of the
+  buffer's rope; the snapshot's `positions' now converts it from the
+  last register converted, or from point, inside the same rope chunk,
+  so a match's registers cost the distance between them. Under
+  callgrind part2 takes 6,193M instructions where it took 6,705M (GNU
+  4,640M): `looking-at' 625M where it took 792M (GNU 342M), the
+  register conversion 72M where it took 235M. A batch test compares
+  2,577 match positions in a 3,000-line multibyte buffer, narrowed and
+  not, and in a small buffer edited between searches, with GNU 30.2.
+  Local validation: the full gate across its ten groups with
+  the documented local skips, all 3,298 tests run passing (2 ignored);
+  the seven integration targets; clippy `-D warnings' (its
+  type-complexity lint named the conversion's state, a struct now,
+  after which the gate's search, match, looking-at and regexp tests ran
+  again), rustfmt and `git diff --check'.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -9556,7 +9583,24 @@ attempt. Its timings: setup 79.6 s against 63.6 s (1.251), test bodies
 258.5 s against 267.3 s (0.967), in all 1.022 (a slower runner: GNU's
 setup took 63.6 s where the run before's took 42.7).
 
+**On `3bf169f`** (round 154): full Rust gate passed (run 40786422667);
+frozen (run 40786426183) matched all 7,928 outcomes on its first
+attempt. Its timings: setup 85.3 s against 70.9 s (1.203), test bodies
+264.7 s against 277.6 s (0.954), in all 0.998.
+
 **Findings recorded, not fixed:**
+- **The expensive tests (round 155).** 111 tests tagged
+  `:expensive-test' in 83 files, run with the frozen runner in both
+  editors: no outcome differs. tramp-tests' expensive set ran past 900
+  s in GNU as one file, so its 51 tests ran one a process: all agree but
+  `tramp-test45-asynchronous-requests', which failed in the sweep's
+  loaded Emaxx run (a `file-attributes' of one of its processes' files
+  read nil). It is a race in the test: six copies at once failed it once
+  in either editor (GNU's a nil, Emaxx's a file not yet removed), and
+  each passes it alone. The slowest against GNU:
+  ucs-normalize-tests part1 1.64 and part2 1.48 times (round 155),
+  `info-xref-test-emacs-manuals' 1.42, `eglot-test-tramp-test' 5.25 s
+  against 1.38 s; `comp-tests-bootstrap' takes 39 s against 376 s.
 - **What the checked build costs (round 131).** mule-tests under the
   frozen runner takes 34.7G instructions in the gate profile against
   22.8G in the release build. Of the 11.9G, 4.4G is the liveness
