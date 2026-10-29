@@ -3995,9 +3995,18 @@ fn format_s_honors_print_circle_for_non_strings() {
 
 #[test]
 fn format_s_honors_print_gensym_for_non_strings() {
+    // styled_format's %s takes a symbol's name as it is, and `princ''s
+    // text, which `print-gensym' marks, of what is neither string nor
+    // symbol.
     assert_eq!(
         eval_str(r##"(let ((print-gensym t)) (string-match-p "#:" (format "%s" (gensym "g"))))"##),
-        Value::Integer(0)
+        Value::Nil
+    );
+    assert_eq!(
+        eval_str(
+            r##"(let ((print-gensym t)) (string-match-p "#:" (format "%s" (list (gensym "g")))))"##
+        ),
+        Value::Integer(1)
     );
 }
 

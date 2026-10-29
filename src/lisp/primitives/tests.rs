@@ -8484,6 +8484,113 @@ fn compiled_catches_and_condition_cases_run_as_gnu_runs_them() {
 }
 
 #[test]
+fn format_conversions_and_string_widths_follow_styled_format() {
+    // editfns.c styled_format: field numbers that move the next argument,
+    // flags as sprintf takes them, precision in digits after a sign or
+    // prefix and in columns for %s, a bignum's precision counting its
+    // sign, %c at precision zero, excess precision, invalid conversions
+    // and arguments, `binary-as-unsigned', glibc's %e/%f/%g (a long double
+    // for an integer a double cannot hold), `float-output-format', a
+    // symbol's name and the format itself returned as they are, and the
+    // format's and the arguments' text properties in the result.
+    let program = r##"(list
+ (format "%.5x|%.5d|%.5o|%#.5x|%#x|%#o|%#o" -255 -255 -8 -255 0 0 8)
+ (format "%+x|% d|%08.3x|%-6.3d|%#X|%x|%.3x" 255 5 -15 -5 255 (ash 1 70) -1.5)
+ (format "%d|%x|%.0d|%.0x|%5.0x|%i|%#d" most-negative-fixnum most-negative-fixnum 0 0 0 7 7)
+ (format "%+.3o|%#.3o|%#5x|%-#8.4X|%d|%.30d" 8 8 255 -255 (- (ash 1 70)) 7)
+ (format "%#.30o|%.30d|%.30d|%030d|%-30d|" (ash 1 70) (- (ash 1 70)) (ash 1 70) (- (ash 1 70)) (ash 1 70))
+ (format "%#o|%#x|%#X|%+x|% x" (ash 1 70) (ash 1 70) (- (ash 1 70)) (ash 1 70) (ash 1 70))
+ (format "%.30x|%.5d|%+d|% d|%d|%x|%x|%o|%d" -1.5 1e10 0.5 0.5 1e30 1e30 -1e30 1e19 -1e19)
+ (format "%d|%x|%X|%o|%d|%d|%.3d|%.5d|%5d|" 3.7 255.9 1e20 -0.9 -3.7 -0.5 -0.5 1.0e+INF -1.0e+INF)
+ (format "%+.0d|% .0d|%5.0d|%#.0o|%#.0x|%#5.3o|" 0 0 0 0 0 8)
+ (format "%10d|%-+5d|%+ d|% +d|%05d|%-05d|%5.3d|%x" -5 5 5 -5 -5 -5 -5 -1)
+ (let ((binary-as-unsigned t))
+   (format "%x %o %d %X %x %x" -1 -8 -1 most-negative-fixnum -1.5 (- (ash 1 70))))
+ (format "%g|%g|%g|%g|%g|%g|%g|%g|%g" 0.1 1234567.0 123456.0 1e-5 0.0001 100.0 1e100 -0.0 0.0)
+ (format "%.3g|%#g|%#.3g|%.0g|%g|%g|%g|%g" 3.14159 1.0 1.0 2.5 1.0e+INF -1.0e+INF 0.0e+NaN -0.0e+NaN)
+ (format "%f|%e|%f|%e|%g|%.2f|%.0f|%.0f|%#.0f" 1.0e+INF 0.0e+NaN 3 3 3 2.675 0.5 1.5 1.0)
+ (format "%010.2f|%-10.2e|%+e|% f|%e|%e|%.20e" -3.5 3.5 0.0 1.0 1e300 1e-300 0.1)
+ (format "%g|%g|%5.1f|%f|%g|%e|%010g" 1e15 123456789012.0 3.14159 (ash 1 70) (ash 1 70) -5 -1.0e+INF)
+ (format "%.0e|%#.0e|%.0g|%#.0g|%e|%g|%f" 3.0 3.0 3.0 3.0 0.0 -0.0 -0.0)
+ (format "%.2e|%g|%g|%g|%g|%.10g|%#.10g|%+g % g" 9.995 100000.0 1000000.0 0.0001 0.00001234 1234567.0 1.5 1.0 1.0)
+ (format "%f|%e|%.15e|%g|%.20g|%f|%f|%.3f"
+         (1+ (ash 1 53)) (1+ (ash 1 53)) 9007199254740995 (1+ (ash 1 53)) (1+ (ash 1 53))
+         (1+ (ash 1 64)) most-positive-fixnum (- (ash 1 62)))
+ (format "%f|%+f|%5.1f|%-8.3e|%08.2f|%.3e|%g|%#.3x" -0.0e+NaN 0.0e+NaN 2.25 2.25 -2.25 5e-324 5e-324 0)
+ (list (length (format "%.20000c" ?a)) (length (format "%.16390d" 1))
+       (substring (format "%.16390x" -1.5) 0 3) (length (format "%#.16390g" 1.5))
+       (substring (format "%.16390e" 1.5) -6) (length (format "%.16390g" 1.5))
+       (substring (format "%.20000c" ?-) 0 3))
+ (format "%5c|%-5c|%05c|%.0c|%c|%3c|%.0c|" 65 65 65 65 233 ?é ?-)
+ (format "%s|%S|%.s|%.2s|%5.2s|%-5s|%05s|%+s|%#s|% s|%5S|%.1S|"
+         1.5 "a" "abc" "abc" "abc" "ab" "ab" "ab" "ab" "ab" "a" "abc")
+ (list (format "%1$s %1$s|%1$-5d|" 3) (format "%2$s %1$s" 1 2) (format "%0$s|" 1)
+       (format "%1$%|" 1) (format "%5%|%-5%|%.3%|") (format "%3$s %1$s %s" 1 2 3))
+ (mapcar (lambda (args) (condition-case e (apply #'format args) (error e)))
+         (list '("%b" 1) '("%B" 1) '("%y" 1) '("%" 1) '("%5" 1) '("%-" 1) '("%5.2" 1)
+               '("%2$s %s" 1 2) '("%1$" 1) '("%x" "a") '("%d" "x") '("%c" 1.0) '("%c" -1)
+               '("%d" foo) (list "%c" (make-symbol "zz")) (list "%c" (make-symbol (string-to-multibyte "zz")))
+               (list "%c%s" (make-symbol (string-to-multibyte "zy")) "x") (list "%d" (make-symbol (string-to-multibyte "zx"))) '("%$s" 1) '("%-1$s" 1) '("%3$s" 1) '("%s")
+               '("%x" 0.0e+NaN) '("%o" 1.0e+INF) (list "%c" (ash 1 70)) (list "%d" (point-marker))
+               '("%é" 1) (list (string-to-unibyte "%\351") 1) '("%d" nil) '("%e" "1")))
+ (format "%5s|%.3s|%.2s|%.1s|%-6.3s|%3s|" "日本" "日本語" "日本語" "日本語" "日本語" "é")
+ (list (string-width (compose-string "abc")) (string-width (concat "x" (compose-string "ab") "y"))
+       (let ((s (compose-string "ab"))) (put-text-property 0 1 'face 'bold s) (string-width s))
+       (string-width "\t\n\e") (string-width "日本") (string-width "abcd" 1 3)
+       (substring-no-properties (format "%3s|%.1s|" (compose-string "ab") (compose-string "cd"))))
+ (list (eq (symbol-name 'foo) (format "%s" 'foo)) (let ((s "abc")) (eq s (format s)))
+       (let ((s "a%%c")) (eq s (format s)))
+       (let ((s "a`c'") (text-quoting-style 'grave)) (eq s (format-message s)))
+       (let ((text-quoting-style 'curve)) (format-message "`a' %s" "`b'"))
+       (let ((text-quoting-style 'straight)) (format-message "`a' %s" "`b'"))
+       (let ((text-quoting-style 'curve)) (multibyte-string-p (format-message "`a'")))
+       (let ((s "x")) (eq s (format "%s" s))) (let ((s "x")) (eq s (format "%S" s)))
+       (format "%s" nil) (format "%s|%S" :key 'a\ b) (format "%d" ?a))
+ (mapcar #'multibyte-string-p
+         (list (format "%s" "\351") (format "%s%s" "\351" "é") (format "\351%s" "é") (format "%c" 233)
+               (format "%c" 200) (format "a%sb" 42) (format "%s" 'foo) (format "%s%c" "\351" ?é)))
+ (mapcar (lambda (s) (append s nil))
+         (list (format "%s%s" "\351" "é") (format "\351%s" "é") (format "%s%c|" "\351" ?é)
+               (format (string-to-unibyte "\351%d") 7) (format "%s" (string-to-unibyte "\351"))))
+ (list (let ((float-output-format "%.2f"))
+         (list (format "%s %S" 1.5 1.5) (number-to-string 1.5) (prin1-to-string 1.5) (format "%s" (list 2.5))))
+       (let ((float-output-format "%.3g")) (list (number-to-string 100.0) (number-to-string 1e10) (prin1-to-string 0.5)))
+       (let ((float-output-format "%.e")) (number-to-string 2.0))
+       (let ((float-output-format "%.0f")) (number-to-string 2.5))
+       (let ((float-output-format "%.0e")) (number-to-string 2.5))
+       (let ((float-output-format "%.16g")) (number-to-string 0.1))
+       (let ((float-output-format "%5.2f")) (number-to-string 0.1))
+       (let ((float-output-format 'x)) (number-to-string 0.1))
+       (let ((print-integers-as-characters t)) (list (format "%s %S %d" 97 97 97) (prin1-to-string 97)))
+       (condition-case e (number-to-string "a") (error e))
+       (list (prin1-to-string 1e-5) (number-to-string 1.5e-7) (format "%s" -1e-9)
+             (prin1-to-string 1.5e20) (prin1-to-string 1e100) (prin1-to-string 5e-324)))
+ (list (format (propertize "%5s|" 'face 'bold) (propertize "ab" 'x 1))
+       (format "%5s|" (propertize "ab" 'x 1))
+       (format "%-5s|" (propertize "ab" 'x 1))
+       (format (propertize "%-5s|" 'face 'bold) (propertize "ab" 'x 1))
+       (format (concat "a" (propertize "%d" 'p 1) "b") 42)
+       (format (concat (propertize "a%" 'p 1) "db") 42)
+       (format (concat "a%" (propertize "5d" 'p 1) "b") 42)
+       (format (concat (propertize "x" 'p 1) "%s" (propertize "y" 'q 2)) (propertize "mid" 'r 3))
+       (format (propertize "%s %s" 'face 'bold) (propertize "a" 'face 'italic 'k 1) "b")
+       (format (propertize "%%%d" 'p 1) 5)
+       (format (concat "%" (propertize "%" 'p 1) "x%d") 5)
+       (format (propertize "%.1s|" 'p 1) (propertize "abc" 'q 2))
+       (format "%S" (propertize "a" 'q 2))
+       (format "%s" (propertize "a" 'q 2))
+       (format (propertize "%s" 'p 1) (propertize "a" 'q 2))
+       (format (propertize "%c%c" 'p 1) ?a ?b)
+       (format "%s:%3s:%-4s:%.1s" (propertize "ab" 'a 1) (propertize "c" 'b 2) (propertize "d" 'c 3) (propertize "ef" 'd 4))
+       (format (concat (propertize "<" 'l 1) "%2$s" (propertize ">" 'r 1) "%1$s") "one" (propertize "two" 't 2))))"##;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        r##"("-000ff|-00255|-00010|-0x000ff|0|0|010" "+ff| 5|    -00f|-005  |0XFF|400000000000000000|-001" "-2305843009213693952|-2000000000000000|||     |7|7" "+010|010| 0xff|-0X00FF |-1180591620717411303424|000000000000000000000000000007" "000000200000000000000000000000|-00000001180591620717411303424|000000001180591620717411303424|-00000001180591620717411303424|1180591620717411303424        |" "0200000000000000000000000|0x400000000000000000|-0X400000000000000000|+400000000000000000| 400000000000000000" "-000000000000000000000000000001|10000000000|+0| 0|1000000000000000019884624838656|c9f2c9cd04675000000000000|-c9f2c9cd04675000000000000|1053071060221172000000|-10000000000000000000" "3|ff|56BC75E2D63100000|0|-3|0|000|000inf| -inf|" "+| |     |0||  010|" "        -5|+5   |+5|-5|-0005|-5   | -005|-1" "3fffffffffffffff 377777777777777777770 -1 2000000000000000 -1 -400000000000000000" "0.1|1.23457e+06|123456|1e-05|0.0001|100|1e+100|-0|0" "3.14|1.00000|1.00|2|inf|-inf|nan|-nan" "inf|nan|3.000000|3.000000e+00|3|2.67|0|2|1." "-000003.50|3.50e+00  |+0.000000e+00| 1.000000|1.000000e+300|1.000000e-300|1.00000000000000005551e-01" "1e+15|1.23457e+11|  3.1|1180591620717411303424.000000|1.18059e+21|-5.000000e+00|      -inf" "3e+00|3.e+00|3|3.|0.000000e+00|-0|-0.000000" "9.99e+00|100000|1e+06|0.0001|1.234e-05|1234567|1.500000000|+1  1" "9007199254740993.000000|9.007199e+15|9.007199254740995e+15|9.0072e+15|9007199254740993|18446744073709551616.000000|2305843009213693951.000000|-4611686018427387904.000" "-nan|+nan|  2.2|2.250e+00|-0002.25|4.941e-324|4.94066e-324|000" (3619 16390 "-00" 16391 "00e+00" 3 "-00") "    A|A    |    A||é|  é||" "1.5|\"a\"||ab|   ab|ab   |   ab|ab|ab|ab|  \"a\"|\"|" ("3 3|3    |" "2 1" "%0$s||" "%|" "%|%|%|" "3 1 2") ((error "Invalid format operation %b") (error "Invalid format operation %B") (error "Invalid format operation %y") (error "Format string ends in middle of format specifier") (error "Format string ends in middle of format specifier") (error "Format string ends in middle of format specifier") (error "Format string ends in middle of format specifier") (error "Not enough arguments for format string") (error "Format string ends in middle of format specifier") (error "Format specifier doesn't match argument type") (error "Format specifier doesn't match argument type") (error "Format specifier doesn't match argument type") (wrong-type-argument characterp -1) (error "Format specifier doesn't match argument type") (error "Format specifier doesn't match argument type") "zz" "zyx" (error "Format specifier doesn't match argument type") (error "Invalid format operation %$") (error "Invalid format operation %$") (error "Not enough arguments for format string") (error "Not enough arguments for format string") (overflow-error) (overflow-error) (error "Format specifier doesn't match argument type") (error "Format specifier doesn't match argument type") (error "Invalid format operation %é") (error "Invalid format operation char #o351") (error "Format specifier doesn't match argument type") (error "Format specifier doesn't match argument type")) " 日本|日|日||日    |  é|" (1 3 1 10 4 2 "  ab|cd|") (t t nil t "‘a’ `b'" "'a' `b'" t t nil "nil" ":key|a\\ b" "97") (nil t t t t nil nil t) ((4194281 233) (4194281 233) (4194281 233 124) (233 55) (233)) (("1.50 1.50" "1.50" "1.50" "(2.50)") ("100.0" "1e+10" "0.5") "2e+00" "2" "2.5" "0.1" "0.1" "0.1" ("?a ?a 97" "?a") (wrong-type-argument numberp "a") ("1e-05" "1.5e-07" "-1e-09" "1.5e+20" "1e+100" "5e-324")) (#("   ab|" 0 5 (x 1 face bold) 5 6 (face bold)) #("   ab|" 3 5 (x 1)) #("ab   |" 0 5 (x 1)) #("ab   |" 0 5 (x 1 face bold) 5 6 (face bold)) #("a42b" 1 3 (p 1)) #("a42b" 0 3 (p 1)) "a   42b" #("xmidy" 0 1 (p 1) 1 4 (r 3) 4 5 (q 2)) #("a b" 0 1 (k 1 face italic) 1 3 (face bold)) #("%5" 0 2 (p 1)) #("%x5" 0 1 (p 1)) #("a|" 0 1 (q 2 p 1) 1 2 (p 1)) "#(\"a\" 0 1 (q 2))" #("a" 0 1 (q 2)) #("a" 0 1 (q 2 p 1)) #("ab" 0 2 (p 1)) #("ab:  c:d   :e" 0 2 (a 1) 5 6 (b 2) 7 11 (c 3) 12 13 (d 4)) #("<two>one" 0 1 (l 1) 1 4 (t 2) 4 5 (r 1))))"##,
+        "styled_format",
+    );
+}
+
+#[test]
 fn directory_files_returns_mutable_sorted_names_with_dot_entries() {
     let unique = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

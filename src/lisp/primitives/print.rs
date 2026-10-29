@@ -575,16 +575,6 @@ pub(crate) fn render_princ_object(
     render_printer_object(interp, value, env, false, false)
 }
 
-/// `prin1' of VALUE as a Rust text view and its side table.
-pub(crate) fn render_prin1_parts_ephemeral(
-    interp: &mut Interpreter,
-    value: &Value,
-    env: &crate::lisp::types::Env,
-) -> Result<(String, Vec<(usize, u32)>), LispError> {
-    let mut env = env.clone();
-    render_prin1_output(interp, value, &mut env).map(|output| output.text_parts())
-}
-
 pub(crate) fn render_prin1_ephemeral(
     interp: &mut Interpreter,
     value: &Value,

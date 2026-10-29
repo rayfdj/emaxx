@@ -347,27 +347,6 @@ pub(crate) fn push_buffer_character(
     }
 }
 
-/// The side table of a string's characters its Rust text view cannot
-/// carry, read in place: empty for a unibyte or ASCII string and for
-/// UTF-8 without a real U+E000..U+E0FF.
-pub(crate) fn string_extended_chars(value: &Value) -> Vec<(usize, u32)> {
-    let Kind::StringObject(state) = value.kind() else {
-        return Vec::new();
-    };
-    let state = state.borrow();
-    let bytes = state.bytes();
-    if !state.is_multibyte() || bytes.is_ascii() {
-        return Vec::new();
-    }
-    if std::str::from_utf8(bytes).is_ok()
-        && !memchr::memchr_iter(0xEE, bytes)
-            .any(|at| matches!(bytes.get(at + 1), Some(0x80..=0x83)))
-    {
-        return Vec::new();
-    }
-    state.text_parts().1
-}
-
 pub(crate) fn string_like(value: &Value) -> Option<StringLike> {
     match value.kind() {
         Kind::StringObject(state) => {
@@ -466,11 +445,6 @@ pub(crate) fn string_is_multibyte(value: &Value) -> Option<bool> {
         Kind::StringObject(state) => Some(state.borrow().is_multibyte()),
         _ => None,
     }
-}
-
-/// Whether VALUE is a string without text properties, read in place.
-pub(crate) fn string_without_properties(value: &Value) -> bool {
-    matches!(value.kind(), Kind::StringObject(state) if state.borrow().props.is_empty())
 }
 
 pub(crate) fn char_from_integer(code: i64) -> Result<char, LispError> {
@@ -1088,103 +1062,6 @@ pub(crate) fn object_intervals_value(
     }
 
     Ok(Value::list(intervals))
-}
-
-pub(crate) fn shift_string_props(
-    props: &[TextPropertySpan],
-    offset: usize,
-) -> Vec<TextPropertySpan> {
-    props
-        .iter()
-        .map(|span| TextPropertySpan {
-            start: span.start + offset,
-            end: span.end + offset,
-            props: span.props.clone(),
-        })
-        .collect()
-}
-
-/// textprop.c copy_text_properties (Fsubstring) and fns.c
-/// concat_to_string (`concat', `mapconcat') hand each source interval's
-/// plist to `add_text_properties' on the fresh result, and add_properties
-/// conses every property it did not find onto the head of the plist: a
-/// copied span comes out with its pairs reversed, so
-/// `(substring (propertize "x" 'a 1 'b 2) 0)' prints as (b 2 a 1) where
-/// `copy-sequence' (copy_intervals) keeps (a 1 b 2).
-pub(crate) fn copied_string_props(
-    props: &[TextPropertySpan],
-    offset: usize,
-) -> Vec<TextPropertySpan> {
-    props
-        .iter()
-        .map(|span| TextPropertySpan {
-            start: span.start + offset,
-            end: span.end + offset,
-            props: span.props.iter().rev().cloned().collect(),
-        })
-        .collect()
-}
-
-pub(crate) fn slice_string_props(
-    props: &[TextPropertySpan],
-    from: usize,
-    to: usize,
-) -> Vec<TextPropertySpan> {
-    let mut sliced = Vec::new();
-    for span in props {
-        let start = span.start.max(from);
-        let end = span.end.min(to);
-        if start < end {
-            sliced.push(TextPropertySpan {
-                start: start - from,
-                end: end - from,
-                props: span.props.clone(),
-            });
-        }
-    }
-    merge_string_props(sliced)
-}
-
-/// editfns.c styled_format's property layering: the format string's
-/// properties cover each substituted span, and the argument string's own
-/// properties are then ADDED over them (add-text-properties semantics:
-/// shared keys take the argument's value, and the argument's keys print
-/// first).  The format builder records these as OVERLAPPING spans in
-/// arrival order (argument spans first, the covering spec span last);
-/// flatten them into disjoint spans whose plists carry the union, with
-/// the earliest covering span winning each key.
-pub(crate) fn flatten_overlapping_string_props(
-    spans: Vec<TextPropertySpan>,
-) -> Vec<TextPropertySpan> {
-    let mut bounds: Vec<usize> = spans
-        .iter()
-        .filter(|span| span.start < span.end)
-        .flat_map(|span| [span.start, span.end])
-        .collect();
-    bounds.sort_unstable();
-    bounds.dedup();
-    let mut result = Vec::new();
-    for window in bounds.windows(2) {
-        let (start, end) = (window[0], window[1]);
-        let mut plist: Vec<(PropertyName, Value)> = Vec::new();
-        for span in &spans {
-            if span.start <= start && end <= span.end {
-                for (key, value) in &span.props {
-                    if !plist.iter().any(|(existing, _)| existing == key) {
-                        plist.push((*key, *value));
-                    }
-                }
-            }
-        }
-        if !plist.is_empty() {
-            result.push(TextPropertySpan {
-                start,
-                end,
-                props: plist,
-            });
-        }
-    }
-    merge_string_props(result)
 }
 
 pub(crate) fn merge_string_props(mut props: Vec<TextPropertySpan>) -> Vec<TextPropertySpan> {

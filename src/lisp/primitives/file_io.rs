@@ -3,44 +3,6 @@ use crate::lisp::types::Kind;
 use crate::lisp::types::LispErrorKind;
 use crate::lisp::types::PropertyName;
 
-pub(crate) fn format_source_props(
-    value: &Value,
-    from: usize,
-    to: usize,
-) -> Option<Vec<(PropertyName, Value)>> {
-    // The format string's intervals, read in place: `format' asks once per
-    // conversion, and its text is never needed here.
-    let Kind::StringObject(state) = value.kind() else {
-        return None;
-    };
-    let state = state.borrow();
-    let mut props: Vec<(PropertyName, Value)> = Vec::new();
-    for span in state.props.iter() {
-        if span.start < to && from < span.end {
-            for (name, value) in &span.props {
-                if !props.iter().any(|(existing, _)| existing == name) {
-                    props.push((*name, *value));
-                }
-            }
-        }
-    }
-    // The format string's own intervals reach the result through
-    // add_text_properties_from_list too: reversed pairs.
-    props.reverse();
-    if props.is_empty() { None } else { Some(props) }
-}
-
-pub(crate) fn props_at_string_offset(
-    spans: &[TextPropertySpan],
-    pos: usize,
-) -> Vec<(PropertyName, Value)> {
-    spans
-        .iter()
-        .find(|span| span.start <= pos && pos < span.end)
-        .map(|span| span.props.clone())
-        .unwrap_or_default()
-}
-
 pub(crate) fn file_modtime(
     interp: &Interpreter,
     env: &Env,

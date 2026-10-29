@@ -307,6 +307,7 @@ const KEY_NAMES: &[&str] = &[
     "print-length",
     "print-level",
     "print-quoted",
+    "float-output-format",
     "noninteractive",
     "clear-message-function",
     "set-message-function",

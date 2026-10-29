@@ -3931,6 +3931,28 @@ fn window_list_value(
     Value::list(ids.into_iter().map(|id| interp.record_value(id)))
 }
 
+/// print.c Fprin1_to_string: OBJECT as `prin1' prints it, or as `princ'
+/// does with NOESCAPE (no quoting), with OVERRIDES bound either way, as
+/// Fprin1_to_string binds them before printing.
+pub(crate) fn prin1_to_string(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    object: &Value,
+    noescape: bool,
+    overrides: Option<&Value>,
+) -> Result<Value, LispError> {
+    let rendered = with_print_overrides(interp, env, overrides, |interp, env| {
+        if noescape {
+            with_printer_buffer_escape(interp, env, Some(true), |interp, env| {
+                render_printer_output(interp, object, env, false, false)
+            })
+        } else {
+            render_prin1_output(interp, object, env)
+        }
+    })?;
+    rendered.into_value(interp, env)
+}
+
 define_dispatch!(
     pub(super) fn call(
         interp: &mut Interpreter,
@@ -4418,20 +4440,8 @@ define_dispatch!(
             }
             "prin1-to-string" => {
                 need_arg_range(name, args, 1, 3)?;
-                // NOESCAPE non-nil prints like `princ' (no quoting); the
-                // OVERRIDES are bound either way, as Fprin1_to_string binds
-                // them before printing.
                 let noescape = args.get(1).is_some_and(|value| value.is_truthy());
-                let rendered = with_print_overrides(interp, env, args.get(2), |interp, env| {
-                    if noescape {
-                        with_printer_buffer_escape(interp, env, Some(true), |interp, env| {
-                            render_printer_output(interp, &args[0], env, false, false)
-                        })
-                    } else {
-                        render_prin1_output(interp, &args[0], env)
-                    }
-                })?;
-                rendered.into_value(interp, env)
+                prin1_to_string(interp, env, &args[0], noescape, args.get(2))
             }
             "write-char" => {
                 need_arg_range(name, args, 1, 2)?;

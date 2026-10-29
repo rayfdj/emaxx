@@ -8843,6 +8843,55 @@ setup_process_coding_systems's check now refuses). A 13-form
   the documented local skips, all 3,310 tests run passing (2 ignored);
   the seven integration targets; clippy `-D warnings', rustfmt and `git
   diff --check'.
+- **Round 164: `format' as styled_format.** `(format "%d-%s" i "x")'
+  took 4,363 instructions against GNU's 3,612: a fixnum's digits went
+  through num_bigint (to_radix_le, BigInt's Display and pad_integral,
+  about 380 instructions a call), and five functions layered text
+  properties over spans that were empty. Probed against GNU 30.2, the
+  conversions differed as well: the precision of a negative number in
+  %x and %o, `%.0d' of zero, the 0 flag beside a precision, `%#o',
+  glibc's %e, %f and %g (%g's form, `#', "nan" and "-nan", `%#.0f'),
+  %c's precision and flags, the errors (an unknown conversion such as %b
+  passed through, a truncated specification printed text, a non-number
+  signaled `wrong-type-argument'), `%N$' leaving the next argument's
+  number alone, `%%' with flags, %s's precision and width counted in
+  characters where GNU counts columns, `binary-as-unsigned',
+  `print-integers-as-characters' in %s, and `float-output-format', which
+  no printed float read. `format' and `format-message' are now
+  editfns.c's styled_format (styled_format.rs): a specification parsed
+  as GNU parses it, its argument converted as GNU converts it (`prin1'
+  for %S and for %s of what is neither string nor symbol, a symbol's
+  name, `char-to-string' for %c of a non-ASCII character, and GNU's
+  restart when the result turns multibyte, after which %c of a symbol
+  with a multibyte name prints the name), %s measured by character.c's
+  lisp_string_width, numbers through glibc's conversions (an integer the
+  nearest double misses formatted from its exact digits, as GNU's long
+  double holds it) at a precision capped at USEFUL_PRECISION_MAX, and
+  the output assembled with GNU's padding, prefix and excess-precision
+  zeros, in the result where GNU's sprintf writes it; where GNU moves a
+  negative length (`(format "%5.0c" ?-)' crashes it) the sign is
+  dropped. The result is the format itself when nothing changed, and the
+  argument's text itself for a format of "%s". Properties follow
+  styled_format's end: the format's ranges move over each
+  specification's output (a range from its first character covers the
+  output, one from inside it nothing), an argument's ranges are added at
+  its specification's start (before the left padding when the format has
+  properties) and stretched over its padding, and `composition' values
+  are copied for later arguments. print.c's float_to_string reads
+  `float-output-format' for every printed float and writes a %g
+  exponent with two digits (1e-05), `string-width' takes static
+  compositions at their registered width, a range running across
+  intervals with `eq' values as get_property_and_range finds it, and
+  `number-to-string' checks `numberp'. A call takes 2,763 instructions.
+  A batch test runs 32 groups of conversions, errors, widths, quoting
+  styles, multibyte results, printer variables and property layouts
+  against GNU 30.2; four tests that expected %b to print binary (a conversion
+  newer than GNU 30.2) and `#:' in the %s of an uninterned symbol now
+  expect 30.2's error and bare name.
+  Local validation: the full gate across its ten groups with
+  the documented local skips, all 3,311 tests run passing (2 ignored);
+  the seven integration targets; clippy `-D warnings', rustfmt and `git
+  diff --check'.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -9908,7 +9957,21 @@ attempt. Its timings: setup 87.0 s against 70.2 s (1.239), test bodies
 267.6 s against 275.7 s (0.971), in all 1.020: the setup back near
 round 160's, so `9984036''s 1.381 was the runner's.
 
+**On `d7529f9`** (round 163): full Rust gate passed (run 40865073493);
+frozen (run 40865077720) matched all 7,928 outcomes on its first
+attempt. Its timings: setup 86.4 s against 68.3 s (1.265), test bodies
+265.8 s against 274.3 s (0.969), in all 1.021.
+
 **Findings recorded, not fixed:**
+- **A string's intervals are merged where GNU keeps them (round 164).**
+  Emaxx's string properties merge adjacent spans with equal plists after
+  every change, where textprop.c leaves the intervals a change made:
+  `(let ((s (copy-sequence "ab"))) (put-text-property 0 1 'k 1 s)
+  (put-text-property 1 2 'k 1 s) s)' prints `#("ab" 0 1 (k 1) 1 2 (k 1))'
+  in GNU and `#("ab" 0 2 (k 1))' in Emaxx, and `object-intervals',
+  `format' of two propertized arguments and `concat' differ alike.
+  Keeping intervals as GNU's tree does changes every string property
+  operation and the printer's interval walk.
 - **Building `ucs-names' (round 162).** editfns-tests'
   `replace-buffer-contents-bug31837' calls `char-from-name', whose
   table of 42,943 names takes 1,024M instructions against GNU's 818M:

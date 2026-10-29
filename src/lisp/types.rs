@@ -2524,7 +2524,9 @@ pub(crate) fn format_float(value: f64) -> String {
                     let (mantissa, exponent) = rendered.split_once('e')?;
                     let mantissa = mantissa.trim_end_matches('0').trim_end_matches('.');
                     let exponent = exponent.parse::<i32>().ok()?;
-                    format!("{mantissa}e{exponent:+}")
+                    // %g's exponent: a sign and at least two digits.
+                    let sign = if exponent < 0 { '-' } else { '+' };
+                    format!("{mantissa}e{sign}{:02}", exponent.unsigned_abs())
                 } else {
                     let precision = (significant - exponent - 1).max(0) as usize;
                     format!("{value:.precision$}")
