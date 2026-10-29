@@ -8210,6 +8210,717 @@ fn hook_variables_and_member_agree_through_native_calls() {
 }
 
 #[test]
+fn variable_predicates_agree_for_c_and_buffer_local_variables() {
+    // boundp, default-boundp, default-value, local-variable-p and
+    // set-default of void, plain, buffer-local, automatically local,
+    // aliased, watched, keyword and C variables (a hook, a DEFVAR_INT and a
+    // DEFVAR_BOOL), from Lisp and through native add-hook and remove-hook.
+    // GNU 30.2's values.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let (out)
+          (defvar r159-local nil)
+          (defvar r159-auto 1)
+          (make-variable-buffer-local 'r159-auto)
+          (defvaralias 'r159-alias 'r159-local)
+          (defvar r159-watched 0)
+          (add-variable-watcher 'r159-watched
+                                (lambda (&rest args) (push (list 'watch (nth 1 args) (nth 2 args)) out)))
+          (push (list (boundp 'r159-void) (boundp 'r159-local) (boundp 'pre-command-hook)
+                      (boundp 'fill-column) (boundp 'r159-alias) (boundp :kw) (boundp nil) (boundp t)
+                      (default-boundp 'r159-void) (default-boundp 'fill-column)
+                      (default-boundp 'r159-auto) (default-boundp 'r159-alias))
+                out)
+          (with-temp-buffer
+            (setq-local r159-local 'here)
+            (setq r159-auto 2)
+            (push (list r159-local (default-value 'r159-local) (local-variable-p 'r159-local)
+                        (local-variable-p 'r159-local (current-buffer)) r159-auto
+                        (default-value 'r159-auto) (local-variable-p 'r159-auto)
+                        (local-variable-p 'fill-column) (local-variable-p 'buffer-file-name)
+                        (local-variable-p 'r159-alias) (default-value 'r159-alias))
+                  out)
+            (set-default 'r159-local 'default)
+            (set-default 'r159-auto 3)
+            (push (list r159-local (default-value 'r159-local) r159-auto (default-value 'r159-auto))
+                  out)
+            (makunbound 'r159-local)
+            (push (list (boundp 'r159-local) (default-boundp 'r159-local)
+                        (condition-case err r159-local (error err)))
+                  out))
+          (push (list r159-local r159-auto (boundp 'r159-local)) out)
+          (let ((old (default-value 'kill-buffer-hook)))
+            (set-default 'kill-buffer-hook '(ignore))
+            (push (list kill-buffer-hook (default-value 'kill-buffer-hook)) out)
+            (set-default 'kill-buffer-hook old))
+          (set-default 'r159-watched 5)
+          (push (list r159-watched (default-value 'r159-watched)) out)
+          (push (condition-case err (set-default 'gc-cons-threshold 'x) (error err)) out)
+          (push (condition-case err (set-default nil 1) (error err)) out)
+          (push (condition-case err (set-default :kw :kw) (error err)) out)
+          (push (condition-case err (set-default :kw 1) (error err)) out)
+          (push (condition-case err (default-value 'r159-void) (error err)) out)
+          (push (condition-case err (boundp 1) (error err)) out)
+          (push (list (set-default 'indent-tabs-mode 'yes) indent-tabs-mode
+                      (default-value 'indent-tabs-mode))
+                out)
+          (set-default 'indent-tabs-mode t)
+          (with-temp-buffer
+            (let ((old (default-value 'kill-buffer-hook)))
+              (add-hook 'kill-buffer-hook 'r159-f nil t)
+              (add-hook 'after-change-functions 'r159-g)
+              (add-hook 'r159-new-hook 'r159-h)
+              (push (list kill-buffer-hook (equal (default-value 'kill-buffer-hook) old)
+                          (local-variable-p 'kill-buffer-hook)
+                          (and (memq 'r159-g after-change-functions) t) r159-new-hook)
+                    out)
+              (remove-hook 'kill-buffer-hook 'r159-f t)
+              (remove-hook 'after-change-functions 'r159-g)
+              (remove-hook 'r159-new-hook 'r159-h)
+              (push (list (equal kill-buffer-hook old) (local-variable-p 'kill-buffer-hook)
+                          (memq 'r159-g (default-value 'after-change-functions)) r159-new-hook)
+                    out)))
+          (nreverse out))"#,
+        r#"((nil t t t t t t t nil t t t) (here nil t t 2 1 t nil t t nil) (here default 2 3) (nil t (void-variable r159-local)) (default 3 t) ((ignore) (ignore)) (watch 5 set) (5 5) (wrong-type-argument integerp x) (setting-constant nil) :kw (setting-constant :kw) (void-variable r159-void) (wrong-type-argument symbolp 1) (yes t t) ((r159-f t) t t t (r159-h)) (t nil nil nil))"#,
+        "variable predicates",
+    );
+}
+
+#[test]
+fn pipe_processes_hold_their_pipes_within_fd_setsize() {
+    // Fmake_pipe_process opens two pipes, and a channel at or above
+    // FD_SETSIZE fails with EMFILE: pipe processes made until one fails,
+    // two deleted, one made again, then more until one fails again.
+    // GNU 30.2's values.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((processes nil) (err nil))
+          (unwind-protect
+              (progn
+                (condition-case e
+                    (dotimes (i 2000)
+                      (push (make-pipe-process :name (format "r160-%d" i) :noquery t) processes))
+                  (file-error (setq err e)))
+                (let ((count (length processes)))
+                  (delete-process (pop processes))
+                  (delete-process (pop processes))
+                  (let ((again (make-pipe-process :name "r160-again" :noquery t)))
+                    (push again processes)
+                    (list (car err) (cadr err) (caddr err)
+                          (< 100 count 300)
+                          (process-status again)
+                          (condition-case e
+                              (progn
+                                (dotimes (i 10)
+                                  (push (make-pipe-process :name (format "r160-more-%d" i) :noquery t)
+                                        processes))
+                                'no-error)
+                            (file-error (list (car e) (cadr e) (caddr e))))))))
+            (mapc #'delete-process processes)))"#,
+        r#"(file-error "Creating pipe" "Too many open files" t open (file-error "Creating pipe" "Too many open files"))"#,
+        "fd setsize",
+    );
+}
+
+#[test]
+fn file_reads_searches_and_unread_deletions_agree_with_gnu() {
+    // Boyer-Moore over a rope's chunks forward and backward, folding case
+    // and in a unibyte buffer of raw bytes; a deletion with undo off,
+    // whose text nothing reads; files read through the decision buffer
+    // (a dos eol, latin-1, a null byte).  GNU 30.2's values.
+    assert_oracle_contract_matches_interpreter(
+        r#"(list
+          ;; Boyer-Moore across a rope's chunks, forward and backward, folding case.
+          (with-temp-buffer
+            (dotimes (i 3000) (insert (format "line %d Äbc xyz\n" i)))
+            (let ((case-fold-search t) (n 0) (m 0))
+              (goto-char (point-min))
+              (while (search-forward "äBC XYZ" nil t) (setq n (1+ n)))
+              (goto-char (point-max))
+              (while (search-backward "LINE 29" nil t) (setq m (1+ m)))
+              (list n m (point)
+                    (progn (goto-char (point-min)) (search-forward "line 2999 " nil t))
+                    (progn (goto-char (point-max)) (search-backward "line 1 Ä" nil t))
+                    (let ((case-fold-search nil))
+                      (goto-char (point-min))
+                      (search-forward "LINE" nil t)))))
+          ;; A unibyte buffer of raw bytes.
+          (with-temp-buffer
+            (set-buffer-multibyte nil)
+            (dotimes (i 2000) (insert "\377\200abc\201"))
+            (let ((n 0))
+              (goto-char (point-min))
+              (while (search-forward "c\201\377" nil t) (setq n (1+ n)))
+              (list n (point) (progn (goto-char (point-max)) (search-backward "\200abc" nil t)))))
+          ;; Deletion with undo off: markers and byte positions.
+          (with-temp-buffer
+            (buffer-disable-undo)
+            (dotimes (i 500) (insert "été \377 "))
+            (let ((m1 (copy-marker 10)) (m2 (copy-marker 3000)) (m3 (copy-marker 1500 t)))
+              (delete-region 20 2000)
+              (list (marker-position m1) (marker-position m2) (marker-position m3)
+                    (position-bytes m2) (buffer-size) (position-bytes (point-max))
+                    (delete-and-extract-region 1 6))))
+          ;; Files read through the decision buffer.
+          (let ((file (make-temp-file "r161")))
+            (unwind-protect
+                (mapcar
+                 (lambda (bytes)
+                   (let ((coding-system-for-write 'no-conversion))
+                     (write-region bytes nil file nil 'silent))
+                   (with-temp-buffer
+                     (insert-file-contents file)
+                     (list (string-to-list (buffer-substring (- (point-max) 12) (point-max)))
+                           (string-to-list (buffer-substring (min 2999 (point-max)) (min 3004 (point-max))))
+                           last-coding-system-used (buffer-size)
+                           (position-bytes (point-max)))))
+                 (list (concat (make-string 3000 ?a) "\303\251\r\n" (make-string 40 ?b) "\r\n")
+                       (concat "abc\351\350\n" (make-string 5000 ?x) "\n")
+                       (concat (make-string 100 ?z) "\342\202\254\n\000\n")))
+              (delete-file file))))"#,
+        r#"((3000 111 455 52883 16 nil) (1999 11996 11996) (10 1020 20 1530 1020 1531 "été \377") (((98 98 98 98 98 98 98 98 98 98 98 10) (97 97 233 10 98) utf-8-dos 3043 3045) ((120 120 120 120 120 120 120 120 120 120 120 10) (120 120 120 120 120) iso-latin-1-unix 5007 5010) ((122 122 122 122 122 122 4194274 4194178 4194220 10 0 10) nil no-conversion 106 110)))"#,
+        "file reads, searches and deletions",
+    );
+}
+
+#[test]
+fn syntax_table_properties_category_and_aliases_read_as_gnu_does() {
+    // `syntax-table' properties over many intervals, some through a
+    // `category' symbol and some among other properties, read by sexp
+    // scans and `parse-partial-sexp' with `parse-sexp-lookup-properties';
+    // `char-property-alias-alist' and `default-text-properties'.  GNU
+    // 30.2's values.
+    assert_oracle_contract_matches_interpreter(
+        r#"(with-temp-buffer
+           (setq-local parse-sexp-lookup-properties t)
+           (dotimes (i 200)
+             (insert (format "(a%d \"s|t\" b) " i)))
+           ;; `|' a string fence over many intervals, some through a category.
+           (put 'r162-fence 'syntax-table (string-to-syntax "|"))
+           (goto-char (point-min))
+           (let ((n 0))
+             (while (search-forward "|" nil t)
+               (setq n (1+ n))
+               (if (= 0 (% n 3))
+                   (put-text-property (1- (point)) (point) 'category 'r162-fence)
+                 (put-text-property (1- (point)) (point) 'syntax-table
+                                    (string-to-syntax "|")))
+               (when (= 0 (% n 5))
+                 (put-text-property (- (point) 3) (- (point) 2) 'face 'bold))))
+           (setq-local char-property-alias-alist '((r162-alias r162-real)))
+           (put-text-property 1 3 'r162-real 'from-alias)
+           (setq-local default-text-properties '(r162-default yes))
+           (list
+            (progn (goto-char (point-min)) (forward-sexp 30) (point))
+            (progn (goto-char (point-max)) (backward-sexp 25) (point))
+            (mapcar (lambda (p) (nth 3 (parse-partial-sexp (point-min) p)))
+                    '(6 7 8 9 10 11 12 510 511 512 513 514 515 516 2700 2701 2702 2703 2704 2705))
+            (mapcar (lambda (p) (nth 8 (parse-partial-sexp (point-min) p)))
+                    '(9 10 513 514 2702 2703))
+            (get-text-property 1 'r162-alias)
+            (get-text-property 5 'r162-default)
+            (get-text-property 10 'syntax-table)
+            (get-text-property 33 'syntax-table)
+            (get-char-property 33 'category)
+            (scan-lists 1 5 0)
+            (scan-lists (point-max) -3 0)))"#,
+        r#"(410 2516 (34 34 34 34 nil nil nil nil nil nil nil nil 34 34 nil nil nil 34 34 34) (5 nil nil nil nil 2702) from-alias yes nil (15) r162-fence 65 2846)"#,
+        "syntax-table properties",
+    );
+}
+
+#[test]
+fn compiled_catches_and_condition_cases_run_as_gnu_runs_them() {
+    // Bpushcatch, Bpushconditioncase and Bpophandler: clauses by
+    // condition, `:success', throws through a handler to an outer catch,
+    // errors from a subr, from `signal' and from a called function, a
+    // handler per iteration of a loop, and `handler-bind' outside them.
+    // GNU 30.2's values.
+    assert_oracle_contract_matches_interpreter(
+        r#"(progn
+        (defun r163-inner (x)
+          (condition-case err
+              (cond ((eq x 'arith) (/ 1 0))
+                    ((eq x 'throw) (throw 'r163-out 'thrown))
+                    ((eq x 'signal) (signal 'wrong-type-argument (list 'r163 x)))
+                    ((eq x 'user) (error "user %s" x))
+                    (t (list 'ok x)))
+            (arith-error (list 'arith (car err)))
+            (wrong-type-argument (list 'wta (cdr err)))
+            (:success (list 'success err))))
+        (defun r163-outer (x)
+          (catch 'r163-out
+            (catch 'r163-other
+              (condition-case nil
+                  (r163-inner x)
+                (error 'outer-error)))))
+        (defun r163-nested (n)
+          (let ((acc nil))
+            (dotimes (i n)
+              (push (catch 'k
+                      (condition-case e
+                          (progn (when (= (% i 3) 0) (throw 'k (list 'caught i)))
+                                 (when (= (% i 3) 1) (ignore (car i)))
+                                 i)
+                        (wrong-type-argument (list 'wta i (car e)))))
+                    acc))
+            (nreverse acc)))
+        (defun r163-bind ()
+          (let ((seen nil))
+            (list
+             (condition-case e
+                 (handler-bind ((error (lambda (err) (push (car err) seen))))
+                   (condition-case nil
+                       (/ 1 0)
+                     (wrong-type-argument 'not-this)))
+               (arith-error (list 'outer (car e))))
+             seen)))
+        (dolist (f '(r163-inner r163-outer r163-nested r163-bind)) (byte-compile f))
+        (list (mapcar #'r163-outer '(arith throw signal user other))
+               (r163-nested 7)
+               (r163-bind)
+               (condition-case e (r163-inner 'user) (error (list 'escaped (cadr e))))))"#,
+        r#"(((arith arith-error) thrown (wta (r163 signal)) outer-error (success (ok other))) ((caught 0) (wta 1 wrong-type-argument) 2 (caught 3) (wta 4 wrong-type-argument) 5 (caught 6)) ((outer arith-error) (arith-error)) (escaped "user user"))"#,
+        "compiled handlers",
+    );
+}
+
+#[test]
+fn format_conversions_and_string_widths_follow_styled_format() {
+    // editfns.c styled_format: field numbers that move the next argument,
+    // flags as sprintf takes them, precision in digits after a sign or
+    // prefix and in columns for %s, a bignum's precision counting its
+    // sign, %c at precision zero, excess precision, invalid conversions
+    // and arguments, `binary-as-unsigned', glibc's %e/%f/%g (a long double
+    // for an integer a double cannot hold), `float-output-format', a
+    // symbol's name and the format itself returned as they are, and the
+    // format's and the arguments' text properties in the result.
+    let program = r##"(list
+ (format "%.5x|%.5d|%.5o|%#.5x|%#x|%#o|%#o" -255 -255 -8 -255 0 0 8)
+ (format "%+x|% d|%08.3x|%-6.3d|%#X|%x|%.3x" 255 5 -15 -5 255 (ash 1 70) -1.5)
+ (format "%d|%x|%.0d|%.0x|%5.0x|%i|%#d" most-negative-fixnum most-negative-fixnum 0 0 0 7 7)
+ (format "%+.3o|%#.3o|%#5x|%-#8.4X|%d|%.30d" 8 8 255 -255 (- (ash 1 70)) 7)
+ (format "%#.30o|%.30d|%.30d|%030d|%-30d|" (ash 1 70) (- (ash 1 70)) (ash 1 70) (- (ash 1 70)) (ash 1 70))
+ (format "%#o|%#x|%#X|%+x|% x" (ash 1 70) (ash 1 70) (- (ash 1 70)) (ash 1 70) (ash 1 70))
+ (format "%.30x|%.5d|%+d|% d|%d|%x|%x|%o|%d" -1.5 1e10 0.5 0.5 1e30 1e30 -1e30 1e19 -1e19)
+ (format "%d|%x|%X|%o|%d|%d|%.3d|%.5d|%5d|" 3.7 255.9 1e20 -0.9 -3.7 -0.5 -0.5 1.0e+INF -1.0e+INF)
+ (format "%+.0d|% .0d|%5.0d|%#.0o|%#.0x|%#5.3o|" 0 0 0 0 0 8)
+ (format "%10d|%-+5d|%+ d|% +d|%05d|%-05d|%5.3d|%x" -5 5 5 -5 -5 -5 -5 -1)
+ (let ((binary-as-unsigned t))
+   (format "%x %o %d %X %x %x" -1 -8 -1 most-negative-fixnum -1.5 (- (ash 1 70))))
+ (format "%g|%g|%g|%g|%g|%g|%g|%g|%g" 0.1 1234567.0 123456.0 1e-5 0.0001 100.0 1e100 -0.0 0.0)
+ (format "%.3g|%#g|%#.3g|%.0g|%g|%g|%g|%g" 3.14159 1.0 1.0 2.5 1.0e+INF -1.0e+INF 0.0e+NaN -0.0e+NaN)
+ (format "%f|%e|%f|%e|%g|%.2f|%.0f|%.0f|%#.0f" 1.0e+INF 0.0e+NaN 3 3 3 2.675 0.5 1.5 1.0)
+ (format "%010.2f|%-10.2e|%+e|% f|%e|%e|%.20e" -3.5 3.5 0.0 1.0 1e300 1e-300 0.1)
+ (format "%g|%g|%5.1f|%f|%g|%e|%010g" 1e15 123456789012.0 3.14159 (ash 1 70) (ash 1 70) -5 -1.0e+INF)
+ (format "%.0e|%#.0e|%.0g|%#.0g|%e|%g|%f" 3.0 3.0 3.0 3.0 0.0 -0.0 -0.0)
+ (format "%.2e|%g|%g|%g|%g|%.10g|%#.10g|%+g % g" 9.995 100000.0 1000000.0 0.0001 0.00001234 1234567.0 1.5 1.0 1.0)
+ (format "%f|%e|%.15e|%g|%.20g|%f|%f|%.3f"
+         (1+ (ash 1 53)) (1+ (ash 1 53)) 9007199254740995 (1+ (ash 1 53)) (1+ (ash 1 53))
+         (1+ (ash 1 64)) most-positive-fixnum (- (ash 1 62)))
+ (format "%f|%+f|%5.1f|%-8.3e|%08.2f|%.3e|%g|%#.3x" -0.0e+NaN 0.0e+NaN 2.25 2.25 -2.25 5e-324 5e-324 0)
+ (list (length (format "%.20000c" ?a)) (length (format "%.16390d" 1))
+       (substring (format "%.16390x" -1.5) 0 3) (length (format "%#.16390g" 1.5))
+       (substring (format "%.16390e" 1.5) -6) (length (format "%.16390g" 1.5))
+       (substring (format "%.20000c" ?-) 0 3))
+ (format "%5c|%-5c|%05c|%.0c|%c|%3c|%.0c|" 65 65 65 65 233 ?é ?-)
+ (format "%s|%S|%.s|%.2s|%5.2s|%-5s|%05s|%+s|%#s|% s|%5S|%.1S|"
+         1.5 "a" "abc" "abc" "abc" "ab" "ab" "ab" "ab" "ab" "a" "abc")
+ (list (format "%1$s %1$s|%1$-5d|" 3) (format "%2$s %1$s" 1 2) (format "%0$s|" 1)
+       (format "%1$%|" 1) (format "%5%|%-5%|%.3%|") (format "%3$s %1$s %s" 1 2 3))
+ (mapcar (lambda (args) (condition-case e (apply #'format args) (error e)))
+         (list '("%b" 1) '("%B" 1) '("%y" 1) '("%" 1) '("%5" 1) '("%-" 1) '("%5.2" 1)
+               '("%2$s %s" 1 2) '("%1$" 1) '("%x" "a") '("%d" "x") '("%c" 1.0) '("%c" -1)
+               '("%d" foo) (list "%c" (make-symbol "zz")) (list "%c" (make-symbol (string-to-multibyte "zz")))
+               (list "%c%s" (make-symbol (string-to-multibyte "zy")) "x") (list "%d" (make-symbol (string-to-multibyte "zx"))) '("%$s" 1) '("%-1$s" 1) '("%3$s" 1) '("%s")
+               '("%x" 0.0e+NaN) '("%o" 1.0e+INF) (list "%c" (ash 1 70)) (list "%d" (point-marker))
+               '("%é" 1) (list (string-to-unibyte "%\351") 1) '("%d" nil) '("%e" "1")))
+ (format "%5s|%.3s|%.2s|%.1s|%-6.3s|%3s|" "日本" "日本語" "日本語" "日本語" "日本語" "é")
+ (list (string-width (compose-string "abc")) (string-width (concat "x" (compose-string "ab") "y"))
+       (let ((s (compose-string "ab"))) (put-text-property 0 1 'face 'bold s) (string-width s))
+       (string-width "\t\n\e") (string-width "日本") (string-width "abcd" 1 3)
+       (substring-no-properties (format "%3s|%.1s|" (compose-string "ab") (compose-string "cd"))))
+ (list (eq (symbol-name 'foo) (format "%s" 'foo)) (let ((s "abc")) (eq s (format s)))
+       (let ((s "a%%c")) (eq s (format s)))
+       (let ((s "a`c'") (text-quoting-style 'grave)) (eq s (format-message s)))
+       (let ((text-quoting-style 'curve)) (format-message "`a' %s" "`b'"))
+       (let ((text-quoting-style 'straight)) (format-message "`a' %s" "`b'"))
+       (let ((text-quoting-style 'curve)) (multibyte-string-p (format-message "`a'")))
+       (let ((s "x")) (eq s (format "%s" s))) (let ((s "x")) (eq s (format "%S" s)))
+       (format "%s" nil) (format "%s|%S" :key 'a\ b) (format "%d" ?a))
+ (mapcar #'multibyte-string-p
+         (list (format "%s" "\351") (format "%s%s" "\351" "é") (format "\351%s" "é") (format "%c" 233)
+               (format "%c" 200) (format "a%sb" 42) (format "%s" 'foo) (format "%s%c" "\351" ?é)))
+ (mapcar (lambda (s) (append s nil))
+         (list (format "%s%s" "\351" "é") (format "\351%s" "é") (format "%s%c|" "\351" ?é)
+               (format (string-to-unibyte "\351%d") 7) (format "%s" (string-to-unibyte "\351"))))
+ (list (let ((float-output-format "%.2f"))
+         (list (format "%s %S" 1.5 1.5) (number-to-string 1.5) (prin1-to-string 1.5) (format "%s" (list 2.5))))
+       (let ((float-output-format "%.3g")) (list (number-to-string 100.0) (number-to-string 1e10) (prin1-to-string 0.5)))
+       (let ((float-output-format "%.e")) (number-to-string 2.0))
+       (let ((float-output-format "%.0f")) (number-to-string 2.5))
+       (let ((float-output-format "%.0e")) (number-to-string 2.5))
+       (let ((float-output-format "%.16g")) (number-to-string 0.1))
+       (let ((float-output-format "%5.2f")) (number-to-string 0.1))
+       (let ((float-output-format 'x)) (number-to-string 0.1))
+       (let ((print-integers-as-characters t)) (list (format "%s %S %d" 97 97 97) (prin1-to-string 97)))
+       (condition-case e (number-to-string "a") (error e))
+       (list (prin1-to-string 1e-5) (number-to-string 1.5e-7) (format "%s" -1e-9)
+             (prin1-to-string 1.5e20) (prin1-to-string 1e100) (prin1-to-string 5e-324)))
+ (list (format (propertize "%5s|" 'face 'bold) (propertize "ab" 'x 1))
+       (format "%5s|" (propertize "ab" 'x 1))
+       (format "%-5s|" (propertize "ab" 'x 1))
+       (format (propertize "%-5s|" 'face 'bold) (propertize "ab" 'x 1))
+       (format (concat "a" (propertize "%d" 'p 1) "b") 42)
+       (format (concat (propertize "a%" 'p 1) "db") 42)
+       (format (concat "a%" (propertize "5d" 'p 1) "b") 42)
+       (format (concat (propertize "x" 'p 1) "%s" (propertize "y" 'q 2)) (propertize "mid" 'r 3))
+       (format (propertize "%s %s" 'face 'bold) (propertize "a" 'face 'italic 'k 1) "b")
+       (format (propertize "%%%d" 'p 1) 5)
+       (format (concat "%" (propertize "%" 'p 1) "x%d") 5)
+       (format (propertize "%.1s|" 'p 1) (propertize "abc" 'q 2))
+       (format "%S" (propertize "a" 'q 2))
+       (format "%s" (propertize "a" 'q 2))
+       (format (propertize "%s" 'p 1) (propertize "a" 'q 2))
+       (format (propertize "%c%c" 'p 1) ?a ?b)
+       (format "%s:%3s:%-4s:%.1s" (propertize "ab" 'a 1) (propertize "c" 'b 2) (propertize "d" 'c 3) (propertize "ef" 'd 4))
+       (format (concat (propertize "<" 'l 1) "%2$s" (propertize ">" 'r 1) "%1$s") "one" (propertize "two" 't 2))))"##;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        r##"("-000ff|-00255|-00010|-0x000ff|0|0|010" "+ff| 5|    -00f|-005  |0XFF|400000000000000000|-001" "-2305843009213693952|-2000000000000000|||     |7|7" "+010|010| 0xff|-0X00FF |-1180591620717411303424|000000000000000000000000000007" "000000200000000000000000000000|-00000001180591620717411303424|000000001180591620717411303424|-00000001180591620717411303424|1180591620717411303424        |" "0200000000000000000000000|0x400000000000000000|-0X400000000000000000|+400000000000000000| 400000000000000000" "-000000000000000000000000000001|10000000000|+0| 0|1000000000000000019884624838656|c9f2c9cd04675000000000000|-c9f2c9cd04675000000000000|1053071060221172000000|-10000000000000000000" "3|ff|56BC75E2D63100000|0|-3|0|000|000inf| -inf|" "+| |     |0||  010|" "        -5|+5   |+5|-5|-0005|-5   | -005|-1" "3fffffffffffffff 377777777777777777770 -1 2000000000000000 -1 -400000000000000000" "0.1|1.23457e+06|123456|1e-05|0.0001|100|1e+100|-0|0" "3.14|1.00000|1.00|2|inf|-inf|nan|-nan" "inf|nan|3.000000|3.000000e+00|3|2.67|0|2|1." "-000003.50|3.50e+00  |+0.000000e+00| 1.000000|1.000000e+300|1.000000e-300|1.00000000000000005551e-01" "1e+15|1.23457e+11|  3.1|1180591620717411303424.000000|1.18059e+21|-5.000000e+00|      -inf" "3e+00|3.e+00|3|3.|0.000000e+00|-0|-0.000000" "9.99e+00|100000|1e+06|0.0001|1.234e-05|1234567|1.500000000|+1  1" "9007199254740993.000000|9.007199e+15|9.007199254740995e+15|9.0072e+15|9007199254740993|18446744073709551616.000000|2305843009213693951.000000|-4611686018427387904.000" "-nan|+nan|  2.2|2.250e+00|-0002.25|4.941e-324|4.94066e-324|000" (3619 16390 "-00" 16391 "00e+00" 3 "-00") "    A|A    |    A||é|  é||" "1.5|\"a\"||ab|   ab|ab   |   ab|ab|ab|ab|  \"a\"|\"|" ("3 3|3    |" "2 1" "%0$s||" "%|" "%|%|%|" "3 1 2") ((error "Invalid format operation %b") (error "Invalid format operation %B") (error "Invalid format operation %y") (error "Format string ends in middle of format specifier") (error "Format string ends in middle of format specifier") (error "Format string ends in middle of format specifier") (error "Format string ends in middle of format specifier") (error "Not enough arguments for format string") (error "Format string ends in middle of format specifier") (error "Format specifier doesn't match argument type") (error "Format specifier doesn't match argument type") (error "Format specifier doesn't match argument type") (wrong-type-argument characterp -1) (error "Format specifier doesn't match argument type") (error "Format specifier doesn't match argument type") "zz" "zyx" (error "Format specifier doesn't match argument type") (error "Invalid format operation %$") (error "Invalid format operation %$") (error "Not enough arguments for format string") (error "Not enough arguments for format string") (overflow-error) (overflow-error) (error "Format specifier doesn't match argument type") (error "Format specifier doesn't match argument type") (error "Invalid format operation %é") (error "Invalid format operation char #o351") (error "Format specifier doesn't match argument type") (error "Format specifier doesn't match argument type")) " 日本|日|日||日    |  é|" (1 3 1 10 4 2 "  ab|cd|") (t t nil t "‘a’ `b'" "'a' `b'" t t nil "nil" ":key|a\\ b" "97") (nil t t t t nil nil t) ((4194281 233) (4194281 233) (4194281 233 124) (233 55) (233)) (("1.50 1.50" "1.50" "1.50" "(2.50)") ("100.0" "1e+10" "0.5") "2e+00" "2" "2.5" "0.1" "0.1" "0.1" ("?a ?a 97" "?a") (wrong-type-argument numberp "a") ("1e-05" "1.5e-07" "-1e-09" "1.5e+20" "1e+100" "5e-324")) (#("   ab|" 0 5 (x 1 face bold) 5 6 (face bold)) #("   ab|" 3 5 (x 1)) #("ab   |" 0 5 (x 1)) #("ab   |" 0 5 (x 1 face bold) 5 6 (face bold)) #("a42b" 1 3 (p 1)) #("a42b" 0 3 (p 1)) "a   42b" #("xmidy" 0 1 (p 1) 1 4 (r 3) 4 5 (q 2)) #("a b" 0 1 (k 1 face italic) 1 3 (face bold)) #("%5" 0 2 (p 1)) #("%x5" 0 1 (p 1)) #("a|" 0 1 (q 2 p 1) 1 2 (p 1)) "#(\"a\" 0 1 (q 2))" #("a" 0 1 (q 2)) #("a" 0 1 (q 2 p 1)) #("ab" 0 2 (p 1)) #("ab:  c:d   :e" 0 2 (a 1) 5 6 (b 2) 7 11 (c 3) 12 13 (d 4)) #("<two>one" 0 1 (l 1) 1 4 (t 2) 4 5 (r 1))))"##,
+        "styled_format",
+    );
+}
+
+#[test]
+fn string_reverse_compiled_assq_and_buffer_local_variables_follow_gnu() {
+    // fns.c:Freverse of a string (and Fnreverse's): no text properties,
+    // unibyte when the bytes are the characters, raw bytes kept in a
+    // multibyte one.  Bassq's walk and its signals for an improper or
+    // circular list, and Bvarref and Bvarset of buffer-local variables
+    // across buffers, `let' and variables automatically local when set.
+    assert_oracle_contract_matches_interpreter(
+        r#"(progn
+  (defvar r165-v 1)
+  (defvar-local r165-auto 5)
+  (defun r165-assq (k l) (assq k l))
+  (defun r165-local (n)
+    (with-temp-buffer
+      (setq-local r165-v 0)
+      (dotimes (i n) (setq r165-v (+ r165-v i)))
+      (list r165-v (local-variable-p 'r165-v) (default-value 'r165-v))))
+  (defun r165-auto-set ()
+    (with-temp-buffer
+      (setq r165-auto (1+ r165-auto))
+      (list r165-auto (local-variable-p 'r165-auto) (default-value 'r165-auto)
+            (let ((b (current-buffer)))
+              (with-temp-buffer
+                (list r165-auto (buffer-local-value 'r165-auto b)
+                      (progn (setq r165-auto 20) r165-auto)
+                      (with-current-buffer b r165-auto)))))))
+  (defun r165-let (n)
+    (with-temp-buffer
+      (setq-local r165-v 3)
+      (list (let ((r165-v n)) (list r165-v (with-temp-buffer r165-v)))
+            r165-v (with-temp-buffer r165-v))))
+  (dolist (f '(r165-assq r165-local r165-auto-set r165-let)) (byte-compile f))
+  (list (reverse (propertize "ab" 'face 'bold))
+        (multibyte-string-p (reverse (string-to-multibyte "ab")))
+        (append (reverse "日本x") nil)
+        (multibyte-string-p (reverse "日本"))
+        (append (reverse "\351a") nil)
+        (append (reverse (string-to-multibyte "\351a")) nil)
+        (multibyte-string-p (reverse (string-to-multibyte "\351a")))
+        (reverse "") (let ((s "abc")) (eq s (reverse s)))
+        (nreverse (copy-sequence "abc")) (nreverse (propertize "ab" 'k 1))
+        (let ((s (copy-sequence "abc"))) (nreverse s) s)
+        (r165-assq 2 '((1 . a) x (2 . b) (2 . c)))
+        (r165-assq 'z '((y . 1)))
+        (condition-case e (r165-assq 3 '((1 . a) . x)) (error e))
+        (condition-case e (r165-assq 3 (let ((l (list (cons 1 2)))) (setcdr l l) l))
+          (error (car e)))
+        (r165-local 5) (r165-auto-set) (r165-auto-set) r165-auto
+        (r165-let 8) r165-v))"#,
+        r#"("ba" nil (120 26412 26085) t (97 233) (97 4194281) t "" nil "cba" "ba" "abc" (2 . b) nil (wrong-type-argument listp ((1 . a) . x)) circular-list (10 t 1) (6 t 5 (5 6 20 6)) (6 t 5 (5 6 20 6)) 5 ((8 1) 3 1) 1)"#,
+        "reverse_assq_locals",
+    );
+}
+
+#[test]
+fn buffer_undo_list_records_follow_undo_c() {
+    // undo.c's records in `buffer-undo-list' itself: insertions merged in
+    // place, the first change's (t . 0), deletions with their properties
+    // and a negative position when point was at their end, marker
+    // adjustments under the deletion, point recorded after a boundary in
+    // the buffer that laid it, `undo-boundary' and its errors, the
+    // records of replace-match, subst-char-in-region, upcase-region,
+    // set-buffer-multibyte and a property change, and the list's identity
+    // through `let', `setq' and `buffer-enable-undo'.
+    assert_oracle_contract_matches_interpreter(
+        r#"(progn
+  (defun r166-show (list)
+    (mapcar (lambda (e)
+              (if (and (consp e) (markerp (car e)))
+                  (list 'marker (marker-insertion-type (car e)) (cdr e))
+                e))
+            list))
+  (list
+   (with-temp-buffer
+     (buffer-enable-undo) (insert "ab") (insert "cd") (goto-char 2) (insert "X")
+     buffer-undo-list)
+   (with-temp-buffer
+     (buffer-enable-undo)
+     (insert (propertize "abc" 'face 'bold) "def")
+     (set-buffer-modified-p nil) (undo-boundary)
+     (goto-char 3) (delete-char 1) (goto-char 5) (delete-char -2)
+     buffer-undo-list)
+   (with-temp-buffer
+     (buffer-enable-undo) (insert "0123456789")
+     (let ((m1 (copy-marker 4)) (m2 (copy-marker 6 t)) (m3 (copy-marker 8)))
+       (undo-boundary) (delete-region 3 9)
+       (list (r166-show buffer-undo-list) (marker-position m1)
+             (marker-position m2) (marker-position m3))))
+   (with-temp-buffer
+     (buffer-enable-undo)
+     (let ((r nil))
+       (setq undo-auto--last-boundary-cause nil)
+       (undo-boundary)
+       (push buffer-undo-list r) (push undo-auto--last-boundary-cause r)
+       (insert "a") (undo-boundary) (undo-boundary)
+       (push (length buffer-undo-list) r)
+       (setq buffer-undo-list 5)
+       (push (condition-case e (undo-boundary) (error e)) r)
+       (setq buffer-undo-list t)
+       (push (undo-boundary) r) (push buffer-undo-list r)
+       (nreverse r)))
+   (with-temp-buffer
+     (buffer-enable-undo) (insert "ab") (set-buffer-multibyte nil)
+     (list (car buffer-undo-list) (length buffer-undo-list)))
+   (with-temp-buffer
+     (buffer-enable-undo) (insert "foo bar") (undo-boundary)
+     (goto-char 1) (re-search-forward "o+") (replace-match "0")
+     (goto-char 1) (re-search-forward "x*") (replace-match "Y")
+     (list (buffer-string) buffer-undo-list))
+   (with-temp-buffer
+     (buffer-enable-undo) (insert "abc") (undo-boundary)
+     (put-text-property 1 3 'face 'bold)
+     buffer-undo-list)
+   (with-temp-buffer
+     (buffer-enable-undo) (insert "a")
+     (let ((before buffer-undo-list))
+       (list (let ((buffer-undo-list nil)) (insert "b") buffer-undo-list)
+             (eq before buffer-undo-list) buffer-undo-list)))
+   (with-temp-buffer
+     (buffer-enable-undo) (insert "hello world") (undo-boundary)
+     (goto-char 7) (delete-char 5) (insert "there") (undo-boundary)
+     (let ((after (buffer-string)))
+       (primitive-undo 1 (cdr buffer-undo-list))
+       (list after (buffer-string) (point))))
+   (with-temp-buffer
+     (buffer-enable-undo) (insert "abcdef") (goto-char 3) (undo-boundary)
+     (goto-char 5) (insert "Z") buffer-undo-list)
+   (with-temp-buffer
+     (list buffer-undo-list (progn (insert "x") buffer-undo-list)
+           (progn (buffer-enable-undo) buffer-undo-list)
+           (progn (insert "y") buffer-undo-list)
+           (progn (buffer-disable-undo) buffer-undo-list)))
+   (let ((b (generate-new-buffer "r166-named")))
+     (prog1 (with-current-buffer b
+              (insert "q") (list buffer-undo-list
+                                 (car (buffer-local-variables))))
+       (kill-buffer b)))
+   (with-temp-buffer
+     (buffer-enable-undo) (insert "abcabc") (set-buffer-modified-p nil)
+     (undo-boundary) (subst-char-in-region 1 7 ?b ?X)
+     (list (buffer-string) buffer-undo-list))
+   (with-temp-buffer
+     (buffer-enable-undo) (insert "Abc") (undo-boundary) (upcase-region 1 4)
+     (list (buffer-string) buffer-undo-list))
+   (with-temp-buffer
+     (buffer-enable-undo) (insert "abc")
+     (let ((l buffer-undo-list))
+       (setq buffer-undo-list (cons 'x l))
+       (insert "d")
+       (list (eq (cddr buffer-undo-list) l) buffer-undo-list)))))"#,
+        r#"(((2 . 3) (1 . 5) (t . 0)) (("de" . -3) (#("c" 0 1 (face bold)) . 3) 7 (t . 0) nil (1 . 7) (t . 0)) ((("234567" . 3) (marker nil -1) (marker t 3) (marker nil -5) 11 nil (1 . 11) (t . 0)) 3 3 3) (nil explicit 3 (wrong-type-argument listp 5) nil t) ((apply set-buffer-multibyte t) 3) ("Yf0 bar" (("" . -1) (1 . 2) ("oo" . -2) (4 . 5) 8 nil (1 . 8) (t . 0))) ((nil face nil 1 . 3) nil (1 . 4) (t . 0)) (((2 . 3)) t ((1 . 2) (t . 0))) ("hello there" "hello world" 12) ((5 . 6) 3 nil (1 . 7) (t . 0)) (t t nil ((2 . 3)) t) (((1 . 2) (t . 0)) (buffer-undo-list (1 . 2) (t . 0))) ("aXcaXc" ((5 . 6) ("b" . 5) (2 . 3) ("b" . 2) (t . 0) nil (1 . 7) (t . 0))) ("ABC" ((1 . 4) ("Abc" . -1) 4 nil (1 . 4) (t . 0))) (t ((4 . 5) x (1 . 4) (t . 0))))"#,
+        "buffer_undo_list",
+    );
+}
+
+#[test]
+fn bracket_classes_read_the_buffer_syntax_table_through_its_parents() {
+    // regex_compile's `[:space:]' and `[:word:]' bits for ASCII
+    // characters, read from the buffer's syntax table through its parents
+    // (an entry of the child over its parent's, nil falling through), with
+    // the other classes and case folding beside them, and the table's
+    // later changes seen by the patterns compiled after them.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let* ((mid (make-syntax-table))
+       (child (make-syntax-table mid))
+       (probe (lambda (re)
+                (let (hits)
+                  (dotimes (c 128)
+                    (when (string-match re (string c))
+                      (push c hits)))
+                  (nreverse hits)))))
+  (modify-syntax-entry ?a " " mid)
+  (modify-syntax-entry ?b " " child)
+  (modify-syntax-entry ?\s "." child)
+  (modify-syntax-entry ?_ "w" mid)
+  (modify-syntax-entry ?- "w" child)
+  (modify-syntax-entry ?x "_" child)
+  (with-temp-buffer
+    (list
+     (funcall probe "[[:space:]]")
+     (funcall probe "[^[:space:][:alnum:][:punct:]]")
+     (funcall probe "[[:word:]]")
+     (progn (set-syntax-table child)
+            (list (funcall probe "[[:space:]]")
+                  (funcall probe "[[:word:]]")
+                  (funcall probe "[^[:space:][:word:]]")
+                  (funcall probe "[[:space:]x-z]")
+                  (let ((case-fold-search t))
+                    (list (funcall probe "[[:upper:][:space:]]")
+                          (funcall probe "[[:lower:]]")))
+                  (let ((case-fold-search nil))
+                    (list (funcall probe "[[:upper:]]")
+                          (funcall probe "[[:blank:][:cntrl:]]")
+                          (funcall probe "[[:graph:]]")
+                          (funcall probe "[[:print:][:xdigit:]]")))
+                  (progn (modify-syntax-entry ?b "w" child)
+                         (modify-syntax-entry ?a "w" mid)
+                         (list (funcall probe "[[:space:]]")
+                               (funcall probe "[[:word:]]")))
+                  (progn (set-char-table-parent child nil)
+                         (list (funcall probe "[[:space:]]")
+                               (funcall probe "[[:word:]]"))))))))"#,
+        r#"((9 10 12 13 32) (0 1 2 3 4 5 6 7 8 11 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 127) (36 37 48 49 50 51 52 53 54 55 56 57 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122) ((9 10 12 13 65 66 97 98) (36 37 45 48 49 50 51 52 53 54 55 56 57 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 95 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122) (0 1 2 3 4 5 6 7 8 11 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 38 39 40 41 42 43 44 46 47 58 59 60 61 62 63 64 91 92 93 94 96 123 124 125 126 127) (9 10 12 13 65 66 88 89 90 97 98 120 121 122) ((9 10 12 13 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122) (65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122)) ((65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90) (0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32) (33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126) (32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126)) ((9 10 12 13) (36 37 45 48 49 50 51 52 53 54 55 56 57 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 95 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122)) ((9 10 12 13) (36 37 45 48 49 50 51 52 53 54 55 56 57 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 95 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122))))"#,
+        "bracket_classes_syntax_parents",
+    );
+}
+
+#[test]
+fn mapping_appending_interning_and_quoting_follow_fns_c_and_lread_c() {
+    // Fmapconcat (identity's fast path, a nil or empty separator left out
+    // of Fconcat), mapcar's Flength and mapcar1, Fappend's concat_to_list,
+    // Fstring_to_number on the string's own data, Fintern and
+    // Fintern_soft in the initial obarray, another or through
+    // `read-symbol-shorthands', sort's resolve_fun of an alias, and
+    // Fregexp_quote, which returns a string needing no quoting itself.
+    assert_oracle_contract_matches_interpreter(
+        r#"(list
+ (list (mapconcat #'identity '("a" "b" "c") ",")
+       (mapconcat #'identity ["x" "y"] "")
+       (mapconcat #'identity nil ",")
+       (multibyte-string-p (mapconcat #'identity '("a" "b") (string-to-multibyte "")))
+       (multibyte-string-p (mapconcat #'identity '("a" "b") (string-to-multibyte "-")))
+       (mapconcat #'identity '((?a ?b) [?c]) "-")
+       (mapconcat #'symbol-name '(foo bar) " ")
+       (mapconcat #'char-to-string "ab" ".")
+       (mapconcat #'identity '("a" "b") '(?: ?:))
+       (condition-case e (mapconcat #'identity '("a" . "b") ",") (error e))
+       (condition-case e (mapconcat #'identity (make-char-table 'x) ",") (error e))
+       (condition-case e (mapconcat #'identity '("a" 1) ",") (error e))
+       (condition-case e (mapconcat #'identity "ab" "") (error e))
+       (let ((n 0)) (list (mapconcat (lambda (s) (setq n (1+ n)) s) '("p" "q") "+") n)))
+ (list (mapcar #'1+ '(1 2 3)) (mapcar #'1+ [1 2]) (mapcar #'identity "ab")
+       (mapcar #'not (make-bool-vector 2 t))
+       (condition-case e (mapcar #'identity '(1 . 2)) (error e))
+       (condition-case e (mapcar #'identity 5) (error e))
+       (let (r) (mapc (lambda (x) (push x r)) '(1 2)) r)
+       (mapcan (lambda (x) (list x x)) '(1 2)))
+ (list (append '(1 2) '(3)) (append) (append nil) (append '(1) nil) (append '(1) 2)
+       (append "ab" nil) (append [1 2] '(3)) (append '(2) "b") (append nil nil '(5))
+       (append (make-bool-vector 2 t) nil)
+       (condition-case e (append '(1 . 2) nil) (error e))
+       (condition-case e (append 3 nil) (error e))
+       (let ((l (list 1 2))) (eq (cdr (append '(0) l)) l)))
+ (list (string-to-number "12") (string-to-number "  12") (string-to-number "12.5")
+       (string-to-number "1e3") (string-to-number "ff" 16) (string-to-number "-7")
+       (string-to-number "") (string-to-number "abc") (string-to-number "1.")
+       (string-to-number (string-to-multibyte "42")) (string-to-number "é42")
+       (condition-case e (string-to-number 5) (error e))
+       (condition-case e (string-to-number "1" 17) (error e))
+       (condition-case e (string-to-number "1" 'x) (error e)))
+ (list (eq (intern "car") 'car) (intern-soft "car") (intern-soft "r168-no-such-symbol")
+       (eq (intern "r168-fresh") (intern "r168-fresh"))
+       (let ((ob (obarray-make))) (list (eq (intern "car" ob) 'car) (intern-soft "car" ob)))
+       (let ((read-symbol-shorthands '(("r1-" . "r168-long-")))) (intern "r1-x"))
+       (let ((obarray (obarray-make))) (eq (intern "car") 'car))
+       (condition-case e (intern 5) (error e))
+       (intern-soft 'car) (intern-soft (make-symbol "car")))
+ (list (sort '(3 1 2) #'<) (sort (list "b" "a") #'string<) (sort [3 1 2] #'>)
+       (progn (defalias 'r168-less #'<) (sort (list 2 1 3) 'r168-less))
+       (sort (list 2 1) (lambda (a b) (< a b))))
+ (list (regexp-quote "a.b*c") (regexp-quote "plain") (regexp-quote "")
+       (let ((s "plain")) (eq (regexp-quote s) s))
+       (regexp-quote (propertize "x.y" 'face 'bold))
+       (multibyte-string-p (regexp-quote (string-to-multibyte "ab")))
+       (regexp-quote "[^$]")))"#,
+        r#"(("a,b,c" "xy" "" nil t "ab-c" "foo bar" "a.b" "a::b" (wrong-type-argument listp "b") (wrong-type-argument listp #^[nil nil x nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil]) (wrong-type-argument sequencep 1) (wrong-type-argument sequencep 97) ("p+q" 2)) ((2 3 4) (2 3) (97 98) (nil nil) (wrong-type-argument listp 2) (wrong-type-argument sequencep 5) (2 1) (1 1 2 2)) ((1 2 3) nil nil (1) (1 . 2) (97 98) (1 2 3) (2 . "b") (5) (t t) (wrong-type-argument listp 2) (wrong-type-argument sequencep 3) t) (12 12 12.5 1000.0 255 -7 0 0 1 42 0 (wrong-type-argument stringp 5) (args-out-of-range 17) (wrong-type-argument fixnump x)) (t car nil t (nil car) r168-long-x nil (wrong-type-argument stringp 5) car nil) ((1 2 3) ("a" "b") [3 2 1] (1 2 3) (1 2)) ("a\\.b\\*c" "plain" "" t "x\\.y" t "\\[\\^\\$]"))"#,
+        "fns_lread_direct_calls",
+    );
+}
+
+#[test]
+fn casing_reads_case_symbols_as_words_as_casefiddle_c_does() {
+    // casefiddle.c's case_ch_is_word: a symbol constituent is part of a
+    // word when the DEFVAR_BOOL `case-symbols-as-words' is non-nil, let
+    // bound or buffer-local, for `capitalize', `upcase-initials', the
+    // region and word commands and `replace-match''s case conversion,
+    // with the buffer's syntax table deciding what a word is.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((rep (lambda (text from to &optional symbols)
+             (with-temp-buffer
+               (insert text)
+               (goto-char 1)
+               (let ((case-symbols-as-words symbols))
+                 (re-search-forward from)
+                 (replace-match to))
+               (buffer-string)))))
+  (list
+   (capitalize "foo_bar baz-qux")
+   (let ((case-symbols-as-words t)) (capitalize "foo_bar baz-qux"))
+   (upcase-initials "foo_bar baz")
+   (let ((case-symbols-as-words t)) (upcase-initials "foo_bar baz"))
+   (with-temp-buffer
+     (setq-local case-symbols-as-words t)
+     (insert "foo_bar x-y")
+     (capitalize-region (point-min) (point-max))
+     (list (buffer-string) case-symbols-as-words
+           (with-temp-buffer case-symbols-as-words)))
+   (with-temp-buffer
+     (insert "foo_bar x-y")
+     (capitalize-region (point-min) (point-max))
+     (buffer-string))
+   (with-temp-buffer
+     (let ((table (make-syntax-table)))
+       (modify-syntax-entry 95 "w" table)
+       (set-syntax-table table)
+       (insert "foo_bar x-y")
+       (capitalize-region (point-min) (point-max))
+       (buffer-string)))
+   (with-temp-buffer
+     (insert "foo_bar baz")
+     (capitalize-word -2)
+     (list (buffer-string) (point)))
+   (funcall rep "Foo_bar baz" "Foo_bar" "xyz_abc")
+   (funcall rep "Foo_bar baz" "Foo_bar" "xyz_abc" t)
+   (funcall rep "Foo_Bar baz" "Foo_Bar" "xyz_abc")
+   (funcall rep "Foo_Bar baz" "Foo_Bar" "xyz_abc" t)
+   (funcall rep "FOO_BAR baz" "FOO_BAR" "xyz_abc" t)
+   (funcall rep "foo_Bar baz" "foo_Bar" "xyz_abc")
+   (funcall rep "foo_Bar baz" "foo_Bar" "xyz_abc" t)
+   (with-temp-buffer
+     (insert "abc_def ghi")
+     (goto-char 1)
+     (list (progn (forward-word 1) (point))
+           (let ((case-symbols-as-words t)) (forward-word 1) (point))
+           (progn (forward-symbol -1) (point))))))"#,
+        r#"("Foo_Bar Baz-Qux" "Foo_bar Baz-qux" "Foo_Bar Baz" "Foo_bar Baz" ("Foo_bar X-y" t nil) "Foo_Bar X-Y" "Foo_bar X-Y" ("foo_Bar Baz" 12) "xyz_abc baz" "Xyz_abc baz" "Xyz_Abc baz" "Xyz_abc baz" "XYZ_ABC baz" "xyz_abc baz" "xyz_abc baz" (4 8 1))"#,
+        "case_symbols_as_words",
+    );
+}
+
+#[test]
 fn directory_files_returns_mutable_sorted_names_with_dot_entries() {
     let unique = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -26839,7 +27550,7 @@ fn undo_file_marker_records_the_visited_modtime() {
     )
     .expect("find-file");
     call(&mut interp, "delete-char", &[Value::Integer(3)], &mut env).expect("delete-char");
-    let undo_list = interp.buffer.borrow().undo_list_value();
+    let undo_list = interp.buffer.borrow().undo_list();
     let marker = undo_list
         .to_vec()
         .expect("undo list is a list")
@@ -26944,12 +27655,12 @@ fn interactive_undo_restores_the_unmodified_state() {
     };
 
     // One command cycle: boundary, then the edit.
-    interp.buffer.borrow_mut().push_undo_boundary();
+    interp.undo_boundary(&mut env).expect("undo-boundary");
     run(&mut interp, &mut env, "(kill-line)");
     assert!(interp.buffer.borrow().is_modified(), "kill-line modifies");
 
     // Next command cycle: boundary, then undo.
-    interp.buffer.borrow_mut().push_undo_boundary();
+    interp.undo_boundary(&mut env).expect("undo-boundary");
     run(&mut interp, &mut env, "(undo)");
 
     let text = interp

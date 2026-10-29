@@ -2317,15 +2317,14 @@ pub(crate) fn digit_value_for_base(ch: char, base: u32) -> Option<u32> {
     (digit < base).then_some(digit)
 }
 
-pub(crate) fn number_to_string(value: &Value) -> Result<String, LispError> {
+/// data.c Fnumber_to_string: CHECK_NUMBER, then an integer's digits or
+/// print.c float_to_string's text of a float.
+pub(crate) fn number_to_string(interp: &Interpreter, value: &Value) -> Result<String, LispError> {
     match value.kind() {
         Kind::Integer(n) => Ok(n.to_string()),
         Kind::BigInteger(n) => Ok(n.to_string()),
-        Kind::Float(f) => Ok(crate::lisp::types::format_float(f.get())),
-        _ => Err(LispError::WrongTypeArgument(
-            "number-or-marker-p".into(),
-            *value,
-        )),
+        Kind::Float(f) => Ok(float_to_string(interp, f.get())),
+        _ => Err(LispError::WrongTypeArgument("numberp".into(), *value)),
     }
 }
 

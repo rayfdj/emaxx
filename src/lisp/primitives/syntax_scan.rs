@@ -153,14 +153,20 @@ struct Text<'r> {
 }
 
 impl<'r> Text<'r> {
-    /// ROPE's text, of CHARS characters in LEN bytes.
+    /// ROPE's text, of CHARS characters in LEN bytes; LEAF its single
+    /// leaf when the buffer knows it is one.
     fn new(
         rope: &'r ropey::Rope,
+        leaf: Option<crate::buffer::ChunkHint>,
         (chars, len): (usize, usize),
         multibyte: bool,
         extended: Vec<(usize, u32)>,
     ) -> Self {
-        let (first, _, _, _) = rope.chunk_at_byte(0);
+        let first = match leaf {
+            // SAFETY: the buffer handed LEAF with ROPE, under one borrow.
+            Some(leaf) => unsafe { leaf.chunk(rope) }.0,
+            None => rope.chunk_at_byte(0).0,
+        };
         Text {
             rope,
             chars,
@@ -322,8 +328,10 @@ pub(super) struct GlState {
     b_property: usize,
     e_property: usize,
     e_property_truncated: bool,
-    forward_i: Option<(usize, usize)>,
-    backward_i: Option<(usize, usize)>,
+    /// The intervals held, by their bounds and the count of spans before
+    /// them (where a step looks first).
+    forward_i: Option<(usize, usize, usize)>,
+    backward_i: Option<(usize, usize, usize)>,
     /// The buffer's own syntax table (BVAR (current_buffer, syntax_table)).
     buffer_table: CharTableRef,
     /// parse_sexp_lookup_properties.
@@ -341,18 +349,21 @@ pub(super) struct GlState {
 }
 
 thread_local! {
-    /// The gl_state the last regexp match used, kept for the next one as
-    /// GNU keeps its one gl_state: setting it up for a match clears what
-    /// it held, without a fresh allocation and copy a match.
-    static REGEXP_GL_STATE: std::cell::Cell<Option<Box<GlState>>> =
+    /// The gl_state the last scan or regexp match used, kept for the next
+    /// one as GNU keeps its one gl_state: setting it up again clears what
+    /// it held, without a fresh allocation and copy each time.  A scan
+    /// Lisp code runs inside another (`syntax-propertize') makes its own.
+    static GL_STATE: std::cell::Cell<Option<Box<GlState>>> =
         const { std::cell::Cell::new(None) };
 }
 
 impl GlState {
-    fn new(interp: &Interpreter) -> Self {
+    /// A gl_state for OBJECT with nothing read yet: `Scanner::read_state'
+    /// or `for_regexp' reads the variables.
+    fn new(interp: &Interpreter, object: GlObject) -> Self {
         let buffer_table = interp.current_syntax_table_id();
-        let mut gl = GlState {
-            object: GlObject::Buffer,
+        GlState {
+            object,
             start: 0,
             stop: 0,
             use_global: false,
@@ -370,17 +381,28 @@ impl GlState {
             ran_lisp: false,
             ascii: [0; 128],
             ascii_known: 0,
-        };
-        gl.read_state(interp);
-        gl
+        }
     }
 
-    /// What `new' makes for a regexp match in OBJECT while
-    /// `parse-sexp-lookup-properties' is set, in place: the ASCII entries
-    /// need no clearing, as `ascii_known' forgets them, and
-    /// `syntax-propertize--done' is read for a buffer alone, the one
-    /// object `syntax-propertize' runs on.
-    fn reset_for_regexp(&mut self, interp: &Interpreter, object: GlObject) {
+    /// The kept gl_state set up as `new' sets one up, else a new one.
+    fn take(interp: &Interpreter, object: GlObject) -> Box<Self> {
+        match GL_STATE.take() {
+            Some(mut gl) => {
+                gl.reset(interp, object);
+                gl
+            }
+            None => Box::new(GlState::new(interp, object)),
+        }
+    }
+
+    /// Give back a scan's or a regexp match's gl_state for the next one.
+    pub(super) fn release(gl: Box<Self>) {
+        GL_STATE.set(Some(gl));
+    }
+
+    /// What `new' makes for OBJECT, in place: the ASCII entries need no
+    /// clearing, as `ascii_known' forgets them.
+    fn reset(&mut self, interp: &Interpreter, object: GlObject) {
         let buffer_table = interp.current_syntax_table_id();
         self.object = object;
         self.start = 0;
@@ -397,14 +419,8 @@ impl GlState {
         self.ran_lisp = false;
         self.buffer_table = buffer_table;
         self.ascii_known = 0;
-        self.lookup_properties = true;
-        self.propertize_done = match object {
-            GlObject::Buffer => interp
-                .symbol_value_key(cached_symbol!("syntax-propertize--done"))
-                .and_then(|value| value.integer_value())
-                .unwrap_or(-1),
-            _ => -1,
-        };
+        self.lookup_properties = false;
+        self.propertize_done = -1;
     }
 
     /// Read what Lisp may have changed: the buffer's syntax table and the
@@ -643,17 +659,18 @@ impl GlState {
             } else {
                 self.backward_i
             };
-            let (Some((held_start, _)), Some(intervals)) = (held, intervals.as_ref()) else {
+            let (Some((held_start, _, held_index)), Some(intervals)) = (held, intervals.as_ref())
+            else {
                 return Err(error(
                     "Error in syntax_table logic for to-the-end intervals",
                 ));
             };
-            i = intervals.find(held_start);
+            i = intervals.find_near(held_start, held_index);
             if charpos < i.start {
                 if count > 0 {
                     return Err(error("Error in syntax_table logic for intervals <-"));
                 }
-                i = intervals.find(charpos);
+                i = intervals.find_near(charpos, i.index());
                 if i.end != self.b_property {
                     invalidate = false;
                     self.forward_i = bounds_of(&i);
@@ -663,7 +680,7 @@ impl GlState {
                 if count < 0 {
                     return Err(error("Error in syntax_table logic for intervals ->"));
                 }
-                i = intervals.find(charpos);
+                i = intervals.find_near(charpos, i.index());
                 if i.start != self.e_property {
                     invalidate = false;
                     self.backward_i = bounds_of(&i);
@@ -672,7 +689,10 @@ impl GlState {
             }
         }
 
-        let tmp_table = textget(interp, i.plist);
+        // No Lisp runs in this update: the variables textget reads are read
+        // once for its intervals.
+        let mut variables = Default::default();
+        let tmp_table = textget(interp, i.plist, &mut variables);
 
         if invalidate {
             invalidate = tmp_table.word() != self.old_prop.word();
@@ -710,7 +730,7 @@ impl GlState {
         let mut cnt = 0;
         let mut walk = Some(i);
         while let Some(i) = walk {
-            if cnt != 0 && textget(interp, i.plist).word() != tmp_table.word() {
+            if cnt != 0 && textget(interp, i.plist, &mut variables).word() != tmp_table.word() {
                 if count > 0 {
                     self.e_property = i.start;
                     self.forward_i = bounds_of(&i);
@@ -758,10 +778,17 @@ impl GlState {
         object: GlObject,
         charpos: impl FnOnce() -> usize,
     ) -> (Box<Self>, Option<LispError>) {
-        let mut gl = REGEXP_GL_STATE
-            .take()
-            .unwrap_or_else(|| Box::new(GlState::new(interp)));
-        gl.reset_for_regexp(interp, object);
+        // While `parse-sexp-lookup-properties' is set, and
+        // `syntax-propertize--done' read for a buffer alone, the one
+        // object `syntax-propertize' runs on.
+        let mut gl = GlState::take(interp, object);
+        gl.lookup_properties = true;
+        if let GlObject::Buffer = object {
+            gl.propertize_done = interp
+                .symbol_value_key(cached_symbol!("syntax-propertize--done"))
+                .and_then(|value| value.integer_value())
+                .unwrap_or(-1);
+        }
         gl.setup_buffer_syntax_table();
         (gl.b_property, gl.e_property) = match object {
             GlObject::Buffer => (1, interp.buffer.borrow().point_max()),
@@ -769,11 +796,6 @@ impl GlState {
         };
         let error = gl.update_syntax_table(interp, charpos(), 1, true).err();
         (gl, error)
-    }
-
-    /// Give back a regexp match's gl_state for the next match.
-    pub(super) fn release_for_regexp(gl: Box<Self>) {
-        REGEXP_GL_STATE.set(Some(gl));
     }
 
     /// Whether `parse-sexp-lookup-properties' is in force.
@@ -824,16 +846,21 @@ fn string_chars(string: &Value) -> usize {
 }
 
 /// An interval as gl_state holds it.
-fn bounds_of(i: &PropertyInterval<'_>) -> Option<(usize, usize)> {
-    Some((i.start, i.end))
+fn bounds_of(i: &PropertyInterval<'_>) -> Option<(usize, usize, usize)> {
+    Some((i.start, i.end, i.index()))
 }
 
 /// textget of `syntax-table' in an interval's plist.
-fn textget(interp: &Interpreter, plist: &[(crate::lisp::types::PropertyName, Value)]) -> Value {
-    crate::lisp::primitives::strings::property_from_props_with_category(
+fn textget(
+    interp: &Interpreter,
+    plist: &[(crate::lisp::types::PropertyName, Value)],
+    variables: &mut crate::lisp::primitives::strings::TextPropertyVariables,
+) -> Value {
+    crate::lisp::primitives::strings::property_from_props_reading(
         interp,
         plist,
         cached_symbol!("syntax-table"),
+        variables,
     )
     .unwrap_or(Value::Nil)
 }
@@ -893,6 +920,19 @@ thread_local! {
     static FIND_START: std::cell::Cell<Option<FindStart>> = const { std::cell::Cell::new(None) };
 }
 
+/// SYNTAX (C) == Sword, or Ssymbol too when INCLUDE_SYMBOLS:
+/// casefiddle.c's case_ch_is_word of the current syntax table's class for
+/// C, as casing and `replace-match' read it (an entry that is no cons is
+/// whitespace).
+pub(super) fn current_syntax_word_char(
+    interp: &Interpreter,
+    code: u32,
+    include_symbols: bool,
+) -> bool {
+    let class = entry_flags(interp.current_syntax_table_id().get(code)) & 0xff;
+    class == SWORD || (include_symbols && class == SSYMBOL)
+}
+
 /// One scan of the current buffer, with the C variables it reads.  Those
 /// change only through Lisp, so they are read again after each call the
 /// scan makes.
@@ -900,7 +940,8 @@ struct Scanner<'a, 'r> {
     interp: &'a mut Interpreter,
     env: &'a mut Env,
     text: Text<'r>,
-    gl: GlState,
+    /// The kept gl_state, given back when the scan is done.
+    gl: std::mem::ManuallyDrop<Box<GlState>>,
     begv: usize,
     begv_byte: usize,
     zv: usize,
@@ -916,8 +957,19 @@ struct Scanner<'a, 'r> {
     quit_count: u16,
 }
 
+impl Drop for Scanner<'_, '_> {
+    fn drop(&mut self) {
+        // SAFETY: the gl_state is taken once, here, and not used after.
+        GlState::release(unsafe { std::mem::ManuallyDrop::take(&mut self.gl) });
+    }
+}
+
 impl<'a, 'r> Scanner<'a, 'r> {
-    fn new(interp: &'a mut Interpreter, env: &'a mut Env, rope: &'r ropey::Rope) -> Self {
+    fn new(
+        interp: &'a mut Interpreter,
+        env: &'a mut Env,
+        (rope, leaf): &'r (ropey::Rope, Option<crate::buffer::ChunkHint>),
+    ) -> Self {
         let buffer = interp.buffer.borrow();
         let multibyte = buffer.is_multibyte();
         let counts = buffer.text_counts();
@@ -932,11 +984,11 @@ impl<'a, 'r> Scanner<'a, 'r> {
             Vec::new()
         };
         drop(buffer);
-        let gl = GlState::new(interp);
+        let gl = std::mem::ManuallyDrop::new(GlState::take(interp, GlObject::Buffer));
         let mut scanner = Scanner {
             interp,
             env,
-            text: Text::new(rope, counts, multibyte, extended),
+            text: Text::new(rope, *leaf, counts, multibyte, extended),
             gl,
             begv: 0,
             begv_byte: 0,
@@ -3030,7 +3082,7 @@ pub(super) fn forward_comment(
     count: &Value,
 ) -> Result<Value, LispError> {
     let count = check_fixnum(count)?;
-    let rope = interp.buffer.borrow().text_rope();
+    let rope = interp.buffer.borrow().text_rope_and_leaf();
     Scanner::new(interp, env, &rope).forward_comment(count)
 }
 
@@ -3045,7 +3097,7 @@ pub(super) fn scan_lists(
     let from = check_fixnum(from)?;
     let count = check_fixnum(count)?;
     let depth = check_fixnum(depth)?;
-    let rope = interp.buffer.borrow().text_rope();
+    let rope = interp.buffer.borrow().text_rope_and_leaf();
     Scanner::new(interp, env, &rope).scan_lists(from, count, depth, false)
 }
 
@@ -3058,7 +3110,7 @@ pub(super) fn scan_sexps(
 ) -> Result<Value, LispError> {
     let from = check_fixnum(from)?;
     let count = check_fixnum(count)?;
-    let rope = interp.buffer.borrow().text_rope();
+    let rope = interp.buffer.borrow().text_rope_and_leaf();
     Scanner::new(interp, env, &rope).scan_lists(from, count, 0, true)
 }
 
@@ -3072,7 +3124,7 @@ pub(super) fn scan_words(
 ) -> Result<Option<usize>, LispError> {
     let (mut from, mut count) = (from, count);
     loop {
-        let rope = interp.buffer.borrow().text_rope();
+        let rope = interp.buffer.borrow().text_rope_and_leaf();
         match Scanner::new(interp, env, &rope).scan_words(from, count)? {
             Words::Done(pos) => return Ok(pos),
             Words::Changed {
@@ -3104,19 +3156,14 @@ pub(super) fn forward_word(
         }
     });
     // Avoid jumping out of an input field.
-    let tmp = super::call(
+    let val = super::fields::constrain_to_field(
         interp,
-        "constrain-to-field",
-        &[
-            Value::Integer(val as i64),
-            Value::Integer(point as i64),
-            Value::Nil,
-            Value::Nil,
-            Value::Nil,
-        ],
-        env,
-    )?;
-    let val = check_fixnum(&tmp)? as usize;
+        &Value::Integer(val as i64),
+        &Value::Integer(point as i64),
+        false,
+        false,
+        Value::Nil,
+    )? as usize;
     interp.buffer.borrow_mut().goto_char(val);
     Ok(if Some(val) == orig_val {
         Value::T
@@ -3130,7 +3177,7 @@ pub(super) fn backward_prefix_chars(
     interp: &mut Interpreter,
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    let rope = interp.buffer.borrow().text_rope();
+    let rope = interp.buffer.borrow().text_rope_and_leaf();
     Scanner::new(interp, env, &rope).backward_prefix_chars()
 }
 
@@ -3192,7 +3239,7 @@ pub(super) fn skip_syntaxes(
             *entry = !*entry;
         }
     }
-    let rope = interp.buffer.borrow().text_rope();
+    let rope = interp.buffer.borrow().text_rope_and_leaf();
     Scanner::new(interp, env, &rope).skip_syntaxes(forward, &fastmap, lim as usize)
 }
 
@@ -3224,7 +3271,7 @@ pub(super) fn parse_partial_sexp(
         value if matches!(value.kind(), Kind::Symbol(name) if name == "syntax-table") => -1,
         _ => 1,
     };
-    let rope = interp.buffer.borrow().text_rope();
+    let rope = interp.buffer.borrow().text_rope_and_leaf();
     let mut scanner = Scanner::new(interp, env, &rope);
     let from_byte = scanner.text.char_to_byte(from);
     scanner.scan_sexps_forward(

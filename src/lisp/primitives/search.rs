@@ -9,7 +9,7 @@
 use super::*;
 use crate::lisp::regex_emacs::{self as rx, MatchEnv, MatchError, Pattern, Registers, Text};
 use crate::lisp::types::{CharTableRef, Kind};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 mod non_re;
@@ -86,6 +86,9 @@ impl std::ops::DerefMut for LentPattern {
 
 thread_local! {
     static SEARCHBUFS: RefCell<SearchBufs> = RefCell::new(SearchBufs::default());
+    /// The character codes of the pattern compiled last, kept for the
+    /// next compilation to read its pattern's into.
+    static PATTERN_CODES: Cell<Vec<u32>> = const { Cell::new(Vec::new()) };
     /// The canonicalization tables last read, with the char-table store
     /// epoch they were read at: a search folding case reads the
     /// case_canon_table and its case_eqv_table.
@@ -129,10 +132,19 @@ fn string_bytes(value: &Value) -> Option<(&[u8], bool, usize)> {
 /// The character codes of a pattern string: a multibyte string's
 /// characters, a unibyte string's bytes.
 fn pattern_codes(bytes: &[u8], multibyte: bool) -> Vec<u32> {
+    let mut codes = Vec::new();
+    pattern_codes_into(bytes, multibyte, &mut codes);
+    codes
+}
+
+/// `pattern_codes' into CODES, which it empties first.
+fn pattern_codes_into(bytes: &[u8], multibyte: bool, codes: &mut Vec<u32>) {
+    codes.clear();
     if !multibyte || bytes.is_ascii() {
-        return bytes.iter().map(|&byte| u32::from(byte)).collect();
+        codes.extend(bytes.iter().map(|&byte| u32::from(byte)));
+        return;
     }
-    let mut codes = Vec::with_capacity(bytes.len());
+    codes.reserve(bytes.len());
     let mut offset = 0;
     while offset < bytes.len() {
         let (code, width) = crate::lisp::types::string_data::decode_character(&bytes[offset..])
@@ -140,7 +152,6 @@ fn pattern_codes(bytes: &[u8], multibyte: bool) -> Vec<u32> {
         codes.push(code);
         offset += width;
     }
-    codes
 }
 
 /// A string's text in the matcher's stored form: its own bytes when they
@@ -251,6 +262,10 @@ enum Object<'t> {
         point: usize,
         /// The text is ASCII: byte offsets are character offsets.
         ascii: bool,
+        /// A byte offset and its character offset, point's to begin with
+        /// and then the one converted last: the position
+        /// buf_bytepos_to_charpos counts a nearby one from.
+        known: Cell<(usize, usize)>,
     },
     String {
         /// The string's data, read in place.
@@ -353,7 +368,7 @@ pub(super) struct LispMatchEnv<'a, 't> {
 impl Drop for LispMatchEnv<'_, '_> {
     fn drop(&mut self) {
         if let Some(gl) = self.gl.take() {
-            super::syntax_scan::GlState::release_for_regexp(gl);
+            super::syntax_scan::GlState::release(gl);
         }
     }
 }
@@ -386,12 +401,16 @@ impl<'a, 't> LispMatchEnv<'a, 't> {
     fn charpos(&self, at: usize) -> usize {
         match &self.object {
             Object::Buffer {
-                text, begv, ascii, ..
+                text,
+                begv,
+                ascii,
+                known,
+                ..
             } => {
                 if *ascii {
                     begv + at
                 } else {
-                    begv + text.byte_to_char(at)
+                    begv + text.char_offset_from(known, at)
                 }
             }
             Object::String {
@@ -434,10 +453,8 @@ pub(super) fn current_category_table(interp: &mut Interpreter) -> CharTableRef {
 
 /// CATEGORY_MEMBER of a category set (a bool-vector).
 pub(crate) fn category_member(set: &Value, category: u8) -> bool {
-    match set.kind() {
-        Kind::BoolVector(set) => set.get(usize::from(category)) == Some(true),
-        _ => false,
-    }
+    set.bool_vector_ref()
+        .is_some_and(|set| set.get(usize::from(category)) == Some(true))
 }
 
 /// The variables category.c's word_boundary_p reads:
@@ -504,10 +521,9 @@ pub(super) fn word_boundary_p_with(
             .map(|code| code as u8)
     };
     let mut tail = tail;
-    while let Ok(elt) = tail.car() {
-        if let (Ok(first), Ok(second)) = (elt.car(), elt.cdr())
-            && elt.is_cons()
-        {
+    while let Some(cell) = tail.cons_ref() {
+        if let Some(elt) = cell.car.get().cons_ref() {
+            let (first, second) = (elt.car.get(), elt.cdr.get());
             let first_ok = first.is_nil()
                 || category(first)
                     .is_some_and(|cat| category_member(&set1, cat) && !category_member(&set2, cat));
@@ -518,11 +534,7 @@ pub(super) fn word_boundary_p_with(
                 return !default_result;
             }
         }
-        let Ok(next) = tail.cdr() else { break };
-        if !next.is_cons() {
-            break;
-        }
-        tail = next;
+        tail = cell.cdr.get();
     }
     default_result
 }
@@ -568,7 +580,7 @@ impl MatchEnv for LispMatchEnv<'_, '_> {
     fn setup_syntax(&mut self, at: usize) {
         use super::syntax_scan::{GlObject, GlState};
         if let Some(gl) = self.gl.take() {
-            GlState::release_for_regexp(gl);
+            GlState::release(gl);
         }
         let object = match &self.object {
             Object::Buffer { .. } => GlObject::Buffer,
@@ -617,6 +629,12 @@ impl MatchEnv for LispMatchEnv<'_, '_> {
 
     fn buffer_syntax(&mut self, c: u32) -> u8 {
         self.plain_class(c)
+    }
+
+    fn buffer_syntax_ascii(&mut self) -> [u8; 128] {
+        self.syntax_table
+            .ascii_get_all()
+            .map(|entry| (super::syntax_scan::entry_flags(entry) & 0xff) as u8)
     }
 
     fn has_category(&mut self, c: u32, category: u8) -> bool {
@@ -772,8 +790,8 @@ fn compile_pattern(
             }
     };
     // The cell found or to compile into, marked busy and moved to the
-    // front; with it, its pattern when it holds this one.  None when
-    // every cell is busy.
+    // front; with it, what it held and whether that is this pattern.
+    // None when every cell is busy.
     let lent = SEARCHBUFS.with(|cache| {
         let mut cache = cache.borrow_mut();
         let cache = &mut *cache;
@@ -796,20 +814,20 @@ fn compile_pattern(
             if !cell.busy {
                 match &cell.entry {
                     None => {
-                        chosen = Some((previous, index));
+                        chosen = Some((previous, index, false));
                         break;
                     }
                     Some(entry) if matches(entry) => {
-                        chosen = Some((previous, index));
+                        chosen = Some((previous, index, true));
                         break;
                     }
-                    Some(_) => least_recent = Some((previous, index)),
+                    Some(_) => least_recent = Some((previous, index, false)),
                 }
             }
             previous = current;
             current = cell.next;
         }
-        let (previous, index) = chosen.or(least_recent)?;
+        let (previous, index, found) = chosen.or(least_recent)?;
         if let Some(previous) = previous {
             cache.cells[usize::from(previous)].next = cache.cells[usize::from(index)].next;
             cache.cells[usize::from(index)].next = cache.head;
@@ -817,46 +835,72 @@ fn compile_pattern(
         }
         let cell = &mut cache.cells[usize::from(index)];
         cell.busy = true;
-        Some((index, cell.entry.take().filter(|entry| matches(entry))))
+        Some((index, cell.entry.take(), found))
     });
-    let Some((cell, found)) = lent else {
+    let Some((cell, held, found)) = lent else {
         return Err(LispError::Signal("Too much matching reentrancy".into()));
     };
-    if let Some(entry) = found {
-        return Ok(LentPattern {
-            entry: std::mem::ManuallyDrop::new(entry),
-            cell,
-        });
-    }
+    let mut held = match held {
+        Some(entry) if found => {
+            return Ok(LentPattern {
+                entry: std::mem::ManuallyDrop::new(entry),
+                cell,
+            });
+        }
+        held => held,
+    };
 
     #[cfg(test)]
     COMPILES.with(|count| count.set(count.get() + 1));
-    let codes = pattern_codes(bytes, multibyte);
+    // compile_pattern_1 compiles into the cell's own buffer, as this
+    // compiles into the storage of the pattern the cell held.
+    let mut codes = PATTERN_CODES.take();
+    pattern_codes_into(bytes, multibyte, &mut codes);
     let whitespace_codes =
         whitespace_bytes.map(|(bytes, multibyte)| pattern_codes(bytes, multibyte));
-    let pattern = rx::compile(
+    let buffer = held
+        .as_mut()
+        .map(|entry| std::mem::take(&mut entry.pattern.buffer))
+        .unwrap_or_default();
+    let compiled = rx::compile(
         &codes,
         multibyte,
         posix,
         whitespace_codes.as_deref(),
         fold,
         menv,
-    )
-    .map_err(|error| {
+        buffer,
+    );
+    PATTERN_CODES.set(codes);
+    let pattern = compiled.map_err(|error| {
         // compile_pattern_1 leaves the cell empty.
         release_cell(cell, None);
         invalid_regexp(error.message())
     })?;
-    let used_syntax = pattern.used_syntax;
-    let entry = Box::new(CacheEntry {
-        regexp: bytes.to_vec(),
-        multibyte,
-        translate,
-        posix,
-        whitespace: whitespace_bytes.map(|(bytes, multibyte)| (bytes.to_vec(), multibyte)),
-        syntax_table: used_syntax.then_some(syntax_table),
-        pattern,
-    });
+    let syntax_table = pattern.used_syntax.then_some(syntax_table);
+    let whitespace = whitespace_bytes.map(|(bytes, multibyte)| (bytes.to_vec(), multibyte));
+    let entry = match held {
+        Some(mut entry) => {
+            entry.regexp.clear();
+            entry.regexp.extend_from_slice(bytes);
+            entry.multibyte = multibyte;
+            entry.translate = translate;
+            entry.posix = posix;
+            entry.whitespace = whitespace;
+            entry.syntax_table = syntax_table;
+            entry.pattern = pattern;
+            entry
+        }
+        None => Box::new(CacheEntry {
+            regexp: bytes.to_vec(),
+            multibyte,
+            translate,
+            posix,
+            whitespace,
+            syntax_table,
+            pattern,
+        }),
+    };
     Ok(LentPattern {
         entry: std::mem::ManuallyDrop::new(entry),
         cell,
@@ -924,12 +968,54 @@ enum SnapshotRange<'t> {
     Str(&'t str),
 }
 
+/// How far in bytes from the offset it knows `char_offset_from' counts
+/// characters rather than asking the text: a rope's conversion counts
+/// within the leaf it lands in, after walking to it.
+const CHAR_COUNT_DISTANCE: usize = 1024;
+
 impl SnapshotRange<'_> {
     /// The character offset of byte offset AT from the range's start.
     fn byte_to_char(&self, at: usize) -> usize {
         match self {
             SnapshotRange::Rope(rope) => rope.byte_to_char(at),
             SnapshotRange::Str(text) => ropey::str_utils::byte_to_char_idx(text, at),
+        }
+    }
+
+    /// The character offset of byte offset AT, counted from KNOWN's offset
+    /// when AT is near it, as buf_bytepos_to_charpos counts from the
+    /// nearest position it knows; AT is then the one known.
+    fn char_offset_from(&self, known: &Cell<(usize, usize)>, at: usize) -> usize {
+        let (byte, char) = known.get();
+        let offset = if at.abs_diff(byte) > CHAR_COUNT_DISTANCE {
+            self.byte_to_char(at)
+        } else if at >= byte {
+            char + self.chars_in(byte, at)
+        } else {
+            char - self.chars_in(at, byte)
+        };
+        known.set((at, offset));
+        offset
+    }
+
+    /// The characters bytes FROM..TO of the range begin.
+    fn chars_in(&self, from: usize, to: usize) -> usize {
+        fn starts(bytes: &[u8]) -> usize {
+            bytes.iter().filter(|&&byte| byte & 0xC0 != 0x80).count()
+        }
+        match self {
+            SnapshotRange::Str(text) => starts(&text.as_bytes()[from..to]),
+            SnapshotRange::Rope(rope) => {
+                let mut count = 0;
+                let mut at = from;
+                while at < to {
+                    let (chunk, chunk_start) = rope.chunk_at_byte(at);
+                    let end = (chunk_start + chunk.len()).min(to);
+                    count += starts(&chunk[at - chunk_start..end - chunk_start]);
+                    at = end;
+                }
+                count
+            }
         }
     }
 }
@@ -1078,11 +1164,13 @@ impl BufferSnapshot {
 
     /// The matcher's object for this snapshot's text.
     fn object(&self) -> Object<'_> {
+        let point = self.offset(self.point);
         Object::Buffer {
             text: self.range(),
             begv: self.begv,
-            point: self.offset(self.point),
+            point,
             ascii: self.ascii,
+            known: Cell::new((point, self.point - self.begv)),
         }
     }
 }

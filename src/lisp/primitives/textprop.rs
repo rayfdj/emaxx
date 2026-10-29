@@ -1003,21 +1003,7 @@ pub(crate) fn add_text_properties(
             return Ok(false);
         };
         match target {
-            SearchObject::String(string) => {
-                modify_shared_string_properties(&string, start, end, |mut current| {
-                    // add_properties replaces a value in place and conses a
-                    // new property onto the plist's head.
-                    for (name, value) in &props {
-                        if let Some((_, existing)) = current.iter_mut().find(|(key, _)| key == name)
-                        {
-                            *existing = *value;
-                        } else {
-                            current.insert(0, (*name, *value));
-                        }
-                    }
-                    current
-                })
-            }
+            SearchObject::String(string) => add_string_properties(&string, start, end, &props),
             SearchObject::Buffer(id) => modify_buffer_text_properties(
                 interp,
                 id,
@@ -1028,6 +1014,27 @@ pub(crate) fn add_text_properties(
                 env,
             ),
         }
+    })
+}
+
+/// textprop.c:add_properties with TEXT_PROPERTY_REPLACE over [START, END)
+/// of the string STRING: each of PROPS replaces its value in place, or is
+/// consed onto the head of a plist without it.  Whether one changed.
+pub(crate) fn add_string_properties(
+    string: &Value,
+    start: usize,
+    end: usize,
+    props: &[(PropertyName, Value)],
+) -> Result<bool, LispError> {
+    modify_shared_string_properties(string, start, end, |mut current| {
+        for (name, value) in props {
+            if let Some((_, existing)) = current.iter_mut().find(|(key, _)| key == name) {
+                *existing = *value;
+            } else {
+                current.insert(0, (*name, *value));
+            }
+        }
+        current
     })
 }
 

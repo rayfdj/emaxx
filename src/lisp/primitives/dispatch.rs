@@ -7,6 +7,7 @@ pub(super) use collections::map_char_table_with;
 mod comp;
 pub(crate) use comp::{comp_el_to_eln_rel_filename, native_elisp_load};
 mod composition;
+pub(crate) use composition::StringCompositions;
 pub(crate) mod display;
 mod emacs_module;
 mod faces;

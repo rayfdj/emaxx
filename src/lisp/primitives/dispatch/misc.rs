@@ -165,6 +165,32 @@ fn destroy_fringe_bitmap(
 /// `symbols-with-pos-enabled' is non-nil — the same view GNU's `eq' takes
 /// inside `assq'/`plist-get' during byte compilation.
 /// `bare_symbol_name' without the name copy: the symbol itself.
+/// Fintern and Fintern_soft's oblookup of a string NAME (ARGS' first)
+/// when they would look it up in the initial obarray as it is: no
+/// OBARRAY argument and `obarray' holding that one, and no
+/// `read-symbol-shorthands' to rewrite it.  The symbol found, or None
+/// (not found, or any other case) for the full arm.
+fn standard_oblookup(
+    interp: &Interpreter,
+    args: &[Value],
+) -> Option<crate::lisp::types::SymbolName> {
+    if args.get(1).is_some_and(|obarray| !obarray.is_nil()) {
+        return None;
+    }
+    let obarray = interp.symbol_value_key(cached_symbol!("obarray"))?;
+    if !matches!(obarray.kind(), Kind::Record(id) if interp.is_standard_obarray_id(id.id))
+        || interp
+            .symbol_value_key(cached_symbol!("read-symbol-shorthands"))
+            .is_some_and(|shorthands| !shorthands.is_nil())
+    {
+        return None;
+    }
+    crate::lisp::primitives::strings::with_string_text(&args[0], |name| {
+        interp.standard_obarray_symbol(name)
+    })
+    .flatten()
+}
+
 pub(super) fn bare_symbol_identity(
     interp: &Interpreter,
     env: &Env,
@@ -388,6 +414,9 @@ fn set_default_internal_symbol(
     value: Value,
     env: &mut Env,
 ) -> Result<(), LispError> {
+    if interp.store_default_value(symbol, value) {
+        return Ok(());
+    }
     if interp.check_constant_assignment_symbol(symbol, value)? {
         return Ok(());
     }
@@ -654,6 +683,9 @@ define_dispatch!(
                 if args.is_empty() || args.len() > 2 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
+                if let Some(symbol) = standard_oblookup(interp, args) {
+                    return Ok(Value::Symbol(symbol));
+                }
                 let obarray = args
                     .get(1)
                     .filter(|value| !value.is_nil())
@@ -714,6 +746,9 @@ define_dispatch!(
                             .lookup_var("obarray", env)
                             .filter(|value| !value.is_nil())
                     });
+                if let Some(symbol) = standard_oblookup(interp, args) {
+                    return Ok(Value::Symbol(symbol));
+                }
                 if let Some(symbol) = bare_symbol_identity(interp, env, &args[0]) {
                     // Fintern_soft's symbol argument searches for this exact
                     // object. A later symbol with the same name is different.

@@ -156,9 +156,6 @@ impl TraceLispRoots for SpecialBindingRestore {
         if let Some(value) = &self.previous {
             marker.value(value);
         }
-        if let Some(state) = &self.previous_undo_state {
-            state.visit_lisp_roots(&mut |value| marker.value(value));
-        }
     }
 }
 

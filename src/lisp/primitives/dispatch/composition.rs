@@ -142,19 +142,60 @@ fn composition_ranges(
             .map(|span| (span.start, span.end, span.props))
             .collect::<Vec<_>>()
     };
-    Ok(spans
-        .into_iter()
-        .filter_map(|(start, end, properties)| {
-            properties
-                .into_iter()
-                .find(|(name, _)| name == "composition")
-                .map(|(_, property)| CompositionRange {
-                    start,
-                    end,
-                    property,
-                })
-        })
-        .collect())
+    // textprop.c get_property_and_range: a composition's range runs on
+    // across the adjacent intervals whose values are `eq' to its own.
+    let mut ranges: Vec<CompositionRange> = Vec::new();
+    for (start, end, properties) in spans {
+        let Some(property) = properties
+            .into_iter()
+            .find(|(name, _)| name == "composition")
+            .map(|(_, property)| property)
+        else {
+            continue;
+        };
+        match ranges.last_mut() {
+            Some(last) if last.end == start && last.property.word() == property.word() => {
+                last.end = end;
+            }
+            _ => ranges.push(CompositionRange {
+                start,
+                end,
+                property,
+            }),
+        }
+    }
+    Ok(ranges)
+}
+
+/// A string's static compositions, for character.c lisp_string_width's
+/// find_composition (POS, -1, ...) and get_composition_id.
+pub(crate) struct StringCompositions(Vec<CompositionRange>);
+
+impl StringCompositions {
+    pub(crate) fn of(interp: &Interpreter, string: &Value) -> Result<Self, LispError> {
+        composition_ranges(interp, string).map(Self)
+    }
+
+    /// The end and width of the composition STRING's `composition'
+    /// property makes of its characters from POSITION to the end of the
+    /// property's range, when the property is valid for them.
+    pub(crate) fn at(
+        &self,
+        interp: &mut Interpreter,
+        string: &Value,
+        position: usize,
+    ) -> Result<Option<(usize, usize)>, LispError> {
+        let Some(range) = find_static_composition(&self.0, position, None) else {
+            return Ok(None);
+        };
+        let from_position = CompositionRange {
+            start: position,
+            end: range.end,
+            property: range.property,
+        };
+        Ok(register_composition(interp, &from_position, string)?
+            .map(|(_, _, _, width)| (range.end, width.max(0) as usize)))
+    }
 }
 
 fn find_static_composition(

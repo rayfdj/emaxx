@@ -452,6 +452,27 @@ impl Interpreter {
 
     /// process.c:open_channel_for_module duplicates the pipe's writer. The
     /// module owns the duplicate; the process retains both original ends.
+    /// Fmake_pipe_process's channels, for the pipe process RECORD_ID.
+    pub(crate) fn install_pipe_process_channels(
+        &mut self,
+        record_id: u64,
+        channels: crate::lisp::primitives::PipeProcessChannels,
+    ) {
+        if let Some(process) = self.find_process_state_mut(record_id) {
+            process.module_pipe = Some(channels.output);
+            process.pipe_input = Some(channels.input);
+        }
+    }
+
+    /// create_process's close_process_fd of the WRITE_TO_SUBPROCESS and
+    /// SUBPROCESS_STDIN of the pipe process RECORD_ID once it is another
+    /// process's standard error.
+    pub(crate) fn close_pipe_process_input(&mut self, record_id: u64) {
+        if let Some(process) = self.find_process_state_mut(record_id) {
+            process.pipe_input = None;
+        }
+    }
+
     pub(crate) fn open_module_channel(
         &mut self,
         value: &Value,
@@ -578,6 +599,7 @@ impl Interpreter {
             network: None,
             serial: None,
             module_pipe: None,
+            pipe_input: None,
             contact_host: None,
             contact_service: None,
             remote: None,
@@ -672,6 +694,7 @@ impl Interpreter {
             network,
             serial: None,
             module_pipe: None,
+            pipe_input: None,
             contact_host,
             contact_service,
             remote,
@@ -752,6 +775,7 @@ impl Interpreter {
             network: None,
             serial: Some(serial),
             module_pipe: None,
+            pipe_input: None,
             contact_host: None,
             contact_service: None,
             remote: None,
@@ -1161,38 +1185,47 @@ impl Interpreter {
             .collect()
     }
 
-    /// Accept one pending connection on a server listener, if any.
-    /// Returns the accepted stream's runtime and, for inet listeners, the
-    /// peer's socket address (unix peers are unnamed).
+    /// Accept one pending connection on a server listener, if any: the
+    /// accepted stream's runtime and, for inet listeners, the peer's
+    /// socket address (unix peers are unnamed), or the errno of an accept
+    /// that failed, an accepted socket beyond FD_SETSIZE's EMFILE among
+    /// them (server_accept_connection closes it).
     pub(crate) fn accept_network_connection(
         &mut self,
         server_id: u64,
-    ) -> Result<Option<(NetworkRuntime, Option<std::net::SocketAddr>)>, LispError> {
+    ) -> Result<Option<AcceptedConnection>, LispError> {
         let Some(process) = self.find_process_state_mut(server_id) else {
             return Ok(None);
         };
-        match process.network.as_ref() {
-            Some(NetworkRuntime::Listener(listener)) => match listener.accept() {
-                Ok((stream, addr)) => {
-                    stream
-                        .set_nonblocking(true)
-                        .map_err(|error| LispError::Signal(error.to_string()))?;
-                    Ok(Some((NetworkRuntime::Stream(stream), Some(addr))))
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
-                Err(error) => Err(LispError::Signal(error.to_string())),
-            },
-            Some(NetworkRuntime::UnixListener(listener)) => match listener.accept() {
-                Ok((stream, _)) => {
-                    stream
-                        .set_nonblocking(true)
-                        .map_err(|error| LispError::Signal(error.to_string()))?;
-                    Ok(Some((NetworkRuntime::UnixStream(stream), None)))
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
-                Err(error) => Err(LispError::Signal(error.to_string())),
-            },
-            _ => Ok(None),
+        let accepted = match process.network.as_ref() {
+            Some(NetworkRuntime::Listener(listener)) => {
+                listener.accept().and_then(|(stream, addr)| {
+                    let stream = crate::lisp::primitives::socket_within_fd_setsize(stream)?;
+                    Ok((NetworkRuntime::Stream(stream), Some(addr)))
+                })
+            }
+            Some(NetworkRuntime::UnixListener(listener)) => {
+                listener.accept().and_then(|(stream, _)| {
+                    let stream = crate::lisp::primitives::socket_within_fd_setsize(stream)?;
+                    Ok((NetworkRuntime::UnixStream(stream), None))
+                })
+            }
+            _ => return Ok(None),
+        };
+        match accepted {
+            Ok((runtime, addr)) => {
+                let nonblocking = match &runtime {
+                    NetworkRuntime::Stream(stream) => stream.set_nonblocking(true),
+                    NetworkRuntime::UnixStream(stream) => stream.set_nonblocking(true),
+                    _ => Ok(()),
+                };
+                nonblocking.map_err(|error| LispError::Signal(error.to_string()))?;
+                Ok(Some(AcceptedConnection::Stream(runtime, addr)))
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
+            Err(error) => Ok(Some(AcceptedConnection::Failed(
+                error.raw_os_error().unwrap_or(libc::EIO),
+            ))),
         }
     }
 
@@ -2067,6 +2100,7 @@ impl Interpreter {
         }
         process.serial = None;
         process.module_pipe = None;
+        process.pipe_input = None;
         if matches!(
             kind,
             ProcessKind::Network | ProcessKind::Serial | ProcessKind::Pipe

@@ -8683,6 +8683,486 @@ setup_process_coding_systems's check now refuses). A 13-form
   the documented local skips, all 3,305 tests run passing (2 ignored);
   the seven integration targets; clippy `-D warnings', rustfmt and `git
   diff --check'.
+- **Round 159: the variable predicates of C and buffer-local
+  variables.** Round 158's native path answered a plain variable only;
+  edebug-tests' hooks are mostly C variables (`kill-buffer-hook', the
+  change functions) or buffer-local ones, whose calls still took the
+  subr's entry and its dispatch by name. `native_variable_subr' answers
+  `boundp', `default-boundp', `default-value', `local-variable-p' (of
+  the current buffer) and `set-default' of any symbol that is no alias,
+  after the handlers are synced, by the lookups the subrs make
+  (find_symbol_value, default_value, the buffer's binding, the
+  always-local flag) and set_default_internal's store when it has nothing
+  to signal, convert badly or notify (`store_default_value', which the
+  subr's own path now tries first too); the symbol is read once, by its
+  tag. Fboundp of a void variable built a `void-variable' error (a name
+  string, then its drop) to answer nil: across edebug-tests 705,744
+  times, 33M instructions beside the lookup's 102M. The lookup now
+  answers an option (`dynamic_value_symbol'), about 37 instructions a
+  call where it took about 150. edebug-tests takes 4,809M where round 158
+  left 4,914M (GNU 4,113M), `remove-hook' 85M where it took 97M (GNU
+  31M). Left of the gap: each native subr call's own path, about 150
+  instructions for these against GNU's 25 to 50, and the closure entry
+  of `mapatoms' (#304): `comp--all-classes', which `advice-add''s
+  trampoline compilation runs again and again over every symbol, is
+  130M of the file's 700M excess. A batch test runs the five subrs over
+  void, plain, buffer-local, automatically local, aliased, watched,
+  keyword and C variables (a hook, a DEFVAR_INT and a DEFVAR_BOOL), from
+  Lisp and through native `add-hook' and `remove-hook', against GNU
+  30.2.
+  Local validation: the full gate across its ten groups with
+  the documented local skips, all 3,306 tests run passing (2 ignored);
+  the seven integration targets; clippy `-D warnings', rustfmt and `git
+  diff --check'.
+- **Round 160: FD_SETSIZE.** process.c refuses a channel that `pselect'
+  could not watch: create_process, Fmake_pipe_process, create_pty,
+  Fmake_serial_process, connect_network_socket and
+  server_accept_connection fail with EMFILE when the descriptor lies at
+  or above FD_SETSIZE (glibc's 1024; the contracted macOS build is
+  configured with 10000). Emaxx checked none of them, and its pipe
+  processes held no descriptors at all (a module's `open-channel' made a
+  pipe on demand), so process-tests' fd-setsize tests, which make pipe
+  processes until one fails with EMFILE and then try each kind of
+  process, made all 1,025 where GNU stops at about 254, and then started
+  every `cat' and `sleep' GNU refuses: `make-process' 174 ms against
+  45, `make-serial-process' 141 against 21, `make-pipe-process' 42
+  against 16. A pipe process now opens Fmake_pipe_process's two pipes
+  (the one it reads, which `open-channel' writes into, and the one its
+  sends go to) and is refused, its pipes closed, when either channel
+  lies beyond FD_SETSIZE; a `:stderr' buffer's pipe process is made
+  before the child is spawned, and a pipe process that becomes a
+  process's standard error loses its input pipe, as create_process
+  closes it. make-process checks the channel it reads and the one it
+  writes, pipe or pty, before the spawn; the fork path makes its pipes
+  itself for that, where it left them to the spawn. create_pty refuses
+  its master ("Opening pty"), Fmake_serial_process its port ("Opening
+  serial port", which serial_open's failure now reports as GNU does, a
+  `file-error' naming the port), and a client socket, TCP or local, is
+  refused before it connects ("make client process failed"), a server
+  or datagram socket once it is made ("make server process failed"),
+  an accepted one once accepted. server_accept_connection's failed
+  accept, this refusal among them, now goes to the server's log
+  function as "accept failed with code" and the errno, where Emaxx
+  signalled; a blocking connect a signal interrupts is waited for and
+  read back through SO_ERROR, as connect_network_socket does. The three
+  tests take 55.5, 44.0 and 15.3 ms (GNU 56.7, 24.3, 15.5), all of
+  process-tests 1,750 ms where it took 1,831 (GNU 1,687), every outcome
+  GNU's. A child's standard error still reaches its stderr pipe process
+  through a pipe of the child's own rather than that process's
+  SUBPROCESS_STDOUT (recorded below). A batch test makes pipe processes
+  until one fails, deletes two, makes one again and more until one
+  fails again, against GNU 30.2.
+  Local validation: the full gate across its ten groups with
+  the documented local skips, all 3,307 tests run passing (2 ignored;
+  eval_01's `subprocess_exit_is_event_driven_and_notifies_newest_process_first_once'
+  failed once with the machine loaded, as round 159's build does there,
+  and its group passed run again alone);
+  the seven integration targets; clippy `-D warnings', rustfmt and `git
+  diff --check'.
+- **Round 161: reading a large file, and Boyer-Moore in place.**
+  ucs-normalize-tests' part0 reads admin/unidata/NormalizationTest.txt
+  (2.6 MB, 600,034 bytes above 0x7F) with `insert-file-contents',
+  which took 172M instructions where GNU's Finsert_file_contents takes
+  67M. The detection that decode_coding_gap runs first was 71M (GNU's
+  detect_coding and detect_coding_utf_8 64M): its head scan stepped a
+  byte at a time where, after the first 8-bit byte, only a control
+  character changes anything, and detect_coding_utf_8 stepped a byte
+  at a time over ASCII; both now skip such bytes sixteen at a time, 24M
+  in all, with the same head_ascii, eol bits and character count.
+  decide_coding_unwind's emptying of the unibyte text
+  `set-auto-coding-function' read copied that text out as the deleted
+  string (10M) though nothing reads it: a deletion now makes the
+  deleted string only for the undo list or a caller that returns it,
+  del_range_1's RET_STRING, and the callers that drop it ask for none;
+  removing the whole text takes its raw-byte count without a walk. The
+  unibyte text goes in with the counts the raw decode made (a character
+  a byte, a raw-byte character each byte above 0x7F), and a marker's
+  byte position in a unibyte buffer moves by the characters inserted,
+  where both were counted again. sgml-html-meta-auto-coding-function's
+  `(search-forward "</head>")' over the whole unibyte text, and every
+  other `search-forward' over a large buffer, ran boyer_moore's strides
+  through a byte reader that checked its chunk at each stride and found
+  each chunk from the rope's root: the strides now run over a chunk's
+  bytes in place, as GNU's pointer runs to BUFFER_CEILING_OF, and a
+  forward scan takes the next chunk from the rope's chunk iterator.
+  Thirty searches over a 2.2M-character buffer take 48.9M instructions
+  where they took 82.5M (GNU 170M, 134.6M of it buf_bytepos_to_charpos).
+  The read takes 102M, part0 150M where it took 220M (GNU 101M). A
+  batch test searches forward and backward across a rope's chunks,
+  folding case and in a unibyte buffer of raw bytes, deletes with undo
+  off and reads a dos-eol UTF-8, a latin-1 and a binary file, against
+  GNU 30.2.
+  Local validation: the full gate across its ten groups with
+  the documented local skips, all 3,308 tests run passing (2 ignored);
+  the seven integration targets; clippy `-D warnings', rustfmt and `git
+  diff --check'.
+- **Round 162: text properties under syntax scans.** csharp-mode's
+  indentation test (cc-mode with `parse-sexp-lookup-properties') took
+  436M instructions against GNU's 257M. Its 42,344 `update_syntax_table'
+  calls cost 1,500 instructions each against GNU's 450; each reads the
+  `syntax-table' property of five intervals or so, at 165 instructions
+  a read where GNU's textget walks the plist with EQ. A read resolved
+  its key's symbol through a thread-local at each plist entry, compared
+  each name with `category' by its text in a second walk, and read
+  `char-property-alias-alist' and `default-text-properties' each time
+  the plist lacked the property. It now walks the plist once by EQ,
+  the key and `category' resolved once, as lookup_char_property does,
+  and the scan's update reads those two variables once for all its
+  intervals (no Lisp runs within it), each only at its first need; a
+  nil alist or plist returns before its walk. Each step to the next or
+  previous interval was a binary search of the spans where GNU's
+  next_interval follows a pointer: an interval now carries the count
+  of spans before it, from which a step looks first, and gl_state holds
+  that count with the interval's bounds. A read takes 95 instructions,
+  a step 56 where a search took 93, an update 1,112; the test takes 421M.
+  A batch test scans sexps and reads string states over `syntax-table'
+  properties in many intervals, some through a `category' symbol, and
+  reads `char-property-alias-alist' and `default-text-properties',
+  against GNU 30.2.
+  Local validation: the full gate across its ten groups with
+  the documented local skips, all 3,309 tests run passing (2 ignored);
+  the seven integration targets; clippy `-D warnings', rustfmt and `git
+  diff --check'.
+- **Round 163: handlers in the verified byte-code loop.** In a compiled
+  loop each `condition-case' (Bpushconditioncase and Bpophandler) cost
+  728 instructions an iteration against GNU's 386, and each `catch'
+  (Bpushcatch) 523 against 364. The three handler opcodes left the
+  verified loop for the general op_in_place path, about 160 instructions
+  an op for its decode and exec_op's prologue, and each push copied the
+  conditions into a fresh Rc<[Value]>. The verified loop now runs them as
+  exec_byte_code does, the handler's stack depth counted from the frame's
+  base as `bc_stack.len()' counts it, and a handler with one condition
+  holds it without an allocation; the helpers stay out of line, since
+  inlined they slowed the loop's other ops by 7.6 %. An iteration of the
+  condition-case loop takes 264 instructions, of the catch loop 219. A
+  batch test throws and signals through nested compiled handlers
+  (conditions alone and in lists, `:success', `handler-bind' around an
+  inner handler that does not match, errors escaping to an interpreted
+  handler) against GNU 30.2.
+  Local validation: the full gate across its ten groups with
+  the documented local skips, all 3,310 tests run passing (2 ignored);
+  the seven integration targets; clippy `-D warnings', rustfmt and `git
+  diff --check'.
+- **Round 164: `format' as styled_format.** `(format "%d-%s" i "x")'
+  took 4,363 instructions against GNU's 3,612: a fixnum's digits went
+  through num_bigint (to_radix_le, BigInt's Display and pad_integral,
+  about 380 instructions a call), and five functions layered text
+  properties over spans that were empty. Probed against GNU 30.2, the
+  conversions differed as well: the precision of a negative number in
+  %x and %o, `%.0d' of zero, the 0 flag beside a precision, `%#o',
+  glibc's %e, %f and %g (%g's form, `#', "nan" and "-nan", `%#.0f'),
+  %c's precision and flags, the errors (an unknown conversion such as %b
+  passed through, a truncated specification printed text, a non-number
+  signaled `wrong-type-argument'), `%N$' leaving the next argument's
+  number alone, `%%' with flags, %s's precision and width counted in
+  characters where GNU counts columns, `binary-as-unsigned',
+  `print-integers-as-characters' in %s, and `float-output-format', which
+  no printed float read. `format' and `format-message' are now
+  editfns.c's styled_format (styled_format.rs): a specification parsed
+  as GNU parses it, its argument converted as GNU converts it (`prin1'
+  for %S and for %s of what is neither string nor symbol, a symbol's
+  name, `char-to-string' for %c of a non-ASCII character, and GNU's
+  restart when the result turns multibyte, after which %c of a symbol
+  with a multibyte name prints the name), %s measured by character.c's
+  lisp_string_width, numbers through glibc's conversions (an integer the
+  nearest double misses formatted from its exact digits, as GNU's long
+  double holds it) at a precision capped at USEFUL_PRECISION_MAX, and
+  the output assembled with GNU's padding, prefix and excess-precision
+  zeros, in the result where GNU's sprintf writes it; where GNU moves a
+  negative length (`(format "%5.0c" ?-)' crashes it) the sign is
+  dropped. The result is the format itself when nothing changed, and the
+  argument's text itself for a format of "%s". Properties follow
+  styled_format's end: the format's ranges move over each
+  specification's output (a range from its first character covers the
+  output, one from inside it nothing), an argument's ranges are added at
+  its specification's start (before the left padding when the format has
+  properties) and stretched over its padding, and `composition' values
+  are copied for later arguments. print.c's float_to_string reads
+  `float-output-format' for every printed float and writes a %g
+  exponent with two digits (1e-05), `string-width' takes static
+  compositions at their registered width, a range running across
+  intervals with `eq' values as get_property_and_range finds it, and
+  `number-to-string' checks `numberp'. A call takes 2,763 instructions.
+  A batch test runs 32 groups of conversions, errors, widths, quoting
+  styles, multibyte results, printer variables and property layouts
+  against GNU 30.2; four tests that expected %b to print binary (a conversion
+  newer than GNU 30.2) and `#:' in the %s of an uninterned symbol now
+  expect 30.2's error and bare name.
+  Local validation: the full gate across its ten groups with
+  the documented local skips, all 3,311 tests run passing (2 ignored);
+  the seven integration targets; clippy `-D warnings', rustfmt and `git
+  diff --check'.
+- **Round 165: Bassq and buffer-local Bvarset in the verified loop,
+  Freverse of strings.** In the release build semantic-utest-ia took
+  19.67G instructions against GNU's 19.28G, 2.02G of them in compiled
+  `assq' (905,540 calls) against Fassq's 1.58G: Bassq left the verified
+  loop for op_in_place, about 160 instructions an op before the walk,
+  and the walk compared each car through values_eq_in_env. The loop now
+  runs Bassq itself (`assq_in_place'), fns.c:Fassq's FOR_EACH_TAIL walk
+  where it can only return, a pending quit, a cycle or an improper list
+  left to the full arm, which signals; a key that is not vectorlike,
+  with `symbols-with-pos-enabled' nil, is compared by its word alone, as
+  lisp.h:EQ compares it (only a vectorlike word can be `eq' to another
+  word). A Bvarset of a variable whose binding for the current buffer
+  is loaded (made by `setq-local', or by a set of a variable
+  automatically local) also left the loop; it is now stored in place,
+  data.c:set_internal's SYMBOL_LOCALIZED case, and a read of such a
+  variable takes the loaded binding (`loaded_local_value') before the
+  alias and redirection walk. A buffer's local cells, made with room
+  for its built-in bindings, grow once to room for 56 when it gains
+  others (a major mode sets dozens) instead of doubling four times.
+  Freverse and Fnreverse of a string kept its text properties
+  (reversed) and decided its multibyteness from its characters; as in
+  fns.c, the result now has no properties, is unibyte when the string's
+  size is its byte count, and is otherwise multibyte with each
+  character's bytes copied whole. semantic-utest-ia takes 19.16G (assq
+  1.51G), electric-tests 7.38G where it took 7.69G (GNU 6.63G). A batch
+  test reverses unibyte, multibyte, raw-byte and propertized strings,
+  and runs compiled `assq' over matching, missing, improper and
+  circular lists and compiled sets and lets of buffer-local and
+  automatically local variables across buffers, against GNU 30.2.
+  Local validation: the full gate across its ten groups with
+  the documented local skips, all 3,312 tests run passing (2 ignored);
+  the seven integration targets; clippy `-D warnings', rustfmt and `git
+  diff --check'.
+- **Round 166: `buffer-undo-list' as undo.c keeps it.** A buffer kept
+  its undo history as native entries (insertions, deletions with their
+  text, property spans and markers, boundaries, opaque Lisp values)
+  beside a Lisp view of them, rebuilt at the next read whenever Lisp had
+  assigned a list the native side had not extended: a `setq' of anything
+  but one new head converted the whole list back into entries, a `let'
+  of the variable set the buffer's whole undo state aside, and the
+  entries carried a replay of their own (`Buffer::undo') that only
+  tests ran. `buffer-undo-list' is now BVAR (b, undo_list) itself, an
+  always-local slot on the buffer record that reads, sets and binds as
+  `buffer-file-name' does, and the buffer's changes push onto it as
+  undo.c's record_point, record_insert (into the newest insertion when
+  that ends where the new one begins, its END changed in place),
+  record_delete (the text as make_buffer_string makes it, at -BEG when
+  point is at its end), record_marker_adjustments (under the deletion),
+  record_change, record_first_change and record_property_change do.
+  `undo-boundary' is Fundo_boundary: it signals for a list that is not
+  one and sets `undo-auto--last-boundary-cause' to `explicit', which
+  Emaxx's did not, and keyboard.c's point_before_last_command_or_undo is
+  the session's, held by the one buffer it names, where each buffer had
+  kept its own. replace_range records its insertion and its deletion
+  whenever undo is kept, either of them empty; subst-char-in-region
+  records each character it replaces after modify_text's first change,
+  where Emaxx recorded the span from the first to the last;
+  set-buffer-multibyte conses
+  its `(apply set-buffer-multibyte FLAG)' onto the list it had; a
+  visiting insert-file-contents empties the list only when it was nil
+  and the buffer empty (fileio.c's empty_undo_list_p), where Emaxx
+  emptied it on every visit; an indirect buffer takes its base's list
+  when it is made and when it becomes current, and gives it back when
+  another does (set_buffer_internal_2), and the edits Emaxx copies into
+  the other members of an indirect family are not recorded there. The
+  copy of a buffer's text made whenever it was marked unmodified
+  (`saved_text'), which nothing read but set-buffer-multibyte and the
+  dump, is gone; the image dumps the list as one of the buffer's Lisp
+  fields and the point pair not at all, as pdumper.c does. undo-tests
+  still takes 10.10G instructions (GNU 9.28G), its cost the insertions
+  round 165 found. A batch test
+  compares fifteen undo lists against GNU 30.2: merged and separate
+  insertions, propertized deletions and their signs, marker adjustments,
+  point after a boundary, `undo-boundary' and its error, replace-match,
+  subst-char-in-region, upcase-region, set-buffer-multibyte, a property
+  change, `let', `setq' and `buffer-enable-undo' of the list, and
+  `primitive-undo' over it; buffer, editfns, subr, simple, electric,
+  dabbrev, files, cl-macs, fileio, cc-mode, kmacro, replace, casefiddle
+  and fill tests keep GNU's outcomes.
+  Local validation: the full gate across its ten groups with
+  the documented local skips, all 3,313 tests run passing (2 ignored);
+  the seven integration targets; clippy `-D warnings', rustfmt and `git
+  diff --check'.
+- **Round 167: bracket classes read the syntax table once a
+  compilation, and syntax-aware matching counts characters from where
+  it last converted.** regex_compile sets the bits of the ASCII
+  characters a `[:CLASS:]' admits by calling re_iswctype for each of
+  the 128 in turn, and `[:space:]' and `[:word:]' read BUFFER_SYNTAX
+  for each; Emaxx did the same through the match environment, each
+  read a call down to CHAR_TABLE_REF_ASCII's walk up the table's
+  parents. In cperl-mode-tests the 5,288 patterns compiled made 1.15M
+  such reads, 136M instructions of the file's 2.26G (GNU's re_iswctype,
+  inlining its lookups, took 100M of 1.94G). The classes that read no
+  table at ASCII now take their bits from masks the compiler computes
+  from the same predicates re_iswctype applies (ISALNUM, ISGRAPH,
+  ISPUNCT and the rest, shared with it), `[:lower:]' and `[:upper:]'
+  still ask the case table character by character, and `[:space:]'
+  and `[:word:]' come from one pass over the buffer's syntax table the
+  first time a pattern needs either (CharTableRef::ascii_get_all: each
+  table up the parents answers the characters its children left nil,
+  as CHAR_TABLE_REF_ASCII does for one). No Lisp runs while a pattern
+  compiles, so the table read is the one each character would have
+  found; without case folding the class's bits go into the bitmap at
+  once, with it each admitted character and its translation as
+  before. A syntax-aware match converts each byte offset it looks up
+  syntax at (RE_SYNTAX_TABLE_BYTE_TO_CHAR for UPDATE_SYNTAX_TABLE) to a
+  character position; in a buffer with non-ASCII text that was the
+  rope's conversion, a tree walk and a count within the leaf, some
+  1,470 instructions each in cperl-mode-tests. It now counts from the
+  offset it converted last (point's to begin with) when the new one is
+  within 1 KB of it, as buf_bytepos_to_charpos counts from the nearest
+  position it knows. related_buffer_ids, which every edit asks for the
+  buffers sharing its text, returns the current buffer at once when no
+  indirect buffer exists. cperl-mode-tests now takes 2.089G
+  instructions (GNU 1.936G; it was 1.169 times GNU's, now 1.079).
+  Tests: a unit test checks every class's mask against re_iswctype for
+  each ASCII character and that `[[:CLASS:]]' and `[^[:CLASS:]]' admit
+  exactly the characters re_iswctype does; a batch test compares
+  bracket classes against GNU 30.2 through a two-level parent chain of
+  syntax tables (entries of the child over the parent's, nil falling
+  through), beside other classes and case folding, and after the
+  tables change. Local validation: the full gate across its ten groups
+  with the documented local skips, all 3,315 tests run passing (2
+  ignored); the seven integration targets; clippy `-D warnings',
+  rustfmt and `git diff --check'.
+- **Round 168: primitives call what their C counterparts call.** A
+  benchmark of 49 primitives in byte-compiled loops (scratchpad
+  r167pb/bench.el, each against GNU 30.2) found several reaching other
+  primitives by name, each such call a lookup of the name's facts
+  where the C function calls the other directly. `mapcar', `mapc',
+  `mapcan' and `mapconcat' took the sequence's length through the
+  `length' primitive by name and now read it as Flength does;
+  `mapconcat' called `mapcar' and then `concat' by name and is now
+  Fmapconcat, with its fast path for `identity' over a list or a
+  vector (no call at all) and a nil or empty SEPARATOR left out of
+  Fconcat's arguments, where Emaxx passed an empty multibyte separator
+  and so made `(mapconcat #'identity '("a" "b") (string-to-multibyte
+  ""))' multibyte, as GNU's is not. `sort' resolved its predicate
+  through `indirect-function' by name and now reads the function cell
+  as resolve_fun does, and the subr it finds is called as
+  funcall_general calls a subr, where a subr object (not a symbol)
+  called from Rust went through the whole general call. `regexp-quote'
+  copied its argument through `copy-sequence' by name when nothing
+  needed quoting; Fregexp_quote returns STRING itself then, which
+  Emaxx's copy was not. `intern' and `intern-soft' of a string in the
+  initial obarray with no `read-symbol-shorthands' now look the
+  string's own text up, as oblookup does, where Emaxx converted the
+  string to a Rust string, rewrote it for shorthands into another, and
+  looked the name up three times. `append' conses its copies directly
+  as concat_to_list does, without gathering the elements in a vector
+  first, each list's walk starting its tortoise at the cdr as
+  concat_to_list's FOR_EACH_TAIL does (so a circular argument is
+  reported at the tail GNU reports, which the list-walk batch test
+  checks), and `string-to-number' parses the string's data in place.
+  Per call against GNU: `regexp-quote' 1,280 instructions to 484 (GNU
+  496), `intern' 1,640 to 723 (547), `append' of two short lists 940
+  to 568 (456), `mapconcat' over three strings 3,515 to 1,862 (1,127),
+  `sort' of three numbers 4,227 to 3,693 (1,694), `string-to-number'
+  1,250 to 1,063 (557). A batch test compares these primitives'
+  results and errors against GNU 30.2: `mapconcat' over lists,
+  vectors, strings and character lists with nil, empty, multibyte and
+  list separators and its errors, `mapcar', `mapc' and `mapcan' over
+  each sequence type, `append' with strings, vectors, bool-vectors and
+  a shared last argument, `string-to-number' with bases and their
+  errors, `intern' and `intern-soft' in the initial obarray, another,
+  through `read-symbol-shorthands' and with `obarray' rebound, `sort'
+  with an alias predicate, and `regexp-quote' of strings needing no
+  quoting. Local validation: the full gate across its ten groups with
+  the documented local skips, all 3,316 tests run passing (2
+  ignored); the seven integration targets; clippy `-D warnings',
+  rustfmt and `git diff --check'.
+- **Round 169: syntax scans, word boundaries and casing do what their C
+  functions do.** The primitive benchmark (scratchpad r167pb/bench.el,
+  now with `forward-word', `skip-syntax-forward', `forward-sexp' and
+  `capitalize' over a six-character buffer) found these two to three
+  times GNU's cost, the scan loops themselves near GNU's and the rest
+  in setting a scan up. Each scan built its gl_state afresh, a
+  structure whose ASCII syntax cache is 512 bytes, zeroed it and
+  copied it by value into the scanner, and read the scan's variables
+  twice; scans and regexp matches now take the one gl_state kept, set
+  up again in place (the cache forgotten by its known-bits word rather
+  than cleared), and give it back when they are done, as GNU keeps
+  its one gl_state, and the variables are read once a scan. A small
+  buffer, whose text is a string until it grows, builds its rope on
+  demand; the rope's single leaf is now kept with it, so a scan starts
+  in that chunk rather than finding it through the rope each time.
+  `forward-word' called `constrain-to-field' by name, through its
+  function cell, and now calls it as Fforward_word calls
+  Fconstrain_to_field. In a buffer with no overlays, each
+  `get-char-property' sorted an empty list of overlays, which now
+  returns at once. CHAR_TABLE_REF's ASCII case, a few loads up the
+  parents, now inlines where it is used, the rest of the walk staying
+  a function, and word_boundary_p tests a category set's bit as
+  CATEGORY_MEMBER does, where Emaxx classified the set's whole type for
+  each of up to sixteen tests a character, and walks the separating and
+  combining lists by CONSP. Casing reads `case-symbols-as-words' as
+  the DEFVAR_BOOL it is, through its symbol, where Emaxx looked its
+  name up as a lexical variable each operation, and tests a word
+  character by the syntax entry's class bits, where it decoded the
+  whole entry. Per call against GNU: `forward-word' 7,485
+  instructions to 5,532 (GNU 2,658), `skip-syntax-forward' 2,942 to
+  2,268 (1,046), `forward-sexp' 3,357 to 2,782 (1,554), `upcase' 6,739
+  to 4,183 (2,054), `capitalize' 6,130 to 5,720 (2,777). What remains
+  in `forward-word' is spread: the three `get-char-property' lookups
+  `constrain-to-field' makes, about 450 instructions each against
+  GNU's 250, the scan's buffer-local variables, some 80 a read, and
+  word_boundary_p's four table reads a character. A batch test compares
+  `case-symbols-as-words' against GNU 30.2: `capitalize' and
+  `upcase-initials' with it let-bound and not, buffer-local in a
+  region command, a syntax table making `_' a word constituent,
+  `capitalize-word' backwards, `replace-match''s case conversion of
+  initial capitals and all capitals, and `forward-word' with it bound.
+  Local validation: the full gate across its ten groups with the
+  documented local skips, all 3,317 tests run passing (2
+  ignored); the seven integration targets; clippy `-D warnings',
+  rustfmt and `git diff --check'.
+- **Round 170: compiling a regexp as regex_compile does.**
+  semantic-utest-ia's lexers try some twenty regexps at each token,
+  more than the twenty cells of the pattern cache hold, so both
+  implementations compile about 265,000 patterns; each compilation
+  cost Emaxx about 6,000 instructions where GNU's re_compile_pattern
+  takes 2,700. A benchmark of the C lexer's 21 regexps in rotation
+  (scratchpad r170/bench.el, every `looking-at' a compilation) showed
+  where: GNU compiles into the cache cell's own buffer (`cp->buf'),
+  where Emaxx allocated a new pattern, a new entry and a copy of the
+  regexp each time and freed the evicted cell's; insert_op1 and
+  insert_op2 move the bytes after LOC up with a loop where Emaxx used
+  `Vec::splice' (123 instructions an insertion against 18); a
+  bracket expression's bitmap lived in the growing buffer, each bit
+  set through a bounds-checked index and its trailing zero bytes
+  counted one at a time. The compiler now compiles into the storage of
+  the pattern the cell held, keeps its compile stack, range table and
+  pattern codes for the next compilation, opens room for an inserted
+  jump in place, stores an op and its operands in one write, builds a
+  bracket expression's bitmap apart and copies it in without its
+  trailing zero bytes (counted a word at a time), and appends an
+  exactn character's bytes directly; a cache hit no longer compares
+  the pattern a second time. In the benchmark `compile_pattern' falls
+  from 5,243 instructions a call to 4,172 (GNU 3,365), and in
+  semantic-utest-ia from 1.93G instructions to 1.53G, the file from
+  19.10G to 18.52G (GNU 19.28G; with round 171). A unit test pins
+  the programs regex_compile writes for repetitions, intervals,
+  alternatives, groups, multibyte characters and bracket expressions,
+  and another checks that compiling into a used buffer gives what
+  compiling afresh does; before the change, the 138 compilations of 46
+  patterns (the C lexer's and others, plain, folding and POSIX) were
+  dumped from the old compiler and found byte-identical in the new.
+  Local validation: the full gate across its ten groups with the
+  documented local skips, all 3,319 tests run passing (2
+  ignored); the seven integration targets; clippy `-D warnings',
+  rustfmt and `git diff --check'.
+- **Round 171: Bnth, Belt and Blength in the verified loop.** bytecode.c
+  gives Bnth and Belt a fast case, a list walked in the loop for an
+  index up to SMALL_LIST_LEN_MAX, and calls Flength for Blength;
+  Emaxx left all three to the op's full arm (`op_in_place'), which
+  decoded the instruction again and called the primitive by name, some
+  220 instructions before the primitive's own work. The verified loop
+  now runs Bnth's and Belt's fast case and Blength's count itself, any
+  other operands going to the full arm as before, which signals and
+  records the backtrace frame as bytecode.c does. Flet's test of a
+  locally special variable (`environment_declares_special') walks the
+  lexical environment by CONSP rather than classifying each tail's
+  whole type, and it, `assq_binding' and `Value::cons' are marked
+  inline, as the gate build's sixteen code generation units otherwise
+  call them out of line (mule-tests spent 1.2G and 0.7G instructions in
+  the first two there). Per call against GNU, the loop around each
+  included: `nth' of a variable's list 422 instructions to 169 (GNU
+  236), `length' of a list 358 to 231 (279) and of a string 272 to 145
+  (190); `mapcar' of a byte-compiled lambda over 50 strings 35,707 to
+  29,409 (17,252), the rest of that gap the call into the lambda.
+  Local validation with round 170 (above).
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -9713,7 +10193,212 @@ attempt. Its timings, on a slower runner (GNU's own setup 73.3 s where
 round 156's took 61.6 s): setup 88.4 s against 73.3 s (1.205), test
 bodies 275.9 s against 291.0 s (0.948), in all 1.000.
 
+**On `330b0ab`** (round 158): full Rust gate passed (run 40817222210);
+frozen (run 40817224490) matched all 7,928 outcomes on its first
+attempt. Its timings: setup 63.2 s against 52.4 s (1.206), test bodies
+225.2 s against 240.0 s (0.938), in all 1.003. Rounds 151 to 158 were
+merged into main with it (PR 113, `9f883d2`).
+
+**On `8849bbd`** (round 159): full Rust gate passed (run 40823290025);
+frozen (run 40823293223) matched all 7,928 outcomes on its first
+attempt. Its timings: setup 81.5 s against 65.5 s (1.245), test bodies
+260.6 s against 269.3 s (0.968), in all 1.005.
+
+**On `5bd3816`** (round 160): full Rust gate passed (run 40829616127);
+frozen (run 40829626295) matched all 7,928 outcomes on its second
+attempt, the first losing one to the known oracle flake (GNU failing
+`eglot-test-rust-completion-exit-function'). Its timings: setup 80.1 s
+against 62.9 s (1.273), test bodies 256.0 s against 265.5 s (0.965), in
+all 1.007.
+
+**On `9984036`** (round 161): full Rust gate passed (run 40841140779);
+frozen (run 40841144438) matched all 7,928 outcomes on its second
+attempt, the first again losing `eglot-test-rust-completion-exit-function'
+to the oracle. Its timings: setup 90.8 s against 65.8 s (1.381), test
+bodies 264.6 s against 272.3 s (0.972), in all 1.039. The setup's rise
+is every file's (the median file's 14 % against GNU's 3 %); in the
+release build a file's setup takes about what it did (time-stamp-tests
+1,213M instructions against GNU's 1,157M), the code round 161 changed
+under 1M of it, so the next run's setup tells a slower runner from a
+change in the gate profile.
+
+**On `14fdfeb`** (round 162): full Rust gate passed (run 40853801437);
+frozen (run 40853805986) matched all 7,928 outcomes on its first
+attempt. Its timings: setup 87.0 s against 70.2 s (1.239), test bodies
+267.6 s against 275.7 s (0.971), in all 1.020: the setup back near
+round 160's, so `9984036''s 1.381 was the runner's.
+
+**On `d7529f9`** (round 163): full Rust gate passed (run 40865073493);
+frozen (run 40865077720) matched all 7,928 outcomes on its first
+attempt. Its timings: setup 86.4 s against 68.3 s (1.265), test bodies
+265.8 s against 274.3 s (0.969), in all 1.021.
+
+**On `cb54dc3`** (round 164): full Rust gate passed (run 40878071206);
+frozen (run 40878076220) matched all 7,928 outcomes on its first
+attempt. Its timings: setup 68.7 s against 57.6 s (1.192), test bodies
+232.7 s against 248.2 s (0.937), in all 0.988.
+
+**On `a61a7c4`** (round 165): full Rust gate passed (run 40894350990);
+frozen (run 40894367851) matched all 7,928 outcomes on its first
+attempt. Its timings: setup 84.3 s against 68.4 s (1.232), test bodies
+264.2 s against 274.7 s (0.962), in all 1.008.
+
+**On `d93228a`** (round 166): full Rust gate passed (run 40912227825);
+frozen (run 40912248646) matched all 7,928 outcomes on its first
+attempt. Its timings: setup 52.6 s against 44.6 s (1.179), test bodies
+203.3 s against 217.6 s (0.934), in all 0.965.
+
+**On `917d16d`** (round 167): full Rust gate passed (run 40928962779);
+frozen (run 40928968255) matched all 7,928 outcomes on its first
+attempt. Its timings: setup 81.0 s against 65.0 s (1.248), test bodies
+258.3 s against 267.4 s (0.966), in all 1.004. The test bodies furthest
+behind GNU's in seconds: comp-tests (+2.8 s), tramp-tests (+2.6 s),
+semantic-utest-ia (1.57 times), mule-tests (1.63), package-tests,
+electric-tests (2.12), undo-tests (1.64) and edebug-tests (1.47).
+
+**On `a479b12`** (round 168): full Rust gate passed (run 40945644215);
+frozen (run 40945657957) matched all 7,928 outcomes on its first
+attempt. Its timings: setup 59.2 s against 50.3 s (1.176), test bodies 214.9 s
+against 230.7 s (0.932), in all 0.987. The test bodies furthest behind
+GNU's in seconds: comp-tests (+1.8 s), tramp-tests (+1.4 s),
+semantic-utest-ia (1.50 times), mule-tests (1.65), electric-tests
+(1.88), undo-tests (1.51) and edebug-tests (1.40); in the release
+build semantic-utest-ia runs 19.10G instructions against GNU's 19.28G,
+undo-tests 10.00G against 9.28G and edebug-tests 4.78G against 4.11G,
+the rest the gate build's (below). The setup gap is the gate build's
+too: the setup of xfaces-tests (Emacs started, ERT and the file
+loaded, no test run), 83 ms against 67 here, takes 520M instructions
+in the release build, 524M in GNU and 660M in the gate build, the
+excess spread over the helpers the release build inlines and the gate
+build's 16 code generation units leave out of line (thread-local
+accessors, `string_bytes', `Value::cons') and its checks.
+
 **Findings recorded, not fixed:**
+- **Where the frozen run's gate build spends past the release build
+  (round 168).** The frozen run times the gate profile (debug
+  assertions, overflow checks, the checked collector), which in
+  electric-tests runs 10.12G instructions where the release build runs
+  7.34G and GNU 6.62G: the verified loop's checks (+405M), `assq'
+  through `assq_in_place' (+157M), the collector's sweeps and mark bits
+  (about +250M), each cons out of line (+181M, 46 instructions a cons)
+  and the closures `with_active' and the record and char-table maps no
+  longer inline. mule-tests runs 21.2G instructions in the release
+  build against GNU's 21.3G, nearly all of it in the interpreter, and
+  32.1G in the gate build, which is the 1.63 times GNU's time the
+  frozen run shows: every dereference of a cons there tests the cell's
+  allocation bit (`ConsRef''s debug assertion), so the 2.56 million
+  `assq' calls over `char-code-property-alist' cost 1,316 instructions
+  each against the release build's 625, and the interpreter's own
+  environment walks (`assq_binding', `environment_declares_special')
+  come out of line at another 1.9G.
+- **Every edit walks the windows (round 168).**
+  `adjust_window_marker_slots' looks the window records up by type
+  name and then each by id on every insertion and deletion, to move
+  the start and point of the windows showing the buffer; GNU keeps
+  those as markers on the buffer's chain, which an edit of a buffer no
+  window shows does not visit. In electric-tests the walk is some 150
+  instructions an edit over 155,000 edits.
+- **A call from Rust into byte code costs about 240 instructions more
+  than GNU's (round 167).** `mapatoms' over 18,663 symbols with a
+  byte-compiled callback takes 596 instructions a symbol in the release
+  build against GNU's 435: funcall_closure 241, call_function_value 124,
+  the callee's run_verified 111 and `mapatoms' itself 26, where GNU
+  spends Ffuncall 61, funcall_general 47, funcall_lambda 40 and
+  exec_byte_code 154. The excess is spread over the entry's steps, none
+  more than a few dozen instructions: the frame-entry cache lookup and
+  its epoch checks, the copy of the cached program, the activation's
+  entry marks and their restoring, the frame and argument pushes, the
+  verified loop's frame record, and the backtrace frame and debugger
+  gates around it. It is most of what separates comp-cstr-tests (4.44G
+  against 3.65G; its 3.85M `mapatoms' callbacks), edebug-tests (4.78G
+  against 4.11G) and em-pred-tests (2.83G against 2.53G; 937K byte-code
+  callbacks) from GNU.
+- **comp-tests' time is the instruction rate (round 166).** In the
+  release build a `comp-tests-ret-type-spec-*' test takes about 330 ms
+  of wall time against GNU's 267 ms and a third more user time, but
+  setup and `comp-tests-ret-type-spec-27' together take 3.66G
+  instructions in process against GNU's 3.30G, and neither runs
+  libgccjit for them: the gap is the instructions per cycle the setup
+  finding below measures, not work Emaxx does that GNU does not.
+- **What undo.c does that Emaxx's undo list does not (round 166).**
+  Garbage collection does not run alloc.c's compact_buffer, so no
+  truncate_undo_list cuts a list past `undo-limit' and
+  `undo-strong-limit' or calls `undo-outer-limit-function' for one
+  command's records past `undo-outer-limit': a long session's lists
+  grow without bound (where GNU truncates depends on when it collects,
+  so no test compares it). record_point does not consult
+  `undo-inhibit-record-point', which nothing in the tree sets.
+- **undo-tests' million insertions (round 165).** In the release build
+  undo-tests takes 10.10G instructions against GNU's 9.28G, most of it
+  `undo-test4''s interpreted `dotimes' of 1,048,576 `insert's at the
+  end of the buffer. An insertion takes 4,878 instructions against
+  Finsert's 3,862, of which update_compositions is 1,640 in GNU and
+  nothing in Emaxx: ropey's insert (`Rope::insert_internal', its tree
+  walk, `Arc::make_mut' of each node and the leaf's character scan)
+  takes 2,030 where GNU's copy_text into the gap takes 92. The windows'
+  start and point are integers in their records, which every insertion
+  and deletion adjusts by walking every window (284 instructions an
+  insertion, where GNU's window markers are on the buffer's chain), and
+  `related_buffer_ids' walks the buffer list for a buffer with no
+  indirect relatives (115). (Round 166 made the undo list GNU's.)
+- **A string's intervals are merged where GNU keeps them (round 164).**
+  Emaxx's string properties merge adjacent spans with equal plists after
+  every change, where textprop.c leaves the intervals a change made:
+  `(let ((s (copy-sequence "ab"))) (put-text-property 0 1 'k 1 s)
+  (put-text-property 1 2 'k 1 s) s)' prints `#("ab" 0 1 (k 1) 1 2 (k 1))'
+  in GNU and `#("ab" 0 2 (k 1))' in Emaxx, and `object-intervals',
+  `format' of two propertized arguments and `concat' differ alike.
+  Keeping intervals as GNU's tree does changes every string property
+  operation and the printer's interval walk.
+- **Building `ucs-names' (round 162).** editfns-tests'
+  `replace-buffer-contents-bug31837' calls `char-from-name', whose
+  table of 42,943 names takes 1,024M instructions against GNU's 818M:
+  the byte-code loop and the calls it makes 335M against
+  exec_byte_code's and Ffuncall's 269M, `concat' 1,155 instructions a
+  call against concat_to_string's 834, `string-match' 2,130 against
+  1,920, the collector's marking 41M against 50M.
+- **What reading a large file still costs (round 161).** Of the 102M
+  instructions `insert-file-contents' of NormalizationTest.txt takes
+  (GNU 67M), the unibyte text for `set-auto-coding-function' is 24.7M
+  to write (U+E080..U+E0FF for each byte above 0x7F, three bytes where
+  GNU's gap holds one) and about 11M to build into the rope, and the
+  decoded text 11M to validate as UTF-8 (detect_coding_utf_8 accepts
+  overlong sequences and surrogates, so its verdict does not stand for
+  `from_utf8''s) and about 8M to build; GNU decodes in the gap and
+  inserts nothing twice. Writing the raw text a byte at a time without
+  a branch, or eight at a time into the reserved bytes, measured no
+  faster than the ASCII-run loop it has.
+- **A child's standard error and its stderr pipe process (round
+  160).** GNU's create_process gives the child the stderr pipe
+  process's SUBPROCESS_STDOUT as its standard error and closes the
+  parent's copy, so the pipe process reads the child's errors on its own
+  READ_FROM_SUBPROCESS and turns (exit 0) at their end. Emaxx gives the
+  child a pipe of its own, delivers what it reads there to the stderr
+  process, and sets that process's status from the child's exit; the
+  pipe process keeps both ends of the pipe it reads, two descriptors
+  where GNU's keeps one while the child runs.
+- **The closure entry from Rust (#304, rounds 159 and 160).** The
+  callback of `mapatoms' in `comp--all-classes' (18,539 symbols) costs
+  807 instructions a symbol against GNU's 639. The byte-code bodies are
+  even (`run_verified' 343 against exec_byte_code's 321); the entry is
+  not: `call_function_value' 118 and `funcall_closure' 215 against
+  mapatoms_1, Ffuncall and funcall_lambda's 100 or so.
+  `funcall_closure''s share is spread over a dozen steps of 10 to 28
+  instructions (finish_activation 28, enter_frame 22, the arguments'
+  push 21, the entry program's lookup 14, the loop's frame record 13,
+  the code bytes' fetch 12, the entry marks 10), none of them most of
+  it; resolving the closure and its entry program once for a Rust loop
+  that calls the same closure would save about 45 a call. In
+  edebug-tests that callback is 130M instructions of the file's 700M
+  excess, in comp-cstr-tests most of it.
+- **The frozen run's slowest files and the gate profile (round 160).**
+  In the release build electric-tests takes 7.73G instructions against
+  GNU's 6.63G, mule-tests 22.6G against 21.3G, semantic-utest-ia 20.2G
+  against 19.3G, undo-tests 10.2G against 9.3G, and comp-tests runs in
+  1.10 times GNU's wall time; the gate profile the frozen run builds
+  makes electric-tests 10.66G (its byte-code loop 74% more), so their
+  frozen ratios (2.26, 1.74, 1.70, 1.67) are mostly the profile's, as
+  the setup's are (round 157's finding).
 - **What the gate profile adds to a file's setup (round 157).**
   cal-french-tests.el's setup under the frozen runner's command line
   takes 576M instructions in the release build, 726M in the gate profile

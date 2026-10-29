@@ -1526,6 +1526,13 @@ pub trait PropertyKey: Copy {
     fn names(self, name: &PropertyName) -> bool {
         self.is(name.0)
     }
+
+    /// The object this key is EQ to, when it is one: a walk of a plist
+    /// then compares each name with it, read once.
+    #[inline]
+    fn object(self) -> Option<Value> {
+        None
+    }
 }
 
 impl PropertyKey for PropertyName {
@@ -1537,6 +1544,11 @@ impl PropertyKey for PropertyName {
     #[inline]
     fn is_named(self, text: &str) -> bool {
         self == *text
+    }
+
+    #[inline]
+    fn object(self) -> Option<Value> {
+        Some(self.0)
     }
 }
 
@@ -1562,6 +1574,11 @@ impl PropertyKey for symbols::SymbolKey {
     #[inline]
     fn is_named(self, text: &str) -> bool {
         self.with(|symbol| symbol.as_str() == text)
+    }
+
+    #[inline]
+    fn object(self) -> Option<Value> {
+        Some(self.with(|symbol| Value::Symbol(*symbol)))
     }
 }
 
@@ -2294,6 +2311,7 @@ pub(crate) fn environment_is_lexical(env: &Env) -> bool {
 /// binding cons whose car is SYMBOL (by identity), entries that are not
 /// conses passed over.  An improper alist signals `listp' and a circular
 /// one `circular-list', as Fassq's FOR_EACH_TAIL does.
+#[inline]
 pub(crate) fn assq_binding(
     environment: &Value,
     symbol: &SymbolName,
@@ -2375,22 +2393,17 @@ fn improper_environment(environment: &Value, circular: bool) -> LispError {
 /// special.
 /// Flet's `Fmemq (var, Vinternal_interpreter_environment)': whether SYMBOL
 /// itself (EQ, its word) is declared special in the lexical environment.
+#[inline]
 pub(crate) fn environment_declares_special(environment: &Value, symbol: &SymbolName) -> bool {
     let target = symbol.identity_ptr() | TAG_SYMBOL;
-    let mut tail = match environment.kind() {
-        Kind::Cons(cell) => cell,
-        _ => return false,
-    };
-    loop {
-        if tail.car.get().word() == target {
+    let mut tail = *environment;
+    while let Some(cell) = tail.cons_ref() {
+        if cell.car.get().word() == target {
             return true;
         }
-        let next = match tail.cdr.get().kind() {
-            Kind::Cons(cell) => cell,
-            _ => return false,
-        };
-        tail = next;
+        tail = cell.cdr.get();
     }
+    false
 }
 
 pub(crate) fn make_uninterned_symbol_name(base: &str, id: u64) -> String {
@@ -2507,7 +2520,9 @@ pub(crate) fn format_float(value: f64) -> String {
                     let (mantissa, exponent) = rendered.split_once('e')?;
                     let mantissa = mantissa.trim_end_matches('0').trim_end_matches('.');
                     let exponent = exponent.parse::<i32>().ok()?;
-                    format!("{mantissa}e{exponent:+}")
+                    // %g's exponent: a sign and at least two digits.
+                    let sign = if exponent < 0 { '-' } else { '+' };
+                    format!("{mantissa}e{sign}{:02}", exponent.unsigned_abs())
                 } else {
                     let precision = (significant - exponent - 1).max(0) as usize;
                     format!("{value:.precision$}")
@@ -2552,6 +2567,7 @@ impl Value {
         Value::Symbol(s.into())
     }
 
+    #[inline]
     pub fn cons(car: Value, cdr: Value) -> Self {
         Value::Cons(crate::lisp::alloc::allocate_cons(ConsCell::new(car, cdr)))
     }
@@ -2751,6 +2767,21 @@ impl Value {
             (crate::lisp::alloc::vectors::header_tag(header)
                 == crate::lisp::alloc::VectorTag::CharTable)
                 .then(|| CharTableRef::from_raw(header))
+        }
+    }
+
+    /// BOOL_VECTOR_P, by the tag and the header alone.
+    #[inline(always)]
+    pub(crate) fn bool_vector_ref(self) -> Option<BoolVectorRef> {
+        if self.0 & TAG_MASK != TAG_VECTORLIKE {
+            return None;
+        }
+        let header = (self.0 & !TAG_MASK) as *mut crate::lisp::alloc::VectorHeader;
+        // SAFETY: as `kind's vectorlike arm.
+        unsafe {
+            (crate::lisp::alloc::vectors::header_tag(header)
+                == crate::lisp::alloc::VectorTag::BoolVector)
+                .then(|| BoolVectorRef::from_raw(header))
         }
     }
 
@@ -2963,25 +2994,36 @@ impl Value {
     /// first element, then FOR_EACH_TAIL from its cdr (where a cycle is
     /// found from), and CHECK_LIST_END (tail, tail).
     pub(crate) fn concat_list_elements(self) -> Result<Vec<Value>, LispError> {
+        let mut items = Vec::new();
+        self.visit_concat_list_elements(|item| items.push(item))?;
+        Ok(items)
+    }
+
+    /// `concat_list_elements` handing each element to VISIT as it is read.
+    #[inline]
+    pub(crate) fn visit_concat_list_elements(
+        self,
+        mut visit: impl FnMut(Value),
+    ) -> Result<(), LispError> {
         let Some(cell) = self.cons_ref() else {
             return if self.is_nil() {
-                Ok(Vec::new())
+                Ok(())
             } else {
                 Err(LispError::WrongTypeArgument("listp".into(), self))
             };
         };
-        let mut items = vec![cell.car.get()];
+        visit(cell.car.get());
         let mut tail = cell.cdr.get();
         let mut walk = TailWalk::new(tail);
         while let Some(cell) = tail.cons_ref() {
-            items.push(cell.car.get());
+            visit(cell.car.get());
             tail = cell.cdr.get();
             if walk.cycled_no_quit(tail) {
                 return Err(circular_list(tail));
             }
         }
         if tail.is_nil() {
-            Ok(items)
+            Ok(())
         } else {
             Err(LispError::WrongTypeArgument("listp".into(), tail))
         }

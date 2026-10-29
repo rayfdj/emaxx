@@ -1223,9 +1223,36 @@ pub(crate) fn spawn_persistent_process(
     let mut pty_output = None;
     let mut pty_slave_guard = None;
     let mut pty_slave_name: Option<String> = None;
-
+    // create_process's pipes, made here rather than by the spawn so that
+    // their descriptors are known before it: the write end of the child's
+    // input, the read ends of its output and its separate standard error.
+    #[cfg(unix)]
+    let (mut stdin_write, mut stdout_read, mut stderr_read) = (None, None, None);
     #[cfg(unix)]
     {
+        let pipe = || {
+            emacs_pipe().map_err(|error| {
+                LispError::SignalValue(file_operation_error_value_without_file(
+                    "Creating pipe",
+                    &error,
+                ))
+            })
+        };
+        let mut piped_stdin = |command: &mut Command| -> Result<(), LispError> {
+            let (read, write) = pipe()?;
+            command.stdin(Stdio::from(read));
+            stdin_write = Some(write);
+            Ok(())
+        };
+        let piped_output = |command: &mut Command, error: bool| -> Result<fs::File, LispError> {
+            let (read, write) = pipe()?;
+            if error {
+                command.stderr(Stdio::from(write));
+            } else {
+                command.stdout(Stdio::from(write));
+            }
+            Ok(read)
+        };
         if input_pty && output_pty {
             let (master, slave, slave_name) = open_emacs_pty()?;
             pty_slave_name = slave_name;
@@ -1245,7 +1272,7 @@ pub(crate) fn spawn_persistent_process(
                     .map_err(|error| LispError::Signal(error.to_string()))?,
             ));
             if separate_stderr {
-                command.stderr(Stdio::piped());
+                stderr_read = Some(piped_output(&mut command, true)?);
             } else {
                 command.stderr(Stdio::from(slave));
             }
@@ -1259,11 +1286,11 @@ pub(crate) fn spawn_persistent_process(
             let (master, slave, slave_name) = open_emacs_pty()?;
             pty_slave_name = slave_name;
             command.stdin(Stdio::from(slave));
-            command.stdout(Stdio::piped());
-            command.stderr(Stdio::piped());
+            stdout_read = Some(piped_output(&mut command, false)?);
+            stderr_read = Some(piped_output(&mut command, true)?);
             pty_input = Some(master);
         } else {
-            command.stdin(Stdio::piped());
+            piped_stdin(&mut command)?;
             if output_pty {
                 let (master, slave, slave_name) = open_emacs_pty()?;
                 pty_slave_name = slave_name;
@@ -1278,15 +1305,25 @@ pub(crate) fn spawn_persistent_process(
                         .map_err(|error| LispError::Signal(error.to_string()))?,
                 ));
                 if separate_stderr {
-                    command.stderr(Stdio::piped());
+                    stderr_read = Some(piped_output(&mut command, true)?);
                 } else {
                     command.stderr(Stdio::from(slave));
                 }
                 pty_output = Some(master);
             } else {
-                command.stdout(Stdio::piped());
-                command.stderr(Stdio::piped());
+                stdout_read = Some(piped_output(&mut command, false)?);
+                stderr_read = Some(piped_output(&mut command, true)?);
             }
+        }
+        // create_process: the channel Emacs reads and the one it writes
+        // must fit an fd_set; none is spawned otherwise.
+        use std::os::fd::AsRawFd;
+        let inchannel = stdout_read.as_ref().or(pty_output.as_ref());
+        let outchannel = stdin_write.as_ref().or(pty_input.as_ref());
+        if beyond_fd_setsize(
+            &[inchannel, outchannel].map(|channel| channel.map_or(-1, |file| file.as_raw_fd())),
+        ) {
+            return Err(fd_setsize_error("Creating pipe"));
         }
     }
     #[cfg(not(unix))]
@@ -1309,8 +1346,10 @@ pub(crate) fn spawn_persistent_process(
     );
 
     let child = command.spawn().map_err(|error| vfork_error(&error))?;
+    // Only the child keeps the ends it was given.
+    drop(command);
     #[cfg(unix)]
-    let child = SpawnedChild::from_std(child);
+    let child = SpawnedChild::new(child.id(), stdin_write, stdout_read, stderr_read);
     // Put the child under RunningProcess's terminate-and-reap Drop guard
     // before any fallible post-spawn setup.  A failed fcntl must not leak a
     // subprocess whose runtime was never installed in the interpreter.
@@ -1343,6 +1382,81 @@ fn finish_spawned_runtime(runtime: RunningProcess) -> Result<RunningProcess, Lis
         }
     }
     Ok(runtime)
+}
+
+/// process.c's FD_SETSIZE: a channel at or above it, which `pselect'
+/// could not watch, makes its process's creation fail with EMFILE.
+/// glibc's fd_set holds 1024 descriptors; the contracted macOS build is
+/// configured with -DFD_SETSIZE=10000.
+#[cfg(target_os = "macos")]
+pub(crate) const FD_SETSIZE: std::os::fd::RawFd = 10000;
+#[cfg(all(unix, not(target_os = "macos")))]
+pub(crate) const FD_SETSIZE: std::os::fd::RawFd = libc::FD_SETSIZE as std::os::fd::RawFd;
+
+/// report_file_errno (WHAT, Qnil, EMFILE): the error of a channel
+/// FD_SETSIZE refuses.
+#[cfg(unix)]
+pub(crate) fn fd_setsize_error(what: &str) -> LispError {
+    LispError::SignalValue(file_operation_error_value_without_file(
+        what,
+        &std::io::Error::from_raw_os_error(libc::EMFILE),
+    ))
+}
+
+/// `FD_SETSIZE <= inchannel || FD_SETSIZE <= outchannel'.
+#[cfg(unix)]
+pub(crate) fn beyond_fd_setsize(channels: &[std::os::fd::RawFd]) -> bool {
+    channels.iter().any(|fd| FD_SETSIZE <= *fd)
+}
+
+/// connect_network_socket's and server_accept_connection's `FD_SETSIZE
+/// <= s': a socket at or above FD_SETSIZE is closed, and its connection
+/// fails with EMFILE.
+#[cfg(unix)]
+pub(crate) fn socket_within_fd_setsize<T: std::os::fd::AsRawFd>(socket: T) -> std::io::Result<T> {
+    if beyond_fd_setsize(&[socket.as_raw_fd()]) {
+        drop(socket);
+        return Err(std::io::Error::from_raw_os_error(libc::EMFILE));
+    }
+    Ok(socket)
+}
+
+#[cfg(not(unix))]
+pub(crate) fn socket_within_fd_setsize<T>(socket: T) -> std::io::Result<T> {
+    Ok(socket)
+}
+
+/// Fmake_pipe_process's two pipes, as (read end, write end): the one the
+/// process writes into (SUBPROCESS_STDIN, WRITE_TO_SUBPROCESS) and the
+/// one it reads (READ_FROM_SUBPROCESS, SUBPROCESS_STDOUT).
+pub(crate) struct PipeProcessChannels {
+    pub(crate) input: (fs::File, fs::File),
+    pub(crate) output: (fs::File, fs::File),
+}
+
+/// Fmake_pipe_process's channels: both pipes, EMFILE when the channel it
+/// reads or the one it writes lies at or above FD_SETSIZE, and both
+/// channels non-blocking.  The descriptors close when an error drops
+/// them, as remove_process's unwind closes them.
+pub(crate) fn open_pipe_process_channels() -> Result<PipeProcessChannels, LispError> {
+    let pipe_error = |error: std::io::Error| {
+        LispError::SignalValue(file_operation_error_value_without_file(
+            "Creating pipe",
+            &error,
+        ))
+    };
+    let input = emacs_pipe().map_err(pipe_error)?;
+    let output = emacs_pipe().map_err(pipe_error)?;
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd;
+        if beyond_fd_setsize(&[output.0.as_raw_fd(), input.1.as_raw_fd()]) {
+            return Err(fd_setsize_error("Creating pipe"));
+        }
+        set_nonblocking(&output.0)?;
+        set_nonblocking(&input.1)?;
+    }
+    Ok(PipeProcessChannels { input, output })
 }
 
 /// emacs_pipe: a pipe both of whose ends are close-on-exec, as (read end,
@@ -1550,6 +1664,17 @@ fn posix_spawn_process(
         .then(emacs_pipe)
         .transpose()
         .map_err(pipe_error)?;
+    // create_process: the channel Emacs reads and the one it writes, each
+    // a pipe or the pty, must fit an fd_set; none is spawned otherwise.
+    let master = pty_master.as_ref().map(|master| master.as_raw_fd());
+    let inchannel = output.as_ref().map(|(read, _)| read.as_raw_fd()).or(master);
+    let outchannel = input
+        .as_ref()
+        .map(|(_, write)| write.as_raw_fd())
+        .or(master);
+    if beyond_fd_setsize(&[inchannel, outchannel].map(|fd| fd.unwrap_or(-1))) {
+        return Err(fd_setsize_error("Creating pipe"));
+    }
     let stdio = [
         input
             .as_ref()
@@ -1653,6 +1778,10 @@ fn open_emacs_pty() -> Result<(fs::File, fs::File, Option<String>), LispError> {
     let master = unsafe { fs::File::from_raw_fd(master) };
     // SAFETY: ownership of the fresh descriptor is transferred exactly once.
     let slave = unsafe { fs::File::from_raw_fd(slave) };
+    // create_pty: a pty `pselect' could not watch is refused.
+    if beyond_fd_setsize(&[master.as_raw_fd()]) {
+        return Err(fd_setsize_error("Opening pty"));
+    }
     for fd in [master.as_raw_fd(), slave.as_raw_fd()] {
         // SAFETY: both descriptors are live and owned by the File values.
         let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
@@ -3103,6 +3232,11 @@ fn connect_nonblocking(
         }
         // SAFETY: FD is the socket just made, owned here alone.
         let socket = unsafe { OwnedFd::from_raw_fd(fd) };
+        // "Reject file descriptors that would be too large."
+        if beyond_fd_setsize(&[fd]) {
+            last_error = std::io::Error::from_raw_os_error(libc::EMFILE);
+            continue;
+        }
         // SAFETY: fcntl on the owned descriptor, as emacs_socket and
         // connect_network_socket set O_NONBLOCK and FD_CLOEXEC.
         unsafe {
@@ -3123,6 +3257,52 @@ fn connect_nonblocking(
         last_error = error;
     }
     Err(last_error)
+}
+
+/// connect_network_socket's loop for a blocking client: the first of
+/// ADDRESSES that connects, else the last address's error.  A socket
+/// beyond FD_SETSIZE is closed before it connects, and its address fails
+/// with EMFILE.
+#[cfg(unix)]
+fn connect_blocking(addresses: &[std::net::SocketAddr]) -> std::io::Result<std::net::TcpStream> {
+    use std::os::fd::{FromRawFd, OwnedFd};
+    let mut last_error = std::io::Error::from_raw_os_error(libc::EADDRNOTAVAIL);
+    for address in addresses {
+        let (family, storage, length) = socket_address(address);
+        // SAFETY: socket makes a descriptor or fails; nothing is borrowed.
+        let fd = unsafe { libc::socket(family, libc::SOCK_STREAM, 0) };
+        if fd < 0 {
+            last_error = std::io::Error::last_os_error();
+            continue;
+        }
+        // SAFETY: FD is the socket just made, owned here alone.
+        let socket = unsafe { OwnedFd::from_raw_fd(fd) };
+        if beyond_fd_setsize(&[fd]) {
+            last_error = std::io::Error::from_raw_os_error(libc::EMFILE);
+            continue;
+        }
+        // SAFETY: fcntl on the owned descriptor, as emacs_socket sets
+        // FD_CLOEXEC.
+        unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
+        // SAFETY: STORAGE holds ADDRESS as a sockaddr of LENGTH bytes.
+        if unsafe { libc::connect(fd, (&raw const storage).cast(), length) } == 0 {
+            return Ok(std::net::TcpStream::from(socket));
+        }
+        let error = std::io::Error::last_os_error();
+        match error.raw_os_error() {
+            Some(libc::EISCONN) => return Ok(std::net::TcpStream::from(socket)),
+            Some(libc::EINTR) => {
+                return finish_interrupted_connect(fd).map(|()| std::net::TcpStream::from(socket));
+            }
+            _ => last_error = error,
+        }
+    }
+    Err(last_error)
+}
+
+#[cfg(not(unix))]
+fn connect_blocking(addresses: &[std::net::SocketAddr]) -> std::io::Result<std::net::TcpStream> {
+    std::net::TcpStream::connect(addresses)
 }
 
 #[cfg(not(unix))]
@@ -3176,6 +3356,95 @@ fn socket_address(
             }
             (libc::AF_INET6, storage, length as libc::socklen_t)
         }
+    }
+}
+
+/// connect_network_socket's report_file_errno ("make server process
+/// failed", contact, EMFILE) for a server socket beyond FD_SETSIZE.
+fn network_server_fd_setsize_error(error: &std::io::Error, args: &[Value]) -> LispError {
+    let mut data = vec![
+        Value::symbol("file-error"),
+        Value::string("make server process failed"),
+        Value::string(&network_io_error_detail(error)),
+    ];
+    data.extend_from_slice(args);
+    LispError::SignalValue(Value::list(data))
+}
+
+/// connect_network_socket's loop for a local client: its socket, closed
+/// with EMFILE when it lies beyond FD_SETSIZE, connected to PATH.
+#[cfg(unix)]
+fn connect_local(path: &str) -> std::io::Result<std::os::unix::net::UnixStream> {
+    use std::os::fd::{FromRawFd, OwnedFd};
+    // SAFETY: an all-zero sockaddr_un is an empty address.
+    let mut storage: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    if path.len() >= storage.sun_path.len() {
+        return Err(std::io::Error::from_raw_os_error(libc::ENAMETOOLONG));
+    }
+    storage.sun_family = libc::AF_UNIX as libc::sa_family_t;
+    for (slot, byte) in storage.sun_path.iter_mut().zip(path.as_bytes()) {
+        *slot = *byte as libc::c_char;
+    }
+    let length =
+        (std::mem::offset_of!(libc::sockaddr_un, sun_path) + path.len() + 1) as libc::socklen_t;
+    // SAFETY: socket makes a descriptor or fails; nothing is borrowed.
+    let fd = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: FD is the socket just made, owned here alone.
+    let socket = socket_within_fd_setsize(unsafe { OwnedFd::from_raw_fd(fd) })?;
+    // SAFETY: fcntl on the owned descriptor, as emacs_socket sets
+    // FD_CLOEXEC.
+    unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
+    // SAFETY: STORAGE holds the address in LENGTH bytes.
+    if unsafe { libc::connect(fd, (&raw const storage).cast(), length) } != 0 {
+        let error = std::io::Error::last_os_error();
+        match error.raw_os_error() {
+            Some(libc::EISCONN) => {}
+            Some(libc::EINTR) => finish_interrupted_connect(fd)?,
+            _ => return Err(error),
+        }
+    }
+    Ok(std::os::unix::net::UnixStream::from(socket))
+}
+
+/// connect_network_socket's wait for a connect a signal interrupted,
+/// which goes on and cannot be made again: pselect for the socket's
+/// writability, then its SO_ERROR says how it ended.
+#[cfg(unix)]
+fn finish_interrupted_connect(fd: std::os::fd::RawFd) -> std::io::Result<()> {
+    let mut poll = libc::pollfd {
+        fd,
+        events: libc::POLLOUT,
+        revents: 0,
+    };
+    // SAFETY: POLL describes the one live descriptor.
+    while unsafe { libc::poll(&mut poll, 1, -1) } < 0 {
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() != Some(libc::EINTR) {
+            return Err(error);
+        }
+    }
+    let mut code: libc::c_int = 0;
+    let mut size = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+    // SAFETY: CODE and SIZE are the int SO_ERROR fills in.
+    if unsafe {
+        libc::getsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_ERROR,
+            (&raw mut code).cast(),
+            &mut size,
+        )
+    } < 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    if code == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::from_raw_os_error(code))
     }
 }
 
@@ -3415,6 +3684,7 @@ pub(crate) fn make_network_process(
             };
             std::net::UdpSocket::bind(local)
         }
+        .and_then(socket_within_fd_setsize)
         .map_err(|error| {
             if is_server {
                 network_server_error(&error)
@@ -3491,6 +3761,8 @@ pub(crate) fn make_network_process(
         if is_server {
             let listener = std::os::unix::net::UnixListener::bind(&path)
                 .map_err(|error| network_server_error(&error))?;
+            let listener = socket_within_fd_setsize(listener)
+                .map_err(|error| network_server_fd_setsize_error(&error, args))?;
             listener
                 .set_nonblocking(true)
                 .map_err(|error| network_server_error(&error))?;
@@ -3517,8 +3789,7 @@ pub(crate) fn make_network_process(
                 encoding,
             );
         }
-        let stream = std::os::unix::net::UnixStream::connect(&path)
-            .map_err(|error| network_client_error(&error, args))?;
+        let stream = connect_local(&path).map_err(|error| network_client_error(&error, args))?;
         stream
             .set_nonblocking(true)
             .map_err(|error| network_client_error(&error, args))?;
@@ -3574,6 +3845,8 @@ pub(crate) fn make_network_process(
             std::net::TcpListener::bind((bind_host.as_str(), bind_port))
         }
         .map_err(|error| network_server_error(&error))?;
+        let listener = socket_within_fd_setsize(listener)
+            .map_err(|error| network_server_fd_setsize_error(&error, args))?;
         listener
             .set_nonblocking(true)
             .map_err(|error| network_server_error(&error))?;
@@ -3631,8 +3904,8 @@ pub(crate) fn make_network_process(
                 Err(error) => (None, None, Vec::new(), Some(error)),
             }
         } else {
-            let stream = std::net::TcpStream::connect(addresses.as_slice())
-                .map_err(|error| network_client_error(&error, args))?;
+            let stream =
+                connect_blocking(&addresses).map_err(|error| network_client_error(&error, args))?;
             stream
                 .set_nonblocking(true)
                 .map_err(|error| network_client_error(&error, args))?;
@@ -3790,12 +4063,22 @@ fn open_serial_port(path: &str) -> Result<serialport::TTYPort, LispError> {
         use std::os::fd::IntoRawFd;
         use std::os::unix::fs::OpenOptionsExt;
 
+        use std::os::fd::AsRawFd;
+        // sysdep.c:serial_open's report_file_error, then
+        // Fmake_serial_process's refusal of a port beyond FD_SETSIZE.
         let file = fs::OpenOptions::new()
             .read(true)
             .write(true)
             .custom_flags(libc::O_NOCTTY | libc::O_NONBLOCK)
             .open(path)
-            .map_err(|error| LispError::Signal(error.to_string()))?;
+            .map_err(|error| file_operation_error("Opening serial port", &error, path))?;
+        if beyond_fd_setsize(&[file.as_raw_fd()]) {
+            return Err(file_operation_error(
+                "Opening serial port",
+                &std::io::Error::from_raw_os_error(libc::EMFILE),
+                path,
+            ));
+        }
         // SAFETY: ownership of the descriptor is transferred from File to
         // TTYPort exactly once.  This path intentionally does not touch
         // termios: GNU's documented :speed nil contract preserves it.
@@ -4342,9 +4625,30 @@ fn pump_connection_processes_for(
             continue;
         }
         loop {
-            let Some((child_runtime, peer_addr)) = interp.accept_network_connection(server_id)?
-            else {
-                break;
+            let (child_runtime, peer_addr) = match interp.accept_network_connection(server_id)? {
+                None => break,
+                Some(crate::lisp::eval::AcceptedConnection::Stream(runtime, peer_addr)) => {
+                    (runtime, peer_addr)
+                }
+                // server_accept_connection: a failed accept is the log
+                // function's to hear of, "accept failed with code" and the
+                // errno run together, and the listener waits again.
+                Some(crate::lisp::eval::AcceptedConnection::Failed(code)) => {
+                    if let Some(log) = interp.process_log_function(server_id) {
+                        call_function_value(
+                            interp,
+                            &log,
+                            &[
+                                interp.record_value(server_id),
+                                Value::Nil,
+                                Value::String(format!("accept failed with code{code}\n").into()),
+                            ],
+                            env,
+                        )?;
+                    }
+                    progressed = true;
+                    break;
+                }
             };
             progressed = true;
             interp.network_connect_counter += 1;

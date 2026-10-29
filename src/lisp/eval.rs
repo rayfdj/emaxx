@@ -1564,10 +1564,6 @@ pub(crate) struct SpecialBindingRestore {
     binding_buffer_id: Option<u64>,
     keyboard_terminal_id: Option<u64>,
     previous: Option<Value>,
-    /// Boxed: a binding of buffer-undo-list holds the buffer's whole undo
-    /// state, and every other binding's record is moved by `memcpy' at
-    /// its size.
-    previous_undo_state: Option<Box<crate::buffer::UndoState>>,
     /// eval.c's SPECPDL_LET_DEFAULT: the symbol was localized (or a
     /// per-buffer one) without a cell in the binding buffer, so the
     /// binding wrote the default and the unbind writes it back through
@@ -2031,6 +2027,14 @@ pub(crate) enum NetworkRuntime {
     /// `:family local' — unix domain sockets (erc-d's direct tests).
     UnixListener(std::os::unix::net::UnixListener),
     UnixStream(std::os::unix::net::UnixStream),
+}
+
+/// What server_accept_connection found on a listener.
+pub(crate) enum AcceptedConnection {
+    /// A connection, with its peer's address for an inet listener.
+    Stream(NetworkRuntime, Option<std::net::SocketAddr>),
+    /// An accept that failed with this errno.
+    Failed(i32),
 }
 
 impl std::fmt::Debug for NetworkRuntime {
@@ -2542,6 +2546,7 @@ impl Clone for ProcessState {
             network: None,
             serial: None,
             module_pipe: None,
+            pipe_input: None,
             contact_host: self.contact_host.clone(),
             contact_service: self.contact_service,
             remote: self.remote.clone(),
@@ -2606,7 +2611,13 @@ struct ProcessState {
     runtime: Option<RunningProcess>,
     network: Option<NetworkRuntime>,
     serial: Option<SerialRuntime>,
+    /// A pipe process's channels (Fmake_pipe_process): the pipe it reads
+    /// (READ_FROM_SUBPROCESS, SUBPROCESS_STDOUT), which a module's
+    /// `open-channel' writes into, and the one its sends go to
+    /// (SUBPROCESS_STDIN, WRITE_TO_SUBPROCESS), which create_process
+    /// closes once the process is another's standard error.
     module_pipe: Option<(fs::File, fs::File)>,
+    pipe_input: Option<(fs::File, fs::File)>,
     /// Network :host/:service as given at creation (process-contact).
     contact_host: Option<String>,
     contact_service: Option<i64>,
@@ -4660,9 +4671,6 @@ impl Interpreter {
             if let Some(value) = &restore.previous {
                 mark(value);
             }
-            if let Some(state) = &restore.previous_undo_state {
-                state.visit_lisp_roots(&mut mark);
-            }
         }
         // editfns.c keeps a buffer's labeled restrictions (`with-restriction'
         // with a label) in `labeled_restrictions', an alist of the buffer,
@@ -5732,6 +5740,10 @@ pub struct InterpreterState {
     /// while point and the buffer's modiff stay as they were (a point of
     /// 0, no position, when invalid).
     pub(crate) last_known_column: (usize, usize, crate::buffer::ModCount),
+    /// keyboard.c's buffer_before_last_command_or_undo: the buffer whose
+    /// point the last command or `undo-boundary' recorded, which alone
+    /// holds that point (`point_before_last_command_or_undo').
+    pub(crate) buffer_before_last_command_or_undo: Option<u64>,
     /// The matcher's registers in text offsets (search.c's search_regs
     /// before a search converts them to positions), held between searches
     /// so their allocation serves every search.
@@ -5893,12 +5905,49 @@ pub(crate) enum ActiveHandler {
     /// handlers may change, and a copy costs a count each.
     Bind(std::rc::Rc<[String]>, Value),
     /// The clause heads of an active `condition-case' (minus :success).
-    Case(std::rc::Rc<[Value]>),
+    Case(CaseHeads),
     /// An internal_condition_case of the C core: HANDLERS that are no list
     /// (find_handler_clause answers them for any condition), t or `error';
     /// `error' lets the debugger in (signal_or_quit's `EQ (clause,
     /// Qerror)').
     Internal(InternalHandlers),
+}
+
+/// The clause heads of an active `condition-case': the one of a
+/// Bpushconditioncase handler, held as it is, or an interpreted form's,
+/// shared as `signal''s copy of the stack shares them.
+#[derive(Clone, Debug)]
+pub(crate) enum CaseHeads {
+    One(Value),
+    Many(std::rc::Rc<[Value]>),
+}
+
+impl std::ops::Deref for CaseHeads {
+    type Target = [Value];
+
+    fn deref(&self) -> &[Value] {
+        match self {
+            Self::One(head) => std::slice::from_ref(head),
+            Self::Many(heads) => heads,
+        }
+    }
+}
+
+impl From<Vec<Value>> for CaseHeads {
+    fn from(heads: Vec<Value>) -> Self {
+        Self::Many(heads.into())
+    }
+}
+
+impl FromIterator<Value> for CaseHeads {
+    fn from_iter<I: IntoIterator<Item = Value>>(heads: I) -> Self {
+        let mut heads = heads.into_iter().collect::<Vec<_>>();
+        if heads.len() == 1 {
+            Self::One(heads.pop().expect("one head"))
+        } else {
+            heads.into()
+        }
+    }
 }
 
 /// The two kinds of `ActiveHandler::Internal'.
@@ -6476,6 +6525,7 @@ impl Interpreter {
             last_match_data: None,
             last_match_data_buffer_id: None,
             last_known_column: (0, 0, 0),
+            buffer_before_last_command_or_undo: None,
             search_registers: Default::default(),
             profiler_memory_running: false,
             profiler_memory_log_pending: false,
@@ -8165,23 +8215,6 @@ pub(crate) fn error_condition_value(error: &LispError) -> Value {
             unreachable!("process termination cannot be converted to a Lisp condition")
         }
         LispErrorKind::SignalValue(value) => *value,
-    }
-}
-
-fn buffer_undo_head_to_entry(value: &Value) -> crate::buffer::UndoEntry {
-    match value.kind() {
-        Kind::Nil => crate::buffer::UndoEntry::Boundary,
-        Kind::Cons(_) => match value.cons_values().map(|(a0, a1)| (a0.kind(), a1.kind())) {
-            // GNU records an insertion as (BEG . END).
-            Some((Kind::Integer(beg), Kind::Integer(end))) if beg >= 0 && end >= beg => {
-                crate::buffer::UndoEntry::Insert {
-                    pos: beg as usize,
-                    len: (end - beg) as usize,
-                }
-            }
-            _ => crate::buffer::UndoEntry::Opaque(*value),
-        },
-        _ => crate::buffer::UndoEntry::Opaque(*value),
     }
 }
 

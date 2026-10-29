@@ -1199,9 +1199,9 @@ pub(crate) fn add_command_undo_boundary(
             env,
         )?;
     } else {
-        interp.buffer.borrow_mut().push_undo_boundary();
+        interp.undo_boundary(env)?;
     }
-    interp.buffer.borrow_mut().note_undo_command_point();
+    interp.note_point_before_last_command_or_undo();
     Ok(())
 }
 

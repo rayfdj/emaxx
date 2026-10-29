@@ -3,7 +3,7 @@ use crate::lisp::types::Kind;
 use crate::lisp::types::PropertyName;
 
 pub fn buffer_undo_list_value(buffer: &crate::buffer::Buffer) -> Value {
-    buffer.undo_list_value()
+    buffer.undo_list()
 }
 
 /// fns.c's equal_kind for the two walks Lisp asks for (equal_no_quit's

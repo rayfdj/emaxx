@@ -347,27 +347,6 @@ pub(crate) fn push_buffer_character(
     }
 }
 
-/// The side table of a string's characters its Rust text view cannot
-/// carry, read in place: empty for a unibyte or ASCII string and for
-/// UTF-8 without a real U+E000..U+E0FF.
-pub(crate) fn string_extended_chars(value: &Value) -> Vec<(usize, u32)> {
-    let Kind::StringObject(state) = value.kind() else {
-        return Vec::new();
-    };
-    let state = state.borrow();
-    let bytes = state.bytes();
-    if !state.is_multibyte() || bytes.is_ascii() {
-        return Vec::new();
-    }
-    if std::str::from_utf8(bytes).is_ok()
-        && !memchr::memchr_iter(0xEE, bytes)
-            .any(|at| matches!(bytes.get(at + 1), Some(0x80..=0x83)))
-    {
-        return Vec::new();
-    }
-    state.text_parts().1
-}
-
 pub(crate) fn string_like(value: &Value) -> Option<StringLike> {
     match value.kind() {
         Kind::StringObject(state) => {
@@ -466,11 +445,6 @@ pub(crate) fn string_is_multibyte(value: &Value) -> Option<bool> {
         Kind::StringObject(state) => Some(state.borrow().is_multibyte()),
         _ => None,
     }
-}
-
-/// Whether VALUE is a string without text properties, read in place.
-pub(crate) fn string_without_properties(value: &Value) -> bool {
-    matches!(value.kind(), Kind::StringObject(state) if state.borrow().props.is_empty())
 }
 
 pub(crate) fn char_from_integer(code: i64) -> Result<char, LispError> {
@@ -920,26 +894,56 @@ pub(crate) fn string_like_value(text: String, props: Vec<TextPropertySpan>) -> V
     string_like_value_with_multibyte(text, merge_string_props(props), multibyte)
 }
 
-pub(crate) fn reverse_string_like_value(value: &Value) -> Result<Value, LispError> {
-    let string =
-        string_like(value).ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *value))?;
-    let len = string.text.chars().count();
-    let text = string.text.chars().rev().collect::<String>();
-    let props = string
-        .props
-        .into_iter()
-        .map(|span| TextPropertySpan {
-            start: len - span.end,
-            end: len - span.start,
-            props: span.props,
-        })
-        .collect();
-    Ok(string_like_value(text, merge_string_props(props)))
+/// fns.c:Freverse of a string, which Fnreverse returns too: its characters
+/// in the opposite order and none of its text properties; a string whose
+/// bytes are its characters (unibyte, or multibyte ASCII) gives a unibyte
+/// one, any other a multibyte one of the same bytes.
+pub(crate) fn reverse_string_value(
+    interp: &Interpreter,
+    env: &Env,
+    value: &Value,
+) -> Result<Value, LispError> {
+    let Kind::StringObject(state) = value.kind() else {
+        return Err(LispError::WrongTypeArgument("stringp".into(), *value));
+    };
+    let (reversed, size, multibyte) = {
+        let state = state.borrow();
+        let bytes = state.bytes();
+        let size = state.len();
+        if size == bytes.len() {
+            (
+                bytes.iter().rev().copied().collect::<Vec<u8>>(),
+                size,
+                false,
+            )
+        } else {
+            // Each character's bytes, read from the front, written from the
+            // back.
+            let mut reversed = vec![0u8; bytes.len()];
+            let mut p = 0;
+            let mut q = bytes.len();
+            while q > 0 {
+                let len =
+                    crate::lisp::types::string_data::multibyte_length(&bytes[p..], true).max(1);
+                q -= len;
+                reversed[q..q + len].copy_from_slice(&bytes[p..p + len]);
+                p += len;
+            }
+            (reversed, size, true)
+        }
+    };
+    StringObjectRef::from_storage(reversed, size, multibyte)
+        .map(Value::StringObject)
+        .map_err(|error| string_storage_error(interp, env, error))
 }
 
-pub(crate) fn reverse_sequence_value(value: &Value) -> Result<Value, LispError> {
-    if string_like(value).is_some() {
-        return reverse_string_like_value(value);
+pub(crate) fn reverse_sequence_value(
+    interp: &Interpreter,
+    env: &Env,
+    value: &Value,
+) -> Result<Value, LispError> {
+    if matches!(value.kind(), Kind::StringObject(_)) {
+        return reverse_string_value(interp, env, value);
     }
     if is_bool_vector_value(value) {
         let mut bits = bool_vector_bits(value)?;
@@ -961,9 +965,13 @@ pub(crate) fn reverse_sequence_value(value: &Value) -> Result<Value, LispError> 
     }
 }
 
-pub(crate) fn nreverse_sequence_value(value: &Value) -> Result<Value, LispError> {
-    if string_like(value).is_some() {
-        return reverse_string_like_value(value);
+pub(crate) fn nreverse_sequence_value(
+    interp: &Interpreter,
+    env: &Env,
+    value: &Value,
+) -> Result<Value, LispError> {
+    if matches!(value.kind(), Kind::StringObject(_)) {
+        return reverse_string_value(interp, env, value);
     }
     // fns.c:Fnreverse: the bits swapped in place.
     if let Kind::BoolVector(vector) = value.kind() {
@@ -1090,103 +1098,6 @@ pub(crate) fn object_intervals_value(
     Ok(Value::list(intervals))
 }
 
-pub(crate) fn shift_string_props(
-    props: &[TextPropertySpan],
-    offset: usize,
-) -> Vec<TextPropertySpan> {
-    props
-        .iter()
-        .map(|span| TextPropertySpan {
-            start: span.start + offset,
-            end: span.end + offset,
-            props: span.props.clone(),
-        })
-        .collect()
-}
-
-/// textprop.c copy_text_properties (Fsubstring) and fns.c
-/// concat_to_string (`concat', `mapconcat') hand each source interval's
-/// plist to `add_text_properties' on the fresh result, and add_properties
-/// conses every property it did not find onto the head of the plist: a
-/// copied span comes out with its pairs reversed, so
-/// `(substring (propertize "x" 'a 1 'b 2) 0)' prints as (b 2 a 1) where
-/// `copy-sequence' (copy_intervals) keeps (a 1 b 2).
-pub(crate) fn copied_string_props(
-    props: &[TextPropertySpan],
-    offset: usize,
-) -> Vec<TextPropertySpan> {
-    props
-        .iter()
-        .map(|span| TextPropertySpan {
-            start: span.start + offset,
-            end: span.end + offset,
-            props: span.props.iter().rev().cloned().collect(),
-        })
-        .collect()
-}
-
-pub(crate) fn slice_string_props(
-    props: &[TextPropertySpan],
-    from: usize,
-    to: usize,
-) -> Vec<TextPropertySpan> {
-    let mut sliced = Vec::new();
-    for span in props {
-        let start = span.start.max(from);
-        let end = span.end.min(to);
-        if start < end {
-            sliced.push(TextPropertySpan {
-                start: start - from,
-                end: end - from,
-                props: span.props.clone(),
-            });
-        }
-    }
-    merge_string_props(sliced)
-}
-
-/// editfns.c styled_format's property layering: the format string's
-/// properties cover each substituted span, and the argument string's own
-/// properties are then ADDED over them (add-text-properties semantics:
-/// shared keys take the argument's value, and the argument's keys print
-/// first).  The format builder records these as OVERLAPPING spans in
-/// arrival order (argument spans first, the covering spec span last);
-/// flatten them into disjoint spans whose plists carry the union, with
-/// the earliest covering span winning each key.
-pub(crate) fn flatten_overlapping_string_props(
-    spans: Vec<TextPropertySpan>,
-) -> Vec<TextPropertySpan> {
-    let mut bounds: Vec<usize> = spans
-        .iter()
-        .filter(|span| span.start < span.end)
-        .flat_map(|span| [span.start, span.end])
-        .collect();
-    bounds.sort_unstable();
-    bounds.dedup();
-    let mut result = Vec::new();
-    for window in bounds.windows(2) {
-        let (start, end) = (window[0], window[1]);
-        let mut plist: Vec<(PropertyName, Value)> = Vec::new();
-        for span in &spans {
-            if span.start <= start && end <= span.end {
-                for (key, value) in &span.props {
-                    if !plist.iter().any(|(existing, _)| existing == key) {
-                        plist.push((*key, *value));
-                    }
-                }
-            }
-        }
-        if !plist.is_empty() {
-            result.push(TextPropertySpan {
-                start,
-                end,
-                props: plist,
-            });
-        }
-    }
-    merge_string_props(result)
-}
-
 pub(crate) fn merge_string_props(mut props: Vec<TextPropertySpan>) -> Vec<TextPropertySpan> {
     props.retain(|span| span.start < span.end && !span.props.is_empty());
     props.sort_by(|left, right| left.start.cmp(&right.start).then(left.end.cmp(&right.end)));
@@ -1231,26 +1142,85 @@ pub(crate) fn property_from_props_with_category(
     props: &[(PropertyName, Value)],
     prop: impl PropertyKey,
 ) -> Option<Value> {
-    if let Some((_, value)) = props.iter().find(|(name, _)| prop.names(name)) {
-        return Some(*value);
+    property_from_props_reading(interp, props, prop, &mut TextPropertyVariables::default())
+}
+
+/// The variables lookup_char_property reads where a plist has no PROP,
+/// each read at its first need: `char-property-alias-alist' and
+/// `default-text-properties'.
+#[derive(Default)]
+pub(crate) struct TextPropertyVariables {
+    aliases: Option<Value>,
+    defaults: Option<Value>,
+}
+
+impl TextPropertyVariables {
+    fn aliases(&mut self, interp: &Interpreter) -> Value {
+        *self.aliases.get_or_insert_with(|| {
+            interp
+                .symbol_value_key(cached_symbol!("char-property-alias-alist"))
+                .unwrap_or(Value::Nil)
+        })
     }
+
+    fn defaults(&mut self, interp: &Interpreter) -> Value {
+        *self.defaults.get_or_insert_with(|| {
+            interp
+                .symbol_value_key(cached_symbol!("default-text-properties"))
+                .unwrap_or(Value::Nil)
+        })
+    }
+}
+
+/// `property_from_props_with_category' for a caller reading many plists
+/// with no Lisp run between them: VARIABLES, each read once, serve them
+/// all.
+pub(crate) fn property_from_props_reading(
+    interp: &Interpreter,
+    props: &[(PropertyName, Value)],
+    prop: impl PropertyKey,
+    variables: &mut TextPropertyVariables,
+) -> Option<Value> {
+    let from_category = match prop.object() {
+        // lookup_char_property's walk: PROP's value by EQ, the `category'
+        // entry read in the same walk.
+        Some(key) => {
+            let category = cached_symbol!("category").with(|symbol| Value::Symbol(*symbol));
+            let mut found = None;
+            for (name, value) in props {
+                let name = name.value().word();
+                if name == key.word() {
+                    return Some(*value);
+                }
+                if name == category.word() && found.is_none() {
+                    found = Some(*value);
+                }
+            }
+            // A category's symbol gives every property but `category'.
+            found
+                .filter(|_| key.word() != category.word())
+                .and_then(|symbol| {
+                    symbol
+                        .symbol_str()
+                        .and_then(|name| interp.get_symbol_property_by(name, prop))
+                })
+        }
+        None => {
+            if let Some((_, value)) = props.iter().find(|(name, _)| prop.names(name)) {
+                return Some(*value);
+            }
+            property_from_category_symbol(interp, props, prop)
+        }
+    };
     if !props.is_empty() {
-        if let Some(value) =
-            property_from_category_symbol(interp, props, prop).filter(|value| !value.is_nil())
-        {
+        if let Some(value) = from_category.filter(|value| !value.is_nil()) {
             return Some(value);
         }
-        let aliases = interp
-            .symbol_value_key(cached_symbol!("char-property-alias-alist"))
-            .unwrap_or(Value::Nil);
-        if let Some(value) = alias_property(props, prop, aliases) {
+        if let Some(value) = alias_property(props, prop, variables.aliases(interp)) {
             return Some(value);
         }
     }
-    let defaults = interp
-        .symbol_value_key(cached_symbol!("default-text-properties"))
-        .unwrap_or(Value::Nil);
-    Some(lisp_plist_get(defaults, prop)).filter(|value| !value.is_nil())
+    Some(lisp_plist_get(variables.defaults(interp), prop)).filter(|value| !value.is_nil())
 }
 
 /// lookup_char_property's alternatives: `Fassq' of PROP in ALIASES, then
@@ -1260,6 +1230,9 @@ fn alias_property(
     prop: impl PropertyKey,
     aliases: Value,
 ) -> Option<Value> {
+    if !aliases.is_cons() {
+        return None;
+    }
     let mut seen = crate::lisp::types::CycleGuard::new();
     let mut tail = aliases;
     let names = loop {
@@ -1295,6 +1268,9 @@ fn alias_property(
 
 /// fns.c:plist_get of PROP in the Lisp property list PLIST.
 fn lisp_plist_get(plist: Value, prop: impl PropertyKey) -> Value {
+    if !plist.is_cons() {
+        return Value::Nil;
+    }
     let mut seen = crate::lisp::types::CycleGuard::new();
     let mut tail = plist;
     while let Kind::Cons(cell) = tail.kind() {

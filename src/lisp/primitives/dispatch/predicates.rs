@@ -387,11 +387,13 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 // GNU 30.2 data.c:Fboundp uses CHECK_SYMBOL/XSYMBOL.
                 let symbol = checked_symbol_identity(interp, &args[0], env)?;
-                Ok(if interp.symbol_value_cell_symbol(&symbol).is_ok() {
-                    Value::T
-                } else {
-                    Value::Nil
-                })
+                Ok(
+                    if matches!(interp.dynamic_value_symbol(&symbol), Ok(Some(_))) {
+                        Value::T
+                    } else {
+                        Value::Nil
+                    },
+                )
             }
             "where-is-internal" => {
                 need_arg_range(name, args, 1, 5)?;

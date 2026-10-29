@@ -116,6 +116,9 @@ impl Interpreter {
 
     #[inline(never)]
     fn symbol_value_redirected(&self, symbol: &SymbolName) -> Option<Value> {
+        if let Some(value) = self.loaded_local_value(symbol) {
+            return value;
+        }
         let resolved_owned;
         let resolved = if self.globals.alias(symbol).is_none() {
             symbol
@@ -192,6 +195,23 @@ impl Interpreter {
             return Some(value);
         }
         self.find_symbol_value_redirected(resolved, resolved_symbol)
+    }
+
+    /// data.c:find_symbol_value's SYMBOL_LOCALIZED read through the
+    /// binding loaded for the current buffer, of a variable whose bindings
+    /// the buffers' cells hold (`has_local_value_cells': no alias to
+    /// follow first): Some of what it reads, None when no binding of it is
+    /// loaded for the buffer.
+    #[inline(always)]
+    pub(crate) fn loaded_local_value(&self, symbol: &SymbolName) -> Option<Option<Value>> {
+        if !symbol.cell().has_local_value_cells() {
+            return None;
+        }
+        let loaded = self.loaded_bindings.get(symbol, self.current_buffer_id())?;
+        Some(match loaded {
+            Some(binding) => super::local_cells::live(binding.get()),
+            None => self.localized_default_symbol(symbol),
+        })
     }
 
     #[inline(never)]
@@ -317,6 +337,9 @@ impl Interpreter {
     }
 
     pub(crate) fn symbol_value_cell_symbol(&self, name: &SymbolName) -> Result<Value, LispError> {
+        if let Some(value) = self.loaded_local_value(name) {
+            return value.ok_or_else(|| LispError::Void(name.as_str().to_owned()));
+        }
         let resolved_owned;
         let resolved = if self.globals.alias(name).is_none() {
             name
@@ -324,17 +347,34 @@ impl Interpreter {
             resolved_owned = self.resolve_variable_symbol(name)?;
             &resolved_owned
         };
+        self.resolved_dynamic_value(resolved)
+            .ok_or_else(|| LispError::Void(resolved.as_str().to_owned()))
+    }
+
+    /// data.c:find_symbol_value of NAME's alias chain's end with no
+    /// lexical environment: Fboundp's answer, None for a void variable,
+    /// without the error `symbol-value' makes of that.
+    pub(crate) fn dynamic_value_symbol(
+        &self,
+        name: &SymbolName,
+    ) -> Result<Option<Value>, LispError> {
+        if self.globals.alias(name).is_none() {
+            return Ok(self.resolved_dynamic_value(name));
+        }
+        let resolved = self.resolve_variable_symbol(name)?;
+        Ok(self.resolved_dynamic_value(&resolved))
+    }
+
+    fn resolved_dynamic_value(&self, resolved: &SymbolName) -> Option<Value> {
         if (!resolved.cell().has_c_slot() || resolved.as_str() != "buffer-undo-list")
             && !self.globals.has_flag(resolved, LOCALIZED)
         {
             return self
                 .global_binding_value_symbol(resolved)
-                .or_else(|| self.builtin_symbol_value(resolved))
-                .ok_or_else(|| LispError::Void(resolved.as_str().to_owned()));
+                .or_else(|| self.builtin_symbol_value(resolved));
         }
         // No lexical environment: the dynamic value, as Fsymbol_value.
         self.find_symbol_value_resolved(resolved.as_str(), Some(resolved))
-            .ok_or_else(|| LispError::Void(resolved.as_str().to_owned()))
     }
 
     /// C readers keep using the C slot even after `makunbound' disconnects
@@ -1171,39 +1211,8 @@ impl Interpreter {
             return;
         }
         if resolved == "buffer-undo-list" {
-            if value.is_nil() {
-                self.buffer.borrow_mut().enable_undo();
-                self.buffer.borrow_mut().clear_undo_history();
-            } else if matches!(value.kind(), Kind::T) {
-                self.buffer.borrow_mut().disable_undo();
-            } else if let Some((head, tail)) = value.cons_values()
-                && crate::lisp::primitives::values_eql(
-                    &tail,
-                    &crate::lisp::primitives::buffer_undo_list_value(&self.buffer.borrow()),
-                )
-            {
-                self.buffer.borrow_mut().enable_undo();
-                let entry = buffer_undo_head_to_entry(&head);
-                self.buffer.borrow_mut().push_undo_entry(entry);
-                self.buffer.borrow().set_undo_list_view(value);
-            } else {
-                // A structural replacement (undo truncation after
-                // cancel-change-group, boundary removal by
-                // undo-amalgamate-change-group, ...): rebuild the native undo
-                // state from the assigned list so the Lisp view round-trips.
-                if let Ok(items) = value.to_vec() {
-                    self.buffer.borrow_mut().enable_undo();
-                    self.buffer.borrow_mut().clear_undo_history();
-                    // The Lisp view is newest-first; the native list is
-                    // oldest-first.
-                    for item in items.into_iter().rev() {
-                        self.buffer
-                            .borrow_mut()
-                            .push_undo_entry(buffer_undo_head_to_entry(&item));
-                    }
-                    self.buffer.borrow().set_undo_list_view(value);
-                }
-            }
+            // BVAR (current_buffer, undo_list) itself.
+            self.buffer.borrow_mut().set_undo_list(value);
             return;
         }
         if let Some(scope) = self.assignment_scope_symbol(symbol) {

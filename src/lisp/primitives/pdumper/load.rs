@@ -2170,10 +2170,9 @@ impl Loader<'_> {
         Ok(spans)
     }
 
-    /// A buffer record: the fields `dump_buffer' wrote, the text and the
-    /// saved snapshot from the cold section, the property spans, the
-    /// local bindings, the syntax and case tables and the undo entries;
-    /// the buffer is installed with its id.
+    /// A buffer record: the fields `dump_buffer' wrote, the text from the
+    /// cold section, the property spans, the local bindings and the syntax
+    /// and case tables; the buffer is installed with its id.
     fn load_buffer(
         &mut self,
         offset: u32,
@@ -2206,11 +2205,6 @@ impl Loader<'_> {
                 text.chars().count()
             )));
         }
-        let (saved_text, _) = self.cold_text_at(
-            word(self, BUFFER_SAVED_TEXT)? as u32,
-            word(self, BUFFER_SAVED_BYTES)? as usize,
-            multibyte,
-        )?;
         let position = |word: u64| (word != NO_POSITION).then_some(word as usize);
         let visited_file_modtime = (flags & BUFFER_FLAG_HAS_MODTIME != 0).then(|| {
             let secs = word(self, BUFFER_MODTIME_SECS).unwrap_or(0) as i64;
@@ -2312,14 +2306,6 @@ impl Loader<'_> {
             marker_chain.push(marker);
             at += 8;
         }
-        let nundo = self.reader.word(at)? as usize;
-        at += 8;
-        let mut undo_list = Vec::with_capacity(nundo);
-        for _ in 0..nundo {
-            let (entry, next) = self.undo_entry_at(at)?;
-            undo_list.push(entry);
-            at = next;
-        }
         let buffer = crate::buffer::Buffer::from_image_parts(crate::buffer::BufferImage {
             name,
             text,
@@ -2329,7 +2315,6 @@ impl Loader<'_> {
             modiff: word(self, BUFFER_MODIFF)? as i64,
             chars_modiff: word(self, BUFFER_CHARS_MODIFF)? as i64,
             save_modiff: word(self, BUFFER_SAVE_MODIFF)? as i64,
-            saved_text,
             forced_modified: flags & BUFFER_FLAG_FORCED_MODIFIED != 0,
             autosaved: flags & BUFFER_FLAG_AUTOSAVED != 0,
             begv: word(self, BUFFER_BEGV)? as usize,
@@ -2337,9 +2322,7 @@ impl Loader<'_> {
             file,
             file_truename,
             visited_file_modtime,
-            undo_list,
-            undo_disabled: flags & BUFFER_FLAG_UNDO_DISABLED != 0,
-            point_before_last_boundary: position(word(self, BUFFER_POINT_BEFORE_BOUNDARY)?),
+            undo_list: self.value_at(offset + 8 * BUFFER_UNDO_LIST)?,
             text_properties,
             extended_chars: extended_chars
                 .into_iter()
@@ -2373,96 +2356,6 @@ impl Loader<'_> {
             self.interp.install_buffer_case_tables(id, tables);
         }
         Ok((object, marker_chain))
-    }
-
-    /// One undo entry at AT: the entry and the offset after it.
-    fn undo_entry_at(&mut self, at: u32) -> Result<(crate::buffer::UndoEntry, u32), LoadError> {
-        use crate::buffer::UndoEntry;
-        let kind = self.reader.word(at)?;
-        Ok(match kind {
-            UNDO_INSERT => (
-                UndoEntry::Insert {
-                    pos: self.reader.word(at + 8)? as usize,
-                    len: self.reader.word(at + 16)? as usize,
-                },
-                at + 24,
-            ),
-            UNDO_DELETE => {
-                let pos = self.reader.word(at + 8)? as usize;
-                let point_after = self.reader.word(at + 16)? != 0;
-                let text = string_like(&self.value_at(at + 24)?)
-                    .map(|string| string.text)
-                    .ok_or_else(|| LoadError::Error("deleted text is not a string".into()))?;
-                let props_offset = self.reader.word(at + 32)? as u32;
-                let props = if props_offset == 0 {
-                    Vec::new()
-                } else {
-                    self.load_text_properties(props_offset)?
-                        .into_iter()
-                        .map(|span| crate::buffer::TextPropertySpan {
-                            start: span.start,
-                            end: span.end,
-                            props: span.props,
-                        })
-                        .collect()
-                };
-                let mut next = at + 40;
-                let nextended = self.reader.word(next)? as usize;
-                next += 8;
-                let mut extended_chars = Vec::with_capacity(nextended);
-                for _ in 0..nextended {
-                    extended_chars.push((
-                        self.reader.word(next)? as usize,
-                        self.reader.word(next + 8)? as u32,
-                    ));
-                    next += 16;
-                }
-                let nmarkers = self.reader.word(next)? as usize;
-                next += 8;
-                let mut markers = Vec::with_capacity(nmarkers);
-                for _ in 0..nmarkers {
-                    let Kind::Marker(marker) = self.value_at(next)?.kind() else {
-                        return Err(LoadError::Error("undo entry has a non-marker".into()));
-                    };
-                    markers.push(crate::buffer::UndoMarker {
-                        id: marker,
-                        original_pos: self.reader.word(next + 8)? as usize,
-                        collapsed_pos: self.reader.word(next + 16)? as usize,
-                    });
-                    next += 24;
-                }
-                (
-                    UndoEntry::Delete {
-                        pos,
-                        point_after,
-                        text,
-                        props,
-                        extended_chars,
-                        markers,
-                    },
-                    next,
-                )
-            }
-            UNDO_COMBINED => {
-                let display = self.value_at(at + 8)?;
-                let count = self.reader.word(at + 16)? as usize;
-                let mut next = at + 24;
-                let mut entries = Vec::with_capacity(count);
-                for _ in 0..count {
-                    let (entry, after) = self.undo_entry_at(next)?;
-                    entries.push(entry);
-                    next = after;
-                }
-                (UndoEntry::Combined { display, entries }, next)
-            }
-            UNDO_OPAQUE => (UndoEntry::Opaque(self.value_at(at + 8)?), at + 16),
-            UNDO_BOUNDARY => (UndoEntry::Boundary, at + 8),
-            other => {
-                return Err(LoadError::Error(format!(
-                    "unknown undo entry kind {other} at {at}"
-                )));
-            }
-        })
     }
 
     /// Relocate a marker into the object allocated before graph restoration.

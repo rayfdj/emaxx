@@ -1830,7 +1830,7 @@ fn image_round_trips_buffers_markers_finalizers_and_nilled_frames() {
     let source_undo_value = interp
         .get_buffer_by_id(source_id)
         .expect("live")
-        .undo_list_value();
+        .undo_list();
     let source_undo = printed(&mut interp, &source_undo_value);
     let source_syntax_table = interp
         .buffer_syntax_table_id(source_id)
@@ -1893,7 +1893,7 @@ fn image_round_trips_buffers_markers_finalizers_and_nilled_frames() {
         Some(std::time::UNIX_EPOCH + std::time::Duration::from_secs(100))
     );
     assert!(buffer.overlays.iter().all(|overlay| overlay.is_dead()));
-    let loaded_undo = buffer.undo_list_value();
+    let loaded_undo = buffer.undo_list();
     drop(buffer);
     assert_eq!(printed(&mut target, &loaded_undo), source_undo);
     // The buffer's 14 always-local slots (reset_buffer gives every buffer

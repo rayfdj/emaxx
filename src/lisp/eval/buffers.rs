@@ -1,8 +1,51 @@
 use super::*;
 
 impl Interpreter {
+    /// buffer.c:Fmake_indirect_buffer's link to the base, whose undo list
+    /// the new buffer shares (Bug#18180).
     pub fn register_indirect_buffer(&mut self, buffer_id: u64, base_id: u64) {
         self.indirect_buffers.push((buffer_id, base_id));
+        let base_undo = self.get_buffer_by_id(base_id).map(|base| base.undo_list());
+        if let Some(list) = base_undo
+            && let Some(mut buffer) = self.get_buffer_by_id_mut(buffer_id)
+        {
+            buffer.set_undo_list(list);
+        }
+    }
+
+    /// undo.c:Fundo_boundary.
+    pub(crate) fn undo_boundary(&mut self, env: &mut Env) -> Result<Value, LispError> {
+        if self.buffer.borrow().undo_recording_disabled() {
+            return Ok(Value::Nil);
+        }
+        if let Err(list) = self.buffer.borrow_mut().undo_boundary() {
+            return Err(LispError::WrongTypeArgument("listp".into(), list));
+        }
+        self.set_variable(
+            "undo-auto--last-boundary-cause",
+            Value::Symbol(cached_symbol!("explicit").with(Clone::clone)),
+            env,
+        );
+        self.note_point_before_last_command_or_undo();
+        Ok(Value::Nil)
+    }
+
+    /// keyboard.c's `point_before_last_command_or_undo = PT;
+    /// buffer_before_last_command_or_undo = current_buffer;', which the
+    /// command loop and `undo-boundary' make: the buffer that held the
+    /// point before gives it up.
+    pub(crate) fn note_point_before_last_command_or_undo(&mut self) {
+        let current = self.current_buffer_id();
+        if let Some(previous) = self.buffer_before_last_command_or_undo.replace(current)
+            && previous != current
+            && let Some(mut buffer) = self.get_buffer_by_id_mut(previous)
+        {
+            buffer.set_point_before_last_command_or_undo(None);
+        }
+        let point = self.buffer.borrow().point();
+        self.buffer
+            .borrow_mut()
+            .set_point_before_last_command_or_undo(Some(point));
     }
 
     pub fn buffer_base_id(&self, buffer_id: u64) -> Option<u64> {
@@ -21,7 +64,11 @@ impl Interpreter {
 
     pub fn related_buffer_ids(&self, buffer_id: u64) -> smallvec::SmallVec<[u64; 4]> {
         if self.indirect_buffers.is_empty() {
-            // Every buffer is its own root: BUFFER_ID's text is its own.
+            // Every buffer is its own root: BUFFER_ID's text is its own,
+            // and the current buffer is live.
+            if buffer_id == self.current_buffer_id {
+                return smallvec::smallvec![buffer_id];
+            }
             return self
                 .buffer_list
                 .iter()
@@ -54,7 +101,11 @@ impl Interpreter {
             if let Some(mut buffer) = self.get_buffer_by_id_mut(*buffer_id) {
                 let saved_point = buffer.point();
                 buffer.goto_char(pos);
+                // The text is one text in GNU, the change recorded once.
+                let undo_list = buffer.undo_list();
+                buffer.set_undo_list(Value::T);
                 buffer.insert_with_properties_and_markers(s, props.clone(), before_markers);
+                buffer.set_undo_list(undo_list);
                 let restored = if saved_point > pos || (saved_point == pos && before_markers) {
                     saved_point + nchars
                 } else {
@@ -79,7 +130,10 @@ impl Interpreter {
             }
             if let Some(mut buffer) = self.get_buffer_by_id_mut(*buffer_id) {
                 let saved_point = buffer.point();
+                let undo_list = buffer.undo_list();
+                buffer.set_undo_list(Value::T);
                 let _ = buffer.delete_region(from, to);
+                buffer.set_undo_list(undo_list);
                 let restored = if saved_point > to {
                     saved_point - (to - from)
                 } else if saved_point > from {
@@ -156,6 +210,19 @@ impl Interpreter {
         let related = self.related_buffer_ids(self.current_buffer_id());
         // The buffer counts the characters it inserts; point moves past them.
         let nchars = self.buffer.borrow_mut().insert(s) - pos;
+        self.adjust_markers_for_insert(self.current_buffer_id(), pos, nchars, false);
+        self.mirror_insert_to_related_buffers(&related, pos, s, nchars, None, false);
+    }
+
+    /// `insert_current_buffer' of a text whose COUNTS its maker has.
+    pub(crate) fn insert_current_buffer_counted(
+        &mut self,
+        s: &str,
+        counts: crate::buffer::TextCounts,
+    ) {
+        let pos = self.buffer.borrow().point();
+        let related = self.related_buffer_ids(self.current_buffer_id());
+        let nchars = self.buffer.borrow_mut().insert_counted(s, counts) - pos;
         self.adjust_markers_for_insert(self.current_buffer_id(), pos, nchars, false);
         self.mirror_insert_to_related_buffers(&related, pos, s, nchars, None, false);
     }
@@ -275,67 +342,70 @@ impl Interpreter {
         from: usize,
         to: usize,
     ) -> Result<String, crate::buffer::BufferError> {
+        self.delete_region_current_buffer_1(from, to, true)
+            .map(Option::unwrap_or_default)
+    }
+
+    /// `delete_region_current_buffer' for a caller that has no use for the
+    /// deleted text (del_range_1 without RET_STRING).
+    pub fn delete_region_current_buffer_unreturned(
+        &mut self,
+        from: usize,
+        to: usize,
+    ) -> Result<(), crate::buffer::BufferError> {
+        self.delete_region_current_buffer_1(from, to, false)
+            .map(drop)
+    }
+
+    fn delete_region_current_buffer_1(
+        &mut self,
+        from: usize,
+        to: usize,
+        ret_string: bool,
+    ) -> Result<Option<String>, crate::buffer::BufferError> {
         let from = from.max(self.buffer.borrow().point_min());
         let to = to.min(self.buffer.borrow().point_max());
-        let affected_markers = self.affected_markers_for_delete(self.current_buffer_id(), from, to);
-        // undo.c records marker adjustments immediately before recording
-        // the deletion, so the Lisp undo list exposes the deletion followed
-        // directly by its marker riders — `primitive-undo' relies on that
-        // adjacency, and the first-change `(t . TIME)' entry the deletion
-        // itself records must stay below both.  The riders are spliced in
-        // under the deletion record once it exists.
-        let marker_adjustments: Vec<crate::buffer::UndoEntry> =
-            if self.buffer.borrow().undo_enabled() {
-                affected_markers
-                    .iter()
-                    .filter_map(|marker| {
-                        let automatic_position =
-                            if self.marker_insertion_type(marker.id) == Some(true) {
-                                to
-                            } else {
-                                from
-                            };
-                        let adjustment = automatic_position as i64 - marker.original_pos as i64;
-                        (adjustment != 0).then(|| {
-                            crate::buffer::UndoEntry::Opaque(Value::cons(
-                                Value::Marker(marker.id),
-                                Value::Integer(adjustment),
-                            ))
-                        })
-                    })
-                    .collect()
-            } else {
-                Vec::new()
-            };
+        // undo.c:record_delete's record_marker_adjustments, read before
+        // the deletion moves the markers and recorded under it after.
+        let marker_adjustments = if self.buffer.borrow().undo_recording_disabled() {
+            Vec::new()
+        } else {
+            self.marker_adjustments_for_delete(self.current_buffer_id(), from, to)
+        };
         let related = self.related_buffer_ids(self.current_buffer_id());
-        let deleted = self.buffer.borrow_mut().delete_region(from, to)?;
+        let deleted = if ret_string {
+            Some(self.buffer.borrow_mut().delete_region(from, to)?)
+        } else {
+            self.buffer
+                .borrow_mut()
+                .delete_region_unreturned(from, to)?;
+            None
+        };
         self.buffer
             .borrow_mut()
-            .splice_undo_entries_before_last(marker_adjustments);
-        self.buffer
-            .borrow_mut()
-            .attach_markers_to_last_delete(affected_markers);
+            .record_marker_adjustments(marker_adjustments);
         self.adjust_markers_for_delete(self.current_buffer_id(), from, to);
         self.mirror_delete_to_related_buffers(&related, from, to);
         Ok(deleted)
     }
 
-    pub(super) fn affected_markers_for_delete(
-        &self,
-        buffer_id: u64,
-        from: usize,
-        to: usize,
-    ) -> Vec<crate::buffer::UndoMarker> {
+    /// undo.c:record_marker_adjustments: (MARKER . ADJUSTMENT) for each
+    /// marker in [FROM, TO] that undoing the deletion would not put back
+    /// where it is, ADJUSTMENT taking it from where the reinsertion leaves
+    /// it (TO for an insertion type t marker, FROM for another).
+    fn marker_adjustments_for_delete(&self, buffer_id: u64, from: usize, to: usize) -> Vec<Value> {
         self.buffer_object(buffer_id)
             .into_iter()
             .flat_map(|buffer| buffer.markers())
             .filter_map(|marker| {
-                let pos = marker.position()?;
-                (pos >= from && pos <= to).then_some(crate::buffer::UndoMarker {
-                    id: marker,
-                    original_pos: pos,
-                    collapsed_pos: from,
-                })
+                let charpos = marker.position()?;
+                if charpos < from || charpos > to {
+                    return None;
+                }
+                let automatic = if marker.insertion_type() { to } else { from };
+                let adjustment = automatic as i64 - charpos as i64;
+                (adjustment != 0)
+                    .then(|| Value::cons(Value::Marker(marker), Value::Integer(adjustment)))
             })
             .collect()
     }

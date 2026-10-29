@@ -402,7 +402,7 @@ impl Printer {
                 }
             }
             Kind::BigInteger(_) => self.out.push_str(&obj.to_string()),
-            Kind::Float(_) => self.out.push_str(&obj.to_string()),
+            Kind::Float(f) => self.out.push_str(&float_to_string(interp, f.get())),
             Kind::StringObject(state) => {
                 if escape {
                     self.print_string_literal(interp, env, state)?;

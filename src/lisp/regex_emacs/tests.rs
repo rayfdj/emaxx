@@ -93,6 +93,7 @@ fn compiled(pattern: &str, posix: bool, fold: bool) -> Pattern {
         None,
         fold,
         &mut TestEnv::default(),
+        Vec::new(),
     )
     .unwrap_or_else(|error| panic!("{pattern:?}: {}", error.message()))
 }
@@ -349,6 +350,7 @@ fn compile_errors() {
             None,
             false,
             &mut TestEnv::default(),
+            Vec::new(),
         )
         .err()
         .map(RegError::message)
@@ -407,4 +409,158 @@ fn rope_chunks_are_read_in_place() {
     .expect("a match");
     assert_eq!(found.regs[1], Some((0, 5000)));
     assert_eq!(found.regs[2], Some((5006, 10006)));
+}
+
+#[test]
+fn bracket_classes_admit_the_ascii_characters_re_iswctype_does() {
+    for &class in &compile::WC_TYPES {
+        let mut env = TestEnv::default();
+        for c in 0..0x80u32 {
+            if let Some(fixed) = compile::ascii_class_fixed(class, c) {
+                assert_eq!(
+                    compile::ASCII_CLASS_MASKS[class as usize] & (1 << c) != 0,
+                    fixed,
+                    "{class:?} {c:#x}"
+                );
+                assert_eq!(fixed, compile::re_iswctype(&mut env, c, class));
+            }
+        }
+    }
+    for name in [
+        "alnum",
+        "alpha",
+        "word",
+        "graph",
+        "print",
+        "lower",
+        "upper",
+        "punct",
+        "cntrl",
+        "digit",
+        "xdigit",
+        "blank",
+        "space",
+        "multibyte",
+        "nonascii",
+        "ascii",
+        "unibyte",
+    ] {
+        let (class, _) =
+            compile::re_wctype_parse(&codes(&format!("[:{name}:]")), 0).expect("a class name");
+        for c in 0..0x80u32 {
+            let text = char::from_u32(c).expect("ASCII").to_string();
+            let expected = compile::re_iswctype(&mut TestEnv::default(), c, class);
+            assert_eq!(
+                search_with(&format!("[[:{name}:]]"), &text, false, false).is_some(),
+                expected,
+                "[:{name}:] {c:#x}"
+            );
+            assert_eq!(
+                search_with(&format!("[^[:{name}:]]"), &text, false, false).is_some(),
+                !expected,
+                "[^[:{name}:]] {c:#x}"
+            );
+        }
+    }
+}
+
+#[test]
+fn compiled_programs_are_regex_compiles() {
+    // The programs regex_compile writes for repetitions (a jump opened
+    // before what they repeat), intervals, alternatives, groups and
+    // bracket expressions (the bitmap without its trailing zero bytes; a
+    // range table for a multibyte range).
+    for (pattern, program) in [
+        (r"a*?", &[13, 3, 0, 2, 1, 97, 14, 250, 255, 1][..]),
+        (r"a??", &[14, 3, 0, 13, 3, 0, 2, 1, 97, 1]),
+        (
+            r"ab*c+d?",
+            &[
+                2, 1, 97, 18, 6, 0, 2, 1, 98, 13, 247, 255, 2, 1, 99, 18, 6, 0, 2, 1, 99, 13, 247,
+                255, 14, 3, 0, 2, 1, 100, 1,
+            ],
+        ),
+        (
+            r"\(?:ab\|cd\)*",
+            &[
+                14, 17, 0, 14, 7, 0, 2, 2, 97, 98, 13, 4, 0, 2, 2, 99, 100, 13, 236, 255, 1,
+            ],
+        ),
+        (
+            r"a\|b\|c",
+            &[
+                14, 6, 0, 2, 1, 97, 13, 6, 0, 14, 6, 0, 2, 1, 98, 13, 3, 0, 2, 1, 99, 1,
+            ],
+        ),
+        (
+            r"a\{2,3\}",
+            &[
+                21, 18, 0, 2, 0, 21, 5, 0, 2, 0, 19, 10, 0, 2, 0, 2, 1, 97, 20, 245, 255, 2, 0, 1,
+            ],
+        ),
+        (
+            r"\(a\)\{2\}",
+            &[
+                21, 22, 0, 1, 0, 21, 5, 0, 2, 0, 19, 14, 0, 2, 0, 6, 1, 2, 1, 97, 7, 1, 20, 241,
+                255, 1, 0, 1,
+            ],
+        ),
+        (
+            "\u{e9}+\u{fc}",
+            &[
+                2, 2, 195, 169, 18, 7, 0, 2, 2, 195, 169, 13, 246, 255, 2, 2, 195, 188, 1,
+            ],
+        ),
+        (
+            r"[^a-z0-9]",
+            &[
+                5, 16, 0, 0, 0, 0, 0, 0, 255, 3, 0, 0, 0, 0, 254, 255, 255, 7, 1,
+            ],
+        ),
+        (
+            r"[]a-]",
+            &[4, 13, 0, 0, 0, 0, 0, 32, 0, 0, 0, 0, 0, 32, 2, 1],
+        ),
+        (
+            r"[[:alpha:]_]",
+            &[
+                4, 144, 0, 0, 0, 0, 0, 0, 0, 0, 254, 255, 255, 135, 254, 255, 255, 7, 64, 0, 0, 0,
+                1,
+            ],
+        ),
+        (
+            "[\u{e9}-\u{fc}]x",
+            &[4, 128, 0, 0, 1, 0, 233, 0, 0, 252, 0, 0, 2, 1, 120, 1],
+        ),
+    ] {
+        assert_eq!(
+            compiled(pattern, false, false).buffer,
+            program,
+            "{pattern:?}"
+        );
+    }
+}
+
+#[test]
+fn compiling_into_a_used_buffer_is_compiling_afresh() {
+    // compile_pattern compiles into the storage of the pattern a cache
+    // cell held, as compile_pattern_1 compiles into the cell's buffer.
+    let held = compiled(r"\(\<[0-9]+[.][0-9]+\>\|[[:xdigit:]]+\)\{2\}", false, false);
+    for pattern in [r"a\|b", r"[^a-z]", r"x*?", ""] {
+        let reused = compile(
+            &codes(pattern),
+            true,
+            false,
+            None,
+            false,
+            &mut TestEnv::default(),
+            held.buffer.clone(),
+        )
+        .expect("compiles");
+        assert_eq!(
+            reused.buffer,
+            compiled(pattern, false, false).buffer,
+            "{pattern:?}"
+        );
+    }
 }

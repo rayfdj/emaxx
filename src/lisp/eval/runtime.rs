@@ -375,7 +375,7 @@ impl Interpreter {
         // != ' ' ? Qnil : Qt)', no undo kept in a buffer whose name starts
         // with a space (`with-temp-buffer's, the printer's, `load's).
         if name.starts_with(' ') {
-            buffer.disable_undo();
+            buffer.set_undo_list(Value::T);
         }
         self.inactive_buffers
             .push((id, crate::lisp::types::BufferRef::new(id, buffer)));
@@ -426,10 +426,33 @@ impl Interpreter {
         let current_buffer = std::mem::replace(&mut self.buffer, next_buffer);
         self.inactive_buffers.push((current_id, current_buffer));
         self.current_buffer_id = id;
+        if !self.indirect_buffers.is_empty() {
+            self.share_undo_list_with_base(current_id, id);
+        }
         // A localized GNU forwarding symbol loads the newly current
         // buffer's cell into its C variable during a buffer switch.
         self.refresh_forwarded_eval_cells_after_switch(current_id);
         Ok(())
+    }
+
+    /// buffer.c:set_buffer_internal_2's sharing of a base buffer's undo
+    /// list: the list of OLD, when indirect, goes back into its base, and
+    /// NEW, when indirect, takes its base's.
+    fn share_undo_list_with_base(&mut self, old: u64, new: u64) {
+        if let Some(base) = self.buffer_base_id(old) {
+            let list = self.get_buffer_by_id(old).map(|buffer| buffer.undo_list());
+            if let Some(list) = list
+                && let Some(mut base) = self.get_buffer_by_id_mut(base)
+            {
+                base.set_undo_list(list);
+            }
+        }
+        if let Some(base) = self.buffer_base_id(new) {
+            let list = self.get_buffer_by_id(base).map(|buffer| buffer.undo_list());
+            if let Some(list) = list {
+                self.buffer.borrow_mut().set_undo_list(list);
+            }
+        }
     }
 
     /// Move a buffer to the front of the buffer list (GNU record_buffer).

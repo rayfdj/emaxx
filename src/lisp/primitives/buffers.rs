@@ -121,6 +121,9 @@ pub(crate) fn sort_overlays(
     overlays: &mut Vec<crate::overlay::OverlayRef>,
     window_id: Option<u64>,
 ) {
+    if overlays.is_empty() {
+        return;
+    }
     // buffer.c:compare_overlays combines interval nesting with secondary
     // priority; crossing intervals can make this relation non-transitive.
     // Rust's sort_by requires a total order and can panic here. Use the same
@@ -567,7 +570,7 @@ fn replace_characters_unsignalled(
     }
     let point = interp.buffer.borrow().point();
     interp
-        .delete_region_current_buffer(from, to)
+        .delete_region_current_buffer_unreturned(from, to)
         .map_err(|e| LispError::Signal(e.to_string()))?;
     interp.buffer.borrow_mut().goto_char(from);
     interp.insert_current_buffer(&text);

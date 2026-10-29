@@ -3431,13 +3431,14 @@ fn secure_hash_supports_core_algorithms_and_iv_auto() {
 
 #[test]
 fn format_binary_negative() {
+    // GNU 30.2's styled_format has no %b: it is an invalid operation.
     assert_eq!(
-        eval_str(r#"(format "%b" #x-5A)"#),
-        Value::String("-1011010".into())
+        eval_str(r#"(condition-case e (format "%b" #x-5A) (error (cadr e)))"#),
+        Value::String("Invalid format operation %b".into())
     );
     assert_eq!(
-        eval_str(r#"(format "%b" #x5A)"#),
-        Value::String("1011010".into())
+        eval_str(r#"(condition-case e (format "%b" #x5A) (error (cadr e)))"#),
+        Value::String("Invalid format operation %b".into())
     );
 }
 
@@ -3700,9 +3701,11 @@ fn format_binary_nonzero_simple() {
         eval_str(
             r#"(let* ((n #x-5A) (bits "1011010")
                           (sgn- (if (< n 0) "-" "")))
-                     (string-equal (format "%b" n) (concat sgn- bits)))"#
+                     (condition-case e
+                         (string-equal (format "%b" n) (concat sgn- bits))
+                       (error (cadr e))))"#
         ),
-        Value::T
+        Value::String("Invalid format operation %b".into())
     );
 }
 
@@ -3710,16 +3713,17 @@ fn format_binary_nonzero_simple() {
 fn format_binary_via_dolist() {
     assert_eq!(
         eval_str(
-            r#"(let ((ok t))
+            r#"(let ((signaled 0))
                      (dolist (nbits `((#x-5A . "1011010")
                                       (#x5A . "1011010")))
                        (let* ((n (car nbits)) (bits (cdr nbits))
                               (sgn- (if (< n 0) "-" "")))
-                         (unless (string-equal (format "%b" n) (concat sgn- bits))
-                           (setq ok nil))))
-                     ok)"#
+                         (condition-case nil
+                             (string-equal (format "%b" n) (concat sgn- bits))
+                           (error (setq signaled (1+ signaled))))))
+                     signaled)"#
         ),
-        Value::T
+        Value::Integer(2)
     );
 }
 

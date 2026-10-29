@@ -1,12 +1,8 @@
 use super::*;
 use crate::lisp::types::Kind;
 
-fn replacement_case_action(
-    interp: &Interpreter,
-    matched: &str,
-    env: &crate::lisp::types::Env,
-) -> Option<CaseAction> {
-    let case_symbols_as_words = case_symbols_as_words_enabled(interp, env);
+fn replacement_case_action(interp: &Interpreter, matched: &str) -> Option<CaseAction> {
+    let case_symbols_as_words = case_symbols_as_words_enabled(interp);
     let mut previous_is_word = false;
     let mut some_multiletter_word = false;
     let mut some_lowercase = false;
@@ -142,7 +138,7 @@ fn replace_match(
                 .buffer_substring(sub_start, sub_end)
                 .map_err(|error| LispError::Signal(error.to_string()))?,
         };
-        replacement_case_action(interp, &matched, env)
+        replacement_case_action(interp, &matched)
     };
 
     if let Some(source) = source {
@@ -550,7 +546,7 @@ fn apply_buffer_replacement_hunks(
                         let to = target_start + hunk.old_end;
                         if from < to {
                             interp
-                                .delete_region_current_buffer(from, to)
+                                .delete_region_current_buffer_unreturned(from, to)
                                 .map_err(|error| LispError::Signal(error.to_string()))?;
                         }
                         if hunk.new_start < hunk.new_end {
@@ -927,8 +923,20 @@ define_dispatch!(
                         return Ok((None, ()));
                     };
                     codes.truncate(last + 1);
-                    for code in &mut codes {
+                    let mut buffer = interp.buffer.borrow_mut();
+                    // modify_text at the first change, from it to the
+                    // region's end, then record_change for each character
+                    // replaced (none under NOUNDO).
+                    if noundo {
+                        buffer.modify_text_unrecorded(changed, to);
+                    } else {
+                        buffer.modify_text(changed, to);
+                    }
+                    for (offset, code) in codes.iter_mut().enumerate() {
                         if *code == fromc {
+                            if !noundo {
+                                buffer.record_change(changed + offset, 1);
+                            }
                             *code = toc;
                         }
                     }
@@ -937,13 +945,8 @@ define_dispatch!(
                     // GNU substitutes characters IN PLACE: text properties
                     // and markers in the region are untouched (fill-region's
                     // newline→space pass must keep erc-button's props intact).
-                    interp.buffer.borrow_mut().replace_region_in_place(
-                        changed,
-                        last_changed,
-                        &replaced,
-                        &extended,
-                        noundo,
-                    );
+                    buffer.replace_text_in_place(changed, last_changed, &replaced, &extended);
+                    drop(buffer);
                     let length = last_changed - changed;
                     Ok((Some(AfterChange::new(changed, length, length)), ()))
                 })?;
@@ -1050,10 +1053,10 @@ define_dispatch!(
                         .map_err(|e| LispError::Signal(e.to_string()))?;
                     let gap_len = gap.chars().count();
                     interp
-                        .delete_region_current_buffer(start2, end2)
+                        .delete_region_current_buffer_unreturned(start2, end2)
                         .map_err(|e| LispError::Signal(e.to_string()))?;
                     interp
-                        .delete_region_current_buffer(start1, end1)
+                        .delete_region_current_buffer_unreturned(start1, end1)
                         .map_err(|e| LispError::Signal(e.to_string()))?;
                     interp.buffer.borrow_mut().goto_char(start1);
                     interp.insert_current_buffer(&region2_text);

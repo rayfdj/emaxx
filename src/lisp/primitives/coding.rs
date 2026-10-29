@@ -1355,8 +1355,6 @@ pub(crate) fn decode_big5_bytes(
     out
 }
 
-/// coding.c decode_coding_raw_text: each byte as itself, a non-ASCII one
-/// as its eight-bit character.
 /// The length of the ASCII run BYTES starts with, a word at a time.
 fn ascii_prefix_len(bytes: &[u8]) -> usize {
     let mut i = 0;
@@ -1373,6 +1371,8 @@ fn ascii_prefix_len(bytes: &[u8]) -> usize {
     i
 }
 
+/// coding.c decode_coding_raw_text: each byte as itself, a non-ASCII one
+/// as its eight-bit character.
 pub(crate) fn decode_coding_raw_text(bytes: &[u8]) -> DecodedText {
     decode_coding_raw_text_block(
         bytes,
@@ -1397,6 +1397,18 @@ fn decode_coding_raw_text_block(bytes: &[u8], block: &mut DecodeBlock) -> Decode
 
 pub(crate) fn decode_raw_text_bytes(bytes: &[u8]) -> String {
     decode_coding_raw_text(bytes).text
+}
+
+/// decode_raw_text_bytes with the counts a buffer keeps of the text: a
+/// character a byte, a raw-byte one each byte above 0x7F.
+pub(crate) fn decode_raw_text_counted(bytes: &[u8]) -> (String, crate::buffer::TextCounts) {
+    let mut out = DecodedText::new();
+    let raw_markers = out.push_raw_bytes(bytes);
+    let counts = crate::buffer::TextCounts {
+        chars: bytes.len(),
+        raw_markers,
+    };
+    (out.text, counts)
 }
 
 pub(crate) fn decode_coding_utf_8(bytes: &[u8]) -> DecodedText {
@@ -2195,8 +2207,9 @@ impl DecodedText {
     }
 
     /// Store each byte of RUN as `push_byte' does, writing the UTF-8 of
-    /// a non-ASCII byte's character, U+E080..U+E0FF, as its three bytes.
-    pub(crate) fn push_raw_bytes(&mut self, run: &[u8]) {
+    /// a non-ASCII byte's character, U+E080..U+E0FF, as its three bytes;
+    /// the count of those bytes.
+    pub(crate) fn push_raw_bytes(&mut self, run: &[u8]) -> usize {
         let high: usize = run
             .chunks(1 << 20)
             .map(|chunk| chunk.iter().map(|&byte| u32::from(byte >> 7)).sum::<u32>() as usize)
@@ -2218,6 +2231,7 @@ impl DecodedText {
             }
         }
         self.chars += run.len();
+        high
     }
 
     /// Store the ASCII run RUN.

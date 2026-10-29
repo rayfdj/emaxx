@@ -2016,8 +2016,8 @@ impl DumpContext {
     /// after the record as the interval tree is, the markers pointing
     /// into it (`own_text.markers'), the local bindings
     /// (`local_var_alist_'), the syntax and case tables (BVARs), the
-    /// base buffer of an indirect one, and the undo entries the
-    /// `undo_list_' renders from.  A buffer with live overlays is refused
+    /// base buffer of an indirect one, and `undo_list_' (a BVAR).  A buffer
+    /// with live overlays is refused
     /// with GNU's error.
     fn dump_buffer(
         &mut self,
@@ -2033,7 +2033,6 @@ impl DumpContext {
             words[BUFFER_ID as usize] = id;
             words[BUFFER_FLAGS as usize] = BUFFER_FLAG_DEAD;
             words[BUFFER_MARK as usize] = NO_POSITION;
-            words[BUFFER_POINT_BEFORE_BOUNDARY as usize] = NO_POSITION;
             for index in [
                 BUFFER_NAME,
                 BUFFER_FILE,
@@ -2047,6 +2046,7 @@ impl DumpContext {
                 BUFFER_CASE_CANON_TABLE,
                 BUFFER_CASE_EQV_TABLE,
                 BUFFER_MARK_ACTIVE,
+                BUFFER_UNDO_LIST,
             ] {
                 self.field_lv(
                     start,
@@ -2056,8 +2056,8 @@ impl DumpContext {
                     WEIGHT_STRONG,
                 );
             }
-            // No locals, hooks, markers or undo entries.
-            words.extend([0, 0, 0, 0]);
+            // No locals, hooks or markers.
+            words.extend([0, 0, 0]);
             return self.object_finish(&words);
         };
         if buffer.overlays.iter().any(|overlay| !overlay.is_dead()) {
@@ -2071,7 +2071,6 @@ impl DumpContext {
             .map(|(position, code)| (position - 1, *code))
             .collect::<Vec<_>>();
         let z_byte = internal_text_bytes(&parts.text, &extended, parts.multibyte)?.len();
-        let saved_bytes = internal_text_bytes(&parts.saved_text, &[], parts.multibyte)?.len();
         let base = interp
             .buffer_base_id(id)
             .and_then(|base| interp.buffer_value(base));
@@ -2092,7 +2091,6 @@ impl DumpContext {
             (parts.multibyte, BUFFER_FLAG_MULTIBYTE),
             (parts.forced_modified, BUFFER_FLAG_FORCED_MODIFIED),
             (parts.autosaved, BUFFER_FLAG_AUTOSAVED),
-            (parts.undo_disabled, BUFFER_FLAG_UNDO_DISABLED),
             (parts.inhibit_hooks, BUFFER_FLAG_INHIBIT_HOOKS),
             (
                 parts.text_conversion_style_is_local,
@@ -2126,8 +2124,6 @@ impl DumpContext {
         words[BUFFER_Z as usize] = parts.text.chars().count() as u64;
         words[BUFFER_Z_BYTE as usize] = z_byte as u64;
         words[BUFFER_TEXT as usize] = FIXUP_PLACEHOLDER;
-        words[BUFFER_SAVED_BYTES as usize] = saved_bytes as u64;
-        words[BUFFER_SAVED_TEXT as usize] = FIXUP_PLACEHOLDER;
         words[BUFFER_PT as usize] = parts.pt as u64;
         words[BUFFER_MARK as usize] = position_word(parts.mark);
         words[BUFFER_BEGV as usize] = parts.begv as u64;
@@ -2135,8 +2131,6 @@ impl DumpContext {
         words[BUFFER_MODIFF as usize] = parts.modiff as u64;
         words[BUFFER_CHARS_MODIFF as usize] = parts.chars_modiff as u64;
         words[BUFFER_SAVE_MODIFF as usize] = parts.save_modiff as u64;
-        words[BUFFER_POINT_BEFORE_BOUNDARY as usize] =
-            position_word(parts.point_before_last_boundary);
         words[BUFFER_MODTIME_SECS as usize] = modtime_secs as u64;
         words[BUFFER_MODTIME_NANOS as usize] = u64::from(modtime_nanos);
         words[BUFFER_INTERVALS as usize] = if parts.text_properties.is_empty() {
@@ -2210,6 +2204,7 @@ impl DumpContext {
                 parts.mark_active,
                 WEIGHT_STRONG,
             ),
+            (BUFFER_UNDO_LIST as usize, parts.undo_list, WEIGHT_STRONG),
         ];
         let mut props_fixups: Vec<(usize, Vec<TextPropertySpan>)> = Vec::new();
         if !parts.text_properties.is_empty() {
@@ -2238,10 +2233,6 @@ impl DumpContext {
         for marker in &markers {
             fields.push((words.len(), Value::Marker(*marker), WEIGHT_NORMAL));
             words.push(0);
-        }
-        words.push(parts.undo_list.len() as u64);
-        for entry in &parts.undo_list {
-            push_undo_entry(&mut words, &mut fields, &mut props_fixups, entry);
         }
         for (index, value, weight) in fields {
             self.field_lv(start, &mut words, index, &value, weight);
@@ -2537,10 +2528,6 @@ impl DumpContext {
         }
         self.remember_fixup_ptr_raw(buffer_offset + 8 * BUFFER_TEXT, self.offset);
         self.write(&bytes)?;
-        self.write(&[0])?;
-        let saved = internal_text_bytes(&parts.saved_text, &[], parts.multibyte)?;
-        self.remember_fixup_ptr_raw(buffer_offset + 8 * BUFFER_SAVED_TEXT, self.offset);
-        self.write(&saved)?;
         self.write(&[0])
     }
 
@@ -2800,71 +2787,6 @@ impl DumpContext {
     }
 }
 
-/// One undo entry of a buffer record: its kind word, then the payload
-/// (an insertion's bounds; a deletion's position, direction, text as a
-/// string object, property spans through a raw-pointer fixup, side list
-/// and marker adjustments; a combined entry's display value and nested
-/// entries; an opaque entry's value; a boundary).
-fn push_undo_entry(
-    words: &mut Vec<u64>,
-    fields: &mut Vec<(usize, Value, LinkWeight)>,
-    props_fixups: &mut Vec<(usize, Vec<TextPropertySpan>)>,
-    entry: &crate::buffer::UndoEntry,
-) {
-    use crate::buffer::UndoEntry;
-    match entry {
-        UndoEntry::Insert { pos, len } => {
-            words.extend([UNDO_INSERT, *pos as u64, *len as u64]);
-        }
-        UndoEntry::Delete {
-            pos,
-            point_after,
-            text,
-            props,
-            extended_chars,
-            markers,
-        } => {
-            words.extend([UNDO_DELETE, *pos as u64, u64::from(*point_after)]);
-            fields.push((
-                words.len(),
-                Value::String(text.clone().into()),
-                WEIGHT_STRONG,
-            ));
-            words.push(0);
-            if props.is_empty() {
-                words.push(0);
-            } else {
-                props_fixups.push((words.len(), props.clone()));
-                words.push(FIXUP_PLACEHOLDER);
-            }
-            words.push(extended_chars.len() as u64);
-            for (position, code) in extended_chars {
-                words.extend([*position as u64, u64::from(*code)]);
-            }
-            words.push(markers.len() as u64);
-            for marker in markers {
-                fields.push((words.len(), Value::Marker(marker.id), WEIGHT_STRONG));
-                words.extend([0, marker.original_pos as u64, marker.collapsed_pos as u64]);
-            }
-        }
-        UndoEntry::Combined { display, entries } => {
-            words.push(UNDO_COMBINED);
-            fields.push((words.len(), *display, WEIGHT_STRONG));
-            words.push(0);
-            words.push(entries.len() as u64);
-            for entry in entries {
-                push_undo_entry(words, fields, props_fixups, entry);
-            }
-        }
-        UndoEntry::Opaque(value) => {
-            words.push(UNDO_OPAQUE);
-            fields.push((words.len(), *value, WEIGHT_STRONG));
-            words.push(0);
-        }
-        UndoEntry::Boundary => words.push(UNDO_BOUNDARY),
-    }
-}
-
 /// `Fmemq' on the referrer list: identity.
 fn values_eq(a: &Value, b: &Value) -> bool {
     match (object_key(a), object_key(b)) {
@@ -2967,40 +2889,38 @@ pub(crate) const BUFFER_Z: u32 = 5;
 pub(crate) const BUFFER_Z_BYTE: u32 = 6;
 /// `own_text.beg': the cold text (a raw-pointer fixup).
 pub(crate) const BUFFER_TEXT: u32 = 7;
-pub(crate) const BUFFER_SAVED_BYTES: u32 = 8;
-pub(crate) const BUFFER_SAVED_TEXT: u32 = 9;
-pub(crate) const BUFFER_PT: u32 = 10;
-pub(crate) const BUFFER_MARK: u32 = 11;
-pub(crate) const BUFFER_BEGV: u32 = 12;
-pub(crate) const BUFFER_ZV: u32 = 13;
-pub(crate) const BUFFER_MODIFF: u32 = 14;
-pub(crate) const BUFFER_CHARS_MODIFF: u32 = 15;
-pub(crate) const BUFFER_SAVE_MODIFF: u32 = 16;
-pub(crate) const BUFFER_POINT_BEFORE_BOUNDARY: u32 = 17;
-pub(crate) const BUFFER_MODTIME_SECS: u32 = 18;
-pub(crate) const BUFFER_MODTIME_NANOS: u32 = 19;
-pub(crate) const BUFFER_BASE: u32 = 20;
+pub(crate) const BUFFER_PT: u32 = 8;
+pub(crate) const BUFFER_MARK: u32 = 9;
+pub(crate) const BUFFER_BEGV: u32 = 10;
+pub(crate) const BUFFER_ZV: u32 = 11;
+pub(crate) const BUFFER_MODIFF: u32 = 12;
+pub(crate) const BUFFER_CHARS_MODIFF: u32 = 13;
+pub(crate) const BUFFER_SAVE_MODIFF: u32 = 14;
+pub(crate) const BUFFER_MODTIME_SECS: u32 = 15;
+pub(crate) const BUFFER_MODTIME_NANOS: u32 = 16;
+pub(crate) const BUFFER_BASE: u32 = 17;
 /// `own_text.intervals': the property spans (a raw-pointer fixup, or 0).
-pub(crate) const BUFFER_INTERVALS: u32 = 21;
-pub(crate) const BUFFER_MARK_MARKER: u32 = 22;
-pub(crate) const BUFFER_SYNTAX_TABLE: u32 = 23;
+pub(crate) const BUFFER_INTERVALS: u32 = 18;
+pub(crate) const BUFFER_MARK_MARKER: u32 = 19;
+pub(crate) const BUFFER_SYNTAX_TABLE: u32 = 20;
 /// The buffer's downcase_table, nil when it holds the standard four.
-pub(crate) const BUFFER_CASE_TABLE: u32 = 24;
-pub(crate) const BUFFER_TEXT_CONVERSION_STYLE: u32 = 25;
+pub(crate) const BUFFER_CASE_TABLE: u32 = 21;
+pub(crate) const BUFFER_TEXT_CONVERSION_STYLE: u32 = 22;
 /// upcase_table, case_canon_table and case_eqv_table, with
 /// BUFFER_CASE_TABLE.
-pub(crate) const BUFFER_UPCASE_TABLE: u32 = 26;
-pub(crate) const BUFFER_CASE_CANON_TABLE: u32 = 27;
-pub(crate) const BUFFER_CASE_EQV_TABLE: u32 = 28;
+pub(crate) const BUFFER_UPCASE_TABLE: u32 = 23;
+pub(crate) const BUFFER_CASE_CANON_TABLE: u32 = 24;
+pub(crate) const BUFFER_CASE_EQV_TABLE: u32 = 25;
 /// BVAR (b, mark_active), any Lisp object.
-pub(crate) const BUFFER_MARK_ACTIVE: u32 = 29;
-/// The variable part: the local bindings, the markers, the undo entries.
-pub(crate) const BUFFER_VARIABLE_PART: u32 = 30;
+pub(crate) const BUFFER_MARK_ACTIVE: u32 = 26;
+/// BVAR (b, undo_list), any Lisp object.
+pub(crate) const BUFFER_UNDO_LIST: u32 = 27;
+/// The variable part: the local bindings and the markers.
+pub(crate) const BUFFER_VARIABLE_PART: u32 = 28;
 // The flag bits of BUFFER_FLAGS.
 pub(crate) const BUFFER_FLAG_MULTIBYTE: u64 = 1;
 pub(crate) const BUFFER_FLAG_FORCED_MODIFIED: u64 = 4;
 pub(crate) const BUFFER_FLAG_AUTOSAVED: u64 = 8;
-pub(crate) const BUFFER_FLAG_UNDO_DISABLED: u64 = 16;
 pub(crate) const BUFFER_FLAG_INHIBIT_HOOKS: u64 = 32;
 pub(crate) const BUFFER_FLAG_HAS_MODTIME: u64 = 64;
 /// A killed buffer (BUFFER_LIVE_P false): no text, name nil.
@@ -3008,12 +2928,6 @@ pub(crate) const BUFFER_FLAG_DEAD: u64 = 128;
 pub(crate) const BUFFER_FLAG_LOCAL_TEXT_CONVERSION_STYLE: u64 = 256;
 /// An absent position.
 pub(crate) const NO_POSITION: u64 = u64::MAX;
-// The kinds of an undo entry.
-pub(crate) const UNDO_INSERT: u64 = 1;
-pub(crate) const UNDO_DELETE: u64 = 2;
-pub(crate) const UNDO_COMBINED: u64 = 3;
-pub(crate) const UNDO_OPAQUE: u64 = 4;
-pub(crate) const UNDO_BOUNDARY: u64 = 5;
 // The flag bits of an overlay record.
 pub(crate) const OVERLAY_FRONT_ADVANCE: u64 = 1;
 pub(crate) const OVERLAY_REAR_ADVANCE: u64 = 2;

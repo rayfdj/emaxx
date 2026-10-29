@@ -94,19 +94,49 @@ pub(super) fn re_wctype_parse(pattern: &[u32], p: usize) -> Option<(WcType, usiz
 
 /// IS_REAL_ASCII.
 #[inline]
-fn is_real_ascii(c: u32) -> bool {
+const fn is_real_ascii(c: u32) -> bool {
     c < 0o200
 }
 
 /// SINGLE_BYTE_CHAR_P.
 #[inline]
-fn single_byte_char_p(c: u32) -> bool {
+const fn single_byte_char_p(c: u32) -> bool {
     c < 0x100
+}
+
+/// ISALNUM of a real ASCII character.
+const fn ascii_alnum(c: u32) -> bool {
+    matches!(c, 0x61..=0x7a | 0x41..=0x5a | 0x30..=0x39)
+}
+
+/// ISALPHA of a real ASCII character.
+const fn ascii_alpha(c: u32) -> bool {
+    matches!(c, 0x61..=0x7a | 0x41..=0x5a)
+}
+
+/// ISBLANK of a real ASCII character.
+const fn ascii_blank(c: u32) -> bool {
+    c == 0x20 || c == 0x09
+}
+
+/// ISGRAPH of a single-byte character.
+const fn unibyte_graph(c: u32) -> bool {
+    c > 0x20 && !matches!(c, 0o177..=0o240)
+}
+
+/// ISPRINT of a single-byte character.
+const fn unibyte_print(c: u32) -> bool {
+    c >= 0x20 && !matches!(c, 0o177..=0o237)
+}
+
+/// ISPUNCT of a real ASCII character.
+const fn ascii_punct(c: u32) -> bool {
+    c > 0x20 && c < 0o177 && !ascii_alnum(c)
 }
 
 pub(super) fn isalnum<E: MatchEnv + ?Sized>(env: &mut E, c: u32) -> bool {
     if is_real_ascii(c) {
-        matches!(c, 0x61..=0x7a | 0x41..=0x5a | 0x30..=0x39)
+        ascii_alnum(c)
     } else {
         env.alphanumericp(c)
     }
@@ -114,7 +144,7 @@ pub(super) fn isalnum<E: MatchEnv + ?Sized>(env: &mut E, c: u32) -> bool {
 
 pub(super) fn isalpha<E: MatchEnv + ?Sized>(env: &mut E, c: u32) -> bool {
     if is_real_ascii(c) {
-        matches!(c, 0x61..=0x7a | 0x41..=0x5a)
+        ascii_alpha(c)
     } else {
         env.alphabeticp(c)
     }
@@ -122,7 +152,7 @@ pub(super) fn isalpha<E: MatchEnv + ?Sized>(env: &mut E, c: u32) -> bool {
 
 pub(super) fn isblank<E: MatchEnv + ?Sized>(env: &mut E, c: u32) -> bool {
     if is_real_ascii(c) {
-        c == 0x20 || c == 0x09
+        ascii_blank(c)
     } else {
         env.blankp(c)
     }
@@ -130,7 +160,7 @@ pub(super) fn isblank<E: MatchEnv + ?Sized>(env: &mut E, c: u32) -> bool {
 
 pub(super) fn isgraph<E: MatchEnv + ?Sized>(env: &mut E, c: u32) -> bool {
     if single_byte_char_p(c) {
-        c > 0x20 && !(0o177..=0o240).contains(&c)
+        unibyte_graph(c)
     } else {
         env.graphicp(c)
     }
@@ -138,7 +168,7 @@ pub(super) fn isgraph<E: MatchEnv + ?Sized>(env: &mut E, c: u32) -> bool {
 
 pub(super) fn isprint<E: MatchEnv + ?Sized>(env: &mut E, c: u32) -> bool {
     if single_byte_char_p(c) {
-        c >= 0x20 && !(0o177..=0o237).contains(&c)
+        unibyte_print(c)
     } else {
         env.printablep(c)
     }
@@ -146,7 +176,7 @@ pub(super) fn isprint<E: MatchEnv + ?Sized>(env: &mut E, c: u32) -> bool {
 
 pub(super) fn ispunct<E: MatchEnv + ?Sized>(env: &mut E, c: u32) -> bool {
     if is_real_ascii(c) {
-        c > 0x20 && c < 0o177 && !matches!(c, 0x61..=0x7a | 0x41..=0x5a | 0x30..=0x39)
+        ascii_punct(c)
     } else {
         env.buffer_syntax(c) != syntax_code::WORD
     }
@@ -161,9 +191,73 @@ pub(super) fn isword<E: MatchEnv + ?Sized>(env: &mut E, c: u32) -> bool {
 }
 
 /// ISXDIGIT (char_hexdigit).
-fn isxdigit(c: u32) -> bool {
+const fn isxdigit(c: u32) -> bool {
     matches!(c, 0x30..=0x39 | 0x41..=0x46 | 0x61..=0x66)
 }
+
+/// re_iswctype of the ASCII character C for a CLASS that reads no table
+/// there; None for `[:lower:]', `[:upper:]', `[:space:]' and `[:word:]',
+/// which read the case or syntax table.
+pub(super) const fn ascii_class_fixed(class: WcType, c: u32) -> Option<bool> {
+    Some(match class {
+        WcType::Alnum => ascii_alnum(c),
+        WcType::Alpha => ascii_alpha(c),
+        WcType::Blank => ascii_blank(c),
+        WcType::Cntrl => c < 0x20,
+        WcType::Digit => matches!(c, 0x30..=0x39),
+        WcType::Graph => unibyte_graph(c),
+        WcType::Print => unibyte_print(c),
+        WcType::Punct => ascii_punct(c),
+        WcType::XDigit => isxdigit(c),
+        WcType::Ascii => is_real_ascii(c),
+        WcType::NonAscii => !is_real_ascii(c),
+        WcType::Unibyte => single_byte_char_p(c),
+        WcType::Multibyte => !single_byte_char_p(c),
+        WcType::Error => false,
+        WcType::Lower | WcType::Upper | WcType::Space | WcType::Word => return None,
+    })
+}
+
+/// Every class, for the tables below.
+pub(super) const WC_TYPES: [WcType; 18] = [
+    WcType::Error,
+    WcType::Alnum,
+    WcType::Alpha,
+    WcType::Word,
+    WcType::Graph,
+    WcType::Print,
+    WcType::Lower,
+    WcType::Upper,
+    WcType::Punct,
+    WcType::Cntrl,
+    WcType::Digit,
+    WcType::XDigit,
+    WcType::Blank,
+    WcType::Space,
+    WcType::Multibyte,
+    WcType::NonAscii,
+    WcType::Ascii,
+    WcType::Unibyte,
+];
+
+/// The ASCII characters of each class `ascii_class_fixed' answers, bit C
+/// for character C, by the class's discriminant.
+pub(super) const ASCII_CLASS_MASKS: [u128; 18] = {
+    let mut masks = [0; 18];
+    let mut i = 0;
+    while i < WC_TYPES.len() {
+        let class = WC_TYPES[i];
+        let mut c = 0;
+        while c < 0x80 {
+            if let Some(true) = ascii_class_fixed(class, c) {
+                masks[class as usize] |= 1 << c;
+            }
+            c += 1;
+        }
+        i += 1;
+    }
+    masks
+};
 
 /// re_iswctype: whether CH is in class CC.
 pub(super) fn re_iswctype<E: MatchEnv + ?Sized>(env: &mut E, ch: u32, cc: WcType) -> bool {
@@ -216,8 +310,13 @@ fn re_wctype_to_bit(cc: WcType) -> u32 {
 /// STORE_NUMBER: a two-byte little-endian number.
 #[inline]
 pub(super) fn store_number(buffer: &mut [u8], at: usize, number: i32) {
-    buffer[at] = (number & 0o377) as u8;
-    buffer[at + 1] = ((number >> 8) & 0o377) as u8;
+    buffer[at..at + 2].copy_from_slice(&number_bytes(number));
+}
+
+/// The two bytes STORE_NUMBER stores for NUMBER.
+#[inline]
+fn number_bytes(number: i32) -> [u8; 2] {
+    [(number & 0o377) as u8, ((number >> 8) & 0o377) as u8]
 }
 
 /// EXTRACT_NUMBER: the signed two-byte number at AT.
@@ -292,9 +391,38 @@ struct Compiler<'e> {
     multibyte: bool,
     re_nsub: i64,
     used_syntax: bool,
+    /// The ASCII characters of `[:space:]' and `[:word:]', from the
+    /// buffer's syntax table when a class first needs them: no Lisp runs
+    /// while a pattern compiles, so the table stays the one read.
+    ascii_syntax_masks: Option<(u128, u128)>,
 }
 
 impl Compiler<'_> {
+    /// The ASCII characters re_iswctype admits for CLASS, bit C for
+    /// character C.
+    fn ascii_class_mask(&mut self, class: WcType) -> u128 {
+        if !matches!(class, WcType::Space | WcType::Word) {
+            if matches!(class, WcType::Lower | WcType::Upper) {
+                return (0..0x80u32)
+                    .filter(|&c| re_iswctype(self.env, c, class))
+                    .fold(0, |mask, c| mask | 1 << c);
+            }
+            return ASCII_CLASS_MASKS[class as usize];
+        }
+        let (space, word) = *self.ascii_syntax_masks.get_or_insert_with(|| {
+            let mut masks = (0, 0);
+            for (c, code) in self.env.buffer_syntax_ascii().into_iter().enumerate() {
+                if code == syntax_code::WHITESPACE {
+                    masks.0 |= 1 << c;
+                } else if code == syntax_code::WORD {
+                    masks.1 |= 1 << c;
+                }
+            }
+            masks
+        });
+        if class == WcType::Space { space } else { word }
+    }
+
     #[inline]
     fn translate(&mut self, c: u32) -> u32 {
         if self.translate {
@@ -327,21 +455,24 @@ impl Compiler<'_> {
     }
 
     /// store_op1 at LOC (the bytes exist already).
+    #[inline]
     fn store_op1(&mut self, op: u8, loc: usize, arg: i32) {
-        self.b[loc] = op;
-        store_number(&mut self.b, loc + 1, arg);
+        let [lo, hi] = number_bytes(arg);
+        self.b[loc..loc + 3].copy_from_slice(&[op, lo, hi]);
     }
 
     /// store_op2 at LOC.
+    #[inline]
     fn store_op2(&mut self, op: u8, loc: usize, arg1: i32, arg2: i32) {
-        self.b[loc] = op;
-        store_number(&mut self.b, loc + 1, arg1);
-        store_number(&mut self.b, loc + 3, arg2);
+        let [lo1, hi1] = number_bytes(arg1);
+        let [lo2, hi2] = number_bytes(arg2);
+        self.b[loc..loc + 5].copy_from_slice(&[op, lo1, hi1, lo2, hi2]);
     }
 
     /// STORE_JUMP: append-or-overwrite a jump at LOC to TO.  The bytes at
     /// LOC.. are reserved by the caller; they are created here when LOC is
     /// the buffer's end.
+    #[inline]
     fn store_jump(&mut self, op: u8, loc: usize, to: usize) {
         if self.b.len() < loc + 3 {
             self.b.resize(loc + 3, 0);
@@ -356,20 +487,28 @@ impl Compiler<'_> {
         self.store_op2(op, loc, to as i32 - loc as i32 - 3, arg);
     }
 
+    /// The loop insert_op1 and insert_op2 move the bytes from LOC up
+    /// with: N more bytes at the end, the ones from LOC copied N up.
+    #[inline]
+    fn open_at(&mut self, loc: usize, n: usize) {
+        let end = self.b.len();
+        self.b.resize(end + n, 0);
+        self.b.copy_within(loc..end, loc + n);
+    }
+
     /// insert_op1: open three bytes at LOC for OP and ARG.
     fn insert_op1(&mut self, op: u8, loc: usize, arg: i32) -> Result<(), RegError> {
         self.space(3)?;
-        self.b.splice(loc..loc, [op, 0, 0]);
-        store_number(&mut self.b, loc + 1, arg);
+        self.open_at(loc, 3);
+        self.store_op1(op, loc, arg);
         Ok(())
     }
 
     /// insert_op2: open five bytes at LOC for OP, ARG1 and ARG2.
     fn insert_op2(&mut self, op: u8, loc: usize, arg1: i32, arg2: i32) -> Result<(), RegError> {
         self.space(5)?;
-        self.b.splice(loc..loc, [op, 0, 0, 0, 0]);
-        store_number(&mut self.b, loc + 1, arg1);
-        store_number(&mut self.b, loc + 3, arg2);
+        self.open_at(loc, 5);
+        self.store_op2(op, loc, arg1, arg2);
         Ok(())
     }
 
@@ -383,14 +522,14 @@ impl Compiler<'_> {
         self.insert_op2(op, loc, to as i32 - loc as i32 - 3, arg)
     }
 
-    /// SET_LIST_BIT in the bitmap that starts at MAP.
-    #[inline]
-    fn set_list_bit(&mut self, map: usize, c: u32) {
-        self.b[map + (c as usize) / 8] |= 1 << (c % 8);
-    }
-
     /// SETUP_ASCII_RANGE.
-    fn setup_ascii_range(&mut self, work: &mut RangeTableWork, map: usize, from: u32, to: u32) {
+    fn setup_ascii_range(
+        &mut self,
+        work: &mut RangeTableWork,
+        map: &mut Bitmap,
+        from: u32,
+        to: u32,
+    ) {
         for c0 in from..=to {
             let mut c1 = self.translate(c0);
             if c1 >= 0x80 {
@@ -400,17 +539,23 @@ impl Compiler<'_> {
                     None => c0,
                 };
             }
-            self.set_list_bit(map, c1);
+            set_list_bit(map, c1);
         }
     }
 
     /// SETUP_UNIBYTE_RANGE: FROM and TO are bytes 0x80..0xFF.
-    fn setup_unibyte_range(&mut self, work: &mut RangeTableWork, map: usize, from: u32, to: u32) {
+    fn setup_unibyte_range(
+        &mut self,
+        work: &mut RangeTableWork,
+        map: &mut Bitmap,
+        from: u32,
+        to: u32,
+    ) {
         let used = work.table.len();
         for c0 in from..=to {
             let c1 = unibyte_to_char(c0);
             if char_byte8_p(c1) {
-                self.set_list_bit(map, c0);
+                set_list_bit(map, c0);
             } else {
                 let c2 = self.translate(c1);
                 let byte = if c2 == c1 {
@@ -418,14 +563,20 @@ impl Compiler<'_> {
                 } else {
                     char_to_unibyte(c2).unwrap_or(c0)
                 };
-                self.set_list_bit(map, byte);
+                set_list_bit(map, byte);
                 merge_into_range_table(work, used, c2);
             }
         }
     }
 
     /// SETUP_MULTIBYTE_RANGE.
-    fn setup_multibyte_range(&mut self, work: &mut RangeTableWork, map: usize, from: u32, to: u32) {
+    fn setup_multibyte_range(
+        &mut self,
+        work: &mut RangeTableWork,
+        map: &mut Bitmap,
+        from: u32,
+        to: u32,
+    ) {
         let used = work.table.len();
         work.set(from, to);
         for c0 in from..=to {
@@ -433,13 +584,37 @@ impl Compiler<'_> {
             let byte =
                 char_to_unibyte(c1).or_else(|| if c1 != c0 { char_to_unibyte(c0) } else { None });
             if let Some(byte) = byte {
-                self.set_list_bit(map, byte);
+                set_list_bit(map, byte);
             }
             if c1 >= from && c1 <= to {
                 continue;
             }
             merge_into_range_table(work, used, c1);
         }
+    }
+}
+
+/// A bracket expression's bitmap of the bytes it matches, built apart
+/// from the buffer and copied in without its trailing zero bytes.
+type Bitmap = [u8; 32];
+
+/// SET_LIST_BIT: C is a byte, or an ASCII character.
+#[inline]
+fn set_list_bit(map: &mut Bitmap, c: u32) {
+    debug_assert!(c < 0x100);
+    let c = c as u8;
+    map[usize::from(c >> 3)] |= 1 << (c & 7);
+}
+
+/// The bytes of MAP up to its last nonzero one.
+#[inline]
+fn bitmap_used(map: &Bitmap) -> usize {
+    let half = |at: usize| u128::from_le_bytes(map[at..at + 16].try_into().expect("16 bytes"));
+    let (low, high) = (half(0), half(16));
+    if high != 0 {
+        32 - high.leading_zeros() as usize / 8
+    } else {
+        16 - low.leading_zeros() as usize / 8
     }
 }
 
@@ -504,11 +679,20 @@ fn group_in_compile_stack(stack: &[CompileStackElt], regnum: i64) -> bool {
     stack.iter().any(|elt| elt.regnum == regnum)
 }
 
+std::thread_local! {
+    /// The compile stack and the range table work area, kept from one
+    /// compilation for the next.
+    static WORK: std::cell::Cell<(Vec<CompileStackElt>, RangeTableWork)> = const {
+        std::cell::Cell::new((Vec::new(), RangeTableWork { table: Vec::new(), bits: 0 }))
+    };
+}
+
 /// regex_compile: compile PATTERN, character codes of a string whose
-/// multibyteness is MULTIBYTE.  WHITESPACE, `search-spaces-regexp', stands
-/// for each run of spaces.  TRANSLATE says whether ENV's translation (case
-/// folding) applies; ENV also answers the class predicates `[:space:]' and
-/// `[:word:]' read from the syntax table.
+/// multibyteness is MULTIBYTE, into BUFFER (a cache cell's pattern buffer,
+/// which re_compile_pattern compiles over).  WHITESPACE,
+/// `search-spaces-regexp', stands for each run of spaces.  TRANSLATE says
+/// whether ENV's translation (case folding) applies; ENV also answers the
+/// class predicates `[:space:]' and `[:word:]' read from the syntax table.
 pub(crate) fn compile(
     pattern: &[u32],
     multibyte: bool,
@@ -516,16 +700,31 @@ pub(crate) fn compile(
     whitespace: Option<&[u32]>,
     translate: bool,
     env: &mut dyn MatchEnv,
+    mut buffer: Vec<u8>,
 ) -> Result<Pattern, RegError> {
+    buffer.clear();
+    buffer.reserve(32);
     let mut cc = Compiler {
-        b: Vec::with_capacity(32),
+        b: buffer,
         translate,
         env,
         multibyte,
         re_nsub: 0,
         used_syntax: false,
+        ascii_syntax_masks: None,
     };
-    regex_compile(&mut cc, pattern, posix, whitespace)?;
+    let (mut compile_stack, mut range_table_work) = WORK.take();
+    compile_stack.clear();
+    let compiled = regex_compile(
+        &mut cc,
+        pattern,
+        posix,
+        whitespace,
+        &mut compile_stack,
+        &mut range_table_work,
+    );
+    WORK.set((compile_stack, range_table_work));
+    compiled?;
     Ok(Pattern {
         buffer: cc.b,
         re_nsub: cc.re_nsub as usize,
@@ -545,6 +744,8 @@ fn regex_compile(
     main_pattern: &[u32],
     posix: bool,
     whitespace: Option<&[u32]>,
+    compile_stack: &mut Vec<CompileStackElt>,
+    range_table_work: &mut RangeTableWork,
 ) -> Result<(), RegError> {
     // The pattern being read: the main one, or the whitespace regexp
     // spliced in for a run of spaces (`in_subpattern').
@@ -554,19 +755,17 @@ fn regex_compile(
     let mut in_subpattern = false;
     let mut main_p = 0usize;
 
-    let mut compile_stack: Vec<CompileStackElt> = Vec::new();
     let mut pending_exact: Option<usize> = None;
     let mut laststart: Option<usize> = None;
     let mut begalt = 0usize;
     let mut fixup_alt_jump: Option<usize> = None;
-    let mut range_table_work = RangeTableWork::default();
 
+    // PEND is the end of PATTERN, whichever pattern is being read.
     macro_rules! patfetch {
         () => {{
-            if p == pend {
+            let Some(&c) = pattern.get(p) else {
                 return Err(RegError::EEnd);
-            }
-            let c = pattern[p];
+            };
             p += 1;
             c
         }};
@@ -649,7 +848,7 @@ fn regex_compile(
             0x2b | 0x3f | 0x2a => {
                 // '+' '?' '*'
                 let Some(start) = laststart else {
-                    compile_normal(cc, &mut pending_exact, &mut laststart, pattern, p, pend, c)?;
+                    compile_normal(cc, &mut pending_exact, &mut laststart, pattern, p, c)?;
                     continue;
                 };
                 let mut zero_times_ok = false;
@@ -775,8 +974,7 @@ fn regex_compile(
                 }
                 let p1 = p;
                 cc.push(32)?;
-                let map = cc.b.len();
-                cc.b.resize(map + 32, 0);
+                let mut map: Bitmap = [0; 32];
 
                 loop {
                     let p2 = p;
@@ -791,18 +989,27 @@ fn regex_compile(
                         if p == pend {
                             return Err(RegError::EBrack);
                         }
-                        for ch in 0..0x80u32 {
-                            if re_iswctype(cc.env, ch, class) {
-                                cc.set_list_bit(map, ch);
-                                let c1 = cc.translate(ch);
-                                if c1 == ch {
-                                    continue;
-                                }
-                                if c1 < 0x80 {
-                                    cc.set_list_bit(map, c1);
-                                } else if let Some(byte) = char_to_unibyte(c1) {
-                                    cc.set_list_bit(map, byte);
-                                }
+                        // Each ASCII character of the class, with its
+                        // translation; without one, the class's bits alone.
+                        let mut admitted = cc.ascii_class_mask(class);
+                        if !cc.translate {
+                            for (byte, bits) in map.iter_mut().zip(admitted.to_le_bytes()) {
+                                *byte |= bits;
+                            }
+                            admitted = 0;
+                        }
+                        while admitted != 0 {
+                            let ch = admitted.trailing_zeros();
+                            admitted &= admitted - 1;
+                            set_list_bit(&mut map, ch);
+                            let c1 = cc.translate(ch);
+                            if c1 == ch {
+                                continue;
+                            }
+                            if c1 < 0x80 {
+                                set_list_bit(&mut map, c1);
+                            } else if let Some(byte) = char_to_unibyte(c1) {
+                                set_list_bit(&mut map, byte);
                             }
                         }
                         range_table_work.bits |= re_wctype_to_bit(class);
@@ -837,7 +1044,7 @@ fn regex_compile(
                     if c <= c1 {
                         if c < 128 {
                             let ch = c1.min(127);
-                            cc.setup_ascii_range(&mut range_table_work, map, c, ch);
+                            cc.setup_ascii_range(range_table_work, &mut map, c, ch);
                             c = ch + 1;
                             if char_byte8_p(c1) {
                                 c = BYTE8_BASE + 128;
@@ -848,24 +1055,21 @@ fn regex_compile(
                                 let from = c - BYTE8_BASE;
                                 let to = c1 - BYTE8_BASE;
                                 for byte in from..=to {
-                                    cc.set_list_bit(map, byte);
+                                    set_list_bit(&mut map, byte);
                                 }
                             } else if cc.multibyte {
-                                cc.setup_multibyte_range(&mut range_table_work, map, c, c1);
+                                cc.setup_multibyte_range(range_table_work, &mut map, c, c1);
                             } else {
-                                cc.setup_unibyte_range(&mut range_table_work, map, c, c1);
+                                cc.setup_unibyte_range(range_table_work, &mut map, c, c1);
                             }
                         }
                     }
                 }
 
                 // Discard the trailing zero bytes of the map.
-                let mut size = 32usize;
-                while size > 0 && cc.b[map + size - 1] == 0 {
-                    size -= 1;
-                }
+                let size = bitmap_used(&map);
                 cc.b[start + 1] = size as u8;
-                cc.b.truncate(map + size);
+                cc.b.extend_from_slice(&map[..size]);
 
                 if !range_table_work.table.is_empty() || range_table_work.bits != 0 {
                     let used = range_table_work.table.len();
@@ -924,7 +1128,7 @@ fn regex_compile(
                             // Explicitly numbered.
                             if regnum > cc.re_nsub {
                                 cc.re_nsub = regnum;
-                            } else if group_in_compile_stack(&compile_stack, regnum) {
+                            } else if group_in_compile_stack(compile_stack, regnum) {
                                 return Err(RegError::BadPat);
                             }
                         } else {
@@ -1035,15 +1239,7 @@ fn regex_compile(
                             // unfetch_interval: match `{' literally.
                             p = beg_interval;
                             c = 0x7b;
-                            compile_normal(
-                                cc,
-                                &mut pending_exact,
-                                &mut laststart,
-                                pattern,
-                                p,
-                                pend,
-                                c,
-                            )?;
+                            compile_normal(cc, &mut pending_exact, &mut laststart, pattern, p, c)?;
                             continue;
                         };
 
@@ -1196,9 +1392,7 @@ fn regex_compile(
 
                     0x31..=0x39 => {
                         let reg = i64::from(c - 0x30);
-                        if reg > cc.re_nsub
-                            || reg < 1
-                            || group_in_compile_stack(&compile_stack, reg)
+                        if reg > cc.re_nsub || reg < 1 || group_in_compile_stack(compile_stack, reg)
                         {
                             return Err(RegError::ESubreg);
                         }
@@ -1214,7 +1408,7 @@ fn regex_compile(
         }
 
         if normal {
-            compile_normal(cc, &mut pending_exact, &mut laststart, pattern, p, pend, c)?;
+            compile_normal(cc, &mut pending_exact, &mut laststart, pattern, p, c)?;
         }
     }
 
@@ -1235,7 +1429,6 @@ fn compile_normal(
     laststart: &mut Option<usize>,
     pattern: &[u32],
     p: usize,
-    pend: usize,
     c: u32,
 ) -> Result<(), RegError> {
     // The stored form of the character to match: GNU's exactn bytes.
@@ -1273,26 +1466,31 @@ fn compile_normal(
         return Ok(());
     };
 
-    let followed_by_repetition = (p != pend && matches!(pattern[p], 0x2a | 0x2b | 0x3f))
-        || (p + 1 < pend && pattern[p] == u32::from(b'\\') && pattern[p + 1] == u32::from(b'{'));
-    let start_new = match *pending_exact {
-        None => true,
-        Some(at) => {
-            at + usize::from(cc.b[at]) + 1 != cc.b.len()
-                || usize::from(cc.b[at]) >= 256 - MAX_MULTIBYTE_LENGTH
-                || followed_by_repetition
+    let followed_by_repetition =
+        matches!(pattern[p..], [0x2a | 0x2b | 0x3f, ..] | [0x5c, 0x7b, ..]);
+    let end = cc.b.len();
+    let at = match *pending_exact {
+        Some(at)
+            if at + usize::from(cc.b[at]) + 1 == end
+                && usize::from(cc.b[at]) < 256 - MAX_MULTIBYTE_LENGTH
+                && !followed_by_repetition =>
+        {
+            at
+        }
+        _ => {
+            *laststart = Some(end);
+            cc.push2(op::EXACTN, 0)?;
+            *pending_exact = Some(end + 1);
+            end + 1
         }
     };
-    if start_new {
-        *laststart = Some(cc.b.len());
-        cc.push2(op::EXACTN, 0)?;
-        *pending_exact = Some(cc.b.len() - 1);
-    }
     cc.space(MAX_MULTIBYTE_LENGTH)?;
-    let mut bytes = [0u8; 4];
-    let encoded = ch.encode_utf8(&mut bytes).as_bytes();
-    cc.b.extend_from_slice(encoded);
-    let at = pending_exact.expect("an exactn is being built");
-    cc.b[at] += encoded.len() as u8;
+    let len = ch.len_utf8();
+    if len == 1 {
+        cc.b.push(ch as u8);
+    } else {
+        cc.b.extend_from_slice(ch.encode_utf8(&mut [0; 4]).as_bytes());
+    }
+    cc.b[at] += len as u8;
     Ok(())
 }

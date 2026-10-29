@@ -2624,7 +2624,7 @@ define_dispatch!(
 
                     let saved_point = interp.buffer.borrow().point();
                     interp
-                        .delete_region_current_buffer(start, end)
+                        .delete_region_current_buffer_unreturned(start, end)
                         .map_err(|error| LispError::Signal(error.to_string()))?;
                     interp.buffer.borrow_mut().goto_char(start);
                     let text = decode_raw_text_bytes(&output);
@@ -3053,6 +3053,13 @@ fn make_process_value(
         }
     }
     let mut parsed = parse_make_process_args(interp, args)?;
+    // Fmake_pipe_process opens its pipes once it has its name, and fails
+    // when a channel lies beyond FD_SETSIZE.
+    let pipe_channels = parsed
+        .program
+        .is_none()
+        .then(open_pipe_process_channels)
+        .transpose()?;
     let inherit_coding_system = parsed.buffer_id.is_some()
         && interp
             .lookup_var("inherit-process-coding-system", env)
@@ -3107,6 +3114,12 @@ fn make_process_value(
     } else {
         Vec::new()
     };
+    // Fmake_process makes a `:stderr' buffer's pipe process before
+    // create_process forks.
+    let stderr_channels = parsed
+        .stderr_buffer_id
+        .map(|_| open_pipe_process_channels())
+        .transpose()?;
     let runtime = executable.as_ref().map(|command| {
         spawn_persistent_process(
             interp,
@@ -3132,6 +3145,9 @@ fn make_process_value(
             Some(format!("{requested_name} stderr")),
         )?;
         let stderr_process_id = interp.resolve_process_id(&stderr)?;
+        if let Some(channels) = stderr_channels {
+            interp.install_pipe_process_channels(stderr_process_id, channels);
+        }
         interp.set_process_query_on_exit_flag(stderr_process_id, parsed.query_on_exit_flag)?;
         parsed.stderr_process_id = Some(stderr_process_id);
     }
@@ -3143,6 +3159,15 @@ fn make_process_value(
         parsed.name,
     )?;
     let process_id = interp.resolve_process_id(&process)?;
+    if let Some(channels) = pipe_channels {
+        interp.install_pipe_process_channels(process_id, channels);
+    }
+    // create_process closes its standard error pipe process's input.
+    if executable.is_some()
+        && let Some(stderr_process_id) = parsed.stderr_process_id
+    {
+        interp.close_pipe_process_input(stderr_process_id);
+    }
     interp.set_process_query_on_exit_flag(process_id, parsed.query_on_exit_flag)?;
     interp.set_process_inherit_coding_system_flag(process_id, inherit_coding_system)?;
     interp.set_process_filter(process_id, parsed.filter)?;

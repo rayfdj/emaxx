@@ -3,44 +3,6 @@ use crate::lisp::types::Kind;
 use crate::lisp::types::LispErrorKind;
 use crate::lisp::types::PropertyName;
 
-pub(crate) fn format_source_props(
-    value: &Value,
-    from: usize,
-    to: usize,
-) -> Option<Vec<(PropertyName, Value)>> {
-    // The format string's intervals, read in place: `format' asks once per
-    // conversion, and its text is never needed here.
-    let Kind::StringObject(state) = value.kind() else {
-        return None;
-    };
-    let state = state.borrow();
-    let mut props: Vec<(PropertyName, Value)> = Vec::new();
-    for span in state.props.iter() {
-        if span.start < to && from < span.end {
-            for (name, value) in &span.props {
-                if !props.iter().any(|(existing, _)| existing == name) {
-                    props.push((*name, *value));
-                }
-            }
-        }
-    }
-    // The format string's own intervals reach the result through
-    // add_text_properties_from_list too: reversed pairs.
-    props.reverse();
-    if props.is_empty() { None } else { Some(props) }
-}
-
-pub(crate) fn props_at_string_offset(
-    spans: &[TextPropertySpan],
-    pos: usize,
-) -> Vec<(PropertyName, Value)> {
-    spans
-        .iter()
-        .find(|span| span.start <= pos && pos < span.end)
-        .map(|span| span.props.clone())
-        .unwrap_or_default()
-}
-
 pub(crate) fn file_modtime(
     interp: &Interpreter,
     env: &Env,
@@ -1618,7 +1580,10 @@ fn auto_coding_in_empty_buffer(
     };
     interp.buffer.borrow_mut().set_multibyte(false);
     interp.set_variable("buffer-undo-list", Value::T, &mut decide_env);
-    interp.insert_current_buffer(&decode_raw_text_bytes(bytes));
+    {
+        let (text, counts) = decode_raw_text_counted(bytes);
+        interp.insert_current_buffer_counted(&text, counts);
+    }
     let inserted_tick = {
         let mut buffer = interp.buffer.borrow_mut();
         buffer.goto_char(1);
@@ -1651,7 +1616,7 @@ fn auto_coding_in_empty_buffer(
             *decided_bytes = Some(encode_raw_text_bytes(&text)?);
         }
         interp
-            .delete_region_current_buffer(1, z)
+            .delete_region_current_buffer_unreturned(1, z)
             .map_err(|error| LispError::Signal(error.to_string()))?;
         let mut buffer = interp.buffer.borrow_mut();
         buffer.goto_char(1);
@@ -1811,6 +1776,12 @@ pub(crate) fn insert_file_contents(
         .map(|value| value.as_integer().map(|value| value.max(0) as usize))
         .transpose()?;
     let replace = args.get(4).is_some_and(Value::is_truthy);
+    // "If the undo log only contains the insertion, there's no point
+    // keeping it": a visit into an empty buffer whose list is nil.
+    let empty_undo_list_p = visit && {
+        let buffer = interp.buffer.borrow();
+        buffer.undo_list().is_nil() && buffer.size_total() == 0
+    };
     if let Some(coding) = interp.lookup_var("coding-system-for-read", env)
         && !coding.is_nil()
     {
@@ -2037,10 +2008,9 @@ pub(crate) fn insert_file_contents(
             .borrow_mut()
             .set_visited_file_modtime(file_modtime(interp, env, &path)?);
         interp.buffer.borrow_mut().set_unmodified();
-        // GNU restores the pre-read undo list when visiting (fileio.c keeps
-        // it aside around the insertion), so the very first interactive undo
-        // must not remove the file's own contents.
-        interp.buffer.borrow_mut().clear_undo();
+        if empty_undo_list_p {
+            interp.buffer.borrow_mut().set_undo_list(Value::Nil);
+        }
     }
     // Finsert_file_contents records the coding decode_coding_gap settled
     // on; mule.el's after-insert-file-set-coding, run below, derives

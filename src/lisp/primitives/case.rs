@@ -240,9 +240,10 @@ pub(crate) fn current_case_classes(interp: &Interpreter, code: u32) -> (bool, bo
     (lowercase, uppercase)
 }
 
-pub(crate) fn case_symbols_as_words_enabled(interp: &Interpreter, env: &Env) -> bool {
+/// casefiddle.c's DEFVAR_BOOL case_symbols_as_words.
+pub(crate) fn case_symbols_as_words_enabled(interp: &Interpreter) -> bool {
     interp
-        .lookup_var("case-symbols-as-words", env)
+        .symbol_value_key(cached_symbol!("case-symbols-as-words"))
         .is_some_and(|value| value.is_truthy())
 }
 
@@ -353,7 +354,7 @@ pub(crate) fn casify_string(
 ) -> Result<(String, Vec<(usize, u32)>), LispError> {
     // GNU prepares the casing context once per operation, never per character.
     let context = CasingContext::prepare(interp, action, env);
-    casify_string_with_context(interp, input, extended, action, env, &context)
+    casify_string_with_context(interp, input, extended, action, &context)
 }
 
 fn casify_string_with_context(
@@ -361,10 +362,9 @@ fn casify_string_with_context(
     input: &str,
     extended: &[(usize, u32)],
     action: CaseAction,
-    env: &mut Env,
     context: &CasingContext,
 ) -> Result<(String, Vec<(usize, u32)>), LispError> {
-    let case_symbols_as_words = case_symbols_as_words_enabled(interp, env);
+    let case_symbols_as_words = case_symbols_as_words_enabled(interp);
     let (down_table, up_table) = current_case_table_ids(interp)?;
     let chars: Vec<char> = input.chars().collect();
     let code_at = |idx: usize| {
@@ -474,7 +474,7 @@ pub(crate) fn casify_value(
         // an ASCII-to-wide mapping falls back to the Unicode ASCII table.
         return interp.with_lisp_stack_roots(value, |interp| {
             let (down, up) = current_case_table_ids(interp)?;
-            let symbols_as_words = case_symbols_as_words_enabled(interp, env);
+            let symbols_as_words = case_symbols_as_words_enabled(interp);
             let mut in_word = false;
             let mut output = String::new();
             for ch in input.text.chars() {
@@ -537,14 +537,8 @@ pub(crate) fn casify_value(
         });
     }
     let input_len = input.text.chars().count();
-    let (output, output_extended) = casify_string_with_context(
-        interp,
-        &input.text,
-        &input.extended_chars,
-        action,
-        env,
-        &context,
-    )?;
+    let (output, output_extended) =
+        casify_string_with_context(interp, &input.text, &input.extended_chars, action, &context)?;
     // casefiddle.c copies intervals while casing can stay in the source
     // string's character footprint.  A full Unicode mapping that changes
     // the character count (for example, sharp-s -> "SS") takes GNU's

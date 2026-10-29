@@ -2437,44 +2437,96 @@ pub(crate) fn invoke_subr(index: usize, arguments: &[NativeWord]) -> NativeWord 
 /// current buffer) for a plain variable, whose value cell answers them all
 /// as data.c's SYMBOL_PLAINVAL cases do, and Fset_default's store into it:
 /// nothing allocated or signalled, so before the handlers are brought up
-/// to date, as the context-free kinds are.  Any other variable takes the
-/// subr's own entry.
+/// to date, as the context-free kinds are.  Any other variable that is no
+/// alias is answered after them by the lookups the subrs make
+/// (`native_variable_subr'), and the rest take the subr's own entry.
 #[inline(never)]
 fn invoke_variable_subr(index: usize, kind: DirectSubr, arguments: &[NativeWord]) -> NativeWord {
+    // SAFETY: the caller's argument words are live.
+    let symbol = arguments
+        .first()
+        .and_then(|word| unsafe { Value::from_word(*word) }.symbol_cell());
     with_active(|active| {
-        let plain = match (kind, arguments) {
-            (DirectSubr::SetDefault, _) => None,
-            (_, [symbol] | [symbol, 0]) => native_plain_variable_value(active, *symbol),
-            _ => None,
+        if let Some(symbol) = &symbol {
+            let interpreter = unsafe { &*active.interpreter };
+            let plain = || interpreter.plain_variable_value(symbol);
+            match (kind, &arguments[1..]) {
+                (DirectSubr::DefaultValue, []) => {
+                    if let Some(value) = plain() {
+                        return value.word();
+                    }
+                }
+                (DirectSubr::Boundp | DirectSubr::DefaultBoundp, []) if plain().is_some() => {
+                    return native_boolean(true);
+                }
+                (DirectSubr::LocalVariableP, [] | [0]) if plain().is_some() => {
+                    return native_boolean(false);
+                }
+                // Fset_default of a plain variable is set_internal's store
+                // alone, as `setq''s is (no watcher, constant, alias or
+                // forwarding).
+                (DirectSubr::SetDefault, [value])
+                    if interpreter
+                        .store_plain_variable(symbol, unsafe { Value::from_word(*value) }) =>
+                {
+                    return *value;
+                }
+                _ => {}
+            }
+        }
+        let Some(subroutine) = entered_subr(active, index) else {
+            return 0;
         };
-        match (kind, plain) {
-            (DirectSubr::DefaultValue, Some(value)) if arguments.len() == 1 => {
-                return value.word();
-            }
-            (DirectSubr::Boundp | DirectSubr::DefaultBoundp, Some(_)) if arguments.len() == 1 => {
-                return native_boolean(true);
-            }
-            (DirectSubr::LocalVariableP, Some(_)) => return native_boolean(false),
-            _ => {}
-        }
-        // Fset_default of a plain variable is set_internal's store alone,
-        // as `setq''s is (no watcher, constant, alias or forwarding).
-        if kind == DirectSubr::SetDefault
-            && let [symbol, value] = arguments
-            && *symbol & TAG_MASK == TAG_SYMBOL
-            && *symbol != 0
-            && *symbol != native_boolean(true)
-            && let Some(name) = unsafe { (&*active.runtime).heap.bare_symbol_value_state(*symbol) }
-            && unsafe { &*active.interpreter }
-                .store_plain_variable(&name, unsafe { Value::from_word(*value) })
-        {
-            return *value;
-        }
-        match entered_subr(active, index) {
-            Some(subroutine) => invoke_subr_entry(active, subroutine, arguments),
-            None => 0,
-        }
+        symbol
+            .and_then(|symbol| {
+                native_variable_subr(
+                    unsafe { &mut *active.interpreter },
+                    kind,
+                    &symbol,
+                    arguments,
+                )
+            })
+            .unwrap_or_else(|| invoke_subr_entry(active, subroutine, arguments))
     })
+}
+
+/// data.c's Fboundp, Fdefault_boundp, Fdefault_value, Flocal_variable_p
+/// (of the current buffer) and Fset_default of SYMBOL, the first of
+/// ARGUMENTS, when it is no alias: find_symbol_value, default_value,
+/// blv_found and set_default_internal, by the lookups the subrs make
+/// without their dispatch, for a C variable's slot or a buffer-local
+/// variable as for any other.  None, with nothing done, for a case the
+/// subr signals or that runs Lisp (a void `default-value', a constant, a
+/// watched variable, a conversion that fails), which its entry takes.
+fn native_variable_subr(
+    interpreter: &mut Interpreter,
+    kind: DirectSubr,
+    symbol: &SymbolName,
+    arguments: &[NativeWord],
+) -> Option<NativeWord> {
+    if symbol.cell().alias().is_some() {
+        return None;
+    }
+    match (kind, &arguments[1..]) {
+        (DirectSubr::Boundp, []) => Some(native_boolean(
+            interpreter.dynamic_value_symbol(symbol).ok()?.is_some(),
+        )),
+        (DirectSubr::DefaultBoundp, []) => Some(native_boolean(
+            interpreter.default_value_symbol(symbol).ok()?.is_some(),
+        )),
+        (DirectSubr::DefaultValue, []) => interpreter
+            .default_value_symbol(symbol)
+            .ok()?
+            .map(|value| value.word()),
+        (DirectSubr::LocalVariableP, [] | [0]) => Some(native_boolean(
+            interpreter.has_buffer_local_binding_symbol(interpreter.current_buffer_id(), symbol)
+                || interpreter.is_always_buffer_local_symbol(symbol),
+        )),
+        (DirectSubr::SetDefault, [value]) => interpreter
+            .store_default_value(symbol, unsafe { Value::from_word(*value) })
+            .then_some(*value),
+        _ => None,
+    }
 }
 
 /// The subr at INDEX in the ABI's table, with the handlers brought to the
@@ -4230,17 +4282,6 @@ fn native_scalar_type_word(word: NativeWord) -> Option<NativeWord> {
         }
     };
     Some(native_type_symbol_word(type_index))
-}
-
-/// The value of the symbol WORD names while it is a plain variable
-/// (`Interpreter::plain_variable_value'); None for any other word, a
-/// positioned symbol's included, and any other variable.
-fn native_plain_variable_value(active: &ActiveCall, word: NativeWord) -> Option<Value> {
-    if word & TAG_MASK != TAG_SYMBOL || word == 0 || word == native_boolean(true) {
-        return None;
-    }
-    let symbol = unsafe { (&*active.runtime).heap.bare_symbol_value_state(word) }?;
-    unsafe { &*active.interpreter }.plain_variable_value(&symbol)
 }
 
 /// data.c:Fsymbol_value reads the global symbol value cell, not the current
@@ -11034,7 +11075,7 @@ mod tests {
                 );
                 state.file = Some("/tmp/retained-dead-buffer.el".into());
                 state.put_text_property(1, 2, "retained-property".into(), property);
-                state.set_undo_list_view(undo);
+                state.set_undo_list(undo);
                 state.text_conversion_style = style;
             }
             let value = Value::Buffer(buffer);
@@ -11072,9 +11113,7 @@ mod tests {
             interpreter.kill_buffer_id(id);
             let state = buffer.borrow();
             assert!(state.full_buffer_string().is_empty());
-            assert!(state.saved_text().is_empty());
-            assert!(state.undo_entries().is_empty());
-            assert!(state.undo_list_value().is_nil());
+            assert!(state.undo_list().is_nil());
             assert!(state.full_property_spans().is_empty());
             assert!(state.text_conversion_style.is_nil());
             assert!(!state.text_conversion_style_is_local);

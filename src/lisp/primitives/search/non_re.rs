@@ -72,6 +72,11 @@ fn char_head_p(byte: u8) -> bool {
 /// BEGV_BYTE.
 trait SearchBytes {
     fn byte(&mut self, at: usize) -> u8;
+
+    /// The bytes read in place around AT, from the offset returned with
+    /// them: a scan reads them without a load each, as GNU's pointer
+    /// runs to BUFFER_CEILING_OF.
+    fn run(&mut self, at: usize) -> (&[u8], usize);
 }
 
 /// A multibyte buffer's text, or a unibyte one's that is all ASCII: the
@@ -80,6 +85,8 @@ struct StoredBytes<'a> {
     rope: ropey::RopeSlice<'a>,
     chunk: &'a [u8],
     start: usize,
+    /// The chunks after CHUNK, for a forward scan's next load.
+    after: Option<ropey::iter::Chunks<'a>>,
 }
 
 impl<'a> StoredBytes<'a> {
@@ -88,6 +95,7 @@ impl<'a> StoredBytes<'a> {
             rope,
             chunk: &[],
             start: 0,
+            after: None,
         }
     }
 
@@ -101,9 +109,33 @@ impl<'a> StoredBytes<'a> {
     #[cold]
     #[inline(never)]
     fn load(&mut self, at: usize) {
-        let (chunk, start, _, _) = self.rope.chunk_at_byte(at);
-        self.chunk = chunk.as_bytes();
-        self.start = start;
+        // A forward scan wants the chunk after the one it read, which the
+        // chunks left after it yield without a walk from the root.
+        let end = self.start + self.chunk.len();
+        if at >= end
+            && let Some(after) = &mut self.after
+            && let Some(next) = after.next()
+            && at < end + next.len()
+        {
+            self.chunk = next.as_bytes();
+            self.start = end;
+            return;
+        }
+        let (mut chunks, start, _, _) = self.rope.chunks_at_byte(at);
+        match chunks.next() {
+            Some(chunk) => {
+                self.chunk = chunk.as_bytes();
+                self.start = start;
+                self.after = Some(chunks);
+            }
+            None => {
+                // The end, whose chunk is the last.
+                let (chunk, start, _, _) = self.rope.chunk_at_byte(at);
+                self.chunk = chunk.as_bytes();
+                self.start = start;
+                self.after = None;
+            }
+        }
     }
 
     /// The stored character at AT and its length.  A rope's chunks hold
@@ -131,6 +163,12 @@ impl SearchBytes for StoredBytes<'_> {
     fn byte(&mut self, at: usize) -> u8 {
         self.ensure(at);
         self.chunk[at - self.start]
+    }
+
+    #[inline]
+    fn run(&mut self, at: usize) -> (&[u8], usize) {
+        self.ensure(at);
+        (self.chunk, self.start)
     }
 }
 
@@ -178,6 +216,14 @@ impl SearchBytes for UnibyteBytes<'_> {
             self.load(at);
         }
         self.bytes[at - self.start]
+    }
+
+    #[inline]
+    fn run(&mut self, at: usize) -> (&[u8], usize) {
+        if at.wrapping_sub(self.start) >= self.bytes.len() {
+            self.load(at);
+        }
+        (&self.bytes, self.start)
     }
 }
 
@@ -862,23 +908,36 @@ fn boyer_moore<B: SearchBytes>(
             // Use one cursor setting as long as I can.
             loop {
                 let mut hit = false;
+                // The strides, a run of bytes in place at a time.
                 if direction > 0 {
-                    while cursor <= p_limit {
-                        let stride = bm_tab[usize::from(text.byte(cursor as usize))];
-                        if stride == 0 {
-                            hit = true;
-                            break;
+                    'scan: while cursor <= p_limit {
+                        let (run, start) = text.run(cursor as usize);
+                        let run = &run[..run.len().min(p_limit as usize + 1 - start)];
+                        let mut at = cursor as usize - start;
+                        while let Some(&byte) = run.get(at) {
+                            let stride = bm_tab[usize::from(byte)];
+                            if stride == 0 {
+                                cursor = (start + at) as isize;
+                                hit = true;
+                                break 'scan;
+                            }
+                            at += stride as usize;
                         }
-                        cursor += stride;
+                        cursor = (start + at) as isize;
                     }
                 } else {
-                    while cursor >= p_limit {
-                        let stride = bm_tab[usize::from(text.byte(cursor as usize))];
-                        if stride == 0 {
-                            hit = true;
-                            break;
+                    'scan: while cursor >= p_limit {
+                        let (run, start) = text.run(cursor as usize);
+                        let first = (p_limit as usize).max(start) as isize;
+                        let start = start as isize;
+                        while cursor >= first {
+                            let stride = bm_tab[usize::from(run[(cursor - start) as usize])];
+                            if stride == 0 {
+                                hit = true;
+                                break 'scan;
+                            }
+                            cursor += stride;
                         }
-                        cursor += stride;
                     }
                 }
                 // If you are here without a hit, cursor is beyond the end

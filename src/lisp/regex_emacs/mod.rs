@@ -482,6 +482,11 @@ pub(crate) trait MatchEnv {
     fn syntax(&mut self, c: u32, at: usize) -> u8;
     /// BUFFER_SYNTAX: the syntax class of C in the buffer's own table.
     fn buffer_syntax(&mut self, c: u32) -> u8;
+    /// BUFFER_SYNTAX of each ASCII character, character C's class at
+    /// index C.
+    fn buffer_syntax_ascii(&mut self) -> [u8; 128] {
+        std::array::from_fn(|c| self.buffer_syntax(c as u32))
+    }
     /// CHAR_HAS_CATEGORY.
     fn has_category(&mut self, c: u32, category: u8) -> bool;
     /// category.c's word_boundary_p.

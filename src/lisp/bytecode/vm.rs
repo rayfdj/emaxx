@@ -2059,6 +2059,7 @@ fn run_verified(
                     };
                     if !name.cell().store_plain_value(*slot!(0))
                         && !varset_plain(vm.interp, &name, *slot!(0))
+                        && !varset_local(vm.interp, &name, *slot!(0))
                     {
                         slow!();
                     }
@@ -2583,6 +2584,48 @@ fn run_verified(
                     drop_values!(1);
                     at += 1;
                 }
+                // Bassq (`assq_in_place'): a list it walks to its end or to
+                // the first entry whose car is the key; any other, in the
+                // full arm, which signals.
+                0o236 => {
+                    let Some(found) = assq_in_place(vm.interp, vm.env, *slot!(1), *slot!(0)) else {
+                        slow!()
+                    };
+                    *slot!(1) = found;
+                    drop_values!(1);
+                    at += 1;
+                }
+                // Bnth's fast case (`nth_in_place'): a list it walks below
+                // SMALL_LIST_LEN_MAX; any other, in the full arm.
+                0o070 => {
+                    let Some(value) = nth_in_place(*slot!(1), *slot!(0)) else {
+                        slow!()
+                    };
+                    *slot!(1) = value;
+                    drop_values!(1);
+                    at += 1;
+                }
+                // Belt's: Bnth's with the operands reversed, for a cons.
+                0o234 => {
+                    let list = *slot!(1);
+                    if !list.is_cons() {
+                        slow!()
+                    }
+                    let Some(value) = nth_in_place(*slot!(0), list) else {
+                        slow!()
+                    };
+                    *slot!(1) = value;
+                    drop_values!(1);
+                    at += 1;
+                }
+                // Blength (Flength) of what it counts without signaling.
+                0o107 => {
+                    let Ok(length) = primitives::sequence_length_value(slot!(0)) else {
+                        slow!()
+                    };
+                    *slot!(0) = Value::Integer(length);
+                    at += 1;
+                }
                 // Bget of two bare symbols (`get_plain').
                 0o116 => {
                     let Some(value) = get_plain(vm.interp, *slot!(1), *slot!(0)) else {
@@ -2769,22 +2812,43 @@ fn run_verified(
                     varbind!(fetch2!());
                     at += 3;
                 }
+                // Bpophandler, Bpushconditioncase and Bpushcatch, as
+                // exec_byte_code runs them in its loop.
+                0o060 => {
+                    pop_handler(vm.interp, vm.handlers_base);
+                    at += 1;
+                }
+                0o061 | 0o062 => {
+                    let operand = *slot!(0);
+                    drop_values!(1);
+                    // The handler's stack length counts from the frame's
+                    // base, as `bc_stack.len()' does.
+                    // SAFETY: sp lies within the active frame.
+                    let stack_len =
+                        unsafe { sp.offset_from(words) as usize } + 1 - vm.interp.bc_stack.base;
+                    let dest = usize::from(fetch2!());
+                    if byte == 0o061 {
+                        push_condition_case(vm.interp, operand, dest, stack_len);
+                    } else {
+                        push_catch(vm.interp, operand, dest, stack_len);
+                    }
+                    at += 3;
+                }
                 // Every other opcode, named so that the match covers all 256
                 // bytes and its jump table needs no range check.  Each byte
                 // in this match is its own case: rustc tests a range
                 // pattern with comparisons ahead of the switch, which
                 // brought back the range check and sent constants and
                 // calls through branches before the table.
-                0o000 | 0o050 | 0o052 | 0o053 | 0o054 | 0o055 | 0o056 | 0o057 | 0o060 | 0o061
-                | 0o062 | 0o063 | 0o064 | 0o065 | 0o066 | 0o067 | 0o070 | 0o107 | 0o112 | 0o113
-                | 0o114 | 0o115 | 0o117 | 0o120 | 0o121 | 0o122 | 0o135 | 0o136 | 0o143 | 0o146
-                | 0o147 | 0o150 | 0o151 | 0o152 | 0o153 | 0o154 | 0o155 | 0o156 | 0o157 | 0o163
-                | 0o164 | 0o165 | 0o166 | 0o167 | 0o170 | 0o171 | 0o172 | 0o173 | 0o174 | 0o175
-                | 0o176 | 0o177 | 0o200 | 0o212 | 0o213 | 0o214 | 0o215 | 0o216 | 0o217 | 0o220
-                | 0o221 | 0o222 | 0o223 | 0o224 | 0o225 | 0o226 | 0o227 | 0o230 | 0o231 | 0o232
-                | 0o233 | 0o234 | 0o235 | 0o236 | 0o237 | 0o244 | 0o251 | 0o252 | 0o253 | 0o254
-                | 0o255 | 0o256 | 0o257 | 0o260 | 0o261 | 0o264 | 0o265 | 0o270 | 0o271 | 0o272
-                | 0o273 | 0o274 | 0o275 | 0o276 | 0o277 => slow!(),
+                0o000 | 0o050 | 0o052 | 0o053 | 0o054 | 0o055 | 0o056 | 0o057 | 0o063 | 0o064
+                | 0o065 | 0o066 | 0o067 | 0o112 | 0o113 | 0o114 | 0o115 | 0o117 | 0o120 | 0o121
+                | 0o122 | 0o135 | 0o136 | 0o143 | 0o146 | 0o147 | 0o150 | 0o151 | 0o152 | 0o153
+                | 0o154 | 0o155 | 0o156 | 0o157 | 0o163 | 0o164 | 0o165 | 0o166 | 0o167 | 0o170
+                | 0o171 | 0o172 | 0o173 | 0o174 | 0o175 | 0o176 | 0o177 | 0o200 | 0o212 | 0o213
+                | 0o214 | 0o215 | 0o216 | 0o217 | 0o220 | 0o221 | 0o222 | 0o223 | 0o224 | 0o225
+                | 0o226 | 0o227 | 0o230 | 0o231 | 0o232 | 0o233 | 0o235 | 0o237 | 0o244 | 0o251
+                | 0o252 | 0o253 | 0o254 | 0o255 | 0o256 | 0o257 | 0o260 | 0o261 | 0o264 | 0o265
+                | 0o270 | 0o271 | 0o272 | 0o273 | 0o274 | 0o275 | 0o276 | 0o277 => slow!(),
             }
         };
         if let FastExit::Continued(new_top) = exit {
@@ -2844,6 +2908,64 @@ fn varref_redirected(interp: &Interpreter, symbol: &SymbolName) -> Option<Value>
 #[inline(never)]
 fn varset_plain(interp: &mut Interpreter, symbol: &SymbolName, value: Value) -> bool {
     interp.assign_plain_global(symbol, value)
+}
+
+/// Bvarset of a buffer-local variable whose store into the current
+/// buffer's binding runs nothing (`assign_loaded_local'): data.c:
+/// set_internal's SYMBOL_LOCALIZED case, a binding made in the buffer for
+/// a variable automatically local when set.
+#[inline(never)]
+fn varset_local(interp: &mut Interpreter, symbol: &SymbolName, value: Value) -> bool {
+    interp.assign_loaded_local(symbol, value)
+}
+
+/// Bassq: fns.c:Fassq's FOR_EACH_TAIL walk when it can only return, the
+/// key compared with each entry's car by lisp.h:EQ.  None, for the full
+/// arm, at a pending quit (nothing in the walk sets `quit-flag', so one
+/// test before it stands for FOR_EACH_TAIL's), a cycle or an improper end.
+#[inline(never)]
+fn assq_in_place(interp: &Interpreter, env: &Env, key: Value, alist: Value) -> Option<Value> {
+    if !interp.quit_flag_is_nil() {
+        return None;
+    }
+    let key_vectorlike = key.is_vectorlike();
+    let mut tail = alist;
+    let mut walk = crate::lisp::types::TailWalk::new(tail);
+    if !key_vectorlike && !interp.symbols_with_positions_enabled() {
+        // EQ of a key that is the one word for its object, with no symbol
+        // with position to see through: the words alone.
+        let key = key.word();
+        while let Some(cell) = tail.cons_ref() {
+            let item = cell.car.get();
+            if let Some(entry) = item.cons_ref()
+                && entry.car.get().word() == key
+            {
+                return Some(item);
+            }
+            tail = cell.cdr.get();
+            if walk.cycled_no_quit(tail) {
+                return None;
+            }
+        }
+        return tail.is_nil().then_some(Value::Nil);
+    }
+    while let Some(cell) = tail.cons_ref() {
+        let item = cell.car.get();
+        if let Some(entry) = item.cons_ref() {
+            let entry_key = entry.car.get();
+            if entry_key.word() == key.word()
+                || ((key_vectorlike || entry_key.is_vectorlike())
+                    && crate::lisp::primitives::values_eq_in_env(interp, &entry_key, &key, env))
+            {
+                return Some(item);
+            }
+        }
+        tail = cell.cdr.get();
+        if walk.cycled_no_quit(tail) {
+            return None;
+        }
+    }
+    tail.is_nil().then_some(Value::Nil)
 }
 
 /// Bvarbind of a symbol whose let is a plain store
@@ -3024,6 +3146,82 @@ fn op_in_place(vm: &mut VmFrames<'_>, offset: usize, top: usize, pc: &mut usize)
             FastExit::Switched(state.bc_stack.top, state.bc_stack.len())
         }
         Err(error) => FastExit::Raised(instr, error),
+    }
+}
+
+/// bytecode.c's SMALL_LIST_LEN_MAX: the indices Bnth and Belt walk a list
+/// to themselves.
+const SMALL_LIST_LEN_MAX: i64 = 127;
+
+/// The fast case of Bnth (and Belt's, operands reversed): the car of
+/// LIST's Nth tail for N a fixnum in [0, SMALL_LIST_LEN_MAX], nil for a
+/// list that ends first; None for any other N or a tail that is neither a
+/// cons nor nil, which the full arm signals.
+#[inline]
+fn nth_in_place(n: Value, list: Value) -> Option<Value> {
+    let mut n = n
+        .fixnum()
+        .filter(|n| (0..=SMALL_LIST_LEN_MAX).contains(n))?;
+    let mut tail = list;
+    while n > 0
+        && let Some(cell) = tail.cons_ref()
+    {
+        tail = cell.cdr.get();
+        n -= 1;
+    }
+    match tail.cons_ref() {
+        Some(cell) => Some(cell.car.get()),
+        None => tail.is_nil().then_some(Value::Nil),
+    }
+}
+
+/// Bpushcatch: a catch of TAG, whose throw resumes at DEST with the stack
+/// STACK_LEN long.  `throw' consults the interpreter's active-catch
+/// registry before unwinding; a VM catch frame must be visible there like
+/// any `sf_catch' frame.
+#[inline(never)]
+fn push_catch(interp: &mut Interpreter, tag: Value, dest: usize, stack_len: usize) {
+    interp.push_active_catch_tag(tag);
+    let handler = Handler {
+        kind: HandlerKind::Catch(tag),
+        dest,
+        stack_len,
+        unwind_len: interp.bc_unwinds.len(),
+        registry_start: None,
+    };
+    interp.bc_handlers.push(handler);
+}
+
+/// Bpushconditioncase: a handler for CONDITIONS, whose signal resumes at
+/// DEST with the stack STACK_LEN long.  The clause head goes to the
+/// interpreter's registry so signal-time `handler-bind' dispatch at
+/// native-call boundaries sees this frame before any outer handler,
+/// exactly like an interpreted `condition-case'.
+#[inline(never)]
+fn push_condition_case(interp: &mut Interpreter, conditions: Value, dest: usize, stack_len: usize) {
+    let registry_start =
+        interp.push_condition_case_handler(crate::lisp::eval::CaseHeads::One(conditions));
+    let handler = Handler {
+        kind: HandlerKind::ConditionCase(conditions),
+        dest,
+        stack_len,
+        unwind_len: interp.bc_unwinds.len(),
+        registry_start: Some(registry_start),
+    };
+    interp.bc_handlers.push(handler);
+}
+
+/// Bpophandler: the innermost handler above HANDLERS_BASE gone, with its
+/// registry entries.
+#[inline(never)]
+fn pop_handler(interp: &mut Interpreter, handlers_base: usize) {
+    if let Some(handler) = interp.bc_handlers.pop_above(handlers_base) {
+        if matches!(handler.kind, HandlerKind::Catch(_)) {
+            interp.pop_active_catch_tag();
+        }
+        if let Some(start) = handler.registry_start {
+            interp.pop_handler_bindings(start);
+        }
     }
 }
 
@@ -3406,45 +3604,15 @@ fn exec_op_inline(vm: &mut VmFrames<'_>, op: Op, pc: &mut usize) -> Result<(), L
         }
         Op::PushCatch { target } => {
             let tag = pop!();
-            // `throw' consults the interpreter's active-catch
-            // registry before unwinding; a VM catch frame must be
-            // visible there like any `sf_catch' frame.
-            interp.push_active_catch_tag(tag);
-            let handler = Handler {
-                kind: HandlerKind::Catch(tag),
-                dest: target as usize,
-                stack_len: interp.bc_stack.len(),
-                unwind_len: interp.bc_unwinds.len(),
-                registry_start: None,
-            };
-            interp.bc_handlers.push(handler);
+            let stack_len = interp.bc_stack.len();
+            push_catch(interp, tag, target as usize, stack_len);
         }
         Op::PushConditionCase { target } => {
             let conditions = pop!();
-            // Register the clause head with the interpreter so
-            // signal-time `handler-bind' dispatch at native-call
-            // boundaries sees this frame before any outer handler,
-            // exactly like an interpreted `condition-case'.
-            let registry_start = interp.push_condition_case_handler(vec![conditions]);
-            let handler = Handler {
-                kind: HandlerKind::ConditionCase(conditions),
-                dest: target as usize,
-                stack_len: interp.bc_stack.len(),
-                unwind_len: interp.bc_unwinds.len(),
-                registry_start: Some(registry_start),
-            };
-            interp.bc_handlers.push(handler);
+            let stack_len = interp.bc_stack.len();
+            push_condition_case(interp, conditions, target as usize, stack_len);
         }
-        Op::PopHandler => {
-            if let Some(handler) = interp.bc_handlers.pop_above(handlers_base) {
-                if matches!(handler.kind, HandlerKind::Catch(_)) {
-                    interp.pop_active_catch_tag();
-                }
-                if let Some(start) = handler.registry_start {
-                    interp.pop_handler_bindings(start);
-                }
-            }
-        }
+        Op::PopHandler => pop_handler(interp, handlers_base),
         Op::Switch => {
             let table = pop!();
             let value = pop!();
