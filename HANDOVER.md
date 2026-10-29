@@ -8892,6 +8892,39 @@ setup_process_coding_systems's check now refuses). A 13-form
   the documented local skips, all 3,311 tests run passing (2 ignored);
   the seven integration targets; clippy `-D warnings', rustfmt and `git
   diff --check'.
+- **Round 165: Bassq and buffer-local Bvarset in the verified loop,
+  Freverse of strings.** In the release build semantic-utest-ia took
+  19.67G instructions against GNU's 19.28G, 2.02G of them in compiled
+  `assq' (905,540 calls) against Fassq's 1.58G: Bassq left the verified
+  loop for op_in_place, about 160 instructions an op before the walk,
+  and the walk compared each car through values_eq_in_env. The loop now
+  runs Bassq itself (`assq_in_place'), fns.c:Fassq's FOR_EACH_TAIL walk
+  where it can only return, a pending quit, a cycle or an improper list
+  left to the full arm, which signals; a key that is not vectorlike,
+  with `symbols-with-pos-enabled' nil, is compared by its word alone, as
+  lisp.h:EQ compares it (only a vectorlike word can be `eq' to another
+  word). A Bvarset of a variable whose binding for the current buffer
+  is loaded (made by `setq-local', or by a set of a variable
+  automatically local) also left the loop; it is now stored in place,
+  data.c:set_internal's SYMBOL_LOCALIZED case, and a read of such a
+  variable takes the loaded binding (`loaded_local_value') before the
+  alias and redirection walk. A buffer's local cells, made with room
+  for its built-in bindings, grow once to room for 56 when it gains
+  others (a major mode sets dozens) instead of doubling four times.
+  Freverse and Fnreverse of a string kept its text properties
+  (reversed) and decided its multibyteness from its characters; as in
+  fns.c, the result now has no properties, is unibyte when the string's
+  size is its byte count, and is otherwise multibyte with each
+  character's bytes copied whole. semantic-utest-ia takes 19.16G (assq
+  1.51G), electric-tests 7.38G where it took 7.69G (GNU 6.63G). A batch
+  test reverses unibyte, multibyte, raw-byte and propertized strings,
+  and runs compiled `assq' over matching, missing, improper and
+  circular lists and compiled sets and lets of buffer-local and
+  automatically local variables across buffers, against GNU 30.2.
+  Local validation: the full gate across its ten groups with
+  the documented local skips, all 3,312 tests run passing (2 ignored);
+  the seven integration targets; clippy `-D warnings', rustfmt and `git
+  diff --check'.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -9962,7 +9995,30 @@ frozen (run 40865077720) matched all 7,928 outcomes on its first
 attempt. Its timings: setup 86.4 s against 68.3 s (1.265), test bodies
 265.8 s against 274.3 s (0.969), in all 1.021.
 
+**On `cb54dc3`** (round 164): full Rust gate passed (run 40878071206);
+frozen (run 40878076220) matched all 7,928 outcomes on its first
+attempt. Its timings: setup 68.7 s against 57.6 s (1.192), test bodies
+232.7 s against 248.2 s (0.937), in all 0.988.
+
 **Findings recorded, not fixed:**
+- **undo-tests' million insertions (round 165).** In the release build
+  undo-tests takes 10.10G instructions against GNU's 9.28G, most of it
+  `undo-test4''s interpreted `dotimes' of 1,048,576 `insert's at the
+  end of the buffer. An insertion takes 4,878 instructions against
+  Finsert's 3,862, of which update_compositions is 1,640 in GNU and
+  nothing in Emaxx: ropey's insert (`Rope::insert_internal', its tree
+  walk, `Arc::make_mut' of each node and the leaf's character scan)
+  takes 2,030 where GNU's copy_text into the gap takes 92. The windows'
+  start and point are integers in their records, which every insertion
+  and deletion adjusts by walking every window (284 instructions an
+  insertion, where GNU's window markers are on the buffer's chain), and
+  `related_buffer_ids' walks the buffer list for a buffer with no
+  indirect relatives (115). The undo list itself is Emaxx's: native
+  entries with a Lisp view rebuilt when Lisp assigns a list it did not
+  extend, a snapshot of the buffer's text copied whenever it is marked
+  unmodified (`saved_text', read by nothing but set-buffer-multibyte and
+  the dump), the record_point pair kept per buffer where GNU keeps one
+  for the session, and no truncate_undo_list at garbage collection.
 - **A string's intervals are merged where GNU keeps them (round 164).**
   Emaxx's string properties merge adjacent spans with equal plists after
   every change, where textprop.c leaves the intervals a change made:

@@ -896,7 +896,7 @@ define_dispatch!(
             }
             "reverse" => {
                 need_args(name, args, 1)?;
-                reverse_sequence_value(&args[0])
+                reverse_sequence_value(interp, env, &args[0])
             }
             "copy-alist" => {
                 need_args(name, args, 1)?;

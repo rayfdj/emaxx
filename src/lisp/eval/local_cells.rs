@@ -37,6 +37,10 @@ fn reshape() {
     SHAPE.fetch_add(1, Ordering::Relaxed);
 }
 
+/// The bindings a buffer has room for once it gains any beyond the
+/// built-in ones.
+const MODE_BINDINGS: usize = 56;
+
 #[derive(Default)]
 pub(crate) struct LocalCells {
     cells: LinkedHashMap<SymbolName, Cell<Value>, IdentityBuildHasher>,
@@ -112,6 +116,17 @@ impl LocalCells {
                     self.forwarded_eval += 1;
                 }
                 loaded.unload(symbol);
+                // A buffer is made with room for its built-in bindings
+                // alone; one gaining others (a major mode sets dozens)
+                // grows at once to room for MODE_BINDINGS, not by
+                // doubling.
+                if self.cells.len() == self.cells.capacity() {
+                    self.cells.reserve(
+                        MODE_BINDINGS
+                            .saturating_sub(self.cells.len())
+                            .max(self.cells.len()),
+                    );
+                }
                 self.cells.insert(*symbol, Cell::new(value));
             }
         }

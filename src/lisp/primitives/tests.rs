@@ -8591,6 +8591,60 @@ fn format_conversions_and_string_widths_follow_styled_format() {
 }
 
 #[test]
+fn string_reverse_compiled_assq_and_buffer_local_variables_follow_gnu() {
+    // fns.c:Freverse of a string (and Fnreverse's): no text properties,
+    // unibyte when the bytes are the characters, raw bytes kept in a
+    // multibyte one.  Bassq's walk and its signals for an improper or
+    // circular list, and Bvarref and Bvarset of buffer-local variables
+    // across buffers, `let' and variables automatically local when set.
+    assert_oracle_contract_matches_interpreter(
+        r#"(progn
+  (defvar r165-v 1)
+  (defvar-local r165-auto 5)
+  (defun r165-assq (k l) (assq k l))
+  (defun r165-local (n)
+    (with-temp-buffer
+      (setq-local r165-v 0)
+      (dotimes (i n) (setq r165-v (+ r165-v i)))
+      (list r165-v (local-variable-p 'r165-v) (default-value 'r165-v))))
+  (defun r165-auto-set ()
+    (with-temp-buffer
+      (setq r165-auto (1+ r165-auto))
+      (list r165-auto (local-variable-p 'r165-auto) (default-value 'r165-auto)
+            (let ((b (current-buffer)))
+              (with-temp-buffer
+                (list r165-auto (buffer-local-value 'r165-auto b)
+                      (progn (setq r165-auto 20) r165-auto)
+                      (with-current-buffer b r165-auto)))))))
+  (defun r165-let (n)
+    (with-temp-buffer
+      (setq-local r165-v 3)
+      (list (let ((r165-v n)) (list r165-v (with-temp-buffer r165-v)))
+            r165-v (with-temp-buffer r165-v))))
+  (dolist (f '(r165-assq r165-local r165-auto-set r165-let)) (byte-compile f))
+  (list (reverse (propertize "ab" 'face 'bold))
+        (multibyte-string-p (reverse (string-to-multibyte "ab")))
+        (append (reverse "日本x") nil)
+        (multibyte-string-p (reverse "日本"))
+        (append (reverse "\351a") nil)
+        (append (reverse (string-to-multibyte "\351a")) nil)
+        (multibyte-string-p (reverse (string-to-multibyte "\351a")))
+        (reverse "") (let ((s "abc")) (eq s (reverse s)))
+        (nreverse (copy-sequence "abc")) (nreverse (propertize "ab" 'k 1))
+        (let ((s (copy-sequence "abc"))) (nreverse s) s)
+        (r165-assq 2 '((1 . a) x (2 . b) (2 . c)))
+        (r165-assq 'z '((y . 1)))
+        (condition-case e (r165-assq 3 '((1 . a) . x)) (error e))
+        (condition-case e (r165-assq 3 (let ((l (list (cons 1 2)))) (setcdr l l) l))
+          (error (car e)))
+        (r165-local 5) (r165-auto-set) (r165-auto-set) r165-auto
+        (r165-let 8) r165-v))"#,
+        r#"("ba" nil (120 26412 26085) t (97 233) (97 4194281) t "" nil "cba" "ba" "abc" (2 . b) nil (wrong-type-argument listp ((1 . a) . x)) circular-list (10 t 1) (6 t 5 (5 6 20 6)) (6 t 5 (5 6 20 6)) 5 ((8 1) 3 1) 1)"#,
+        "reverse_assq_locals",
+    );
+}
+
+#[test]
 fn directory_files_returns_mutable_sorted_names_with_dot_entries() {
     let unique = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

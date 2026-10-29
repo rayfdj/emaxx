@@ -894,26 +894,56 @@ pub(crate) fn string_like_value(text: String, props: Vec<TextPropertySpan>) -> V
     string_like_value_with_multibyte(text, merge_string_props(props), multibyte)
 }
 
-pub(crate) fn reverse_string_like_value(value: &Value) -> Result<Value, LispError> {
-    let string =
-        string_like(value).ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *value))?;
-    let len = string.text.chars().count();
-    let text = string.text.chars().rev().collect::<String>();
-    let props = string
-        .props
-        .into_iter()
-        .map(|span| TextPropertySpan {
-            start: len - span.end,
-            end: len - span.start,
-            props: span.props,
-        })
-        .collect();
-    Ok(string_like_value(text, merge_string_props(props)))
+/// fns.c:Freverse of a string, which Fnreverse returns too: its characters
+/// in the opposite order and none of its text properties; a string whose
+/// bytes are its characters (unibyte, or multibyte ASCII) gives a unibyte
+/// one, any other a multibyte one of the same bytes.
+pub(crate) fn reverse_string_value(
+    interp: &Interpreter,
+    env: &Env,
+    value: &Value,
+) -> Result<Value, LispError> {
+    let Kind::StringObject(state) = value.kind() else {
+        return Err(LispError::WrongTypeArgument("stringp".into(), *value));
+    };
+    let (reversed, size, multibyte) = {
+        let state = state.borrow();
+        let bytes = state.bytes();
+        let size = state.len();
+        if size == bytes.len() {
+            (
+                bytes.iter().rev().copied().collect::<Vec<u8>>(),
+                size,
+                false,
+            )
+        } else {
+            // Each character's bytes, read from the front, written from the
+            // back.
+            let mut reversed = vec![0u8; bytes.len()];
+            let mut p = 0;
+            let mut q = bytes.len();
+            while q > 0 {
+                let len =
+                    crate::lisp::types::string_data::multibyte_length(&bytes[p..], true).max(1);
+                q -= len;
+                reversed[q..q + len].copy_from_slice(&bytes[p..p + len]);
+                p += len;
+            }
+            (reversed, size, true)
+        }
+    };
+    StringObjectRef::from_storage(reversed, size, multibyte)
+        .map(Value::StringObject)
+        .map_err(|error| string_storage_error(interp, env, error))
 }
 
-pub(crate) fn reverse_sequence_value(value: &Value) -> Result<Value, LispError> {
-    if string_like(value).is_some() {
-        return reverse_string_like_value(value);
+pub(crate) fn reverse_sequence_value(
+    interp: &Interpreter,
+    env: &Env,
+    value: &Value,
+) -> Result<Value, LispError> {
+    if matches!(value.kind(), Kind::StringObject(_)) {
+        return reverse_string_value(interp, env, value);
     }
     if is_bool_vector_value(value) {
         let mut bits = bool_vector_bits(value)?;
@@ -935,9 +965,13 @@ pub(crate) fn reverse_sequence_value(value: &Value) -> Result<Value, LispError> 
     }
 }
 
-pub(crate) fn nreverse_sequence_value(value: &Value) -> Result<Value, LispError> {
-    if string_like(value).is_some() {
-        return reverse_string_like_value(value);
+pub(crate) fn nreverse_sequence_value(
+    interp: &Interpreter,
+    env: &Env,
+    value: &Value,
+) -> Result<Value, LispError> {
+    if matches!(value.kind(), Kind::StringObject(_)) {
+        return reverse_string_value(interp, env, value);
     }
     // fns.c:Fnreverse: the bits swapped in place.
     if let Kind::BoolVector(vector) = value.kind() {

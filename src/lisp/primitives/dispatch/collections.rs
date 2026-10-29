@@ -1013,7 +1013,7 @@ define_dispatch!(
 
             "nreverse" => {
                 need_args(name, args, 1)?;
-                nreverse_sequence_value(&args[0])
+                nreverse_sequence_value(interp, env, &args[0])
             }
 
             "copy-sequence" => {

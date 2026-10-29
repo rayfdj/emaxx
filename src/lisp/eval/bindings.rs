@@ -116,6 +116,9 @@ impl Interpreter {
 
     #[inline(never)]
     fn symbol_value_redirected(&self, symbol: &SymbolName) -> Option<Value> {
+        if let Some(value) = self.loaded_local_value(symbol) {
+            return value;
+        }
         let resolved_owned;
         let resolved = if self.globals.alias(symbol).is_none() {
             symbol
@@ -192,6 +195,23 @@ impl Interpreter {
             return Some(value);
         }
         self.find_symbol_value_redirected(resolved, resolved_symbol)
+    }
+
+    /// data.c:find_symbol_value's SYMBOL_LOCALIZED read through the
+    /// binding loaded for the current buffer, of a variable whose bindings
+    /// the buffers' cells hold (`has_local_value_cells': no alias to
+    /// follow first): Some of what it reads, None when no binding of it is
+    /// loaded for the buffer.
+    #[inline(always)]
+    pub(crate) fn loaded_local_value(&self, symbol: &SymbolName) -> Option<Option<Value>> {
+        if !symbol.cell().has_local_value_cells() {
+            return None;
+        }
+        let loaded = self.loaded_bindings.get(symbol, self.current_buffer_id())?;
+        Some(match loaded {
+            Some(binding) => super::local_cells::live(binding.get()),
+            None => self.localized_default_symbol(symbol),
+        })
     }
 
     #[inline(never)]
@@ -317,6 +337,9 @@ impl Interpreter {
     }
 
     pub(crate) fn symbol_value_cell_symbol(&self, name: &SymbolName) -> Result<Value, LispError> {
+        if let Some(value) = self.loaded_local_value(name) {
+            return value.ok_or_else(|| LispError::Void(name.as_str().to_owned()));
+        }
         let resolved_owned;
         let resolved = if self.globals.alias(name).is_none() {
             name
