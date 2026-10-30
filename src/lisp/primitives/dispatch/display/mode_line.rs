@@ -819,11 +819,9 @@ impl<'a> ModeLine<'a> {
             let Kind::StringObject(state) = string.kind() else {
                 return None;
             };
-            state
-                .borrow()
-                .props
-                .iter()
-                .position(|span| span.start <= pos && pos < span.end)
+            let state = state.borrow();
+            let intervals = state.props.intervals()?;
+            (pos < intervals.end()).then(|| intervals.find(pos))
         };
         let mut pos = start;
         let mut span: Option<Option<usize>> = None;

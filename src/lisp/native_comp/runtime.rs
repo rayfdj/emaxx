@@ -6677,7 +6677,7 @@ mod tests {
         let mut runtime = NativeRuntime::default();
         let string = crate::lisp::primitives::make_shared_string_value_with_multibyte(
             "x".repeat(1 << 18),
-            Vec::new(),
+            None,
             true,
         );
         let Kind::StringObject(state) = string.kind() else {
@@ -11114,7 +11114,7 @@ mod tests {
             let state = buffer.borrow();
             assert!(state.full_buffer_string().is_empty());
             assert!(state.undo_list().is_nil());
-            assert!(state.full_property_spans().is_empty());
+            assert!(state.intervals().is_none());
             assert!(state.text_conversion_style.is_nil());
             assert!(!state.text_conversion_style_is_local);
             assert_eq!(state.file.as_deref(), Some("/tmp/retained-dead-buffer.el"));
@@ -12075,7 +12075,7 @@ mod tests {
         );
         let code = crate::lisp::primitives::make_shared_string_value_with_multibyte(
             "\u{c0}\u{87}".to_owned(),
-            Vec::new(),
+            None,
             false,
         );
         let function = crate::lisp::primitives::call(
@@ -12268,7 +12268,7 @@ mod tests {
         // A Bconstant/Breturn program returns the very word native code wrote.
         let code = crate::lisp::primitives::make_shared_string_value_with_multibyte(
             "\u{c0}\u{87}".to_owned(),
-            Vec::new(),
+            None,
             false,
         );
         let function = crate::lisp::primitives::call(
@@ -14139,12 +14139,12 @@ mod tests {
             Value::string("internal-name"),
             crate::lisp::primitives::make_shared_string_value_with_multibyte(
                 "mutable λ\0text".into(),
-                Vec::new(),
+                None,
                 true,
             ),
             crate::lisp::primitives::make_shared_string_value_with_multibyte(
                 "byte text".into(),
-                Vec::new(),
+                None,
                 false,
             ),
         ] {
@@ -14198,23 +14198,31 @@ mod tests {
             let plain = Value::string("string-property-child");
             let object = crate::lisp::primitives::make_shared_string_value_with_multibyte(
                 "root".into(),
-                vec![crate::buffer::TextPropertySpan {
-                    start: 0,
-                    end: 4,
-                    props: vec![("child".into(), plain)],
-                }],
+                Some(crate::intervals::Intervals::with_plist(
+                    0,
+                    4,
+                    Value::list([Value::symbol("child"), plain]),
+                )),
                 true,
             );
             let Kind::StringObject(state) = object.kind() else {
                 panic!("property-bearing string")
             };
-            state.borrow_mut().props[0]
+            let plist = state
+                .borrow()
                 .props
-                .push(("cycle".into(), object));
+                .intervals()
+                .expect("intervals")
+                .plist(0);
+            plist
+                .cdr()
+                .expect("child value")
+                .set_cdr(Value::list([Value::symbol("cycle"), object]))
+                .expect("mutable plist");
             let dead_plain = Value::string("unreachable-plain-string");
             let dead_object = crate::lisp::primitives::make_shared_string_value_with_multibyte(
                 "unreachable-mutable-string".into(),
-                Vec::new(),
+                None,
                 true,
             );
             let word = heap.encode(&object).expect("native string word");
@@ -14250,8 +14258,9 @@ mod tests {
                 panic!("retained property-bearing string")
             };
             let state = state.borrow();
-            assert!(state.props[0].props[0].1.eq_value(plain));
-            assert!(state.props[0].props[1].1.eq_value(object));
+            let plist = state.props.intervals().expect("intervals").plist(0);
+            assert!(crate::intervals::plist_get(plist, Value::symbol("child")).eq_value(plain));
+            assert!(crate::intervals::plist_get(plist, Value::symbol("cycle")).eq_value(object));
             assert!(heap.decode(hidden[3] ^ HIDE).is_err());
             assert!(heap.decode(hidden[4] ^ HIDE).is_err());
         }
@@ -14301,11 +14310,11 @@ mod tests {
             let child = Value::cons(Value::Integer(73), Value::Nil);
             let string = crate::lisp::primitives::make_shared_string_value_with_multibyte(
                 "borrowed".into(),
-                vec![crate::buffer::TextPropertySpan {
-                    start: 0,
-                    end: 8,
-                    props: vec![("child".into(), child)],
-                }],
+                Some(crate::intervals::Intervals::with_plist(
+                    0,
+                    8,
+                    Value::list([Value::symbol("child"), child]),
+                )),
                 false,
             );
             let Kind::StringObject(object) = string.kind() else {
@@ -14336,7 +14345,14 @@ mod tests {
                 .decode(hidden[1] ^ HIDE)
                 .expect("a string borrow also retains its property values");
             assert_eq!(child.car().expect("property cons"), Value::Integer(73));
-            assert_eq!(guard.props[0].props[0].1.word(), child.word());
+            assert_eq!(
+                crate::intervals::plist_get(
+                    guard.props.intervals().expect("intervals").plist(0),
+                    Value::symbol("child")
+                )
+                .word(),
+                child.word()
+            );
             assert_eq!(string.as_string().expect("borrowed text"), "borrowed");
             drop(guard);
             // SAFETY: make_guard leaked this one Box to provide a stable
@@ -14387,11 +14403,11 @@ mod tests {
             let child = Value::cons(Value::Integer(73), Value::Nil);
             let string = crate::lisp::primitives::make_shared_string_value_with_multibyte(
                 "borrowed".into(),
-                vec![crate::buffer::TextPropertySpan {
-                    start: 0,
-                    end: 8,
-                    props: vec![("child".into(), child)],
-                }],
+                Some(crate::intervals::Intervals::with_plist(
+                    0,
+                    8,
+                    Value::list([Value::symbol("child"), child]),
+                )),
                 false,
             );
             let values = [
@@ -14435,7 +14451,14 @@ mod tests {
             for word in &hidden[..4] {
                 heap.decode(word ^ HIDE).expect("borrowed weak-key graph");
             }
-            assert_eq!(guard.props[0].props[0].1.word(), hidden[1] ^ HIDE);
+            assert_eq!(
+                crate::intervals::plist_get(
+                    guard.props.intervals().expect("intervals").plist(0),
+                    Value::symbol("child")
+                )
+                .word(),
+                hidden[1] ^ HIDE
+            );
             drop(guard);
             // SAFETY: build leaked this owner; its only guard is now gone.
             unsafe {
@@ -14499,11 +14522,11 @@ mod tests {
             let unrelated = Value::cons(Value::Integer(99), Value::Nil);
             let string = crate::lisp::primitives::make_shared_string_value_with_multibyte(
                 "exclusive".into(),
-                vec![crate::buffer::TextPropertySpan {
-                    start: 0,
-                    end: 9,
-                    props: vec![("child".into(), child)],
-                }],
+                Some(crate::intervals::Intervals::with_plist(
+                    0,
+                    9,
+                    Value::list([Value::symbol("child"), child]),
+                )),
                 false,
             );
             let Kind::StringObject(object) = string.kind() else {
@@ -14524,13 +14547,28 @@ mod tests {
         }
 
         #[inline(never)]
-        fn check_and_release(heap: &mut NativeHeap, mut guard: Guard, hidden: [usize; 4]) {
+        fn check_and_release(heap: &mut NativeHeap, guard: Guard, hidden: [usize; 4]) {
             for word in &hidden[..3] {
                 heap.decode(word ^ HIDE)
                     .expect("rejected collection preserves every allocation");
             }
-            assert_eq!(guard.props[0].props[0].1.word(), hidden[1] ^ HIDE);
-            guard.props[0].props[0].1 = Value::Integer(74);
+            assert_eq!(
+                crate::intervals::plist_get(
+                    guard.props.intervals().expect("intervals").plist(0),
+                    Value::symbol("child")
+                )
+                .word(),
+                hidden[1] ^ HIDE
+            );
+            guard
+                .props
+                .intervals()
+                .expect("intervals")
+                .plist(0)
+                .cdr()
+                .expect("child value")
+                .set_car(Value::Integer(74))
+                .expect("mutable plist");
             drop(guard);
             // SAFETY: build leaked this owner; its only guard is now gone.
             unsafe {

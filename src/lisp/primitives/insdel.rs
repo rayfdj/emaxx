@@ -131,7 +131,7 @@ pub(crate) fn barf_if_buffer_read_only(interp: &Interpreter, pos: usize) -> Resu
     if buffer_read_only_active(interp, &inhibit)
         && textget(
             interp,
-            interp.buffer.borrow().text_properties_at_ref(pos),
+            interp.buffer.borrow().text_plist_at(pos),
             cached_symbol!("inhibit-read-only"),
         )
         .is_nil()
@@ -524,11 +524,11 @@ fn check_modified_intervals(
     let buffer_read_only = buffer_read_only_active(interp, &inhibit);
     let buffer = interp.buffer.borrow();
     let mut hooks = Vec::new();
-    if !buffer.has_text_properties() {
+    if !buffer.has_interval_tree() {
         return Ok(hooks);
     }
     let mut previous = Value::Nil;
-    buffer.try_for_each_property_interval(from, to, |_, _, props| {
+    buffer.try_for_each_interval(from, to, |_, _, props| {
         let read_only = textget(interp, props, cached_symbol!("read-only"));
         // intervals.h INTERVAL_GENERALLY_WRITABLE_P and
         // INTERVAL_EXPRESSLY_WRITABLE_P.
@@ -561,18 +561,23 @@ fn check_insertion_intervals(interp: &Interpreter, pos: usize) -> Result<[Value;
     let inhibit = inhibit_read_only_value(interp);
     let buffer = interp.buffer.borrow();
     // The intervals of the characters after and before POS: none at the
-    // accessible region's edges, and the same one inside a span.
-    let after = (pos < buffer.point_max()).then(|| buffer.text_properties_at_ref(pos));
-    let before = (pos > buffer.point_min()).then(|| buffer.text_properties_at_ref(pos - 1));
+    // accessible region's edges or without intervals, and the same one
+    // inside an interval.
+    let after = (pos < buffer.point_max())
+        .then(|| buffer.interval_at(pos))
+        .flatten();
+    let before = (pos > buffer.point_min())
+        .then(|| buffer.interval_at(pos - 1))
+        .flatten();
     // A non-list `inhibit-read-only' lets any text be inserted into.
     if inhibit.is_nil() || is_cons(&inhibit) {
         check_insertion_stickiness(interp, inhibit, after, before)?;
     }
     Ok([
-        before.map_or(Value::Nil, |props| {
+        before.map_or(Value::Nil, |(_, props)| {
             textget(interp, props, cached_symbol!("insert-behind-hooks"))
         }),
-        after.map_or(Value::Nil, |props| {
+        after.map_or(Value::Nil, |(_, props)| {
             textget(interp, props, cached_symbol!("insert-in-front-hooks"))
         }),
     ])
@@ -581,10 +586,10 @@ fn check_insertion_intervals(interp: &Interpreter, pos: usize) -> Result<[Value;
 fn check_insertion_stickiness(
     interp: &Interpreter,
     inhibit: Value,
-    after: Option<&[(PropertyName, Value)]>,
-    before: Option<&[(PropertyName, Value)]>,
+    after: Option<(usize, Value)>,
+    before: Option<(usize, Value)>,
 ) -> Result<(), LispError> {
-    let read_only_unless_inhibited = |props: &[(PropertyName, Value)]| {
+    let read_only_unless_inhibited = |props: Value| {
         let value = textget(interp, props, cached_symbol!("read-only"));
         (!value.is_nil() && !memq(PropertyName::new(value), inhibit)).then_some(value)
     };
@@ -592,20 +597,20 @@ fn check_insertion_stickiness(
     // is rear-nonsticky (directly, or through `category' when the
     // interval has no read-only property of its own), and before it when
     // it is front-sticky.
-    let sticks_behind = |props: &[(PropertyName, Value)]| {
+    let sticks_behind = |props: Value| {
         let tem = textget(interp, props, cached_symbol!("rear-nonsticky"));
         !tmem(cached_symbol!("read-only"), tem)
             && (!plist_get(props, cached_symbol!("read-only")).is_nil()
                 || !tmem(cached_symbol!("category"), tem))
     };
-    let sticks_ahead = |props: &[(PropertyName, Value)]| {
+    let sticks_ahead = |props: Value| {
         let tem = textget(interp, props, cached_symbol!("front-sticky"));
         tmem(cached_symbol!("read-only"), tem)
             || (plist_get(props, cached_symbol!("read-only")).is_nil()
                 && tmem(cached_symbol!("category"), tem))
     };
     match (after, before) {
-        (Some(after), Some(before)) if std::ptr::eq(after, before) => {
+        (Some((after_index, after)), Some((before_index, _))) if after_index == before_index => {
             if let Some(value) = read_only_unless_inhibited(after)
                 && (sticks_ahead(after) || sticks_behind(after))
             {
@@ -613,13 +618,13 @@ fn check_insertion_stickiness(
             }
         }
         (after, before) => {
-            if let Some(after) = after
+            if let Some((_, after)) = after
                 && let Some(value) = read_only_unless_inhibited(after)
                 && sticks_ahead(after)
             {
                 return Err(text_read_only(value));
             }
-            if let Some(before) = before
+            if let Some((_, before)) = before
                 && let Some(value) = read_only_unless_inhibited(before)
                 && sticks_behind(before)
             {

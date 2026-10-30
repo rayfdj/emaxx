@@ -67,7 +67,7 @@ pub(crate) fn set_echo_area_message(text: Option<String>) {
     bump_echo_message_tick();
     let value = text
         .as_ref()
-        .map(|text| crate::lisp::primitives::strings::string_like_value(text.clone(), Vec::new()));
+        .map(|text| crate::lisp::primitives::strings::string_like_value(text.clone(), None));
     ECHO_AREA_MESSAGE_VALUE.with_borrow_mut(|slot| *slot = value);
     let message = text.map(|text| (text, Vec::new()));
     // message3 displays right away: the new message (or, for a clear,
@@ -81,15 +81,20 @@ pub(crate) fn set_echo_area_message(text: Option<String>) {
 pub(crate) fn set_echo_area_message_with_spans(text: String, spans: EchoSpans) {
     ECHO_FROM_PRINT.with(|flag| flag.set(false));
     bump_echo_message_tick();
-    let props = spans
-        .iter()
-        .map(|(start, end, face)| crate::buffer::TextPropertySpan {
-            start: *start,
-            end: *end,
-            props: vec![(crate::lisp::types::PropertyName::symbol("face"), *face)],
-        })
-        .collect();
-    let value = crate::lisp::primitives::strings::string_like_value(text.clone(), props);
+    let len = text.chars().count();
+    let mut props = crate::lisp::types::string_data::StringProperties::default();
+    for (start, end, face) in &spans {
+        let _ = crate::intervals::add_string_text_properties(
+            &mut props,
+            len,
+            *start,
+            (*end).min(len),
+            Value::list([Value::symbol("face"), *face]),
+            crate::intervals::PropertySetType::Replace,
+            true,
+        );
+    }
+    let value = crate::lisp::primitives::strings::string_like_value(text.clone(), props.take());
     ECHO_AREA_MESSAGE_VALUE.with_borrow_mut(|slot| *slot = Some(value));
     let message = Some((text, spans));
     ECHO_AREA_LAST_DISPLAYED.with_borrow_mut(|slot| slot.clone_from(&message));
@@ -489,7 +494,7 @@ fn message_dolog(
                 let count = format!(" [{dups} times]");
                 let at = buffer.size_total();
                 buffer.goto_char(at);
-                buffer.insert_with_properties_and_markers(&count, None, true);
+                buffer.insert_before_markers(&count);
                 for position in &mut saved {
                     if *position >= at {
                         *position += count.len();
@@ -636,7 +641,7 @@ pub(crate) fn echo_area_print(text: &str) {
     ECHO_AREA_MESSAGE_VALUE.with_borrow_mut(|slot| {
         *slot = ECHO_AREA_MESSAGE.with_borrow(|current| {
             current.as_ref().map(|(text, _)| {
-                crate::lisp::primitives::strings::string_like_value(text.clone(), Vec::new())
+                crate::lisp::primitives::strings::string_like_value(text.clone(), None)
             })
         })
     });
@@ -686,17 +691,19 @@ pub(crate) fn string_face_spans(value: &Value) -> EchoSpans {
         return Vec::new();
     };
     let state = state.borrow();
-    state
-        .props
+    let Some(intervals) = state.props.intervals() else {
+        return Vec::new();
+    };
+    intervals
         .iter()
-        .filter_map(|span| {
-            let face = span
-                .props
-                .iter()
-                .find(|(name, _)| name == "face")
-                .or_else(|| span.props.iter().find(|(name, _)| name == "font-lock-face"));
-            face.map(|(_, face)| (span.start, span.end, *face))
-                .filter(|(_, _, face)| !face.is_nil())
+        .filter_map(|(start, end, plist)| {
+            let face = crate::lisp::primitives::strings::lisp_plist_get(plist, "face");
+            let face = if face.is_nil() {
+                crate::lisp::primitives::strings::lisp_plist_get(plist, "font-lock-face")
+            } else {
+                face
+            };
+            (!face.is_nil()).then_some((start, end, face))
         })
         .collect()
 }
@@ -4185,11 +4192,7 @@ define_dispatch!(
                 // The general C path returns Fbuffer_string from the
                 // multibyte prin1 buffer. It is already mutable at creation;
                 // bytecode argument passing only copies the Lisp_Object.
-                Ok(make_shared_string_value_with_multibyte(
-                    text,
-                    Vec::new(),
-                    true,
-                ))
+                Ok(make_shared_string_value_with_multibyte(text, None, true))
             }
             "command-error-default-function" => {
                 need_args(name, args, 3)?;

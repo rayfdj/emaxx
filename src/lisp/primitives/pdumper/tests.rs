@@ -6,7 +6,7 @@ use super::context::{DumpContext, object_key};
 use super::image::*;
 use super::load::{LoadError, load_image, validate_header};
 use super::{RootSource, write_image};
-use crate::buffer::TextPropertySpan;
+use crate::intervals::{Interval, Intervals};
 use crate::lisp::eval::Interpreter;
 use crate::lisp::primitives::strings::{make_shared_string_value_with_extended_chars, string_like};
 use crate::lisp::types::{Kind, LispErrorKind, SymbolName, Value};
@@ -577,24 +577,23 @@ fn graph_matches(
             {
                 return Err(format!("string differs: {x:?} vs {y:?}"));
             }
-            if x.props.len() != y.props.len() {
-                return Err(format!(
-                    "property spans differ: {:?} vs {:?}",
-                    x.props, y.props
-                ));
-            }
-            for (span_x, span_y) in x.props.iter().zip(&y.props) {
-                if span_x.start != span_y.start
-                    || span_x.end != span_y.end
-                    || span_x.props.len() != span_y.props.len()
-                {
-                    return Err(format!("span differs: {span_x:?} vs {span_y:?}"));
+            match (&x.props, &y.props) {
+                (None, None) => {}
+                (Some(x_intervals), Some(y_intervals)) => {
+                    let spans = |intervals: &Intervals| -> Vec<(usize, usize)> {
+                        intervals
+                            .iter()
+                            .map(|(start, end, _)| (start, end))
+                            .collect()
+                    };
+                    if spans(x_intervals) != spans(y_intervals) {
+                        return Err(format!("intervals differ: {:?} vs {:?}", x.props, y.props));
+                    }
+                    for (plist_x, plist_y) in x_intervals.plists().zip(y_intervals.plists()) {
+                        graph_matches(&plist_x, &plist_y, seen)?;
+                    }
                 }
-                for ((name_x, value_x), (name_y, value_y)) in span_x.props.iter().zip(&span_y.props)
-                {
-                    graph_matches(&name_x.value(), &name_y.value(), seen)?;
-                    graph_matches(value_x, value_y, seen)?;
-                }
+                _ => return Err(format!("intervals differ: {:?} vs {:?}", x.props, y.props)),
             }
             Ok(())
         }
@@ -668,19 +667,33 @@ fn image_round_trips_sharing_cycles_and_every_supported_object_kind() {
     let cycle = Value::cons(Value::symbol("loop"), Value::Nil);
     cycle.set_cdr(cycle).expect("setcdr");
     let float = Value::float(2.5);
-    let props = vec![TextPropertySpan {
-        start: 1,
-        end: 3,
-        props: vec![
-            ("face".into(), Value::symbol("bold")),
-            ("shared".into(), shared),
+    let props = Some(Intervals::from_items(
+        vec![
+            Interval {
+                start: 0,
+                plist: Value::Nil,
+            },
+            Interval {
+                start: 1,
+                plist: Value::list([
+                    Value::symbol("face"),
+                    Value::symbol("bold"),
+                    Value::symbol("shared"),
+                    shared,
+                ]),
+            },
+            Interval {
+                start: 3,
+                plist: Value::Nil,
+            },
         ],
-    }];
+        5,
+    ));
     let propertized =
         make_shared_string_value_with_extended_chars("héllo".into(), props, true, Vec::new());
     let extended = make_shared_string_value_with_extended_chars(
         format!("a{}b", crate::lisp::json::INVALID_UNICODE_SENTINEL),
-        Vec::new(),
+        None,
         true,
         vec![(1, 0x20_0000)],
     );
@@ -690,7 +703,7 @@ fn image_round_trips_sharing_cycles_and_every_supported_object_kind() {
             crate::lisp::primitives::case::raw_byte_regex_char(0xC3),
             crate::lisp::primitives::case::raw_byte_regex_char(0xA9)
         ),
-        Vec::new(),
+        None,
         false,
         Vec::new(),
     );
@@ -699,7 +712,7 @@ fn image_round_trips_sharing_cycles_and_every_supported_object_kind() {
             "x{}",
             crate::lisp::primitives::case::raw_byte_regex_char(0x80)
         ),
-        Vec::new(),
+        None,
         true,
         Vec::new(),
     );
@@ -1878,14 +1891,19 @@ fn image_round_trips_buffers_markers_finalizers_and_nilled_frames() {
     assert_eq!(buffer.mark(), Some(1));
     assert!(buffer.is_multibyte());
     assert!(buffer.is_modified());
+    let intervals = buffer.intervals().expect("the buffer's intervals");
     assert_eq!(
-        buffer.full_property_spans(),
-        vec![TextPropertySpan {
-            start: 1,
-            end: 2,
-            props: vec![("face".into(), Value::symbol("bold"))],
-        }]
+        intervals
+            .iter()
+            .map(|(start, end, _)| (start, end))
+            .collect::<Vec<_>>(),
+        [(1, 2), (2, 12)]
     );
+    assert_eq!(
+        crate::intervals::plist_get(intervals.plist(0), Value::symbol("face")),
+        Value::symbol("bold")
+    );
+    assert!(intervals.plist(1).is_nil());
     assert_eq!(
         buffer
             .visited_file_modtime()

@@ -1131,8 +1131,8 @@ impl Loader<'_> {
             }
         }
         for (string, props_offset) in string_props {
-            let spans = self.load_text_properties(props_offset)?;
-            string.borrow_mut().props = spans.into();
+            let intervals = self.load_text_properties(props_offset)?;
+            string.borrow_mut().props.set(Some(intervals));
         }
         // The buffers with their text, then the markers into them, the
         // deleted overlays on their lists, and the finalizers in list
@@ -2144,30 +2144,33 @@ impl Loader<'_> {
         })
     }
 
-    /// A text-properties record: count, then (start, end, nprops, (name,
-    /// value)*).
+    /// An intervals record: the count and the text's end, then each
+    /// interval's start and plist.
     fn load_text_properties(
         &mut self,
         offset: u32,
-    ) -> Result<Vec<crate::lisp::types::StringPropertySpan>, LoadError> {
+    ) -> Result<crate::intervals::Intervals, LoadError> {
         let count = self.reader.word(offset)? as usize;
-        let mut at = offset + 8;
-        let mut spans = Vec::with_capacity(count);
+        let end = self.reader.word(offset + 8)? as usize;
+        let mut at = offset + 16;
+        let mut items = Vec::with_capacity(count);
         for _ in 0..count {
             let start = self.reader.word(at)? as usize;
-            let end = self.reader.word(at + 8)? as usize;
-            let nprops = self.reader.word(at + 16)? as usize;
-            at += 24;
-            let mut props = Vec::with_capacity(nprops);
-            for _ in 0..nprops {
-                let name = crate::lisp::types::PropertyName::new(self.value_at(at)?);
-                let value = self.value_at(at + 8)?;
-                at += 16;
-                props.push((name, value));
+            let plist = self.value_at(at + 8)?;
+            at += 16;
+            if items
+                .last()
+                .is_some_and(|last: &crate::intervals::Interval| last.start >= start)
+                || start >= end
+            {
+                return Err(LoadError::Error("intervals out of order".into()));
             }
-            spans.push(crate::lisp::types::StringPropertySpan { start, end, props });
+            items.push(crate::intervals::Interval { start, plist });
         }
-        Ok(spans)
+        if items.is_empty() {
+            return Err(LoadError::Error("an intervals record with none".into()));
+        }
+        Ok(crate::intervals::Intervals::from_items(items, end))
     }
 
     /// A buffer record: the fields `dump_buffer' wrote, the text from the
@@ -2227,17 +2230,10 @@ impl Loader<'_> {
             }
         };
         let intervals = word(self, BUFFER_INTERVALS)? as u32;
-        let text_properties = if intervals == 0 {
-            Vec::new()
+        let intervals = if intervals == 0 {
+            None
         } else {
-            self.load_text_properties(intervals)?
-                .into_iter()
-                .map(|span| crate::buffer::TextPropertySpan {
-                    start: span.start,
-                    end: span.end,
-                    props: span.props,
-                })
-                .collect()
+            Some(self.load_text_properties(intervals)?)
         };
         let mark_marker = match (self.value_at(offset + 8 * BUFFER_MARK_MARKER)?).kind() {
             Kind::Marker(marker) => Some(marker),
@@ -2323,7 +2319,7 @@ impl Loader<'_> {
             file_truename,
             visited_file_modtime,
             undo_list: self.value_at(offset + 8 * BUFFER_UNDO_LIST)?,
-            text_properties,
+            intervals,
             extended_chars: extended_chars
                 .into_iter()
                 .map(|(position, code)| (position + 1, code))

@@ -58,6 +58,7 @@ pub mod batch;
 pub(crate) mod buffer;
 pub mod compat;
 pub(crate) mod file_system;
+pub(crate) mod intervals;
 pub mod lisp;
 pub(crate) mod overlay;
 pub mod perf;

@@ -1182,24 +1182,17 @@ define_dispatch!(
                     Kind::StringObject(state) => state.borrow().len(),
                     _ => return Err(LispError::WrongTypeArgument("stringp".into(), args[0])),
                 };
-                // editfns.c:Fpropertize starts with Fcopy_sequence, sharing
-                // property values while copying the string's real bytes.
+                // editfns.c:Fpropertize: Fcopy_sequence of the string, the
+                // pairs consed into a plist from the last one back, then
+                // Fadd_text_properties over the whole copy.
                 let value = shared_string_copy(&args[0])?;
-                let props = args[1..]
-                    .chunks(2)
-                    .map(|pair| (crate::lisp::types::PropertyName::new(pair[0]), pair[1]))
-                    .collect::<Vec<_>>();
-                modify_shared_string_properties(&value, 0, len, |mut current| {
-                    for (name, value) in &props {
-                        if let Some((_, existing)) = current.iter_mut().find(|(key, _)| key == name)
-                        {
-                            *existing = *value;
-                        } else {
-                            current.push((*name, *value));
-                        }
-                    }
-                    current
-                })?;
+                let mut properties = Value::Nil;
+                for pair in args[1..].chunks(2) {
+                    properties = Value::cons(pair[0], Value::cons(pair[1], properties));
+                }
+                if len > 0 {
+                    add_string_properties(&value, 0, len, properties)?;
+                }
                 Ok(value)
             }
 

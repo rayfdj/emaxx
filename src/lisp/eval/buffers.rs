@@ -84,14 +84,16 @@ impl Interpreter {
             .collect()
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn mirror_insert_to_related_buffers(
         &mut self,
         related: &[u64],
         pos: usize,
         s: &str,
         nchars: usize,
-        props: Option<Vec<(crate::lisp::types::PropertyName, Value)>>,
+        props: crate::buffer::InsertedProperties<'_>,
         before_markers: bool,
+        vars: &crate::intervals::PropertyVariables,
     ) {
         let current_id = self.current_buffer_id();
         for buffer_id in related {
@@ -104,7 +106,7 @@ impl Interpreter {
                 // The text is one text in GNU, the change recorded once.
                 let undo_list = buffer.undo_list();
                 buffer.set_undo_list(Value::T);
-                buffer.insert_with_properties_and_markers(s, props.clone(), before_markers);
+                buffer.insert_with(s, props, before_markers, vars);
                 buffer.set_undo_list(undo_list);
                 let restored = if saved_point > pos || (saved_point == pos && before_markers) {
                     saved_point + nchars
@@ -147,32 +149,6 @@ impl Interpreter {
         }
     }
 
-    /// GNU stores text properties in the intervals of the shared text
-    /// itself, so a property change made through any member of an
-    /// indirect-buffer family is visible in every other member (comint's
-    /// input fontification reads the base buffer's `field' properties
-    /// through its indirect buffer).  The native model keeps one buffer
-    /// struct per member and mirrors text edits between them;
-    /// property-only edits must mirror the same way.
-    pub fn apply_text_property_change_shared(
-        &mut self,
-        apply: &dyn Fn(&mut crate::buffer::Buffer),
-    ) {
-        apply(&mut self.buffer.borrow_mut());
-        if self.indirect_buffers.is_empty() {
-            return;
-        }
-        let current_id = self.current_buffer_id();
-        for buffer_id in self.related_buffer_ids(current_id) {
-            if buffer_id == current_id {
-                continue;
-            }
-            if let Some(mut buffer) = self.get_buffer_by_id_mut(buffer_id) {
-                apply(&mut buffer);
-            }
-        }
-    }
-
     /// The same family-wide property mirroring for an explicit target
     /// buffer.  Returns whether any buffer received the change.
     pub fn apply_text_property_change_shared_for(
@@ -205,13 +181,47 @@ impl Interpreter {
         applied
     }
 
-    pub fn insert_current_buffer(&mut self, s: &str) {
+    /// The variables an insertion into the current buffer reads, when its
+    /// text has intervals for them to matter to.
+    pub(crate) fn insertion_property_variables(&self) -> crate::intervals::PropertyVariables {
+        if self.buffer.borrow().has_interval_tree() {
+            crate::intervals::PropertyVariables::read(self)
+        } else {
+            crate::intervals::PropertyVariables::NONE
+        }
+    }
+
+    /// insdel.c's insertion of S at point in the current buffer and the
+    /// rest of its indirect family, PROPS what its intervals get, markers
+    /// at point advanced with BEFORE_MARKERS.
+    pub(crate) fn insert_current_buffer_with(
+        &mut self,
+        s: &str,
+        props: crate::buffer::InsertedProperties<'_>,
+        before_markers: bool,
+    ) {
         let pos = self.buffer.borrow().point();
         let related = self.related_buffer_ids(self.current_buffer_id());
-        // The buffer counts the characters it inserts; point moves past them.
-        let nchars = self.buffer.borrow_mut().insert(s) - pos;
-        self.adjust_markers_for_insert(self.current_buffer_id(), pos, nchars, false);
-        self.mirror_insert_to_related_buffers(&related, pos, s, nchars, None, false);
+        let vars = self.insertion_property_variables();
+        let nchars = self
+            .buffer
+            .borrow_mut()
+            .insert_with(s, props, before_markers, &vars)
+            - pos;
+        self.adjust_markers_for_insert(self.current_buffer_id(), pos, nchars, before_markers);
+        self.mirror_insert_to_related_buffers(
+            &related,
+            pos,
+            s,
+            nchars,
+            props,
+            before_markers,
+            &vars,
+        );
+    }
+
+    pub fn insert_current_buffer(&mut self, s: &str) {
+        self.insert_current_buffer_with(s, crate::buffer::InsertedProperties::PLAIN, false);
     }
 
     /// `insert_current_buffer' of a text whose COUNTS its maker has.
@@ -222,55 +232,22 @@ impl Interpreter {
     ) {
         let pos = self.buffer.borrow().point();
         let related = self.related_buffer_ids(self.current_buffer_id());
-        let nchars = self.buffer.borrow_mut().insert_counted(s, counts) - pos;
-        self.adjust_markers_for_insert(self.current_buffer_id(), pos, nchars, false);
-        self.mirror_insert_to_related_buffers(&related, pos, s, nchars, None, false);
-    }
-
-    pub fn insert_current_buffer_and_inherit(&mut self, s: &str) {
-        let pos = self.buffer.borrow().point();
-        let related = self.related_buffer_ids(self.current_buffer_id());
-        let defaults = self.lookup_var("text-property-default-nonsticky", &Env::new());
-        let props = self
-            .buffer
-            .borrow()
-            .inherited_text_properties(pos, defaults.as_ref());
+        let vars = self.insertion_property_variables();
         let nchars = self
             .buffer
             .borrow_mut()
-            .insert_with_properties(s, Some(props.clone()))
+            .insert_counted_with(s, counts, &vars)
             - pos;
         self.adjust_markers_for_insert(self.current_buffer_id(), pos, nchars, false);
-        self.mirror_insert_to_related_buffers(&related, pos, s, nchars, Some(props), false);
-    }
-
-    pub fn insert_current_buffer_before_markers(&mut self, s: &str) {
-        let pos = self.buffer.borrow().point();
-        let related = self.related_buffer_ids(self.current_buffer_id());
-        let nchars = self
-            .buffer
-            .borrow_mut()
-            .insert_with_properties_and_markers(s, None, true)
-            - pos;
-        self.adjust_markers_for_insert(self.current_buffer_id(), pos, nchars, true);
-        self.mirror_insert_to_related_buffers(&related, pos, s, nchars, None, true);
-    }
-
-    pub fn insert_current_buffer_before_markers_and_inherit(&mut self, s: &str) {
-        let pos = self.buffer.borrow().point();
-        let related = self.related_buffer_ids(self.current_buffer_id());
-        let defaults = self.lookup_var("text-property-default-nonsticky", &Env::new());
-        let props = self
-            .buffer
-            .borrow()
-            .inherited_text_properties(pos, defaults.as_ref());
-        let nchars = self.buffer.borrow_mut().insert_with_properties_and_markers(
+        self.mirror_insert_to_related_buffers(
+            &related,
+            pos,
             s,
-            Some(props.clone()),
-            true,
-        ) - pos;
-        self.adjust_markers_for_insert(self.current_buffer_id(), pos, nchars, true);
-        self.mirror_insert_to_related_buffers(&related, pos, s, nchars, Some(props), true);
+            nchars,
+            crate::buffer::InsertedProperties::PLAIN,
+            false,
+            &vars,
+        );
     }
 
     /// Attach non-Unicode GNU character codes to text just inserted into the
@@ -303,6 +280,7 @@ impl Interpreter {
         to: usize,
         text: &str,
         extended: &[(usize, u32)],
+        props: crate::buffer::InsertedProperties<'_>,
     ) -> usize {
         let current_id = self.current_buffer_id();
         let related = self.related_buffer_ids(current_id);
@@ -312,9 +290,10 @@ impl Interpreter {
             (from, to.min(buffer.point_max()).max(from))
         };
         let inschars = text.chars().count();
+        let vars = self.insertion_property_variables();
         self.buffer
             .borrow_mut()
-            .replace_range(from, to, text, extended, true);
+            .replace_range(from, to, text, extended, true, props, &vars);
         self.adjust_markers_for_replace(current_id, from, to, inschars);
         for buffer_id in &related {
             if *buffer_id == current_id {
@@ -322,7 +301,7 @@ impl Interpreter {
             }
             if let Some(mut buffer) = self.get_buffer_by_id_mut(*buffer_id) {
                 let saved_point = buffer.point();
-                buffer.replace_range(from, to, text, extended, true);
+                buffer.replace_range(from, to, text, extended, true, props, &vars);
                 let restored = if saved_point >= to {
                     saved_point + inschars - (to - from)
                 } else if saved_point > from {

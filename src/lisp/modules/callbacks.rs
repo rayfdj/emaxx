@@ -268,7 +268,7 @@ fn utf8_value(bytes: &[u8]) -> Result<Value, LispError> {
                         "utf-8-string-p",
                         primitives::make_shared_string_value_with_multibyte(
                             primitives::decode_utf8_bytes(bytes),
-                            Vec::new(),
+                            None,
                             true,
                         ),
                     ));
@@ -277,10 +277,7 @@ fn utf8_value(bytes: &[u8]) -> Result<Value, LispError> {
         }
     }
     Ok(primitives::make_shared_string_value_with_extended_chars(
-        text,
-        Vec::new(),
-        true,
-        extended,
+        text, None, true, extended,
     ))
 }
 pub(super) unsafe extern "C" fn copy_string_contents(

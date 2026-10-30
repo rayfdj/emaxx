@@ -324,9 +324,8 @@ fn bind_values(
             if bytes.is_empty() {
                 bind_text(stmt, index, &bytes)
             } else {
-                let coding_system = property_at_start(&string.props, "coding-system")
-                    .copied()
-                    .unwrap_or(Value::Nil);
+                let coding_system =
+                    property_at_start(&string.props, "coding-system").unwrap_or(Value::Nil);
                 if coding_system.is_nil() {
                     // Default to utf-8.
                     bind_text(stmt, index, &encode_string(&string)?)
@@ -399,21 +398,12 @@ fn bind_text(stmt: *mut ffi::sqlite3_stmt, index: c_int, bytes: &[u8]) -> c_int 
     }
 }
 
-/// Fget_text_property (make_fixnum (0), PROPERTY, string).
-fn property_at_start<'a>(
-    props: &'a [crate::buffer::TextPropertySpan],
-    property: &str,
-) -> Option<&'a Value> {
-    props
-        .iter()
-        .find(|span| span.start == 0 && span.end > 0)
-        .and_then(|span| {
-            span.props.iter().find_map(
-                |(name, value)| {
-                    if name == property { Some(value) } else { None }
-                },
-            )
-        })
+/// Fget_text_property (make_fixnum (0), PROPERTY, string): PROPERTY in
+/// the plist of the string's first interval.
+fn property_at_start(props: &Option<crate::intervals::Intervals>, property: &str) -> Option<Value> {
+    let intervals = props.as_ref()?;
+    let value = crate::lisp::primitives::lisp_plist_get(intervals.plist(0), property);
+    (!value.is_nil()).then_some(value)
 }
 
 /// The bytes of column I's value, as SQLite keeps them for the row.

@@ -5649,7 +5649,7 @@ mod native_surface_tests {
         let constants = Value::vector([Value::Integer(11)]);
         let code = crate::lisp::primitives::make_shared_string_value_with_multibyte(
             "\u{c0}\u{87}".to_owned(),
-            Vec::new(),
+            None,
             false,
         );
         let function = prim(
@@ -5698,7 +5698,7 @@ mod native_surface_tests {
         // GNU's saved vectorp sees a mutation made during the same frame.
         let code = crate::lisp::primitives::make_shared_string_value_with_multibyte(
             "\u{c2}\u{c1}\u{49}\u{88}\u{c0}\u{87}".to_owned(),
-            Vec::new(),
+            None,
             false,
         );
         let function = prim(
@@ -5723,13 +5723,13 @@ mod native_surface_tests {
         let mut env = Env::new();
         let removed = crate::lisp::primitives::make_shared_string_value_with_multibyte(
             "original constant".to_owned(),
-            Vec::new(),
+            None,
             false,
         );
         let constants = Value::vector([removed]);
         let code = crate::lisp::primitives::make_shared_string_value_with_multibyte(
             "\u{c0}\u{87}".to_owned(),
-            Vec::new(),
+            None,
             false,
         );
         let slots = [Value::Integer(0), code, constants, Value::Integer(1)];
@@ -5766,7 +5766,7 @@ mod native_surface_tests {
         // constants vector, including when called through the Rust API.
         let code = crate::lisp::primitives::make_shared_string_value_with_multibyte(
             "\u{89}\u{54}\u{87}".to_owned(),
-            Vec::new(),
+            None,
             false,
         );
         let object = prim(
@@ -5793,7 +5793,7 @@ mod native_surface_tests {
         let mut env = Env::new();
         let code = crate::lisp::primitives::make_shared_string_value_with_multibyte(
             "\u{87}".to_owned(),
-            Vec::new(),
+            None,
             false,
         );
         let object = prim(
@@ -5831,7 +5831,7 @@ mod native_surface_tests {
         // argspec 257: one mandatory arg; code: return that argument.
         let code = crate::lisp::primitives::make_shared_string_value_with_multibyte(
             "\u{87}".to_owned(),
-            Vec::new(),
+            None,
             false,
         );
         let object = prim(

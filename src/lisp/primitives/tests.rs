@@ -8920,6 +8920,168 @@ fn casing_reads_case_symbols_as_words_as_casefiddle_c_does() {
     );
 }
 
+/// textprop.c over a string: adjacent equal intervals stay separate
+/// unless set_text_properties_1 merged them, add_properties conses a new
+/// property on the front, and propertize, concat and substring build
+/// their plists in GNU's order.
+#[test]
+fn string_intervals_keep_gnu_boundaries_and_plist_order() {
+    assert_oracle_contract_matches_interpreter(
+        r##"(list
+ (concat (propertize "a" 'face 'bold) (propertize "b" 'face 'bold))
+ (let ((s (copy-sequence "abcd"))) (put-text-property 0 2 'face 'bold s) (put-text-property 2 4 'face 'bold s) s)
+ (let ((s (copy-sequence "abcd"))) (add-text-properties 0 2 '(face bold k 1) s) (add-text-properties 2 4 '(k 1 face bold) s) s)
+ (let ((s (copy-sequence "abcd"))) (add-text-properties 0 2 '(face bold) s) (add-text-properties 1 4 '(k 1) s) s)
+ (let ((s (copy-sequence "abcd"))) (add-text-properties 0 4 '(face bold) s) (add-text-properties 1 2 '(face bold) s) s)
+ (let ((s (copy-sequence "abcd"))) (add-text-properties 0 4 '(face bold) s) (add-text-properties 1 2 '(face italic) s) (add-text-properties 1 2 '(face bold) s) s)
+ (let ((s (copy-sequence "abcd"))) (set-text-properties 0 2 '(a 1 b 2) s) (set-text-properties 2 4 '(b 2 a 1) s) s)
+ (let ((s (copy-sequence "abcd"))) (set-text-properties 0 2 '(a 1) s) (set-text-properties 2 4 '(a 1) s) s)
+ (let ((s (copy-sequence "abcd"))) (add-text-properties 0 4 '(a 1 a 2) s) s)
+ (let ((s (copy-sequence "abcd"))) (add-text-properties 0 4 '(a 1 b 2) s) (remove-text-properties 1 2 '(a nil) s) (add-text-properties 1 2 '(a 1) s) s)
+ (let ((s (copy-sequence "abcd"))) (add-face-text-property 0 2 'bold nil s) (add-face-text-property 1 4 'italic t s) s)
+ (let ((s (propertize "abcd" 'x 1))) (alter-text-property 1 2 'x (lambda (v) (1+ v)) s) s)
+ (propertize "ab" 'a 1 'b 2 'a 3)
+ (format "%s" (propertize "ab" 'a 1))
+ (let ((s (concat "x" (propertize "ab" 'face 'bold) "y"))) (list s (substring s 1 2)))
+ )"##,
+        r##"(#("ab" 0 1 (face bold) 1 2 (face bold)) #("abcd" 0 2 (face bold) 2 4 (face bold)) #("abcd" 0 2 (k 1 face bold) 2 4 (face bold k 1)) #("abcd" 0 1 (face bold) 1 2 (k 1 face bold) 2 4 (k 1)) #("abcd" 0 4 (face bold)) #("abcd" 0 1 (face bold) 1 2 (face bold) 2 4 (face bold)) #("abcd" 0 2 (a 1 b 2) 2 4 (b 2 a 1)) #("abcd" 0 2 (a 1) 2 4 (a 1)) #("abcd" 0 4 (a 2)) #("abcd" 0 1 (b 2 a 1) 1 2 (a 1 b 2) 2 4 (b 2 a 1)) #("abcd" 0 1 (face bold) 1 2 (face (bold italic)) 2 4 (face italic)) #("abcd" 0 1 (x 1) 1 2 (x 2) 2 4 (x 1)) #("ab" 0 2 (b 2 a 1)) #("ab" 0 2 (a 1)) (#("xaby" 1 3 (face bold)) #("a" 0 1 (face bold))))"##,
+        "string intervals",
+    );
+}
+
+/// textprop.c over a buffer: object-intervals shows each interval,
+/// text-properties-at returns the interval's own plist (eq at every
+/// position of it), and deletion drops only intervals left empty.
+#[test]
+fn buffer_intervals_keep_gnu_boundaries_and_plist_identity() {
+    assert_oracle_contract_matches_interpreter(
+        r##"(list
+ (with-temp-buffer (insert "abcd") (put-text-property 1 3 'face 'bold) (put-text-property 3 5 'face 'bold) (list (buffer-string) (object-intervals (current-buffer))))
+ (with-temp-buffer (insert "abcd") (add-text-properties 1 3 '(face bold k 1)) (add-text-properties 3 5 '(k 1 face bold)) (list (buffer-string) (text-properties-at 3)))
+ (with-temp-buffer (insert "abcd") (add-text-properties 1 5 '(face bold)) (add-text-properties 2 3 '(face italic)) (add-text-properties 2 3 '(face bold)) (object-intervals (current-buffer)))
+ (with-temp-buffer (insert (propertize "ab" 'face 'bold)) (insert (propertize "cd" 'face 'bold)) (object-intervals (current-buffer)))
+ (with-temp-buffer (insert "abcd") (set-text-properties 1 3 '(a 1 b 2)) (set-text-properties 3 5 '(b 2 a 1)) (list (object-intervals (current-buffer)) (next-property-change 1) (next-single-property-change 1 'a)))
+ (with-temp-buffer (insert "abcd") (add-text-properties 1 5 '(a 1)) (add-text-properties 2 3 '(b 2)) (list (text-properties-at 2) (text-properties-at 1)))
+ (with-temp-buffer (insert "abcd") (add-text-properties 1 5 '(a 1)) (let ((p (text-properties-at 2))) (list (eq p (text-properties-at 3)) (eq p (text-properties-at 2)))))
+ (let ((s (propertize "abcd" 'a 1))) (list (eq (text-properties-at 0 s) (text-properties-at 1 s)) (object-intervals s)))
+ (let ((s (copy-sequence "abcd"))) (put-text-property 0 2 'face 'bold s) (put-text-property 2 4 'face 'bold s) (list (object-intervals s) (next-property-change 0 s) (equal-including-properties s (propertize "abcd" 'face 'bold))))
+ (let ((s (concat (propertize "ab" 'face 'bold) (propertize "cd" 'face 'bold)))) (list (object-intervals s) (object-intervals (substring s 1 3)) (object-intervals (copy-sequence s))))
+ (with-temp-buffer (insert "abcdef") (put-text-property 1 3 'face 'bold) (put-text-property 3 5 'face 'bold) (delete-region 2 4) (object-intervals (current-buffer)))
+ (with-temp-buffer (insert "abcdef") (put-text-property 1 3 'face 'bold) (put-text-property 3 5 'face 'bold) (remove-text-properties 1 7 '(face nil)) (object-intervals (current-buffer)))
+ )"##,
+        r##"((#("abcd" 0 2 (face bold) 2 4 (face bold)) ((0 2 (face bold)) (2 4 (face bold)))) (#("abcd" 0 2 (k 1 face bold) 2 4 (face bold k 1)) (face bold k 1)) ((0 1 (face bold)) (1 2 (face bold)) (2 4 (face bold))) ((0 2 (face bold)) (2 4 (face bold))) (((0 2 (a 1 b 2)) (2 4 (b 2 a 1))) nil nil) ((b 2 a 1) (a 1)) (t t) (t ((0 4 (a 1)))) (((0 2 (face bold)) (2 4 (face bold))) nil t) (((0 2 (face bold)) (2 4 (face bold))) ((0 1 (face bold)) (1 2 (face bold))) ((0 2 (face bold)) (2 4 (face bold)))) ((0 1 (face bold)) (1 2 (face bold)) (2 4 nil)) ((0 2 nil) (2 4 nil) (4 6 nil)))"##,
+        "buffer intervals",
+    );
+}
+
+/// intervals.c insertion: offset_intervals' stickiness,
+/// graft_intervals_into_buffer with and without inheritance, and the
+/// intervals of buffer-substring (none for text without properties, as
+/// make_buffer_string_both), substring, concat and format.
+#[test]
+fn insertion_grafts_intervals_as_intervals_c() {
+    assert_oracle_contract_matches_interpreter(
+        r##"(list
+ (with-temp-buffer (buffer-enable-undo) (insert (propertize "abcd" 'face 'bold)) (undo-boundary) (goto-char 3) (insert "XY") (list (object-intervals (current-buffer)) buffer-undo-list))
+ (with-temp-buffer (buffer-enable-undo) (insert (propertize "abcd" 'face 'bold)) (undo-boundary) (goto-char 5) (insert "XY") (list (object-intervals (current-buffer)) buffer-undo-list))
+ (with-temp-buffer (buffer-enable-undo) (insert (propertize "abcd" 'face 'bold)) (undo-boundary) (goto-char 1) (insert "XY") (list (object-intervals (current-buffer)) buffer-undo-list))
+ (with-temp-buffer (insert (propertize "abcd" 'face 'bold 'rear-nonsticky t)) (goto-char 3) (insert "XY") (object-intervals (current-buffer)))
+ (with-temp-buffer (insert (propertize "ab" 'face 'bold) "cd") (goto-char 3) (insert-and-inherit "XY") (object-intervals (current-buffer)))
+ (with-temp-buffer (insert (propertize "ab" 'face 'bold) (propertize "cd" 'face 'italic 'front-sticky t)) (goto-char 3) (insert-and-inherit "XY") (object-intervals (current-buffer)))
+ (with-temp-buffer (insert (propertize "ab" 'face 'bold) (propertize "cd" 'face 'italic 'front-sticky t)) (goto-char 3) (insert "XY") (object-intervals (current-buffer)))
+ (with-temp-buffer (insert "abcd") (goto-char 3) (insert (propertize "XY" 'k 1)) (object-intervals (current-buffer)))
+ (with-temp-buffer (insert (propertize "abcd" 'face 'bold)) (goto-char 3) (insert (propertize "XY" 'k 1)) (object-intervals (current-buffer)))
+ (with-temp-buffer (insert (propertize "abcd" 'face 'bold)) (goto-char 3) (insert-and-inherit (propertize "XY" 'k 1)) (object-intervals (current-buffer)))
+ (with-temp-buffer (insert (propertize "abcd" 'face 'bold)) (let ((s (buffer-substring 2 4))) (list s (object-intervals s))))
+ (with-temp-buffer (insert "ab" (propertize "cd" 'face 'bold) "ef") (let ((s (buffer-substring 1 7))) (list (object-intervals s) (object-intervals (buffer-substring 1 2)) (object-intervals (buffer-substring 1 4)))))
+ (with-temp-buffer (insert (propertize "abcd" 'face 'bold)) (erase-buffer) (insert "xy") (object-intervals (current-buffer)))
+ (with-temp-buffer (insert (propertize "abcd" 'face 'bold)) (delete-region 1 3) (insert "xy") (object-intervals (current-buffer)))
+ (with-temp-buffer (insert "abcd") (put-text-property 2 3 'face 'bold) (remove-text-properties 1 5 '(face nil)) (list (object-intervals (current-buffer)) (progn (goto-char 2) (insert "Q") (object-intervals (current-buffer)))))
+ (let ((s (concat "x" (propertize "ab" 'face 'bold) "y"))) (list (object-intervals s) (object-intervals (copy-sequence s)) (object-intervals (substring s 0 2)) (object-intervals (substring s 1)) (object-intervals (concat s s))))
+ (let ((s (format "%s-%s" (propertize "ab" 'face 'bold) "c"))) (object-intervals s))
+ (let ((s (format (propertize "%s-%d" 'face 'italic) (propertize "ab" 'face 'bold) 7))) (object-intervals s))
+ )"##,
+        r##"((((0 2 (face bold)) (2 4 nil) (4 6 (face bold))) ((3 . 5) 5 nil (1 . 5) (t . 0))) (((0 4 (face bold)) (4 6 nil)) ((5 . 7) nil (1 . 5) (t . 0))) (((0 2 nil) (2 6 (face bold))) ((1 . 3) 5 nil (1 . 5) (t . 0))) ((0 2 (face bold rear-nonsticky t)) (2 4 nil) (4 6 (face bold rear-nonsticky t))) ((0 4 (face bold)) (4 6 nil)) ((0 4 (face bold)) (4 6 (face italic front-sticky t))) ((0 2 (face bold)) (2 4 nil) (4 6 (face italic front-sticky t))) ((0 2 nil) (2 4 (k 1)) (4 6 nil)) ((0 2 (face bold)) (2 4 (k 1)) (4 6 (face bold))) ((0 2 (face bold)) (2 4 (k 1 face bold)) (4 6 (face bold))) (#("bc" 0 2 (face bold)) ((0 2 (face bold)))) (((0 2 nil) (2 4 (face bold)) (4 6 nil)) nil ((0 2 nil) (2 3 (face bold)))) nil ((0 2 (face bold)) (2 4 nil)) (((0 1 nil) (1 2 nil) (2 4 nil)) ((0 1 nil) (1 2 nil) (2 3 nil) (3 5 nil))) (((0 1 nil) (1 3 (face bold)) (3 4 nil)) ((0 1 nil) (1 3 (face bold)) (3 4 nil)) ((0 1 nil) (1 2 (face bold))) ((0 2 (face bold)) (2 3 nil)) ((0 1 nil) (1 3 (face bold)) (3 5 nil) (5 7 (face bold)) (7 8 nil))) ((0 2 (face bold)) (2 4 nil)) ((0 2 (face bold)) (2 4 (face italic))))"##,
+        "insertion intervals",
+    );
+}
+
+/// The reader's #(...) intervals, equal-including-properties and its hash,
+/// plists set or removed to nothing, the plist's identity, and the
+/// intervals left by buffer edits (subst-char-in-region, upcase-region,
+/// replace-match, transpose-regions, replace-buffer-contents) and by
+/// string-replace, replace-regexp-in-string, upcase and string-trim.
+#[test]
+fn string_and_buffer_edits_keep_intervals_as_gnu() {
+    assert_oracle_contract_matches_interpreter(
+        r##"(list
+ (object-intervals #("abc" 0 1 (a 1) 1 3 (a 1)))
+ (object-intervals #("abcd" 1 2 (a 1)))
+ (let ((s #("abc" 0 3 (a 1 b 2)))) (list (text-properties-at 1 s) (eq (text-properties-at 0 s) (text-properties-at 2 s))))
+ (equal-including-properties #("ab" 0 1 (a 1) 1 2 (a 1)) #("ab" 0 2 (a 1)))
+ (equal-including-properties #("ab" 0 2 (a 1 b 2)) #("ab" 0 2 (b 2 a 1)))
+ (= (sxhash-equal-including-properties #("ab" 0 1 (a 1) 1 2 (a 1))) (sxhash-equal-including-properties #("ab" 0 2 (a 1))))
+ (let ((s (copy-sequence "abc"))) (set-text-properties 0 3 nil s) (list (object-intervals s) (prin1-to-string s)))
+ (let ((s (propertize "abc" 'a 1))) (set-text-properties 0 3 nil s) (list (object-intervals s) (prin1-to-string s)))
+ (let ((s (propertize "abc" 'a 1))) (remove-text-properties 0 3 '(a nil) s) (list (object-intervals s) (prin1-to-string s)))
+ (let ((s (propertize "abc" 'a 1))) (remove-text-properties 1 2 '(a nil) s) (list (object-intervals s) (next-single-property-change 0 'a s) (previous-single-property-change 3 'a s)))
+ (let* ((p (list 'a 1)) (s (copy-sequence "abc"))) (set-text-properties 0 3 p s) (list (eq p (text-properties-at 0 s)) (equal p (text-properties-at 0 s))))
+ (let ((s (propertize "abc" 'a 1))) (setcar (cdr (text-properties-at 0 s)) 5) s)
+ (let ((s (concat (propertize "ab" 'a 1) "cd" (propertize "e" 'b 2)))) (list s (object-intervals s)))
+ (string-to-multibyte (propertize "ab" 'a 1))
+ (apply #'string (append "ab" nil))
+ (let ((s (propertize "abc" 'a 1))) (put-text-property 1 2 'a 1 s) (object-intervals s))
+ (let ((s (propertize "abc" 'a 1))) (put-text-property 1 2 'b 2 s) (put-text-property 1 2 'b nil s) (object-intervals s))
+ (with-temp-buffer (insert "abcdef") (put-text-property 2 4 'a 1) (list (next-single-char-property-change 1 'a) (text-property-any 1 7 'a 1) (text-property-not-all 2 7 'a 1)))
+ (with-temp-buffer (insert (propertize "abc" 'a 1)) (let ((b (current-buffer))) (with-temp-buffer (insert-buffer-substring b 2 3) (insert-buffer-substring b) (object-intervals (current-buffer)))))
+ (with-temp-buffer (insert (propertize "abc" 'a 1) "def") (subst-char-in-region 1 7 ?b ?B) (list (buffer-string) (object-intervals (current-buffer))))
+ (with-temp-buffer (insert (propertize "abc" 'a 1) "def") (goto-char 2) (delete-char 1) (insert "Z") (object-intervals (current-buffer)))
+ (with-temp-buffer (insert (propertize "abc" 'a 1) "def") (upcase-region 1 7) (list (buffer-string) (object-intervals (current-buffer))))
+ (with-temp-buffer (insert "abc") (put-text-property 1 4 'a 1) (goto-char 2) (let ((src (current-buffer))) (with-temp-buffer (insert (propertize "aXc" 'b 2)) (let ((other (current-buffer))) (with-current-buffer src (replace-buffer-contents other) (object-intervals (current-buffer)))))))
+ (with-temp-buffer (insert (propertize "abc" 'a 1) "def") (goto-char 1) (re-search-forward "c") (replace-match "QQ") (object-intervals (current-buffer)))
+ (with-temp-buffer (insert (propertize "abc" 'a 1) "def") (transpose-regions 1 3 4 6) (list (buffer-string) (object-intervals (current-buffer))))
+ (let ((s (propertize "abc" 'composition nil))) (object-intervals s))
+ (mapconcat #'identity (list (propertize "a" 'a 1) (propertize "b" 'a 1)) "")
+ (let ((s (propertize "abc" 'a 1))) (list (object-intervals (string-replace "b" "X" s)) (object-intervals (replace-regexp-in-string "b" "X" s))))
+ (let ((s (propertize "ab" 'a 1))) (list (object-intervals (upcase s)) (object-intervals (string-trim (concat " " s " ")))))
+ )"##,
+        r##"(((0 1 (a 1)) (1 3 (a 1))) ((0 1 nil) (1 2 (a 1)) (2 4 nil)) ((a 1 b 2) t) t t nil (nil "\"abc\"") (nil "\"abc\"") (((0 3 nil)) "\"abc\"") (((0 1 (a 1)) (1 2 nil) (2 3 (a 1))) 1 2) (nil t) #("abc" 0 3 (a 5)) (#("abcde" 0 2 (a 1) 4 5 (b 2)) ((0 2 (a 1)) (2 4 nil) (4 5 (b 2)))) "ab" "ab" ((0 3 (a 1))) ((0 1 (a 1)) (1 2 (b nil a 1)) (2 3 (a 1))) (2 2 4) ((0 1 (a 1)) (1 4 (a 1))) (#("aBcdef" 0 3 (a 1)) ((0 3 (a 1)) (3 6 nil))) ((0 1 (a 1)) (1 2 nil) (2 3 (a 1)) (3 6 nil)) (#("ABCDEF" 0 3 (a 1)) ((0 3 (a 1)) (3 6 nil))) ((0 1 (a 1)) (1 2 (b 2)) (2 3 (a 1))) ((0 2 (a 1)) (2 4 nil) (4 7 nil)) (#("decabf" 2 3 (a 1) 3 5 (a 1)) ((0 2 nil) (2 3 (a 1)) (3 5 (a 1)) (5 6 nil))) ((0 3 (composition nil))) #("ab" 0 1 (a 1) 1 2 (a 1)) (((0 1 (a 1)) (1 2 nil) (2 3 (a 1))) ((0 1 (a 1)) (1 2 nil) (2 3 (a 1)))) (((0 2 (a 1))) ((0 2 (a 1)))))"##,
+        "interval edits",
+    );
+}
+
+/// Property changes' undo records, the deletion record's intervals, the
+/// stickiness of text-property-default-nonsticky and front-sticky t,
+/// categories, char-property-alias-alist, default-text-properties, the
+/// property-change motion functions, text-property-search-forward and
+/// add-face-text-property.
+#[test]
+fn property_changes_record_undo_and_obey_stickiness_variables() {
+    assert_oracle_contract_matches_interpreter(
+        r##"(list
+ (with-temp-buffer (buffer-enable-undo) (insert "abcd") (undo-boundary) (put-text-property 1 3 'face 'bold) (put-text-property 2 4 'face 'italic) (add-text-properties 1 5 '(k 1 face bold)) (remove-text-properties 3 4 '(k nil)) (set-text-properties 4 5 '(z 9)) buffer-undo-list)
+ (with-temp-buffer (buffer-enable-undo) (insert (propertize "abcd" 'face 'bold)) (undo-boundary) (delete-region 2 4) (list buffer-undo-list (object-intervals (car (car buffer-undo-list)))))
+ (with-temp-buffer (buffer-enable-undo) (insert "abcd") (undo-boundary) (put-text-property 1 3 'face 'bold) (undo-boundary) (primitive-undo 1 buffer-undo-list) (object-intervals (current-buffer)))
+ (with-temp-buffer (insert (propertize "ab" 'face 'bold 'rear-nonsticky '(face))) (insert-and-inherit "X") (object-intervals (current-buffer)))
+ (with-temp-buffer (let ((text-property-default-nonsticky '((face . t)))) (insert (propertize "ab" 'face 'bold)) (insert-and-inherit "X") (object-intervals (current-buffer))))
+ (with-temp-buffer (let ((text-property-default-nonsticky '((k . t)))) (insert (propertize "abcd" 'face 'bold 'k 1)) (goto-char 3) (insert "X") (object-intervals (current-buffer))))
+ (with-temp-buffer (let ((text-property-default-nonsticky '((k . t)))) (insert (propertize "abcd" 'face 'bold 'k 1)) (goto-char 3) (insert-and-inherit "X") (object-intervals (current-buffer))))
+ (with-temp-buffer (insert (propertize "abcd" 'face 'bold 'front-sticky t)) (goto-char 1) (insert-and-inherit "X") (object-intervals (current-buffer)))
+ (with-temp-buffer (insert (propertize "ab" 'category 'zz-cat)) (put 'zz-cat 'face 'bold) (list (get-text-property 1 'face) (get-char-property 1 'face) (text-properties-at 1)))
+ (with-temp-buffer (insert (propertize "ab" 'font-lock-face 'bold)) (let ((char-property-alias-alist '((face font-lock-face)))) (list (get-text-property 1 'face) (next-single-property-change 1 'face))))
+ (with-temp-buffer (let ((default-text-properties '(face italic))) (insert "ab") (list (get-text-property 1 'face) (text-properties-at 1))))
+ (with-temp-buffer (insert "abcdef") (put-text-property 2 5 'a 1) (put-text-property 3 4 'b 2) (list (next-property-change 1) (next-property-change 2) (next-property-change 3) (previous-property-change 7) (previous-property-change 5) (next-single-property-change 1 'b nil 3) (next-property-change 4 nil 5)))
+ (let ((s (concat "ab" (propertize "cd" 'a 1)))) (list (next-property-change 0 s) (next-property-change 2 s) (next-property-change 2 s 3) (text-property-search-forward 'a)))
+ (with-temp-buffer (insert "ab" (propertize "cd" 'a 1) "ef") (goto-char 1) (let ((m (text-property-search-forward 'a 1 t))) (list (prop-match-beginning m) (prop-match-end m) (point))))
+ (with-temp-buffer (insert "abc") (put-text-property 1 4 'face 'bold) (add-face-text-property 2 3 'italic) (list (object-intervals (current-buffer)) (eq (get-text-property 1 'face) (get-text-property 3 'face))))
+ (let ((s (propertize "abc" 'face '(bold)))) (add-face-text-property 0 3 'italic t s) (add-face-text-property 1 2 'underline nil s) s)
+ (with-temp-buffer (insert "a\nb") (put-text-property 1 4 'a 1) (let ((s (buffer-substring 1 4))) (list (object-intervals s) (object-intervals (string-trim-right s)))))
+ )"##,
+        r##"(((nil z nil 4 . 5) (nil k 1 4 . 5) (nil face bold 4 . 5) (nil k 1 3 . 4) (nil face nil 4 . 5) (nil k nil 4 . 5) (nil face italic 3 . 4) (nil k nil 3 . 4) (nil face italic 2 . 3) (nil k nil 2 . 3) (nil k nil 1 . 2) (nil face nil 3 . 4) (nil face bold 2 . 3) (nil face nil 1 . 3) nil (1 . 5) (t . 0)) (((#("bc" 0 2 (face bold)) . 2) 5 nil (1 . 5) (t . 0)) ((0 2 (face bold)))) ((0 2 (face bold)) (2 4 nil)) ((0 2 (face bold rear-nonsticky (face))) (2 3 nil)) ((0 2 (face bold)) (2 3 nil)) ((0 2 (face bold k 1)) (2 3 nil) (3 5 (face bold k 1))) ((0 2 (face bold k 1)) (2 3 (face bold)) (3 5 (face bold k 1))) ((0 1 (front-sticky (face) face bold)) (1 5 (face bold front-sticky t))) (bold bold (category zz-cat)) (bold nil) (italic nil) (2 3 4 5 4 3 5) (2 nil 3 nil) (3 5 5) (((0 1 (face bold)) (1 2 (face (italic bold))) (2 3 (face bold))) t) #("abc" 0 1 (face (bold italic)) 1 2 (face (underline bold italic)) 2 3 (face (bold italic))) (((0 3 (a 1))) ((0 3 (a 1)))))"##,
+        "property variables",
+    );
+}
+
 #[test]
 fn directory_files_returns_mutable_sorted_names_with_dot_entries() {
     let unique = std::time::SystemTime::now()
@@ -9586,7 +9748,7 @@ fn equal_string_hash_tables_scale_without_losing_public_semantics() {
         &mut interp,
         "puthash",
         &[
-            make_shared_string_value_with_multibyte("SHARED UNICODE NAME".into(), Vec::new(), true),
+            make_shared_string_value_with_multibyte("SHARED UNICODE NAME".into(), None, true),
             Value::Integer(20_000),
             table,
         ],
@@ -19147,9 +19309,17 @@ fn set_text_properties_replaces_existing_properties() {
     )
     .expect("set-text-properties should replace buffer props");
 
+    let plist = interp.buffer.borrow().text_plist_at(1);
     assert_eq!(
-        interp.buffer.borrow().text_properties_at(1),
-        vec![("face".into(), Value::Symbol("italic".into()))]
+        crate::intervals::plist_get(plist, Value::Symbol("face".into())),
+        Value::Symbol("italic".into())
+    );
+    assert!(
+        plist
+            .cdr()
+            .and_then(|tail| tail.cdr())
+            .expect("plist")
+            .is_nil()
     );
 
     let string = call(
@@ -19696,9 +19866,8 @@ fn intern_retains_the_supplied_name_and_does_not_replace_it_on_a_hit() {
     interp.define_special_variable("purify-flag", Value::Nil);
     let first_table = make_obarray(&mut interp);
     let second_table = make_obarray(&mut interp);
-    let name = make_shared_string_value_with_multibyte("local-name".into(), Vec::new(), false);
-    let second_name =
-        make_shared_string_value_with_multibyte("local-name".into(), Vec::new(), false);
+    let name = make_shared_string_value_with_multibyte("local-name".into(), None, false);
+    let second_name = make_shared_string_value_with_multibyte("local-name".into(), None, false);
     let first = call(&mut interp, "intern", &[name, first_table], &mut env).expect("Fintern miss");
     let again =
         call(&mut interp, "intern", &[second_name, first_table], &mut env).expect("Fintern hit");
@@ -19763,7 +19932,7 @@ fn intern_uses_gnu_name_copy_and_type_check_boundaries() {
     ));
 
     interp.define_special_variable("purify-flag", Value::T);
-    let name = make_shared_string_value_with_multibyte("pure-name".into(), Vec::new(), false);
+    let name = make_shared_string_value_with_multibyte("pure-name".into(), None, false);
     let symbol =
         call(&mut interp, "intern", &[name, table], &mut env).expect("Fintern purecopy miss");
     let copied = call(
@@ -19791,7 +19960,7 @@ fn intern_uses_gnu_name_copy_and_type_check_boundaries() {
         "read-symbol-shorthands",
         Value::list([Value::cons(Value::string("short-"), Value::string("long-"))]),
     );
-    let shorthand = make_shared_string_value_with_multibyte("short-name".into(), Vec::new(), false);
+    let shorthand = make_shared_string_value_with_multibyte("short-name".into(), None, false);
     let expanded = call(&mut interp, "intern", &[shorthand, table], &mut env)
         .expect("Fintern constructs the longhand name");
     let expanded = call(&mut interp, "symbol-name", &[expanded], &mut env)
@@ -20724,16 +20893,20 @@ fn case_tables_apply_explicit_byte8_mappings_to_raw_unibyte_strings() {
     }
 }
 
+/// casefiddle.c: a unibyte string is cased in a Fcopy_sequence of it, its
+/// intervals copied with their plists; a multibyte string's casing is a
+/// new string (make_multibyte_string) without intervals.
 #[test]
-fn string_case_conversion_preserves_properties_until_character_count_changes() {
-    let program = r#"
-        (let* ((stable (concat (propertize "al" 'face 'bold)
+fn string_case_conversion_copies_properties_of_unibyte_strings_only() {
+    assert_oracle_contract_matches_interpreter(
+        r#"(let* ((stable (concat (propertize "al" 'face 'bold)
                                (propertize "pha" 'face 'italic)))
                (upper (upcase stable))
                (lower (downcase stable))
                (capitalized (capitalize stable))
                (initials (upcase-initials stable))
-               (expanded (upcase (propertize "aßc" 'face 'bold))))
+               (expanded (upcase (propertize "a\u00dfc" 'face 'bold)))
+               (wide (upcase (propertize "\u00e9a" 'face 'bold))))
           (list
            (substring-no-properties upper)
            (text-properties-at 0 upper) (text-properties-at 2 upper)
@@ -20744,25 +20917,18 @@ fn string_case_conversion_preserves_properties_until_character_count_changes() {
            (substring-no-properties initials)
            (text-properties-at 0 initials) (text-properties-at 2 initials)
            (substring-no-properties expanded)
-           (text-properties-at 0 expanded)))
-    "#;
-    let expected = concat!(
-        "(\"ALPHA\" (face bold) (face italic) ",
-        "\"alpha\" (face bold) (face italic) ",
-        "\"Alpha\" (face bold) (face italic) ",
-        "\"Alpha\" (face bold) (face italic) \"ASSC\" nil)"
+           (text-properties-at 0 expanded)
+           (multibyte-string-p wide) (text-properties-at 0 wide)
+           (eq (text-properties-at 0 stable) (text-properties-at 0 upper))
+           (eq (text-properties-at 0 upper) (text-properties-at 0 lower))))"#,
+        concat!(
+            "(\"ALPHA\" (face bold) (face italic) ",
+            "\"alpha\" (face bold) (face italic) ",
+            "\"Alpha\" (face bold) (face italic) ",
+            "\"Alpha\" (face bold) (face italic) \"ASSC\" nil t nil nil nil)"
+        ),
+        "string casing",
     );
-    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
-
-    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let form = Reader::new(program)
-        .read()
-        .expect("case-property contract should parse")
-        .expect("case-property contract should contain a form");
-    let result = interp
-        .eval(&form, &mut crate::lisp::types::Env::new())
-        .expect("case-property contract should evaluate");
-    assert_eq!(result.to_string(), expected);
 }
 
 #[test]
@@ -27797,7 +27963,7 @@ fn command_error_echo_accepts_mutable_error_message_strings() {
             expected
         );
     }
-    let text = make_shared_string_value_with_multibyte("before".into(), Vec::new(), true);
+    let text = make_shared_string_value_with_multibyte("before".into(), None, true);
     let error = LispError::SignalValue(Value::list([Value::symbol("error"), text]));
     assert_eq!(
         command_error_echo_text(&mut interp, &mut env, &error),

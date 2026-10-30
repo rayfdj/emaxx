@@ -735,7 +735,7 @@ define_dispatch!(
                 };
                 Ok(string_like_value(
                     expand_file_name_runtime(interp, env, &path, base.as_deref())?,
-                    Vec::new(),
+                    None,
                 ))
             }
             "substitute-in-file-name" => {
@@ -1723,7 +1723,7 @@ define_dispatch!(
                 // The matches are consed up as they are read: last read first.
                 Ok(Value::list(names.into_iter().rev().map(
                     |(text, multibyte)| {
-                        make_shared_string_value_with_multibyte(text, Vec::new(), multibyte)
+                        make_shared_string_value_with_multibyte(text, None, multibyte)
                     },
                 )))
             }

@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use crate::intervals::{self, Intervals, PropertyRecorder, PropertySetType, PropertyVariables};
 use crate::lisp::types::{BufferRef, Kind, MarkerRef};
 use crate::lisp::types::{PropertyKey, PropertyName, Value};
 use ropey::Rope;
@@ -145,15 +146,10 @@ pub struct Buffer {
     /// Overlays attached to this buffer.
     pub overlays: crate::overlay::OverlayTree,
 
-    /// Sparse text property spans over [start, end) buffer positions.
-    text_properties: Vec<TextPropertySpan>,
-
-    /// Whether GNU's buffer_intervals would be set: true once any text
-    /// has had a property, kept while every interval's plist is empty,
-    /// and false again when a deletion takes the whole text
-    /// (adjust_intervals_for_deletion).  `set-text-properties' modifies,
-    /// so signals and counts, such a buffer even when no plist changes.
-    interval_tree: bool,
+    /// buffer_intervals: the intervals of the whole text [BEG, Z), none
+    /// until a property is first given, and none again once a deletion
+    /// takes the whole text (adjust_intervals_for_deletion).
+    intervals: Option<Intervals>,
 
     /// Sparse 1-based character positions for GNU Emacs characters outside
     /// Unicode's scalar range.  The rope holds one placeholder scalar at each
@@ -201,8 +197,7 @@ impl Clone for Buffer {
             undo_list: self.undo_list,
             point_before_last_command_or_undo: self.point_before_last_command_or_undo,
             overlays: crate::overlay::OverlayTree::default(),
-            text_properties: self.text_properties.clone(),
-            interval_tree: self.interval_tree,
+            intervals: self.intervals.clone(),
             extended_chars: self.extended_chars.clone(),
             inhibit_hooks: self.inhibit_hooks,
             text_conversion_style: self.text_conversion_style,
@@ -1065,7 +1060,7 @@ pub(crate) struct BufferImage {
     pub(crate) file_truename: Option<String>,
     pub(crate) visited_file_modtime: Option<FileModTime>,
     pub(crate) undo_list: Value,
-    pub(crate) text_properties: Vec<TextPropertySpan>,
+    pub(crate) intervals: Option<Intervals>,
     pub(crate) extended_chars: Vec<(usize, u32)>,
     pub(crate) inhibit_hooks: bool,
     pub(crate) text_conversion_style: Value,
@@ -1073,136 +1068,128 @@ pub(crate) struct BufferImage {
     pub(crate) multibyte: bool,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct TextPropertySpan {
-    pub start: usize,
-    pub end: usize,
-    pub props: Vec<(PropertyName, Value)>,
-}
-
-/// A buffer's or a string's span of text with a non-empty plist.
-pub(crate) trait PropertySpan {
-    fn bounds(&self) -> (usize, usize);
-    fn plist(&self) -> &[(PropertyName, Value)];
-}
-
-impl PropertySpan for TextPropertySpan {
-    fn bounds(&self) -> (usize, usize) {
-        (self.start, self.end)
-    }
-
-    fn plist(&self) -> &[(PropertyName, Value)] {
-        &self.props
-    }
-}
-
-impl PropertySpan for crate::lisp::types::StringPropertySpan {
-    fn bounds(&self) -> (usize, usize) {
-        (self.start, self.end)
-    }
-
-    fn plist(&self) -> &[(PropertyName, Value)] {
-        &self.props
-    }
-}
-
 /// One interval of an object's text: [START, END) and its plist.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct PropertyInterval<'a> {
+pub(crate) struct PropertyInterval {
     pub(crate) start: usize,
     pub(crate) end: usize,
-    pub(crate) plist: &'a [(PropertyName, Value)],
-    /// How many spans start at or before the interval's start: where the
-    /// next and previous intervals are looked for.
+    pub(crate) plist: Value,
+    /// The interval's index in its object's intervals, where the next and
+    /// previous ones are.
     index: usize,
 }
 
-impl PropertyInterval<'_> {
-    /// The count of spans starting at or before the interval, for a later
-    /// `find_near' of a position near it.
+impl PropertyInterval {
     pub(crate) fn index(&self) -> usize {
         self.index
     }
 }
 
-/// An object's interval tree as textprop.c walks it: the whole text
-/// [BEG, END), never empty, split at the bounds of its sorted, disjoint
-/// property SPANS, each stretch between them an interval with the empty
-/// plist.  (GNU may keep adjacent intervals with equal plists apart; no
-/// walk here tells them from one.)
+/// An object's intervals as textprop.c walks them: find_interval, then
+/// next_interval and previous_interval from where it is.
 #[derive(Clone, Copy)]
-pub(crate) struct PropertyIntervals<'a, S> {
-    spans: &'a [S],
-    beg: usize,
-    end: usize,
+pub(crate) struct PropertyIntervals<'a> {
+    intervals: &'a Intervals,
 }
 
-impl<'a, S: PropertySpan> PropertyIntervals<'a, S> {
-    pub(crate) fn new(spans: &'a [S], beg: usize, end: usize) -> Self {
-        debug_assert!(beg < end);
-        Self { spans, beg, end }
+impl<'a> PropertyIntervals<'a> {
+    pub(crate) fn new(intervals: &'a Intervals) -> Self {
+        Self { intervals }
+    }
+
+    pub(crate) fn intervals(&self) -> &'a Intervals {
+        self.intervals
+    }
+
+    fn at(&self, index: usize) -> PropertyInterval {
+        let intervals = self.intervals;
+        PropertyInterval {
+            start: intervals.start(index),
+            end: intervals.last_pos(index),
+            plist: intervals.plist(index),
+            index,
+        }
     }
 
     /// intervals.c:find_interval: the interval holding POS, the last one
     /// for POS at the end of the text.
-    pub(crate) fn find(&self, pos: usize) -> PropertyInterval<'a> {
-        let pos = pos.clamp(self.beg, self.end - 1);
-        let index = self.spans.partition_point(|span| span.bounds().0 <= pos);
-        self.interval_at(pos, index)
+    pub(crate) fn find(&self, pos: usize) -> PropertyInterval {
+        let pos = pos.clamp(self.intervals.origin(), self.intervals.end());
+        self.at(self.intervals.find(pos))
     }
 
-    /// `find' from INDEX, the count of spans starting at or before a
-    /// position near POS: the count for POS stepped to from it, as
-    /// next_interval follows the tree from where it is, and searched for
-    /// only when it lies further off.
-    pub(crate) fn find_near(&self, pos: usize, index: usize) -> PropertyInterval<'a> {
-        let spans = self.spans;
-        let pos = pos.clamp(self.beg, self.end - 1);
-        let mut index = index.min(spans.len());
+    /// `find' of a position near the interval at INDEX.
+    pub(crate) fn find_near(&self, pos: usize, index: usize) -> PropertyInterval {
+        let intervals = self.intervals;
+        let pos = pos.clamp(intervals.origin(), intervals.end());
+        let mut index = index.min(intervals.count() - 1);
         for _ in 0..4 {
-            if spans.get(index).is_some_and(|span| span.bounds().0 <= pos) {
-                index += 1;
-            } else if index > 0 && spans[index - 1].bounds().0 > pos {
+            if pos < intervals.start(index) {
                 index -= 1;
+            } else if pos >= intervals.last_pos(index) && index + 1 < intervals.count() {
+                index += 1;
             } else {
-                return self.interval_at(pos, index);
+                return self.at(index);
             }
         }
         self.find(pos)
     }
 
-    /// The interval holding POS, of which INDEX spans start at or before
-    /// it.
-    fn interval_at(&self, pos: usize, index: usize) -> PropertyInterval<'a> {
-        let spans: &'a [S] = self.spans;
-        let before = index.checked_sub(1).map(|index| &spans[index]);
-        if let Some(span) = before
-            && pos < span.bounds().1
-        {
-            let (start, end) = span.bounds();
-            return PropertyInterval {
-                start,
-                end,
-                plist: span.plist(),
-                index,
-            };
-        }
-        PropertyInterval {
-            start: before.map_or(self.beg, |span| span.bounds().1),
-            end: spans.get(index).map_or(self.end, |span| span.bounds().0),
-            plist: &[],
-            index,
-        }
-    }
-
     /// next_interval.
-    pub(crate) fn next(&self, interval: &PropertyInterval<'_>) -> Option<PropertyInterval<'a>> {
-        (interval.end < self.end).then(|| self.find_near(interval.end, interval.index))
+    pub(crate) fn next(&self, interval: &PropertyInterval) -> Option<PropertyInterval> {
+        self.intervals
+            .next(interval.index)
+            .map(|index| self.at(index))
     }
 
     /// previous_interval.
-    pub(crate) fn previous(&self, interval: &PropertyInterval<'_>) -> Option<PropertyInterval<'a>> {
-        (interval.start > self.beg).then(|| self.find_near(interval.start - 1, interval.index))
+    pub(crate) fn previous(&self, interval: &PropertyInterval) -> Option<PropertyInterval> {
+        self.intervals
+            .previous(interval.index)
+            .map(|index| self.at(index))
+    }
+}
+
+/// What an insertion gives the buffer's intervals for its text
+/// (graft_intervals_into_buffer's SOURCE and INHERIT).
+#[derive(Clone, Copy)]
+pub(crate) enum InsertedProperties<'a> {
+    /// No intervals: without INHERIT the text gets no properties, with it
+    /// what offset_intervals gave it.
+    None { inherit: bool },
+    /// A string's intervals, from 0 over the inserted text: copied over
+    /// it, or with INHERIT merged into what offset_intervals gave it.
+    Intervals {
+        source: &'a Intervals,
+        inherit: bool,
+    },
+}
+
+impl InsertedProperties<'_> {
+    pub(crate) const PLAIN: Self = Self::None { inherit: false };
+}
+
+/// undo.c:record_property_change into a buffer's undo list.
+struct UndoRecorder<'a> {
+    undo_list: &'a mut Value,
+}
+
+impl PropertyRecorder for UndoRecorder<'_> {
+    fn record(&mut self, start: usize, length: usize, prop: Value, value: Value) {
+        let entry = Value::cons(
+            Value::Nil,
+            Value::cons(
+                prop,
+                Value::cons(
+                    value,
+                    Value::cons(
+                        Value::Integer(start as i64),
+                        Value::Integer((start + length) as i64),
+                    ),
+                ),
+            ),
+        );
+        *self.undo_list = Value::cons(entry, *self.undo_list);
     }
 }
 
@@ -1256,8 +1243,7 @@ impl Buffer {
             undo_list: Value::Nil,
             point_before_last_command_or_undo: None,
             overlays: crate::overlay::OverlayTree::default(),
-            text_properties: Vec::new(),
-            interval_tree: false,
+            intervals: None,
             extended_chars: Vec::new(),
             inhibit_hooks: false,
             text_conversion_style: Value::Nil,
@@ -1294,8 +1280,7 @@ impl Buffer {
             undo_list: Value::Nil,
             point_before_last_command_or_undo: None,
             overlays: crate::overlay::OverlayTree::default(),
-            text_properties: Vec::new(),
-            interval_tree: false,
+            intervals: None,
             extended_chars: Vec::new(),
             inhibit_hooks: false,
             text_conversion_style: Value::Nil,
@@ -1436,9 +1421,10 @@ impl Buffer {
         // The unibyte overlay API translates those coordinates at its public
         // boundary, so remapping them here would apply the byte-to-character
         // conversion twice.
-        for span in &mut self.text_properties {
-            span.start = remap(span.start);
-            span.end = remap(span.end);
+        // intervals.c:set_intervals_multibyte: each interval's bounds in
+        // the new positions, one left with no text gone.
+        if let Some(intervals) = &mut self.intervals {
+            intervals.remap(remap);
         }
         for (position, _) in &mut self.extended_chars {
             *position = remap(*position);
@@ -2074,37 +2060,6 @@ impl Buffer {
         Ok(self.text.string((from - 1)..(to - 1)))
     }
 
-    pub fn substring_property_spans(&self, from: usize, to: usize) -> Vec<TextPropertySpan> {
-        let (from, to) = if from <= to { (from, to) } else { (to, from) };
-        let from = from.max(self.begv);
-        let to = to.min(self.zv);
-        if from >= to {
-            return Vec::new();
-        }
-        // The spans meeting [from, to), by binary search.
-        let lo = self
-            .text_properties
-            .partition_point(|span| span.end <= from);
-        let hi = self.text_properties.partition_point(|span| span.start < to);
-        let mut spans = Vec::new();
-        for span in &self.text_properties[lo..hi] {
-            let start = span.start.max(from);
-            let end = span.end.min(to);
-            if start < end {
-                spans.push(TextPropertySpan {
-                    start: start - from,
-                    end: end - from,
-                    props: span.props.clone(),
-                });
-            }
-        }
-        merge_adjacent_spans(spans)
-    }
-
-    pub fn full_property_spans(&self) -> Vec<TextPropertySpan> {
-        self.text_properties.clone()
-    }
-
     pub fn extended_char_at(&self, pos: usize) -> Option<u32> {
         self.extended_chars
             .binary_search_by_key(&pos, |(position, _)| *position)
@@ -2145,208 +2100,409 @@ impl Buffer {
         }
     }
 
-    /// `has_text_property_named' for the spans meeting FROM to TO.
+    /// `has_text_property_named' for the intervals meeting FROM to TO.
     pub fn has_text_property_named_in(&self, property: &str, from: usize, to: usize) -> bool {
         let Some(symbol) = crate::lisp::types::SymbolName::find(property) else {
             return false;
         };
-        let name = PropertyName::new(Value::Symbol(symbol));
-        let lo = self
-            .text_properties
-            .partition_point(|span| span.end <= from);
-        let hi = self.text_properties.partition_point(|span| span.start < to);
-        self.text_properties
-            .get(lo..hi)
-            .unwrap_or_default()
-            .iter()
-            .any(|span| span.props.iter().any(|(candidate, _)| *candidate == name))
+        let Some(intervals) = &self.intervals else {
+            return false;
+        };
+        let name = Value::Symbol(symbol);
+        let from = from.clamp(intervals.origin(), intervals.end());
+        let mut i = intervals.find(from);
+        loop {
+            if intervals.start(i) >= to {
+                return false;
+            }
+            if plist_has_name(intervals.plist(i), name) {
+                return true;
+            }
+            match intervals.next(i) {
+                Some(next) => i = next,
+                None => return false,
+            }
+        }
     }
 
     pub fn has_text_property_named(&self, property: &str) -> bool {
         // The symbol PROPERTY names, found once (no symbol has that name
         // when none exists): each stored name is then the same symbol or
-        // not, as EQ compares them, where comparing each name's text took
-        // a call of memcmp a property.
+        // not, as EQ compares them.
         let Some(symbol) = crate::lisp::types::SymbolName::find(property) else {
             return false;
         };
-        let name = PropertyName::new(Value::Symbol(symbol));
-        self.text_properties
-            .iter()
-            .any(|span| span.props.iter().any(|(candidate, _)| *candidate == name))
+        let name = Value::Symbol(symbol);
+        self.intervals
+            .as_ref()
+            .is_some_and(|intervals| intervals.plists().any(|plist| plist_has_name(plist, name)))
     }
 
     /// Rewrite every Lisp value stored in this buffer through COPY
     /// (image-template deep clone; see `Interpreter::deep_clone_image').
     pub(crate) fn rewrite_lisp_values(&mut self, copy: &mut impl FnMut(&Value) -> Value) {
-        fn rewrite_properties(
-            props: &mut [(PropertyName, Value)],
-            copy: &mut impl FnMut(&Value) -> Value,
-        ) {
-            for (name, value) in props {
-                *name = PropertyName::new(copy(&name.value()));
-                *value = copy(value);
-            }
-        }
         self.text_conversion_style = copy(&self.text_conversion_style);
         self.mark_active = copy(&self.mark_active);
-        for span in &mut self.text_properties {
-            rewrite_properties(&mut span.props, copy);
+        if let Some(intervals) = &mut self.intervals {
+            intervals.rewrite_plists(|plist| copy(&plist));
         }
         self.undo_list = copy(&self.undo_list);
     }
 
     /// Visit every Lisp value retained by this buffer.  Garbage collection
     /// uses the same ownership boundary as `rewrite_lisp_values`: the rope,
-    /// positions and file metadata are native data, while properties, the
-    /// undo list and attached overlay objects are Lisp roots.
+    /// positions and file metadata are native data, while the intervals'
+    /// plists, the undo list and attached overlay objects are Lisp roots.
     pub(crate) fn visit_lisp_values(&self, visit: &mut impl FnMut(&Value)) {
         visit(&self.text_conversion_style);
         visit(&self.mark_active);
         if let Some(marker) = self.mark_object() {
             visit(&Value::Marker(marker));
         }
-        for span in &self.text_properties {
-            for (name, value) in &span.props {
-                visit(&name.value());
-                visit(value);
+        if let Some(intervals) = &self.intervals {
+            for plist in intervals.plists() {
+                visit(&plist);
             }
         }
         visit(&self.undo_list);
         self.overlays.visit_lisp_values(visit);
     }
 
-    /// How many text-property spans this buffer holds (the census's
-    /// `intervals' analogue for buffer text).
+    /// How many intervals this buffer holds (the census's `intervals').
     pub(crate) fn text_property_span_count(&self) -> usize {
-        self.text_properties.len()
+        self.intervals.as_ref().map_or(0, Intervals::count)
     }
 
     /// Whether any text property is set.
     pub fn has_text_properties(&self) -> bool {
-        !self.text_properties.is_empty()
+        self.intervals
+            .as_ref()
+            .is_some_and(|intervals| intervals.plists().any(|plist| !plist.is_nil()))
     }
 
-    /// Whether the buffer has intervals in GNU's terms, every plist of
-    /// which may be empty (`interval_tree').
+    /// Whether the buffer has intervals (buffer_intervals non-null), every
+    /// plist of which may be empty.
     pub fn has_interval_tree(&self) -> bool {
-        self.interval_tree || !self.text_properties.is_empty()
+        self.intervals.is_some()
     }
 
+    /// buffer_intervals.
+    pub(crate) fn intervals(&self) -> Option<&Intervals> {
+        self.intervals.as_ref()
+    }
+
+    /// set_buffer_intervals.
+    pub(crate) fn set_intervals(&mut self, intervals: Option<Intervals>) {
+        self.intervals = intervals;
+    }
+
+    /// PROP in the plist of the character at POS (none outside the
+    /// accessible text), by the interval's own plist alone.
     pub fn text_property_at(&self, pos: usize, prop: impl PropertyKey) -> Option<Value> {
-        self.text_properties_at_ref(pos)
-            .iter()
-            .find(|(name, _)| prop.names(name))
-            .map(|(_, value)| *value)
-    }
-
-    pub(crate) fn text_properties_at_ref(&self, pos: usize) -> &[(PropertyName, Value)] {
-        if pos < self.point_min() || pos >= self.point_max() {
-            return &[];
+        let mut tail = self.text_plist_at(pos);
+        while let Some(cell) = tail.cons_ref() {
+            let Some(value) = cell.cdr.get().cons_ref() else {
+                break;
+            };
+            if prop.is(cell.car.get()) {
+                return Some(value.car.get());
+            }
+            tail = value.cdr.get();
         }
-        text_property_span_at(&self.text_properties, pos)
-            .map(|span| span.props.as_slice())
-            .unwrap_or_default()
+        None
     }
 
-    /// F over the intervals meeting [FROM, TO) as textprop.c walks them
-    /// (find_interval, then next_interval): each span clipped to the
-    /// range with its plist, and each stretch between spans as an
-    /// interval with none.  Stops at F's first error.
-    pub(crate) fn try_for_each_property_interval<E>(
+    /// The plist of the interval holding the character at POS, the
+    /// interval's own list; nil outside the accessible text or without
+    /// intervals.
+    pub(crate) fn text_plist_at(&self, pos: usize) -> Value {
+        if pos < self.point_min() || pos >= self.point_max() {
+            return Value::Nil;
+        }
+        match &self.intervals {
+            Some(intervals) => intervals.plist(intervals.find(pos)),
+            None => Value::Nil,
+        }
+    }
+
+    /// F over each interval from the one holding FROM (find_interval)
+    /// while it starts before TO, as textprop.c's loops walk them: its
+    /// start, end and plist.  Nothing without intervals.
+    pub(crate) fn try_for_each_interval<E>(
         &self,
         from: usize,
         to: usize,
-        mut f: impl FnMut(usize, usize, &[(PropertyName, Value)]) -> Result<(), E>,
+        mut f: impl FnMut(usize, usize, Value) -> Result<(), E>,
     ) -> Result<(), E> {
-        let spans = &self.text_properties;
-        let mut cursor = from;
-        let lo = spans.partition_point(|span| span.end <= from);
-        for span in &spans[lo..] {
-            if span.start >= to {
-                break;
+        let Some(intervals) = &self.intervals else {
+            return Ok(());
+        };
+        let mut i = intervals.find(from.clamp(intervals.origin(), intervals.end()));
+        loop {
+            f(
+                intervals.start(i),
+                intervals.last_pos(i),
+                intervals.plist(i),
+            )?;
+            match intervals.next(i) {
+                Some(next) if intervals.start(next) < to => i = next,
+                _ => return Ok(()),
             }
-            if cursor < span.start {
-                f(cursor, span.start, &[])?;
-                cursor = span.start;
-            }
-            let end = span.end.min(to);
-            f(cursor, end, &span.props)?;
-            cursor = end;
         }
-        if cursor < to {
-            f(cursor, to, &[])?;
-        }
-        Ok(())
+    }
+
+    /// The interval holding the character at POS, by its index, and its
+    /// plist: None without intervals.
+    pub(crate) fn interval_at(&self, pos: usize) -> Option<(usize, Value)> {
+        let intervals = self.intervals.as_ref()?;
+        let i = intervals.find(pos.clamp(intervals.origin(), intervals.end()));
+        Some((i, intervals.plist(i)))
     }
 
     /// The buffer's intervals over its whole text [BEG, Z), narrowing
-    /// aside; None where buffer_intervals is null (no interval tree, or no
-    /// text).
-    pub(crate) fn property_intervals(&self) -> Option<PropertyIntervals<'_, TextPropertySpan>> {
-        let z = self.size_total() + 1;
-        (self.has_interval_tree() && z > 1)
-            .then(|| PropertyIntervals::new(&self.text_properties, 1, z))
+    /// aside; None where buffer_intervals is null.
+    pub(crate) fn property_intervals(&self) -> Option<PropertyIntervals<'_>> {
+        self.intervals.as_ref().map(PropertyIntervals::new)
     }
 
-    pub fn text_properties_at(&self, pos: usize) -> Vec<(PropertyName, Value)> {
-        self.text_properties_at_ref(pos).to_vec()
-    }
-
-    /// The interval [start, end) around POS over which the text-property
-    /// list is constant: a covering span's own bounds, or the
-    /// property-free gap up to the neighboring spans (syntax.h's
-    /// b_property/e_property discipline for update_syntax_table).
+    /// The interval [start, end) around POS, clipped to the accessible
+    /// text: where the plist is constant (syntax.h's b_property and
+    /// e_property for update_syntax_table), the whole accessible text
+    /// without intervals.
     pub(crate) fn text_property_interval_around(&self, pos: usize) -> (usize, usize) {
         let begv = self.point_min();
         let zv = self.point_max();
-        let spans = &self.text_properties;
-        let insertion = spans.partition_point(|span| span.start <= pos);
-        if let Some(span) = insertion.checked_sub(1).and_then(|index| spans.get(index))
-            && pos < span.end
-        {
-            return (span.start.max(begv), span.end.min(zv));
-        }
-        let start = insertion
-            .checked_sub(1)
-            .and_then(|index| spans.get(index))
-            .map(|span| span.end)
-            .unwrap_or(0);
-        let end = spans.get(insertion).map(|span| span.start).unwrap_or(zv);
-        (start.max(begv), end.min(zv).max(start.max(begv)))
+        let Some(intervals) = &self.intervals else {
+            return (begv, zv);
+        };
+        let i = intervals.find(pos.clamp(intervals.origin(), intervals.end()));
+        let start = intervals.start(i).max(begv);
+        let end = intervals.last_pos(i).min(zv).max(start);
+        (start, end)
     }
 
-    pub fn add_text_properties(
+    /// textprop.c:modify_text_properties's part of a property change:
+    /// the first change since a save recorded, the modification counted.
+    fn begin_text_property_change(&mut self, start: usize, end: usize) {
+        if !self.is_modified() {
+            self.record_first_change();
+        }
+        modiff_incr(&mut self.modiff, 1);
+        self.log_edit(start, end, end, false);
+        self.autosaved = false;
+    }
+
+    /// The intervals [START, END) of a change made, created where there
+    /// are none (validate_interval_range with FORCE): None for no text in
+    /// the range.
+    fn intervals_for_change(
         &mut self,
         start: usize,
         end: usize,
-        props: &[(PropertyName, Value)],
-    ) {
-        self.modify_text_properties(start, end, |mut current| {
-            // GNU replaces existing properties in place and CONSES new
-            // ones onto the front of the interval plist, so
-            // `text-properties-at' lists later additions first.
-            for (name, value) in props {
-                if let Some((_, existing)) = current.iter_mut().find(|(key, _)| key == name) {
-                    *existing = *value;
-                } else {
-                    current.insert(0, (*name, *value));
-                }
+        force: bool,
+    ) -> Option<(usize, usize)> {
+        let start = start.max(self.point_min());
+        let end = end.min(self.point_max());
+        if start >= end {
+            return None;
+        }
+        if self.intervals.is_none() {
+            if !force {
+                return None;
             }
-            current
-        });
+            self.intervals = Some(Intervals::root(1, self.size_total() + 1));
+        }
+        Some((start, end))
     }
 
-    /// F over the plist of each interval of [START, END), its result the
-    /// interval's new plist, in one pass (recorded and counted as a
-    /// property change where one changes).
-    pub(crate) fn update_text_properties<F>(&mut self, start: usize, end: usize, f: F)
-    where
-        F: FnMut(Vec<(PropertyName, Value)>) -> Vec<(PropertyName, Value)>,
-    {
-        self.modify_text_properties(start, end, f);
+    /// Whether add_text_properties_1 of PROPERTIES (validated) over
+    /// [START, END) would change a plist.
+    pub(crate) fn would_add_text_properties(
+        &self,
+        start: usize,
+        end: usize,
+        properties: Value,
+    ) -> bool {
+        let (start, end) = (start.max(self.point_min()), end.min(self.point_max()));
+        if start >= end || properties.is_nil() {
+            return false;
+        }
+        match &self.intervals {
+            // A new root interval has no properties.
+            None => true,
+            Some(intervals) => {
+                intervals::would_add_properties(intervals, start, end - start, properties)
+                    .unwrap_or(true)
+            }
+        }
     }
 
+    /// Whether removing the properties of PLIST (or of LIST's names)
+    /// from [START, END) would change a plist.
+    pub(crate) fn would_remove_text_properties(
+        &self,
+        start: usize,
+        end: usize,
+        plist: Value,
+        list: Value,
+    ) -> bool {
+        let (start, end) = (start.max(self.point_min()), end.min(self.point_max()));
+        match &self.intervals {
+            Some(intervals) if start < end => {
+                intervals::would_remove_properties(intervals, start, end - start, plist, list)
+                    .unwrap_or(true)
+            }
+            _ => false,
+        }
+    }
+
+    /// textprop.c:add_text_properties_1's change of the buffer, after its
+    /// hooks: PROPERTIES (validated, non-nil) over [START, END), counted
+    /// and recorded for undo as modify_text_properties and add_properties
+    /// do.  Whether a plist changed.
+    pub(crate) fn add_text_properties_range(
+        &mut self,
+        start: usize,
+        end: usize,
+        properties: Value,
+        set_type: PropertySetType,
+        destructive: bool,
+    ) -> Result<bool, crate::lisp::types::LispError> {
+        if !self.would_add_text_properties(start, end, properties) {
+            return Ok(false);
+        }
+        let Some((start, end)) = self.intervals_for_change(start, end, true) else {
+            return Ok(false);
+        };
+        self.begin_text_property_change(start, end);
+        let disabled = self.undo_recording_disabled();
+        let intervals = self.intervals.as_mut().expect("intervals for the change");
+        if disabled {
+            intervals::add_text_properties_range(
+                intervals,
+                start,
+                end - start,
+                properties,
+                &mut intervals::NoRecord,
+                set_type,
+                destructive,
+            )
+        } else {
+            let mut recorder = UndoRecorder {
+                undo_list: &mut self.undo_list,
+            };
+            intervals::add_text_properties_range(
+                intervals,
+                start,
+                end - start,
+                properties,
+                &mut recorder,
+                set_type,
+                destructive,
+            )
+        }
+    }
+
+    /// textprop.c:set_text_properties's change of the buffer: PROPERTIES
+    /// (validated) the plist of [START, END), intervals made for
+    /// properties to set; a COHERENT change (Fset_text_properties)
+    /// counted as modify_text_properties counts it.  Whether it set
+    /// anything.
+    pub(crate) fn set_text_properties_range(
+        &mut self,
+        start: usize,
+        end: usize,
+        properties: Value,
+        coherent: bool,
+    ) -> Result<bool, crate::lisp::types::LispError> {
+        let Some((start, end)) = self.intervals_for_change(start, end, !properties.is_nil()) else {
+            return Ok(false);
+        };
+        if coherent {
+            self.begin_text_property_change(start, end);
+        }
+        self.set_text_properties_1(start, end, properties)?;
+        Ok(true)
+    }
+
+    /// textprop.c:set_text_properties_1 over [START, END) of the buffer's
+    /// intervals (which there are), undo recorded.
+    fn set_text_properties_1(
+        &mut self,
+        start: usize,
+        end: usize,
+        properties: Value,
+    ) -> Result<(), crate::lisp::types::LispError> {
+        let disabled = self.undo_recording_disabled();
+        let Some(intervals) = self.intervals.as_mut() else {
+            return Ok(());
+        };
+        if disabled {
+            intervals::set_text_properties_range(
+                intervals,
+                start,
+                end - start,
+                properties,
+                &mut intervals::NoRecord,
+            )
+        } else {
+            let mut recorder = UndoRecorder {
+                undo_list: &mut self.undo_list,
+            };
+            intervals::set_text_properties_range(
+                intervals,
+                start,
+                end - start,
+                properties,
+                &mut recorder,
+            )
+        }
+    }
+
+    /// Fremove_text_properties' (PLIST the properties) and
+    /// Fremove_list_of_text_properties' (PLIST nil, LIST the names) change
+    /// of the buffer after their hooks: counted, recorded for undo.
+    /// Whether one went.
+    pub(crate) fn remove_text_properties_range(
+        &mut self,
+        start: usize,
+        end: usize,
+        plist: Value,
+        list: Value,
+    ) -> Result<bool, crate::lisp::types::LispError> {
+        if !self.would_remove_text_properties(start, end, plist, list) {
+            return Ok(false);
+        }
+        let (start, end) = (start.max(self.point_min()), end.min(self.point_max()));
+        self.begin_text_property_change(start, end);
+        let disabled = self.undo_recording_disabled();
+        let intervals = self.intervals.as_mut().expect("intervals with properties");
+        if disabled {
+            intervals::remove_text_properties_range(
+                intervals,
+                start,
+                end - start,
+                plist,
+                list,
+                &mut intervals::NoRecord,
+            )
+        } else {
+            let mut recorder = UndoRecorder {
+                undo_list: &mut self.undo_list,
+            };
+            intervals::remove_text_properties_range(
+                intervals,
+                start,
+                end - start,
+                plist,
+                list,
+                &mut recorder,
+            )
+        }
+    }
+
+    /// Fput_text_property of NAME's VALUE over [START, END), for callers
+    /// that are not a Lisp primitive (its hooks the caller's).
     pub fn put_text_property(
         &mut self,
         start: usize,
@@ -2354,54 +2510,89 @@ impl Buffer {
         name: PropertyName,
         value: Value,
     ) {
-        self.modify_text_properties(start, end, |mut current| {
-            if let Some((_, existing)) = current.iter_mut().find(|(key, _)| *key == name) {
-                *existing = value;
-            } else {
-                current.insert(0, (name, value));
-            }
-            current
-        });
+        let _ = self.add_text_properties_range(
+            start,
+            end,
+            Value::list([name.value(), value]),
+            PropertySetType::Replace,
+            true,
+        );
     }
 
+    /// Fadd_text_properties of PROPS (pairs) over [START, END), for
+    /// callers that are not a Lisp primitive.
+    pub fn add_text_properties(
+        &mut self,
+        start: usize,
+        end: usize,
+        props: &[(PropertyName, Value)],
+    ) {
+        if props.is_empty() {
+            return;
+        }
+        let plist = Value::list(
+            props
+                .iter()
+                .flat_map(|(name, value)| [name.value(), *value]),
+        );
+        let _ = self.add_text_properties_range(start, end, plist, PropertySetType::Replace, true);
+    }
+
+    /// Fset_text_properties of PROPS (pairs) over [START, END), for
+    /// callers that are not a Lisp primitive.
     pub fn set_text_properties(
         &mut self,
         start: usize,
         end: usize,
         props: &[(PropertyName, Value)],
     ) {
-        let tick = self.modiff;
-        self.modify_text_properties(start, end, |_| props.to_vec());
-        // textprop.c set_text_properties modifies a buffer that has
-        // intervals whether or not a plist changes.
-        let (start, end) = (start.max(self.point_min()), end.min(self.point_max()));
-        if self.modiff == tick && start < end && self.has_interval_tree() {
-            if !self.is_modified() {
-                self.record_first_change();
-            }
-            self.count_text_property_change(start, end);
-        }
+        let plist = Value::list(
+            props
+                .iter()
+                .flat_map(|(name, value)| [name.value(), *value]),
+        );
+        let _ = self.set_text_properties_range(start, end, plist, true);
     }
 
-    /// textprop.c modify_text_properties's count of a property change.
-    fn count_text_property_change(&mut self, start: usize, end: usize) {
-        modiff_incr(&mut self.modiff, 1);
-        self.log_edit(start, end, end, false);
-        self.autosaved = false;
-    }
-
+    /// Fremove_list_of_text_properties of NAMES over [START, END), for
+    /// callers that are not a Lisp primitive.
     pub fn remove_list_of_text_properties(
         &mut self,
         start: usize,
         end: usize,
         names: &[PropertyName],
     ) {
-        self.modify_text_properties(start, end, |current| {
-            current
-                .into_iter()
-                .filter(|(key, _)| !names.iter().any(|name| name == key))
-                .collect()
-        });
+        let list = Value::list(names.iter().map(|name| name.value()));
+        let _ = self.remove_text_properties_range(start, end, Value::Nil, list);
+    }
+
+    /// The intervals of [FROM, TO) as a string's (copy_intervals, from 0);
+    /// none where the buffer has none there.
+    pub(crate) fn copy_intervals(&self, from: usize, to: usize) -> Option<Intervals> {
+        let intervals = self.intervals.as_ref()?;
+        if from >= to {
+            return None;
+        }
+        intervals.copy(from, to - from).ok().flatten()
+    }
+
+    /// editfns.c:make_buffer_string_both's properties for [FROM, TO):
+    /// its intervals, unless no property changes before TO
+    /// (next-property-change) and the text at FROM has none.
+    pub(crate) fn string_intervals(&self, from: usize, to: usize) -> Option<Intervals> {
+        let tree = self.intervals.as_ref()?;
+        if from >= to {
+            return None;
+        }
+        let first = tree.find(from);
+        let plist = tree.plist(first);
+        let changes = std::iter::successors(tree.next(first), |&i| tree.next(i))
+            .take_while(|&i| tree.start(i) < to)
+            .any(|i| !intervals::intervals_equal(plist, tree.plist(i)));
+        if !changes && plist.is_nil() {
+            return None;
+        }
+        self.copy_intervals(from, to)
     }
 
     fn invalidate_char_cache(&mut self) {
@@ -2459,85 +2650,111 @@ impl Buffer {
 
     /// Insert text at point and advance point past it.
     pub fn insert(&mut self, s: &str) -> usize {
-        self.insert_with_properties(s, None)
+        self.insert_text(
+            s,
+            InsertedProperties::PLAIN,
+            false,
+            None,
+            &PropertyVariables::NONE,
+        )
     }
 
-    /// Properties inherited by `insert-and-inherit' at POS.
-    ///
-    /// GNU text-property inheritance is directional: rear-sticky values on
-    /// the preceding character normally win, front-sticky values on the
-    /// following character fill gaps, and the two stickiness-control
-    /// properties never propagate to the inserted text themselves.
-    pub fn inherited_text_properties(
-        &self,
-        pos: usize,
-        default_nonsticky: Option<&Value>,
-    ) -> Vec<(PropertyName, Value)> {
-        let previous = if pos > self.point_min() {
-            self.text_properties_at(pos - 1)
-        } else {
-            Vec::new()
-        };
-        let following = if pos < self.point_max() {
-            self.text_properties_at(pos)
-        } else {
-            Vec::new()
-        };
-        let rear_nonsticky = property_value(&previous, "rear-nonsticky").cloned();
-        let front_sticky = property_value(&following, "front-sticky").cloned();
-        let mut inherited = Vec::new();
-
-        for (name, value) in previous {
-            if is_stickiness_control(&name)
-                || default_property_nonsticky(default_nonsticky, &name)
-                || property_named_by_stickiness(rear_nonsticky.as_ref(), &name)
-                || value.is_nil()
-            {
-                continue;
-            }
-            inherited.push((name, value));
-        }
-        for (name, value) in following {
-            if is_stickiness_control(&name)
-                || !property_named_by_stickiness(front_sticky.as_ref(), &name)
-                || value.is_nil()
-                || inherited.iter().any(|(existing, _)| existing == &name)
-            {
-                continue;
-            }
-            inherited.push((name, value));
-        }
-        inherited
-    }
-
-    pub fn insert_with_properties(
+    /// `insert' with the properties PROPS gives the text and the
+    /// variables VARS that its stickiness reads.
+    pub(crate) fn insert_with(
         &mut self,
         s: &str,
-        props: Option<Vec<(PropertyName, Value)>>,
+        props: InsertedProperties<'_>,
+        before_markers: bool,
+        vars: &PropertyVariables,
     ) -> usize {
-        self.insert_with_properties_and_markers(s, props, false)
+        self.insert_text(s, props, before_markers, None, vars)
     }
 
     /// `insert' of a text whose COUNTS its maker already has.
     pub fn insert_counted(&mut self, s: &str, counts: TextCounts) -> usize {
-        self.insert_text(s, None, false, Some(counts))
+        self.insert_text(
+            s,
+            InsertedProperties::PLAIN,
+            false,
+            Some(counts),
+            &PropertyVariables::NONE,
+        )
     }
 
-    pub(crate) fn insert_with_properties_and_markers(
+    /// `insert_counted' with the variables VARS an insertion reads.
+    pub(crate) fn insert_counted_with(
         &mut self,
         s: &str,
-        props: Option<Vec<(PropertyName, Value)>>,
-        before_markers: bool,
+        counts: TextCounts,
+        vars: &PropertyVariables,
     ) -> usize {
-        self.insert_text(s, props, before_markers, None)
+        self.insert_text(s, InsertedProperties::PLAIN, false, Some(counts), vars)
+    }
+
+    pub(crate) fn insert_before_markers(&mut self, s: &str) -> usize {
+        self.insert_text(
+            s,
+            InsertedProperties::PLAIN,
+            true,
+            None,
+            &PropertyVariables::NONE,
+        )
+    }
+
+    /// intervals.c:offset_intervals for NCHARS characters inserted at
+    /// POS, then graft_intervals_into_buffer of PROPS over them.
+    fn adjust_intervals_for_insert(
+        &mut self,
+        pos: usize,
+        nchars: usize,
+        props: InsertedProperties<'_>,
+        vars: &PropertyVariables,
+    ) {
+        if nchars == 0 {
+            return;
+        }
+        if let Some(intervals) = &mut self.intervals {
+            let mut host = *vars;
+            let _ = intervals.adjust_for_insertion(&mut host, pos, nchars);
+        }
+        self.graft_intervals(props, pos, nchars);
+    }
+
+    /// intervals.c:graft_intervals_into_buffer of PROPS over the LENGTH
+    /// characters just inserted at POSITION.
+    fn graft_intervals(&mut self, props: InsertedProperties<'_>, position: usize, length: usize) {
+        match props {
+            InsertedProperties::None { inherit } => {
+                // Without inheritance, the new text's properties are
+                // cleared out.
+                if !inherit && self.intervals.is_some() && length > 0 {
+                    let _ = self.set_text_properties_1(position, position + length, Value::Nil);
+                }
+            }
+            InsertedProperties::Intervals { source, inherit } => {
+                if self.size_total() == length {
+                    // The inserted text is the whole buffer: a copy of the
+                    // interval structure.
+                    self.intervals = Some(intervals::reproduce(source, 1));
+                    return;
+                }
+                if self.intervals.is_none() {
+                    self.intervals = Some(Intervals::root(1, self.size_total() + 1));
+                }
+                let tree = self.intervals.as_mut().expect("intervals for the graft");
+                let _ = intervals::graft_into(tree, source, position, inherit);
+            }
+        }
     }
 
     fn insert_text(
         &mut self,
         s: &str,
-        props: Option<Vec<(PropertyName, Value)>>,
+        props: InsertedProperties<'_>,
         before_markers: bool,
         counts: Option<TextCounts>,
+        vars: &PropertyVariables,
     ) -> usize {
         if s.is_empty() {
             return self.pt;
@@ -2585,14 +2802,8 @@ impl Buffer {
         // Adjust overlays
         self.overlays.insert_gap(insert_at, nchars, before_markers);
 
-        self.adjust_text_properties_for_insert(insert_at, nchars);
+        self.adjust_intervals_for_insert(insert_at, nchars, props, vars);
         self.adjust_extended_chars_for_insert(insert_at, nchars);
-        if let Some(props) = props
-            && !props.is_empty()
-        {
-            // Fresh text: keep the given plist order (GNU grafts intervals).
-            self.graft_text_properties(insert_at, insert_at + nchars, &props);
-        }
 
         modiff_incr(&mut self.modiff, nchars);
         self.chars_modiff = self.modiff;
@@ -2689,13 +2900,16 @@ impl Buffer {
     /// and those at or after TO shift (adjust_markers_for_replace), and
     /// overlays take the insertion as if made before markers at TO, then
     /// the deletion.  Point moves as a marker would.  Returns FROM.
-    pub fn replace_range(
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn replace_range(
         &mut self,
         from: usize,
         to: usize,
         text: &str,
         extended: &[(usize, u32)],
         markers: bool,
+        props: InsertedProperties<'_>,
+        vars: &PropertyVariables,
     ) -> usize {
         let from = from.max(self.begv);
         let to = to.min(self.zv).max(from);
@@ -2760,17 +2974,16 @@ impl Buffer {
         if nchars_del > 0 {
             self.overlays.delete_gap(from, nchars_del);
         }
-        self.adjust_text_properties_for_delete(from, to);
         self.adjust_extended_chars_for_delete(from, to);
-        self.adjust_text_properties_for_insert(from, inschars);
         self.adjust_extended_chars_for_insert(from, inschars);
         self.extended_chars
             .extend(extended.iter().map(|(offset, code)| (from + offset, *code)));
         self.extended_chars
             .sort_unstable_by_key(|(position, _)| *position);
-        if self.text.len_chars() == 0 {
-            self.interval_tree = false;
-        }
+        // insdel.c:replace_range: offset_intervals by the change in length
+        // at FROM, then graft_intervals_into_buffer of the new text's.
+        self.offset_intervals(from, inschars as isize - nchars_del as isize, vars);
+        self.graft_intervals(props, from, inschars);
         self.zv = self.zv + inschars - nchars_del;
         self.refresh_marker_byte_positions();
         modiff_incr(&mut self.modiff, nchars_del + inschars);
@@ -2880,10 +3093,7 @@ impl Buffer {
 
         // Adjust overlays and evaporate empty ones
         self.overlays.delete_gap(from, to.saturating_sub(from));
-        self.adjust_text_properties_for_delete(from, to);
-        if self.text.len_chars() == 0 {
-            self.interval_tree = false;
-        }
+        self.offset_intervals(from, -(nchars as isize), &PropertyVariables::NONE);
         self.adjust_extended_chars_for_delete(from, to);
 
         // Shrink accessible region
@@ -3083,14 +3293,7 @@ impl Buffer {
     fn deleted_text_value(&self, text: &str, from: usize, to: usize) -> Value {
         Value::StringObject(crate::lisp::types::StringObjectRef::from_text_ref(
             text,
-            self.substring_property_spans(from, to)
-                .into_iter()
-                .map(|span| crate::lisp::types::StringPropertySpan {
-                    start: span.start,
-                    end: span.end,
-                    props: span.props,
-                })
-                .collect(),
+            crate::lisp::types::string_data::StringProperties::new(self.string_intervals(from, to)),
             self.multibyte,
             &self.substring_extended_chars(from, to),
         ))
@@ -3147,8 +3350,7 @@ impl Buffer {
         self.edits = std::collections::VecDeque::new();
         self.undo_list = Value::Nil;
         self.point_before_last_command_or_undo = None;
-        self.text_properties = Vec::new();
-        self.interval_tree = false;
+        self.intervals = None;
         self.text_conversion_style = Value::Nil;
         self.text_conversion_style_is_local = false;
         self.extended_chars = Vec::new();
@@ -3182,7 +3384,7 @@ impl Buffer {
             file_truename: self.file_truename.clone(),
             visited_file_modtime: self.visited_file_modtime,
             undo_list: self.undo_list,
-            text_properties: self.text_properties.clone(),
+            intervals: self.intervals.clone(),
             extended_chars: self.extended_chars.clone(),
             inhibit_hooks: self.inhibit_hooks,
             text_conversion_style: self.text_conversion_style,
@@ -3219,8 +3421,7 @@ impl Buffer {
             undo_list: parts.undo_list,
             point_before_last_command_or_undo: None,
             overlays: crate::overlay::OverlayTree::default(),
-            interval_tree: !parts.text_properties.is_empty(),
-            text_properties: parts.text_properties,
+            intervals: parts.intervals,
             extended_chars: parts.extended_chars,
             inhibit_hooks: parts.inhibit_hooks,
             text_conversion_style: parts.text_conversion_style,
@@ -3259,8 +3460,7 @@ impl Buffer {
         std::mem::swap(&mut self.zv, &mut other.zv);
         std::mem::swap(&mut self.undo_list, &mut other.undo_list);
         std::mem::swap(&mut self.overlays, &mut other.overlays);
-        std::mem::swap(&mut self.text_properties, &mut other.text_properties);
-        std::mem::swap(&mut self.interval_tree, &mut other.interval_tree);
+        std::mem::swap(&mut self.intervals, &mut other.intervals);
         std::mem::swap(&mut self.extended_chars, &mut other.extended_chars);
         std::mem::swap(&mut self.multibyte, &mut other.multibyte);
         match (&mut self.mark, &mut other.mark) {
@@ -3360,82 +3560,19 @@ impl Buffer {
         if end > start { newlines + 1 } else { 0 }
     }
 
-    /// intervals.c:adjust_intervals_for_insertion, then the plain insertion's
-    /// `graft_intervals_into_buffer' with no intervals to graft: the
-    /// inserted text has no properties, so the spans after the point move
-    /// and the one the point falls inside splits around the new text.  In
-    /// place: the whole list used to be cloned, plist by plist, rebuilt,
-    /// sorted and re-merged on every insertion (0.36 ms a
-    /// `decode-coding-region' in a dired listing of 4,000 spans).
-    fn adjust_text_properties_for_insert(&mut self, pos: usize, nchars: usize) {
-        if nchars == 0 {
+    /// intervals.c:offset_intervals: LENGTH characters inserted (positive)
+    /// at START, or -LENGTH deleted from it; a deletion of the whole text
+    /// leaves no intervals.
+    fn offset_intervals(&mut self, start: usize, length: isize, vars: &PropertyVariables) {
+        let Some(intervals) = &mut self.intervals else {
             return;
+        };
+        if length > 0 {
+            let mut host = *vars;
+            let _ = intervals.adjust_for_insertion(&mut host, start, length as usize);
+        } else if length < 0 && !intervals.adjust_for_deletion(start, length.unsigned_abs()) {
+            self.intervals = None;
         }
-        let spans = &mut self.text_properties;
-        let first = spans.partition_point(|span| span.end <= pos);
-        for span in &mut spans[first..] {
-            if span.start >= pos {
-                span.start += nchars;
-                span.end += nchars;
-            }
-        }
-        // Only the first affected span can hold the point strictly
-        // inside; it did not move above.
-        if first < spans.len() && spans[first].start < pos {
-            let tail = TextPropertySpan {
-                start: pos + nchars,
-                end: spans[first].end + nchars,
-                props: spans[first].props.clone(),
-            };
-            spans[first].end = pos;
-            spans.insert(first + 1, tail);
-        }
-    }
-
-    /// intervals.c:adjust_intervals_for_deletion: the spans inside the
-    /// deleted text go, the ones straddling its ends are cut to it, the
-    /// ones after it move, and the two cut ends merge when they carry the
-    /// same properties.  In place, over the spans the deletion meets (see
-    /// `adjust_text_properties_for_insert').
-    fn adjust_text_properties_for_delete(&mut self, from: usize, to: usize) {
-        if from >= to {
-            return;
-        }
-        let removed = to - from;
-        self.interval_tree |= !self.text_properties.is_empty();
-        let spans = &mut self.text_properties;
-        let lo = spans.partition_point(|span| span.end <= from);
-        let hi = spans.partition_point(|span| span.start < to);
-        let mut pieces = Vec::new();
-        if lo < hi {
-            if spans[lo].start < from {
-                pieces.push(TextPropertySpan {
-                    start: spans[lo].start,
-                    end: from,
-                    props: spans[lo].props.clone(),
-                });
-            }
-            if spans[hi - 1].end > to {
-                pieces.push(TextPropertySpan {
-                    start: from,
-                    end: spans[hi - 1].end - removed,
-                    props: spans[hi - 1].props.clone(),
-                });
-            }
-        }
-        for span in &mut spans[hi..] {
-            span.start -= removed;
-            span.end -= removed;
-        }
-        // The cut ends meet each other and their untouched neighbours;
-        // merge over that window only.
-        let splice_lo = lo.saturating_sub(1);
-        let splice_hi = (hi + 1).min(spans.len());
-        let mut window: Vec<TextPropertySpan> = spans[splice_lo..lo].to_vec();
-        window.extend(pieces);
-        window.extend(spans[hi..splice_hi].iter().cloned());
-        let window = merge_adjacent_spans(window);
-        spans.splice(splice_lo..splice_hi, window);
     }
 
     fn adjust_extended_chars_for_insert(&mut self, pos: usize, nchars: usize) {
@@ -3459,155 +3596,6 @@ impl Buffer {
             }
         });
     }
-
-    fn modify_text_properties<F>(&mut self, start: usize, end: usize, f: F)
-    where
-        F: FnMut(Vec<(PropertyName, Value)>) -> Vec<(PropertyName, Value)>,
-    {
-        self.modify_text_properties_with_undo(start, end, true, f);
-    }
-
-    /// intervals.c graft_intervals_into_buffer: freshly inserted text
-    /// takes PROPS as part of its insertion, which alone is recorded and
-    /// counted.
-    pub(crate) fn graft_text_properties(
-        &mut self,
-        start: usize,
-        end: usize,
-        props: &[(PropertyName, Value)],
-    ) {
-        self.modify_text_properties_with_undo(start, end, false, |_| props.to_vec());
-    }
-
-    /// RECORD: a change of the properties alone (textprop.c
-    /// modify_text_properties), recorded for undo and counted; otherwise
-    /// a graft into text just inserted.
-    fn modify_text_properties_with_undo<F>(
-        &mut self,
-        start: usize,
-        end: usize,
-        record: bool,
-        mut f: F,
-    ) where
-        F: FnMut(Vec<(PropertyName, Value)>) -> Vec<(PropertyName, Value)>,
-    {
-        let start = start.max(self.point_min());
-        let end = end.min(self.point_max());
-        if start >= end {
-            return;
-        }
-        self.interval_tree |= !self.text_properties.is_empty();
-
-        // The spans are sorted by start and disjoint: only those meeting
-        // [start, end), and the neighbour on either side for the merge,
-        // are read or rewritten.  Cloning and rebuilding the whole list
-        // per write cost dired's listing of 12,000 files half a
-        // millisecond per `put-text-property' (textprop.c splits and
-        // merges the intervals at the edges alone).
-        let spans = &self.text_properties;
-        let lo = spans.partition_point(|span| span.end <= start);
-        let hi = spans.partition_point(|span| span.start < end);
-        let affected = &spans[lo..hi];
-
-        let mut pieces = Vec::with_capacity(affected.len() + 3);
-        if let Some(first) = affected.first()
-            && first.start < start
-        {
-            pieces.push(TextPropertySpan {
-                start: first.start,
-                end: start,
-                props: first.props.clone(),
-            });
-        }
-        let mut boundaries = vec![start, end];
-        for span in affected {
-            boundaries.push(span.start.max(start));
-            boundaries.push(span.end.min(end));
-        }
-        boundaries.sort_unstable();
-        boundaries.dedup();
-
-        let mut undo_records = Vec::new();
-        let mut changed = false;
-        for window in boundaries.windows(2) {
-            let seg_start = window[0];
-            let seg_end = window[1];
-            if seg_start >= seg_end {
-                continue;
-            }
-            let current = properties_at_from(affected, seg_start);
-            let next = f(current.clone());
-            if !text_property_plists_eq(&current, &next) {
-                changed = true;
-                if record && !self.undo_recording_disabled() {
-                    for (name, old_value) in &current {
-                        let value_changed = next
-                            .iter()
-                            .find(|(candidate, _)| candidate == name)
-                            .is_none_or(|(_, new_value)| {
-                                !text_property_values_eq(old_value, new_value)
-                            });
-                        if value_changed {
-                            undo_records
-                                .push(property_undo_entry(name, *old_value, seg_start, seg_end));
-                        }
-                    }
-                    for (name, _) in &next {
-                        if !current.iter().any(|(candidate, _)| candidate == name) {
-                            undo_records.push(property_undo_entry(
-                                name,
-                                Value::Nil,
-                                seg_start,
-                                seg_end,
-                            ));
-                        }
-                    }
-                }
-            }
-            if !next.is_empty() {
-                pieces.push(TextPropertySpan {
-                    start: seg_start,
-                    end: seg_end,
-                    props: next,
-                });
-            }
-        }
-        if let Some(last) = affected.last()
-            && last.end > end
-        {
-            pieces.push(TextPropertySpan {
-                start: end,
-                end: last.end,
-                props: last.props.clone(),
-            });
-        }
-        if !changed {
-            return;
-        }
-        // textprop.c:modify_text_properties records the first change
-        // since a save, then each interval's record_property_change.
-        if record && !self.undo_recording_disabled() {
-            if !self.is_modified() {
-                self.record_first_change();
-            }
-            for entry in undo_records {
-                self.push_undo(entry);
-            }
-        }
-        // Merge with the untouched neighbours on either side, as the
-        // whole-list merge did, by taking them into the rewritten window.
-        let splice_lo = lo.saturating_sub(1);
-        let splice_hi = (hi + 1).min(self.text_properties.len());
-        let mut window: Vec<TextPropertySpan> = self.text_properties[splice_lo..lo].to_vec();
-        window.extend(pieces);
-        window.extend(self.text_properties[hi..splice_hi].iter().cloned());
-        let window = merge_adjacent_spans(window);
-        self.text_properties.splice(splice_lo..splice_hi, window);
-        self.interval_tree |= !self.text_properties.is_empty();
-        if record {
-            self.count_text_property_change(start, end);
-        }
-    }
 }
 
 /// lisp.h modiff_incr: a change of LEN characters counts one more than
@@ -3620,139 +3608,19 @@ fn modiff_incr(count: &mut ModCount, len: usize) {
     };
 }
 
-fn property_undo_entry(name: &PropertyName, value: Value, start: usize, end: usize) -> Value {
-    Value::cons(
-        Value::Nil,
-        Value::cons(
-            name.value(),
-            Value::cons(
-                value,
-                Value::cons(Value::Integer(start as i64), Value::Integer(end as i64)),
-            ),
-        ),
-    )
-}
-
-fn text_property_span_at(spans: &[TextPropertySpan], pos: usize) -> Option<&TextPropertySpan> {
-    let insertion = spans.partition_point(|span| span.start <= pos);
-    insertion
-        .checked_sub(1)
-        .and_then(|index| spans.get(index))
-        .filter(|span| pos < span.end)
-}
-
-fn properties_at_from(spans: &[TextPropertySpan], pos: usize) -> Vec<(PropertyName, Value)> {
-    text_property_span_at(spans, pos)
-        .map(|span| span.props.clone())
-        .unwrap_or_default()
-}
-
-fn property_value<'a>(props: &'a [(PropertyName, Value)], name: &str) -> Option<&'a Value> {
-    props
-        .iter()
-        .find(|(property, _)| property == name)
-        .map(|(_, value)| value)
-}
-
-fn is_stickiness_control(name: &PropertyName) -> bool {
-    *name == "front-sticky" || *name == "rear-nonsticky"
-}
-
-/// textprop.c's `!NILP (Fmemq (prop, stickiness))' for a stickiness
-/// property's value: t names every property.
-fn property_named_by_stickiness(setting: Option<&Value>, name: &PropertyName) -> bool {
-    match setting.map(|v| v.kind()) {
-        Some(Kind::T) => true,
-        Some(value @ Kind::Cons(_)) => value
-            .value()
-            .to_vec()
-            .is_ok_and(|items| items.iter().any(|item| PropertyName::new(*item) == *name)),
-        _ => false,
-    }
-}
-
-/// textprop.c's `Fassq (prop, Vtext_property_default_nonsticky)' with a
-/// non-nil cdr.
-fn default_property_nonsticky(defaults: Option<&Value>, name: &PropertyName) -> bool {
-    let Some(defaults) = defaults.and_then(|value| value.to_vec().ok()) else {
-        return false;
-    };
-    defaults.iter().any(|entry| {
-        let Some((property, nonsticky)) = (entry).cons_cells() else {
+/// Whether PLIST has a property named NAME (by EQ).
+fn plist_has_name(plist: Value, name: Value) -> bool {
+    let mut tail = plist;
+    while let Some(cell) = tail.cons_ref() {
+        if cell.car.get().word() == name.word() {
+            return true;
+        }
+        let Some(value) = cell.cdr.get().cons_ref() else {
             return false;
         };
-        PropertyName::new(property.get()) == *name && nonsticky.get().is_truthy()
-    })
-}
-
-pub(crate) fn text_property_plists_eq(
-    left: &[(PropertyName, Value)],
-    right: &[(PropertyName, Value)],
-) -> bool {
-    left.len() == right.len()
-        && left.iter().all(|(name, value)| {
-            right
-                .iter()
-                .find(|(candidate, _)| candidate == name)
-                .is_some_and(|(_, candidate)| text_property_values_eq(value, candidate))
-        })
-}
-
-pub(crate) fn text_property_values_eq(left: &Value, right: &Value) -> bool {
-    match (left.kind(), right.kind()) {
-        (Kind::Nil, Kind::Nil) | (Kind::T, Kind::T) => true,
-        (Kind::Integer(left), Kind::Integer(right)) => left == right,
-        (Kind::BigInteger(left), Kind::BigInteger(right)) => left == right,
-        (Kind::Float(left), Kind::Float(right)) => left == right,
-        (Kind::Symbol(left), Kind::Symbol(right)) => left == right,
-        (Kind::BuiltinFunc(left), Kind::BuiltinFunc(right)) => left == right,
-        (Kind::NativeFunction(left), Kind::NativeFunction(right)) => left.ptr_eq(&right),
-        (Kind::NativeCompUnit(left), Kind::NativeCompUnit(right)) => left.ptr_eq(&right),
-        // GNU's interval code compares property values with EQ, so a range
-        // propertized with ONE string object is a single run.  Emaxx string
-        // clones share their backing store, preserving that identity; the
-        // missing arm here fell to `false' and fragmented every
-        // string-valued span per character (shr-zoom-image's
-        // next-single-property-change saw a "change" at every char of the
-        // alt text and replaced two characters of a twenty-char image).
-        (Kind::StringObject(left), Kind::StringObject(right)) => left.ptr_eq(&right),
-        (Kind::Cons(left), Kind::Cons(right)) => {
-            crate::lisp::types::SharedCons::ptr_eq(&left, &right)
-        }
-        (Kind::Closure(left), Kind::Closure(right)) => left.ptr_eq(&right),
-        (Kind::Buffer(left), Kind::Buffer(right)) => left.ptr_eq(&right),
-        (Kind::Marker(left), Kind::Marker(right)) => left == right,
-        (Kind::Overlay(left), Kind::Overlay(right)) => left.ptr_eq(&right),
-        (Kind::CharTable(left), Kind::CharTable(right)) => left == right,
-        (Kind::SubCharTable(left), Kind::SubCharTable(right)) => left == right,
-        (Kind::Frame(left), Kind::Frame(right)) => left == right,
-        (Kind::Terminal(left), Kind::Terminal(right)) => left.ptr_eq(&right),
-        (Kind::Finalizer(left), Kind::Finalizer(right)) => left == right,
-        (Kind::Record(left), Kind::Record(right)) => left.ptr_eq(&right),
-        (Kind::LispRecord(left), Kind::LispRecord(right)) => left.ptr_eq(&right),
-        (Kind::Unbound, Kind::Unbound) => true,
-        _ => false,
+        tail = value.cdr.get();
     }
-}
-
-fn merge_adjacent_spans(mut spans: Vec<TextPropertySpan>) -> Vec<TextPropertySpan> {
-    spans.retain(|span| span.start < span.end && !span.props.is_empty());
-    spans.sort_by(|left, right| left.start.cmp(&right.start).then(left.end.cmp(&right.end)));
-    let mut merged: Vec<TextPropertySpan> = Vec::new();
-    for span in spans {
-        if let Some(last) = merged.last_mut() {
-            debug_assert!(
-                last.end <= span.start,
-                "text property spans must be non-overlapping"
-            );
-            if last.end == span.start && text_property_plists_eq(&last.props, &span.props) {
-                last.end = span.end;
-                continue;
-            }
-        }
-        merged.push(span);
-    }
-    merged
+    false
 }
 
 fn position_to_byte_in_text(text: &str, pos: usize) -> Option<usize> {
@@ -3893,7 +3761,10 @@ mod tests {
         assert_eq!(buf.buffer_substring(4, 2).unwrap(), "bc");
 
         buf.add_text_properties(2, 3, &[("sample".into(), Value::T)]);
-        assert_eq!(buf.substring_property_spans(4, 2).len(), 1);
+        let copied = buf.copy_intervals(2, 4).expect("intervals of [2, 4)");
+        let spans: Vec<_> = copied.iter().map(|(start, end, _)| (start, end)).collect();
+        assert_eq!(spans, [(0, 1), (1, 2)]);
+        assert!(copied.plist(1).is_nil());
     }
 
     #[test]
@@ -3908,37 +3779,33 @@ mod tests {
             );
         }
 
-        assert!(buf.text_properties_at_ref(0).is_empty());
-        assert!(buf.text_properties_at_ref(1).is_empty());
-        assert!(buf.text_properties_at_ref(buf.point_max()).is_empty());
+        assert!(buf.text_plist_at(1).is_nil());
+        assert!(buf.text_plist_at(buf.point_max()).is_nil());
         for index in 0..64 {
             let start = 2 + index * 5;
-            let expected = [("slot".into(), Value::Integer(index as i64))];
-            assert_eq!(buf.text_properties_at_ref(start), expected.as_slice());
-            assert_eq!(buf.text_properties_at_ref(start + 1), expected.as_slice());
-            assert!(buf.text_properties_at_ref(start + 2).is_empty());
-            assert_eq!(buf.text_properties_at(start), expected);
-            assert_eq!(
-                buf.text_property_at(start, "slot"),
-                Some(Value::Integer(index as i64))
-            );
+            for pos in [start, start + 1] {
+                assert_eq!(
+                    buf.text_property_at(pos, "slot"),
+                    Some(Value::Integer(index as i64))
+                );
+            }
+            assert!(buf.text_plist_at(start + 2).is_nil());
         }
 
-        // Fill the first gap with the preceding span's properties.  The
-        // mutation authority must merge the adjacent equal intervals while
-        // retaining a sharp boundary at the differently-valued next span.
+        // Fill the first gap with the preceding span's properties.  As in
+        // set_text_properties_1, the changed intervals merge only with each
+        // other, so the equal interval before them stays separate.
         buf.set_text_properties(4, 7, &[("slot".into(), Value::Integer(0))]);
         assert_eq!(buf.text_property_at(6, "slot"), Some(Value::Integer(0)));
         assert_eq!(buf.text_property_at(7, "slot"), Some(Value::Integer(1)));
-        assert!(
-            buf.text_properties
-                .windows(2)
-                .all(|spans| spans[0].end <= spans[1].start)
-        );
-        assert_eq!(
-            (buf.text_properties[0].start, buf.text_properties[0].end),
-            (2, 7)
-        );
+        let spans: Vec<_> = buf
+            .intervals()
+            .expect("intervals")
+            .iter()
+            .map(|(start, end, _)| (start, end))
+            .take(4)
+            .collect();
+        assert_eq!(spans, [(1, 2), (2, 4), (4, 7), (7, 9)]);
     }
 
     #[test]
@@ -4137,43 +4004,79 @@ mod tests {
                 ),
             ],
         );
-        assert!(prompt.inherited_text_properties(2, None).is_empty());
-
-        let mut adjacent = Buffer::from_text("adjacent", "ab");
-        adjacent.set_text_properties(
-            1,
-            2,
-            &[
-                ("from-rear".into(), Value::Integer(1)),
-                (
-                    "rear-nonsticky".into(),
-                    Value::list([Value::Symbol("face".into())]),
-                ),
-            ],
+        prompt.goto_char(2);
+        prompt.insert_with(
+            "x",
+            InsertedProperties::None { inherit: true },
+            false,
+            &PropertyVariables::NONE,
         );
-        adjacent.set_text_properties(
-            2,
-            3,
-            &[
-                ("from-front".into(), Value::Integer(2)),
-                (
-                    "front-sticky".into(),
-                    Value::list([Value::Symbol("from-front".into())]),
-                ),
-            ],
+        assert_eq!(prompt.text_property_at(2, "field"), None);
+        assert_eq!(prompt.text_property_at(2, "read-only"), None);
+
+        fn adjacent_buffer() -> Buffer {
+            let mut buffer = Buffer::from_text("adjacent", "ab");
+            buffer.set_text_properties(
+                1,
+                2,
+                &[
+                    ("from-rear".into(), Value::Integer(1)),
+                    (
+                        "rear-nonsticky".into(),
+                        Value::list([Value::Symbol("face".into())]),
+                    ),
+                ],
+            );
+            buffer.set_text_properties(
+                2,
+                3,
+                &[
+                    ("from-front".into(), Value::Integer(2)),
+                    (
+                        "front-sticky".into(),
+                        Value::list([Value::Symbol("from-front".into())]),
+                    ),
+                ],
+            );
+            buffer
+        }
+
+        let mut adjacent = adjacent_buffer();
+        adjacent.goto_char(2);
+        adjacent.insert_with(
+            "x",
+            InsertedProperties::None { inherit: true },
+            false,
+            &PropertyVariables::NONE,
         );
         assert_eq!(
-            adjacent.inherited_text_properties(2, None),
-            vec![
-                ("from-rear".into(), Value::Integer(1)),
-                ("from-front".into(), Value::Integer(2)),
-            ]
+            adjacent.text_property_at(2, "from-rear"),
+            Some(Value::Integer(1))
+        );
+        assert_eq!(
+            adjacent.text_property_at(2, "from-front"),
+            Some(Value::Integer(2))
         );
 
-        let defaults = Value::list([Value::cons(Value::Symbol("from-rear".into()), Value::T)]);
+        let vars = PropertyVariables {
+            default_nonsticky: Value::list([Value::cons(
+                Value::Symbol("from-rear".into()),
+                Value::T,
+            )]),
+            ..PropertyVariables::NONE
+        };
+        let mut nonsticky = adjacent_buffer();
+        nonsticky.goto_char(2);
+        nonsticky.insert_with(
+            "x",
+            InsertedProperties::None { inherit: true },
+            false,
+            &vars,
+        );
+        assert_eq!(nonsticky.text_property_at(2, "from-rear"), None);
         assert_eq!(
-            adjacent.inherited_text_properties(2, Some(&defaults)),
-            vec![("from-front".into(), Value::Integer(2))]
+            nonsticky.text_property_at(2, "from-front"),
+            Some(Value::Integer(2))
         );
     }
 
@@ -4327,9 +4230,16 @@ mod tests {
         let (text, _) = buf.undo_list().car().unwrap().cons_values().unwrap();
         let string = crate::lisp::primitives::string_like(&text).expect("deleted text");
         assert_eq!(string.text, "b");
-        assert_eq!(string.props.len(), 1);
-        assert_eq!((string.props[0].start, string.props[0].end), (0, 1));
-        assert_eq!(string.props[0].props[0].1, Value::String("x".into()));
+        let intervals = string.props.as_ref().expect("deleted text's intervals");
+        let spans: Vec<_> = intervals
+            .iter()
+            .map(|(start, end, _)| (start, end))
+            .collect();
+        assert_eq!(spans, [(0, 1)]);
+        assert_eq!(
+            intervals::plist_get(intervals.plist(0), Value::Symbol("markup".into())),
+            Value::String("x".into())
+        );
     }
 
     #[test]

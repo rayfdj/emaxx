@@ -539,7 +539,7 @@ pub(crate) fn insert_impl(
             insert_text_with_hooks(
                 interp,
                 &text,
-                &[],
+                None,
                 &extended_chars,
                 inherit,
                 before_markers,
@@ -549,10 +549,12 @@ pub(crate) fn insert_impl(
             if string.text.is_empty() {
                 continue;
             }
+            // insdel.c:insert_from_string_1 grafts the string's own
+            // intervals.
             insert_text_with_hooks(
                 interp,
                 &string.text,
-                &merge_string_props(string.props),
+                string.props.as_ref(),
                 &string.extended_chars,
                 inherit,
                 before_markers,
@@ -598,14 +600,14 @@ pub(crate) fn insert_char_impl(
     for offset in 0..count as usize {
         push_buffer_character(&mut text, &mut extended_chars, offset, ch, multibyte);
     }
-    insert_text_with_hooks(interp, &text, &[], &extended_chars, inherit, false, env)?;
+    insert_text_with_hooks(interp, &text, None, &extended_chars, inherit, false, env)?;
     Ok(Value::Nil)
 }
 
 pub(crate) fn insert_text_with_hooks(
     interp: &mut Interpreter,
     text: &str,
-    props: &[TextPropertySpan],
+    props: Option<&crate::intervals::Intervals>,
     extended_chars: &[(usize, u32)],
     inherit: bool,
     before_markers: bool,
@@ -632,7 +634,7 @@ pub(crate) fn insert_text_with_hooks(
 pub(crate) fn insert_text_before_point(
     interp: &mut Interpreter,
     text: &str,
-    props: &[TextPropertySpan],
+    props: Option<&crate::intervals::Intervals>,
     extended_chars: &[(usize, u32)],
     produced: usize,
     env: &mut crate::lisp::types::Env,
@@ -653,7 +655,7 @@ pub(crate) fn insert_text_before_point(
 fn insert_text_and_signal(
     interp: &mut Interpreter,
     text: &str,
-    props: &[TextPropertySpan],
+    props: Option<&crate::intervals::Intervals>,
     extended_chars: &[(usize, u32)],
     inherit: bool,
     before_markers: bool,
@@ -669,58 +671,18 @@ fn insert_text_and_signal(
     // insdel.c inserts at point as the before-change hooks left it.
     modify_current_buffer(interp, point, point, false, env, |interp, _, _| {
         let start = interp.buffer.borrow().point();
-        if before_markers {
-            if inherit {
-                interp.insert_current_buffer_before_markers_and_inherit(text);
-            } else {
-                interp.insert_current_buffer_before_markers(text);
-            }
-        } else if inherit {
-            interp.insert_current_buffer_and_inherit(text);
-        } else {
-            interp.insert_current_buffer(text);
-        }
-        for span in props {
-            if inherit {
-                // graft_intervals_into_buffer with inherit: the string's own
-                // intervals are grafted MERGED with what the insertion point
-                // inherited -- the string's keys win, inherited keys the
-                // string does not define stay (format-spec relies on a
-                // propertized replacement keeping the spec region's face).
-                // The string's plist order leads, inherited keys follow.
-                let (span_start, span_end) = (start + span.start, start + span.end);
-                let mut position = span_start;
-                while position < span_end {
-                    let existing = interp.buffer.borrow().text_properties_at(position);
-                    let mut run_end = position + 1;
-                    while run_end < span_end
-                        && interp.buffer.borrow().text_properties_at(run_end) == existing
-                    {
-                        run_end += 1;
-                    }
-                    let mut merged = span.props.clone();
-                    for (key, value) in existing {
-                        if !merged.iter().any(|(present, _)| *present == key) {
-                            merged.push((key, value));
-                        }
-                    }
-                    interp
-                        .buffer
-                        .borrow_mut()
-                        .graft_text_properties(position, run_end, &merged);
-                    position = run_end;
-                }
-            } else {
-                // Freshly inserted text: graft the string's plist verbatim so
-                // the stored order matches GNU (add_text_properties would
-                // reverse it).
-                interp.buffer.borrow_mut().graft_text_properties(
-                    start + span.start,
-                    start + span.end,
-                    &span.props,
-                );
-            }
-        }
+        // insdel.c: offset_intervals, then graft_intervals_into_buffer of
+        // the string's intervals (copied over the text, or with INHERIT
+        // merged into what the insertion gave it), or with no intervals
+        // and no INHERIT the new text's properties cleared.
+        let source = match props {
+            Some(intervals) => crate::buffer::InsertedProperties::Intervals {
+                source: intervals,
+                inherit,
+            },
+            None => crate::buffer::InsertedProperties::None { inherit },
+        };
+        interp.insert_current_buffer_with(text, source, before_markers);
         interp.set_inserted_extended_chars(start, extended_chars);
         let mut inserted = text.chars().count();
         if let Some(produced) = keep_point {

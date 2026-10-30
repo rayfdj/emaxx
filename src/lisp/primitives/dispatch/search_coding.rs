@@ -142,12 +142,17 @@ fn replace_match(
     };
 
     if let Some(source) = source {
-        let substring = |object: &crate::lisp::types::StringObjectRef, from: usize, to: usize| {
-            Value::StringObject(object.borrow().substring(from, to, true))
+        let substring = |object: &crate::lisp::types::StringObjectRef,
+                         from: usize,
+                         to: usize|
+         -> Result<Value, LispError> {
+            Ok(Value::StringObject(
+                object.borrow().substring(from, to, true)?,
+            ))
         };
         let source_len = source.borrow().len();
-        let before = substring(&source, 0, sub_start);
-        let after = substring(&source, sub_end, source_len);
+        let before = substring(&source, 0, sub_start)?;
+        let after = substring(&source, sub_end, source_len)?;
         let mut newtext = newtext;
         if !literal {
             // Substitute parts of the match into NEWTEXT, piece by piece
@@ -185,17 +190,17 @@ fn replace_match(
                 }
                 if let Some((start, end)) = substitution {
                     if pos - 2 != lastpos {
-                        pieces.push(substring(&newtext_ref, lastpos, pos - 2));
+                        pieces.push(substring(&newtext_ref, lastpos, pos - 2)?);
                     }
-                    pieces.push(substring(&source, start, end));
+                    pieces.push(substring(&source, start, end)?);
                     lastpos = pos;
                 } else if delbackslash {
-                    pieces.push(substring(&newtext_ref, lastpos, pos - 1));
+                    pieces.push(substring(&newtext_ref, lastpos, pos - 1)?);
                     lastpos = pos;
                 }
             }
             if pos != lastpos {
-                pieces.push(substring(&newtext_ref, lastpos, pos));
+                pieces.push(substring(&newtext_ref, lastpos, pos)?);
             }
             newtext = super::call(interp, "concat", &pieces, env)?;
         }
@@ -278,7 +283,7 @@ fn replace_match(
         }
         if really_changed {
             let (text, extended) = text_from_codes(&substed, buf_multibyte);
-            (text, extended, Vec::new())
+            (text, extended, None)
         } else {
             (
                 newtext_parts.text,
@@ -304,18 +309,16 @@ fn replace_match(
             let to = (from + length)
                 .min(interp.buffer.borrow().point_max())
                 .max(from);
-            let from = interp.replace_range_current_buffer(from, to, &text, &extended);
-            if !props.is_empty() {
-                interp.apply_text_property_change_shared(&|buffer| {
-                    for span in &props {
-                        buffer.graft_text_properties(
-                            from + span.start,
-                            from + span.end,
-                            &span.props,
-                        );
-                    }
-                });
-            }
+            // insdel.c:replace_range grafts the new text's intervals
+            // without inheritance.
+            let source = match &props {
+                Some(intervals) => crate::buffer::InsertedProperties::Intervals {
+                    source: intervals,
+                    inherit: false,
+                },
+                None => crate::buffer::InsertedProperties::PLAIN,
+            };
+            let from = interp.replace_range_current_buffer(from, to, &text, &extended, source);
             if let Some(match_data) = interp.last_match_data.as_mut() {
                 regexp::update_search_regs(match_data, from, to, from + inschars);
             }
@@ -478,32 +481,13 @@ fn non_destructive_replacement_hunks(
     ))
 }
 
-fn clipped_property_spans(
-    spans: &[TextPropertySpan],
-    from: usize,
-    to: usize,
-) -> Vec<TextPropertySpan> {
-    spans
-        .iter()
-        .filter_map(|span| {
-            let start = span.start.max(from);
-            let end = span.end.min(to);
-            (start < end).then(|| TextPropertySpan {
-                start: start - from,
-                end: end - from,
-                props: span.props.clone(),
-            })
-        })
-        .collect()
-}
-
 fn apply_buffer_replacement_hunks(
     interp: &mut Interpreter,
     env: &mut crate::lisp::types::Env,
     target_start: usize,
     target_end: usize,
     source_chars: &[char],
-    source_props: &[TextPropertySpan],
+    source_props: Option<&crate::intervals::Intervals>,
     hunks: &[BufferReplacementHunk],
 ) -> Result<(), LispError> {
     if hunks.is_empty() {
@@ -554,23 +538,20 @@ fn apply_buffer_replacement_hunks(
                                 source_chars[hunk.new_start..hunk.new_end].iter().collect();
                             let inserted_len = hunk.new_end - hunk.new_start;
                             interp.buffer.borrow_mut().goto_char(from);
-                            interp.insert_current_buffer(&inserted);
-                            // `insert' can inherit edge properties.  `replace-buffer-contents'
-                            // grafts the source intervals instead, including property-free gaps.
-                            interp.buffer.borrow_mut().graft_text_properties(
-                                from,
-                                from + inserted_len,
-                                &[],
-                            );
-                            for span in
-                                clipped_property_spans(source_props, hunk.new_start, hunk.new_end)
-                            {
-                                interp.buffer.borrow_mut().graft_text_properties(
-                                    from + span.start,
-                                    from + span.end,
-                                    &span.props,
-                                );
-                            }
+                            // Finsert_buffer_substring of the source's text:
+                            // copy_intervals of it, grafted without
+                            // inheritance.
+                            let copy = source_props.and_then(|intervals| {
+                                intervals.copy(hunk.new_start, inserted_len).ok().flatten()
+                            });
+                            let props = match &copy {
+                                Some(source) => crate::buffer::InsertedProperties::Intervals {
+                                    source,
+                                    inherit: false,
+                                },
+                                None => crate::buffer::InsertedProperties::PLAIN,
+                            };
+                            interp.insert_current_buffer_with(&inserted, props, false);
                         }
                     }
                     Ok(())
@@ -809,7 +790,7 @@ define_dispatch!(
                         source
                             .buffer_substring(source.point_min(), source.point_max())
                             .map_err(|error| LispError::Signal(error.to_string()))?,
-                        source.substring_property_spans(source.point_min(), source.point_max()),
+                        source.copy_intervals(source.point_min(), source.point_max()),
                     )
                 };
                 let target_start = interp.buffer.borrow().point_min();
@@ -873,7 +854,7 @@ define_dispatch!(
                     target_start,
                     target_end,
                     &new_chars,
-                    &source_props,
+                    source_props.as_ref(),
                     &hunks,
                 )?;
                 Ok(if non_destructive {
@@ -1025,10 +1006,7 @@ define_dispatch!(
                         .borrow()
                         .buffer_substring(start1, end1)
                         .map_err(|e| LispError::Signal(e.to_string()))?;
-                    let region1_props = interp
-                        .buffer
-                        .borrow()
-                        .substring_property_spans(start1, end1);
+                    let region1_props = interp.buffer.borrow().copy_intervals(start1, end1);
                     let region1_extended = interp
                         .buffer
                         .borrow()
@@ -1038,10 +1016,7 @@ define_dispatch!(
                         .borrow()
                         .buffer_substring(start2, end2)
                         .map_err(|e| LispError::Signal(e.to_string()))?;
-                    let region2_props = interp
-                        .buffer
-                        .borrow()
-                        .substring_property_spans(start2, end2);
+                    let region2_props = interp.buffer.borrow().copy_intervals(start2, end2);
                     let region2_extended = interp
                         .buffer
                         .borrow()
@@ -1058,27 +1033,35 @@ define_dispatch!(
                     interp
                         .delete_region_current_buffer_unreturned(start1, end1)
                         .map_err(|e| LispError::Signal(e.to_string()))?;
-                    interp.buffer.borrow_mut().goto_char(start1);
-                    interp.insert_current_buffer(&region2_text);
-                    interp.set_inserted_extended_chars(start1, &region2_extended);
-                    for span in &region2_props {
-                        interp.buffer.borrow_mut().graft_text_properties(
-                            start1 + span.start,
-                            start1 + span.end,
-                            &span.props,
-                        );
+                    // Each region's text with its copied intervals grafted
+                    // without inheritance, as Ftranspose_regions grafts
+                    // them.
+                    fn grafted(
+                        props: &Option<crate::intervals::Intervals>,
+                    ) -> crate::buffer::InsertedProperties<'_> {
+                        match props {
+                            Some(source) => crate::buffer::InsertedProperties::Intervals {
+                                source,
+                                inherit: false,
+                            },
+                            None => crate::buffer::InsertedProperties::PLAIN,
+                        }
                     }
+                    interp.buffer.borrow_mut().goto_char(start1);
+                    interp.insert_current_buffer_with(
+                        &region2_text,
+                        grafted(&region2_props),
+                        false,
+                    );
+                    interp.set_inserted_extended_chars(start1, &region2_extended);
                     let insert_region1_at = start1 + region2_text.chars().count() + gap_len;
                     interp.buffer.borrow_mut().goto_char(insert_region1_at);
-                    interp.insert_current_buffer(&region1_text);
+                    interp.insert_current_buffer_with(
+                        &region1_text,
+                        grafted(&region1_props),
+                        false,
+                    );
                     interp.set_inserted_extended_chars(insert_region1_at, &region1_extended);
-                    for span in &region1_props {
-                        interp.buffer.borrow_mut().graft_text_properties(
-                            insert_region1_at + span.start,
-                            insert_region1_at + span.end,
-                            &span.props,
-                        );
-                    }
                     let len1 = end1 - start1;
                     let len2 = end2 - start2;
                     let diff = len2 as isize - len1 as isize;
@@ -1147,9 +1130,9 @@ define_dispatch!(
                         .buffer_substring(start, end)
                         .map_err(|error| LispError::Signal(error.to_string()))?;
                     let props = if name == "encode-coding-region" {
-                        buffer.substring_property_spans(start, end)
+                        buffer.copy_intervals(start, end)
                     } else {
-                        Vec::new()
+                        None
                     };
                     make_shared_string_value_with_extended_chars(
                         text,
@@ -1214,12 +1197,19 @@ define_dispatch!(
                             // decode_coding counts produced characters even
                             // into a unibyte destination, so the spans keep
                             // their character offsets there.
-                            for span in &transformed_props {
-                                interp.buffer.borrow_mut().add_text_properties(
-                                    start + span.start,
-                                    start + span.end,
-                                    &span.props,
-                                );
+                            if let Some(intervals) = &transformed_props {
+                                for (from, to, plist) in intervals.iter() {
+                                    if !plist.is_nil() {
+                                        let _ =
+                                            interp.buffer.borrow_mut().add_text_properties_range(
+                                                start + from,
+                                                start + to,
+                                                plist,
+                                                crate::intervals::PropertySetType::Replace,
+                                                true,
+                                            );
+                                    }
+                                }
                             }
                             Ok((
                                 Some(AfterChange::new(start, old_length, new_end - start)),
@@ -1236,7 +1226,7 @@ define_dispatch!(
                         let insertion = insert_text_with_hooks(
                             interp,
                             &text,
-                            &transformed_props,
+                            transformed_props.as_ref(),
                             &extended,
                             false,
                             false,
@@ -1362,7 +1352,7 @@ define_dispatch!(
                 } else {
                     (&serialized.bytes_text, Vec::new())
                 };
-                insert_text_with_hooks(interp, text, &[], &extended, false, false, env)?;
+                insert_text_with_hooks(interp, text, None, &extended, false, false, env)?;
                 Ok(Value::Nil)
             }
 
@@ -1518,7 +1508,7 @@ fn insert_converted_text(
     let inserted = insert_text_before_point(
         interp,
         &converted.text,
-        &converted.props,
+        converted.props.as_ref(),
         &converted.extended_chars,
         produced,
         env,

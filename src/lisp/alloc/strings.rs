@@ -180,7 +180,7 @@ impl StringObjectRef {
         // SAFETY: with no mutable guard alive, nothing changes the state
         // while this shared reference to it is read.
         let state = unsafe { &*cell.state.get() };
-        !state.props.is_empty()
+        state.props.has_properties()
     }
 
     pub fn borrow(&self) -> StringBorrow<'_> {
@@ -429,7 +429,10 @@ pub(crate) fn allocate_string<E>(
     assert_eq!(state.len(), characters);
     assert_eq!(state.is_multibyte(), multibyte);
     if kind == StringAllocation::Pure {
-        assert!(state.props.is_empty(), "pure strings have no intervals");
+        assert!(
+            !state.props.has_intervals(),
+            "pure strings have no intervals"
+        );
     } else {
         if kind == StringAllocation::Ordinary {
             // alloc.c:make_clear_multibyte_string: allocate_string's
@@ -448,7 +451,7 @@ pub(crate) fn allocate_string<E>(
             Ordering::Relaxed,
         );
         LIVE_SPANS.store(
-            LIVE_SPANS.load(Ordering::Relaxed) + state.props.len(),
+            LIVE_SPANS.load(Ordering::Relaxed) + state.props.interval_count(),
             Ordering::Relaxed,
         );
     }
@@ -693,7 +696,7 @@ pub(crate) fn sweep_strings(epoch: u32) {
                         let state = handle.borrow();
                         strings += 1;
                         bytes += state.storage_bytes();
-                        spans += state.props.len();
+                        spans += state.props.interval_count();
                         continue;
                     }
                     debug_assert_eq!((*cell).borrows.get(), 0, "unmarked string borrow");

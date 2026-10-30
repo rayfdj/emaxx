@@ -1,7 +1,6 @@
 use super::*;
 use crate::lisp::types::Kind;
 use crate::lisp::types::LispErrorKind;
-use crate::lisp::types::PropertyName;
 
 pub(crate) fn file_modtime(
     interp: &Interpreter,
@@ -697,7 +696,7 @@ fn encode_region_for_write(
             text: buffer
                 .buffer_substring(start, end)
                 .map_err(|error| LispError::Signal(error.to_string()))?,
-            props: Vec::new(),
+            props: None,
             multibyte: buffer.is_multibyte(),
             extended_chars: buffer.substring_extended_chars(start, end),
         }
@@ -759,7 +758,7 @@ fn write_region_with_coding(
             text: buffer
                 .buffer_substring(start, end)
                 .map_err(|error| LispError::Signal(error.to_string()))?,
-            props: Vec::new(),
+            props: None,
             multibyte: buffer.is_multibyte(),
             extended_chars: buffer.substring_extended_chars(start, end),
         }
@@ -1162,7 +1161,7 @@ fn write_prepared_printer_output(
         }
         None | Some(Kind::Nil | Kind::Buffer(_) | Kind::Marker(_)) => {
             let (text, extended) = output.text_parts();
-            insert_text_with_hooks(interp, &text, &[], &extended, false, false, env)
+            insert_text_with_hooks(interp, &text, None, &extended, false, false, env)
         }
         Some(_) => {
             let function = *stream.expect("matched Some");
@@ -1638,8 +1637,9 @@ pub(crate) struct FileDecode {
     /// The decided coding is for unibyte text, which makes a visited
     /// buffer unibyte.
     pub(crate) for_unibyte: bool,
-    /// The `charset' properties the decoder annotated.
-    pub(crate) charset_props: Vec<TextPropertySpan>,
+    /// The `charset' properties the decoder annotated, as the decoded
+    /// text's intervals.
+    pub(crate) charset_props: Option<crate::intervals::Intervals>,
 }
 
 /// fileio.c Finsert_file_contents's decoding of a file's BYTES into the
@@ -1719,32 +1719,22 @@ pub(crate) fn decode_file_contents(
             decoded: DecodedText::new(),
             coding,
             for_unibyte,
-            charset_props: Vec::new(),
+            charset_props: None,
         });
     }
     let dst_multibyte = multibyte && !(make_unibyte && for_unibyte);
     let mut outcome = decode_coding_gap(interp, env, bytes, &coding, dst_multibyte)?;
-    let charset_props = charset_runs_to_props(std::mem::take(&mut outcome.decoded.charsets));
+    let charset_props = super::charset_spans_to_props(
+        std::mem::take(&mut outcome.decoded.charsets),
+        &outcome.decoded.text,
+        None,
+    );
     Ok(FileDecode {
         decoded: outcome.decoded,
         coding: outcome.coding,
         for_unibyte,
         charset_props,
     })
-}
-
-fn charset_runs_to_props(charsets: Vec<(usize, usize, String)>) -> Vec<TextPropertySpan> {
-    charsets
-        .into_iter()
-        .map(|(start, end, charset)| TextPropertySpan {
-            start,
-            end,
-            props: vec![(
-                PropertyName::symbol("charset"),
-                Value::Symbol(charset.into()),
-            )],
-        })
-        .collect()
 }
 
 pub(crate) fn insert_file_contents(
@@ -1852,7 +1842,7 @@ pub(crate) fn insert_file_contents(
                 let (begv, zv) = (buffer.point_min(), buffer.point_max());
                 let old = StringLike {
                     text: buffer.buffer_string(),
-                    props: Vec::new(),
+                    props: None,
                     multibyte: true,
                     extended_chars: buffer.substring_extended_chars(begv, zv),
                 };
@@ -1861,7 +1851,7 @@ pub(crate) fn insert_file_contents(
             let new_chars = text.chars().collect::<Vec<_>>();
             let new_codes = StringLike {
                 text: text.clone(),
-                props: Vec::new(),
+                props: None,
                 multibyte: true,
                 extended_chars: extended.clone(),
             }
@@ -1925,7 +1915,7 @@ pub(crate) fn insert_file_contents(
                 crate::lisp::primitives::insert_text_with_hooks(
                     interp,
                     &replacement,
-                    &[],
+                    None,
                     &replacement_extended,
                     false,
                     false,
@@ -1953,7 +1943,7 @@ pub(crate) fn insert_file_contents(
         crate::lisp::primitives::insert_text_with_hooks(
             interp,
             &text,
-            &charset_props,
+            charset_props.as_ref(),
             &extended,
             false,
             false,

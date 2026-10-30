@@ -712,7 +712,7 @@ define_dispatch!(
                         // longhand as multibyte, including ASCII longhand.
                         Ok(make_shared_string_value_with_multibyte(
                             symbol_name.clone(),
-                            Vec::new(),
+                            None,
                             true,
                         ))
                     } else {

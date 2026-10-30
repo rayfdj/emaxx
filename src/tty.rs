@@ -4914,8 +4914,14 @@ fn redraw_with_echo_policy(
                 let end = plan.window_end.min(buffer.point_max());
                 let from = plan.top_pos.clamp(buffer.point_min(), end);
                 let mut used: Vec<(usize, bool, usize)> = Vec::new();
-                for span in buffer.substring_property_spans(from, end) {
-                    let position = from + span.start;
+                let mut starts = Vec::new();
+                let _ = buffer.try_for_each_interval(from, end, |start, _, plist| {
+                    if !plist.is_nil() {
+                        starts.push(start.max(from));
+                    }
+                    Ok::<(), ()>(())
+                });
+                for position in starts {
                     let Some(display) = buffer.text_property_at(position, "display") else {
                         continue;
                     };

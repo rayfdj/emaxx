@@ -2309,7 +2309,7 @@ pub(crate) fn internal_default_process_filter(
         insert_text_with_hooks(
             interp,
             &text.text,
-            &text.props,
+            text.props.as_ref(),
             &text.extended_chars,
             false,
             true,
@@ -2389,7 +2389,7 @@ pub(crate) fn internal_default_process_sentinel(
     // process.c's four insertions, each through the change protocol.
     let inserted = insert_with_read_only_cleared(interp, buffer_id, env, |interp, env| {
         for text in ["\nProcess ", process_name.as_str(), " ", message] {
-            insert_text_with_hooks(interp, text, &[], &[], false, false, env)?;
+            insert_text_with_hooks(interp, text, None, &[], false, false, env)?;
         }
         Ok(())
     });
@@ -2771,7 +2771,7 @@ fn decode_process_bytes_at_point(
     insert_text_before_point(
         interp,
         &decoded.text,
-        &props,
+        props.as_ref(),
         &decoded.extended,
         produced,
         env,

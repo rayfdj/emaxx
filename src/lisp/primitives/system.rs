@@ -1645,7 +1645,7 @@ pub(crate) fn encode_file_name(
                 interp,
                 &StringLike {
                     text: name.to_string(),
-                    props: Vec::new(),
+                    props: None,
                     multibyte: true,
                     extended_chars: Vec::new(),
                 },
@@ -1715,7 +1715,7 @@ pub(crate) fn decode_file_name(
     if coding == "utf-8-unix" || (coding == "utf-8" && !bytes.contains(&b'\r')) {
         return Ok(make_shared_string_value_with_multibyte(
             super::decode_utf8_bytes(bytes),
-            Vec::new(),
+            None,
             true,
         ));
     }
@@ -2259,11 +2259,7 @@ pub(crate) fn directory_files(
         let name = if full {
             let multibyte =
                 directory_multibyte || string_like(&name).is_some_and(|string| string.multibyte);
-            make_shared_string_value_with_multibyte(
-                format!("{prefix}{text}"),
-                Vec::new(),
-                multibyte,
-            )
+            make_shared_string_value_with_multibyte(format!("{prefix}{text}"), None, multibyte)
         } else {
             name
         };

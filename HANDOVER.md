@@ -9163,6 +9163,72 @@ setup_process_coding_systems's check now refuses). A 13-form
   (190); `mapcar' of a byte-compiled lambda over 50 strings 35,707 to
   29,409 (17,252), the rest of that gap the call into the lambda.
   Local validation with round 170 (above).
+- **Round 172: text properties on intervals.c's intervals.** A string
+  held its properties as spans, each a Rust vector of name and value
+  pairs, and a buffer as such spans re-merged with their neighbours at
+  every change, beside an interval tree rebuilt for lookups.
+  `text-properties-at' built a new plist at each call, so two calls at
+  one position never returned the same list and a `setcar' on it
+  changed nothing; neighbours with equal properties merged where GNU
+  keeps them apart (`put-text-property' of `face' over [0, 2) and then
+  [2, 4) printed one interval, GNU two); a property added to an interval
+  went on the end of its plist, where add_properties conses it on the
+  front; `propertize', `concat' and `substring' built their plists in
+  other orders; `object-intervals' showed the merged spans and none of
+  the empty intervals GNU keeps; an insertion's stickiness was read from
+  the merged spans. `src/intervals.rs' now holds an object's intervals
+  as GNU's tree does: they cover the text ([1, Z) of a buffer,
+  [0, SCHARS) of a string), each with the Lisp plist `text-properties-at'
+  returns. The algorithms are textprop.c's and intervals.c's:
+  add_properties (a changed value set in place, a new property consed
+  on the front), remove_properties, set_properties, add_text_properties_1
+  and set_text_properties_1 (which alone merges, the intervals it
+  changed among themselves), remove_text_properties, the prepending and
+  appending of `add-face-text-property', lookup_char_property (category,
+  `char-property-alias-alist', `default-text-properties'),
+  offset_intervals for an insertion (adjust_intervals_for_insertion's
+  stickiness, its reading of `text-property-default-nonsticky' included,
+  and merge_properties_sticky) and for a deletion (which drops only the
+  intervals left empty), graft_intervals_into_buffer, copy_intervals
+  (with its test that copies nothing of a range inside one empty
+  interval), make_buffer_string_both's (no intervals for text without
+  properties, which buffer-substring, the deleted text and the undo
+  list's deletions now share), text_property_list and
+  add_text_properties_from_list for `concat', copy_text_properties for
+  `substring', compare_string_intervals and hash_interval for
+  `equal-including-properties' and its hash, print_interval and
+  print_prune_string_charset for printing, and the reader's
+  Fset_text_properties for `#("..." ...)'. replace_range offsets the
+  intervals by the net change and grafts the new text's, so
+  `replace-match' leaves the intervals GNU leaves; a property change in
+  a buffer records `(nil PROP VAL BEG . END)' for each interval it
+  changes, as record_property_change does. Casing a unibyte string
+  copies its intervals with their plists, as do_casify_unibyte_string's
+  Fcopy_sequence does, and casing a multibyte one leaves the new string
+  without intervals (do_casify_multibyte_string's make_multibyte_string),
+  where Emaxx had kept them whenever the character count stayed the
+  same. The image dumps an object's intervals as their count, the end
+  and each start with its plist. A string's intervals take one
+  allocation for up to three of them:
+  `propertize' of a three-character string costs 1,612 instructions a
+  call, 2,297 before (GNU 1,082), and `get-text-property' 630 (566).
+  Five oracle tests compare 91 forms against GNU 30.2: boundaries and
+  plist order after each property primitive on strings and buffers, the
+  plists' identity, insertion with and without inheritance at interval
+  boundaries and inside them, stickiness and the property variables,
+  undo records of property changes and of propertized deletions, the
+  reader and printer, and the intervals left by `subst-char-in-region',
+  `upcase-region', `replace-match', `transpose-regions',
+  `replace-buffer-contents', `insert-buffer-substring', `string-replace',
+  `replace-regexp-in-string', `upcase', `string-trim' and `format'; the
+  casing test compares against GNU too, a multibyte string and the
+  plists' identity included.
+  `length' classifies its argument once: the reader's record literal,
+  tested before the type dispatch with a copy of its slots, is one case
+  of it now; a list's length costs 219 instructions a call (231 before,
+  GNU 279) and a string's 137 (145, GNU 191). Local validation: the
+  grouped gate's 3,330 library tests, the seven integration suites,
+  clippy with every target and feature, rustfmt and `git diff --check'.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -10273,7 +10339,28 @@ excess spread over the helpers the release build inlines and the gate
 build's 16 code generation units leave out of line (thread-local
 accessors, `string_bytes', `Value::cons') and its checks.
 
+**On `8c13a3f`** (round 169): full Rust gate passed (run 40957726561);
+frozen (run 40957731039) matched all 7,928 outcomes on its first
+attempt. Its timings: setup 75.8 s against 62.2 s (1.217), test bodies
+243.3 s against 260.4 s (0.934), in all 0.982.
+
+**On `8e6ae86`** (rounds 170 and 171): full Rust gate passed (run
+40964311945); frozen (run 40964315843) matched all 7,928 outcomes on
+its first attempt. Its timings: setup 71.1 s against 60.4 s (1.178),
+test bodies 236.0 s against 251.2 s (0.939), in all 0.984.
+
 **Findings recorded, not fixed:**
+- **The gate build's excess over the release build is its checks, not
+  its link (round 172).** Built with fat LTO and one code generation
+  unit, the gate profile runs the setup of xfaces-tests in 640M
+  instructions and mule-tests in 30.88G, against 659M and 32.18G as it
+  is configured (thin LTO, sixteen units) and 517M and 21.06G in the
+  release build: whole-program optimisation would take back an eighth
+  of the excess (13% and 12%), the rest being the debug assertions,
+  overflow checks and checked collector the frozen run times. In the
+  release build icalendar-tests runs 4.54G instructions against GNU's
+  4.81G and electric-tests 7.03G against 6.62G, so their places among
+  the frozen run's slowest files are the gate build's.
 - **Where the frozen run's gate build spends past the release build
   (round 168).** The frozen run times the gate profile (debug
   assertions, overflow checks, the checked collector), which in

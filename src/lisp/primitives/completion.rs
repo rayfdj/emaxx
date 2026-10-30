@@ -479,21 +479,22 @@ pub(crate) fn substitute_object_recurse(
             Ok(*subtree)
         }
         Kind::StringObject(state) => {
-            if state.borrow().props.is_empty() {
-                return Ok(*subtree);
-            }
-            let mut state = state.borrow_mut();
-            for span in &mut state.props {
-                for (name, prop_value) in &mut span.props {
-                    *name = crate::lisp::types::PropertyName::new(substitute_object_recurse(
-                        interp,
-                        object,
-                        placeholder,
-                        &name.value(),
-                        seen,
-                    )?);
-                    *prop_value =
-                        substitute_object_recurse(interp, object, placeholder, prop_value, seen)?;
+            // substitute_in_interval: each interval's plist.
+            let intervals = state.borrow_mut().props.take();
+            if let Some(mut intervals) = intervals {
+                let mut failure = None;
+                intervals.rewrite_plists(|plist| {
+                    match substitute_object_recurse(interp, object, placeholder, &plist, seen) {
+                        Ok(value) => value,
+                        Err(error) => {
+                            failure.get_or_insert(error);
+                            plist
+                        }
+                    }
+                });
+                state.borrow_mut().props.set(Some(intervals));
+                if let Some(error) = failure {
+                    return Err(error);
                 }
             }
             Ok(*subtree)
@@ -1374,7 +1375,7 @@ pub(crate) fn internal_complete_buffer(
             .iter()
             .map(|(id, name)| {
                 Value::cons(
-                    string_like_value(name.clone(), Vec::new()),
+                    string_like_value(name.clone(), None),
                     interp.buffer_value(*id).expect("live buffer object"),
                 )
             })
@@ -1621,11 +1622,10 @@ pub(crate) fn activate_minibuffer(
     let initial_input = &initial_input;
     let initial_string = string_like(initial_input).unwrap_or_else(|| StringLike {
         text: String::new(),
-        props: Vec::new(),
+        props: None,
         multibyte: false,
         extended_chars: Vec::new(),
     });
-    let initial_length = initial_string.text.chars().count();
     let saved_windows = interp.snapshot_window_configuration();
     let depth = interp.minibuffer_depth().saturating_add(1);
     let (buffer_id, reused) = get_minibuffer(interp, depth);
@@ -1731,14 +1731,18 @@ pub(crate) fn activate_minibuffer(
             super::call(interp, "insert", &[*initial_input], env)?;
         } else {
             let initial_start = interp.buffer.borrow().point();
-            interp.buffer.borrow_mut().insert(&initial_string.text);
-            for span in &initial_string.props {
-                interp.buffer.borrow_mut().graft_text_properties(
-                    initial_start + span.start,
-                    initial_start + span.end.min(initial_length),
-                    &span.props,
-                );
-            }
+            let props = match &initial_string.props {
+                Some(intervals) => crate::buffer::InsertedProperties::Intervals {
+                    source: intervals,
+                    inherit: false,
+                },
+                None => crate::buffer::InsertedProperties::PLAIN,
+            };
+            let vars = interp.insertion_property_variables();
+            interp
+                .buffer
+                .borrow_mut()
+                .insert_with(&initial_string.text, props, false, &vars);
             interp
                 .buffer
                 .borrow_mut()

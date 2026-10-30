@@ -299,7 +299,7 @@ define_dispatch!(
                     })?;
                     (
                         base.full_buffer_string(),
-                        base.full_property_spans(),
+                        base.intervals().cloned(),
                         base.point(),
                         base.mark(),
                         base.mark_active_value(),
@@ -330,11 +330,10 @@ define_dispatch!(
                         }
                         buffer.set_mark_active_value(mark_active);
                     }
-                    // Property spans are 1-based buffer positions, the
-                    // same coordinates set_text_properties consumes.
-                    for span in props {
-                        buffer.graft_text_properties(span.start, span.end, &span.props);
-                    }
+                    // GNU's indirect buffer shares its base's text and so
+                    // its intervals: the same intervals here, their plists
+                    // the base's own.
+                    buffer.set_intervals(props);
                     drop(buffer);
                     if clone {
                         // buffer.c:copy_overlays walks ascending intervals,

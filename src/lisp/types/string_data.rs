@@ -5,7 +5,7 @@
 //! Rust text and its non-Unicode side list are transient consumer views;
 //! neither is retained beside the authoritative bytes.
 
-use super::{Kind, LispError, StringObjectRef, StringPropertySpan, Value};
+use super::{Kind, LispError, StringObjectRef, Value};
 use crate::lisp::alloc::{
     PendingStringData, StringAllocation, retire_string_data, string_data_size,
 };
@@ -130,13 +130,13 @@ impl StringObjectRef {
         characters: usize,
         multibyte: bool,
         kind: StringAllocation,
-        initialize: impl FnOnce(*mut u8) -> Vec<StringPropertySpan>,
+        initialize: impl FnOnce(*mut u8) -> StringProperties,
     ) -> Result<Self, StringError> {
         validate_size(nbytes)?;
         crate::lisp::alloc::allocate_string(characters, multibyte, kind, |state| {
             assert!(nbytes < isize::MAX as usize - 16 && (multibyte || characters == nbytes));
             if nbytes == 0 {
-                state.props = initialize(state.data.as_ptr()).into();
+                state.props = initialize(state.data.as_ptr());
                 return Ok(());
             }
             // SAFETY: STATE is exclusively borrowed at its final address.
@@ -146,7 +146,7 @@ impl StringObjectRef {
             state.size = characters;
             state.size_byte = if multibyte { nbytes as isize } else { -1 };
             state.data = data.install();
-            state.props = props.into();
+            state.props = props;
             Ok(())
         })
     }
@@ -155,7 +155,7 @@ impl StringObjectRef {
         bytes: Vec<u8>,
         characters: usize,
         multibyte: bool,
-        props: Vec<StringPropertySpan>,
+        props: StringProperties,
     ) -> Self {
         Self::from_slice(
             &bytes,
@@ -170,7 +170,7 @@ impl StringObjectRef {
         bytes: &[u8],
         characters: usize,
         multibyte: bool,
-        props: Vec<StringPropertySpan>,
+        props: StringProperties,
         kind: StringAllocation,
     ) -> Self {
         Self::try_from_slice(bytes, characters, multibyte, props, kind)
@@ -181,7 +181,7 @@ impl StringObjectRef {
         bytes: &[u8],
         characters: usize,
         multibyte: bool,
-        props: Vec<StringPropertySpan>,
+        props: StringProperties,
         kind: StringAllocation,
     ) -> Result<Self, StringError> {
         Self::from_data(bytes.len(), characters, multibyte, kind, |data| {
@@ -217,7 +217,7 @@ impl StringObjectRef {
                     unsafe { ptr::copy_nonoverlapping(encoded.as_ptr(), data.add(offset), width) };
                     offset += width;
                 }
-                Vec::new()
+                StringProperties::default()
             },
         )
     }
@@ -252,14 +252,14 @@ impl StringObjectRef {
                         }
                     }
                 }
-                Vec::new()
+                StringProperties::default()
             },
         )
     }
 
     pub(crate) fn from_unibyte(bytes: Vec<u8>) -> Self {
         let characters = bytes.len();
-        Self::from_encoded(bytes, characters, false, Vec::new())
+        Self::from_encoded(bytes, characters, false, StringProperties::default())
     }
 
     /// alloc.c:make_string classifies a C byte sequence as multibyte only
@@ -290,7 +290,7 @@ impl StringObjectRef {
                     bytes,
                     bytes.len(),
                     false,
-                    Vec::new(),
+                    StringProperties::default(),
                     StringAllocation::Ordinary,
                 );
             };
@@ -301,7 +301,7 @@ impl StringObjectRef {
             bytes,
             characters,
             characters != bytes.len(),
-            Vec::new(),
+            StringProperties::default(),
             StringAllocation::Ordinary,
         )
     }
@@ -326,12 +326,18 @@ impl StringObjectRef {
         kind: crate::lisp::alloc::StringAllocation,
     ) -> Result<Self, StringError> {
         check_character_count(bytes, characters, multibyte)?;
-        Self::try_from_slice(bytes, characters, multibyte, Vec::new(), kind)
+        Self::try_from_slice(
+            bytes,
+            characters,
+            multibyte,
+            StringProperties::default(),
+            kind,
+        )
     }
 
     pub(crate) fn from_text(
         text: String,
-        props: Vec<StringPropertySpan>,
+        props: StringProperties,
         multibyte: bool,
         extended_chars: Vec<(usize, u32)>,
     ) -> Self {
@@ -359,7 +365,7 @@ impl StringObjectRef {
                 text.as_bytes(),
                 text.len(),
                 false,
-                Vec::new(),
+                StringProperties::default(),
                 StringAllocation::Ordinary,
             );
         }
@@ -370,7 +376,7 @@ impl StringObjectRef {
     /// string's data.
     pub(crate) fn from_text_ref(
         text: &str,
-        props: Vec<StringPropertySpan>,
+        props: StringProperties,
         multibyte: bool,
         extended_chars: &[(usize, u32)],
     ) -> Self {
@@ -807,20 +813,24 @@ impl SharedStringState {
         self.text_parts().0
     }
 
+    /// fns.c:Fcopy_sequence of a string: its bytes, and copy_intervals of
+    /// its intervals, every one kept with a copy of its plist.
     pub(crate) fn copy_with_properties(&self) -> StringObjectRef {
-        let copy = StringObjectRef::from_slice(
+        let props = match self.props.intervals() {
+            Some(intervals) => StringProperties::new(
+                intervals
+                    .copy(0, self.len())
+                    .expect("a string's plists are lists"),
+            ),
+            None => StringProperties::default(),
+        };
+        StringObjectRef::from_slice(
             self.bytes(),
             self.len(),
             self.is_multibyte(),
-            self.props.to_vec(),
+            props,
             StringAllocation::Ordinary,
-        );
-        // fns.c Fcopy_sequence copies the intervals, every plist of which
-        // may be empty.
-        if self.props.is_empty() && self.props.has_intervals() && self.len() != 0 {
-            copy.borrow_mut().props = StringProperties::empty_tree();
-        }
-        copy
+        )
     }
 
     pub(crate) fn copy_without_properties(
@@ -831,14 +841,22 @@ impl SharedStringState {
             self.bytes(),
             self.len(),
             self.is_multibyte(),
-            Vec::new(),
+            StringProperties::default(),
             kind,
         )
     }
 
-    /// fns.c:Fsubstring copies the actual byte range and preserves encoding.
+    /// fns.c:Fsubstring copies the actual byte range and preserves encoding,
+    /// then (with PROPERTIES) the properties of [FROM, TO) as
+    /// copy_text_properties does: each interval with a plist added to the
+    /// new string by Fadd_text_properties, the last one first.
     /// The primitive validates both character bounds before reaching here.
-    pub(crate) fn substring(&self, from: usize, to: usize, properties: bool) -> StringObjectRef {
+    pub(crate) fn substring(
+        &self,
+        from: usize,
+        to: usize,
+        properties: bool,
+    ) -> Result<StringObjectRef, LispError> {
         assert!(from <= to && to <= self.len());
         let offset = |index| {
             if index == self.len() {
@@ -848,30 +866,32 @@ impl SharedStringState {
             }
         };
         let bytes = &self.bytes()[offset(from)..offset(to)];
-        let props = if properties {
-            self.props
-                .iter()
-                .filter_map(|span| {
-                    let start = span.start.max(from);
-                    let end = span.end.min(to);
-                    (start < end).then(|| StringPropertySpan {
-                        start: start - from,
-                        end: end - from,
-                        // copy_text_properties adds each pair at the head.
-                        props: span.props.iter().rev().cloned().collect(),
-                    })
-                })
-                .collect()
-        } else {
-            Vec::new()
+        let stuff = match self.props.intervals() {
+            Some(intervals) if properties && from < to => {
+                crate::intervals::copy_text_properties_list(intervals, from, to, 0)?
+            }
+            _ => Vec::new(),
         };
-        StringObjectRef::from_slice(
+        let mut props = StringProperties::default();
+        let length = to - from;
+        for (start, end, plist) in stuff {
+            crate::intervals::add_string_text_properties(
+                &mut props,
+                length,
+                start,
+                end,
+                plist,
+                crate::intervals::PropertySetType::Replace,
+                true,
+            )?;
+        }
+        Ok(StringObjectRef::from_slice(
             bytes,
-            to - from,
+            length,
             self.is_multibyte(),
             props,
             StringAllocation::Ordinary,
-        )
+        ))
     }
 
     pub(crate) fn character_at(&self, index: usize) -> Option<i64> {

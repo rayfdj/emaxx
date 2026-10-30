@@ -3,7 +3,8 @@
 //! walk from find_interval with `textget' values compared by EQ.
 
 use super::*;
-use crate::buffer::{PropertyInterval, PropertyIntervals, PropertySpan};
+use crate::buffer::{PropertyInterval, PropertyIntervals};
+use crate::intervals::{self, PropertySetType};
 use crate::lisp::types::{Kind, PropertyKey, PropertyName};
 
 /// The object a text-property search names: a buffer (nil the current
@@ -48,10 +49,10 @@ fn args_out_of_range(begin: Value, end: Value) -> LispError {
 /// result is measured against (BEGV and ZV of a buffer, 0 and the length
 /// of a string) and its intervals, None where find_interval would get no
 /// tree (none, or no accessible text).
-struct SearchText<'a, S> {
+struct SearchText<'a> {
     min: usize,
     max: usize,
-    intervals: Option<PropertyIntervals<'a, S>>,
+    intervals: Option<PropertyIntervals<'a>>,
 }
 
 /// F over OBJECT's text, its buffer or string borrowed meanwhile.
@@ -81,8 +82,11 @@ fn with_search_text<R>(
             f(&SearchText {
                 min: 0,
                 max: len,
-                intervals: (state.props.has_intervals() && len > 0)
-                    .then(|| PropertyIntervals::new(&state.props[..], 0, len)),
+                intervals: state
+                    .props
+                    .intervals()
+                    .filter(|_| len > 0)
+                    .map(PropertyIntervals::new),
             })
         }
     }
@@ -95,11 +99,11 @@ trait SearchWalk {
     fn has_intervals(&self) -> bool;
     /// find_interval: the interval holding POS, the last one for POS at
     /// the end of the text; None without intervals.
-    fn find(&self, pos: usize) -> Option<PropertyInterval<'_>>;
+    fn find(&self, pos: usize) -> Option<PropertyInterval>;
     /// next_interval.
-    fn next(&self, interval: &PropertyInterval<'_>) -> Option<PropertyInterval<'_>>;
+    fn next(&self, interval: &PropertyInterval) -> Option<PropertyInterval>;
     /// previous_interval.
-    fn previous(&self, interval: &PropertyInterval<'_>) -> Option<PropertyInterval<'_>>;
+    fn previous(&self, interval: &PropertyInterval) -> Option<PropertyInterval>;
     /// The first interval from FROM (find_interval) on whose start is
     /// below END and whose `textget' of PROP is EQ to VALUE (MATCH) or not:
     /// its start, at least FROM.
@@ -148,7 +152,7 @@ fn textget_eq(
     )
 }
 
-impl<S: PropertySpan> SearchWalk for SearchText<'_, S> {
+impl SearchWalk for SearchText<'_> {
     fn min(&self) -> usize {
         self.min
     }
@@ -161,15 +165,15 @@ impl<S: PropertySpan> SearchWalk for SearchText<'_, S> {
         self.intervals.is_some()
     }
 
-    fn find(&self, pos: usize) -> Option<PropertyInterval<'_>> {
+    fn find(&self, pos: usize) -> Option<PropertyInterval> {
         self.intervals.as_ref().map(|intervals| intervals.find(pos))
     }
 
-    fn next(&self, interval: &PropertyInterval<'_>) -> Option<PropertyInterval<'_>> {
+    fn next(&self, interval: &PropertyInterval) -> Option<PropertyInterval> {
         self.intervals.as_ref()?.next(interval)
     }
 
-    fn previous(&self, interval: &PropertyInterval<'_>) -> Option<PropertyInterval<'_>> {
+    fn previous(&self, interval: &PropertyInterval) -> Option<PropertyInterval> {
         self.intervals.as_ref()?.previous(interval)
     }
 
@@ -413,10 +417,10 @@ pub(crate) fn validate_interval_range(
 /// The plist of the character at POS in TEXT (a position
 /// validate_interval_range accepted), the empty one without intervals or
 /// at the very end of the object, where no character follows.
-fn plist_at(text: &dyn SearchWalk, pos: usize) -> &[(PropertyName, Value)] {
+fn plist_at(text: &dyn SearchWalk, pos: usize) -> Value {
     match text.find(pos) {
         Some(interval) if pos != interval.end => interval.plist,
-        _ => &[],
+        _ => Value::Nil,
     }
 }
 
@@ -429,7 +433,8 @@ pub(crate) fn text_properties_at(
     let object = search_object(interp, object)?;
     with_search_text(interp, object, |text| {
         let pos = scan_position(interp, text, position)?;
-        Ok(plist_value(plist_at(text, pos)))
+        // The interval's own plist, as Ftext_properties_at returns it.
+        Ok(plist_at(text, pos))
     })
 }
 
@@ -478,7 +483,7 @@ pub(crate) fn next_property_change(
         };
         let mut next = text.next(&here);
         while let Some(current) = next
-            && crate::buffer::text_property_plists_eq(here.plist, current.plist)
+            && intervals::intervals_equal(here.plist, current.plist)
             && limit.is_none_or(|limit| (current.start as i64) < limit)
         {
             next = text.next(&current);
@@ -514,7 +519,7 @@ pub(crate) fn previous_property_change(
         }
         let mut previous = text.previous(&here);
         while let Some(current) = previous
-            && crate::buffer::text_property_plists_eq(current.plist, here.plist)
+            && intervals::intervals_equal(current.plist, here.plist)
             && limit.is_none_or(|limit| (current.end as i64) > limit)
         {
             previous = text.previous(&current);
@@ -916,75 +921,79 @@ pub(crate) fn previous_single_char_property_change(
     })
 }
 
-/// textprop.c:validate_plist: nil no properties, a list its pairs (one
-/// of an odd length "Odd length text property list"), any other object
-/// that property with nil.
-fn validate_plist(list: Value) -> Result<Vec<(PropertyName, Value)>, LispError> {
-    match list.kind() {
-        Kind::Nil => Ok(Vec::new()),
-        Kind::Cons(_) => {
-            let mut pairs = Vec::new();
-            let mut seen = crate::lisp::types::CycleGuard::new();
-            let mut tail = list;
-            while let Kind::Cons(cell) = tail.kind() {
-                let Kind::Cons(rest) = cell.cdr.get().kind() else {
-                    return Err(LispError::Signal("Odd length text property list".into()));
-                };
-                pairs.push((PropertyName::new(cell.car.get()), rest.car.get()));
-                if seen.step(crate::lisp::types::ConsCell::identity(&cell)) {
-                    return Err(LispError::SignalValue(Value::list([
-                        Value::symbol("circular-list"),
-                        list,
-                    ])));
-                }
-                tail = rest.cdr.get();
-            }
-            Ok(pairs)
-        }
-        _ => Ok(vec![(PropertyName::new(list), Value::Nil)]),
-    }
+/// The string STRING's state.
+fn string_state(string: &Value) -> crate::lisp::types::StringObjectRef {
+    let Kind::StringObject(state) = string.kind() else {
+        unreachable!("a string target is a string");
+    };
+    state
 }
 
-/// The names of the plist PROPERTIES as remove_properties walks it, the
-/// car of every other cons (Fcdr of an improper tail a `listp' error).
-fn plist_names(properties: Value) -> Result<Vec<PropertyName>, LispError> {
-    let mut names = Vec::new();
-    let mut seen = crate::lisp::types::CycleGuard::new();
-    let mut tail = properties;
-    while let Kind::Cons(cell) = tail.kind() {
-        names.push(PropertyName::new(cell.car.get()));
-        tail = match cell.cdr.get().kind() {
-            Kind::Cons(rest) => rest.cdr.get(),
-            Kind::Nil => Value::Nil,
-            _ => return Err(wrong_type_argument("listp", cell.cdr.get())),
+/// textprop.c:add_text_properties_1 (Fadd_text_properties with
+/// TEXT_PROPERTY_REPLACE, Fadd_face_text_property with a prepend or an
+/// append): PROPERTIES over [START, END) of OBJECT, a buffer one with that
+/// buffer current and through modify_text_properties and
+/// signal_after_change when a value changes.  Whether one did.
+#[allow(clippy::too_many_arguments)]
+fn add_text_properties_1(
+    interp: &mut Interpreter,
+    start: &Value,
+    end: &Value,
+    properties: Value,
+    object: Value,
+    set_type: PropertySetType,
+    destructive: bool,
+    env: &mut Env,
+) -> Result<bool, LispError> {
+    with_object_buffer(interp, &object, |interp| {
+        let properties = intervals::validate_plist(properties)?;
+        if properties.is_nil() {
+            return Ok(false);
+        }
+        let target = search_object(interp, object)?;
+        let Some((start, end, _)) = validate_interval_range(interp, target, start, end)? else {
+            return Ok(false);
         };
-        if seen.step(crate::lisp::types::ConsCell::identity(&cell)) {
-            break;
+        match target {
+            SearchObject::String(string) => {
+                let state = string_state(&string);
+                if !state.borrow().props.has_intervals() {
+                    state.check_impure()?;
+                }
+                let len = state.borrow().len();
+                let mut borrowed = state.borrow_mut();
+                intervals::add_string_text_properties(
+                    &mut borrowed.props,
+                    len,
+                    start,
+                    end,
+                    properties,
+                    set_type,
+                    destructive,
+                )
+            }
+            SearchObject::Buffer(id) => modify_buffer_text_properties(
+                interp,
+                id,
+                start,
+                end,
+                &|buffer| buffer.would_add_text_properties(start, end, properties),
+                &|buffer| {
+                    let _ = buffer.add_text_properties_range(
+                        start,
+                        end,
+                        properties,
+                        set_type,
+                        destructive,
+                    );
+                },
+                env,
+            ),
         }
-    }
-    Ok(names)
+    })
 }
 
-/// The elements of LIST up to its first non-cons tail.
-fn list_names(list: Value) -> Vec<PropertyName> {
-    let mut names = Vec::new();
-    let mut seen = crate::lisp::types::CycleGuard::new();
-    let mut tail = list;
-    while let Kind::Cons(cell) = tail.kind() {
-        names.push(PropertyName::new(cell.car.get()));
-        if seen.step(crate::lisp::types::ConsCell::identity(&cell)) {
-            break;
-        }
-        tail = cell.cdr.get();
-    }
-    names
-}
-
-/// textprop.c:add_text_properties_1 with TEXT_PROPERTY_REPLACE
-/// (Fadd_text_properties, Fput_text_property): PROPERTIES over
-/// [START, END) of OBJECT, a buffer one with that buffer current and
-/// through modify_text_properties and signal_after_change when a value
-/// changes.  Whether one did.
+/// textprop.c:Fadd_text_properties and Fput_text_property.
 pub(crate) fn add_text_properties(
     interp: &mut Interpreter,
     start: &Value,
@@ -993,49 +1002,41 @@ pub(crate) fn add_text_properties(
     object: Value,
     env: &mut Env,
 ) -> Result<bool, LispError> {
-    with_object_buffer(interp, &object, |interp| {
-        let props = validate_plist(properties)?;
-        if props.is_empty() {
-            return Ok(false);
-        }
-        let target = search_object(interp, object)?;
-        let Some((start, end, _)) = validate_interval_range(interp, target, start, end)? else {
-            return Ok(false);
-        };
-        match target {
-            SearchObject::String(string) => add_string_properties(&string, start, end, &props),
-            SearchObject::Buffer(id) => modify_buffer_text_properties(
-                interp,
-                id,
-                start,
-                end,
-                &|buffer| properties_would_add(buffer, start, end, &props),
-                &|buffer| buffer.add_text_properties(start, end, &props),
-                env,
-            ),
-        }
-    })
+    add_text_properties_1(
+        interp,
+        start,
+        end,
+        properties,
+        object,
+        PropertySetType::Replace,
+        true,
+        env,
+    )
 }
 
-/// textprop.c:add_properties with TEXT_PROPERTY_REPLACE over [START, END)
-/// of the string STRING: each of PROPS replaces its value in place, or is
-/// consed onto the head of a plist without it.  Whether one changed.
+/// Fadd_text_properties of PROPERTIES over [START, END) of the string
+/// STRING (the range validated): whether a value changed.
 pub(crate) fn add_string_properties(
     string: &Value,
     start: usize,
     end: usize,
-    props: &[(PropertyName, Value)],
+    properties: Value,
 ) -> Result<bool, LispError> {
-    modify_shared_string_properties(string, start, end, |mut current| {
-        for (name, value) in props {
-            if let Some((_, existing)) = current.iter_mut().find(|(key, _)| key == name) {
-                *existing = *value;
-            } else {
-                current.insert(0, (*name, *value));
-            }
-        }
-        current
-    })
+    let state = string_state(string);
+    if !state.borrow().props.has_intervals() {
+        state.check_impure()?;
+    }
+    let len = state.borrow().len();
+    let mut borrowed = state.borrow_mut();
+    intervals::add_string_text_properties(
+        &mut borrowed.props,
+        len,
+        start,
+        end,
+        properties,
+        PropertySetType::Replace,
+        true,
+    )
 }
 
 /// textprop.c:set_text_properties with a coherent change
@@ -1051,10 +1052,10 @@ pub(crate) fn set_text_properties(
     env: &mut Env,
 ) -> Result<bool, LispError> {
     with_object_buffer(interp, &object, |interp| {
-        let props = validate_plist(properties)?;
+        let properties = intervals::validate_plist(properties)?;
         let target = search_object(interp, object)?;
         // No properties for a whole string: no intervals at all.
-        if props.is_empty()
+        if properties.is_nil()
             && let SearchObject::String(string) = target
             && let Kind::StringObject(state) = string.kind()
             && matches!(start.kind(), Kind::Integer(0))
@@ -1063,21 +1064,32 @@ pub(crate) fn set_text_properties(
             if !state.borrow().props.has_intervals() {
                 return Ok(false);
             }
-            state.check_impure()?;
-            state.borrow_mut().props = Default::default();
+            state.borrow_mut().props.set(None);
             return Ok(true);
         }
-        let Some((start, end, intervals)) = validate_interval_range(interp, target, start, end)?
+        let Some((start, end, has_intervals)) =
+            validate_interval_range(interp, target, start, end)?
         else {
             return Ok(false);
         };
-        if !intervals && props.is_empty() {
+        if !has_intervals && properties.is_nil() {
             return Ok(false);
         }
         match target {
             SearchObject::String(string) => {
-                modify_shared_string_properties(&string, start, end, |_| props.clone())?;
-                Ok(true)
+                let state = string_state(&string);
+                if !has_intervals {
+                    state.check_impure()?;
+                }
+                let len = state.borrow().len();
+                let mut borrowed = state.borrow_mut();
+                intervals::set_string_text_properties(
+                    &mut borrowed.props,
+                    len,
+                    start,
+                    end,
+                    properties,
+                )
             }
             SearchObject::Buffer(id) => modify_buffer_text_properties(
                 interp,
@@ -1085,11 +1097,61 @@ pub(crate) fn set_text_properties(
                 start,
                 end,
                 &|_| true,
-                &|buffer| buffer.set_text_properties(start, end, &props),
+                &|buffer| {
+                    let _ = buffer.set_text_properties_range(start, end, properties, true);
+                },
                 env,
             ),
         }
     })
+}
+
+/// Fset_text_properties of PROPERTIES over [START, END) of the string
+/// STRING, its bounds fixnums: the reader's for `#("..." ...)'.
+pub(crate) fn set_string_text_properties_value(
+    string: &Value,
+    start: &Value,
+    end: &Value,
+    properties: Value,
+) -> Result<bool, LispError> {
+    let state = string_state(string);
+    let properties = intervals::validate_plist(properties)?;
+    let len = state.borrow().len();
+    let (Kind::Integer(b), Kind::Integer(e)) = (start.kind(), end.kind()) else {
+        let culprit = if matches!(start.kind(), Kind::Integer(_)) {
+            *end
+        } else {
+            *start
+        };
+        return Err(wrong_type_argument("integer-or-marker-p", culprit));
+    };
+    // No properties for the whole string: no intervals.
+    if properties.is_nil() && b == 0 && e == len as i64 {
+        let had = state.borrow().props.has_intervals();
+        state.borrow_mut().props.set(None);
+        return Ok(had);
+    }
+    if b == e {
+        return Ok(false);
+    }
+    let (b, e) = (b.min(e), b.max(e));
+    if !(0 <= b && e <= len as i64) {
+        return Err(args_out_of_range(*start, *end));
+    }
+    if !state.borrow().props.has_intervals() {
+        if properties.is_nil() {
+            return Ok(false);
+        }
+        state.check_impure()?;
+    }
+    let mut borrowed = state.borrow_mut();
+    intervals::set_string_text_properties(
+        &mut borrowed.props,
+        len,
+        b as usize,
+        e as usize,
+        properties,
+    )
 }
 
 /// textprop.c:Fremove_text_properties (LIST nil, PROPERTIES a plist whose
@@ -1109,87 +1171,49 @@ pub(crate) fn remove_text_properties(
         let Some((start, end, true)) = validate_interval_range(interp, target, start, end)? else {
             return Ok(false);
         };
-        let names = if list {
-            list_names(properties)
+        let (plist, names) = if list {
+            (Value::Nil, properties)
         } else {
-            plist_names(properties)?
+            (properties, Value::Nil)
         };
+        // Fremove_text_properties of a nil plist removes nothing.
+        if !list && properties.is_nil() {
+            return Ok(false);
+        }
         match target {
             SearchObject::String(string) => {
-                modify_shared_string_properties(&string, start, end, |current| {
-                    current
-                        .into_iter()
-                        .filter(|(key, _)| !names.contains(key))
-                        .collect()
-                })
+                let state = string_state(&string);
+                let mut borrowed = state.borrow_mut();
+                let Some(intervals) = borrowed.props.intervals_mut() else {
+                    return Ok(false);
+                };
+                intervals::remove_text_properties_range(
+                    intervals,
+                    start,
+                    end - start,
+                    plist,
+                    names,
+                    &mut intervals::NoRecord,
+                )
             }
             SearchObject::Buffer(id) => modify_buffer_text_properties(
                 interp,
                 id,
                 start,
                 end,
-                &|buffer| properties_would_remove(buffer, start, end, &names),
-                &|buffer| buffer.remove_list_of_text_properties(start, end, &names),
+                &|buffer| buffer.would_remove_text_properties(start, end, plist, names),
+                &|buffer| {
+                    let _ = buffer.remove_text_properties_range(start, end, plist, names);
+                },
                 env,
             ),
         }
     })
 }
 
-/// add_properties' TEXT_PROPERTY_PREPEND or _APPEND of FACE to an
-/// interval's face OLD: a list (but an anonymous face, a plist of
-/// attributes) takes FACE at its head or, copied, its end; a single value
-/// becomes a list of the two.
-fn combine_face(old: Value, face: Value, append: bool) -> Result<Value, LispError> {
-    let is_list = matches!(old.kind(), Kind::Cons(cell)
-        if !matches!(cell.car.get().kind(), Kind::Symbol(name) if name.is_keyword()));
-    Ok(match (is_list, append) {
-        (true, false) => Value::cons(face, old),
-        (true, true) => {
-            let mut items = old.to_vec()?;
-            items.push(face);
-            Value::list(items)
-        }
-        (false, false) => Value::list([face, old]),
-        (false, true) => Value::list([old, face]),
-    })
-}
-
-/// add_properties' new face for an interval whose plist is PLIST: None
-/// where its face is FACE already, else FACE consed on for none, else
-/// combine_face's.
-fn face_update(
-    plist: &[(PropertyName, Value)],
-    face_name: PropertyName,
-    face: Value,
-    append: bool,
-) -> Result<Option<Value>, LispError> {
-    match plist.iter().find(|(name, _)| *name == face_name) {
-        None => Ok(Some(face)),
-        Some((_, old)) if old.word() == face.word() => Ok(None),
-        Some((_, old)) => combine_face(*old, face, append).map(Some),
-    }
-}
-
-/// PLIST with FACE_NAME's value NEW, replaced in place or consed on.
-fn with_face(
-    mut plist: Vec<(PropertyName, Value)>,
-    face_name: PropertyName,
-    new: Value,
-) -> Vec<(PropertyName, Value)> {
-    if let Some((_, existing)) = plist.iter_mut().find(|(key, _)| *key == face_name) {
-        *existing = new;
-    } else {
-        plist.insert(0, (face_name, new));
-    }
-    plist
-}
-
 /// textprop.c:Fadd_face_text_property: add_text_properties_1 of (face
-/// FACE) prepended (APPEND nil) or appended to each interval's face but
-/// the ones whose face is FACE already, not destructively, in one pass
-/// over the intervals after one that finds whether any changes (and
-/// signals what Fappend would of an improper face list).
+/// FACE), prepended (APPEND nil) or appended to each interval's face, not
+/// destructively.
 pub(crate) fn add_face_text_property(
     interp: &mut Interpreter,
     start: &Value,
@@ -1199,65 +1223,14 @@ pub(crate) fn add_face_text_property(
     object: Value,
     env: &mut Env,
 ) -> Result<(), LispError> {
-    let face_name = PropertyName::symbol("face");
-    let update = move |current: Vec<(PropertyName, Value)>| match face_update(
-        &current, face_name, face, append,
-    ) {
-        Ok(Some(new)) => with_face(current, face_name, new),
-        _ => current,
+    let properties = Value::list([Value::symbol("face"), face]);
+    let set_type = if append {
+        PropertySetType::Append
+    } else {
+        PropertySetType::Prepend
     };
-    with_object_buffer(interp, &object, |interp| {
-        let target = search_object(interp, object)?;
-        let Some((start, end, _)) = validate_interval_range(interp, target, start, end)? else {
-            return Ok(());
-        };
-        let mut changes = false;
-        match target {
-            SearchObject::String(string) => {
-                let Kind::StringObject(state) = string.kind() else {
-                    unreachable!("a string target is a string");
-                };
-                {
-                    let state = state.borrow();
-                    let intervals = PropertyIntervals::new(&state.props[..], 0, state.len());
-                    let mut interval = Some(intervals.find(start));
-                    while let Some(current) = interval
-                        && current.start < end
-                    {
-                        changes |= face_update(current.plist, face_name, face, append)?.is_some();
-                        interval = intervals.next(&current);
-                    }
-                }
-                if changes {
-                    modify_shared_string_properties(&string, start, end, update)?;
-                }
-                Ok(())
-            }
-            SearchObject::Buffer(id) => {
-                {
-                    let buffer = interp
-                        .get_buffer_by_id(id)
-                        .ok_or_else(|| LispError::Signal(format!("No buffer with id {id}")))?;
-                    buffer.try_for_each_property_interval(start, end, |_, _, plist| {
-                        changes |= face_update(plist, face_name, face, append)?.is_some();
-                        Ok::<(), LispError>(())
-                    })?;
-                }
-                if changes {
-                    modify_buffer_text_properties(
-                        interp,
-                        id,
-                        start,
-                        end,
-                        &|_| true,
-                        &|buffer| buffer.update_text_properties(start, end, update),
-                        env,
-                    )?;
-                }
-                Ok(())
-            }
-        }
-    })
+    add_text_properties_1(interp, start, end, properties, object, set_type, false, env)?;
+    Ok(())
 }
 
 /// editfns.c:update_buffer_properties: `buffer-access-fontify-functions'

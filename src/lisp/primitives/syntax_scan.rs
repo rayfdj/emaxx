@@ -13,7 +13,7 @@
 //! `syntax-ppss'), since GNU signals when either changes the text.
 
 use super::*;
-use crate::buffer::{PropertyInterval, PropertyIntervals, PropertySpan};
+use crate::buffer::{PropertyInterval, PropertyIntervals};
 use crate::lisp::regex_emacs as rx;
 use crate::lisp::types::{CharTableRef, Kind};
 
@@ -604,8 +604,11 @@ impl GlState {
                 };
                 let state = state.borrow();
                 let len = state.len();
-                let intervals = (state.props.has_intervals() && len > 0)
-                    .then(|| PropertyIntervals::new(&state.props[..], 0, len));
+                let intervals = state
+                    .props
+                    .intervals()
+                    .filter(|_| len > 0)
+                    .map(PropertyIntervals::new);
                 self.update_in(interp, intervals, Some((0, len)), charpos, count, init)
             }
         }
@@ -613,10 +616,10 @@ impl GlState {
 
     /// update_syntax_table over the object's INTERVALS, BOUNDS its
     /// accessible text (none for t, which has no intervals).
-    fn update_in<S: PropertySpan>(
+    fn update_in(
         &mut self,
         interp: &Interpreter,
-        intervals: Option<PropertyIntervals<'_, S>>,
+        intervals: Option<PropertyIntervals<'_>>,
         bounds: Option<(usize, usize)>,
         charpos: usize,
         count: i64,
@@ -846,14 +849,14 @@ fn string_chars(string: &Value) -> usize {
 }
 
 /// An interval as gl_state holds it.
-fn bounds_of(i: &PropertyInterval<'_>) -> Option<(usize, usize, usize)> {
+fn bounds_of(i: &PropertyInterval) -> Option<(usize, usize, usize)> {
     Some((i.start, i.end, i.index()))
 }
 
 /// textget of `syntax-table' in an interval's plist.
 fn textget(
     interp: &Interpreter,
-    plist: &[(crate::lisp::types::PropertyName, Value)],
+    plist: Value,
     variables: &mut crate::lisp::primitives::strings::TextPropertyVariables,
 ) -> Value {
     crate::lisp::primitives::strings::property_from_props_reading(

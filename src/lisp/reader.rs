@@ -1,6 +1,6 @@
 use super::types::{
-    IdentityBuildHasher, Kind, LispError, ReaderClosureKind, ReaderForm, StringObjectRef,
-    StringPropertySpan, Value, make_uninterned_symbol_name,
+    IdentityBuildHasher, Kind, LispError, ReaderClosureKind, ReaderForm, StringObjectRef, Value,
+    make_uninterned_symbol_name,
 };
 mod input;
 use input::Input;
@@ -229,7 +229,7 @@ fn atomic_for_substitution(value: &Value) -> bool {
         | Kind::Integer(_)
         | Kind::BigInteger(_)
         | Kind::Float(_) => true,
-        Kind::StringObject(string) => string.borrow().props.is_empty(),
+        Kind::StringObject(string) => !string.borrow().props.has_intervals(),
         _ => false,
     }
 }
@@ -284,26 +284,11 @@ impl Substitution<'_> {
             }
             Kind::StringObject(string) => {
                 // substitute_in_interval: each interval's plist.
-                let spans = string.borrow().props.to_vec();
-                let spans = spans
-                    .into_iter()
-                    .map(|span| StringPropertySpan {
-                        props: span
-                            .props
-                            .iter()
-                            .map(|(name, value)| {
-                                (
-                                    crate::lisp::types::PropertyName::new(
-                                        self.recurse(name.value()),
-                                    ),
-                                    self.recurse(*value),
-                                )
-                            })
-                            .collect(),
-                        ..span
-                    })
-                    .collect::<Vec<_>>();
-                string.borrow_mut().props = spans.into();
+                let intervals = string.borrow_mut().props.take();
+                if let Some(mut intervals) = intervals {
+                    intervals.rewrite_plists(|plist| self.recurse(plist));
+                    string.borrow_mut().props.set(Some(intervals));
+                }
             }
             Kind::ReaderForm(form) => {
                 // A literal read without a context, its fields still open.
@@ -415,11 +400,8 @@ pub(crate) fn read_object_needs_resolution(value: &Value) -> bool {
                 stack.extend(vector.slots());
             }
             Kind::StringObject(state) => {
-                for span in &state.borrow().props {
-                    for (name, prop_value) in &span.props {
-                        stack.push(name.value());
-                        stack.push(*prop_value);
-                    }
+                if let Some(intervals) = state.borrow().props.intervals() {
+                    stack.extend(intervals.plists());
                 }
             }
             _ => {}
@@ -1205,7 +1187,7 @@ impl<'a> Reader<'a> {
                     // evaluation of the same literal returns that object.
                     return Ok(Some(Value::StringObject(StringObjectRef::from_text(
                         s,
-                        Vec::new(),
+                        Default::default(),
                         has_explicit_multibyte || has_invalid_unicode,
                         extended_chars,
                     ))));
@@ -2183,48 +2165,25 @@ impl<'a> Reader<'a> {
         let Some(first) = items.first() else {
             return Ok(None);
         };
-        let (text, mut props, multibyte, extended_chars) = match first.kind() {
-            Kind::StringObject(state) => {
-                let state = state.borrow();
-                (
-                    state.text(),
-                    state.props.to_vec(),
-                    state.is_multibyte(),
-                    state.text_parts().1,
-                )
-            }
-            _ => return Ok(None),
-        };
+        // lread.c:string_props_from_rev_list: Fset_text_properties of each
+        // (BEG END PLIST) on the string read itself.
+        if !matches!(first.kind(), Kind::StringObject(_)) {
+            return Ok(None);
+        }
         if !(items.len() - 1).is_multiple_of(3) {
             return Ok(None);
         }
         let mut index = 1usize;
         while index + 2 < items.len() {
-            let start = items[index].as_integer()?;
-            let end = items[index + 1].as_integer()?;
-            let plist = items[index + 2].to_vec()?;
-            let mut span_props = Vec::new();
-            let mut cursor = 0usize;
-            while cursor + 1 < plist.len() {
-                span_props.push((
-                    crate::lisp::types::PropertyName::new(plist[cursor]),
-                    plist[cursor + 1],
-                ));
-                cursor += 2;
-            }
-            props.push(StringPropertySpan {
-                start: start.max(0) as usize,
-                end: end.max(0) as usize,
-                props: span_props,
-            });
+            crate::lisp::primitives::textprop::set_string_text_properties_value(
+                first,
+                &items[index],
+                &items[index + 1],
+                items[index + 2],
+            )?;
             index += 3;
         }
-        Ok(Some(Value::StringObject(StringObjectRef::from_text(
-            text,
-            props,
-            multibyte,
-            extended_chars,
-        ))))
+        Ok(Some(*first))
     }
 
     fn read_atom(&mut self) -> Result<Option<Value>, LispError> {
@@ -2975,13 +2934,14 @@ mod tests {
         };
         let state = state.borrow();
         assert_eq!(state.text(), "abc");
+        let intervals = state.props.intervals().expect("intervals");
+        let shape: Vec<_> = intervals
+            .iter()
+            .map(|(start, end, plist)| (start, end, plist.to_string()))
+            .collect();
         assert_eq!(
-            state.props.to_vec(),
-            vec![StringPropertySpan {
-                start: 0,
-                end: 1,
-                props: vec![("face".into(), Value::Symbol("bold".into()))],
-            }]
+            shape,
+            vec![(0, 1, "(face bold)".to_string()), (1, 3, "nil".to_string())]
         );
     }
 

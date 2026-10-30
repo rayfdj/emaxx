@@ -3314,24 +3314,12 @@ impl ImageGraphCopier {
                         .copy_without_properties(crate::lisp::alloc::StringAllocation::Restored),
                 );
                 self.strings.insert(key, copied);
-                let props = state.borrow().props.to_vec();
-                let copied_props: Vec<crate::lisp::types::StringPropertySpan> = props
-                    .iter()
-                    .map(|span| crate::lisp::types::StringPropertySpan {
-                        start: span.start,
-                        end: span.end,
-                        props: span
-                            .props
-                            .iter()
-                            .map(|(name, prop)| {
-                                let name = self.copy(&name.value());
-                                (crate::lisp::types::PropertyName::new(name), self.copy(prop))
-                            })
-                            .collect(),
-                    })
-                    .collect();
+                let mut intervals = state.borrow().props.intervals().cloned();
+                if let Some(intervals) = intervals.as_mut() {
+                    intervals.rewrite_plists(|plist| self.copy(&plist));
+                }
                 if let Kind::StringObject(new_state) = copied.kind() {
-                    new_state.borrow_mut().props = copied_props.into();
+                    new_state.borrow_mut().props.set(intervals);
                 }
                 copied
             }
@@ -3797,10 +3785,9 @@ impl LispReachability {
             }
             Kind::StringObject(value) => {
                 let state = value.borrow();
-                for span in &state.props {
-                    for (name, child) in &span.props {
-                        self.enqueue(&name.value());
-                        self.enqueue(child);
+                if let Some(intervals) = state.props.intervals() {
+                    for plist in intervals.plists() {
+                        self.enqueue(&plist);
                     }
                 }
             }
@@ -6053,7 +6040,7 @@ impl Interpreter {
             .map(|value| Value::String(value.into()))
             .unwrap_or_else(|_| Value::Symbol("wall".into()));
         let frame_name =
-            primitives::make_shared_string_value_with_multibyte("F1".into(), Vec::new(), true);
+            primitives::make_shared_string_value_with_multibyte("F1".into(), None, true);
         let fringe_bitmaps = Value::list(
             primitives::STANDARD_FRINGE_BITMAPS
                 .iter()

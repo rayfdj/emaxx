@@ -1054,11 +1054,8 @@ impl Interpreter {
                     pending.push(object.symbol());
                 }
                 Kind::StringObject(state) if seen_strings.insert(state.identity()) => {
-                    for span in &state.borrow().props {
-                        for (property, property_value) in &span.props {
-                            pending.push(property.value());
-                            pending.push(*property_value);
-                        }
+                    if let Some(intervals) = state.borrow().props.intervals() {
+                        pending.extend(intervals.plists());
                     }
                 }
                 // GNU's reader interns symbols inside every literal it

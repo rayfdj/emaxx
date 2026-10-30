@@ -1,6 +1,5 @@
 use super::*;
 use crate::lisp::types::Kind;
-use crate::lisp::types::PropertyName;
 
 pub fn buffer_undo_list_value(buffer: &crate::buffer::Buffer) -> Value {
     buffer.undo_list()
@@ -380,47 +379,24 @@ fn string_intervals_equal(
     left: &crate::lisp::types::SharedStringState,
     right: &crate::lisp::types::SharedStringState,
 ) -> Result<bool, LispError> {
-    let len = left.len();
-    let props_at = |spans: &[StringPropertySpan], pos: usize| {
-        let mut out: Vec<(PropertyName, Value)> = Vec::new();
-        for span in spans {
-            if span.start <= pos && pos < span.end {
-                for (key, value) in &span.props {
-                    if !out.iter().any(|(existing, _)| existing == key) {
-                        out.push((*key, *value));
-                    }
-                }
-            }
+    let mut failure = None;
+    let mut equal = |a: Value, b: Value| match values_equal(interp, &a, &b) {
+        Ok(same) => same,
+        Err(error) => {
+            failure.get_or_insert(error);
+            false
         }
-        out
     };
-    let mut bounds: Vec<usize> = vec![0, len];
-    for span in left.props.iter().chain(right.props.iter()) {
-        bounds.push(span.start.min(len));
-        bounds.push(span.end.min(len));
+    let same = crate::intervals::compare_string_intervals(
+        left.props.intervals(),
+        right.props.intervals(),
+        left.len(),
+        &mut equal,
+    );
+    match failure {
+        Some(error) => Err(error),
+        None => Ok(same),
     }
-    bounds.sort_unstable();
-    bounds.dedup();
-    for window in bounds.windows(2) {
-        let pos = window[0];
-        if pos >= len {
-            break;
-        }
-        let (left_props, right_props) = (props_at(&left.props, pos), props_at(&right.props, pos));
-        if left_props.len() != right_props.len() {
-            return Ok(false);
-        }
-        for (key, left_value) in &left_props {
-            let Some((_, right_value)) = right_props.iter().find(|(right_key, _)| right_key == key)
-            else {
-                return Ok(false);
-            };
-            if !values_equal(interp, right_value, left_value)? {
-                return Ok(false);
-            }
-        }
-    }
-    Ok(true)
 }
 
 pub(crate) fn values_eql(left: &Value, right: &Value) -> bool {
@@ -723,9 +699,6 @@ fn rarely_quit(interp: &mut Interpreter, env: &mut Env, count: i64) -> Result<()
 }
 
 pub(crate) fn sequence_length_value(value: &Value) -> Result<i64, LispError> {
-    if let Some(items) = record_literal_items(value) {
-        return Ok(items.len().saturating_sub(1) as i64);
-    }
     match value.kind() {
         // fns.c:Flength reads SCHARS: the character count in place, no
         // copy of the text.
@@ -740,6 +713,11 @@ pub(crate) fn sequence_length_value(value: &Value) -> Result<i64, LispError> {
         Kind::BoolVector(vector) => Ok(vector.len() as i64),
         Kind::Closure(lambda) => Ok(lambda.public_len() as i64),
         Kind::LispRecord(record) => Ok(record.len() as i64),
+        // The reader's record literal: its slots, without a copy of them.
+        Kind::ReaderForm(form) => match form.as_ref() {
+            crate::lisp::types::ReaderForm::Record { slots } => Ok(slots.len() as i64),
+            _ => Err(LispError::WrongTypeArgument("sequencep".into(), *value)),
+        },
         // fns.c:list_length counts the tails in place (FOR_EACH_TAIL and
         // CHECK_LIST_END), without a copy of the elements.
         Kind::Cons(_) => {

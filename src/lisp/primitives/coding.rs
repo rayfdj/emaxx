@@ -389,14 +389,16 @@ fn run_coding_conversion(
     interp.set_buffer_hooks_inhibited(temp_id, true);
     interp.set_current_buffer_id(temp_id)?;
     interp.buffer.borrow_mut().set_multibyte(source.multibyte);
-    interp.insert_current_buffer(&source.text);
+    // insert_from_string of the source, its intervals grafted.
+    let props = match &source.props {
+        Some(intervals) => crate::buffer::InsertedProperties::Intervals {
+            source: intervals,
+            inherit: false,
+        },
+        None => crate::buffer::InsertedProperties::PLAIN,
+    };
+    interp.insert_current_buffer_with(&source.text, props, false);
     interp.set_inserted_extended_chars(1, &source.extended_chars);
-    for span in &source.props {
-        interp
-            .buffer
-            .borrow_mut()
-            .graft_text_properties(1 + span.start, 1 + span.end, &span.props);
-    }
     // GNU invokes a post-read conversion with point at the beginning of the
     // newly decoded span.  Lisp decoders such as `utf-7-decode' consume LEN
     // bytes starting at point, so leaving point after the insertion silently
@@ -424,7 +426,7 @@ fn run_coding_conversion(
         let buffer = interp.buffer.borrow();
         StringLike {
             text: buffer.buffer_string(),
-            props: Vec::new(),
+            props: None,
             multibyte: buffer.is_multibyte(),
             extended_chars: buffer.substring_extended_chars(buffer.point_min(), buffer.point_max()),
         }
@@ -850,7 +852,7 @@ fn insert_then_delete_region(
 ) -> Result<usize, LispError> {
     let old_pos = interp.buffer.borrow().point();
     interp.buffer.borrow_mut().goto_char(lo);
-    insert_text_with_hooks(interp, text, &[], &[], false, false, env)?;
+    insert_text_with_hooks(interp, text, None, &[], false, false, env)?;
     let inserted = text.chars().count();
     delete_region_with_hooks(interp, lo + inserted, hi + inserted, env)?;
     let pos = if old_pos >= hi {
@@ -2624,7 +2626,7 @@ fn buffer_character_codes(interp: &Interpreter, from: usize, to: usize) -> Vec<u
     let buffer = interp.buffer.borrow();
     let source = StringLike {
         text: String::from(buffer.text_rope().slice(from - 1..to - 1)),
-        props: Vec::new(),
+        props: None,
         multibyte: buffer.is_multibyte(),
         extended_chars: buffer.substring_extended_chars(from, to),
     };
@@ -3087,7 +3089,7 @@ pub(crate) fn find_coding_systems_region_internal_value(
         }
         StringLike {
             text: String::from(text.slice(from - 1..to - 1)),
-            props: Vec::new(),
+            props: None,
             multibyte: buffer.is_multibyte(),
             extended_chars: buffer.substring_extended_chars(from, to),
         }
@@ -3323,20 +3325,15 @@ pub(crate) fn find_operation_coding_system_value(
 /// CODING_ANNOTATE_CHARSET_MASK hands the encoder as the preferred
 /// charset.
 fn charset_preferences(string: &StringLike) -> Vec<Option<String>> {
-    if string.props.is_empty() {
+    let Some(intervals) = &string.props else {
         return Vec::new();
-    }
+    };
     let count = string.text.chars().count();
     let mut preferred = vec![None; count];
-    for span in &string.props {
-        if let Some((_, value)) = span.props.iter().find(|(name, _)| name == "charset")
-            && let Ok(charset) = value.as_symbol()
-        {
-            for slot in preferred
-                .iter_mut()
-                .take(span.end.min(count))
-                .skip(span.start)
-            {
+    for (start, end, plist) in intervals.iter() {
+        let value = crate::lisp::primitives::strings::lisp_plist_get(plist, "charset");
+        if let Ok(charset) = value.as_symbol() {
+            for slot in preferred.iter_mut().take(end.min(count)).skip(start) {
                 *slot = Some(charset.to_string());
             }
         }
@@ -3588,12 +3585,14 @@ fn eol_removed_prefix(staged: &str, crlf: bool) -> Vec<usize> {
     removed
 }
 
-/// The `charset' runs as text property spans on the converted text.
+/// The `charset' runs on the converted text as produce_charset puts them,
+/// Fput_text_property of each run's charset in turn: the intervals of the
+/// text, none for no run.
 pub(crate) fn charset_spans_to_props(
     charsets: Vec<(usize, usize, String)>,
     staged: &str,
     crlf_conversion: Option<bool>,
-) -> Vec<TextPropertySpan> {
+) -> Option<crate::intervals::Intervals> {
     let removed = crlf_conversion.map(|crlf| eol_removed_prefix(staged, crlf));
     let adjust = |offset: usize| match &removed {
         Some(removed) => {
@@ -3602,20 +3601,24 @@ pub(crate) fn charset_spans_to_props(
         }
         None => offset,
     };
-    charsets
-        .into_iter()
-        .filter_map(|(start, end, charset)| {
-            let (start, end) = (adjust(start), adjust(end));
-            (end > start).then(|| TextPropertySpan {
+    let total = staged.chars().count();
+    let len = adjust(total);
+    let mut props = crate::lisp::types::string_data::StringProperties::default();
+    for (start, end, charset) in charsets {
+        let (start, end) = (adjust(start), adjust(end).min(len));
+        if end > start {
+            let _ = crate::intervals::add_string_text_properties(
+                &mut props,
+                len,
                 start,
                 end,
-                props: vec![(
-                    crate::lisp::types::PropertyName::symbol("charset"),
-                    Value::Symbol(charset.into()),
-                )],
-            })
-        })
-        .collect()
+                Value::list([Value::symbol("charset"), Value::Symbol(charset.into())]),
+                crate::intervals::PropertySetType::Replace,
+                true,
+            );
+        }
+    }
+    props.take()
 }
 
 /// A text decode_coding_object reads.
@@ -3989,7 +3992,7 @@ pub(crate) fn decode_coding_text_recording(
         return Ok(if nocopy {
             *value
         } else {
-            make_shared_string_value_with_multibyte(string.text, Vec::new(), true)
+            make_shared_string_value_with_multibyte(string.text, None, true)
         });
     }
     let CodingDecode {
@@ -4012,7 +4015,7 @@ pub(crate) fn decode_coding_text_recording(
     let conversion_ran = !post_read.is_nil();
     let decoded = StringLike {
         text: decoded.text,
-        props: Vec::new(),
+        props: None,
         // A buffer destination takes the characters produced (written
         // into a unibyte one in their multibyte form, by the caller); a
         // string is unibyte for a coding for unibyte text.
@@ -4027,11 +4030,7 @@ pub(crate) fn decode_coding_text_recording(
     }
     // A post-read conversion rewrites the text, after which the decoder's
     // annotations cannot be placed.
-    let props = if conversion_ran {
-        Vec::new()
-    } else {
-        charset_props
-    };
+    let props = if conversion_ran { None } else { charset_props };
     Ok(make_shared_string_value_with_extended_chars(
         converted.text,
         props,

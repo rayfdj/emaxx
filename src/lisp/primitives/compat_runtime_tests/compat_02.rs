@@ -1080,7 +1080,7 @@ fn call_process_accepts_a_shared_string_buffer_name() {
     let mut env = crate::lisp::types::Env::new();
     let (buffer_id, _) = interp.create_buffer("*shared-name-output*");
     let destination =
-        make_shared_string_value_with_multibyte("*shared-name-output*".into(), Vec::new(), true);
+        make_shared_string_value_with_multibyte("*shared-name-output*".into(), None, true);
 
     call_sh(&mut interp, &mut env, destination, "printf 'output\\n'")
         .expect("write output to a buffer named by a shared string");

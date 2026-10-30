@@ -1,7 +1,6 @@
 use super::*;
 use crate::lisp::types::Kind;
 use crate::lisp::types::LispErrorKind;
-use crate::lisp::types::PropertyName;
 
 /// Ffuncall of FUNCTION, unnamed: a forwarder, inline at every caller.
 #[inline(always)]
@@ -566,7 +565,7 @@ pub(crate) fn extract_region_with_hooks(
         delete_region_with_hooks_then(interp, from, to, env, |interp, from, to| {
             let buffer = interp.buffer.borrow();
             (
-                buffer.substring_property_spans(from, to),
+                buffer.string_intervals(from, to),
                 buffer.is_multibyte(),
                 buffer.substring_extended_chars(from, to),
             )
@@ -659,54 +658,6 @@ pub(crate) fn modify_buffer_text_properties(
     Ok(true)
 }
 
-/// Whether some interval of [FROM, TO) lacks one of PROPS with its value
-/// (EQ): textprop.c:interval_has_all_properties false somewhere, so that
-/// add_text_properties changes the text.
-pub(crate) fn properties_would_add(
-    buffer: &crate::buffer::Buffer,
-    from: usize,
-    to: usize,
-    props: &[(PropertyName, Value)],
-) -> bool {
-    let (from, to) = clamp_property_range(buffer, from, to);
-    buffer
-        .try_for_each_property_interval(from, to, |_, _, current| {
-            let has_all = props.iter().all(|(name, value)| {
-                current
-                    .iter()
-                    .any(|(key, existing)| key == name && existing.word() == value.word())
-            });
-            if has_all { Ok(()) } else { Err(()) }
-        })
-        .is_err()
-}
-
-/// Whether some interval of [FROM, TO) has one of NAMES:
-/// textprop.c:interval_has_some_properties(_list), so that removing them
-/// changes the text.
-pub(crate) fn properties_would_remove(
-    buffer: &crate::buffer::Buffer,
-    from: usize,
-    to: usize,
-    names: &[PropertyName],
-) -> bool {
-    let (from, to) = clamp_property_range(buffer, from, to);
-    buffer
-        .try_for_each_property_interval(from, to, |_, _, current| {
-            if current.iter().any(|(key, _)| names.contains(key)) {
-                Err(())
-            } else {
-                Ok(())
-            }
-        })
-        .is_err()
-}
-
-fn clamp_property_range(buffer: &crate::buffer::Buffer, from: usize, to: usize) -> (usize, usize) {
-    let (from, to) = if from <= to { (from, to) } else { (to, from) };
-    (from.max(buffer.point_min()), to.min(buffer.point_max()))
-}
-
 pub(crate) fn inhibit_read_only_value(interp: &Interpreter) -> Value {
     interp
         .symbol_value_key(cached_symbol!("inhibit-read-only"))
@@ -741,21 +692,15 @@ pub(crate) fn text_read_only(property: Value) -> LispError {
 /// through the `category' symbol and `char-property-alias-alist'.
 pub(crate) fn textget(
     interp: &Interpreter,
-    plist: &[(PropertyName, Value)],
+    plist: Value,
     prop: impl crate::lisp::types::PropertyKey,
 ) -> Value {
     property_from_props_with_category(interp, plist, prop).unwrap_or(Value::Nil)
 }
 
 /// fns.c:plist_get on an interval's own plist: no category.
-pub(crate) fn plist_get(
-    plist: &[(PropertyName, Value)],
-    prop: impl crate::lisp::types::PropertyKey,
-) -> Value {
-    plist
-        .iter()
-        .find(|(name, _)| prop.names(name))
-        .map_or(Value::Nil, |(_, value)| *value)
+pub(crate) fn plist_get(plist: Value, prop: impl crate::lisp::types::PropertyKey) -> Value {
+    crate::lisp::primitives::strings::lisp_plist_get(plist, prop)
 }
 
 /// textprop.c TMEM: SYM in SET when SET is a list, else SET non-nil.

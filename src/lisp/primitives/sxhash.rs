@@ -5,7 +5,7 @@
 use super::*;
 use crate::lisp::alloc::VectorHeader;
 use crate::lisp::types::symbols::{hash_string, sxhash_combine};
-use crate::lisp::types::{BoolVectorRef, Kind, PropertyName};
+use crate::lisp::types::{BoolVectorRef, Kind};
 
 /// fns.c:5336 `SXHASH_MAX_DEPTH' and fns.c:5341 `SXHASH_MAX_LEN'.  GNU stops
 /// descending at depth 3 and folds in at most seven elements of a list or
@@ -262,90 +262,13 @@ fn sxhash_including_properties(interp: &Interpreter, obj: Value) -> u64 {
         return hash;
     };
     let string = string.borrow();
-    if !string.props.has_intervals() {
+    let Some(intervals) = string.props.intervals() else {
         return hash;
-    }
-    for (position, end, plist) in string_intervals(&string.props, string.len()) {
+    };
+    for (position, end, plist) in intervals.iter() {
         hash = sxhash_combine(hash, position as u64);
         hash = sxhash_combine(hash, (end - position) as u64);
-        hash = sxhash_combine(hash, sxhash_plist(interp, plist, 0));
-    }
-    hash
-}
-
-/// An interval's start, end and plist.
-type Interval<'a> = (usize, usize, &'a [(PropertyName, Value)]);
-
-/// A string's intervals in order, as `object-intervals' lists them: the
-/// spans with equal plists that meet merged, the gaps between them with
-/// an empty plist.
-fn string_intervals(
-    spans: &[crate::lisp::types::StringPropertySpan],
-    len: usize,
-) -> Vec<Interval<'_>> {
-    let mut sorted: Vec<Interval<'_>> = spans
-        .iter()
-        .filter(|span| span.start < span.end && !span.props.is_empty())
-        .map(|span| (span.start, span.end, span.props.as_slice()))
-        .collect();
-    sorted.sort_by_key(|&(start, end, _)| (start, end));
-    let mut merged: Vec<Interval<'_>> = Vec::new();
-    for span in sorted {
-        if let Some(last) = merged.last_mut()
-            && last.1 == span.0
-            && crate::buffer::text_property_plists_eq(last.2, span.2)
-        {
-            last.1 = span.1;
-        } else {
-            merged.push(span);
-        }
-    }
-    let mut boundaries = vec![0, len];
-    for &(start, end, _) in &merged {
-        boundaries.push(start);
-        boundaries.push(end);
-    }
-    boundaries.sort_unstable();
-    boundaries.dedup();
-    boundaries
-        .windows(2)
-        .filter(|window| window[0] < window[1])
-        .map(|window| {
-            let plist = merged
-                .iter()
-                .find(|&&(start, end, _)| start <= window[0] && window[0] < end)
-                .map_or(&[][..], |&(_, _, plist)| plist);
-            (window[0], window[1], plist)
-        })
-        .collect()
-}
-
-/// sxhash_obj of a plist at DEPTH, the list's elements being PLIST's
-/// names and values in turn: sxhash_list without consing the list.
-fn sxhash_plist(interp: &Interpreter, plist: &[(PropertyName, Value)], depth: u32) -> u64 {
-    let items: Vec<Value> = plist
-        .iter()
-        .flat_map(|(name, value)| [name.value(), *value])
-        .collect();
-    sxhash_list_items(interp, &items, depth)
-}
-
-/// sxhash_list of the proper list of ITEMS, at DEPTH.
-fn sxhash_list_items(interp: &Interpreter, items: &[Value], depth: u32) -> u64 {
-    if depth > SXHASH_MAX_DEPTH {
-        return 0;
-    }
-    let mut hash = 0;
-    let mut rest = items;
-    if depth < SXHASH_MAX_DEPTH {
-        let count = rest.len().min(SXHASH_MAX_LEN);
-        for item in &rest[..count] {
-            hash = sxhash_combine(hash, sxhash_obj(interp, *item, depth + 1));
-        }
-        rest = &rest[count..];
-    }
-    if !rest.is_empty() {
-        hash = sxhash_combine(hash, sxhash_list_items(interp, rest, depth + 1));
+        hash = sxhash_combine(hash, sxhash_obj(interp, plist, 0));
     }
     hash
 }

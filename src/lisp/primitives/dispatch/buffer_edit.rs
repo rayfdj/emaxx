@@ -239,7 +239,7 @@ fn internal_self_insert(
         for offset in 0..n as usize {
             push_buffer_character(&mut text, &mut extended_chars, offset, c, multibyte);
         }
-        insert_text_with_hooks(interp, &text, &[], &extended_chars, true, false, env)?;
+        insert_text_with_hooks(interp, &text, None, &extended_chars, true, false, env)?;
     }
 
     let auto_fill_character = match interp
@@ -485,10 +485,26 @@ define_dispatch!(
                 let text = source
                     .buffer_substring(start, end)
                     .map_err(|e| LispError::Signal(e.to_string()))?;
-                let props = source.substring_property_spans(start, end);
+                // insdel.c:insert_from_buffer_1: the source's intervals,
+                // copied for part of its text, the tree itself for all.
+                let props = if end - start < source.size_total() {
+                    source.copy_intervals(start, end)
+                } else {
+                    source
+                        .intervals()
+                        .map(crate::intervals::Intervals::shared_from_zero)
+                };
                 let extended_chars = source.substring_extended_chars(start, end);
                 drop(source);
-                insert_text_with_hooks(interp, &text, &props, &extended_chars, false, false, env)?;
+                insert_text_with_hooks(
+                    interp,
+                    &text,
+                    props.as_ref(),
+                    &extended_chars,
+                    false,
+                    false,
+                    env,
+                )?;
                 Ok(Value::Nil)
             }
             "point" => direct_point(interp, args, env),
@@ -592,7 +608,7 @@ define_dispatch!(
                 update_buffer_properties(interp, begv, zv, env)?;
                 Ok(string_like_value_with_extended_chars(
                     interp.buffer.borrow().buffer_string(),
-                    interp.buffer.borrow().substring_property_spans(
+                    interp.buffer.borrow().string_intervals(
                         interp.buffer.borrow().point_min(),
                         interp.buffer.borrow().point_max(),
                     ),
@@ -628,9 +644,9 @@ define_dispatch!(
                     .buffer_substring(start, end)
                     .map_err(|error| LispError::Signal(error.to_string()))?;
                 let props = if name == "minibuffer-contents" {
-                    interp.buffer.borrow().substring_property_spans(start, end)
+                    interp.buffer.borrow().string_intervals(start, end)
                 } else {
-                    Vec::new()
+                    None
                 };
                 Ok(string_like_value_with_extended_chars(
                     text,
@@ -1068,7 +1084,7 @@ define_dispatch!(
                     // at the end of the tab gets adjusted.
                     interp.buffer.borrow_mut().goto_char(scan.prev_pos);
                     let spaces = " ".repeat(goal - scan.prev_col);
-                    insert_text_with_hooks(interp, &spaces, &[], &[], true, false, env)?;
+                    insert_text_with_hooks(interp, &spaces, None, &[], true, false, env)?;
                     // Now delete the tab, and indent to COL.
                     let point = interp.buffer.borrow().point();
                     delete_region_with_hooks(interp, point, point + 1, env)?;
@@ -2669,7 +2685,7 @@ fn indent_to(
             insert_text_with_hooks(
                 interp,
                 &"\t".repeat(tabs as usize),
-                &[],
+                None,
                 &[],
                 true,
                 false,
@@ -2679,7 +2695,7 @@ fn indent_to(
         }
     }
     let spaces = (min_col - from_col).max(0) as usize;
-    insert_text_with_hooks(interp, &" ".repeat(spaces), &[], &[], true, false, env)?;
+    insert_text_with_hooks(interp, &" ".repeat(spaces), None, &[], true, false, env)?;
     remember_current_column(interp, min_col as usize);
     Ok(min_col)
 }
@@ -2748,14 +2764,14 @@ fn buffer_substring_named(
             if name == "buffer-substring" {
                 Ok(string_like_value_with_extended_chars(
                     s,
-                    interp.buffer.borrow().substring_property_spans(start, end),
+                    interp.buffer.borrow().string_intervals(start, end),
                     interp.buffer.borrow().is_multibyte(),
                     interp.buffer.borrow().substring_extended_chars(start, end),
                 ))
             } else {
                 Ok(string_like_value_with_extended_chars(
                     s,
-                    Vec::new(),
+                    None,
                     interp.buffer.borrow().is_multibyte(),
                     interp.buffer.borrow().substring_extended_chars(start, end),
                 ))

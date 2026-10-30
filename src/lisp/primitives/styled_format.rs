@@ -4,7 +4,7 @@
 //! lisp_string_width, by which it measures a string argument.
 
 use super::*;
-use crate::lisp::types::{Kind, PropertyName};
+use crate::lisp::types::Kind;
 use smallvec::SmallVec;
 
 /// Whether float.h's long double is wider than double where GNU Emacs is
@@ -630,12 +630,9 @@ enum SpecText {
     Number(Printed),
 }
 
-/// A range of a string's text properties: its start, end and plist.
-type PropertyRange = (usize, usize, Vec<(PropertyName, Value)>);
-
-/// An argument's property range for its output: start, end, the end the
-/// range has in the argument, and the plist.
-type ArgumentRange = (usize, usize, usize, Vec<(PropertyName, Value)>);
+/// A range of a string's text properties, as text_property_list gives
+/// it: its start, end and the interval's own plist.
+type PropertyRange = (usize, usize, Value);
 
 /// What styled_format records of a conversion: where its output went in
 /// the result, the argument it read, and where it began in the format.
@@ -1336,13 +1333,7 @@ fn add_format_properties(
 ) -> Result<(), LispError> {
     // text_property_list of the format, in increasing order.
     let format_props: Vec<PropertyRange> = match format.kind() {
-        Kind::StringObject(state) => state
-            .borrow()
-            .props
-            .iter()
-            .filter(|span| !span.props.is_empty())
-            .map(|span| (span.start, span.end, span.props.clone()))
-            .collect(),
+        Kind::StringObject(state) => property_ranges(&state.borrow())?,
         _ => Vec::new(),
     };
     if !format_props.is_empty() {
@@ -1364,14 +1355,14 @@ fn add_format_properties(
             }
         };
         let mut moved = Vec::with_capacity(format_props.len());
-        for (start, end, props) in format_props {
+        for (start, end, plist) in format_props {
             advance(start, &mut position, &mut translated);
             let new_start = translated;
             advance(end, &mut position, &mut translated);
-            moved.push((new_start, translated, props));
+            moved.push((new_start, translated, plist));
         }
-        for (start, end, props) in moved {
-            add_string_properties(val, start, end, &props)?;
+        for (start, end, plist) in moved {
+            add_string_properties(val, start, end, plist)?;
         }
     }
 
@@ -1384,18 +1375,11 @@ fn add_format_properties(
         };
         let len = state.borrow().len();
         let new_len = spec.end - spec.start;
-        // text_property_list's order, decreasing, each range with the end
-        // it has in the argument.
-        let mut props: Vec<ArgumentRange> = state
-            .borrow()
-            .props
-            .iter()
-            .rev()
-            .filter(|span| !span.props.is_empty())
-            .map(|span| (span.start, span.end, span.end, span.props.clone()))
-            .collect();
+        // text_property_list's order, decreasing.
+        let mut props: Vec<PropertyRange> = property_ranges(&state.borrow())?;
+        props.reverse();
         // textprop.c extend_property_ranges.
-        props.retain_mut(|(start, end, _, _)| {
+        props.retain_mut(|(start, end, _)| {
             if *start >= new_len {
                 return false;
             }
@@ -1405,50 +1389,32 @@ fn add_format_properties(
             true
         });
         // If successive arguments have properties, be sure that the value
-        // of the `composition' property be the copy.
+        // of the `composition' property be the copy: in the argument's own
+        // plists, which text_property_list gives.
         if 1 < i && specs[i - 1].end != 0 {
-            make_composition_value_copy(&spec.argument, &mut props)?;
+            for (_, _, plist) in &props {
+                crate::intervals::copy_composition_value(*plist);
+            }
         }
-        for (start, end, _, plist) in props {
-            add_string_properties(val, spec.start + start, spec.start + end, &plist)?;
+        for (start, end, plist) in props {
+            add_string_properties(val, spec.start + start, spec.start + end, plist)?;
         }
     }
     Ok(())
 }
 
-/// composite.c make_composition_value_copy: each `composition' value of
-/// PROPS that is a cons replaced by a copy of it.  GNU's PROPS hold the
-/// argument's own interval plists, so the argument's intervals (from
-/// START to their own END) take the copies too.
-fn make_composition_value_copy(
-    argument: &Value,
-    props: &mut [ArgumentRange],
-) -> Result<(), LispError> {
-    for (start, _, interval_end, plist) in props.iter_mut() {
-        let mut copied = false;
-        for (name, value) in plist.iter_mut() {
-            if *name == "composition"
-                && let Kind::Cons(cell) = value.kind()
-            {
-                *value = Value::cons(cell.car.get(), cell.cdr.get());
-                copied = true;
-            }
-        }
-        if copied {
-            let replacement = plist.clone();
-            modify_shared_string_properties(argument, *start, *interval_end, |mut current| {
-                for (name, value) in current.iter_mut() {
-                    if *name == "composition"
-                        && let Some((_, copy)) = replacement.iter().find(|(key, _)| key == name)
-                    {
-                        *value = *copy;
-                    }
-                }
-                current
-            })?;
-        }
-    }
-    Ok(())
+/// textprop.c:text_property_list of a whole string, in increasing order:
+/// each interval with a plist, the plist its own.
+fn property_ranges(
+    state: &crate::lisp::types::SharedStringState,
+) -> Result<Vec<PropertyRange>, LispError> {
+    let Some(intervals) = state.props.intervals() else {
+        return Ok(Vec::new());
+    };
+    Ok(intervals
+        .iter()
+        .filter(|(_, _, plist)| !plist.is_nil())
+        .collect())
 }
 
 /// print.c float_to_string: DATA as the printer writes it.  A

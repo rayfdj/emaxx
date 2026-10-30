@@ -1357,7 +1357,7 @@ fn locale_decoded_string(
     if bytes.is_ascii() {
         return Ok(string_like_value_with_multibyte(
             String::from_utf8_lossy(bytes).into_owned(),
-            Vec::new(),
+            None,
             true,
         ));
     }
