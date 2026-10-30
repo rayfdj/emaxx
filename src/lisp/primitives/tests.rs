@@ -576,6 +576,89 @@ fn buffer_arguments_are_decoded_as_gnu() {
 }
 
 #[test]
+fn insert_file_contents_reads_files_as_finsert_file_contents() {
+    // fileio.c:Finsert_file_contents: the checks before the handler and
+    // of a visit, file_offset, fstat's kinds (a special file's REPLACE,
+    // BEG and unbounded read), the change functions at point, the
+    // format functions and their counts, the undo record they fit, and
+    // FOR_EACH_TAIL's cycle.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let* ((f (make-temp-file "ifc" nil nil "hello\nworld\n"))
+               (tc (lambda (g)
+                     (condition-case e (with-temp-buffer (funcall g))
+                       (error (if (equal (car (last e)) f) (butlast e) e)))))
+               (grow (lambda (n) (save-excursion (insert "XX")) (+ n 2))))
+          (unwind-protect
+              (list (funcall tc (lambda () (insert-file-contents "/dev/null")))
+                    (funcall tc (lambda () (insert-file-contents "/dev/null" nil nil nil t)))
+                    (funcall tc (lambda () (insert-file-contents "/dev/null" nil 0)))
+                    (funcall tc (lambda () (list (cadr (insert-file-contents "/dev/zero" nil nil 10)) (buffer-size))))
+                    (funcall tc (lambda () (insert "x") (insert-file-contents "/dev/null" nil nil nil 'if-regular)))
+                    (funcall tc (lambda () (insert-file-contents "/")))
+                    (funcall tc (lambda () (insert-file-contents f t 1)))
+                    (funcall tc (lambda () (insert "x") (insert-file-contents f t)))
+                    (funcall tc (lambda () (insert-file-contents f nil 1.5)))
+                    (funcall tc (lambda () (insert-file-contents f nil -3)))
+                    (funcall tc (lambda () (list (cadr (insert-file-contents f nil 0.0 2.0)) (buffer-string))))
+                    (funcall tc (lambda () (list (cadr (insert-file-contents f nil 3 1)) (buffer-size))))
+                    (funcall tc (lambda () (let ((buffer-read-only t)) (insert-file-contents 5))))
+                    (funcall tc (lambda ()
+                                  (let ((log nil))
+                                    (add-hook 'before-change-functions (lambda (b e) (push (list b e) log)) nil t)
+                                    (add-hook 'after-change-functions (lambda (b e l) (push (list b e l) log)) nil t)
+                                    (insert-file-contents "/dev/null" nil nil 1)
+                                    (insert-file-contents f t)
+                                    (list log buffer-saved-size (buffer-modified-p)))))
+                    (funcall tc (lambda ()
+                                  (buffer-enable-undo) (insert "ab") (undo-boundary)
+                                  (let ((after-insert-file-functions (list grow)))
+                                    (list (cadr (insert-file-contents f)) (point) (car buffer-undo-list)))))
+                    (funcall tc (lambda ()
+                                  (insert "zzz") (goto-char 2)
+                                  (let ((after-insert-file-functions (list grow)))
+                                    (list (cadr (insert-file-contents f nil nil nil t)) (point) (buffer-string)))))
+                    (funcall tc (lambda ()
+                                  (buffer-enable-undo)
+                                  (let ((after-insert-file-functions (list (lambda (_) (error "boom")))))
+                                    (list (condition-case e (insert-file-contents f) (error e)) buffer-undo-list))))
+                    (funcall tc (lambda () (let ((after-insert-file-functions (list (lambda (_) 1000)))) (insert-file-contents f))))
+                    (funcall tc (lambda ()
+                                  (let ((after-insert-file-functions (list 'identity)))
+                                    (setcdr after-insert-file-functions after-insert-file-functions)
+                                    (condition-case e (insert-file-contents f) (circular-list (list (car e) (buffer-size)))))))
+                    (funcall tc (lambda () (setq deactivate-mark 'keep) (insert-file-contents "/dev/null" nil nil 2) deactivate-mark)))
+            (delete-file f)))"#,
+        r##"((error "Maximum buffer size exceeded") (file-error "not a regular file" "/dev/null") (file-error "cannot use a start position in a non-seekable file/device" "/dev/null") (10 10) (error "Maximum buffer size exceeded") (file-error "Read error" "Is a directory" "/") (error "Attempt to visit less than an entire file") (error "Cannot do file visiting in a non-empty buffer") (wrong-type-argument file-offset 1.5) (wrong-type-argument file-offset -3) (2 "he") (0 0) (buffer-read-only #<killed buffer>) (((1 1)) 12 nil) (14 3 (3 . 17)) (14 7 "XXhello
+world
+") ((error "boom") t) (wrong-type-argument inserted-chars 1000) (circular-list 12) keep)"##,
+        "insert-file-contents",
+    );
+}
+
+#[test]
+fn killed_buffer_holds_no_text_properties_as_gnu() {
+    // Fkill_buffer frees the text and its intervals and keeps BEGV and
+    // ZV; Fset_buffer, set_buffer_internal and readchar refuse it.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((dead (let ((b (generate-new-buffer "kt")))
+                      (with-current-buffer b (insert "abc") (put-text-property 1 3 'face 'bold))
+                      (kill-buffer b) b))
+              (tc (lambda (f) (condition-case e (funcall f) (error e)))))
+          (list (get-text-property 1 'face dead)
+                (text-properties-at 2 dead)
+                (funcall tc (lambda () (get-text-property 9 'face dead)))
+                (next-single-property-change 1 'face dead)
+                (get-char-property 1 'face dead)
+                (funcall tc (lambda () (next-single-char-property-change 1 'face dead)))
+                (funcall tc (lambda () (previous-single-char-property-change 3 'face dead)))
+                (funcall tc (lambda () (prin1 'x dead)))
+                (car (funcall tc (lambda () (read dead))))))"#,
+        r##"(nil nil (args-out-of-range 9 9) nil nil (error "Selecting deleted buffer") (error "Selecting deleted buffer") (error "Selecting deleted buffer") end-of-file)"##,
+        "killed buffer properties",
+    );
+}
+
+#[test]
 fn native_buffer_lookup_preserves_object_identity_after_rename_or_kill() {
     assert_oracle_contract_matches_interpreter(
         r#"(progn
@@ -10391,10 +10474,31 @@ fn dumped_directory_family_ignores_the_test_harness_variable() {
     assert_eq!(values.to_string(), expected);
 }
 
+/// filelock.c names a lock with files.el's `make-lock-file-name', which a
+/// bare interpreter has not loaded: its value with no
+/// `lock-file-name-transforms'.
+fn define_make_lock_file_name(interp: &mut Interpreter, env: &mut crate::lisp::types::Env) {
+    let definition = Reader::new(
+        "(fset 'make-lock-file-name
+               (function
+                (lambda (filename)
+                  (concat (file-name-directory filename) \".#\"
+                          (file-name-nondirectory filename)))))",
+    )
+    .read()
+    .expect("read make-lock-file-name")
+    .expect("a definition");
+    interp
+        .eval(&definition, env)
+        .expect("define make-lock-file-name");
+}
+
 #[test]
 fn insert_file_contents_reports_missing_input_as_file_missing() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
+    // A visit unlocks the file before it signals.
+    define_make_lock_file_name(&mut interp, &mut env);
     let path = std::env::temp_dir().join(format!(
         "emaxx-missing-input-{}",
         std::time::SystemTime::now()
@@ -10430,6 +10534,7 @@ fn insert_file_contents_reports_missing_input_as_file_missing() {
 fn insert_file_contents_replace_collapses_point_in_the_differing_middle() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
+    define_make_lock_file_name(&mut interp, &mut env);
     let path = std::env::temp_dir().join(format!(
         "emaxx-replace-point-{}",
         std::time::SystemTime::now()
@@ -12546,22 +12651,7 @@ fn native_file_lock_primitives_share_the_buffer_lock_state_machine() {
 
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
-    // filelock.c names a lock with files.el's `make-lock-file-name', which
-    // a bare interpreter has not loaded: its value with no
-    // `lock-file-name-transforms'.
-    let definition = Reader::new(
-        "(fset 'make-lock-file-name
-               (function
-                (lambda (filename)
-                  (concat (file-name-directory filename) \".#\"
-                          (file-name-nondirectory filename)))))",
-    )
-    .read()
-    .expect("read make-lock-file-name")
-    .expect("a definition");
-    interp
-        .eval(&definition, &mut env)
-        .expect("define make-lock-file-name");
+    define_make_lock_file_name(&mut interp, &mut env);
     let path = std::env::temp_dir().join(format!(
         "lock-primitive-{}-{}",
         std::process::id(),

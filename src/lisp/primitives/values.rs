@@ -49,7 +49,7 @@ type EqualSeen = HashMap<usize, Vec<Value>>;
 /// lisp.h's FOR_EACH_TAIL bookkeeping (struct for_each_tail_internal):
 /// Brent's tortoise, which moves to the tail in hand after MAX steps
 /// (Q counts them, with N counting each 65,536), MAX doubling each time.
-struct ForEachTail {
+pub(crate) struct ForEachTail {
     tortoise: Value,
     max: isize,
     n: isize,
@@ -57,7 +57,7 @@ struct ForEachTail {
 }
 
 impl ForEachTail {
-    fn new(list: Value) -> Self {
+    pub(crate) fn new(list: Value) -> Self {
         ForEachTail {
             tortoise: list,
             max: 2,
@@ -69,7 +69,7 @@ impl ForEachTail {
     /// The step after TAIL = XCDR (TAIL): whether TAIL is the tortoise,
     /// closing a cycle.
     #[inline]
-    fn step(&mut self, tail: Value) -> bool {
+    pub(crate) fn step(&mut self, tail: Value) -> bool {
         self.q = self.q.wrapping_sub(1);
         if self.q != 0 {
             return tail.eq_value(self.tortoise);

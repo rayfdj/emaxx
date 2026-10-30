@@ -894,8 +894,11 @@ pub(crate) fn read_positioning_symbols_from_lisp_source(
     env: &mut Env,
 ) -> Result<Value, LispError> {
     match source.kind() {
-        Kind::Buffer(_) => {
-            let buffer_id = interp.resolve_buffer_id(source)?;
+        Kind::Buffer(buffer) => {
+            // lread.c:readchar reads a killed buffer as at its end.
+            let buffer_id = interp
+                .live_buffer_id(buffer)
+                .ok_or_else(|| end_of_file_error(interp, env))?;
             let (start, end) = {
                 let buffer = interp
                     .get_buffer_by_id(buffer_id)
@@ -1533,8 +1536,11 @@ fn read_from_lisp_source_raw(
     env: &mut Env,
 ) -> Result<Value, LispError> {
     match source.kind() {
-        Kind::Buffer(_) => {
-            let buffer_id = interp.resolve_buffer_id(source)?;
+        Kind::Buffer(buffer) => {
+            // lread.c:readchar reads a killed buffer as at its end.
+            let buffer_id = interp
+                .live_buffer_id(buffer)
+                .ok_or_else(|| end_of_file_error(interp, env))?;
             let (start, end) = {
                 let buffer = interp
                     .get_buffer_by_id(buffer_id)

@@ -74,9 +74,11 @@ pub struct Buffer {
     /// Whether Fkill_buffer killed the buffer (GNU's nil name).
     pub(crate) killed: bool,
 
-    /// BUF_Z - BUF_BEG as a killed buffer's freed text left it: GNU's
-    /// free_buffer_text frees the text and keeps its positions.
+    /// BUF_Z - BUF_BEG, BUF_BEGV and BUF_ZV as a killed buffer's freed
+    /// text left them: GNU's free_buffer_text frees the text and keeps its
+    /// positions.
     killed_size: usize,
+    killed_bounds: (usize, usize),
 
     /// A killed buffer's always-local slots held apart from its fields, as
     /// they were when it was killed: the fixed slots in their order
@@ -196,6 +198,7 @@ impl Clone for Buffer {
             text: self.text.clone(),
             killed: self.killed,
             killed_size: self.killed_size,
+            killed_bounds: self.killed_bounds,
             killed_locals: self.killed_locals.clone(),
             char_cache: self.char_cache.clone(),
             pt: self.pt,
@@ -870,6 +873,7 @@ impl Buffer {
             text,
             killed: false,
             killed_size: 0,
+            killed_bounds: (1, 1),
             killed_locals: None,
             char_cache: RefCell::new(RopeCharCache::default()),
             pt: 1,
@@ -910,6 +914,7 @@ impl Buffer {
             text,
             killed: false,
             killed_size: 0,
+            killed_bounds: (1, 1),
             killed_locals: None,
             char_cache: RefCell::new(RopeCharCache::default()),
             pt: 1,
@@ -1096,6 +1101,11 @@ impl Buffer {
     /// buffer-size reads it).
     pub(crate) fn killed_size(&self) -> usize {
         self.killed_size
+    }
+
+    /// A killed buffer's BEGV and ZV as Fkill_buffer left them.
+    pub(crate) fn killed_bounds(&self) -> (usize, usize) {
+        self.killed_bounds
     }
 
     // ── Position predicates ──
@@ -2920,6 +2930,7 @@ impl Buffer {
     pub(crate) fn release_killed_storage(&mut self) {
         self.killed = true;
         self.killed_size = self.size_total();
+        self.killed_bounds = (self.point_min(), self.point_max());
         self.text = BufferText::default();
         *self.char_cache.get_mut() = RopeCharCache::default();
         self.edits = std::collections::VecDeque::new();
@@ -2978,6 +2989,7 @@ impl Buffer {
             text: BufferText::from_str(&parts.text),
             killed: false,
             killed_size: 0,
+            killed_bounds: (1, 1),
             killed_locals: None,
             char_cache: RefCell::new(RopeCharCache::default()),
             pt: parts.pt,

@@ -456,7 +456,9 @@ impl Interpreter {
             .inactive_buffers
             .iter()
             .position(|(buffer_id, _)| *buffer_id == id)
-            .ok_or_else(|| LispError::Signal(format!("No buffer with id {id}")))?;
+            // Fset_buffer's error for a buffer no longer live (print.c's
+            // print_prepare and the others select theirs through it).
+            .ok_or_else(|| LispError::Signal("Selecting deleted buffer".into()))?;
         // buffer.c:set_buffer_internal_2 invalidates the indentation cache.
         self.invalidate_current_column();
         let current_id = self.current_buffer_id;

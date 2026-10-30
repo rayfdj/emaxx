@@ -9806,6 +9806,75 @@ setup_process_coding_systems's check now refuses). A 13-form
   validation: the grouped gate's 3,345 library tests, the seven
   integration suites, clippy with every target and feature, rustfmt and
   `git diff --check'.
+- **Round 186: insert-file-contents as Finsert_file_contents; a killed
+  buffer as a property object and a stream.** insert-file-contents read
+  a file other than a regular one only 8,192 bytes at a time (one read
+  of a pipe), signalled its own "Cannot seek in non-regular file", took
+  any integer for BEG and END, ran the change functions when visiting,
+  none when nothing was read, and asked `after-insert-file-functions'
+  for a cycle before inserting. It now follows fileio.c. Before the
+  file-name handler, a visit in an indirect buffer is refused and a
+  read-only buffer goes through Fbarf_if_buffer_read_only. A visit
+  refuses BEG or END ("Attempt to visit less than an entire file") and a
+  buffer with text without REPLACE; BEG and END are file_offset's (an
+  integer from 0 to the largest off_t, or a float of one, else
+  `(wrong-type-argument file-offset X)'). fstat decides what the file
+  is, a directory counting as regular: another kind takes REPLACE only
+  as `if-regular' (`(file-error "not a regular file" FILE)'), then
+  erasing the accessible portion, refuses BEG (`(file-error "cannot use
+  a start position in a non-seekable file/device" FILE)'), reads to END
+  or, without it, as much as off_t holds when lseek works on it
+  (`/dev/null' or `/dev/zero' is "Maximum buffer size exceeded", which
+  `(insert-file-contents "/dev/zero" nil nil most-positive-fixnum)' was
+  too, after Emaxx aborted for 2^61 bytes of memory) or to the end of a
+  pipe. A regular file reads at most END - BEG bytes from BEG (its size
+  when END is nil, READ_BUF_SIZE for a size of zero), the gap's growth
+  checked first, and a failed read is "Read error" with its errno text
+  after the read. The change is prepared at point when bytes are
+  expected and not visiting (`first-change-hook' and the before-change
+  functions run, at (PT PT), for an empty file too), the text goes in
+  before point, and the after-change functions run for it unless
+  visiting without REPLACE; with nothing read `deactivate-mark' gets its
+  value back and a file the preparation locked is unlocked. A buffer
+  with text decides its coding before the read, an empty one after. With
+  REPLACE, point is a marker the change moves, placed by
+  restore_window_points and gone back to only when the primitive
+  returns, so the format functions see point before the text read. A
+  visit records the file, the modtime, the buffer saved at its size
+  (`buffer-saved-size', which `write-region''s visit now sets too) and
+  releases the locks of the truename and the file, and leaves
+  `buffer-file-truename' to files.el (Emaxx set it); a special file
+  visited is "not a regular file" afterwards. A visited file that cannot
+  be opened completes the visit first: `coding-system-for-read' becomes
+  the buffer's coding, the coding is decided for no text (a unibyte one
+  making the buffer unibyte), `last-coding-system-used' is set and
+  `after-insert-file-set-coding' runs. The tail is GNU's:
+  `after-insert-file-set-coding', then for inserted text `format-decode'
+  and each of `after-insert-file-functions' (walked as FOR_EACH_TAIL, a
+  cycle being `(circular-list TAIL)' after the text is in) with point
+  motion and modification hooks inhibited and undo off, each count
+  checked as RANGED_FIXNUMP (`(wrong-type-argument inserted-chars X)');
+  with REPLACE they run from BEGV with the accessible size and point
+  goes back unless the text's characters changed. The undo list comes
+  back with its last insertion record fitted to the new count, or stays
+  t when one of them signals. A file-name handler's insertion shares the
+  visit's record and the tail. A killed buffer, its text and intervals
+  freed by Fkill_buffer and its bounds kept, now has no text properties:
+  reads return nil, a position outside the bounds it was left with is
+  args-out-of-range, and writes do nothing (GNU makes the killed buffer
+  current and builds intervals for it, undefined behaviour Emaxx does
+  not copy). Printing to a killed buffer is "Selecting deleted buffer"
+  and reading from one `(end-of-file)', as set_buffer_internal and
+  readchar have them. The library test that found a bare visit by its
+  truename now records the truename as files.el does, and two that visit
+  define files.el's `make-lock-file-name', which a visit's unlock calls.
+  Undo runs 1,488,300 instructions a unit (1,491,900 before). Batteries
+  of 71 insert-file-contents cases (special files, a FIFO with and
+  without END, REPLACE, VISIT, the format functions, the change
+  functions) and 22 property and stream cases over a killed buffer read
+  as GNU's. Local validation: the grouped gate's 3,347 library
+  tests, the seven integration suites, clippy with every target and
+  feature, rustfmt and `git diff --check'.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -11010,6 +11079,12 @@ frozen (run 41123055251) matched all 7,928 outcomes on its first
 attempt. Setup 64.5 s against 55.4 s (1.165), test bodies 225.0 s
 against 242.3 s (0.929), in all 0.988; undo-tests' bodies 0.83 s against
 0.65 s.
+
+**On `2d3c6c1`** (round 185): full Rust gate passed (run 41132822618);
+frozen (run 41132826303) matched all 7,928 outcomes on its first
+attempt. Setup 79.5 s against 65.5 s (1.215), test bodies 254.1 s
+against 264.9 s (0.959), in all 0.994; undo-tests' bodies 1.11 s against
+0.91 s.
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'
