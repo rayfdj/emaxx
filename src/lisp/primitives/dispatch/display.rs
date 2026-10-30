@@ -4725,15 +4725,17 @@ define_dispatch!(
             // ── More buffer ops ──
             "following-char" => direct_following_char(interp, args, env),
             "preceding-char" => direct_preceding_char(interp, args, env),
-            "buffer-last-name" => Ok(Value::String(
-                interp
-                    .buffer
+            "buffer-last-name" => {
+                need_arg_range(name, args, 0, 1)?;
+                // buffer.c: BVAR (decode_buffer (BUFFER), last_name), the
+                // name a buffer was made, renamed or killed with.
+                Ok(interp
+                    .decode_buffer(args.first())?
                     .borrow()
                     .last_name
                     .clone()
-                    .unwrap_or_else(|| interp.buffer.borrow().name.clone())
-                    .into(),
-            )),
+                    .map_or(Value::Nil, |name| Value::String(name.into())))
+            }
 
             // ── Display stubs ──
             "window-system" => {
@@ -5709,8 +5711,15 @@ define_dispatch!(
                 // text and a margin spec removes it from the line flow.
                 need_arg_range(name, args, 0, 4)?;
                 let window_id = live_window_id_or_selected(interp, args.get(1))?;
+                // xdisp.c: Fget_buffer (GNU reads no such buffer, or a
+                // killed one, through XBUFFER regardless).
                 let buffer_id = match args.first().filter(|value| !value.is_nil()) {
-                    Some(buffer) => interp.resolve_buffer_id(buffer)?,
+                    Some(buffer) => {
+                        let buffer = interp.get_buffer_or_error(buffer)?;
+                        interp
+                            .live_buffer_id(buffer)
+                            .ok_or_else(|| LispError::Signal("Selecting deleted buffer".into()))?
+                    }
                     None => interp.current_buffer_id(),
                 };
                 let saved_buffer = interp.current_buffer_id();
@@ -6370,7 +6379,14 @@ define_dispatch!(
                 let Some(window_id) = window_record_id_from_value(interp, &window) else {
                     return Err(LispError::WrongTypeArgument("windowp".into(), window));
                 };
-                let buffer_id = interp.resolve_buffer_id(&args[1])?;
+                // window.c:Fset_window_buffer: Fget_buffer, CHECK_BUFFER,
+                // then the buffer's liveness.
+                let buffer = interp
+                    .get_buffer(&args[1])?
+                    .ok_or_else(|| LispError::WrongTypeArgument("bufferp".into(), Value::Nil))?;
+                let buffer_id = interp
+                    .live_buffer_id(buffer)
+                    .ok_or_else(|| LispError::Signal("Attempt to display deleted buffer".into()))?;
                 let changes_buffer =
                     window_buffer_id(interp, &window).is_some_and(|previous| previous != buffer_id);
                 if changes_buffer {

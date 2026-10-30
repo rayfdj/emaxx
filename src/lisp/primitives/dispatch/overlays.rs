@@ -177,11 +177,11 @@ define_dispatch!(
                 Ok(Value::Nil)
             }
             "delete-all-overlays" => {
-                let buffer_id = match args.first().map(|v| v.kind()) {
-                    None | Some(Kind::Nil) => interp.current_buffer_id(),
-                    Some(buffer) => interp.resolve_buffer_id(&buffer.value())?,
-                };
-                interp.delete_buffer_overlays(buffer_id);
+                // buffer.c:decode_buffer: a killed buffer has no overlays.
+                let buffer = interp.decode_buffer(args.first())?;
+                if let Some(buffer_id) = interp.live_buffer_id(buffer) {
+                    interp.delete_buffer_overlays(buffer_id);
+                }
                 Ok(Value::Nil)
             }
             "overlay-put" => {

@@ -992,6 +992,13 @@ define_dispatch!(
             }
             "treesit-parser-list" => {
                 need_arg_range(name, args, 0, 3)?;
+                // treesit.c: CHECK_BUFFER; a killed buffer's parser list
+                // is empty.
+                if let Some(Kind::Buffer(buffer)) = args.first().map(|value| value.kind())
+                    && interp.live_buffer_id(buffer).is_none()
+                {
+                    return Ok(Value::Nil);
+                }
                 let (_, list_buffer_id) = current_or_named_buffer(interp, args.first())?;
                 let language = args.get(1).filter(|language| !language.is_nil());
                 if let Some(language) = language {

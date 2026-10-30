@@ -439,11 +439,13 @@ define_dispatch!(
                 if args.is_empty() || args.len() > 3 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let buffer_id = interp.resolve_buffer_id(&args[0])?;
+                // editfns.c: Fget_buffer and nsberror, then the liveness.
+                let source = interp.get_buffer_or_error(&args[0])?;
+                let buffer_id = interp
+                    .live_buffer_id(source)
+                    .ok_or_else(|| LispError::Signal("Selecting deleted buffer".into()))?;
                 let (begv, zv) = {
-                    let source = interp.get_buffer_by_id(buffer_id).ok_or_else(|| {
-                        LispError::Signal(format!("No buffer with id {}", buffer_id))
-                    })?;
+                    let source = source.borrow();
                     (source.point_min() as i64, source.point_max() as i64)
                 };
                 // editfns.c: nil START and END the accessible portion's
@@ -668,14 +670,15 @@ define_dispatch!(
             }
             "buffer-size" => {
                 need_arg_range(name, args, 0, 1)?;
-                let buffer_id = match args.first() {
-                    Some(buffer) if !buffer.is_nil() => interp.resolve_buffer_id(buffer)?,
-                    _ => interp.current_buffer_id(),
+                // editfns.c: CHECK_BUFFER; a killed buffer's size is the
+                // one its text had.
+                let buffer = interp.decode_buffer(args.first())?;
+                let size = if interp.live_buffer_id(buffer).is_some() {
+                    buffer.borrow().size_total()
+                } else {
+                    buffer.borrow().killed_size()
                 };
-                let buffer = interp
-                    .get_buffer_by_id(buffer_id)
-                    .ok_or_else(|| LispError::TypeError("buffer".into(), "killed".into()))?;
-                Ok(Value::Integer(buffer.size_total() as i64))
+                Ok(Value::Integer(size as i64))
             }
             "buffer-enable-undo" => {
                 need_arg_range(name, args, 0, 1)?;
@@ -750,15 +753,13 @@ define_dispatch!(
             }
 
             "buffer-name" => {
-                if !args.is_empty()
-                    && let Kind::Buffer(buffer) = args[0].kind()
-                {
-                    return Ok(interp
-                        .get_buffer_by_id(buffer.id)
-                        .map(|buffer| Value::String(buffer.name.clone().into()))
-                        .unwrap_or(Value::Nil));
+                need_arg_range(name, args, 0, 1)?;
+                // buffer.c:decode_buffer: nil for a killed buffer.
+                let buffer = interp.decode_buffer(args.first())?;
+                if interp.live_buffer_id(buffer).is_none() {
+                    return Ok(Value::Nil);
                 }
-                Ok(Value::String(interp.buffer.borrow().name.clone().into()))
+                Ok(Value::String(buffer.borrow().name.clone().into()))
             }
             "set-buffer-multibyte" => {
                 need_args(name, args, 1)?;
@@ -1216,13 +1217,10 @@ define_dispatch!(
             }
             "buffer-modified-p" => {
                 need_arg_range(name, args, 0, 1)?;
-                let buffer_id = match args.first() {
-                    Some(buffer) if !buffer.is_nil() => interp.resolve_buffer_id(buffer)?,
-                    _ => interp.current_buffer_id(),
-                };
-                let buffer = interp
-                    .get_buffer_by_id(buffer_id)
-                    .ok_or_else(|| LispError::TypeError("buffer".into(), "killed".into()))?;
+                // buffer.c:decode_buffer: a killed buffer's ticks as it
+                // left them.
+                let buffer = interp.decode_buffer(args.first())?;
+                let buffer = buffer.borrow();
                 Ok(if buffer.is_autosaved() {
                     Value::Symbol("autosaved".into())
                 } else if buffer.is_modified() {
@@ -1233,13 +1231,8 @@ define_dispatch!(
             }
             "buffer-chars-modified-tick" | "buffer-modified-tick" => {
                 need_arg_range(name, args, 0, 1)?;
-                let buffer_id = match args.first() {
-                    Some(buffer) if !buffer.is_nil() => interp.resolve_buffer_id(buffer)?,
-                    _ => interp.current_buffer_id(),
-                };
-                let buffer = interp
-                    .get_buffer_by_id(buffer_id)
-                    .ok_or_else(|| LispError::TypeError("buffer".into(), "killed".into()))?;
+                let buffer = interp.decode_buffer(args.first())?;
+                let buffer = buffer.borrow();
                 let tick = if name == "buffer-chars-modified-tick" {
                     buffer.chars_modified_tick()
                 } else {
@@ -1252,13 +1245,9 @@ define_dispatch!(
                 let Kind::Integer(tick) = args[0].kind() else {
                     return Err(LispError::WrongTypeArgument("fixnump".into(), args[0]));
                 };
-                let buffer_id = match args.get(1) {
-                    Some(buffer) if !buffer.is_nil() => interp.resolve_buffer_id(buffer)?,
-                    _ => interp.current_buffer_id(),
-                };
                 interp
-                    .get_buffer_by_id_mut(buffer_id)
-                    .ok_or_else(|| LispError::TypeError("buffer".into(), "killed".into()))?
+                    .decode_buffer(args.get(1))?
+                    .borrow_mut()
                     .set_modified_tick(tick);
                 Ok(Value::Nil)
             }

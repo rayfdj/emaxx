@@ -135,6 +135,20 @@ impl LocalCells {
     }
 
     /// The fixed slots that are bindings, in their order.
+    /// Each fixed slot's value, None where it is not a binding, as a
+    /// killed buffer keeps them.
+    pub(crate) fn fixed_values(&self) -> [Option<Value>; FIXED_SLOTS] {
+        let mut values = [None; FIXED_SLOTS];
+        if let Some(fixed) = &self.fixed {
+            for (slot, value) in fixed.values.iter().enumerate() {
+                if self.present & (1 << slot) != 0 {
+                    values[slot] = Some(value.get());
+                }
+            }
+        }
+        values
+    }
+
     fn fixed_bindings(&self) -> impl Iterator<Item = (&SymbolName, &Cell<Value>)> {
         let present = self.present;
         self.fixed.iter().flat_map(move |fixed| {

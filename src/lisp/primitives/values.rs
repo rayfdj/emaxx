@@ -875,7 +875,7 @@ fn compare_buffer_objects(
     // buffers (nil names) before live ones. Allocation IDs are not order.
     let left = left.borrow();
     let right = right.borrow();
-    match (left.last_name.is_none(), right.last_name.is_none()) {
+    match (!left.killed, !right.killed) {
         (true, true) => compare_plain_symbol_names(&left.name, &right.name),
         (false, true) => ValueOrder::Less,
         (true, false) => ValueOrder::Greater,

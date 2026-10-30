@@ -756,9 +756,8 @@ define_dispatch!(
             "looking-at" | "posix-looking-at" => looking_at_named(interp, name, args, env),
             "newline-cache-check" => {
                 need_arg_range(name, args, 0, 1)?;
-                if let Some(buffer) = args.first().filter(|value| !value.is_nil()) {
-                    interp.resolve_buffer_id(buffer)?;
-                }
+                // search.c: CHECK_BUFFER, a killed buffer included.
+                interp.decode_buffer(args.first())?;
                 // Emaxx does not maintain GNU's optional long-line newline
                 // cache.  GNU's documented result when no cache exists is nil.
                 Ok(Value::Nil)
@@ -776,7 +775,11 @@ define_dispatch!(
 
             "replace-buffer-contents" => {
                 need_arg_range(name, args, 1, 3)?;
-                let source_id = interp.resolve_buffer_id(&args[0])?;
+                // editfns.c: Fget_buffer and nsberror, then the liveness.
+                let source = interp.get_buffer_or_error(&args[0])?;
+                let source_id = interp
+                    .live_buffer_id(source)
+                    .ok_or_else(|| LispError::Signal("Selecting deleted buffer".into()))?;
                 if source_id == interp.current_buffer_id() {
                     return Err(LispError::Signal(
                         "Cannot replace a buffer with itself".into(),

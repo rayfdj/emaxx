@@ -550,16 +550,20 @@ define_dispatch!(
         match name {
             "set-buffer" => {
                 need_args(name, args, 1)?;
-                let id = interp.resolve_buffer_id(&args[0])?;
+                // buffer.c:Fset_buffer: Fget_buffer and nsberror, then the
+                // buffer's liveness.
+                let buffer = interp.get_buffer_or_error(&args[0])?;
+                let id = interp
+                    .live_buffer_id(buffer)
+                    .ok_or_else(|| LispError::Signal("Selecting deleted buffer".into()))?;
                 interp.set_current_buffer_id(id)?;
-                Ok(interp.buffer_value(id).expect("live buffer object"))
+                Ok(Value::Buffer(buffer))
             }
             "buffer-file-name" => {
                 need_arg_range(name, args, 0, 1)?;
-                let requested = args.first().filter(|value| !value.is_nil());
-                if let Some(Kind::Buffer(buffer)) = requested.map(|v| v.kind())
-                    && !buffer.ptr_eq(&interp.buffer)
-                {
+                // buffer.c:decode_buffer: a buffer, live or killed.
+                let buffer = interp.decode_buffer(args.first())?;
+                if !buffer.ptr_eq(&interp.buffer) {
                     return Ok(buffer
                         .borrow()
                         .file
@@ -567,25 +571,13 @@ define_dispatch!(
                         .map(|value| Value::String(value.into()))
                         .unwrap_or(Value::Nil));
                 }
-                let buffer_id = if let Some(buffer) = requested {
-                    interp.resolve_buffer_id(buffer)?
-                } else {
-                    interp.current_buffer_id()
-                };
                 // `buffer-file-name' is a per-buffer special variable.  A
                 // dynamic binding in the current buffer is observable both
                 // through the variable and through this primitive; reading
                 // only the host Buffer field lost bindings used by ordinary
                 // save code (including backup creation).
-                if buffer_id == interp.current_buffer_id() {
-                    return Ok(interp
-                        .lookup_var("buffer-file-name", env)
-                        .unwrap_or(Value::Nil));
-                }
                 Ok(interp
-                    .get_buffer_by_id(buffer_id)
-                    .and_then(|buffer| buffer.file.clone())
-                    .map(|value| Value::String(value.into()))
+                    .lookup_var("buffer-file-name", env)
                     .unwrap_or(Value::Nil))
             }
             "visited-file-modtime" => Ok(interp
@@ -596,14 +588,13 @@ define_dispatch!(
                 .unwrap_or(Value::Integer(0))),
             "verify-visited-file-modtime" => {
                 need_arg_range(name, args, 0, 1)?;
-                let buffer_id = match args.first().map(|v| v.kind()) {
-                    None | Some(Kind::Nil) => interp.current_buffer_id(),
-                    Some(buffer) => interp.resolve_buffer_id(&buffer.value())?,
-                };
-                let remote_visit = interp.buffer_remote_prefix(buffer_id).is_some();
-                let Some(buffer) = interp.get_buffer_by_id(buffer_id) else {
-                    return Ok(Value::Nil);
-                };
+                // fileio.c: decode_buffer, so a killed buffer's file and
+                // time are read as it left them.
+                let buffer = interp.decode_buffer(args.first())?;
+                let remote_visit = interp
+                    .live_buffer_id(buffer)
+                    .is_some_and(|id| interp.buffer_remote_prefix(id).is_some());
+                let buffer = buffer.borrow();
                 let Some(path) = buffer.file.as_deref() else {
                     return Ok(Value::T);
                 };
@@ -643,24 +634,35 @@ define_dispatch!(
             }
             "set-buffer-major-mode" => {
                 need_args(name, args, 1)?;
-                let buffer_id = interp.resolve_buffer_id(&args[0])?;
-                let buffer_name = interp
-                    .get_buffer_by_id(buffer_id)
-                    .map(|buffer| buffer.name.clone())
-                    .ok_or_else(|| {
-                        LispError::Signal("Attempt to set major mode for a dead buffer".into())
-                    })?;
+                let Kind::Buffer(buffer) = args[0].kind() else {
+                    return Err(LispError::WrongTypeArgument("bufferp".into(), args[0]));
+                };
+                let buffer_id = interp.live_buffer_id(buffer).ok_or_else(|| {
+                    LispError::Signal("Attempt to set major mode for a dead buffer".into())
+                })?;
+                let buffer_name = buffer.borrow().name.clone();
                 let mode = if buffer_name == "*scratch*" {
                     interp
                         .lookup_var("initial-major-mode", env)
                         .unwrap_or(Value::Nil)
                 } else {
-                    super::call(
+                    let mode = super::call(
                         interp,
                         "default-value",
                         &[Value::Symbol("major-mode".into())],
                         env,
-                    )?
+                    )?;
+                    // buffer.c: a nil default takes the current buffer's
+                    // mode unless that is a special mode.
+                    let current = interp.lookup_var("major-mode", env).unwrap_or(Value::Nil);
+                    if mode.is_nil()
+                        && super::call(interp, "get", &[current, Value::symbol("mode-class")], env)?
+                            .is_nil()
+                    {
+                        current
+                    } else {
+                        mode
+                    }
                 };
                 if mode.is_nil() {
                     return Ok(Value::Nil);
@@ -1976,10 +1978,7 @@ define_dispatch!(
             "process-buffer" => {
                 need_args(name, args, 1)?;
                 let process_id = interp.resolve_process_id(&args[0])?;
-                Ok(interp
-                    .process_buffer_id(process_id)
-                    .and_then(|buffer_id| interp.buffer_identity_value(buffer_id))
-                    .unwrap_or(Value::Nil))
+                Ok(interp.process_buffer_value(process_id))
             }
             "process-mark" => {
                 need_args(name, args, 1)?;
@@ -2118,12 +2117,14 @@ define_dispatch!(
             "set-process-buffer" => {
                 need_args(name, args, 2)?;
                 let process_id = interp.resolve_process_id(&args[0])?;
-                let buffer_id = if args[1].is_nil() {
-                    None
-                } else {
-                    Some(interp.resolve_buffer_id(&args[1])?)
+                // process.c: CHECK_BUFFER; a killed buffer leaves the
+                // process with no live buffer.
+                let buffer_id = match args[1].kind() {
+                    Kind::Nil => None,
+                    Kind::Buffer(buffer) => interp.live_buffer_id(buffer),
+                    _ => return Err(LispError::WrongTypeArgument("bufferp".into(), args[1])),
                 };
-                interp.set_process_buffer_id(process_id, buffer_id);
+                interp.set_process_buffer_id(process_id, buffer_id, args[1]);
                 Ok(args[1])
             }
             "process-sentinel" => {
@@ -2760,16 +2761,17 @@ define_dispatch!(
             }
             "kill-buffer" => {
                 need_arg_range(name, args, 0, 1)?;
-                let id = if let Some(buffer) = args.first().filter(|buffer| !buffer.is_nil()) {
-                    match interp.resolve_buffer_id(buffer) {
-                        Ok(id) => id,
-                        Err(_) if matches!(buffer.kind(), Kind::Buffer(_)) => {
+                // Fget_buffer and nsberror; a killed buffer is not killed
+                // again.
+                let id = match args.first().filter(|buffer| !buffer.is_nil()) {
+                    Some(buffer) => {
+                        let buffer = interp.get_buffer_or_error(buffer)?;
+                        let Some(id) = interp.live_buffer_id(buffer) else {
                             return Ok(Value::Nil);
-                        }
-                        Err(error) => return Err(error),
+                        };
+                        id
                     }
-                } else {
-                    interp.current_buffer_id()
+                    None => interp.current_buffer_id(),
                 };
                 // thread.c:thread_check_current_buffer: a buffer another
                 // thread has current is not killed, nor asked about.
@@ -2975,10 +2977,16 @@ define_dispatch!(
                 } else {
                     need_arg_range(name, args, 0, 1)?;
                 }
-                let id = if let Some(buffer) = args.first().filter(|value| !value.is_nil()) {
-                    interp.resolve_buffer_id(buffer)?
-                } else {
-                    interp.current_buffer_id()
+                // buffer.c: CHECK_BUFFER; a killed buffer is in no list.
+                let id = match args.first().map(|value| value.kind()) {
+                    None | Some(Kind::Nil) => interp.current_buffer_id(),
+                    Some(Kind::Buffer(buffer)) => match interp.live_buffer_id(buffer) {
+                        Some(id) => id,
+                        None => return Ok(Value::Nil),
+                    },
+                    Some(_) => {
+                        return Err(LispError::WrongTypeArgument("bufferp".into(), args[0]));
+                    }
                 };
                 bury_buffer_in_lists(interp, id, env)?;
                 if name == "bury-buffer-internal" {

@@ -71,6 +71,20 @@ pub struct Buffer {
     /// The text.
     text: BufferText,
 
+    /// Whether Fkill_buffer killed the buffer (GNU's nil name).
+    pub(crate) killed: bool,
+
+    /// BUF_Z - BUF_BEG as a killed buffer's freed text left it: GNU's
+    /// free_buffer_text frees the text and keeps its positions.
+    killed_size: usize,
+
+    /// A killed buffer's always-local slots held apart from its fields, as
+    /// they were when it was killed: the fixed slots in their order
+    /// (`FIXED_SLOT_NAMES'), None for one that was not a binding, then
+    /// `mark-active'; None for a live buffer.
+    #[allow(clippy::type_complexity)]
+    pub(crate) killed_locals: Option<Box<[Option<Value>; crate::lisp::eval::FIXED_SLOTS + 1]>>,
+
     /// Derived character view of the text around the last character read.
     /// Syntax and motion code commonly scan adjacent characters through
     /// `char_at`; retaining a decoded window avoids a conversion per
@@ -180,6 +194,9 @@ impl Clone for Buffer {
             name: self.name.clone(),
             last_name: self.last_name.clone(),
             text: self.text.clone(),
+            killed: self.killed,
+            killed_size: self.killed_size,
+            killed_locals: self.killed_locals.clone(),
             char_cache: self.char_cache.clone(),
             pt: self.pt,
             mark: self.mark.clone(),
@@ -851,6 +868,9 @@ impl Buffer {
             name: name.to_string(),
             last_name: None,
             text,
+            killed: false,
+            killed_size: 0,
+            killed_locals: None,
             char_cache: RefCell::new(RopeCharCache::default()),
             pt: 1,
             mark: BufferMark::Position(None),
@@ -888,6 +908,9 @@ impl Buffer {
             name: name.to_string(),
             last_name: None,
             text,
+            killed: false,
+            killed_size: 0,
+            killed_locals: None,
             char_cache: RefCell::new(RopeCharCache::default()),
             pt: 1,
             mark: BufferMark::Position(None),
@@ -1067,6 +1090,12 @@ impl Buffer {
     /// Total characters in the buffer (ignoring narrowing).
     pub fn size_total(&self) -> usize {
         self.text.len_chars()
+    }
+
+    /// A killed buffer's size as Fkill_buffer left it (editfns.c's
+    /// buffer-size reads it).
+    pub(crate) fn killed_size(&self) -> usize {
+        self.killed_size
     }
 
     // ── Position predicates ──
@@ -1705,6 +1734,13 @@ impl Buffer {
             }
         }
         visit(&self.undo_list);
+        for value in self
+            .killed_locals
+            .iter()
+            .flat_map(|slots| slots.iter().flatten())
+        {
+            visit(value);
+        }
         self.overlays.visit_lisp_values(visit);
     }
 
@@ -2882,6 +2918,8 @@ impl Buffer {
     /// retains the buffer object.  GNU Fkill_buffer clears undo, intervals
     /// and overlays and frees text; file slots remain readable afterwards.
     pub(crate) fn release_killed_storage(&mut self) {
+        self.killed = true;
+        self.killed_size = self.size_total();
         self.text = BufferText::default();
         *self.char_cache.get_mut() = RopeCharCache::default();
         self.edits = std::collections::VecDeque::new();
@@ -2938,6 +2976,9 @@ impl Buffer {
             name: parts.name,
             last_name: None,
             text: BufferText::from_str(&parts.text),
+            killed: false,
+            killed_size: 0,
+            killed_locals: None,
             char_cache: RefCell::new(RopeCharCache::default()),
             pt: parts.pt,
             mark: BufferMark::Position(parts.mark),

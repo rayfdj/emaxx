@@ -377,6 +377,7 @@ const KEY_NAMES: &[&str] = &[
     "debug-on-signal",
     ":success",
     "replace-buffer-in-windows",
+    "mark-active",
 ];
 
 struct Symbols {

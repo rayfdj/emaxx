@@ -542,6 +542,40 @@ fn kill_buffer_spares_another_threads_buffer_and_thread_names_are_strings_as_gnu
 }
 
 #[test]
+fn buffer_arguments_are_decoded_as_gnu() {
+    // buffer.c:decode_buffer (CHECK_BUFFER, a killed buffer read as
+    // Fkill_buffer left it) and Fget_buffer (CHECK_STRING) with nsberror,
+    // each primitive's own errors for a killed buffer, and a process
+    // keeping the buffer object it was given.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let* ((dead (let ((b (get-buffer-create "dk")))
+                        (with-current-buffer b (insert "abc") (setq default-directory "/tmp/"))
+                        (kill-buffer b) b))
+               (tc (lambda (f) (condition-case e (funcall f) (error e)))))
+          (list (funcall tc (lambda () (set-buffer "no-such-buf")))
+                (funcall tc (lambda () (kill-buffer 7)))
+                (funcall tc (lambda () (buffer-name "x")))
+                (funcall tc (lambda () (get-buffer 'sym)))
+                (buffer-size dead) (buffer-modified-p dead) (buffer-last-name dead) (buffer-name dead)
+                (buffer-local-value 'default-directory dead)
+                (cdr (assq 'major-mode (buffer-local-variables dead)))
+                (funcall tc (lambda () (set-window-buffer nil "no-such-buf")))
+                (funcall tc (lambda () (set-window-buffer nil dead)))
+                (funcall tc (lambda () (make-indirect-buffer "*scratch*" "*scratch*")))
+                (funcall tc (lambda () (get-buffer-create "")))
+                (funcall tc (lambda () (barf-if-buffer-read-only "x")))
+                (local-variable-if-set-p 'fill-column 7)
+                (funcall tc (lambda () (eval-buffer "no-such-buf")))
+                (funcall tc (lambda () (buffer-swap-text dead)))
+                (let ((p (make-pipe-process :name "dkp" :noquery t)))
+                  (prog1 (list (set-process-buffer p dead) (eq (process-buffer p) dead))
+                    (delete-process p)))))"#,
+        r##"((error "No buffer named no-such-buf") (wrong-type-argument stringp 7) (wrong-type-argument bufferp "x") (wrong-type-argument stringp sym) 3 t "dk" nil "/tmp/" fundamental-mode (wrong-type-argument bufferp nil) (error "Attempt to display deleted buffer") (error "Buffer name `*scratch*' is in use") (error "Empty string for buffer name is not allowed") (wrong-type-argument fixnump "x") t (error "No such buffer") (error "Cannot swap a dead buffer's text") (#<killed buffer> t))"##,
+        "buffer arguments",
+    );
+}
+
+#[test]
 fn native_buffer_lookup_preserves_object_identity_after_rename_or_kill() {
     assert_oracle_contract_matches_interpreter(
         r#"(progn

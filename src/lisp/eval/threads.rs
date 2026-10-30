@@ -595,10 +595,14 @@ impl Interpreter {
         };
         let thread_id = Some(self.active_thread_id);
         let readmax = self.process_readmax();
+        let buffer = buffer_id
+            .and_then(|id| self.buffer_value(id))
+            .unwrap_or(Value::Nil);
         self.process_states.push(ProcessState {
             record_id: record_id.id,
             kind,
             buffer_id,
+            buffer,
             mark_marker_id,
             status: ProcessStatus::Run,
             filter: None,
@@ -690,10 +694,14 @@ impl Interpreter {
         self.set_marker(mark_marker_id, initial_position, buffer_id)?;
         let thread_id = Some(self.active_thread_id);
         let readmax = self.process_readmax();
+        let buffer = buffer_id
+            .and_then(|id| self.buffer_value(id))
+            .unwrap_or(Value::Nil);
         self.process_states.push(ProcessState {
             record_id: record_id.id,
             kind: ProcessKind::Network,
             buffer_id,
+            buffer,
             mark_marker_id,
             status,
             filter,
@@ -771,10 +779,12 @@ impl Interpreter {
         self.set_marker(mark_marker_id, initial_position, Some(buffer_id))?;
         let thread_id = Some(self.active_thread_id);
         let readmax = self.process_readmax();
+        let buffer = self.buffer_value(buffer_id).unwrap_or(Value::Nil);
         self.process_states.push(ProcessState {
             record_id: record_id.id,
             kind: ProcessKind::Serial,
             buffer_id: Some(buffer_id),
+            buffer,
             mark_marker_id,
             status: ProcessStatus::Open,
             filter,
@@ -1600,15 +1610,29 @@ impl Interpreter {
         Self::refresh_process_state(process)
     }
 
-    pub fn set_process_buffer_id(&mut self, record_id: u64, buffer_id: Option<u64>) -> bool {
+    /// Fset_process_buffer: BUFFER (nil or a buffer object) is the
+    /// process's buffer; BUFFER_ID its id while it is live.
+    pub fn set_process_buffer_id(
+        &mut self,
+        record_id: u64,
+        buffer_id: Option<u64>,
+        buffer: Value,
+    ) -> bool {
         let Some(process) = self.find_process_state_mut(record_id) else {
             return false;
         };
         process.buffer_id = buffer_id;
+        process.buffer = buffer;
         let mark_id = process.mark_marker_id;
         let position = buffer_id.and_then(|id| self.get_buffer_by_id(id).map(|b| b.point_max()));
         let _ = self.set_marker(mark_id, position, buffer_id);
         true
+    }
+
+    /// The process's buffer object, live or killed, or nil.
+    pub(crate) fn process_buffer_value(&self, record_id: u64) -> Value {
+        self.find_process_state(record_id)
+            .map_or(Value::Nil, |process| process.buffer)
     }
 
     pub fn process_buffer_id(&self, record_id: u64) -> Option<u64> {

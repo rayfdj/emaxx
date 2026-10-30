@@ -101,8 +101,14 @@ pub(crate) fn buffer_hash_value(
     interp: &mut Interpreter,
     buffer_or_name: Option<&Value>,
 ) -> Result<Value, LispError> {
+    // Fget_buffer and nsberror (GNU reads a killed buffer's freed text).
     let buffer_id = match buffer_or_name {
-        Some(value) if !value.is_nil() => interp.resolve_buffer_id(value)?,
+        Some(value) if !value.is_nil() => {
+            let buffer = interp.get_buffer_or_error(value)?;
+            interp
+                .live_buffer_id(buffer)
+                .ok_or_else(|| LispError::Signal("Selecting deleted buffer".into()))?
+        }
         _ => interp.current_buffer_id(),
     };
     let bytes = {
@@ -179,7 +185,10 @@ pub(crate) fn buffer_line_statistics_value(
 ) -> Result<Value, LispError> {
     let (text, multibyte) = match buffer_or_name {
         Some(value) if !value.is_nil() => {
-            let buffer_id = interp.resolve_buffer_id(value)?;
+            let buffer = interp.get_buffer_or_error(value)?;
+            let buffer_id = interp
+                .live_buffer_id(buffer)
+                .ok_or_else(|| LispError::Signal("Selecting deleted buffer".into()))?;
             let buffer = interp
                 .get_buffer_by_id(buffer_id)
                 .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?;

@@ -9751,6 +9751,61 @@ setup_process_coding_systems's check now refuses). A 13-form
   Local validation: the grouped gate's 3,344 library tests, the
   seven integration suites, clippy with every target and feature,
   rustfmt and `git diff --check'.
+- **Round 185: buffer arguments decoded as GNU's primitives decode
+  them.** Most buffer primitives took their argument through one
+  resolver that accepted a buffer or a name, signalled
+  `(wrong-type-argument string-or-buffer "integer")' (a predicate GNU
+  has not, with the type's name for the object) for anything else, and
+  "Selecting deleted buffer" for a killed buffer; `buffer-name' and
+  `buffer-last-name' read the current buffer whatever they were given.
+  Each now follows its C primitive. buffer.c:decode_buffer (nil the
+  current buffer, else CHECK_BUFFER, a killed buffer accepted) for
+  `buffer-name', `buffer-last-name', `buffer-file-name', `buffer-size',
+  `buffer-modified-p', the two ticks and the setter,
+  `buffer-base-buffer', `buffer-local-variables', `local-variable-p',
+  `delete-all-overlays', `newline-cache-check' and
+  `verify-visited-file-modtime'; CHECK_BUFFER for `buffer-local-value',
+  `buffer-swap-text', `bury-buffer-internal', `set-buffer-major-mode',
+  `set-process-buffer' and `treesit-parser-list'; Fget_buffer
+  (CHECK_STRING) with nsberror's "No buffer named NAME" for
+  `set-buffer', `kill-buffer', `insert-buffer-substring',
+  `compare-buffer-substrings', `replace-buffer-contents', `buffer-hash',
+  `buffer-line-statistics' and `buffer-text-pixel-size'; `get-buffer'
+  and `get-buffer-create' CHECK_STRING; `set-window-buffer' CHECK_BUFFER
+  after Fget_buffer; `eval-buffer' and `minibufferp' theirs; and each
+  one's own error for a killed buffer ("Attempt to display deleted
+  buffer", "Cannot swap a dead buffer's text", "Attempt to set major
+  mode for a dead buffer", "Base buffer has been killed", "Reading from
+  killed buffer"). A killed buffer reads as Fkill_buffer leaves it: its
+  size (free_buffer_text keeps the positions), modification state and
+  ticks, last name, file name, an empty history, and its always-local
+  slots as reset_buffer_local_variables leaves them (its mode, mode name
+  and invisibility spec reset, the rest as they were), which
+  `buffer-local-variables' lists and `buffer-local-value' reads. A
+  buffer is made with its name as its last name (*scratch* from the
+  image has none), and `value<' orders killed buffers by Fkill_buffer's
+  mark (it took a buffer without a last name for a live one).
+  `get-buffer-create' and `make-indirect-buffer' refuse an empty name,
+  and `make-indirect-buffer' a name in use (it made a second
+  "*scratch*"); `local-variable-if-set-p' asks about BUFFER only for a
+  localized variable; `barf-if-buffer-read-only' checks POSITION as a
+  fixnum and passes where it has an `inhibit-read-only' property;
+  `set-buffer-major-mode' takes the current buffer's mode when the
+  default is nil and that mode is not special; and a process keeps the
+  buffer object it was given, which `process-buffer' returns after the
+  buffer is killed. A battery of 59 primitives over a missing name, a
+  number, a killed buffer and a symbol now reads as GNU's in every case
+  where GNU does not crash (it does on `bury-buffer-internal',
+  `buffer-hash', `buffer-line-statistics', `buffer-text-pixel-size',
+  `current-bidi-paragraph-direction' and `decode-coding-string' with a
+  killed buffer, where Emaxx signals), and `encode-coding-region' into a
+  killed buffer still signals where GNU returns 0. The library test that
+  expected `buffer-size' to take a name now expects GNU's `bufferp'
+  error. Undo runs 1,491,900 instructions a unit (1,482,600 before: the
+  decoding helpers and the copy of the slots at a kill). Local
+  validation: the grouped gate's 3,345 library tests, the seven
+  integration suites, clippy with every target and feature, rustfmt and
+  `git diff --check'.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -10949,6 +11004,12 @@ frozen (run 41112983374) matched all 7,928 outcomes on its first
 attempt. Setup 78.2 s against 62.9 s (1.244), test bodies 252.4 s
 against 272.2 s (0.928), in all 0.971; undo-tests' bodies 1.10 s against
 0.89 s.
+
+**On `b18f8ef`** (round 184): full Rust gate passed (run 41123050944);
+frozen (run 41123055251) matched all 7,928 outcomes on its first
+attempt. Setup 64.5 s against 55.4 s (1.165), test bodies 225.0 s
+against 242.3 s (0.929), in all 0.988; undo-tests' bodies 0.83 s against
+0.65 s.
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

@@ -47,7 +47,7 @@ pub(crate) mod terminal;
 mod thread_context;
 pub(crate) use dump_roots::{FIELDS_NOT_CARRIED, ROOTS_RESET_AFTER_LOAD, TRANSIENT_ROOTS};
 pub(crate) use image_install::PdumperLoadRecord;
-pub(crate) use local_cells::{LoadedBindings, LocalCells};
+pub(crate) use local_cells::{FIXED_SLOTS, LoadedBindings, LocalCells};
 pub(crate) use macros::LispReadContext;
 mod symbol_cells;
 pub(crate) use symbol_cells::{SymbolCellSnapshot, SymbolCells};
@@ -2515,6 +2515,7 @@ impl Clone for ProcessState {
             record_id: self.record_id,
             kind: self.kind,
             buffer_id: self.buffer_id,
+            buffer: self.buffer,
             mark_marker_id: self.mark_marker_id,
             status: self.status.clone(),
             filter: self.filter,
@@ -2565,6 +2566,9 @@ struct ProcessState {
     record_id: u64,
     kind: ProcessKind,
     buffer_id: Option<u64>,
+    /// process.c's buffer slot: nil or the buffer given, which stays the
+    /// process's buffer when it is killed.
+    buffer: Value,
     mark_marker_id: crate::lisp::types::MarkerRef,
     status: ProcessStatus,
     filter: Option<Value>,
@@ -4681,6 +4685,7 @@ impl Interpreter {
         }
         for process in &self.process_states {
             mark(&self.record_value(process.record_id));
+            mark(&process.buffer);
             // process.c's Lisp_Process.mark slot: the process mark marker.
             mark(&Value::Marker(process.mark_marker_id));
             for value in [
@@ -5149,6 +5154,7 @@ impl Interpreter {
                     unreachable!()
                 };
                 process.mark_marker_id = marker;
+                process.buffer = c.copy(&process.buffer);
 
                 if let Some(filter) = &process.filter {
                     process.filter = Some(c.copy(filter));
