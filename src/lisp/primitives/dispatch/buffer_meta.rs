@@ -464,20 +464,15 @@ define_dispatch!(
                 Ok(Value::String(interp.buffer.borrow().name.clone().into()))
             }
             "other-buffer" => {
-                let exclude = if !args.is_empty() {
-                    match args[0].kind() {
-                        Kind::Buffer(buffer) => buffer.borrow().name.to_string(),
-                        _ => interp.buffer.borrow().name.clone(),
-                    }
-                } else {
-                    interp.buffer.borrow().name.clone()
-                };
-                for (id, buf_name) in &interp.buffer_list {
-                    if *buf_name != exclude && !buf_name.starts_with(' ') {
-                        return Ok(interp.buffer_value(*id).expect("live buffer object"));
-                    }
-                }
-                Ok(interp.buffer_value(0).expect("live buffer object"))
+                need_arg_range(name, args, 0, 3)?;
+                let frame = super::frames::decode_live_frame(interp, args.get(2), true)?;
+                other_buffer(
+                    interp,
+                    args.first().copied().unwrap_or(Value::Nil),
+                    args.get(1).is_some_and(Value::is_truthy),
+                    frame,
+                    env,
+                )
             }
             "buffer-base-buffer" => {
                 // buffer.c Fbuffer_base_buffer: a nil BUFFER means the
@@ -1926,4 +1921,63 @@ fn iso_final_chars_in_use(
         }
     }
     Ok(taken)
+}
+
+/// buffer.c:Fother_buffer: the most recently selected buffer other than
+/// BUFFER (when BUFFER is a buffer), live and not hidden
+/// (candidate_buffer), that FRAME's buffer predicate accepts; one no
+/// window shows unless VISIBLE_OK, else the first one shown; else
+/// *scratch*, made when there is none. The frame's buffer list is the
+/// buffer list here (its `buffer-list' parameter), so Fother_buffer's walk
+/// of the frame's list and then of all buffers is one.
+pub(crate) fn other_buffer(
+    interp: &mut Interpreter,
+    buffer: Value,
+    visible_ok: bool,
+    frame: crate::lisp::types::FrameRef,
+    env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    let predicate = super::frames::frame_parameter_value(interp, frame, "buffer-predicate");
+    let excluded = match buffer.kind() {
+        Kind::Buffer(buffer) => Some(buffer.id),
+        _ => None,
+    };
+    let candidates: Vec<u64> = interp.buffer_list.iter().map(|(id, _)| *id).collect();
+    let mut not_so_good = None;
+    for id in candidates {
+        // The predicate may have killed or renamed a buffer.
+        let hidden = match interp.buffer_list.iter().find(|(other, _)| *other == id) {
+            Some((_, name)) => name.starts_with(' '),
+            None => true,
+        };
+        if Some(id) == excluded || hidden {
+            continue;
+        }
+        let candidate = interp.buffer_value(id).expect("live buffer object");
+        if !predicate.is_nil()
+            && call_function_value(interp, &predicate, &[candidate], env)?.is_nil()
+        {
+            continue;
+        }
+        if visible_ok
+            || super::display::buffer_window(interp, id, &Value::symbol("visible")).is_none()
+        {
+            return Ok(candidate);
+        }
+        not_so_good.get_or_insert(candidate);
+    }
+    if let Some(candidate) = not_so_good {
+        return Ok(candidate);
+    }
+    if let Some(id) = interp.find_buffer_id("*scratch*") {
+        return Ok(interp.buffer_value(id).expect("live buffer object"));
+    }
+    let scratch = super::call(
+        interp,
+        "get-buffer-create",
+        &[Value::string("*scratch*"), Value::Nil],
+        env,
+    )?;
+    super::call(interp, "set-buffer-major-mode", &[scratch], env)?;
+    Ok(scratch)
 }

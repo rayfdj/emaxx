@@ -9596,6 +9596,102 @@ setup_process_coding_systems's check now refuses). A 13-form
   where the lines come from either. Local validation: the grouped
   gate's 3,341 library tests, the seven integration suites,
   clippy with every target and feature, rustfmt and `git diff --check'.
+- **Round 182: kill-buffer as Fkill_buffer, other-buffer as Fother_buffer,
+  and a buffer's always-local slots made with it.** Emaxx's `kill-buffer'
+  went from its hooks straight to the teardown, which showed the first
+  unhidden buffer of the list in each window that had shown the killed
+  one. GNU's then does the rest of Fkill_buffer: a buffer the hooks
+  killed counts as killed; the minibuffer's buffer is kept; a base
+  buffer's indirect buffers are killed first; window.el's
+  `replace-buffer-in-windows' runs (each window showing the buffer
+  switches to its previous buffer, and every window's previous and next
+  buffers lose it); another buffer is made current with `other-buffer',
+  the buffer kept when none can be (the last *scratch*); and
+  kill_buffer_processes deletes the buffer's connections and hangs up its
+  subprocesses. Each was missing, as GNU showed against the round 181
+  build: an advice on `replace-buffer-in-windows' heard 3 calls against
+  0, a killed buffer stayed in `window-prev-buffers', a killed base's
+  indirect buffer lived on, a pipe process read `open' rather than
+  `closed' and a subprocess kept running, and killing the last *scratch*
+  made another rather than refusing. `other-buffer' excluded by name,
+  ignored VISIBLE-OK and the frame, never preferred a buffer no window
+  shows, and fell back to buffer 0; it is Fother_buffer now
+  (candidate_buffer by object, the frame's `buffer-predicate', a shown
+  buffer only when no other will do, *scratch* made when there is none).
+  The frame's buffer list is still the buffer list itself, so its walk
+  and the walk of all buffers are one.
+  Undo's tests kill two buffers each (ERT's and `with-temp-buffer''s),
+  and GNU spends 8,300 instructions on each kill, 3,200 of them in
+  Fother_buffer's `get-buffer-window' and 2,500 in
+  `replace-buffer-in-windows'. The port as first written cost Emaxx
+  12,000 more a kill (undo 1,455,000 -> 1,552,600 instructions a unit),
+  most of it Rust calling primitives by name (each a name lookup and the
+  dispatch's string match) and `get-buffer-window' consing the window
+  list to find one window. Those are direct now: `kill-buffer' calls
+  Fother_buffer's and Fset_buffer's bodies, `get-buffer-window' and
+  Fother_buffer walk the windows in place (window_loop's
+  GET_BUFFER_WINDOW), and the window tree's walk bounds itself by the
+  count of windows rather than a list of them (1,512,500); Fother_buffer
+  now costs 3,700 a kill against GNU's 3,200, `replace-buffer-in-windows'
+  3,200 against 2,500.
+  A buffer's fourteen always-local slots (buffer_local_flags index -1,
+  those not on the buffer record: `default-directory', `buffer-read-only',
+  `major-mode' ...) were fourteen hash-table nodes made with each buffer,
+  4,900 instructions; they are one block made with it, struct buffer's
+  fields, each found by its symbol among the slots' own (`FixedSlots').
+  Dropping a buffer's bindings unloads their symbols
+  (swap_out_buffer_local_variables) instead of retiring every loaded
+  binding, and `kill-all-local-variables' keeps the block, as
+  reset_buffer_local_variables leaves those fields (it rebuilt them as
+  nodes); and a frame of one window is its own leaf, the window list
+  the first frame's leaves, without a stack or a second list. Undo
+  1,484,400 instructions a unit against GNU's 1,540,900; its allocations
+  583 a unit -> 527, the fourteen nodes' 112 gone and the windows' walks
+  (the frame list, each walk's leaves) adding 56.
+  Tried and not kept: LLVM's extended-TSP block placement
+  (`-enable-ext-tsp-block-placement') in the profile-guided build of
+  round 181, from its own profile. In callgrind's simulation undo's
+  instructions fell 1,352,000 -> 1,332,900 a unit and its modelled
+  cycles 1.1%, bytecode calls' 327 -> 311 an iteration, but
+  interpreted-dynamic's rose 1,380 -> 1,443 and mapcar's 10.3 M ->
+  11.9 M (its mispredicted conditional branches 959 -> 101,000 a unit);
+  the wall pilot (nine rounds, minimum ratio to GNU, median in
+  parentheses), the build as it is against the variant: undo 0.976
+  (1.049) against 1.019 (1.054), bytecode calls 0.870 (0.908) against
+  0.864 (0.975), interpreted-dynamic 0.831 (0.897) against 0.864
+  (0.919), mapcar 0.806 (0.775) against 0.845 (0.799). lld's
+  call-graph ordering does not run in these builds: no call-graph
+  profile reaches the link (`--print-symbol-order' wrote nothing).
+  Nor kept: round 181's fourteen nodes as one chunked table of slots
+  indexed by a map of their own (+3,500 instructions a unit, the
+  simulated cycles +0.2%).
+  Local validation: the grouped gate's 3,342 library tests, the
+  seven integration suites, clippy with every target and feature,
+  rustfmt and `git diff --check'.
+- **Round 181 measured** (its profile-guided build, the locked runner:
+  `tools/core_runtime_perf.py run --diagnostic`, nine rounds, the
+  native files of the round 176 preparation; no calibration, so it
+  certifies nothing). Paired median ratios and their bootstrapped 95%
+  intervals: undo 1.099 [0.965, 1.492], bytecode calls 0.961 [0.854,
+  1.150], interpreted-to-native 0.922 [0.803, 1.258], interpreted-dynamic
+  0.919 [0.765, 0.981], mapcar 0.889 [0.670, 1.004], cons allocation
+  0.822 [0.694, 1.011], explicit GC 0.803, list traversal 0.812,
+  bytecode-to-native 0.778 [0.667, 0.999], native-to-interpreted 0.777,
+  native-to-bytecode 0.767, bindat 0.682, sort 0.658, interpreted-lexical
+  0.632, interpreted calls 0.616, native execution 0.528; geometric mean
+  0.779. Three upper bounds pass 1.03; only undo's median is above 1
+  (bytecode calls and interpreted-to-native from single rounds at 1.22,
+  1.26 and 1.63). Undo's first four rounds (1.20, 1.54, 1.24, 1.49) ran
+  beside this session's own profile analysis, niced but not idle; its
+  other five read 0.97, 0.92, 1.01, 1.10 and 1.01.
+  Wall pilots of profile-guided variants of round 181 (eleven rounds,
+  minimum ratio to GNU, median in parentheses), built from its profile:
+  undo 1.050 (1.036) as built; with `-inline-threshold=75' 1.121
+  (0.975); with `-Copt-level=s' 1.309 (1.213), interpreted-dynamic
+  1.087 (1.093) against 0.816 (0.903), the text 13.2 MB against 15.3 MB.
+  Neither kept. Bcall's shared tail (round 181's note) read 1.129
+  (1.063) against 1.152 (1.076) in one fifteen-round pilot and 1.090
+  (1.076) against 1.050 (1.036) in this one: within this host's spread.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -10776,6 +10872,12 @@ frozen (run 41067279561) matched all 7,928 outcomes on its first
 attempt. Setup 77.6 s against 65.0 s (1.195), test bodies 252.4 s
 against 266.4 s (0.947), in all 0.981; undo-tests' bodies 1.09 s against
 0.91 s.
+
+**On `2ee3cce`** (round 181): full Rust gate passed (run 41073690053);
+frozen (run 41073695376) matched all 7,928 outcomes on its first
+attempt. Setup 71.1 s against 61.4 s (1.158), test bodies 238.4 s
+against 259.1 s (0.920), in all 0.957; undo-tests' bodies 0.91 s against
+0.82 s.
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

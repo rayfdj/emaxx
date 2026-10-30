@@ -439,6 +439,41 @@ fn buffer_lookup_preserves_object_identity_after_rename_or_kill() {
 }
 
 #[test]
+fn kill_buffer_replaces_it_in_windows_and_kills_its_dependents_as_gnu() {
+    // buffer.c:Fkill_buffer calls window.el's `replace-buffer-in-windows'
+    // (which drops the buffer from the windows' previous buffers), kills a
+    // base buffer's indirect buffers first and deletes its connections;
+    // Fother_buffer prefers a buffer no window shows unless VISIBLE-OK.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let* ((calls 0) (count (lambda (&rest _) (setq calls (1+ calls)))))
+             (advice-add 'replace-buffer-in-windows :before count)
+             (unwind-protect
+                 (let* ((a (get-buffer-create "kb-a")) (b (get-buffer-create "kb-b"))
+                        (base (get-buffer-create "kb-base"))
+                        (pipe (make-pipe-process :name "kb-pipe" :buffer base :noquery t))
+                        indirect)
+                   (switch-to-buffer a) (switch-to-buffer b)
+                   (switch-to-buffer a) (switch-to-buffer b)
+                   (kill-buffer b)
+                   (with-current-buffer base (insert "x"))
+                   (setq indirect (make-indirect-buffer base "kb-indirect"))
+                   (kill-buffer base)
+                   (prog1 (list calls
+                                (buffer-name (window-buffer))
+                                (memq b (mapcar #'car (window-prev-buffers)))
+                                (buffer-live-p indirect)
+                                (process-status pipe)
+                                (with-temp-buffer (buffer-name (other-buffer)))
+                                (with-temp-buffer (buffer-name (other-buffer nil t)))
+                                (buffer-name (other-buffer a)))
+                     (kill-buffer a)))
+               (advice-remove 'replace-buffer-in-windows count)))"#,
+        r#"(3 "kb-a" nil nil closed "*scratch*" "kb-a" "*scratch*")"#,
+        "kill-buffer's windows, indirect buffers, connections; other-buffer",
+    );
+}
+
+#[test]
 fn native_buffer_lookup_preserves_object_identity_after_rename_or_kill() {
     assert_oracle_contract_matches_interpreter(
         r#"(progn

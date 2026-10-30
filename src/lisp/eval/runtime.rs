@@ -1871,6 +1871,13 @@ impl Interpreter {
             .unwrap_or_default()
     }
 
+    /// How many records `record_ids_by_type' would list, without them.
+    pub(crate) fn record_count_by_type(&self, type_name: &str) -> usize {
+        self.record_ids_by_type_index
+            .get(type_name)
+            .map_or(0, |ids| ids.len())
+    }
+
     pub fn register_sqlite_handle(&mut self, id: u64, state: SqliteHandleState) {
         if let Some((_, existing)) = self
             .sqlite_handles

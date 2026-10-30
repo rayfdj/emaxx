@@ -2857,12 +2857,105 @@ define_dispatch!(
                 if !proceed {
                     return Ok(Value::Nil);
                 }
+                // buffer.c:Fkill_buffer once nothing more is asked: a buffer
+                // the hooks killed is reported killed, and the minibuffer
+                // now current is not killed.
+                if !interp.has_buffer_id(id) {
+                    return Ok(Value::T);
+                }
+                let buffer = interp.buffer_value(id).expect("live buffer object");
+                let minibuffer_buffer = |interp: &Interpreter| {
+                    crate::lisp::primitives::window::window_buffer_id(
+                        interp,
+                        &interp.minibuffer_window_value(),
+                    )
+                };
+                if minibuffer_buffer(interp) == Some(id) {
+                    return Ok(Value::Nil);
+                }
+                // A base buffer's indirect buffers are killed first, in the
+                // buffer list's order, so that nothing terrible happens if
+                // they ask questions or their hooks fail.
+                if interp.buffer_base_id(id).is_none() {
+                    let indirect: Vec<u64> = interp
+                        .buffer_list
+                        .iter()
+                        .map(|(other, _)| *other)
+                        .filter(|other| interp.buffer_base_id(*other) == Some(id))
+                        .collect();
+                    if !indirect.is_empty() {
+                        for other in indirect {
+                            let Some(value) = interp.buffer_value(other) else {
+                                continue;
+                            };
+                            super::call(interp, "kill-buffer", &[value], env)?;
+                            if let Some(survivor) = interp.get_buffer_by_id(other) {
+                                return Err(LispError::Signal(format!(
+                                    "Unable to kill buffer whose indirect buffer `{}' cannot be killed",
+                                    survivor.name
+                                )));
+                            }
+                        }
+                        if !interp.has_buffer_id(id) {
+                            return Ok(Value::T);
+                        }
+                    }
+                }
+                // replace_buffer_in_windows, before another buffer is made
+                // current: window.el's `replace-buffer-in-windows' shows
+                // another buffer in each window showing this one and
+                // removes it from every window's buffer lists.
+                let replace = cached_symbol!("replace-buffer-in-windows").with(Clone::clone);
+                if interp
+                    .raw_function_binding_symbol(&replace, env)
+                    .is_some_and(|function| !function.is_nil())
+                {
+                    call_function_value(interp, &Value::Symbol(replace), &[buffer], env)?;
+                }
+                if !interp.has_buffer_id(id) {
+                    return Ok(Value::T);
+                }
+                // This buffer stops being current (Fset_buffer of
+                // Fother_buffer); when no other buffer can be, it is not
+                // killed.
+                let frame = interp.selected_frame_id;
+                if id == interp.current_buffer_id() {
+                    let other =
+                        super::buffer_meta::other_buffer(interp, buffer, false, frame, env)?;
+                    let other = interp.resolve_buffer_id(&other)?;
+                    interp.set_current_buffer_id(other)?;
+                    if id == interp.current_buffer_id() {
+                        return Ok(Value::Nil);
+                    }
+                }
+                // Nor when the buffer now current is the minibuffer's and
+                // this one is the sole other buffer.
+                if minibuffer_buffer(interp) == Some(interp.current_buffer_id())
+                    && super::buffer_meta::other_buffer(interp, buffer, false, frame, env)?.word()
+                        == buffer.word()
+                {
+                    return Ok(Value::Nil);
+                }
                 if !interp.allow_kill_buffer_for_threads(id) {
                     return Ok(Value::Nil);
                 }
                 // GNU releases the target buffer's lock only after every query
                 // and hook has accepted the kill, immediately before teardown.
                 unlock_buffer(interp, env, id)?;
+                // kill_buffer_processes: the buffer's connections are
+                // deleted and its subprocesses hung up.
+                for (process_id, connection) in interp.buffer_processes(id) {
+                    if connection {
+                        delete_process_notifying(interp, process_id, env)?;
+                    } else {
+                        #[cfg(unix)]
+                        interp.signal_process_group(process_id, libc::SIGHUP, &Value::Nil)?;
+                    }
+                }
+                // Their sentinels may have killed it.
+                if !interp.has_buffer_id(id) {
+                    return Ok(Value::T);
+                }
                 interp.kill_buffer_id(id);
                 if !inhibit_hooks {
                     run_named_hooks(interp, "buffer-list-update-hook", env, None)?;

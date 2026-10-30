@@ -238,6 +238,30 @@ impl Interpreter {
         )
     }
 
+    /// The processes process.c:kill_buffer_processes acts on for a buffer
+    /// being killed: those on the process alist whose buffer it is, in the
+    /// alist's order, each with whether it is a connection (a network,
+    /// serial or pipe process), which Fdelete_process deletes, rather than
+    /// a subprocess, which is sent SIGHUP while its input is open.
+    pub(crate) fn buffer_processes(&self, buffer_id: u64) -> Vec<(u64, bool)> {
+        self.process_states
+            .iter()
+            .rev()
+            .filter(|process| {
+                Self::in_process_alist(process) && process.buffer_id == Some(buffer_id)
+            })
+            .filter_map(|process| match process.kind {
+                ProcessKind::Real => process
+                    .runtime
+                    .is_some()
+                    .then_some((process.record_id, false)),
+                ProcessKind::Pipe | ProcessKind::Network | ProcessKind::Serial => {
+                    Some((process.record_id, true))
+                }
+            })
+            .collect()
+    }
+
     pub fn set_process_plist_value(&mut self, record_id: u64, plist: Value) -> bool {
         if let Some(process) = self.find_process_state_mut(record_id) {
             process.plist = plist;

@@ -10,10 +10,13 @@
 //!
 //! Each binding's value lives in its own node, at an address that holds
 //! while the binding does (the alist cons of GNU's binding), so a symbol's
-//! loaded binding (`LoadedBindings') can name it.  Making or killing one
-//! binding unloads its symbol, as data.c swaps a variable's binding out
-//! when its loaded buffer gains or loses one; dropping or copying a
-//! buffer's bindings wholesale advances the bindings' shape, which retires
+//! loaded binding (`LoadedBindings') can name it; a buffer's always-local
+//! slots, struct buffer's own fields in GNU, are made with the buffer in
+//! one block (`FixedSlots').  Making or killing one binding unloads its
+//! symbol, as data.c swaps a variable's binding out when its loaded buffer
+//! gains or loses one, and so does discarding a buffer's bindings, for
+//! each of them (swap_out_buffer_local_variables); copying them, or
+//! dropping them otherwise, advances the bindings' shape, which retires
 //! every binding loaded before it.
 
 use super::super::types::{SymbolName, Value};
@@ -41,8 +44,27 @@ fn reshape() {
 /// built-in ones.
 const MODE_BINDINGS: usize = 56;
 
+/// How many always-local slots a buffer keeps with its bindings: the
+/// buffer_local_flags index -1 fields of struct buffer that are not on the
+/// buffer record itself.
+pub(crate) const FIXED_SLOTS: usize = 14;
+
+/// The always-local slots' bindings, struct buffer's fields: each value at
+/// a place that holds while the buffer's bindings do, found by its symbol
+/// among the slots' own (the variables flagged ALWAYS_LOCAL, a few).
+struct FixedSlots {
+    symbols: [SymbolName; FIXED_SLOTS],
+    values: [Cell<Value>; FIXED_SLOTS],
+}
+
 #[derive(Default)]
 pub(crate) struct LocalCells {
+    /// A buffer's always-local slots, made with it (`with_fixed_slots');
+    /// the bindings of a buffer made otherwise keep such a variable as any
+    /// other.
+    fixed: Option<Box<FixedSlots>>,
+    /// Which fixed slots are bindings, by bit.
+    present: u16,
     cells: LinkedHashMap<SymbolName, Cell<Value>, IdentityBuildHasher>,
     /// How many of the bindings are of the variables whose evaluator cells
     /// hold the current buffer's value (`is_forwarded_eval_cell'), so that
@@ -54,6 +76,13 @@ impl Clone for LocalCells {
     fn clone(&self) -> Self {
         reshape();
         Self {
+            fixed: self.fixed.as_ref().map(|fixed| {
+                Box::new(FixedSlots {
+                    symbols: fixed.symbols,
+                    values: fixed.values.clone(),
+                })
+            }),
+            present: self.present,
             cells: self.cells.clone(),
             forwarded_eval: self.forwarded_eval,
         }
@@ -62,42 +91,82 @@ impl Clone for LocalCells {
 
 impl Drop for LocalCells {
     fn drop(&mut self) {
-        if !self.cells.is_empty() {
+        if !self.is_empty() {
             reshape();
         }
     }
 }
 
 impl LocalCells {
-    /// The bindings a new buffer is made with, room for CAPACITY of them.
-    pub(crate) fn with_capacity(capacity: usize) -> Self {
+    /// The bindings a buffer is made with: its always-local slots, each
+    /// SYMBOLS[i] bound to VALUES[i], none with an evaluator cell.
+    pub(crate) fn with_fixed_slots(
+        symbols: [SymbolName; FIXED_SLOTS],
+        values: [Value; FIXED_SLOTS],
+    ) -> Self {
+        debug_assert!(
+            symbols
+                .iter()
+                .all(|symbol| !super::variables::is_forwarded_eval_cell(symbol))
+        );
         Self {
-            cells: LinkedHashMap::with_capacity_and_hasher(capacity, Default::default()),
+            fixed: Some(Box::new(FixedSlots {
+                symbols,
+                values: values.map(Cell::new),
+            })),
+            present: (1 << FIXED_SLOTS) - 1,
+            cells: LinkedHashMap::default(),
             forwarded_eval: 0,
         }
     }
 
-    /// Bind SYMBOL in a buffer just made: no binding of the buffer can be
-    /// loaded yet, SYMBOL has none here, and it has no evaluator cell.
-    pub(crate) fn insert_fresh(&mut self, symbol: &SymbolName, value: Value) {
-        debug_assert!(self.cells.get(symbol).is_none());
-        debug_assert!(!super::variables::is_forwarded_eval_cell(symbol));
-        self.cells.insert(*symbol, Cell::new(value));
+    /// SYMBOL's fixed slot, bound or not.
+    #[inline]
+    fn fixed_slot(&self, symbol: &SymbolName) -> Option<usize> {
+        if symbol.cell().flags.get() & super::symbol_cell_flags::ALWAYS_LOCAL == 0 {
+            return None;
+        }
+        let fixed = self.fixed.as_ref()?;
+        let wanted = symbol.identity_ptr();
+        fixed
+            .symbols
+            .iter()
+            .position(|slot| slot.identity_ptr() == wanted)
+    }
+
+    /// The fixed slots that are bindings, in their order.
+    fn fixed_bindings(&self) -> impl Iterator<Item = (&SymbolName, &Cell<Value>)> {
+        let present = self.present;
+        self.fixed.iter().flat_map(move |fixed| {
+            fixed
+                .symbols
+                .iter()
+                .zip(&fixed.values)
+                .enumerate()
+                .filter(move |(slot, _)| present & (1 << slot) != 0)
+                .map(|(_, binding)| binding)
+        })
     }
 
     /// A local binding retains its actual symbol, as GNU's local_var_alist does.
     pub(crate) fn symbols(&self) -> impl Iterator<Item = &SymbolName> {
-        self.cells.keys()
+        self.fixed_bindings()
+            .map(|(symbol, _)| symbol)
+            .chain(self.cells.keys())
     }
 
     /// The binding for SYMBOL: `Some(None)' is a void local, `None' no local.
     pub(crate) fn binding(&self, symbol: &SymbolName) -> Option<Option<Value>> {
-        self.cells.get(symbol).map(|value| live(value.get()))
+        self.binding_cell(symbol).map(|value| live(value.get()))
     }
 
     /// SYMBOL's binding here, void or not, to store into.
     pub(crate) fn binding_cell(&self, symbol: &SymbolName) -> Option<&Cell<Value>> {
-        self.cells.get(symbol)
+        match self.fixed_slot(symbol) {
+            Some(slot) => (self.present & (1 << slot) != 0)
+                .then(|| &self.fixed.as_ref().expect("fixed slots").values[slot]),
+            None => self.cells.get(symbol),
+        }
     }
 
     pub(crate) fn binding_by_name(&self, name: &str) -> Option<Option<Value>> {
@@ -109,6 +178,17 @@ impl LocalCells {
     /// SYMBOL's binding loaded in LOADED (this buffer's default, perhaps)
     /// is unloaded.
     pub(crate) fn insert(&mut self, symbol: &SymbolName, value: Value, loaded: &LoadedBindings) {
+        if let Some(slot) = self.fixed_slot(symbol) {
+            if self.present & (1 << slot) == 0 {
+                if super::variables::is_forwarded_eval_cell(symbol) {
+                    self.forwarded_eval += 1;
+                }
+                loaded.unload(symbol);
+                self.present |= 1 << slot;
+            }
+            self.fixed.as_ref().expect("fixed slots").values[slot].set(value);
+            return;
+        }
         match self.cells.get(symbol) {
             Some(existing) => existing.set(value),
             None => {
@@ -116,15 +196,16 @@ impl LocalCells {
                     self.forwarded_eval += 1;
                 }
                 loaded.unload(symbol);
-                // A buffer is made with room for its built-in bindings
-                // alone; one gaining others (a major mode sets dozens)
-                // grows at once to room for MODE_BINDINGS, not by
-                // doubling.
+                // A buffer is made with its built-in bindings alone; one
+                // gaining others (a major mode sets dozens) grows at once to
+                // room for MODE_BINDINGS, not by doubling.
                 if self.cells.len() == self.cells.capacity() {
+                    let bindings = self.len();
                     self.cells.reserve(
                         MODE_BINDINGS
-                            .saturating_sub(self.cells.len())
-                            .max(self.cells.len()),
+                            .saturating_sub(bindings)
+                            .max(self.cells.len())
+                            .max(1),
                     );
                 }
                 self.cells.insert(*symbol, Cell::new(value));
@@ -136,12 +217,47 @@ impl LocalCells {
     /// node it names is reused).
     pub(crate) fn remove(&mut self, name: &str, loaded: &LoadedBindings) -> Option<Value> {
         let symbol = SymbolName::find(name)?;
-        let removed = self.cells.remove(&symbol)?;
+        let removed = match self.fixed_slot(&symbol) {
+            Some(slot) => {
+                if self.present & (1 << slot) == 0 {
+                    return None;
+                }
+                self.present &= !(1 << slot);
+                self.fixed.as_ref().expect("fixed slots").values[slot].get()
+            }
+            None => self.cells.remove(&symbol)?.get(),
+        };
         loaded.unload(&symbol);
         if super::variables::is_forwarded_eval_cell(&symbol) {
             self.forwarded_eval -= 1;
         }
-        Some(removed.get())
+        Some(removed)
+    }
+
+    /// Drop these bindings, unloading each one's symbol in LOADED instead
+    /// of retiring every loaded binding: a binding loaded for their buffer
+    /// names one of them, or none (the buffer saw a default, which a later
+    /// binding there unloads in turn), and a buffer's id is never another's.
+    pub(crate) fn discard(mut self, loaded: &LoadedBindings) {
+        for symbol in self.symbols() {
+            loaded.unload(symbol);
+        }
+        self.present = 0;
+        self.cells.clear();
+    }
+
+    /// Drop the bindings but the fixed slots (the local_var_alist that
+    /// reset_buffer_local_variables resets: struct buffer's fields stay),
+    /// unloading their symbols in LOADED as `discard' does.
+    pub(crate) fn discard_cells(&mut self, loaded: &LoadedBindings) {
+        for symbol in self.cells.keys() {
+            loaded.unload(symbol);
+        }
+        self.cells.clear();
+        self.forwarded_eval = self
+            .fixed_bindings()
+            .filter(|(symbol, _)| super::variables::is_forwarded_eval_cell(symbol))
+            .count();
     }
 
     /// Whether a variable whose evaluator cell holds the current buffer's
@@ -150,32 +266,50 @@ impl LocalCells {
         self.forwarded_eval != 0
     }
 
+    fn len(&self) -> usize {
+        self.present.count_ones() as usize + self.cells.len()
+    }
+
     pub(crate) fn is_empty(&self) -> bool {
-        self.cells.is_empty()
+        self.present == 0 && self.cells.is_empty()
     }
 
     /// Bindings in first-binding order, a void local as `Value::Unbound'.
     pub(crate) fn iter(&self) -> impl Iterator<Item = (&SymbolName, Value)> {
-        self.cells
-            .iter()
+        self.fixed_bindings()
+            .chain(self.cells.iter())
             .map(|(symbol, value)| (symbol, value.get()))
     }
 
     #[cfg(test)]
     pub(crate) fn values_mut(&mut self) -> impl Iterator<Item = &mut Value> {
-        self.cells.values_mut().map(Cell::get_mut)
+        let present = self.present;
+        self.fixed
+            .iter_mut()
+            .flat_map(move |fixed| {
+                fixed
+                    .values
+                    .iter_mut()
+                    .enumerate()
+                    .filter(move |(slot, _)| present & (1 << slot) != 0)
+                    .map(|(_, value)| value)
+            })
+            .chain(self.cells.values_mut())
+            .map(Cell::get_mut)
     }
 
     #[cfg(test)]
     pub(crate) fn map_symbols(&mut self, mut copy: impl FnMut(SymbolName) -> SymbolName) {
         reshape();
+        if let Some(fixed) = self.fixed.as_mut() {
+            fixed.symbols = fixed.symbols.map(&mut copy);
+        }
         self.cells = std::mem::take(&mut self.cells)
             .into_iter()
             .map(|(symbol, value)| (copy(symbol), value))
             .collect();
         self.forwarded_eval = self
-            .cells
-            .keys()
+            .symbols()
             .filter(|symbol| super::variables::is_forwarded_eval_cell(symbol))
             .count();
     }
