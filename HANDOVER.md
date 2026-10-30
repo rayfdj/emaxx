@@ -9558,6 +9558,44 @@ setup_process_coding_systems's check now refuses). A 13-form
   Local validation: the grouped gate's 3,341 library tests, the
   seven integration suites, clippy with every target and feature,
   rustfmt and `git diff --check'.
+- **Round 181: native code's call of a subr with no word-level path holds
+  nothing across the subr.** `invoke_other_subr', which native code
+  reaches through the freloc table for every subr without a word-level
+  entry, ran inside `with_active', whose closure kept the active call's
+  pointers in saved registers across the subr: each call pushed and
+  popped them and brought the handlers up to date through the general
+  path. The usual call -- the handlers already current, a direct entry
+  taking this many arguments -- now reads the active call once and calls
+  the entry with nothing else live, as native code's own call through
+  the freloc table does; a signal finds the active call again
+  (`remember_active_helper_error'), and any other case is the old body,
+  out of line. `NativeSubr::call' takes the same arity test
+  (`direct_admitting'). Undo runs 1,451,800 instructions a unit against
+  1,464,100, `invoke_other_subr''s own 27,100 -> 16,100.
+  Undo's code footprint against GNU's, from callgrind's cache
+  simulation of the profile-guided build: 60,900 distinct instructions
+  run at least once a unit against GNU's 28,500, on 5,743 code lines
+  against 3,016 (76% of the lines' bytes run, against 61%: the lines are
+  fuller, there are more of them), and 39,100 instruction-cache misses
+  a unit against 20,700. Half the excess is the byte-code loop and its
+  helpers (10,500 misses against exec_byte_code's 1,650; the loop runs
+  375 lines to GNU's 143); then the evaluator's methods (9,200) and the
+  primitives (8,600). Bytecode calls is at GNU's cost in the same
+  simulation (440 instructions an iteration against 468, ten indirect
+  branches mispredicted against nine, no cache misses in either).
+  Tried and not kept: Bcall's subr, native and full paths in one copy
+  after the loop's match, as exec_byte_code's `dofuncall', the closure
+  entry left in each count's arm. The loop's lines 363 -> 326 and undo's
+  instruction-cache misses 54,300 -> 52,800 a unit in the plain build,
+  but 17,000 more instructions (1,451,800 -> 1,468,700), the count no
+  longer a constant in the call's path; the simulated cycles fell under
+  one per cent.
+  A profile-guided build without the hot call-site inlining boost
+  (`-hot-callsite-threshold=225', the round 180 profile) ran undo's
+  same footprint (5,667 lines, 38,900 misses), so that inlining is not
+  where the lines come from either. Local validation: the grouped
+  gate's 3,341 library tests, the seven integration suites,
+  clippy with every target and feature, rustfmt and `git diff --check'.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -10732,6 +10770,12 @@ frozen (run 41055391243) matched all 7,928 outcomes on its first
 attempt. Setup 76.2 s against 63.0 s (1.209), test bodies 250.7 s
 against 263.2 s (0.953), in all 0.987; undo-tests' bodies 1.13 s against
 0.88 s.
+
+**On `92995fb`** (round 180): full Rust gate passed (run 41067275249);
+frozen (run 41067279561) matched all 7,928 outcomes on its first
+attempt. Setup 77.6 s against 65.0 s (1.195), test bodies 252.4 s
+against 266.4 s (0.947), in all 0.981; undo-tests' bodies 1.09 s against
+0.91 s.
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

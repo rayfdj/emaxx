@@ -1964,6 +1964,13 @@ impl NativeRuntime {
         self.sync_handlers_unwinding(interpreter, current)
     }
 
+    /// Whether the runtime's handlers agree with the thread's list, so
+    /// that `sync_handlers' has nothing to do.
+    #[inline(always)]
+    fn handlers_in_sync(&self) -> bool {
+        self.top_handler == self.thread.handler()
+    }
+
     #[inline(never)]
     fn sync_handlers_unwinding(
         &mut self,
@@ -2473,9 +2480,42 @@ fn invoke_kind_subr(index: usize, kind: DirectSubr, arguments: &[NativeWord]) ->
 }
 
 /// `invoke_subr' of a subr with no word-level path: the handlers brought
-/// up to date, then its own entry.
+/// up to date, then its own entry.  The usual call -- the handlers already
+/// current, a direct entry taking this many arguments -- holds nothing
+/// across the subr but its result, as native code's call through the
+/// freloc table does, so it saves no registers: any other case is
+/// `invoke_other_subr_slow's, and a signal finds the active call again.
 #[inline(never)]
 fn invoke_other_subr(
+    subroutine: &'static super::abi::NativeSubr,
+    arguments: &[NativeWord],
+) -> NativeWord {
+    let active = ACTIVE_CALL.get();
+    if active.is_null() {
+        std::process::abort();
+    }
+    // SAFETY: `with_active_call' installs the pointer only for the
+    // synchronous extent in which its pointees live.
+    let active = unsafe { &*active };
+    let direct = subroutine.resolved_direct_admitting(arguments.len());
+    let (Some(direct), true) = (direct, unsafe { &*active.runtime }.handlers_in_sync()) else {
+        return invoke_other_subr_slow(subroutine, arguments);
+    };
+    // SAFETY: generated code passes live Lisp_Object words.
+    let values = unsafe { live_values(arguments) };
+    match direct(unsafe { &mut *active.interpreter }, values, unsafe {
+        &mut *active.environment.get()
+    }) {
+        Ok(value) => value.word(),
+        Err(error) => remember_active_helper_error(error),
+    }
+}
+
+/// `invoke_other_subr' when the handlers need bringing up to date or the
+/// subr has no direct entry for this many arguments.
+#[cold]
+#[inline(never)]
+fn invoke_other_subr_slow(
     subroutine: &'static super::abi::NativeSubr,
     arguments: &[NativeWord],
 ) -> NativeWord {
@@ -2488,6 +2528,15 @@ fn invoke_other_subr(
         }
         invoke_subr_entry(active, subroutine, arguments)
     })
+}
+
+/// `remember_helper_error' of the active call, for a caller that holds
+/// none: the word native code reads when it returns at all.
+#[cold]
+#[inline(never)]
+fn remember_active_helper_error(error: LispError) -> NativeWord {
+    with_active(|active| remember_helper_error(active, error));
+    0
 }
 
 #[cold]
