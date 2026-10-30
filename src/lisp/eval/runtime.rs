@@ -455,7 +455,8 @@ impl Interpreter {
         }
     }
 
-    /// Move a buffer to the front of the buffer list (GNU record_buffer).
+    /// buffer.c:record_buffer: a buffer to the front of the buffer list,
+    /// and of the selected frame's, out of the frame's buried buffers.
     pub fn record_buffer_front(&mut self, id: u64) {
         if let Some(index) = self
             .buffer_list
@@ -464,6 +465,29 @@ impl Interpreter {
         {
             let entry = self.buffer_list.remove(index);
             self.buffer_list.insert(0, entry);
+        }
+        let mut frame = self.selected_frame_id.borrow_mut();
+        frame.buffer_list.retain(|buffer| *buffer != id);
+        frame.buffer_list.insert(0, id);
+        frame.buried_buffer_list.retain(|buffer| *buffer != id);
+    }
+
+    /// Fbury_buffer_internal's update of the selected frame's lists: the
+    /// buffer leaves the frame's buffers for the front of its buried ones.
+    pub(crate) fn bury_buffer_in_selected_frame(&mut self, id: u64) {
+        let mut frame = self.selected_frame_id.borrow_mut();
+        frame.buffer_list.retain(|buffer| *buffer != id);
+        frame.buried_buffer_list.retain(|buffer| *buffer != id);
+        frame.buried_buffer_list.insert(0, id);
+    }
+
+    /// frame.c:frames_discard_buffer: a killed buffer leaves every frame's
+    /// lists.
+    fn frames_discard_buffer(&mut self, id: u64) {
+        for frame in &self.frame_states {
+            let mut frame = frame.borrow_mut();
+            frame.buffer_list.retain(|buffer| *buffer != id);
+            frame.buried_buffer_list.retain(|buffer| *buffer != id);
         }
     }
 
@@ -1175,6 +1199,7 @@ impl Interpreter {
 
     /// Kill a buffer by ID, switching away if it is current.
     pub fn kill_buffer_id(&mut self, id: u64) {
+        self.frames_discard_buffer(id);
         self.delete_buffer_overlays(id);
         let selected_window_showed_buffer = self.selected_window_buffer_id() == id;
         self.detach_markers_for_buffer(id);

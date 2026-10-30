@@ -664,12 +664,27 @@ define_dispatch!(
                 Ok(Value::Symbol(symbol))
             }
             "buffer-list" => {
-                let bufs: Vec<Value> = interp
-                    .buffer_list
-                    .iter()
-                    .map(|(id, n)| interp.buffer_value(*id).expect("live buffer object"))
-                    .collect();
-                Ok(Value::list(bufs))
+                need_arg_range(name, args, 0, 1)?;
+                // buffer.c:Fbuffer_list: for a FRAME, its own buffers first,
+                // then the others, then its buried buffers, least recently
+                // buried first.
+                let general = interp.buffer_list.iter().map(|(id, _)| *id);
+                let ids: Vec<u64> = match args.first().map(|frame| frame.kind()) {
+                    Some(Kind::Frame(frame)) => {
+                        let frame = frame.borrow();
+                        let mut ids = frame.buffer_list.clone();
+                        ids.extend(general.filter(|id| {
+                            !frame.buffer_list.contains(id)
+                                && !frame.buried_buffer_list.contains(id)
+                        }));
+                        ids.extend(frame.buried_buffer_list.iter().rev());
+                        ids
+                    }
+                    _ => general.collect(),
+                };
+                Ok(Value::list(
+                    ids.into_iter().filter_map(|id| interp.buffer_value(id)),
+                ))
             }
             "add-variable-watcher" => {
                 need_args(name, args, 2)?;
@@ -1925,11 +1940,10 @@ fn iso_final_chars_in_use(
 
 /// buffer.c:Fother_buffer: the most recently selected buffer other than
 /// BUFFER (when BUFFER is a buffer), live and not hidden
-/// (candidate_buffer), that FRAME's buffer predicate accepts; one no
-/// window shows unless VISIBLE_OK, else the first one shown; else
-/// *scratch*, made when there is none. The frame's buffer list is the
-/// buffer list here (its `buffer-list' parameter), so Fother_buffer's walk
-/// of the frame's list and then of all buffers is one.
+/// (candidate_buffer), that FRAME's buffer predicate accepts, among
+/// FRAME's buffers and then all of them; one no window shows unless
+/// VISIBLE_OK, else the first one shown; else *scratch*, made when there
+/// is none.
 pub(crate) fn other_buffer(
     interp: &mut Interpreter,
     buffer: Value,
@@ -1942,7 +1956,13 @@ pub(crate) fn other_buffer(
         Kind::Buffer(buffer) => Some(buffer.id),
         _ => None,
     };
-    let candidates: Vec<u64> = interp.buffer_list.iter().map(|(id, _)| *id).collect();
+    let candidates: Vec<u64> = frame
+        .borrow()
+        .buffer_list
+        .iter()
+        .copied()
+        .chain(interp.buffer_list.iter().map(|(id, _)| *id))
+        .collect();
     let mut not_so_good = None;
     for id in candidates {
         // The predicate may have killed or renamed a buffer.

@@ -2876,6 +2876,13 @@ pub(crate) struct FrameState {
     pub(crate) after_make_frame: bool,
     pub(crate) pointer_invisible: bool,
     pub(crate) was_invisible: bool,
+    /// frame.h's buffer_list and buried_buffer_list, by buffer id: the
+    /// buffers selected in the frame, most recent first (record_buffer),
+    /// and those buried from it, most recent first
+    /// (Fbury_buffer_internal). A killed buffer leaves both
+    /// (frames_discard_buffer).
+    pub(crate) buffer_list: Vec<u64>,
+    pub(crate) buried_buffer_list: Vec<u64>,
 }
 
 impl FrameState {
@@ -4259,6 +4266,8 @@ impl Interpreter {
                 after_make_frame: true,
                 pointer_invisible: false,
                 was_invisible: false,
+                buffer_list: Vec::new(),
+                buried_buffer_list: Vec::new(),
             },
         )
     }
@@ -6083,6 +6092,10 @@ impl Interpreter {
                 after_make_frame: true,
                 pointer_invisible: false,
                 was_invisible: false,
+                // frame.c:make_frame: `list1 (buf)', the buffer its root
+                // window shows (*scratch*, buffer 0).
+                buffer_list: vec![0],
+                buried_buffer_list: Vec::new(),
             },
         );
         initial_terminal.borrow_mut().top_frame = Some(initial_frame);

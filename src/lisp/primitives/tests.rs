@@ -474,6 +474,40 @@ fn kill_buffer_replaces_it_in_windows_and_kills_its_dependents_as_gnu() {
 }
 
 #[test]
+fn frames_keep_their_own_buffer_lists_as_gnu() {
+    // frame.h's buffer_list and buried_buffer_list: record_buffer (a
+    // window's selection), Fbury_buffer_internal and frames_discard_buffer
+    // keep them; store_frame_param keeps their live buffers apart from the
+    // alist; Fbuffer_list for a frame puts them around the others, and
+    // Fother_buffer walks the frame's first.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let* ((names (lambda (l) (mapcar (lambda (b) (if (buffer-live-p b) (buffer-name b) b))
+                                          (seq-remove (lambda (b) (string-prefix-p " " (buffer-name b))) l))))
+               (a (get-buffer-create "fb-a")) (b (get-buffer-create "fb-b")) (c (get-buffer-create "fb-c"))
+               (dead (get-buffer-create "fb-dead")))
+          (kill-buffer dead)
+          (unwind-protect
+              (progn
+                (switch-to-buffer a) (switch-to-buffer b) (switch-to-buffer c)
+                (bury-buffer c) (bury-buffer b)
+                (let ((before (list (funcall names (frame-parameter nil 'buffer-list))
+                                    (funcall names (frame-parameter nil 'buried-buffer-list))
+                                    (funcall names (buffer-list (selected-frame))))))
+                  (modify-frame-parameters nil (list (cons 'buffer-list (list c dead 7 a))
+                                                     (cons 'buried-buffer-list (list b))))
+                  (list before
+                        (funcall names (frame-parameter nil 'buffer-list))
+                        (funcall names (frame-parameter nil 'buried-buffer-list))
+                        (funcall names (cdr (assq 'buffer-list (frame-parameters))))
+                        (buffer-name (other-buffer))
+                        (progn (kill-buffer a) (funcall names (frame-parameter nil 'buffer-list))))))
+            (dolist (x (list a b c)) (when (buffer-live-p x) (kill-buffer x)))))"#,
+        r#"((("fb-a" "*scratch*") ("fb-b" "fb-c") ("fb-a" "*scratch*" "*Messages*" "fb-c" "fb-b")) ("fb-c" "fb-a") ("fb-b") ("fb-c" "fb-a") "fb-a" ("fb-c"))"#,
+        "frame buffer lists",
+    );
+}
+
+#[test]
 fn native_buffer_lookup_preserves_object_identity_after_rename_or_kill() {
     assert_oracle_contract_matches_interpreter(
         r#"(progn

@@ -136,7 +136,12 @@ fn bury_buffer_in_lists(
     {
         let entry = interp.buffer_list.remove(index);
         interp.buffer_list.push(entry);
-        run_named_hooks(interp, "buffer-list-update-hook", env, Some(buffer_id))?;
+        interp.bury_buffer_in_selected_frame(buffer_id);
+        // run_buffer_list_update_hook: not for a buffer whose hooks are
+        // inhibited.
+        if !interp.buffer_hooks_inhibited(buffer_id) {
+            run_named_hooks(interp, "buffer-list-update-hook", env, Some(buffer_id))?;
+        }
     }
     Ok(())
 }

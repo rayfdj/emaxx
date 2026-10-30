@@ -9692,6 +9692,32 @@ setup_process_coding_systems's check now refuses). A 13-form
   Neither kept. Bcall's shared tail (round 181's note) read 1.129
   (1.063) against 1.152 (1.076) in one fifteen-round pilot and 1.090
   (1.076) against 1.050 (1.036) in this one: within this host's spread.
+- **Round 183: each frame's own buffer lists, as frame.h keeps them.**
+  Emaxx answered a frame's `buffer-list' parameter with the buffer list
+  itself (hidden buffers and all), its `buried-buffer-list' with nil,
+  and `buffer-list' ignored its FRAME. A frame now keeps GNU's
+  buffer_list and buried_buffer_list: record_buffer, run by a window's
+  selection, moves the buffer to the front of the selected frame's
+  buffers and out of its buried ones; Fbury_buffer_internal moves it from
+  the one to the front of the other (and runs `buffer-list-update-hook'
+  only for a buffer whose hooks are not inhibited, as
+  run_buffer_list_update_hook); frames_discard_buffer takes a killed
+  buffer out of every frame's; a frame is made with its root window's
+  buffer (the initial frame with *scratch*); store_frame_param keeps the
+  two parameters apart from the alist, of the live buffers given, in
+  their order; Fbuffer_list for a frame lists its buffers, then the
+  others, then its buried ones least recently buried first; and
+  Fother_buffer walks the frame's buffers before all of them. Against
+  GNU before, in batch after three `switch-to-buffer's and a
+  `bury-buffer': the frame's `buffer-list' read every buffer, the
+  hidden ones and the buried "x3" included, rather than ("x2"
+  "*scratch*"), and its `buried-buffer-list' nil rather than ("x3").
+  Undo's units run 1,495,500 instructions (round 182 1,484,400): its
+  kills' `other-buffer' now meets *scratch* first among the frame's
+  buffers and looks for its window once more, as GNU's does.
+  Local validation: the grouped gate's 3,343 library tests, the
+  seven integration suites, clippy with every target and feature,
+  rustfmt and `git diff --check'.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -10878,6 +10904,12 @@ frozen (run 41073695376) matched all 7,928 outcomes on its first
 attempt. Setup 71.1 s against 61.4 s (1.158), test bodies 238.4 s
 against 259.1 s (0.920), in all 0.957; undo-tests' bodies 0.91 s against
 0.82 s.
+
+**On `69cab2f`** (round 182): full Rust gate passed (run 41105887806);
+frozen (run 41105892949) matched all 7,928 outcomes on its first
+attempt. Setup 66.5 s against 57.9 s (1.148), test bodies 230.0 s
+against 245.2 s (0.938), in all 0.979; undo-tests' bodies 0.82 s against
+0.69 s.
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'
