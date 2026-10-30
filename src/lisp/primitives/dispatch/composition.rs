@@ -68,19 +68,24 @@ fn compose_region(
     let property = composition_property(end - start, components, modification);
     // composite.c:compose_text puts the property as Fput_text_property does,
     // through the change protocol.
-    let props = [(
-        crate::lisp::types::PropertyName::symbol("composition"),
-        property,
-    )];
+    let properties = Value::list([Value::symbol("composition"), property]);
     let buffer_id = interp.current_buffer_id();
-    interp.with_lisp_stack_roots(&property, |interp| {
+    interp.with_lisp_stack_roots(&properties, |interp| {
         modify_buffer_text_properties(
             interp,
             buffer_id,
             start,
             end,
-            &|buffer| properties_would_add(buffer, start, end, &props),
-            &|buffer| buffer.put_text_property(start, end, props[0].0, props[0].1),
+            &|buffer| buffer.would_add_text_properties(start, end, properties),
+            &|buffer| {
+                let _ = buffer.add_text_properties_range(
+                    start,
+                    end,
+                    properties,
+                    crate::intervals::PropertySetType::Replace,
+                    true,
+                );
+            },
             env,
         )
     })?;
@@ -95,23 +100,13 @@ fn compose_string(args: &[Value]) -> Result<Value, LispError> {
     let components = args.get(3).cloned().unwrap_or(Value::Nil);
     let modification = args.get(4).cloned().unwrap_or(Value::Nil);
     let property = composition_property(end - start, components, modification);
-    modify_shared_string_properties(&args[0], start, end, |mut properties| {
-        if let Some((_, value)) = properties
-            .iter_mut()
-            .find(|(name, _)| name == "composition")
-        {
-            *value = property;
-        } else {
-            properties.insert(
-                0,
-                (
-                    crate::lisp::types::PropertyName::symbol("composition"),
-                    property,
-                ),
-            );
-        }
-        properties
-    })?;
+    // composite.c:compose_text: Fput_text_property of `composition'.
+    add_string_properties(
+        &args[0],
+        start,
+        end,
+        Value::list([Value::symbol("composition"), property]),
+    )?;
     Ok(args[0])
 }
 
@@ -126,31 +121,38 @@ fn composition_ranges(
     interp: &Interpreter,
     string: &Value,
 ) -> Result<Vec<CompositionRange>, LispError> {
-    let spans = if string.is_nil() {
-        interp
-            .buffer
-            .borrow()
-            .full_property_spans()
-            .into_iter()
-            .map(|span| (span.start, span.end, span.props))
-            .collect::<Vec<_>>()
+    let intervals = if string.is_nil() {
+        interp.buffer.borrow().intervals().cloned()
     } else {
         let string = string_like(string).ok_or_else(|| wrong_type_argument("stringp", *string))?;
-        string
-            .props
-            .into_iter()
-            .map(|span| (span.start, span.end, span.props))
-            .collect::<Vec<_>>()
+        string.props
     };
+    let composition = Value::symbol("composition");
+    let spans: Vec<(usize, usize, Option<Value>)> = intervals
+        .iter()
+        .flat_map(|intervals| {
+            intervals.iter().map(|(start, end, plist)| {
+                let mut tail = plist;
+                let mut value = None;
+                while let Some(cell) = tail.cons_ref() {
+                    let Some(rest) = cell.cdr.get().cons_ref() else {
+                        break;
+                    };
+                    if cell.car.get().word() == composition.word() {
+                        value = Some(rest.car.get());
+                        break;
+                    }
+                    tail = rest.cdr.get();
+                }
+                (start, end, value)
+            })
+        })
+        .collect();
     // textprop.c get_property_and_range: a composition's range runs on
     // across the adjacent intervals whose values are `eq' to its own.
     let mut ranges: Vec<CompositionRange> = Vec::new();
-    for (start, end, properties) in spans {
-        let Some(property) = properties
-            .into_iter()
-            .find(|(name, _)| name == "composition")
-            .map(|(_, property)| property)
-        else {
+    for (start, end, property) in spans {
+        let Some(property) = property else {
             continue;
         };
         match ranges.last_mut() {

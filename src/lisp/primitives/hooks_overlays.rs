@@ -1,7 +1,6 @@
 use super::*;
 use crate::lisp::types::Kind;
 use crate::lisp::types::LispErrorKind;
-use crate::lisp::types::PropertyName;
 
 /// Ffuncall of FUNCTION, unnamed: a forwarder, inline at every caller.
 #[inline(always)]
@@ -459,25 +458,26 @@ pub(crate) fn with_overlay_hook_roots<R>(
 /// [FROM, TO) (FROM = TO for an insertion): the `modification-hooks' of
 /// the overlays it touches and, for an insertion, the
 /// `insert-in-front-hooks' and `insert-behind-hooks' of those starting or
-/// ending there.
+/// ending there, each read by Foverlay_get, which can signal.
 pub(crate) fn overlay_change_hook_calls(
     interp: &Interpreter,
     buffer: &crate::buffer::Buffer,
     from: usize,
     to: usize,
-) -> OverlayHookCalls {
+) -> Result<OverlayHookCalls, LispError> {
     let mut calls = Vec::new();
     // A buffer with no overlays has none to search.
     if buffer.overlays.is_empty() {
-        return OverlayHookCalls { calls };
+        return Ok(OverlayHookCalls { calls });
     }
     let insertion = from == to;
-    let mut add = |overlay, property| {
+    let mut add = |overlay, property| -> Result<(), LispError> {
         if let Some(functions) =
-            overlay_property_with_category(interp, &overlay, property).filter(Value::is_truthy)
+            overlay_property_with_category(interp, &overlay, property)?.filter(Value::is_truthy)
         {
             calls.push(OverlayHookCall { overlay, functions });
         }
+        Ok(())
     };
     // buffer.c:report_overlay_modification searches only intersecting
     // intervals and stores the actual function lists, without copying or
@@ -489,16 +489,16 @@ pub(crate) fn overlay_change_hook_calls(
     ) {
         let (beg, end) = overlay.bounds();
         if insertion && from as isize == beg {
-            add(overlay, "insert-in-front-hooks");
+            add(overlay, "insert-in-front-hooks")?;
         }
         if insertion && from as isize == end {
-            add(overlay, "insert-behind-hooks");
+            add(overlay, "insert-behind-hooks")?;
         }
         if (to as isize) > beg && (from as isize) < end {
-            add(overlay, "modification-hooks");
+            add(overlay, "modification-hooks")?;
         }
     }
-    OverlayHookCalls { calls }
+    Ok(OverlayHookCalls { calls })
 }
 
 /// buffer.c:report_overlay_modification's calls: each recorded function
@@ -566,7 +566,7 @@ pub(crate) fn extract_region_with_hooks(
         delete_region_with_hooks_then(interp, from, to, env, |interp, from, to| {
             let buffer = interp.buffer.borrow();
             (
-                buffer.substring_property_spans(from, to),
+                buffer.string_intervals(from, to),
                 buffer.is_multibyte(),
                 buffer.substring_extended_chars(from, to),
             )
@@ -659,54 +659,6 @@ pub(crate) fn modify_buffer_text_properties(
     Ok(true)
 }
 
-/// Whether some interval of [FROM, TO) lacks one of PROPS with its value
-/// (EQ): textprop.c:interval_has_all_properties false somewhere, so that
-/// add_text_properties changes the text.
-pub(crate) fn properties_would_add(
-    buffer: &crate::buffer::Buffer,
-    from: usize,
-    to: usize,
-    props: &[(PropertyName, Value)],
-) -> bool {
-    let (from, to) = clamp_property_range(buffer, from, to);
-    buffer
-        .try_for_each_property_interval(from, to, |_, _, current| {
-            let has_all = props.iter().all(|(name, value)| {
-                current
-                    .iter()
-                    .any(|(key, existing)| key == name && existing.word() == value.word())
-            });
-            if has_all { Ok(()) } else { Err(()) }
-        })
-        .is_err()
-}
-
-/// Whether some interval of [FROM, TO) has one of NAMES:
-/// textprop.c:interval_has_some_properties(_list), so that removing them
-/// changes the text.
-pub(crate) fn properties_would_remove(
-    buffer: &crate::buffer::Buffer,
-    from: usize,
-    to: usize,
-    names: &[PropertyName],
-) -> bool {
-    let (from, to) = clamp_property_range(buffer, from, to);
-    buffer
-        .try_for_each_property_interval(from, to, |_, _, current| {
-            if current.iter().any(|(key, _)| names.contains(key)) {
-                Err(())
-            } else {
-                Ok(())
-            }
-        })
-        .is_err()
-}
-
-fn clamp_property_range(buffer: &crate::buffer::Buffer, from: usize, to: usize) -> (usize, usize) {
-    let (from, to) = if from <= to { (from, to) } else { (to, from) };
-    (from.max(buffer.point_min()), to.min(buffer.point_max()))
-}
-
 pub(crate) fn inhibit_read_only_value(interp: &Interpreter) -> Value {
     interp
         .symbol_value_key(cached_symbol!("inhibit-read-only"))
@@ -741,21 +693,15 @@ pub(crate) fn text_read_only(property: Value) -> LispError {
 /// through the `category' symbol and `char-property-alias-alist'.
 pub(crate) fn textget(
     interp: &Interpreter,
-    plist: &[(PropertyName, Value)],
+    plist: Value,
     prop: impl crate::lisp::types::PropertyKey,
-) -> Value {
-    property_from_props_with_category(interp, plist, prop).unwrap_or(Value::Nil)
+) -> Result<Value, LispError> {
+    Ok(property_from_props_with_category(interp, plist, prop)?.unwrap_or(Value::Nil))
 }
 
 /// fns.c:plist_get on an interval's own plist: no category.
-pub(crate) fn plist_get(
-    plist: &[(PropertyName, Value)],
-    prop: impl crate::lisp::types::PropertyKey,
-) -> Value {
-    plist
-        .iter()
-        .find(|(name, _)| prop.names(name))
-        .map_or(Value::Nil, |(_, value)| *value)
+pub(crate) fn plist_get(plist: Value, prop: impl crate::lisp::types::PropertyKey) -> Value {
+    crate::lisp::primitives::strings::lisp_plist_get(plist, prop)
 }
 
 /// textprop.c TMEM: SYM in SET when SET is a list, else SET non-nil.

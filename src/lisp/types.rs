@@ -248,7 +248,7 @@ impl SharedText {
             && text.chars().any(|ch| {
                 !crate::lisp::primitives::is_raw_byte_regex_char(ch) && u32::from(ch) > 127
             });
-        StringObjectRef::from_text(text, Vec::new(), multibyte, Vec::new())
+        StringObjectRef::from_text(text, Default::default(), multibyte, Vec::new())
     }
 
     pub fn into_string(self) -> String {
@@ -1440,13 +1440,6 @@ impl WeakConsSlot {
             ConsField::Cdr => ConsSlot::cdr(&cell),
         })
     }
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct StringPropertySpan {
-    pub start: usize,
-    pub end: usize,
-    pub props: Vec<(PropertyName, Value)>,
 }
 
 /// A text property's name: any Lisp object, compared with EQ, as

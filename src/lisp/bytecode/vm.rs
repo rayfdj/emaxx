@@ -839,7 +839,7 @@ fn call_native_nested_by_count(
 /// that case. The answer is the stack's top and the frame's depth after
 /// the call, or the call's signal; None, with nothing changed but the
 /// stack's TOP, for the full arm.
-#[inline(never)]
+#[inline(always)]
 fn call_plain(
     vm: &mut VmFrames<'_>,
     top: usize,
@@ -4158,6 +4158,19 @@ fn run_entered_inline(
                 {
                     // The return owns nothing to drop.
                     std::mem::forget(verified_exit);
+                    // Nothing recorded above the entry's marks: only the
+                    // caller's frame to restore, as exec_byte_code's return
+                    // to its caller restores bc->fp.
+                    if interp.backtrace_frames_len() == marks.backtrace
+                        && interp.bc_unwinds.len() == marks.unwinds
+                    {
+                        (
+                            interp.bc_stack.frame,
+                            interp.bc_stack.base,
+                            interp.bc_stack.top,
+                        ) = marks.stack;
+                        return Ok(value);
+                    }
                     break 'entry Ok(value);
                 }
                 FastExit::Resume => None,
@@ -4794,11 +4807,7 @@ fn run_loop(
                             (HandlerKind::ConditionCase(clause), kind) => {
                                 let condition = kind.condition_symbol();
                                 let condition_list = interp.error_condition_names_of(&condition);
-                                if Interpreter::clause_head_matches(
-                                    clause,
-                                    condition.as_str(),
-                                    &condition_list,
-                                ) {
+                                if Interpreter::clause_head_matches(clause, &condition_list) {
                                     Some(super::super::eval::error_condition_value(&error))
                                 } else {
                                     None
@@ -5649,7 +5658,7 @@ mod native_surface_tests {
         let constants = Value::vector([Value::Integer(11)]);
         let code = crate::lisp::primitives::make_shared_string_value_with_multibyte(
             "\u{c0}\u{87}".to_owned(),
-            Vec::new(),
+            None,
             false,
         );
         let function = prim(
@@ -5698,7 +5707,7 @@ mod native_surface_tests {
         // GNU's saved vectorp sees a mutation made during the same frame.
         let code = crate::lisp::primitives::make_shared_string_value_with_multibyte(
             "\u{c2}\u{c1}\u{49}\u{88}\u{c0}\u{87}".to_owned(),
-            Vec::new(),
+            None,
             false,
         );
         let function = prim(
@@ -5723,13 +5732,13 @@ mod native_surface_tests {
         let mut env = Env::new();
         let removed = crate::lisp::primitives::make_shared_string_value_with_multibyte(
             "original constant".to_owned(),
-            Vec::new(),
+            None,
             false,
         );
         let constants = Value::vector([removed]);
         let code = crate::lisp::primitives::make_shared_string_value_with_multibyte(
             "\u{c0}\u{87}".to_owned(),
-            Vec::new(),
+            None,
             false,
         );
         let slots = [Value::Integer(0), code, constants, Value::Integer(1)];
@@ -5766,7 +5775,7 @@ mod native_surface_tests {
         // constants vector, including when called through the Rust API.
         let code = crate::lisp::primitives::make_shared_string_value_with_multibyte(
             "\u{89}\u{54}\u{87}".to_owned(),
-            Vec::new(),
+            None,
             false,
         );
         let object = prim(
@@ -5793,7 +5802,7 @@ mod native_surface_tests {
         let mut env = Env::new();
         let code = crate::lisp::primitives::make_shared_string_value_with_multibyte(
             "\u{87}".to_owned(),
-            Vec::new(),
+            None,
             false,
         );
         let object = prim(
@@ -5831,7 +5840,7 @@ mod native_surface_tests {
         // argspec 257: one mandatory arg; code: return that argument.
         let code = crate::lisp::primitives::make_shared_string_value_with_multibyte(
             "\u{87}".to_owned(),
-            Vec::new(),
+            None,
             false,
         );
         let object = prim(

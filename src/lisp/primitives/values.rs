@@ -1,6 +1,5 @@
 use super::*;
 use crate::lisp::types::Kind;
-use crate::lisp::types::PropertyName;
 
 pub fn buffer_undo_list_value(buffer: &crate::buffer::Buffer) -> Value {
     buffer.undo_list()
@@ -380,47 +379,24 @@ fn string_intervals_equal(
     left: &crate::lisp::types::SharedStringState,
     right: &crate::lisp::types::SharedStringState,
 ) -> Result<bool, LispError> {
-    let len = left.len();
-    let props_at = |spans: &[StringPropertySpan], pos: usize| {
-        let mut out: Vec<(PropertyName, Value)> = Vec::new();
-        for span in spans {
-            if span.start <= pos && pos < span.end {
-                for (key, value) in &span.props {
-                    if !out.iter().any(|(existing, _)| existing == key) {
-                        out.push((*key, *value));
-                    }
-                }
-            }
+    let mut failure = None;
+    let mut equal = |a: Value, b: Value| match values_equal(interp, &a, &b) {
+        Ok(same) => same,
+        Err(error) => {
+            failure.get_or_insert(error);
+            false
         }
-        out
     };
-    let mut bounds: Vec<usize> = vec![0, len];
-    for span in left.props.iter().chain(right.props.iter()) {
-        bounds.push(span.start.min(len));
-        bounds.push(span.end.min(len));
+    let same = crate::intervals::compare_string_intervals(
+        left.props.intervals(),
+        right.props.intervals(),
+        left.len(),
+        &mut equal,
+    );
+    match failure {
+        Some(error) => Err(error),
+        None => Ok(same),
     }
-    bounds.sort_unstable();
-    bounds.dedup();
-    for window in bounds.windows(2) {
-        let pos = window[0];
-        if pos >= len {
-            break;
-        }
-        let (left_props, right_props) = (props_at(&left.props, pos), props_at(&right.props, pos));
-        if left_props.len() != right_props.len() {
-            return Ok(false);
-        }
-        for (key, left_value) in &left_props {
-            let Some((_, right_value)) = right_props.iter().find(|(right_key, _)| right_key == key)
-            else {
-                return Ok(false);
-            };
-            if !values_equal(interp, right_value, left_value)? {
-                return Ok(false);
-            }
-        }
-    }
-    Ok(true)
 }
 
 pub(crate) fn values_eql(left: &Value, right: &Value) -> bool {
@@ -723,9 +699,6 @@ fn rarely_quit(interp: &mut Interpreter, env: &mut Env, count: i64) -> Result<()
 }
 
 pub(crate) fn sequence_length_value(value: &Value) -> Result<i64, LispError> {
-    if let Some(items) = record_literal_items(value) {
-        return Ok(items.len().saturating_sub(1) as i64);
-    }
     match value.kind() {
         // fns.c:Flength reads SCHARS: the character count in place, no
         // copy of the text.
@@ -740,6 +713,11 @@ pub(crate) fn sequence_length_value(value: &Value) -> Result<i64, LispError> {
         Kind::BoolVector(vector) => Ok(vector.len() as i64),
         Kind::Closure(lambda) => Ok(lambda.public_len() as i64),
         Kind::LispRecord(record) => Ok(record.len() as i64),
+        // The reader's record literal: its slots, without a copy of them.
+        Kind::ReaderForm(form) => match form.as_ref() {
+            crate::lisp::types::ReaderForm::Record { slots } => Ok(slots.len() as i64),
+            _ => Err(LispError::WrongTypeArgument("sequencep".into(), *value)),
+        },
         // fns.c:list_length counts the tails in place (FOR_EACH_TAIL and
         // CHECK_LIST_END), without a copy of the elements.
         Kind::Cons(_) => {
@@ -2062,7 +2040,7 @@ pub(crate) fn describe_buffer_bindings(
             active_minor_mode_bindings(interp, env).map(crate::lisp::alloc::RootedVec::from_vec)
         })?;
         let property = with_keymap_description_buffer(interp, buffer, |interp| {
-            Ok(keymap_at_active_position(interp, None).unwrap_or(Value::Nil))
+            Ok(keymap_at_active_position(interp, None)?.unwrap_or(Value::Nil))
         })?;
         if !property.is_nil() {
             insert_keymap_description(
@@ -2089,7 +2067,7 @@ pub(crate) fn describe_buffer_bindings(
                 let normal = interp
                     .lookup_var("current-local-map", env)
                     .unwrap_or(Value::Nil);
-                let local = local_map_at_active_position(interp, None).unwrap_or(normal);
+                let local = local_map_at_active_position(interp, None)?.unwrap_or(normal);
                 let major = interp.lookup_var("major-mode", env).unwrap_or(Value::Nil);
                 Ok((local, values_eq_in_env(interp, &local, &normal, env), major))
             })?;
@@ -2495,7 +2473,7 @@ pub(crate) fn active_minor_mode_maps(
 pub(crate) fn keymap_at_active_position(
     interp: &Interpreter,
     posn: Option<&Value>,
-) -> Option<Value> {
+) -> Result<Option<Value>, LispError> {
     text_property_keymap_at_active_position(interp, posn, "keymap")
 }
 
@@ -2505,7 +2483,7 @@ pub(crate) fn keymap_at_active_position(
 pub(crate) fn local_map_at_active_position(
     interp: &Interpreter,
     posn: Option<&Value>,
-) -> Option<Value> {
+) -> Result<Option<Value>, LispError> {
     text_property_keymap_at_active_position(interp, posn, "local-map")
 }
 
@@ -2513,32 +2491,42 @@ fn text_property_keymap_at_active_position(
     interp: &Interpreter,
     posn: Option<&Value>,
     category: &str,
-) -> Option<Value> {
-    let buffer_keymap = |pos: usize| {
-        buffer_property_at_with_category(interp, &interp.buffer.borrow(), pos, category)
-            .filter(|value| is_keymap_value(interp, value))
+) -> Result<Option<Value>, LispError> {
+    let buffer_keymap = |pos: usize| -> Result<Option<Value>, LispError> {
+        Ok(
+            buffer_property_at_with_category(interp, &interp.buffer.borrow(), pos, category)?
+                .filter(|value| is_keymap_value(interp, value)),
+        )
     };
 
-    let string_keymap = |value: &Value| {
-        string_property_at_with_category(interp, value, 0, category)
-            .filter(|value| is_keymap_value(interp, value))
+    let string_keymap = |value: &Value| -> Result<Option<Value>, LispError> {
+        Ok(
+            string_property_at_with_category(interp, value, 0, category)?
+                .filter(|value| is_keymap_value(interp, value)),
+        )
     };
 
     match posn {
         None => buffer_keymap(interp.buffer.borrow().point()),
         Some(value) if value.is_nil() => buffer_keymap(interp.buffer.borrow().point()),
-        Some(value) if string_like(value).is_some() => {
-            string_keymap(value).or_else(|| buffer_keymap(interp.buffer.borrow().point()))
-        }
+        Some(value) if string_like(value).is_some() => match string_keymap(value)? {
+            Some(map) => Ok(Some(map)),
+            None => buffer_keymap(interp.buffer.borrow().point()),
+        },
         Some(value) => {
-            let items = value.to_vec().ok()?;
-            let area = items.get(1)?;
-            let string = items.get(4).and_then(|value| value.car_if_list());
-            if let Some(string) = string.as_ref().and_then(string_keymap) {
-                return Some(string);
+            let Ok(items) = value.to_vec() else {
+                return Ok(None);
+            };
+            let Some(area) = items.get(1) else {
+                return Ok(None);
+            };
+            if let Some(string) = items.get(4).and_then(|value| value.car_if_list())
+                && let Some(map) = string_keymap(&string)?
+            {
+                return Ok(Some(map));
             }
             if !area.is_nil() {
-                return None;
+                return Ok(None);
             }
             match items.get(5).map(|v| v.kind()) {
                 Some(Kind::Integer(pos)) if pos > 0 => buffer_keymap(pos as usize),
@@ -2603,11 +2591,11 @@ pub(crate) fn active_command_keymaps_for(
     {
         maps.push(map);
     }
-    if let Some(map) = keymap_at_active_position(interp, posn) {
+    if let Some(map) = keymap_at_active_position(interp, posn)? {
         maps.push(map);
     }
     maps.extend(active_minor_mode_maps(interp, env)?);
-    if let Some(map) = local_map_at_active_position(interp, posn) {
+    if let Some(map) = local_map_at_active_position(interp, posn)? {
         maps.push(map);
     } else if let Some(map) = interp
         .lookup_var("current-local-map", env)
@@ -2684,11 +2672,11 @@ pub(crate) fn locale_uses_utf8() -> bool {
 /// answers grave when U+2018 displays as a one-element vector holding ?`.
 /// This plain Lisp-variable read is observable in batch as well as in the
 /// interactive startup path that forces the locale flag to t.
-pub(crate) fn effective_text_quoting_style(interp: &Interpreter, env: &Env) -> &'static str {
+pub(crate) fn effective_text_quoting_style(interp: &Interpreter) -> &'static str {
     // doc.c reads the C variable Vtext_quoting_style itself, which a
     // `makunbound' of the symbol leaves untouched.
     match interp
-        .forwarded_c_value("text-quoting-style", env)
+        .forwarded_c_value_key(cached_symbol!("text-quoting-style"))
         .map(|v| v.kind())
     {
         Some(Kind::Symbol(style)) if style == "grave" => "grave",

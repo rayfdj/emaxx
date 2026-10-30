@@ -295,6 +295,21 @@ impl SymbolCell {
             && self.flags.get() & LOCALIZED != 0
     }
 
+    /// The default of a variable with local value cells
+    /// (`has_local_value_cells') that is not always local, when its cell
+    /// holds it: what a buffer without a binding of it reads, blv's
+    /// default cell.  None when the default is void or a C slot's.
+    #[inline(always)]
+    pub(crate) fn localized_default(&self) -> Option<Value> {
+        use crate::lisp::eval::symbol_cell_flags::ALWAYS_LOCAL;
+        if self.state.get() & VALUE_PRESENT != 0 && self.flags.get() & ALWAYS_LOCAL == 0 {
+            // SAFETY: VALUE_PRESENT without INT_FORWARD (which local value
+            // cells exclude) selects the value member.
+            return Some(unsafe { self.payload.get().value });
+        }
+        None
+    }
+
     /// A buffer-local variable whose store into a buffer's binding changes
     /// nothing else: no alias, counter, KBOARD, store-effect or
     /// buffer-held slot, no value conversion, no watcher, not constant, and

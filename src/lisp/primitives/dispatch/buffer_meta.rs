@@ -89,7 +89,7 @@ define_dispatch!(
                 // case_canon_table of the current buffer, even when either
                 // substring belongs to another buffer.
                 let canonical_table = interp
-                    .case_fold_search_active(env)
+                    .case_fold_search_active()
                     .then(|| interp.current_case_tables().canon);
                 // Both operands are read in place, as editfns.c reads the
                 // buffer text; neither is copied.
@@ -100,7 +100,7 @@ define_dispatch!(
                     comparison_range(interp, &args[0], &args[1], &args[2])?;
                 let (right_buffer, right_start, right_end) =
                     comparison_range(interp, &args[3], &args[4], &args[5])?;
-                // Two ASCII ranges, each within one chunk of its rope, are
+                // Two ASCII ranges, each on one side of its buffer's gap, are
                 // compared as bytes; a byte is its character there.
                 if canonical_table.is_none()
                     && let Some(left) = left_buffer.ascii_chunk_range(left_start, left_end)
@@ -299,7 +299,7 @@ define_dispatch!(
                     })?;
                     (
                         base.full_buffer_string(),
-                        base.full_property_spans(),
+                        base.intervals().cloned(),
                         base.point(),
                         base.mark(),
                         base.mark_active_value(),
@@ -330,11 +330,10 @@ define_dispatch!(
                         }
                         buffer.set_mark_active_value(mark_active);
                     }
-                    // Property spans are 1-based buffer positions, the
-                    // same coordinates set_text_properties consumes.
-                    for span in props {
-                        buffer.graft_text_properties(span.start, span.end, &span.props);
-                    }
+                    // GNU's indirect buffer shares its base's text and so
+                    // its intervals: the same intervals here, their plists
+                    // the base's own.
+                    buffer.set_intervals(props);
                     drop(buffer);
                     if clone {
                         // buffer.c:copy_overlays walks ascending intervals,

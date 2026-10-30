@@ -588,7 +588,7 @@ pub(crate) fn serialize(
     let bytes_value = if bytes_text == text {
         Value::String(bytes_text.clone().into())
     } else {
-        make_shared_string_value_with_multibyte(bytes_text.clone(), Vec::new(), false)
+        make_shared_string_value_with_multibyte(bytes_text.clone(), None, false)
     };
     Ok(JsonSerialized {
         text,
@@ -705,7 +705,7 @@ fn node_to_lisp(interp: &mut Interpreter, node: JsonNode, options: &JsonParseOpt
         JsonNode::Float(value) => Value::float(value),
         // json.c returns ordinary mutable multibyte strings, including
         // ASCII strings. LSP clients attach completion metadata to them.
-        JsonNode::String(value) => make_shared_string_value_with_multibyte(value, Vec::new(), true),
+        JsonNode::String(value) => make_shared_string_value_with_multibyte(value, None, true),
         JsonNode::Array(items) => {
             let items: Vec<Value> = items
                 .into_iter()
@@ -734,7 +734,7 @@ fn node_to_lisp(interp: &mut Interpreter, node: JsonNode, options: &JsonParseOpt
                         .into_iter()
                         .map(|(key, value)| {
                             (
-                                make_shared_string_value_with_multibyte(key, Vec::new(), true),
+                                make_shared_string_value_with_multibyte(key, None, true),
                                 value,
                             )
                         })

@@ -115,9 +115,12 @@ fn schars(value: &Value) -> usize {
     }
 }
 
-/// Fget_text_property for strings, through textget.
+/// Fget_text_property for strings, through textget; redisplay reads a
+/// lookup that signals as nil.
 fn string_property(interp: &Interpreter, string: &Value, pos: usize, prop: &str) -> Value {
     crate::lisp::primitives::string_property_at_with_category(interp, string, pos, prop)
+        .ok()
+        .flatten()
         .unwrap_or(Value::Nil)
 }
 
@@ -819,11 +822,9 @@ impl<'a> ModeLine<'a> {
             let Kind::StringObject(state) = string.kind() else {
                 return None;
             };
-            state
-                .borrow()
-                .props
-                .iter()
-                .position(|span| span.start <= pos && pos < span.end)
+            let state = state.borrow();
+            let intervals = state.props.intervals()?;
+            (pos < intervals.end()).then(|| intervals.find(pos))
         };
         let mut pos = start;
         let mut span: Option<Option<usize>> = None;

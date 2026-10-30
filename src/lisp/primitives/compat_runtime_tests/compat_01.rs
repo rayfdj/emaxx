@@ -896,7 +896,7 @@ fn string_multibyte_conversion_helpers_match_fns_expectations() {
         string_like(&ascii_as)
             .expect("ascii string")
             .props
-            .is_empty()
+            .is_none()
     );
 
     let raw = call(

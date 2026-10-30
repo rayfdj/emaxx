@@ -1175,6 +1175,9 @@ pub(crate) struct NativeRuntime {
     shared: Option<Box<NativeSharedState>>,
     thread: Box<NativeThreadState>,
     handlers: Vec<HandlerEntry>,
+    /// The innermost handler's record, null for none: what the thread's
+    /// handler list points to while the two agree.
+    top_handler: *mut NativeHandler,
     /// Records of popped handlers, for the next pushes (eval.c keeps its
     /// popped handlers on `nextfree' the same way). Each stays boxed: a
     /// record's address is what native code holds, and it moves between
@@ -1378,6 +1381,7 @@ impl Default for NativeRuntime {
             })),
             thread,
             handlers: Vec::new(),
+            top_handler: std::ptr::null_mut(),
             spare_handlers: Vec::new(),
             unwind: Vec::new(),
             call: std::ptr::null(),
@@ -1954,11 +1958,7 @@ impl NativeRuntime {
     #[inline(always)]
     fn sync_handlers(&mut self, interpreter: &mut Interpreter) -> Result<(), LispError> {
         let current = self.thread.handler();
-        if self
-            .handlers
-            .last()
-            .map_or(current.is_null(), |entry| entry.address() == current)
-        {
+        if self.top_handler == current {
             return Ok(());
         }
         self.sync_handlers_unwinding(interpreter, current)
@@ -1986,6 +1986,10 @@ impl NativeRuntime {
                 self.spare_handlers.push(entry.storage);
             }
         }
+        self.top_handler = self
+            .handlers
+            .last()
+            .map_or(std::ptr::null_mut(), HandlerEntry::address);
         if current.is_null()
             || self
                 .handlers
@@ -2018,17 +2022,11 @@ impl NativeRuntime {
         error: &LispError,
     ) -> Option<usize> {
         let is_throw = matches!(error.kind(), LispErrorKind::Throw(_, _));
-        let (condition, conditions) =
-            if is_throw || matches!(error.kind(), LispErrorKind::Terminate(_)) {
-                (None, crate::lisp::eval::ConditionNames::new())
-            } else {
-                let condition = error.condition_symbol();
-                let conditions = interpreter.error_condition_names_of(&condition);
-                (Some(condition), conditions)
-            };
-        let condition = condition
-            .as_ref()
-            .map_or("", |condition| condition.as_str());
+        let conditions = if is_throw || matches!(error.kind(), LispErrorKind::Terminate(_)) {
+            crate::lisp::eval::ConditionNames::new()
+        } else {
+            interpreter.error_condition_names_of(&error.condition_symbol())
+        };
         let handler_depth = self.call_depth(PUSHED_HANDLERS);
         self.handlers[handler_depth..]
             .iter()
@@ -2043,7 +2041,7 @@ impl NativeRuntime {
                     _ => false,
                 },
                 1 if !is_throw && !matches!(error.kind(), LispErrorKind::Terminate(_)) => {
-                    Interpreter::clause_head_matches(&handler.match_value, condition, &conditions)
+                    Interpreter::clause_head_matches(&handler.match_value, &conditions)
                 }
                 _ => false,
             })
@@ -2225,9 +2223,10 @@ fn invoke_context_free_subr(index: usize, arguments: &[NativeWord]) -> Option<Na
 }
 
 /// The subrs `invoke_subr' answers on its own paths, by name. A subr's
-/// kind is read by its index into the ABI's table, one byte, where the
-/// names were compared one after another on every call.
+/// kind is one byte of its own entry in the ABI's table, where the names
+/// were compared one after another on every call.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
 enum DirectSubr {
     Other,
     Funcall,
@@ -2333,18 +2332,37 @@ impl DirectSubr {
 
     /// The kind of the subr at INDEX in the ABI's table; `Other' past it.
     #[inline(always)]
+    #[cfg(test)]
     fn of_index(index: usize) -> Self {
-        static KINDS: OnceLock<Box<[DirectSubr]>> = OnceLock::new();
-        KINDS
-            .get_or_init(|| {
-                super::abi::native_subrs()
-                    .iter()
-                    .map(|subroutine| Self::of_name(subroutine.name))
-                    .collect()
-            })
+        super::abi::native_subrs()
             .get(index)
-            .copied()
-            .unwrap_or(Self::Other)
+            .map_or(Self::Other, Self::of_subr)
+    }
+
+    /// SUBROUTINE's kind, from its byte once known.
+    #[inline(always)]
+    fn of_subr(subroutine: &super::abi::NativeSubr) -> Self {
+        Self::known_of_subr(subroutine).unwrap_or_else(|| Self::of_subr_slow(subroutine))
+    }
+
+    /// SUBROUTINE's kind if its byte holds it yet.
+    #[inline(always)]
+    fn known_of_subr(subroutine: &super::abi::NativeSubr) -> Option<Self> {
+        match subroutine.kind.load(std::sync::atomic::Ordering::Relaxed) {
+            0 => None,
+            // SAFETY: a nonzero byte was stored below from a kind plus one.
+            byte => Some(unsafe { std::mem::transmute::<u8, Self>(byte - 1) }),
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn of_subr_slow(subroutine: &super::abi::NativeSubr) -> Self {
+        let kind = Self::of_name(subroutine.name);
+        subroutine
+            .kind
+            .store(kind as u8 + 1, std::sync::atomic::Ordering::Relaxed);
+        kind
     }
 }
 
@@ -2408,7 +2426,36 @@ fn invoke_context_free_kind(kind: DirectSubr, arguments: &[NativeWord]) -> Optio
 }
 
 pub(crate) fn invoke_subr(index: usize, arguments: &[NativeWord]) -> NativeWord {
-    let kind = DirectSubr::of_index(index);
+    let Some(subroutine) = super::abi::native_subrs().get(index) else {
+        return invoke_subr_outside_abi();
+    };
+    // Every path from here is a call in tail position, so that the
+    // dispatch saves no registers: a subr with no word-level path is
+    // called at once, from a body of its own.
+    match DirectSubr::known_of_subr(subroutine) {
+        Some(DirectSubr::Other) => invoke_other_subr(subroutine, arguments),
+        Some(kind) => invoke_kind_subr(index, kind, arguments),
+        None => invoke_subr_first(index, subroutine, arguments),
+    }
+}
+
+/// `invoke_subr' of a subr whose kind is not read yet: its kind learned,
+/// then the call.
+#[cold]
+#[inline(never)]
+fn invoke_subr_first(
+    index: usize,
+    subroutine: &'static super::abi::NativeSubr,
+    arguments: &[NativeWord],
+) -> NativeWord {
+    DirectSubr::of_subr(subroutine);
+    invoke_subr(index, arguments)
+}
+
+/// `invoke_subr' of a subr with a word-level path: the paths that need no
+/// context, the variable subrs', then the rest.
+#[inline(never)]
+fn invoke_kind_subr(index: usize, kind: DirectSubr, arguments: &[NativeWord]) -> NativeWord {
     if let Some(result) = invoke_context_free_kind(kind, arguments) {
         return result;
     }
@@ -2422,15 +2469,37 @@ pub(crate) fn invoke_subr(index: usize, arguments: &[NativeWord]) -> NativeWord 
     ) {
         return invoke_variable_subr(index, kind, arguments);
     }
-    // A subr with no word-level path is called at once, through a body
-    // small enough that its prologue is the call's and no more.
-    if kind == DirectSubr::Other {
-        return with_active(|active| match entered_subr(active, index) {
-            Some(subroutine) => invoke_subr_entry(active, subroutine, arguments),
-            None => 0,
-        });
-    }
     invoke_word_level_subr(index, kind, arguments)
+}
+
+/// `invoke_subr' of a subr with no word-level path: the handlers brought
+/// up to date, then its own entry.
+#[inline(never)]
+fn invoke_other_subr(
+    subroutine: &'static super::abi::NativeSubr,
+    arguments: &[NativeWord],
+) -> NativeWord {
+    with_active(|active| {
+        if let Err(error) =
+            unsafe { &mut *active.runtime }.sync_handlers(unsafe { &mut *active.interpreter })
+        {
+            remember_helper_error(active, error);
+            return 0;
+        }
+        invoke_subr_entry(active, subroutine, arguments)
+    })
+}
+
+#[cold]
+#[inline(never)]
+fn invoke_subr_outside_abi() -> NativeWord {
+    with_active(|active| {
+        remember_helper_error(
+            active,
+            super::lisp::native_ice("native subroutine index is outside the runtime ABI"),
+        );
+        0
+    })
 }
 
 /// Fboundp, Fdefault_boundp, Fdefault_value and Flocal_variable_p (of the
@@ -4943,6 +5012,7 @@ extern "C" fn runtime_push_handler(match_value: NativeWord, kind: i32) -> *mut N
                 backtrace_depth: interpreter.backtrace_frames_len(),
                 registration,
             });
+            runtime.top_handler = address;
             Ok(address)
         })();
         match result {
@@ -6677,7 +6747,7 @@ mod tests {
         let mut runtime = NativeRuntime::default();
         let string = crate::lisp::primitives::make_shared_string_value_with_multibyte(
             "x".repeat(1 << 18),
-            Vec::new(),
+            None,
             true,
         );
         let Kind::StringObject(state) = string.kind() else {
@@ -11114,7 +11184,7 @@ mod tests {
             let state = buffer.borrow();
             assert!(state.full_buffer_string().is_empty());
             assert!(state.undo_list().is_nil());
-            assert!(state.full_property_spans().is_empty());
+            assert!(state.intervals().is_none());
             assert!(state.text_conversion_style.is_nil());
             assert!(!state.text_conversion_style_is_local);
             assert_eq!(state.file.as_deref(), Some("/tmp/retained-dead-buffer.el"));
@@ -12075,7 +12145,7 @@ mod tests {
         );
         let code = crate::lisp::primitives::make_shared_string_value_with_multibyte(
             "\u{c0}\u{87}".to_owned(),
-            Vec::new(),
+            None,
             false,
         );
         let function = crate::lisp::primitives::call(
@@ -12268,7 +12338,7 @@ mod tests {
         // A Bconstant/Breturn program returns the very word native code wrote.
         let code = crate::lisp::primitives::make_shared_string_value_with_multibyte(
             "\u{c0}\u{87}".to_owned(),
-            Vec::new(),
+            None,
             false,
         );
         let function = crate::lisp::primitives::call(
@@ -14139,12 +14209,12 @@ mod tests {
             Value::string("internal-name"),
             crate::lisp::primitives::make_shared_string_value_with_multibyte(
                 "mutable λ\0text".into(),
-                Vec::new(),
+                None,
                 true,
             ),
             crate::lisp::primitives::make_shared_string_value_with_multibyte(
                 "byte text".into(),
-                Vec::new(),
+                None,
                 false,
             ),
         ] {
@@ -14198,23 +14268,31 @@ mod tests {
             let plain = Value::string("string-property-child");
             let object = crate::lisp::primitives::make_shared_string_value_with_multibyte(
                 "root".into(),
-                vec![crate::buffer::TextPropertySpan {
-                    start: 0,
-                    end: 4,
-                    props: vec![("child".into(), plain)],
-                }],
+                Some(crate::intervals::Intervals::with_plist(
+                    0,
+                    4,
+                    Value::list([Value::symbol("child"), plain]),
+                )),
                 true,
             );
             let Kind::StringObject(state) = object.kind() else {
                 panic!("property-bearing string")
             };
-            state.borrow_mut().props[0]
+            let plist = state
+                .borrow()
                 .props
-                .push(("cycle".into(), object));
+                .intervals()
+                .expect("intervals")
+                .plist(0);
+            plist
+                .cdr()
+                .expect("child value")
+                .set_cdr(Value::list([Value::symbol("cycle"), object]))
+                .expect("mutable plist");
             let dead_plain = Value::string("unreachable-plain-string");
             let dead_object = crate::lisp::primitives::make_shared_string_value_with_multibyte(
                 "unreachable-mutable-string".into(),
-                Vec::new(),
+                None,
                 true,
             );
             let word = heap.encode(&object).expect("native string word");
@@ -14250,8 +14328,9 @@ mod tests {
                 panic!("retained property-bearing string")
             };
             let state = state.borrow();
-            assert!(state.props[0].props[0].1.eq_value(plain));
-            assert!(state.props[0].props[1].1.eq_value(object));
+            let plist = state.props.intervals().expect("intervals").plist(0);
+            assert!(crate::intervals::plist_get(plist, Value::symbol("child")).eq_value(plain));
+            assert!(crate::intervals::plist_get(plist, Value::symbol("cycle")).eq_value(object));
             assert!(heap.decode(hidden[3] ^ HIDE).is_err());
             assert!(heap.decode(hidden[4] ^ HIDE).is_err());
         }
@@ -14301,11 +14380,11 @@ mod tests {
             let child = Value::cons(Value::Integer(73), Value::Nil);
             let string = crate::lisp::primitives::make_shared_string_value_with_multibyte(
                 "borrowed".into(),
-                vec![crate::buffer::TextPropertySpan {
-                    start: 0,
-                    end: 8,
-                    props: vec![("child".into(), child)],
-                }],
+                Some(crate::intervals::Intervals::with_plist(
+                    0,
+                    8,
+                    Value::list([Value::symbol("child"), child]),
+                )),
                 false,
             );
             let Kind::StringObject(object) = string.kind() else {
@@ -14336,7 +14415,14 @@ mod tests {
                 .decode(hidden[1] ^ HIDE)
                 .expect("a string borrow also retains its property values");
             assert_eq!(child.car().expect("property cons"), Value::Integer(73));
-            assert_eq!(guard.props[0].props[0].1.word(), child.word());
+            assert_eq!(
+                crate::intervals::plist_get(
+                    guard.props.intervals().expect("intervals").plist(0),
+                    Value::symbol("child")
+                )
+                .word(),
+                child.word()
+            );
             assert_eq!(string.as_string().expect("borrowed text"), "borrowed");
             drop(guard);
             // SAFETY: make_guard leaked this one Box to provide a stable
@@ -14387,11 +14473,11 @@ mod tests {
             let child = Value::cons(Value::Integer(73), Value::Nil);
             let string = crate::lisp::primitives::make_shared_string_value_with_multibyte(
                 "borrowed".into(),
-                vec![crate::buffer::TextPropertySpan {
-                    start: 0,
-                    end: 8,
-                    props: vec![("child".into(), child)],
-                }],
+                Some(crate::intervals::Intervals::with_plist(
+                    0,
+                    8,
+                    Value::list([Value::symbol("child"), child]),
+                )),
                 false,
             );
             let values = [
@@ -14435,7 +14521,14 @@ mod tests {
             for word in &hidden[..4] {
                 heap.decode(word ^ HIDE).expect("borrowed weak-key graph");
             }
-            assert_eq!(guard.props[0].props[0].1.word(), hidden[1] ^ HIDE);
+            assert_eq!(
+                crate::intervals::plist_get(
+                    guard.props.intervals().expect("intervals").plist(0),
+                    Value::symbol("child")
+                )
+                .word(),
+                hidden[1] ^ HIDE
+            );
             drop(guard);
             // SAFETY: build leaked this owner; its only guard is now gone.
             unsafe {
@@ -14499,11 +14592,11 @@ mod tests {
             let unrelated = Value::cons(Value::Integer(99), Value::Nil);
             let string = crate::lisp::primitives::make_shared_string_value_with_multibyte(
                 "exclusive".into(),
-                vec![crate::buffer::TextPropertySpan {
-                    start: 0,
-                    end: 9,
-                    props: vec![("child".into(), child)],
-                }],
+                Some(crate::intervals::Intervals::with_plist(
+                    0,
+                    9,
+                    Value::list([Value::symbol("child"), child]),
+                )),
                 false,
             );
             let Kind::StringObject(object) = string.kind() else {
@@ -14524,13 +14617,28 @@ mod tests {
         }
 
         #[inline(never)]
-        fn check_and_release(heap: &mut NativeHeap, mut guard: Guard, hidden: [usize; 4]) {
+        fn check_and_release(heap: &mut NativeHeap, guard: Guard, hidden: [usize; 4]) {
             for word in &hidden[..3] {
                 heap.decode(word ^ HIDE)
                     .expect("rejected collection preserves every allocation");
             }
-            assert_eq!(guard.props[0].props[0].1.word(), hidden[1] ^ HIDE);
-            guard.props[0].props[0].1 = Value::Integer(74);
+            assert_eq!(
+                crate::intervals::plist_get(
+                    guard.props.intervals().expect("intervals").plist(0),
+                    Value::symbol("child")
+                )
+                .word(),
+                hidden[1] ^ HIDE
+            );
+            guard
+                .props
+                .intervals()
+                .expect("intervals")
+                .plist(0)
+                .cdr()
+                .expect("child value")
+                .set_car(Value::Integer(74))
+                .expect("mutable plist");
             drop(guard);
             // SAFETY: build leaked this owner; its only guard is now gone.
             unsafe {

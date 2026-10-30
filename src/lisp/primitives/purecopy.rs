@@ -158,7 +158,7 @@ fn purecopy_inner(
     if matches!(value.kind(), Kind::StringObject(state) if state.is_pure()) {
         return Ok(*value);
     }
-    if matches!(value.kind(), Kind::StringObject(state) if !state.borrow().props.is_empty()) {
+    if matches!(value.kind(), Kind::StringObject(state) if state.borrow().props.has_intervals()) {
         // A callback may detach this string from the original graph before
         // collecting. The message's formatted string is a different object.
         interp.with_lisp_stack_roots(value, |interp| {

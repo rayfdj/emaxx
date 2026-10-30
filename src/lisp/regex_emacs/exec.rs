@@ -15,12 +15,12 @@ const FAIL_STACK_LIMIT: usize = 40_000 * 20;
 /// REG_UNSET, and GNU's NULL string position.
 const UNSET: isize = -1;
 
-/// Reads the text a chunk at a time.  Chunks end on character boundaries,
-/// so a character never straddles two.
+/// Reads the text a part at a time.  The parts end on character
+/// boundaries, so a character never straddles two.
 struct Reader<'a> {
-    /// The rope read a chunk at a time; None for a string, whose bytes
-    /// are all of `chunk'.
-    rope: Option<RopeRange<'a>>,
+    /// A buffer's text read a part at a time; None for a string, whose
+    /// bytes are all of `chunk'.
+    halves: Option<GapRange<'a>>,
     chunk: &'a [u8],
     start: usize,
     /// Text::latin1_bytes.
@@ -29,12 +29,12 @@ struct Reader<'a> {
 
 impl<'a> Reader<'a> {
     fn new(text: &Text<'a>) -> Self {
-        let (rope, chunk) = match text.source() {
+        let (halves, chunk) = match text.source() {
             super::TextSource::Str(text) => (None, text.as_bytes()),
-            super::TextSource::Rope(rope) => (Some(rope), &[][..]),
+            super::TextSource::Gap(halves) => (Some(halves), &[][..]),
         };
         Reader {
-            rope,
+            halves,
             chunk,
             start: 0,
             latin1_bytes: text.latin1_bytes,
@@ -52,10 +52,10 @@ impl<'a> Reader<'a> {
     #[inline(never)]
     fn load(&mut self, d: usize) {
         // A string's one run is already loaded.
-        let Some(rope) = self.rope else {
+        let Some(halves) = self.halves else {
             return;
         };
-        let (chunk, start) = rope.chunk_at_byte(d);
+        let (chunk, start) = halves.chunk_at_byte(d);
         self.chunk = chunk;
         self.start = start;
     }
@@ -143,8 +143,9 @@ impl Drop for PooledState {
 
 impl PooledState {
     /// A MatchState for NUM_REGS registers, the last finished search's
-    /// arrays when they are spare.  The best registers are written before
-    /// they are read, as re_match_2_internal's are.
+    /// arrays when they are spare.  Each match's `reset' empties the
+    /// stack and unsets the registers it reads; the best registers are
+    /// written before they are read, as re_match_2_internal's are.
     fn new(num_regs: usize) -> Self {
         let mut st = SPARE_STATE
             .try_with(std::cell::Cell::take)
@@ -160,11 +161,11 @@ impl PooledState {
                     best_regend: Vec::new(),
                 })
             });
-        st.stack.clear();
-        st.frame = 0;
         for regs in [&mut st.regstart, &mut st.regend] {
-            regs.clear();
-            regs.resize(num_regs, UNSET);
+            if regs.len() != num_regs {
+                regs.clear();
+                regs.resize(num_regs, UNSET);
+            }
         }
         for regs in [&mut st.best_regstart, &mut st.best_regend] {
             if regs.len() < num_regs {

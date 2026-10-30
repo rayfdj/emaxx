@@ -39,6 +39,7 @@ mod image_install;
 mod local_cells;
 mod loops;
 mod macros;
+mod record_registry;
 mod resource_forms;
 pub(crate) mod roots;
 pub(crate) mod runtime;
@@ -3314,24 +3315,12 @@ impl ImageGraphCopier {
                         .copy_without_properties(crate::lisp::alloc::StringAllocation::Restored),
                 );
                 self.strings.insert(key, copied);
-                let props = state.borrow().props.to_vec();
-                let copied_props: Vec<crate::lisp::types::StringPropertySpan> = props
-                    .iter()
-                    .map(|span| crate::lisp::types::StringPropertySpan {
-                        start: span.start,
-                        end: span.end,
-                        props: span
-                            .props
-                            .iter()
-                            .map(|(name, prop)| {
-                                let name = self.copy(&name.value());
-                                (crate::lisp::types::PropertyName::new(name), self.copy(prop))
-                            })
-                            .collect(),
-                    })
-                    .collect();
+                let mut intervals = state.borrow().props.intervals().cloned();
+                if let Some(intervals) = intervals.as_mut() {
+                    intervals.rewrite_plists(|plist| self.copy(&plist));
+                }
                 if let Kind::StringObject(new_state) = copied.kind() {
-                    new_state.borrow_mut().props = copied_props.into();
+                    new_state.borrow_mut().props.set(intervals);
                 }
                 copied
             }
@@ -3797,10 +3786,9 @@ impl LispReachability {
             }
             Kind::StringObject(value) => {
                 let state = value.borrow();
-                for span in &state.props {
-                    for (name, child) in &span.props {
-                        self.enqueue(&name.value());
-                        self.enqueue(child);
+                if let Some(intervals) = state.props.intervals() {
+                    for plist in intervals.plists() {
+                        self.enqueue(&plist);
                     }
                 }
             }
@@ -4042,7 +4030,7 @@ impl Interpreter {
     pub(crate) fn install_record(&mut self, mut state: RecordState) -> RecordRef {
         let previous_type = self
             .records
-            .get(&state.id)
+            .get(state.id)
             .and_then(|record| record.symbol_type_name().map(str::to_owned));
         if let Some(type_name) = previous_type
             && let Some(ids) = self.record_ids_by_type_index.get_mut(&type_name)
@@ -4067,8 +4055,9 @@ impl Interpreter {
     /// not freed it: the registry is not a root (alloc.c has no list of
     /// records), and a freed record's slot is cleared after the sweep
     /// (`purge_freed_records').
+    #[inline]
     pub(crate) fn record_ref(&self, id: u64) -> Option<RecordRef> {
-        self.records.get(&id).copied()
+        self.records.get(id)
     }
 
     /// The record ID names, as a value: for the side tables that still
@@ -4097,9 +4086,9 @@ impl Interpreter {
             // The registry names the freed cell under this id, or it names
             // the record an image load put in its place (whose side tables
             // are its own): only the former leaves.
-            match self.records.get(&id) {
+            match self.records.get(id) {
                 Some(held) if held.identity() == record.identity => {
-                    self.records.remove(&id);
+                    self.records.remove(id);
                 }
                 _ => continue,
             }
@@ -4179,22 +4168,19 @@ impl Interpreter {
 
     /// BVAR (b, syntax_table) when the buffer has set one.
     pub(crate) fn buffer_syntax_table_id(&self, id: u64) -> Option<CharTableRef> {
-        self.buffer_syntax_tables.get(&id).copied()
+        self.buffer_syntax_tables.get(id)
     }
 
     /// reset_buffer_local_variables's syntax table: BUFFER's slot returns
     /// to buffer_defaults' (the standard table), which nothing then roots
     /// for it.
     pub(crate) fn reset_buffer_syntax_table(&mut self, id: u64) {
-        self.buffer_syntax_tables.remove(&id);
+        self.buffer_syntax_tables.remove(id);
     }
 
     /// BUFFER's four case tables when they are not the standard ones.
     pub(crate) fn buffer_case_tables(&self, id: u64) -> Option<coding::CaseTables> {
-        self.buffer_case_tables
-            .iter()
-            .find(|(buffer_id, _)| *buffer_id == id)
-            .map(|(_, tables)| *tables)
+        self.buffer_case_tables.get(id)
     }
 
     /// alloc.c's `finalizers' list in order (head.next first).
@@ -4312,9 +4298,7 @@ impl Interpreter {
     }
 
     pub(crate) fn install_buffer_case_tables(&mut self, id: u64, tables: coding::CaseTables) {
-        self.buffer_case_tables
-            .retain(|(buffer_id, _)| *buffer_id != id);
-        self.buffer_case_tables.push((id, tables));
+        self.buffer_case_tables.install(id, tables);
     }
 
     /// Mark actual roots, then iterate weak-table reachability to a fixed
@@ -5017,7 +5001,7 @@ impl Interpreter {
             for table in clone.buffer_syntax_tables.values_mut() {
                 *table = copy_table(c, *table);
             }
-            for (_, tables) in &mut clone.buffer_case_tables {
+            for (_, tables) in clone.buffer_case_tables.iter_mut() {
                 *tables = tables.map(|table| copy_table(c, table));
             }
             for (_, plist) in &mut clone.charset_plists {
@@ -5605,13 +5589,9 @@ pub struct InterpreterState {
     standard_case_tables: Option<coding::CaseTables>,
     /// buffer.h's four case-table slots of each live buffer whose four are
     /// not the standard ones; a buffer without an entry holds those.
-    buffer_case_tables: Vec<(u64, coding::CaseTables)>,
-    /// Allocated record objects.
-    /// The records by id (`find_record'), a registry and not a root:
-    /// a record the sweep frees leaves it (`purge_freed_records').  Ids
-    /// are sparse (an image's records keep the ids of the dumping
-    /// process), so the registry holds only the records.
-    records: std::collections::BTreeMap<u64, RecordRef>,
+    buffer_case_tables: coding::BufferCaseTables,
+    /// Allocated record objects, by id (see `record_registry').
+    records: record_registry::RecordRegistry,
     /// This state's id space, for the records' `owner'.
     record_owner: u32,
     /// Host pseudovector IDs grouped by their fixed type tags, principally
@@ -5683,7 +5663,7 @@ pub struct InterpreterState {
     loaded_bindings: LoadedBindings,
     /// BVAR (b, syntax_table) for each buffer whose table is not the
     /// standard one (buffer_defaults'), keyed by buffer id.
-    buffer_syntax_tables: HashMap<u64, CharTableRef, crate::lisp::types::IdentityBuildHasher>,
+    buffer_syntax_tables: coding::BufferSyntaxTables,
     /// Active dynamic special bindings in stack order.
     active_special_restores: Vec<SpecialBindingRestore>,
     next_special_binding_id: u64,
@@ -6053,7 +6033,7 @@ impl Interpreter {
             .map(|value| Value::String(value.into()))
             .unwrap_or_else(|_| Value::Symbol("wall".into()));
         let frame_name =
-            primitives::make_shared_string_value_with_multibyte("F1".into(), Vec::new(), true);
+            primitives::make_shared_string_value_with_multibyte("F1".into(), None, true);
         let fringe_bitmaps = Value::list(
             primitives::STANDARD_FRINGE_BITMAPS
                 .iter()
@@ -6467,8 +6447,8 @@ impl Interpreter {
             input_interrupt_mode: true,
             standard_category_table_id: None,
             standard_case_tables: None,
-            buffer_case_tables: Vec::new(),
-            records: std::collections::BTreeMap::from([
+            buffer_case_tables: coding::BufferCaseTables::default(),
+            records: record_registry::RecordRegistry::from([
                 (main_thread_id, main_thread),
                 (standard_obarray_id, standard_obarray),
             ]),
@@ -6499,7 +6479,7 @@ impl Interpreter {
             buffer_local_hooks: HashMap::default(),
             buffer_locals: HashMap::default(),
             loaded_bindings: LoadedBindings::default(),
-            buffer_syntax_tables: HashMap::default(),
+            buffer_syntax_tables: coding::BufferSyntaxTables::default(),
             active_special_restores: Vec::new(),
             next_special_binding_id: 1,
             labeled_restrictions: Vec::new(),
@@ -8150,6 +8130,7 @@ fn c_charset_plist(
     (name.to_string(), plist)
 }
 
+#[cfg(test)]
 fn symbol_name(value: &Value) -> Option<String> {
     match value.kind() {
         Kind::Symbol(name) => Some(name.to_string()),

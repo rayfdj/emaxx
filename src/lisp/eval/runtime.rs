@@ -236,8 +236,8 @@ impl Interpreter {
 
     /// The quote characters `error' will requote a message with, per the
     /// effective `text-quoting-style' (doc.c:679, doprnt.c:490).
-    fn effective_quote_pair(&self, env: &Env) -> (char, char) {
-        match crate::lisp::primitives::values::effective_text_quoting_style(self, env) {
+    fn effective_quote_pair(&self) -> (char, char) {
+        match crate::lisp::primitives::values::effective_text_quoting_style(self) {
             "curve" => ('\u{2018}', '\u{2019}'),
             "straight" => ('\'', '\''),
             _ => ('`', '\''),
@@ -290,7 +290,7 @@ impl Interpreter {
         }
         let feature = symbol.as_str();
         let load_target = target.unwrap_or(feature);
-        let (open, close) = self.effective_quote_pair(env);
+        let (open, close) = self.effective_quote_pair();
         let loaded = self.with_require_nesting(feature, (open, close), |interp| {
             primitives::load_file(
                 interp,
@@ -1184,8 +1184,7 @@ impl Interpreter {
             .unwrap_or(Value::Nil);
         self.remove_buffer_locals(id);
         self.buffer_local_hooks.remove(&id);
-        self.buffer_case_tables
-            .retain(|(buffer_id, _)| *buffer_id != id);
+        self.buffer_case_tables.remove(id);
         self.reset_buffer_syntax_table(id);
         self.labeled_restrictions
             .retain(|restriction| restriction.buffer_id != id);

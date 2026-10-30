@@ -125,12 +125,7 @@ fn lookup_key_value(
                             }
                             push_character_code(&mut text, &mut extended, position, mapped as u32);
                         }
-                        make_shared_string_value_with_extended_chars(
-                            text,
-                            Vec::new(),
-                            true,
-                            extended,
-                        )
+                        make_shared_string_value_with_extended_chars(text, None, true, extended)
                     };
                     converted.set(index, super::call(interp, "intern", &[lowered], env)?);
                 }
@@ -150,7 +145,7 @@ fn lookup_key_value(
                     }
                     let dashed = make_shared_string_value_with_extended_chars(
                         string.text.replace(' ', "-"),
-                        Vec::new(),
+                        None,
                         true,
                         string.extended_chars,
                     );
@@ -652,9 +647,7 @@ define_dispatch!(
 
             "text-quoting-style" => {
                 need_args(name, args, 0)?;
-                Ok(Value::Symbol(
-                    effective_text_quoting_style(interp, env).into(),
-                ))
+                Ok(Value::Symbol(effective_text_quoting_style(interp).into()))
             }
             "user-uid" => Ok(Value::Integer(current_user_id()? as i64)),
             "user-real-uid" => Ok(Value::Integer(current_real_user_id()? as i64)),

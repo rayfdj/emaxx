@@ -1054,11 +1054,8 @@ impl Interpreter {
                     pending.push(object.symbol());
                 }
                 Kind::StringObject(state) if seen_strings.insert(state.identity()) => {
-                    for span in &state.borrow().props {
-                        for (property, property_value) in &span.props {
-                            pending.push(property.value());
-                            pending.push(*property_value);
-                        }
+                    if let Some(intervals) = state.borrow().props.intervals() {
+                        pending.extend(intervals.plists());
                     }
                 }
                 // GNU's reader interns symbols inside every literal it
@@ -2161,29 +2158,14 @@ impl Interpreter {
         self.bind_special_symbol(&SymbolName::intern_str(name), value, env)
     }
 
-    /// `case-fold-search' as search.c reads it: the DEFVAR_PER_BUFFER slot
-    /// of the current buffer when it has one, else the default, by the
-    /// symbol interned once per thread (a name lookup per search hashed
-    /// the name and walked the alias, flag and buffer-local tables by it).
-    pub(crate) fn case_fold_search_active(&self, env: &Env) -> bool {
-        cached_symbol!("case-fold-search").with(|symbol| {
-            if self.globals.alias(symbol).is_some() {
-                return self
-                    .lookup_var("case-fold-search", env)
-                    .is_some_and(|value| value.is_truthy());
-            }
-            match self.buffer_local_binding_symbol(self.current_buffer_id(), symbol) {
-                Some(Some(local)) => local.is_truthy(),
-                // A void local cell reads as void: not a true value.
-                Some(None) => false,
-                None => match self.globals.value(symbol) {
-                    Some(value) => value.is_truthy(),
-                    None => self
-                        .builtin_var_value("case-fold-search")
-                        .is_some_and(|value| value.is_truthy()),
-                },
-            }
-        })
+    /// `case-fold-search' as search.c reads it, BVAR (current_buffer,
+    /// case_fold_search): the binding loaded for the current buffer, its
+    /// own or the default, by the symbol interned once per thread.  A
+    /// buffer-local variable cannot be an alias (Fdefvaralias refuses it).
+    #[inline]
+    pub(crate) fn case_fold_search_active(&self) -> bool {
+        self.local_variable_value_key(cached_symbol!("case-fold-search"))
+            .is_some_and(|value| value.is_truthy())
     }
 
     /// Learn whether SYMBOL's assignments are a plain store (data.c's
@@ -3458,45 +3440,39 @@ impl Interpreter {
     /// `signal_or_quit''s conditions walk): `t' matches anything; otherwise the
     /// handler symbol must be `memq' in the signaled symbol's
     /// `error-conditions' property.  A symbol with NO `error-conditions' — one
-    /// that never went through `define-error' — is caught only by `t'.  GNU
-    /// probe: (condition-case nil (signal 'undefined-cond nil)
-    /// (error 'as-error) (t 'as-t)) => as-t.  Treating an unregistered
-    /// condition as `error' would let `ignore-errors' and `should-error'
-    /// silently absorb conditions Emaxx forgot to register.
-    pub(super) fn condition_symbol_matches(
-        symbol: &str,
-        error_type: &str,
-        condition_list: &[SymbolName],
-    ) -> bool {
-        if symbol == "t" {
-            return true;
-        }
-        if condition_list.is_empty() {
-            return symbol == error_type;
-        }
-        condition_list.iter().any(|entry| entry.as_str() == symbol)
+    /// that never went through `define-error' — is caught only by `t', even
+    /// by a handler naming that symbol.  GNU probes:
+    /// (condition-case nil (signal 'undefined-cond nil)
+    /// (error 'as-error) (t 'as-t)) => as-t, and (condition-case nil
+    /// (signal 'undefined-cond nil) (undefined-cond 'x) (t 'y)) => y.
+    pub(super) fn condition_symbol_matches(symbol: &str, condition_list: &[SymbolName]) -> bool {
+        symbol == "t" || condition_list.iter().any(|entry| entry.as_str() == symbol)
     }
 
-    pub(crate) fn clause_head_matches(
-        head: &Value,
-        error_type: &str,
-        condition_list: &[SymbolName],
-    ) -> bool {
-        match head.kind() {
+    /// find_handler_clause for one clause's condition HEAD: `t', or a
+    /// symbol `memq' (EQ) in CONDITION_LIST, the signaled symbol's
+    /// `error-conditions'; a list of them matches by any element, walked
+    /// as FOR_EACH_TAIL's CONSP loop walks it.
+    pub(crate) fn clause_head_matches(head: &Value, condition_list: &[SymbolName]) -> bool {
+        let element_matches = |element: Value| match element.kind() {
             Kind::T => true,
-            Kind::Symbol(symbol) => {
-                Self::condition_symbol_matches(&symbol, error_type, condition_list)
+            Kind::Symbol(symbol) => condition_list.contains(&symbol),
+            Kind::Nil => {
+                condition_list.contains(&crate::lisp::types::symbols::builtin_boolean(false))
             }
-            Kind::Cons(_) => head.to_vec().ok().is_some_and(|items| {
-                items.iter().any(|item| {
-                    matches!(item.kind(), Kind::T)
-                        || symbol_name(item).is_some_and(|symbol| {
-                            Self::condition_symbol_matches(&symbol, error_type, condition_list)
-                        })
-                })
-            }),
             _ => false,
+        };
+        let mut tail = *head;
+        if !tail.is_cons() {
+            return element_matches(tail);
         }
+        while let Some(cell) = tail.cons_ref() {
+            if element_matches(cell.car.get()) {
+                return true;
+            }
+            tail = cell.cdr.get();
+        }
+        false
     }
 
     pub(super) fn take_condition_case_suspend(&mut self) -> bool {
@@ -3526,10 +3502,10 @@ impl Interpreter {
             ActiveHandler::Module | ActiveHandler::Internal(_) => true,
             ActiveHandler::Case(heads) => heads
                 .iter()
-                .any(|head| Self::clause_head_matches(head, &error_type, &condition_list)),
+                .any(|head| Self::clause_head_matches(head, &condition_list)),
             ActiveHandler::Bind(conditions, _) => conditions
                 .iter()
-                .any(|symbol| Self::condition_symbol_matches(symbol, &error_type, &condition_list)),
+                .any(|symbol| Self::condition_symbol_matches(symbol, &condition_list)),
         })
     }
 
@@ -3562,7 +3538,6 @@ impl Interpreter {
         {
             return memo;
         }
-        let error_type = error_symbol.as_str();
         let condition_list = self.error_condition_names_of(&error_symbol);
         let mut decisive = None;
         let mut catching_case = None;
@@ -3576,15 +3551,15 @@ impl Interpreter {
                 ActiveHandler::Case(heads) => {
                     let catches = heads
                         .iter()
-                        .any(|head| Self::clause_head_matches(head, error_type, &condition_list));
+                        .any(|head| Self::clause_head_matches(head, &condition_list));
                     if catches {
                         catching_case = Some(index);
                     }
                     catches
                 }
-                ActiveHandler::Bind(conditions, _) => conditions.iter().any(|symbol| {
-                    Self::condition_symbol_matches(symbol, error_type, &condition_list)
-                }),
+                ActiveHandler::Bind(conditions, _) => conditions
+                    .iter()
+                    .any(|symbol| Self::condition_symbol_matches(symbol, &condition_list)),
             };
             if matches && decisive.is_none() {
                 decisive = Some(index);
@@ -3638,7 +3613,7 @@ impl Interpreter {
         // `if (! NILP (Vsignal_hook_function) && !oom)': edebug's hook,
         // with room for it on the stack.
         let hook = self
-            .lookup_var("signal-hook-function", env)
+            .symbol_value_key(cached_symbol!("signal-hook-function"))
             .unwrap_or(Value::Nil);
         if !hook.is_nil() {
             let object = super::error_condition_value(&error);
@@ -3690,7 +3665,7 @@ impl Interpreter {
     fn signal_debugger(&mut self, error: &LispError, env: &mut Env) -> Result<bool, LispError> {
         let clause = self.catching_clause(error);
         let debug_on_signal = self
-            .lookup_var("debug-on-signal", env)
+            .symbol_value_key(cached_symbol!("debug-on-signal"))
             .is_some_and(|value| value.is_truthy());
         if !debug_on_signal
             && !matches!(
@@ -3708,7 +3683,6 @@ impl Interpreter {
     /// of a `condition-case''s clauses), a catch-all, or none.
     fn catching_clause(&mut self, error: &LispError) -> CatchingClause {
         let error_symbol = error.condition_symbol();
-        let error_type = error_symbol.as_str();
         let condition_list = self.error_condition_names_of(&error_symbol);
         for entry in self.active_handlers.iter().rev() {
             match entry {
@@ -3720,7 +3694,7 @@ impl Interpreter {
                 ActiveHandler::Case(heads) => {
                     if let Some(head) = heads
                         .iter()
-                        .find(|head| Self::clause_head_matches(head, error_type, &condition_list))
+                        .find(|head| Self::clause_head_matches(head, &condition_list))
                     {
                         let debug = head.to_vec().is_ok_and(|items| {
                             items.iter().any(|item| {
@@ -3876,7 +3850,6 @@ impl Interpreter {
             return Err(error);
         };
         let error_symbol = error.condition_symbol();
-        let error_type = error_symbol.as_str();
         let condition_list = self.error_condition_names_of(&error_symbol);
         let error_value = error_condition_value(&error);
         let mut handled = false;
@@ -3891,15 +3864,16 @@ impl Interpreter {
                 ActiveHandler::Case(heads) => {
                     if heads
                         .iter()
-                        .any(|head| Self::clause_head_matches(head, error_type, &condition_list))
+                        .any(|head| Self::clause_head_matches(head, &condition_list))
                     {
                         break;
                     }
                 }
                 ActiveHandler::Bind(conditions, handler) => {
-                    if !conditions.iter().any(|condition| {
-                        Self::condition_symbol_matches(condition, error_type, &condition_list)
-                    }) {
+                    if !conditions
+                        .iter()
+                        .any(|condition| Self::condition_symbol_matches(condition, &condition_list))
+                    {
                         continue;
                     }
                     let result = self.call_function_value(

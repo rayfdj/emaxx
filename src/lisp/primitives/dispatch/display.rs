@@ -67,7 +67,7 @@ pub(crate) fn set_echo_area_message(text: Option<String>) {
     bump_echo_message_tick();
     let value = text
         .as_ref()
-        .map(|text| crate::lisp::primitives::strings::string_like_value(text.clone(), Vec::new()));
+        .map(|text| crate::lisp::primitives::strings::string_like_value(text.clone(), None));
     ECHO_AREA_MESSAGE_VALUE.with_borrow_mut(|slot| *slot = value);
     let message = text.map(|text| (text, Vec::new()));
     // message3 displays right away: the new message (or, for a clear,
@@ -81,15 +81,20 @@ pub(crate) fn set_echo_area_message(text: Option<String>) {
 pub(crate) fn set_echo_area_message_with_spans(text: String, spans: EchoSpans) {
     ECHO_FROM_PRINT.with(|flag| flag.set(false));
     bump_echo_message_tick();
-    let props = spans
-        .iter()
-        .map(|(start, end, face)| crate::buffer::TextPropertySpan {
-            start: *start,
-            end: *end,
-            props: vec![(crate::lisp::types::PropertyName::symbol("face"), *face)],
-        })
-        .collect();
-    let value = crate::lisp::primitives::strings::string_like_value(text.clone(), props);
+    let len = text.chars().count();
+    let mut props = crate::lisp::types::string_data::StringProperties::default();
+    for (start, end, face) in &spans {
+        let _ = crate::intervals::add_string_text_properties(
+            &mut props,
+            len,
+            *start,
+            (*end).min(len),
+            Value::list([Value::symbol("face"), *face]),
+            crate::intervals::PropertySetType::Replace,
+            true,
+        );
+    }
+    let value = crate::lisp::primitives::strings::string_like_value(text.clone(), props.take());
     ECHO_AREA_MESSAGE_VALUE.with_borrow_mut(|slot| *slot = Some(value));
     let message = Some((text, spans));
     ECHO_AREA_LAST_DISPLAYED.with_borrow_mut(|slot| slot.clone_from(&message));
@@ -229,9 +234,9 @@ pub(crate) fn message_to_stderr(
     let bytes = match message {
         Some(message) => {
             let coding = interp
-                .forwarded_c_value("coding-system-for-write", &Env::new())
+                .forwarded_c_value_key(cached_symbol!("coding-system-for-write"))
                 .filter(|value| !value.is_nil())
-                .or_else(|| interp.forwarded_c_value("locale-coding-system", &Env::new()))
+                .or_else(|| interp.forwarded_c_value_key(cached_symbol!("locale-coding-system")))
                 .unwrap_or(Value::Nil);
             let encoded = if coding.is_nil() {
                 *message
@@ -489,7 +494,7 @@ fn message_dolog(
                 let count = format!(" [{dups} times]");
                 let at = buffer.size_total();
                 buffer.goto_char(at);
-                buffer.insert_with_properties_and_markers(&count, None, true);
+                buffer.insert_before_markers(&count);
                 for position in &mut saved {
                     if *position >= at {
                         *position += count.len();
@@ -636,7 +641,7 @@ pub(crate) fn echo_area_print(text: &str) {
     ECHO_AREA_MESSAGE_VALUE.with_borrow_mut(|slot| {
         *slot = ECHO_AREA_MESSAGE.with_borrow(|current| {
             current.as_ref().map(|(text, _)| {
-                crate::lisp::primitives::strings::string_like_value(text.clone(), Vec::new())
+                crate::lisp::primitives::strings::string_like_value(text.clone(), None)
             })
         })
     });
@@ -686,17 +691,19 @@ pub(crate) fn string_face_spans(value: &Value) -> EchoSpans {
         return Vec::new();
     };
     let state = state.borrow();
-    state
-        .props
+    let Some(intervals) = state.props.intervals() else {
+        return Vec::new();
+    };
+    intervals
         .iter()
-        .filter_map(|span| {
-            let face = span
-                .props
-                .iter()
-                .find(|(name, _)| name == "face")
-                .or_else(|| span.props.iter().find(|(name, _)| name == "font-lock-face"));
-            face.map(|(_, face)| (span.start, span.end, *face))
-                .filter(|(_, _, face)| !face.is_nil())
+        .filter_map(|(start, end, plist)| {
+            let face = crate::lisp::primitives::strings::lisp_plist_get(plist, "face");
+            let face = if face.is_nil() {
+                crate::lisp::primitives::strings::lisp_plist_get(plist, "font-lock-face")
+            } else {
+                face
+            };
+            (!face.is_nil()).then_some((start, end, face))
         })
         .collect()
 }
@@ -1073,6 +1080,29 @@ fn window_id_or_selected(interp: &Interpreter, value: &Value) -> Result<u64, Lis
         .ok_or_else(|| LispError::WrongTypeArgument("windowp".into(), *value))
 }
 
+/// decode_valid_window: a window record not deleted, nil the selected one.
+fn valid_window_or_selected(
+    interp: &Interpreter,
+    value: &Value,
+) -> Result<crate::lisp::types::RecordRef, LispError> {
+    let window = if value.is_nil() {
+        interp.record_ref(interp.selected_window_id())
+    } else {
+        window_record(value)
+    };
+    window
+        .filter(|window| !window_kind_is(*window, DELETED_WINDOW_KIND))
+        .ok_or_else(|| wrong_type_argument("window-valid-p", *value))
+}
+
+/// Whether WINDOW's kind is KIND.
+fn window_kind_is(window: crate::lisp::types::RecordRef, kind: &str) -> bool {
+    matches!(
+        window.slots.get(WINDOW_KIND_SLOT).map(|slot| slot.kind()),
+        Some(Kind::Symbol(own)) if own == kind
+    )
+}
+
 /// window.c:Fwindow_parameter: PARAMETER's entry found by `assq'.
 fn window_parameter_value(interp: &Interpreter, window_id: u64, parameter: &Value) -> Value {
     window_parameter_entry(interp, window_id, parameter)
@@ -1085,15 +1115,18 @@ fn window_parameter_entry(
     window_id: u64,
     parameter: &Value,
 ) -> Option<Value> {
-    let params = interp
+    // Fassq (parameter, w->window_parameters), walking the alist in place.
+    let mut params = interp
         .find_record(window_id)
         .and_then(|record| record.slots.get(WINDOW_PARAMETERS_SLOT))
         .copied()?;
-    params
-        .to_vec()
-        .ok()?
-        .into_iter()
-        .find(|item| item.car().is_ok_and(|key| key.eq_value(*parameter)))
+    while let Some((item, rest)) = params.cons_values() {
+        if item.car().is_ok_and(|key| key.eq_value(*parameter)) {
+            return Some(item);
+        }
+        params = rest;
+    }
+    None
 }
 
 /// window.c:Fset_window_parameter: change PARAMETER's `assq' entry in
@@ -1894,16 +1927,21 @@ pub(crate) fn window_face_spans(
         {
             return spans;
         }
+        // Redisplay reads a property whose lookup signals as nil.
         let face_at = |pos: usize| {
             crate::lisp::primitives::strings::buffer_property_at_with_category(
                 interp, &buffer, pos, "face",
             )
+            .ok()
+            .flatten()
             .filter(|face| !face.is_nil())
             .or_else(|| {
                 face_alias_names.iter().find_map(|name| {
                     crate::lisp::primitives::strings::buffer_property_at_with_category(
                         interp, &buffer, pos, name,
                     )
+                    .ok()
+                    .flatten()
                     .filter(|face| !face.is_nil())
                 })
             })
@@ -1927,12 +1965,16 @@ pub(crate) fn window_face_spans(
             let Some(face) = crate::lisp::primitives::strings::overlay_property_with_category(
                 interp, &overlay, "face",
             )
+            .ok()
+            .flatten()
             .filter(|face| !face.is_nil())
             .or_else(|| {
                 face_alias_names.iter().find_map(|name| {
                     crate::lisp::primitives::strings::overlay_property_with_category(
                         interp, &overlay, name,
                     )
+                    .ok()
+                    .flatten()
                     .filter(|face| !face.is_nil())
                 })
             }) else {
@@ -1941,6 +1983,8 @@ pub(crate) fn window_face_spans(
             let priority = crate::lisp::primitives::strings::overlay_property_with_category(
                 interp, &overlay, "priority",
             )
+            .ok()
+            .flatten()
             .and_then(|priority| priority.integer_value())
             .unwrap_or(0);
             overlay_spans.push((
@@ -2166,23 +2210,22 @@ fn live_window_id_or_selected(
         .filter(|window| !window.is_nil())
         .cloned()
         .unwrap_or_else(|| interp.selected_window_value());
-    let window_id = window_record_id_from_value(interp, &window)
-        .ok_or_else(|| LispError::WrongTypeArgument("window-live-p".into(), window))?;
-    let kind = window_slot_value(interp, window_id, WINDOW_KIND_SLOT);
-    if matches!(
-        kind.kind(),
-        Kind::Symbol(ref kind)
-            if matches!(
-                kind.as_str(),
-                INTERNAL_HORIZONTAL_WINDOW_KIND
-                    | INTERNAL_VERTICAL_WINDOW_KIND
-                    | DELETED_WINDOW_KIND
-            )
-    ) || window_buffer_id(interp, &window).is_none()
-    {
-        return Err(LispError::WrongTypeArgument("window-live-p".into(), window));
-    }
-    Ok(window_id)
+    // WINDOW_LIVE_P of the record: a leaf showing a live buffer.
+    window_record(&window)
+        .filter(|record| {
+            !matches!(
+                record.slots.get(WINDOW_KIND_SLOT).map(|slot| slot.kind()),
+                Some(Kind::Symbol(kind))
+                    if matches!(
+                        kind.as_str(),
+                        INTERNAL_HORIZONTAL_WINDOW_KIND
+                            | INTERNAL_VERTICAL_WINDOW_KIND
+                            | DELETED_WINDOW_KIND
+                    )
+            ) && window_buffer_id(interp, &window).is_some()
+        })
+        .map(|record| record.id)
+        .ok_or_else(|| LispError::WrongTypeArgument("window-live-p".into(), window))
 }
 
 fn select_window_value(
@@ -3620,7 +3663,17 @@ fn window_line_height(
     env: &Env,
 ) -> i64 {
     let format = if buffer_id == interp.current_buffer_id() {
-        interp.lookup_var(format_variable, env)
+        // BVAR (current_buffer, ...): the symbol's loaded binding.
+        match format_variable {
+            "mode-line-format" => {
+                interp.local_variable_value_key(cached_symbol!("mode-line-format"))
+            }
+            "header-line-format" => {
+                interp.local_variable_value_key(cached_symbol!("header-line-format"))
+            }
+            "tab-line-format" => interp.local_variable_value_key(cached_symbol!("tab-line-format")),
+            _ => interp.lookup_var(format_variable, env),
+        }
     } else {
         interp
             .buffer_local_toplevel_value(buffer_id, format_variable)
@@ -4185,11 +4238,7 @@ define_dispatch!(
                 // The general C path returns Fbuffer_string from the
                 // multibyte prin1 buffer. It is already mutable at creation;
                 // bytecode argument passing only copies the Lisp_Object.
-                Ok(make_shared_string_value_with_multibyte(
-                    text,
-                    Vec::new(),
-                    true,
-                ))
+                Ok(make_shared_string_value_with_multibyte(text, None, true))
             }
             "command-error-default-function" => {
                 need_args(name, args, 3)?;
@@ -5376,15 +5425,12 @@ define_dispatch!(
                 // window.c window_wants_mode_line/header_line/tab_line all
                 // require !MINI_WINDOW_P: a minibuffer window has none of
                 // these lines whatever its buffer's format variables say.
-                let window = args.first().cloned().unwrap_or(Value::Nil);
-                let window_id = window_id_or_selected(interp, &window)?;
-                let is_minibuffer = interp
-                    .find_record(window_id)
-                    .and_then(|record| record.slots.get(WINDOW_KIND_SLOT))
-                    .is_some_and(
-                        |slot| matches!(slot.kind(), Kind::Symbol(kind) if kind == MINIBUFFER_WINDOW_KIND),
-                    );
-                if is_minibuffer {
+                // decode_live_window.
+                let window_id = live_window_id_or_selected(interp, args.first())?;
+                if interp
+                    .record_ref(window_id)
+                    .is_some_and(|window| window_kind_is(window, MINIBUFFER_WINDOW_KIND))
+                {
                     return Ok(Value::Integer(0));
                 }
                 let buffer_id = window_buffer_id_or_selected(interp, args.first())?;
@@ -6183,24 +6229,13 @@ define_dispatch!(
                     .filter(|window| !window.is_nil())
                     .cloned()
                     .unwrap_or_else(|| interp.selected_window_value());
-                if window_record_id_from_value(interp, &window).is_none() {
+                if window_record(&window).is_none() {
                     return Err(LispError::WrongTypeArgument("windowp".into(), window));
                 }
-                let Some(buffer_id) = window_buffer_id(interp, &window) else {
-                    return Ok(Value::Nil);
-                };
-                if buffer_id == interp.current_buffer_id() {
-                    Ok(interp.buffer_value(buffer_id).expect("live buffer object"))
-                } else if let Some((_, name)) = interp
-                    .buffer_list
-                    .iter()
-                    .find(|(id, _)| *id == buffer_id)
-                    .cloned()
-                {
-                    Ok(interp.buffer_value(buffer_id).expect("live buffer object"))
-                } else {
-                    Ok(Value::Nil)
-                }
+                // A live buffer by window_buffer_id's own test.
+                Ok(window_buffer_id(interp, &window)
+                    .map(|buffer_id| interp.buffer_value(buffer_id).expect("live buffer object"))
+                    .unwrap_or(Value::Nil))
             }
             "window-old-buffer" => {
                 need_arg_range(name, args, 0, 1)?;
@@ -6443,38 +6478,27 @@ define_dispatch!(
             }
             "window-frame" => {
                 need_arg_range(name, args, 0, 1)?;
-                let value = args.first().unwrap_or(&Value::Nil);
-                let id = window_id_or_selected(interp, value)?;
-                if window_slot_value(interp, id, WINDOW_KIND_SLOT)
-                    .as_symbol()
-                    .ok()
-                    == Some(DELETED_WINDOW_KIND)
-                {
-                    return Err(wrong_type_argument("window-valid-p", *value));
-                }
-                Ok(interp
-                    .window_frame_id(id)
-                    .map(Value::Frame)
-                    .unwrap_or(Value::Nil))
+                let window = valid_window_or_selected(interp, args.first().unwrap_or(&Value::Nil))?;
+                Ok(
+                    match window.slots.get(WINDOW_FRAME_SLOT).map(|slot| slot.kind()) {
+                        Some(Kind::Frame(frame)) => Value::Frame(frame),
+                        _ => Value::Nil,
+                    },
+                )
             }
             "windowp" | "window-live-p" | "window-valid-p" => {
                 need_args(name, args, 1)?;
-                let Some(window_id) = window_record_id_from_value(interp, &args[0]) else {
+                // WINDOWP, WINDOW_VALID_P and WINDOW_LIVE_P of the record.
+                let Some(window) = window_record(&args[0]) else {
                     return Ok(Value::Nil);
                 };
-                let kind = window_slot_value(interp, window_id, WINDOW_KIND_SLOT);
-                let valid = !matches!(
-                    kind.kind(),
-                    Kind::Symbol(ref kind) if kind == DELETED_WINDOW_KIND
-                );
-                let live = valid && window_buffer_id(interp, &args[0]).is_some();
-                Ok(
-                    if name == "windowp" || (name == "window-valid-p" && valid) || live {
-                        Value::T
-                    } else {
-                        Value::Nil
-                    },
-                )
+                let valid = || !window_kind_is(window, DELETED_WINDOW_KIND);
+                let answer = match name {
+                    "windowp" => true,
+                    "window-valid-p" => valid(),
+                    _ => valid() && window_buffer_id(interp, &args[0]).is_some(),
+                };
+                Ok(if answer { Value::T } else { Value::Nil })
             }
             "window-parent" | "window-prev-sibling" | "window-next-sibling" => {
                 need_arg_range(name, args, 0, 1)?;
@@ -6503,25 +6527,24 @@ define_dispatch!(
             }
             "window-top-child" | "window-left-child" => {
                 need_arg_range(name, args, 0, 1)?;
-                let window = args.first().cloned().unwrap_or(Value::Nil);
-                let window_id = window_id_or_selected(interp, &window)?;
-                let kind = window_slot_value(interp, window_id, WINDOW_KIND_SLOT);
-                let matching_orientation = matches!(
-                    (name, kind.kind()),
-                    ("window-top-child", Kind::Symbol(kind))
-                        if kind == INTERNAL_VERTICAL_WINDOW_KIND
-                ) || matches!(
-                    (name, window_slot_value(interp, window_id, WINDOW_KIND_SLOT).kind()),
-                    ("window-left-child", Kind::Symbol(kind))
-                        if kind == INTERNAL_HORIZONTAL_WINDOW_KIND
-                );
-                Ok(if matching_orientation {
-                    window_link(interp, window_id, WINDOW_FIRST_CHILD_SLOT)
-                        .map(|id| interp.record_value(id))
-                        .unwrap_or(Value::Nil)
+                let window = valid_window_or_selected(interp, args.first().unwrap_or(&Value::Nil))?;
+                let orientation = if name == "window-top-child" {
+                    INTERNAL_VERTICAL_WINDOW_KIND
                 } else {
-                    Value::Nil
-                })
+                    INTERNAL_HORIZONTAL_WINDOW_KIND
+                };
+                Ok(
+                    match window
+                        .slots
+                        .get(WINDOW_FIRST_CHILD_SLOT)
+                        .map(|slot| slot.kind())
+                    {
+                        Some(Kind::Record(child)) if window_kind_is(window, orientation) => {
+                            interp.record_value(child.id)
+                        }
+                        _ => Value::Nil,
+                    },
+                )
             }
             "window-combination-limit" | "set-window-combination-limit" => {
                 need_args(

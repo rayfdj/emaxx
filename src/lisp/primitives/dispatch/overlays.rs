@@ -164,7 +164,7 @@ define_dispatch!(
                 let (beg, end) = overlay_range(interp, buffer, args[1], args[2])?;
                 object.move_to(buffer, beg, end);
                 if beg == end
-                    && overlay_property_with_category(interp, &object, "evaporate")
+                    && overlay_property_with_category(interp, &object, "evaporate")?
                         .is_some_and(|v| v.is_truthy())
                 {
                     object.detach();
@@ -203,7 +203,7 @@ define_dispatch!(
                     interp,
                     &object,
                     crate::lisp::types::PropertyName::new(args[1]),
-                )
+                )?
                 .unwrap_or(Value::Nil))
             }
             "overlay-properties" => {
@@ -217,7 +217,7 @@ define_dispatch!(
                     overlays_in_range(&interp.buffer.borrow(), pos, pos + 1, false, true);
                 if let Some(sorted) = args.get(1).filter(|value| value.is_truthy()) {
                     let window = window_record_id_from_value(interp, sorted);
-                    sort_overlays(interp, &mut objects, window);
+                    sort_overlays(interp, &mut objects, window)?;
                     objects.reverse();
                 }
                 Ok(Value::list(objects.into_iter().map(Value::Overlay)))

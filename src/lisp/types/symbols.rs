@@ -365,6 +365,17 @@ const KEY_NAMES: &[&str] = &[
     "buffer-display-table",
     "standard-display-table",
     "permanent-local",
+    "frame-windows-min-size",
+    "mode-line-format",
+    "header-line-format",
+    "tab-line-format",
+    "undo-auto--last-boundary-cause",
+    "text-quoting-style",
+    "coding-system-for-write",
+    "locale-coding-system",
+    "signal-hook-function",
+    "debug-on-signal",
+    ":success",
 ];
 
 struct Symbols {
@@ -674,6 +685,7 @@ impl SymbolKey {
         })
     }
 
+    #[inline]
     pub(crate) fn with<R>(self, body: impl FnOnce(&SymbolName) -> R) -> R {
         let keys = ACTIVE_KEYS.get();
         // SAFETY: a non-null pointer names the selected table's key slots,
@@ -681,8 +693,15 @@ impl SymbolKey {
         if let Some(symbol) = unsafe { keys.as_ref() }.and_then(|keys| keys[self.0].get()) {
             return body(&symbol);
         }
-        let symbol = with_current(|symbols| self.get(symbols));
-        body(&symbol)
+        body(&self.intern())
+    }
+
+    /// The key's symbol where its slot is empty or no table's slots are
+    /// held: found or interned in the current table.
+    #[cold]
+    #[inline(never)]
+    fn intern(self) -> SymbolName {
+        with_current(|symbols| self.get(symbols))
     }
 
     /// The name the key's symbol has.

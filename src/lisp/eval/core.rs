@@ -1427,7 +1427,7 @@ impl Interpreter {
         env: &mut Env,
     ) -> Result<Value, LispError> {
         if original_name.is_none()
-            && let Some(result) = self.plain_funcall_closure(func, args, env)
+            && let Some(result) = self.plain_funcall(func, args, env)
         {
             return result;
         }
@@ -1447,16 +1447,16 @@ impl Interpreter {
         result
     }
 
-    /// Ffuncall of a byte-code closure (FUNC, or the one in its function
-    /// cell) from Rust when nothing else happens on the way in, as Bcall's
-    /// `enter_closure_frame' finds it: `plain_bcall_entry' (whose gate
-    /// holds the debugger's stop at the next call), no fatal signal for
-    /// maybe_quit and no collection due.
-    /// The frame is recorded and the closure run at once, as
-    /// `funcall_unnamed' would reach it; None, with nothing changed, for
-    /// any other case.
+    /// Ffuncall from Rust when nothing else happens on the way in, as
+    /// Bcall finds it (`plain_bcall_entry', whose gate holds the
+    /// debugger's stop at the next call; no fatal signal for maybe_quit
+    /// and no collection due): a byte-code closure (FUNC, or the one in
+    /// its function cell) run at once, as `funcall_unnamed' would reach
+    /// it, and a subr or a native-compiled function called as Bcall's
+    /// `call_plain' calls them, the frame recorded around the call.
+    /// None, with nothing changed, for any other case.
     #[inline(always)]
-    fn plain_funcall_closure(
+    fn plain_funcall(
         &mut self,
         func: Value,
         args: &[Value],
@@ -1467,17 +1467,33 @@ impl Interpreter {
             Some(name) => name.cell().function.get(),
             None => func,
         };
-        let closure = function
-            .closure_ref()
-            .filter(|closure| closure.is_bytecode())?;
-        if !self.plain_bcall_entry(name)
-            || primitives::fatal_signal_pending()
+        if let Some(closure) = function.closure_ref() {
+            if !closure.is_bytecode()
+                || !self.plain_bcall_entry(name)
+                || primitives::fatal_signal_pending()
+                || !crate::lisp::native_comp::collection_cannot_be_due(self)
+            {
+                return None;
+            }
+            let depth = self.enter_plain_funcall(func, args);
+            let result = crate::lisp::bytecode::vm::funcall_closure(self, closure, args, env);
+            let result = self.settle_call_result(depth, result, env);
+            self.leave_plain_funcall(depth);
+            return Some(result);
+        }
+        let callee = self.plain_bcall_callee(func, function)?;
+        if primitives::fatal_signal_pending()
             || !crate::lisp::native_comp::collection_cannot_be_due(self)
         {
             return None;
         }
         let depth = self.enter_plain_funcall(func, args);
-        let result = crate::lisp::bytecode::vm::funcall_closure(self, closure, args, env);
+        let result = match callee {
+            super::PlainCallee::Native(native) => {
+                crate::lisp::native_comp::call_function(self, env, native, args)
+            }
+            super::PlainCallee::Subr(subr) => self.call_subr(subr, args, env, true),
+        };
         let result = self.settle_call_result(depth, result, env);
         self.leave_plain_funcall(depth);
         Some(result)

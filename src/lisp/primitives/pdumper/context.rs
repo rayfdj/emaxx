@@ -1407,15 +1407,7 @@ impl DumpContext {
         };
         let (size, size_byte, props) = {
             let string = state.borrow();
-            let props = string
-                .props
-                .iter()
-                .map(|span| TextPropertySpan {
-                    start: span.start,
-                    end: span.end,
-                    props: span.props.clone(),
-                })
-                .collect::<Vec<_>>();
+            let props = string.props.intervals().cloned();
             (
                 string.len() as u64,
                 if string.is_multibyte() {
@@ -1427,7 +1419,7 @@ impl DumpContext {
             )
         };
         let mut words = [size, size_byte, 0, 0];
-        let has_props = !props.is_empty();
+        let has_props = props.is_some();
         if has_props {
             words[2] = FIXUP_PLACEHOLDER;
         }
@@ -1455,33 +1447,27 @@ impl DumpContext {
             }
             (start, DumpType::String)
         };
-        if has_props {
-            let properties = self.dump_text_properties(interp, &props)?;
+        if let Some(props) = &props {
+            let properties = self.dump_text_properties(interp, props)?;
             self.remember_fixup_ptr_raw(offset + 16, properties);
         }
         Ok((offset, kind))
     }
 
-    /// The string's property spans: count, then (start, end, nprops,
-    /// (name, value)*) per span, names as symbol words.
+    /// An object's intervals (dump_interval_tree): the count and the end of
+    /// the text, then each interval's start and plist.
     fn dump_text_properties(
         &mut self,
         _interp: &Interpreter,
-        props: &[TextPropertySpan],
+        intervals: &crate::intervals::Intervals,
     ) -> Result<u32, DumpError> {
         let start = self.object_start()?;
-        let mut words = vec![props.len() as u64];
+        let mut words = vec![intervals.count() as u64, intervals.end() as u64];
         let mut fields: Vec<(usize, Value, LinkWeight)> = Vec::new();
-        for span in props {
-            words.push(span.start as u64);
-            words.push(span.end as u64);
-            words.push(span.props.len() as u64);
-            for (name, value) in &span.props {
-                fields.push((words.len(), name.value(), WEIGHT_STRONG));
-                words.push(0);
-                fields.push((words.len(), *value, WEIGHT_STRONG));
-                words.push(0);
-            }
+        for (interval_start, _, plist) in intervals.iter() {
+            words.push(interval_start as u64);
+            fields.push((words.len(), plist, WEIGHT_STRONG));
+            words.push(0);
         }
         for (index, value, weight) in fields {
             self.field_lv(start, &mut words, index, &value, weight);
@@ -2133,7 +2119,7 @@ impl DumpContext {
         words[BUFFER_SAVE_MODIFF as usize] = parts.save_modiff as u64;
         words[BUFFER_MODTIME_SECS as usize] = modtime_secs as u64;
         words[BUFFER_MODTIME_NANOS as usize] = u64::from(modtime_nanos);
-        words[BUFFER_INTERVALS as usize] = if parts.text_properties.is_empty() {
+        words[BUFFER_INTERVALS as usize] = if parts.intervals.is_none() {
             0
         } else {
             FIXUP_PLACEHOLDER
@@ -2206,9 +2192,9 @@ impl DumpContext {
             ),
             (BUFFER_UNDO_LIST as usize, parts.undo_list, WEIGHT_STRONG),
         ];
-        let mut props_fixups: Vec<(usize, Vec<TextPropertySpan>)> = Vec::new();
-        if !parts.text_properties.is_empty() {
-            props_fixups.push((BUFFER_INTERVALS as usize, parts.text_properties.clone()));
+        let mut props_fixups: Vec<(usize, crate::intervals::Intervals)> = Vec::new();
+        if let Some(intervals) = &parts.intervals {
+            props_fixups.push((BUFFER_INTERVALS as usize, intervals.clone()));
         }
         words.push(locals.len() as u64);
         for (symbol, value) in &locals {
@@ -2239,8 +2225,8 @@ impl DumpContext {
         }
         self.remember_cold_op(ColdOp::Buffer(*object));
         let offset = self.object_finish(&words)?;
-        for (index, spans) in props_fixups {
-            let properties = self.dump_text_properties(interp, &spans)?;
+        for (index, intervals) in props_fixups {
+            let properties = self.dump_text_properties(interp, &intervals)?;
             self.remember_fixup_ptr_raw(offset + 8 * index as u32, properties);
         }
         Ok(offset)
@@ -2503,8 +2489,8 @@ impl DumpContext {
     }
 
     /// dump_cold_buffer: the text bytes in GNU's internal representation
-    /// plus the terminating NUL (GNU also writes the zeroed gap; Emaxx's
-    /// rope has none), then the saved-text snapshot Emaxx compares
+    /// plus the terminating NUL (GNU also writes the zeroed gap; Emaxx
+    /// writes none), then the saved-text snapshot Emaxx compares
     /// against, each with the fixup that points the record at it.
     fn dump_cold_buffer(&mut self, interp: &Interpreter, object: &Value) -> Result<(), DumpError> {
         let Some(ObjectState::Dumped(buffer_offset)) = self.recall_object(object) else {

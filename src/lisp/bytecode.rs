@@ -1365,7 +1365,7 @@ pub(crate) mod tests {
     fn bytecode_shape_checks_do_not_read_or_copy_payloads() {
         let code = crate::lisp::primitives::make_shared_string_value_with_multibyte(
             "\u{87}".repeat(4096),
-            Vec::new(),
+            None,
             false,
         );
         let constants = Value::vector(std::iter::repeat_n(Value::Integer(1), 4096));

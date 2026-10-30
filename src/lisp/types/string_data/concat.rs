@@ -1,6 +1,6 @@
 //! fns.c:concat_to_string copies strings in their actual internal encoding.
 
-use super::{Kind, LispError, StringError, StringObjectRef, StringPropertySpan, Value};
+use super::{Kind, LispError, StringError, StringObjectRef, StringProperties, Value};
 use super::{StringAllocation, character_code, encode_character, string_overflow, validate_size};
 use std::ptr;
 
@@ -49,17 +49,22 @@ impl Output {
     }
 }
 
-fn copy_properties(
-    target: &mut Vec<StringPropertySpan>,
-    source: &[StringPropertySpan],
-    offset: usize,
-) {
-    target.extend(source.iter().map(|span| StringPropertySpan {
-        start: offset + span.start,
-        end: offset + span.end,
-        // add_text_properties_from_list reverses each copied plist.
-        props: span.props.iter().rev().cloned().collect(),
-    }));
+/// composite.c:make_composition_value_copy: each `composition' value of
+/// the plists of LIST (text_property_list's, so the source string's own
+/// plists) replaced by a copy of its first cons.
+fn make_composition_value_copy(list: Value) {
+    let mut list = list;
+    while let Some(cell) = list.cons_ref() {
+        let plist = cell
+            .car
+            .get()
+            .cons_ref()
+            .and_then(|item| item.cdr.get().cons_ref())
+            .and_then(|rest| rest.cdr.get().cons_ref())
+            .map_or(Value::Nil, |rest| rest.car.get());
+        crate::intervals::copy_composition_value(plist);
+        list = cell.cdr.get();
+    }
 }
 
 impl StringObjectRef {
@@ -119,7 +124,9 @@ impl StringObjectRef {
         }
 
         validate_size(nbytes)?;
-        Self::from_data(
+        // Each string argument with intervals, and where it goes.
+        let mut textprops: Vec<(Value, usize)> = Vec::new();
+        let result = Self::from_data(
             nbytes,
             characters,
             multibyte,
@@ -130,12 +137,14 @@ impl StringObjectRef {
                     length: nbytes,
                     filled: 0,
                 };
-                let mut props = Vec::new();
                 let mut offset = 0usize;
                 for &arg in args {
                     match arg.kind() {
                         Kind::StringObject(state) => {
                             let state = state.borrow();
+                            if state.props.has_intervals() {
+                                textprops.push((arg, offset));
+                            }
                             if state.is_multibyte() == multibyte {
                                 bytes.extend(state.bytes());
                             } else {
@@ -148,7 +157,6 @@ impl StringObjectRef {
                                     bytes.character(code, true);
                                 }
                             }
-                            copy_properties(&mut props, &state.props, offset);
                             offset += state.len();
                         }
                         _ => visit_sequence(arg, |value| {
@@ -164,21 +172,42 @@ impl StringObjectRef {
                 }
                 assert_eq!(bytes.filled, nbytes);
                 debug_assert_eq!(offset, characters);
-                props.retain(|span| span.start < span.end && !span.props.is_empty());
-                props.sort_by_key(|span| (span.start, span.end));
-                let mut merged: Vec<StringPropertySpan> = Vec::new();
-                for span in props {
-                    if let Some(last) = merged.last_mut()
-                        && last.end == span.start
-                        && crate::buffer::text_property_plists_eq(&last.props, &span.props)
-                    {
-                        last.end = span.end;
-                    } else {
-                        merged.push(span);
-                    }
-                }
-                merged
+                StringProperties::default()
             },
-        )
+        )?;
+        // fns.c:concat_to_string: each argument's text_property_list added
+        // to the result where the argument went, a composition value
+        // copied where the previous argument with properties ended there.
+        if !textprops.is_empty() {
+            let mut last_to_end = None;
+            let mut props = StringProperties::default();
+            for (arg, to) in textprops {
+                let Kind::StringObject(state) = arg.kind() else {
+                    unreachable!("a string argument");
+                };
+                let (list, len) = {
+                    let state = state.borrow();
+                    let list = match state.props.intervals() {
+                        Some(intervals) => crate::intervals::text_property_list(
+                            intervals,
+                            0,
+                            state.len(),
+                            Value::Nil,
+                        )?,
+                        None => Value::Nil,
+                    };
+                    (list, state.len())
+                };
+                if last_to_end == Some(to) {
+                    make_composition_value_copy(list);
+                }
+                crate::intervals::add_string_text_properties_from_list(
+                    &mut props, characters, list, to,
+                )?;
+                last_to_end = Some(to + len);
+            }
+            result.borrow_mut().props = props;
+        }
+        Ok(result)
     }
 }

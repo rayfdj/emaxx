@@ -4,7 +4,7 @@
 //! `scan-sexps'), `backward-prefix-chars', skip_syntaxes and
 //! scan_sexps_forward (`parse-partial-sexp').
 //!
-//! The text is a snapshot of the buffer's rope read in place, and
+//! The text is a snapshot of the buffer's gap text read in place, and
 //! positions travel as GNU's (charpos, bytepos) pairs: INC_BOTH and
 //! DEC_BOTH step both, FETCH_CHAR_AS_MULTIBYTE reads at the byte.  Byte
 //! positions count Emaxx's UTF-8 storage rather than GNU's internal
@@ -13,7 +13,7 @@
 //! `syntax-ppss'), since GNU signals when either changes the text.
 
 use super::*;
-use crate::buffer::{PropertyInterval, PropertyIntervals, PropertySpan};
+use crate::buffer::{PropertyInterval, PropertyIntervals};
 use crate::lisp::regex_emacs as rx;
 use crate::lisp::types::{CharTableRef, Kind};
 
@@ -132,16 +132,17 @@ fn fixnum_coerce_marker(interp: &Interpreter, value: &Value) -> Result<i64, Lisp
 }
 
 /// The buffer's text as FETCH_CHAR_AS_MULTIBYTE, INC_BOTH and DEC_BOTH
-/// read it, one rope chunk at a time.  Positions are 1-based like GNU's.
+/// read it, the half before the gap or after it at a time.  Positions are
+/// 1-based like GNU's.
 struct Text<'r> {
-    rope: &'r ropey::Rope,
-    /// The rope's characters and bytes, as the buffer counts them.
+    text: &'r crate::buffer::ScanText,
+    /// The text's characters and bytes.
     chars: usize,
     len: usize,
-    /// The whole text when the rope is one chunk (a small buffer's), read
-    /// in place: ropey counts a one-leaf rope's text anew for each length,
-    /// position or chunk query.
-    whole: Option<&'r str>,
+    /// Positions whose byte offsets the buffer knew when the scan began
+    /// (point, the accessible region's ends), which conversions count
+    /// from as buf_charpos_to_bytepos counts from PT.
+    known: [(usize, usize); 3],
     ascii: bool,
     /// The buffer is unibyte, holding the bytes 0x80 to 0xFF as U+0080 to
     /// U+00FF: those read as raw-byte characters.
@@ -153,26 +154,20 @@ struct Text<'r> {
 }
 
 impl<'r> Text<'r> {
-    /// ROPE's text, of CHARS characters in LEN bytes; LEAF its single
-    /// leaf when the buffer knows it is one.
+    /// TEXT, the buffer's, with the char and byte offsets KNOWN of it.
     fn new(
-        rope: &'r ropey::Rope,
-        leaf: Option<crate::buffer::ChunkHint>,
-        (chars, len): (usize, usize),
+        text: &'r crate::buffer::ScanText,
+        known: [(usize, usize); 3],
         multibyte: bool,
         extended: Vec<(usize, u32)>,
     ) -> Self {
-        let first = match leaf {
-            // SAFETY: the buffer handed LEAF with ROPE, under one borrow.
-            Some(leaf) => unsafe { leaf.chunk(rope) }.0,
-            None => rope.chunk_at_byte(0).0,
-        };
+        let (first, _, _) = text.chunk_at_byte(0);
         Text {
-            rope,
-            chars,
-            len,
-            whole: (first.len() == len).then_some(first),
-            ascii: len == chars,
+            text,
+            chars: text.chars(),
+            len: text.len(),
+            known,
+            ascii: text.is_ascii(),
             unibyte: !multibyte,
             extended,
             chunk: first.as_bytes(),
@@ -180,17 +175,15 @@ impl<'r> Text<'r> {
         }
     }
 
-    /// CHAR_TO_BYTE.  The text's ends need no walk of the rope.
+    /// CHAR_TO_BYTE.
     fn char_to_byte(&self, charpos: usize) -> usize {
         let index = (charpos - 1).min(self.chars);
-        if self.ascii || index == 0 {
+        if self.ascii {
             charpos
-        } else if index == self.chars {
-            self.len + 1
-        } else if let Some(text) = self.whole {
-            ropey::str_utils::char_to_byte_idx(text, index) + 1
         } else {
-            self.rope.char_to_byte(index) + 1
+            self.text
+                .char_to_byte_near(index, self.known.iter().copied())
+                + 1
         }
     }
 
@@ -204,7 +197,7 @@ impl<'r> Text<'r> {
 
     #[cold]
     fn load(&mut self, index: usize) {
-        let (chunk, start, _, _) = self.rope.chunk_at_byte(index);
+        let (chunk, start, _) = self.text.chunk_at_byte(index);
         self.chunk = chunk.as_bytes();
         self.chunk_start = start;
     }
@@ -256,10 +249,10 @@ impl<'r> Text<'r> {
             };
         }
         if ch == rx::EXTENDED_PLACEHOLDER && !self.extended.is_empty() {
-            let charpos = match self.whole {
-                Some(text) => ropey::str_utils::byte_to_char_idx(text, index),
-                None => self.rope.byte_to_char(index),
-            } + 1;
+            let charpos = self
+                .text
+                .byte_to_char_near(index, self.known.iter().copied())
+                + 1;
             if let Ok(found) = self
                 .extended
                 .binary_search_by_key(&charpos, |(pos, _)| *pos)
@@ -429,10 +422,10 @@ impl GlState {
         self.buffer_table = interp.current_syntax_table_id();
         self.ascii_known = 0;
         self.lookup_properties = interp
-            .symbol_value_key(cached_symbol!("parse-sexp-lookup-properties"))
+            .local_variable_value_key(cached_symbol!("parse-sexp-lookup-properties"))
             .is_some_and(|value| value.is_truthy());
         self.propertize_done = interp
-            .symbol_value_key(cached_symbol!("syntax-propertize--done"))
+            .local_variable_value_key(cached_symbol!("syntax-propertize--done"))
             .and_then(|value| value.integer_value())
             .unwrap_or(-1);
     }
@@ -604,8 +597,11 @@ impl GlState {
                 };
                 let state = state.borrow();
                 let len = state.len();
-                let intervals = (state.props.has_intervals() && len > 0)
-                    .then(|| PropertyIntervals::new(&state.props[..], 0, len));
+                let intervals = state
+                    .props
+                    .intervals()
+                    .filter(|_| len > 0)
+                    .map(PropertyIntervals::new);
                 self.update_in(interp, intervals, Some((0, len)), charpos, count, init)
             }
         }
@@ -613,10 +609,10 @@ impl GlState {
 
     /// update_syntax_table over the object's INTERVALS, BOUNDS its
     /// accessible text (none for t, which has no intervals).
-    fn update_in<S: PropertySpan>(
+    fn update_in(
         &mut self,
         interp: &Interpreter,
-        intervals: Option<PropertyIntervals<'_, S>>,
+        intervals: Option<PropertyIntervals<'_>>,
         bounds: Option<(usize, usize)>,
         charpos: usize,
         count: i64,
@@ -691,8 +687,12 @@ impl GlState {
 
         // No Lisp runs in this update: the variables textget reads are read
         // once for its intervals.
-        let mut variables = Default::default();
-        let tmp_table = textget(interp, i.plist, &mut variables);
+        let mut variables = crate::lisp::primitives::strings::TextPropertyVariables::new(interp);
+        let syntax_table = cached_symbol!("syntax-table").with(|symbol| Value::Symbol(*symbol));
+        let mut textget = |plist| {
+            crate::intervals::lookup_char_property(plist, syntax_table, true, &mut variables)
+        };
+        let tmp_table = textget(i.plist)?;
 
         if invalidate {
             invalidate = tmp_table.word() != self.old_prop.word();
@@ -726,11 +726,15 @@ impl GlState {
             }
         }
 
+        // The walk steps by index and reads each plist alone, as GNU's
+        // steps from node to node; the bounds are found where it stops.
         let intervals = intervals.expect("an interval was found");
+        let items = intervals.intervals();
         let mut cnt = 0;
-        let mut walk = Some(i);
-        while let Some(i) = walk {
-            if cnt != 0 && textget(interp, i.plist, &mut variables).word() != tmp_table.word() {
+        let mut walk = Some(i.index());
+        while let Some(index) = walk {
+            if cnt != 0 && textget(items.plist(index))?.word() != tmp_table.word() {
+                let i = intervals.at(index);
                 if count > 0 {
                     self.e_property = i.start;
                     self.forward_i = bounds_of(&i);
@@ -740,11 +744,12 @@ impl GlState {
                 }
                 return Ok(());
             } else if cnt == INTERVALS_AT_ONCE {
+                let i = intervals.at(index);
                 if count > 0 {
                     // e_property at the end is ZV + 1, not ZV, so that
                     // INC(from);UPDATE_SYNTAX_TABLE_FORWARD needs no check
                     // for the end in between.
-                    self.e_property = i.end + usize::from(intervals.next(&i).is_none());
+                    self.e_property = i.end + usize::from(items.next(index).is_none());
                     self.forward_i = bounds_of(&i);
                 } else {
                     self.b_property = i.start;
@@ -754,9 +759,9 @@ impl GlState {
             }
             cnt += 1;
             walk = if count > 0 {
-                intervals.next(&i)
+                items.next(index)
             } else {
-                intervals.previous(&i)
+                items.previous(index)
             };
         }
         // This property goes to the end.
@@ -785,7 +790,7 @@ impl GlState {
         gl.lookup_properties = true;
         if let GlObject::Buffer = object {
             gl.propertize_done = interp
-                .symbol_value_key(cached_symbol!("syntax-propertize--done"))
+                .local_variable_value_key(cached_symbol!("syntax-propertize--done"))
                 .and_then(|value| value.integer_value())
                 .unwrap_or(-1);
         }
@@ -846,23 +851,8 @@ fn string_chars(string: &Value) -> usize {
 }
 
 /// An interval as gl_state holds it.
-fn bounds_of(i: &PropertyInterval<'_>) -> Option<(usize, usize, usize)> {
+fn bounds_of(i: &PropertyInterval) -> Option<(usize, usize, usize)> {
     Some((i.start, i.end, i.index()))
-}
-
-/// textget of `syntax-table' in an interval's plist.
-fn textget(
-    interp: &Interpreter,
-    plist: &[(crate::lisp::types::PropertyName, Value)],
-    variables: &mut crate::lisp::primitives::strings::TextPropertyVariables,
-) -> Value {
-    crate::lisp::primitives::strings::property_from_props_reading(
-        interp,
-        plist,
-        cached_symbol!("syntax-table"),
-        variables,
-    )
-    .unwrap_or(Value::Nil)
 }
 
 /// How scan_words ended: at a position (None for GNU's 0, the accessible
@@ -968,11 +958,16 @@ impl<'a, 'r> Scanner<'a, 'r> {
     fn new(
         interp: &'a mut Interpreter,
         env: &'a mut Env,
-        (rope, leaf): &'r (ropey::Rope, Option<crate::buffer::ChunkHint>),
+        text: &'r crate::buffer::ScanText,
     ) -> Self {
         let buffer = interp.buffer.borrow();
         let multibyte = buffer.is_multibyte();
-        let counts = buffer.text_counts();
+        let known = [buffer.point(), buffer.point_min(), buffer.point_max()].map(|pos| {
+            let byte = buffer
+                .storage_byte_position(pos)
+                .expect("an accessible position");
+            (pos - 1, byte - 1)
+        });
         let z = buffer.size_total() + 1;
         let extended = if buffer.has_extended_chars_in(1, z) {
             buffer
@@ -988,7 +983,7 @@ impl<'a, 'r> Scanner<'a, 'r> {
         let mut scanner = Scanner {
             interp,
             env,
-            text: Text::new(rope, *leaf, counts, multibyte, extended),
+            text: Text::new(text, known, multibyte, extended),
             gl,
             begv: 0,
             begv_byte: 0,
@@ -3082,8 +3077,8 @@ pub(super) fn forward_comment(
     count: &Value,
 ) -> Result<Value, LispError> {
     let count = check_fixnum(count)?;
-    let rope = interp.buffer.borrow().text_rope_and_leaf();
-    Scanner::new(interp, env, &rope).forward_comment(count)
+    let text = interp.buffer.borrow().scan_text();
+    Scanner::new(interp, env, &text).forward_comment(count)
 }
 
 /// `scan-lists'.
@@ -3097,8 +3092,8 @@ pub(super) fn scan_lists(
     let from = check_fixnum(from)?;
     let count = check_fixnum(count)?;
     let depth = check_fixnum(depth)?;
-    let rope = interp.buffer.borrow().text_rope_and_leaf();
-    Scanner::new(interp, env, &rope).scan_lists(from, count, depth, false)
+    let text = interp.buffer.borrow().scan_text();
+    Scanner::new(interp, env, &text).scan_lists(from, count, depth, false)
 }
 
 /// `scan-sexps'.
@@ -3110,8 +3105,8 @@ pub(super) fn scan_sexps(
 ) -> Result<Value, LispError> {
     let from = check_fixnum(from)?;
     let count = check_fixnum(count)?;
-    let rope = interp.buffer.borrow().text_rope_and_leaf();
-    Scanner::new(interp, env, &rope).scan_lists(from, count, 0, true)
+    let text = interp.buffer.borrow().scan_text();
+    Scanner::new(interp, env, &text).scan_lists(from, count, 0, true)
 }
 
 /// scan_words: the position COUNT words from FROM, None (GNU's 0) when
@@ -3124,8 +3119,8 @@ pub(super) fn scan_words(
 ) -> Result<Option<usize>, LispError> {
     let (mut from, mut count) = (from, count);
     loop {
-        let rope = interp.buffer.borrow().text_rope_and_leaf();
-        match Scanner::new(interp, env, &rope).scan_words(from, count)? {
+        let text = interp.buffer.borrow().scan_text();
+        match Scanner::new(interp, env, &text).scan_words(from, count)? {
             Words::Done(pos) => return Ok(pos),
             Words::Changed {
                 from: at,
@@ -3177,8 +3172,8 @@ pub(super) fn backward_prefix_chars(
     interp: &mut Interpreter,
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    let rope = interp.buffer.borrow().text_rope_and_leaf();
-    Scanner::new(interp, env, &rope).backward_prefix_chars()
+    let text = interp.buffer.borrow().scan_text();
+    Scanner::new(interp, env, &text).backward_prefix_chars()
 }
 
 /// `skip-syntax-forward' and `skip-syntax-backward'.
@@ -3239,8 +3234,8 @@ pub(super) fn skip_syntaxes(
             *entry = !*entry;
         }
     }
-    let rope = interp.buffer.borrow().text_rope_and_leaf();
-    Scanner::new(interp, env, &rope).skip_syntaxes(forward, &fastmap, lim as usize)
+    let text = interp.buffer.borrow().scan_text();
+    Scanner::new(interp, env, &text).skip_syntaxes(forward, &fastmap, lim as usize)
 }
 
 /// `parse-partial-sexp'.
@@ -3271,8 +3266,8 @@ pub(super) fn parse_partial_sexp(
         value if matches!(value.kind(), Kind::Symbol(name) if name == "syntax-table") => -1,
         _ => 1,
     };
-    let rope = interp.buffer.borrow().text_rope_and_leaf();
-    let mut scanner = Scanner::new(interp, env, &rope);
+    let text = interp.buffer.borrow().scan_text();
+    let mut scanner = Scanner::new(interp, env, &text);
     let from_byte = scanner.text.char_to_byte(from);
     scanner.scan_sexps_forward(
         &mut state,

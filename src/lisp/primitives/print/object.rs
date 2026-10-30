@@ -218,9 +218,14 @@ pub(crate) fn print_preprocess(
                 match obj.kind() {
                     // print_preprocess_string: each interval's plist.
                     Kind::StringObject(state) => {
-                        let spans = state.borrow().props.to_vec();
-                        for span in spans.into_iter().filter(|span| !span.props.is_empty()) {
-                            print_preprocess(interp, env, plist_value(&span.props), options)?;
+                        let plists: Vec<Value> = state
+                            .borrow()
+                            .props
+                            .intervals()
+                            .map(|intervals| intervals.plists().collect())
+                            .unwrap_or_default();
+                        for plist in plists.into_iter().filter(|plist| !plist.is_nil()) {
+                            print_preprocess(interp, env, plist, options)?;
                         }
                     }
                     Kind::Cons(_) => {
@@ -749,36 +754,27 @@ impl Printer {
     ) -> Result<(), LispError> {
         let intervals = {
             let state = state.borrow();
-            let intervals = if state.props.is_empty() {
-                Vec::new()
-            } else {
-                let props = state.props.to_vec();
-                let keep_charset = props
-                    .iter()
-                    .any(|span| span.props.iter().any(|(name, _)| name == "charset"))
-                    && charset_text_properties_print(interp, env, &state.codes(), &props);
-                props
-                    .into_iter()
-                    .filter_map(|span| {
-                        let plist = span
-                            .props
-                            .iter()
-                            .filter(|(name, _)| name != "charset" || keep_charset)
-                            .cloned()
-                            .collect::<Vec<_>>();
-                        (!plist.is_empty()).then(|| (span.start, span.end, plist_value(&plist)))
-                    })
-                    .collect::<Vec<_>>()
+            // print_prune_string_charset, then print_interval of each
+            // interval with a plist.
+            let pruned = match state.props.intervals() {
+                Some(intervals) => {
+                    print_prune_string_charset(interp, env, &state.codes(), intervals)?
+                }
+                None => None,
             };
-            if !intervals.is_empty() {
+            if pruned.is_some() {
                 self.out.push_str("#(");
             }
             render_prin1_string(self.escapes, &state, &mut self.out);
-            intervals
+            pruned
         };
-        if intervals.is_empty() {
+        let Some(intervals) = intervals else {
             return Ok(());
-        }
+        };
+        let intervals: Vec<(usize, usize, Value)> = intervals
+            .iter()
+            .filter(|(_, _, plist)| !plist.is_nil())
+            .collect();
         for (start, end, plist) in intervals {
             self.out.push(' ');
             self.print_object(interp, env, Value::Integer(start as i64), true)?;

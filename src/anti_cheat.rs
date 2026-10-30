@@ -721,7 +721,7 @@ pub(crate) fn native_comp_fast_paths_are_audited_against_gnu_c() {
     let constants = Value::vector([Value::Integer(11)]);
     let code = crate::lisp::primitives::make_shared_string_value_with_multibyte(
         "\u{c0}\u{87}".to_owned(),
-        Vec::new(),
+        None,
         false,
     );
     let function = crate::lisp::primitives::call(

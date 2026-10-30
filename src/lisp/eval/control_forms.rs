@@ -85,14 +85,6 @@ impl Interpreter {
         Ok(result)
     }
 
-    pub(super) fn sf_progn(&mut self, body: &[Value], env: &mut Env) -> Result<Value, LispError> {
-        let mut result = Value::Nil;
-        for expr in body {
-            result = self.eval(expr, env)?;
-        }
-        Ok(result)
-    }
-
     pub(super) fn sf_catch(&mut self, args: &Value, env: &mut Env) -> Result<Value, LispError> {
         let Some((tag_form, body)) = list_next(args) else {
             return Err(LispError::WrongNumberOfArgs("catch".into(), 0));

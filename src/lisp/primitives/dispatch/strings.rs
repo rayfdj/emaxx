@@ -240,11 +240,7 @@ define_dispatch!(
                     .collect();
                 // Converting actual non-ASCII bytes allocates a new string
                 // with no intervals, as GNU's make_uninit_multibyte_string.
-                Ok(make_shared_string_value_with_multibyte(
-                    text,
-                    Vec::new(),
-                    true,
-                ))
+                Ok(make_shared_string_value_with_multibyte(text, None, true))
             }
             "string-as-multibyte" => {
                 // fns.c Fstring_as_multibyte: STRING itself when multibyte,

@@ -94,7 +94,7 @@ pub(crate) fn public_buffer_char_code(ch: char, multibyte: bool) -> i64 {
 
 /// Return the Lisp-visible character at a buffer position.
 ///
-/// Most characters live directly in the rope.  Emacs characters outside
+/// Most characters live directly in the text.  Emacs characters outside
 /// Unicode's scalar range use a placeholder plus typed buffer metadata, so
 /// every public character accessor must consult that sidecar through this
 /// one boundary rather than leaking the placeholder value.
@@ -469,9 +469,14 @@ pub(crate) fn casify_value(
     let input = string_like(value)
         .ok_or_else(|| LispError::WrongTypeArgument("char-or-string-p".into(), *value))?;
     if !input.multibyte {
-        // casefiddle.c:do_casify_unibyte_string uses one-to-one casing,
-        // preserving bytes and intervals. In locales such as Turkish,
-        // an ASCII-to-wide mapping falls back to the Unicode ASCII table.
+        // casefiddle.c:do_casify_unibyte_string cases a Fcopy_sequence of
+        // the string one byte for one, its intervals copied with their
+        // plists. In locales such as Turkish, an ASCII-to-wide mapping
+        // falls back to the Unicode ASCII table.
+        let props = match &input.props {
+            Some(intervals) => intervals.copy(0, intervals.total_length())?,
+            None => None,
+        };
         return interp.with_lisp_stack_roots(value, |interp| {
             let (down, up) = current_case_table_ids(interp)?;
             let symbols_as_words = case_symbols_as_words_enabled(interp);
@@ -530,27 +535,17 @@ pub(crate) fn casify_value(
                 });
             }
             Ok(make_shared_string_value_with_multibyte(
-                output,
-                input.props,
-                false,
+                output, props, false,
             ))
         });
     }
-    let input_len = input.text.chars().count();
     let (output, output_extended) =
         casify_string_with_context(interp, &input.text, &input.extended_chars, action, &context)?;
-    // casefiddle.c copies intervals while casing can stay in the source
-    // string's character footprint.  A full Unicode mapping that changes
-    // the character count (for example, sharp-s -> "SS") takes GNU's
-    // rebuilt-string path and drops all intervals instead.
-    let props = if output.chars().count() == input_len {
-        input.props
-    } else {
-        Vec::new()
-    };
+    // casefiddle.c:do_casify_multibyte_string makes the cased text a new
+    // string (make_multibyte_string), without the source's intervals.
     Ok(string_like_value_with_extended_chars(
         output,
-        props,
+        None,
         input.multibyte,
         output_extended,
     ))
@@ -611,7 +606,7 @@ pub(crate) fn casify_buffer_region(
         let codes = |text: &str, extended: &[(usize, u32)]| {
             StringLike {
                 text: text.to_owned(),
-                props: Vec::new(),
+                props: None,
                 multibyte: true,
                 extended_chars: extended.to_vec(),
             }

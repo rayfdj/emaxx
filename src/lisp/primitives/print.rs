@@ -339,53 +339,99 @@ pub(crate) fn render_prin1_symbol(
     out.push_str(&rendered);
 }
 
-/// print.c print_prune_string_charset: a string's `charset' properties
-/// print only when `print-charset-text-property' is t, or when it is
-/// `default' and some property is "unsafe" -- a non-ASCII character in
-/// its span belongs (by CHAR_CHARSET) to a different charset.  The
-/// decision is made once for the whole string.
-pub(crate) fn charset_text_properties_print(
+/// print.c print_prune_string_charset: the intervals a string prints
+/// with, from a string with INTERVALS whose characters are CODES (as
+/// fetch_string_char_advance reads them).  Unless
+/// `print-charset-text-property' is t, print_check_string_charset_prop
+/// looks for a property other than `charset' and for a `charset' that a
+/// non-ASCII character of its interval does not belong to (CHAR_CHARSET);
+/// with the variable nil or no such charset, a copy of the string loses
+/// its `charset' properties, or all its intervals where it has no other.
+/// None for a string that prints without them.
+pub(crate) fn print_prune_string_charset(
     interp: &Interpreter,
     env: &Env,
     codes: &[u32],
-    props: &[StringPropertySpan],
-) -> bool {
+    intervals: &crate::intervals::Intervals,
+) -> Result<Option<crate::intervals::Intervals>, LispError> {
     let setting = interp
         .lookup_var_key(cached_symbol!("print-charset-text-property"), env)
         .unwrap_or(Value::Nil);
-    if setting.is_nil() {
-        return false;
-    }
     if matches!(setting.kind(), Kind::T) {
-        return true;
+        return Ok(Some(intervals.clone()));
     }
-    let ordered = interp.charset_priority_list();
-    let head = interp.charset_non_preferred_head();
-    props.iter().any(|span| {
-        span.props.iter().any(|(name, value)| {
-            if name != "charset" {
-                return false;
+    let charset_symbol = Value::symbol("charset");
+    let (mut non_charset, mut unsafe_charset) = (false, false);
+    let mut ordered = None;
+    for (start, end, plist) in intervals.iter() {
+        if plist.is_nil() || (non_charset && unsafe_charset) {
+            continue;
+        }
+        let mut val = plist;
+        while let Some(cell) = val.cons_ref() {
+            if cell.car.get().word() == charset_symbol.word() {
+                break;
             }
-            let Ok(charset) = value.as_symbol() else {
-                return true;
-            };
-            let expected = interp
-                .charset_canonical_name(charset)
-                .unwrap_or_else(|| charset.to_string());
-            // CODES as fetch_string_char_advance reads them: a unibyte
-            // string's bytes (0xE9 is U+00E9 there), a multibyte one's
-            // characters, raw bytes included.
-            codes
-                .iter()
-                .skip(span.start)
-                .take(span.end.saturating_sub(span.start))
-                .any(|&code| {
-                    code >= 0x80
-                        && char_charset_ordered(interp, &ordered, head.as_deref(), code).0
-                            != expected
-                })
-        })
-    })
+            val = cell
+                .cdr
+                .get()
+                .cons_ref()
+                .map_or(Value::Nil, |rest| rest.cdr.get());
+        }
+        let Some(cell) = val.cons_ref() else {
+            non_charset = true;
+            continue;
+        };
+        let value_cell = cell.cdr.get().cons_ref();
+        if !non_charset
+            && (val.word() != plist.word()
+                || value_cell
+                    .as_ref()
+                    .is_some_and(|rest| rest.cdr.get().cons_ref().is_some()))
+        {
+            non_charset = true;
+        }
+        if !unsafe_charset {
+            let charset = value_cell.map_or(Value::Nil, |rest| rest.car.get());
+            let expected = charset.symbol_str().map(|name| {
+                interp
+                    .charset_canonical_name(name)
+                    .unwrap_or_else(|| name.to_string())
+            });
+            let (ordered, head) = ordered.get_or_insert_with(|| {
+                (
+                    interp.charset_priority_list(),
+                    interp.charset_non_preferred_head(),
+                )
+            });
+            unsafe_charset = codes.iter().skip(start).take(end - start).any(|&code| {
+                code >= 0x80
+                    && Some(char_charset_ordered(interp, ordered, head.as_deref(), code).0)
+                        != expected
+            });
+        }
+    }
+    if !setting.is_nil() && unsafe_charset {
+        return Ok(Some(intervals.clone()));
+    }
+    if !non_charset {
+        // Fset_text_properties of nil over the whole copy.
+        return Ok(None);
+    }
+    // Fremove_text_properties of (charset) over the whole copy.
+    let Some(mut copy) = intervals.copy(0, intervals.total_length())? else {
+        return Ok(None);
+    };
+    let len = copy.total_length();
+    crate::intervals::remove_text_properties_range(
+        &mut copy,
+        0,
+        len,
+        Value::list([charset_symbol]),
+        Value::Nil,
+        &mut crate::intervals::NoRecord,
+    )?;
+    Ok(Some(copy))
 }
 
 /// `print_bool_vector' (print.c): the bits are packed eight to a byte,
@@ -652,8 +698,9 @@ pub(crate) fn read_encoded_form_in_env(
 pub(crate) enum LispReaderInput<'a> {
     Text(&'a str),
     Encoded(&'a [u8], bool),
-    /// A buffer's text, read in place.
-    Rope(ropey::RopeSlice<'a>),
+    /// A buffer's text, read in place in its parts before the gap and
+    /// after it.
+    Buffer(crate::lisp::regex_emacs::GapRange<'a>),
 }
 
 fn read_one_from_reader(
@@ -674,7 +721,9 @@ fn read_one_from_reader(
             LispReaderInput::Encoded(bytes, multibyte) => {
                 crate::lisp::reader::Reader::from_encoded(bytes, multibyte, shorthands)
             }
-            LispReaderInput::Rope(rope) => crate::lisp::reader::Reader::from_rope(rope, shorthands),
+            LispReaderInput::Buffer(parts) => {
+                crate::lisp::reader::Reader::from_buffer_parts(parts, shorthands)
+            }
         };
         let mut reader = reader.with_read_context(&mut context);
         let value = match reader.read() {
@@ -715,13 +764,13 @@ fn read_one_from_reader(
 }
 
 /// A buffer's text from START to END as the reader reads it, the way
-/// lread.c's readchar takes each character from the buffer.  The rope is
-/// read in place (a clone shares it) unless the range holds a character
+/// lread.c's readchar takes each character from the buffer.  The text is
+/// read in place (a scan's copy shares it) unless the range holds a character
 /// it cannot carry (one beyond Unicode, or a real U+E000..U+E0FF): then
 /// the reader takes the range's internal multibyte bytes.
 pub(crate) enum BufferReadSource {
-    /// The rope and the byte range of the text in it.
-    Rope(ropey::Rope, std::ops::Range<usize>),
+    /// The buffer's text and the byte range of the range in it.
+    Buffer(crate::buffer::ScanText, std::ops::Range<usize>),
     Encoded(Vec<u8>),
 }
 
@@ -748,9 +797,15 @@ impl BufferReadSource {
             ));
         }
         if !buffer.has_extended_chars_in(start, end) {
-            let rope = buffer.text_rope();
-            let range = rope.char_to_byte(start - 1)..rope.char_to_byte(end - 1);
-            return Ok(Self::Rope(rope, range));
+            let text = buffer.scan_text();
+            let byte = |pos: usize| {
+                buffer
+                    .storage_byte_position(pos)
+                    .expect("an accessible position")
+                    - 1
+            };
+            let range = byte(start)..byte(end);
+            return Ok(Self::Buffer(text, range));
         }
         let text = buffer
             .buffer_substring(start, end)
@@ -768,8 +823,9 @@ impl BufferReadSource {
     /// The source from byte OFFSET on.
     pub(crate) fn input_from(&self, offset: usize) -> LispReaderInput<'_> {
         match self {
-            Self::Rope(rope, range) => {
-                LispReaderInput::Rope(rope.byte_slice(range.start + offset..range.end))
+            Self::Buffer(text, range) => {
+                let (first, second) = text.range_halves(range.start + offset..range.end);
+                LispReaderInput::Buffer(crate::lisp::regex_emacs::GapRange::new(first, second))
             }
             Self::Encoded(bytes) => LispReaderInput::Encoded(&bytes[offset..], true),
         }
@@ -778,9 +834,7 @@ impl BufferReadSource {
     /// The characters before byte OFFSET.
     pub(crate) fn characters_before(&self, offset: usize) -> usize {
         match self {
-            Self::Rope(rope, range) => {
-                rope.byte_to_char(range.start + offset) - rope.byte_to_char(range.start)
-            }
+            Self::Buffer(text, range) => text.chars_in(range.start..range.start + offset),
             Self::Encoded(bytes) => {
                 let mut position = 0;
                 let mut count = 0;
@@ -933,11 +987,13 @@ fn read_one_positioned_form(
                     base_position,
                 )
             }
-            LispReaderInput::Rope(rope) => crate::lisp::reader::Reader::from_rope_positioned(
-                rope,
-                symbol_shorthands,
-                base_position,
-            ),
+            LispReaderInput::Buffer(parts) => {
+                crate::lisp::reader::Reader::from_buffer_parts_positioned(
+                    parts,
+                    symbol_shorthands,
+                    base_position,
+                )
+            }
         };
         let mut reader = reader.with_read_context(&mut context);
         let value = match reader.read() {

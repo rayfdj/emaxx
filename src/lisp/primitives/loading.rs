@@ -693,7 +693,9 @@ fn read_next_eval_form(
             LispReaderInput::Encoded(bytes, multibyte) => {
                 crate::lisp::reader::Reader::from_encoded(bytes, multibyte, shorthands)
             }
-            LispReaderInput::Rope(rope) => crate::lisp::reader::Reader::from_rope(rope, shorthands),
+            LispReaderInput::Buffer(parts) => {
+                crate::lisp::reader::Reader::from_buffer_parts(parts, shorthands)
+            }
         };
         let mut reader = reader.with_read_context(&mut context);
         let value = match reader.read() {

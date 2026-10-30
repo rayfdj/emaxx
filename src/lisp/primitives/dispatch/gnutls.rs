@@ -1325,38 +1325,32 @@ fn peer_certificates(api: &GnuTlsApi, state: *mut c_void) -> Vec<Value> {
             if let Some(serial) = x509_serial_number(api, certificate.pointer) {
                 details.extend([
                     Value::symbol(":serial-number"),
-                    string_like_value(serial, Vec::new()),
+                    string_like_value(serial, None),
                 ]);
             }
             if let Some(issuer) =
                 x509_distinguished_name(api.x509_crt_get_issuer_dn, certificate.pointer)
             {
-                details.extend([
-                    Value::symbol(":issuer"),
-                    string_like_value(issuer, Vec::new()),
-                ]);
+                details.extend([Value::symbol(":issuer"), string_like_value(issuer, None)]);
             }
             if let Some(valid_from) =
                 x509_date(api.x509_crt_get_activation_time, certificate.pointer)
             {
                 details.extend([
                     Value::symbol(":valid-from"),
-                    string_like_value(valid_from, Vec::new()),
+                    string_like_value(valid_from, None),
                 ]);
             }
             if let Some(valid_to) = x509_date(api.x509_crt_get_expiration_time, certificate.pointer)
             {
                 details.extend([
                     Value::symbol(":valid-to"),
-                    string_like_value(valid_to, Vec::new()),
+                    string_like_value(valid_to, None),
                 ]);
             }
             if let Some(subject) = x509_distinguished_name(api.x509_crt_get_dn, certificate.pointer)
             {
-                details.extend([
-                    Value::symbol(":subject"),
-                    string_like_value(subject, Vec::new()),
-                ]);
+                details.extend([Value::symbol(":subject"), string_like_value(subject, None)]);
             }
             let mut public_key_bits = 0;
             // SAFETY: CERTIFICATE is live and PUBLIC_KEY_BITS is writable.
@@ -1367,7 +1361,7 @@ fn peer_certificates(api: &GnuTlsApi, state: *mut c_void) -> Vec<Value> {
             if let Some(name) = unsafe { c_string((api.pk_algorithm_name)(public_key)) } {
                 details.extend([
                     Value::symbol(":public-key-algorithm"),
-                    string_like_value(name, Vec::new()),
+                    string_like_value(name, None),
                 ]);
             }
             // SAFETY: PUBLIC_KEY and PUBLIC_KEY_BITS came from this certificate;
@@ -1377,7 +1371,7 @@ fn peer_certificates(api: &GnuTlsApi, state: *mut c_void) -> Vec<Value> {
             if let Some(name) = unsafe { c_string((api.sec_param_name)(security_parameter)) } {
                 details.extend([
                     Value::symbol(":certificate-security-level"),
-                    string_like_value(name, Vec::new()),
+                    string_like_value(name, None),
                 ]);
             }
             // SAFETY: CERTIFICATE is live and the name pointer is static.
@@ -1385,11 +1379,11 @@ fn peer_certificates(api: &GnuTlsApi, state: *mut c_void) -> Vec<Value> {
             if let Some(name) = unsafe { c_string((api.sign_algorithm_name)(signature)) } {
                 details.extend([
                     Value::symbol(":signature-algorithm"),
-                    string_like_value(name, Vec::new()),
+                    string_like_value(name, None),
                 ]);
             }
             if let Some(pem) = x509_pem(api, certificate.pointer) {
-                details.extend([Value::symbol(":pem"), string_like_value(pem, Vec::new())]);
+                details.extend([Value::symbol(":pem"), string_like_value(pem, None)]);
             }
             Some(Value::list(details))
         })
@@ -1456,7 +1450,7 @@ fn negotiated_peer_status(
         if let Some(value) = value {
             // gnutls.c builds fresh mutable strings for each report. Host
             // text would make subsequent Lisp `aset' silently ineffective.
-            result.extend([Value::symbol(key), string_like_value(value, Vec::new())]);
+            result.extend([Value::symbol(key), string_like_value(value, None)]);
         }
     }
     Value::list(result)

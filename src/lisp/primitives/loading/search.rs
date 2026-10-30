@@ -130,7 +130,7 @@ pub(super) fn openp_search(
             let text = format!("{base}{suffix_text}");
             let name = make_shared_string_value_with_multibyte(
                 text.clone(),
-                Vec::new(),
+                None,
                 filename.multibyte || suffix_multibyte,
             );
             let handler = find_file_name_handler(
