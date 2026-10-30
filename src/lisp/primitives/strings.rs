@@ -1066,46 +1066,9 @@ pub(crate) fn property_from_props_with_category(
     plist: Value,
     prop: impl PropertyKey,
 ) -> Option<Value> {
-    property_from_props_reading(interp, plist, prop, &mut TextPropertyVariables::default())
-}
-
-/// The variables lookup_char_property reads where a plist has no PROP,
-/// each read at its first need: `char-property-alias-alist' and
-/// `default-text-properties'.
-#[derive(Default)]
-pub(crate) struct TextPropertyVariables {
-    aliases: Option<Value>,
-    defaults: Option<Value>,
-}
-
-impl TextPropertyVariables {
-    fn aliases(&mut self, interp: &Interpreter) -> Value {
-        *self.aliases.get_or_insert_with(|| {
-            interp
-                .symbol_value_key(cached_symbol!("char-property-alias-alist"))
-                .unwrap_or(Value::Nil)
-        })
-    }
-
-    fn defaults(&mut self, interp: &Interpreter) -> Value {
-        *self.defaults.get_or_insert_with(|| {
-            interp
-                .symbol_value_key(cached_symbol!("default-text-properties"))
-                .unwrap_or(Value::Nil)
-        })
-    }
-}
-
-/// `property_from_props_with_category' for a caller reading many plists
-/// with no Lisp run between them: VARIABLES, each read once, serve them
-/// all.
-pub(crate) fn property_from_props_reading(
-    interp: &Interpreter,
-    plist: Value,
-    prop: impl PropertyKey,
-    variables: &mut TextPropertyVariables,
-) -> Option<Value> {
-    let category = cached_symbol!("category").with(|symbol| Value::Symbol(*symbol));
+    use crate::intervals::LookupContext as _;
+    let mut variables = TextPropertyVariables::new(interp);
+    let category = variables.category();
     let mut fallback = Value::Nil;
     let mut seen = crate::lisp::types::CycleGuard::new();
     let mut tail = plist;
@@ -1136,11 +1099,57 @@ pub(crate) fn property_from_props_reading(
         return Some(fallback);
     }
     if !plist.is_nil()
-        && let Some(value) = alias_property(plist, prop, variables.aliases(interp))
+        && let Some(value) = alias_property(plist, prop, variables.aliases())
     {
         return Some(value);
     }
-    Some(lisp_plist_get(variables.defaults(interp), prop)).filter(|value| !value.is_nil())
+    Some(lisp_plist_get(variables.defaults(), prop)).filter(|value| !value.is_nil())
+}
+
+/// The variables lookup_char_property reads where a plist has no PROP,
+/// each read from INTERP at its first need: `char-property-alias-alist'
+/// and `default-text-properties'.  One serves a caller reading many
+/// plists with no Lisp run between them, `category' found once for them.
+pub(crate) struct TextPropertyVariables<'a> {
+    interp: &'a Interpreter,
+    category: Value,
+    aliases: Option<Value>,
+    defaults: Option<Value>,
+}
+
+impl<'a> TextPropertyVariables<'a> {
+    pub(crate) fn new(interp: &'a Interpreter) -> Self {
+        Self {
+            interp,
+            category: cached_symbol!("category").with(|symbol| Value::Symbol(*symbol)),
+            aliases: None,
+            defaults: None,
+        }
+    }
+}
+
+impl crate::intervals::LookupContext for TextPropertyVariables<'_> {
+    fn category(&mut self) -> Value {
+        self.category
+    }
+
+    fn aliases(&mut self) -> Value {
+        let interp = self.interp;
+        *self.aliases.get_or_insert_with(|| {
+            interp
+                .symbol_value_key(cached_symbol!("char-property-alias-alist"))
+                .unwrap_or(Value::Nil)
+        })
+    }
+
+    fn defaults(&mut self) -> Value {
+        let interp = self.interp;
+        *self.defaults.get_or_insert_with(|| {
+            interp
+                .symbol_value_key(cached_symbol!("default-text-properties"))
+                .unwrap_or(Value::Nil)
+        })
+    }
 }
 
 /// lookup_char_property's alternatives: `Fassq' of PROP in ALIASES, then

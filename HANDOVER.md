@@ -9229,6 +9229,47 @@ setup_process_coding_systems's check now refuses). A 13-form
   GNU 279) and a string's 137 (145, GNU 191). Local validation: the
   grouped gate's 3,330 library tests, the seven integration suites,
   clippy with every target and feature, rustfmt and `git diff --check'.
+- **Round 173: the intervals' gap, the `syntax-table' walk, and
+  returns.** Round 172's intervals were one vector, so a split moved
+  every interval after it, and `concat' (add_text_properties_from_list
+  of a list built from the last interval back) and `substring'
+  (copy_text_properties) split from the end toward the front: a string
+  of n intervals cost O(n²) moves where GNU's balanced tree splits each
+  in logarithmic time. ert-tests.el, whose
+  `ert-test-run-tests-batch-expensive' prints a failure's backtrace
+  into strings of many intervals, went from 2.98 s to 132.3 s in the
+  frozen run of `e39cb9c' (GNU 37.6 s), that one test 400 s here. The
+  intervals now keep a gap where they last changed, as a buffer's text
+  does: a split or merge beside the gap moves nothing, a pass of splits
+  in either direction moves the gap along with it, and the first three
+  intervals still take no allocation. That test now runs in 1.1 s here
+  (GNU 13.6 s), ert-tests.el in 5.58 s (GNU 82 s). Round 172's unmerged intervals also left `syntax-table'
+  lookups behind: update_syntax_table walks up to INTERVALS_AT_ONCE
+  intervals at each regexp match start and scan, and its textget, a
+  name-keyed walk of the plist with its own cycle guard, cost about 100
+  instructions where GNU's costs 48. It is now
+  intervals.c:lookup_char_property by EQ, with `category' found once for
+  the walk and `char-property-alias-alist' and
+  `default-text-properties' read at their first need (an empty plist has
+  no alternatives to read); an interval's start, end and plist come from
+  one slot; and a cached symbol's lookup inlines its fast path, its
+  interning out of line. format-tests runs 7.01G instructions, 7.76G
+  before (GNU 6.21G), its 7,245,966 textget calls the count GNU makes,
+  their 311M against GNU's 315M; semantic-utest-ia 19.00G against
+  19.79G (GNU 19.28G). The byte-code call through `call_plain' is
+  inlined into the verified loop, and a return from an activation
+  entered from Rust that left nothing recorded above its entry marks
+  restores the caller's stack registers and returns, as exec_byte_code
+  restores bc->fp, without finish_activation's checks: electric-tests
+  runs 6.93G instructions against 7.00G, edebug-tests 4.68G against
+  4.76G, elisp-mode-tests 3.63G against 3.65G. The gate's test of
+  subprocess exit order raced its child: GNU too returns nil from the
+  first `process-live-p' when the child has exited before it is asked,
+  four times in six on a loaded machine, so the child now waits for the
+  end of its input. Local validation: the grouped gate's 3,332
+  library tests, the seven integration suites, clippy with every target
+  and feature, rustfmt and `git diff --check'; the 91 forms of the
+  intervals' oracle tests and the five interval probes match GNU 30.2.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -10349,7 +10390,31 @@ attempt. Its timings: setup 75.8 s against 62.2 s (1.217), test bodies
 its first attempt. Its timings: setup 71.1 s against 60.4 s (1.178),
 test bodies 236.0 s against 251.2 s (0.939), in all 0.984.
 
+**On `e39cb9c`** (round 172): full Rust gate passed (run 40984761897);
+frozen (run 40984764702) matched all 7,928 outcomes on its first
+attempt. Its timings: setup 78.2 s against 63.2 s (1.238), test bodies
+382.3 s against 264.0 s (1.448), in all 1.369. ert-tests.el took
+132.3 s of it against 2.98 s at `8e6ae86' (GNU 37.6 s), the quadratic
+interval splits round 173 removes; with that file at its earlier time
+the test bodies come to 253.0 s (0.958).
+
 **Findings recorded, not fixed:**
+- **Each insertion into a buffer's rope costs about 2,000 instructions
+  (round 173).** A buffer's text is a `ropey' rope, whose insertion
+  walks and rebalances its tree and updates the chunk's byte, character
+  and line counts: undo-tests' `undo-test4' appends a character a
+  million times at about 2,027 instructions an insertion, where GNU's
+  gap buffer copies the bytes into the gap at point. GNU's own design,
+  a gap buffer with the byte and character positions of the gap and the
+  chars-to-bytes caches insdel.c and marker.c keep, is the long-term
+  replacement; the rope is read by the buffer, search, the non-regexp
+  scanners, the syntax scanners, the reader's buffer input and the
+  regexp matcher.
+- **`make-symbol' costs about 690 instructions (round 173).** The name
+  is copied out of its string and the uninterned symbol registered under
+  a counter in the symbol tables, where GNU's Fmake_symbol allocates the
+  symbol and points it at the string; it is rare outside macro
+  expansion.
 - **The gate build's excess over the release build is its checks, not
   its link (round 172).** Built with fat LTO and one code generation
   unit, the gate profile runs the setup of xfaces-tests in 640M

@@ -498,7 +498,11 @@ fn subprocess_exit_is_event_driven_and_notifies_newest_process_first_once() {
         assert_eq!(
             eval_str_with_upstream_batch(
                 r#"(let* ((shell (executable-find "sh"))
-                         (command (list shell "-c" "printf err >&2"))
+                         ;; The child waits for its input's end, so that it
+                         ;; is still live when first asked, however soon a
+                         ;; loaded machine would otherwise see it exit.
+                         (command
+                          (list shell "-c" "printf err >&2; read line; true"))
                          (events nil)
                          (stderr
                           (make-pipe-process
@@ -510,12 +514,14 @@ fn subprocess_exit_is_event_driven_and_notifies_newest_process_first_once() {
                           (make-process
                            :name "event-order-primary"
                            :command command
+                           :connection-type 'pipe
                            :stderr stderr
                            :sentinel
                            (lambda (_process _event)
                              (setq events (append events '(primary))))))
                          (initially-live (process-live-p child))
                          (pid (process-id child)))
+                    (process-send-eof child)
                     (while (process-live-p child)
                       (sit-for 0.01))
                     ;; A second pump must not repeat either terminal event.

@@ -1101,12 +1101,13 @@ impl<'a> PropertyIntervals<'a> {
         self.intervals
     }
 
+    #[inline]
     fn at(&self, index: usize) -> PropertyInterval {
-        let intervals = self.intervals;
+        let (start, end, plist) = self.intervals.bounds(index);
         PropertyInterval {
-            start: intervals.start(index),
-            end: intervals.last_pos(index),
-            plist: intervals.plist(index),
+            start,
+            end,
+            plist,
             index,
         }
     }
@@ -1136,6 +1137,7 @@ impl<'a> PropertyIntervals<'a> {
     }
 
     /// next_interval.
+    #[inline]
     pub(crate) fn next(&self, interval: &PropertyInterval) -> Option<PropertyInterval> {
         self.intervals
             .next(interval.index)
@@ -1143,6 +1145,7 @@ impl<'a> PropertyIntervals<'a> {
     }
 
     /// previous_interval.
+    #[inline]
     pub(crate) fn previous(&self, interval: &PropertyInterval) -> Option<PropertyInterval> {
         self.intervals
             .previous(interval.index)

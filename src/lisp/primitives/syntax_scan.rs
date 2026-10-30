@@ -694,8 +694,13 @@ impl GlState {
 
         // No Lisp runs in this update: the variables textget reads are read
         // once for its intervals.
-        let mut variables = Default::default();
-        let tmp_table = textget(interp, i.plist, &mut variables);
+        let mut variables = crate::lisp::primitives::strings::TextPropertyVariables::new(interp);
+        let syntax_table = cached_symbol!("syntax-table").with(|symbol| Value::Symbol(*symbol));
+        let mut textget = |plist| {
+            crate::intervals::lookup_char_property(plist, syntax_table, true, &mut variables)
+                .unwrap_or(Value::Nil)
+        };
+        let tmp_table = textget(i.plist);
 
         if invalidate {
             invalidate = tmp_table.word() != self.old_prop.word();
@@ -733,7 +738,7 @@ impl GlState {
         let mut cnt = 0;
         let mut walk = Some(i);
         while let Some(i) = walk {
-            if cnt != 0 && textget(interp, i.plist, &mut variables).word() != tmp_table.word() {
+            if cnt != 0 && textget(i.plist).word() != tmp_table.word() {
                 if count > 0 {
                     self.e_property = i.start;
                     self.forward_i = bounds_of(&i);
@@ -851,21 +856,6 @@ fn string_chars(string: &Value) -> usize {
 /// An interval as gl_state holds it.
 fn bounds_of(i: &PropertyInterval) -> Option<(usize, usize, usize)> {
     Some((i.start, i.end, i.index()))
-}
-
-/// textget of `syntax-table' in an interval's plist.
-fn textget(
-    interp: &Interpreter,
-    plist: Value,
-    variables: &mut crate::lisp::primitives::strings::TextPropertyVariables,
-) -> Value {
-    crate::lisp::primitives::strings::property_from_props_reading(
-        interp,
-        plist,
-        cached_symbol!("syntax-table"),
-        variables,
-    )
-    .unwrap_or(Value::Nil)
 }
 
 /// How scan_words ended: at a position (None for GNU's 0, the accessible

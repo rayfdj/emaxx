@@ -839,7 +839,7 @@ fn call_native_nested_by_count(
 /// that case. The answer is the stack's top and the frame's depth after
 /// the call, or the call's signal; None, with nothing changed but the
 /// stack's TOP, for the full arm.
-#[inline(never)]
+#[inline(always)]
 fn call_plain(
     vm: &mut VmFrames<'_>,
     top: usize,
@@ -4158,6 +4158,19 @@ fn run_entered_inline(
                 {
                     // The return owns nothing to drop.
                     std::mem::forget(verified_exit);
+                    // Nothing recorded above the entry's marks: only the
+                    // caller's frame to restore, as exec_byte_code's return
+                    // to its caller restores bc->fp.
+                    if interp.backtrace_frames_len() == marks.backtrace
+                        && interp.bc_unwinds.len() == marks.unwinds
+                    {
+                        (
+                            interp.bc_stack.frame,
+                            interp.bc_stack.base,
+                            interp.bc_stack.top,
+                        ) = marks.stack;
+                        return Ok(value);
+                    }
                     break 'entry Ok(value);
                 }
                 FastExit::Resume => None,
