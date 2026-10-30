@@ -9365,6 +9365,43 @@ setup_process_coding_systems's check now refuses). A 13-form
   Local validation: the grouped gate's 3,338 library tests, the
   seven integration suites, clippy with every target and feature,
   rustfmt and `git diff --check'.
+- **Round 177: a Rust funcall of a subr or a native function enters it
+  directly, and the records looked up last are kept beside the tree.**
+  The core workloads' instruction counts against GNU (an eighth and a
+  sixteenth of the contract's n, the difference) put mapcar at 1.293:
+  its call of `identity' through `call_function_value' cost 200
+  instructions an element against GNU's 147 for mapcar1's whole
+  element. Round 133's plain entry for a byte-code closure now serves
+  any function a symbol or value names: a subr or a native function
+  given as a value or through its symbol's function cell is called as
+  Ffuncall's funcall_subr calls it, after the same tests (no fatal
+  signal pending, no collection due), without the general call's
+  resolution and frame. An element now costs 155 instructions and
+  mapcar runs 1.106 of GNU's. Undo's window primitives
+  (`frame-windows-min-size' from `set-window-configuration''s
+  adjust_frame_size, as in GNU) read a window's slots by its id, each
+  read a walk of the record tree where GNU reads XWINDOW (w)->field
+  through the pointer; `selected-window''s buffer alone cost about
+  22,000 instructions a unit. The registry keeps the 32 records looked
+  up last beside the tree, one slot an id modulo 32, cleared whenever
+  its id's record is put in, replaced or taken out, so that it never
+  names a record the tree does not. Undo runs 1,573,000 instructions a
+  unit against 1,641,000 (GNU 1,541,000; 250 against 500 iterations, the
+  steady state). A unit test puts in, replaces and takes out records
+  under one slot. A wall-time pilot of the plain release build before
+  the registry (the contract's n, one warmup and three samples a
+  process, the minimum over rounds, against GNU): lexical 0.705,
+  dynamic 0.963, calls 0.713, bytecode calls 0.919, native execution
+  0.604, interpreted-to-native 0.968, bytecode-to-native 0.742,
+  native-to-interpreted 0.857, native-to-bytecode 0.913, cons
+  allocation 0.963, list traversal 0.913, mapcar 0.796, explicit GC
+  0.890, sort 0.799, undo 1.448, bindat 0.833. Undo's excess there is
+  the caches': 2.87 times GNU's first-level instruction misses, most in
+  `run_verified' (39 KB of code, 24 KB of it run each unit), and more
+  branch and data misses; the timing build is the profile-guided one,
+  which the next round measures. Local validation: the grouped gate's
+  3,339 library tests, the seven integration suites, clippy with
+  every target and feature, rustfmt and `git diff --check'.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -10513,6 +10550,14 @@ setup's rise from 1.179 is the runner's: built with the gate profile
 the frozen run times, a file's setup takes the instructions it took at
 `84ad4a4' (cal-french-tests 702.7M against 699.3M, electric-tests
 4.62G against 4.68G, erc-tests 2.126G against 2.129G).
+
+**On `70e9498`** (round 176): full Rust gate passed (run 41027912353);
+frozen (run 41027947876) matched all 7,928 outcomes on its rerun. Its
+first attempt matched 7,927: GNU's own `eglot-test-rust-completion-exit-function'
+failed with a `jsonrpc-error' where Emaxx passed, the language server's
+known flake. The rerun's timings: setup 78.4 s against 63.1 s (1.243),
+test bodies 255.3 s against 263.8 s (0.968), in all 1.007; undo-tests'
+bodies 1.20 s against 0.94 s.
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

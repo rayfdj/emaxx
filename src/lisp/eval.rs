@@ -39,6 +39,7 @@ mod image_install;
 mod local_cells;
 mod loops;
 mod macros;
+mod record_registry;
 mod resource_forms;
 pub(crate) mod roots;
 pub(crate) mod runtime;
@@ -4029,7 +4030,7 @@ impl Interpreter {
     pub(crate) fn install_record(&mut self, mut state: RecordState) -> RecordRef {
         let previous_type = self
             .records
-            .get(&state.id)
+            .get(state.id)
             .and_then(|record| record.symbol_type_name().map(str::to_owned));
         if let Some(type_name) = previous_type
             && let Some(ids) = self.record_ids_by_type_index.get_mut(&type_name)
@@ -4054,8 +4055,9 @@ impl Interpreter {
     /// not freed it: the registry is not a root (alloc.c has no list of
     /// records), and a freed record's slot is cleared after the sweep
     /// (`purge_freed_records').
+    #[inline]
     pub(crate) fn record_ref(&self, id: u64) -> Option<RecordRef> {
-        self.records.get(&id).copied()
+        self.records.get(id)
     }
 
     /// The record ID names, as a value: for the side tables that still
@@ -4084,9 +4086,9 @@ impl Interpreter {
             // The registry names the freed cell under this id, or it names
             // the record an image load put in its place (whose side tables
             // are its own): only the former leaves.
-            match self.records.get(&id) {
+            match self.records.get(id) {
                 Some(held) if held.identity() == record.identity => {
-                    self.records.remove(&id);
+                    self.records.remove(id);
                 }
                 _ => continue,
             }
@@ -5588,12 +5590,8 @@ pub struct InterpreterState {
     /// buffer.h's four case-table slots of each live buffer whose four are
     /// not the standard ones; a buffer without an entry holds those.
     buffer_case_tables: coding::BufferCaseTables,
-    /// Allocated record objects.
-    /// The records by id (`find_record'), a registry and not a root:
-    /// a record the sweep frees leaves it (`purge_freed_records').  Ids
-    /// are sparse (an image's records keep the ids of the dumping
-    /// process), so the registry holds only the records.
-    records: std::collections::BTreeMap<u64, RecordRef>,
+    /// Allocated record objects, by id (see `record_registry').
+    records: record_registry::RecordRegistry,
     /// This state's id space, for the records' `owner'.
     record_owner: u32,
     /// Host pseudovector IDs grouped by their fixed type tags, principally
@@ -6450,7 +6448,7 @@ impl Interpreter {
             standard_category_table_id: None,
             standard_case_tables: None,
             buffer_case_tables: coding::BufferCaseTables::default(),
-            records: std::collections::BTreeMap::from([
+            records: record_registry::RecordRegistry::from([
                 (main_thread_id, main_thread),
                 (standard_obarray_id, standard_obarray),
             ]),
