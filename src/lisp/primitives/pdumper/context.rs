@@ -2075,8 +2075,6 @@ impl DumpContext {
         let mut flags = 0;
         for (set, bit) in [
             (parts.multibyte, BUFFER_FLAG_MULTIBYTE),
-            (parts.forced_modified, BUFFER_FLAG_FORCED_MODIFIED),
-            (parts.autosaved, BUFFER_FLAG_AUTOSAVED),
             (parts.inhibit_hooks, BUFFER_FLAG_INHIBIT_HOOKS),
             (
                 parts.text_conversion_style_is_local,
@@ -2117,6 +2115,7 @@ impl DumpContext {
         words[BUFFER_MODIFF as usize] = parts.modiff as u64;
         words[BUFFER_CHARS_MODIFF as usize] = parts.chars_modiff as u64;
         words[BUFFER_SAVE_MODIFF as usize] = parts.save_modiff as u64;
+        words[BUFFER_AUTOSAVE_MODIFF as usize] = parts.autosave_modiff as u64;
         words[BUFFER_MODTIME_SECS as usize] = modtime_secs as u64;
         words[BUFFER_MODTIME_NANOS as usize] = u64::from(modtime_nanos);
         words[BUFFER_INTERVALS as usize] = if parts.intervals.is_none() {
@@ -2901,12 +2900,12 @@ pub(crate) const BUFFER_CASE_EQV_TABLE: u32 = 25;
 pub(crate) const BUFFER_MARK_ACTIVE: u32 = 26;
 /// BVAR (b, undo_list), any Lisp object.
 pub(crate) const BUFFER_UNDO_LIST: u32 = 27;
+/// auto_save_modified.
+pub(crate) const BUFFER_AUTOSAVE_MODIFF: u32 = 28;
 /// The variable part: the local bindings and the markers.
-pub(crate) const BUFFER_VARIABLE_PART: u32 = 28;
+pub(crate) const BUFFER_VARIABLE_PART: u32 = 29;
 // The flag bits of BUFFER_FLAGS.
 pub(crate) const BUFFER_FLAG_MULTIBYTE: u64 = 1;
-pub(crate) const BUFFER_FLAG_FORCED_MODIFIED: u64 = 4;
-pub(crate) const BUFFER_FLAG_AUTOSAVED: u64 = 8;
 pub(crate) const BUFFER_FLAG_INHIBIT_HOOKS: u64 = 32;
 pub(crate) const BUFFER_FLAG_HAS_MODTIME: u64 = 64;
 /// A killed buffer (BUFFER_LIVE_P false): no text, name nil.

@@ -803,17 +803,6 @@ pub(crate) fn describe_key_code(code: i64) -> String {
         .expect("push_key_description writes valid multibyte text")
 }
 
-pub(crate) fn auto_save_path_for_buffer(buffer: &crate::buffer::Buffer) -> String {
-    if let Some(path) = &buffer.file {
-        format!("{path}#")
-    } else {
-        std::env::temp_dir()
-            .join(format!("{}.autosave", buffer.name.replace('/', "_")))
-            .display()
-            .to_string()
-    }
-}
-
 pub(crate) fn forward_line_bigint(buffer: &mut crate::buffer::Buffer, n: BigInt) -> BigInt {
     if n.is_zero() {
         let _ = buffer.forward_line(0);

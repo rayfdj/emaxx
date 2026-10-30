@@ -1,5 +1,6 @@
 use super::*;
 use crate::lisp::types::Kind;
+use crate::lisp::types::LispErrorKind;
 
 pub(crate) fn file_modtime(
     interp: &Interpreter,
@@ -165,15 +166,26 @@ pub(crate) fn file_error_with_detail_value(message: &str, detail: &str, path: &s
     ])
 }
 
+/// fileio.c get_file_errno_data: `(CONDITION MESSAGE ERRSTRING FILE)',
+/// except that EEXIST's `file-already-exists' drops MESSAGE.
 pub(crate) fn file_operation_error_value(
     message: &str,
     error: &std::io::Error,
     path: &str,
 ) -> Value {
+    let condition = file_error_condition(error);
+    let errstring = Value::String(errno_text(error).into());
+    if condition == "file-already-exists" {
+        return Value::list([
+            Value::Symbol(condition.into()),
+            errstring,
+            Value::String(path.into()),
+        ]);
+    }
     Value::list([
-        Value::Symbol(file_error_condition(error).into()),
+        Value::Symbol(condition.into()),
         Value::String(message.into()),
-        Value::String(errno_text(error).into()),
+        errstring,
         Value::String(path.into()),
     ])
 }
@@ -210,10 +222,15 @@ pub(crate) fn file_operation_error_value_without_file(
     message: &str,
     error: &std::io::Error,
 ) -> Value {
+    let condition = file_error_condition(error);
+    let errstring = Value::String(errno_text(error).into());
+    if condition == "file-already-exists" {
+        return Value::list([Value::Symbol(condition.into()), errstring]);
+    }
     Value::list([
-        Value::Symbol(file_error_condition(error).into()),
+        Value::Symbol(condition.into()),
         Value::String(message.into()),
-        Value::String(errno_text(error).into()),
+        errstring,
     ])
 }
 
@@ -564,6 +581,15 @@ fn choose_write_coding(
     args: &[Value; 7],
     env: &mut Env,
 ) -> Result<Value, LispError> {
+    // An auto-save file other than the visited one is utf-8-emacs, with
+    // Unix line ends.
+    if auto_saving() && !auto_saving_into_visited_file(interp) {
+        return inherit_write_coding_eol(
+            interp,
+            Value::symbol("utf-8-emacs"),
+            Value::symbol("unix"),
+        );
+    }
     let mut coding = interp
         .lookup_var("coding-system-for-write", env)
         .unwrap_or(Value::Nil);
@@ -913,11 +939,22 @@ fn write_region_with_coding(
     // fileio.c:write_region: Flock_file before the file is opened (its
     // lock_file asks about a supersession threat even when
     // `create-lockfiles' makes no lock), Funlock_file once it is written.
-    flock_file(interp, env, Value::String(lock_path.clone().into()))?;
+    // An auto-save neither locks nor unlocks.
+    let auto_saving = auto_saving();
+    if !auto_saving {
+        flock_file(interp, env, Value::String(lock_path.clone().into()))?;
+    }
     let host = host_file_name(interp, env, path)?;
     let write_result = (|| {
+        use std::os::unix::fs::OpenOptionsExt;
         let exclusive = args[6].symbol_str() == Some("excl");
-        if args[3].is_nil() && !exclusive {
+        // An auto-save file is made with auto_save_mode_bits.
+        let mode = if auto_saving {
+            AUTO_SAVE_MODE_BITS.get()
+        } else {
+            0o666
+        };
+        if args[3].is_nil() && !exclusive && !auto_saving {
             return fs::write(&host, &bytes).map_err(|error| file_output_error(path, &error));
         }
         let offset = args
@@ -931,6 +968,7 @@ fn write_region_with_coding(
             .truncate(args[3].is_nil())
             .append(append)
             .write(true)
+            .mode(mode)
             .open(&host)
             .map_err(|error| {
                 if exclusive && error.kind() == ErrorKind::AlreadyExists {
@@ -946,7 +984,11 @@ fn write_region_with_coding(
         file.write_all(&bytes)
             .map_err(|error| file_output_error(path, &error))
     })();
-    let unlock_result = funlock_file(interp, env, Value::String(lock_path.into()));
+    let unlock_result = if auto_saving {
+        Ok(())
+    } else {
+        funlock_file(interp, env, Value::String(lock_path.clone().into()))
+    };
     match (write_result, unlock_result) {
         (Err(error), _) | (Ok(()), Err(error)) => return Err(error),
         (Ok(()), Ok(())) => {}
@@ -966,13 +1008,13 @@ fn write_region_with_coding(
     if existed_before_write || !bytes.is_empty() {
         dispatch_file_notification(interp, env, path, "attribute-changed")?;
     }
-    if let Some(visit) = args.get(4)
-        && (matches!(visit.kind(), Kind::T) || string_like(visit).is_some())
-    {
+    let into_visited_file = auto_saving_into_visited_file(interp);
+    let visit = args.get(4).copied().unwrap_or(Value::Nil);
+    if matches!(visit.kind(), Kind::T) || string_like(&visit).is_some() {
         let visited_name = if matches!(visit.kind(), Kind::T) {
             logical_path.to_string()
         } else {
-            string_text(visit)?
+            string_text(&visit)?
         };
         let visited_name = expand_file_name_runtime(interp, env, &visited_name, None)?;
         interp.buffer.borrow_mut().file = Some(visited_name);
@@ -981,13 +1023,23 @@ fn write_region_with_coding(
             .borrow_mut()
             .set_visited_file_modtime(file_modtime(interp, env, path)?);
         record_visit_saved(interp);
+        if into_visited_file {
+            funlock_file(interp, env, Value::String(lock_path.into()))?;
+        }
+    } else if visit.is_truthy() {
+        // Quietly: an auto-save into the visited file saves it.
+        if into_visited_file {
+            interp.buffer.borrow_mut().set_unmodified();
+            let buffer_id = interp.current_buffer_id();
+            interp.share_text_counters(buffer_id);
+            funlock_file(interp, env, Value::String(lock_path.into()))?;
+        }
+        return Ok(Value::Nil);
     }
-    if interp
-        .lookup_var("noninteractive", env)
-        .is_none_or(|value| value.is_nil())
-        && args.get(4).is_none_or(|visit| {
-            visit.is_nil() || matches!(visit.kind(), Kind::T) || string_like(visit).is_some()
-        })
+    if !auto_saving
+        && interp
+            .lookup_var("noninteractive", env)
+            .is_none_or(|value| value.is_nil())
     {
         // fileio.c write_region: the expanded VISIT name, else the
         // expanded FILENAME, through message_with_string.
@@ -1753,6 +1805,8 @@ fn auto_coding_in_empty_buffer(
         buffer.set_modified_tick(modiff);
         buffer.set_chars_modified_tick(chars_modiff);
         drop(buffer);
+        let buffer_id = interp.current_buffer_id();
+        interp.share_text_counters(buffer_id);
         interp.set_variable("buffer-undo-list", undo_list, &mut decide_env);
     }
     result
@@ -1936,11 +1990,20 @@ pub(crate) fn record_visit_saved(interp: &mut Interpreter) {
     interp.buffer.borrow_mut().set_unmodified();
     let size = interp.buffer.borrow().size_total();
     let buffer_id = interp.current_buffer_id();
+    interp.share_text_counters(buffer_id);
     interp.set_buffer_local_value_symbol(
         buffer_id,
         &cached_symbol!("buffer-saved-size").with(Clone::clone),
         Value::Integer(size as i64),
     );
+}
+
+/// Finsert_file_contents's record of a visit: saved as
+/// `record_visit_saved', and auto-saved at the same count
+/// (BUF_AUTOSAVE_MODIFF = MODIFF).
+pub(crate) fn record_insert_visit_saved(interp: &mut Interpreter) {
+    record_visit_saved(interp);
+    interp.buffer.borrow_mut().set_autosaved();
 }
 
 /// Finsert_file_contents's record of a visit it read itself (the
@@ -1957,7 +2020,7 @@ fn record_visit(
         interp.buffer.borrow_mut().set_undo_list(Value::Nil);
     }
     interp.buffer.borrow_mut().file = Some(path.to_string());
-    record_visit_saved(interp);
+    record_insert_visit_saved(interp);
     if let Some(truename) = interp
         .lookup_var("buffer-file-truename", env)
         .filter(|truename| !truename.is_nil())
@@ -2633,4 +2696,335 @@ pub(crate) fn finish_insert_file_contents(
     modification_restore?;
     motion_restore?;
     Ok(inserted)
+}
+
+thread_local! {
+    /// fileio.c auto_saving: `write-region' is writing an auto-save file.
+    static AUTO_SAVING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// auto_save_mode_bits: the mode an auto-save file is made with.
+    static AUTO_SAVE_MODE_BITS: std::cell::Cell<u32> = const { std::cell::Cell::new(0o666) };
+    /// auto_save_error_occurred.
+    static AUTO_SAVE_ERROR_OCCURRED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// auto_saving_dir_umask: the mode bits `make-directory-internal'
+    /// leaves out while the auto-save list's directory is made.
+    static AUTO_SAVING_DIR_UMASK: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+pub(crate) fn auto_saving() -> bool {
+    AUTO_SAVING.get()
+}
+
+pub(crate) fn auto_saving_dir_umask() -> u32 {
+    AUTO_SAVING_DIR_UMASK.get()
+}
+
+/// fileio.c auto_saving_into_visited_file: an auto-save whose file is
+/// the visited one (string-equal of the two names).
+fn auto_saving_into_visited_file(interp: &Interpreter) -> bool {
+    auto_saving() && {
+        let id = interp.current_buffer_id();
+        let file = interp.buffer.borrow().file.clone();
+        let auto_save = interp
+            .buffer_local_value(id, "buffer-auto-save-file-name")
+            .and_then(|name| string_like(&name).map(|name| name.text));
+        file.is_some() && file == auto_save
+    }
+}
+
+/// fileio.c auto_save_1: the visited file's mode with owner read and
+/// write for the auto-save file's, then `write-region' of the whole
+/// buffer to it, visiting it only for `auto-save-visited-file-name'.
+fn auto_save_1(interp: &mut Interpreter, env: &mut Env) -> Result<Value, LispError> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut bits = 0o666;
+    let file = interp.buffer.borrow().file.clone();
+    if let Some(file) = file {
+        match host_file_name(interp, env, &file)
+            .ok()
+            .and_then(|host| fs::metadata(host).ok())
+        {
+            Some(metadata) => bits = (metadata.permissions().mode() | 0o600) & 0o777,
+            None => {
+                // Remote files don't cooperate with fstatat.
+                if let Kind::Integer(modes) = call(
+                    interp,
+                    "file-modes",
+                    &[Value::string(&file), Value::Nil],
+                    env,
+                )?
+                .kind()
+                {
+                    bits = ((modes as u32) | 0o600) & 0o777;
+                }
+            }
+        }
+    }
+    AUTO_SAVE_MODE_BITS.set(bits);
+    let id = interp.current_buffer_id();
+    let name = interp
+        .buffer_local_value(id, "buffer-auto-save-file-name")
+        .unwrap_or(Value::Nil);
+    let visit = if interp
+        .lookup_var("auto-save-visited-file-name", env)
+        .is_some_and(|value| value.is_truthy())
+    {
+        Value::T
+    } else {
+        Value::symbol("lambda")
+    };
+    call(
+        interp,
+        "write-region",
+        &[
+            Value::Nil,
+            Value::Nil,
+            name,
+            Value::Nil,
+            visit,
+            Value::Nil,
+            Value::Nil,
+        ],
+        env,
+    )
+}
+
+/// fileio.c auto_save_error: the bell, and a warning naming the buffer
+/// and the error.
+fn auto_save_error(interp: &mut Interpreter, env: &mut Env, error: &LispError) {
+    AUTO_SAVE_ERROR_OCCURRED.set(true);
+    let _ = super::dispatch::display::ring_bell(interp, env);
+    let condition = crate::lisp::eval::error_condition_value(error);
+    let name = Value::string(&interp.buffer.borrow().name);
+    let message = call(interp, "error-message-string", &[condition], env).and_then(|text| {
+        call(
+            interp,
+            "format",
+            &[Value::string("Auto-saving %s: %s"), name, text],
+            env,
+        )
+    });
+    if let Ok(message) = message {
+        let _ = call_named_function(
+            interp,
+            "display-warning",
+            &[Value::symbol("auto-save"), message, Value::symbol(":error")],
+            env,
+        );
+    }
+}
+
+/// fileio.c:Fdo_auto_save.  `auto-save-hook' first, then the list of
+/// auto-saving buffers written to `auto-save-list-file-name' (its
+/// directory made private when missing), then each live buffer that is
+/// not indirect (only the current one for CURRENT-ONLY) auto-saved when
+/// it has an auto-save file name, changed since its last real save and
+/// its last auto-save, and has not turned auto-saving off -- those whose
+/// auto-save file has no handler on the first pass, the others on the
+/// second.  A failed or slow (over a minute) save waits twenty minutes;
+/// a buffer much shorter than when last saved is reported and stops
+/// auto-saving until saved.  An auto-save error is a warning.
+pub(crate) fn do_auto_save(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    no_message: Value,
+    current_only: Value,
+) -> Result<Value, LispError> {
+    let old = interp.current_buffer_id();
+    let no_message = no_message.is_truthy() || interp.minibuffer_depth() > 0;
+    // push_message: the echo area's message, put back at the end.
+    let old_message = if no_message {
+        Value::Nil
+    } else {
+        call(interp, "current-message", &[], env)?
+    };
+    let old_message_p = old_message.is_string();
+    // Ordinarily don't quit within this function.
+    let oquit = interp.lookup_var("quit-flag", env).unwrap_or(Value::Nil);
+    interp.set_variable("quit-flag", Value::Nil, env);
+    crate::batch::safe_run_hooks(interp, "auto-save-hook")?;
+    let mut stream = None;
+    if let Some(list_file) = interp
+        .lookup_var("auto-save-list-file-name", env)
+        .filter(Value::is_string)
+    {
+        let list_file = call(interp, "expand-file-name", &[list_file, Value::Nil], env)?;
+        let dir = call(interp, "file-name-directory", &[list_file], env)?;
+        if !call(interp, "file-directory-p", &[dir], env)?.is_truthy() {
+            // do_auto_save_make_dir under internal_condition_case_1:
+            // private, and any error ignored.
+            AUTO_SAVING_DIR_UMASK.set(0o077);
+            let handlers =
+                interp.push_internal_condition_case(crate::lisp::eval::InternalHandlers::All);
+            let made = call_named_function(interp, "make-directory", &[dir, Value::T], env);
+            interp.pop_handler_bindings(handlers);
+            AUTO_SAVING_DIR_UMASK.set(0);
+            if let Err(error) = made
+                && matches!(
+                    error.kind(),
+                    LispErrorKind::Throw(_, _) | LispErrorKind::Terminate(_)
+                )
+            {
+                return Err(error);
+            }
+        }
+        stream = host_file_name(interp, env, &string_text(&list_file)?)
+            .ok()
+            .and_then(|host| fs::File::create(host).ok());
+    }
+    let auto_raise = interp
+        .lookup_var("minibuffer-auto-raise", env)
+        .unwrap_or(Value::Nil);
+    interp.set_variable("minibuffer-auto-raise", Value::Nil, env);
+    AUTO_SAVING.set(true);
+    AUTO_SAVE_ERROR_OCCURRED.set(false);
+    let result = (|| -> Result<bool, LispError> {
+        let mut auto_saved = false;
+        for do_handled_files in [false, true] {
+            let ids = interp
+                .buffer_list
+                .iter()
+                .map(|(id, _)| *id)
+                .collect::<Vec<_>>();
+            for id in ids {
+                let Some(buffer) = interp.buffer_object(id) else {
+                    continue;
+                };
+                let auto_save_name = interp
+                    .buffer_local_value(id, "buffer-auto-save-file-name")
+                    .filter(Value::is_string);
+                // The buffers that auto-save, by visited and auto-save
+                // file names, in the special file that lists them.
+                if let (Some(name), Some(stream), false) =
+                    (&auto_save_name, stream.as_mut(), do_handled_files)
+                {
+                    let file = buffer.borrow().file.clone().unwrap_or_default();
+                    let name = string_text(name)?;
+                    let _ = writeln!(stream, "{file}\n{name}");
+                }
+                if current_only.is_truthy() && id != interp.current_buffer_id() {
+                    continue;
+                }
+                // Don't auto-save indirect buffers; the base buffer
+                // takes care of it.
+                if interp.buffer_base_id(id).is_some() {
+                    continue;
+                }
+                let Some(auto_save_name) = auto_save_name else {
+                    continue;
+                };
+                let save_length = interp.buffer_local_value(id, "buffer-saved-size");
+                let (changed, failure_time) = {
+                    let state = buffer.borrow();
+                    (state.changed_since_saves(), state.auto_save_failure_time)
+                };
+                let save_length = match save_length.map(|value| value.kind()) {
+                    Some(Kind::Integer(length)) if length >= 0 => length,
+                    _ => continue,
+                };
+                if !changed
+                    || (!do_handled_files
+                        && !call(
+                            interp,
+                            "find-file-name-handler",
+                            &[auto_save_name, Value::symbol("write-region")],
+                            env,
+                        )?
+                        .is_nil())
+                {
+                    continue;
+                }
+                let before_time = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |time| time.as_secs() as i64);
+                // If we had a failure, don't try again for 20 minutes.
+                if failure_time > 0 && before_time - failure_time < 1200 {
+                    continue;
+                }
+                const GROWTH_FACTOR: i64 = 4;
+                interp.set_current_buffer_id(id)?;
+                let size = interp.buffer.borrow().size_total() as i64;
+                if interp
+                    .lookup_var("auto-save-include-big-deletions", env)
+                    .is_none_or(|value| value.is_nil())
+                    && save_length > 5000
+                    && GROWTH_FACTOR * size < (GROWTH_FACTOR - 1) * save_length
+                    && buffer.borrow().file.is_some()
+                    && !no_message
+                {
+                    // It has shrunk too much; turn off auto-saving here.
+                    interp.set_variable("minibuffer-auto-raise", auto_raise, env);
+                    let name = Value::string(&buffer.borrow().name);
+                    super::dispatch::display::message_with_string(
+                        interp,
+                        "Buffer %s has shrunk a lot; auto save disabled in that buffer until next real save",
+                        name,
+                        env,
+                    )?;
+                    interp.set_variable("minibuffer-auto-raise", Value::Nil, env);
+                    interp.set_buffer_local_value_symbol(
+                        id,
+                        &cached_symbol!("buffer-saved-size").with(Clone::clone),
+                        Value::Integer(-1),
+                    );
+                    call(interp, "sleep-for", &[Value::Integer(1), Value::Nil], env)?;
+                    continue;
+                }
+                if !auto_saved && !no_message {
+                    super::dispatch::display::message1(interp, "Auto-saving...", env)?;
+                }
+                let handlers =
+                    interp.push_internal_condition_case(crate::lisp::eval::InternalHandlers::All);
+                let saved = auto_save_1(interp, env);
+                interp.pop_handler_bindings(handlers);
+                if let Err(error) = saved {
+                    if matches!(
+                        error.kind(),
+                        LispErrorKind::Throw(_, _) | LispErrorKind::Terminate(_)
+                    ) {
+                        return Err(error);
+                    }
+                    auto_save_error(interp, env, &error);
+                }
+                auto_saved = true;
+                buffer.borrow_mut().set_autosaved();
+                let current = interp.current_buffer_id();
+                let size = interp.buffer.borrow().size_total() as i64;
+                interp.set_buffer_local_value_symbol(
+                    current,
+                    &cached_symbol!("buffer-saved-size").with(Clone::clone),
+                    Value::Integer(size),
+                );
+                if interp.buffer_object(old).is_some() {
+                    interp.set_current_buffer_id(old)?;
+                }
+                // If auto-save took more than 60 seconds, assume it was an
+                // NFS failure that got a timeout.
+                let after_time = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |time| time.as_secs() as i64);
+                if after_time - before_time > 60 {
+                    buffer.borrow_mut().auto_save_failure_time = after_time;
+                }
+            }
+        }
+        Ok(auto_saved)
+    })();
+    // do_auto_save_unwind.
+    interp.set_variable("minibuffer-auto-raise", auto_raise, env);
+    AUTO_SAVING.set(false);
+    drop(stream);
+    let auto_saved = result?;
+    if auto_saved && !no_message {
+        if old_message_p {
+            // If we are going to restore an old message, give time to
+            // read ours.
+            call_named_function(interp, "sit-for", &[Value::Integer(1)], env)?;
+            // restore_message: message3_nolog of the old message.
+            super::dispatch::display::set_echo_area_message_value(old_message)?;
+        } else if !AUTO_SAVE_ERROR_OCCURRED.get() {
+            super::dispatch::display::message1(interp, "Auto-saving...done", env)?;
+        }
+    }
+    interp.set_variable("quit-flag", oquit, env);
+    Ok(Value::Nil)
 }

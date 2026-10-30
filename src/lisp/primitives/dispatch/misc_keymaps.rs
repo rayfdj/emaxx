@@ -688,7 +688,7 @@ define_dispatch!(
 
             "recent-auto-save-p" => {
                 need_args(name, args, 0)?;
-                Ok(if interp.buffer.borrow().is_autosaved() {
+                Ok(if interp.buffer.borrow().recent_auto_save_p() {
                     Value::T
                 } else {
                     Value::Nil
@@ -696,11 +696,22 @@ define_dispatch!(
             }
             "set-buffer-auto-saved" => {
                 need_args(name, args, 0)?;
+                // The auto-save mark at the text as it is, the size it
+                // was saved at, and no failure.
                 interp.buffer.borrow_mut().set_autosaved();
+                let size = interp.buffer.borrow().size_total();
+                let id = interp.current_buffer_id();
+                interp.set_buffer_local_value_symbol(
+                    id,
+                    &cached_symbol!("buffer-saved-size").with(Clone::clone),
+                    Value::Integer(size as i64),
+                );
+                interp.buffer.borrow_mut().auto_save_failure_time = 0;
                 Ok(Value::Nil)
             }
             "clear-buffer-auto-save-failure" => {
                 need_args(name, args, 0)?;
+                interp.buffer.borrow_mut().auto_save_failure_time = 0;
                 Ok(Value::Nil)
             }
             "next-read-file-uses-dialog-p" => {
@@ -734,19 +745,13 @@ define_dispatch!(
                 )
             }
             "do-auto-save" => {
-                let path = interp
-                    .buffer_local_value(interp.current_buffer_id(), "buffer-auto-save-file-name")
-                    .and_then(|value| string_text(&value).ok())
-                    .unwrap_or_else(|| auto_save_path_for_buffer(&interp.buffer.borrow()));
-                std::fs::write(&path, interp.buffer.borrow().buffer_string())
-                    .map_err(|e| LispError::Signal(e.to_string()))?;
-                interp.set_buffer_local_value(
-                    interp.current_buffer_id(),
-                    "buffer-auto-save-file-name",
-                    Value::String(path.into()),
-                );
-                interp.buffer.borrow_mut().set_autosaved();
-                Ok(Value::Nil)
+                need_arg_range(name, args, 0, 2)?;
+                crate::lisp::primitives::file_io::do_auto_save(
+                    interp,
+                    env,
+                    args.first().copied().unwrap_or(Value::Nil),
+                    args.get(1).copied().unwrap_or(Value::Nil),
+                )
             }
             "unix-sync" => {
                 need_args(name, args, 0)?;

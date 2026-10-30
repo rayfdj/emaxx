@@ -1,40 +1,53 @@
 use super::*;
 use crate::lisp::types::{Kind, PropertyName};
 
-/// buffer.c:Frestore_buffer_modified_p: a buffer becoming modified locks
-/// its file truename and one becoming unmodified unlocks it, unless
-/// `inhibit-modification-hooks'.  Testing `buffer-file-name' makes
-/// binding it to nil effective.
-fn update_modified_lock(
+/// buffer.c:Frestore_buffer_modified_p.  The base buffer's file truename
+/// is locked when the text becomes modified and unlocked when it becomes
+/// unmodified, unless `inhibit-modification-hooks'; testing its
+/// `buffer-file-name' makes binding that to nil effective.  A nil FLAG
+/// sets SAVE_MODIFF to MODIFF (and so `recent-auto-save-p' to nil);
+/// another makes the text modified, and `autosaved' also marks the base
+/// buffer auto-saved at that count.
+fn restore_buffer_modified_p(
     interp: &mut Interpreter,
     env: &mut Env,
-    already: bool,
-    flag: bool,
-) -> Result<(), LispError> {
-    if already == flag
-        || interp
-            .lookup_var("inhibit-modification-hooks", env)
-            .is_some_and(|value| value.is_truthy())
-    {
-        return Ok(());
-    }
-    let Some(truename) = interp
-        .symbol_value_key(cached_symbol!("buffer-file-truename"))
-        .filter(|value| value.is_truthy())
-    else {
-        return Ok(());
-    };
+    flag: Value,
+) -> Result<Value, LispError> {
+    let current = interp.current_buffer_id();
+    let base = interp.root_buffer_id(current);
     if !interp
-        .symbol_value_key(cached_symbol!("buffer-file-name"))
+        .lookup_var("inhibit-modification-hooks", env)
         .is_some_and(|value| value.is_truthy())
     {
-        return Ok(());
+        let truename = interp.get_buffer_by_id(base).and_then(|buffer| {
+            buffer
+                .file
+                .is_some()
+                .then(|| buffer.file_truename.clone())
+                .flatten()
+        });
+        if let Some(truename) = truename {
+            let already = interp.buffer.borrow().is_modified();
+            if !already && flag.is_truthy() {
+                flock_file(interp, env, Value::string(&truename))?;
+            } else if already && flag.is_nil() {
+                funlock_file(interp, env, Value::string(&truename))?;
+            }
+        }
     }
-    if flag {
-        flock_file(interp, env, truename)
+    if flag.is_nil() {
+        interp.buffer.borrow_mut().set_unmodified();
     } else {
-        funlock_file(interp, env, truename)
+        interp.buffer.borrow_mut().set_modified();
+        if matches!(flag.kind(), Kind::Symbol(symbol) if symbol == "autosaved") {
+            let modiff = interp.buffer.borrow().modified_tick();
+            if let Some(mut buffer) = interp.get_buffer_by_id_mut(base) {
+                buffer.set_autosave_modiff(modiff);
+            }
+        }
     }
+    interp.share_text_counters(current);
+    Ok(flag)
 }
 
 // cmds.c:236/288: `self-insert-command' and `delete-char' amalgamate
@@ -1245,39 +1258,24 @@ define_dispatch!(
                 let Kind::Integer(tick) = args[0].kind() else {
                     return Err(LispError::WrongTypeArgument("fixnump".into(), args[0]));
                 };
-                interp
-                    .decode_buffer(args.get(1))?
-                    .borrow_mut()
-                    .set_modified_tick(tick);
+                let buffer = interp.decode_buffer(args.get(1))?;
+                buffer.borrow_mut().set_modified_tick(tick);
+                // BUF_MODIFF of the text a live buffer's family shares.
+                if let Some(id) = interp.live_buffer_id(buffer) {
+                    interp.share_text_counters(id);
+                }
                 Ok(Value::Nil)
             }
             "set-buffer-modified-p" => {
                 need_args(name, args, 1)?;
-                let modified = !args[0].is_nil();
-                let was_modified = interp.buffer.borrow().is_modified();
-                update_modified_lock(interp, env, was_modified, modified)?;
-                if modified {
-                    interp.buffer.borrow_mut().set_modified();
-                } else {
-                    interp.buffer.borrow_mut().set_unmodified();
-                }
+                // Frestore_buffer_modified_p, then Fforce_mode_line_update
+                // (Qnil)'s value.
+                restore_buffer_modified_p(interp, env, args[0])?;
                 Ok(Value::Nil)
             }
             "restore-buffer-modified-p" => {
                 need_args(name, args, 1)?;
-                let flag = args[0];
-                let modified = !flag.is_nil();
-                let was_modified = interp.buffer.borrow().is_modified();
-                update_modified_lock(interp, env, was_modified, modified)?;
-                if flag.is_nil() {
-                    interp.buffer.borrow_mut().set_unmodified();
-                } else if matches!(flag.kind(), Kind::Symbol(symbol) if symbol == "autosaved") {
-                    interp.buffer.borrow_mut().set_modified();
-                    interp.buffer.borrow_mut().set_autosaved();
-                } else {
-                    interp.buffer.borrow_mut().set_modified();
-                }
-                Ok(flag)
+                restore_buffer_modified_p(interp, env, args[0])
             }
             "get-char-property" => {
                 need_arg_range(name, args, 2, 3)?;

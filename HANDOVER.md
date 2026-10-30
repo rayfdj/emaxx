@@ -9875,6 +9875,71 @@ setup_process_coding_systems's check now refuses). A 13-form
   as GNU's. Local validation: the grouped gate's 3,347 library
   tests, the seven integration suites, clippy with every target and
   feature, rustfmt and `git diff --check'.
+- **Round 187: auto-saving as fileio.c's Fdo_auto_save; modification
+  counts as buffer.c's.** do-auto-save wrote only the current buffer, to
+  its `buffer-auto-save-file-name' or to a name Emaxx made up (FILE# or
+  a file under the temporary directory), with no hook, list file,
+  messages or checks, and a buffer kept one auto-saved flag that every
+  change cleared, so `recent-auto-save-p' was nil after the next edit.
+  Each buffer now has BUF_AUTOSAVE_MODIFF, a count reset to 0 at
+  creation, not swapped by buffer-swap-text and dumped with the buffer:
+  `buffer-modified-p' is `autosaved' when it equals MODIFF,
+  `recent-auto-save-p' is SAVE_MODIFF below it, `set-buffer-auto-saved'
+  sets it with `buffer-saved-size' and clears the failure time, and an
+  insert-file-contents visit sets it with SAVE_MODIFF (a write-region
+  visit does not). do-auto-save runs `auto-save-hook' (safe_run_hooks),
+  writes the visited and auto-save names of every auto-saving buffer to
+  `auto-save-list-file-name' (its directory made with `make-directory'
+  under umask 077 when missing, any error ignored), and on two passes,
+  those without a file-name handler for the auto-save file first,
+  auto-saves each live non-indirect buffer (only the current one for
+  CURRENT-ONLY) changed since both its last save and its last auto-save
+  whose `buffer-saved-size' is a natural number, skipping one that
+  failed in the last twenty minutes. A buffer visiting a file that
+  shrank by more than a quarter from over 5,000 characters is reported
+  ("Buffer %s has shrunk a lot; ..."), gets `buffer-saved-size' -1 and a
+  second's sleep, unless `auto-save-include-big-deletions' or
+  NO-MESSAGE. auto_save_1 writes the whole buffer with write-region and
+  VISIT `lambda' (t for `auto-save-visited-file-name'), the file made
+  with the visited file's mode plus owner read and write; while
+  auto-saving, write-region uses utf-8-emacs-unix (inheriting the
+  buffer's EOL) unless writing into the visited file, takes no lock,
+  shows no message, and a `lambda' visit into the visited file marks the
+  buffer saved and unlocks it. An error is the bell and a `(auto-save
+  :error)' warning "Auto-saving NAME: MESSAGE" (the buffer still marked
+  auto-saved), and a save over a minute records a failure time.
+  "Auto-saving..." and "Auto-saving...done" are shown unless NO-MESSAGE
+  or a minibuffer is active, an earlier message coming back after a
+  second; `quit-flag' is held off throughout and `minibuffer-auto-raise'
+  bound off. `make-directory-internal' makes its directory with 0777
+  less that umask and reports `(file-error "Creating directory" ...)' by
+  errno, and get_file_errno_data's `file-already-exists' leaves out the
+  message, as GNU's does, for every primitive that reports an errno. A
+  buffer no longer carries a modified flag beside its counts:
+  `buffer-modified-p' is SAVE_MODIFF below MODIFF, so a modified tick
+  set below the saved one by `internal--set-buffer-modified-tick' reads
+  unmodified, and `set-buffer-modified-p' t is modiff_incr from a saved
+  state. restore-buffer-modified-p and set-buffer-modified-p (one
+  function, as buffer.c has) lock or unlock the base buffer's truename,
+  and `autosaved' marks the base buffer. An indirect buffer, whose text
+  Emaxx keeps as a mirrored copy, now shares its base's MODIFF,
+  CHARS_MODIFF and SAVE_MODIFF: given them when made and after each
+  mirrored change, save, visit or tick, so `buffer-modified-tick' and
+  `buffer-modified-p' agree across the family as GNU's one buffer_text
+  has them. Undo runs 1,488,300 instructions a unit, as before.
+  Batteries of 23 auto-save cases (the list file and its private
+  directory, the hook, CURRENT-ONLY, the shrink check, an unwritable
+  file, a buffer with no file, `make-directory-internal') and 13
+  modification-state cases across an indirect family read as GNU's, but
+  for the warning of an unwritable auto-save file when a test let-binds
+  `warning-minimum-log-level' before warnings.el is loaded: Emaxx
+  predefines that variable and four other `warning-' ones and
+  `cl--proclaims-deferred' as special globals GNU leaves unbound, so the
+  binding is dynamic there and lexical in GNU (recorded for the next
+  round). fileio-tests, files-tests, buffer-tests, editfns-tests and
+  autorevert-tests pass as many tests as GNU's. Local validation: the
+  grouped gate's 3,348 library tests, the seven integration suites,
+  clippy with every target and feature, rustfmt and `git diff --check'.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -11085,6 +11150,17 @@ frozen (run 41132826303) matched all 7,928 outcomes on its first
 attempt. Setup 79.5 s against 65.5 s (1.215), test bodies 254.1 s
 against 264.9 s (0.959), in all 0.994; undo-tests' bodies 1.11 s against
 0.91 s.
+
+**On `2af3fd2`** (round 186): full Rust gate passed (run 41139632167).
+Frozen (run 41139642783) failed on both attempts on one outcome only,
+GNU's: the oracle's `eglot-test-rust-completion-exit-function' timed
+out on rust-analyzer's request (`(jsonrpc-error "request id=2 failed:"
+(jsonrpc-error-message . "Timed out"))' after 11.3 s, while indexing)
+and Emaxx passed it; the other 7,927 outcomes matched. The first attempt
+had setup 64.8 s against 56.0 s (1.157), test bodies 229.4 s against
+251.4 s (0.913), in all 0.970, undo-tests' bodies 0.90 s against 0.66 s;
+the second, on a slower runner, 91.2 s against 68.8 s (1.326), 263.5 s
+against 273.8 s (0.962), 1.033, and 1.15 s against 0.91 s.
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

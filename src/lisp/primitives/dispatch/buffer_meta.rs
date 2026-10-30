@@ -365,6 +365,8 @@ define_dispatch!(
                     }
                 }
                 interp.register_indirect_buffer(new_id, base_id);
+                // The base's text, and so its modification counts.
+                interp.share_text_counters(base_id);
                 if clone {
                     interp.clone_buffer_local_state(base_id, new_id);
                     // The clone visits no file, has its own display count,

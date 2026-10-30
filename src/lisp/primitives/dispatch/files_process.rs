@@ -1345,8 +1345,14 @@ define_dispatch!(
             "make-directory-internal" => {
                 need_args(name, args, 1)?;
                 let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
-                fs::create_dir(host_file_name(interp, env, &path)?)
-                    .map_err(|error| LispError::Signal(error.to_string()))?;
+                // Fmake_directory_internal: emacs_mkdir (dir, 0777 &
+                // ~auto_saving_dir_umask), report_file_error ("Creating
+                // directory", directory).
+                use std::os::unix::fs::DirBuilderExt;
+                std::fs::DirBuilder::new()
+                    .mode(0o777 & !crate::lisp::primitives::file_io::auto_saving_dir_umask())
+                    .create(host_file_name(interp, env, &path)?)
+                    .map_err(|error| file_operation_error("Creating directory", &error, &path))?;
                 dispatch_file_notification(interp, env, &path, "created")?;
                 Ok(Value::Nil)
             }

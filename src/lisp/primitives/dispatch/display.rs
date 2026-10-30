@@ -101,7 +101,7 @@ pub(crate) fn set_echo_area_message_with_spans(text: String, spans: EchoSpans) {
     ECHO_AREA_MESSAGE.with_borrow_mut(|slot| *slot = message);
 }
 
-fn set_echo_area_message_value(value: Value) -> Result<(), LispError> {
+pub(crate) fn set_echo_area_message_value(value: Value) -> Result<(), LispError> {
     let text = string_text(&value)?;
     let spans = string_face_spans(&value);
     ECHO_FROM_PRINT.with(|flag| flag.set(false));

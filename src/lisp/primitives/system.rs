@@ -2145,7 +2145,7 @@ pub(crate) fn dispatch_file_name_handler(
                 if empty_undo_list_p {
                     interp.buffer.borrow_mut().set_undo_list(Value::Nil);
                 }
-                super::file_io::record_visit_saved(interp);
+                super::file_io::record_insert_visit_saved(interp);
             }
             finish_insert_file_contents(interp, env, inserted, &args[1..], empty_undo_list_p)?;
         }

@@ -659,6 +659,69 @@ fn killed_buffer_holds_no_text_properties_as_gnu() {
 }
 
 #[test]
+fn auto_save_and_modification_counts_follow_gnu() {
+    // fileio.c:Fdo_auto_save marks each buffer it saves with
+    // BUF_AUTOSAVE_MODIFF; buffer.c:Frestore_buffer_modified_p moves
+    // SAVE_MODIFF and MODIFF of the text an indirect buffer shares with its
+    // base, and marks the base auto-saved; Fmake_directory_internal reports
+    // as get_file_errno_data does.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let* ((dir (make-temp-file "emaxx-autosave-" t))
+               (file (expand-file-name "a.txt" dir))
+               (auto-save-list-file-name nil)
+               results)
+          (unwind-protect
+              (progn
+                (with-temp-file file (insert "hello\n"))
+                (with-current-buffer (find-file-noselect file)
+                  (auto-save-mode 1)
+                  (push (list (buffer-modified-p) (recent-auto-save-p)) results)
+                  (goto-char (point-max))
+                  (insert "world\n")
+                  (push (list (buffer-modified-p) (recent-auto-save-p)) results)
+                  (do-auto-save t)
+                  (push (list (buffer-modified-p) (recent-auto-save-p) buffer-saved-size
+                              (let ((name buffer-auto-save-file-name))
+                                (with-temp-buffer
+                                  (insert-file-contents name)
+                                  (buffer-string))))
+                        results)
+                  (set-buffer-modified-p nil)
+                  (push (list (buffer-modified-p) (recent-auto-save-p)) results)
+                  (restore-buffer-modified-p 'autosaved)
+                  (push (list (buffer-modified-p) (recent-auto-save-p)) results)
+                  (set-buffer-modified-p nil)
+                  (kill-buffer))
+                (with-temp-buffer
+                  (insert "abc")
+                  (let ((indirect (make-indirect-buffer (current-buffer) " emaxx-indirect")))
+                    (with-current-buffer indirect (insert "x"))
+                    (push (list (= (buffer-modified-tick) (buffer-modified-tick indirect))
+                                (buffer-modified-p indirect))
+                          results)
+                    (set-buffer-modified-p nil)
+                    (push (buffer-modified-p indirect) results)
+                    (with-current-buffer indirect (restore-buffer-modified-p 'autosaved))
+                    (push (list (buffer-modified-p) (buffer-modified-p indirect)) results)
+                    (kill-buffer indirect))
+                  (set-buffer-modified-p nil)
+                  (internal--set-buffer-modified-tick 1)
+                  (push (buffer-modified-p) results))
+                (dolist (name (list dir (expand-file-name "q/r" dir)))
+                  (push (condition-case err
+                            (make-directory-internal name)
+                          (file-error (list (car err) (length err))))
+                        results))
+                (nreverse results))
+            (delete-directory dir t)))"#,
+        r#"((nil nil) (t nil) (autosaved t 12 "hello
+world
+") (nil nil) (autosaved t) (t t) nil (autosaved t) nil (file-already-exists 3) (file-missing 4))"#,
+        "auto-save and modification counts",
+    );
+}
+
+#[test]
 fn native_buffer_lookup_preserves_object_identity_after_rename_or_kill() {
     assert_oracle_contract_matches_interpreter(
         r#"(progn
