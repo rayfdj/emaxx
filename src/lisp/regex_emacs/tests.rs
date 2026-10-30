@@ -378,12 +378,12 @@ fn failure_stack_overflow() {
 }
 
 #[test]
-fn rope_chunks_are_read_in_place() {
+fn a_buffer_text_is_read_in_its_two_parts() {
     let mut text = "x".repeat(5000);
     text.push_str("needle");
     text.push_str(&"y".repeat(5000));
-    let rope = ropey::Rope::from_str(&text);
-    let t = Text::from_rope(RopeRange::new(&rope, 0, rope.len_bytes(), 0), true, false);
+    // The gap inside the match: the needle's halves are in the two parts.
+    let t = Text::from_gap(GapRange::new(&text[..5003], &text[5003..]), true, false);
     let mut pattern = compiled("ne+dle\\|zz", false, false);
     let found = search_regs(
         &mut pattern,

@@ -2625,7 +2625,7 @@ pub(crate) fn terminal_char_encodable(interp: &Interpreter, coding: &str, c: u32
 fn buffer_character_codes(interp: &Interpreter, from: usize, to: usize) -> Vec<u32> {
     let buffer = interp.buffer.borrow();
     let source = StringLike {
-        text: String::from(buffer.text_rope().slice(from - 1..to - 1)),
+        text: buffer.absolute_text_range(from, to),
         props: None,
         multibyte: buffer.is_multibyte(),
         extended_chars: buffer.substring_extended_chars(from, to),
@@ -3077,10 +3077,9 @@ pub(crate) fn find_coding_systems_region_internal_value(
         let from = position_from_value(interp, start)?;
         let to = position_from_value(interp, end)?;
         let buffer = interp.buffer.borrow();
-        let text = buffer.text_rope();
         // coding.c checks BEG..Z, including text outside narrowing, and
         // rejects reversed bounds. No Lisp callback runs while reading it.
-        if from == 0 || from > to || to > text.len_chars() + 1 {
+        if from == 0 || from > to || to > buffer.size_total() + 1 {
             return Err(LispError::SignalValue(Value::list([
                 Value::symbol("args-out-of-range"),
                 *start,
@@ -3088,7 +3087,7 @@ pub(crate) fn find_coding_systems_region_internal_value(
             ])));
         }
         StringLike {
-            text: String::from(text.slice(from - 1..to - 1)),
+            text: buffer.absolute_text_range(from, to),
             props: None,
             multibyte: buffer.is_multibyte(),
             extended_chars: buffer.substring_extended_chars(from, to),
@@ -3185,7 +3184,7 @@ pub(crate) fn check_coding_systems_region_value(
         let e = position_from_value(interp, &end_value)?;
         let (z, multibyte) = {
             let buffer = interp.buffer.borrow();
-            (buffer.text_rope().len_chars() + 1, buffer.is_multibyte())
+            (buffer.size_total() + 1, buffer.is_multibyte())
         };
         if !(1 <= s && s <= e && e <= z) {
             return Err(LispError::SignalValue(Value::list([

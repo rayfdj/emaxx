@@ -94,7 +94,7 @@ pub(crate) fn public_buffer_char_code(ch: char, multibyte: bool) -> i64 {
 
 /// Return the Lisp-visible character at a buffer position.
 ///
-/// Most characters live directly in the rope.  Emacs characters outside
+/// Most characters live directly in the text.  Emacs characters outside
 /// Unicode's scalar range use a placeholder plus typed buffer metadata, so
 /// every public character accessor must consult that sidecar through this
 /// one boundary rather than leaking the placeholder value.

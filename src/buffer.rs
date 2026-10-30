@@ -3,8 +3,11 @@
 use crate::intervals::{self, Intervals, PropertyRecorder, PropertySetType, PropertyVariables};
 use crate::lisp::types::{BufferRef, Kind, MarkerRef};
 use crate::lisp::types::{PropertyKey, PropertyName, Value};
-use ropey::Rope;
 use std::cell::{Cell, RefCell};
+
+mod gap;
+pub use gap::GapText;
+pub(crate) use gap::{backward_bytes, count_chars, forward_bytes};
 use std::time::SystemTime;
 
 /// One edit of a buffer: the characters [START, OLD_END) became
@@ -57,7 +60,7 @@ impl Clone for BufferMark {
 ///
 /// Positions are 1-based to match Emacs semantics: position 1 is
 /// before the first character, position (len+1) is after the last.
-/// Internally we convert to 0-based char indices into the rope.
+/// Internally we convert to 0-based char indices into the text.
 pub struct Buffer {
     /// Human-visible name (e.g. "*scratch*" or "main.rs").
     pub name: String,
@@ -68,10 +71,10 @@ pub struct Buffer {
     /// The text.
     text: BufferText,
 
-    /// Derived character view of the most recently read Rope chunk. Syntax
-    /// and motion code commonly scan adjacent characters through `char_at`;
-    /// retaining one decoded chunk avoids a tree walk per character while
-    /// keeping Rope as the sole text authority.
+    /// Derived character view of the text around the last character read.
+    /// Syntax and motion code commonly scan adjacent characters through
+    /// `char_at`; retaining a decoded window avoids a conversion per
+    /// character while keeping the text the sole authority.
     char_cache: RefCell<RopeCharCache>,
 
     /// Current cursor position (1-based char offset).
@@ -152,7 +155,7 @@ pub struct Buffer {
     intervals: Option<Intervals>,
 
     /// Sparse 1-based character positions for GNU Emacs characters outside
-    /// Unicode's scalar range.  The rope holds one placeholder scalar at each
+    /// Unicode's scalar range.  The text holds one placeholder scalar at each
     /// position; this typed sidecar is runtime representation, never a Lisp
     /// text property.
     extended_chars: Vec<(usize, u32)>,
@@ -208,87 +211,22 @@ impl Clone for Buffer {
 }
 
 /// The buffer's text with its character and byte counts, GNU's Z and
-/// Z_BYTE kept beside it.  A text of up to `SMALL_TEXT' bytes is one
-/// string: ropey keeps such a text in a single leaf, whose counts it finds
-/// by scanning the whole leaf on every bounds check (twice or three times
-/// an edit, once a chunk lookup).  A longer text is a rope, and becomes a
-/// string again when deletions bring it under half that.  All changes go
-/// through `insert' and `remove', which keep the counts.
+/// Z_BYTE: the bytes in a gap buffer (`gap::GapText'), as insdel.c keeps
+/// them, with the count of the raw-byte markers among them.  All changes
+/// go through `insert' and `remove', which keep the counts.
 #[derive(Clone, Default)]
 struct BufferText {
-    store: TextStore,
-    chars: usize,
-    bytes: usize,
+    text: GapText,
     /// The raw-byte markers (U+E080..U+E0FF) in the text, whose stored
     /// form is a byte longer than GNU's: a marker's byte position needs
     /// their count before it only when there are any.
     raw_markers: usize,
-    /// A small text's rope for `text_rope', built when a scan asks for
-    /// one and dropped by the next change.
-    rope_view: RefCell<Option<Rope>>,
-    /// The leaf of `rope_view' when that rope is the one leaf, found when
-    /// it is built: a scan of it reads that chunk throughout, which
-    /// ropey's own lookups count afresh at each bounds check.
-    rope_leaf: Cell<Option<ChunkHint>>,
-    /// Recent char/byte conversions of a rope's text.
+    /// Recent char/byte conversions of a text whose characters are not
+    /// all one byte.
     positions: Cell<PositionCache>,
-    /// The rope's chunk the last walk reached.
-    chunk: Cell<Option<ChunkView>>,
 }
 
-/// The chunk of a rope's text the last walk of its tree reached, with the
-/// char and byte offsets it starts at: a lookup inside it scans from the
-/// nearest position known there instead of walking the tree again, as
-/// GNU's buf_charpos_to_bytepos scans from the known position nearest.
-/// TEXT addresses the rope's leaf, which lives and does not change while
-/// no `&mut' method runs (each of them forgets the view).
-#[derive(Clone, Copy)]
-struct ChunkView {
-    text: usize,
-    len: usize,
-    byte: usize,
-    char: usize,
-    /// The chunk's characters, counted when a lookup by character first
-    /// needs them (UNCOUNTED until then).
-    chars: usize,
-}
-
-/// ChunkView::chars before the chunk's characters are counted.
-const UNCOUNTED: usize = usize::MAX;
-
-impl ChunkView {
-    fn new(chunk: &str, byte: usize, char: usize) -> Self {
-        Self {
-            text: chunk.as_ptr() as usize,
-            len: chunk.len(),
-            byte,
-            char,
-            chars: UNCOUNTED,
-        }
-    }
-
-    /// The chunk's text.
-    ///
-    /// # Safety
-    ///
-    /// The rope the view was taken from has not changed since.
-    unsafe fn text<'t>(&self) -> &'t str {
-        // SAFETY: the caller's guarantee keeps the leaf's bytes, valid
-        // UTF-8 as a chunk of the rope, where they were.
-        unsafe {
-            std::str::from_utf8_unchecked(std::slice::from_raw_parts(
-                self.text as *const u8,
-                self.len,
-            ))
-        }
-    }
-
-    fn holds_byte(&self, byte: usize) -> bool {
-        byte >= self.byte && byte < self.byte + self.len
-    }
-}
-
-/// marker.c buf_charpos_to_bytepos's cache, for a rope whose characters
+/// marker.c buf_charpos_to_bytepos's cache, for a text whose characters
 /// are not all one byte: the char and byte offsets of recent conversions,
 /// shifted by an edit before them and dropped by one over them.
 #[derive(Clone, Copy, Default)]
@@ -352,59 +290,10 @@ impl PositionCache {
     }
 }
 
-#[derive(Clone)]
-enum TextStore {
-    Small(String),
-    Rope(Rope),
-}
-
 /// A buffer's text as a scan reads it apart from the buffer (see
-/// `Buffer::scan_text').
-pub enum ScanText {
-    Small(String),
-    Rope(Rope),
-}
-
-/// The rope leaf the buffer's last walk reached, as `Buffer::scan_hint'
-/// hands it to a scan of a `ScanText::Rope' taken with it: the leaf's
-/// address and length, and its first byte in the text.
-#[derive(Clone, Copy)]
-pub struct ChunkHint {
-    text: usize,
-    len: usize,
-    byte: usize,
-}
-
-impl ChunkHint {
-    /// The leaf's text and its first byte.
-    ///
-    /// # Safety
-    ///
-    /// ROPE is the `ScanText::Rope' taken from the buffer under the same
-    /// borrow as the hint.  A clone of a rope shares its leaves, and ropey
-    /// copies a shared leaf before an edit changes it, so the leaf stays
-    /// where it was, unchanged, while ROPE lives.
-    pub unsafe fn chunk<'r>(&self, _rope: &'r Rope) -> (&'r str, usize) {
-        // SAFETY: the caller's guarantee; the leaf is a chunk of the rope,
-        // valid UTF-8.
-        let text = unsafe {
-            std::str::from_utf8_unchecked(std::slice::from_raw_parts(
-                self.text as *const u8,
-                self.len,
-            ))
-        };
-        (text, self.byte)
-    }
-}
-
-impl Default for TextStore {
-    fn default() -> Self {
-        TextStore::Small(String::new())
-    }
-}
-
-/// The longest text kept as one string: about ropey's leaf size.
-const SMALL_TEXT: usize = 1024;
+/// `Buffer::scan_text'): the gap buffer's bytes, shared until the next
+/// change.
+pub type ScanText = GapText;
 
 /// What the maker of a text to insert already counted of it: its
 /// characters and its raw-byte markers (`count_raw_markers'), which the
@@ -448,57 +337,10 @@ fn count_raw_markers(bytes: &[u8]) -> usize {
 impl BufferText {
     fn from_str(text: &str) -> Self {
         Self {
-            store: if text.len() <= SMALL_TEXT {
-                TextStore::Small(text.to_owned())
-            } else {
-                TextStore::Rope(Rope::from_str(text))
-            },
-            chars: ropey::str_utils::byte_to_char_idx(text, text.len()),
-            bytes: text.len(),
+            text: GapText::from_str(text),
             raw_markers: count_raw_markers(text.as_bytes()),
-            rope_view: RefCell::new(None),
-            rope_leaf: Cell::new(None),
             positions: Cell::default(),
-            chunk: Cell::new(None),
         }
-    }
-
-    /// The chunk of ROPE, this text's, holding char INDEX: the one the last
-    /// walk reached when it does.
-    fn view_at_char(&self, rope: &Rope, index: usize) -> ChunkView {
-        if let Some(view) = self.chunk.get()
-            && index >= view.char
-            // A chunk holds no more characters than bytes.
-            && index - view.char < view.len
-        {
-            let mut view = view;
-            if view.chars == UNCOUNTED {
-                // SAFETY: the view is of this unchanged rope.
-                let text = unsafe { view.text() };
-                view.chars = ropey::str_utils::byte_to_char_idx(text, text.len());
-                self.chunk.set(Some(view));
-            }
-            if index - view.char < view.chars {
-                return view;
-            }
-        }
-        let (chunk, byte, char, _) = rope.chunk_at_char(index);
-        let view = ChunkView::new(chunk, byte, char);
-        self.chunk.set(Some(view));
-        view
-    }
-
-    /// The chunk of ROPE holding byte BYTE, as `view_at_char'.
-    fn view_at_byte(&self, rope: &Rope, byte: usize) -> ChunkView {
-        if let Some(view) = self.chunk.get()
-            && view.holds_byte(byte)
-        {
-            return view;
-        }
-        let (chunk, byte, char, _) = rope.chunk_at_byte(byte);
-        let view = ChunkView::new(chunk, byte, char);
-        self.chunk.set(Some(view));
-        view
     }
 
     /// The raw-byte markers in the first BYTES bytes of the text.
@@ -506,14 +348,8 @@ impl BufferText {
         if self.raw_markers == 0 {
             return 0;
         }
-        match &self.store {
-            TextStore::Small(text) => count_raw_markers(&text.as_bytes()[..bytes]),
-            TextStore::Rope(rope) => rope
-                .byte_slice(..bytes)
-                .chunks()
-                .map(|chunk| count_raw_markers(chunk.as_bytes()))
-                .sum(),
-        }
+        let (first, second) = self.text.range_halves(0..bytes);
+        count_raw_markers(first.as_bytes()) + count_raw_markers(second.as_bytes())
     }
 
     /// The raw-byte markers among the characters of RANGE.
@@ -521,290 +357,176 @@ impl BufferText {
         if self.raw_markers == 0 {
             return 0;
         }
-        match &self.store {
-            TextStore::Small(text) => {
-                let start = ropey::str_utils::char_to_byte_idx(text, range.start);
-                let end = ropey::str_utils::char_to_byte_idx(text, range.end);
-                count_raw_markers(&text.as_bytes()[start..end])
-            }
-            TextStore::Rope(rope) => rope
-                .slice(range)
-                .chunks()
-                .map(|chunk| count_raw_markers(chunk.as_bytes()))
-                .sum(),
-        }
+        let start = self.char_to_byte(range.start);
+        let end = self.char_to_byte(range.end);
+        let (first, second) = self.text.range_halves(start..end);
+        count_raw_markers(first.as_bytes()) + count_raw_markers(second.as_bytes())
     }
 
     #[inline]
     fn len_chars(&self) -> usize {
-        self.chars
+        self.text.chars()
     }
 
     #[inline]
     fn len_bytes(&self) -> usize {
-        self.bytes
+        self.text.len()
     }
 
-    /// The byte index of char index INDEX in a small TEXT.
+    /// The half of the text holding char index INDEX, with the byte and
+    /// char indices of its start: the text before the gap or after it.
     #[inline]
-    fn small_byte(&self, text: &str, index: usize) -> usize {
-        if self.chars == self.bytes {
-            index
-        } else {
-            ropey::str_utils::char_to_byte_idx(text, index)
-        }
+    fn chunk_at_char(&self, index: usize) -> (&str, usize, usize) {
+        self.text.chunk_at_char(index)
     }
 
-    /// The chunk holding char index INDEX, with the byte, char and line
-    /// indices of its start (ropey's `chunk_at_char').
+    /// The half holding byte index INDEX, as `chunk_at_char'.
     #[inline]
-    fn chunk_at_char(&self, index: usize) -> (&str, usize, usize, usize) {
-        match &self.store {
-            TextStore::Small(text) => (text, 0, 0, 0),
-            TextStore::Rope(rope) if index < self.chars => {
-                let view = self.view_at_char(rope, index);
-                // SAFETY: the view is of this unchanged rope.
-                (unsafe { view.text() }, view.byte, view.char, 0)
-            }
-            TextStore::Rope(rope) => rope.chunk_at_char(index),
-        }
+    fn chunk_at_byte(&self, index: usize) -> (&str, usize, usize) {
+        self.text.chunk_at_byte(index)
     }
 
-    /// The chunk holding byte index INDEX, as `chunk_at_char'.
+    /// The text from byte BYTE to the end of the half holding it.
     #[inline]
-    fn chunk_at_byte(&self, index: usize) -> (&str, usize, usize, usize) {
-        match &self.store {
-            TextStore::Small(text) => (text, 0, 0, 0),
-            TextStore::Rope(rope) if index < self.bytes => {
-                let view = self.view_at_byte(rope, index);
-                // SAFETY: the view is of this unchanged rope.
-                (unsafe { view.text() }, view.byte, view.char, 0)
-            }
-            TextStore::Rope(rope) => rope.chunk_at_byte(index),
-        }
+    fn rest_at_byte(&self, byte: usize) -> &str {
+        let (chunk, chunk_byte, _) = self.text.chunk_at_byte(byte);
+        &chunk[byte - chunk_byte..]
+    }
+
+    /// The text before byte BYTE back to the start of the half holding
+    /// the byte before it.
+    #[inline]
+    fn before_byte(&self, byte: usize) -> &str {
+        let (chunk, chunk_byte, _) = self.text.chunk_at_byte(byte.saturating_sub(1));
+        &chunk[..byte - chunk_byte]
     }
 
     #[inline]
     fn char(&self, index: usize) -> char {
-        match &self.store {
-            TextStore::Small(text) => text[self.small_byte(text, index)..]
-                .chars()
-                .next()
-                .expect("char index within the text"),
-            TextStore::Rope(rope) => rope.char(index),
-        }
+        self.rest_at_byte(self.char_to_byte(index))
+            .chars()
+            .next()
+            .expect("char index within the text")
     }
 
+    /// buf_charpos_to_bytepos: the byte index of char INDEX, counted from
+    /// the nearest position known (the text's ends, the gap, a recent
+    /// conversion).
     #[inline]
     fn char_to_byte(&self, index: usize) -> usize {
-        match &self.store {
-            TextStore::Small(text) => self.small_byte(text, index),
-            TextStore::Rope(rope) => {
-                // The text's ends and an ASCII text need no walk; nor does
-                // a position converted since the last edit before it.
-                if self.chars == self.bytes || index == 0 {
-                    return index;
-                }
-                if index == self.chars {
-                    return self.bytes;
-                }
-                let mut positions = self.positions.get();
-                if let Some(byte) = positions.by_char(index) {
-                    return byte;
-                }
-                // Scan the chunk holding INDEX from the nearest position
-                // known before it there.
-                let view = self.view_at_char(rope, index);
-                let (from, from_byte) = positions
-                    .entries()
-                    .filter(|entry| entry.0 >= view.char && entry.0 <= index)
-                    .fold((view.char, view.byte), |best, entry| {
-                        if entry.0 > best.0 { entry } else { best }
-                    });
-                // SAFETY: the view is of this unchanged rope.
-                let text = unsafe { view.text() };
-                let byte = from_byte
-                    + ropey::str_utils::char_to_byte_idx(
-                        &text[from_byte - view.byte..],
-                        index - from,
-                    );
-                positions.record(index, byte);
-                self.positions.set(positions);
-                byte
-            }
+        if self.text.is_ascii() {
+            return index;
         }
+        self.char_to_byte_counted(index)
     }
 
-    /// The char index of the character byte index BYTE lies in.
-    fn byte_to_char(&self, byte: usize) -> usize {
-        match &self.store {
-            TextStore::Small(text) => ropey::str_utils::byte_to_char_idx(text, byte),
-            TextStore::Rope(rope) => {
-                if self.chars == self.bytes || byte == 0 {
-                    return byte;
-                }
-                if byte == self.bytes {
-                    return self.chars;
-                }
-                let mut positions = self.positions.get();
-                if let Some(index) = positions.by_byte(byte) {
-                    return index;
-                }
-                let view = self.view_at_byte(rope, byte);
-                let (from, from_byte) = positions
-                    .entries()
-                    .filter(|entry| entry.1 >= view.byte && entry.1 <= byte)
-                    .fold((view.char, view.byte), |best, entry| {
-                        if entry.1 > best.1 { entry } else { best }
-                    });
-                // SAFETY: the view is of this unchanged rope.
-                let text = unsafe { view.text() };
-                let index = from
-                    + ropey::str_utils::byte_to_char_idx(
-                        &text[from_byte - view.byte..],
-                        byte - from_byte,
-                    );
-                // A byte that starts its character is that character's
-                // position, remembered as buf_bytepos_to_charpos remembers
-                // the last it converted (a match's registers then count
-                // from each other); one in the middle names none.
-                if text.is_char_boundary(byte - view.byte) {
-                    positions.record(index, byte);
-                    self.positions.set(positions);
-                }
-                index
-            }
+    fn char_to_byte_counted(&self, index: usize) -> usize {
+        let mut positions = self.positions.get();
+        if let Some(byte) = positions.by_char(index) {
+            return byte;
         }
+        let byte = self.text.char_to_byte_near(index, positions.entries());
+        positions.record(index, byte);
+        self.positions.set(positions);
+        byte
     }
 
+    /// buf_bytepos_to_charpos: the char index of the character byte index
+    /// BYTE lies in.
     #[inline]
-    fn slice(&self, range: std::ops::Range<usize>) -> ropey::RopeSlice<'_> {
-        match &self.store {
-            TextStore::Small(text) => ropey::RopeSlice::from(
-                &text[self.small_byte(text, range.start)..self.small_byte(text, range.end)],
-            ),
-            TextStore::Rope(rope) => rope.slice(range),
+    fn byte_to_char(&self, byte: usize) -> usize {
+        if self.text.is_ascii() {
+            return byte;
         }
+        self.byte_to_char_counted(byte)
     }
 
-    /// The text of RANGE (char indices) as a String. A small store's bytes
-    /// are copied as they are: a slice of them counts their chars and lines
-    /// first.
+    fn byte_to_char_counted(&self, byte: usize) -> usize {
+        let mut positions = self.positions.get();
+        if let Some(index) = positions.by_byte(byte) {
+            return index;
+        }
+        // A byte inside a character belongs to the character it continues.
+        let mut start = byte;
+        while start > 0 && start < self.text.len() && self.text.byte(start) & 0xC0 == 0x80 {
+            start -= 1;
+        }
+        let index = self.text.byte_to_char_near(start, positions.entries());
+        // A byte that starts its character is that character's position,
+        // remembered as buf_bytepos_to_charpos remembers the last it
+        // converted (a match's registers then count from each other).
+        if start == byte {
+            positions.record(index, byte);
+            self.positions.set(positions);
+        }
+        index
+    }
+
+    /// The text of RANGE (char indices) as a String.
     fn string(&self, range: std::ops::Range<usize>) -> String {
-        match &self.store {
-            TextStore::Small(text) => text
-                [self.small_byte(text, range.start)..self.small_byte(text, range.end)]
-                .to_owned(),
-            TextStore::Rope(rope) => String::from(rope.slice(range)),
-        }
+        let start = self.char_to_byte(range.start);
+        let end = self.char_to_byte(range.end);
+        self.text.string(start..end)
     }
 
-    fn chars(&self) -> ropey::iter::Chars<'_> {
-        match &self.store {
-            TextStore::Small(text) => ropey::RopeSlice::from(text.as_str()).chars(),
-            TextStore::Rope(rope) => rope.chars(),
-        }
+    /// The text of RANGE (char indices) before the gap and after it.
+    fn range_halves(&self, range: std::ops::Range<usize>) -> (&str, &str) {
+        let start = self.char_to_byte(range.start);
+        let end = self.char_to_byte(range.end);
+        self.text.range_halves(start..end)
     }
 
+    /// The newlines in byte RANGE.
+    fn newlines_in(&self, range: std::ops::Range<usize>) -> usize {
+        let (first, second) = self.text.range_halves(range);
+        memchr::memchr_iter(b'\n', first.as_bytes()).count()
+            + memchr::memchr_iter(b'\n', second.as_bytes()).count()
+    }
+
+    /// The text's lines: its newlines and one.
     fn len_lines(&self) -> usize {
-        match &self.store {
-            TextStore::Small(text) => ropey::str_utils::byte_to_line_idx(text, text.len()) + 1,
-            TextStore::Rope(rope) => rope.len_lines(),
-        }
+        self.newlines_in(0..self.text.len()) + 1
     }
 
-    fn line(&self, index: usize) -> ropey::RopeSlice<'_> {
-        match &self.store {
-            TextStore::Small(text) => ropey::RopeSlice::from(
-                &text[ropey::str_utils::line_to_byte_idx(text, index)
-                    ..ropey::str_utils::line_to_byte_idx(text, index + 1)],
-            ),
-            TextStore::Rope(rope) => rope.line(index),
-        }
-    }
-
+    /// The char index of the start of 0-based line INDEX: just after the
+    /// INDEXth newline, the end when there are fewer.
     fn line_to_char(&self, index: usize) -> usize {
-        match &self.store {
-            TextStore::Small(text) => ropey::str_utils::line_to_char_idx(text, index),
-            TextStore::Rope(rope) => rope.line_to_char(index),
+        if index == 0 {
+            return 0;
         }
+        let (before, after) = self.text.halves();
+        let mut left = index;
+        for (half, start) in [(before, 0), (after, before.len())] {
+            for at in memchr::memchr_iter(b'\n', half.as_bytes()) {
+                left -= 1;
+                if left == 0 {
+                    return self.byte_to_char(start + at + 1);
+                }
+            }
+        }
+        self.text.chars()
     }
 
+    /// The 0-based line char index INDEX is on: the newlines before it.
     fn char_to_line(&self, index: usize) -> usize {
-        match &self.store {
-            TextStore::Small(text) => ropey::str_utils::char_to_line_idx(text, index),
-            TextStore::Rope(rope) => rope.char_to_line(index),
-        }
+        self.newlines_in(0..self.char_to_byte(index))
     }
 
-    /// The text for a scan that must not hold the buffer: a rope's shared
-    /// tree, or a small text's own copy, which costs less than the rope
-    /// `rope' would build of it after each change.
+    /// The text of 0-based line INDEX, its newline included.
+    fn line(&self, index: usize) -> String {
+        let start = self.line_to_char(index);
+        let end = self.line_to_char(index + 1);
+        self.string(start..end)
+    }
+
+    /// The text for a scan that must not hold the buffer: its bytes,
+    /// shared until the next change.
     fn scan_text(&self) -> ScanText {
-        match &self.store {
-            TextStore::Small(text) => match self.rope_view.borrow().as_ref() {
-                Some(rope) => ScanText::Rope(rope.clone()),
-                None => ScanText::Small(text.clone()),
-            },
-            TextStore::Rope(rope) => ScanText::Rope(rope.clone()),
-        }
-    }
-
-    /// The chunk the last walk of the rope reached, when it holds byte
-    /// offset BYTE.
-    fn scan_hint(&self, byte: usize) -> Option<ChunkHint> {
-        let TextStore::Rope(_) = &self.store else {
-            // A small text's rope, `scan_text''s when it has one, of one
-            // leaf holds every byte.
-            return self.rope_leaf();
-        };
-        self.chunk
-            .get()
-            .filter(|view| view.holds_byte(byte))
-            .map(|view| ChunkHint {
-                text: view.text,
-                len: view.len,
-                byte: view.byte,
-            })
-    }
-
-    /// The text as a rope that never changes (a small text's is built
-    /// once until the next change).
-    fn rope(&self) -> Rope {
-        match &self.store {
-            TextStore::Small(text) => self
-                .rope_view
-                .borrow_mut()
-                .get_or_insert_with(|| {
-                    let rope = Rope::from_str(text);
-                    let (leaf, _, _, _) = rope.chunk_at_byte(0);
-                    self.rope_leaf
-                        .set((leaf.len() == text.len()).then_some(ChunkHint {
-                            text: leaf.as_ptr() as usize,
-                            len: leaf.len(),
-                            byte: 0,
-                        }));
-                    rope
-                })
-                .clone(),
-            TextStore::Rope(rope) => rope.clone(),
-        }
-    }
-
-    /// The single leaf of the rope `rope' answers, for a small text whose
-    /// rope is one (see `rope_leaf').
-    fn rope_leaf(&self) -> Option<ChunkHint> {
-        match &self.store {
-            TextStore::Small(_) if self.rope_view.borrow().is_some() => self.rope_leaf.get(),
-            _ => None,
-        }
+        self.text.clone()
     }
 
     fn whole_string(&self) -> String {
-        match &self.store {
-            TextStore::Small(text) => text.clone(),
-            TextStore::Rope(rope) => String::from(rope),
-        }
+        self.text.string(0..self.text.len())
     }
 
     fn insert(&mut self, char_index: usize, text: &str) {
@@ -829,169 +551,71 @@ impl BufferText {
                 count_raw_markers(text.as_bytes()),
             ),
         };
-        let ascii = self.chars == self.bytes;
-        let grown = match &mut self.store {
-            TextStore::Small(small) => {
-                let byte = if ascii {
-                    char_index
-                } else {
-                    ropey::str_utils::char_to_byte_idx(small, char_index)
-                };
-                if self.bytes + text.len() > SMALL_TEXT {
-                    // The rope is built from the pieces, the text not
-                    // copied into the string first.
-                    let mut builder = ropey::RopeBuilder::new();
-                    builder.append(&small[..byte]);
-                    builder.append(text);
-                    builder.append(&small[byte..]);
-                    Some(builder.finish())
-                } else {
-                    small.insert_str(byte, text);
-                    None
-                }
-            }
-            TextStore::Rope(rope) => {
-                rope.insert(char_index, text);
-                None
-            }
-        };
-        if let Some(rope) = grown {
-            self.store = TextStore::Rope(rope);
-        }
+        let byte = self.char_to_byte(char_index);
+        self.text.insert(byte, char_index, text, added);
         self.positions
             .get_mut()
             .inserted(char_index, added, text.len());
-        *self.chunk.get_mut() = None;
-        self.chars += added;
-        self.bytes += text.len();
         self.raw_markers += raw_markers;
-        *self.rope_view.get_mut() = None;
         self.check_counts();
     }
 
     fn remove(&mut self, range: std::ops::Range<usize>) {
-        self.raw_markers -= if range.len() == self.chars {
+        let start = self.char_to_byte(range.start);
+        let end = self.char_to_byte(range.end);
+        self.raw_markers -= if range.len() == self.text.chars() {
             self.raw_markers
+        } else if self.raw_markers == 0 {
+            0
         } else {
-            self.raw_markers_in(range.clone())
+            let (first, second) = self.text.range_halves(start..end);
+            count_raw_markers(first.as_bytes()) + count_raw_markers(second.as_bytes())
         };
-        let bytes = match &mut self.store {
-            TextStore::Small(_) if self.chars == self.bytes => range.len(),
-            TextStore::Small(text) => {
-                ropey::str_utils::char_to_byte_idx(text, range.end)
-                    - ropey::str_utils::char_to_byte_idx(text, range.start)
-            }
-            // The rope's own count, read after the removal (in a rope of
-            // more than one leaf, from the root's children).
-            TextStore::Rope(rope) => {
-                let before = self.bytes;
-                rope.remove(range.clone());
-                let bytes = before - rope.len_bytes();
-                self.removed(range, bytes);
-                return;
-            }
-        };
-        self.remove_bytes(range, bytes);
+        self.delete(range, start, end - start);
     }
 
     /// `remove' for a caller that already holds the removed text.
     fn remove_text(&mut self, range: std::ops::Range<usize>, removed: &str) {
-        self.raw_markers -= if range.len() == self.chars {
+        self.raw_markers -= if range.len() == self.text.chars() {
             self.raw_markers
         } else {
             count_raw_markers(removed.as_bytes())
         };
-        self.remove_bytes(range, removed.len());
+        let start = self.char_to_byte(range.start);
+        self.delete(range, start, removed.len());
     }
 
+    /// `remove' of RANGE, BYTES long, whose raw-byte markers the caller
+    /// has counted.
     fn remove_bytes(&mut self, range: std::ops::Range<usize>, bytes: usize) {
-        match &mut self.store {
-            TextStore::Small(text) => {
-                let start = if self.chars == self.bytes {
-                    range.start
-                } else {
-                    ropey::str_utils::char_to_byte_idx(text, range.start)
-                };
-                text.replace_range(start..start + bytes, "");
-            }
-            TextStore::Rope(rope) => rope.remove(range.clone()),
-        }
-        self.removed(range, bytes);
+        let start = self.char_to_byte(range.start);
+        self.delete(range, start, bytes);
     }
 
-    /// The counts after RANGE, BYTES long, was removed; a rope that fell
-    /// under half the small size becomes a string.
-    fn removed(&mut self, range: std::ops::Range<usize>, bytes: usize) {
-        self.positions.get_mut().removed(range.clone(), bytes);
-        *self.chunk.get_mut() = None;
-        self.chars -= range.len();
-        self.bytes -= bytes;
-        if let TextStore::Rope(rope) = &self.store
-            && self.bytes <= SMALL_TEXT / 2
-        {
-            self.store = TextStore::Small(String::from(rope));
-        }
-        *self.rope_view.get_mut() = None;
+    /// The characters of RANGE, BYTES bytes from byte START, deleted.
+    fn delete(&mut self, range: std::ops::Range<usize>, start: usize, bytes: usize) {
+        self.text.delete(start..start + bytes, range.clone());
+        self.positions.get_mut().removed(range, bytes);
         self.check_counts();
     }
 
     fn check_counts(&self) {
-        if cfg!(debug_assertions) {
-            let (chars, bytes) = match &self.store {
-                TextStore::Small(text) => (
-                    ropey::str_utils::byte_to_char_idx(text, text.len()),
-                    text.len(),
-                ),
-                TextStore::Rope(rope) => (rope.len_chars(), rope.len_bytes()),
-            };
-            assert_eq!((self.chars, self.bytes), (chars, bytes));
-            // Recounting a rope's raw-byte markers walks all its text,
-            // which at every edit made a million insertions quadratic
-            // (undo-tests' flush-lines buffer); a small text's are
-            // recounted.
-            if let TextStore::Small(text) = &self.store {
-                assert_eq!(self.raw_markers, count_raw_markers(text.as_bytes()));
-            }
+        // A recount walks all the text, which at every edit would make a
+        // million insertions quadratic (undo-tests' flush-lines buffer):
+        // a short text's counts are checked.
+        if cfg!(debug_assertions) && self.text.len() <= 4096 {
+            let (before, after) = self.text.halves();
+            let before_chars = gap::count_chars(before.as_bytes());
+            assert_eq!(self.text.gap_char(), before_chars);
+            assert_eq!(
+                self.text.chars(),
+                before_chars + gap::count_chars(after.as_bytes())
+            );
+            assert_eq!(
+                self.raw_markers,
+                count_raw_markers(before.as_bytes()) + count_raw_markers(after.as_bytes())
+            );
         }
-    }
-}
-
-/// REMAINING characters of a rope from char index NEXT, read chunk by
-/// chunk in place: a ropey `Chars' iterator allocates its node stack. In
-/// an ASCII rope a char index is a byte index, found without counting.
-struct RopeChars<'a> {
-    rope: &'a BufferText,
-    ascii: bool,
-    chars: std::str::Chars<'a>,
-    next: usize,
-    remaining: usize,
-}
-
-impl Iterator for RopeChars<'_> {
-    type Item = char;
-
-    fn next(&mut self) -> Option<char> {
-        if self.remaining == 0 {
-            return None;
-        }
-        let character = match self.chars.next() {
-            Some(character) => character,
-            None => {
-                let (chunk, byte) = if self.ascii {
-                    let (chunk, chunk_start, _, _) = self.rope.chunk_at_byte(self.next);
-                    (chunk, self.next - chunk_start)
-                } else {
-                    let (chunk, _, chunk_start, _) = self.rope.chunk_at_char(self.next);
-                    let byte = ropey::str_utils::char_to_byte_idx(chunk, self.next - chunk_start);
-                    (chunk, byte)
-                };
-                self.chars = chunk[byte..].chars();
-                self.chars.next()?
-            }
-        };
-        self.next += 1;
-        self.remaining -= 1;
-        Some(character)
     }
 }
 
@@ -1421,7 +1045,7 @@ impl Buffer {
                 marker.set_positions(remap(marker.last_position()), marker.bytepos());
             }
         }
-        // Overlay endpoints already use the rope's character coordinates.
+        // Overlay endpoints already use the text's character coordinates.
         // The unibyte overlay API translates those coordinates at its public
         // boundary, so remapping them here would apply the byte-to-character
         // conversion twice.
@@ -1510,35 +1134,27 @@ impl Buffer {
 
     /// Advance toward LIMIT while PREDICATE accepts each character.
     ///
-    /// Iterating a Rope slice avoids paying for a tree lookup per character,
-    /// which matters for primitives such as `skip-chars-forward' that often
-    /// scan long regions of a large buffer.
+    /// The text's two halves are read in place, as syntax.c's skip_chars
+    /// reads the buffer text directly.
     pub fn skip_forward_while(
         &mut self,
         limit: usize,
         mut predicate: impl FnMut(char) -> bool,
     ) -> usize {
-        // The rope's chunks in place (syntax.c's skip_chars reads the
-        // buffer text directly): a rope slice per call counted the
-        // lines of its end chunks first, most of a short skip.
         let start = self.pt;
         let end = limit.clamp(start, self.zv);
         let mut remaining = end - start;
-        let mut index = start - 1;
+        let mut byte = self.text.char_to_byte(start - 1);
         let mut count = 0;
-        'chunks: while remaining > 0 && index < self.text.len_chars() {
-            let (chunk, _, chunk_start, _) = self.text.chunk_at_char(index);
-            let byte = ropey::str_utils::char_to_byte_idx(chunk, index - chunk_start);
-            if byte >= chunk.len() {
-                break;
-            }
-            for ch in chunk[byte..].chars() {
+        'chunks: while remaining > 0 && byte < self.text.len_bytes() {
+            let rest = self.text.rest_at_byte(byte);
+            for ch in rest.chars() {
                 if remaining == 0 || !predicate(ch) {
                     break 'chunks;
                 }
                 count += 1;
                 remaining -= 1;
-                index += 1;
+                byte += ch.len_utf8();
             }
         }
         self.pt += count;
@@ -1554,106 +1170,59 @@ impl Buffer {
         let start = self.pt;
         let end = limit.clamp(self.begv, start);
         let mut remaining = start - end;
-        let mut index = start - 1;
+        let mut byte = self.text.char_to_byte(start - 1);
         let mut count = 0;
-        'chunks: while remaining > 0 && index > 0 {
-            let (chunk, _, chunk_start, _) = self.text.chunk_at_char(index - 1);
-            let byte = ropey::str_utils::char_to_byte_idx(chunk, index - chunk_start);
-            for ch in chunk[..byte].chars().rev() {
+        'chunks: while remaining > 0 && byte > 0 {
+            let before = self.text.before_byte(byte);
+            for ch in before.chars().rev() {
                 if remaining == 0 || !predicate(ch) {
                     break 'chunks;
                 }
                 count += 1;
                 remaining -= 1;
-                index -= 1;
+                byte -= ch.len_utf8();
             }
         }
         self.pt -= count;
         count
     }
 
-    /// The text of 0-based character range [FROM, TO), copied chunk by
-    /// chunk: a rope slice counts the lines of its end chunks before
-    /// anything is read, most of a short deletion's record.
+    /// The text of 0-based character range [FROM, TO).
     fn text_range_string(&self, from: usize, to: usize) -> String {
         self.text_range_with_bytes(from, to).0
     }
 
     /// `text_range_string' with the store byte offsets of the range's
-    /// ends, from one walk to FROM's chunk when the range lies in it (as a
-    /// short deletion's does): the characters are counted from FROM, not
-    /// over the whole chunk.
+    /// ends, the end's counted from FROM's.
     fn text_range_with_bytes(&self, from: usize, to: usize) -> (String, usize, usize) {
-        let to = to.min(self.text.len_chars());
-        // An ASCII text's char indexes are its byte indexes.
-        let ascii = self.text_is_ascii();
-        let mut out = String::with_capacity(to.saturating_sub(from));
-        let mut index = from;
-        let mut first = None;
-        loop {
-            let (chunk, chunk_byte, chunk_start, _) = self.text.chunk_at_char(index);
-            let start = if ascii {
-                index - chunk_start
-            } else {
-                ropey::str_utils::char_to_byte_idx(chunk, index - chunk_start)
-            };
-            let start_byte = *first.get_or_insert(chunk_byte + start);
-            let rest = &chunk[start..];
-            let wanted = to - index;
-            let take = if ascii {
-                wanted.min(rest.len())
-            } else {
-                ropey::str_utils::char_to_byte_idx(rest, wanted)
-            };
-            out.push_str(&rest[..take]);
-            let taken = if ascii {
-                take
-            } else if take < rest.len() {
-                wanted
-            } else {
-                // The range runs to the chunk's end or past it: count what
-                // the chunk held.
-                ropey::str_utils::byte_to_char_idx(rest, rest.len())
-            };
-            index += taken;
-            if index >= to || taken == 0 {
-                return (out, start_byte, chunk_byte + start + take);
-            }
-        }
+        let to = to.min(self.text.len_chars()).max(from);
+        let start = self.text.char_to_byte(from);
+        let end = if self.text_is_ascii() {
+            to
+        } else {
+            self.text
+                .text
+                .char_to_byte_near(to, std::iter::once((from, start)))
+        };
+        (self.text.text.string(start..end), start, end)
     }
 
     /// search.c's find_newline forward: the 0-based index of the first
-    /// newline at or after char index FROM, scanned a chunk at a time
-    /// with memchr.
+    /// newline at or after char index FROM, scanned a half at a time with
+    /// memchr and its position counted from FROM's.
     fn newline_at_or_after(&self, from: usize) -> Option<usize> {
-        let ascii = self.text_is_ascii();
-        let mut index = from;
-        while index < self.text.len_chars() {
-            let (chunk, _, chunk_start, _) = self.text.chunk_at_char(index);
-            let byte = if ascii {
-                index - chunk_start
-            } else {
-                ropey::str_utils::char_to_byte_idx(chunk, index - chunk_start)
-            };
-            if let Some(offset) = memchr::memchr(b'\n', &chunk.as_bytes()[byte..]) {
-                return Some(
-                    chunk_start
-                        + if ascii {
-                            byte + offset
-                        } else {
-                            ropey::str_utils::byte_to_char_idx(chunk, byte + offset)
-                        },
-                );
+        if from >= self.text.len_chars() {
+            return None;
+        }
+        let start = self.text.char_to_byte(from);
+        let mut byte = start;
+        while byte < self.text.len_bytes() {
+            let rest = self.text.rest_at_byte(byte);
+            if let Some(offset) = memchr::memchr(b'\n', rest.as_bytes()) {
+                let found = byte + offset;
+                return Some(from + self.text.text.chars_in(start..found));
             }
-            let chunk_chars = if ascii {
-                chunk.len()
-            } else {
-                ropey::str_utils::byte_to_char_idx(chunk, chunk.len())
-            };
-            if chunk_chars == 0 {
-                break;
-            }
-            index = chunk_start + chunk_chars;
+            byte += rest.len();
         }
         None
     }
@@ -1667,26 +1236,17 @@ impl Buffer {
     /// search.c's find_newline backward: the 0-based index of the last
     /// newline before char index BEFORE.
     fn newline_before(&self, before: usize) -> Option<usize> {
-        let ascii = self.text_is_ascii();
-        let mut index = before.min(self.text.len_chars());
-        while index > 0 {
-            let (chunk, _, chunk_start, _) = self.text.chunk_at_char(index - 1);
-            let byte = if ascii {
-                index - chunk_start
-            } else {
-                ropey::str_utils::char_to_byte_idx(chunk, index - chunk_start)
-            };
-            if let Some(offset) = memchr::memrchr(b'\n', &chunk.as_bytes()[..byte]) {
-                return Some(
-                    chunk_start
-                        + if ascii {
-                            offset
-                        } else {
-                            ropey::str_utils::byte_to_char_idx(chunk, offset)
-                        },
-                );
+        let before = before.min(self.text.len_chars());
+        let end = self.text.char_to_byte(before);
+        let mut byte = end;
+        while byte > 0 {
+            let text = self.text.before_byte(byte);
+            let start = byte - text.len();
+            if let Some(offset) = memchr::memrchr(b'\n', text.as_bytes()) {
+                let found = start + offset;
+                return Some(before - self.text.text.chars_in(found..end));
             }
-            index = chunk_start;
+            byte = start;
         }
         None
     }
@@ -1907,39 +1467,21 @@ impl Buffer {
         self.text.string(start..end)
     }
 
-    /// A shared handle on the text as it is now: ropey's rope clones in
-    /// constant time and never changes once cloned, so a scan can read
-    /// characters by index without holding the buffer borrowed.
-    pub fn text_rope(&self) -> Rope {
-        self.text.rope()
-    }
-
-    /// `text_rope' with its leaf when it is a single one (a small text's),
-    /// which `ChunkHint::chunk' reads without asking the rope.
-    pub fn text_rope_and_leaf(&self) -> (Rope, Option<ChunkHint>) {
-        let rope = self.text.rope();
-        (rope, self.text.rope_leaf())
-    }
-
-    /// The text for a scan apart from the buffer: the rope, or a small
-    /// text's copy.
+    /// The text for a scan apart from the buffer: the gap buffer's bytes,
+    /// shared until the next change copies them.
     pub fn scan_text(&self) -> ScanText {
         self.text.scan_text()
     }
 
-    /// The rope leaf holding the stored text's byte offset BYTE when the
-    /// buffer's last walk reached it (point's, after a conversion of
-    /// point), for a scan of `scan_text''s rope taken under the same
-    /// borrow to start in without walking the tree (see `ChunkHint').
-    pub fn scan_hint(&self, byte: usize) -> Option<ChunkHint> {
-        self.text.scan_hint(byte)
-    }
-
     /// The stored text's characters and UTF-8 bytes, which the buffer
-    /// keeps: a rope of one leaf (a small text's) counts its text anew for
-    /// each length or chunk query.
+    /// keeps.
     pub fn text_counts(&self) -> (usize, usize) {
         (self.text.len_chars(), self.text.len_bytes())
+    }
+
+    /// The text of [FROM, TO) (1-based), read past any narrowing.
+    pub(crate) fn absolute_text_range(&self, from: usize, to: usize) -> String {
+        self.text.string(from - 1..to - 1)
     }
 
     pub fn full_buffer_string(&self) -> String {
@@ -1947,15 +1489,14 @@ impl Buffer {
     }
 
     /// Text of up to COUNT lines starting at 1-based LINE, one string per
-    /// line without its terminator.  The rope resolves each line seek in
-    /// O(log n), so a redisplay window costs the window — never the file.
+    /// line without its terminator.
     pub fn lines_from(&self, line: usize, count: usize) -> Vec<String> {
         let total = self.text.len_lines();
         let start = line.saturating_sub(1).min(total);
         let end = start.saturating_add(count).min(total);
         (start..end)
             .map(|index| {
-                let mut text = String::from(self.text.line(index));
+                let mut text = self.text.line(index);
                 while text.ends_with(['\n', '\r']) {
                     text.pop();
                 }
@@ -2014,7 +1555,7 @@ impl Buffer {
     }
 
     /// The characters `buffer_substring' returns for [FROM, TO), read from
-    /// the rope in place.
+    /// the text's halves in place.
     pub fn substring_chars(
         &self,
         from: usize,
@@ -2026,18 +1567,13 @@ impl Buffer {
         if from > to {
             return Err(BufferError::InvalidPosition(from));
         }
-        Ok(RopeChars {
-            rope: &self.text,
-            ascii: self.text.len_bytes() == self.text.len_chars(),
-            chars: "".chars(),
-            next: from - 1,
-            remaining: to - from,
-        })
+        let (first, second) = self.text.range_halves(from - 1..to - 1);
+        Ok(first.chars().chain(second.chars()))
     }
 
-    /// [FROM, TO) (1-based) of an ASCII text as a slice of the one rope
-    /// chunk holding it, so nothing is decoded; None when the text has a
-    /// multibyte character or the range crosses a chunk.
+    /// [FROM, TO) (1-based) of an ASCII text as a slice of the half of the
+    /// text holding it, so nothing is decoded; None when the text has a
+    /// multibyte character or the range crosses the gap.
     pub(crate) fn ascii_chunk_range(&self, from: usize, to: usize) -> Option<&str> {
         if self.text.len_bytes() != self.text.len_chars() || from == 0 || from > to {
             return None;
@@ -2049,7 +1585,7 @@ impl Buffer {
         if start == end {
             return Some("");
         }
-        let (chunk, chunk_start, _, _) = self.text.chunk_at_byte(start);
+        let (chunk, chunk_start, _) = self.text.chunk_at_byte(start);
         chunk.get(start - chunk_start..end - chunk_start)
     }
 
@@ -2073,7 +1609,7 @@ impl Buffer {
 
     /// Whether any character of [FROM, TO) has a sidecar entry (a code
     /// outside Unicode's scalars), which the regexp haystack of the span
-    /// then renders differently from the rope's text.
+    /// then renders differently from the stored text.
     pub fn has_extended_chars_in(&self, from: usize, to: usize) -> bool {
         let (from, to) = if from <= to { (from, to) } else { (to, from) };
         let first = self
@@ -2154,7 +1690,7 @@ impl Buffer {
     }
 
     /// Visit every Lisp value retained by this buffer.  Garbage collection
-    /// uses the same ownership boundary as `rewrite_lisp_values`: the rope,
+    /// uses the same ownership boundary as `rewrite_lisp_values`: the text,
     /// positions and file metadata are native data, while the intervals'
     /// plists, the undo list and attached overlay objects are Lisp roots.
     pub(crate) fn visit_lisp_values(&self, visit: &mut impl FnMut(&Value)) {
@@ -2612,26 +2148,23 @@ impl Buffer {
         // An ASCII text's character is its byte, read in place as
         // FETCH_CHAR reads it, with no chunk decoded into the cache.
         if self.text.len_chars() == self.text.len_bytes() {
-            let (chunk, chunk_byte, _, _) = self.text.chunk_at_byte(index);
-            return Some(char::from(chunk.as_bytes()[index - chunk_byte]));
+            return Some(char::from(self.text.text.byte(index)));
         }
         if let Some(ch) = self.char_cache.borrow().character(index) {
             return Some(ch);
         }
 
-        // A window of the chunk around INDEX, decoded once for the reads
-        // near it (a scan's next characters or its previous ones), where
-        // decoding the whole chunk cost each column count after an edit
-        // a pass over up to a kilobyte.
-        let (chunk, _, chunk_start, _) = self.text.chunk_at_char(index);
+        // A window of the half around INDEX, decoded once for the reads
+        // near it (a scan's next characters or its previous ones).
+        let (_, _, chunk_start) = self.text.chunk_at_char(index);
         let first = index.saturating_sub(CHAR_CACHE_BEHIND).max(chunk_start);
-        let byte = ropey::str_utils::char_to_byte_idx(chunk, first - chunk_start);
+        let byte = self.text.char_to_byte(first);
         let mut cache = self.char_cache.borrow_mut();
         cache.start = first;
         cache.chars.clear();
         cache
             .chars
-            .extend(chunk[byte..].chars().take(CHAR_CACHE_WINDOW));
+            .extend(self.text.rest_at_byte(byte).chars().take(CHAR_CACHE_WINDOW));
         cache.valid = true;
         cache.character(index)
     }
@@ -2766,7 +2299,7 @@ impl Buffer {
 
         let insert_at = self.pt;
         let idx0 = self.pt - 1; // 0-based
-        // The rope keeps its length; what it grew by is the insertion's.
+        // The text keeps its length; what it grew by is the insertion's.
         let before = self.text.len_chars();
         self.text.insert_counted(idx0, s, counts);
         let nchars = self.text.len_chars() - before;
@@ -3538,7 +3071,7 @@ impl Buffer {
 
     /// search.c's find_newline backward from Z over the whole text: the
     /// position just after the COUNTth newline before the end, or None when
-    /// the text has fewer. The rope counts only newlines as line breaks.
+    /// the text has fewer. Only newlines count as line breaks.
     pub fn after_newlines_from_end(&self, count: usize) -> Option<usize> {
         let newlines = self.text.len_lines() - 1;
         (count >= 1 && count <= newlines).then(|| self.text.line_to_char(newlines - count + 1) + 1)
@@ -3558,9 +3091,9 @@ impl Buffer {
         if start >= end {
             return 0;
         }
-        let slice = self.text.slice(start..end);
+        let (start_byte, end_byte) = (self.text.char_to_byte(start), self.text.char_to_byte(end));
         // Count newlines + 1 (last line might not end with newline)
-        let newlines = slice.chars().filter(|&c| c == '\n').count();
+        let newlines = self.text.newlines_in(start_byte..end_byte);
         if end > start { newlines + 1 } else { 0 }
     }
 
@@ -3691,7 +3224,7 @@ mod tests {
 
     #[test]
     fn byte_conversions_remember_only_character_starts() {
-        // A rope of many chunks converted byte by byte, in and out of order
+        // A text with its gap moved about converted byte by byte, in and out of order
         // and in the middle of characters, after edits: the conversions a
         // character's first byte records must not answer for another byte.
         let mut buf = Buffer::from_text("test", &"aé€𝄞\n".repeat(600));
@@ -3851,7 +3384,7 @@ mod tests {
     }
 
     #[test]
-    fn rope_character_cache_tracks_text_mutation_and_swap() {
+    fn character_cache_tracks_text_mutation_and_swap() {
         let text = format!("{}λ{}", "a".repeat(1500), "b".repeat(1500));
         let mut buf = Buffer::from_text("cached", &text);
         assert_eq!(buf.char_at(1501), Some('λ'));
@@ -3877,12 +3410,12 @@ mod tests {
     }
 
     #[test]
-    fn rope_position_cache_follows_edits_before_and_over_it() {
+    fn position_cache_follows_edits_before_and_over_it() {
         // Conversions recorded since an edit stay right across the edits
-        // after them: shifted by an edit before, dropped by one over them.
+        // after them: shifted by an edit before, dropped by one over them;
+        // and each counts right across the gap the edits leave.
         let mut model: Vec<char> = "aé€bc\n".repeat(400).chars().collect();
         let mut text = BufferText::from_str(&model.iter().collect::<String>());
-        assert!(matches!(text.store, TextStore::Rope(_)));
         let mut seed = 0x2545_f491_4f6c_dd1du64;
         let mut next = |bound: usize| {
             seed ^= seed << 13;
@@ -3917,27 +3450,17 @@ mod tests {
     }
 
     #[test]
-    fn small_texts_are_strings_and_grow_into_ropes_and_back() {
-        // A text of up to SMALL_TEXT bytes is one string; past it a rope,
-        // and a string again under half.  Each step answers as the text
-        // it holds, multibyte characters and lines included.
+    fn a_text_answers_through_insertions_and_deletions_around_its_gap() {
+        // Each step answers as the text it holds, multibyte characters and
+        // lines included, wherever the last edit left the gap; a scan's
+        // copy taken before an edit keeps the text it was taken of.
         fn check(buf: &Buffer, expected: &str) {
             assert_eq!(buf.full_buffer_string(), expected);
             assert_eq!(buf.size_total(), expected.chars().count());
-            assert_eq!(String::from(&buf.text_rope()), expected);
-            // A small text's rope of one leaf comes with that leaf, its
-            // whole text.
-            let (rope, leaf) = buf.text_rope_and_leaf();
-            match leaf {
-                Some(leaf) => {
-                    // SAFETY: the rope and its leaf were taken together.
-                    assert_eq!(unsafe { leaf.chunk(&rope) }, (expected, 0));
-                    assert!(matches!(buf.text.store, TextStore::Small(_)));
-                }
-                None => assert!(
-                    matches!(buf.text.store, TextStore::Rope(_)) || rope.chunks().count() > 1
-                ),
-            }
+            let scan = buf.scan_text();
+            let (before, after) = scan.halves();
+            assert_eq!(format!("{before}{after}"), expected);
+            assert_eq!(scan.chars(), expected.chars().count());
             let lines: Vec<&str> = expected.split('\n').collect();
             assert_eq!(buf.text.len_lines(), lines.len());
             assert_eq!(buf.lines_from(2, 1), vec![lines[1].to_string()]);
@@ -3959,20 +3482,21 @@ mod tests {
             );
         }
         let mut buf = Buffer::from_text("small", "λx\nab\n");
-        assert!(matches!(buf.text.store, TextStore::Small(_)));
         check(&buf, "λx\nab\n");
 
         let line = "abcλ\u{1F600}def\n";
         let mut expected = String::from("λx\nab\n");
-        while expected.len() <= SMALL_TEXT {
+        let first = buf.scan_text();
+        while expected.len() <= 4096 {
             buf.goto_char(3);
             buf.insert(line);
             expected.insert_str(expected.char_indices().nth(2).expect("char").0, line);
             check(&buf, &expected);
         }
-        assert!(matches!(buf.text.store, TextStore::Rope(_)));
+        let (before, after) = first.halves();
+        assert_eq!(format!("{before}{after}"), "λx\nab\n");
 
-        while expected.len() > SMALL_TEXT / 4 {
+        while expected.len() > 1024 {
             let from = 3;
             let to = from + line.chars().count();
             assert_eq!(buf.delete_region(from, to).as_deref(), Ok(line));
@@ -3980,7 +3504,6 @@ mod tests {
             expected.replace_range(start..start + line.len(), "");
             check(&buf, &expected);
         }
-        assert!(matches!(buf.text.store, TextStore::Small(_)));
     }
 
     #[test]

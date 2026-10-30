@@ -457,7 +457,7 @@ pub(crate) fn apply_symbol_shorthands_to_token(
 pub struct Reader<'a> {
     input: Input<'a>,
     /// The bytes of a text or encoded input, read at POS directly (empty
-    /// for a stream or a rope, read through INPUT).
+    /// for a stream or a buffer's text, read through INPUT).
     slice: &'a [u8],
     pos: usize,
     symbol_shorthands: Vec<(String, String)>,
@@ -607,23 +607,23 @@ impl<'a> Reader<'a> {
         reader
     }
 
-    /// A buffer's text, read in place from its rope.
-    pub(crate) fn from_rope(
-        rope: ropey::RopeSlice<'a>,
+    /// A buffer's text, read in place in its two parts.
+    pub(crate) fn from_buffer_parts(
+        parts: crate::lisp::regex_emacs::GapRange<'a>,
         symbol_shorthands: Vec<(String, String)>,
     ) -> Self {
         let mut reader = Self::with_symbol_shorthands("", symbol_shorthands);
-        reader.input = Input::rope(rope);
+        reader.input = Input::buffer(parts);
         reader
     }
 
-    /// `read-positioning-symbols' on a buffer's rope, as on encoded text.
-    pub(crate) fn from_rope_positioned(
-        rope: ropey::RopeSlice<'a>,
+    /// `read-positioning-symbols' on a buffer's text, as on encoded text.
+    pub(crate) fn from_buffer_parts_positioned(
+        parts: crate::lisp::regex_emacs::GapRange<'a>,
         symbol_shorthands: Vec<(String, String)>,
         position_base: i64,
     ) -> Self {
-        let mut reader = Self::from_rope(rope, symbol_shorthands);
+        let mut reader = Self::from_buffer_parts(parts, symbol_shorthands);
         reader.locate_symbols = true;
         reader.position_base = position_base;
         reader
@@ -2225,9 +2225,19 @@ impl<'a> Reader<'a> {
             }
             return self.position_base + self.position_cursor_char;
         }
-        if let Input::Rope(input) = &self.input {
-            // The bytes consumed are whole characters of the rope's text.
-            return self.position_base + input.rope.byte_to_char(self.pos) as i64;
+        if let Input::Buffer(input) = &self.input {
+            // The bytes consumed are whole characters of the buffer's
+            // text, counted on from the last position found.
+            if self.position_cursor_byte > self.pos {
+                self.position_cursor_byte = 0;
+                self.position_cursor_char = 0;
+            }
+            self.position_cursor_char += input
+                .parts
+                .chars_between(self.position_cursor_byte, self.pos)
+                as i64;
+            self.position_cursor_byte = self.pos;
+            return self.position_base + self.position_cursor_char;
         }
         let Input::Text(bytes) = &self.input else {
             unreachable!()

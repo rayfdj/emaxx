@@ -9301,6 +9301,42 @@ setup_process_coding_systems's check now refuses). A 13-form
   grouped gate's 3,333 library tests, the seven integration suites,
   clippy with every target and feature, rustfmt and `git diff --check';
   the five interval probes match GNU 30.2.
+- **Round 175: a buffer's text in a gap buffer, as insdel.c keeps it.**
+  A buffer's text was a `ropey' rope (a string while it was short), whose
+  insertion walks and rebalances its tree and recounts the leaf it
+  changes: about 2,000 instructions an insertion where GNU copies the
+  bytes into the gap. `BufferText' now holds a `GapText': the text's
+  bytes in one allocation with a gap where the last change was made, the
+  gap's byte and character positions and the text's character count
+  (GPT_BYTE, GPT, Z_BYTE and Z). An insertion moves the gap to its
+  position and copies the bytes in (insert_1_both), a deletion widens the
+  gap over the deleted bytes (del_range_2), and a gap too small grows by
+  what the insertion needs and GAP_BYTES_DFL, or by a quarter of the text
+  when that is more, so that a long run of insertions copies the text a
+  bounded number of times. A conversion between character and byte
+  positions counts from the nearest position known, as
+  buf_charpos_to_bytepos does: the text's start, the gap, its end and the
+  recent conversions, and for a scan point, BEGV and ZV too. Lines are
+  found by memchr over the text before and after the gap. The scans read
+  those two parts in place, as re_search_2 reads its two strings: the
+  regexp matcher, the searches and their match positions, the non-regexp
+  scanners, the syntax scanners, the reader's buffer and marker input,
+  `compare-buffer-substrings' and the coding functions' reads of a
+  region. A scan that must not hold the buffer (Lisp may run while it
+  reads) shares the bytes through a reference count, and a change while
+  one does copies them once. A byte-compiled loop's `(insert "x")' costs
+  2,160 instructions against GNU's 3,520, after `(goto-char 3)' 2,237
+  against 3,744, and `(insert "xy")' with `(delete-char -1)' 5,009
+  against 5,957; undo-tests runs 7.64G instructions against 10.00G (GNU
+  9.28G), format-tests 6.63G against 6.82G (GNU 6.21G), electric-tests
+  6.74G against 6.93G (GNU 6.62G) and semantic-utest-ia 18.47G against
+  19.00G (GNU 19.28G); a failing `looking-at' costs 1,639 instructions
+  against 1,716 (GNU 1,116). The oracle tests of
+  `compare-buffer-substrings', match positions, counted searches, a read
+  file's searches and newline scans now move the gap inside the ranges
+  they read, so that each reads across it. Local validation: the
+  grouped gate's 3,337 library tests, the seven integration suites,
+  clippy with every target and feature, rustfmt and `git diff --check'.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -10429,6 +10465,17 @@ attempt. Its timings: setup 78.2 s against 63.2 s (1.238), test bodies
 interval splits round 173 removes; with that file at its earlier time
 the test bodies come to 253.0 s (0.958).
 
+**On `3a81df7`** (round 173): full Rust gate passed (run 41002951997);
+frozen (run 41002961003) matched all 7,928 outcomes on its first
+attempt. Its timings: setup 81.0 s against 68.6 s (1.179), test bodies
+258.3 s against 274.2 s (0.942), in all 0.978: ert-tests.el back under
+GNU's time.
+
+**On `84ad4a4`** (round 174): full Rust gate passed (run 41008892545);
+frozen (run 41008895624) matched all 7,928 outcomes on its first
+attempt. Its timings: setup 79.5 s against 67.4 s (1.179), test bodies
+256.4 s against 272.2 s (0.942), in all 0.979.
+
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'
   without signalling (round 174).** In GNU,
@@ -10442,30 +10489,18 @@ the test bodies come to 253.0 s (0.958).
   `insert-and-inherit' beside propertized text therefore return where
   GNU signals `(wrong-type-argument listp VALUE)' while that variable is
   bound to a non-list.
-- **A call of `looking-at' costs about 600 instructions more than GNU's
-  around the match (round 174).** `(looking-at "x")' at a failing
-  position costs 1,716 instructions against GNU's 1,115: the buffer
-  snapshot the matcher reads apart from the buffer (about 200, and a
-  small buffer's text copied with an allocation and free, about 80 more),
-  reading `case-fold-search' through its buffer-local binding and the
+- **A call of `looking-at' costs about 520 instructions more than GNU's
+  around the match (rounds 174, 175).** `(looking-at "x")' at a failing
+  position costs 1,639 instructions against GNU's 1,116: reading
+  `case-fold-search' through its buffer-local binding and the
   canonicalization table's cache (about 180, where GNU reads
-  BVAR (current_buffer, case_fold_search)), and the pooled match state,
-  the cell release and the match environment's drop. In format-tests'
-  709,311 calls that is about 425M of its 0.61G excess. The snapshot is
-  the rope's (a gap buffer's two halves would be read in place, as
-  re_search_2 reads them); the variable read is that of a
-  DEFVAR_PER_BUFFER variable kept as a buffer-local binding.
-- **Each insertion into a buffer's rope costs about 2,000 instructions
-  (round 173).** A buffer's text is a `ropey' rope, whose insertion
-  walks and rebalances its tree and updates the chunk's byte, character
-  and line counts: undo-tests' `undo-test4' appends a character a
-  million times at about 2,027 instructions an insertion, where GNU's
-  gap buffer copies the bytes into the gap at point. GNU's own design,
-  a gap buffer with the byte and character positions of the gap and the
-  chars-to-bytes caches insdel.c and marker.c keep, is the long-term
-  replacement; the rope is read by the buffer, search, the non-regexp
-  scanners, the syntax scanners, the reader's buffer input and the
-  regexp matcher.
+  BVAR (current_buffer, case_fold_search)), the buffer snapshot the
+  matcher reads apart from the buffer (since round 175 the gap buffer's
+  bytes shared, and the positions it converts from), and the pooled
+  match state, the cell release and the match environment's drop. In
+  format-tests' 709,311 calls that is about 370M of its 0.42G excess.
+  The variable read is that of a DEFVAR_PER_BUFFER variable kept as a
+  buffer-local binding.
 - **`make-symbol' costs about 690 instructions (round 173).** The name
   is copied out of its string and the uninterned symbol registered under
   a counter in the symbol tables, where GNU's Fmake_symbol allocates the
@@ -10536,19 +10571,18 @@ the test bodies come to 253.0 s (0.958).
   grow without bound (where GNU truncates depends on when it collects,
   so no test compares it). record_point does not consult
   `undo-inhibit-record-point', which nothing in the tree sets.
-- **undo-tests' million insertions (round 165).** In the release build
-  undo-tests takes 10.10G instructions against GNU's 9.28G, most of it
-  `undo-test4''s interpreted `dotimes' of 1,048,576 `insert's at the
-  end of the buffer. An insertion takes 4,878 instructions against
-  Finsert's 3,862, of which update_compositions is 1,640 in GNU and
-  nothing in Emaxx: ropey's insert (`Rope::insert_internal', its tree
-  walk, `Arc::make_mut' of each node and the leaf's character scan)
-  takes 2,030 where GNU's copy_text into the gap takes 92. The windows'
-  start and point are integers in their records, which every insertion
-  and deletion adjusts by walking every window (284 instructions an
-  insertion, where GNU's window markers are on the buffer's chain), and
-  `related_buffer_ids' walks the buffer list for a buffer with no
-  indirect relatives (115). (Round 166 made the undo list GNU's.)
+- **undo-tests' million insertions (rounds 165, 175).** Most of
+  undo-tests is `undo-test4''s interpreted `dotimes' of 1,048,576
+  `insert's at the end of the buffer. At round 165 the release build ran
+  it in 10.10G instructions against GNU's 9.28G, an insertion in 4,878
+  against Finsert's 3,862 (update_compositions is 1,640 of GNU's, and
+  nothing in Emaxx), of which ropey's insert took 2,030 where GNU's
+  copy_text into the gap takes 92; with round 175's gap buffer it runs
+  in 7.64G. The windows' start and point are integers in their records,
+  which every insertion and deletion adjusts by walking every window
+  (284 instructions an insertion at round 165), where GNU's window
+  markers are on the buffer's chain. (Round 166 made the undo list
+  GNU's, round 167 `related_buffer_ids''s walk.)
 - **A string's intervals are merged where GNU keeps them (round 164).**
   Emaxx's string properties merge adjacent spans with equal plists after
   every change, where textprop.c leaves the intervals a change made:
@@ -10565,15 +10599,15 @@ the test bodies come to 253.0 s (0.958).
   exec_byte_code's and Ffuncall's 269M, `concat' 1,155 instructions a
   call against concat_to_string's 834, `string-match' 2,130 against
   1,920, the collector's marking 41M against 50M.
-- **What reading a large file still costs (round 161).** Of the 102M
-  instructions `insert-file-contents' of NormalizationTest.txt takes
-  (GNU 67M), the unibyte text for `set-auto-coding-function' is 24.7M
+- **What reading a large file still costs (rounds 161, 175).** Of the
+  85M instructions `insert-file-contents' of NormalizationTest.txt
+  takes (GNU 67M; 102M at round 161, when each text was built into a
+  rope), the unibyte text for `set-auto-coding-function' is about 25M
   to write (U+E080..U+E0FF for each byte above 0x7F, three bytes where
-  GNU's gap holds one) and about 11M to build into the rope, and the
-  decoded text 11M to validate as UTF-8 (detect_coding_utf_8 accepts
-  overlong sequences and surrogates, so its verdict does not stand for
-  `from_utf8''s) and about 8M to build; GNU decodes in the gap and
-  inserts nothing twice. Writing the raw text a byte at a time without
+  GNU's gap holds one), and the decoded text about 10M to validate as
+  UTF-8 (detect_coding_utf_8 accepts overlong sequences and surrogates,
+  so its verdict does not stand for `from_utf8''s); GNU decodes in the
+  gap and inserts nothing twice. Writing the raw text a byte at a time without
   a branch, or eight at a time into the reserved bytes, measured no
   faster than the ASCII-run loop it has.
 - **A child's standard error and its stderr pipe process (round

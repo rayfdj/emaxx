@@ -4670,10 +4670,10 @@ fn special_forms_signal_their_min_args_as_eval_sub_does() {
 }
 
 #[test]
-fn newline_scans_cross_the_rope_chunks() {
-    // find_newline over a buffer longer than one rope chunk, with
-    // multibyte text so byte and character offsets differ inside a
-    // chunk: line starts, ends, `forward-line' both ways, and
+fn newline_scans_cross_the_gap() {
+    // find_newline over a buffer whose gap an edit left inside it, with
+    // multibyte text so byte and character offsets differ on either side
+    // of it: line starts, ends, `forward-line' both ways, and
     // `skip-chars' over a line.  The oracle's values.
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut step = |form: &str, expected: &str| {
@@ -4686,6 +4686,7 @@ fn newline_scans_cross_the_rope_chunks() {
     step(
         "(with-temp-buffer
            (dotimes (i 300) (insert (format \"línea %d — texto\\n\" i)))
+           (goto-char 3003) (insert \"x\") (delete-char -1)
            (goto-char 3000)
            (let ((middle (list (line-beginning-position) (line-end-position)
                                (forward-line 2) (point) (forward-line -3) (point))))

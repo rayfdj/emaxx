@@ -2489,8 +2489,8 @@ impl DumpContext {
     }
 
     /// dump_cold_buffer: the text bytes in GNU's internal representation
-    /// plus the terminating NUL (GNU also writes the zeroed gap; Emaxx's
-    /// rope has none), then the saved-text snapshot Emaxx compares
+    /// plus the terminating NUL (GNU also writes the zeroed gap; Emaxx
+    /// writes none), then the saved-text snapshot Emaxx compares
     /// against, each with the fixup that points the record at it.
     fn dump_cold_buffer(&mut self, interp: &Interpreter, object: &Value) -> Result<(), DumpError> {
         let Some(ObjectState::Dumped(buffer_offset)) = self.recall_object(object) else {

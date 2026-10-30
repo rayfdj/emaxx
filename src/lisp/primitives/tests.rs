@@ -1029,8 +1029,9 @@ fn compiled_time_string_results_keep_text_property_mutation() {
 #[test]
 fn compare_buffer_substrings_reads_both_ranges_in_place_like_editfns() {
     // editfns.c compares the two ranges character by character in the
-    // buffers themselves. The ranges here cross the rope's chunks in a
-    // multibyte buffer and in an ASCII one, come reversed or whole, and
+    // buffers themselves. The ranges here cross the gap, which an edit
+    // leaves inside them, in a multibyte buffer and in an ASCII one, come
+    // reversed or whole, and
     // fold case through the current buffer's `case-fold-search'. A range
     // outside a buffer's accessible region signals `args-out-of-range'
     // with the original bounds; Emaxx clamped it and compared what was
@@ -1038,11 +1039,13 @@ fn compare_buffer_substrings_reads_both_ranges_in_place_like_editfns() {
     let program = r#"
         (with-temp-buffer
           (dotimes (i 400) (insert (format "line %03d é\n" i)))
+          (goto-char 1700) (insert "x") (delete-char -1)
           (let ((other (generate-new-buffer " other")))
             (unwind-protect
                 (progn
                   (with-current-buffer other
-                    (dotimes (i 400) (insert (format "line %03d e\n" i))))
+                    (dotimes (i 400) (insert (format "line %03d e\n" i)))
+                    (goto-char 1100) (insert "x") (delete-char -1))
                   (list (compare-buffer-substrings nil 1 2000 nil 1 2000)
                         (compare-buffer-substrings nil 1 2000 other 1 2000)
                         (compare-buffer-substrings nil 2000 1 other 1 2000)
@@ -1076,7 +1079,7 @@ fn compare_buffer_substrings_reads_both_ranges_in_place_like_editfns() {
 
 #[test]
 fn compare_buffer_substrings_compares_short_ascii_ranges_like_editfns() {
-    // Short ranges of ASCII buffers lie in one rope chunk and are compared
+    // Short ranges of ASCII buffers lie on one side of the gap and are compared
     // as bytes: equal, differing, prefix either way, empty and reversed
     // ranges, another buffer, and case kept with case-fold-search nil.
     let program = r#"(with-temp-buffer
@@ -8049,13 +8052,15 @@ fn directory_listings_keep_readdirs_order_as_dired_c_does() {
 
 #[test]
 fn match_positions_agree_in_large_and_small_multibyte_buffers() {
-    // A multibyte buffer of many rope chunks converts each register's
-    // byte offset from the last one converted; a small buffer's searches
-    // read a copy of its text, edited between them. GNU 30.2's positions.
+    // A large multibyte buffer, its gap inside the text, converts each
+    // register's byte offset from the last one converted; a small buffer's
+    // searches read a copy of its text, edited between them. GNU 30.2's
+    // positions.
     assert_oracle_contract_matches_interpreter(
         r#"(let (out)
           (with-temp-buffer
             (dotimes (i 3000) (insert (format "é%dλ%s\n" i (make-string (% i 7) ?ü))))
+            (goto-char 20000) (insert "x") (delete-char -1)
             (goto-char (point-min))
             (while (re-search-forward "λ\\(ü+\\)$" nil t)
               (push (list (match-beginning 0) (match-end 1) (point)) out))
@@ -8125,7 +8130,7 @@ fn raw_bytes_read_from_a_file_keep_their_codes_through_edits() {
 
 #[test]
 fn counted_searches_convert_their_registers_through_the_buffer() {
-    // A multibyte buffer of many rope chunks searched with counts both
+    // A multibyte buffer, its gap inside the text, searched with counts both
     // ways, within a bound, after an edit and with a group left unset:
     // each match's registers and end converted by the buffer's own
     // position cache. GNU 30.2's positions.
@@ -8133,6 +8138,7 @@ fn counted_searches_convert_their_registers_through_the_buffer() {
         r#"(list
           (with-temp-buffer
             (insert (make-string 2000 ?é) "abcλdef" (make-string 3000 ?ü))
+            (goto-char 3500) (insert "x") (delete-char -1)
             (goto-char 1)
             (list (re-search-forward "c\\(λ\\)d" nil t) (match-beginning 0) (match-end 1)
                   (re-search-forward "ü\\{3\\}" nil t 5) (point)
@@ -8322,15 +8328,16 @@ fn pipe_processes_hold_their_pipes_within_fd_setsize() {
 
 #[test]
 fn file_reads_searches_and_unread_deletions_agree_with_gnu() {
-    // Boyer-Moore over a rope's chunks forward and backward, folding case
+    // Boyer-Moore across the gap forward and backward, folding case
     // and in a unibyte buffer of raw bytes; a deletion with undo off,
     // whose text nothing reads; files read through the decision buffer
     // (a dos eol, latin-1, a null byte).  GNU 30.2's values.
     assert_oracle_contract_matches_interpreter(
         r#"(list
-          ;; Boyer-Moore across a rope's chunks, forward and backward, folding case.
+          ;; Boyer-Moore across the gap, forward and backward, folding case.
           (with-temp-buffer
             (dotimes (i 3000) (insert (format "line %d Äbc xyz\n" i)))
+            (goto-char 30003) (insert "x") (delete-char -1)
             (let ((case-fold-search t) (n 0) (m 0))
               (goto-char (point-min))
               (while (search-forward "äBC XYZ" nil t) (setq n (1+ n)))

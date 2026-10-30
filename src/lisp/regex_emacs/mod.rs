@@ -6,7 +6,7 @@
 //! one change of representation is the text itself: GNU reads its internal
 //! multibyte form in at most two contiguous strings (the buffer's text on
 //! either side of the gap); this engine reads Emaxx's UTF-8 text, a string
-//! or a rope's chunks, in place.  Raw bytes are the private-use characters
+//! or a buffer's two parts, in place.  Raw bytes are the private-use characters
 //! U+E080..U+E0FF there (`raw_byte_regex_char'), and `exactn' stores its
 //! characters in that same form so a literal still matches byte for byte.
 //! Syntax, categories, case translation and point come from the caller
@@ -339,82 +339,66 @@ pub(crate) struct Text<'a> {
 }
 
 /// Where the text's bytes are: one run (a string's data, read in place as
-/// GNU's re_search_2 reads SDATA) or a rope's chunks.
+/// GNU's re_search_2 reads SDATA) or a buffer's text in two parts.
 #[derive(Clone, Copy)]
 pub(super) enum TextSource<'a> {
     Str(&'a str),
-    Rope(RopeRange<'a>),
+    Gap(GapRange<'a>),
 }
 
-/// Bytes START to START + LEN of a rope, BEGV_BYTE to ZV_BYTE of a buffer's
-/// text: read a chunk at a time as re_search_2 reads the buffer's two
-/// halves in place, with no ropey::RopeSlice built for it (whose
-/// construction counts the characters and lines of the leaf it lands in).
+/// BEGV_BYTE to ZV_BYTE of a buffer's text: the part before the gap and
+/// the part after it, read in place as re_search_2 reads its two strings.
+/// Each holds whole characters.
 #[derive(Clone, Copy)]
-pub(crate) struct RopeRange<'a> {
-    rope: &'a ropey::Rope,
-    start: usize,
-    len: usize,
-    /// The character index of START.
-    start_char: usize,
-    /// A chunk of the rope already found and its first byte, read without
-    /// walking the tree (see `with_chunk').
-    known: Option<(&'a [u8], usize)>,
+pub(crate) struct GapRange<'a> {
+    first: &'a [u8],
+    second: &'a [u8],
 }
 
-impl<'a> RopeRange<'a> {
-    /// Bytes START..END of ROPE, START being the character START_CHAR.
-    pub(crate) fn new(rope: &'a ropey::Rope, start: usize, end: usize, start_char: usize) -> Self {
-        debug_assert!(start <= end && end <= rope.len_bytes());
-        RopeRange {
-            rope,
-            start,
-            len: end - start,
-            start_char,
-            known: None,
-        }
-    }
-
-    /// The range with CHUNK of its rope, starting at the rope's byte
-    /// CHUNK_START, known: a read inside it walks no tree.
-    pub(crate) fn with_chunk(self, chunk: &'a str, chunk_start: usize) -> Self {
-        RopeRange {
-            known: Some((chunk.as_bytes(), chunk_start)),
-            ..self
+impl<'a> GapRange<'a> {
+    /// FIRST then SECOND.
+    pub(crate) fn new(first: &'a str, second: &'a str) -> Self {
+        GapRange {
+            first: first.as_bytes(),
+            second: second.as_bytes(),
         }
     }
 
     #[inline]
     pub(crate) fn len_bytes(&self) -> usize {
-        self.len
+        self.first.len() + self.second.len()
     }
 
-    /// The chunk holding byte D of the range, cut to the range, and the
-    /// range offset its first byte has.
+    /// The parts before the gap and after it.
+    #[inline]
+    pub(crate) fn parts(&self) -> (&'a [u8], &'a [u8]) {
+        (self.first, self.second)
+    }
+
+    /// The part holding byte D of the range and the offset of its first
+    /// byte; at the end, the last part.
     #[inline]
     pub(crate) fn chunk_at_byte(&self, d: usize) -> (&'a [u8], usize) {
-        let at = self.start + d;
-        let (bytes, chunk_start) = match self.known {
-            Some((bytes, chunk_start)) if at >= chunk_start && at < chunk_start + bytes.len() => {
-                (bytes, chunk_start)
-            }
-            _ => {
-                let (chunk, chunk_start, _, _) = self.rope.chunk_at_byte(at);
-                (chunk.as_bytes(), chunk_start)
-            }
-        };
-        let low = self.start.max(chunk_start);
-        let high = (self.start + self.len).min(chunk_start + bytes.len());
-        (
-            &bytes[low - chunk_start..high - chunk_start],
-            low - self.start,
-        )
+        if d < self.first.len() || self.second.is_empty() {
+            (self.first, 0)
+        } else {
+            (self.second, self.first.len())
+        }
     }
 
     /// The character offset of byte offset D from the range's start.
-    #[inline]
+    #[cfg(test)]
     pub(crate) fn byte_to_char(&self, d: usize) -> usize {
-        self.rope.byte_to_char(self.start + d) - self.start_char
+        self.chars_between(0, d)
+    }
+
+    /// The characters bytes FROM..TO of the range begin.
+    pub(crate) fn chars_between(&self, from: usize, to: usize) -> usize {
+        let split = self.first.len();
+        crate::buffer::count_chars(&self.first[from.min(split)..to.min(split)])
+            + crate::buffer::count_chars(
+                &self.second[from.max(split) - split..to.max(split) - split],
+            )
     }
 }
 
@@ -429,10 +413,10 @@ impl<'a> Text<'a> {
         }
     }
 
-    pub(crate) fn from_rope(rope: RopeRange<'a>, multibyte: bool, has_side_table: bool) -> Self {
+    pub(crate) fn from_gap(range: GapRange<'a>, multibyte: bool, has_side_table: bool) -> Self {
         Text {
-            size: rope.len_bytes(),
-            source: TextSource::Rope(rope),
+            size: range.len_bytes(),
+            source: TextSource::Gap(range),
             has_side_table,
             multibyte,
             latin1_bytes: false,
@@ -456,7 +440,7 @@ impl<'a> Text<'a> {
     pub(crate) fn char_offset(&self, d: usize) -> usize {
         match self.source {
             TextSource::Str(text) => ropey::str_utils::byte_to_char_idx(text, d),
-            TextSource::Rope(rope) => rope.byte_to_char(d),
+            TextSource::Gap(range) => range.byte_to_char(d),
         }
     }
 

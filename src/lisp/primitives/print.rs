@@ -698,8 +698,9 @@ pub(crate) fn read_encoded_form_in_env(
 pub(crate) enum LispReaderInput<'a> {
     Text(&'a str),
     Encoded(&'a [u8], bool),
-    /// A buffer's text, read in place.
-    Rope(ropey::RopeSlice<'a>),
+    /// A buffer's text, read in place in its parts before the gap and
+    /// after it.
+    Buffer(crate::lisp::regex_emacs::GapRange<'a>),
 }
 
 fn read_one_from_reader(
@@ -720,7 +721,9 @@ fn read_one_from_reader(
             LispReaderInput::Encoded(bytes, multibyte) => {
                 crate::lisp::reader::Reader::from_encoded(bytes, multibyte, shorthands)
             }
-            LispReaderInput::Rope(rope) => crate::lisp::reader::Reader::from_rope(rope, shorthands),
+            LispReaderInput::Buffer(parts) => {
+                crate::lisp::reader::Reader::from_buffer_parts(parts, shorthands)
+            }
         };
         let mut reader = reader.with_read_context(&mut context);
         let value = match reader.read() {
@@ -761,13 +764,13 @@ fn read_one_from_reader(
 }
 
 /// A buffer's text from START to END as the reader reads it, the way
-/// lread.c's readchar takes each character from the buffer.  The rope is
-/// read in place (a clone shares it) unless the range holds a character
+/// lread.c's readchar takes each character from the buffer.  The text is
+/// read in place (a scan's copy shares it) unless the range holds a character
 /// it cannot carry (one beyond Unicode, or a real U+E000..U+E0FF): then
 /// the reader takes the range's internal multibyte bytes.
 pub(crate) enum BufferReadSource {
-    /// The rope and the byte range of the text in it.
-    Rope(ropey::Rope, std::ops::Range<usize>),
+    /// The buffer's text and the byte range of the range in it.
+    Buffer(crate::buffer::ScanText, std::ops::Range<usize>),
     Encoded(Vec<u8>),
 }
 
@@ -794,9 +797,15 @@ impl BufferReadSource {
             ));
         }
         if !buffer.has_extended_chars_in(start, end) {
-            let rope = buffer.text_rope();
-            let range = rope.char_to_byte(start - 1)..rope.char_to_byte(end - 1);
-            return Ok(Self::Rope(rope, range));
+            let text = buffer.scan_text();
+            let byte = |pos: usize| {
+                buffer
+                    .storage_byte_position(pos)
+                    .expect("an accessible position")
+                    - 1
+            };
+            let range = byte(start)..byte(end);
+            return Ok(Self::Buffer(text, range));
         }
         let text = buffer
             .buffer_substring(start, end)
@@ -814,8 +823,9 @@ impl BufferReadSource {
     /// The source from byte OFFSET on.
     pub(crate) fn input_from(&self, offset: usize) -> LispReaderInput<'_> {
         match self {
-            Self::Rope(rope, range) => {
-                LispReaderInput::Rope(rope.byte_slice(range.start + offset..range.end))
+            Self::Buffer(text, range) => {
+                let (first, second) = text.range_halves(range.start + offset..range.end);
+                LispReaderInput::Buffer(crate::lisp::regex_emacs::GapRange::new(first, second))
             }
             Self::Encoded(bytes) => LispReaderInput::Encoded(&bytes[offset..], true),
         }
@@ -824,9 +834,7 @@ impl BufferReadSource {
     /// The characters before byte OFFSET.
     pub(crate) fn characters_before(&self, offset: usize) -> usize {
         match self {
-            Self::Rope(rope, range) => {
-                rope.byte_to_char(range.start + offset) - rope.byte_to_char(range.start)
-            }
+            Self::Buffer(text, range) => text.chars_in(range.start..range.start + offset),
             Self::Encoded(bytes) => {
                 let mut position = 0;
                 let mut count = 0;
@@ -979,11 +987,13 @@ fn read_one_positioned_form(
                     base_position,
                 )
             }
-            LispReaderInput::Rope(rope) => crate::lisp::reader::Reader::from_rope_positioned(
-                rope,
-                symbol_shorthands,
-                base_position,
-            ),
+            LispReaderInput::Buffer(parts) => {
+                crate::lisp::reader::Reader::from_buffer_parts_positioned(
+                    parts,
+                    symbol_shorthands,
+                    base_position,
+                )
+            }
         };
         let mut reader = reader.with_read_context(&mut context);
         let value = match reader.read() {

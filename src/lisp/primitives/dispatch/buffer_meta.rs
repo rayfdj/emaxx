@@ -100,7 +100,7 @@ define_dispatch!(
                     comparison_range(interp, &args[0], &args[1], &args[2])?;
                 let (right_buffer, right_start, right_end) =
                     comparison_range(interp, &args[3], &args[4], &args[5])?;
-                // Two ASCII ranges, each within one chunk of its rope, are
+                // Two ASCII ranges, each on one side of its buffer's gap, are
                 // compared as bytes; a byte is its character there.
                 if canonical_table.is_none()
                     && let Some(left) = left_buffer.ascii_chunk_range(left_start, left_end)

@@ -122,17 +122,18 @@ pub(super) enum Input<'a> {
     },
     Function(FunctionInput<'a>),
     /// A buffer's text read in place, as lread.c's readchar reads it from
-    /// the buffer: the chunk holding the last byte read is kept at hand.
-    Rope(RopeInput<'a>),
+    /// the buffer: the part (before the gap, after it) holding the last
+    /// byte read is kept at hand.
+    Buffer(BufferInput<'a>),
 }
 
-pub(super) struct RopeInput<'a> {
-    pub(super) rope: ropey::RopeSlice<'a>,
+pub(super) struct BufferInput<'a> {
+    pub(super) parts: crate::lisp::regex_emacs::GapRange<'a>,
     chunk: &'a [u8],
     chunk_start: usize,
 }
 
-impl<'a> RopeInput<'a> {
+impl<'a> BufferInput<'a> {
     fn byte(&mut self, position: usize) -> Option<u8> {
         if let Some(byte) = position
             .checked_sub(self.chunk_start)
@@ -140,20 +141,20 @@ impl<'a> RopeInput<'a> {
         {
             return Some(*byte);
         }
-        if position >= self.rope.len_bytes() {
+        if position >= self.parts.len_bytes() {
             return None;
         }
-        let (chunk, chunk_start, _, _) = self.rope.chunk_at_byte(position);
-        self.chunk = chunk.as_bytes();
+        let (chunk, chunk_start) = self.parts.chunk_at_byte(position);
+        self.chunk = chunk;
         self.chunk_start = chunk_start;
         self.chunk.get(position - chunk_start).copied()
     }
 }
 
 impl<'a> Input<'a> {
-    pub(super) fn rope(rope: ropey::RopeSlice<'a>) -> Self {
-        Self::Rope(RopeInput {
-            rope,
+    pub(super) fn buffer(parts: crate::lisp::regex_emacs::GapRange<'a>) -> Self {
+        Self::Buffer(BufferInput {
+            parts,
             chunk: &[],
             chunk_start: 0,
         })
@@ -176,7 +177,7 @@ impl<'a> Input<'a> {
                 Ok(bytes.get(position + offset).copied())
             }
             Self::Function(input) => input.peek(offset),
-            Self::Rope(input) => Ok(input.byte(position + offset)),
+            Self::Buffer(input) => Ok(input.byte(position + offset)),
         }
     }
 
@@ -184,7 +185,7 @@ impl<'a> Input<'a> {
         match self {
             Self::Text(bytes) | Self::Encoded { bytes, .. } => Ok(bytes.get(position).copied()),
             Self::Function(input) => input.advance(),
-            Self::Rope(input) => Ok(input.byte(position)),
+            Self::Buffer(input) => Ok(input.byte(position)),
         }
     }
 
@@ -197,7 +198,7 @@ impl<'a> Input<'a> {
                 let rest = bytes.get(position..)?;
                 Some(memchr::memchr(b'\n', rest).map_or(bytes.len(), |at| position + at + 1))
             }
-            Self::Rope(input) => {
+            Self::Buffer(input) => {
                 let mut position = position;
                 while input.byte(position).is_some() {
                     let offset = position - input.chunk_start;
@@ -220,21 +221,21 @@ impl<'a> Input<'a> {
 
     pub(super) fn unread_lookahead(&mut self) -> Result<(), LispError> {
         match self {
-            Self::Text(_) | Self::Encoded { .. } | Self::Rope(_) => Ok(()),
+            Self::Text(_) | Self::Encoded { .. } | Self::Buffer(_) => Ok(()),
             Self::Function(input) => input.unread_lookahead(),
         }
     }
 
     pub(super) fn function_code(&mut self) -> Result<Option<i64>, LispError> {
         match self {
-            Self::Text(_) | Self::Encoded { .. } | Self::Rope(_) => Ok(None),
+            Self::Text(_) | Self::Encoded { .. } | Self::Buffer(_) => Ok(None),
             Self::Function(input) => Ok(input.peek(0)?.map(|_| input.characters[0].code)),
         }
     }
 
     pub(super) fn function_position(&self) -> Option<i64> {
         match self {
-            Self::Text(_) | Self::Encoded { .. } | Self::Rope(_) => None,
+            Self::Text(_) | Self::Encoded { .. } | Self::Buffer(_) => None,
             Self::Function(input) => Some(input.position),
         }
     }

@@ -3,7 +3,7 @@
 //! `search-backward' use, and the regexp commands for a trivial regexp.
 //!
 //! GNU compares the bytes of its internal multibyte form.  These compare
-//! the rope's stored form, UTF-8 with a raw byte as U+E080..U+E0FF, which
+//! the buffer's stored form, UTF-8 with a raw byte as U+E080..U+E0FF, which
 //! is that form for every character up to U+10FFFF: characters that agree
 //! but for `c & 0x3F' still differ only in their last byte, as
 //! `boyer_moore' requires.  A unibyte buffer's text is read one byte per
@@ -13,8 +13,8 @@
 
 use super::*;
 use crate::lisp::regex_emacs::{
-    char_byte8_p, code_of_stored, decode_stored, stored_char_is_ambiguous, stored_char_of,
-    unibyte_to_char,
+    GapRange, char_byte8_p, code_of_stored, decode_stored, stored_char_is_ambiguous,
+    stored_char_of, unibyte_to_char,
 };
 
 /// trivial_regexp_p: whether REGEXP (its bytes) matches just one constant
@@ -79,23 +79,21 @@ trait SearchBytes {
     fn run(&mut self, at: usize) -> (&[u8], usize);
 }
 
-/// A multibyte buffer's text, or a unibyte one's that is all ASCII: the
-/// rope's stored bytes, read in place a chunk at a time.
+/// A multibyte buffer's text, or a unibyte one's that is all ASCII: its
+/// stored bytes, read in place a part (before the gap, after it) at a
+/// time.
 struct StoredBytes<'a> {
-    rope: ropey::RopeSlice<'a>,
+    parts: GapRange<'a>,
     chunk: &'a [u8],
     start: usize,
-    /// The chunks after CHUNK, for a forward scan's next load.
-    after: Option<ropey::iter::Chunks<'a>>,
 }
 
 impl<'a> StoredBytes<'a> {
-    fn new(rope: ropey::RopeSlice<'a>) -> Self {
+    fn new(parts: GapRange<'a>) -> Self {
         StoredBytes {
-            rope,
+            parts,
             chunk: &[],
             start: 0,
-            after: None,
         }
     }
 
@@ -109,37 +107,13 @@ impl<'a> StoredBytes<'a> {
     #[cold]
     #[inline(never)]
     fn load(&mut self, at: usize) {
-        // A forward scan wants the chunk after the one it read, which the
-        // chunks left after it yield without a walk from the root.
-        let end = self.start + self.chunk.len();
-        if at >= end
-            && let Some(after) = &mut self.after
-            && let Some(next) = after.next()
-            && at < end + next.len()
-        {
-            self.chunk = next.as_bytes();
-            self.start = end;
-            return;
-        }
-        let (mut chunks, start, _, _) = self.rope.chunks_at_byte(at);
-        match chunks.next() {
-            Some(chunk) => {
-                self.chunk = chunk.as_bytes();
-                self.start = start;
-                self.after = Some(chunks);
-            }
-            None => {
-                // The end, whose chunk is the last.
-                let (chunk, start, _, _) = self.rope.chunk_at_byte(at);
-                self.chunk = chunk.as_bytes();
-                self.start = start;
-                self.after = None;
-            }
-        }
+        let (chunk, start) = self.parts.chunk_at_byte(at);
+        self.chunk = chunk;
+        self.start = start;
     }
 
-    /// The stored character at AT and its length.  A rope's chunks hold
-    /// whole characters.
+    /// The stored character at AT and its length.  The parts hold whole
+    /// characters.
     #[inline]
     fn stored(&mut self, at: usize) -> (char, usize) {
         self.ensure(at);
@@ -172,40 +146,73 @@ impl SearchBytes for StoredBytes<'_> {
     }
 }
 
-/// A unibyte buffer's text holding bytes above 0x7F, which the rope stores
-/// as U+0080..U+00FF: each chunk read back to its bytes, at character
-/// offsets.
+/// A unibyte buffer's text holding bytes above 0x7F, which the text
+/// stores as U+0080..U+00FF: a window of a part read back to its bytes,
+/// at character offsets.
 struct UnibyteBytes<'a> {
-    rope: ropey::RopeSlice<'a>,
+    parts: GapRange<'a>,
+    /// The characters before the gap, counted at the first load.
+    first_chars: Option<usize>,
     bytes: Vec<u8>,
     start: usize,
+    /// The character and byte offsets of the window's start, which the
+    /// next window's is counted from.
+    window: (usize, usize),
 }
 
+/// The characters a window of `UnibyteBytes' reads back.
+const UNIBYTE_WINDOW: usize = 4096;
+
 impl<'a> UnibyteBytes<'a> {
-    fn new(rope: ropey::RopeSlice<'a>) -> Self {
+    fn new(parts: GapRange<'a>) -> Self {
         UnibyteBytes {
-            rope,
+            parts,
+            first_chars: None,
             bytes: Vec::new(),
             start: 0,
+            window: (0, 0),
         }
     }
 
     #[cold]
     #[inline(never)]
     fn load(&mut self, at: usize) {
-        let (chunk, _, start, _) = self.rope.chunk_at_char(at);
+        let (first, second) = self.parts.parts();
+        let first_chars = *self
+            .first_chars
+            .get_or_insert_with(|| crate::buffer::count_chars(first));
+        // The part holding AT, and its first character's offset.
+        let (part, part_char, part_byte) = if at < first_chars || second.is_empty() {
+            (first, 0, 0)
+        } else {
+            (second, first_chars, first.len())
+        };
+        // The window around AT, counted from the last window's start when
+        // it is in this part, else from the part's.
+        let wanted = at.saturating_sub(UNIBYTE_WINDOW / 2).max(part_char) - part_char;
+        let (known_char, known_byte) = match self.window {
+            (char, byte)
+                if char >= part_char && byte >= part_byte && byte - part_byte <= part.len() =>
+            {
+                (char - part_char, byte - part_byte)
+            }
+            _ => (0, 0),
+        };
+        let byte = if wanted >= known_char {
+            known_byte + crate::buffer::forward_bytes(&part[known_byte..], wanted - known_char)
+        } else {
+            crate::buffer::backward_bytes(part, known_byte, known_char - wanted)
+        };
+        self.window = (part_char + wanted, part_byte + byte);
+        self.start = part_char + wanted;
         self.bytes.clear();
-        if chunk.is_ascii() {
-            // An ASCII chunk is its own bytes.
-            self.bytes.extend_from_slice(chunk.as_bytes());
-            self.start = start;
-            return;
-        }
-        self.bytes.extend(chunk.chars().map(|ch| {
-            let code = code_of_stored(ch);
-            crate::lisp::regex_emacs::char_to_unibyte(code).unwrap_or(code & 0xFF) as u8
-        }));
-        self.start = start;
+        // SAFETY: a part holds whole characters, from BYTE on too.
+        let text = unsafe { std::str::from_utf8_unchecked(&part[byte..]) };
+        self.bytes
+            .extend(text.chars().take(UNIBYTE_WINDOW).map(|ch| {
+                let code = code_of_stored(ch);
+                crate::lisp::regex_emacs::char_to_unibyte(code).unwrap_or(code & 0xFF) as u8
+            }));
     }
 }
 
@@ -402,8 +409,8 @@ pub(super) fn search_buffer_non_re(
         boyer_moore_ok = false;
     }
 
-    let slice = snapshot.slice();
-    let size = slice.len_bytes();
+    let parts = snapshot.range().parts;
+    let size = parts.len_bytes();
     // A unibyte text's bytes above 0x7F are stored as two-byte sequences,
     // none of whose bytes is ASCII.  An ASCII pattern whose characters'
     // equivalents are all ASCII (boyer_moore's condition here) matches
@@ -433,8 +440,8 @@ pub(super) fn search_buffer_non_re(
     let (outcome, last_hit) = if boyer_moore_ok {
         let mut quit = || interp.maybe_quit(env);
         if unibyte_bytes {
-            let mut text = UnibyteBytes::new(slice);
-            let size = slice.len_chars();
+            let mut text = UnibyteBytes::new(parts);
+            let size = snapshot.zv - snapshot.begv;
             boyer_moore(
                 &mut text,
                 size,
@@ -449,7 +456,7 @@ pub(super) fn search_buffer_non_re(
                 &mut quit,
             )?
         } else {
-            let mut text = StoredBytes::new(slice);
+            let mut text = StoredBytes::new(parts);
             boyer_moore(
                 &mut text,
                 size,
@@ -465,7 +472,7 @@ pub(super) fn search_buffer_non_re(
             )?
         }
     } else if multibyte {
-        let mut text = StoredBytes::new(slice);
+        let mut text = StoredBytes::new(parts);
         let buffer = interp.buffer.borrow();
         let mut side = |at: usize| buffer.extended_char_at(snapshot.position(at));
         let outcome = simple_search_multibyte(
@@ -481,13 +488,13 @@ pub(super) fn search_buffer_non_re(
         );
         (outcome, None)
     } else if unibyte_bytes {
-        let mut text = UnibyteBytes::new(slice);
+        let mut text = UnibyteBytes::new(parts);
         (
             simple_search_unibyte(&mut text, n, &pat, trt, pos_byte, lim_byte),
             None,
         )
     } else {
-        let mut text = StoredBytes::new(slice);
+        let mut text = StoredBytes::new(parts);
         (
             simple_search_unibyte(&mut text, n, &pat, trt, pos_byte, lim_byte),
             None,
@@ -893,9 +900,10 @@ fn boyer_moore<B: SearchBytes>(
         if (lim_byte - pos_byte - forward_one) * direction < 0 {
             return Ok((Outcome::Remaining(n * -(direction as i64)), last_hit));
         }
-        // First we do the part we can by pointers (maybe nothing).  The rope
-        // has no gap: BUFFER_CEILING_OF and BUFFER_FLOOR_OF are its ends,
-        // and LIMIT the last value POS_BYTE can take on.
+        // First we do the part we can by pointers (maybe nothing): a run
+        // of bytes on one side of the gap at a time, as BUFFER_CEILING_OF
+        // and BUFFER_FLOOR_OF bound it, and LIMIT the last value POS_BYTE
+        // can take on.
         quit()?;
         let limit = if direction > 0 {
             (size - 1).min(pos_byte + 20000).min(lim_byte - 1)
