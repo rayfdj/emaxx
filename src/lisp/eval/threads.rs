@@ -4263,7 +4263,7 @@ impl Interpreter {
         Ok(Value::Nil)
     }
 
-    fn condition_mutex_depth(&self, condvar_id: u64, env: &Env) -> Result<(u64, usize), LispError> {
+    fn condition_mutex_depth(&self, condvar_id: u64) -> Result<(u64, usize), LispError> {
         let mutex_id = self
             .condition_variable_mutex_id(condvar_id)
             .ok_or_else(|| {
@@ -4278,7 +4278,7 @@ impl Interpreter {
             .ok_or_else(|| {
                 LispError::Signal(format!(
                     "Condition variable{}s mutex is not held by current thread",
-                    if primitives::values::effective_text_quoting_style(self, env) == "curve" {
+                    if primitives::values::effective_text_quoting_style(self) == "curve" {
                         '\u{2019}'
                     } else {
                         '\''
@@ -4329,7 +4329,7 @@ impl Interpreter {
         condvar_id: u64,
         env: &mut Env,
     ) -> Result<Value, LispError> {
-        let (mutex_id, depth) = self.condition_mutex_depth(condvar_id, env)?;
+        let (mutex_id, depth) = self.condition_mutex_depth(condvar_id)?;
         let thread_id = self.active_thread_id;
         self.release_condition_mutex(mutex_id);
         self.find_thread_state_mut(thread_id)
@@ -4351,7 +4351,7 @@ impl Interpreter {
         notify_all: bool,
         env: &mut Env,
     ) -> Result<(), LispError> {
-        let (mutex_id, depth) = self.condition_mutex_depth(condvar_id, env)?;
+        let (mutex_id, depth) = self.condition_mutex_depth(condvar_id)?;
         self.release_condition_mutex(mutex_id);
         for thread in &mut self.thread_states {
             if matches!(thread.status, ThreadStatus::Blocked(ThreadBlocker::ConditionVariable(id)) if id == condvar_id)

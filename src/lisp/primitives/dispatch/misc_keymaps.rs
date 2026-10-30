@@ -647,9 +647,7 @@ define_dispatch!(
 
             "text-quoting-style" => {
                 need_args(name, args, 0)?;
-                Ok(Value::Symbol(
-                    effective_text_quoting_style(interp, env).into(),
-                ))
+                Ok(Value::Symbol(effective_text_quoting_style(interp).into()))
             }
             "user-uid" => Ok(Value::Integer(current_user_id()? as i64)),
             "user-real-uid" => Ok(Value::Integer(current_real_user_id()? as i64)),

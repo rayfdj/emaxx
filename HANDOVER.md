@@ -9448,6 +9448,61 @@ setup_process_coding_systems's check now refuses). A 13-form
   the grouped gate's 3,340 library tests, the seven integration
   suites, clippy with every target and feature, rustfmt and
   `git diff --check'.
+- **Round 179: the native handler list's top held, the live window by
+  its record, C variables by their symbols.** Each native call of a subr
+  with no word-level path syncs the native runtime's handlers with the
+  thread's list (`sync_handlers'), which read the last entry of its
+  vector to compare; the innermost record is now held beside the vector,
+  set where a handler is pushed and where the unwinding pops them, so
+  the test is one compare. The line heights and the other primitives
+  that want a live window (decode_live_window) read the leaf's kind and
+  buffer from the record they are given, where the window was found
+  again by its id. `text-quoting-style', `coding-system-for-write',
+  `locale-coding-system', `signal-hook-function' and `debug-on-signal'
+  are read as C reads them, by symbol, where each name was looked up as
+  a lexical variable first. Undo runs 1,471,100 instructions a unit in
+  the plain build against 1,486,000 (GNU 1,541,000), and 1,363,600 in
+  the profile-guided build of the round's first two changes.
+  A wall-time pilot of the sixteen core workloads on that build and its
+  plain twin (`corewall.py': the
+  contract's n, one warmup and three samples a process, five rounds with
+  the editors' order alternating, the minimum over rounds of each
+  process's median against GNU's, the median ratio in parentheses), the
+  profile-guided build, then the plain one: lexical 0.657 (0.636), 0.754;
+  dynamic 0.895 (1.048), 1.040; calls 0.596, 0.677; bytecode calls
+  1.034 (1.259), 0.878 (1.015); native execution 0.555, 0.553;
+  interpreted-to-native 0.886, 1.153; bytecode-to-native 0.699, 0.771;
+  native-to-interpreted 0.700, 0.705; native-to-bytecode 0.759, 0.768;
+  cons allocation 0.817, 1.006; list traversal 0.819, 0.844; mapcar
+  0.698, 0.783; explicit GC 0.797, 0.852; sort 0.602, 0.756; undo 1.071
+  (1.060), 1.141; bindat 0.766, 0.833. Over the bound in the timed
+  build: undo, and bytecode calls, which runs 439.7 instructions an
+  iteration in both builds (GNU 468) and so differs between them only
+  in how the core runs the same work.
+  Undo's remaining excess is the instruction cache's. Cachegrind on the
+  profile-guided build, a unit (GNU's in parentheses): 1,363,600
+  instructions (1,540,900), 39,400 first-level instruction misses
+  (20,700), 16,200 data read misses (11,300) and 5,000 write misses
+  (2,100), 19,200 mispredicted conditional branches (15,700) and 10,700
+  indirect ones (10,300). The code run at least once a unit is 5,461
+  64-byte lines, 341 KB, in 61,509 distinct instructions (GNU 2,853
+  lines, 178 KB, 27,850 instructions): each instruction runs 22 times a
+  unit against GNU's 55. The byte-code VM is the largest part:
+  `run_verified' 379 hot lines (24 KB) and 6,356 misses at its two
+  depths, against exec_byte_code's 143 lines and 1,649; with
+  `op_in_place', `bytecode_call', `run_loop', `funcall_closure' and
+  `run_entered', about 620 lines. The evaluator's (`eval_native_form'
+  160 lines, `eval_sub' 73, `eval_cons_call' 62, `call_function_value'
+  34, `make_closure' 33) come to about 360 against GNU's 175 (eval_sub,
+  the special forms, funcall_lambda, specbind and unbind_to), with
+  about 4,900 misses; the rest is spread over the primitives (buffer
+  editing's 140 lines, display's 148, `styled_format' 81 against 57,
+  interval adjustment 69 against offset_intervals' 29,
+  `prepare_to_modify_buffer' 67 against 17). The collector's 368 hot
+  lines miss rarely: its loops are tight.
+  Local validation: the grouped gate's 3,340 library tests, the
+  seven integration suites, clippy with every target and feature,
+  rustfmt and `git diff --check'.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -10604,6 +10659,18 @@ failed with a `jsonrpc-error' where Emaxx passed, the language server's
 known flake. The rerun's timings: setup 78.4 s against 63.1 s (1.243),
 test bodies 255.3 s against 263.8 s (0.968), in all 1.007; undo-tests'
 bodies 1.20 s against 0.94 s.
+
+**On `f73317f`** (round 177): full Rust gate passed (run 41041457799);
+frozen (run 41041495570) matched all 7,928 outcomes on its first
+attempt. Setup 57.6 s against 49.8 s (1.156), test bodies 213.4 s
+against 229.9 s (0.928), in all 0.970; undo-tests' bodies 0.74 s against
+0.60 s.
+
+**On `15bf220`** (round 178): full Rust gate passed (run 41045599849);
+frozen (run 41045603742) matched all 7,928 outcomes on its first
+attempt. Setup 66.2 s against 55.7 s (1.188), test bodies 226.7 s
+against 240.8 s (0.942), in all 0.999; undo-tests' bodies 0.85 s against
+0.69 s.
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

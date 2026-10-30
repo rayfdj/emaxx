@@ -370,6 +370,11 @@ const KEY_NAMES: &[&str] = &[
     "header-line-format",
     "tab-line-format",
     "undo-auto--last-boundary-cause",
+    "text-quoting-style",
+    "coding-system-for-write",
+    "locale-coding-system",
+    "signal-hook-function",
+    "debug-on-signal",
 ];
 
 struct Symbols {

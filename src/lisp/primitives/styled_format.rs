@@ -694,7 +694,7 @@ pub(crate) fn styled_format(
             .iter()
             .any(|arg| string_is_multibyte(arg) == Some(true));
     let quoting_style = if message {
-        effective_text_quoting_style(interp, env)
+        effective_text_quoting_style(interp)
     } else {
         ""
     };

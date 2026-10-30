@@ -1175,6 +1175,9 @@ pub(crate) struct NativeRuntime {
     shared: Option<Box<NativeSharedState>>,
     thread: Box<NativeThreadState>,
     handlers: Vec<HandlerEntry>,
+    /// The innermost handler's record, null for none: what the thread's
+    /// handler list points to while the two agree.
+    top_handler: *mut NativeHandler,
     /// Records of popped handlers, for the next pushes (eval.c keeps its
     /// popped handlers on `nextfree' the same way). Each stays boxed: a
     /// record's address is what native code holds, and it moves between
@@ -1378,6 +1381,7 @@ impl Default for NativeRuntime {
             })),
             thread,
             handlers: Vec::new(),
+            top_handler: std::ptr::null_mut(),
             spare_handlers: Vec::new(),
             unwind: Vec::new(),
             call: std::ptr::null(),
@@ -1954,11 +1958,7 @@ impl NativeRuntime {
     #[inline(always)]
     fn sync_handlers(&mut self, interpreter: &mut Interpreter) -> Result<(), LispError> {
         let current = self.thread.handler();
-        if self
-            .handlers
-            .last()
-            .map_or(current.is_null(), |entry| entry.address() == current)
-        {
+        if self.top_handler == current {
             return Ok(());
         }
         self.sync_handlers_unwinding(interpreter, current)
@@ -1986,6 +1986,10 @@ impl NativeRuntime {
                 self.spare_handlers.push(entry.storage);
             }
         }
+        self.top_handler = self
+            .handlers
+            .last()
+            .map_or(std::ptr::null_mut(), HandlerEntry::address);
         if current.is_null()
             || self
                 .handlers
@@ -5014,6 +5018,7 @@ extern "C" fn runtime_push_handler(match_value: NativeWord, kind: i32) -> *mut N
                 backtrace_depth: interpreter.backtrace_frames_len(),
                 registration,
             });
+            runtime.top_handler = address;
             Ok(address)
         })();
         match result {

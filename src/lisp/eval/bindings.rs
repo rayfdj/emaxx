@@ -415,6 +415,21 @@ impl Interpreter {
         self.lookup_var(name, env)
     }
 
+    /// `forwarded_c_value' of a C variable named by KEY that is none of the
+    /// evaluator's own cells: its detached C value, else its value as C
+    /// reads it, without a lookup of its name.
+    pub(crate) fn forwarded_c_value_key(
+        &self,
+        key: crate::lisp::types::symbols::SymbolKey,
+    ) -> Option<Value> {
+        if !self.detached_forwarded_variables.is_empty()
+            && let Some(detached) = self.detached_forwarded_variables.get(key.name())
+        {
+            return Some(*detached);
+        }
+        self.symbol_value_key(key)
+    }
+
     /// The remaining native slot adapter is reached only through the object
     /// that the C initializer registered, never through a reused spelling.
     pub(crate) fn builtin_symbol_value(&self, symbol: &SymbolName) -> Option<Value> {

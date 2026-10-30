@@ -3620,7 +3620,7 @@ impl Interpreter {
         // `if (! NILP (Vsignal_hook_function) && !oom)': edebug's hook,
         // with room for it on the stack.
         let hook = self
-            .lookup_var("signal-hook-function", env)
+            .symbol_value_key(cached_symbol!("signal-hook-function"))
             .unwrap_or(Value::Nil);
         if !hook.is_nil() {
             let object = super::error_condition_value(&error);
@@ -3672,7 +3672,7 @@ impl Interpreter {
     fn signal_debugger(&mut self, error: &LispError, env: &mut Env) -> Result<bool, LispError> {
         let clause = self.catching_clause(error);
         let debug_on_signal = self
-            .lookup_var("debug-on-signal", env)
+            .symbol_value_key(cached_symbol!("debug-on-signal"))
             .is_some_and(|value| value.is_truthy());
         if !debug_on_signal
             && !matches!(

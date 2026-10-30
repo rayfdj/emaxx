@@ -234,9 +234,9 @@ pub(crate) fn message_to_stderr(
     let bytes = match message {
         Some(message) => {
             let coding = interp
-                .forwarded_c_value("coding-system-for-write", &Env::new())
+                .forwarded_c_value_key(cached_symbol!("coding-system-for-write"))
                 .filter(|value| !value.is_nil())
-                .or_else(|| interp.forwarded_c_value("locale-coding-system", &Env::new()))
+                .or_else(|| interp.forwarded_c_value_key(cached_symbol!("locale-coding-system")))
                 .unwrap_or(Value::Nil);
             let encoded = if coding.is_nil() {
                 *message
@@ -2210,23 +2210,22 @@ fn live_window_id_or_selected(
         .filter(|window| !window.is_nil())
         .cloned()
         .unwrap_or_else(|| interp.selected_window_value());
-    let window_id = window_record_id_from_value(interp, &window)
-        .ok_or_else(|| LispError::WrongTypeArgument("window-live-p".into(), window))?;
-    let kind = window_slot_value(interp, window_id, WINDOW_KIND_SLOT);
-    if matches!(
-        kind.kind(),
-        Kind::Symbol(ref kind)
-            if matches!(
-                kind.as_str(),
-                INTERNAL_HORIZONTAL_WINDOW_KIND
-                    | INTERNAL_VERTICAL_WINDOW_KIND
-                    | DELETED_WINDOW_KIND
-            )
-    ) || window_buffer_id(interp, &window).is_none()
-    {
-        return Err(LispError::WrongTypeArgument("window-live-p".into(), window));
-    }
-    Ok(window_id)
+    // WINDOW_LIVE_P of the record: a leaf showing a live buffer.
+    window_record(&window)
+        .filter(|record| {
+            !matches!(
+                record.slots.get(WINDOW_KIND_SLOT).map(|slot| slot.kind()),
+                Some(Kind::Symbol(kind))
+                    if matches!(
+                        kind.as_str(),
+                        INTERNAL_HORIZONTAL_WINDOW_KIND
+                            | INTERNAL_VERTICAL_WINDOW_KIND
+                            | DELETED_WINDOW_KIND
+                    )
+            ) && window_buffer_id(interp, &window).is_some()
+        })
+        .map(|record| record.id)
+        .ok_or_else(|| LispError::WrongTypeArgument("window-live-p".into(), window))
 }
 
 fn select_window_value(

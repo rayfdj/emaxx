@@ -2672,11 +2672,11 @@ pub(crate) fn locale_uses_utf8() -> bool {
 /// answers grave when U+2018 displays as a one-element vector holding ?`.
 /// This plain Lisp-variable read is observable in batch as well as in the
 /// interactive startup path that forces the locale flag to t.
-pub(crate) fn effective_text_quoting_style(interp: &Interpreter, env: &Env) -> &'static str {
+pub(crate) fn effective_text_quoting_style(interp: &Interpreter) -> &'static str {
     // doc.c reads the C variable Vtext_quoting_style itself, which a
     // `makunbound' of the symbol leaves untouched.
     match interp
-        .forwarded_c_value("text-quoting-style", env)
+        .forwarded_c_value_key(cached_symbol!("text-quoting-style"))
         .map(|v| v.kind())
     {
         Some(Kind::Symbol(style)) if style == "grave" => "grave",
