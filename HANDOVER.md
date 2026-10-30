@@ -9718,6 +9718,39 @@ setup_process_coding_systems's check now refuses). A 13-form
   Local validation: the grouped gate's 3,343 library tests, the
   seven integration suites, clippy with every target and feature,
   rustfmt and `git diff --check'.
+- **Round 184: kill-buffer spares another thread's buffer; threads keep
+  their names; get-buffer-window as window_loop.** Fkill_buffer returns
+  nil before any query or hook when thread_check_current_buffer finds a
+  live thread other than the current one with the buffer current (a
+  thread not yet run has the buffer it was made in). Emaxx asked only
+  after the hooks, and then killed the buffer unless the thread had been
+  made with a third `make-thread' argument, Emacs 31's buffer
+  disposition, which GNU 30.2's two-argument `make-thread' does not take
+  (and Emaxx's arity already refused); that argument's remnants are gone.
+  Against GNU before, with a thread blocked in `condition-wait' inside
+  `with-current-buffer': `kill-buffer' returned t, ran `kill-buffer-hook'
+  and left the thread in a dead buffer, where GNU returns nil and runs
+  nothing. `make-thread', `make-mutex' and `make-condition-variable'
+  check NAME with CHECK_STRING and keep the string itself, so
+  `thread-name', `mutex-name' and `condition-name' return it (`eq', its
+  properties kept) and a symbol or number is a wrong-type-argument;
+  Emaxx took any string-like NAME, dropped others, and returned a fresh
+  plain copy. The collector marks the names with their objects, and
+  print.c's `#<thread NAME>' prints the string's text.
+  `get-buffer-window' is window_loop's GET_BUFFER_WINDOW: the walk starts
+  from the selected window of the frame ALL-FRAMES names (else of the
+  selected frame), returns the selected window when it shows the buffer
+  (tested first, before any list is made), else the first window that
+  does on the selected frame, else the first that does at all, a
+  minibuffer window counting only while a minibuffer is active and only
+  as minibuf_window. Emaxx returned the first in the cyclic order from
+  the selected window, from another frame's windows too. Undo's units
+  run 1,482,600 instructions (round 183 1,495,500): its kills'
+  `other-buffer' finds *scratch* in the selected window without a list
+  of windows.
+  Local validation: the grouped gate's 3,344 library tests, the
+  seven integration suites, clippy with every target and feature,
+  rustfmt and `git diff --check'.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -10910,6 +10943,12 @@ frozen (run 41105892949) matched all 7,928 outcomes on its first
 attempt. Setup 66.5 s against 57.9 s (1.148), test bodies 230.0 s
 against 245.2 s (0.938), in all 0.979; undo-tests' bodies 0.82 s against
 0.69 s.
+
+**On `c4950ba`** (round 183): full Rust gate passed (run 41112978137);
+frozen (run 41112983374) matched all 7,928 outcomes on its first
+attempt. Setup 78.2 s against 62.9 s (1.244), test bodies 252.4 s
+against 272.2 s (0.928), in all 0.971; undo-tests' bodies 1.10 s against
+0.89 s.
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

@@ -508,6 +508,40 @@ fn frames_keep_their_own_buffer_lists_as_gnu() {
 }
 
 #[test]
+fn kill_buffer_spares_another_threads_buffer_and_thread_names_are_strings_as_gnu() {
+    // thread.c:thread_check_current_buffer keeps Fkill_buffer from a
+    // buffer another thread has current, before any hook; Fmake_thread,
+    // Fmake_mutex and Fmake_condition_variable CHECK_STRING their NAME and
+    // keep it as given.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let* ((b (get-buffer-create "kt-b"))
+               (m (make-mutex)) (cv (make-condition-variable m))
+               (go nil) (inside nil) (hook-ran nil)
+               (th (make-thread (lambda ()
+                                  (with-current-buffer b
+                                    (setq inside t)
+                                    (with-mutex m (while (not go) (condition-wait cv))))))))
+          (while (not inside) (thread-yield))
+          (with-current-buffer b
+            (add-hook 'kill-buffer-hook (lambda () (setq hook-ran t)) nil t))
+          (let ((during (list (kill-buffer b) (buffer-live-p b) hook-ran)))
+            (with-mutex m (setq go t) (condition-notify cv))
+            (thread-join th)
+            (let ((name (propertize "nm" 'face 'bold)))
+              (list during (kill-buffer b) (buffer-live-p b) hook-ran
+                    (eq (thread-name (make-thread #'ignore name)) name)
+                    (eq (mutex-name (make-mutex name)) name)
+                    (eq (condition-name (make-condition-variable (make-mutex) name)) name)
+                    (condition-case e (make-thread #'ignore 'foo) (error e))
+                    (condition-case e (make-mutex 7) (error e))
+                    (condition-case e (make-condition-variable (make-mutex) 'x) (error e))
+                    (format "%S" (make-mutex "mx"))))))"#,
+        r##"((nil t nil) t nil t t t t (wrong-type-argument stringp foo) (wrong-type-argument stringp 7) (wrong-type-argument stringp x) "#<mutex mx>")"##,
+        "threads and kill-buffer",
+    );
+}
+
+#[test]
 fn native_buffer_lookup_preserves_object_identity_after_rename_or_kill() {
     assert_oracle_contract_matches_interpreter(
         r#"(progn

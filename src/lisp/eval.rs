@@ -1827,13 +1827,6 @@ pub(crate) struct BatchErrorBacktrace {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum BufferDisposition {
-    Default,
-    Preserve,
-    Silently,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
 enum ThreadBlocker {
     Mutex(u64),
     ConditionVariable(u64),
@@ -1853,10 +1846,9 @@ enum ThreadStatus {
 #[derive(Clone, Debug)]
 struct ThreadState {
     record_id: u64,
-    name: Option<String>,
+    /// thread.h's name: nil or the string Fmake_thread was given.
+    name: Value,
     buffer_id: u64,
-    buffer_disposition: BufferDisposition,
-    buffer_killed: bool,
     status: ThreadStatus,
     entry: Option<Value>,
     outcome: Option<Value>,
@@ -1872,7 +1864,7 @@ struct ThreadState {
 #[derive(Clone, Debug)]
 struct MutexState {
     record_id: u64,
-    _name: Option<String>,
+    name: Value,
     owner: Option<u64>,
     recursion_depth: usize,
 }
@@ -1881,7 +1873,7 @@ struct MutexState {
 struct ConditionVariableState {
     record_id: u64,
     mutex_id: u64,
-    name: Option<String>,
+    name: Value,
 }
 
 #[derive(Clone, Debug)]
@@ -3896,6 +3888,7 @@ impl LispReachability {
                 if record.kind == RecordKind::Thread
                     && let Some(thread) = interp.find_thread_state(record.id)
                 {
+                    self.enqueue(&thread.name);
                     for value in thread.entry.iter() {
                         self.enqueue(value);
                     }
@@ -3904,6 +3897,14 @@ impl LispReachability {
                     for value in thread.outcome.iter() {
                         self.enqueue(value);
                     }
+                }
+                // A mutex's and a condition variable's name are theirs too.
+                match record.kind {
+                    RecordKind::Mutex => self.enqueue(&interp.mutex_name(record.id)),
+                    RecordKind::ConditionVariable => {
+                        self.enqueue(&interp.condition_variable_name(record.id));
+                    }
+                    _ => {}
                 }
             }
             Kind::ReaderForm(form) => {
@@ -6561,10 +6562,8 @@ impl Interpreter {
             lambda_capture_overrides: Vec::new(),
             thread_states: vec![ThreadState {
                 record_id: main_thread_id,
-                name: None,
+                name: Value::Nil,
                 buffer_id: 0,
-                buffer_disposition: BufferDisposition::Default,
-                buffer_killed: false,
                 status: ThreadStatus::Runnable,
                 entry: None,
                 signal_condition: Value::Nil,

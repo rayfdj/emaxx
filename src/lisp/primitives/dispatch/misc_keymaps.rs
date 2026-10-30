@@ -277,6 +277,16 @@ fn backtrace_nframes(nframes: Value) -> Result<usize, LispError> {
     }
 }
 
+/// thread.c's NAME argument: nil, or a string kept as given
+/// (CHECK_STRING).
+fn thread_object_name(name: Option<&Value>) -> Result<Value, LispError> {
+    match name {
+        None => Ok(Value::Nil),
+        Some(name) if name.is_nil() || name.is_string() => Ok(*name),
+        Some(name) => Err(LispError::WrongTypeArgument("stringp".into(), *name)),
+    }
+}
+
 fn vector_index_description(index: u32) -> Result<String, LispError> {
     key_sequence_binding_text(&Value::vector([Value::Integer(i64::from(index))]))
 }
@@ -1244,28 +1254,9 @@ define_dispatch!(
                 Ok(Value::list(interp.live_threads()))
             }
             "make-thread" => {
-                need_arg_range(name, args, 1, 3)?;
-                let thread_name = args.get(1).and_then(|value| {
-                    if value.is_nil() {
-                        None
-                    } else {
-                        string_like(value).map(|string| string.text)
-                    }
-                });
-                let disposition = match args.get(2).map(|v| v.kind()) {
-                    None | Some(Kind::Nil) => BufferDisposition::Default,
-                    Some(Kind::T) => BufferDisposition::Preserve,
-                    Some(Kind::Symbol(symbol)) if symbol == "silently" => {
-                        BufferDisposition::Silently
-                    }
-                    Some(other) => {
-                        return Err(LispError::TypeError(
-                            "thread-buffer-disposition".into(),
-                            other.value().type_name(),
-                        ));
-                    }
-                };
-                interp.make_thread(args[0], thread_name, disposition)
+                need_arg_range(name, args, 1, 2)?;
+                let thread_name = thread_object_name(args.get(1))?;
+                interp.make_thread(args[0], thread_name)
             }
             "thread-live-p" => {
                 need_args(name, args, 1)?;
@@ -1281,10 +1272,7 @@ define_dispatch!(
             }
             "thread-name" => {
                 need_args(name, args, 1)?;
-                Ok(interp
-                    .thread_name(interp.resolve_thread_id(&args[0])?)
-                    .map(|value| Value::String(value.into()))
-                    .unwrap_or(Value::Nil))
+                Ok(interp.thread_name(interp.resolve_thread_id(&args[0])?))
             }
             "thread-signal" => {
                 need_args(name, args, 3)?;
@@ -1300,21 +1288,12 @@ define_dispatch!(
             }
             "make-mutex" => {
                 need_arg_range(name, args, 0, 1)?;
-                let mutex_name = args.first().and_then(|value| {
-                    if value.is_nil() {
-                        None
-                    } else {
-                        string_like(value).map(|string| string.text)
-                    }
-                });
+                let mutex_name = thread_object_name(args.first())?;
                 Ok(interp.make_mutex(mutex_name))
             }
             "mutex-name" => {
                 need_args(name, args, 1)?;
-                Ok(interp
-                    .mutex_name(interp.resolve_mutex_id(&args[0])?)
-                    .map(|value| Value::String(value.into()))
-                    .unwrap_or(Value::Nil))
+                Ok(interp.mutex_name(interp.resolve_mutex_id(&args[0])?))
             }
             "mutex-lock" => {
                 need_args(name, args, 1)?;
@@ -1327,13 +1306,7 @@ define_dispatch!(
             "make-condition-variable" => {
                 need_arg_range(name, args, 1, 2)?;
                 let mutex_id = interp.resolve_mutex_id(&args[0])?;
-                let condvar_name = args.get(1).and_then(|value| {
-                    if value.is_nil() {
-                        None
-                    } else {
-                        string_like(value).map(|string| string.text)
-                    }
-                });
+                let condvar_name = thread_object_name(args.get(1))?;
                 Ok(interp.make_condition_variable(mutex_id, condvar_name))
             }
             "condition-mutex" => {
@@ -1348,10 +1321,7 @@ define_dispatch!(
             }
             "condition-name" => {
                 need_args(name, args, 1)?;
-                Ok(interp
-                    .condition_variable_name(interp.resolve_condition_variable_id(&args[0])?)
-                    .map(|value| Value::String(value.into()))
-                    .unwrap_or(Value::Nil))
+                Ok(interp.condition_variable_name(interp.resolve_condition_variable_id(&args[0])?))
             }
             "condition-wait" => {
                 need_args(name, args, 1)?;

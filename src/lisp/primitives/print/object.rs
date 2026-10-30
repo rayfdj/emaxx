@@ -948,24 +948,21 @@ impl Printer {
             self.out.push_str(&obj.to_string());
             return Ok(());
         };
+        // print.c prints a thread, mutex or condition variable by its
+        // name string, falling back to the object's address; Emaxx quotes
+        // its own object identity in the same syntax.
+        let named = |kind: &str, name: Value| match crate::lisp::primitives::string_text(&name) {
+            Ok(name) => format!("#<{kind} {name}>"),
+            Err(_) => format!("#<{kind} 0x{:x}>", id.identity()),
+        };
         let rendered = match kind {
             RecordKind::ModuleFunction => crate::lisp::modules::print_function(interp, id.id),
             RecordKind::UserPointer => crate::lisp::modules::print_user_pointer(interp, id.id),
-            // print.c prints a thread, mutex or condition variable by
-            // name, falling back to the object's address; Emaxx quotes
-            // its own object identity in the same syntax.
-            RecordKind::Thread => interp
-                .thread_name(id.id)
-                .map(|name| format!("#<thread {name}>"))
-                .unwrap_or_else(|| format!("#<thread 0x{:x}>", id.identity())),
-            RecordKind::Mutex => interp
-                .mutex_name(id.id)
-                .map(|name| format!("#<mutex {name}>"))
-                .unwrap_or_else(|| format!("#<mutex 0x{:x}>", id.identity())),
-            RecordKind::ConditionVariable => interp
-                .condition_variable_name(id.id)
-                .map(|name| format!("#<condvar {name}>"))
-                .unwrap_or_else(|| format!("#<condvar 0x{:x}>", id.identity())),
+            RecordKind::Thread => named("thread", interp.thread_name(id.id)),
+            RecordKind::Mutex => named("mutex", interp.mutex_name(id.id)),
+            RecordKind::ConditionVariable => {
+                named("condvar", interp.condition_variable_name(id.id))
+            }
             // `#<process NAME>', or the bare name when `princ' clears
             // escapeflag.
             RecordKind::Process => {

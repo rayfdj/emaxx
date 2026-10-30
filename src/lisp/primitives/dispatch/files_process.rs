@@ -2771,6 +2771,11 @@ define_dispatch!(
                 } else {
                     interp.current_buffer_id()
                 };
+                // thread.c:thread_check_current_buffer: a buffer another
+                // thread has current is not killed, nor asked about.
+                if interp.thread_check_current_buffer(id) {
+                    return Ok(Value::Nil);
+                }
                 let inhibit_hooks = interp.buffer_hooks_inhibited(id);
                 let saved = interp.current_buffer_id();
                 let switched = saved != id;
@@ -2939,9 +2944,6 @@ define_dispatch!(
                     && super::buffer_meta::other_buffer(interp, buffer, false, frame, env)?.word()
                         == buffer.word()
                 {
-                    return Ok(Value::Nil);
-                }
-                if !interp.allow_kill_buffer_for_threads(id) {
                     return Ok(Value::Nil);
                 }
                 // GNU releases the target buffer's lock only after every query

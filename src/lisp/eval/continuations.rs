@@ -398,11 +398,7 @@ mod tests {
         interpreter.set_global_binding("native-suspension-weak-table", table);
         for native in [false, true] {
             let Kind::Record(id) = interpreter
-                .make_thread(
-                    Value::symbol("ignore"),
-                    None,
-                    crate::lisp::eval::BufferDisposition::Default,
-                )
+                .make_thread(Value::symbol("ignore"), Value::Nil)
                 .expect("create registered thread")
                 .kind()
             else {

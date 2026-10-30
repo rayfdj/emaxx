@@ -3989,31 +3989,53 @@ fn window_list_frames(
         .collect()
 }
 
-/// window.c:Fget_buffer_window's window_loop (GET_BUFFER_WINDOW): the
-/// window among ALL-FRAMES's (minibuffer windows included) that shows
-/// BUFFER_ID, the selected window first and then the others in their
-/// cyclic order from it; a minibuffer window counts while it is active.
+/// window.c:Fget_buffer_window's window_loop (GET_BUFFER_WINDOW): among
+/// ALL-FRAMES's windows in their cyclic order from the selected window of
+/// the frame ALL-FRAMES names (else of the selected frame), the selected
+/// window if it shows BUFFER_ID, else the first that does on the selected
+/// frame, else the first that does at all.  A minibuffer window counts
+/// only while a minibuffer is active and only as minibuf_window.
 pub(super) fn buffer_window(
     interp: &Interpreter,
     buffer_id: u64,
     all_frames: &Value,
 ) -> Option<Value> {
-    let selected = interp.selected_window_value();
-    let start = live_window_id_or_selected(interp, Some(&selected)).ok()?;
-    let own_frame = interp.window_frame_id(start)?;
-    let frames = window_list_frames(interp, own_frame, all_frames);
-    window_list_ids(interp, Some(&Value::T), Some(&selected), &frames)
-        .into_iter()
-        .map(|id| interp.record_value(id))
-        .find(|window| {
-            let Kind::Record(id) = window.kind() else {
-                return false;
-            };
-            (is_live_ordinary_window(interp, id.id)
-                || (interp.active_minibuffer_buffer_id().is_some()
-                    && id.id == interp.minibuffer_window_id()))
-                && window_buffer_id(interp, window) == Some(buffer_id)
-        })
+    let selected_frame = interp.selected_frame_id;
+    let frame = match all_frames.kind() {
+        Kind::Frame(frame) if frame.is_live() => frame,
+        _ => selected_frame,
+    };
+    let selected = interp.selected_window_id();
+    let minibuffer_active = interp.active_minibuffer_buffer_id().is_some();
+    let minibuffer = interp.minibuffer_window_id();
+    let shows = |id: u64| {
+        (is_live_ordinary_window(interp, id) || (minibuffer_active && id == minibuffer))
+            && window_buffer_id(interp, &interp.record_value(id)) == Some(buffer_id)
+    };
+    // The selected window is returned wherever the walk meets it, and it
+    // is among the windows unless ALL-FRAMES names another frame.
+    if frame == selected_frame && shows(selected) {
+        return Some(interp.record_value(selected));
+    }
+    let start = interp.record_value(frame.borrow().selected_window_id());
+    let frames = window_list_frames(interp, frame, all_frames);
+    let mut best = None;
+    let mut on_selected_frame = false;
+    for id in window_list_ids(interp, Some(&Value::T), Some(&start), &frames) {
+        if !shows(id) {
+            continue;
+        }
+        if id == selected {
+            return Some(interp.record_value(id));
+        }
+        if !on_selected_frame && interp.window_frame_id(id) == Some(selected_frame) {
+            best = Some(id);
+            on_selected_frame = true;
+        } else if best.is_none() {
+            best = Some(id);
+        }
+    }
+    best.map(|id| interp.record_value(id))
 }
 
 /// The windows `window_list_value' lists, by record id.
