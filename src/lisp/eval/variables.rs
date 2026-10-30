@@ -2158,29 +2158,14 @@ impl Interpreter {
         self.bind_special_symbol(&SymbolName::intern_str(name), value, env)
     }
 
-    /// `case-fold-search' as search.c reads it: the DEFVAR_PER_BUFFER slot
-    /// of the current buffer when it has one, else the default, by the
-    /// symbol interned once per thread (a name lookup per search hashed
-    /// the name and walked the alias, flag and buffer-local tables by it).
-    pub(crate) fn case_fold_search_active(&self, env: &Env) -> bool {
-        cached_symbol!("case-fold-search").with(|symbol| {
-            if self.globals.alias(symbol).is_some() {
-                return self
-                    .lookup_var("case-fold-search", env)
-                    .is_some_and(|value| value.is_truthy());
-            }
-            match self.buffer_local_binding_symbol(self.current_buffer_id(), symbol) {
-                Some(Some(local)) => local.is_truthy(),
-                // A void local cell reads as void: not a true value.
-                Some(None) => false,
-                None => match self.globals.value(symbol) {
-                    Some(value) => value.is_truthy(),
-                    None => self
-                        .builtin_var_value("case-fold-search")
-                        .is_some_and(|value| value.is_truthy()),
-                },
-            }
-        })
+    /// `case-fold-search' as search.c reads it, BVAR (current_buffer,
+    /// case_fold_search): the binding loaded for the current buffer, its
+    /// own or the default, by the symbol interned once per thread.  A
+    /// buffer-local variable cannot be an alias (Fdefvaralias refuses it).
+    #[inline]
+    pub(crate) fn case_fold_search_active(&self) -> bool {
+        self.local_variable_value_key(cached_symbol!("case-fold-search"))
+            .is_some_and(|value| value.is_truthy())
     }
 
     /// Learn whether SYMBOL's assignments are a plain store (data.c's

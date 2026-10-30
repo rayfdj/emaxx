@@ -9337,6 +9337,34 @@ setup_process_coding_systems's check now refuses). A 13-form
   they read, so that each reads across it. Local validation: the
   grouped gate's 3,337 library tests, the seven integration suites,
   clippy with every target and feature, rustfmt and `git diff --check'.
+- **Round 176: a search's per-buffer reads, as BVAR reads them.** A
+  failing `(looking-at "x")' cost 1,639 instructions against GNU's
+  1,116, most of the excess outside the matcher, in reads GNU makes
+  with BVAR (current_buffer, ...) or a C variable. A buffer-local
+  variable whose current buffer has no binding of its own read its
+  default through three calls (the loaded binding, the always-local
+  test, the global binding); the symbol cell's default is now read
+  where the loaded binding says the buffer has none (blv's default
+  cell), and the searches and syntax scans read `case-fold-search',
+  `parse-sexp-lookup-properties' and `syntax-propertize--done'
+  through the loaded binding inline. `case-fold-search' is read as
+  the symbol's value, where it was looked up by name for an alias a
+  buffer-local variable cannot have. The buffers' case tables and
+  syntax tables, kept for each buffer whose own differ from the
+  standard ones, remember the buffer looked up last, so that a search
+  in the same buffer finds them without walking the list or hashing
+  its id; any change of an entry forgets it. The canonicalization
+  table read last is tried before the cache's walk and its reordering,
+  a match reuses the registers of the last when it has as many, and
+  the argument count checks are inline with their error out of line.
+  A failing `looking-at' now costs 1,462 instructions, format-tests runs
+  6.49G instructions against 6.62G (GNU 6.21G) and electric-tests
+  6.70G against 6.74G (GNU 6.62G); `insert' and `delete-char' are
+  unchanged. An oracle test searches two buffers with different case
+  and syntax tables in turn, then changes one's tables and kills it.
+  Local validation: the grouped gate's 3,338 library tests, the
+  seven integration suites, clippy with every target and feature,
+  rustfmt and `git diff --check'.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -10476,6 +10504,16 @@ frozen (run 41008895624) matched all 7,928 outcomes on its first
 attempt. Its timings: setup 79.5 s against 67.4 s (1.179), test bodies
 256.4 s against 272.2 s (0.942), in all 0.979.
 
+**On `bf3764c`** (round 175): full Rust gate passed (run 41015705354);
+frozen (run 41015721622) matched all 7,928 outcomes on its first
+attempt. Its timings: setup 81.8 s against 66.9 s (1.224), test bodies
+259.5 s against 268.0 s (0.968), in all 1.005; undo-tests' bodies
+1.20 s against 0.91 s (1.42 s against 0.83 s at `84ad4a4'). The
+setup's rise from 1.179 is the runner's: built with the gate profile
+the frozen run times, a file's setup takes the instructions it took at
+`84ad4a4' (cal-french-tests 702.7M against 699.3M, electric-tests
+4.62G against 4.68G, erc-tests 2.126G against 2.129G).
+
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'
   without signalling (round 174).** In GNU,
@@ -10489,18 +10527,18 @@ attempt. Its timings: setup 79.5 s against 67.4 s (1.179), test bodies
   `insert-and-inherit' beside propertized text therefore return where
   GNU signals `(wrong-type-argument listp VALUE)' while that variable is
   bound to a non-list.
-- **A call of `looking-at' costs about 520 instructions more than GNU's
-  around the match (rounds 174, 175).** `(looking-at "x")' at a failing
-  position costs 1,639 instructions against GNU's 1,116: reading
-  `case-fold-search' through its buffer-local binding and the
-  canonicalization table's cache (about 180, where GNU reads
-  BVAR (current_buffer, case_fold_search)), the buffer snapshot the
-  matcher reads apart from the buffer (since round 175 the gap buffer's
-  bytes shared, and the positions it converts from), and the pooled
-  match state, the cell release and the match environment's drop. In
-  format-tests' 709,311 calls that is about 370M of its 0.42G excess.
-  The variable read is that of a DEFVAR_PER_BUFFER variable kept as a
-  buffer-local binding.
+- **A call of `looking-at' costs about 350 instructions more than GNU's
+  around the match (rounds 174 to 176).** `(looking-at "x")' at a
+  failing position costs 1,462 instructions against GNU's 1,116: the
+  buffer snapshot the matcher reads apart from the buffer (about 120:
+  the gap buffer's bytes shared, its positions and the matcher's text
+  and object made from them, where GNU takes BEGV_ADDR and the gap's
+  sizes), reading `case-fold-search' and `parse-sexp-lookup-properties'
+  through their loaded bindings (about 70, where GNU reads a buffer slot
+  and a C variable), the canonicalization table's cache (37), the
+  pooled match state (43), the pattern cell's release (34) and the match
+  environment's drop (21). In format-tests' 709,311 calls that is about
+  250M of its 0.28G excess.
 - **`make-symbol' costs about 690 instructions (round 173).** The name
   is copied out of its string and the uninterned symbol registered under
   a counter in the symbol tables, where GNU's Fmake_symbol allocates the

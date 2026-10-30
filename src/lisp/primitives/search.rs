@@ -330,7 +330,14 @@ fn canon_for(table: CharTableRef) -> Rc<Canon> {
     let epoch = crate::lisp::alloc::vectors::char_tables::char_table_store_epoch();
     CANON_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
-        for (index, slot) in cache.iter().enumerate() {
+        // The table read last, as a search folding case reads it again.
+        if let Some((id, at, canon)) = &cache[0]
+            && *id == table.identity()
+            && *at == epoch
+        {
+            return canon.clone();
+        }
+        for (index, slot) in cache.iter().enumerate().skip(1) {
             if let Some((id, at, canon)) = slot
                 && *id == table.identity()
                 && *at == epoch
@@ -601,7 +608,7 @@ impl MatchEnv for LispMatchEnv<'_, '_> {
         };
         if !self
             .interp
-            .symbol_value_key(cached_symbol!("parse-sexp-lookup-properties"))
+            .local_variable_value_key(cached_symbol!("parse-sexp-lookup-properties"))
             .is_some_and(|value| value.is_truthy())
         {
             return;
@@ -1192,7 +1199,7 @@ pub(super) fn looking_at_1(
     }
     let modify_match_data = modify_match_data_allowed(interp) && modify_data;
     let case_table = interp
-        .case_fold_search_active(env)
+        .case_fold_search_active()
         .then(|| interp.current_case_tables().canon);
     let buffer_id = interp.current_buffer_id();
     let snapshot = BufferSnapshot::take(interp);
@@ -1267,7 +1274,7 @@ pub(super) fn string_match_1(
         }
     };
     let case_table = interp
-        .case_fold_search_active(env)
+        .case_fold_search_active()
         .then(|| interp.current_case_tables().canon);
     let string_text = StringText::new(string).expect("a string");
     let haystack = string_text.text();
@@ -1433,7 +1440,7 @@ fn search_buffer(
         return search_buffer_re(interp, env, string, pos, lim, n, posix);
     }
     let tables = interp
-        .case_fold_search_active(env)
+        .case_fold_search_active()
         .then(|| interp.current_case_tables());
     let trt = tables.map(|tables| canon_for(tables.canon));
     let inverse_trt = tables.map(|tables| canon_for(tables.eqv));
@@ -1463,7 +1470,7 @@ fn search_buffer_re(
     let preserve_match_data = modify_match_data_allowed(interp);
     let buffer_id = interp.current_buffer_id();
     let case_table = interp
-        .case_fold_search_active(env)
+        .case_fold_search_active()
         .then(|| interp.current_case_tables().canon);
     let snapshot = BufferSnapshot::take(interp);
     let mut menv = LispMatchEnv::new(interp, env, case_table);
@@ -1556,7 +1563,7 @@ pub(super) fn describe_compiled(
     raw: bool,
 ) -> Result<Value, LispError> {
     let case_table = interp
-        .case_fold_search_active(env)
+        .case_fold_search_active()
         .then(|| interp.current_case_tables().canon);
     let mut menv = LispMatchEnv::new(interp, env, case_table);
     let entry = compile_pattern(&mut menv, regexp, false)?;

@@ -1900,14 +1900,15 @@ pub(crate) fn invalid_interactive_control_letter(ch: char) -> LispError {
     ))
 }
 
+#[inline]
 pub(crate) fn need_args(name: &str, args: &[Value], n: usize) -> Result<(), LispError> {
     if args.len() < n {
-        Err(LispError::WrongNumberOfArgs(name.into(), args.len()))
-    } else {
-        Ok(())
+        return Err(wrong_number_of_args(name, args.len()));
     }
+    Ok(())
 }
 
+#[inline]
 pub(crate) fn need_arg_range(
     name: &str,
     args: &[Value],
@@ -1915,10 +1916,17 @@ pub(crate) fn need_arg_range(
     max: usize,
 ) -> Result<(), LispError> {
     if args.len() < min || args.len() > max {
-        Err(LispError::WrongNumberOfArgs(name.into(), args.len()))
-    } else {
-        Ok(())
+        return Err(wrong_number_of_args(name, args.len()));
     }
+    Ok(())
+}
+
+/// The `wrong-number-of-arguments' error of a call of NAME with COUNT
+/// arguments, out of the callers' way.
+#[cold]
+#[inline(never)]
+fn wrong_number_of_args(name: &str, count: usize) -> LispError {
+    LispError::WrongNumberOfArgs(name.into(), count)
 }
 
 /// keyboard.c's menu_bar_items: the menu bar's top-level captions in

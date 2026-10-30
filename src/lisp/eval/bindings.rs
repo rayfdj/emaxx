@@ -114,6 +114,22 @@ impl Interpreter {
         self.symbol_value_redirected(symbol)
     }
 
+    /// `symbol_value_key' of a buffer-local C variable that a search or
+    /// scan reads at each call (search.c's BVAR (current_buffer,
+    /// case_fold_search), syntax.c's parse_sexp_lookup_properties), with
+    /// the binding loaded for the current buffer read inline (blv_value
+    /// while `where' is the current buffer).
+    #[inline(always)]
+    pub(crate) fn local_variable_value_key(
+        &self,
+        key: crate::lisp::types::symbols::SymbolKey,
+    ) -> Option<Value> {
+        key.with(|symbol| match self.loaded_local_value(symbol) {
+            Some(value) => value,
+            None => self.symbol_value_symbol(symbol),
+        })
+    }
+
     #[inline(never)]
     fn symbol_value_redirected(&self, symbol: &SymbolName) -> Option<Value> {
         if let Some(value) = self.loaded_local_value(symbol) {
@@ -204,13 +220,17 @@ impl Interpreter {
     /// loaded for the buffer.
     #[inline(always)]
     pub(crate) fn loaded_local_value(&self, symbol: &SymbolName) -> Option<Option<Value>> {
-        if !symbol.cell().has_local_value_cells() {
+        let cell = symbol.cell();
+        if !cell.has_local_value_cells() {
             return None;
         }
         let loaded = self.loaded_bindings.get(symbol, self.current_buffer_id())?;
         Some(match loaded {
             Some(binding) => super::local_cells::live(binding.get()),
-            None => self.localized_default_symbol(symbol),
+            None => match cell.localized_default() {
+                Some(value) => Some(value),
+                None => self.localized_default_symbol(symbol),
+            },
         })
     }
 

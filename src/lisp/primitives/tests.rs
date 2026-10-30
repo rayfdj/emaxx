@@ -20860,6 +20860,51 @@ fn case_class_regexps_follow_table_selection_and_mutation_without_case_folding()
 }
 
 #[test]
+fn searches_read_each_buffers_case_and_syntax_tables_as_they_change() {
+    // The current buffer's case and syntax tables, found again after each
+    // change of buffer or table and after a buffer with its own is killed.
+    let program = r#"(let* ((custom (copy-case-table (standard-case-table)))
+        (st (make-syntax-table))
+        (a (generate-new-buffer "a"))
+        (b (generate-new-buffer "b")))
+   (set-case-syntax-pair ?☀ ?☂ custom)
+   (modify-syntax-entry ?- "w" st)
+   (unwind-protect
+       (progn
+         (with-current-buffer a (insert "☂x-y") (set-case-table custom) (set-syntax-table st))
+         (with-current-buffer b (insert "☂x-y"))
+         (let ((case-fold-search t) out)
+           (dolist (buf (list a b a b))
+             (with-current-buffer buf
+               (goto-char 1)
+               (push (list (looking-at "☀")
+                           (progn (goto-char 2) (looking-at "\\sw\\sw\\sw"))
+                           (string-match-p "☀" "☂")
+                           (progn (goto-char 1) (re-search-forward "☀" nil t))
+                           (char-syntax ?-))
+                     out)))
+           (with-current-buffer a
+             (set-case-table (standard-case-table))
+             (set-syntax-table (standard-syntax-table))
+             (goto-char 1)
+             (push (list (looking-at "☀") (progn (goto-char 2) (looking-at "\\sw\\sw\\sw")) (char-syntax ?-)) out)
+             (set-case-table custom)
+             (with-syntax-table st (push (list (looking-at "\\sw\\sw\\sw") (char-syntax ?-)) out))
+             (goto-char 1)
+             (push (looking-at "☀") out))
+           (kill-buffer a)
+           (with-current-buffer b (goto-char 1) (push (list (looking-at "☀") (char-syntax ?-)) out))
+           (nreverse out)))
+     (when (buffer-live-p a) (kill-buffer a))
+     (kill-buffer b)))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "((t t 0 2 119) (nil nil nil nil 95) (t t 0 2 119) (nil nil nil nil 95) (nil nil 95) (t 119) t (nil 95))",
+        "searches with each buffer's case and syntax tables",
+    );
+}
+
+#[test]
 fn case_tables_apply_explicit_byte8_mappings_to_raw_unibyte_strings() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     interp.set_load_path(vec![upstream_emacs_repo().join("lisp")]);

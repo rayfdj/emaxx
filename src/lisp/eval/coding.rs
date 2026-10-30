@@ -1131,7 +1131,7 @@ impl Interpreter {
     /// four keeps no entry.
     pub(crate) fn set_buffer_case_tables(&mut self, buffer_id: u64, tables: CaseTables) {
         if Some(tables) == self.standard_case_tables {
-            self.buffer_case_tables.retain(|(id, _)| *id != buffer_id);
+            self.buffer_case_tables.remove(buffer_id);
         } else {
             self.install_buffer_case_tables(buffer_id, tables);
         }
@@ -1155,7 +1155,7 @@ impl Interpreter {
                 .filter(|id| self.buffer_case_tables(*id).is_none())
                 .collect::<Vec<_>>();
             for id in holders {
-                self.buffer_case_tables.push((id, old));
+                self.buffer_case_tables.install(id, old);
             }
         }
         self.standard_case_tables = Some(tables);
@@ -1167,10 +1167,10 @@ impl Interpreter {
     }
 
     /// BVAR (current_buffer, syntax_table).
+    #[inline]
     pub fn current_syntax_table_id(&self) -> CharTableRef {
         self.buffer_syntax_tables
-            .get(&self.current_buffer_id())
-            .copied()
+            .get(self.current_buffer_id())
             .unwrap_or(self.standard_syntax_table_id())
     }
 
@@ -1372,5 +1372,107 @@ impl CaseTables {
             canon: f(self.canon),
             eqv: f(self.eqv),
         }
+    }
+}
+
+/// buffer.h's syntax_table slot of each live buffer whose table is not
+/// the standard one, with the last buffer's found: the scans, the
+/// matcher and `char-syntax' read BVAR (current_buffer, syntax_table)
+/// at each call.
+#[derive(Clone, Default)]
+pub(crate) struct BufferSyntaxTables {
+    tables: HashMap<u64, CharTableRef, crate::lisp::types::IdentityBuildHasher>,
+    /// The buffer looked up last and its table, until the tables change.
+    last: Cell<Option<(u64, Option<CharTableRef>)>>,
+}
+
+impl BufferSyntaxTables {
+    /// BUFFER's own table.
+    #[inline]
+    pub(crate) fn get(&self, buffer: u64) -> Option<CharTableRef> {
+        if let Some((id, table)) = self.last.get()
+            && id == buffer
+        {
+            return table;
+        }
+        let table = self.tables.get(&buffer).copied();
+        self.last.set(Some((buffer, table)));
+        table
+    }
+
+    pub(crate) fn insert(&mut self, buffer: u64, table: CharTableRef) {
+        self.last.set(None);
+        self.tables.insert(buffer, table);
+    }
+
+    pub(crate) fn remove(&mut self, buffer: u64) {
+        self.last.set(None);
+        self.tables.remove(&buffer);
+    }
+
+    pub(crate) fn values(&self) -> impl Iterator<Item = &CharTableRef> {
+        self.tables.values()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn values_mut(&mut self) -> impl Iterator<Item = &mut CharTableRef> {
+        self.last.set(None);
+        self.tables.values_mut()
+    }
+}
+
+/// buffer.h's four case-table slots of each live buffer whose four are
+/// not the standard ones (a buffer without an entry holds those), with
+/// the last buffer's found: a search reads its buffer's slots each call,
+/// as BVAR (current_buffer, case_canon_table) is read.
+#[derive(Clone, Default)]
+pub(crate) struct BufferCaseTables {
+    entries: Vec<(u64, CaseTables)>,
+    /// The buffer looked up last and its entry, until the entries change.
+    last: Cell<Option<(u64, Option<CaseTables>)>>,
+}
+
+impl BufferCaseTables {
+    /// BUFFER's entry.
+    #[inline]
+    pub(crate) fn get(&self, buffer: u64) -> Option<CaseTables> {
+        if let Some((id, tables)) = self.last.get()
+            && id == buffer
+        {
+            return tables;
+        }
+        let tables = self
+            .entries
+            .iter()
+            .find(|(id, _)| *id == buffer)
+            .map(|(_, tables)| *tables);
+        self.last.set(Some((buffer, tables)));
+        tables
+    }
+
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &(u64, CaseTables)> {
+        self.entries.iter()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn iter_mut(&mut self) -> impl Iterator<Item = &mut (u64, CaseTables)> {
+        self.last.set(None);
+        self.entries.iter_mut()
+    }
+
+    /// BUFFER's four set to TABLES, its own entry.
+    pub(crate) fn install(&mut self, buffer: u64, tables: CaseTables) {
+        self.remove(buffer);
+        self.entries.push((buffer, tables));
+    }
+
+    /// BUFFER back to the standard four (or killed).
+    pub(crate) fn remove(&mut self, buffer: u64) {
+        self.retain(|(id, _)| *id != buffer);
+    }
+
+    pub(crate) fn retain(&mut self, keep: impl FnMut(&(u64, CaseTables)) -> bool) {
+        self.last.set(None);
+        self.entries.retain(keep);
     }
 }

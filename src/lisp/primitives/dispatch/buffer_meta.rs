@@ -89,7 +89,7 @@ define_dispatch!(
                 // case_canon_table of the current buffer, even when either
                 // substring belongs to another buffer.
                 let canonical_table = interp
-                    .case_fold_search_active(env)
+                    .case_fold_search_active()
                     .then(|| interp.current_case_tables().canon);
                 // Both operands are read in place, as editfns.c reads the
                 // buffer text; neither is copied.

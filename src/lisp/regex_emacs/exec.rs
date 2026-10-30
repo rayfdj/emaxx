@@ -143,8 +143,9 @@ impl Drop for PooledState {
 
 impl PooledState {
     /// A MatchState for NUM_REGS registers, the last finished search's
-    /// arrays when they are spare.  The best registers are written before
-    /// they are read, as re_match_2_internal's are.
+    /// arrays when they are spare.  Each match's `reset' empties the
+    /// stack and unsets the registers it reads; the best registers are
+    /// written before they are read, as re_match_2_internal's are.
     fn new(num_regs: usize) -> Self {
         let mut st = SPARE_STATE
             .try_with(std::cell::Cell::take)
@@ -160,11 +161,11 @@ impl PooledState {
                     best_regend: Vec::new(),
                 })
             });
-        st.stack.clear();
-        st.frame = 0;
         for regs in [&mut st.regstart, &mut st.regend] {
-            regs.clear();
-            regs.resize(num_regs, UNSET);
+            if regs.len() != num_regs {
+                regs.clear();
+                regs.resize(num_regs, UNSET);
+            }
         }
         for regs in [&mut st.best_regstart, &mut st.best_regend] {
             if regs.len() < num_regs {

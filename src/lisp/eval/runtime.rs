@@ -1184,8 +1184,7 @@ impl Interpreter {
             .unwrap_or(Value::Nil);
         self.remove_buffer_locals(id);
         self.buffer_local_hooks.remove(&id);
-        self.buffer_case_tables
-            .retain(|(buffer_id, _)| *buffer_id != id);
+        self.buffer_case_tables.remove(id);
         self.reset_buffer_syntax_table(id);
         self.labeled_restrictions
             .retain(|restriction| restriction.buffer_id != id);

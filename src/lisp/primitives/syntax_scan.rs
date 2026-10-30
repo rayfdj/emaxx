@@ -422,10 +422,10 @@ impl GlState {
         self.buffer_table = interp.current_syntax_table_id();
         self.ascii_known = 0;
         self.lookup_properties = interp
-            .symbol_value_key(cached_symbol!("parse-sexp-lookup-properties"))
+            .local_variable_value_key(cached_symbol!("parse-sexp-lookup-properties"))
             .is_some_and(|value| value.is_truthy());
         self.propertize_done = interp
-            .symbol_value_key(cached_symbol!("syntax-propertize--done"))
+            .local_variable_value_key(cached_symbol!("syntax-propertize--done"))
             .and_then(|value| value.integer_value())
             .unwrap_or(-1);
     }
@@ -790,7 +790,7 @@ impl GlState {
         gl.lookup_properties = true;
         if let GlObject::Buffer = object {
             gl.propertize_done = interp
-                .symbol_value_key(cached_symbol!("syntax-propertize--done"))
+                .local_variable_value_key(cached_symbol!("syntax-propertize--done"))
                 .and_then(|value| value.integer_value())
                 .unwrap_or(-1);
         }

@@ -4166,22 +4166,19 @@ impl Interpreter {
 
     /// BVAR (b, syntax_table) when the buffer has set one.
     pub(crate) fn buffer_syntax_table_id(&self, id: u64) -> Option<CharTableRef> {
-        self.buffer_syntax_tables.get(&id).copied()
+        self.buffer_syntax_tables.get(id)
     }
 
     /// reset_buffer_local_variables's syntax table: BUFFER's slot returns
     /// to buffer_defaults' (the standard table), which nothing then roots
     /// for it.
     pub(crate) fn reset_buffer_syntax_table(&mut self, id: u64) {
-        self.buffer_syntax_tables.remove(&id);
+        self.buffer_syntax_tables.remove(id);
     }
 
     /// BUFFER's four case tables when they are not the standard ones.
     pub(crate) fn buffer_case_tables(&self, id: u64) -> Option<coding::CaseTables> {
-        self.buffer_case_tables
-            .iter()
-            .find(|(buffer_id, _)| *buffer_id == id)
-            .map(|(_, tables)| *tables)
+        self.buffer_case_tables.get(id)
     }
 
     /// alloc.c's `finalizers' list in order (head.next first).
@@ -4299,9 +4296,7 @@ impl Interpreter {
     }
 
     pub(crate) fn install_buffer_case_tables(&mut self, id: u64, tables: coding::CaseTables) {
-        self.buffer_case_tables
-            .retain(|(buffer_id, _)| *buffer_id != id);
-        self.buffer_case_tables.push((id, tables));
+        self.buffer_case_tables.install(id, tables);
     }
 
     /// Mark actual roots, then iterate weak-table reachability to a fixed
@@ -5004,7 +4999,7 @@ impl Interpreter {
             for table in clone.buffer_syntax_tables.values_mut() {
                 *table = copy_table(c, *table);
             }
-            for (_, tables) in &mut clone.buffer_case_tables {
+            for (_, tables) in clone.buffer_case_tables.iter_mut() {
                 *tables = tables.map(|table| copy_table(c, table));
             }
             for (_, plist) in &mut clone.charset_plists {
@@ -5592,7 +5587,7 @@ pub struct InterpreterState {
     standard_case_tables: Option<coding::CaseTables>,
     /// buffer.h's four case-table slots of each live buffer whose four are
     /// not the standard ones; a buffer without an entry holds those.
-    buffer_case_tables: Vec<(u64, coding::CaseTables)>,
+    buffer_case_tables: coding::BufferCaseTables,
     /// Allocated record objects.
     /// The records by id (`find_record'), a registry and not a root:
     /// a record the sweep frees leaves it (`purge_freed_records').  Ids
@@ -5670,7 +5665,7 @@ pub struct InterpreterState {
     loaded_bindings: LoadedBindings,
     /// BVAR (b, syntax_table) for each buffer whose table is not the
     /// standard one (buffer_defaults'), keyed by buffer id.
-    buffer_syntax_tables: HashMap<u64, CharTableRef, crate::lisp::types::IdentityBuildHasher>,
+    buffer_syntax_tables: coding::BufferSyntaxTables,
     /// Active dynamic special bindings in stack order.
     active_special_restores: Vec<SpecialBindingRestore>,
     next_special_binding_id: u64,
@@ -6454,7 +6449,7 @@ impl Interpreter {
             input_interrupt_mode: true,
             standard_category_table_id: None,
             standard_case_tables: None,
-            buffer_case_tables: Vec::new(),
+            buffer_case_tables: coding::BufferCaseTables::default(),
             records: std::collections::BTreeMap::from([
                 (main_thread_id, main_thread),
                 (standard_obarray_id, standard_obarray),
@@ -6486,7 +6481,7 @@ impl Interpreter {
             buffer_local_hooks: HashMap::default(),
             buffer_locals: HashMap::default(),
             loaded_bindings: LoadedBindings::default(),
-            buffer_syntax_tables: HashMap::default(),
+            buffer_syntax_tables: coding::BufferSyntaxTables::default(),
             active_special_restores: Vec::new(),
             next_special_binding_id: 1,
             labeled_restrictions: Vec::new(),
