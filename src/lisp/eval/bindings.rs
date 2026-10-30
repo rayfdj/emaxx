@@ -407,7 +407,9 @@ impl Interpreter {
         if let Some(value) = self.forwarded_eval_cell_value(name) {
             return Some(value);
         }
-        if let Some(detached) = self.detached_forwarded_variables.get(name) {
+        if !self.detached_forwarded_variables.is_empty()
+            && let Some(detached) = self.detached_forwarded_variables.get(name)
+        {
             return Some(*detached);
         }
         self.lookup_var(name, env)

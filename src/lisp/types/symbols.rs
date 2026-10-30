@@ -365,6 +365,11 @@ const KEY_NAMES: &[&str] = &[
     "buffer-display-table",
     "standard-display-table",
     "permanent-local",
+    "frame-windows-min-size",
+    "mode-line-format",
+    "header-line-format",
+    "tab-line-format",
+    "undo-auto--last-boundary-cause",
 ];
 
 struct Symbols {

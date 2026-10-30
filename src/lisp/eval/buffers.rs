@@ -21,11 +21,10 @@ impl Interpreter {
         if let Err(list) = self.buffer.borrow_mut().undo_boundary() {
             return Err(LispError::WrongTypeArgument("listp".into(), list));
         }
-        self.set_variable(
-            "undo-auto--last-boundary-cause",
-            Value::Symbol(cached_symbol!("explicit").with(Clone::clone)),
-            env,
-        );
+        // Fset (Qundo_auto__last_boundary_cause, Qexplicit).
+        let cause = cached_symbol!("undo-auto--last-boundary-cause").with(Clone::clone);
+        let explicit = Value::Symbol(cached_symbol!("explicit").with(Clone::clone));
+        crate::lisp::primitives::set_internal_symbol(self, &cause, explicit, env)?;
         self.note_point_before_last_command_or_undo();
         Ok(Value::Nil)
     }

@@ -400,7 +400,7 @@ pub(crate) fn signal_after_change(
     // The insert hooks this change recorded, kept from those a hook's own
     // changes record (insdel.c saves and restores them around the hook).
     let saved_insert_hooks = interp.interval_insert_hooks;
-    interp.with_lisp_stack_roots(&saved_insert_hooks.to_vec(), |interp| {
+    interp.with_lisp_stack_roots(&saved_insert_hooks, |interp| {
         if interp.combined_after_change().is_some() {
             flush_combined_after_change(interp, env)?;
         }

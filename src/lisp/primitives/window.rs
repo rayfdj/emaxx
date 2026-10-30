@@ -273,34 +273,37 @@ pub(crate) fn buffer_point_bounds(interp: &Interpreter, buffer_id: u64) -> (usiz
     ))
 }
 
-pub(crate) fn window_record_id_from_value(interp: &Interpreter, value: &Value) -> Option<u64> {
+/// decode_any_window's WINDOWP: the window record VALUE is, live,
+/// internal or deleted.
+#[inline]
+pub(crate) fn window_record(value: &Value) -> Option<crate::lisp::types::RecordRef> {
     match value.kind() {
-        Kind::Record(id)
-            if interp
-                .find_record(id)
-                .is_some_and(|record| record.kind == crate::lisp::eval::RecordKind::Window) =>
-        {
-            Some(id.id)
+        Kind::Record(record) if record.kind == crate::lisp::eval::RecordKind::Window => {
+            Some(record)
         }
-        Kind::Symbol(symbol) if symbol == "window" => Some(interp.selected_window_id()),
         _ => None,
     }
 }
 
+pub(crate) fn window_record_id_from_value(_interp: &Interpreter, value: &Value) -> Option<u64> {
+    window_record(value).map(|record| record.id)
+}
+
+/// The live buffer the window VALUE shows (BUFFERP (w->contents)), read
+/// from the record itself; the selected window with no buffer of its own
+/// shows the current one.
 pub(crate) fn window_buffer_id(interp: &Interpreter, value: &Value) -> Option<u64> {
-    match window_record_id_from_value(interp, value) {
-        Some(id) if id == interp.selected_window_id() => {
-            let buffer_id = interp.selected_window_buffer_id();
-            interp.has_buffer_id(buffer_id).then_some(buffer_id)
-        }
-        Some(id) => interp
-            .find_record(id)
-            .and_then(|record| record.slots.get(WINDOW_BUFFER_SLOT))
-            .and_then(|slot| slot.integer_value())
-            .map(|buffer_id| buffer_id.max(0) as u64)
-            .filter(|buffer_id| interp.has_buffer_id(*buffer_id)),
-        None => None,
-    }
+    let window = window_record(value)?;
+    let buffer_id = match window
+        .slots
+        .get(WINDOW_BUFFER_SLOT)
+        .and_then(|slot| slot.integer_value())
+    {
+        Some(buffer_id) => buffer_id.max(0) as u64,
+        None if window.id == interp.selected_window_id() => interp.current_buffer_id(),
+        None => return None,
+    };
+    interp.has_buffer_id(buffer_id).then_some(buffer_id)
 }
 
 pub(crate) fn window_start(

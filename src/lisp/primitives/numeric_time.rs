@@ -450,6 +450,14 @@ pub(crate) fn integer_rounding_value(
     if float_result && !matches!(args[0].kind(), Kind::Float(_)) {
         return Err(LispError::WrongTypeArgument("floatp".into(), args[0]));
     }
+    // rounding_driver divides a fixnum by a nonzero fixnum specially, for
+    // speed.
+    if let [numerator, divisor] = args
+        && let (Some(numerator), Some(divisor)) = (numerator.fixnum(), divisor.fixnum())
+        && divisor != 0
+    {
+        return Ok(Value::Integer(fixnum_divide(kind, numerator, divisor)));
+    }
 
     // floatfns.c:rounding_driver receives a fixed second C argument and uses
     // NILP (d), so funcall_subr's padded Qnil and an explicit nil have the
@@ -508,6 +516,29 @@ pub(crate) fn integer_rounding_value(
         Ok(Value::float(rounded))
     } else {
         rounded_f64_to_number_value(rounded)
+    }
+}
+
+/// floatfns.c's ceiling2, floor2, truncate2 and round2: N divided by D,
+/// fixnums and D nonzero, rounded as KIND says (round to even on a tie).
+/// A fixnum's quotient is within an i64.
+fn fixnum_divide(kind: RoundingKind, n: i64, d: i64) -> i64 {
+    let (q, r) = (n / d, n % d);
+    match kind {
+        RoundingKind::Ceiling => q + i64::from(r != 0 && (n < 0) == (d < 0)),
+        RoundingKind::Floor => q - i64::from(r != 0 && (n < 0) != (d < 0)),
+        RoundingKind::Truncate => q,
+        RoundingKind::Round => {
+            // The remainder on the other side of zero, if it is nearer
+            // zero, or as near and the truncated quotient odd.
+            let abs_r = r.abs();
+            let abs_r1 = d.abs() - abs_r;
+            if abs_r1 < abs_r + (q & 1) {
+                q + if (d < 0) == (r < 0) { 1 } else { -1 }
+            } else {
+                q
+            }
+        }
     }
 }
 

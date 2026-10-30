@@ -2225,9 +2225,10 @@ fn invoke_context_free_subr(index: usize, arguments: &[NativeWord]) -> Option<Na
 }
 
 /// The subrs `invoke_subr' answers on its own paths, by name. A subr's
-/// kind is read by its index into the ABI's table, one byte, where the
-/// names were compared one after another on every call.
+/// kind is one byte of its own entry in the ABI's table, where the names
+/// were compared one after another on every call.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
 enum DirectSubr {
     Other,
     Funcall,
@@ -2333,18 +2334,37 @@ impl DirectSubr {
 
     /// The kind of the subr at INDEX in the ABI's table; `Other' past it.
     #[inline(always)]
+    #[cfg(test)]
     fn of_index(index: usize) -> Self {
-        static KINDS: OnceLock<Box<[DirectSubr]>> = OnceLock::new();
-        KINDS
-            .get_or_init(|| {
-                super::abi::native_subrs()
-                    .iter()
-                    .map(|subroutine| Self::of_name(subroutine.name))
-                    .collect()
-            })
+        super::abi::native_subrs()
             .get(index)
-            .copied()
-            .unwrap_or(Self::Other)
+            .map_or(Self::Other, Self::of_subr)
+    }
+
+    /// SUBROUTINE's kind, from its byte once known.
+    #[inline(always)]
+    fn of_subr(subroutine: &super::abi::NativeSubr) -> Self {
+        Self::known_of_subr(subroutine).unwrap_or_else(|| Self::of_subr_slow(subroutine))
+    }
+
+    /// SUBROUTINE's kind if its byte holds it yet.
+    #[inline(always)]
+    fn known_of_subr(subroutine: &super::abi::NativeSubr) -> Option<Self> {
+        match subroutine.kind.load(std::sync::atomic::Ordering::Relaxed) {
+            0 => None,
+            // SAFETY: a nonzero byte was stored below from a kind plus one.
+            byte => Some(unsafe { std::mem::transmute::<u8, Self>(byte - 1) }),
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn of_subr_slow(subroutine: &super::abi::NativeSubr) -> Self {
+        let kind = Self::of_name(subroutine.name);
+        subroutine
+            .kind
+            .store(kind as u8 + 1, std::sync::atomic::Ordering::Relaxed);
+        kind
     }
 }
 
@@ -2408,7 +2428,36 @@ fn invoke_context_free_kind(kind: DirectSubr, arguments: &[NativeWord]) -> Optio
 }
 
 pub(crate) fn invoke_subr(index: usize, arguments: &[NativeWord]) -> NativeWord {
-    let kind = DirectSubr::of_index(index);
+    let Some(subroutine) = super::abi::native_subrs().get(index) else {
+        return invoke_subr_outside_abi();
+    };
+    // Every path from here is a call in tail position, so that the
+    // dispatch saves no registers: a subr with no word-level path is
+    // called at once, from a body of its own.
+    match DirectSubr::known_of_subr(subroutine) {
+        Some(DirectSubr::Other) => invoke_other_subr(subroutine, arguments),
+        Some(kind) => invoke_kind_subr(index, kind, arguments),
+        None => invoke_subr_first(index, subroutine, arguments),
+    }
+}
+
+/// `invoke_subr' of a subr whose kind is not read yet: its kind learned,
+/// then the call.
+#[cold]
+#[inline(never)]
+fn invoke_subr_first(
+    index: usize,
+    subroutine: &'static super::abi::NativeSubr,
+    arguments: &[NativeWord],
+) -> NativeWord {
+    DirectSubr::of_subr(subroutine);
+    invoke_subr(index, arguments)
+}
+
+/// `invoke_subr' of a subr with a word-level path: the paths that need no
+/// context, the variable subrs', then the rest.
+#[inline(never)]
+fn invoke_kind_subr(index: usize, kind: DirectSubr, arguments: &[NativeWord]) -> NativeWord {
     if let Some(result) = invoke_context_free_kind(kind, arguments) {
         return result;
     }
@@ -2422,15 +2471,37 @@ pub(crate) fn invoke_subr(index: usize, arguments: &[NativeWord]) -> NativeWord 
     ) {
         return invoke_variable_subr(index, kind, arguments);
     }
-    // A subr with no word-level path is called at once, through a body
-    // small enough that its prologue is the call's and no more.
-    if kind == DirectSubr::Other {
-        return with_active(|active| match entered_subr(active, index) {
-            Some(subroutine) => invoke_subr_entry(active, subroutine, arguments),
-            None => 0,
-        });
-    }
     invoke_word_level_subr(index, kind, arguments)
+}
+
+/// `invoke_subr' of a subr with no word-level path: the handlers brought
+/// up to date, then its own entry.
+#[inline(never)]
+fn invoke_other_subr(
+    subroutine: &'static super::abi::NativeSubr,
+    arguments: &[NativeWord],
+) -> NativeWord {
+    with_active(|active| {
+        if let Err(error) =
+            unsafe { &mut *active.runtime }.sync_handlers(unsafe { &mut *active.interpreter })
+        {
+            remember_helper_error(active, error);
+            return 0;
+        }
+        invoke_subr_entry(active, subroutine, arguments)
+    })
+}
+
+#[cold]
+#[inline(never)]
+fn invoke_subr_outside_abi() -> NativeWord {
+    with_active(|active| {
+        remember_helper_error(
+            active,
+            super::lisp::native_ice("native subroutine index is outside the runtime ABI"),
+        );
+        0
+    })
 }
 
 /// Fboundp, Fdefault_boundp, Fdefault_value and Flocal_variable_p (of the

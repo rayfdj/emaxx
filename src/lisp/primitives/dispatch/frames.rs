@@ -42,34 +42,61 @@ pub(super) fn decode_live_frame(
     decode_frame(interp, value, nil_defaults_to_selected, true)
 }
 
+/// The parameters a frame reports beside its stored ones, as
+/// Fframe_parameters adds them from the frame and its terminal, in that
+/// order (after `COMPUTED_FRAME_PARAMETERS').
+const DEFAULT_FRAME_PARAMETERS: [&str; 12] = [
+    "buried-buffer-list",
+    "buffer-list",
+    "unsplittable",
+    "modeline",
+    "name",
+    "font",
+    "background-color",
+    "foreground-color",
+    "cursor-color",
+    "scroll-bar-background",
+    "scroll-bar-foreground",
+    "minibuffer",
+];
+
+/// The value of the default parameter PARAMETER of frame ID, None for a
+/// name outside `DEFAULT_FRAME_PARAMETERS'.
+fn default_frame_parameter(
+    interp: &Interpreter,
+    id: crate::lisp::types::FrameRef,
+    parameter: &str,
+) -> Option<Value> {
+    Some(match parameter {
+        "buried-buffer-list"
+        | "unsplittable"
+        | "scroll-bar-background"
+        | "scroll-bar-foreground" => Value::Nil,
+        "buffer-list" => Value::list(
+            interp
+                .buffer_list
+                .iter()
+                .map(|(id, _)| interp.buffer_value(*id).expect("live buffer object")),
+        ),
+        "modeline" | "minibuffer" => Value::T,
+        "name" => id.name.get(),
+        "font" => Value::string("tty"),
+        "background-color" => Value::string("unspecified-bg"),
+        "foreground-color" => Value::string("unspecified-fg"),
+        "cursor-color" => Value::string("white"),
+        _ => return None,
+    })
+}
+
 fn default_frame_parameters(
     interp: &Interpreter,
     id: crate::lisp::types::FrameRef,
 ) -> Vec<(String, Value)> {
-    let frame = id.borrow();
-    let buffers = Value::list(
-        interp
-            .buffer_list
-            .iter()
-            .map(|(id, _)| interp.buffer_value(*id).expect("live buffer object")),
-    );
-    let mut parameters = computed_frame_parameters(&frame);
-    parameters.extend([
-        ("buried-buffer-list".into(), Value::Nil),
-        ("buffer-list".into(), buffers),
-        ("unsplittable".into(), Value::Nil),
-        ("modeline".into(), Value::T),
-    ]);
-    parameters.extend([
-        ("name".into(), id.name.get()),
-        ("font".into(), Value::string("tty")),
-        ("background-color".into(), Value::string("unspecified-bg")),
-        ("foreground-color".into(), Value::string("unspecified-fg")),
-        ("cursor-color".into(), Value::string("white")),
-        ("scroll-bar-background".into(), Value::Nil),
-        ("scroll-bar-foreground".into(), Value::Nil),
-        ("minibuffer".into(), Value::T),
-    ]);
+    let mut parameters = computed_frame_parameters(&id.borrow());
+    parameters.extend(DEFAULT_FRAME_PARAMETERS.iter().map(|name| {
+        let value = default_frame_parameter(interp, id, name).expect("a default parameter");
+        ((*name).into(), value)
+    }));
     parameters
 }
 
@@ -77,28 +104,37 @@ fn default_frame_parameters(
 /// the frame itself: a text frame's bar lines, and its size in lines
 /// and columns (a size change_frame_size has queued, as GNU reports
 /// f->new_height and f->new_width).
-fn computed_frame_parameters(frame: &crate::lisp::eval::FrameState) -> Vec<(String, Value)> {
-    let height = if frame.new_size_p && frame.new_height >= 0 {
-        frame.new_height
-    } else {
-        frame.text_height
-    };
-    let width = if frame.new_size_p && frame.new_width >= 0 {
-        frame.new_width
-    } else {
-        frame.width
-    };
-    vec![
-        ("tab-bar-lines".into(), Value::Integer(frame.tab_bar_lines)),
-        (
-            "menu-bar-lines".into(),
-            Value::Integer(frame.menu_bar_lines),
-        ),
-        ("width".into(), Value::Integer(width)),
-        ("height".into(), Value::Integer(height)),
-    ]
+const COMPUTED_FRAME_PARAMETERS: [&str; 4] = ["tab-bar-lines", "menu-bar-lines", "width", "height"];
+
+/// The value of the computed parameter PARAMETER of FRAME, None for a
+/// name outside `COMPUTED_FRAME_PARAMETERS'.
+fn computed_frame_parameter(
+    frame: &crate::lisp::eval::FrameState,
+    parameter: &str,
+) -> Option<Value> {
+    Some(Value::Integer(match parameter {
+        "tab-bar-lines" => frame.tab_bar_lines,
+        "menu-bar-lines" => frame.menu_bar_lines,
+        "width" if frame.new_size_p && frame.new_width >= 0 => frame.new_width,
+        "width" => frame.width,
+        "height" if frame.new_size_p && frame.new_height >= 0 => frame.new_height,
+        "height" => frame.text_height,
+        _ => return None,
+    }))
 }
 
+fn computed_frame_parameters(frame: &crate::lisp::eval::FrameState) -> Vec<(String, Value)> {
+    COMPUTED_FRAME_PARAMETERS
+        .iter()
+        .map(|name| {
+            let value = computed_frame_parameter(frame, name).expect("a computed parameter");
+            ((*name).into(), value)
+        })
+        .collect()
+}
+
+/// Fframe_parameter of frame ID: a computed parameter, else the stored
+/// one, else the default, else nil; each read alone, nothing built.
 pub(super) fn frame_parameter_value(
     interp: &Interpreter,
     id: crate::lisp::types::FrameRef,
@@ -108,10 +144,7 @@ pub(super) fn frame_parameter_value(
         return id.name.get();
     }
     let frame = id.borrow();
-    computed_frame_parameters(&frame)
-        .into_iter()
-        .find(|(name, _)| name == parameter)
-        .map(|(_, value)| value)
+    computed_frame_parameter(&frame, parameter)
         .or_else(|| {
             frame
                 .parameter_overrides
@@ -119,12 +152,7 @@ pub(super) fn frame_parameter_value(
                 .find(|(name, _)| name == parameter)
                 .map(|(_, value)| *value)
         })
-        .or_else(|| {
-            default_frame_parameters(interp, id)
-                .into_iter()
-                .find(|(name, _)| name == parameter)
-                .map(|(_, value)| value)
-        })
+        .or_else(|| default_frame_parameter(interp, id, parameter))
         .unwrap_or(Value::Nil)
 }
 

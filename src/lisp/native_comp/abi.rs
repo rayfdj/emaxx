@@ -34,6 +34,9 @@ pub(crate) struct NativeSubr {
     native_type: usize,
     pub(crate) name: &'static str,
     index: u32,
+    /// The native runtime's kind of this subr (`runtime::DirectSubr') plus
+    /// one, 0 until first read.
+    pub(crate) kind: std::sync::atomic::AtomicU8,
     facts: std::sync::OnceLock<crate::lisp::primitives::NameFacts>,
     /// `direct_entry's answer once its facts are known: 0 before, 1 for
     /// none, otherwise the function pointer.
@@ -104,6 +107,7 @@ impl NativeSubr {
             native_type: 0,
             name: name_text,
             index,
+            kind: std::sync::atomic::AtomicU8::new(0),
             facts: std::sync::OnceLock::new(),
             direct: std::sync::atomic::AtomicUsize::new(0),
         }
@@ -163,10 +167,21 @@ impl NativeSubr {
             {
                 direct(interp, args, env)
             }
-            _ => {
-                crate::lisp::primitives::call_with_facts(interp, self.name, self.facts(), args, env)
-            }
+            _ => self.call_by_facts(interp, args, env),
         }
+    }
+
+    /// `call' of a subr with no direct entry, or of ARGS outside its range:
+    /// through the name's facts, out of line so that the direct call's
+    /// callers keep their registers.
+    #[inline(never)]
+    fn call_by_facts(
+        &'static self,
+        interp: &mut crate::lisp::eval::Interpreter,
+        args: &[crate::lisp::types::Value],
+        env: &mut crate::lisp::types::Env,
+    ) -> Result<crate::lisp::types::Value, crate::lisp::types::LispError> {
+        crate::lisp::primitives::call_with_facts(interp, self.name, self.facts(), args, env)
     }
 
     #[cold]

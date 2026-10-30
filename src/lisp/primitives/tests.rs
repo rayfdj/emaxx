@@ -20905,6 +20905,39 @@ fn searches_read_each_buffers_case_and_syntax_tables_as_they_change() {
 }
 
 #[test]
+fn integer_rounding_and_window_decoding_answer_as_floatfns_and_window_c() {
+    // rounding_driver's fixnum division (round to even on a tie, a
+    // quotient past the fixnums a bignum); decode_any_window,
+    // decode_valid_window and decode_live_window, the symbol `window' no
+    // window; a window's parameters and the frame's stored ones.
+    let program = r#"(list
+ (mapcar (lambda (p) (list (ceiling (car p) (cdr p)) (floor (car p) (cdr p))
+                           (truncate (car p) (cdr p)) (round (car p) (cdr p))))
+         '((7 . 2) (-7 . 2) (7 . -2) (-7 . -2) (5 . 2) (-5 . 2) (6 . 3) (-6 . 4) (1 . 3) (-1 . 3)))
+ (= (ceiling most-negative-fixnum -1) (- most-negative-fixnum))
+ (bignump (floor most-negative-fixnum -1))
+ (condition-case err (ceiling 1 0) (arith-error (car err)))
+ (mapcar (lambda (f) (condition-case err (funcall f 'window) (error err)))
+         (list #'windowp #'window-live-p #'window-valid-p #'window-buffer #'window-frame
+               #'window-top-child #'window-mode-line-height))
+ (let ((w (selected-window)))
+   (set-window-parameter w 'p1 1)
+   (set-window-parameter w 'p2 2)
+   (list (windowp w) (window-live-p w) (window-valid-p w) (eq (window-buffer w) (current-buffer))
+         (eq (window-frame w) (selected-frame)) (window-top-child w) (window-left-child w)
+         (window-parameter w 'p0) (window-parameter w 'p1) (window-parameter w 'p2)
+         (window-mode-line-height (minibuffer-window))))
+ (list (frame-parameter nil 'min-height)
+       (progn (set-frame-parameter nil 'min-height 3) (frame-parameter nil 'min-height))
+       (frame-parameter nil 'no-such-parameter)))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "(((4 3 3 4) (-3 -4 -3 -4) (-3 -4 -3 -4) (4 3 3 4) (3 2 2 2) (-2 -3 -2 -2) (2 2 2 2) (-1 -2 -1 -2) (1 0 0 0) (0 -1 0 0)) t t arith-error (nil nil nil (wrong-type-argument windowp window) (wrong-type-argument window-valid-p window) (wrong-type-argument window-valid-p window) (wrong-type-argument window-live-p window)) (t t t t t nil nil nil 1 2 0) (nil 3 nil))",
+        "fixnum rounding and window decoding",
+    );
+}
+
+#[test]
 fn case_tables_apply_explicit_byte8_mappings_to_raw_unibyte_strings() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     interp.set_load_path(vec![upstream_emacs_repo().join("lisp")]);

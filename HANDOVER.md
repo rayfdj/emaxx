@@ -9402,6 +9402,52 @@ setup_process_coding_systems's check now refuses). A 13-form
   which the next round measures. Local validation: the grouped gate's
   3,339 library tests, the seven integration suites, clippy with
   every target and feature, rustfmt and `git diff --check'.
+- **Round 178: undo's window sizes, as frame.c, window.c and
+  floatfns.c compute them.** Each `set-window-configuration' of undo's
+  tests runs adjust_frame_size, which asks window.el's native
+  `frame-windows-min-size' twice; that call tree cost 181,000
+  instructions a unit against GNU's 100,500, and the Rust side around it
+  some 34,000 more. The frame's `min-height' was read by building every
+  frame parameter, with fresh strings, to find one (about 8,500
+  instructions a call): `frame-parameter''s computed, stored and default
+  parameters are now each read alone by name, and adjust_frame_size calls
+  `frame-windows-min-size' through its symbol as call4 does, where it
+  interned the name each time. `ceiling', `floor', `round' and
+  `truncate' of two fixnums divided as bignums (887 instructions a
+  `ceiling'); they now divide as rounding_driver's ceiling2, floor2,
+  round2 and truncate2 do. The window primitives undo's Lisp asks most
+  (`window-valid-p' 72 times a unit, `window-buffer' and `window-frame'
+  36, the line heights 24) read the window record they are given where
+  they found it again by its id, the buffer without a second decode and
+  the parameters without copying the alist; the line heights read the
+  three format variables by their symbols. A native call of a subr with
+  no word-level path reads its kind from a byte of its own entry, where
+  a lock-guarded table was read on every call, from a dispatcher whose
+  every path is a tail call, and the call by facts is out of line.
+  `undo-boundary' sets `undo-auto--last-boundary-cause' by its symbol,
+  as Fundo_boundary's Fset does, where the name was resolved, interned
+  and looked up as a lexical variable first (about 820 instructions, 31
+  times a unit). Undo now runs 1,486,000 instructions a unit against
+  1,573,000 (GNU 1,541,000), and the window-size tree 152,000. The
+  sixteen core workloads' instructions against GNU's (an eighth and a
+  sixteenth of the contract's n), from round 176 to here: native
+  execution 0.866 to 0.817, bytecode-to-native 0.914 to 0.881, bytecode
+  calls 0.961 to 0.940, mapcar 1.293 to 1.097 (with round 177), sort
+  0.899 to 0.887; the others moved by 0.2% or less, interpreted-dynamic
+  1.048, interpreted-to-native 1.050 and list traversal 1.023 the ones
+  still above GNU's count.
+  Three differences from GNU are fixed on the way: the symbol `window'
+  was taken for the selected window by every window primitive
+  (`(windowp 'window)' was t), `window-frame', `window-top-child' and
+  `window-left-child' signalled `windowp' where decode_valid_window
+  signals `window-valid-p', and the line heights accepted any window
+  where decode_live_window wants a live one. An oracle test divides
+  fixnums of each sign with each rounding, past the fixnums and by
+  zero, decodes `window' and the selected window through each
+  primitive, and reads window and frame parameters. Local validation:
+  the grouped gate's 3,340 library tests, the seven integration
+  suites, clippy with every target and feature, rustfmt and
+  `git diff --check'.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's

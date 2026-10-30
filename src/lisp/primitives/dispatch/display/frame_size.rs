@@ -158,13 +158,19 @@ fn frame_windows_min_size(
     );
     let size = match parameter.integer_value() {
         Some(size) if i32::try_from(size).is_ok() => size.max(1),
-        _ => crate::lisp::primitives::hooks_overlays::call_named_function(
-            interp,
-            "frame-windows-min-size",
-            &[Value::Frame(frame), lisp_bool(horizontal), ignore, Value::T],
-            env,
-        )?
-        .as_integer()?,
+        // call4 (Qframe_windows_min_size, ...): Ffuncall of the symbol.
+        _ => {
+            let function =
+                cached_symbol!("frame-windows-min-size").with(|symbol| Value::Symbol(*symbol));
+            interp
+                .call_function_value(
+                    function,
+                    None,
+                    &[Value::Frame(frame), lisp_bool(horizontal), ignore, Value::T],
+                    env,
+                )?
+                .as_integer()?
+        }
     };
     let termcap = frame.borrow().tty_sized;
     if termcap && !horizontal {

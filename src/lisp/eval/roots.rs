@@ -58,6 +58,12 @@ impl TraceLispRoots for [Value] {
     }
 }
 
+impl<const N: usize> TraceLispRoots for [Value; N] {
+    fn trace_lisp_roots(&self, marker: &mut LispRootMarker<'_>) {
+        self.as_slice().trace_lisp_roots(marker);
+    }
+}
+
 impl<T: TraceLispRoots> TraceLispRoots for Vec<T> {
     fn trace_lisp_roots(&self, marker: &mut LispRootMarker<'_>) {
         for value in self {
