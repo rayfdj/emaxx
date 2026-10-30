@@ -20932,6 +20932,82 @@ fn string_case_conversion_copies_properties_of_unibyte_strings_only() {
 }
 
 #[test]
+fn text_property_lookups_signal_for_a_bad_alias_or_nonsticky_list_as_fassq_does() {
+    // intervals.c:lookup_char_property's Fassq of `char-property-alias-alist'
+    // (for an empty plist too) and text_property_stickiness's of
+    // `text-property-default-nonsticky' signal for a list that does not end
+    // in nil or that cycles, through the text and overlay property
+    // primitives, the overlay sort, the read-only checks of an insertion
+    // and the scans' `syntax-table' lookups.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((ret (lambda (thunk) (condition-case e (funcall thunk) (error e)))))
+          (list
+           (funcall ret (lambda () (let ((char-property-alias-alist 5)) (get-text-property 0 'face (propertize "a" 'x 1)))))
+           (funcall ret (lambda () (let ((char-property-alias-alist 5)) (get-text-property 0 'face "plain"))))
+           (funcall ret (lambda () (let ((char-property-alias-alist 5)) (get-text-property 0 'x (propertize "a" 'x 1)))))
+           (funcall ret (lambda () (let ((char-property-alias-alist '((face foo) . 5))) (get-text-property 0 'zzz (propertize "a" 'x 1)))))
+           (funcall ret (lambda () (let ((char-property-alias-alist '((face foo) . 5))) (get-text-property 0 'face (propertize "a" 'foo 7)))))
+           (car (funcall ret (lambda () (let ((l (list (list 'a 'b)))) (setcdr l l) (let ((char-property-alias-alist l)) (get-text-property 0 'zzz (propertize "a" 'x 1)))))))
+           (with-temp-buffer
+             (insert (propertize "abc" 'face 'bold) "def")
+             (let ((ov (make-overlay 1 3)) (ov2 (make-overlay 2 3)))
+               (overlay-put ov 'x 1)
+               (let ((char-property-alias-alist 5))
+                 (list (funcall ret (lambda () (get-char-property 2 'face)))
+                       (funcall ret (lambda () (get-char-property 5 'face)))
+                       (funcall ret (lambda () (overlay-get ov 'face)))
+                       (funcall ret (lambda () (overlay-get ov 'x)))
+                       (funcall ret (lambda () (length (overlays-at 2 t))))
+                       (length (overlays-at 2))
+                       (funcall ret (lambda () (next-single-property-change 1 'face)))
+                       (funcall ret (lambda () (previous-single-property-change 6 'face)))
+                       (funcall ret (lambda () (text-property-any 1 7 'face nil)))
+                       (funcall ret (lambda () (text-property-not-all 1 7 'face 'bold)))
+                       (funcall ret (lambda () (get-pos-property 2 'face)))
+                       (funcall ret (lambda () (goto-char 2) (insert "z") (buffer-string)))))))
+           (with-temp-buffer
+             (insert (propertize "abc" 'invisible t))
+             (let ((char-property-alias-alist 5)) (funcall ret (lambda () (invisible-p 2)))))
+           (with-temp-buffer
+             (insert "abc")
+             (let ((char-property-alias-alist 5)) (goto-char 2) (insert "z") (buffer-string)))
+           (with-temp-buffer
+             (insert (propertize "a" 'face 1) "b")
+             (list (let ((text-property-default-nonsticky 7))
+                     (funcall ret (lambda () (get-pos-property 2 'face))))
+                   (let ((text-property-default-nonsticky '((face . t) . 7)))
+                     (list (funcall ret (lambda () (get-pos-property 2 'zzz)))
+                           (funcall ret (lambda () (get-pos-property 2 'face)))))))
+           (with-temp-buffer
+             (insert "(a b) c")
+             (put-text-property 1 2 'x 1)
+             (let ((parse-sexp-lookup-properties t) (char-property-alias-alist 5))
+               (list (funcall ret (lambda () (goto-char 1) (forward-sexp) (point)))
+                     (funcall ret (lambda () (goto-char 1) (re-search-forward "\\_<b" nil t))))))
+           (let ((char-property-alias-alist '((face font-lock-face))))
+             (list (get-text-property 0 'face (propertize "a" 'font-lock-face 'bold))
+                   (get-text-property 0 'face "a")))
+           (let ((default-text-properties '(face italic)))
+             (list (get-text-property 0 'face "a")
+                   (get-text-property 0 'face (propertize "a" 'x 1))))))"#,
+        concat!(
+            "((wrong-type-argument listp 5) (wrong-type-argument listp 5) ",
+            "1 (wrong-type-argument listp ((face foo) . 5)) 7 ",
+            "circular-list ((wrong-type-argument listp 5) ",
+            "(wrong-type-argument listp 5) (wrong-type-argument listp 5) ",
+            "1 (wrong-type-argument listp 5) 2 (wrong-type-argument listp ",
+            "5) (wrong-type-argument listp 5) (wrong-type-argument listp ",
+            "5) (wrong-type-argument listp 5) (wrong-type-argument listp ",
+            "5) (wrong-type-argument listp 5)) t \"azbc\" ",
+            "((wrong-type-argument listp 7) ((wrong-type-argument listp ",
+            "((face . t) . 7)) nil)) ((wrong-type-argument listp 5) ",
+            "(wrong-type-argument listp 5)) (bold nil) (italic italic))",
+        ),
+        "lookups through Fassq",
+    );
+}
+
+#[test]
 fn capitalize_uses_current_syntax_table_word_boundaries() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = crate::lisp::types::Env::new();

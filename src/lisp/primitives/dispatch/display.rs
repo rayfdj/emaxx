@@ -1901,16 +1901,21 @@ pub(crate) fn window_face_spans(
         {
             return spans;
         }
+        // Redisplay reads a property whose lookup signals as nil.
         let face_at = |pos: usize| {
             crate::lisp::primitives::strings::buffer_property_at_with_category(
                 interp, &buffer, pos, "face",
             )
+            .ok()
+            .flatten()
             .filter(|face| !face.is_nil())
             .or_else(|| {
                 face_alias_names.iter().find_map(|name| {
                     crate::lisp::primitives::strings::buffer_property_at_with_category(
                         interp, &buffer, pos, name,
                     )
+                    .ok()
+                    .flatten()
                     .filter(|face| !face.is_nil())
                 })
             })
@@ -1934,12 +1939,16 @@ pub(crate) fn window_face_spans(
             let Some(face) = crate::lisp::primitives::strings::overlay_property_with_category(
                 interp, &overlay, "face",
             )
+            .ok()
+            .flatten()
             .filter(|face| !face.is_nil())
             .or_else(|| {
                 face_alias_names.iter().find_map(|name| {
                     crate::lisp::primitives::strings::overlay_property_with_category(
                         interp, &overlay, name,
                     )
+                    .ok()
+                    .flatten()
                     .filter(|face| !face.is_nil())
                 })
             }) else {
@@ -1948,6 +1957,8 @@ pub(crate) fn window_face_spans(
             let priority = crate::lisp::primitives::strings::overlay_property_with_category(
                 interp, &overlay, "priority",
             )
+            .ok()
+            .flatten()
             .and_then(|priority| priority.integer_value())
             .unwrap_or(0);
             overlay_spans.push((

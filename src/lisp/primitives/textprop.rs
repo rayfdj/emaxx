@@ -115,7 +115,7 @@ trait SearchWalk {
         prop: PropertyName,
         value: Value,
         matching: bool,
-    ) -> Option<usize>;
+    ) -> Result<Option<usize>, LispError>;
     /// The start of the first interval after the one holding POS whose
     /// PROP differs (by EQ) from that interval's, with the start of each
     /// interval passed over below LIMIT.
@@ -125,7 +125,7 @@ trait SearchWalk {
         pos: usize,
         prop: PropertyName,
         limit: Option<i64>,
-    ) -> Option<usize>;
+    ) -> Result<Option<usize>, LispError>;
     /// Backward: the end of the first interval before the one holding the
     /// character before POS whose PROP differs, each end passed over above
     /// LIMIT.
@@ -135,7 +135,7 @@ trait SearchWalk {
         pos: usize,
         prop: PropertyName,
         limit: Option<i64>,
-    ) -> Option<usize>;
+    ) -> Result<Option<usize>, LispError>;
 }
 
 fn textget_eq(
@@ -143,13 +143,13 @@ fn textget_eq(
     interval: &PropertyInterval,
     prop: PropertyName,
     value: Value,
-) -> bool {
-    values_eq_in_env(
+) -> Result<bool, LispError> {
+    Ok(values_eq_in_env(
         interp,
-        &textget(interp, interval.plist, prop),
+        &textget(interp, interval.plist, prop)?,
         &value,
         &Env::new(),
-    )
+    ))
 }
 
 impl SearchWalk for SearchText<'_> {
@@ -185,19 +185,21 @@ impl SearchWalk for SearchText<'_> {
         prop: PropertyName,
         value: Value,
         matching: bool,
-    ) -> Option<usize> {
-        let intervals = self.intervals.as_ref()?;
+    ) -> Result<Option<usize>, LispError> {
+        let Some(intervals) = self.intervals.as_ref() else {
+            return Ok(None);
+        };
         let mut interval = Some(intervals.find(from));
         while let Some(current) = interval {
             if current.start >= end {
                 break;
             }
-            if textget_eq(interp, &current, prop, value) == matching {
-                return Some(current.start.max(from));
+            if textget_eq(interp, &current, prop, value)? == matching {
+                return Ok(Some(current.start.max(from)));
             }
             interval = intervals.next(&current);
         }
-        None
+        Ok(None)
     }
 
     fn next_change(
@@ -206,20 +208,23 @@ impl SearchWalk for SearchText<'_> {
         pos: usize,
         prop: PropertyName,
         limit: Option<i64>,
-    ) -> Option<usize> {
-        let intervals = self.intervals.as_ref()?;
+    ) -> Result<Option<usize>, LispError> {
+        let Some(intervals) = self.intervals.as_ref() else {
+            return Ok(None);
+        };
         let here = intervals.find(pos);
-        let here_value = textget(interp, here.plist, prop);
+        let here_value = textget(interp, here.plist, prop)?;
         let mut next = intervals.next(&here);
         while let Some(current) = next
-            && textget_eq(interp, &current, prop, here_value)
+            && textget_eq(interp, &current, prop, here_value)?
             && limit.is_none_or(|limit| (current.start as i64) < limit)
         {
             next = intervals.next(&current);
         }
         let bound = limit.unwrap_or(self.max as i64);
-        next.map(|interval| interval.start)
-            .filter(|&start| (start as i64) < bound)
+        Ok(next
+            .map(|interval| interval.start)
+            .filter(|&start| (start as i64) < bound))
     }
 
     fn previous_change(
@@ -228,25 +233,30 @@ impl SearchWalk for SearchText<'_> {
         pos: usize,
         prop: PropertyName,
         limit: Option<i64>,
-    ) -> Option<usize> {
-        let intervals = self.intervals.as_ref()?;
+    ) -> Result<Option<usize>, LispError> {
+        let Some(intervals) = self.intervals.as_ref() else {
+            return Ok(None);
+        };
         // Start with the interval holding the character before POS.
         let mut here = intervals.find(pos);
         if here.start == pos {
-            here = intervals.previous(&here)?;
+            let Some(previous) = intervals.previous(&here) else {
+                return Ok(None);
+            };
+            here = previous;
         }
-        let here_value = textget(interp, here.plist, prop);
+        let here_value = textget(interp, here.plist, prop)?;
         let mut previous = intervals.previous(&here);
         while let Some(current) = previous
-            && textget_eq(interp, &current, prop, here_value)
+            && textget_eq(interp, &current, prop, here_value)?
             && limit.is_none_or(|limit| (current.end as i64) > limit)
         {
             previous = intervals.previous(&current);
         }
         let bound = limit.unwrap_or(self.min as i64);
-        previous
+        Ok(previous
             .map(|interval| interval.end)
-            .filter(|&end| (end as i64) > bound)
+            .filter(|&end| (end as i64) > bound))
     }
 }
 
@@ -285,9 +295,11 @@ pub(crate) fn text_property_any(
             None
         } else {
             check_range(text, start, end, args[0], args[1])?;
-            text.has_intervals().then(|| {
-                text.find_property(interp, start as usize, end as usize, prop, value, matching)
-            })
+            text.has_intervals()
+                .then(|| {
+                    text.find_property(interp, start as usize, end as usize, prop, value, matching)
+                })
+                .transpose()?
         };
         Ok(match interval_found {
             Some(found) => found.map(|pos| pos as i64),
@@ -334,7 +346,7 @@ pub(crate) fn next_single_property_change(
     with_search_text(interp, object, |text| {
         let pos = scan_position(interp, text, &args[0])?;
         Ok(text
-            .next_change(interp, pos, prop, limit)
+            .next_change(interp, pos, prop, limit)?
             .map_or_else(|| limit_value(limit), |pos| Value::Integer(pos as i64)))
     })
 }
@@ -351,7 +363,7 @@ pub(crate) fn previous_single_property_change(
     with_search_text(interp, object, |text| {
         let pos = scan_position(interp, text, &args[0])?;
         Ok(text
-            .previous_change(interp, pos, prop, limit)
+            .previous_change(interp, pos, prop, limit)?
             .map_or_else(|| limit_value(limit), |pos| Value::Integer(pos as i64)))
     })
 }
@@ -448,7 +460,7 @@ pub(crate) fn get_text_property(
     let object = search_object(interp, object)?;
     with_search_text(interp, object, |text| {
         let pos = scan_position(interp, text, position)?;
-        Ok(textget(interp, plist_at(text, pos), prop))
+        textget(interp, plist_at(text, pos), prop)
     })
 }
 
@@ -586,7 +598,7 @@ pub(crate) fn get_char_property_and_overlay(
             prop,
             false,
             window,
-        ) {
+        )? {
             return Ok((value, Some(overlay)));
         }
     }
@@ -606,25 +618,6 @@ pub(crate) fn get_char_property(
     get_char_property_and_overlay(interp, position, prop, object).map(|(value, _)| value)
 }
 
-/// Fassq of KEY in LIST, its improper tail ignored.
-fn assq_entry(key: PropertyName, list: Value) -> Value {
-    let mut tail = list;
-    let mut seen = crate::lisp::types::CycleGuard::new();
-    while let Kind::Cons(cell) = tail.kind() {
-        let entry = cell.car.get();
-        if let Kind::Cons(pair) = entry.kind()
-            && key.is(pair.car.get())
-        {
-            return entry;
-        }
-        if seen.step(crate::lisp::types::ConsCell::identity(&cell)) {
-            break;
-        }
-        tail = cell.cdr.get();
-    }
-    Value::Nil
-}
-
 /// textprop.c:text_property_stickiness: whether a character inserted at
 /// POS in BUFFER inherits PROP from the character after (1), before (-1)
 /// or neither (0), by `text-property-default-nonsticky', the character
@@ -640,7 +633,8 @@ pub(crate) fn text_property_stickiness(
     let defaults = interp
         .symbol_value_key(cached_symbol!("text-property-default-nonsticky"))
         .unwrap_or(Value::Nil);
-    let default = assq_entry(prop, defaults);
+    // Fassq, which signals for DEFAULTS not a list.
+    let default = crate::intervals::assq_by(|car| prop.is(car), defaults)?;
     let begv = match buffer.kind() {
         Kind::Nil => interp.buffer.borrow().point_min(),
         _ => {
@@ -725,7 +719,7 @@ pub(crate) fn get_pos_property(
             .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?;
         if pos >= 0
             && let Some(value) =
-                highest_priority_overlay_property(interp, &buffer, pos as usize, prop, true, None)
+                highest_priority_overlay_property(interp, &buffer, pos as usize, prop, true, None)?
         {
             return Ok(value);
         }

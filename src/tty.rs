@@ -2188,6 +2188,9 @@ impl<'a> CharacterDisplayContext<'a> {
                 false,
                 Some(self.window_id),
             )
+            // Redisplay reads a property whose lookup signals as nil.
+            .ok()
+            .flatten()
             .filter(|value| !value.is_nil())
             .or_else(|| buffer.text_property_at(pos, name))
             .filter(|value| !value.is_nil());
@@ -4127,12 +4130,14 @@ fn fontify_buffer_range(interpreter: &mut Interpreter, env: &mut Env, start: usi
         let round_limit = end.saturating_sub(start).max(512);
         while pos < end && rounds < round_limit {
             rounds += 1;
+            // Redisplay reads a property whose lookup signals as nil.
             let fontified = crate::lisp::primitives::buffer_char_property_at(
                 interpreter,
                 &interpreter.buffer.borrow(),
                 pos,
                 "fontified",
-            );
+            )
+            .unwrap_or(Value::Nil);
             if !fontified.is_nil() {
                 let (_, span_end) = interpreter
                     .buffer
@@ -4156,7 +4161,8 @@ fn fontify_buffer_range(interpreter: &mut Interpreter, env: &mut Env, start: usi
                 &interpreter.buffer.borrow(),
                 pos,
                 "fontified",
-            );
+            )
+            .unwrap_or(Value::Nil);
             if fontified.is_nil() {
                 // The functions declined to mark this position; a loop
                 // here could never terminate (GNU simply moves on with

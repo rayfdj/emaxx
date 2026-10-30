@@ -31,16 +31,16 @@ pub(crate) fn highest_priority_overlay_property(
     prop: impl crate::lisp::types::PropertyKey,
     at_insertion_position: bool,
     window_id: Option<u64>,
-) -> Option<Value> {
-    highest_priority_overlay_property_with_id(
+) -> Result<Option<Value>, LispError> {
+    Ok(highest_priority_overlay_property_with_id(
         interp,
         buffer,
         pos,
         prop,
         at_insertion_position,
         window_id,
-    )
-    .map(|(value, _)| value)
+    )?
+    .map(|(value, _)| value))
 }
 
 pub(crate) fn highest_priority_overlay_property_with_id(
@@ -50,7 +50,7 @@ pub(crate) fn highest_priority_overlay_property_with_id(
     prop: impl crate::lisp::types::PropertyKey,
     at_insertion_position: bool,
     window_id: Option<u64>,
-) -> Option<(Value, crate::overlay::OverlayRef)> {
+) -> Result<Option<(Value, crate::overlay::OverlayRef)>, LispError> {
     let mut overlays: Vec<crate::overlay::OverlayRef> = buffer
         .overlays
         .intersecting(
@@ -60,10 +60,13 @@ pub(crate) fn highest_priority_overlay_property_with_id(
         )
         .filter(|overlay| overlay_covers_position(overlay, pos, at_insertion_position))
         .collect();
-    sort_overlays(interp, &mut overlays, window_id);
-    overlays.into_iter().rev().find_map(|overlay| {
-        overlay_property_with_category(interp, &overlay, prop).map(|value| (value, overlay))
-    })
+    sort_overlays(interp, &mut overlays, window_id)?;
+    for overlay in overlays.into_iter().rev() {
+        if let Some(value) = overlay_property_with_category(interp, &overlay, prop)? {
+            return Ok(Some((value, overlay)));
+        }
+    }
+    Ok(None)
 }
 
 /// buffer.c:next_overlay_change: the first overlay boundary after
@@ -120,9 +123,9 @@ pub(crate) fn sort_overlays(
     interp: &Interpreter,
     overlays: &mut Vec<crate::overlay::OverlayRef>,
     window_id: Option<u64>,
-) {
+) -> Result<(), LispError> {
     if overlays.is_empty() {
-        return;
+        return Ok(());
     }
     // buffer.c:compare_overlays combines interval nesting with secondary
     // priority; crossing intervals can make this relation non-transitive.
@@ -167,22 +170,19 @@ pub(crate) fn sort_overlays(
             Greater => 1,
         }
     }
-    let mut items: Vec<_> = overlays
-        .iter()
-        .copied()
-        .filter(|overlay| {
-            window_id.is_none_or(|window| {
-                overlay_property_with_category(interp, overlay, "window")
-                    .and_then(|value| window_record_id_from_value(interp, &value))
-                    .is_none_or(|owner| owner == window)
-            })
-        })
-        .map(|overlay| {
-            let (priority, secondary) = match overlay_property_with_category(
-                interp, &overlay, "priority",
-            )
-            .map(|v| v.kind())
-            {
+    // Foverlay_get of `window' and `priority', each of which signals as
+    // lookup_char_property's Fassq does.
+    let mut items = Vec::with_capacity(overlays.len());
+    for &overlay in overlays.iter() {
+        if let Some(window) = window_id
+            && overlay_property_with_category(interp, &overlay, "window")?
+                .and_then(|value| window_record_id_from_value(interp, &value))
+                .is_some_and(|owner| owner != window)
+        {
+            continue;
+        }
+        let (priority, secondary) =
+            match overlay_property_with_category(interp, &overlay, "priority")?.map(|v| v.kind()) {
                 Some(Kind::Integer(value)) => (value, 0),
                 Some(Kind::Cons(cell)) => (
                     match cell.car.get().kind() {
@@ -196,16 +196,15 @@ pub(crate) fn sort_overlays(
                 ),
                 _ => (0, 0),
             };
-            let (beg, end) = overlay.bounds();
-            SortItem {
-                overlay,
-                beg,
-                end,
-                priority,
-                secondary,
-            }
-        })
-        .collect();
+        let (beg, end) = overlay.bounds();
+        items.push(SortItem {
+            overlay,
+            beg,
+            end,
+            priority,
+            secondary,
+        });
+    }
     if items.len() > 1 {
         // SAFETY: the exclusive Vec borrow keeps this initialized, trivially
         // movable array alive. The comparator reads only its two elements;
@@ -221,6 +220,7 @@ pub(crate) fn sort_overlays(
     }
     overlays.clear();
     overlays.extend(items.into_iter().map(|item| item.overlay));
+    Ok(())
 }
 
 pub(crate) fn overlay_covers_position(
@@ -1521,9 +1521,13 @@ fn text_property_range_end(buffer: &crate::buffer::Buffer, pos: usize, prop: &st
     }
 }
 
-pub(crate) fn char_is_invisible(interp: &Interpreter, pos: usize, env: &Env) -> bool {
-    let value = buffer_char_property_at(interp, &interp.buffer.borrow(), pos, "invisible");
-    invisibility_value_is_hidden(interp, &value, env)
+pub(crate) fn char_is_invisible(
+    interp: &Interpreter,
+    pos: usize,
+    env: &Env,
+) -> Result<bool, LispError> {
+    let value = buffer_char_property_at(interp, &interp.buffer.borrow(), pos, "invisible")?;
+    Ok(invisibility_value_is_hidden(interp, &value, env))
 }
 
 pub(crate) fn invisibility_value_is_hidden(interp: &Interpreter, value: &Value, env: &Env) -> bool {

@@ -1060,12 +1060,13 @@ pub(crate) fn object_intervals_value(
 /// PLIST of an alternative that `char-property-alias-alist' (read as the
 /// C variable, in the current buffer) gives PROP; else PROP's value in
 /// `default-text-properties', which an empty plist reads too.  None
-/// where every one of them is nil.
+/// where every one of them is nil; Fassq's error for an alias alist that
+/// is not a list.
 pub(crate) fn property_from_props_with_category(
     interp: &Interpreter,
     plist: Value,
     prop: impl PropertyKey,
-) -> Option<Value> {
+) -> Result<Option<Value>, LispError> {
     use crate::intervals::LookupContext as _;
     let mut variables = TextPropertyVariables::new(interp);
     let category = variables.category();
@@ -1077,7 +1078,7 @@ pub(crate) fn property_from_props_with_category(
         let rest = cell.cdr.get().cons_ref();
         let value = rest.as_ref().map_or(Value::Nil, |rest| rest.car.get());
         if prop.is(tem) {
-            return Some(value).filter(|value| !value.is_nil());
+            return Ok(Some(value).filter(|value| !value.is_nil()));
         }
         // A category symbol gives every property but `category'.
         if tem.word() == category.word()
@@ -1096,14 +1097,12 @@ pub(crate) fn property_from_props_with_category(
         tail = rest.cdr.get();
     }
     if !fallback.is_nil() {
-        return Some(fallback);
+        return Ok(Some(fallback));
     }
-    if !plist.is_nil()
-        && let Some(value) = alias_property(plist, prop, variables.aliases())
-    {
-        return Some(value);
+    if let Some(value) = alias_property(plist, prop, variables.aliases())? {
+        return Ok(Some(value));
     }
-    Some(lisp_plist_get(variables.defaults(), prop)).filter(|value| !value.is_nil())
+    Ok(Some(lisp_plist_get(variables.defaults(), prop)).filter(|value| !value.is_nil()))
 }
 
 /// The variables lookup_char_property reads where a plist has no PROP,
@@ -1152,41 +1151,31 @@ impl crate::intervals::LookupContext for TextPropertyVariables<'_> {
     }
 }
 
-/// lookup_char_property's alternatives: `Fassq' of PROP in ALIASES, then
-/// the first name of its cdr with a non-nil value in PLIST.
-fn alias_property(plist: Value, prop: impl PropertyKey, aliases: Value) -> Option<Value> {
-    if !aliases.is_cons() {
-        return None;
-    }
-    let mut seen = crate::lisp::types::CycleGuard::new();
-    let mut tail = aliases;
-    let names = loop {
-        let Kind::Cons(cell) = tail.kind() else {
-            return None;
-        };
-        if let Kind::Cons(entry) = cell.car.get().kind()
-            && prop.is(entry.car.get())
-        {
-            break entry.cdr.get();
-        }
-        if seen.step(crate::lisp::types::ConsCell::identity(&cell)) {
-            return None;
-        }
-        tail = cell.cdr.get();
+/// lookup_char_property's alternatives: `Fassq' of PROP in ALIASES, which
+/// signals for ALIASES not a list, then the first name of its cdr with a
+/// non-nil value in PLIST.
+fn alias_property(
+    plist: Value,
+    prop: impl PropertyKey,
+    aliases: Value,
+) -> Result<Option<Value>, LispError> {
+    let entry = crate::intervals::assq_by(|car| prop.is(car), aliases)?;
+    let Some(entry) = entry.cons_ref() else {
+        return Ok(None);
     };
     let mut seen = crate::lisp::types::CycleGuard::new();
-    let mut tail = names;
+    let mut tail = entry.cdr.get();
     while let Kind::Cons(cell) = tail.kind() {
         let value = lisp_plist_get(plist, PropertyName::new(cell.car.get()));
         if !value.is_nil() {
-            return Some(value);
+            return Ok(Some(value));
         }
         if seen.step(crate::lisp::types::ConsCell::identity(&cell)) {
-            return None;
+            break;
         }
         tail = cell.cdr.get();
     }
-    None
+    Ok(None)
 }
 
 /// fns.c:plist_get of PROP in the Lisp property list PLIST.
@@ -1216,7 +1205,7 @@ pub(crate) fn buffer_property_at_with_category(
     buffer: &crate::buffer::Buffer,
     pos: usize,
     prop: impl PropertyKey,
-) -> Option<Value> {
+) -> Result<Option<Value>, LispError> {
     // Out of the accessible text there is no interval: the empty plist's
     // textget, `default-text-properties' alone (Ftext_properties_at's nil
     // at the end).
@@ -1228,8 +1217,8 @@ pub(crate) fn buffer_char_property_at(
     buffer: &crate::buffer::Buffer,
     pos: usize,
     prop: impl PropertyKey,
-) -> Value {
-    buffer_char_property_at_with_overlay_id(interp, buffer, pos, prop).0
+) -> Result<Value, LispError> {
+    Ok(buffer_char_property_at_with_overlay_id(interp, buffer, pos, prop)?.0)
 }
 
 pub(crate) fn buffer_char_property_at_with_overlay_id(
@@ -1237,28 +1226,29 @@ pub(crate) fn buffer_char_property_at_with_overlay_id(
     buffer: &crate::buffer::Buffer,
     pos: usize,
     prop: impl PropertyKey,
-) -> (Value, Option<crate::overlay::OverlayRef>) {
+) -> Result<(Value, Option<crate::overlay::OverlayRef>), LispError> {
     if let Some((value, overlay_id)) =
-        highest_priority_overlay_property_with_id(interp, buffer, pos, prop, false, None)
+        highest_priority_overlay_property_with_id(interp, buffer, pos, prop, false, None)?
     {
-        return (value, Some(overlay_id));
+        return Ok((value, Some(overlay_id)));
     }
-    (
-        buffer_property_at_with_category(interp, buffer, pos, prop).unwrap_or(Value::Nil),
+    Ok((
+        buffer_property_at_with_category(interp, buffer, pos, prop)?.unwrap_or(Value::Nil),
         None,
-    )
+    ))
 }
 
 /// buffer.c:Foverlay_get, intervals.c:lookup_char_property over the
 /// overlay's plist without `default-text-properties': PROP's value, else
 /// the non-nil PROP of its `category' symbol, else the first non-nil
 /// value in the plist of an alternative `char-property-alias-alist' gives
-/// PROP.  None where that is nil.
+/// PROP.  None where that is nil; Fassq's error for an alias alist that
+/// is not a list.
 pub(crate) fn overlay_property_with_category(
     interp: &Interpreter,
     overlay: &crate::overlay::OverlayRef,
     prop: impl PropertyKey,
-) -> Option<Value> {
+) -> Result<Option<Value>, LispError> {
     let plist = overlay.plist();
     let mut fallback = Value::Nil;
     let mut seen = crate::lisp::types::CycleGuard::new();
@@ -1271,7 +1261,7 @@ pub(crate) fn overlay_property_with_category(
             _ => Value::Nil,
         };
         if prop.is(name) {
-            return Some(value).filter(|value| !value.is_nil());
+            return Ok(Some(value).filter(|value| !value.is_nil()));
         }
         if matches!(name.kind(), Kind::Symbol(symbol) if symbol == "category")
             && let Some(category) = value.symbol_str()
@@ -1289,37 +1279,12 @@ pub(crate) fn overlay_property_with_category(
         tail = rest.cdr.get();
     }
     if !fallback.is_nil() {
-        return Some(fallback);
+        return Ok(Some(fallback));
     }
     let aliases = interp
         .symbol_value_key(cached_symbol!("char-property-alias-alist"))
         .unwrap_or(Value::Nil);
-    let mut seen = crate::lisp::types::CycleGuard::new();
-    let mut tail = aliases;
-    while let Kind::Cons(cell) = tail.kind() {
-        if let Kind::Cons(entry) = cell.car.get().kind()
-            && prop.is(entry.car.get())
-        {
-            let mut names = entry.cdr.get();
-            let mut seen = crate::lisp::types::CycleGuard::new();
-            while let Kind::Cons(alias) = names.kind() {
-                let value = lisp_plist_get(plist, PropertyName::new(alias.car.get()));
-                if !value.is_nil() {
-                    return Some(value);
-                }
-                if seen.step(crate::lisp::types::ConsCell::identity(&alias)) {
-                    break;
-                }
-                names = alias.cdr.get();
-            }
-            return None;
-        }
-        if seen.step(crate::lisp::types::ConsCell::identity(&cell)) {
-            break;
-        }
-        tail = cell.cdr.get();
-    }
-    None
+    alias_property(plist, prop, aliases)
 }
 
 /// The plist of the character at POS of a string, its interval's own:
@@ -1356,9 +1321,9 @@ pub(crate) fn string_property_at_with_category(
     value: &Value,
     pos: usize,
     prop: impl PropertyKey,
-) -> Option<Value> {
+) -> Result<Option<Value>, LispError> {
     let Kind::StringObject(state) = value.kind() else {
-        return None;
+        return Ok(None);
     };
     // A position no interval covers has the empty plist, whose textget
     // still reads `default-text-properties'.

@@ -458,25 +458,26 @@ pub(crate) fn with_overlay_hook_roots<R>(
 /// [FROM, TO) (FROM = TO for an insertion): the `modification-hooks' of
 /// the overlays it touches and, for an insertion, the
 /// `insert-in-front-hooks' and `insert-behind-hooks' of those starting or
-/// ending there.
+/// ending there, each read by Foverlay_get, which can signal.
 pub(crate) fn overlay_change_hook_calls(
     interp: &Interpreter,
     buffer: &crate::buffer::Buffer,
     from: usize,
     to: usize,
-) -> OverlayHookCalls {
+) -> Result<OverlayHookCalls, LispError> {
     let mut calls = Vec::new();
     // A buffer with no overlays has none to search.
     if buffer.overlays.is_empty() {
-        return OverlayHookCalls { calls };
+        return Ok(OverlayHookCalls { calls });
     }
     let insertion = from == to;
-    let mut add = |overlay, property| {
+    let mut add = |overlay, property| -> Result<(), LispError> {
         if let Some(functions) =
-            overlay_property_with_category(interp, &overlay, property).filter(Value::is_truthy)
+            overlay_property_with_category(interp, &overlay, property)?.filter(Value::is_truthy)
         {
             calls.push(OverlayHookCall { overlay, functions });
         }
+        Ok(())
     };
     // buffer.c:report_overlay_modification searches only intersecting
     // intervals and stores the actual function lists, without copying or
@@ -488,16 +489,16 @@ pub(crate) fn overlay_change_hook_calls(
     ) {
         let (beg, end) = overlay.bounds();
         if insertion && from as isize == beg {
-            add(overlay, "insert-in-front-hooks");
+            add(overlay, "insert-in-front-hooks")?;
         }
         if insertion && from as isize == end {
-            add(overlay, "insert-behind-hooks");
+            add(overlay, "insert-behind-hooks")?;
         }
         if (to as isize) > beg && (from as isize) < end {
-            add(overlay, "modification-hooks");
+            add(overlay, "modification-hooks")?;
         }
     }
-    OverlayHookCalls { calls }
+    Ok(OverlayHookCalls { calls })
 }
 
 /// buffer.c:report_overlay_modification's calls: each recorded function
@@ -694,8 +695,8 @@ pub(crate) fn textget(
     interp: &Interpreter,
     plist: Value,
     prop: impl crate::lisp::types::PropertyKey,
-) -> Value {
-    property_from_props_with_category(interp, plist, prop).unwrap_or(Value::Nil)
+) -> Result<Value, LispError> {
+    Ok(property_from_props_with_category(interp, plist, prop)?.unwrap_or(Value::Nil))
 }
 
 /// fns.c:plist_get on an interval's own plist: no category.

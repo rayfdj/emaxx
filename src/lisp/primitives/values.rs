@@ -2040,7 +2040,7 @@ pub(crate) fn describe_buffer_bindings(
             active_minor_mode_bindings(interp, env).map(crate::lisp::alloc::RootedVec::from_vec)
         })?;
         let property = with_keymap_description_buffer(interp, buffer, |interp| {
-            Ok(keymap_at_active_position(interp, None).unwrap_or(Value::Nil))
+            Ok(keymap_at_active_position(interp, None)?.unwrap_or(Value::Nil))
         })?;
         if !property.is_nil() {
             insert_keymap_description(
@@ -2067,7 +2067,7 @@ pub(crate) fn describe_buffer_bindings(
                 let normal = interp
                     .lookup_var("current-local-map", env)
                     .unwrap_or(Value::Nil);
-                let local = local_map_at_active_position(interp, None).unwrap_or(normal);
+                let local = local_map_at_active_position(interp, None)?.unwrap_or(normal);
                 let major = interp.lookup_var("major-mode", env).unwrap_or(Value::Nil);
                 Ok((local, values_eq_in_env(interp, &local, &normal, env), major))
             })?;
@@ -2473,7 +2473,7 @@ pub(crate) fn active_minor_mode_maps(
 pub(crate) fn keymap_at_active_position(
     interp: &Interpreter,
     posn: Option<&Value>,
-) -> Option<Value> {
+) -> Result<Option<Value>, LispError> {
     text_property_keymap_at_active_position(interp, posn, "keymap")
 }
 
@@ -2483,7 +2483,7 @@ pub(crate) fn keymap_at_active_position(
 pub(crate) fn local_map_at_active_position(
     interp: &Interpreter,
     posn: Option<&Value>,
-) -> Option<Value> {
+) -> Result<Option<Value>, LispError> {
     text_property_keymap_at_active_position(interp, posn, "local-map")
 }
 
@@ -2491,32 +2491,42 @@ fn text_property_keymap_at_active_position(
     interp: &Interpreter,
     posn: Option<&Value>,
     category: &str,
-) -> Option<Value> {
-    let buffer_keymap = |pos: usize| {
-        buffer_property_at_with_category(interp, &interp.buffer.borrow(), pos, category)
-            .filter(|value| is_keymap_value(interp, value))
+) -> Result<Option<Value>, LispError> {
+    let buffer_keymap = |pos: usize| -> Result<Option<Value>, LispError> {
+        Ok(
+            buffer_property_at_with_category(interp, &interp.buffer.borrow(), pos, category)?
+                .filter(|value| is_keymap_value(interp, value)),
+        )
     };
 
-    let string_keymap = |value: &Value| {
-        string_property_at_with_category(interp, value, 0, category)
-            .filter(|value| is_keymap_value(interp, value))
+    let string_keymap = |value: &Value| -> Result<Option<Value>, LispError> {
+        Ok(
+            string_property_at_with_category(interp, value, 0, category)?
+                .filter(|value| is_keymap_value(interp, value)),
+        )
     };
 
     match posn {
         None => buffer_keymap(interp.buffer.borrow().point()),
         Some(value) if value.is_nil() => buffer_keymap(interp.buffer.borrow().point()),
-        Some(value) if string_like(value).is_some() => {
-            string_keymap(value).or_else(|| buffer_keymap(interp.buffer.borrow().point()))
-        }
+        Some(value) if string_like(value).is_some() => match string_keymap(value)? {
+            Some(map) => Ok(Some(map)),
+            None => buffer_keymap(interp.buffer.borrow().point()),
+        },
         Some(value) => {
-            let items = value.to_vec().ok()?;
-            let area = items.get(1)?;
-            let string = items.get(4).and_then(|value| value.car_if_list());
-            if let Some(string) = string.as_ref().and_then(string_keymap) {
-                return Some(string);
+            let Ok(items) = value.to_vec() else {
+                return Ok(None);
+            };
+            let Some(area) = items.get(1) else {
+                return Ok(None);
+            };
+            if let Some(string) = items.get(4).and_then(|value| value.car_if_list())
+                && let Some(map) = string_keymap(&string)?
+            {
+                return Ok(Some(map));
             }
             if !area.is_nil() {
-                return None;
+                return Ok(None);
             }
             match items.get(5).map(|v| v.kind()) {
                 Some(Kind::Integer(pos)) if pos > 0 => buffer_keymap(pos as usize),
@@ -2581,11 +2591,11 @@ pub(crate) fn active_command_keymaps_for(
     {
         maps.push(map);
     }
-    if let Some(map) = keymap_at_active_position(interp, posn) {
+    if let Some(map) = keymap_at_active_position(interp, posn)? {
         maps.push(map);
     }
     maps.extend(active_minor_mode_maps(interp, env)?);
-    if let Some(map) = local_map_at_active_position(interp, posn) {
+    if let Some(map) = local_map_at_active_position(interp, posn)? {
         maps.push(map);
     } else if let Some(map) = interp
         .lookup_var("current-local-map", env)

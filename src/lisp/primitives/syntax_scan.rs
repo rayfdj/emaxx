@@ -698,9 +698,8 @@ impl GlState {
         let syntax_table = cached_symbol!("syntax-table").with(|symbol| Value::Symbol(*symbol));
         let mut textget = |plist| {
             crate::intervals::lookup_char_property(plist, syntax_table, true, &mut variables)
-                .unwrap_or(Value::Nil)
         };
-        let tmp_table = textget(i.plist);
+        let tmp_table = textget(i.plist)?;
 
         if invalidate {
             invalidate = tmp_table.word() != self.old_prop.word();
@@ -734,11 +733,15 @@ impl GlState {
             }
         }
 
+        // The walk steps by index and reads each plist alone, as GNU's
+        // steps from node to node; the bounds are found where it stops.
         let intervals = intervals.expect("an interval was found");
+        let items = intervals.intervals();
         let mut cnt = 0;
-        let mut walk = Some(i);
-        while let Some(i) = walk {
-            if cnt != 0 && textget(i.plist).word() != tmp_table.word() {
+        let mut walk = Some(i.index());
+        while let Some(index) = walk {
+            if cnt != 0 && textget(items.plist(index))?.word() != tmp_table.word() {
+                let i = intervals.at(index);
                 if count > 0 {
                     self.e_property = i.start;
                     self.forward_i = bounds_of(&i);
@@ -748,11 +751,12 @@ impl GlState {
                 }
                 return Ok(());
             } else if cnt == INTERVALS_AT_ONCE {
+                let i = intervals.at(index);
                 if count > 0 {
                     // e_property at the end is ZV + 1, not ZV, so that
                     // INC(from);UPDATE_SYNTAX_TABLE_FORWARD needs no check
                     // for the end in between.
-                    self.e_property = i.end + usize::from(intervals.next(&i).is_none());
+                    self.e_property = i.end + usize::from(items.next(index).is_none());
                     self.forward_i = bounds_of(&i);
                 } else {
                     self.b_property = i.start;
@@ -762,9 +766,9 @@ impl GlState {
             }
             cnt += 1;
             walk = if count > 0 {
-                intervals.next(&i)
+                items.next(index)
             } else {
-                intervals.previous(&i)
+                items.previous(index)
             };
         }
         // This property goes to the end.

@@ -1101,8 +1101,9 @@ impl<'a> PropertyIntervals<'a> {
         self.intervals
     }
 
+    /// The interval at INDEX.
     #[inline]
-    fn at(&self, index: usize) -> PropertyInterval {
+    pub(crate) fn at(&self, index: usize) -> PropertyInterval {
         let (start, end, plist) = self.intervals.bounds(index);
         PropertyInterval {
             start,

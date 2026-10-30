@@ -9270,6 +9270,37 @@ setup_process_coding_systems's check now refuses). A 13-form
   library tests, the seven integration suites, clippy with every target
   and feature, rustfmt and `git diff --check'; the 91 forms of the
   intervals' oracle tests and the five interval probes match GNU 30.2.
+- **Round 174: lookups through Fassq, and the `syntax-table' walk by
+  index.** intervals.c:lookup_char_property looks the property's
+  alternatives up with Fassq of `char-property-alias-alist' whenever the
+  plist has no value for it (an empty plist included), and
+  text_property_stickiness does the same with
+  `text-property-default-nonsticky'; Fassq's FOR_EACH_TAIL and
+  CHECK_LIST_END signal `(wrong-type-argument listp ALIST)' for a list
+  that does not end in nil and `(circular-list TAIL)' for one that
+  cycles. Emaxx's walks stopped quietly at either, so
+  `get-text-property', `get-char-property', `get-pos-property',
+  `overlay-get', `overlays-at' with SORTED (sort_overlays reads each
+  overlay's `window' and `priority'), the single-property scans,
+  `text-property-any', `text-property-not-all', `invisible-p', the
+  read-only and hook checks before an insertion, and the scans' and
+  matcher's `syntax-table' lookups all answered where GNU signals. The
+  text and overlay lookups now return the signal, and the primitives
+  and keymap lookups pass it on; redisplay's face, fontification and
+  mode-line reads take a lookup that signals as nil. The lookups an
+  insertion's offsets make (adjust_intervals_for_insertion and
+  merge_properties_sticky) cannot signal: GNU's comes after the text
+  is in, part way through its tree's change (finding below), and a
+  failing Fassq has found nothing, so they read it as nil. An oracle
+  test compares 29 such lookups against GNU 30.2. update_syntax_table's
+  walk over INTERVALS_AT_ONCE intervals steps by index and reads each
+  plist alone, finding an interval's bounds only where it stops, and
+  the textget is inlined: an update at a regexp match's start costs
+  1,231 instructions against 1,537 (GNU 1,129), and format-tests runs
+  6.82G instructions against 7.01G (GNU 6.21G). Local validation: the
+  grouped gate's 3,333 library tests, the seven integration suites,
+  clippy with every target and feature, rustfmt and `git diff --check';
+  the five interval probes match GNU 30.2.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -10399,6 +10430,31 @@ interval splits round 173 removes; with that file at its earlier time
 the test bodies come to 253.0 s (0.958).
 
 **Findings recorded, not fixed:**
+- **An insertion's stickiness reads `text-property-default-nonsticky'
+  without signalling (round 174).** In GNU,
+  adjust_intervals_for_insertion and merge_properties_sticky look each
+  property up with Fassq, which signals for a value that is not a list;
+  the signal comes after the inserted text is in the buffer, and in the
+  middle of an interval before the tree's lengths are updated, which
+  leaves GNU's tree short of the text. Emaxx's insertion offsets do not
+  signal: they read the failing lookup as nil, as the walk found
+  nothing, and keep the intervals consistent. `insert' and
+  `insert-and-inherit' beside propertized text therefore return where
+  GNU signals `(wrong-type-argument listp VALUE)' while that variable is
+  bound to a non-list.
+- **A call of `looking-at' costs about 600 instructions more than GNU's
+  around the match (round 174).** `(looking-at "x")' at a failing
+  position costs 1,716 instructions against GNU's 1,115: the buffer
+  snapshot the matcher reads apart from the buffer (about 200, and a
+  small buffer's text copied with an allocation and free, about 80 more),
+  reading `case-fold-search' through its buffer-local binding and the
+  canonicalization table's cache (about 180, where GNU reads
+  BVAR (current_buffer, case_fold_search)), and the pooled match state,
+  the cell release and the match environment's drop. In format-tests'
+  709,311 calls that is about 425M of its 0.61G excess. The snapshot is
+  the rope's (a gap buffer's two halves would be read in place, as
+  re_search_2 reads them); the variable read is that of a
+  DEFVAR_PER_BUFFER variable kept as a buffer-local binding.
 - **Each insertion into a buffer's rope costs about 2,000 instructions
   (round 173).** A buffer's text is a `ropey' rope, whose insertion
   walks and rebalances its tree and updates the chunk's byte, character

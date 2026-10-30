@@ -661,7 +661,7 @@ define_dispatch!(
             "invisible-p" => {
                 need_args(name, args, 1)?;
                 let invisible = match position_from_value(interp, &args[0]) {
-                    Ok(position) if position >= 1 => char_is_invisible(interp, position, env),
+                    Ok(position) if position >= 1 => char_is_invisible(interp, position, env)?,
                     _ => invisibility_value_is_hidden(interp, &args[0], env),
                 };
                 Ok(if invisible { Value::T } else { Value::Nil })
@@ -1881,7 +1881,8 @@ fn display_motion_width(
     hscroll: i64,
     tab_offset: i64,
 ) -> i64 {
-    if char_is_invisible(interp, position, env) {
+    // Redisplay's motion reads a property whose lookup signals as nil.
+    if char_is_invisible(interp, position, env).unwrap_or(false) {
         return 0;
     }
     if let Some(display) = interp

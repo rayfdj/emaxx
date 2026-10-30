@@ -314,23 +314,35 @@ pub(crate) fn memq(elt: Value, list: Value) -> bool {
     false
 }
 
-/// Fassq, a circular list's elements once.
-pub(crate) fn assq(key: Value, list: Value) -> Value {
+/// Fassq.
+#[inline]
+pub(crate) fn assq(key: Value, list: Value) -> Result<Value, LispError> {
+    assq_by(|car| eq(car, key), list)
+}
+
+/// Fassq of the key IS_KEY holds of: FOR_EACH_TAIL over LIST for an
+/// element that is a cons whose car is the key, then CHECK_LIST_END,
+/// which reports LIST itself.
+pub(crate) fn assq_by(is_key: impl Fn(Value) -> bool, list: Value) -> Result<Value, LispError> {
     let mut tail = list;
-    let mut seen = crate::lisp::types::CycleGuard::new();
+    let mut walk = crate::lisp::types::TailWalk::new(tail);
     while let Some(cell) = tail.cons_ref() {
         let entry = cell.car.get();
         if let Some(pair) = entry.cons_ref()
-            && eq(pair.car.get(), key)
+            && is_key(pair.car.get())
         {
-            return entry;
-        }
-        if seen.step(crate::lisp::types::ConsCell::identity(&cell)) {
-            break;
+            return Ok(entry);
         }
         tail = cell.cdr.get();
+        if walk.cycled_no_quit(tail) {
+            return Err(crate::lisp::types::circular_list(tail));
+        }
     }
-    Value::Nil
+    if tail.is_nil() {
+        Ok(Value::Nil)
+    } else {
+        Err(listp_error(list))
+    }
 }
 
 /// textprop.c TMEM: SYM in SET when SET is a list, else SET non-nil.
@@ -390,8 +402,10 @@ pub(crate) fn symbol_get(symbol: Value, prop: Value) -> Value {
 /// non-nil; else the first non-nil value in PLIST of an alternative
 /// `char-property-alias-alist' gives PROP; else, for a text property
 /// (TEXTPROP), PROP's value in `default-text-properties'.  CONTEXT gives
-/// the symbol and the two variables, read where needed: an empty plist
-/// has no alternatives.
+/// the symbol and the two variables, each read where first needed.  The
+/// alternatives are looked up for an empty plist too: Fassq signals for
+/// an alist that is not a list.
+#[inline]
 pub(crate) fn lookup_char_property(
     plist: Value,
     prop: Value,
@@ -418,14 +432,14 @@ pub(crate) fn lookup_char_property(
         if !fallback.is_nil() {
             return Ok(fallback);
         }
-        // Alternative properties.
-        let entry = assq(prop, context.aliases());
-        if !entry.is_nil() {
-            let mut tail = xcdr(entry);
-            while fallback.is_nil() && consp(tail) {
-                fallback = plist_get(plist, xcar(tail));
-                tail = xcdr(tail);
-            }
+    }
+    // Alternative properties.
+    let entry = assq(prop, context.aliases())?;
+    if !entry.is_nil() {
+        let mut tail = xcdr(entry);
+        while fallback.is_nil() && consp(tail) {
+            fallback = plist_get(plist, xcar(tail));
+            tail = xcdr(tail);
         }
     }
     if textprop && fallback.is_nil() {
@@ -768,9 +782,9 @@ impl Intervals {
         if !(position == self.start(i) || eobp) {
             let plist = self.plist(i);
             let mut tail = plist;
-            let rear = host.textget(plist, symbol(REAR_NONSTICKY))?;
+            let rear = quiet(host.textget(plist, symbol(REAR_NONSTICKY)));
             if consp(rear) || rear.is_nil() {
-                let front = host.textget(plist, symbol(FRONT_STICKY))?;
+                let front = quiet(host.textget(plist, symbol(FRONT_STICKY)));
                 if !consp(front) && !front.is_nil() {
                     // All properties are sticky: no split.
                     tail = Value::Nil;
@@ -787,7 +801,7 @@ impl Intervals {
                             // Recorded in Vtext_property_default_nonsticky?
                             // (GNU breaks here for any entry: its test of a
                             // nil entry is never true of a cons.)
-                            if consp(assq(prop, defaults)) {
+                            if consp(quiet(assq(prop, defaults))) {
                                 break;
                             }
                         }
@@ -1059,6 +1073,15 @@ pub(crate) fn merge_properties(source: Value, target: Value) -> Result<Value, Li
     Ok(target)
 }
 
+/// A lookup an insertion's offsets make, which do not signal: the text is
+/// in by then, and GNU's signal there (Fassq's, of a variable that is
+/// not a list) leaves its tree part way through the change.  Fassq fails
+/// only having walked the list without finding the key, so nil is what
+/// the walk found.
+fn quiet(lookup: Result<Value, LispError>) -> Value {
+    lookup.unwrap_or(Value::Nil)
+}
+
 /// intervals.c:merge_properties_sticky: the plist of text inserted
 /// between an interval with plist PLEFT and one with PRIGHT, each
 /// property taken from the side whose stickiness faces the insertion
@@ -1075,10 +1098,10 @@ pub(crate) fn merge_properties_sticky(
     let mut props: Vec<(Value, Value)> = Vec::new();
     let mut front: Vec<Value> = Vec::new();
     let mut rear: Vec<Value> = Vec::new();
-    let lfront = host.textget(pleft, front_sticky)?;
-    let lrear = host.textget(pleft, rear_nonsticky)?;
-    let rfront = host.textget(pright, front_sticky)?;
-    let rrear = host.textget(pright, rear_nonsticky)?;
+    let lfront = quiet(host.textget(pleft, front_sticky));
+    let lrear = quiet(host.textget(pleft, rear_nonsticky));
+    let rfront = quiet(host.textget(pright, front_sticky));
+    let rrear = quiet(host.textget(pright, rear_nonsticky));
     let defaults = host.default_nonsticky();
 
     // Go through each element of PRIGHT.
@@ -1102,7 +1125,7 @@ pub(crate) fn merge_properties_sticky(
             } else {
                 fcar(fcdr(tail2)?)?
             };
-            let tmp = assq(sym, defaults);
+            let tmp = quiet(assq(sym, defaults));
             let mut use_left =
                 lpresent && !(tmem(sym, lrear) || (consp(tmp) && !xcdr(tmp).is_nil()));
             let mut use_right = tmem(sym, rfront) || (consp(tmp) && xcdr(tmp).is_nil());
@@ -1149,7 +1172,7 @@ pub(crate) fn merge_properties_sticky(
             }
             if tail1.is_nil() {
                 let lval = fcar(xcdr(tail2))?;
-                let tmp = assq(sym, defaults);
+                let tmp = quiet(assq(sym, defaults));
                 // RVAL is nil here, so the test simplifies.
                 if !(tmem(sym, lrear) || (consp(tmp) && !xcdr(tmp).is_nil())) {
                     props.push((sym, lval));
@@ -1173,7 +1196,7 @@ pub(crate) fn merge_properties_sticky(
     if !rear.is_empty() {
         result = Value::cons(rear_nonsticky, Value::cons(Value::list(rear), result));
     }
-    let category = host.textget(result, symbol(CATEGORY))?;
+    let category = quiet(host.textget(result, symbol(CATEGORY)));
     if !front.is_empty()
         // A front-sticky category property of t needs no detailed list.
         && !(!category.is_nil()

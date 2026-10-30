@@ -133,7 +133,7 @@ pub(crate) fn barf_if_buffer_read_only(interp: &Interpreter, pos: usize) -> Resu
             interp,
             interp.buffer.borrow().text_plist_at(pos),
             cached_symbol!("inhibit-read-only"),
-        )
+        )?
         .is_nil()
     {
         return Err(buffer_read_only_signal(interp));
@@ -354,7 +354,7 @@ fn signal_before_change(
                 )?;
             }
             let (start, end) = fetch(interp);
-            let calls = overlay_change_hook_calls(interp, &interp.buffer.borrow(), start, end);
+            let calls = overlay_change_hook_calls(interp, &interp.buffer.borrow(), start, end)?;
             with_overlay_hook_roots(interp, &calls, |interp| {
                 run_overlay_hook_calls(
                     interp,
@@ -529,11 +529,11 @@ fn check_modified_intervals(
     }
     let mut previous = Value::Nil;
     buffer.try_for_each_interval(from, to, |_, _, props| {
-        let read_only = textget(interp, props, cached_symbol!("read-only"));
+        let read_only = textget(interp, props, cached_symbol!("read-only"))?;
         // intervals.h INTERVAL_GENERALLY_WRITABLE_P and
         // INTERVAL_EXPRESSLY_WRITABLE_P.
         let implied = read_only.is_nil() || (!inhibit.is_nil() && !is_cons(&inhibit));
-        let express = !textget(interp, props, cached_symbol!("inhibit-read-only")).is_nil()
+        let express = !textget(interp, props, cached_symbol!("inhibit-read-only"))?.is_nil()
             || (!read_only.is_nil()
                 && is_cons(&inhibit)
                 && memq(PropertyName::new(read_only), inhibit));
@@ -543,7 +543,7 @@ fn check_modified_intervals(
         if !express && buffer_read_only {
             return Err(buffer_read_only_signal(interp));
         }
-        let mod_hooks = textget(interp, props, cached_symbol!("modification-hooks"));
+        let mod_hooks = textget(interp, props, cached_symbol!("modification-hooks"))?;
         if !mod_hooks.is_nil() && mod_hooks.word() != previous.word() {
             hooks.push(mod_hooks);
             previous = mod_hooks;
@@ -574,12 +574,12 @@ fn check_insertion_intervals(interp: &Interpreter, pos: usize) -> Result<[Value;
         check_insertion_stickiness(interp, inhibit, after, before)?;
     }
     Ok([
-        before.map_or(Value::Nil, |(_, props)| {
+        before.map_or(Ok(Value::Nil), |(_, props)| {
             textget(interp, props, cached_symbol!("insert-behind-hooks"))
-        }),
-        after.map_or(Value::Nil, |(_, props)| {
+        })?,
+        after.map_or(Ok(Value::Nil), |(_, props)| {
             textget(interp, props, cached_symbol!("insert-in-front-hooks"))
-        }),
+        })?,
     ])
 }
 
@@ -589,44 +589,44 @@ fn check_insertion_stickiness(
     after: Option<(usize, Value)>,
     before: Option<(usize, Value)>,
 ) -> Result<(), LispError> {
-    let read_only_unless_inhibited = |props: Value| {
-        let value = textget(interp, props, cached_symbol!("read-only"));
-        (!value.is_nil() && !memq(PropertyName::new(value), inhibit)).then_some(value)
+    let read_only_unless_inhibited = |props: Value| -> Result<Option<Value>, LispError> {
+        let value = textget(interp, props, cached_symbol!("read-only"))?;
+        Ok((!value.is_nil() && !memq(PropertyName::new(value), inhibit)).then_some(value))
     };
     // The read-only property sticks to text inserted after it unless it
     // is rear-nonsticky (directly, or through `category' when the
     // interval has no read-only property of its own), and before it when
     // it is front-sticky.
-    let sticks_behind = |props: Value| {
-        let tem = textget(interp, props, cached_symbol!("rear-nonsticky"));
-        !tmem(cached_symbol!("read-only"), tem)
+    let sticks_behind = |props: Value| -> Result<bool, LispError> {
+        let tem = textget(interp, props, cached_symbol!("rear-nonsticky"))?;
+        Ok(!tmem(cached_symbol!("read-only"), tem)
             && (!plist_get(props, cached_symbol!("read-only")).is_nil()
-                || !tmem(cached_symbol!("category"), tem))
+                || !tmem(cached_symbol!("category"), tem)))
     };
-    let sticks_ahead = |props: Value| {
-        let tem = textget(interp, props, cached_symbol!("front-sticky"));
-        tmem(cached_symbol!("read-only"), tem)
+    let sticks_ahead = |props: Value| -> Result<bool, LispError> {
+        let tem = textget(interp, props, cached_symbol!("front-sticky"))?;
+        Ok(tmem(cached_symbol!("read-only"), tem)
             || (plist_get(props, cached_symbol!("read-only")).is_nil()
-                && tmem(cached_symbol!("category"), tem))
+                && tmem(cached_symbol!("category"), tem)))
     };
     match (after, before) {
         (Some((after_index, after)), Some((before_index, _))) if after_index == before_index => {
-            if let Some(value) = read_only_unless_inhibited(after)
-                && (sticks_ahead(after) || sticks_behind(after))
+            if let Some(value) = read_only_unless_inhibited(after)?
+                && (sticks_ahead(after)? || sticks_behind(after)?)
             {
                 return Err(text_read_only(value));
             }
         }
         (after, before) => {
             if let Some((_, after)) = after
-                && let Some(value) = read_only_unless_inhibited(after)
-                && sticks_ahead(after)
+                && let Some(value) = read_only_unless_inhibited(after)?
+                && sticks_ahead(after)?
             {
                 return Err(text_read_only(value));
             }
             if let Some((_, before)) = before
-                && let Some(value) = read_only_unless_inhibited(before)
-                && sticks_behind(before)
+                && let Some(value) = read_only_unless_inhibited(before)?
+                && sticks_behind(before)?
             {
                 return Err(text_read_only(value));
             }
