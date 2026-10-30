@@ -9503,6 +9503,61 @@ setup_process_coding_systems's check now refuses). A 13-form
   Local validation: the grouped gate's 3,340 library tests, the
   seven integration suites, clippy with every target and feature,
   rustfmt and `git diff --check'.
+- **Round 180: condition-case as internal_lisp_condition_case, and
+  handlers matched as find_handler_clause matches them.** Three
+  differences from GNU are fixed. The last `:success' clause is the one
+  that runs, where the first ran. A clause that is neither nil nor a
+  list whose car is a symbol or a list signals
+  `(error "Invalid condition handler: CLAUSE")' as GNU does, where a
+  non-list clause signalled `(wrong-type-argument listp 1)' and a clause
+  like `(2 3)' was accepted. And a signal whose symbol has no
+  `error-conditions' is caught only by a `t' clause, as Fmemq in the
+  empty conditions finds nothing, where a handler naming the symbol
+  caught it; that holds for an interpreted `condition-case', byte code's
+  and native code's handlers and `handler-bind' alike. Clause heads are
+  compared with the conditions by symbol (EQ) rather than by name, and a
+  list of conditions is walked in place, where it was copied to a
+  vector and each element's name to a string. A `condition-case' no
+  longer copies its clause heads into a vector each time: a single head
+  is held by itself, several in one allocation, and the clauses are
+  walked in place where a matched one was copied out. Undo runs
+  1,464,100 instructions a unit against 1,471,100 (the profile-guided
+  build 1,352,200 against 1,363,600). An oracle test covers the clauses,
+  the invalid handlers and the matching through each of the four handler
+  kinds. The portable-dumper boundary test read its program before the
+  image it runs in existed, from the test process's own symbols, which
+  are not the image template's copies; matched by name, its `error'
+  handler caught the signal all the same, and by identity it could not.
+  The program is now read once the image exists, as every Lisp program
+  is read in the editor.
+  Undo's closure conversion (`cconv-make-interpreted-closure', three
+  calls a unit, collected alone with callgrind's `--toggle-collect')
+  costs 87,400 instructions a unit against GNU's 67,500, the native
+  code's own instructions the same in both (the same .eln); the
+  difference is the runtime it calls, the funcall and mapcar machinery
+  about 10,000 a unit and specbind and unbind 4,000.
+  Tried and not kept:
+  - The executable's text on 2 MB transparent huge pages (the
+    executable segment's aligned interior copied into anonymous memory
+    advised for them and moved over the original at startup, an
+    environment switch for the trial). One binary with and without, seven
+    rounds against GNU (minimum ratio, median in parentheses): undo 1.195
+    (1.243) and 1.209 (1.225), bytecode calls 0.873 (0.888) and 0.832
+    (0.834), mapcar 0.839 and 0.816, interpreted-dynamic 0.999 and
+    1.037, interpreted-to-native 1.020 and 0.947, cons allocation 0.909
+    and 0.911. No gain on undo, and the remapped text hides the
+    executable from valgrind's and perf's symbols.
+  - One arm for the 64 Bconstant opcodes and one each for Bvarref,
+    Bvarset and Bvarbind 0 to 5, as exec_byte_code shares their bodies:
+    `run_verified''s hot lines in undo 368 -> 328, but the opcode held
+    past the dispatch lengthened every op's dispatch, bytecode calls
+    439.7 -> 448.7 instructions an iteration.
+  - `call_plain' out of line, one copy for the four call arms:
+    `run_verified''s hot lines 368 -> 269, but 60 more instructions a
+    subr call (318 a unit), undo 1,471,100 -> 1,490,700.
+  Local validation: the grouped gate's 3,341 library tests, the
+  seven integration suites, clippy with every target and feature,
+  rustfmt and `git diff --check'.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -10671,6 +10726,12 @@ frozen (run 41045603742) matched all 7,928 outcomes on its first
 attempt. Setup 66.2 s against 55.7 s (1.188), test bodies 226.7 s
 against 240.8 s (0.942), in all 0.999; undo-tests' bodies 0.85 s against
 0.69 s.
+
+**On `a93bd0a`** (round 179): full Rust gate passed (run 41055387855);
+frozen (run 41055391243) matched all 7,928 outcomes on its first
+attempt. Setup 76.2 s against 63.0 s (1.209), test bodies 250.7 s
+against 263.2 s (0.953), in all 0.987; undo-tests' bodies 1.13 s against
+0.88 s.
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

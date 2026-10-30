@@ -2022,17 +2022,11 @@ impl NativeRuntime {
         error: &LispError,
     ) -> Option<usize> {
         let is_throw = matches!(error.kind(), LispErrorKind::Throw(_, _));
-        let (condition, conditions) =
-            if is_throw || matches!(error.kind(), LispErrorKind::Terminate(_)) {
-                (None, crate::lisp::eval::ConditionNames::new())
-            } else {
-                let condition = error.condition_symbol();
-                let conditions = interpreter.error_condition_names_of(&condition);
-                (Some(condition), conditions)
-            };
-        let condition = condition
-            .as_ref()
-            .map_or("", |condition| condition.as_str());
+        let conditions = if is_throw || matches!(error.kind(), LispErrorKind::Terminate(_)) {
+            crate::lisp::eval::ConditionNames::new()
+        } else {
+            interpreter.error_condition_names_of(&error.condition_symbol())
+        };
         let handler_depth = self.call_depth(PUSHED_HANDLERS);
         self.handlers[handler_depth..]
             .iter()
@@ -2047,7 +2041,7 @@ impl NativeRuntime {
                     _ => false,
                 },
                 1 if !is_throw && !matches!(error.kind(), LispErrorKind::Terminate(_)) => {
-                    Interpreter::clause_head_matches(&handler.match_value, condition, &conditions)
+                    Interpreter::clause_head_matches(&handler.match_value, &conditions)
                 }
                 _ => false,
             })

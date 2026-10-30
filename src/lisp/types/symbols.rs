@@ -375,6 +375,7 @@ const KEY_NAMES: &[&str] = &[
     "locale-coding-system",
     "signal-hook-function",
     "debug-on-signal",
+    ":success",
 ];
 
 struct Symbols {

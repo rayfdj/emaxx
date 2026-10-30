@@ -8130,6 +8130,7 @@ fn c_charset_plist(
     (name.to_string(), plist)
 }
 
+#[cfg(test)]
 fn symbol_name(value: &Value) -> Option<String> {
     match value.kind() {
         Kind::Symbol(name) => Some(name.to_string()),

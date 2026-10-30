@@ -154,26 +154,59 @@ impl Interpreter {
         if list_cons_count(args) < 2 {
             return Ok(Value::Nil);
         }
-        let var = match list_car(args).kind() {
-            Kind::Symbol(s) => Some(s),
-            Kind::Nil => None,
-            other => return Err(wrong_type_argument("symbolp", other.value())),
-        };
+        // eval.c:internal_lisp_condition_case.  VAR is a bare symbol once
+        // maybe_remove_pos_from_symbol has looked at it; nil binds nothing.
+        let var = crate::lisp::primitives::checked_symbol_identity(self, &list_car(args), env)?;
+        let var = (var != crate::lisp::types::symbols::builtin_boolean(false)).then_some(var);
         let bodyform = list_nth(args, 1);
         let handlers = list_cdr(&list_cdr(args));
+        let success = cached_symbol!(":success").with(|symbol| Value::Symbol(*symbol));
 
-        // Register the clause heads so signal-time `handler-bind' dispatch
-        // can see this frame, like GNU's handlerlist.
-        let mut clause_heads = Vec::new();
-        for handler in list_forms(&handlers) {
-            let Some(head) = clause_first(&handler).ok().flatten() else {
-                continue;
+        // Each clause is nil or a list whose car is a symbol or a list of
+        // them; the last `:success' clause is the one that runs, and the
+        // others' conditions are the heads signal-time dispatch (and
+        // `handler-bind') sees on the handler list.
+        let mut success_handler = None;
+        let mut heads = 0usize;
+        let mut first_head = Value::Nil;
+        let mut tail = handlers;
+        while let Some(cell) = tail.cons_ref() {
+            let clause = cell.car.get();
+            tail = cell.cdr.get();
+            let Some(clause_cell) = clause.cons_ref() else {
+                if clause.is_nil() {
+                    continue;
+                }
+                return Err(self.invalid_condition_handler(clause, env));
             };
-            if !matches!(head.kind(), Kind::Symbol(symbol) if symbol == ":success") {
-                clause_heads.push(head);
+            let head = clause_cell.car.get();
+            if !(head.is_symbol()
+                || head.is_cons()
+                || (matches!(head.kind(), Kind::SymbolWithPos(_))
+                    && crate::lisp::primitives::symbols_with_pos_enabled(self, env)))
+            {
+                return Err(self.invalid_condition_handler(clause, env));
+            }
+            if head.word() == success.word() {
+                success_handler = Some(clause_cell.cdr.get());
+            } else {
+                if heads == 0 {
+                    first_head = head;
+                }
+                heads += 1;
             }
         }
-        let handler_start = self.push_condition_case_handler(clause_heads);
+        let case_heads = if heads == 1 {
+            crate::lisp::eval::CaseHeads::One(first_head)
+        } else {
+            crate::lisp::eval::CaseHeads::Many(
+                list_forms(&handlers)
+                    .filter_map(|clause| clause.cons_ref().map(|cell| cell.car.get()))
+                    .filter(|head| head.word() != success.word())
+                    .collect(),
+            )
+        };
+        let handler_start = self.push_condition_case_handler(case_heads);
         let depth = env.len();
         // A signal no frame boundary settled (a variable's, say) has
         // signal_or_quit's work done while these clauses are active.
@@ -187,17 +220,10 @@ impl Interpreter {
             env.truncate(depth);
         }
         match body_result {
-            Ok(val) => {
-                for handler in list_forms(&handlers) {
-                    if !matches!(clause_first(&handler)?.map(|v| v.kind()), Some(Kind::Symbol(symbol)) if symbol == ":success")
-                    {
-                        continue;
-                    }
-                    let parts = handler.to_vec()?;
-                    return self.eval_condition_case_handler(var.as_ref(), val, &parts[1..], env);
-                }
-                Ok(val)
-            }
+            Ok(val) => match success_handler {
+                Some(body) => self.eval_condition_case_handler(var.as_ref(), val, &body, env),
+                None => Ok(val),
+            },
             Err(e) => {
                 if self.take_condition_case_suspend() {
                     return Err(e);
@@ -211,30 +237,46 @@ impl Interpreter {
                     return Err(e);
                 }
                 let symbol = e.condition_symbol();
-                let condition = symbol.as_str();
-                // GNU matches a handler when it is `memq' in the signaled
-                // symbol's `error-conditions' (or is `t'); fall back to the
-                // legacy condition-or-error rule when no property is defined.
+                // find_handler_clause: a clause whose condition is `t' or
+                // `memq' in the signaled symbol's `error-conditions', the
+                // first clause first.
                 let condition_list = self.error_condition_names_of(&symbol);
-                // Try to find a matching handler
-                for handler in list_forms(&handlers) {
-                    let Some(head) = clause_first(&handler)? else {
+                let mut tail = handlers;
+                while let Some(cell) = tail.cons_ref() {
+                    let clause = cell.car.get();
+                    tail = cell.cdr.get();
+                    let Some(clause_cell) = clause.cons_ref() else {
                         continue;
                     };
-                    if !Self::clause_head_matches(&head, condition, &condition_list) {
+                    let head = clause_cell.car.get();
+                    if head.word() == success.word()
+                        || !Self::clause_head_matches(&head, &condition_list)
+                    {
                         continue;
                     }
-                    let parts = handler.to_vec()?;
+                    let body = clause_cell.cdr.get();
                     self.clear_batch_error_backtrace();
                     return self.eval_condition_case_handler(
                         var.as_ref(),
                         error_condition_value(&e),
-                        &parts[1..],
+                        &body,
                         env,
                     );
                 }
                 Err(e)
             }
+        }
+    }
+
+    /// internal_lisp_condition_case's `error ("Invalid condition handler:
+    /// %s", SDATA (Fprin1_to_string (tem, Qt, Qnil)))'.
+    #[cold]
+    fn invalid_condition_handler(&mut self, clause: Value, env: &mut Env) -> LispError {
+        match crate::lisp::primitives::prin1_to_string(self, env, &clause, true, None)
+            .and_then(|text| text.as_string())
+        {
+            Ok(text) => LispError::Signal(format!("Invalid condition handler: {text}")),
+            Err(error) => error,
         }
     }
 
@@ -246,22 +288,22 @@ impl Interpreter {
         &mut self,
         variable: Option<&SymbolName>,
         value: Value,
-        body: &[Value],
+        body: &Value,
         env: &mut Env,
     ) -> Result<Value, LispError> {
         let Some(variable) = variable else {
-            return self.sf_progn(body, env);
+            return self.progn_list(body, env);
         };
         if self.interpreter_environment_is_lexical(env) {
             Self::push_bindings(env, vec![(*variable, value)]);
-            let result = self.sf_progn(body, env);
+            let result = self.progn_list(body, env);
             env.pop();
             return result;
         }
 
         let count = self.specpdl_index();
         self.specbind_symbol(variable, value, env)?;
-        let result = self.sf_progn(body, env);
+        let result = self.progn_list(body, env);
         let unbind = self.unbind_to(count, env);
         match result {
             Ok(value) => unbind.map(|()| value),
@@ -317,18 +359,4 @@ impl Interpreter {
     // (cl-macrolet ((name (args) body...) ...) body...)
 
     // ── Backquote ──
-}
-
-/// The first element of a `condition-case' handler clause, checked as
-/// `Value::to_vec' checks the clause (a proper list), without copying it.
-fn clause_first(handler: &Value) -> Result<Option<Value>, LispError> {
-    if !matches!(handler.kind(), Kind::Cons(_)) {
-        return Ok(handler.to_vec()?.first().copied());
-    }
-    let mut first = None;
-    handler.visit_list_elements(|value| {
-        first.get_or_insert(value);
-        Ok(())
-    })?;
-    Ok(first)
 }

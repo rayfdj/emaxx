@@ -4807,11 +4807,7 @@ fn run_loop(
                             (HandlerKind::ConditionCase(clause), kind) => {
                                 let condition = kind.condition_symbol();
                                 let condition_list = interp.error_condition_names_of(&condition);
-                                if Interpreter::clause_head_matches(
-                                    clause,
-                                    condition.as_str(),
-                                    &condition_list,
-                                ) {
+                                if Interpreter::clause_head_matches(clause, &condition_list) {
                                     Some(super::super::eval::error_condition_value(&error))
                                 } else {
                                     None

@@ -4540,14 +4540,16 @@ fn portable_dump_introspection_and_backend_boundary_are_honest() {
         "((1 . 2) (2 . 2) (wrong-type-argument stringp 42) \
          file-missing {unavailable})"
     );
+    // The writer boundary sits past pdumper.c's batch-mode check, so the
+    // program runs in an initialized batch image (a bare interpreter is
+    // refused as GNU refuses an interactive one).  It is read once that
+    // image exists, so that its symbols are the image's own: a handler's
+    // `error' is compared with the conditions by identity, as Fmemq does.
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let form = Reader::new(boundary_program)
         .read()
         .expect("portable-dumper boundary program should parse")
         .expect("portable-dumper boundary program should contain a form");
-    // The writer boundary sits past pdumper.c's batch-mode check, so the
-    // program runs in an initialized batch image (a bare interpreter is
-    // refused as GNU refuses an interactive one).
-    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let actual = interp
         .eval(&form, &mut env)
         .expect("portable-dumper boundary should be catchable");
@@ -20934,6 +20936,35 @@ fn integer_rounding_and_window_decoding_answer_as_floatfns_and_window_c() {
         program,
         "(((4 3 3 4) (-3 -4 -3 -4) (-3 -4 -3 -4) (4 3 3 4) (3 2 2 2) (-2 -3 -2 -2) (2 2 2 2) (-1 -2 -1 -2) (1 0 0 0) (0 -1 0 0)) t t arith-error (nil nil nil (wrong-type-argument windowp window) (wrong-type-argument window-valid-p window) (wrong-type-argument window-valid-p window) (wrong-type-argument window-live-p window)) (t t t t t nil nil nil 1 2 0) (nil 3 nil))",
         "fixnum rounding and window decoding",
+    );
+}
+
+#[test]
+fn condition_case_clauses_and_handlers_match_as_eval_c_does() {
+    // internal_lisp_condition_case: the last :success clause runs, a clause
+    // neither nil nor headed by a symbol or list is an invalid handler, nil
+    // clauses are skipped; find_handler_clause: a condition with no
+    // `error-conditions' is caught by `t' alone, for an interpreted
+    // condition-case, a byte-compiled one and handler-bind.
+    let program = r#"(list
+ (condition-case nil 1 (:success 'a) (:success 'b))
+ (condition-case v (+ 1 2) (:success (list :ok v)) (error 0))
+ (condition-case err (condition-case nil (signal 'error (list "x")) 1) (error err))
+ (condition-case err (condition-case nil 1 (2 3)) (error err))
+ (condition-case err (condition-case nil 1 nil (error 2)) (error err))
+ (condition-case nil (error "y") ((quit error) 'caught))
+ (condition-case err (condition-case "v" 1 (error 2)) (error err))
+ (condition-case nil (signal 'quit nil) (error 1) (quit 2) (t 3))
+ (condition-case nil (signal 'undefined-cond nil) (undefined-cond 'x) (t 'y))
+ (condition-case nil (condition-case nil (signal 'undefined-cond nil) (undefined-cond 'x)) (t 'outer))
+ (condition-case nil (condition-case nil (signal 'undefined-cond nil) ((foo undefined-cond) 'x)) (t 'outer))
+ (funcall (byte-compile (lambda () (condition-case nil (condition-case nil (signal 'undefined-cond nil) (undefined-cond 'x)) (t 'outer)))))
+ (catch 'tag (condition-case nil (handler-bind ((undefined-cond (lambda (_) (throw 'tag 'bound)))) (signal 'undefined-cond nil)) (t 'outer)))
+ (condition-case e (signal 'wrong-type-argument '(x)) (error (car e))))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        r#"(b (:ok 3) (error "Invalid condition handler: 1") (error "Invalid condition handler: (2 3)") 1 caught (wrong-type-argument symbolp "v") 2 y outer outer outer outer wrong-type-argument)"#,
+        "condition-case clauses and handler matching",
     );
 }
 
