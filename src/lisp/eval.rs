@@ -22,9 +22,7 @@ use hashlink::LinkedHashMap;
 use regex::Regex;
 
 mod bindings;
-mod char_table_snapshot;
 pub(crate) use bindings::dynamic_library_suffix_values;
-pub(crate) use char_table_snapshot::CharTableChainSignature;
 mod bootstrap;
 mod buffers;
 pub(crate) mod coding;
@@ -1252,13 +1250,6 @@ pub struct CharTableEntry {
     pub start: u32,
     pub end: u32,
     pub value: Value,
-}
-
-#[derive(Clone)]
-pub(crate) struct SyntaxSegmentCache {
-    table_id: CharTableRef,
-    chain: CharTableChainSignature,
-    pub(crate) segments: std::rc::Rc<Vec<(u32, u32, crate::lisp::primitives::syntax::SyntaxClass)>>,
 }
 
 /// GNU vectorlike representation carried by Emaxx's shared record arena.
@@ -5177,7 +5168,6 @@ impl Interpreter {
         // every cached verdict keyed by (or holding) template cells is
         // stale.  All of these repopulate lazily.
         *clone.known_symbols_cache.get_mut() = None;
-        *clone.syntax_segment_cache.get_mut() = None;
         clone.bc_stack = crate::lisp::bytecode::vm::BcStack::new();
         clone.bc_frames = Default::default();
         clone.bc_handlers = Default::default();
@@ -5519,12 +5509,6 @@ pub struct InterpreterState {
     pub buffer_list: Vec<(u64, String)>,
     /// Next buffer ID for identity tracking.
     next_buffer_id: u64,
-    /// The rendered current-table syntax classes are expensive to derive and
-    /// are reused by many different compiled patterns.  This small cache
-    /// is stamped with the table identity and its chain signature; regexp
-    /// code declines to populate it for tables containing mutable Lisp
-    /// entry objects whose in-place changes bypass the table mutation door.
-    syntax_segment_cache: RefCell<Option<SyntaxSegmentCache>>,
     /// Charset aliases defined at runtime.
     charset_aliases: Vec<(String, String)>,
     /// Registered charsets and their stable GNU-compatible numeric IDs.
@@ -6369,7 +6353,6 @@ impl Interpreter {
             // buffer exists, below.
             buffer_list: vec![(0, "*scratch*".to_string())],
             next_buffer_id: 2,
-            syntax_segment_cache: RefCell::new(None),
             charset_aliases: Vec::new(),
             charset_ids: C_CHARSETS
                 .iter()

@@ -10318,6 +10318,41 @@ setup_process_coding_systems's check now refuses). A 13-form
   fail before (one panics) and pass after. The batteries (raw-byte
   strings, unibyte buffers, casing; 175 ops) now match GNU op for op,
   string-glyph-split's spin included.
+- **Round 196: skip-chars as syntax.c's skip_chars.** A battery of 17
+  skip-chars ops run against GNU differed on seven. The set was parsed
+  without backslash quoting ("\\-a" skipped nothing where GNU skips
+  "-a-"), an unknown or empty `[:NAME:]' was accepted where skip_chars
+  signals "Invalid ISO C character class", and the classes were Rust's
+  Unicode predicates plus a syntax snapshot sampled from the table, so
+  `[:alpha:]' stopped at a combining mark, a titlecase letter or a
+  letter number, `[:alnum:]' at an Arabic-Indic digit, `[:upper:]' and
+  `[:lower:]' ignored the case table for U+0130 and U+01C5, `[:blank:]'
+  took U+2028 and `[:print:]' DEL. The set is now parsed as skip_chars
+  parses it (`SkipChars' in search.rs: re_wctype_parse at each position,
+  a backslash quoting the next character, `-' a range only when another
+  character follows and empty out of order, ASCII and a unibyte string's
+  bytes in a fastmap and the multibyte string's characters by range, a
+  unibyte string's eight-bit bytes naming the raw bytes of multibyte text
+  and a multibyte string's raw bytes the bytes of a unibyte scan), the
+  scan multibyte only when the buffer is and the span to LIM holds a
+  non-ASCII character, and each class tested with the regexp engine's
+  re_iswctype (in_classes first, a unibyte scan's bytes as those codes);
+  a LIM behind point moves nowhere. The scan reads the text where it
+  stands, an ASCII character's class verdict kept for the rest of the
+  call, and records the byte offset it stops at in the text's position
+  cache, as GNU keeps PT_BYTE with PT, so the next call starts from a
+  known position; re_wctype_parse compares a class name where it stands
+  where it built a String of it (the regexp compiler's too). The sampled
+  `SkipSyntaxSnapshot', the interpreter's syntax-segment cache and
+  `char_table_snapshot.rs', whose chain signature only that cache read,
+  are gone. On a class-heavy loop (four skip-chars calls a word over 500
+  lines, ten passes, interpreted) skip_chars costs 109M instructions where
+  it cost 188M when first ported (GNU's 56M), the whole run 233M against
+  GNU's 164M beyond startup; a plain-set loop runs at GNU's (0.019 s to
+  0.024 s against 0.019 s). Local validation: the grouped gate's
+  3,362 library tests, the integration targets and clippy with
+  `--all-targets --all-features -D warnings' pass; the new oracle test
+  differs from GNU on 15 of its 22 cases before.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -11597,6 +11632,12 @@ against 222.5 s (0.929), in all 0.973, on a faster runner than round
 0.58 s. The gate-profile build reads textsec-tests' bodies at 43 ms
 against 20 ms and ucs-normalize-tests' at 111 ms against 56 ms, still
 about twice GNU's where the release build reads them at GNU's.
+
+**On `1846813`** (round 195): full Rust gate passed (run 41175324206);
+frozen (run 41175326151) matched all 7,928 outcomes on its first
+attempt. Setup 76.2 s against 65.2 s (1.170), test bodies 247.1 s
+against 264.3 s (0.935), in all 0.968; undo-tests' bodies 0.98 s against
+0.88 s.
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

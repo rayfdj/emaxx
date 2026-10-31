@@ -482,6 +482,7 @@ impl CharTableRef {
         copy
     }
 
+    #[cfg(test)]
     pub(crate) fn ranges(&self) -> Vec<crate::lisp::eval::CharTableEntry> {
         let mut ranges: Vec<crate::lisp::eval::CharTableEntry> = Vec::new();
         self.visit_ranges(&mut |start, end, value| {
@@ -540,6 +541,7 @@ impl CharTableRef {
     /// A walk of current leaf ranges, including nil. This owns no persistent
     /// range cache or write history; callers that need resolved inheritance
     /// combine the returned ranges with the actual default/parent fields.
+    #[cfg(test)]
     pub(crate) fn visit_ranges(&self, visit: &mut impl FnMut(u32, u32, Value)) {
         self.visit_ranges_between(0, CHAR_TABLE_MAX_CHAR, visit);
     }

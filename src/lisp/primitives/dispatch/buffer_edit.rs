@@ -2399,26 +2399,26 @@ pub(super) fn direct_backward_char(
 pub(super) fn direct_skip_chars_forward(
     interp: &mut Interpreter,
     args: &[Value],
-    _env: &mut crate::lisp::types::Env,
+    env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
     let name = "skip-chars-forward";
     if args.is_empty() || args.len() > 2 {
         return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
     }
-    regexp::skip_chars_forward_impl(interp, &args[0], args.get(1))
+    regexp::skip_chars_forward_impl(interp, &args[0], args.get(1), env)
 }
 
 /// The `skip-chars-backward' primitive, callable directly (a subr's function pointer).
 pub(super) fn direct_skip_chars_backward(
     interp: &mut Interpreter,
     args: &[Value],
-    _env: &mut crate::lisp::types::Env,
+    env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
     let name = "skip-chars-backward";
     if args.is_empty() || args.len() > 2 {
         return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
     }
-    regexp::skip_chars_backward_impl(interp, &args[0], args.get(1))
+    regexp::skip_chars_backward_impl(interp, &args[0], args.get(1), env)
 }
 
 /// The `skip-syntax-forward' primitive, callable directly (a subr's function pointer).

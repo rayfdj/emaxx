@@ -26,7 +26,7 @@ const MAX_MULTIBYTE_LENGTH: usize = 5;
 
 /// re_wctype_t: the character classes of `[:NAME:]'.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum WcType {
+pub(crate) enum WcType {
     Error = 0,
     Alnum,
     Alpha,
@@ -50,7 +50,7 @@ pub(super) enum WcType {
 /// re_wctype_parse: whether the pattern at P begins with "[:NAME:]".  None
 /// when it does not; Some(class, end) when it does, the class being
 /// `Error' for an unknown NAME.
-pub(super) fn re_wctype_parse(pattern: &[u32], p: usize) -> Option<(WcType, usize)> {
+pub(crate) fn re_wctype_parse(pattern: &[u32], p: usize) -> Option<(WcType, usize)> {
     let rest = &pattern[p..];
     if rest.len() < 4 || rest[0] != u32::from(b'[') || rest[1] != u32::from(b':') {
         return None;
@@ -65,30 +65,37 @@ pub(super) fn re_wctype_parse(pattern: &[u32], p: usize) -> Option<(WcType, usiz
         }
         it += 1;
     }
-    let name: Option<String> = rest[beg..it]
+    // The NAME compared where it stands, as the C switch's memcmp does.
+    let name = &rest[beg..it];
+    const CLASSES: [(&[u8], WcType); 17] = [
+        (b"word", WcType::Word),
+        (b"alnum", WcType::Alnum),
+        (b"alpha", WcType::Alpha),
+        (b"space", WcType::Space),
+        (b"digit", WcType::Digit),
+        (b"blank", WcType::Blank),
+        (b"upper", WcType::Upper),
+        (b"lower", WcType::Lower),
+        (b"punct", WcType::Punct),
+        (b"ascii", WcType::Ascii),
+        (b"graph", WcType::Graph),
+        (b"print", WcType::Print),
+        (b"cntrl", WcType::Cntrl),
+        (b"xdigit", WcType::XDigit),
+        (b"unibyte", WcType::Unibyte),
+        (b"nonascii", WcType::NonAscii),
+        (b"multibyte", WcType::Multibyte),
+    ];
+    let class = CLASSES
         .iter()
-        .map(|&c| char::from_u32(c).filter(char::is_ascii))
-        .collect();
-    let class = match name.as_deref() {
-        Some("word") => WcType::Word,
-        Some("alnum") => WcType::Alnum,
-        Some("alpha") => WcType::Alpha,
-        Some("space") => WcType::Space,
-        Some("digit") => WcType::Digit,
-        Some("blank") => WcType::Blank,
-        Some("upper") => WcType::Upper,
-        Some("lower") => WcType::Lower,
-        Some("punct") => WcType::Punct,
-        Some("ascii") => WcType::Ascii,
-        Some("graph") => WcType::Graph,
-        Some("print") => WcType::Print,
-        Some("cntrl") => WcType::Cntrl,
-        Some("xdigit") => WcType::XDigit,
-        Some("unibyte") => WcType::Unibyte,
-        Some("nonascii") => WcType::NonAscii,
-        Some("multibyte") => WcType::Multibyte,
-        _ => WcType::Error,
-    };
+        .find(|(spelling, _)| {
+            spelling.len() == name.len()
+                && spelling
+                    .iter()
+                    .zip(name)
+                    .all(|(&byte, &c)| u32::from(byte) == c)
+        })
+        .map_or(WcType::Error, |&(_, class)| class);
     Some((class, p + it + 2))
 }
 
@@ -260,7 +267,7 @@ pub(super) const ASCII_CLASS_MASKS: [u128; 18] = {
 };
 
 /// re_iswctype: whether CH is in class CC.
-pub(super) fn re_iswctype<E: MatchEnv + ?Sized>(env: &mut E, ch: u32, cc: WcType) -> bool {
+pub(crate) fn re_iswctype<E: MatchEnv + ?Sized>(env: &mut E, ch: u32, cc: WcType) -> bool {
     match cc {
         WcType::Alnum => isalnum(env, ch),
         WcType::Alpha => isalpha(env, ch),

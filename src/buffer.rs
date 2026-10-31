@@ -1668,6 +1668,26 @@ impl Buffer {
         Ok(first.chars().chain(second.chars()))
     }
 
+    /// The byte offsets in the text of positions FROM and TO (1-based).
+    pub(crate) fn span_bytes(&self, from: usize, to: usize) -> (usize, usize) {
+        (
+            self.text.char_to_byte(from - 1),
+            self.text.char_to_byte(to - 1),
+        )
+    }
+
+    /// The text of byte offsets [START, END) as it stands, the part before
+    /// the gap and the part after.
+    pub(crate) fn byte_halves(&self, start: usize, end: usize) -> (&str, &str) {
+        self.text.text.range_halves(start..end)
+    }
+
+    /// Remember that position POS (1-based) starts at byte offset BYTE, as
+    /// a scan that counted both finds it (GNU keeps PT_BYTE with PT).
+    pub(crate) fn note_position(&self, pos: usize, byte: usize) {
+        self.text.note_position(pos - 1, byte);
+    }
+
     /// [FROM, TO) (1-based) of an ASCII text as a slice of the half of the
     /// text holding it, so nothing is decoded; None when the text has a
     /// multibyte character or the range crosses the gap.

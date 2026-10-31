@@ -262,7 +262,6 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
         "terminal.c resets its allocation counter for the new process; restored nilled terminals advance it",
     ),
     ("next_buffer_id", "carried in the remembered scalars"),
-    ("syntax_segment_cache", "a cache"),
     (
         "loaded_bindings",
         "a cache of the buffer-local bindings last used (data.c's blv where and valcell), loaded again on use",

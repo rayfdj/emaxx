@@ -17534,7 +17534,7 @@ fn subr_arity_answers_the_host_inotify_primitives() {
 
 #[test]
 fn skip_chars_word_class_includes_ascii_digits() {
-    // The SkipSyntaxSnapshot classifies each segment by sampling its START,
+    // A former SkipSyntaxSnapshot classified each segment by sampling its START,
     // which is only correct where the class is uniform across the window.
     // `default_syntax_entry' varies per character INSIDE ASCII, and with
     // boundaries drawn only from explicit char-table entries the window
@@ -32685,5 +32685,31 @@ fn char_equal_string_distance_and_composition_limits_as_gnu() {
              (find-composition-internal 4 2 s nil)))))"##,
         r##"(nil t nil (nil t t t) (wrong-type-argument characterp -1) (wrong-type-argument characterp b) (t nil) 1 1 1 2 (nil (1 3 t) nil (1 3 t) nil (1 3 t) (1 3 t)))"##,
         "char-equal, string-distance and composition limits",
+    );
+}
+
+/// skip-chars-forward and -backward as syntax.c:skip_chars reads their
+/// set: a backslash quoting the next character, `-' a range only before
+/// another character and empty out of order, an unknown or empty
+/// `[:NAME:]' an error, the classes re_iswctype's (a unibyte scan's bytes
+/// tested as those codes), eight-bit bytes naming raw bytes of multibyte
+/// text, and a LIM behind point moving nowhere.
+#[test]
+fn skip_chars_reads_its_set_as_syntax_c() {
+    assert_oracle_contract_matches_interpreter(
+        r##"(let ((sk (lambda (spec text &optional back)
+            (with-temp-buffer (insert text) (goto-char (if back (point-max) 1))
+              (condition-case err (list (if back (skip-chars-backward spec) (skip-chars-forward spec)) (point)) (error err)))))
+      (ub (lambda (spec text) (with-temp-buffer (set-buffer-multibyte nil) (insert text) (goto-char 1) (list (skip-chars-forward spec) (point))))))
+  (list (funcall sk "\\-a" "-a-b") (funcall sk "a\\-c" "a-c b") (funcall sk "^\\^" "ab^") (funcall sk "a\\" "aa\\")
+        (funcall sk "z-a" "zab") (funcall sk "[:foo:]" "ab") (funcall sk "[::]" "[::]x") (funcall sk "[:alpha" "[:alpha")
+        (funcall sk "[:alpha:]" "é́ǅʰאः⃝Ⅰ²x1") (funcall sk "[:alnum:]" "a1١²Ⅰ_")
+        (funcall sk "[:upper:]" "İǅa") (funcall sk "[:blank:]" " \t 　 x") (funcall sk "[:print:]" "\x7fx")
+        (funcall sk "^[:alpha:]" "12ab") (funcall sk "[:space:]" "a  " t) (funcall sk "\\-" "a--" t)
+        (funcall ub "\x80-\xff" "\xa0\xff\x41") (funcall ub "[:alpha:]" "a\xe9b") (funcall ub "é" "\xe9a")
+        (funcall sk "\x80-\xff" "éa") (funcall sk "a-λ" "zλν")
+        (with-temp-buffer (insert "abcdef") (goto-char 4) (list (skip-chars-forward "a-z" 1) (point) (skip-chars-backward "a-z" 6) (point)))))"##,
+        r##"((3 4) (3 4) (2 3) (2 3) (0 1) (error "Invalid ISO C character class") (error "Invalid ISO C character class") (7 8) (8 9) (3 4) (0 1) (4 5) (0 1) (2 3) (-2 2) (-2 2) (2 3) (1 2) (0 1) (0 1) (2 3) (0 4 0 4))"##,
+        "skip-chars sets",
     );
 }
