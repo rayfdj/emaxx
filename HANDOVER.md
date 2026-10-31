@@ -10400,6 +10400,41 @@ setup_process_coding_systems's check now refuses). A 13-form
   integration targets and clippy with `--all-targets --all-features -D
   warnings' pass; the invisible-p and expand-file-name oracle tests and
   the batch minibuffer CLI test fail before.
+- **Round 198: an edit moves the intervals after it in one step.** A
+  release sweep of the frozen run's slowest test files found
+  dired-aux-tests at twice GNU's time where /tmp is large: `(dired
+  "/tmp")' over 14,404 entries ran 23.2 G instructions, 85% of them in
+  Buffer::offset_intervals and Intervals::grow. The intervals were a gap
+  vector of absolute starts, so every insertion or deletion rewrote the
+  start of each interval after it, and dired's passes that edit each line
+  of a listing in turn (indenting it, putting a mark on it) cost the
+  square of its length, where GNU's tree adjusts the total lengths on one
+  path. The slots after the gap now hold their starts less a SHIFT that
+  Items keeps, a slot's start read through it, and the starts that cross
+  the gap made absolute or relative as it moves; an insertion or a
+  deletion moves the gap to the first interval after the edit and changes
+  SHIFT once (`shift_from'), the intervals inside a deletion set to its
+  start as before. On a 15,000-file directory dired takes 0.343 s
+  against GNU's 0.349 s (0.985 s before), revert-buffer 0.281 s against
+  0.324 s (1.062 s) and dired-mark-files-regexp 0.162 s against 0.148 s
+  (0.687 s); inserting a character on each of 20,000 propertized lines
+  takes 0.016 s forward and 0.012 s backward against GNU's 0.033 s and
+  0.040 s (0.318 s and 0.590 s), and dired-aux-tests' bodies run in
+  0.94 s against GNU's 1.04 s (2.0 s). A battery of ten interval shapes
+  after edits (stickiness, deletions across intervals, undo, grafts,
+  casing, unibyte round trips) matches GNU op for op; a new randomized
+  test checks splits, insertions and deletions at wandering places
+  against a plain list of starts. Markers (20,000 live: 0.217 s against
+  0.213 s) and overlays (0.025 s against 0.039 s) already shift as fast
+  as GNU's.
+
+  **Found, not fixed:** a multibyte buffer's characters outside Unicode
+  (raw bytes among them) live in a sorted side table that every edit
+  walks and every byte position counts through, so deleting a character
+  on each of 20,000 lines holding a raw byte takes 0.199 s against GNU's
+  0.013 s. Local validation: the grouped gate's 3,365 library tests,
+  the integration targets and clippy with `--all-targets --all-features
+  -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -11691,6 +11726,14 @@ frozen (run 41180759767) matched all 7,928 outcomes on its first
 attempt. Setup 77.9 s against 62.8 s (1.240), test bodies 250.9 s
 against 260.0 s (0.965), in all 1.001; undo-tests' bodies 1.11 s against
 0.88 s.
+
+**On `18dd5d6`** (round 197): full Rust gate passed (run 41184426831);
+frozen (run 41184428857) matched 7,927 of 7,928 outcomes: fileio-tests'
+`fileio-tests--relative-HOME' failed, round 197's expand-file-name
+leaving a relative HOME relative where get_homedir splices it onto
+emacs_wd (fixed with round 199). Setup 61.5 s against 54.2 s (1.135),
+test bodies 214.0 s against 229.1 s (0.934), in all 0.980; undo-tests'
+bodies 0.66 s against 0.55 s.
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'
