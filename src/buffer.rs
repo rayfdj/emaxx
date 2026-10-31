@@ -252,7 +252,21 @@ struct BufferText {
     /// Recent char/byte conversions of a text whose characters are not
     /// all one byte.
     positions: Cell<PositionCache>,
+    /// The conversions found far from every known position, in order:
+    /// buf_charpos_to_bytepos keeps one as a marker until the next GC
+    /// when it scanned more than 5000 characters for it, so a pass over
+    /// positions all through the text (sort-lines comparing its lines)
+    /// scans from the nearest of them.  Moved by an edit before them,
+    /// dropped by one over them.
+    checkpoints: RefCell<Vec<(usize, usize)>>,
 }
+
+/// buf_charpos_to_bytepos's distance past which a conversion is kept.
+const CHECKPOINT_DISTANCE: usize = 5000;
+
+/// The most checkpoints a text keeps: beyond, they start again (GNU's go
+/// at the next GC).
+const CHECKPOINT_LIMIT: usize = 4096;
 
 /// editfns.c:transpose_markers' move of POSITION: in the first region by
 /// the second's length and the distance between them, between them by the
@@ -391,6 +405,7 @@ impl BufferText {
             raw_markers: count_raw_markers(text.as_bytes()),
             raw_anchor: Cell::default(),
             positions: Cell::default(),
+            checkpoints: RefCell::default(),
         }
     }
 
@@ -506,10 +521,30 @@ impl BufferText {
         if let Some(byte) = positions.by_char(index) {
             return byte;
         }
-        let byte = self.text.char_to_byte_near(index, positions.entries());
+        let checkpoints = self.checkpoints.borrow();
+        let at = checkpoints.partition_point(|&(char, _)| char < index);
+        let near = &checkpoints[at.saturating_sub(1)..(at + 1).min(checkpoints.len())];
+        let (byte, counted) = self
+            .text
+            .char_to_byte_counting(index, positions.entries().chain(near.iter().copied()));
+        drop(checkpoints);
+        if counted > CHECKPOINT_DISTANCE {
+            self.keep_checkpoint(at, index, byte);
+        }
         positions.record(index, byte);
         self.positions.set(positions);
         byte
+    }
+
+    /// Char INDEX at byte BYTE kept as the AT'th checkpoint.
+    fn keep_checkpoint(&self, at: usize, index: usize, byte: usize) {
+        let mut checkpoints = self.checkpoints.borrow_mut();
+        if checkpoints.len() >= CHECKPOINT_LIMIT {
+            checkpoints.clear();
+            checkpoints.push((index, byte));
+        } else {
+            checkpoints.insert(at, (index, byte));
+        }
     }
 
     /// buf_bytepos_to_charpos: the char index of the character byte index
@@ -538,11 +573,20 @@ impl BufferText {
         while start > 0 && start < self.text.len() && self.text.byte(start) & 0xC0 == 0x80 {
             start -= 1;
         }
-        let index = self.text.byte_to_char_near(start, positions.entries());
+        let checkpoints = self.checkpoints.borrow();
+        let at = checkpoints.partition_point(|&(_, at)| at < start);
+        let near = &checkpoints[at.saturating_sub(1)..(at + 1).min(checkpoints.len())];
+        let (index, counted) = self
+            .text
+            .byte_to_char_counting(start, positions.entries().chain(near.iter().copied()));
+        drop(checkpoints);
         // A byte that starts its character is that character's position,
         // remembered as buf_bytepos_to_charpos remembers the last it
         // converted (a match's registers then count from each other).
         if start == byte {
+            if counted > CHECKPOINT_DISTANCE {
+                self.keep_checkpoint(at, index, byte);
+            }
             positions.record(index, byte);
             self.positions.set(positions);
         }
@@ -643,6 +687,11 @@ impl BufferText {
         self.positions
             .get_mut()
             .inserted(char_index, added, text.len());
+        let checkpoints = self.checkpoints.get_mut();
+        let after = checkpoints.partition_point(|&(char, _)| char <= char_index);
+        for entry in &mut checkpoints[after..] {
+            *entry = (entry.0 + added, entry.1 + text.len());
+        }
         self.raw_markers += raw_markers;
         let (at, count) = self.raw_anchor.get();
         if at > byte {
@@ -685,7 +734,15 @@ impl BufferText {
         markers: usize,
     ) {
         self.text.delete(start..start + bytes, range.clone());
-        self.positions.get_mut().removed(range, bytes);
+        self.positions.get_mut().removed(range.clone(), bytes);
+        let checkpoints = self.checkpoints.get_mut();
+        let first = checkpoints.partition_point(|&(char, _)| char <= range.start);
+        // One at the deletion's end would land on one at its start.
+        let last = checkpoints.partition_point(|&(char, _)| char <= range.end);
+        checkpoints.drain(first..last);
+        for entry in &mut checkpoints[first..] {
+            *entry = (entry.0 - range.len(), entry.1 - bytes);
+        }
         self.raw_markers -= markers;
         let (at, count) = self.raw_anchor.get();
         if at >= start + bytes {
@@ -3709,6 +3766,59 @@ mod tests {
                 buf.delete_region(from, to).unwrap();
             }
         }
+    }
+
+    /// Conversions all through a long non-ASCII text, in and out of
+    /// order between edits, against a count from the start; the
+    /// checkpoints the far ones leave stay in order and true.
+    #[test]
+    fn far_conversions_leave_checkpoints_that_edits_keep_true() {
+        let mut buf = Buffer::from_text("test", &"aé€𝄞 line\n".repeat(4000));
+        let mut seed = 777_u64;
+        let mut next = |bound: usize| {
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            (seed >> 33) as usize % bound
+        };
+        for round in 0..300 {
+            let text = buf.buffer_string();
+            let offsets: Vec<usize> = text
+                .char_indices()
+                .map(|(at, _)| at)
+                .chain([text.len()])
+                .collect();
+            let chars = offsets.len() - 1;
+            for _ in 0..4 {
+                let index = next(chars + 1);
+                assert_eq!(
+                    buf.text.char_to_byte(index),
+                    offsets[index],
+                    "round {round}"
+                );
+                assert_eq!(
+                    buf.text.byte_to_char(offsets[index]),
+                    index,
+                    "round {round}"
+                );
+            }
+            let checkpoints = buf.text.checkpoints.borrow().clone();
+            assert!(checkpoints.windows(2).all(|pair| pair[0].0 < pair[1].0));
+            for (index, byte) in checkpoints {
+                assert_eq!(offsets[index], byte, "round {round}");
+            }
+            match next(3) {
+                0 => {
+                    buf.goto_char(1 + next(chars + 1));
+                    buf.insert(["x", "λ𝄞", "é\n"][next(3)]);
+                }
+                1 => {
+                    let from = 1 + next(chars - 1);
+                    let to = (from + 1 + next(30)).min(chars + 1);
+                    buf.delete_region(from, to).unwrap();
+                }
+                _ => {}
+            }
+        }
+        assert!(!buf.text.checkpoints.borrow().is_empty());
     }
 
     #[test]

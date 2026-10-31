@@ -2477,6 +2477,13 @@ impl<'a, 'r> Scanner<'a, 'r> {
             }
             count += 1;
         }
+        // Where the scan stops its byte offset is known, as GNU keeps
+        // PT_BYTE with the point forward-word sets: the next scan's
+        // conversion of point finds it.
+        self.interp
+            .buffer
+            .borrow()
+            .note_position(from, from_byte - 1);
         Ok(Words::Done(Some(from)))
     }
 

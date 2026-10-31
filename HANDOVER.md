@@ -10469,6 +10469,36 @@ setup_process_coding_systems's check now refuses). A 13-form
   failure. Local validation: the grouped gate's 3,367 library tests,
   the integration targets and clippy with `--all-targets --all-features
   -D warnings' pass.
+- **Round 200: char and byte positions as buf_charpos_to_bytepos finds
+  them.** Large-buffer operations timed against GNU on simple.el and
+  subr.el together (795 KB, four lines not ASCII) ran at or under GNU's
+  times except sort-lines (4.09 s against 0.10 s) and forward-word (0.29 s
+  against 0.16 s). sort-lines spent 39.5 G instructions, 97% of them
+  converting character positions to byte offsets: compare-buffer-
+  substrings asked for positions all through the text, and each
+  conversion counted the characters from the nearest of the text's ends,
+  the gap and four recent conversions. marker.c brackets the position
+  between the nearest known positions below and above it, interpolates
+  when the text between them is all one-byte characters, and counts from
+  the nearer only otherwise, keeping a marker until the next GC where it
+  counted more than 5000 characters. GapText's conversions now bracket
+  and interpolate the same way (`char_to_byte_counting' and
+  `byte_to_char_counting', which also say how far they counted), and
+  BufferText keeps a checkpoint, in order and moved by edits as markers
+  are, where a conversion counted more than 5000 characters (at most 4096,
+  then started again). forward-word's scan also leaves the byte offset
+  where it stopped in the text's position cache, as GNU keeps PT_BYTE
+  with the point it sets, so the next scan's conversion of point is a
+  hit. sort-lines takes 0.094 s against GNU's 0.067 s and forward-word
+  over the buffer three times 0.193 s against 0.139 s (constrain-to-
+  field's four field lookups cost 0.68 G instructions there against
+  GNU's 0.58 G, the scan's syntax-table updates 0.18 G against 0.12 G).
+  A new test reads
+  positions all through a long non-ASCII text, in and out of order
+  between edits, against a count from the start, and checks that the
+  checkpoints stay in order and true. Local validation: the grouped
+  gate's 3,368 library tests, the integration targets and clippy
+  with `--all-targets --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -11768,6 +11798,15 @@ leaving a relative HOME relative where get_homedir splices it onto
 emacs_wd (fixed with round 199). Setup 61.5 s against 54.2 s (1.135),
 test bodies 214.0 s against 229.1 s (0.934), in all 0.980; undo-tests'
 bodies 0.66 s against 0.55 s.
+
+**On `2f7c378`** (rounds 198 and 199): full Rust gate passed (run
+41190185669); frozen (run 41190187346) matched 7,927 of 7,928 outcomes on
+its first attempt, the one mismatch the oracle's
+`eglot-test-rust-completion-exit-function' failing while Emaxx passed (the
+language server flake); fileio-tests' relative-HOME test now matches. Setup
+64.0 s against 55.5 s (1.153), test bodies 224.7 s against 244.7 s
+(0.918), in all 0.979. The failed job was rerun once; its result is
+recorded with round 201.
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'
