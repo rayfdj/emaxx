@@ -10085,6 +10085,56 @@ setup_process_coding_systems's check now refuses). A 13-form
   old transposition, is removed. Local validation: the grouped gate's
   3,351 library tests, the seven integration suites, clippy with
   every target and feature, rustfmt and `git diff --check'.
+- **Round 191: casify_region as casefiddle.c's, and
+  `buffer-access-fontify-functions' where make_buffer_string runs it.**
+  A casing of a region that changed nothing left the buffer unmodified
+  with no undo records, where casify_region's modify_text and
+  record_delete mark it modified, count the change and record the region
+  ((1 . 4) ("ABC" . 1) and the first-change record for `(upcase-region 1
+  4)' over "ABC"); and a character cased to another number of characters
+  (ß to SS, ﬁ to FI, İ to i̇) made Emaxx delete the whole region and
+  insert the result, dropping its text properties and moving point,
+  markers and overlays. casify_buffer_region now runs modify_text, then
+  update_buffer_properties and record_delete of the region as
+  make_buffer_string makes it, cases the text, and records the insertion
+  (before the casing in a unibyte buffer, after it with the length it
+  then has in a multibyte one); a character whose casing is another
+  number of characters or of bytes is replaced as replace_range_2
+  replaces it (Buffer::replace_char_unrecorded: markers and overlays at
+  their character positions, the intervals offset there so the
+  properties stay, point moved as a marker and set to casefiddle.c's
+  opoint, the change counted), the others where they stand.
+  `buffer-access-fontify-functions' (editfns.c:update_buffer_properties)
+  ran only for buffer-substring, buffer-string and field-string; it now
+  also runs where GNU's make_buffer_string_both does: over the text a
+  deletion takes when the buffer records undo or the caller wants the
+  text (del_range_2: delete-region, delete-char, erase-buffer,
+  replace-buffer-contents' hunks, zlib-decompress-region;
+  delete-and-extract-region and so kill-region always), over
+  replace-match's and translate-region's replace_range text with undo,
+  over every record_change span whether or not the buffer records undo
+  (casing, translate-region's characters, subst-char-in-region's with
+  undo one by one between the substitutions, transpose-regions' spans
+  before the change hooks when the second region is the shorter), and
+  over minibuffer-contents. Batteries of 34 operations with and without
+  undo (each hook call with the buffer's modified flag) and of 20 casings
+  (four functions over plain, ligature, dotless and dotted i, titlecase
+  and propertied text: text, properties, point, marker, overlay, modified
+  flag, undo list, after-change calls, both modification ticks and the
+  undone text) read as GNU's. casefiddle-tests, editfns-tests,
+  textprop-tests, undo-tests, simple-tests, minibuf-tests and
+  subr-x-tests pass as many tests as GNU's.
+
+  **Found, not fixed (next):** an indirect buffer's text is a copy kept
+  in step by mirroring each insertion, deletion and property change, but
+  the edits made where the text stands (casing, subst-char-in-region,
+  translate-region, transpose-regions) reach only the buffer they were
+  made in, and transpose_markers moves only that buffer's markers, where
+  GNU's family shares one buffer_text, its markers (the other buffers'
+  point, BEGV and ZV among them) and its intervals (#359).
+  Local validation: the grouped gate's 3,353 library tests, the
+  seven integration suites, clippy with every target and feature,
+  rustfmt and `git diff --check'.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -11324,6 +11374,12 @@ frozen (run 41153638950) matched all 7,928 outcomes on its first
 attempt. Setup 82.5 s against 68.5 s (1.205), test bodies 259.1 s
 against 271.5 s (0.955), in all 0.994; undo-tests' bodies 1.12 s against
 0.93 s.
+
+**On `b2c2bb3`** (round 190): full Rust gate passed (run 41156316286);
+frozen (run 41156318687) matched all 7,928 outcomes on its first
+attempt. Setup 82.0 s against 67.8 s (1.209), test bodies 258.7 s
+against 268.8 s (0.962), in all 0.998; undo-tests' bodies 1.14 s against
+0.91 s.
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

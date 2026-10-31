@@ -2883,7 +2883,7 @@ define_dispatch!(
                     .map_err(|error| LispError::Signal(error.to_string()))?;
                 let input = encode_raw_text_bytes(&compressed)?;
                 // zlib.c: modify_text over the region, then one change.
-                modify_current_buffer(interp, start, end, false, env, |interp, _, _| {
+                modify_current_buffer(interp, start, end, false, env, |interp, _, env| {
                     let mut output = Vec::new();
                     let (complete, remaining) = if input.starts_with(&[0x1f, 0x8b]) {
                         let mut decoder = flate2::bufread::GzDecoder::new(&input[..]);
@@ -2904,6 +2904,10 @@ define_dispatch!(
                     }
 
                     let saved_point = interp.buffer.borrow().point();
+                    // del_range_2's make_buffer_string_both.
+                    crate::lisp::primitives::textprop::update_deleted_text_properties(
+                        interp, start, end, false, env,
+                    )?;
                     interp
                         .delete_region_current_buffer_unreturned(start, end)
                         .map_err(|error| LispError::Signal(error.to_string()))?;

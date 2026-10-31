@@ -9454,6 +9454,80 @@ fn transpose_regions_works_in_place_as_editfns_c() {
     );
 }
 
+/// editfns.c:make_buffer_string_both's update_buffer_properties:
+/// `buffer-access-fontify-functions' runs over the text a deletion takes
+/// when the buffer records undo or the caller wants the text
+/// (delete-and-extract-region, kill-region), over replace-match's old text
+/// with undo, over casing's whole region and every record_change span
+/// (subst-char-in-region with undo, translate-region, transpose-regions)
+/// whether or not the buffer records undo, and over minibuffer-contents.
+#[test]
+fn buffer_access_fontify_functions_run_where_make_buffer_string_does() {
+    assert_oracle_contract_matches_interpreter(
+        r##"(let ((ops (list (lambda () (goto-char 1) (re-search-forward "c") (replace-match "W"))
+                        (lambda () (delete-region 2 4))
+                        (lambda () (delete-and-extract-region 2 4))
+                        (lambda () (goto-char 3) (delete-char -1))
+                        (lambda () (erase-buffer))
+                        (lambda () (upcase-region 2 4))
+                        (lambda () (capitalize-region 1 7))
+                        (lambda () (subst-char-in-region 1 7 ?c ?Q))
+                        (lambda () (subst-char-in-region 1 7 ?c ?Q t))
+                        (lambda () (translate-region 1 7 (let ((tbl (make-string 256 0))) (dotimes (i 256) (aset tbl i i)) (aset tbl ?d ?Z) tbl)))
+                        (lambda () (transpose-regions 1 2 4 5))
+                        (lambda () (transpose-regions 1 2 4 6))
+                        (lambda () (transpose-regions 1 3 4 5))
+                        (lambda () (transpose-regions 1 2 2 4))
+                        (lambda () (kill-region 2 4))
+                        (lambda () (buffer-substring 2 4))
+                        (lambda () (minibuffer-contents))))
+             (result nil))
+         (dolist (undo '(nil t))
+           (dolist (op ops)
+             (let ((log nil))
+               (with-temp-buffer
+                 (when undo (buffer-enable-undo))
+                 (insert "abcdef")
+                 (setq-local buffer-access-fontify-functions
+                             (list (lambda (s e) (push (list s e (buffer-modified-p)) log))))
+                 (funcall op))
+               (push (reverse log) result))))
+         (nreverse result))"##,
+        r##"(nil nil ((2 4 t)) nil nil ((2 4 t)) ((1 7 t)) ((3 4 t)) nil ((4 5 t)) ((1 2 t) (4 5 t)) ((1 6 t)) ((1 5 t)) ((1 4 t)) ((2 4 t)) ((2 4 t)) ((1 7 t)) ((3 4 t)) ((2 4 t)) ((2 4 t)) ((2 3 t)) ((1 7 t)) ((2 4 t)) ((1 7 t)) ((3 4 t)) nil ((4 5 t)) ((1 2 t) (4 5 t)) ((1 6 t)) ((1 5 t)) ((1 4 t)) ((2 4 t)) ((2 4 t)) ((1 7 t)))"##,
+        "buffer-access-fontify-functions",
+    );
+}
+
+/// casefiddle.c:casify_region: modify_text and record_delete of the
+/// region even when its casing changes nothing (the buffer modified, the
+/// undo records made, no after-change call), a character cased to others
+/// than one (or to another byte length) replaced as replace_range_2
+/// replaces it, its properties kept, markers and overlays where they were,
+/// point moved as opoint, record_insert of what was left, and undoing it.
+#[test]
+fn casify_region_records_and_replaces_as_casefiddle_c() {
+    assert_oracle_contract_matches_interpreter(
+        r##"(let ((result nil))
+         (dolist (text (list "ABC def" (concat "a" (propertize "ßﬁx" 'face 'bold) "ǆ yz") "aıb" "İs"))
+           (dolist (f '(upcase-region downcase-region capitalize-region upcase-initials-region))
+             (with-temp-buffer
+               (buffer-enable-undo) (insert text) (set-buffer-modified-p nil) (setq buffer-undo-list nil)
+               (let ((log nil) (m (copy-marker 3)) (ov (make-overlay 2 4)))
+                 (goto-char 3)
+                 (add-hook 'after-change-functions (lambda (b e l) (push (list b e l) log)) nil t)
+                 (funcall f 1 (point-max))
+                 (push (list (buffer-string) (point) (marker-position m) (overlay-start ov) (overlay-end ov)
+                             (buffer-modified-p)
+                             (mapcar (lambda (e) (if (eq (car-safe e) t) t e)) buffer-undo-list)
+                             (reverse log) (buffer-chars-modified-tick)
+                             (progn (primitive-undo 10 buffer-undo-list) (buffer-string)))
+                       result)))))
+         (nreverse result))"##,
+        r##"(("ABC DEF" 3 3 2 4 t ((1 . 8) ("ABC def" . 1) t) ((5 8 3)) 7 "ABC def") ("abc def" 3 3 2 4 t ((1 . 8) ("ABC def" . 1) t) ((1 4 3)) 7 "ABC def") ("Abc Def" 3 3 2 4 t ((1 . 8) ("ABC def" . 1) t) ((2 6 4)) 7 "ABC def") ("ABC Def" 3 3 2 4 t ((1 . 8) ("ABC def" . 1) t) ((5 6 1)) 7 "ABC def") (#("ASSFIXǄ YZ" 2 6 (face bold)) 4 3 2 4 t ((1 . 11) (#("aßﬁxǆ yz" 1 4 (face bold)) . 1) t) ((1 11 8)) 13 #("aßﬁxǆ yz" 1 4 (face bold))) (#("aßﬁxǆ yz" 1 4 (face bold)) 3 3 2 4 t ((1 . 9) (#("aßﬁxǆ yz" 1 4 (face bold)) . 1) t) nil 9 #("aßﬁxǆ yz" 1 4 (face bold))) (#("Aßﬁxǆ Yz" 1 4 (face bold)) 3 3 2 4 t ((1 . 9) (#("aßﬁxǆ yz" 1 4 (face bold)) . 1) t) ((1 8 7)) 9 #("aßﬁxǆ yz" 1 4 (face bold))) (#("Aßﬁxǆ Yz" 1 4 (face bold)) 3 3 2 4 t ((1 . 9) (#("aßﬁxǆ yz" 1 4 (face bold)) . 1) t) ((1 8 7)) 9 #("aßﬁxǆ yz" 1 4 (face bold))) ("AıB" 3 3 2 4 t ((1 . 4) ("aıb" . 1) t) ((1 4 3)) 5 "aıb") ("aıb" 3 3 2 4 t ((1 . 4) ("aıb" . 1) t) nil 5 "aıb") ("Aıb" 3 3 2 4 t ((1 . 4) ("aıb" . 1) t) ((1 2 1)) 5 "aıb") ("Aıb" 3 3 2 4 t ((1 . 4) ("aıb" . 1) t) ((1 2 1)) 5 "aıb") ("İS" 3 3 2 3 t ((1 . 3) ("İs" . -1) t) ((2 3 1)) 5 "İs") ("i̇s" 4 3 2 3 t ((1 . 4) ("İs" . -1) t) ((1 3 1)) 7 "İs") ("İs" 3 3 2 3 t ((1 . 3) ("İs" . -1) t) nil 5 "İs") ("İs" 3 3 2 3 t ((1 . 3) ("İs" . -1) t) nil 5 "İs"))"##,
+        "casify-region",
+    );
+}
+
 /// Property changes' undo records, the deletion record's intervals, the
 /// stickiness of text-property-default-nonsticky and front-sticky t,
 /// categories, char-property-alias-alist, default-text-properties, the

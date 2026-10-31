@@ -346,7 +346,7 @@ pub(crate) enum TranslationTable {
 
 /// The characters character.c's CHAR_STRING writes for C in a multibyte
 /// buffer: a raw byte two, others as their code's size.
-fn multibyte_char_bytes(c: u32) -> usize {
+pub(crate) fn multibyte_char_bytes(c: u32) -> usize {
     match c {
         0..0x80 => 1,
         0x80..0x800 => 2,
@@ -484,6 +484,13 @@ pub(crate) fn translate_region_internal(
                 if new_bytes != old_bytes {
                     replace_range_with_hooks(interp, pos, pos + 1, &[nc], env)?;
                 } else {
+                    // record_change's make_buffer_string of the character.
+                    crate::lisp::primitives::textprop::update_buffer_properties(
+                        interp,
+                        pos,
+                        pos + 1,
+                        env,
+                    )?;
                     replace_character_in_place(interp, pos, nc)?;
                     signal_after_change(
                         interp,
@@ -544,10 +551,15 @@ pub(crate) fn replace_range_with_hooks(
     env: &mut Env,
 ) -> Result<(), LispError> {
     let length = to - from;
-    modify_current_buffer(interp, from, to, true, env, |interp, from, _| {
+    modify_current_buffer(interp, from, to, true, env, |interp, from, env| {
         let to = (from + length)
             .min(interp.buffer.borrow().point_max())
             .max(from);
+        // replace_range's make_buffer_string_both of the old text.
+        crate::lisp::primitives::textprop::update_deleted_text_properties(
+            interp, from, to, false, env,
+        )?;
+        let to = to.min(interp.buffer.borrow().point_max()).max(from);
         replace_characters_unsignalled(interp, from, to, replacement)?;
         Ok((
             Some(AfterChange::new(from, to - from, replacement.len())),

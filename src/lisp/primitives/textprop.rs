@@ -1319,3 +1319,20 @@ pub(crate) fn update_buffer_properties(
     )?;
     Ok(())
 }
+
+/// The update_buffer_properties of insdel.c's make_buffer_string_both
+/// for text about to go: del_range_2 makes the deleted text's string when
+/// its caller wants it (RET_STRING) or the buffer records undo, as
+/// replace_range does for a buffer recording undo.
+pub(crate) fn update_deleted_text_properties(
+    interp: &mut Interpreter,
+    start: usize,
+    end: usize,
+    ret_string: bool,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    if start < end && (ret_string || !interp.buffer.borrow().undo_recording_disabled()) {
+        update_buffer_properties(interp, start, end, env)?;
+    }
+    Ok(())
+}

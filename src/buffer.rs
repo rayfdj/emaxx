@@ -2588,6 +2588,60 @@ impl Buffer {
         }
     }
 
+    /// casefiddle.c:casify_region's record_delete of [FROM, TO) as
+    /// make_buffer_string makes it, before the text is cased: the string
+    /// made even in a buffer without undo, as in record_change.
+    pub(crate) fn record_casing_deletion(&mut self, from: usize, to: usize) {
+        let old = self.text_range_string(from - 1, to - 1);
+        let string = self.deleted_text_value(&old, from, to);
+        if self.undo_recording_disabled() {
+            return;
+        }
+        self.record_delete(from, string, to - from);
+    }
+
+    /// casefiddle.c:casify_region's record_insert of the LENGTH characters
+    /// the casing left at FROM.
+    pub(crate) fn record_casing_insertion(&mut self, from: usize, length: usize) {
+        self.record_insert(from, length);
+    }
+
+    /// insdel.c:replace_range_2 without MARKERS, as
+    /// do_casify_multibyte_region calls it: the character at FROM replaced
+    /// by TEXT (EXTENDED its side table) where it stands, unrecorded.
+    /// Markers and overlays keep their character positions (marker byte
+    /// positions follow the new text), the intervals are offset at FROM
+    /// (offset_intervals), point moves as a marker would, and the change
+    /// counts as the characters deleted and inserted.
+    pub(crate) fn replace_char_unrecorded(
+        &mut self,
+        from: usize,
+        text: &str,
+        extended: &[(usize, u32)],
+        vars: &PropertyVariables,
+    ) {
+        let inschars = text.chars().count();
+        let to = from + 1;
+        self.text.remove(from - 1..to - 1);
+        self.text.insert(from - 1, text);
+        self.invalidate_char_cache();
+        self.adjust_extended_chars_for_delete(from, to);
+        self.adjust_extended_chars_for_insert(from, inschars);
+        self.extended_chars
+            .extend(extended.iter().map(|(offset, code)| (from + offset, *code)));
+        self.extended_chars
+            .sort_unstable_by_key(|(position, _)| *position);
+        self.zv = self.zv + inschars - 1;
+        self.offset_intervals(from, inschars as isize - 1, vars);
+        if from < self.pt && inschars != 1 {
+            self.pt = self.pt + inschars - 1;
+        }
+        self.refresh_marker_byte_positions();
+        modiff_incr(&mut self.modiff, 1 + inschars);
+        self.chars_modiff = self.modiff;
+        self.log_edit(from, to, from + inschars, true);
+    }
+
     /// [FROM, TO) replaced by TEXT of the same length where it stands,
     /// unrecorded and uncounted.
     pub(crate) fn replace_text_in_place(
