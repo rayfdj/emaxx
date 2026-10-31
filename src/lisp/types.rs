@@ -3366,14 +3366,10 @@ pub enum LispErrorKind {
     Signal(String),
     /// Generic error with explicit condition payload.
     SignalValue(Value),
-    /// An ERT assertion failure.
-    ErtTestFailed(String),
     /// Non-local exit via `throw`.
     Throw(Value, Value),
     /// Orderly, non-catchable process termination via `kill-emacs`.
     Terminate(EmacsTermination),
-    /// An ERT skip condition.
-    TestSkipped(String),
     /// End of input during read
     EndOfInput,
     /// Reader syntax error
@@ -3400,12 +3396,10 @@ impl LispErrorKind {
                 Some(Kind::Symbol(symbol)) => return symbol,
                 _ => cached_symbol!("error"),
             },
-            LispErrorKind::ErtTestFailed(_) => cached_symbol!("ert-test-failed"),
             LispErrorKind::Throw(_, _) => cached_symbol!("no-catch"),
             LispErrorKind::Terminate(_) => {
                 unreachable!("process termination is non-catchable evaluator control flow")
             }
-            LispErrorKind::TestSkipped(_) => cached_symbol!("ert-test-skipped"),
             LispErrorKind::EndOfInput => cached_symbol!("end-of-file"),
             LispErrorKind::ReadError(_) => cached_symbol!("invalid-read-syntax"),
         };
@@ -3484,7 +3478,6 @@ impl fmt::Display for LispErrorKind {
                 },
                 _ => write!(f, "{}", value),
             },
-            LispErrorKind::ErtTestFailed(msg) => write!(f, "{}", msg),
             LispErrorKind::Throw(tag, value) => write!(f, "No catch for {}: {}", tag, value),
             LispErrorKind::Terminate(termination) => {
                 if termination.restart {
@@ -3501,7 +3494,6 @@ impl fmt::Display for LispErrorKind {
                     )
                 }
             }
-            LispErrorKind::TestSkipped(msg) => write!(f, "{}", msg),
             LispErrorKind::EndOfInput => write!(f, "End of file during parsing"),
             LispErrorKind::ReadError(msg) => write!(f, "Invalid read syntax: {}", msg),
         }
@@ -3603,20 +3595,12 @@ impl LispError {
         Self::boxed(LispErrorKind::SignalValue(a0))
     }
 
-    pub fn ErtTestFailed(a0: String) -> Self {
-        Self::boxed(LispErrorKind::ErtTestFailed(a0))
-    }
-
     pub fn Throw(a0: Value, a1: Value) -> Self {
         Self::boxed(LispErrorKind::Throw(a0, a1))
     }
 
     pub fn Terminate(a0: EmacsTermination) -> Self {
         Self::boxed(LispErrorKind::Terminate(a0))
-    }
-
-    pub fn TestSkipped(a0: String) -> Self {
-        Self::boxed(LispErrorKind::TestSkipped(a0))
     }
 
     pub fn EndOfInput() -> Self {

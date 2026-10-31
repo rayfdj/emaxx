@@ -2051,20 +2051,27 @@ fn snarf_documentation(
         if entry.skip {
             continue;
         }
+        // doc.c finds each entry's symbol with oblookup: the DEFUNs and
+        // DEFVARs DOC lists under `#if 0', GLYPH_DEBUG or another
+        // platform's file name no symbol, and none is made for them.
+        let Some(symbol) = crate::lisp::types::SymbolName::find(&entry.name) else {
+            continue;
+        };
         match entry.kind {
             b'F' => {
-                if let Ok(Kind::BuiltinFunc(native_name)) =
-                    interp.lookup_function(&entry.name, env).map(|v| v.kind())
+                if let Ok(Kind::BuiltinFunc(native_name)) = interp
+                    .lookup_function_symbol(&symbol, env)
+                    .map(|v| v.kind())
                 {
                     interp
                         .builtin_doc_offsets
                         .insert(native_name.to_string(), entry.offset);
                 }
             }
-            b'V' if interp.lookup_var(&entry.name, env).is_some()
-                || delayed.iter().any(
-                    |value| matches!(value.kind(), Kind::Symbol(name) if name.as_str() == entry.name.as_str()),
-                ) =>
+            b'V' if interp.lookup_var_symbol(&symbol, env).is_some()
+                || delayed
+                    .iter()
+                    .any(|value| matches!(value.kind(), Kind::Symbol(name) if name == symbol)) =>
             {
                 interp.put_symbol_property(
                     &entry.name,

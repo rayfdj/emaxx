@@ -3077,10 +3077,10 @@ impl Interpreter {
         // GNU's Qsymbol belongs to the editor that owns its value and
         // declared-special flag. Keep a direct reference in this owner;
         // neither a process-wide id nor a name/TLS lookup is needed here.
-        self.globals.edebug_is_special()
-            && self
-                .symbol_value_key(cached_symbol!("edebug-entered"))
-                .is_some_and(|value| value.is_truthy())
+        self.globals
+            .special_edebug_entered()
+            .and_then(|symbol| self.symbol_value_symbol(&symbol))
+            .is_some_and(|value| value.is_truthy())
     }
 
     #[inline(always)]

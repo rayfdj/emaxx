@@ -3235,92 +3235,108 @@ pub(crate) fn check_coding_systems_region_value(
     ))
 }
 
+/// coding.c:Ffind_operation_coding_system: OPERATION's `target-idx'
+/// property names the argument whose coding systems the operation's alist
+/// gives.
 pub(crate) fn find_operation_coding_system_value(
     interp: &mut Interpreter,
     args: &[Value],
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    if args.is_empty() {
-        return Err(LispError::WrongNumberOfArgs(
-            "find-operation-coding-system".into(),
-            0,
-        ));
+    if args.len() < 2 {
+        return Err(LispError::Signal("Too few arguments".into()));
     }
-    let operation = args[0].as_symbol()?;
-    let (target_index, alist_name) = match operation {
-        "insert-file-contents" => (0, "file-coding-system-alist"),
-        "write-region" => (2, "file-coding-system-alist"),
-        "call-process" => (0, "process-coding-system-alist"),
-        "call-process-region" | "start-process" => (2, "process-coding-system-alist"),
-        "open-network-stream" => (3, "network-coding-system-alist"),
-        _ => {
-            return Err(LispError::Signal(format!(
-                "Invalid first argument: {operation}"
-            )));
-        }
+    let operation = args[0];
+    let Kind::Symbol(operation_name) = operation.kind() else {
+        return Err(LispError::Signal("Invalid first argument".into()));
     };
-    let Some(target) = args.get(target_index + 1) else {
+    let Some(index) = interp
+        .get_symbol_property(operation_name.as_str(), "target-idx")
+        .and_then(|index| index.fixnum())
+        .and_then(|index| usize::try_from(index).ok())
+    else {
+        return Err(LispError::Signal("Invalid first argument".into()));
+    };
+    if args.len() <= 1 + index {
         return Err(LispError::Signal(format!(
-            "Too few arguments for operation `{operation}'"
+            "Too few arguments for operation `{operation_name}'"
         )));
+    }
+    let insert = operation_name == "insert-file-contents";
+    let network = operation_name == "open-network-stream";
+    let mut target = args[index + 1];
+    let is_string = |value: &Value| matches!(value.kind(), Kind::StringObject(_));
+    let valid = is_string(&target)
+        || (insert
+            && target.cons_values().is_some_and(|(file, buffer)| {
+                is_string(&file) && matches!(buffer.kind(), Kind::Buffer(_))
+            }))
+        || (network && (target.fixnum().is_some() || matches!(target.kind(), Kind::T)));
+    if !valid {
+        return Err(LispError::Signal(format!(
+            "Invalid argument {} of operation `{operation_name}'",
+            index + 1
+        )));
+    }
+    if let Some((file, _)) = target.cons_values() {
+        target = file;
+    }
+    let alist_name = if insert || operation_name == "write-region" {
+        "file-coding-system-alist"
+    } else if network {
+        "network-coding-system-alist"
+    } else {
+        "process-coding-system-alist"
     };
-    let operation_target = match target.kind() {
-        Kind::Cons(cell) if operation == "insert-file-contents" => cell.car.get(),
-        other => other.value(),
-    };
-    let Some(alist) = interp.lookup_var(alist_name, env) else {
-        return Ok(Value::Nil);
-    };
-    for entry in alist.to_vec()? {
-        let Some((pattern, target)) = entry.cons_values() else {
+    let mut chain = interp.lookup_var(alist_name, env).unwrap_or(Value::Nil);
+    while let Some((elt, rest)) = chain.cons_values() {
+        chain = rest;
+        let Some((key, val)) = elt.cons_values() else {
             continue;
         };
-        let matches = match (pattern.kind(), operation_target.kind()) {
-            (Kind::Integer(pattern), Kind::Integer(target)) => pattern == target,
-            (Kind::StringObject(_), Kind::StringObject(_)) => {
-                search::fast_string_match(interp, env, &pattern, &operation_target, None, false)?
-                    .is_some()
-            }
-            _ => continue,
+        let matches = if is_string(&target) {
+            is_string(&key)
+                && search::fast_string_match(interp, env, &key, &target, None, false)?.is_some()
+        } else {
+            target.fixnum().is_some() && target.eq_value(key)
         };
         if !matches {
             continue;
         }
-        // A cons is already the requested (DECODING . ENCODING) pair.
-        if matches!(target.kind(), Kind::Cons(_)) {
-            return Ok(target);
+        // VAL is a coding system before it is a function to call.
+        if val.is_cons() {
+            return Ok(val);
         }
-        let coding = match target.kind() {
-            Kind::Symbol(symbol) if interp.has_coding_system(&symbol) => interp
-                .coding_system_canonical_name(&symbol)
-                .unwrap_or_else(|| symbol.to_string()),
-            Kind::Symbol(symbol) => {
-                let result =
-                    call_named_function(interp, &symbol, &[Value::list(args.to_vec())], env)?;
-                if let Some((decode, encode)) = result.cons_values() {
-                    return Ok(Value::cons(decode, encode));
-                }
-                checked_coding_symbol(interp, &result)?
-            }
-            other => {
-                let result = call_function_value(
-                    interp,
-                    &other.value(),
-                    &[Value::list(args.to_vec())],
-                    env,
-                )?;
-                if let Some((decode, encode)) = result.cons_values() {
-                    return Ok(Value::cons(decode, encode));
-                }
-                checked_coding_symbol(interp, &result)?
-            }
+        if !val.is_symbol() {
+            return Ok(Value::Nil);
+        }
+        if coding_system_p(interp, &val) {
+            return Ok(Value::cons(val, val));
+        }
+        let Kind::Symbol(function) = val.kind() else {
+            unreachable!("VAL was checked to be a symbol")
         };
-        return Ok(Value::cons(
-            Value::Symbol(coding.clone().into()),
-            Value::Symbol(coding.into()),
-        ));
+        if interp
+            .raw_function_binding_symbol(&function, env)
+            .is_some_and(|binding| !binding.is_nil())
+        {
+            let result = call_function_value(interp, &val, &[Value::list(args.to_vec())], env)?;
+            if result.is_cons() {
+                return Ok(result);
+            }
+            if result.is_symbol() && coding_system_p(interp, &result) {
+                return Ok(Value::cons(result, result));
+            }
+        }
+        return Ok(Value::Nil);
     }
     Ok(Value::Nil)
+}
+
+/// coding.c:Fcoding_system_p.
+pub(crate) fn coding_system_p(interp: &Interpreter, value: &Value) -> bool {
+    value.is_nil()
+        || matches!(value.kind(), Kind::Symbol(symbol) if interp.has_coding_system(&symbol))
 }
 
 /// The `charset' text property per character of STRING: the annotation

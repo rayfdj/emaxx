@@ -1498,14 +1498,8 @@ define_dispatch!(
             }
             "coding-system-p" => {
                 need_args(name, args, 1)?;
-                Ok(if args[0].is_nil() {
+                Ok(if coding_system_p(interp, &args[0]) {
                     Value::T
-                } else if let Kind::Symbol(symbol) = args[0].kind() {
-                    if interp.has_coding_system(&symbol) {
-                        Value::T
-                    } else {
-                        Value::Nil
-                    }
                 } else {
                     Value::Nil
                 })

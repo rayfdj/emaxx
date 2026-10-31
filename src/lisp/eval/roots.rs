@@ -105,9 +105,7 @@ impl TraceLispRoots for LispError {
             | LispErrorKind::VoidFunction(_)
             | LispErrorKind::WrongNumberOfArgs(..)
             | LispErrorKind::Signal(_)
-            | LispErrorKind::ErtTestFailed(_)
             | LispErrorKind::Terminate(_)
-            | LispErrorKind::TestSkipped(_)
             | LispErrorKind::EndOfInput
             | LispErrorKind::ReadError(_) => {}
         }

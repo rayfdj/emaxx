@@ -10706,6 +10706,47 @@ setup_process_coding_systems's check now refuses). A 13-form
   four ops did not; an oracle test pins it. Local validation: the grouped
   gate's 3,386 library tests, the integration targets and clippy with
   `--all-targets --all-features -D warnings' pass.
+- **Round 208: the startup obarray and the C initializers' properties as
+  GNU's.** A `-Q' session's obarray held 161 symbols GNU's does not: every
+  cached key (`edebug-entered', `ert-test-failed', `ert-test-skipped'
+  among them) was interned at construction, the debugger probe interned
+  `edebug-entered' for itself, Snarf-documentation interned every name DOC
+  lists (DOC carries the DEFUNs of `#if 0', GLYPH_DEBUG and the other
+  platforms' files) where doc.c finds them with oblookup, the DEFSYM pass
+  interned `unbound' (lread.c:define_symbol leaves Qunbound out) and the
+  three symbols syms_of_eval, syms_of_editfns and syms_of_print unintern,
+  the image's own scalars were named by symbols, and cl-macs.el's edebug
+  element specs were seeded although cl-macs.el, which loads before
+  anything names them, defines them. The keys GNU has no DEFSYM for are
+  gone (the two ERT error kinds were never made), the probe holds
+  `edebug-entered' once edebug's defvar makes the interned symbol special,
+  Snarf looks names up without interning them, the DEFSYM pass leaves out
+  what GNU leaves out, the scalars are named by strings, and the seeds
+  GNU's `-Q' lacks (the cl-macs specs, cl-macrolet's form spec,
+  `defgeneric''s doc-string position, `display-table''s extra slots) are
+  dropped; one remains, `abbrev-table', which names Emaxx's record form of
+  an abbrev table (GNU's abbrev tables are obarrays). Five C hooks
+  (`pre-command-hook', `post-command-hook', `show-help-function',
+  `after-delete-frame-functions', `x-pre-popup-menu-hook') were bound only
+  when Lisp first set them, after loadup's Snarf, so the image carried no
+  documentation for them; they are bound from construction as their
+  DEFVARs bind them. The C initializers' Fput calls that their own code
+  reads back are made at startup: coding.c's `target-idx' of the six I/O
+  operations, buffer.c's disabled `erase-buffer' and `protected-field'
+  error, window.c's `scroll-command' of scroll-up and scroll-down,
+  emacs.c's risky `dynamic-library-alist' and keyboard.c's head_table
+  event kinds; property seeds for one symbol now merge as Fput puts them.
+  find-operation-coding-system is Ffind_operation_coding_system: the
+  target is the argument OPERATION's `target-idx' names (a user operation
+  with the property works), checked as coding.c checks it, and an alist
+  value is a cons, a coding system (nil among them, returned as given) or
+  a function whose answer is used the same way, anything else nil; it
+  aborted on a string value, errored on an unbound function and returned
+  canonical names. Oracle tests pin the obarray, the properties and the
+  function, and CLI tests check a loaded image's obarray and the hooks'
+  documentation. Local validation: the grouped gate's 3,389 library
+  tests, the integration targets and clippy with `--all-targets
+  --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -12058,6 +12099,11 @@ setup 87.1 s against 71.3 s (1.222), test bodies 266.1 s against 274.8 s
 frozen (run 41214329900) matched all 7,928 outcomes on the first attempt:
 setup 75.8 s against 59.8 s (1.269), test bodies 247.0 s against 253.8 s
 (0.973), in all 1.024.
+
+**On `315168d`** (round 207): full Rust gate passed (run 41217426228);
+frozen (run 41217428179) matched all 7,928 outcomes on the first attempt:
+setup 66.0 s against 57.5 s (1.148), test bodies 227.0 s against 245.3 s
+(0.926), in all 0.977.
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

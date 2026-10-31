@@ -775,33 +775,35 @@ impl Interpreter {
         // them in the subr objects), lossage_size, the face change
         // counter and the finalizer count.  Everything else the
         // interpreter holds is in `FIELDS_NOT_CARRIED' with its reason.
+        // Each scalar is named by a string: a tag symbol would be interned
+        // in every process that loads the image, where GNU has none.
         let mut doc_offsets = self.builtin_doc_offsets.iter().collect::<Vec<_>>();
         doc_offsets.sort_by(|a, b| a.0.cmp(b.0));
         groups.push((
             RootSlot::RememberedScalars,
             Value::list([
                 pair(
-                    Value::symbol("special-variables"),
+                    Value::String("special-variables".into()),
                     symbol_list(&self.special_variables),
                 ),
                 pair(
-                    Value::symbol("next-buffer-id"),
+                    Value::String("next-buffer-id".into()),
                     Value::Integer(self.next_buffer_id as i64),
                 ),
                 pair(
-                    Value::symbol("next-record-id"),
+                    Value::String("next-record-id".into()),
                     Value::Integer(self.next_record_id as i64),
                 ),
                 pair(
-                    Value::symbol("next-special-binding-id"),
+                    Value::String("next-special-binding-id".into()),
                     Value::Integer(self.next_special_binding_id as i64),
                 ),
                 pair(
-                    Value::symbol("lossage-size"),
+                    Value::String("lossage-size".into()),
                     Value::Integer(self.lossage_size),
                 ),
                 pair(
-                    Value::symbol("builtin-doc-offsets"),
+                    Value::String("builtin-doc-offsets".into()),
                     Value::list(
                         doc_offsets.into_iter().map(|(name, offset)| {
                             pair(Value::symbol(name), Value::Integer(*offset))
@@ -809,11 +811,11 @@ impl Interpreter {
                     ),
                 ),
                 pair(
-                    Value::symbol("face-change-count"),
+                    Value::String("face-change-count".into()),
                     Value::Integer(self.face_change_count as i64),
                 ),
                 pair(
-                    Value::symbol("finalizers-run"),
+                    Value::String("finalizers-run".into()),
                     Value::Integer(self.finalizers_run as i64),
                 ),
             ]),
@@ -1302,7 +1304,7 @@ mod install {
                 RootSlot::RememberedScalars => {
                     for entry in expect_list(value, "remembered scalars")? {
                         let (name, scalar) = expect_pair(&entry, "remembered scalar")?;
-                        let name = expect_symbol(&name, "remembered scalar name")?;
+                        let name = expect_string(&name, "remembered scalar name")?;
                         let int = |what: &str| expect_int(&scalar, what);
                         let id = |what: &str| expect_id(&scalar, what);
                         match name.as_str() {

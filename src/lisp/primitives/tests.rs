@@ -32996,3 +32996,46 @@ fn kill_all_local_variables_keeps_partially_permanent_hooks_as_buffer_c() {
         "partially permanent hooks",
     );
 }
+
+#[test]
+fn the_initial_obarray_holds_only_the_symbols_gnu_makes_at_startup() {
+    // lread.c:define_symbol interns every DEFSYM but Qunbound, and
+    // syms_of_eval, syms_of_editfns and syms_of_print unintern their own
+    // symbol again; Snarf-documentation finds DOC's names with oblookup
+    // (DOC also lists `#if 0', GLYPH_DEBUG and other platforms' DEFUNs);
+    // edebug, ERT and cl-macs make their symbols when they load.
+    assert_oracle_contract_matches_interpreter(
+        r#"(mapcar #'intern-soft '("edebug-entered" "ert-test-failed" "ert-test-skipped" "unbound" "internal-interpreter-environment" "outermost-restriction" "print--unreadable-callback-buffer" "w32-shell-execute" "ns-hide-emacs" "dump-glyph-matrix" "trace-redisplay" "insert-startup-screen" "cl-lambda-list" "cl-type-spec" "defgeneric"))"#,
+        "(nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil)",
+        "startup obarray",
+    );
+}
+
+#[test]
+fn c_initializers_put_the_properties_c_reads_back() {
+    // coding.c's `target-idx', buffer.c's `disabled' erase-buffer and
+    // protected-field error, window.c's `scroll-command', emacs.c's risky
+    // `dynamic-library-alist' and keyboard.c's head_table event kinds are
+    // properties from startup; `display-table''s extra slots, cl-macrolet's
+    // edebug spec and `defgeneric''s doc string position are put by Lisp
+    // files -Q has not loaded.
+    assert_oracle_contract_matches_interpreter(
+        r#"(list (get 'write-region 'target-idx) (get 'call-process 'target-idx) (get 'open-network-stream 'target-idx) (get 'erase-buffer 'disabled) (get 'scroll-up 'scroll-command) (get 'dynamic-library-alist 'risky-local-variable) (get 'focus-in 'event-kind) (get 'select-window 'event-kind) (get 'scroll-bar-movement 'event-kind) (get 'touchscreen-begin 'event-symbol-elements) (get 'protected-field 'error-conditions) (get 'protected-field 'error-message) (get 'display-table 'char-table-extra-slots) (get 'cl-macrolet 'edebug-form-spec) (get 'defgeneric 'doc-string-elt))"#,
+        r#"(2 0 3 t t t focus-in switch-frame mouse-movement (touchscreen-begin) (protected-field error) "Attempt to modify a protected field" nil nil nil)"#,
+        "C initializer properties",
+    );
+}
+
+#[test]
+fn find_operation_coding_system_reads_the_operation_s_target_idx_as_coding_c() {
+    // Ffind_operation_coding_system: the target is the argument OPERATION's
+    // `target-idx' names, checked to be a string (a (FILE . BUFFER) cons
+    // for insert-file-contents, a port or t for open-network-stream); an
+    // alist value is a cons, a coding system (nil among them) or a function
+    // whose answer is used the same way, and anything else gives nil.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((file-coding-system-alist '(("\\.zz\\'" . utf-8) ("\\.yy\\'" . zz-fop) ("\\.xx\\'" latin-1 . utf-8) ("\\.ww\\'" . "str") ("\\.vv\\'" . zz-unbound-fop) ("\\.uu\\'" . nil))) (process-coding-system-alist '(("zzproc" . undecided))) (network-coding-system-alist '((8080 . utf-8)))) (defalias 'zz-fop (lambda (args) (list 'called (car args)))) (put 'zz-op 'target-idx 1) (list (find-operation-coding-system 'insert-file-contents "a.zz") (find-operation-coding-system 'write-region 1 2 "b.yy") (find-operation-coding-system 'insert-file-contents "c.xx") (find-operation-coding-system 'insert-file-contents "d.ww") (find-operation-coding-system 'insert-file-contents "e.vv") (find-operation-coding-system 'insert-file-contents "f.uu") (find-operation-coding-system 'insert-file-contents (cons "a.zz" (current-buffer))) (find-operation-coding-system 'zz-op 'x "zzproc") (find-operation-coding-system 'open-network-stream 'n 'b 'h 8080) (find-operation-coding-system 'open-network-stream 'n 'b 'h t) (condition-case e (find-operation-coding-system 'car "x") (error e)) (condition-case e (find-operation-coding-system "car" "x") (error e)) (condition-case e (find-operation-coding-system 'write-region "x") (error e)) (condition-case e (find-operation-coding-system 'insert-file-contents 'sym) (error e)) (condition-case e (find-operation-coding-system 'insert-file-contents (cons "a" "b")) (error e)) (condition-case e (find-operation-coding-system 'insert-file-contents) (error e))))"#,
+        r#"((utf-8 . utf-8) (called write-region) (latin-1 . utf-8) nil nil (nil) (utf-8 . utf-8) (undecided . undecided) (utf-8 . utf-8) nil (error "Invalid first argument") (error "Invalid first argument") (error "Too few arguments for operation `write-region'") (error "Invalid argument 1 of operation `insert-file-contents'") (error "Invalid argument 1 of operation `insert-file-contents'") (error "Too few arguments"))"#,
+        "find-operation-coding-system",
+    );
+}

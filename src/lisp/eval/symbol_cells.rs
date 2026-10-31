@@ -37,21 +37,14 @@ pub(crate) struct SymbolCellSnapshot {
     pub(crate) flags: u8,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub(crate) struct SymbolCells {
     /// Canonical objects retained by this editor's obarray, including while parked.
     symbols: crate::lisp::types::symbols::SymbolOwner,
-    /// This editor's Qsymbol reference for the debugger flag probe.
-    edebug_entered: SymbolName,
-}
-
-impl Default for SymbolCells {
-    fn default() -> Self {
-        Self {
-            symbols: Default::default(),
-            edebug_entered: SymbolName::intern_str("edebug-entered"),
-        }
-    }
+    /// The interned `edebug-entered' once edebug's defvar has made it
+    /// special, for the debugger flag probe.  No C file defines the
+    /// symbol, so it is held only once Lisp has made it.
+    edebug_entered: Option<SymbolName>,
 }
 
 impl SymbolCells {
@@ -65,7 +58,9 @@ impl SymbolCells {
 
     pub(crate) fn mark_symbol_roots(&self, mark: &mut dyn FnMut(&Value)) {
         self.symbols.mark_roots(mark);
-        mark(&Value::Symbol(self.edebug_entered));
+        if let Some(symbol) = self.edebug_entered {
+            mark(&Value::Symbol(symbol));
+        }
     }
 
     pub(crate) fn names(&self) -> Vec<SymbolName> {
@@ -106,7 +101,7 @@ impl SymbolCells {
         owner: crate::lisp::types::symbols::SymbolOwner,
         mut copy: impl FnMut(SymbolName) -> SymbolName,
     ) {
-        self.edebug_entered = copy(self.edebug_entered);
+        self.edebug_entered = self.edebug_entered.map(&mut copy);
         self.symbols = owner;
     }
 
@@ -298,6 +293,9 @@ impl SymbolCells {
         }
         symbol.cell().flags.set(snapshot.flags);
         symbol.cell().set_plain_store(false);
+        if snapshot.flags & SPECIAL != 0 {
+            self.note_special(symbol);
+        }
         if let Some(target) = snapshot.alias {
             self.set_alias(symbol, target);
         }
@@ -307,8 +305,21 @@ impl SymbolCells {
         symbol.cell().flags.get() & flag != 0
     }
 
-    pub(crate) fn edebug_is_special(&self) -> bool {
-        self.has_flag(&self.edebug_entered, SPECIAL)
+    /// `edebug-entered' while it is special (edebug is loaded).
+    #[inline(always)]
+    pub(crate) fn special_edebug_entered(&self) -> Option<SymbolName> {
+        self.edebug_entered
+            .filter(|symbol| self.has_flag(symbol, SPECIAL))
+    }
+
+    /// Hold SYMBOL for the debugger flag probe when it is the interned
+    /// `edebug-entered', just made special.
+    fn note_special(&mut self, symbol: &SymbolName) {
+        if symbol.as_str() == "edebug-entered"
+            && SymbolName::find("edebug-entered") == Some(*symbol)
+        {
+            self.edebug_entered = Some(*symbol);
+        }
     }
 
     /// Whether a call may have to record its frame's lexical context for
@@ -317,12 +328,12 @@ impl SymbolCells {
     /// localized or redirected value counts as maybe.
     #[inline(always)]
     pub(crate) fn edebug_may_be_entered(&self) -> bool {
-        self.edebug_is_special()
-            && self
-                .edebug_entered
+        self.special_edebug_entered().is_some_and(|symbol| {
+            symbol
                 .cell()
                 .unlocalized_value()
                 .is_none_or(|value| !value.is_nil())
+        })
     }
 
     pub(crate) fn has_flag_by_name(&self, name: &str, flag: u8) -> bool {
@@ -333,6 +344,9 @@ impl SymbolCells {
         symbol.cell().set_plain_store(false);
         let old = symbol.cell().flags.get();
         symbol.cell().flags.set(old | flag);
+        if flag & SPECIAL != 0 {
+            self.note_special(symbol);
+        }
         old & flag == 0
     }
 

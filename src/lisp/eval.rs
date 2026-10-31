@@ -569,10 +569,6 @@ fn builtin_edebug_form_specs() -> Vec<(String, Vec<(String, Value)>)> {
             "cl-defgeneric",
             "(&define &interpose [&name sexp] cl--generic-edebug-remember-name listp lambda-doc [&rest [&or (\"declare\" &rest sexp) (\":argument-precedence-order\" &rest sexp) (&define \":method\" [&name [[&rest cl-generic--method-qualifier-p] listp] cl--generic-edebug-make-name in:method] lambda-doc def-body)]] def-body)",
         ),
-        (
-            "cl-macrolet",
-            "(&interpose (&rest (&define [&name symbolp \"@cl-macrolet@\"] [&name [] gensym] cl-macro-list cl-declarations-or-string def-body)) cl--edebug-macrolet-interposer cl-declarations body)",
-        ),
         ("1value", "t"),
     ]
     .into_iter()
@@ -610,85 +606,24 @@ fn builtin_edebug_declaration_specs() -> Vec<(String, Vec<(String, Value)>)> {
         .collect()
 }
 
-// Element specs GNU registers with `def-edebug-elem-spec' in cl-macs.el
-// (and gv.el's `gv-place').  cl-lib is native in emaxx so cl-macs.el never
-// loads; without these, instrumenting any spec that references
-// `cl-lambda-list' (cl-defun, cl-defmethod, nadvice's macros...) fails with
-// "cl-lambda-list is not a form-spec or function".
+// gv.el's `def-edebug-elem-spec' of `gv-place', which `push' and `pop'
+// name.  cl-macs.el's element specs are its own: it loads, as it does in
+// GNU, before anything that names them is instrumented.
 fn builtin_edebug_elem_specs() -> Vec<(String, Vec<(String, Value)>)> {
-    [
-        ("cl-declarations", "(&rest (\"cl-declare\" &rest sexp))"),
-        (
-            "cl-declarations-or-string",
-            "(lambda-doc &or (\"declare\" def-declarations) cl-declarations)",
-        ),
-        (
-            "cl-lambda-list",
-            "(([&rest cl-lambda-arg]
-               [&optional [\"&optional\" cl-&optional-arg &rest cl-&optional-arg]]
-               [&optional [\"&rest\" cl-lambda-arg]]
-               [&optional [\"&key\" [cl-&key-arg &rest cl-&key-arg]
-                           &optional \"&allow-other-keys\"]]
-               [&optional [\"&aux\" &rest
-                           &or (cl-lambda-arg &optional def-form) arg]]
-               . [&or arg nil]))",
-        ),
-        (
-            "cl-&optional-arg",
-            "(&or (cl-lambda-arg &optional def-form arg) arg)",
-        ),
-        (
-            "cl-&key-arg",
-            "(&or ([&or (symbolp cl-lambda-arg) arg] &optional def-form arg) arg)",
-        ),
-        ("cl-lambda-arg", "(&or arg cl-lambda-list1)"),
-        (
-            "cl-lambda-list1",
-            "(([&optional [\"&whole\" arg]]
-               [&rest cl-lambda-arg]
-               [&optional [\"&optional\" cl-&optional-arg &rest cl-&optional-arg]]
-               [&optional [\"&rest\" cl-lambda-arg]]
-               [&optional [\"&key\" cl-&key-arg &rest cl-&key-arg
-                           &optional \"&allow-other-keys\"]]
-               [&optional [\"&aux\" &rest
-                           &or (cl-lambda-arg &optional def-form) arg]]
-               . [&or arg nil]))",
-        ),
-        ("cl-type-spec", "(sexp)"),
-        (
-            "cl-macro-list",
-            "(([&optional \"&whole\" arg]
-               [&optional \"&environment\" arg]
-               [&rest cl-macro-arg]
-               [&optional [\"&optional\" &rest
-                           &or (cl-macro-arg &optional def-form cl-macro-arg) arg]]
-               [&optional [[&or \"&rest\" \"&body\"] cl-macro-arg]]
-               [&optional [\"&key\" [&rest
-                                     [&or ([&or (symbolp cl-macro-arg) arg]
-                                           &optional def-form cl-macro-arg)
-                                          arg]]
-                           &optional \"&allow-other-keys\"]]
-               [&optional [\"&aux\" &rest
-                           &or (cl-macro-arg &optional def-form) arg]]
-               [&optional \"&environment\" arg]
-               . [&or arg nil]))",
-        ),
-        ("cl-macro-arg", "(&or arg cl-macro-list)"),
-        ("gv-place", "(form)"),
-    ]
-    .into_iter()
-    .filter_map(|(symbol, spec_text)| {
-        let spec = crate::lisp::reader::Reader::new(spec_text)
-            .read_all()
-            .ok()?
-            .into_iter()
-            .next()?;
-        Some((
-            symbol.to_string(),
-            vec![("edebug-elem-spec".to_string(), spec)],
-        ))
-    })
-    .collect()
+    [("gv-place", "(form)")]
+        .into_iter()
+        .filter_map(|(symbol, spec_text)| {
+            let spec = crate::lisp::reader::Reader::new(spec_text)
+                .read_all()
+                .ok()?
+                .into_iter()
+                .next()?;
+            Some((
+                symbol.to_string(),
+                vec![("edebug-elem-spec".to_string(), spec)],
+            ))
+        })
+        .collect()
 }
 
 fn builtin_error_symbol_properties() -> Vec<(String, Vec<(String, Value)>)> {
@@ -793,6 +728,11 @@ fn builtin_error_symbol_properties() -> Vec<(String, Vec<(String, Value)>)> {
             "text-read-only",
             &["text-read-only", "buffer-read-only", "error"],
             "Text is read-only",
+        ),
+        (
+            "protected-field",
+            &["protected-field", "error"],
+            "Attempt to modify a protected field",
         ),
         (
             "inhibited-interaction",
@@ -1134,7 +1074,6 @@ fn builtin_symbol_properties() -> Vec<(String, Value)> {
         ("defalias", 3),
         ("defconst", 3),
         ("defconstant", 3),
-        ("defgeneric", 3),
         ("defmacro", 3),
         ("defmethod", 3),
         ("defparameter", 3),
@@ -1205,23 +1144,32 @@ fn builtin_symbol_properties() -> Vec<(String, Value)> {
         }),
     );
     // GNU: (function-put 'lambda 'doc-string-elt 2); pp's code formatter
-    // keeps only pre-docstring elements on the first line.  Merged into
-    // lambda's existing entry (per-symbol entries replace wholesale).
-    if let Some(entry) = properties
-        .iter_mut()
-        .rev()
-        .find(|(name, _)| name == "lambda")
-    {
-        entry
-            .1
-            .push(("doc-string-elt".to_string(), Value::Integer(2)));
-    } else {
-        properties.push((
-            "lambda".to_string(),
-            vec![("doc-string-elt".to_string(), Value::Integer(2))],
-        ));
+    // keeps only pre-docstring elements on the first line.
+    properties.push((
+        "lambda".to_string(),
+        vec![("doc-string-elt".to_string(), Value::Integer(2))],
+    ));
+    properties.extend(c_initializer_properties());
+    // Each entry is a run of Fput calls: a symbol's properties are put in
+    // the order they come, a property put again keeping its place.
+    let mut merged: Vec<(String, Vec<(String, Value)>)> = Vec::new();
+    for (symbol, puts) in properties {
+        let index = match merged.iter().position(|(name, _)| *name == symbol) {
+            Some(index) => index,
+            None => {
+                merged.push((symbol, Vec::new()));
+                merged.len() - 1
+            }
+        };
+        let plist = &mut merged[index].1;
+        for (property, value) in puts {
+            match plist.iter_mut().find(|(name, _)| *name == property) {
+                Some(existing) => existing.1 = value,
+                None => plist.push((property, value)),
+            }
+        }
     }
-    properties
+    merged
         .into_iter()
         .map(|(symbol, properties)| {
             let plist = properties
@@ -1230,6 +1178,58 @@ fn builtin_symbol_properties() -> Vec<(String, Value)> {
             (symbol, Value::list(plist))
         })
         .collect()
+}
+
+/// The Fput calls of the syms_of_* initializers that give a symbol a
+/// property C code reads back.
+fn c_initializer_properties() -> Vec<(String, Vec<(String, Value)>)> {
+    let mut properties = Vec::new();
+    let mut put = |symbol: &str, property: &str, value: Value| {
+        properties.push((symbol.to_string(), vec![(property.to_string(), value)]));
+    };
+    // coding.c: the argument of each I/O operation that
+    // find-operation-coding-system looks up.
+    for (operation, index) in [
+        ("insert-file-contents", 0),
+        ("write-region", 2),
+        ("call-process", 0),
+        ("call-process-region", 2),
+        ("start-process", 2),
+        ("open-network-stream", 3),
+    ] {
+        put(operation, "target-idx", Value::Integer(index));
+    }
+    // buffer.c.
+    put("erase-buffer", "disabled", Value::T);
+    // window.c: window_scroll's `scroll-preserve-screen-position' test.
+    put("scroll-up", "scroll-command", Value::T);
+    put("scroll-down", "scroll-command", Value::T);
+    // emacs.c.
+    put("dynamic-library-alist", "risky-local-variable", Value::T);
+    // keyboard.c's head_table: each event head's kind, and the head as its
+    // own (unmodified) elements.
+    for (head, kind) in [
+        ("mouse-movement", "mouse-movement"),
+        ("scroll-bar-movement", "mouse-movement"),
+        ("switch-frame", "switch-frame"),
+        ("focus-in", "focus-in"),
+        ("focus-out", "focus-out"),
+        ("move-frame", "move-frame"),
+        ("delete-frame", "delete-frame"),
+        ("iconify-frame", "iconify-frame"),
+        ("make-frame-visible", "make-frame-visible"),
+        ("select-window", "switch-frame"),
+        ("touchscreen-begin", "touchscreen"),
+        ("touchscreen-end", "touchscreen"),
+    ] {
+        put(head, "event-kind", Value::symbol(kind));
+        put(
+            head,
+            "event-symbol-elements",
+            Value::list([Value::symbol(head)]),
+        );
+    }
+    properties
 }
 
 // keyboard.c keeps these as one kboard-owned input state.  Keeping the same
@@ -6632,7 +6632,6 @@ impl Interpreter {
             ("case-table", 3),
             ("category-table", 2),
             ("char-code-property-table", 5),
-            ("display-table", 6),
             ("char-script-table", 1),
             ("glyphless-char-display", 1),
             ("translation-table", 2),
@@ -6739,6 +6738,7 @@ impl Interpreter {
             ]),
         ]);
         for (name, value) in [
+            ("after-delete-frame-functions", Value::Nil),
             ("alternate-fontname-alist", Value::Nil),
             ("attempt-orderly-shutdown-on-fatal-signal", Value::T),
             ("attempt-stack-overflow-recovery", Value::T),
@@ -6875,8 +6875,10 @@ impl Interpreter {
             // build of Emacs"; the value is computed lazily from THIS
             // executable in builtin_var_value, never copied from the
             // oracle's binary (2026-08-23 audit finding 77).
+            ("post-command-hook", Value::Nil),
             ("post-gc-hook", Value::Nil),
             ("post-select-region-hook", Value::Nil),
+            ("pre-command-hook", Value::Nil),
             ("print-escape-control-characters", Value::Nil),
             ("print-escape-multibyte", Value::Nil),
             ("print-escape-newlines", Value::Nil),
@@ -6898,6 +6900,7 @@ impl Interpreter {
             ("resume-tty-functions", Value::Nil),
             ("scroll-bar-adjust-thumb-portion", Value::T),
             ("shared-game-score-directory", Value::Nil),
+            ("show-help-function", Value::Nil),
             ("suspend-tty-functions", Value::Nil),
             ("system-key-alist", Value::Nil),
             ("tab-bar--dragging-in-progress", Value::Nil),
@@ -6918,6 +6921,7 @@ impl Interpreter {
             ("write-region-inhibit-fsync", Value::T),
             ("write-region-post-annotation-function", Value::Nil),
             ("x-max-tooltip-size", Value::Nil),
+            ("x-pre-popup-menu-hook", Value::Nil),
             ("x-resource-class", Value::String("Emacs".into())),
             ("x-resource-name", Value::Nil),
             ("x-show-tooltip-timeout", Value::Integer(5)),
@@ -8007,11 +8011,21 @@ impl Interpreter {
                             || *file == "xmenu.c")
                     })
                     .collect();
+            // lread.c:define_symbol leaves Qunbound out of the obarray, and
+            // syms_of_eval, syms_of_editfns and syms_of_print unintern the
+            // symbol each keeps to itself.
+            const NOT_INTERNED: [&str; 4] = [
+                "unbound",
+                "internal-interpreter-environment",
+                "outermost-restriction",
+                "print--unreadable-callback-buffer",
+            ];
             for defsym in primitives::GNU_C_DEFSYMS {
-                if defsym
-                    .origins
-                    .split(", ")
-                    .any(|file| compiled_files.contains(file))
+                if !NOT_INTERNED.contains(&defsym.name)
+                    && defsym
+                        .origins
+                        .split(", ")
+                        .any(|file| compiled_files.contains(file))
                 {
                     self.intern_symbol_name(defsym.name);
                 }
@@ -8211,14 +8225,6 @@ pub(crate) fn error_condition_value(error: &LispError) -> Value {
         ]),
         // lread.c:end_of_file_error outside a load: no data.
         LispErrorKind::EndOfInput => Value::list([Value::Symbol("end-of-file".into())]),
-        LispErrorKind::TestSkipped(message) => Value::list([
-            Value::Symbol("ert-test-skipped".into()),
-            Value::String(message.clone().into()),
-        ]),
-        LispErrorKind::ErtTestFailed(message) => Value::list([
-            Value::Symbol("ert-test-failed".into()),
-            Value::String(message.clone().into()),
-        ]),
         LispErrorKind::ReadError(message) => Value::list([
             Value::Symbol("invalid-read-syntax".into()),
             Value::String(message.clone().into()),
