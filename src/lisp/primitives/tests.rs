@@ -32767,3 +32767,123 @@ fn relative_home_is_spliced_onto_the_startup_directory() {
         "relative and empty HOME",
     );
 }
+
+#[test]
+fn json_parse_errors_carry_line_column_and_position_as_json_c() {
+    // json.c json_signal_error: each error's data are the line, the column
+    // and the position the parser reached, counted as json.c counts them;
+    // a number out of range, a bad escape and a lone surrogate have their
+    // own conditions.
+    assert_oracle_contract_matches_interpreter(
+        r##"(mapcar (lambda (s) (condition-case err (json-parse-string s) (error err))) '("[1, 2, 3" "{\"a\" 1}" "{\"a\":1,}" "[1 2]" "\"abc" "tru" "nulll" "[-]" "[1.]" "[1e]" "\"\\uD83D\"" "\"\\uDE00\"" "\"\\x\"" "\"\\u12\"" "1e400" "-1e400" "[1, 2,\n  3,\n  x]" "{\n\"a\": \"\\q\"}" "\n\n  \"\\uD83D\\u0041\"" "" " " "[" "{" "{\"a\"" "{\"a\":" "\"\\" "\"\\u" "[1," "truex" "true-" "true ," "falsex" "[nul]" "01" "-01" "1.5x" "  [  ] x" "[]x" "{}{}"))"##,
+        r##"((json-end-of-file 1 8 8) (json-parse-error 1 6 6) (json-parse-error 1 8 8) (json-parse-error 1 4 4) (json-end-of-file 1 4 4) (json-parse-error 1 1 1) (json-parse-error 1 1 1) (json-parse-error 1 3 3) (json-parse-error 1 4 4) (json-parse-error 1 4 4) (json-invalid-surrogate-error 1 8 8) (json-invalid-surrogate-error 1 7 7) (json-escape-sequence-error 1 3 3) (json-escape-sequence-error 1 6 6) (json-number-out-of-range-error 1 5 5) (json-number-out-of-range-error 1 6 6) (json-parse-error 3 3 15) (json-escape-sequence-error 2 8 10) (json-invalid-surrogate-error 3 15 17) (json-end-of-file 1 0 0) (json-end-of-file 1 1 1) (json-end-of-file 1 1 1) (json-end-of-file 1 1 1) (json-end-of-file 1 4 4) (json-end-of-file 1 5 5) (json-end-of-file 1 2 2) (json-end-of-file 1 3 3) (json-end-of-file 1 3 3) (json-parse-error 1 1 1) (json-parse-error 1 1 1) (json-trailing-content 1 6 6) (json-parse-error 1 1 1) (json-parse-error 1 2 2) (json-trailing-content 1 2 2) (json-trailing-content 1 3 3) (json-trailing-content 1 4 4) (json-trailing-content 1 8 8) (json-trailing-content 1 3 3) (json-trailing-content 1 3 3))"##,
+        "json-parse-string errors",
+    );
+}
+
+#[test]
+fn json_parse_values_follow_json_c() {
+    // json.c: integers summed while read, overflowing ones read as
+    // string_to_number reads them; floats by strtod; strings strict UTF-8,
+    // multibyte even when ASCII; a hash table's later member with an equal
+    // key sets the earlier one's value.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list (json-parse-string "123456789012345678") (json-parse-string "1234567890123456789") (json-parse-string "-9223372036854775808") (json-parse-string "-9223372036854775809") (json-parse-string "99999999999999999999999") (json-parse-string "-0") (json-parse-string "0.0") (json-parse-string "-1.5e-3") (json-parse-string "1E+2") (json-parse-string "1e-400") (json-parse-string "\"é\\u00e9λ\"") (append (json-parse-string "\"\\/\\b\\f\\n\\r\\t\\u0000\\u0080\\uFFFF\\uD83D\\uDE00\"") nil) (json-parse-string "[true,false,null]") (multibyte-string-p (json-parse-string "\"a\"")) (json-parse-string "{\"a\":1,\"b\":{\"a\":2},\"a\":3}" :object-type 'plist) (json-parse-string "{\"x y\":[true,false,null]}" :object-type 'alist :array-type 'list :false-object 'F :null-object 'N) (let ((h (json-parse-string "{\"k\":[],\"k\":{}}"))) (list (hash-table-count h) (gethash "k" h) (hash-table-test h))))"##,
+        r##"(123456789012345678 1234567890123456789 -9223372036854775808 -9223372036854775809 99999999999999999999999 0 0.0 -0.0015 100.0 0.0 "ééλ" (47 8 12 10 13 9 0 128 65535 128512) [t :false :null] t (:a 1 :b (:a 2) :a 3) ((x\ y t F N)) (1 #s(hash-table test equal) equal))"##,
+        "json-parse-string values",
+    );
+}
+
+#[test]
+fn json_parse_string_reads_the_string_bytes_as_emacs_holds_them() {
+    // json.c Fjson_parse_string: CHECK_STRING first, then SDATA read as
+    // strict UTF-8, so a unibyte string's UTF-8 bytes are its text and a
+    // raw byte or a character beyond Unicode is a decode error.
+    assert_oracle_contract_matches_interpreter(
+        r##"(mapcar (lambda (s) (condition-case err (json-parse-string s) (error err))) (list (string-to-unibyte "[1,\"a\"]") (encode-coding-string "\"é\"" 'utf-8) (string-to-unibyte "\"\377\"") (string-to-multibyte "\"\377\"") (concat "\"" (string #x3fff80) "\"") (concat "[\"" (string #x200000) "\"]") 1 'a))"##,
+        r##"([1 "a"] "é" (json-utf8-decode-error 1 2 2) (json-utf8-decode-error 1 2 2) (json-utf8-decode-error 1 2 2) (json-utf8-decode-error 1 3 3) (wrong-type-argument stringp 1) (wrong-type-argument stringp a))"##,
+        "json-parse-string sources",
+    );
+}
+
+#[test]
+fn json_parse_buffer_moves_point_past_the_value_as_json_c() {
+    // json.c Fjson_parse_buffer: point to Z read as the buffer's bytes,
+    // point moved by the characters (bytes, unibyte) of the value; an
+    // error leaves point.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list (with-temp-buffer (insert "  {\"a\": [1, {\"b\": null}]}  [2] \"x\" ") (goto-char 1) (let (r) (dotimes (_ 4) (push (condition-case err (json-parse-buffer :object-type 'alist :null-object 'N) (error err)) r) (push (point) r)) (nreverse r))) (with-temp-buffer (insert "é [1, ") (goto-char 3) (list (condition-case err (json-parse-buffer) (error err)) (point))) (with-temp-buffer (set-buffer-multibyte nil) (insert "\"\303\251\" [1]") (goto-char 1) (list (json-parse-buffer) (point) (json-parse-buffer) (point))) (with-temp-buffer (insert "[1,\n2,\n\"é\" é]") (goto-char 1) (list (condition-case err (json-parse-buffer) (error err)) (point))) (with-temp-buffer (insert "[\"" (string #x3fff80) "\"]") (goto-char 1) (condition-case err (json-parse-buffer) (error err))) (with-temp-buffer (insert "[1, 2] x") (narrow-to-region 1 4) (goto-char 1) (json-parse-buffer)) (with-temp-buffer (insert "x\"é\"") (goto-char 2) (list (json-parse-buffer) (point))))"##,
+        r##"((((a . [1 ((b . N))])) 26 [2] 31 "x" 35 (json-end-of-file 1 1 1) 35) ((json-end-of-file 1 4 4) 3) ("é" 5 [1] 9) ((json-parse-error 3 5 12) 1) (json-utf8-decode-error 1 3 3) [1 2] ("é" 5))"##,
+        "json-parse-buffer positions",
+    );
+}
+
+#[test]
+fn json_parse_nesting_is_limited_as_json_c() {
+    // json.c json_parser: available_depth starts at 10000 and each
+    // non-empty array or object takes one.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list (vectorp (json-parse-string (concat (make-string 10001 ?\[) (make-string 10001 ?\])))) (condition-case err (json-parse-string (concat (make-string 10002 ?\[) (make-string 10002 ?\]))) (error err)) (condition-case err (json-parse-string (concat (apply #'concat (make-list 10001 "{\"a\":")) "1")) (error err)) (condition-case err (json-parse-string (concat (apply #'concat (make-list 10000 "{\"a\":")) "[]")) (error err)))"##,
+        r##"(t (json-object-too-deep 1 10002 10002) (json-object-too-deep 1 50002 50002) (json-end-of-file 1 50002 50002))"##,
+        "json nesting limit",
+    );
+}
+
+#[test]
+fn json_serialize_floats_and_json_error_conditions_as_json_c() {
+    // json.c json_out_float: `float-output-format' bound to nil, Inf and
+    // NaN an error; syms_of_json's conditions and pure json functions.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list (json-serialize 1e100) (json-serialize [1.5 2e-7 123456789.0 1e21 -0.0 0.1]) (let ((float-output-format "%.3e")) (json-serialize [1.0 0.5])) (condition-case err (json-serialize 1.0e+INF) (error err)) (condition-case err (json-serialize -1.0e+INF) (error err)) (with-temp-buffer (json-insert [1.5 1e100]) (buffer-string)) (get 'json-escape-sequence-error 'error-conditions) (get 'json-number-out-of-range-error 'error-message) (get 'json-invalid-surrogate-error 'error-conditions) (get 'json-object-too-deep 'error-message) (get 'json-out-of-memory 'error-conditions) (get 'json-serialize 'pure) (get 'json-parse-string 'side-effect-free))"##,
+        r##"("1e+100" "[1.5,2e-07,123456789.0,1e+21,-0.0,0.1]" "[1.0,0.5]" (error "JSON does not allow Inf or NaN" 1.0e+INF) (error "JSON does not allow Inf or NaN" -1.0e+INF) "[1.5,1e+100]" (json-escape-sequence-error json-parse-error json-error error) "number out of range" (json-invalid-surrogate-error json-error error) "object cyclic or Lisp evaluation too deep" (json-out-of-memory json-error error) t t)"##,
+        "json floats and conditions",
+    );
+}
+
+#[test]
+fn json_keyword_arguments_are_read_as_json_parse_args() {
+    // json.c json_parse_args: the pairs read from the back, so a keyword's
+    // first value wins; an odd count is not a plist, and an unknown keyword
+    // or value signals data.c's wrong_choice with the value.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list (json-parse-string "[1]" :array-type 'array) (condition-case e (json-parse-string "[1]" :array-type 'vector) (error e)) (condition-case e (json-parse-string "[1]" :foo 1) (error e)) (condition-case e (json-serialize 1 :foo 1) (error e)) (condition-case e (json-serialize 1 :object-type 1) (error e)) (condition-case e (json-parse-string "[1]" :object-type 'alist :object-type 'bad) (error e)) (json-parse-string "{}" :object-type 'alist :object-type 'plist) (condition-case e (json-parse-string "[1]" "x" 1) (error e)) (condition-case e (json-serialize 1 :null-object) (error e)) (condition-case e (json-parse-string 1 :object-type 'foo) (error e)) (condition-case e (json-parse-string "1" :object-type 'foo) (error e)) (condition-case e (with-temp-buffer (json-insert 1 :array-type 'list)) (error e)) (json-serialize '(:a nil) :null-object nil :null-object 0))"##,
+        r##"([1] (error "One of array or list should be specified" vector) (error "One of :object-type, :array-type, :null-object or :false-object should be specified" 1) (error "One of :null-object or :false-object should be specified" 1) (error "One of :null-object or :false-object should be specified" 1) (error "One of hash-table, alist or plist should be specified" bad) nil (error "One of :object-type, :array-type, :null-object or :false-object should be specified" 1) (wrong-type-argument plistp (:null-object)) (wrong-type-argument stringp 1) (error "One of hash-table, alist or plist should be specified" foo) (error "One of :null-object or :false-object should be specified" list) "{\"a\":null}")"##,
+        "json keyword arguments",
+    );
+}
+
+#[test]
+fn json_objects_make_tables_of_their_member_count() {
+    // json.c json_parse_object: make_hash_table of the members' count,
+    // duplicates included, which later growth starts from.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list (hash-table-size (json-parse-string "{\"a\":1,\"b\":2,\"c\":3}")) (hash-table-size (json-parse-string "{}")) (hash-table-size (json-parse-string "{\"a\":1}")) (hash-table-size (json-parse-string "{\"a\":1,\"a\":2}")) (let ((h (json-parse-string "{\"a\":1}"))) (puthash "b" 2 h) (puthash "c" 2 h) (list (hash-table-size h) (hash-table-count h))) (hash-table-size (json-parse-string (concat "{" (mapconcat (lambda (i) (format "\"k%d\":1" i)) (number-sequence 1 70) ",") "}"))))"##,
+        r##"(3 0 1 2 (24 3) 70)"##,
+        "json object table sizes",
+    );
+}
+
+#[test]
+fn json_serialize_writes_as_json_out_something() {
+    // json.c json_out_something: alist and plist keys by identity, the
+    // first occurrence kept, a plist key's leading colon dropped; strings
+    // checked as Unicode; anything else not a JSON value.
+    assert_oracle_contract_matches_interpreter(
+        r##"(mapcar (lambda (x) (condition-case err (decode-coding-string (json-serialize x) 'utf-8) (error (list (car err) (cadr err))))) (list '((a . 1) (b . 2) (a . 3)) '(:a 1 :b 2 :a 3) '(: 1 :: 2 a 3) '((:a . 1)) (list (cons (make-symbol "k") 1) (cons (make-symbol "k") 2)) '((nil . 1) (t . 2)) '((a . 1) b) '(:a 1 :b) '((1 . 2)) '(1 2) '((a . 1) . b) '(:a 1 . b) '("a" 1) "a\"b\\c\n\t\r\f\b\x01\x1f/é😀" (string-to-unibyte "abc") "\377" (string-to-multibyte "\377") (string #x3fff80) (string #x110000) 'sym [1 [2 [3]] "x" :null :false t nil] 123456789012345678901234567890 -5 (record 'foo 1) '((a . [1 (b . 2)])) 1e100 -0.0))"##,
+        r##"("{\"a\":1,\"b\":2}" "{\"a\":1,\"b\":2}" "{\":\":1,\":\":2,\"a\":3}" "{\":a\":1}" "{\"k\":1,\"k\":2}" "{\"nil\":1,\"t\":2}" (wrong-type-argument consp) (wrong-type-argument consp) (wrong-type-argument symbolp) (wrong-type-argument symbolp) (wrong-type-argument listp) (wrong-type-argument listp) (wrong-type-argument symbolp) "\"a\\\"b\\\\c\\n\\t\\r\\f\\b\\u0001\\u001F/é😀\"" "\"abc\"" (wrong-type-argument json-value-p) (wrong-type-argument json-value-p) (wrong-type-argument json-value-p) (wrong-type-argument json-value-p) (wrong-type-argument json-value-p) "[1,[2,[3]],\"x\",null,false,true,{}]" "123456789012345678901234567890" "-5" (wrong-type-argument json-value-p) (wrong-type-argument consp) "1e+100" "-0.0")"##,
+        "json-serialize values",
+    );
+}
+
+#[test]
+fn json_serialize_nesting_cycles_and_insertion_as_json_c() {
+    // json.c: FOR_EACH_TAIL's circular-list, json_out_nest's depth of 50,
+    // CHECK_STRING of hash keys, the configured objects by EQ, and
+    // Fjson_insert's characters into a multibyte buffer and bytes into a
+    // unibyte one.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list (let ((x (list (cons 'a 1)))) (setcdr x x) (condition-case err (json-serialize x) (error (car err)))) (let ((x (list :a 1))) (setcdr (cdr x) x) (condition-case err (json-serialize x) (error (car err)))) (let ((v (make-vector 1 nil))) (aset v 0 v) (condition-case err (json-serialize v) (error err))) (length (json-serialize (let ((l 1)) (dotimes (_ 50) (setq l (vector l))) l))) (condition-case err (json-serialize (let ((l 1)) (dotimes (_ 51) (setq l (vector l))) l)) (error err)) (let ((h (make-hash-table :test 'equal))) (puthash "a" 1 h) (puthash 'k 1 h) (condition-case err (json-serialize h) (error err))) (json-serialize 1.5 :null-object 1.5) (json-serialize 'x :null-object 'x) (json-serialize '(:a nil) :null-object nil :null-object 0) (with-temp-buffer (json-insert '((a . "é😀") (b . [1.5]))) (list (buffer-string) (point))) (with-temp-buffer (set-buffer-multibyte nil) (json-insert "é") (list (point) (buffer-size))) (with-temp-buffer (insert "xy") (goto-char 2) (json-insert [1]) (list (buffer-string) (point))) (multibyte-string-p (json-serialize "é")) (string-bytes (json-serialize "é")))"##,
+        r##"(circular-list circular-list (error "Maximum JSON serialization depth exceeded") 101 (error "Maximum JSON serialization depth exceeded") (wrong-type-argument stringp k) "1.5" "null" "{\"a\":null}" ("{\"a\":\"é😀\",\"b\":[1.5]}" 21) (5 4) ("x[1]y" 5) nil 4)"##,
+        "json-serialize nesting and json-insert",
+    );
+}

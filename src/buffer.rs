@@ -1802,6 +1802,11 @@ impl Buffer {
         Ok(self.text.string((from - 1)..(to - 1)))
     }
 
+    /// The text from FROM to Z, past any narrowing.
+    pub(crate) fn text_to_z(&self, from: usize) -> String {
+        self.text.string((from - 1)..self.text.len_chars())
+    }
+
     /// The text of [FROM, TO) where it stands, when one side of the gap
     /// holds all of it.
     pub(crate) fn contiguous_text(&self, from: usize, to: usize) -> Option<&str> {

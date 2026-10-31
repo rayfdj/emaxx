@@ -1,14 +1,11 @@
 use super::eval::Interpreter;
-use super::primitives::{
-    make_shared_string_value_with_multibyte, string_like, values_eql, vector_items,
-};
 use super::types::{Kind, LispError, ReaderForm, Value, visible_symbol_name};
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
 
 pub(crate) const INVALID_UNICODE_SENTINEL: char = '\u{F8FF}';
 const RAW_BYTE_REGEX_BASE: u32 = 0xE000;
-const JSON_SERIALIZATION_MAX_DEPTH: usize = 50;
+const JSON_SERIALIZATION_MAX_DEPTH: i32 = 50;
 
 #[derive(Clone, Debug)]
 pub(crate) enum JsonObjectType {
@@ -31,570 +28,809 @@ pub(crate) struct JsonParseOptions {
     pub(crate) false_object: Value,
 }
 
-#[derive(Clone, Debug)]
-pub(crate) struct JsonParseSuccess {
-    pub(crate) value: Value,
-    pub(crate) consumed_source_pos: usize,
+/// data.c wrong_choice: "One of A, B or C should be specified", WRONG.
+fn wrong_choice(choices: &[&str], wrong: Value) -> LispError {
+    let mut message = String::from("One of ");
+    for (index, choice) in choices.iter().enumerate() {
+        message.push_str(choice);
+        message.push_str(match choices.len() - index {
+            1 => " should be specified",
+            2 => " or ",
+            _ => ", ",
+        });
+    }
+    LispError::SignalValue(Value::list([
+        Value::symbol("error"),
+        Value::String(message.into()),
+        wrong,
+    ]))
 }
 
+/// json.c json_parse_args: the keyword/value pairs ARGS read from the
+/// back, so a keyword's first value takes precedence; PARSE_OBJECT_TYPES
+/// admits :object-type and :array-type.
+pub(crate) fn parse_args(
+    args: &[Value],
+    parse_object_types: bool,
+) -> Result<JsonParseOptions, LispError> {
+    if !args.len().is_multiple_of(2) {
+        return Err(LispError::WrongTypeArgument(
+            "plistp".into(),
+            Value::list(args.iter().copied()),
+        ));
+    }
+    let mut conf = JsonParseOptions {
+        object_type: JsonObjectType::HashTable,
+        array_type: JsonArrayType::Vector,
+        null_object: Value::symbol(":null"),
+        false_object: Value::symbol(":false"),
+    };
+    let is =
+        |value: &Value, name: &str| matches!(value.kind(), Kind::Symbol(symbol) if symbol == name);
+    for pair in args.as_chunks::<2>().0.iter().rev() {
+        let (key, value) = (pair[0], pair[1]);
+        if parse_object_types && is(&key, ":object-type") {
+            conf.object_type = if is(&value, "hash-table") {
+                JsonObjectType::HashTable
+            } else if is(&value, "alist") {
+                JsonObjectType::Alist
+            } else if is(&value, "plist") {
+                JsonObjectType::Plist
+            } else {
+                return Err(wrong_choice(&["hash-table", "alist", "plist"], value));
+            };
+        } else if parse_object_types && is(&key, ":array-type") {
+            conf.array_type = if is(&value, "array") {
+                JsonArrayType::Vector
+            } else if is(&value, "list") {
+                JsonArrayType::List
+            } else {
+                return Err(wrong_choice(&["array", "list"], value));
+            };
+        } else if is(&key, ":null-object") {
+            conf.null_object = value;
+        } else if is(&key, ":false-object") {
+            conf.false_object = value;
+        } else if parse_object_types {
+            return Err(wrong_choice(
+                &[
+                    ":object-type",
+                    ":array-type",
+                    ":null-object",
+                    ":false-object",
+                ],
+                value,
+            ));
+        } else {
+            return Err(wrong_choice(&[":null-object", ":false-object"], value));
+        }
+    }
+    Ok(conf)
+}
+
+/// json_out_t's output: JSON's UTF-8 bytes.
 #[derive(Clone, Debug)]
 pub(crate) struct JsonSerialized {
-    pub(crate) text: String,
-    pub(crate) bytes_text: String,
-    pub(crate) bytes_value: Value,
+    pub(crate) bytes: Vec<u8>,
 }
 
-#[derive(Clone, Debug)]
-enum JsonNode {
-    Null,
-    False,
-    True,
-    Integer(i64),
-    BigInteger(BigInt),
-    Float(f64),
-    String(String),
-    Array(Vec<JsonNode>),
-    Object(Vec<(String, JsonNode)>),
+impl JsonSerialized {
+    /// The output as text: json_out_string writes Unicode only, as UTF-8.
+    pub(crate) fn text(&self) -> &str {
+        std::str::from_utf8(&self.bytes).expect("json_out_string writes Unicode as UTF-8")
+    }
+
+    /// The output's bytes as a unibyte text, a raw byte as its marker.
+    pub(crate) fn unibyte_text(&self) -> String {
+        utf8_bytes_to_unibyte_text(&self.bytes)
+    }
+
+    /// Fjson_serialize's make_unibyte_string of the output.
+    pub(crate) fn into_value(self) -> Value {
+        Value::StringObject(crate::lisp::types::StringObjectRef::from_unibyte(
+            self.bytes,
+        ))
+    }
 }
 
-#[derive(Clone, Debug)]
-struct ConvertedSource {
-    bytes: Vec<u8>,
-    byte_positions: Vec<usize>,
-    end_position: usize,
+/// json.c's json_plain_char: printable ASCII and DEL but `"' and `\',
+/// which a string holds as they stand.
+fn json_plain_char(byte: u8) -> bool {
+    (0x20..=0x7F).contains(&byte) && byte != b'"' && byte != b'\\'
 }
 
+/// json.c:json_is_token_char.
+fn json_is_token_char(c: i32) -> bool {
+    matches!(c, 0x41..=0x5A | 0x61..=0x7A | 0x30..=0x39 | 0x2D)
+}
+
+/// json.c's json_parser: the input's bytes as Emacs holds them, read
+/// byte by byte with the line and column the error data report; each
+/// value made as it is read, an array's elements and an object's members
+/// gathered in the object workspace (`objects') until the vector or hash
+/// table that holds them is made, a string's or a number's bytes in the
+/// byte workspace (`bytes').
 struct JsonParser<'a> {
-    source: &'a ConvertedSource,
-    index: usize,
+    input: &'a [u8],
+    current: usize,
+    current_line: i64,
+    current_column: i64,
+    point_of_current_line: i64,
+    available_depth: i32,
+    interp: &'a mut Interpreter,
+    options: &'a JsonParseOptions,
+    objects: Vec<Value>,
+    bytes: Vec<u8>,
+    /// fns.c's hashtest_equal, looked up at the first object.
+    equal_test: Option<&'static crate::lisp::alloc::vectors::hash_tables::HashTableTest>,
+    env: crate::lisp::types::Env,
+}
+
+/// json_parse's PARSE_END_BEHAVIOR.
+#[derive(Clone, Copy, PartialEq)]
+enum ParseEnd {
+    CheckForGarbage,
+    MovePoint,
 }
 
 impl<'a> JsonParser<'a> {
-    fn new(source: &'a ConvertedSource) -> Self {
-        Self { source, index: 0 }
-    }
-
-    fn parse_value(&mut self) -> Result<JsonNode, LispError> {
-        self.skip_whitespace();
-        match self.peek() {
-            None => Err(json_error(
-                "json-end-of-file",
-                "Unexpected end of JSON input",
-                self.pos(),
-            )),
-            Some(b'n') => self.parse_literal(b"null", JsonNode::Null),
-            Some(b'f') => self.parse_literal(b"false", JsonNode::False),
-            Some(b't') => self.parse_literal(b"true", JsonNode::True),
-            Some(b'"') => Ok(JsonNode::String(self.parse_string()?)),
-            Some(b'[') => self.parse_array(),
-            Some(b'{') => self.parse_object(),
-            Some(b'-' | b'0'..=b'9') => self.parse_number(),
-            Some(_) => Err(json_error(
-                "json-parse-error",
-                "Unexpected character while parsing JSON",
-                self.pos(),
-            )),
+    fn new(input: &'a [u8], interp: &'a mut Interpreter, options: &'a JsonParseOptions) -> Self {
+        JsonParser {
+            input,
+            current: 0,
+            current_line: 1,
+            current_column: 0,
+            point_of_current_line: 0,
+            available_depth: 10000,
+            interp,
+            options,
+            objects: Vec::new(),
+            bytes: Vec::new(),
+            equal_test: None,
+            env: crate::lisp::types::Env::new(),
         }
     }
 
-    fn parse_literal(&mut self, expected: &[u8], node: JsonNode) -> Result<JsonNode, LispError> {
-        for &byte in expected {
-            match self.peek() {
-                Some(actual) if actual == byte => {
-                    self.index += 1;
-                }
-                Some(_) | None => {
-                    return Err(json_error(
-                        "json-parse-error",
-                        "Invalid JSON literal",
-                        self.pos(),
-                    ));
-                }
-            }
-        }
-        Ok(node)
+    /// json_signal_error: ERROR with the line, the column and the
+    /// position reached.
+    fn error(&self, error: &str) -> LispError {
+        LispError::SignalValue(Value::list([
+            Value::Symbol(error.into()),
+            Value::Integer(self.current_line),
+            Value::Integer(self.current_column),
+            Value::Integer(self.point_of_current_line + self.current_column),
+        ]))
     }
 
-    fn parse_number(&mut self) -> Result<JsonNode, LispError> {
-        let start = self.index;
-        if self.peek() == Some(b'-') {
-            self.index += 1;
-        }
-        match self.peek() {
-            Some(b'0') => {
-                self.index += 1;
-            }
-            Some(b'1'..=b'9') => {
-                self.index += 1;
-                while matches!(self.peek(), Some(b'0'..=b'9')) {
-                    self.index += 1;
-                }
-            }
-            _ => {
-                return Err(json_error(
-                    "json-parse-error",
-                    "Invalid JSON number",
-                    self.pos(),
-                ));
-            }
-        }
-
-        let mut is_float = false;
-        if self.peek() == Some(b'.') {
-            is_float = true;
-            self.index += 1;
-            if !matches!(self.peek(), Some(b'0'..=b'9')) {
-                return Err(json_error(
-                    "json-parse-error",
-                    "Invalid JSON number",
-                    self.pos(),
-                ));
-            }
-            while matches!(self.peek(), Some(b'0'..=b'9')) {
-                self.index += 1;
-            }
-        }
-
-        if matches!(self.peek(), Some(b'e' | b'E')) {
-            is_float = true;
-            self.index += 1;
-            if matches!(self.peek(), Some(b'+' | b'-')) {
-                self.index += 1;
-            }
-            if !matches!(self.peek(), Some(b'0'..=b'9')) {
-                return Err(json_error(
-                    "json-parse-error",
-                    "Invalid JSON number",
-                    self.pos(),
-                ));
-            }
-            while matches!(self.peek(), Some(b'0'..=b'9')) {
-                self.index += 1;
-            }
-        }
-
-        let raw = std::str::from_utf8(&self.source.bytes[start..self.index]).map_err(|_| {
-            json_error(
-                "json-parse-error",
-                "Invalid JSON number",
-                self.position_for_byte_index(start),
-            )
-        })?;
-        if is_float {
-            return raw
-                .parse::<f64>()
-                .map(JsonNode::Float)
-                .map_err(|_| json_error("json-parse-error", "Invalid JSON number", self.pos()));
-        }
-        let bigint = raw.parse::<BigInt>().map_err(|_| {
-            json_error(
-                "json-parse-error",
-                "Invalid JSON number",
-                self.position_for_byte_index(start),
-            )
-        })?;
-        Ok(bigint
-            .to_i64()
-            .map(JsonNode::Integer)
-            .unwrap_or(JsonNode::BigInteger(bigint)))
+    fn at_eof(&self) -> bool {
+        self.current >= self.input.len()
     }
 
-    fn parse_string(&mut self) -> Result<String, LispError> {
-        self.expect_byte(b'"')?;
-        let mut result = String::new();
+    /// json_input_get.
+    fn get(&mut self) -> Result<u8, LispError> {
+        match self.input.get(self.current) {
+            Some(&byte) => {
+                self.current += 1;
+                Ok(byte)
+            }
+            None => Err(self.error("json-end-of-file")),
+        }
+    }
+
+    /// json_input_get_if_possible: -1 at the end.
+    fn get_if_possible(&mut self) -> i32 {
+        match self.input.get(self.current) {
+            Some(&byte) => {
+                self.current += 1;
+                i32::from(byte)
+            }
+            None => -1,
+        }
+    }
+
+    /// json_input_put_back.
+    fn put_back(&mut self) {
+        self.current -= 1;
+    }
+
+    /// json_skip_whitespace_internal: whether C is not whitespace.
+    fn skip_whitespace_internal(&mut self, c: u8) -> bool {
+        self.current_column += 1;
+        match c {
+            0x20 | 0x09 | 0x0D => false,
+            0x0A => {
+                self.current_line += 1;
+                self.point_of_current_line += self.current_column;
+                self.current_column = 0;
+                false
+            }
+            _ => true,
+        }
+    }
+
+    /// json_skip_whitespace.
+    fn skip_whitespace(&mut self) -> Result<u8, LispError> {
         loop {
-            let Some(byte) = self.peek() else {
-                return Err(json_error(
-                    "json-end-of-file",
-                    "Unexpected end of JSON string",
-                    self.source.end_position,
-                ));
-            };
-            match byte {
-                b'"' => {
-                    self.index += 1;
-                    return Ok(result);
-                }
-                b'\\' => {
-                    self.index += 1;
-                    let escaped = self.parse_escape()?;
-                    result.push_str(&escaped);
-                }
-                0x00..=0x1F => {
-                    return Err(json_error(
-                        "json-parse-error",
-                        "Unescaped control character in JSON string",
-                        self.pos(),
-                    ));
-                }
-                0x80..=0xFF => {
-                    let ch = self.decode_utf8_char()?;
-                    result.push(ch);
-                }
-                _ => {
-                    self.index += 1;
-                    result.push(byte as char);
-                }
+            let c = self.get()?;
+            if self.skip_whitespace_internal(c) {
+                return Ok(c);
             }
         }
     }
 
-    fn parse_escape(&mut self) -> Result<String, LispError> {
-        let Some(byte) = self.peek() else {
-            return Err(json_error(
-                "json-parse-error",
-                "Incomplete JSON escape sequence",
-                self.source.end_position,
-            ));
-        };
-        self.index += 1;
-        match byte {
-            b'"' => Ok("\"".into()),
-            b'\\' => Ok("\\".into()),
-            b'/' => Ok("/".into()),
-            b'b' => Ok("\u{0008}".into()),
-            b'f' => Ok("\u{000C}".into()),
-            b'n' => Ok("\n".into()),
-            b'r' => Ok("\r".into()),
-            b't' => Ok("\t".into()),
-            b'u' => {
-                let first = self.read_hex_u16()?;
-                if (0xD800..=0xDBFF).contains(&first) {
-                    if self.peek() != Some(b'\\') || self.peek_next() != Some(b'u') {
-                        return Err(json_error(
-                            "json-utf8-decode-error",
-                            "Invalid UTF-16 surrogate pair in JSON string",
-                            self.pos(),
-                        ));
-                    }
-                    self.index += 2;
-                    let second = self.read_hex_u16()?;
-                    if !(0xDC00..=0xDFFF).contains(&second) {
-                        return Err(json_error(
-                            "json-utf8-decode-error",
-                            "Invalid UTF-16 surrogate pair in JSON string",
-                            self.pos(),
-                        ));
-                    }
-                    let code =
-                        0x1_0000 + (((first as u32 - 0xD800) << 10) | (second as u32 - 0xDC00));
-                    let ch = char::from_u32(code).ok_or_else(|| {
-                        json_error(
-                            "json-utf8-decode-error",
-                            "Invalid Unicode scalar value in JSON string",
-                            self.pos(),
-                        )
-                    })?;
-                    Ok(ch.to_string())
-                } else if (0xDC00..=0xDFFF).contains(&first) {
-                    Err(json_error(
-                        "json-utf8-decode-error",
-                        "Invalid UTF-16 surrogate pair in JSON string",
-                        self.pos(),
-                    ))
-                } else {
-                    let ch = char::from_u32(first as u32).ok_or_else(|| {
-                        json_error(
-                            "json-utf8-decode-error",
-                            "Invalid Unicode scalar value in JSON string",
-                            self.pos(),
-                        )
-                    })?;
-                    Ok(ch.to_string())
-                }
-            }
-            _ => Err(json_error(
-                "json-parse-error",
-                "Invalid JSON escape sequence",
-                self.pos(),
-            )),
-        }
-    }
-
-    fn parse_array(&mut self) -> Result<JsonNode, LispError> {
-        self.expect_byte(b'[')?;
-        self.skip_whitespace();
-        let mut items = Vec::new();
-        if self.peek() == Some(b']') {
-            self.index += 1;
-            return Ok(JsonNode::Array(items));
-        }
+    /// json_skip_whitespace_if_possible: -1 at the end.
+    fn skip_whitespace_if_possible(&mut self) -> i32 {
         loop {
-            items.push(self.parse_value()?);
-            self.skip_whitespace();
-            match self.peek() {
-                Some(b',') => {
-                    self.index += 1;
-                }
-                Some(b']') => {
-                    self.index += 1;
-                    return Ok(JsonNode::Array(items));
-                }
-                None => {
-                    return Err(json_error(
-                        "json-end-of-file",
-                        "Unexpected end of JSON array",
-                        self.source.end_position,
-                    ));
-                }
-                _ => {
-                    return Err(json_error(
-                        "json-parse-error",
-                        "Expected ',' or ']' while parsing JSON array",
-                        self.pos(),
-                    ));
-                }
+            let c = self.get_if_possible();
+            if c < 0 || self.skip_whitespace_internal(c as u8) {
+                return c;
             }
         }
     }
 
-    fn parse_object(&mut self) -> Result<JsonNode, LispError> {
-        self.expect_byte(b'{')?;
-        self.skip_whitespace();
-        let mut entries = Vec::new();
-        if self.peek() == Some(b'}') {
-            self.index += 1;
-            return Ok(JsonNode::Object(entries));
-        }
-        loop {
-            self.skip_whitespace();
-            if self.peek() != Some(b'"') {
-                return Err(json_error(
-                    "json-parse-error",
-                    "Expected string key while parsing JSON object",
-                    self.pos(),
-                ));
-            }
-            let key = self.parse_string()?;
-            self.skip_whitespace();
-            if self.peek() != Some(b':') {
-                return Err(json_error(
-                    "json-parse-error",
-                    "Expected ':' while parsing JSON object",
-                    self.pos(),
-                ));
-            }
-            self.index += 1;
-            let value = self.parse_value()?;
-            entries.push((key, value));
-            self.skip_whitespace();
-            match self.peek() {
-                Some(b',') => {
-                    self.index += 1;
-                }
-                Some(b'}') => {
-                    self.index += 1;
-                    return Ok(JsonNode::Object(entries));
-                }
-                None => {
-                    return Err(json_error(
-                        "json-end-of-file",
-                        "Unexpected end of JSON object",
-                        self.source.end_position,
-                    ));
-                }
-                _ => {
-                    return Err(json_error(
-                        "json-parse-error",
-                        "Expected ',' or '}' while parsing JSON object",
-                        self.pos(),
-                    ));
-                }
-            }
-        }
-    }
-
-    fn expect_byte(&mut self, expected: u8) -> Result<(), LispError> {
-        match self.peek() {
-            Some(actual) if actual == expected => {
-                self.index += 1;
-                Ok(())
-            }
-            Some(_) | None => Err(json_error(
-                "json-parse-error",
-                "Unexpected character while parsing JSON",
-                self.pos(),
-            )),
-        }
-    }
-
-    fn read_hex_u16(&mut self) -> Result<u16, LispError> {
-        let mut value = 0u16;
+    /// json_parse_unicode: the CCCC of 쳌.
+    fn parse_unicode(&mut self) -> Result<u32, LispError> {
+        let mut value = 0;
         for _ in 0..4 {
-            let Some(byte) = self.peek() else {
-                return Err(json_error(
-                    "json-parse-error",
-                    "Incomplete JSON unicode escape",
-                    self.source.end_position,
-                ));
-            };
-            let digit = match byte {
-                b'0'..=b'9' => byte - b'0',
-                b'a'..=b'f' => byte - b'a' + 10,
-                b'A'..=b'F' => byte - b'A' + 10,
-                _ => {
-                    return Err(json_error(
-                        "json-parse-error",
-                        "Incomplete JSON unicode escape",
-                        self.pos(),
-                    ));
-                }
-            };
-            value = value * 16 + digit as u16;
-            self.index += 1;
+            let c = self.get()?;
+            self.current_column += 1;
+            let digit = (c as char)
+                .to_digit(16)
+                .ok_or_else(|| self.error("json-escape-sequence-error"))?;
+            value = value << 4 | digit;
         }
         Ok(value)
     }
 
-    fn decode_utf8_char(&mut self) -> Result<char, LispError> {
-        let start = self.index;
-        let first = self.source.bytes[start];
-        let (len, min_codepoint) = match first {
-            0xC2..=0xDF => (2usize, 0x80u32),
-            0xE0..=0xEF => (3usize, 0x800u32),
-            0xF0..=0xF4 => (4usize, 0x1_0000u32),
-            _ => {
-                return Err(json_error(
-                    "json-utf8-decode-error",
-                    "Invalid UTF-8 in JSON input",
-                    self.pos(),
-                ));
+    /// The UTF-8 of CODE into the byte workspace: how many bytes more than
+    /// one it took.
+    fn put_utf8(&mut self, code: u32) -> usize {
+        let ch = char::from_u32(code).expect("a scalar value");
+        let mut buf = [0; 4];
+        let encoded = ch.encode_utf8(&mut buf);
+        self.bytes.extend_from_slice(encoded.as_bytes());
+        encoded.len() - 1
+    }
+
+    /// The byte workspace as a multibyte string of NCHARS characters
+    /// (make_multibyte_string).
+    fn make_string(&self, nchars: usize) -> Value {
+        Value::StringObject(
+            crate::lisp::types::StringObjectRef::multibyte_from_internal(&self.bytes, nchars),
+        )
+    }
+
+    /// The symbol the byte workspace names (intern_c_multibyte).
+    fn intern(&self) -> Value {
+        Value::Symbol(
+            std::str::from_utf8(&self.bytes)
+                .expect("strings are read as checked UTF-8")
+                .into(),
+        )
+    }
+
+    /// json_parse_string: the string literal after the opening quote,
+    /// strictly UTF-8, into the byte workspace, `:'-prefixed for
+    /// LEADING_COLON; how many characters it holds.
+    fn parse_string(&mut self, leading_colon: bool) -> Result<usize, LispError> {
+        self.bytes.clear();
+        if leading_colon {
+            self.bytes.push(b':');
+        }
+        // nbytes - nchars.
+        let mut chars_delta = 0;
+        loop {
+            let c = self.get()?;
+            self.current_column += 1;
+            if json_plain_char(c) {
+                self.bytes.push(c);
+                continue;
             }
+            if c == b'"' {
+                return Ok(self.bytes.len() - chars_delta);
+            }
+            if c & 0x80 != 0 {
+                self.bytes.push(c);
+                let c1 = self.get()?;
+                if c1 & 0xC0 != 0x80 {
+                    return Err(self.error("json-utf8-decode-error"));
+                }
+                self.bytes.push(c1);
+                if c <= 0xC1 {
+                    return Err(self.error("json-utf8-decode-error"));
+                } else if c <= 0xDF {
+                    chars_delta += 1;
+                } else if c <= 0xEF {
+                    let c2 = self.get()?;
+                    if c2 & 0xC0 != 0x80 {
+                        return Err(self.error("json-utf8-decode-error"));
+                    }
+                    let v = (u32::from(c & 0x0F) << 12)
+                        + (u32::from(c1 & 0x3F) << 6)
+                        + u32::from(c2 & 0x3F);
+                    if v < 0x800 || (0xD800..=0xDFFF).contains(&v) {
+                        return Err(self.error("json-utf8-decode-error"));
+                    }
+                    self.bytes.push(c2);
+                    chars_delta += 2;
+                } else if c <= 0xF7 {
+                    let c2 = self.get()?;
+                    let c3 = self.get()?;
+                    if c2 & 0xC0 != 0x80 || c3 & 0xC0 != 0x80 {
+                        return Err(self.error("json-utf8-decode-error"));
+                    }
+                    let v = (u32::from(c & 0x07) << 18)
+                        + (u32::from(c1 & 0x3F) << 12)
+                        + (u32::from(c2 & 0x3F) << 6)
+                        + u32::from(c3 & 0x3F);
+                    if !(0x10000..=0x10FFFF).contains(&v) {
+                        return Err(self.error("json-utf8-decode-error"));
+                    }
+                    self.bytes.extend_from_slice(&[c2, c3]);
+                    chars_delta += 3;
+                } else {
+                    return Err(self.error("json-utf8-decode-error"));
+                }
+            } else if c == b'\\' {
+                let c = self.get()?;
+                self.current_column += 1;
+                match c {
+                    b'"' | b'\\' | b'/' => self.bytes.push(c),
+                    b'b' => self.bytes.push(0x08),
+                    b'f' => self.bytes.push(0x0C),
+                    b'n' => self.bytes.push(b'\n'),
+                    b'r' => self.bytes.push(b'\r'),
+                    b't' => self.bytes.push(b'\t'),
+                    b'u' => {
+                        let mut num = self.parse_unicode()?;
+                        if (0xD800..0xDC00).contains(&num) {
+                            // The first half of a surrogate pair.
+                            self.current_column += 1;
+                            if self.get()? != b'\\' {
+                                return Err(self.error("json-invalid-surrogate-error"));
+                            }
+                            self.current_column += 1;
+                            if self.get()? != b'u' {
+                                return Err(self.error("json-invalid-surrogate-error"));
+                            }
+                            let num2 = self.parse_unicode()?;
+                            if !(0xDC00..0xE000).contains(&num2) {
+                                return Err(self.error("json-invalid-surrogate-error"));
+                            }
+                            num = 0x10000 + ((num - 0xD800) << 10 | (num2 - 0xDC00));
+                        } else if (0xDC00..0xE000).contains(&num) {
+                            // The second half without the first.
+                            return Err(self.error("json-invalid-surrogate-error"));
+                        }
+                        chars_delta += self.put_utf8(num);
+                    }
+                    _ => return Err(self.error("json-escape-sequence-error")),
+                }
+            } else {
+                return Err(self.error("json-parse-error"));
+            }
+        }
+    }
+
+    /// json_create_integer: the summed VALUE when nothing overflowed,
+    /// else the byte workspace read as string_to_number reads it.
+    fn create_integer(&mut self, overflow: bool, negative: bool, value: u64) -> Value {
+        if !overflow {
+            if !negative {
+                return match i64::try_from(value) {
+                    Ok(value) => Value::Integer(value),
+                    Err(_) => Value::BigInteger(BigInt::from(value).into()),
+                };
+            }
+            if value <= i64::MAX as u64 + 1 {
+                return Value::Integer((value as i64).wrapping_neg());
+            }
+        }
+        let digits = std::str::from_utf8(&self.bytes).expect("ASCII digits");
+        let number: BigInt = digits.parse().expect("JSON integer syntax");
+        match number.to_i64() {
+            Some(value) => Value::Integer(value),
+            None => Value::BigInteger(number.into()),
+        }
+    }
+
+    /// json_create_float: strtod of the byte workspace, out of range
+    /// where it overflows.
+    fn create_float(&self) -> Result<Value, LispError> {
+        let text = std::str::from_utf8(&self.bytes).expect("ASCII number");
+        let value: f64 = text.parse().map_err(|_| self.error("json-error"))?;
+        if value.is_infinite() {
+            return Err(self.error("json-number-out-of-range-error"));
+        }
+        Ok(Value::float(value))
+    }
+
+    /// json_parse_number: the number whose first character C is read.
+    fn parse_number(&mut self, mut c: u8) -> Result<Value, LispError> {
+        self.bytes.clear();
+        self.bytes.push(c);
+        let mut negative = false;
+        if c == b'-' {
+            negative = true;
+            c = self.get()?;
+            self.bytes.push(c);
+            self.current_column += 1;
+        }
+        if !c.is_ascii_digit() {
+            return Err(self.error("json-parse-error"));
+        }
+        let mut integer = u64::from(c - b'0');
+        let mut overflow = false;
+        if integer == 0 {
+            if self.at_eof() {
+                return Ok(Value::Integer(0));
+            }
+            c = self.get()?;
+        } else {
+            loop {
+                if self.at_eof() {
+                    return Ok(self.create_integer(overflow, negative, integer));
+                }
+                c = self.get()?;
+                if !c.is_ascii_digit() {
+                    break;
+                }
+                self.bytes.push(c);
+                self.current_column += 1;
+                let (times, o1) = integer.overflowing_mul(10);
+                let (sum, o2) = times.overflowing_add(u64::from(c - b'0'));
+                overflow |= o1 | o2;
+                integer = sum;
+            }
+        }
+        let mut is_float = false;
+        if c == b'.' {
+            self.bytes.push(c);
+            self.current_column += 1;
+            is_float = true;
+            c = self.get()?;
+            self.bytes.push(c);
+            self.current_column += 1;
+            if !c.is_ascii_digit() {
+                return Err(self.error("json-parse-error"));
+            }
+            loop {
+                if self.at_eof() {
+                    return self.create_float();
+                }
+                c = self.get()?;
+                if !c.is_ascii_digit() {
+                    break;
+                }
+                self.bytes.push(c);
+                self.current_column += 1;
+            }
+        }
+        if c == b'e' || c == b'E' {
+            self.bytes.push(c);
+            self.current_column += 1;
+            is_float = true;
+            c = self.get()?;
+            self.bytes.push(c);
+            self.current_column += 1;
+            if c == b'-' || c == b'+' {
+                c = self.get()?;
+                self.bytes.push(c);
+                self.current_column += 1;
+            }
+            if !c.is_ascii_digit() {
+                return Err(self.error("json-parse-error"));
+            }
+            loop {
+                if self.at_eof() {
+                    return self.create_float();
+                }
+                c = self.get()?;
+                if !c.is_ascii_digit() {
+                    break;
+                }
+                self.bytes.push(c);
+                self.current_column += 1;
+            }
+        }
+        // C is not part of the number.
+        self.put_back();
+        if is_float {
+            self.create_float()
+        } else {
+            Ok(self.create_integer(overflow, negative, integer))
+        }
+    }
+
+    /// json_parse_array.
+    fn parse_array(&mut self) -> Result<Value, LispError> {
+        let mut c = self.skip_whitespace()?;
+        let first = self.objects.len();
+        if c != b']' {
+            self.available_depth -= 1;
+            if self.available_depth < 0 {
+                return Err(self.error("json-object-too-deep"));
+            }
+            loop {
+                let element = self.parse_value(c)?;
+                self.objects.push(element);
+                c = self.skip_whitespace()?;
+                if c == b']' {
+                    self.available_depth += 1;
+                    break;
+                }
+                if c != b',' {
+                    return Err(self.error("json-parse-error"));
+                }
+                c = self.skip_whitespace()?;
+            }
+        }
+        let elements = self.objects.drain(first..);
+        Ok(match self.options.array_type {
+            JsonArrayType::Vector => Value::vector(elements.collect::<Vec<_>>()),
+            JsonArrayType::List => Value::list(elements),
+        })
+    }
+
+    /// json_parse_object_member_value: the ": value" of a member.
+    fn parse_member_value(&mut self) -> Result<Value, LispError> {
+        if self.skip_whitespace()? != b':' {
+            return Err(self.error("json-parse-error"));
+        }
+        let c = self.skip_whitespace()?;
+        self.parse_value(c)
+    }
+
+    /// json_parse_object: a hash table's later member with an equal key
+    /// sets the earlier one's value (hash_put); an alist and a plist keep
+    /// every member.
+    fn parse_object(&mut self) -> Result<Value, LispError> {
+        let mut c = self.skip_whitespace()?;
+        let first = self.objects.len();
+        if c != b'}' {
+            self.available_depth -= 1;
+            if self.available_depth < 0 {
+                return Err(self.error("json-object-too-deep"));
+            }
+            loop {
+                if c != b'"' {
+                    return Err(self.error("json-parse-error"));
+                }
+                let key = match self.options.object_type {
+                    JsonObjectType::HashTable => {
+                        let nchars = self.parse_string(false)?;
+                        self.make_string(nchars)
+                    }
+                    JsonObjectType::Alist => {
+                        self.parse_string(false)?;
+                        self.intern()
+                    }
+                    JsonObjectType::Plist => {
+                        self.parse_string(true)?;
+                        self.intern()
+                    }
+                };
+                self.objects.push(key);
+                let value = self.parse_member_value()?;
+                self.objects.push(value);
+                c = self.skip_whitespace()?;
+                if c == b'}' {
+                    self.available_depth += 1;
+                    break;
+                }
+                if c != b',' {
+                    return Err(self.error("json-parse-error"));
+                }
+                c = self.skip_whitespace()?;
+            }
+        }
+        let members = &self.objects[first..];
+        let result = match self.options.object_type {
+            JsonObjectType::HashTable => {
+                let test = match self.equal_test {
+                    Some(test) => test,
+                    None => {
+                        let test = crate::lisp::primitives::hash_table_test_descriptor(
+                            self.interp,
+                            Value::symbol("equal"),
+                            &self.env,
+                        )
+                        .expect("the `equal' test");
+                        *self.equal_test.insert(test)
+                    }
+                };
+                // make_hash_table of the members' count, duplicates
+                // included.
+                let table = crate::lisp::primitives::hash_table_from_test(
+                    test,
+                    members.len() / 2,
+                    0,
+                    Value::Nil,
+                )
+                .expect("an `equal' table");
+                let Kind::HashTable(hash) = table.kind() else {
+                    unreachable!()
+                };
+                for pair in members.as_chunks::<2>().0 {
+                    assert!(
+                        matches!(
+                            self.interp
+                                .equal_hash_put(hash, pair[0], pair[1], &self.env),
+                            Ok(true)
+                        ),
+                        "an `equal' table takes any key"
+                    );
+                }
+                table
+            }
+            JsonObjectType::Alist => Value::list(
+                members
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|pair| Value::cons(pair[0], pair[1])),
+            ),
+            JsonObjectType::Plist => Value::list(members.iter().copied()),
         };
-        if start + len > self.source.bytes.len() {
-            return Err(json_error(
-                "json-utf8-decode-error",
-                "Invalid UTF-8 in JSON input",
-                self.pos(),
-            ));
-        }
-        let mut code = (first & (0x7F >> len)) as u32;
-        for offset in 1..len {
-            let byte = self.source.bytes[start + offset];
-            if byte & 0xC0 != 0x80 {
-                return Err(json_error(
-                    "json-utf8-decode-error",
-                    "Invalid UTF-8 in JSON input",
-                    self.position_for_byte_index(start + offset),
-                ));
+        self.objects.truncate(first);
+        Ok(result)
+    }
+
+    /// json_parse_value: the value whose first character C is read.
+    fn parse_value(&mut self, c: u8) -> Result<Value, LispError> {
+        match c {
+            b'{' => self.parse_object(),
+            b'[' => self.parse_array(),
+            // json.c returns ordinary mutable multibyte strings, including
+            // ASCII strings. LSP clients attach completion metadata to them.
+            b'"' => {
+                let nchars = self.parse_string(false)?;
+                Ok(self.make_string(nchars))
             }
-            code = (code << 6) | (byte & 0x3F) as u32;
+            b'0'..=b'9' | b'-' => self.parse_number(c),
+            _ => {
+                let c = i32::from(c);
+                let c2 = self.get_if_possible();
+                let c3 = self.get_if_possible();
+                let c4 = self.get_if_possible();
+                let c5 = self.get_if_possible();
+                let is = |c: i32, b: u8| c == i32::from(b);
+                if is(c, b't')
+                    && is(c2, b'r')
+                    && is(c3, b'u')
+                    && is(c4, b'e')
+                    && (c5 < 0 || !json_is_token_char(c5))
+                {
+                    if c5 >= 0 {
+                        self.put_back();
+                    }
+                    self.current_column += 3;
+                    return Ok(Value::T);
+                }
+                if is(c, b'n')
+                    && is(c2, b'u')
+                    && is(c3, b'l')
+                    && is(c4, b'l')
+                    && (c5 < 0 || !json_is_token_char(c5))
+                {
+                    if c5 >= 0 {
+                        self.put_back();
+                    }
+                    self.current_column += 3;
+                    return Ok(self.options.null_object);
+                }
+                if is(c, b'f') && is(c2, b'a') && is(c3, b'l') && is(c4, b's') && is(c5, b'e') {
+                    let c6 = self.get_if_possible();
+                    if c6 < 0 || !json_is_token_char(c6) {
+                        if c6 >= 0 {
+                            self.put_back();
+                        }
+                        self.current_column += 4;
+                        return Ok(self.options.false_object);
+                    }
+                }
+                Err(self.error("json-parse-error"))
+            }
         }
-        if code < min_codepoint || code > 0x10_FFFF || (0xD800..=0xDFFF).contains(&code) {
-            return Err(json_error(
-                "json-utf8-decode-error",
-                "Invalid UTF-8 in JSON input",
-                self.position_for_byte_index(start),
-            ));
+    }
+
+    /// json_parse: the value, then nothing but whitespace or the point
+    /// past the value.
+    fn parse(&mut self, end: ParseEnd) -> Result<Value, LispError> {
+        let c = self.skip_whitespace()?;
+        let value = self.parse_value(c)?;
+        if end == ParseEnd::CheckForGarbage && self.skip_whitespace_if_possible() >= 0 {
+            return Err(self.error("json-trailing-content"));
         }
-        let ch = char::from_u32(code).ok_or_else(|| {
-            json_error(
-                "json-utf8-decode-error",
-                "Invalid UTF-8 in JSON input",
-                self.position_for_byte_index(start),
-            )
-        })?;
-        self.index += len;
-        Ok(ch)
-    }
-
-    fn skip_whitespace(&mut self) {
-        while matches!(self.peek(), Some(b' ' | b'\n' | b'\r' | b'\t')) {
-            self.index += 1;
-        }
-    }
-
-    fn peek(&self) -> Option<u8> {
-        self.source.bytes.get(self.index).copied()
-    }
-
-    fn peek_next(&self) -> Option<u8> {
-        self.source.bytes.get(self.index + 1).copied()
-    }
-
-    fn pos(&self) -> usize {
-        self.position_for_byte_index(self.index)
-    }
-
-    fn position_for_byte_index(&self, index: usize) -> usize {
-        self.source
-            .byte_positions
-            .get(index)
-            .copied()
-            .unwrap_or(self.source.end_position)
+        Ok(value)
     }
 }
 
-pub(crate) fn parse_value_source(
+/// Emacs's internal bytes of buffer TEXT, the bytes json.c reads from
+/// the buffer: a multibyte buffer's raw byte its two-byte form (C0 or C1
+/// then a continuation) and a character beyond Unicode its four- or
+/// five-byte form, a unibyte buffer's raw bytes the bytes they stand for;
+/// EXTENDED names the characters of TEXT's side table.
+fn buffer_internal_bytes<'t>(
+    text: &'t str,
+    multibyte: bool,
+    extended: &[(usize, u32)],
+) -> std::borrow::Cow<'t, [u8]> {
+    if extended.is_empty() && memchr::memchr(0xEE, text.as_bytes()).is_none() {
+        return std::borrow::Cow::Borrowed(text.as_bytes());
+    }
+    let mut bytes = Vec::with_capacity(text.len());
+    let mut extended = extended.iter().peekable();
+    for (index, ch) in text.chars().enumerate() {
+        let code = match extended.peek() {
+            Some(&&(at, code)) if at == index => {
+                extended.next();
+                code
+            }
+            _ => match raw_byte_from_regex_char(ch) {
+                Some(byte) => 0x3F_FF00 + u32::from(byte),
+                None => ch as u32,
+            },
+        };
+        if multibyte {
+            let (encoded, width) = crate::lisp::types::string_data::encode_character(code)
+                .expect("a buffer holds characters");
+            bytes.extend_from_slice(&encoded[..width]);
+        } else {
+            bytes.push(code.checked_sub(0x3F_FF00).unwrap_or(code) as u8);
+        }
+    }
+    std::borrow::Cow::Owned(bytes)
+}
+
+/// Fjson_parse_string of a string's bytes (SDATA).
+pub(crate) fn parse_string_bytes(
     interp: &mut Interpreter,
-    value: &Value,
+    input: &[u8],
     options: &JsonParseOptions,
-    require_eof: bool,
-) -> Result<JsonParseSuccess, LispError> {
-    let source =
-        string_like(value).ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *value))?;
-    parse_text_source(interp, &source.text, source.multibyte, options, require_eof)
+) -> Result<Value, LispError> {
+    JsonParser::new(input, interp, options).parse(ParseEnd::CheckForGarbage)
 }
 
-pub(crate) fn parse_text_source(
+/// Fjson_parse_buffer of TEXT, the current buffer's from point to Z (its
+/// side-table characters EXTENDED): the value and how many positions
+/// point moves past it, characters of multibyte text and bytes of
+/// unibyte.
+pub(crate) fn parse_buffer_text(
     interp: &mut Interpreter,
     text: &str,
     multibyte: bool,
+    extended: &[(usize, u32)],
     options: &JsonParseOptions,
-    require_eof: bool,
-) -> Result<JsonParseSuccess, LispError> {
-    let source = convert_source(text, multibyte)?;
-    let mut parser = JsonParser::new(&source);
-    let node = parser.parse_value()?;
-    let consumed = parser.position_for_byte_index(parser.index);
-    if require_eof {
-        let before_skip = parser.index;
-        parser.skip_whitespace();
-        if parser.peek().is_some() {
-            let condition = if before_skip == parser.index
-                && matches!(
-                    parser.peek(),
-                    Some(b'0'..=b'9' | b'a'..=b'z' | b'A'..=b'Z' | b'_')
-                ) {
-                "json-parse-error"
-            } else {
-                "json-trailing-content"
-            };
-            return Err(json_error(
-                condition,
-                "Trailing content after JSON value",
-                parser.pos(),
-            ));
-        }
-    }
-    Ok(JsonParseSuccess {
-        value: node_to_lisp(interp, node, options),
-        consumed_source_pos: consumed,
-    })
+) -> Result<(Value, usize), LispError> {
+    let input = buffer_internal_bytes(text, multibyte, extended);
+    let mut parser = JsonParser::new(&input, interp, options);
+    let value = parser.parse(ParseEnd::MovePoint)?;
+    let moved = if multibyte {
+        (parser.point_of_current_line + parser.current_column) as usize
+    } else {
+        parser.current
+    };
+    Ok((value, moved))
 }
 
+/// json.c json_serialize: OBJECT's JSON as its UTF-8 bytes.
 pub(crate) fn serialize(
     interp: &mut Interpreter,
     value: &Value,
     null_object: &Value,
     false_object: &Value,
 ) -> Result<JsonSerialized, LispError> {
-    let options = SerializeOptions {
-        null_object,
-        false_object,
+    let mut out = JsonOut {
+        buf: Vec::new(),
+        maxdepth: JSON_SERIALIZATION_MAX_DEPTH,
+        null_object: *null_object,
+        false_object: *false_object,
+        interp: &*interp,
+        env: crate::lisp::types::Env::new(),
     };
-    let text = serialize_value(interp, value, &options, JSON_SERIALIZATION_MAX_DEPTH)?;
-    let bytes_text = utf8_bytes_to_unibyte_text(text.as_bytes());
-    let bytes_value = if bytes_text == text {
-        Value::String(bytes_text.clone().into())
-    } else {
-        make_shared_string_value_with_multibyte(bytes_text.clone(), None, false)
-    };
-    Ok(JsonSerialized {
-        text,
-        bytes_text,
-        bytes_value,
-    })
+    out.something(value)?;
+    Ok(JsonSerialized { bytes: out.buf })
 }
 
 pub(crate) fn make_hash_table(
@@ -650,228 +886,327 @@ pub(crate) fn hash_table_entries(
     ))
 }
 
-fn convert_source(text: &str, multibyte: bool) -> Result<ConvertedSource, LispError> {
-    let mut bytes = Vec::new();
-    let mut byte_positions = Vec::new();
-    let mut source_pos = 1usize;
-    for ch in text.chars() {
-        if ch == INVALID_UNICODE_SENTINEL {
-            return Err(json_error(
-                "json-utf8-decode-error",
-                "Invalid Unicode scalar value in JSON input",
-                source_pos,
-            ));
-        }
-        if let Some(byte) = raw_byte_from_regex_char(ch) {
-            if multibyte {
-                return Err(json_error(
-                    "json-utf8-decode-error",
-                    "Invalid raw byte in multibyte JSON input",
-                    source_pos,
-                ));
-            }
-            bytes.push(byte);
-            byte_positions.push(source_pos);
-            source_pos += 1;
-        } else {
-            let mut buf = [0u8; 4];
-            let encoded = ch.encode_utf8(&mut buf);
-            for (offset, byte) in encoded.bytes().enumerate() {
-                bytes.push(byte);
-                byte_positions.push(if multibyte {
-                    source_pos
-                } else {
-                    source_pos + offset
-                });
-            }
-            source_pos += if multibyte { 1 } else { encoded.len() };
-            continue;
-        }
-    }
-    Ok(ConvertedSource {
-        bytes,
-        byte_positions,
-        end_position: source_pos,
-    })
+/// json.c json_out_t: the output's bytes, the nesting depth left and
+/// the configured null and false objects.
+struct JsonOut<'a> {
+    buf: Vec<u8>,
+    maxdepth: i32,
+    null_object: Value,
+    false_object: Value,
+    interp: &'a Interpreter,
+    env: crate::lisp::types::Env,
 }
 
-fn node_to_lisp(interp: &mut Interpreter, node: JsonNode, options: &JsonParseOptions) -> Value {
-    match node {
-        JsonNode::Null => options.null_object,
-        JsonNode::False => options.false_object,
-        JsonNode::True => Value::T,
-        JsonNode::Integer(value) => Value::Integer(value),
-        JsonNode::BigInteger(value) => Value::BigInteger(value.into()),
-        JsonNode::Float(value) => Value::float(value),
-        // json.c returns ordinary mutable multibyte strings, including
-        // ASCII strings. LSP clients attach completion metadata to them.
-        JsonNode::String(value) => make_shared_string_value_with_multibyte(value, None, true),
-        JsonNode::Array(items) => {
-            let items: Vec<Value> = items
-                .into_iter()
-                .map(|item| node_to_lisp(interp, item, options))
-                .collect();
-            match options.array_type {
-                JsonArrayType::Vector => Value::vector(items),
-                JsonArrayType::List => Value::list(items),
-            }
+impl JsonOut<'_> {
+    fn eq(&self, left: &Value, right: &Value) -> bool {
+        crate::lisp::primitives::values_eq_in_env(self.interp, left, right, &self.env)
+    }
+
+    /// json_out_nest.
+    fn nest(&mut self) -> Result<(), LispError> {
+        self.maxdepth -= 1;
+        if self.maxdepth < 0 {
+            return Err(LispError::SignalValue(Value::list([
+                Value::symbol("error"),
+                Value::String("Maximum JSON serialization depth exceeded".into()),
+            ])));
         }
-        JsonNode::Object(entries) => match options.object_type {
-            JsonObjectType::HashTable => {
-                let mut deduped = Vec::new();
-                for (key, value) in entries {
-                    let value = node_to_lisp(interp, value, options);
-                    if let Some((_, existing)) = deduped.iter_mut().find(|(name, _)| *name == key) {
-                        *existing = value;
-                    } else {
-                        deduped.push((key, value));
+        Ok(())
+    }
+
+    /// json_out_unnest.
+    fn unnest(&mut self) {
+        self.maxdepth += 1;
+    }
+
+    /// json_out_something.
+    fn something(&mut self, value: &Value) -> Result<(), LispError> {
+        if self.eq(value, &self.null_object) {
+            self.buf.extend_from_slice(b"null");
+            return Ok(());
+        }
+        if self.eq(value, &self.false_object) {
+            self.buf.extend_from_slice(b"false");
+            return Ok(());
+        }
+        match value.kind() {
+            Kind::T => self.buf.extend_from_slice(b"true"),
+            Kind::Nil => self.buf.extend_from_slice(b"{}"),
+            Kind::Integer(number) => {
+                use std::io::Write;
+                write!(self.buf, "{number}").expect("a Vec takes any write");
+            }
+            Kind::StringObject(string) => {
+                let string = string.borrow();
+                json_out_string(&mut self.buf, string.bytes(), string.is_multibyte(), 0)
+                    .map_err(|()| not_json_value(value))?;
+            }
+            Kind::Cons(_) => self.object_cons(value)?,
+            // json_out_float, with `float-output-format' bound to nil
+            // around the output: the fewest digits that read back.
+            Kind::Float(number) if !number.get().is_finite() => {
+                return Err(LispError::SignalValue(Value::list([
+                    Value::symbol("error"),
+                    Value::String("JSON does not allow Inf or NaN".into()),
+                    *value,
+                ])));
+            }
+            Kind::Float(number) => self
+                .buf
+                .extend_from_slice(crate::lisp::types::format_float(number.get()).as_bytes()),
+            Kind::HashTable(table) => {
+                self.nest()?;
+                self.buf.push(b'{');
+                let mut first = true;
+                for (_, key, entry) in table.entries() {
+                    self.member(&mut first, &key, &entry)?;
+                }
+                self.buf.push(b'}');
+                self.unnest();
+            }
+            Kind::ReaderForm(form) => match form.as_ref() {
+                ReaderForm::HashTable { fields } => self.object_hash_literal(fields)?,
+                _ => return Err(not_json_value(value)),
+            },
+            Kind::Vector(vector) => {
+                self.nest()?;
+                self.buf.push(b'[');
+                for (index, item) in vector.slots().enumerate() {
+                    if index > 0 {
+                        self.buf.push(b',');
                     }
+                    self.something(&item)?;
                 }
-                make_hash_table(
-                    interp,
-                    "equal",
-                    deduped
-                        .into_iter()
-                        .map(|(key, value)| {
-                            (
-                                make_shared_string_value_with_multibyte(key, None, true),
-                                value,
-                            )
-                        })
-                        .collect(),
-                )
+                self.buf.push(b']');
+                self.unnest();
             }
-            JsonObjectType::Alist => Value::list(entries.into_iter().map(|(key, value)| {
-                Value::cons(
-                    Value::Symbol(key.into()),
-                    node_to_lisp(interp, value, options),
-                )
-            })),
-            JsonObjectType::Plist => {
-                let mut items = Vec::new();
-                for (key, value) in entries {
-                    items.push(Value::Symbol(format!(":{key}").into()));
-                    items.push(node_to_lisp(interp, value, options));
-                }
-                Value::list(items)
-            }
-        },
-    }
-}
-
-struct SerializeOptions<'a> {
-    null_object: &'a Value,
-    false_object: &'a Value,
-}
-
-fn serialize_value(
-    interp: &mut Interpreter,
-    value: &Value,
-    options: &SerializeOptions<'_>,
-    depth: usize,
-) -> Result<String, LispError> {
-    // json.c uses EQ for the configurable sentinel objects.  Structural
-    // equality would turn a distinct equal string/list into null or false.
-    if values_eql(value, options.null_object) {
-        return Ok("null".into());
-    }
-    if values_eql(value, options.false_object) {
-        return Ok("false".into());
-    }
-    match value.kind() {
-        Kind::Nil => Ok("{}".into()),
-        Kind::T => Ok("true".into()),
-        Kind::Integer(number) => Ok(number.to_string()),
-        Kind::BigInteger(number) => Ok(number.to_string()),
-        Kind::Float(number) => Ok(number.to_string()),
-        Kind::ReaderForm(form) => match form.as_ref() {
-            ReaderForm::HashTable { .. } => {
-                serialize_hash_table_literal(interp, value, options, depth)?
-                    .ok_or_else(|| LispError::TypeError("json-value".into(), value.type_name()))
-            }
-            _ => Err(LispError::TypeError("json-value".into(), value.type_name())),
-        },
-        Kind::HashTable(_) => serialize_hash_table(interp, value, options, depth),
-        // json.c lisp_to_json: a vector is a JSON array.
-        Kind::Vector(_) => serialize_array(interp, &vector_items(value)?, options, depth),
-        Kind::Cons(_) => {
-            if let Some(rendered) = serialize_hash_table_literal(interp, value, options, depth)? {
-                return Ok(rendered);
-            }
-            if string_like(value).is_some() {
-                return serialize_string(value);
-            }
-            serialize_list_object(interp, value, options, depth)
+            Kind::BigInteger(number) => self.buf.extend_from_slice(number.to_string().as_bytes()),
+            _ => return Err(not_json_value(value)),
         }
-        _ if string_like(value).is_some() => serialize_string(value),
-        _ => Err(LispError::TypeError("json-value".into(), value.type_name())),
+        Ok(())
+    }
+
+    /// One member of json_out_object_hash: KEY must be a string
+    /// (CHECK_STRING); uniqueness is the caller's business.
+    fn member(&mut self, first: &mut bool, key: &Value, value: &Value) -> Result<(), LispError> {
+        if !*first {
+            self.buf.push(b',');
+        }
+        *first = false;
+        let Kind::StringObject(string) = key.kind() else {
+            return Err(LispError::WrongTypeArgument("stringp".into(), *key));
+        };
+        {
+            let string = string.borrow();
+            json_out_string(&mut self.buf, string.bytes(), string.is_multibyte(), 0)
+                .map_err(|()| not_json_value(key))?;
+        }
+        self.buf.push(b':');
+        self.something(value)
+    }
+
+    /// A `#s(hash-table ...)' literal not yet made a table: its data's
+    /// pairs written as json_out_object_hash writes a table's.
+    fn object_hash_literal(&mut self, fields: &[Value]) -> Result<(), LispError> {
+        let mut data = Vec::new();
+        for pair in fields.as_chunks::<2>().0 {
+            if pair[0].as_symbol()? == "data" {
+                data = list_to_flat_pairs(&pair[1])?;
+            }
+        }
+        self.nest()?;
+        self.buf.push(b'{');
+        let mut first = true;
+        for (key, value) in &data {
+            self.member(&mut first, key, value)?;
+        }
+        self.buf.push(b'}');
+        self.unnest();
+        Ok(())
+    }
+
+    /// json_out_object_cons: an alist when the first element is a cons,
+    /// otherwise a plist.  Every key must be a symbol, a plist key's
+    /// leading `:' is dropped unless it is the whole name while an alist
+    /// key keeps it, and a later occurrence of the same symbol (by
+    /// identity, the symset) is skipped; an alist element must be a cons
+    /// and a plist key must have its value, the list must be proper, and
+    /// FOR_EACH_TAIL's cycle check signals `circular-list'.  Each value is
+    /// written as its member is reached.
+    fn object_cons(&mut self, object: &Value) -> Result<(), LispError> {
+        self.nest()?;
+        self.buf.push(b'{');
+        let is_alist = matches!(object.car().map(|v| v.kind()), Ok(Kind::Cons(_)));
+        let mut symset = Symset::new();
+        let mut first = true;
+        let mut tail = *object;
+        let mut tortoise = *object;
+        let mut steps = 0usize;
+        while let Some((head, rest)) = tail.cons_values() {
+            let (key, value, next) = if is_alist {
+                let (key, value) = head
+                    .cons_values()
+                    .ok_or_else(|| LispError::WrongTypeArgument("consp".into(), head))?;
+                (key, value, rest)
+            } else {
+                let (value, next) = rest
+                    .cons_values()
+                    .ok_or_else(|| LispError::WrongTypeArgument("consp".into(), rest))?;
+                (head, value, next)
+            };
+            let key = match key.kind() {
+                Kind::SymbolWithPos(symbol)
+                    if crate::lisp::primitives::symbols_with_pos_enabled(
+                        self.interp,
+                        &self.env,
+                    ) =>
+                {
+                    symbol.symbol()
+                }
+                _ => key,
+            };
+            let name = match key.kind() {
+                Kind::Nil | Kind::T | Kind::Symbol(_) => key.as_symbol()?,
+                _ => return Err(LispError::WrongTypeArgument("symbolp".into(), key)),
+            };
+            if symset.add(key.word() as u64) {
+                if !first {
+                    self.buf.push(b',');
+                }
+                first = false;
+                let name = visible_symbol_name(name);
+                let skip = usize::from(!is_alist && name.len() > 1 && name.starts_with(':'));
+                json_out_string(&mut self.buf, name.as_bytes(), !name.is_ascii(), skip)
+                    .map_err(|()| not_json_value(&key))?;
+                self.buf.push(b':');
+                self.something(&value)?;
+            }
+            tail = next;
+            steps += 1;
+            if steps.is_multiple_of(2) {
+                tortoise = tortoise.cdr().unwrap_or(Value::Nil);
+            }
+            if let (Kind::Cons(current), Kind::Cons(lagging)) = (tail.kind(), tortoise.kind())
+                && crate::lisp::types::SharedCons::ptr_eq(&current, &lagging)
+            {
+                return Err(LispError::SignalValue(Value::list([
+                    Value::Symbol("circular-list".into()),
+                    *object,
+                ])));
+            }
+        }
+        if !tail.is_nil() {
+            return Err(LispError::WrongTypeArgument("listp".into(), *object));
+        }
+        self.buf.push(b'}');
+        self.unnest();
+        Ok(())
     }
 }
 
-fn serialize_array(
-    interp: &mut Interpreter,
-    items: &[Value],
-    options: &SerializeOptions<'_>,
-    depth: usize,
-) -> Result<String, LispError> {
-    let depth = json_nested_depth(depth)?;
-    let mut rendered = Vec::with_capacity(items.len());
-    for item in items {
-        rendered.push(serialize_value(interp, item, options, depth)?);
-    }
-    Ok(format!("[{}]", rendered.join(",")))
+/// json.c symset_t: the keys an object has written, by identity, in an
+/// open-addressed table of 2^BITS slots at most half full.
+struct Symset {
+    count: usize,
+    bits: u32,
+    table: Vec<Option<u64>>,
 }
 
-/// json.c json_out_string, over the string's internal bytes: printable
-/// ASCII but `"' and `\\' as is, the other ASCII characters escaped, and a
-/// multibyte string's Unicode characters copied as UTF-8; a raw byte, a
-/// surrogate, a character beyond Unicode or any non-ASCII byte of a unibyte
-/// string signals `(wrong-type-argument json-value-p STRING)'.
-fn serialize_string(value: &Value) -> Result<String, LispError> {
-    let (bytes, multibyte) = if let Kind::StringObject(state) = value.kind() {
-        let state = state.borrow();
-        (state.bytes().to_vec(), state.is_multibyte())
-    } else {
-        let string = string_like(value)
-            .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *value))?;
-        (
-            crate::lisp::primitives::internal_string_bytes(&string)?,
-            string.multibyte,
-        )
-    };
-    let not_unicode = || LispError::WrongTypeArgument("json-value-p".into(), *value);
-    let mut out = Vec::with_capacity(bytes.len() + 2);
+impl Symset {
+    fn new() -> Self {
+        Symset {
+            count: 0,
+            bits: 4,
+            table: vec![None; 1 << 4],
+        }
+    }
+
+    /// symset_hash: knuth_hash of the word reduced to 32 bits.
+    fn hash(word: u64, bits: u32) -> usize {
+        let reduced = (word ^ (word >> 32)) as u32;
+        (reduced.wrapping_mul(2_654_435_769) >> (32 - bits)) as usize
+    }
+
+    /// symset_add: whether WORD was not yet in the set, adding it.
+    fn add(&mut self, word: u64) -> bool {
+        if self.count >= self.table.len() >> 1 {
+            // symset_expand.
+            self.bits += 1;
+            let old = std::mem::replace(&mut self.table, vec![None; 1 << self.bits]);
+            let mask = self.table.len() - 1;
+            for entry in old.into_iter().flatten() {
+                let mut j = Self::hash(entry, self.bits);
+                while self.table[j].is_some() {
+                    j = (j + 1) & mask;
+                }
+                self.table[j] = Some(entry);
+            }
+        }
+        let mask = self.table.len() - 1;
+        let mut i = Self::hash(word, self.bits);
+        loop {
+            match self.table[i] {
+                Some(entry) if entry == word => return false,
+                Some(_) => i = (i + 1) & mask,
+                None => {
+                    self.table[i] = Some(word);
+                    self.count += 1;
+                    return true;
+                }
+            }
+        }
+    }
+}
+
+fn not_json_value(value: &Value) -> LispError {
+    LispError::WrongTypeArgument("json-value-p".into(), *value)
+}
+
+/// json.c json_out_string of a string's internal BYTES from SKIP on:
+/// printable ASCII but `"' and `\\' as is, the other ASCII characters
+/// escaped, and a MULTIBYTE string's Unicode characters copied as UTF-8; a
+/// raw byte, a surrogate, a character beyond Unicode or any non-ASCII byte
+/// of a unibyte string is an error, `(wrong-type-argument json-value-p
+/// STRING)' to the caller.
+fn json_out_string(
+    out: &mut Vec<u8>,
+    bytes: &[u8],
+    multibyte: bool,
+    skip: usize,
+) -> Result<(), ()> {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    out.reserve(bytes.len() + 2);
     out.push(b'"');
-    let mut p = 0;
+    let mut p = skip;
     while p < bytes.len() {
         let c = bytes[p];
-        if (0x20..=0x7F).contains(&c) && c != b'"' && c != b'\\' {
+        if json_plain_char(c) {
             out.push(c);
             p += 1;
         } else if c > 0x7F {
             if !multibyte {
-                return Err(not_unicode());
+                return Err(());
             }
             let byte =
                 |offset: usize| u32::from(bytes.get(p + offset).copied().unwrap_or(0) & 0x3F);
             let n = if c <= 0xC1 {
-                return Err(not_unicode());
+                return Err(());
             } else if c <= 0xDF {
                 2
             } else if c <= 0xEF {
                 let v = (u32::from(c & 0x0F) << 12) + (byte(1) << 6) + byte(2);
                 if (0xD800..=0xDFFF).contains(&v) {
-                    return Err(not_unicode());
+                    return Err(());
                 }
                 3
             } else if c <= 0xF7 {
                 let v = (u32::from(c & 0x07) << 18) + (byte(1) << 12) + (byte(2) << 6) + byte(3);
                 if v > 0x10_FFFF {
-                    return Err(not_unicode());
+                    return Err(());
                 }
                 4
             } else {
-                return Err(not_unicode());
+                return Err(());
             };
             out.extend_from_slice(&bytes[p..(p + n).min(bytes.len())]);
             p += n;
@@ -884,171 +1219,19 @@ fn serialize_string(value: &Value) -> Result<String, LispError> {
                 b'\n' => out.push(b'n'),
                 0x0C => out.push(b'f'),
                 b'\r' => out.push(b'r'),
-                _ => out.extend_from_slice(format!("u00{c:02X}").as_bytes()),
+                _ => out.extend_from_slice(&[
+                    b'u',
+                    b'0',
+                    b'0',
+                    HEX[usize::from(c >> 4)],
+                    HEX[usize::from(c & 0xF)],
+                ]),
             }
             p += 1;
         }
     }
     out.push(b'"');
-    String::from_utf8(out).map_err(|_| not_unicode())
-}
-
-fn serialize_hash_table(
-    interp: &mut Interpreter,
-    value: &Value,
-    options: &SerializeOptions<'_>,
-    depth: usize,
-) -> Result<String, LispError> {
-    let depth = json_nested_depth(depth)?;
-    let Some((_, entries)) = hash_table_entries(interp, value) else {
-        return Err(LispError::WrongTypeArgument("hash-table-p".into(), *value));
-    };
-    serialize_object_entries(
-        interp,
-        entries.iter().map(|(key, value)| (*key, value)).collect(),
-        options,
-        depth,
-    )
-}
-
-fn serialize_hash_table_literal(
-    interp: &mut Interpreter,
-    value: &Value,
-    options: &SerializeOptions<'_>,
-    depth: usize,
-) -> Result<Option<String>, LispError> {
-    let Kind::ReaderForm(form) = value.kind() else {
-        return Ok(None);
-    };
-    let ReaderForm::HashTable { fields } = form.as_ref() else {
-        return Ok(None);
-    };
-    let depth = json_nested_depth(depth)?;
-    let mut test = "eql".to_string();
-    let mut data = Vec::new();
-    let mut index = 0usize;
-    while index + 1 < fields.len() {
-        let key = fields[index].as_symbol()?.to_string();
-        let value = fields[index + 1];
-        match key.as_str() {
-            "test" => test = value.as_symbol()?.to_string(),
-            "data" => data = list_to_flat_pairs(&value)?,
-            _ => {}
-        }
-        index += 2;
-    }
-    if test.is_empty() {
-        test = "eql".into();
-    }
-    let _ = test;
-    serialize_object_entries(
-        interp,
-        data.iter().map(|(key, value)| (*key, value)).collect(),
-        options,
-        depth,
-    )
-    .map(Some)
-}
-
-fn serialize_list_object(
-    interp: &mut Interpreter,
-    value: &Value,
-    options: &SerializeOptions<'_>,
-    depth: usize,
-) -> Result<String, LispError> {
-    // json.c json_out_object_cons: an alist when the first element is a
-    // cons, otherwise a plist.  Every key must be a symbol
-    // (`(wrong-type-argument symbolp KEY)'), a plist key's leading `:' is
-    // dropped unless it is the whole name while an alist key keeps it, a
-    // later occurrence of the same symbol is skipped, an alist element
-    // must be a cons and a plist key must have its value
-    // (`(wrong-type-argument consp ...)'), the list must be proper, and
-    // FOR_EACH_TAIL's cycle check signals `circular-list'.  Each value is
-    // written as its pair is reached, so a bad value inside a cycle is
-    // reported before the cycle is (json-tests pins the type order).
-    let depth = json_nested_depth(depth)?;
-    let is_alist = matches!(value.car().map(|v| v.kind()), Ok(Kind::Cons(_)));
-    let mut seen: Vec<String> = Vec::new();
-    let mut rendered: Vec<String> = Vec::new();
-    let mut tail = *value;
-    let mut tortoise = *value;
-    let mut steps = 0usize;
-    while let Some((head, rest)) = tail.cons_values() {
-        let (key, entry_value, next) = if is_alist {
-            let (key, entry_value) = head
-                .cons_values()
-                .ok_or_else(|| LispError::WrongTypeArgument("consp".into(), head))?;
-            (key, entry_value, rest)
-        } else {
-            let (entry_value, next) = rest
-                .cons_values()
-                .ok_or_else(|| LispError::WrongTypeArgument("consp".into(), rest))?;
-            (head, entry_value, next)
-        };
-        let name = key
-            .as_symbol()
-            .map_err(|_| LispError::WrongTypeArgument("symbolp".into(), key))?
-            .to_string();
-        if !seen.contains(&name) {
-            seen.push(name.clone());
-            let visible = visible_symbol_name(&name);
-            let printed = match visible.strip_prefix(':') {
-                Some(rest) if !is_alist && !rest.is_empty() => rest.to_string(),
-                _ => visible.to_string(),
-            };
-            rendered.push(format!(
-                "{}:{}",
-                serialize_string(&Value::String(printed.into()))?,
-                serialize_value(interp, &entry_value, options, depth)?
-            ));
-        }
-        tail = next;
-        steps += 1;
-        if steps.is_multiple_of(2) {
-            tortoise = tortoise.cdr().unwrap_or(Value::Nil);
-        }
-        if let (Kind::Cons(current), Kind::Cons(lagging)) = (tail.kind(), tortoise.kind())
-            && crate::lisp::types::SharedCons::ptr_eq(&current, &lagging)
-        {
-            return Err(LispError::SignalValue(Value::list([
-                Value::Symbol("circular-list".into()),
-                *value,
-            ])));
-        }
-    }
-    if !tail.is_nil() {
-        return Err(LispError::WrongTypeArgument("listp".into(), *value));
-    }
-    Ok(format!("{{{}}}", rendered.join(",")))
-}
-
-/// json.c json_out_object_hash: each key must be a string (CHECK_STRING)
-/// and is written before its value; uniqueness is the caller's business.
-fn serialize_object_entries(
-    interp: &mut Interpreter,
-    entries: Vec<(Value, &Value)>,
-    options: &SerializeOptions<'_>,
-    depth: usize,
-) -> Result<String, LispError> {
-    let mut rendered = Vec::new();
-    for (key, value) in entries {
-        if string_like(&key).is_none() {
-            return Err(LispError::WrongTypeArgument("stringp".into(), key));
-        }
-        let key = serialize_string(&key)?;
-        rendered.push(format!(
-            "{}:{}",
-            key,
-            serialize_value(interp, value, options, depth)?
-        ));
-    }
-    Ok(format!("{{{}}}", rendered.join(",")))
-}
-
-fn json_nested_depth(depth: usize) -> Result<usize, LispError> {
-    depth
-        .checked_sub(1)
-        .ok_or_else(|| LispError::Signal("Maximum JSON serialization depth exceeded".into()))
+    Ok(())
 }
 
 fn raw_byte_from_regex_char(ch: char) -> Option<u8> {
@@ -1086,15 +1269,6 @@ fn list_to_flat_pairs(value: &Value) -> Result<Vec<(Value, Value)>, LispError> {
     Ok(pairs)
 }
 
-fn json_error(condition: &str, message: &str, position: usize) -> LispError {
-    LispError::SignalValue(Value::list([
-        Value::Symbol(condition.into()),
-        Value::String(message.into()),
-        Value::Nil,
-        Value::Integer(position as i64),
-    ]))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1108,9 +1282,7 @@ mod tests {
             null_object: Value::Nil,
             false_object: Value::symbol(":false"),
         };
-        let string = parse_text_source(&mut interp, "\"alpha\"", true, &options, true)
-            .expect("JSON string")
-            .value;
+        let string = parse_string_bytes(&mut interp, b"\"alpha\"", &options).expect("JSON string");
         let alias = string;
         let mut env = crate::lisp::types::Env::new();
         for (name, args) in [
@@ -1132,7 +1304,8 @@ mod tests {
             crate::lisp::primitives::call(&mut interp, name, &args, &mut env)
                 .expect("parsed JSON strings should support mutation");
         }
-        let text = string_like(&alias).expect("the alias should remain a string");
+        let text =
+            crate::lisp::primitives::string_like(&alias).expect("the alias should remain a string");
         assert_eq!(text.text, "Alpha");
         assert!(text.multibyte);
         assert_eq!(
@@ -1151,10 +1324,10 @@ mod tests {
             &Value::Symbol(":false".into()),
         )
         .expect("serialization should succeed");
-        assert_eq!(serialized.text, "\"abcα\"");
+        assert_eq!(serialized.text(), "\"abcα\"");
         assert!(
             serialized
-                .bytes_text
+                .unibyte_text()
                 .chars()
                 .any(|ch| raw_byte_from_regex_char(ch).is_some())
         );
@@ -1191,7 +1364,7 @@ mod tests {
             &Value::Symbol(":false".into()),
         )
         .expect("distinct equal string is ordinary JSON data");
-        assert_eq!(serialized.text, "\"same text\"");
+        assert_eq!(serialized.text(), "\"same text\"");
     }
 
     #[test]
@@ -1205,7 +1378,7 @@ mod tests {
             &Value::Symbol(":false".into()),
         )
         .expect("uninterned symbol should be a JSON object key");
-        assert_eq!(serialized.text, "{\"key\":1}");
+        assert_eq!(serialized.text(), "{\"key\":1}");
     }
 
     #[test]
@@ -1262,22 +1435,24 @@ mod tests {
     }
 
     #[test]
-    fn parser_reports_consumed_source_positions() {
-        let mut interp = Interpreter::new();
-        let parsed = parse_text_source(
-            &mut interp,
-            "[123] [456]",
-            true,
-            &JsonParseOptions {
-                object_type: JsonObjectType::HashTable,
-                array_type: JsonArrayType::Vector,
-                null_object: Value::Symbol(":null".into()),
-                false_object: Value::Symbol(":false".into()),
-            },
-            false,
-        )
-        .expect("parsing should succeed");
-        assert_eq!(parsed.consumed_source_pos, 6);
+    fn parser_reports_the_positions_point_moves() {
+        let options = JsonParseOptions {
+            object_type: JsonObjectType::HashTable,
+            array_type: JsonArrayType::Vector,
+            null_object: Value::Symbol(":null".into()),
+            false_object: Value::Symbol(":false".into()),
+        };
+        // Characters of multibyte text, bytes of unibyte text.
+        for (text, multibyte, moved) in [
+            ("[123] [456]", true, 5),
+            ("\"\u{e9}\u{e9}\" 1", true, 4),
+            ("\"\u{e0c3}\u{e0a9}\u{e0c3}\u{e0a9}\" 1", false, 6),
+        ] {
+            let mut interp = Interpreter::new();
+            let (_, consumed) = parse_buffer_text(&mut interp, text, multibyte, &[], &options)
+                .expect("parsing should succeed");
+            assert_eq!(consumed, moved, "{text:?}");
+        }
     }
 
     #[test]
@@ -1288,17 +1463,15 @@ mod tests {
         ];
         for case in cases {
             let mut interp = Interpreter::new();
-            let error = parse_text_source(
+            let error = parse_string_bytes(
                 &mut interp,
-                case,
-                true,
+                case.as_bytes(),
                 &JsonParseOptions {
                     object_type: JsonObjectType::HashTable,
                     array_type: JsonArrayType::Vector,
                     null_object: Value::Symbol(":null".into()),
                     false_object: Value::Symbol(":false".into()),
                 },
-                true,
             )
             .expect_err(case);
             assert_eq!(error.condition_type(), "json-parse-error", "case={case:?}");

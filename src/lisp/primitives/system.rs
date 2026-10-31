@@ -2,70 +2,12 @@ use super::*;
 use crate::lisp::types::Kind;
 
 pub(crate) fn json_parse_options(args: &[Value]) -> Result<JsonParseOptions, LispError> {
-    let mut options = JsonParseOptions {
-        object_type: JsonObjectType::HashTable,
-        array_type: JsonArrayType::Vector,
-        null_object: Value::Symbol(":null".into()),
-        false_object: Value::Symbol(":false".into()),
-    };
-    let mut index = 0usize;
-    while index + 1 < args.len() {
-        let key = args[index].as_symbol()?;
-        let value = args[index + 1];
-        match key {
-            ":object-type" => {
-                options.object_type = match value.kind() {
-                    Kind::Symbol(symbol) if symbol == "hash-table" => JsonObjectType::HashTable,
-                    Kind::Symbol(symbol) if symbol == "alist" => JsonObjectType::Alist,
-                    Kind::Symbol(symbol) if symbol == "plist" => JsonObjectType::Plist,
-                    other => {
-                        return Err(LispError::WrongTypeArgument(
-                            "symbolp".into(),
-                            other.value(),
-                        ));
-                    }
-                };
-            }
-            ":array-type" => {
-                options.array_type = match value.kind() {
-                    Kind::Symbol(symbol) if symbol == "vector" => JsonArrayType::Vector,
-                    Kind::Symbol(symbol) if symbol == "list" => JsonArrayType::List,
-                    other => {
-                        return Err(LispError::WrongTypeArgument(
-                            "symbolp".into(),
-                            other.value(),
-                        ));
-                    }
-                };
-            }
-            ":null-object" => options.null_object = value,
-            ":false-object" => options.false_object = value,
-            _ => {
-                return Err(LispError::TypeError("json-option".into(), key.into()));
-            }
-        }
-        index += 2;
-    }
-    Ok(options)
+    crate::lisp::json::parse_args(args, true)
 }
 
 pub(crate) fn json_serialize_options(args: &[Value]) -> Result<(Value, Value), LispError> {
-    let mut null_object = Value::Symbol(":null".into());
-    let mut false_object = Value::Symbol(":false".into());
-    let mut index = 0usize;
-    while index + 1 < args.len() {
-        let key = args[index].as_symbol()?;
-        let value = args[index + 1];
-        match key {
-            ":null-object" => null_object = value,
-            ":false-object" => false_object = value,
-            _ => {
-                return Err(LispError::TypeError("json-option".into(), key.into()));
-            }
-        }
-        index += 2;
-    }
-    Ok((null_object, false_object))
+    let conf = crate::lisp::json::parse_args(args, false)?;
+    Ok((conf.null_object, conf.false_object))
 }
 
 pub(crate) fn current_group_id() -> Result<u32, LispError> {

@@ -940,6 +940,11 @@ fn builtin_error_symbol_properties() -> Vec<(String, Vec<(String, Value)>)> {
         // such as `condition-case' and ERT match through this hierarchy.
         ("json-error", &["json-error", "error"], "generic JSON error"),
         (
+            "json-out-of-memory",
+            &["json-out-of-memory", "json-error", "error"],
+            "not enough memory for creating JSON object",
+        ),
+        (
             "json-parse-error",
             &["json-parse-error", "json-error", "error"],
             "could not parse JSON stream",
@@ -965,9 +970,34 @@ fn builtin_error_symbol_properties() -> Vec<(String, Vec<(String, Value)>)> {
             "trailing content after JSON stream",
         ),
         (
+            "json-object-too-deep",
+            &["json-object-too-deep", "json-error", "error"],
+            "object cyclic or Lisp evaluation too deep",
+        ),
+        (
             "json-utf8-decode-error",
             &["json-utf8-decode-error", "json-error", "error"],
             "invalid utf-8 encoding",
+        ),
+        (
+            "json-invalid-surrogate-error",
+            &["json-invalid-surrogate-error", "json-error", "error"],
+            "invalid surrogate pair",
+        ),
+        (
+            "json-number-out-of-range-error",
+            &["json-number-out-of-range-error", "json-error", "error"],
+            "number out of range",
+        ),
+        (
+            "json-escape-sequence-error",
+            &[
+                "json-escape-sequence-error",
+                "json-parse-error",
+                "json-error",
+                "error",
+            ],
+            "invalid escape sequence",
         ),
         // comp.c registers the native compiler and loader condition tree in
         // C, independently of comp.el.  Keep that ownership here: these are
@@ -7383,6 +7413,12 @@ impl Interpreter {
         // mode changes (erc-d's canned-dialog buffers register their
         // cleanup before switching to lisp-data-mode).
         interp.put_symbol_property("kill-buffer-hook", "permanent-local", Value::T);
+        // json.c syms_of_json: json-serialize and json-parse-string are
+        // pure and side-effect-free, so the byte compiler may fold them.
+        for name in ["json-serialize", "json-parse-string"] {
+            interp.put_symbol_property(name, "pure", Value::T);
+            interp.put_symbol_property(name, "side-effect-free", Value::T);
+        }
         // files.el keeps `write-file-functions' global by default: a local
         // binding is allowed and survives a mode change, but ordinary global
         // additions must remain visible in every buffer.  The two legacy and

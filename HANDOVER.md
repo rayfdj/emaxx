@@ -10499,6 +10499,55 @@ setup_process_coding_systems's check now refuses). A 13-form
   checkpoints stay in order and true. Local validation: the grouped
   gate's 3,368 library tests, the integration targets and clippy
   with `--all-targets --all-features -D warnings' pass.
+- **Round 201: JSON as json.c parses and writes it.** The parser was a
+  converted copy of the text read into a node tree, its errors data of the
+  shape `(CONDITION MESSAGE nil POSITION)' where json.c signals
+  `(CONDITION LINE COLUMN POSITION)', and json-parse-string of 20,000
+  objects took 0.127 s against GNU's 0.050 s. It is now json.c's parser:
+  json-parse-string reads the string's bytes (SDATA) and json-parse-buffer
+  the buffer's from point to Z, past a narrowing as json.c does, byte by
+  byte with json.c's line and column accounting; strings strictly UTF-8,
+  made multibyte with their character count as json_parse_string counts
+  it, `\u' escapes and surrogate pairs as json_parse_unicode reads them;
+  numbers summed while read, an overflowing integer read again as
+  string_to_number reads it and a float that overflows strtod
+  `json-number-out-of-range-error'; values made as they are read, an
+  array's elements and an object's members gathered in a workspace until
+  the vector or table that holds them is made, a table of the members'
+  count (`hash-table-size' 3 for three members where it was 6); nesting
+  limited by json_parser's available depth of 10000. json-out-of-memory,
+  json-object-too-deep, json-invalid-surrogate-error,
+  json-number-out-of-range-error and json-escape-sequence-error are
+  defined as syms_of_json defines them, and json-serialize and
+  json-parse-string carry its `pure' and `side-effect-free' properties.
+  The keyword arguments are json_parse_args: read from the back so a
+  keyword's first value wins, an odd count `(wrong-type-argument plistp
+  ARGS)', `:array-type 'array' accepted where `vector' was, and an unknown
+  keyword or value data.c's wrong_choice ("One of array or list should be
+  specified"). The serializer is json_out_t: one output buffer, the
+  configured null and false objects by EQ (eql before), an alist's or
+  plist's keys deduplicated by identity in json.c's symset, floats written
+  with `float-output-format' bound to nil (it was honored) and Inf or NaN
+  `(error "JSON does not allow Inf or NaN" FLOAT)'. json-parse-string of
+  the 20,000 objects three times takes 0.061 s (ten parses 1,687 M
+  instructions against GNU's 1,509 M, 2,046 M before); json-serialize of
+  them three times 0.027 s against GNU's 0.028 s
+  (0.055 s before; ten serializations 1,025 M instructions against
+  GNU's 842 M). Recorded difference: json-parse-buffer
+  in a narrowed buffer reads past ZV as GNU does but leaves point at ZV
+  where GNU's SET_PT_BOTH leaves it past ZV, a position no other GNU
+  primitive produces. Round 197's statement that the JSON battery matched
+  GNU was wrong: that loop passed `NAME:COUNT.el' as the file for four of
+  its batteries (reader syntax, strings, JSON, overlays), which therefore
+  never ran; run properly, only the JSON battery differed. Its 11 ops,
+  three further batteries (10 parse and buffer ops, 15 error-data, depth,
+  float and argument ops, 11 serializer ops) and the JSON ERT files
+  (test/src/json-tests.el, test/lisp/json-tests.el, jsonrpc-tests) match
+  GNU. Eleven oracle tests pin the error data, values, sources, buffer
+  positions, nesting limits, keyword arguments, table sizes, serializer
+  output and json-insert. Local validation: the grouped gate's 3,378
+  library tests, the integration targets and clippy with `--all-targets
+  --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -11807,6 +11856,20 @@ language server flake); fileio-tests' relative-HOME test now matches. Setup
 64.0 s against 55.5 s (1.153), test bodies 224.7 s against 244.7 s
 (0.918), in all 0.979. The failed job was rerun once; its result is
 recorded with round 201.
+
+**On `2f7c378`**, the frozen job's rerun (run 41190187346, second
+attempt) matched all 7,928 outcomes: setup 57.5 s against 51.1 s (1.126),
+test bodies 211.2 s against 226.9 s (0.931), in all 0.977.
+
+**On `92339c1`** (round 200): full Rust gate passed (run 41192916041);
+frozen (run 41192917943) matched 7,927 of 7,928 outcomes on both attempts,
+the one mismatch each time the oracle's
+`eglot-test-rust-completion-exit-function' failing while Emaxx passed
+(Emaxx 0 unexpected outcomes; the language server flake, as with round
+187). First attempt: setup 80.2 s against 66.6 s (1.205), test bodies
+254.6 s against 270.3 s (0.942), in all 0.981; second: setup 63.3 s
+against 55.1 s (1.147), test bodies 225.4 s against 247.7 s (0.910), in
+all 0.970.
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'
