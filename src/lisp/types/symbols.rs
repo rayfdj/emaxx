@@ -355,6 +355,7 @@ const KEY_NAMES: &[&str] = &[
     "event-symbol-elements",
     "modifier-cache",
     "event-kind",
+    "watchers",
     "tab-width",
     "ctl-arrow",
     "selective-display",

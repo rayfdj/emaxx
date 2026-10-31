@@ -892,8 +892,16 @@ fn image_records_symbol_cells_from_the_interpreter() {
         plain.flags & super::context::FLAG_TRAPPED_WRITE,
         super::context::FLAG_TRAPPED_WRITE
     );
-    assert_eq!(plain.watchers, vec![Value::symbol("ignore")]);
-    assert_eq!(plain.plist.to_vec().ok().map(|plist| plist.len()), Some(2));
+    // data.c keeps the watchers in the `watchers' property.
+    assert_eq!(
+        plain.plist.to_vec().ok(),
+        Some(vec![
+            Value::symbol("zz-prop"),
+            Value::string("value"),
+            Value::symbol("watchers"),
+            Value::list([Value::symbol("ignore")]),
+        ])
+    );
     let function = mapped(3, "zz-dump-fn");
     assert_eq!(function.cell().function.get(), Value::symbol("car"));
     assert_eq!(mapped(4, "zz-dump-void").cell().value(), None);

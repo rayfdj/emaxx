@@ -20716,6 +20716,7 @@ fn set_buffer_redisplay_is_a_callable_variable_watcher() {
     let watcher = interp
         .lookup_function("set-buffer-redisplay", &env)
         .expect("xdisp watcher primitive should be prebound");
+    // data.c:Fadd_variable_watcher returns nil.
     assert_eq!(
         call(
             &mut interp,
@@ -20724,7 +20725,7 @@ fn set_buffer_redisplay_is_a_callable_variable_watcher() {
             &mut env,
         )
         .expect("install redisplay watcher"),
-        watcher
+        Value::Nil
     );
     let form = Reader::new(
         "(setq header-line-format
@@ -33037,5 +33038,21 @@ fn find_operation_coding_system_reads_the_operation_s_target_idx_as_coding_c() {
         r#"(let ((file-coding-system-alist '(("\\.zz\\'" . utf-8) ("\\.yy\\'" . zz-fop) ("\\.xx\\'" latin-1 . utf-8) ("\\.ww\\'" . "str") ("\\.vv\\'" . zz-unbound-fop) ("\\.uu\\'" . nil))) (process-coding-system-alist '(("zzproc" . undecided))) (network-coding-system-alist '((8080 . utf-8)))) (defalias 'zz-fop (lambda (args) (list 'called (car args)))) (put 'zz-op 'target-idx 1) (list (find-operation-coding-system 'insert-file-contents "a.zz") (find-operation-coding-system 'write-region 1 2 "b.yy") (find-operation-coding-system 'insert-file-contents "c.xx") (find-operation-coding-system 'insert-file-contents "d.ww") (find-operation-coding-system 'insert-file-contents "e.vv") (find-operation-coding-system 'insert-file-contents "f.uu") (find-operation-coding-system 'insert-file-contents (cons "a.zz" (current-buffer))) (find-operation-coding-system 'zz-op 'x "zzproc") (find-operation-coding-system 'open-network-stream 'n 'b 'h 8080) (find-operation-coding-system 'open-network-stream 'n 'b 'h t) (condition-case e (find-operation-coding-system 'car "x") (error e)) (condition-case e (find-operation-coding-system "car" "x") (error e)) (condition-case e (find-operation-coding-system 'write-region "x") (error e)) (condition-case e (find-operation-coding-system 'insert-file-contents 'sym) (error e)) (condition-case e (find-operation-coding-system 'insert-file-contents (cons "a" "b")) (error e)) (condition-case e (find-operation-coding-system 'insert-file-contents) (error e))))"#,
         r#"((utf-8 . utf-8) (called write-region) (latin-1 . utf-8) nil nil (nil) (utf-8 . utf-8) (undecided . undecided) (utf-8 . utf-8) nil (error "Invalid first argument") (error "Invalid first argument") (error "Too few arguments for operation `write-region'") (error "Invalid argument 1 of operation `insert-file-contents'") (error "Invalid argument 1 of operation `insert-file-contents'") (error "Too few arguments"))"#,
         "find-operation-coding-system",
+    );
+}
+
+#[test]
+fn variable_watchers_are_the_watchers_property_as_data_c_keeps_them() {
+    // Fadd_variable_watcher puts the function in front of the base
+    // variable's `watchers' property unless an `equal' one is there, and
+    // answers nil as Fremove_variable_watcher does; notify_variable_watchers
+    // calls what the property holds, newest first, with the variable's
+    // stores untrapped, so a watcher's own store notifies no one and
+    // get-variable-watchers answers nil inside it; frame.el's
+    // set-buffer-redisplay watchers are in place from startup.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let (log) (defvar zz-w 1) (defvaralias 'zz-wa 'zz-w) (defvar zz-r 1) (list (add-variable-watcher 'zz-w (lambda (&rest a) (push (cons 'first (nth 2 a)) log))) (add-variable-watcher 'zz-wa (lambda (&rest a) (push (cons 'second (nth 2 a)) log))) (add-variable-watcher 'zz-w 'ignore) (add-variable-watcher 'zz-w 'ignore) (length (get-variable-watchers 'zz-wa)) (length (get 'zz-w 'watchers)) (get 'zz-wa 'watchers) (progn (setq zz-wa 2) (prog1 (reverse log) (setq log nil))) (remove-variable-watcher 'zz-wa 'ignore) (length (get 'zz-w 'watchers)) (progn (put 'zz-w 'watchers nil) (setq zz-w 3) (prog1 (reverse log) (setq log nil))) (get-variable-watchers 'zz-w) (remove-variable-watcher 'zz-w 'nothing) (progn (add-variable-watcher 'zz-r (lambda (s n o w) (push (list s n o (get-variable-watchers s)) log) (setq zz-r (1+ n)))) (setq zz-r 10) (list zz-r (prog1 log (setq log nil)))) (mapcar (lambda (v) (length (get v 'watchers))) '(mode-line-format truncate-lines line-spacing display-line-numbers))))"#,
+        r#"(nil nil nil nil 3 3 nil ((second . set) (first . set)) nil 2 nil nil nil (10 ((zz-r 10 set nil))) (1 1 1 1))"#,
+        "variable watchers",
     );
 }

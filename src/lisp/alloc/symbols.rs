@@ -132,8 +132,8 @@ const KBOARD_FORWARD: u16 = 1024;
 // forwarded variable is known to be the cell's alone without a name check.
 const STORE_EFFECT: u16 = 2048;
 // lisp.h: trapped_write == SYMBOL_TRAPPED_WRITE: a variable watcher is
-// registered under this object (`Interpreter::variable_watchers' holds
-// them), so a store notifies; without it none is.
+// registered under this object (its `watchers' property holds them), so a
+// store notifies; without it none is.
 const TRAPPED_WRITE: u16 = 4096;
 // Set with C_SLOT on the C variables whose value the current buffer holds
 // rather than the cell (`BUFFER_SLOT_VARIABLES'): the reads and stores that

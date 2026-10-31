@@ -4554,11 +4554,6 @@ impl Interpreter {
         }
         mark(&self.local_time_zone_rule);
         mark(&self.signaling_function);
-        for (_, watchers) in &self.variable_watchers {
-            for watcher in watchers {
-                mark(watcher);
-            }
-        }
         if let Some(value) = &self.current_global_map {
             mark(value);
         }
@@ -5003,12 +4998,6 @@ impl Interpreter {
             }
             clone.local_time_zone_rule = c.copy(&clone.local_time_zone_rule.clone());
             clone.signaling_function = c.copy(&clone.signaling_function);
-            for (symbol, watchers) in &mut clone.variable_watchers {
-                *symbol = c.copy_symbol(*symbol);
-                for watcher in watchers {
-                    *watcher = c.copy(watcher);
-                }
-            }
             if let Some(map) = &clone.current_global_map {
                 clone.current_global_map = Some(c.copy(map));
             }
@@ -5512,8 +5501,6 @@ pub struct InterpreterState {
     /// symbol view is synthesized from the interpreter's canonical namespace
     /// indexes rather than duplicated in the record's storage slot.
     standard_obarray_id: u64,
-    /// Variable watchers keyed by canonical variable name.
-    variable_watchers: Vec<(SymbolName, Vec<Value>)>,
     /// The current buffer being operated on.
     pub buffer: crate::lisp::types::BufferRef,
     /// Keymap selected by `use-global-map'.  GNU keeps this independently
@@ -6382,7 +6369,6 @@ impl Interpreter {
             known_symbols_cache: RefCell::new(None),
             obarray_epoch: 0,
             standard_obarray_id,
-            variable_watchers: Vec::new(),
             buffer: crate::lisp::types::BufferRef::new(0, crate::buffer::Buffer::new("*scratch*")),
             current_global_map: None,
             current_buffer_id: 0,

@@ -10747,6 +10747,32 @@ setup_process_coding_systems's check now refuses). A 13-form
   documentation. Local validation: the grouped gate's 3,389 library
   tests, the integration targets and clippy with `--all-targets
   --all-features -D warnings' pass.
+- **Round 209: variable watchers kept as data.c keeps them.** Emaxx held
+  each variable's watch functions in a table of its own:
+  `add-variable-watcher' and `remove-variable-watcher' answered the
+  function where GNU answers nil, a new watcher went behind the older ones
+  and was called after them, `(get VAR 'watchers)' was nil and storing
+  into that property changed nothing, frame.el's set-buffer-redisplay
+  watchers on `mode-line-format', `truncate-lines' and twenty other
+  display variables were invisible, and a watcher that stored into its own
+  variable recursed until `excessive-lisp-nesting' (GNU's watcher runs
+  with the variable's stores untrapped, so its store notifies no one and
+  the outer store then lands). The watchers are now the `watchers'
+  property of the base variable: Fadd_variable_watcher traps the
+  variable's stores and conses the function in front unless an `equal' one
+  is there, Fremove_variable_watcher deletes it and untraps with the last,
+  Fget_variable_watchers reads the property while the stores are trapped,
+  and notify_variable_watchers calls what the property holds, newest
+  first, as the base variable, untrapping the variable for the call and
+  trapping it again however the watchers return; `defvaralias' notifies
+  the alias's watchers and gives the alias its base's trap. The image
+  carries the trap in the symbol's flags and the watchers in its plist
+  (the separate watcher list of a symbol record is gone). An oracle test
+  pins the protocol; the GC variables' C watchers (alloc.c's
+  watch_gc_cons_threshold and watch_gc_cons_percentage) remain the one
+  startup difference. Local validation: the grouped gate's 3,390
+  library tests, the integration targets and clippy with `--all-targets
+  --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -12104,6 +12130,11 @@ setup 75.8 s against 59.8 s (1.269), test bodies 247.0 s against 253.8 s
 frozen (run 41217428179) matched all 7,928 outcomes on the first attempt:
 setup 66.0 s against 57.5 s (1.148), test bodies 227.0 s against 245.3 s
 (0.926), in all 0.977.
+
+**On `4a172df`** (round 208): full Rust gate passed (run 41220466282);
+frozen (run 41220468442) matched all 7,928 outcomes on the first attempt:
+setup 54.9 s against 48.3 s (1.137), test bodies 206.2 s against 221.2 s
+(0.933), in all 0.969.
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

@@ -7,6 +7,7 @@
 //! them; this is the symbol table and the static roots.
 
 use super::*;
+use crate::lisp::primitives::pdumper::context::FLAG_TRAPPED_WRITE;
 use crate::lisp::primitives::pdumper::image::RootSlot;
 use crate::lisp::primitives::pdumper::load::{LoadedImage, LoadedSymbol};
 use crate::lisp::types::{IdentityHasher, Kind};
@@ -80,7 +81,10 @@ impl Interpreter {
         for cells in &image.builtin_cells {
             self.install_function_cell(&cells.symbol, &cells.function);
             self.install_plist(&cells.symbol, &cells.plist);
-            self.install_watchers(&cells.symbol, &cells.watchers);
+            cells
+                .symbol
+                .cell()
+                .set_trapped_write(cells.flags & FLAG_TRAPPED_WRITE != 0);
         }
         for (slot, value) in &image.roots {
             self.install_root_slot(*slot, value);
@@ -207,7 +211,7 @@ impl Interpreter {
     }
 
     /// One symbol record: the value cell with its redirect and flags, the
-    /// function cell, the plist, the watchers.
+    /// function cell, the plist (the variable's watchers among it).
     fn install_symbol(&mut self, symbol: &LoadedSymbol) {
         use crate::lisp::primitives::pdumper::context::{
             FLAG_ALWAYS_LOCAL, FLAG_C_SLOT, FLAG_CONSTANT, FLAG_DECLARED_SPECIAL, FLAG_FWD_BOOL,
@@ -253,7 +257,9 @@ impl Interpreter {
         }
         self.install_function_cell(&name, &symbol.function);
         self.install_plist(&name, &symbol.plist);
-        self.install_watchers(&name, &symbol.watchers);
+        // The watchers are in the plist; their symbol's stores are trapped.
+        name.cell()
+            .set_trapped_write(symbol.flags & FLAG_TRAPPED_WRITE != 0);
     }
 
     /// The derived state a value carries beside its cell: the forwarded C
@@ -293,27 +299,6 @@ impl Interpreter {
         }
         // The restored symbol owns the same live plist read by every caller.
         let _ = self.set_symbol_plist_symbol(symbol, *plist);
-    }
-
-    fn install_watchers(&mut self, symbol: &SymbolName, watchers: &[Value]) {
-        if let Some(index) = self
-            .variable_watchers
-            .iter()
-            .rposition(|(watched, _)| watched == symbol)
-        {
-            if watchers.is_empty() {
-                self.remove_variable_watcher_entry(index);
-            } else {
-                self.variable_watchers[index]
-                    .0
-                    .cell()
-                    .set_trapped_write(true);
-                self.variable_watchers[index].1 = watchers.to_vec();
-            }
-        } else if !watchers.is_empty() {
-            symbol.cell().set_trapped_write(true);
-            self.variable_watchers.push((*symbol, watchers.to_vec()));
-        }
     }
 
     /// The inverse of `dump_root_values' for the single slots; the

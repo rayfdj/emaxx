@@ -1238,9 +1238,9 @@ define_dispatch!(
                             let resolved = interp.resolve_variable_symbol(&base)?;
                             let stored =
                                 interp.prepare_forwarded_assignment_symbol(&resolved, value)?;
-                            if !interp.variable_watchers(&base).is_empty() {
-                                interp.notify_variable_watchers(&base, value, "let", None, env)?;
-                            }
+                            interp.notify_variable_watchers_symbol(
+                                &resolved, value, "let", None, env,
+                            )?;
                             interp.set_symbol_value_cell_resolved(&resolved, stored);
                         }
                     }
@@ -1279,19 +1279,20 @@ define_dispatch!(
                         visible(&alias)
                     )));
                 }
-                if !interp.variable_watchers(&alias).is_empty() {
-                    interp.notify_variable_watchers(
-                        &alias,
-                        Value::Symbol(base),
-                        "defvaralias",
-                        None,
-                        env,
-                    )?;
-                    interp.clear_variable_watchers(&alias);
-                }
+                interp.notify_variable_watchers(
+                    &alias,
+                    Value::Symbol(base),
+                    "defvaralias",
+                    None,
+                    env,
+                )?;
                 interp.mark_special_variable_symbol(&alias);
                 interp.mark_special_variable_symbol(&base);
                 interp.set_variable_alias_symbol(&alias, &base)?;
+                // The alias's stores are trapped as its base's are.
+                alias
+                    .cell()
+                    .set_trapped_write(base.cell().is_trapped_write());
                 // LOADHIST_ATTACH (new_alias): the bare symbol, as for defvar.
                 interp.record_symbol_definition_in_load_history("defvar", &alias);
                 // "Even if docstring is nil: remove old docstring."

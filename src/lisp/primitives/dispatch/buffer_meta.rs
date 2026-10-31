@@ -796,16 +796,16 @@ define_dispatch!(
             "add-variable-watcher" => {
                 need_args(name, args, 2)?;
                 interp.add_variable_watcher(args[0].as_symbol()?, args[1])?;
-                Ok(args[1])
+                Ok(Value::Nil)
             }
             "remove-variable-watcher" => {
                 need_args(name, args, 2)?;
                 interp.remove_variable_watcher(args[0].as_symbol()?, &args[1])?;
-                Ok(args[1])
+                Ok(Value::Nil)
             }
             "get-variable-watchers" => {
                 need_args(name, args, 1)?;
-                Ok(Value::list(interp.variable_watchers(args[0].as_symbol()?)))
+                interp.variable_watchers(args[0].as_symbol()?)
             }
             "command-modes" => {
                 need_args(name, args, 1)?;

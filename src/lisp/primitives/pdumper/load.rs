@@ -36,7 +36,6 @@ pub(crate) struct LoadedSymbol {
     pub(crate) alias: Option<SymbolName>,
     pub(crate) function: Value,
     pub(crate) plist: Value,
-    pub(crate) watchers: Vec<Value>,
 }
 
 pub(crate) struct LoadedImage {
@@ -1215,11 +1214,6 @@ impl Loader<'_> {
                     _ => Some(symbol_of(next, "obarray chain")?),
                 });
             }
-            let nwatchers = self.reader.word(offset + SYMBOL_NWATCHERS)? as u32;
-            let mut watchers = Vec::new();
-            for index in 0..nwatchers {
-                watchers.push(self.value_at(offset + SYMBOL_WATCHERS + 8 * index)?);
-            }
             let (value, alias) = if flags & SYMBOL_REDIRECT_MASK == SYMBOL_VARALIAS {
                 (None, Some(symbol_of(val, "alias target")?))
             } else {
@@ -1232,7 +1226,6 @@ impl Loader<'_> {
                 alias,
                 function,
                 plist,
-                watchers,
             });
         }
 
@@ -2006,8 +1999,8 @@ impl Loader<'_> {
     /// The symbol a record stands for.  A symbol `unintern' removed from
     /// the obarray keeps its ordinary name; a symbol made uninterned gets
     /// a fresh identity; one interned in another obarray (SYMBOL_INTERNED)
-    /// is re-created under the internal name the record carries after
-    /// its watchers, so its obarray's lookups find the same object.
+    /// is re-created under the internal name the record ends with, so its
+    /// obarray's lookups find the same object.
     /// The symbol of a dumped record.  NAME is the record's name string,
     /// itself an object of the image: as pdumper.c's symbol points at
     /// that string, so does the interned state (no second copy of the
@@ -2053,10 +2046,8 @@ impl Loader<'_> {
 
     /// The host key a symbol record ends with: text of the permanent image.
     fn symbol_key(&self, offset: u32) -> Result<&'static str, LoadError> {
-        let nwatchers = self.reader.word(offset + SYMBOL_NWATCHERS)?;
-        let at = u64::from(offset + SYMBOL_WATCHERS) + 8 * nwatchers;
         let invalid = || LoadError::Error(format!("invalid symbol key at {offset}"));
-        let at = u32::try_from(at).map_err(|_| invalid())?;
+        let at = offset + SYMBOL_KEY;
         let len = self.reader.word(at)? as usize;
         let start = at as usize + 8;
         let bytes = self
@@ -2439,16 +2430,11 @@ impl Loader<'_> {
         }
     }
 
-    /// The cells record of `nil' or `t': flags, function, plist, watchers.
+    /// The cells record of `nil' or `t': flags, function, plist.
     fn load_builtin_cells(&mut self, offset: u32, name: &str) -> Result<LoadedSymbol, LoadError> {
         let flags = self.reader.word(offset)?;
         let function = self.value_at(offset + 8)?;
         let plist = self.value_at(offset + 16)?;
-        let nwatchers = self.reader.word(offset + 24)? as u32;
-        let mut watchers = Vec::with_capacity(nwatchers as usize);
-        for index in 0..nwatchers {
-            watchers.push(self.value_at(offset + 32 + 8 * index)?);
-        }
         Ok(LoadedSymbol {
             symbol: SymbolName::intern_str(name),
             flags,
@@ -2456,7 +2442,6 @@ impl Loader<'_> {
             alias: None,
             function,
             plist,
-            watchers,
         })
     }
 }
@@ -2464,8 +2449,7 @@ impl Loader<'_> {
 /// A symbol record's fields: the flags, name, value, function and plist,
 /// then these.
 const SYMBOL_NEXT: u32 = 40;
-const SYMBOL_NWATCHERS: u32 = 48;
-const SYMBOL_WATCHERS: u32 = 56;
+const SYMBOL_KEY: u32 = 48;
 
 /// A symbol-valued field: `nil' and `t' arrive as their immediate words.
 fn symbol_of(value: Value, what: &str) -> Result<SymbolName, LoadError> {

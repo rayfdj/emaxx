@@ -126,10 +126,6 @@ pub(crate) const ROOTS_RESET_AFTER_LOAD: &[(&str, &str)] = &[
         "the symbol cells: written per symbol from the obarray (dump_symbol)",
     ),
     (
-        "variable_watchers",
-        "written per symbol (dump_symbol's watchers)",
-    ),
-    (
         "buffer_locals",
         "written per buffer (dump_buffer's local_var_alist)",
     ),

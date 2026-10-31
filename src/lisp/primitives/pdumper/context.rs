@@ -140,7 +140,7 @@ fn mapped_symbol_state(
     };
     (!string.is_empty_singleton()
         && interp.standard_obarray_contains_object(symbol)
-        && interp.variable_watchers(symbol.as_str()).is_empty())
+        && !symbol.cell().is_trapped_write())
     .then_some(state)
 }
 
@@ -996,7 +996,7 @@ impl DumpContext {
         Ok(())
     }
 
-    /// The function cell, plist and watchers of `nil' or `t'.
+    /// The function cell and plist of `nil' or `t'.
     fn dump_builtin_symbol_cells(
         &mut self,
         interp: &Interpreter,
@@ -1008,21 +1008,14 @@ impl DumpContext {
             .raw_function_binding(name, &crate::lisp::types::Env::new())
             .unwrap_or(Value::Nil);
         let plist = interp.symbol_plist(name);
-        let watchers = interp.variable_watchers(name);
         let start = self.object_start()?;
         let mut words = vec![
-            symbol_flags_word(&symbol, &cell, !watchers.is_empty(), false),
+            symbol_flags_word(&symbol, &cell, symbol.cell().is_trapped_write(), false),
             0,
             0,
-            watchers.len() as u64,
         ];
         self.field_lv(start, &mut words, 1, &function, WEIGHT_NORMAL);
         self.field_lv(start, &mut words, 2, &plist, WEIGHT_NORMAL);
-        for watcher in &watchers {
-            let index = words.len();
-            words.push(0);
-            self.field_lv(start, &mut words, index, watcher, WEIGHT_NORMAL);
-        }
         let offset = self.object_finish(&words)?;
         if self.flags.dump_object_contents && self.flags.record_object_starts {
             self.object_starts
@@ -1496,14 +1489,13 @@ impl DumpContext {
             .raw_function_binding_symbol(&symbol, &crate::lisp::types::Env::new())
             .unwrap_or(Value::Nil);
         let plist = interp.symbol_plist_symbol(&symbol);
-        let watchers = interp.variable_watchers(symbol.as_str());
         let start = self.object_start()?;
         let uninterned_from_obarray = false; // Object state now owns membership.
         let mut words = vec![
             symbol_flags_word(
                 &symbol,
                 &cell,
-                !watchers.is_empty(),
+                symbol.cell().is_trapped_write(),
                 uninterned_from_obarray,
             ),
             0,
@@ -1527,12 +1519,6 @@ impl DumpContext {
             _ => Value::Integer(0),
         };
         self.field_lv(start, &mut words, 5, &next, WEIGHT_NORMAL);
-        words.push(watchers.len() as u64);
-        for watcher in &watchers {
-            let index = words.len();
-            words.push(0);
-            self.field_lv(start, &mut words, index, watcher, WEIGHT_NORMAL);
-        }
         // Not GNU: the host key the symbol keeps beside its name, its length
         // and its bytes, which the loaded symbol keeps where the image
         // holds them: an uninterned symbol's visible name (it gets a fresh
