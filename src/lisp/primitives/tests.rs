@@ -32755,3 +32755,15 @@ fn expand_file_name_canonicalizes_as_fileio_c() {
         "expand-file-name superroot, leading //, embedded absolute names",
     );
 }
+
+#[test]
+fn relative_home_is_spliced_onto_the_startup_directory() {
+    // fileio.c:get_homedir: a relative or empty HOME names a directory
+    // under emacs_wd, the directory Emacs started in, whatever
+    // default-directory is.
+    assert_oracle_contract_matches_interpreter(
+        r##"(let ((process-environment (cons "HOME=a/b" process-environment)) (default-directory "/q/")) (list (file-name-absolute-p (expand-file-name "~/x")) (string-suffix-p "/a/b/x" (expand-file-name "~/x")) (string-prefix-p "/q/" (expand-file-name "~/x")) (let ((process-environment (cons "HOME=" process-environment))) (list (file-name-absolute-p (expand-file-name "~")) (string-suffix-p "/x" (expand-file-name "~/x")) (string-prefix-p "/q/" (expand-file-name "~/x"))))))"##,
+        r##"(t t nil (t t nil))"##,
+        "relative and empty HOME",
+    );
+}

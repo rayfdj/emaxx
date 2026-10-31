@@ -1098,11 +1098,18 @@ fn expand_file_name_with_home(path: &str, base: Option<&str>, home: Option<&str>
     let mut newdir: Option<String> = None;
     if let Some(after) = path.strip_prefix('~') {
         if after.is_empty() || after.starts_with('/') {
-            // get_homedir: HOME, else the passwd entry's directory, else "".
+            // get_homedir: HOME, else the passwd entry's directory, else
+            // ""; a relative one spliced onto the directory Emacs started
+            // in (emacs_wd, the process's working directory here).
             newdir = Some(
-                home.map(str::to_string)
+                match home
+                    .map(str::to_string)
                     .or_else(current_user_home_directory)
-                    .unwrap_or_default(),
+                {
+                    None => String::new(),
+                    Some(home) if home.starts_with('/') => home,
+                    Some(home) => default_directory() + &home,
+                },
             );
             rest = after;
         } else {

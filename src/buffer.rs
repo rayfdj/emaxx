@@ -243,6 +243,12 @@ struct BufferText {
     /// form is a byte longer than GNU's: a marker's byte position needs
     /// their count before it only when there are any.
     raw_markers: usize,
+    /// The count of the raw-byte markers before a byte offset, as the
+    /// last count found it: the next count scans from there, from the
+    /// start or from the end, whichever is nearest, as
+    /// buf_charpos_to_bytepos starts from the nearest known position.
+    /// Edits after it leave it; one before it moves it.
+    raw_anchor: Cell<(usize, usize)>,
     /// Recent char/byte conversions of a text whose characters are not
     /// all one byte.
     positions: Cell<PositionCache>,
@@ -383,27 +389,37 @@ impl BufferText {
         Self {
             text: GapText::from_str(text),
             raw_markers: count_raw_markers(text.as_bytes()),
+            raw_anchor: Cell::default(),
             positions: Cell::default(),
         }
     }
 
-    /// The raw-byte markers in the first BYTES bytes of the text.
+    /// The raw-byte markers in the first BYTES bytes of the text, counted
+    /// from the nearest of the anchor, the start and the end.
     fn raw_markers_before(&self, bytes: usize) -> usize {
         if self.raw_markers == 0 {
             return 0;
         }
-        let (first, second) = self.text.range_halves(0..bytes);
-        count_raw_markers(first.as_bytes()) + count_raw_markers(second.as_bytes())
+        let (at, count) = self.raw_anchor.get();
+        let to_end = self.text.len() - bytes;
+        let count = if bytes.abs_diff(at) <= bytes.min(to_end) {
+            if bytes >= at {
+                count + self.raw_markers_between(at, bytes)
+            } else {
+                count - self.raw_markers_between(bytes, at)
+            }
+        } else if bytes <= to_end {
+            self.raw_markers_between(0, bytes)
+        } else {
+            self.raw_markers - self.raw_markers_between(bytes, self.text.len())
+        };
+        self.raw_anchor.set((bytes, count));
+        count
     }
 
-    /// The raw-byte markers among the characters of RANGE.
-    fn raw_markers_in(&self, range: std::ops::Range<usize>) -> usize {
-        if self.raw_markers == 0 {
-            return 0;
-        }
-        let start = self.char_to_byte(range.start);
-        let end = self.char_to_byte(range.end);
-        let (first, second) = self.text.range_halves(start..end);
+    /// The raw-byte markers in bytes [FROM, TO) of the text.
+    fn raw_markers_between(&self, from: usize, to: usize) -> usize {
+        let (first, second) = self.text.range_halves(from..to);
         count_raw_markers(first.as_bytes()) + count_raw_markers(second.as_bytes())
     }
 
@@ -628,45 +644,55 @@ impl BufferText {
             .get_mut()
             .inserted(char_index, added, text.len());
         self.raw_markers += raw_markers;
+        let (at, count) = self.raw_anchor.get();
+        if at > byte {
+            self.raw_anchor.set((at + text.len(), count + raw_markers));
+        }
         self.check_counts();
     }
 
     fn remove(&mut self, range: std::ops::Range<usize>) {
         let start = self.char_to_byte(range.start);
         let end = self.char_to_byte(range.end);
-        self.raw_markers -= if range.len() == self.text.chars() {
+        let removed = if range.len() == self.text.chars() {
             self.raw_markers
         } else if self.raw_markers == 0 {
             0
         } else {
-            let (first, second) = self.text.range_halves(start..end);
-            count_raw_markers(first.as_bytes()) + count_raw_markers(second.as_bytes())
+            self.raw_markers_between(start, end)
         };
-        self.delete(range, start, end - start);
+        self.delete(range, start, end - start, removed);
     }
 
     /// `remove' for a caller that already holds the removed text.
     fn remove_text(&mut self, range: std::ops::Range<usize>, removed: &str) {
-        self.raw_markers -= if range.len() == self.text.chars() {
+        let markers = if range.len() == self.text.chars() {
             self.raw_markers
         } else {
             count_raw_markers(removed.as_bytes())
         };
         let start = self.char_to_byte(range.start);
-        self.delete(range, start, removed.len());
+        self.delete(range, start, removed.len(), markers);
     }
 
-    /// `remove' of RANGE, BYTES long, whose raw-byte markers the caller
-    /// has counted.
-    fn remove_bytes(&mut self, range: std::ops::Range<usize>, bytes: usize) {
-        let start = self.char_to_byte(range.start);
-        self.delete(range, start, bytes);
-    }
-
-    /// The characters of RANGE, BYTES bytes from byte START, deleted.
-    fn delete(&mut self, range: std::ops::Range<usize>, start: usize, bytes: usize) {
+    /// The characters of RANGE, BYTES bytes from byte START, deleted,
+    /// MARKERS raw-byte markers among them.
+    fn delete(
+        &mut self,
+        range: std::ops::Range<usize>,
+        start: usize,
+        bytes: usize,
+        markers: usize,
+    ) {
         self.text.delete(start..start + bytes, range.clone());
         self.positions.get_mut().removed(range, bytes);
+        self.raw_markers -= markers;
+        let (at, count) = self.raw_anchor.get();
+        if at >= start + bytes {
+            self.raw_anchor.set((at - bytes, count - markers));
+        } else if at > start {
+            self.raw_anchor.set((0, 0));
+        }
         self.check_counts();
     }
 
@@ -686,6 +712,8 @@ impl BufferText {
                 self.raw_markers,
                 count_raw_markers(before.as_bytes()) + count_raw_markers(after.as_bytes())
             );
+            let (at, count) = self.raw_anchor.get();
+            assert_eq!(count, self.raw_markers_between(0, at));
         }
     }
 }
@@ -3647,6 +3675,40 @@ mod tests {
         }
         assert_eq!(count_raw_markers(&[0xEE]), 0);
         assert_eq!(count_raw_markers(&[0xEE, 0x81, 0x80]), 0);
+    }
+
+    /// Byte positions of a text holding raw bytes, read in and out of
+    /// order between edits before, inside and after the last count's
+    /// anchor, against a count from the start.
+    #[test]
+    fn raw_marker_counts_follow_edits_around_their_anchor() {
+        let mut buf = Buffer::from_text("test", &"ab\u{E0FF}c\u{E080}\n".repeat(300));
+        assert!(buf.is_multibyte());
+        let recount = |buf: &Buffer, position: usize| {
+            let text = buf.buffer_string();
+            let stored: usize = text.chars().take(position - 1).map(char::len_utf8).sum();
+            1 + stored - count_raw_markers(&text.as_bytes()[..stored])
+        };
+        let mut seed = 4_242_u64;
+        let mut next = |bound: usize| {
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            (seed >> 33) as usize % bound
+        };
+        for _ in 0..800 {
+            let size = buf.size_total();
+            for _ in 0..3 {
+                let position = 1 + next(size + 1);
+                assert_eq!(buf.marker_byte_position(position), recount(&buf, position));
+            }
+            if next(2) == 0 {
+                buf.goto_char(1 + next(size + 1));
+                buf.insert(["x", "\u{E0C0}y", "é\u{E081}"][next(3)]);
+            } else if size > 2 {
+                let from = 1 + next(size - 1);
+                let to = (from + 1 + next(8)).min(size + 1);
+                buf.delete_region(from, to).unwrap();
+            }
+        }
     }
 
     #[test]

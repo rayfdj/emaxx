@@ -10435,6 +10435,40 @@ setup_process_coding_systems's check now refuses). A 13-form
   0.013 s. Local validation: the grouped gate's 3,365 library tests,
   the integration targets and clippy with `--all-targets --all-features
   -D warnings' pass.
+- **Round 199: raw-byte counts from the nearest known offset, and a
+  relative HOME.** A raw
+  byte in a multibyte buffer is stored as a three-byte marker
+  (U+E080..U+E0FF) where GNU stores two bytes, so a byte position counts
+  the markers before it, and BufferText::raw_markers_before counted them
+  from the start of the text each time: with one raw byte anywhere in a
+  740 KB buffer, 2,000 position-bytes calls took 0.132 s against GNU's
+  0.001 s, and deleting a character on each of 20,000 lines holding a raw
+  byte took 0.199 s against 0.013 s (delete_region_1's two byte
+  positions, 82% of the run in count_raw_markers). The text now keeps the
+  count at the offset the last count reached (`raw_anchor'), moved by an
+  insertion or deletion before it and reset by one across it, and a count
+  scans from the nearest of that offset, the start and the end, as
+  buf_charpos_to_bytepos starts from the nearest known position: the
+  deletions take 0.011 s and the position-bytes calls too little to
+  measure. The unused raw_markers_in and remove_bytes are gone, the
+  checked build verifies the anchor with the other counts, and a new test
+  reads byte positions in and out of order between insertions and
+  deletions before, inside and after the anchor against a count from the
+  start. The round 195 batteries (raw-byte strings, unibyte buffers,
+  casing) still match GNU op for op.
+
+  Round 197's frozen run failed `fileio-tests--relative-HOME': with HOME
+  "a/b/c", `(expand-file-name "~/foo")' gave "a/b/c/foo" where GNU's
+  get_homedir splices a relative or empty HOME onto emacs_wd, the
+  directory Emacs started in (before round 197 Emaxx expanded it against
+  `default-directory', so a let-bound one moved it). The home a `~'
+  names is now spliced onto the process's working directory, which only
+  `--chdir' changes, as emacs_wd follows it; a new oracle test binds
+  `default-directory' elsewhere and reads a relative and an empty HOME.
+  Rounds 198 and 199 are pushed together, so no head carries the
+  failure. Local validation: the grouped gate's 3,367 library tests,
+  the integration targets and clippy with `--all-targets --all-features
+  -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
