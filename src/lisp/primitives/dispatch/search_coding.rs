@@ -988,6 +988,7 @@ define_dispatch!(
                 // editfns.c:Ftranspose_regions validates each region.
                 let (mut start1, mut end1) = validate_region(interp, &args[0], &args[1])?;
                 let (mut start2, mut end2) = validate_region(interp, &args[2], &args[3])?;
+                let given = [(start1, end1), (start2, end2)];
                 if start2 < end1 {
                     std::mem::swap(&mut start1, &mut start2);
                     std::mem::swap(&mut end1, &mut end2);
@@ -998,98 +999,26 @@ define_dispatch!(
                 if (start1 == end1 || start2 == end2) && end1 == start2 {
                     return Ok(Value::Nil);
                 }
+                let leave_markers = args.get(4).is_some_and(|value| value.is_truthy());
                 // editfns.c: modify_text over both regions and what lies
-                // between, then one change of it all.
+                // between, the text rearranged where it stands, then one
+                // change of it all.
                 modify_current_buffer(interp, start1, end2, false, env, |interp, _, _| {
-                    let leave_markers = args.get(4).is_some_and(|value| value.is_truthy());
-                    let saved_markers =
-                        interp.live_marker_positions_for_buffer(interp.current_buffer_id());
-                    let region1_text = interp
-                        .buffer
-                        .borrow()
-                        .buffer_substring(start1, end1)
-                        .map_err(|e| LispError::Signal(e.to_string()))?;
-                    let region1_props = interp.buffer.borrow().copy_intervals(start1, end1);
-                    let region1_extended = interp
-                        .buffer
-                        .borrow()
-                        .substring_extended_chars(start1, end1);
-                    let region2_text = interp
-                        .buffer
-                        .borrow()
-                        .buffer_substring(start2, end2)
-                        .map_err(|e| LispError::Signal(e.to_string()))?;
-                    let region2_props = interp.buffer.borrow().copy_intervals(start2, end2);
-                    let region2_extended = interp
-                        .buffer
-                        .borrow()
-                        .substring_extended_chars(start2, end2);
-                    let gap = interp
-                        .buffer
-                        .borrow()
-                        .buffer_substring(end1, start2)
-                        .map_err(|e| LispError::Signal(e.to_string()))?;
-                    let gap_len = gap.chars().count();
-                    interp
-                        .delete_region_current_buffer_unreturned(start2, end2)
-                        .map_err(|e| LispError::Signal(e.to_string()))?;
-                    interp
-                        .delete_region_current_buffer_unreturned(start1, end1)
-                        .map_err(|e| LispError::Signal(e.to_string()))?;
-                    // Each region's text with its copied intervals grafted
-                    // without inheritance, as Ftranspose_regions grafts
-                    // them.
-                    fn grafted(
-                        props: &Option<crate::intervals::Intervals>,
-                    ) -> crate::buffer::InsertedProperties<'_> {
-                        match props {
-                            Some(source) => crate::buffer::InsertedProperties::Intervals {
-                                source,
-                                inherit: false,
-                            },
-                            None => crate::buffer::InsertedProperties::PLAIN,
-                        }
+                    // GNU rearranges the text the hooks left without looking
+                    // again; text they removed is out of range here.
+                    if end2 > interp.buffer.borrow().size_total() + 1 {
+                        return Err(LispError::SignalValue(Value::list([
+                            Value::symbol("args-out-of-range"),
+                            Value::Integer(start1 as i64),
+                            Value::Integer(end2 as i64),
+                        ])));
                     }
-                    interp.buffer.borrow_mut().goto_char(start1);
-                    interp.insert_current_buffer_with(
-                        &region2_text,
-                        grafted(&region2_props),
-                        false,
+                    interp.buffer.borrow_mut().transpose_regions(
+                        (start1, end1),
+                        (start2, end2),
+                        given,
+                        leave_markers,
                     );
-                    interp.set_inserted_extended_chars(start1, &region2_extended);
-                    let insert_region1_at = start1 + region2_text.chars().count() + gap_len;
-                    interp.buffer.borrow_mut().goto_char(insert_region1_at);
-                    interp.insert_current_buffer_with(
-                        &region1_text,
-                        grafted(&region1_props),
-                        false,
-                    );
-                    interp.set_inserted_extended_chars(insert_region1_at, &region1_extended);
-                    let len1 = end1 - start1;
-                    let len2 = end2 - start2;
-                    let diff = len2 as isize - len1 as isize;
-                    let amt1 = len2 + (start2 - end1);
-                    let amt2 = len1 + (start2 - end1);
-                    for (marker_id, original) in saved_markers {
-                        let Some(original_pos) = original else {
-                            continue;
-                        };
-                        let new_pos =
-                            if leave_markers || original_pos < start1 || original_pos >= end2 {
-                                original_pos
-                            } else if original_pos < end1 {
-                                original_pos + amt1
-                            } else if original_pos < start2 {
-                                ((original_pos as isize) + diff) as usize
-                            } else {
-                                original_pos - amt2
-                            };
-                        let _ = interp.set_marker(
-                            marker_id,
-                            Some(new_pos),
-                            Some(interp.current_buffer_id()),
-                        );
-                    }
                     Ok((
                         Some(AfterChange::new(start1, end2 - start1, end2 - start1)),
                         (),

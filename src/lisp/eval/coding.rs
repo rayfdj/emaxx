@@ -1335,17 +1335,6 @@ impl Interpreter {
             .map(|buffer| buffer.markers().count())
             .sum()
     }
-
-    pub fn live_marker_positions_for_buffer(
-        &self,
-        buffer_id: u64,
-    ) -> Vec<(crate::lisp::types::MarkerRef, Option<usize>)> {
-        self.buffer_object(buffer_id)
-            .into_iter()
-            .flat_map(|buffer| buffer.markers())
-            .map(|marker| (marker, marker.position()))
-            .collect()
-    }
 }
 
 /// A buffer's four case tables (buffer.h's downcase_table, upcase_table,

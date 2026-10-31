@@ -10053,6 +10053,38 @@ setup_process_coding_systems's check now refuses). A 13-form
   Local validation: the grouped gate's 3,350 library tests, the
   seven integration suites, clippy with every target and feature,
   rustfmt and `git diff --check'.
+- **Round 190: transpose-regions as editfns.c's Ftranspose_regions.**
+  Emaxx deleted both regions and inserted them again: point moved with
+  the insertions (`(transpose-regions 1 3 5 7)' with point at 4 left it
+  at 7, GNU at 4), overlays moved and stretched, markers were set back
+  one by one, and the undo list held deletions, insertions and marker
+  adjustments. Buffer::transpose_regions now follows Ftranspose_regions
+  after its modify_text: the text of [START1, END2) is rearranged where
+  it stands (replace_text_in_place, the side table of characters beyond
+  Unicode with it), with record_change over both regions when they are
+  adjacent, over each when they are equal in bytes and over their whole
+  span otherwise (before modify_text when the second is the shorter, so
+  an unmodified buffer gets the first-change records GNU gives it), each
+  region's intervals and the text between's copied (copy_intervals), the
+  properties cleared over the span from the first region's start to the
+  second's end as the caller gave them (validate_interval_range of
+  STARTR1 and ENDR2: regions given in reverse clear that span, adjacent
+  ones in reverse nothing) or over each given region when equal, and the
+  copies grafted without inheritance where GNU grafts them (for
+  byte-equal regions at GNU's character positions). transpose_markers
+  then moves point and every marker (the mark included) unless
+  LEAVE-MARKERS; overlays stay, as in GNU. A battery of 22 cases (each
+  case in both orders, LEAVE-MARKERS, empty and overlapping regions,
+  narrowing, change hooks, an unmodified buffer, read-only text,
+  multibyte text of equal and unequal bytes, raw bytes, a unibyte
+  buffer, a buffer without undo) gives GNU's text, properties, point,
+  markers, overlay, modified flag, undo list, hook calls and undone text,
+  and three transpositions GNU's `intervals-consed' delta. editfns-tests,
+  simple-tests, undo-tests and subr-tests pass as many tests as GNU's.
+  The interpreter's live_marker_positions_for_buffer, used only by the
+  old transposition, is removed. Local validation: the grouped gate's
+  3,351 library tests, the seven integration suites, clippy with
+  every target and feature, rustfmt and `git diff --check'.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -11286,6 +11318,12 @@ frozen (run 41148756713) matched all 7,928 outcomes on its first
 attempt. Setup 47.5 s against 41.5 s (1.145), test bodies 195.2 s
 against 207.9 s (0.939), in all 0.962; undo-tests' bodies 0.59 s against
 0.47 s. PR #116 took rounds 181 to 188 into main as `bc45e15`.
+
+**On `5ba7ec7`** (round 189): full Rust gate passed (run 41153636938);
+frozen (run 41153638950) matched all 7,928 outcomes on its first
+attempt. Setup 82.5 s against 68.5 s (1.205), test bodies 259.1 s
+against 271.5 s (0.955), in all 0.994; undo-tests' bodies 1.12 s against
+0.93 s.
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

@@ -9413,6 +9413,47 @@ fn string_and_buffer_edits_keep_intervals_as_gnu() {
     );
 }
 
+/// editfns.c:Ftranspose_regions: the text rearranged where it stands,
+/// so point, markers (by transpose_markers unless LEAVE-MARKERS) and
+/// overlays (left alone) end where GNU's do; record_change for both
+/// regions, their span or each equal-length region, the first-change
+/// records when the second region is shorter, and the property changes
+/// of the span from the given first region's start to the given second
+/// region's end (none for adjacent regions given in reverse); and
+/// undoing all of it.
+#[test]
+fn transpose_regions_works_in_place_as_editfns_c() {
+    assert_oracle_contract_matches_interpreter(
+        r##"(let ((s (concat (propertize "ab" 'face 'bold) "cd" (propertize "ef" 'x 1) "gh"))
+             (run (lambda (text args &optional setup)
+                    (with-temp-buffer
+                      (buffer-enable-undo)
+                      (insert text)
+                      (let ((m1 (copy-marker 2)) (m2 (copy-marker 4 t)) (ov (make-overlay 2 5)) (log nil))
+                        (setq buffer-undo-list nil)
+                        (goto-char 3)
+                        (when setup (funcall setup))
+                        (add-hook 'after-change-functions (lambda (b e l) (push (list b e l) log)) nil t)
+                        (apply #'transpose-regions args)
+                        (list (buffer-string) (point) (marker-position m1) (marker-position m2)
+                              (overlay-start ov) (overlay-end ov)
+                              (mapcar (lambda (e) (if (eq (car-safe e) t) t e)) buffer-undo-list)
+                              log
+                              (progn (primitive-undo 20 buffer-undo-list) (buffer-string))))))))
+         (list (funcall run s '(1 3 3 5))
+               (funcall run s '(3 5 1 3))
+               (funcall run s '(1 3 5 7))
+               (funcall run s '(5 7 1 3))
+               (funcall run s '(1 2 4 7))
+               (funcall run s '(1 4 6 7) (lambda () (set-buffer-modified-p nil)))
+               (funcall run s '(1 2 4 7 t))
+               (funcall run "aéxyzbb" '(1 3 5 7))
+               (funcall run "abcdefgh" '(1 3 5 8) (lambda () (set-buffer-multibyte nil)))))"##,
+        r##"((#("cdabefgh" 2 4 (face bold) 4 6 (x 1)) 1 4 2 2 5 ((nil face bold 1 . 3) (1 . 5) (#("abcd" 0 2 (face bold)) . 1)) ((1 5 4)) #("abcdefgh" 0 2 (face bold) 4 6 (x 1))) (#("cdabefgh" 2 4 (face bold) 4 6 (x 1)) 1 4 2 2 5 ((1 . 5) (#("abcd" 0 2 (face bold)) . 1)) ((1 5 4)) #("abcdefgh" 0 2 (face bold) 4 6 (x 1))) (#("efcdabgh" 0 2 (x 1) 4 6 (face bold)) 3 6 4 2 5 ((nil x 1 5 . 7) (nil face bold 1 . 3) (5 . 7) (#("ef" 0 2 (x 1)) . 5) (1 . 3) (#("ab" 0 2 (face bold)) . -1)) ((1 7 6)) #("abcdefgh" 0 2 (face bold) 4 6 (x 1))) (#("efcdabgh" 0 2 (x 1) 4 6 (face bold)) 3 6 4 2 5 ((nil face bold 1 . 3) (nil x 1 5 . 7) (5 . 7) (#("ef" 0 2 (x 1)) . 5) (1 . 3) (#("ab" 0 2 (face bold)) . -1)) ((1 7 6)) #("abcdefgh" 0 2 (face bold) 4 6 (x 1))) (#("defbcagh" 1 3 (x 1) 3 4 (face bold) 5 6 (face bold)) 5 4 1 2 5 ((nil x 1 5 . 7) (nil face bold 1 . 3) (1 . 7) (#("abcdef" 0 2 (face bold) 4 6 (x 1)) . 1)) ((1 7 6)) #("abcdefgh" 0 2 (face bold) 4 6 (x 1))) (#("fdeabcgh" 0 1 (x 1) 2 3 (x 1) 3 5 (face bold)) 6 5 2 2 5 ((nil x 1 5 . 7) (nil face bold 1 . 3) t (1 . 7) t (#("abcdef" 0 2 (face bold) 4 6 (x 1)) . 1) t) ((1 7 6)) #("abcdefgh" 0 2 (face bold) 4 6 (x 1))) (#("defbcagh" 1 3 (x 1) 3 4 (face bold) 5 6 (face bold)) 3 2 4 2 5 ((nil x 1 5 . 7) (nil face bold 1 . 3) (1 . 7) (#("abcdef" 0 2 (face bold) 4 6 (x 1)) . 1)) ((1 7 6)) #("abcdefgh" 0 2 (face bold) 4 6 (x 1))) ("zbxyaéb" 3 6 4 2 5 ((1 . 7) ("aéxyzb" . 1)) ((1 7 6)) "aéxyzbb") ("efgcdabh" 4 7 5 2 5 ((1 . 8) ("abcdefg" . 1) (apply set-buffer-multibyte t)) ((1 8 7)) "abcdefgh"))"##,
+        "transpose-regions",
+    );
+}
+
 /// Property changes' undo records, the deletion record's intervals, the
 /// stickiness of text-property-default-nonsticky and front-sticky t,
 /// categories, char-property-alias-alist, default-text-properties, the

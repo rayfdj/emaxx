@@ -2456,6 +2456,138 @@ impl Buffer {
         self.record_insert(beg, length);
     }
 
+    /// editfns.c:Ftranspose_regions after prepare_to_modify_buffer, with
+    /// START1 <= END1 <= START2 <= END2 and the regions not adjacent with
+    /// one empty.  modify_text and record_change as GNU calls them in each
+    /// case (both regions adjacent, separate regions of equal byte length,
+    /// the second longer or shorter in bytes), each region's (and the
+    /// text between's) intervals copied, the properties cleared where GNU
+    /// clears them, the text rearranged where it stands and the copies
+    /// grafted without inheritance where GNU grafts them; then
+    /// transpose_markers (point and the mark included, overlays not)
+    /// unless LEAVE_MARKERS.  GIVEN is the regions as the caller gave them
+    /// (each in order, the two not swapped): GNU clears the properties of
+    /// the span from the first's start to the second's end
+    /// (validate_interval_range of STARTR1 and ENDR2, nothing when they
+    /// are equal), or of each given region when they are equal in bytes.
+    pub(crate) fn transpose_regions(
+        &mut self,
+        (start1, end1): (usize, usize),
+        (start2, end2): (usize, usize),
+        given: [(usize, usize); 2],
+        leave_markers: bool,
+    ) {
+        let (len1, len2, len_mid) = (end1 - start1, end2 - start2, start2 - end1);
+        let byte = |position: usize| self.marker_byte_position(position);
+        let (len1_byte, len2_byte) = (byte(end1) - byte(start1), byte(end2) - byte(start2));
+        let piece = |from: usize, to: usize| {
+            (
+                self.text.string((from - 1)..(to - 1)),
+                self.substring_extended_chars(from, to),
+            )
+        };
+        let (text1, extended1) = piece(start1, end1);
+        let (text_mid, extended_mid) = piece(end1, start2);
+        let (text2, extended2) = piece(start2, end2);
+        let mut text = String::with_capacity(text1.len() + text_mid.len() + text2.len());
+        let mut extended = Vec::new();
+        for (part, part_extended) in [
+            (&text2, &extended2),
+            (&text_mid, &extended_mid),
+            (&text1, &extended1),
+        ] {
+            let offset = text.chars().count();
+            text.push_str(part);
+            extended.extend(part_extended.iter().map(|(at, code)| (offset + at, *code)));
+        }
+        let clear = |buffer: &mut Self, from: usize, to: usize| {
+            if from != to {
+                let _ = buffer.set_text_properties_1(from.min(to), from.max(to), Value::Nil);
+            }
+        };
+        let [(given_start1, given_end1), (given_start2, given_end2)] = given;
+        let graft =
+            |buffer: &mut Self, tree: &Option<Intervals>, position: usize, length: usize| {
+                let props = match tree {
+                    Some(source) => InsertedProperties::Intervals {
+                        source,
+                        inherit: false,
+                    },
+                    None => InsertedProperties::PLAIN,
+                };
+                buffer.graft_intervals(props, position, length);
+            };
+        if end1 == start2 {
+            self.modify_text(start1, end2);
+            self.record_change(start1, len1 + len2);
+            let tree1 = self.copy_intervals(start1, end1);
+            let tree2 = self.copy_intervals(start2, end2);
+            clear(self, given_start1, given_end2);
+            self.replace_text_in_place(start1, end2, &text, &extended);
+            graft(self, &tree1, start1 + len2, len1);
+            graft(self, &tree2, start1, len2);
+        } else if len1_byte == len2_byte {
+            self.modify_text(start1, end2);
+            self.record_change(start1, len1);
+            self.record_change(start2, len2);
+            let tree1 = self.copy_intervals(start1, end1);
+            let tree2 = self.copy_intervals(start2, end2);
+            clear(self, given_start1, given_end1);
+            clear(self, given_start2, given_end2);
+            self.replace_text_in_place(start1, end2, &text, &extended);
+            // GNU's positions, which assume equal lengths in characters.
+            graft(self, &tree1, start2, len1);
+            graft(self, &tree2, start1, len2);
+        } else {
+            // The second region shorter: record_change before modify_text.
+            if len1_byte < len2_byte {
+                self.modify_text(start1, end2);
+                self.record_change(start1, end2 - start1);
+            } else {
+                self.record_change(start1, end2 - start1);
+                self.modify_text(start1, end2);
+            }
+            let tree1 = self.copy_intervals(start1, end1);
+            let tree_mid = self.copy_intervals(end1, start2);
+            let tree2 = self.copy_intervals(start2, end2);
+            clear(self, given_start1, given_end2);
+            self.replace_text_in_place(start1, end2, &text, &extended);
+            graft(self, &tree1, end2 - len1, len1);
+            graft(self, &tree_mid, start1 + len2, len_mid);
+            graft(self, &tree2, start1, len2);
+        }
+        if !leave_markers {
+            self.transpose_markers(start1, end1, start2, end2);
+        }
+    }
+
+    /// editfns.c:transpose_markers: point and each marker in a region
+    /// moved by the other's length and the distance between them, those
+    /// between by the difference of the lengths.
+    fn transpose_markers(&mut self, start1: usize, end1: usize, start2: usize, end2: usize) {
+        let moved = |position: usize| {
+            if position < start1 || position >= end2 {
+                position
+            } else if position < end1 {
+                position + (end2 - start2) + (start2 - end1)
+            } else if position < start2 {
+                position + (end2 - start2) - (end1 - start1)
+            } else {
+                position - (end1 - start1) - (start2 - end1)
+            }
+        };
+        self.pt = moved(self.pt);
+        match &mut self.mark {
+            BufferMark::Position(mark) => *mark = mark.map(moved),
+            BufferMark::Object { owner, .. } => {
+                for marker in owner.markers() {
+                    let position = moved(marker.last_position());
+                    marker.set_positions(position, self.marker_byte_position(position));
+                }
+            }
+        }
+    }
+
     /// [FROM, TO) replaced by TEXT of the same length where it stands,
     /// unrecorded and uncounted.
     pub(crate) fn replace_text_in_place(
