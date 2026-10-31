@@ -32522,3 +32522,61 @@ fn point_ops_read_as_editfns_at_the_accessible_ends() {
         "point ops at the accessible ends",
     );
 }
+
+/// buffer.c:Fset_buffer_multibyte: to unibyte, each character's internal
+/// bytes (a character beyond Unicode, a surrogate and a real U+E000 as
+/// theirs, a raw byte as its own); to multibyte with t, each valid
+/// internal sequence as its character, any other byte as eight-bit.
+#[test]
+fn set_buffer_multibyte_converts_as_fset_buffer_multibyte() {
+    assert_oracle_contract_matches_interpreter(
+        r##" (let ((result nil)
+       (state (lambda () (list (append (buffer-string) nil) (point) (point-max) (multibyte-string-p (buffer-string))))))
+   (with-temp-buffer
+     (insert "a" (string #x3BB #x3FFF80 #x110000 #x3FFF7F #xD800 #xE000 #xE0FF #x3FFFFF) "z")
+     (goto-char 6)
+     (let ((m (copy-marker 9)))
+       (set-buffer-multibyte nil)
+       (push (list (funcall state) (marker-position m)) result)
+       (set-buffer-multibyte t)
+       (push (list (funcall state) (marker-position m)) result)
+       (set-buffer-multibyte nil)
+       (set-buffer-multibyte 'other)
+       (push (list (funcall state) (marker-position m)) result)))
+   (with-temp-buffer
+     (set-buffer-multibyte nil)
+     (insert "\xf4\x90\x80\x80|\xed\xa0\x80|\xf8\x88\x80\x80\x80|\xc0\x80|\xc1\xbf|\xe0\x80\x80|\xce\xbb|\xee\x80\x80|\xff")
+     (goto-char 10)
+     (set-buffer-multibyte t)
+     (push (funcall state) result)
+     (push (list (append (buffer-substring 1 3) nil) (char-after 1) (char-after 3)) result))
+   (nreverse result))"##,
+        r##"((((97 206 187 128 244 144 128 128 248 143 191 189 191 237 160 128 238 128 128 238 131 191 255 122) 14 25 nil) 23) (((97 955 4194176 1114112 4194175 55296 57344 57599 4194303 122) 6 11 t) 9) (((97 4194254 4194235 4194176 4194292 4194192 4194176 4194176 4194296 4194191 4194239 4194237 4194239 4194285 4194208 4194176 4194286 4194176 4194176 4194286 4194179 4194239 4194303 122) 14 25 t) 23) ((1114112 124 55296 124 2097152 124 4194240 4194176 124 4194241 4194239 124 4194272 4194176 4194176 124 955 124 57344 124 4194303) 5 22 t) ((1114112 124) 1114112 55296))"##,
+        "set-buffer-multibyte conversions",
+    );
+}
+
+/// buffer-substring of spans on one side of the gap and across it, with
+/// properties, raw bytes and a character beyond Unicode, multibyte and
+/// unibyte.
+#[test]
+fn buffer_substring_reads_each_side_of_the_gap() {
+    assert_oracle_contract_matches_interpreter(
+        r##" (let ((result nil))
+   (with-temp-buffer
+     (insert "ab" (propertize "cλd" 'p 1) (string #x3FFF80) "e" (string #x110000) "f\ngh")
+     (goto-char 4) (insert "Z") (goto-char 9)
+     (dolist (span '((1 3) (1 13) (3 7) (4 6) (6 9) (8 11) (10 14) (2 2)))
+       (let ((s (buffer-substring (car span) (cadr span))))
+         (push (list (append s nil) (object-intervals s) (multibyte-string-p s)
+                     (object-intervals (buffer-substring-no-properties (car span) (cadr span))))
+               result)))
+     (set-buffer-multibyte nil)
+     (dolist (span '((1 4) (5 12)))
+       (let ((s (buffer-substring (car span) (cadr span))))
+         (push (list (append s nil) (multibyte-string-p s)) result))))
+   (nreverse result))"##,
+        r##"(((97 98) nil t nil) ((97 98 99 90 955 100 4194176 101 1114112 102 10 103) ((0 2 nil) (2 3 (p 1)) (3 4 nil) (4 6 (p 1)) (6 7 nil) (7 8 nil) (8 9 nil) (9 12 nil)) t nil) ((99 90 955 100) ((0 1 (p 1)) (1 2 nil) (2 4 (p 1))) t nil) ((90 955) ((0 1 nil) (1 2 (p 1))) t nil) ((100 4194176 101) ((0 1 (p 1)) (1 2 nil) (2 3 nil)) t nil) ((101 1114112 102) nil t nil) ((102 10 103 104) nil t nil) (nil nil t nil) ((97 98 99) nil) ((206 187 100 128 101 244 144) nil))"##,
+        "buffer-substring across the gap",
+    );
+}

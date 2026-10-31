@@ -10215,6 +10215,69 @@ setup_process_coding_systems's check now refuses). A 13-form
   grouped gate's 3,356 library tests, the seven integration
   suites, clippy with every target and feature, rustfmt and `git diff
   --check'.
+- **Round 194: set-buffer-multibyte as Fset_buffer_multibyte, and
+  buffer-substring, get-char-property and line ends at GNU's cost.**
+  `(set-buffer-multibyte nil)' on a buffer holding a character beyond
+  Unicode left that character's sidecar entry in the unibyte buffer,
+  and the next string made of its text panicked ("unibyte string holds
+  character 0x110000"); a real U+E000..U+E0FF became one raw byte where
+  GNU keeps its three, and `(set-buffer-multibyte t)' took the bytes of a
+  surrogate or of a character beyond Unicode (and any five-byte
+  sequence) as raw bytes, Rust's UTF-8 refusing them. The conversion to
+  unibyte now writes each character's internal bytes, the sidecar's codes
+  included (encode_character), and keeps no sidecar; the conversion to
+  multibyte with t takes each valid internal sequence as its character as
+  Fset_buffer_multibyte does (MULTIBYTE_LENGTH, a byte8 head never),
+  those its text view cannot carry into the sidecar. buffer-substring
+  copies a span that one side of the gap holds straight from the text, as
+  make_buffer_string_both does, where it built a Rust string and copied
+  that; get-char-property in the current buffer with no overlays checks
+  BEGV and ZV and reads the text property, where it looked the buffer up
+  by id twice and walked the overlays; and a newline scan remembers the
+  newline it found by character and byte, as find_newline returns both, so
+  the line end that buffer-substring or forward-line converts next is
+  known. textsec's first link test (publicsuffix.txt's 15,675 lines)
+  costs 122.6M instructions against GNU's 122.7M (130.0M at round 193);
+  per call buffer-substring 742 instructions against 712 (1,243),
+  get-char-property 292 against 272 (474). A battery of round trips
+  through set-buffer-multibyte (nil, t and another flag; a character
+  beyond Unicode, the largest, a surrogate, U+E000, U+E0FF, raw bytes,
+  overlong and eight-bit sequences; point and a marker) and of
+  buffer-substring across the gap with properties reads as GNU's, where
+  Emaxx panicked on both. mule-tests, coding-tests, mule-util-tests,
+  fileio-tests, files-tests, buffer-tests, arc-mode-tests, ccl-tests,
+  character-tests, bytecomp-tests, textprop-tests, editfns-tests,
+  simple-tests, subr-tests, minibuf-tests, subr-x-tests, search-tests,
+  textsec-tests, thingatpt-tests, syntax-tests, casefiddle-tests,
+  undo-tests, url-domsuf-tests, elisp-mode-tests pass as many tests as
+  GNU's. Local validation: the grouped gate's 3,358 library tests,
+  the seven integration suites, clippy with every target and feature,
+  rustfmt and `git diff --check'.
+- **Round 193 measured** (its profile-guided build, `tools/pgo-build.sh`
+  afresh, the locked runner: `tools/core_runtime_perf.py run
+  --diagnostic`, nine rounds, the native files of the round 176
+  preparation, the host otherwise idle; no calibration, so it certifies
+  nothing). Paired median ratios and their bootstrapped 95% intervals:
+  interpreted-to-native 0.758 [0.691, 1.091], undo 0.970 [0.895, 1.058],
+  bytecode calls 0.971 [0.912, 0.996], cons allocation 0.899 [0.767,
+  0.927], mapcar 0.809 [0.757, 0.926], bytecode-to-native 0.837 [0.802,
+  0.893], explicit GC 0.777, list traversal 0.779, interpreted-dynamic
+  0.657, bindat 0.647, sort 0.644, native-to-bytecode 0.671,
+  native-to-interpreted 0.639, interpreted calls 0.560,
+  interpreted-lexical 0.607, native execution 0.496; geometric mean 0.720
+  (round 181's 0.779). Every median is below 1; two upper bounds pass
+  1.03, from single rounds: interpreted-to-native's 1.091 and 1.105 among
+  0.685 to 0.913, undo's 1.075 and 1.058 among 0.812 to 1.002 (the load
+  average read 0.9 to 1.0 throughout, this session's own processes).
+  Bytecode calls' bound, 1.150 at round 181, is 0.996.
+  The VM's call paths out of line (`call_plain' and
+  `call_native_nested_by_count' not inlined, the closure entry kept):
+  run_verified 25,102 bytes against 38,551, electric-tests' whole run
+  124.3M instruction-cache misses against 129.9M, 96.3M mispredictions
+  against 94.5M, 6.109G instructions against 6.062G; its bodies over five
+  interleaved runs read medians of 759 ms against 818 ms within a 728 to
+  970 ms spread. Not kept: the instructions it adds cost about what the
+  misses it saves do, and the core workloads' calls take that path.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -11476,6 +11539,15 @@ frozen (run 41163448928) matched all 7,928 outcomes on its first
 attempt. Setup 66.7 s against 58.0 s (1.150), test bodies 228.4 s
 against 245.2 s (0.931), in all 0.980; undo-tests' bodies 0.82 s against
 0.65 s.
+
+**On `5d3513c`** (round 193): full Rust gate passed (run 41165504740);
+frozen (run 41165506464) matched all 7,928 outcomes on its first
+attempt. Setup 77.9 s against 63.9 s (1.220), test bodies 253.1 s
+against 263.3 s (0.961), in all 0.994; undo-tests' bodies 1.13 s against
+0.89 s. The frozen run's gate-profile build still reads textsec-tests'
+bodies at 71 ms against 34 ms and ucs-normalize-tests' (its part 1 not
+run) at 176 ms against 93 ms, where the release build reads them at
+GNU's.
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

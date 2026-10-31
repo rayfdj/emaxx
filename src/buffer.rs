@@ -464,6 +464,19 @@ impl BufferText {
         self.char_to_byte_counted(index)
     }
 
+    /// Remember that char INDEX starts at byte BYTE, found by a scan that
+    /// counted both, as find_newline returns both positions.
+    fn note_position(&self, index: usize, byte: usize) {
+        if self.text.is_ascii() {
+            return;
+        }
+        let mut positions = self.positions.get();
+        if positions.by_char(index).is_none() {
+            positions.record(index, byte);
+            self.positions.set(positions);
+        }
+    }
+
     fn char_to_byte_counted(&self, index: usize) -> usize {
         // CONSIDER of BEG and Z, which buf_charpos_to_bytepos returns
         // before it looks further.
@@ -1090,12 +1103,14 @@ impl Buffer {
 
     /// Replace the internal character view while preserving the underlying
     /// byte sequence.  POSITION_MAP contains the new 1-based position for
-    /// every old character boundary, including point-max.
+    /// every old character boundary, including point-max; EXTENDED holds
+    /// the new text's characters its view cannot carry, by position.
     pub fn set_multibyte_representation(
         &mut self,
         enabled: bool,
         text: String,
         position_map: &[usize],
+        extended: Vec<(usize, u32)>,
     ) {
         let remap = |position: usize| {
             position_map
@@ -1123,9 +1138,7 @@ impl Buffer {
         if let Some(intervals) = &mut self.intervals {
             intervals.remap(remap);
         }
-        for (position, _) in &mut self.extended_chars {
-            *position = remap(*position);
-        }
+        self.extended_chars = extended;
 
         self.text = BufferText::from_str(&text);
         self.invalidate_char_cache();
@@ -1300,7 +1313,9 @@ impl Buffer {
             let rest = self.text.rest_at_byte(byte);
             if let Some(offset) = memchr::memchr(b'\n', rest.as_bytes()) {
                 let found = byte + offset;
-                return Some(from + self.text.text.chars_in(start..found));
+                let index = from + self.text.text.chars_in(start..found);
+                self.text.note_position(index, found);
+                return Some(index);
             }
             byte += rest.len();
         }
@@ -1324,7 +1339,9 @@ impl Buffer {
             let start = byte - text.len();
             if let Some(offset) = memchr::memrchr(b'\n', text.as_bytes()) {
                 let found = start + offset;
-                return Some(before - self.text.text.chars_in(found..end));
+                let index = before - self.text.text.chars_in(found..end);
+                self.text.note_position(index, found);
+                return Some(index);
             }
             byte = start;
         }
@@ -1678,6 +1695,15 @@ impl Buffer {
             return Err(BufferError::InvalidPosition(from));
         }
         Ok(self.text.string((from - 1)..(to - 1)))
+    }
+
+    /// The text of [FROM, TO) where it stands, when one side of the gap
+    /// holds all of it.
+    pub(crate) fn contiguous_text(&self, from: usize, to: usize) -> Option<&str> {
+        match self.text.range_halves((from - 1)..(to - 1)) {
+            (text, "") | ("", text) => Some(text),
+            _ => None,
+        }
     }
 
     pub fn extended_char_at(&self, pos: usize) -> Option<u32> {
