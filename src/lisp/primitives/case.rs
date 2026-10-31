@@ -271,8 +271,15 @@ pub(crate) fn case_symbols_as_words_enabled(interp: &Interpreter) -> bool {
         .is_some_and(|value| value.is_truthy())
 }
 
+/// Whether CH is a word constituent as casefiddle.c and Freplace_match
+/// read it: SYNTAX of the character, a raw byte as its eight-bit character
+/// (make_char_multibyte), not the byte's Latin-1 namesake.
 pub(crate) fn case_word_char(interp: &Interpreter, ch: char, case_symbols_as_words: bool) -> bool {
-    syntax::current_syntax_word_char(interp, normalize_case_key(ch as u32), case_symbols_as_words)
+    syntax::current_syntax_word_char(
+        interp,
+        string_character_code(true, ch) as u32,
+        case_symbols_as_words,
+    )
 }
 
 pub(crate) fn full_upcase_string(

@@ -671,6 +671,16 @@ fn insert_text_and_signal(
     // insdel.c inserts at point as the before-change hooks left it.
     modify_current_buffer(interp, point, point, false, env, |interp, _, _| {
         let start = interp.buffer.borrow().point();
+        // insdel.c:copy_text: a unibyte buffer takes each character's byte.
+        let unibyte_copy = if interp.buffer.borrow().is_multibyte() {
+            None
+        } else {
+            crate::lisp::primitives::unibyte_buffer_copy(text, extended_chars)
+        };
+        let (text, extended_chars) = match &unibyte_copy {
+            Some(copy) => (copy.as_str(), &[][..]),
+            None => (text, extended_chars),
+        };
         // insdel.c: offset_intervals, then graft_intervals_into_buffer of
         // the string's intervals (copied over the text, or with INHERIT
         // merged into what the insertion gave it), or with no intervals

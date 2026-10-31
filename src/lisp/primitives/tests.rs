@@ -32580,3 +32580,110 @@ fn buffer_substring_reads_each_side_of_the_gap() {
         "buffer-substring across the gap",
     );
 }
+
+/// string-as-multibyte reads a unibyte string as parse_str_as_multibyte
+/// does, a byte8 head (#xC0, #xC1) never starting a sequence, and the
+/// conversions back and to multibyte agree with fns.c.
+#[test]
+fn string_as_multibyte_parses_without_eight_bit_heads() {
+    assert_oracle_contract_matches_interpreter(
+        r##"(let ((u (unibyte-string 97 #xf4 #x90 #x80 #x80 #xc0 #x80 #xc1 #xbf #xce #xbb #xed #xa0 #x80 #xff 122)))
+   (mapcar (lambda (s) (list (append s nil) (multibyte-string-p s) (string-bytes s)))
+           (list (string-as-multibyte u) (string-to-multibyte u) (string-as-unibyte (string-as-multibyte u)))))"##,
+        r##"(((97 1114112 4194240 4194176 4194241 4194239 955 55296 4194303 122) t 21) ((97 4194292 4194192 4194176 4194176 4194240 4194176 4194241 4194239 4194254 4194235 4194285 4194208 4194176 4194303 122) t 30) ((97 244 144 128 128 192 128 193 191 206 187 237 160 128 255 122) nil 16))"##,
+        "string-as-multibyte conversions",
+    );
+}
+
+/// A unibyte buffer takes each inserted character's byte as copy_text
+/// does (`c & 0xFF', a raw byte its own), from insert,
+/// insert-buffer-substring, princ, insert-before-markers and
+/// replace-match alike, properties kept.
+#[test]
+fn unibyte_buffer_insertions_copy_each_characters_byte() {
+    assert_oracle_contract_matches_interpreter(
+        r##"(let ((m (string ?a #x3BB #x3FFF80 #x110000 #x3FFF7F #xD800 #xE000 #xE0FF #x3FFFFF ?z))
+       (result nil)
+       (state (lambda () (list (append (buffer-string) nil) (point) (multibyte-string-p (buffer-string))))))
+   (with-temp-buffer
+     (set-buffer-multibyte nil)
+     (insert "<" (propertize m 'p 1) ">")
+     (push (list (funcall state) (get-text-property 3 'p) (buffer-size)) result)
+     (let ((source (current-buffer)))
+       (with-temp-buffer
+         (insert m)
+         (let ((multibyte (current-buffer)))
+           (with-current-buffer source
+             (erase-buffer)
+             (insert-buffer-substring multibyte 2 6)
+             (princ m (current-buffer))
+             (insert-before-markers (string #x3FFF90 #x100))
+             (push (funcall state) result)
+             (goto-char 1)
+             (re-search-forward "\xbb")
+             (replace-match (string #x3BB #x1FF) t t)
+             (push (list (funcall state) (match-beginning 0) (match-end 0)) result)))))
+     (set-buffer-multibyte t)
+     (push (funcall state) result))
+   (nreverse result))"##,
+        r##"((((60 97 187 128 0 127 0 0 255 255 122 62) 13 nil) 1 12) ((187 128 0 127 97 187 128 0 127 0 0 255 255 122 144 0) 17 nil) (((187 255 128 0 127 97 187 128 0 127 0 0 255 255 122 144 0) 3 nil) 1 3) ((4194235 4194303 4194176 0 127 97 4194235 4194176 0 127 0 0 4194303 4194303 122 4194192 0) 3 t))"##,
+        "unibyte buffer insertions",
+    );
+}
+
+/// Casing reads a raw byte as its eight-bit character, a word constituent,
+/// in unibyte and multibyte buffers and strings, as casefiddle.c's
+/// make_char_multibyte and Freplace_match's case test do.
+#[test]
+fn casing_reads_raw_bytes_as_eight_bit_characters() {
+    assert_oracle_contract_matches_interpreter(
+        r##"(let ((result nil))
+   (with-temp-buffer
+     (set-buffer-multibyte nil)
+     (insert "a\xbbz b\xe9x \x80y")
+     (capitalize-region 1 (point-max))
+     (push (append (buffer-string) nil) result)
+     (goto-char 1)
+     (re-search-forward "A\xbbz")
+     (replace-match "qrs")
+     (push (append (buffer-string) nil) result))
+   (with-temp-buffer
+     (insert "a" (string #x3FFFBB) "z a»z")
+     (upcase-initials-region 1 (point-max))
+     (push (append (buffer-string) nil) result))
+   (push (append (capitalize (string-to-unibyte (string ?a #x3FFFBB ?z ?\s ?q))) nil) result)
+   (push (append (capitalize (string ?a #x3FFFBB ?z ?\s ?q #xBB ?r)) nil) result)
+   (nreverse result))"##,
+        r##"((65 187 122 32 66 233 120 32 128 121) (81 114 115 32 66 233 120 32 128 121) (65 4194235 122 32 65 187 90) (65 187 122 32 81) (65 4194235 122 32 81 187 82))"##,
+        "raw-byte casing",
+    );
+}
+
+/// char-equal as editfns.c (CHECK_CHARACTER, the current downcase table,
+/// a unibyte buffer's 0x80..0xFF as raw bytes), string-distance by
+/// character code, and find-composition-internal's LIMIT clipped to the
+/// current buffer's ZV, a string's search included.
+#[test]
+fn char_equal_string_distance_and_composition_limits_as_gnu() {
+    assert_oracle_contract_matches_interpreter(
+        r##"(list
+   (char-equal ?\xbb #x3FFFBB) (char-equal 233 201) (let ((case-fold-search nil)) (char-equal 233 201))
+   (with-temp-buffer (set-buffer-multibyte nil) (list (char-equal 233 201) (char-equal 233 #x3FFFE9) (char-equal ?a ?A) (char-equal #xbb #x3FFFBB)))
+   (condition-case e (char-equal -1 1) (error e)) (condition-case e (char-equal ?a 'b) (error e))
+   (with-temp-buffer (let ((table (copy-case-table (standard-case-table)))) (set-case-syntax-pair ?Q ?z table) (set-case-table table) (list (char-equal ?Q ?z) (char-equal ?q ?z))))
+   (string-distance "\xbb" (string #x3FFFBB)) (string-distance (string #x110000) (string #x110001))
+   (string-distance "\xbb" (string #x3FFFBB) t) (string-distance "a\xbbc" "abc")
+   (with-temp-buffer
+     (let ((s (copy-sequence "abcd")))
+       (compose-string-internal s 1 3 nil 'ignore)
+       (list (find-composition-internal 0 4 s nil)
+             (progn (insert "0123456789") (find-composition-internal 0 4 s nil))
+             (find-composition-internal 0 -1 s nil)
+             (find-composition-internal 4 0 s nil)
+             (erase-buffer)
+             (find-composition-internal 4 0 s nil)
+             (find-composition-internal 4 2 s nil)))))"##,
+        r##"(nil t nil (nil t t t) (wrong-type-argument characterp -1) (wrong-type-argument characterp b) (t nil) 1 1 1 2 (nil (1 3 t) nil (1 3 t) nil (1 3 t) (1 3 t)))"##,
+        "char-equal, string-distance and composition limits",
+    );
+}

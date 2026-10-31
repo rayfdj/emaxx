@@ -348,6 +348,32 @@ pub(crate) fn push_buffer_character(
     }
 }
 
+/// insdel.c:copy_text of TEXT (EXTENDED its side table) into a unibyte
+/// buffer: each non-ASCII character's low byte (`c &= 0xFF', a raw byte
+/// its own), or None when every character is a byte already (unibyte text).
+pub(crate) fn unibyte_buffer_copy(text: &str, extended: &[(usize, u32)]) -> Option<String> {
+    if extended.is_empty()
+        && text
+            .chars()
+            .all(|ch| ch.is_ascii() || raw_byte_from_regex_char(ch).is_some())
+    {
+        return None;
+    }
+    let mut extended = extended.iter().peekable();
+    Some(
+        text.chars()
+            .enumerate()
+            .map(|(index, ch)| {
+                let code = match extended.next_if(|(position, _)| *position == index) {
+                    Some(&(_, code)) => code,
+                    None => string_character_code(true, ch) as u32,
+                };
+                raw_byte_regex_char(code as u8)
+            })
+            .collect(),
+    )
+}
+
 pub(crate) fn string_like(value: &Value) -> Option<StringLike> {
     match value.kind() {
         Kind::StringObject(state) => {

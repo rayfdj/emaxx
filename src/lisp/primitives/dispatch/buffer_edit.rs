@@ -343,7 +343,8 @@ fn unibyte_text_bytes(text: &str) -> Vec<u8> {
 
 /// buffer.c:Fset_buffer_multibyte's conversion to multibyte: each byte of
 /// the unibyte TEXT kept, an ASCII one as itself, the bytes of a valid
-/// internal sequence (MULTIBYTE_LENGTH, not a byte8 head) as their
+/// internal sequence (multibyte_length without ALLOW_8BIT, so not a byte8
+/// head) as their
 /// character when FLAG is t, any other byte as its eight-bit character.
 /// The text, the new position of every old one (point-max's included),
 /// and the characters the text's view cannot carry, by position.
@@ -363,8 +364,8 @@ fn multibyte_buffer_text(
         let byte = bytes[byte_index];
         let width = if byte.is_ascii() {
             1
-        } else if preserve_utf8_sequences && byte != 0xC0 && byte != 0xC1 {
-            crate::lisp::types::string_data::multibyte_length(&bytes[byte_index..], true)
+        } else if preserve_utf8_sequences {
+            crate::lisp::types::string_data::multibyte_length(&bytes[byte_index..], false)
         } else {
             0
         };

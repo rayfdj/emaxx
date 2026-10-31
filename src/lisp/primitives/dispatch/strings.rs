@@ -261,7 +261,7 @@ define_dispatch!(
                 let mut offset = 0;
                 while offset < source.len() {
                     let width =
-                        crate::lisp::types::string_data::multibyte_length(&source[offset..], true);
+                        crate::lisp::types::string_data::multibyte_length(&source[offset..], false);
                     if width > 0 {
                         bytes.extend_from_slice(&source[offset..offset + width]);
                         offset += width;

@@ -10278,6 +10278,46 @@ setup_process_coding_systems's check now refuses). A 13-form
   interleaved runs read medians of 759 ms against 818 ms within a 728 to
   970 ms spread. Not kept: the instructions it adds cost about what the
   misses it saves do, and the core workloads' calls take that path.
+- **Round 195: unibyte text, raw bytes and char-equal as GNU reads
+  them.** Edge-case batteries run op by op against GNU (each op its own
+  process, the outputs compared) found these. Inserting a multibyte
+  string into a unibyte buffer stored its characters unconverted, so
+  the buffer held λ or a character beyond Unicode and the next
+  buffer-string panicked ("unibyte string holds character 0x3bb");
+  insert, insert-buffer-substring, princ to a buffer,
+  insert-before-markers and replace-match now copy each character's
+  byte as insdel.c:copy_text does (`c & 0xFF', a raw byte its own),
+  where the text is inserted (`insert_text_and_signal') or replaced
+  (`replace_range_current_buffer'), properties kept; unibyte text passes
+  unchanged. string-as-multibyte read #xC0 #x80 as one raw byte, its
+  internal sequence, where parse_str_as_multibyte calls multibyte_length
+  without ALLOW_8BIT and reads two (Fset_buffer_multibyte's conversion
+  now makes the same call where it tested the byte8 heads itself).
+  Casing asked the syntax of a raw byte's Latin-1 namesake, so in a
+  unibyte buffer "a\xbbz" capitalized as "A\xbbZ" (» punctuation);
+  casefiddle.c reads SYNTAX of the eight-bit character
+  (make_char_multibyte), a word constituent, as Freplace_match's case
+  test does, and `case_word_char' now does too, for regions, strings and
+  replace-match. char-equal folded only the ASCII case of each code's
+  low byte: #x3FFFBB equalled #xBB, é did not equal É, a case table's
+  own pairs went unread and a non-character passed; it is now
+  editfns.c:Fchar_equal (CHECK_CHARACTER, the current downcase table,
+  a unibyte buffer reading 0x80..0xFF as raw bytes). string-distance
+  compared the text view's characters, so a unibyte byte equalled its
+  raw-byte character and every character beyond Unicode every other; it
+  compares character codes as FETCH_STRING_CHAR_ADVANCE reads them.
+  find-composition-internal clamped LIMIT to the string's bounds where
+  composite.c clips it to the current buffer's ZV, a string's search
+  included (so GNU's string-glyph-split spins in an empty current buffer
+  on "a" followed by a combining acute: the backward search finds the
+  composition ending at POS). Local validation: the grouped gate's
+  3,362 library tests, the integration targets (cli, cli_parity,
+  ert_runner, native_comp_identity, native_thread_continuations,
+  package_lifecycle, runtime_ownership) and clippy with
+  `--all-targets --all-features -D warnings' pass; four new oracle tests
+  fail before (one panics) and pass after. The batteries (raw-byte
+  strings, unibyte buffers, casing; 175 ops) now match GNU op for op,
+  string-glyph-split's spin included.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -11548,6 +11588,15 @@ against 263.3 s (0.961), in all 0.994; undo-tests' bodies 1.13 s against
 bodies at 71 ms against 34 ms and ucs-normalize-tests' (its part 1 not
 run) at 176 ms against 93 ms, where the release build reads them at
 GNU's.
+
+**On `6ed3ac4`** (round 194): full Rust gate passed (run 41172015730);
+frozen (run 41172017709) matched all 7,928 outcomes on its first
+attempt. Setup 54.9 s against 48.2 s (1.139), test bodies 206.6 s
+against 222.5 s (0.929), in all 0.973, on a faster runner than round
+193's (setup 77.9 s against 63.9 s); undo-tests' bodies 0.68 s against
+0.58 s. The gate-profile build reads textsec-tests' bodies at 43 ms
+against 20 ms and ucs-normalize-tests' at 111 ms against 56 ms, still
+about twice GNU's where the release build reads them at GNU's.
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'
