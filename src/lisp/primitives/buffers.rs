@@ -51,6 +51,9 @@ pub(crate) fn highest_priority_overlay_property_with_id(
     at_insertion_position: bool,
     window_id: Option<u64>,
 ) -> Result<Option<(Value, crate::overlay::OverlayRef)>, LispError> {
+    if buffer.overlays.is_empty() {
+        return Ok(None);
+    }
     let mut overlays: Vec<crate::overlay::OverlayRef> = buffer
         .overlays
         .intersecting(

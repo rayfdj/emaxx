@@ -465,6 +465,14 @@ impl BufferText {
     }
 
     fn char_to_byte_counted(&self, index: usize) -> usize {
+        // CONSIDER of BEG and Z, which buf_charpos_to_bytepos returns
+        // before it looks further.
+        if index == 0 {
+            return 0;
+        }
+        if index == self.text.chars() {
+            return self.text.len();
+        }
         let mut positions = self.positions.get();
         if let Some(byte) = positions.by_char(index) {
             return byte;
@@ -486,6 +494,12 @@ impl BufferText {
     }
 
     fn byte_to_char_counted(&self, byte: usize) -> usize {
+        if byte == 0 {
+            return 0;
+        }
+        if byte == self.text.len() {
+            return self.text.chars();
+        }
         let mut positions = self.positions.get();
         if let Some(index) = positions.by_byte(byte) {
             return index;
@@ -672,6 +686,10 @@ struct RopeCharCache {
     start: usize,
     chars: Vec<char>,
     valid: bool,
+    /// The last character read outside the window: a read next to it
+    /// continues a scan, which fills the window, where a read elsewhere
+    /// decodes its character alone.
+    last_single: Option<usize>,
 }
 
 impl RopeCharCache {
@@ -2221,6 +2239,20 @@ impl Buffer {
         if let Some(ch) = self.char_cache.borrow().character(index) {
             return Some(ch);
         }
+        // A read away from the last one (`following-char' at each line's
+        // start) decodes its character where it stands, as FETCH_CHAR does.
+        {
+            let mut cache = self.char_cache.borrow_mut();
+            let scanning = cache
+                .last_single
+                .is_some_and(|last| last.abs_diff(index) <= 1);
+            cache.last_single = Some(index);
+            if !scanning {
+                drop(cache);
+                let byte = self.text.char_to_byte(index);
+                return self.text.rest_at_byte(byte).chars().next();
+            }
+        }
 
         // A window of the half around INDEX, decoded once for the reads
         // near it (a scan's next characters or its previous ones).
@@ -3736,8 +3768,14 @@ mod tests {
     fn character_cache_tracks_text_mutation_and_swap() {
         let text = format!("{}λ{}", "a".repeat(1500), "b".repeat(1500));
         let mut buf = Buffer::from_text("cached", &text);
+        // A read alone decodes its character where it stands; the next
+        // one beside it scans, filling the window.
+        assert_eq!(buf.char_at(1500), Some('a'));
+        assert!(!buf.char_cache.borrow().valid);
         assert_eq!(buf.char_at(1501), Some('λ'));
         assert!(buf.char_cache.borrow().valid);
+        assert_eq!(buf.char_at(3001), Some('b'));
+        assert_eq!(buf.char_cache.borrow().start, 1500 - CHAR_CACHE_BEHIND);
 
         buf.goto_char(1);
         buf.insert("z");

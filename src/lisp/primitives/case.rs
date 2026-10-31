@@ -113,6 +113,30 @@ pub(crate) fn public_buffer_char_code_at(interp: &Interpreter, position: usize) 
         })
 }
 
+/// Ffollowing_char: the character after point, 0 at ZV.
+pub(crate) fn following_char_code(interp: &Interpreter) -> i64 {
+    let (point, zv) = {
+        let buffer = interp.buffer.borrow();
+        (buffer.point(), buffer.point_max())
+    };
+    if point >= zv {
+        return 0;
+    }
+    public_buffer_char_code_at(interp, point).unwrap_or(0)
+}
+
+/// Fprevious_char: the character before point, 0 at BEGV.
+pub(crate) fn preceding_char_code(interp: &Interpreter) -> i64 {
+    let (point, begv) = {
+        let buffer = interp.buffer.borrow();
+        (buffer.point(), buffer.point_min())
+    };
+    if point <= begv {
+        return 0;
+    }
+    public_buffer_char_code_at(interp, point - 1).unwrap_or(0)
+}
+
 pub(crate) fn single_char_case_mapping(iter: impl Iterator<Item = char>, fallback: u32) -> u32 {
     let mut iter = iter;
     match (iter.next(), iter.next()) {

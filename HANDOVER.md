@@ -10173,6 +10173,48 @@ setup_process_coding_systems's check now refuses). A 13-form
   validation: the grouped gate's 3,355 library tests, the seven
   integration suites, clippy with every target and feature, rustfmt and
   `git diff --check'.
+- **Round 193: charset ranges, the text's ends and point ops at GNU's
+  cost.** ucs-normalize-tests took 7.65 s against GNU's 5.91 s (1.29),
+  textsec-tests 1.45 times GNU's, both in execute_charset's walk of a
+  range table and the reads a buffer search makes. execute_charset now
+  walks the table in six-byte chunks, the bounds checked once for the
+  table, as EXTRACT_CHARACTER reads it: rule 2 of part 1 costs 80,900
+  instructions a character against 115,100 (GNU's 84,200), the walk
+  itself 39,600 against 74,100 (GNU's 48,900). A value's pointer is its
+  word less its tag, as lisp.h's XUNTAG subtracts it, which folds into
+  each load's displacement where the mask cost two instructions (nconc's
+  tail walk ten instructions an element where it was twelve). A
+  character or byte position at the text's start or end converts at
+  once, as buf_charpos_to_bytepos's CONSIDER of BEG and Z returns, so a
+  search's snapshot of BEGV and ZV costs nothing for an unnarrowed
+  buffer. An overlay property lookup in a buffer with no overlays
+  returns at once. Bfollowing_char, Bpreceding_char, Beolp, Beobp, Bbolp
+  and Bbobp run in the verified loop and the op arms as their C
+  functions read PT, BEGV, ZV and the text, where they looked their
+  primitive up by name for each op; `following-char' at ZV is now 0
+  before a character beyond Unicode too, where Emaxx returned that
+  character. Buffer::char_at decodes a lone read where it stands (the
+  window of 256 characters it decoded for each miss served scans, but a
+  read at each line's start paid it every few lines): 139 instructions a
+  `following-char' where it was 657. textsec's first link test, which
+  parses the 15,675 lines of publicsuffix.txt, costs 130.0M instructions
+  against 147.6M (GNU's 122.7M). Unloaded, ucs-normalize-tests' bodies
+  take 6.15 s against GNU's 6.01 s (1.02) and textsec-tests' 20.0 ms
+  against 20.2 ms; regex-emacs-tests, search-tests, buffer-tests,
+  editfns-tests, textprop-tests, fns-tests, data-tests, bytecomp-tests,
+  subr-tests, simple-tests, casefiddle-tests, syntax-tests, subr-x-tests
+  and thingatpt-tests pass as many tests as GNU's. Measured, not yet
+  fixed: electric-tests' bodies take 1.25 times GNU's (740 ms against
+  591 ms) at fewer instructions (3.04G against 3.17G), and cachegrind
+  counts 77.8M instruction-cache misses against GNU's 19.9M and 52.7M
+  branch mispredictions against 38.6M over them: run_verified is 38.5 KB
+  of code against exec_byte_code's 12.0 KB (op_in_place another 16.0
+  KB), the text 13.2 MB against 3.4 MB; library loads (vc-git,
+  diff-mode, track-changes and their like) likewise cost fewer
+  instructions than GNU's and more time. Local validation: the
+  grouped gate's 3,356 library tests, the seven integration
+  suites, clippy with every target and feature, rustfmt and `git diff
+  --check'.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -11428,6 +11470,12 @@ second attempt had setup 75.1 s against 62.0 s (1.212), test bodies
 248.9 s against 258.4 s (0.963), in all 1.000; undo-tests' bodies 1.11 s
 against 0.86 s (the first: 80.9 s against 67.1 s, 257.1 s against
 271.3 s, 0.985).
+
+**On `8db3ff1`** (round 192): full Rust gate passed (run 41163446783);
+frozen (run 41163448928) matched all 7,928 outcomes on its first
+attempt. Setup 66.7 s against 58.0 s (1.150), test bodies 228.4 s
+against 245.2 s (0.931), in all 0.980; undo-tests' bodies 0.82 s against
+0.65 s.
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

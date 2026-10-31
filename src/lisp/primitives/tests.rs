@@ -32498,3 +32498,27 @@ fn symbol_constant_entry_points_follow_actual_aliases() {
         "constant and default operations preserve actual objects through alias chains",
     );
 }
+
+/// Bfollowing_char, Bpreceding_char, Beolp, Beobp, Bbolp and Bbobp in
+/// the bytecode loop read as their C functions do, and as the
+/// interpreted calls: a character after ZV (one beyond Unicode included)
+/// or before BEGV is 0.
+#[test]
+fn point_ops_read_as_editfns_at_the_accessible_ends() {
+    assert_oracle_contract_matches_interpreter(
+        r##"(let ((probe (lambda () (list (point) (following-char) (preceding-char) (eolp) (eobp) (bolp) (bobp))))
+               (compiled (byte-compile (lambda () (list (point) (following-char) (preceding-char) (eolp) (eobp) (bolp) (bobp)))))
+               (result nil))
+           (with-temp-buffer
+             (insert "ab" (string #x110000) "\nλ" (string #x3FFF80) "c")
+             (dolist (bounds '((1 8) (1 3) (4 6) (5 8)))
+               (narrow-to-region (car bounds) (cadr bounds))
+               (dolist (pos (list (point-min) (1+ (point-min)) (point-max)))
+                 (goto-char (min pos (point-max)))
+                 (push (list (funcall probe) (funcall compiled)) result))
+               (widen)))
+           (nreverse result))"##,
+        r##"(((1 97 0 nil nil t t) (1 97 0 nil nil t t)) ((2 98 97 nil nil nil nil) (2 98 97 nil nil nil nil)) ((8 0 99 t t nil nil) (8 0 99 t t nil nil)) ((1 97 0 nil nil t t) (1 97 0 nil nil t t)) ((2 98 97 nil nil nil nil) (2 98 97 nil nil nil nil)) ((3 0 98 t t nil nil) (3 0 98 t t nil nil)) ((4 10 0 t nil t t) (4 10 0 t nil t t)) ((5 955 10 nil nil t nil) (5 955 10 nil nil t nil)) ((6 0 955 t t nil nil) (6 0 955 t t nil nil)) ((5 955 0 nil nil t t) (5 955 0 nil nil t t)) ((6 4194176 955 nil nil nil nil) (6 4194176 955 nil nil nil nil)) ((8 0 99 t t nil nil) (8 0 99 t t nil nil)))"##,
+        "point ops at the accessible ends",
+    );
+}

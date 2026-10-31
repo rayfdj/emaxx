@@ -448,16 +448,15 @@ pub(super) fn execute_charset<E: MatchEnv + ?Sized>(
         {
             return !not;
         }
-        let mut at = charset_range_table(buf, p);
+        let at = charset_range_table(buf, p);
         let count = extract_number(buf, at) as usize;
-        at += 2;
-        for _ in 0..count {
-            let from = extract_character(buf, at);
-            let to = extract_character(buf, at + 3);
+        let (ranges, _) = buf[at + 2..at + 2 + count * 6].as_chunks::<6>();
+        for range in ranges {
+            let from = u32::from(range[0]) | u32::from(range[1]) << 8 | u32::from(range[2]) << 16;
+            let to = u32::from(range[3]) | u32::from(range[4]) << 8 | u32::from(range[5]) << 16;
             if from <= c && c <= to {
                 return !not;
             }
-            at += 6;
         }
     }
     not
