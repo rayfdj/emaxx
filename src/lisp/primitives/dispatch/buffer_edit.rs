@@ -1234,12 +1234,8 @@ define_dispatch!(
                         interp.buffer.borrow().point_max(),
                     )
                 };
-                let line = interp
-                    .buffer
-                    .borrow()
-                    .line_number_at_pos(pos)
-                    .saturating_sub(interp.buffer.borrow().line_number_at_pos(start))
-                    + 1;
+                // fns.c: count_lines (start_byte, pos_byte) + 1.
+                let line = interp.buffer.borrow().count_newlines(start, pos) + 1;
                 Ok(Value::Integer(line as i64))
             }
             "line-number-display-width" => {

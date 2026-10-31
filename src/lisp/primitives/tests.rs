@@ -32887,3 +32887,40 @@ fn json_serialize_nesting_cycles_and_insertion_as_json_c() {
         "json-serialize nesting and json-insert",
     );
 }
+
+#[test]
+fn casify_region_cases_as_do_casify_multibyte_region() {
+    // casefiddle.c casify_region: special casing (ß, ﬁ, İ), title case,
+    // the final sigma, and one signal_after_change from the first to the
+    // last character changed, with the characters added.
+    assert_oracle_contract_matches_interpreter(
+        r##"(let* ((log nil) (rec (lambda (b e l) (push (list b e l) log)))) (list (with-temp-buffer (insert "straße ﬁne İx ǆ ǅ ΣΑΣ ΌΣΟΣ σς") (let ((after-change-functions (list rec))) (setq log nil) (goto-char 9) (upcase-region 1 (point-max)) (list (buffer-string) (point) log))) (with-temp-buffer (insert "straße ﬁne İx ǆ ǅ ΣΑΣ ΌΣΟΣ σς") (let ((after-change-functions (list rec))) (setq log nil) (downcase-region 1 (point-max)) (list (buffer-string) log))) (with-temp-buffer (insert "straße ﬁne İx ǆ ǅ ΣΑΣ ΌΣΟΣ σς hello-world foo_bar") (let ((after-change-functions (list rec))) (setq log nil) (capitalize-region 1 (point-max)) (list (buffer-string) log))) (with-temp-buffer (insert "straße ﬁne İx ǆ ǅ hello-world foo_bar") (upcase-initials-region 1 (point-max)) (buffer-string)) (with-temp-buffer (insert "ABC def") (let ((after-change-functions (list rec))) (setq log nil) (upcase-region 1 4) (upcase-region 5 8) (downcase-region 1 2) (list (buffer-string) log)))))"##,
+        r##"(("STRASSE FINE İX Ǆ Ǆ ΣΑΣ ΌΣΟΣ ΣΣ" 11 ((1 32 29))) ("straße ﬁne i̇x ǆ ǆ σας όσος σς" ((12 28 15))) ("Straße Fine İx ǅ ǅ Σας Όσος Σς Hello-World Foo_Bar" ((1 49 47))) "Straße Fine İx ǅ ǅ Hello-World Foo_Bar" ("aBC DEF" ((1 2 1) (5 8 3))))"##,
+        "region casing",
+    );
+}
+
+#[test]
+fn casing_strings_characters_and_buffers_as_casefiddle_c() {
+    // casefiddle.c: do_casify_multibyte_string, case_single_character for
+    // characters, replace_range_2's markers, point, undo records and
+    // properties where a character becomes two, raw bytes and characters
+    // beyond Unicode left alone, and a unibyte buffer's bytes cased as
+    // their characters.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list (upcase "straße ﬁne İx ǆ ΣΑΣ") (downcase "ΣΑΣ ΌΣΟΣ İ") (capitalize "straße ﬁne ǆ hello-world 'foo") (upcase-initials "ǆx ﬁne 'foo") (with-temp-buffer (insert "aßb") (let ((m (copy-marker 3)) (m2 (copy-marker 4))) (goto-char 3) (upcase-region 1 4) (list (buffer-string) (point) (marker-position m) (marker-position m2)))) (with-temp-buffer (buffer-enable-undo) (insert "abc ßx") (undo-boundary) (upcase-region 1 (point-max)) (list (buffer-string) (car buffer-undo-list) (cadr buffer-undo-list) (caddr buffer-undo-list))) (with-temp-buffer (insert (propertize "aßc" 'face 'bold)) (upcase-region 1 (point-max)) (list (buffer-string) (get-text-property 2 'face) (get-text-property 3 'face))) (with-temp-buffer (insert "abc" (string #x3fff80 #x3fffe9) "déf" (string #x110000)) (upcase-region 1 (point-max)) (append (buffer-string) nil)) (with-temp-buffer (set-buffer-multibyte nil) (insert "abc\351\311xyz") (upcase-region 1 (point-max)) (list (append (buffer-string) nil) (progn (capitalize-region 1 (point-max)) (append (buffer-string) nil)))) (with-temp-buffer (emacs-lisp-mode) (insert "'foo `bar ,baz #'qux ?a") (capitalize-region 1 (point-max)) (buffer-string)) (list (upcase ?ß) (upcase ?ﬁ) (capitalize ?ǆ) (upcase-initials ?ǆ) (downcase ?Σ) (upcase #x3fffe9) (downcase ?İ)))"##,
+        r##"("STRASSE FINE İX Ǆ ΣΑΣ" "σας όσος i̇" "Straße Fine ǅ Hello-World 'Foo" "ǅx Fine 'Foo" ("ASSB" 4 3 4) ("ABC SSX" (1 . 8) ("abc ßx" . -1) 7) (#("ASSC" 0 4 (face bold)) bold bold) (65 66 67 4194176 4194281 68 201 70 1114112) ((65 66 67 233 201 88 89 90) (65 98 99 233 201 120 121 122)) "'Foo `Bar ,Baz #'Qux ?A" (7838 64257 453 453 963 4194281 304))"##,
+        "string and buffer casing",
+    );
+}
+
+#[test]
+fn line_number_at_pos_counts_from_begv_as_count_lines() {
+    // fns.c Fline_number_at_pos: count_lines from BEGV (BEG when ABSOLUTE)
+    // to the position, clipped to the accessible region unless ABSOLUTE.
+    assert_oracle_contract_matches_interpreter(
+        r##"(with-temp-buffer (insert "a\nb\nc\nd\ne") (list (progn (narrow-to-region 3 7) (list (line-number-at-pos 5) (line-number-at-pos 3) (line-number-at-pos 7) (line-number-at-pos 5 t) (line-number-at-pos 1 t) (line-number-at-pos 1) (line-number-at-pos 10) (condition-case err (line-number-at-pos 11) (error err)) (count-lines 3 7))) (progn (widen) (list (count-lines 2 6) (count-lines 6 2) (count-lines 1 10) (count-lines 1 1) (line-number-at-pos)))))"##,
+        r##"((2 1 3 3 1 1 3 (args-out-of-range 11 1 10) 2) (3 3 5 0 4))"##,
+        "line-number-at-pos",
+    );
+}

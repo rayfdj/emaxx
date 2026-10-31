@@ -3567,6 +3567,15 @@ impl Buffer {
     // ── Line/column helpers ──
 
     /// Return the line number (1-based) at the given position (1-based).
+    /// xdisp.c count_lines: the newlines from 1-based FROM to TO.
+    pub(crate) fn count_newlines(&self, from: usize, to: usize) -> usize {
+        let (from, to) = (from.min(to), from.max(to));
+        let end = self.text.len_chars();
+        let start = self.text.char_to_byte((from - 1).min(end));
+        let stop = self.text.char_to_byte((to - 1).min(end));
+        self.text.newlines_in(start..stop)
+    }
+
     pub fn line_number_at_pos(&self, pos: usize) -> usize {
         let pos0 = (pos - 1).min(self.text.len_chars());
         self.text.char_to_line(pos0) + 1

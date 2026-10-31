@@ -10548,6 +10548,45 @@ setup_process_coding_systems's check now refuses). A 13-form
   output and json-insert. Local validation: the grouped gate's 3,378
   library tests, the integration targets and clippy with `--all-targets
   --all-features -D warnings' pass.
+- **Round 202: casing as casefiddle.c cases, and line numbers counted
+  from BEGV.** upcase-region and downcase-region over xdisp.c took 0.175 s
+  against GNU's 0.064 s (1,639 M instructions against 627 M): each region
+  was cased by a string routine that looked every character's syntax up
+  twice, allocated a string for each cased character, read the special
+  casing tables through a property name compared per character and the
+  case tables through a key normalization meant for raw-byte markers, and
+  then built two code vectors of the region to compare old and new. The
+  casing is now casefiddle.c's: case_character_impl (the word state from
+  SYNTAX with syntax_prefix_flag_p in buffers, the flag normalized as GNU
+  normalizes it, the special casing table for that flag, then the
+  titlecase table or the buffer's case table entry read as downcase and
+  upcase read it) and case_character's final sigma, driven by
+  do_casify_multibyte_string, do_casify_multibyte_region and
+  do_casify_unibyte_region, the last casing each byte as its character by
+  case_single_character and storing make_char_unibyte of the result.
+  casify_region signals the change from the first to the last character
+  changed with the characters added, as GNU computes them; a region in
+  which a character becomes another number of characters or bytes is cased
+  again keeping the codes and replaced character by character as
+  replace_range_2 replaces them. Up- and downcasing xdisp.c takes 0.070 s
+  (902 M instructions). occur over xdisp.c spent 60% of its time in
+  line-number-at-pos, which counted the newlines from the buffer's start to
+  the position and to BEGV and subtracted; it now counts from BEGV (BEG
+  when ABSOLUTE) to the position as Fline_number_at_pos's count_lines
+  does, and five occurs take 0.241 s where they took 0.515 s (GNU 0.246
+  s; one occur 217 M instructions against GNU's 363 M). Recorded
+  difference: GNU hangs on `(line-number-at-pos POS t)' for a POS past ZV
+  in a narrowed buffer, display_count_lines never reaching a limit beyond
+  ZV; Emaxx counts to POS. A casing battery of 16 ops (special casing,
+  final sigma, title case, after-change data, markers and point across
+  an expansion, undo records, properties, raw bytes, a unibyte buffer,
+  prefix-syntax word starts) and round 195's 22 casing ops match GNU;
+  three oracle tests pin region casing, string and buffer casing, and
+  line-number-at-pos. count-words remains 1.4x GNU (0.044 s against 0.031
+  s): forward-word's scanner setup costs about 660 instructions a call.
+  Local validation: the grouped gate's 3,381 library tests, the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -11870,6 +11909,11 @@ the one mismatch each time the oracle's
 254.6 s against 270.3 s (0.942), in all 0.981; second: setup 63.3 s
 against 55.1 s (1.147), test bodies 225.4 s against 247.7 s (0.910), in
 all 0.970.
+
+**On `4ba8dde`** (round 201): full Rust gate passed (run 41198052241);
+frozen (run 41198054109) matched all 7,928 outcomes on the first attempt:
+setup 67.7 s against 59.4 s (1.140), test bodies 229.9 s against 246.2 s
+(0.934), in all 0.980.
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'
