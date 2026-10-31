@@ -322,6 +322,33 @@ fn default_syntax_entry(code: u32) -> SyntaxEntry {
     }
 }
 
+/// syntax.c check_syntax_table: VALUE's table when it is a char-table of
+/// purpose `syntax-table', else `(wrong-type-argument syntax-table-p VALUE)'.
+pub(crate) fn check_syntax_table(value: &Value) -> Result<CharTableRef, LispError> {
+    match value.kind() {
+        Kind::CharTable(id) if id.has_purpose("syntax-table") => Ok(id),
+        _ => Err(LispError::WrongTypeArgument(
+            "syntax-table-p".into(),
+            *value,
+        )),
+    }
+}
+
+/// syntax.c:Fmatching_paren's answer for CODE: the entry's matching
+/// character (SYNTAX_MATCH) when the current syntax table makes it an
+/// open or close parenthesis, nil otherwise.
+pub(super) fn matching_paren_value(interp: &Interpreter, code: u32) -> Value {
+    let entry = syntax_entry_for_code(interp, interp.current_syntax_table_id(), code);
+    match entry.class {
+        SyntaxClass::OpenParen | SyntaxClass::CloseParen => {
+            entry.matching.map_or(Value::Nil, |matching| {
+                Value::Integer(i64::from(u32::from(matching)))
+            })
+        }
+        _ => Value::Nil,
+    }
+}
+
 pub(super) fn syntax_entry_for_code(
     interp: &Interpreter,
     table_id: CharTableRef,

@@ -4248,99 +4248,108 @@ define_dispatch!(
             }
             "error-message-string" => {
                 need_args(name, args, 1)?;
-                if let Err(LispErrorKind::SignalValue(signal)) =
-                    args[0].to_vec().map_err(LispError::into_kind)
-                    && circular_list_signal_p(&signal)
+                let obj = args[0];
+                let error = Value::symbol("error");
+                // print.c:Ferror_message_string returns the STRING of (error
+                // STRING) itself, without allocating or losing properties.
+                if let Some((head, rest)) = obj.cons_values()
+                    && head.eq_value(error)
+                    && let Some((message, end)) = rest.cons_values()
+                    && message.is_string()
+                    && end.is_nil()
                 {
-                    return Err(LispError::SignalValue(signal));
+                    return Ok(message);
                 }
-                // print.c's print_error_message: plain `error' promotes its
-                // first datum to the message; other conditions lead with
-                // their error-message property.  Remaining data is printed
-                // under the condition-specific princ/prin1 rule below.
-                let Ok(items) = args[0].to_vec() else {
-                    return Ok(Value::String(args[0].to_string().into()));
+                // print_error_message.
+                let errname = match obj.cons_values() {
+                    Some((head, _)) => head,
+                    None if obj.is_nil() => Value::Nil,
+                    None => return Err(LispError::WrongTypeArgument("listp".into(), obj)),
                 };
-                let Some(Kind::Symbol(condition)) = items.first().map(|v| v.kind()) else {
-                    return Ok(Value::String(args[0].to_string().into()));
-                };
-                // print.c:Ferror_message_string returns the original object
-                // for (error STRING), without allocating or losing properties.
-                if condition == "error" && items.len() == 2 && items[1].is_string() {
-                    return Ok(items[1]);
-                }
-                // A file-error condition promotes its first datum to the
-                // message ("Opening input file: ...").
-                let file_error = interp
-                    .get_symbol_property(&condition, "error-conditions")
-                    .and_then(|conditions| conditions.to_vec().ok())
-                    .is_some_and(|conditions| {
-                        conditions.iter().any(
-                            |entry| matches!(entry.kind(), Kind::Symbol(name) if name == "file-error"),
-                        )
-                    });
-                let mut data = &items[1..];
-                let mut text = if condition == "error" {
-                    let message = data
-                        .first()
-                        .and_then(string_like)
-                        .map(|message| message.text)
-                        .unwrap_or_else(|| "peculiar error".to_string());
-                    data = data.get(1..).unwrap_or_default();
-                    message
+                let (mut errmsg, file_error, data) = if errname.eq_value(error) {
+                    let data = obj.cons_values().map_or(Value::Nil, |(_, rest)| rest);
+                    let data = if data.cons_values().is_some() {
+                        data
+                    } else {
+                        Value::Nil
+                    };
+                    (
+                        data.cons_values().map_or(Value::Nil, |(car, _)| car),
+                        false,
+                        data,
+                    )
                 } else {
-                    let message = interp
-                        .get_symbol_property(&condition, "error-message")
-                        .as_ref()
-                        .and_then(string_like)
-                        .map(|message| message.text)
-                        .unwrap_or_else(|| "peculiar error".to_string());
-                    // print.c passes the error-message property through
-                    // `substitute-command-keys' when it is fboundp (so the
-                    // apostrophe in "Symbol's" follows `text-quoting-style'),
-                    // keeping the raw text if that call fails.
-                    if interp
-                        .lookup_function("substitute-command-keys", env)
-                        .is_ok()
+                    let conditions = super::call(
+                        interp,
+                        "get",
+                        &[errname, Value::symbol("error-conditions")],
+                        env,
+                    )?;
+                    let mut errmsg = super::call(
+                        interp,
+                        "get",
+                        &[errname, Value::symbol("error-message")],
+                        env,
+                    )?;
+                    // During loadup `substitute-command-keys' may be
+                    // missing, and its errors are ignored (safe_calln).
+                    let substitute = Value::symbol("substitute-command-keys");
+                    if super::call(interp, "fboundp", &[substitute], env)?.is_truthy()
                         && let Ok(substituted) = interp.call_function_value(
-                            Value::Symbol("substitute-command-keys".into()),
+                            substitute,
                             Some("substitute-command-keys"),
-                            &[Value::String(message.clone().into())],
+                            &[errmsg],
                             env,
                         )
-                        && let Some(substituted) = string_like(&substituted)
+                        && !substituted.is_nil()
                     {
-                        substituted.text
-                    } else {
-                        message
+                        errmsg = substituted;
                     }
+                    let file_error = super::call(
+                        interp,
+                        "memq",
+                        &[Value::symbol("file-error"), conditions],
+                        env,
+                    )?
+                    .is_truthy();
+                    (errmsg, file_error, obj)
                 };
-                if file_error && !data.is_empty() {
-                    text =
-                        crate::lisp::primitives::print::render_princ_object(interp, &data[0], env)?;
-                    data = &data[1..];
+                let mut tail = data.cons_values().map_or(Value::Nil, |(_, rest)| rest);
+                // A file-error's message is its first datum.
+                if file_error && let Some((first, rest)) = tail.cons_values() {
+                    errmsg = first;
+                    tail = rest;
                 }
-                if !data.is_empty() {
-                    if !text.is_empty() {
-                        text.push_str(": ");
+                let mut text = String::new();
+                let mut sep = Some(": ");
+                match string_like(&errmsg) {
+                    None => text.push_str("peculiar error"),
+                    Some(message) if message.text.is_empty() => sep = None,
+                    Some(_) => text.push_str(&crate::lisp::primitives::print::render_princ_object(
+                        interp, &errmsg, env,
+                    )?),
+                }
+                // princ for file-error, end-of-file and user-error data,
+                // prin1 for every other condition's: Magit's multi-part git
+                // errors keep their quotes and escapes.
+                let use_princ = file_error
+                    || errname.eq_value(Value::symbol("end-of-file"))
+                    || errname.eq_value(Value::symbol("user-error"));
+                let mut cycle = crate::lisp::primitives::values::ForEachTail::new(tail);
+                while let Some((datum, next)) = tail.cons_values() {
+                    if let Some(sep) = sep {
+                        text.push_str(sep);
                     }
-                    // print.c princ's file/end-of-file/user-error data and
-                    // prin1's every other condition's data.  The distinction
-                    // matters for custom conditions carrying strings: Magit's
-                    // multi-part git errors retain quotes and escaping.
-                    let use_princ =
-                        file_error || condition == "end-of-file" || condition == "user-error";
-                    let mut rendered = Vec::with_capacity(data.len());
-                    for datum in data {
-                        rendered.push(if use_princ {
-                            crate::lisp::primitives::print::render_princ_object(interp, datum, env)?
-                        } else {
-                            crate::lisp::primitives::print::render_prin1_ephemeral(
-                                interp, datum, env,
-                            )?
-                        });
+                    sep = Some(", ");
+                    text.push_str(&if use_princ {
+                        crate::lisp::primitives::print::render_princ_object(interp, &datum, env)?
+                    } else {
+                        crate::lisp::primitives::print::render_prin1_ephemeral(interp, &datum, env)?
+                    });
+                    tail = next;
+                    if cycle.step(tail) {
+                        return Err(crate::lisp::types::circular_list(tail));
                     }
-                    text.push_str(&rendered.join(", "));
                 }
                 // The general C path returns Fbuffer_string from the
                 // multibyte prin1 buffer. It is already mutable at creation;

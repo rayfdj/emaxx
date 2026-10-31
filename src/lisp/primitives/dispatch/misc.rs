@@ -1311,7 +1311,10 @@ define_dispatch!(
             }
             "indirect-variable" => {
                 need_args(name, args, 1)?;
-                let symbol = checked_symbol_identity(interp, &args[0], env)?;
+                // data.c:Findirect_variable answers a non-symbol as given.
+                let Ok(symbol) = checked_symbol_identity(interp, &args[0], env) else {
+                    return Ok(args[0]);
+                };
                 Ok(Value::Symbol(interp.resolve_variable_symbol(&symbol)?))
             }
             "internal--define-uninitialized-variable" => {
@@ -1357,7 +1360,9 @@ define_dispatch!(
                     interp.put_symbol_property(&symbol_name, "variable-documentation", doc);
                 }
                 let value = purecopy_value(interp, &args[1], env)?;
-                interp.set_variable(&symbol_name, value, &mut crate::lisp::types::Env::new());
+                // eval.c:Fdefconst_1 stores with Fset_default, which refuses
+                // a constant.
+                super::call(interp, "set-default", &[args[0], value], env)?;
                 interp.put_symbol_property(&symbol_name, "risky-local-variable", Value::T);
                 Ok(Value::Symbol(symbol_name.into()))
             }
@@ -2021,12 +2026,17 @@ fn snarf_documentation(
     let directory = interp
         .lookup_var("doc-directory", env)
         .unwrap_or(Value::Nil);
-    let path = doc_path(&directory, filename)?;
+    // doc.c names the file by appending FILENAME to `doc-directory'.
+    let directory = string_like(&directory)
+        .ok_or_else(|| wrong_type_argument("stringp", directory))?
+        .text;
+    let path = directory + &string_text(filename)?;
     let bytes = std::fs::read(&path).map_err(|error| {
-        LispError::SignalValue(file_error_value(
-            &format!("Opening doc string file: {error}"),
-            &path.to_string_lossy(),
-        ))
+        crate::lisp::primitives::file_io::file_operation_error(
+            "Opening doc string file",
+            &error,
+            &path,
+        )
     })?;
     let entries = parse_doc_file_entries(&bytes)?;
     interp.set_variable("internal-doc-file-name", *filename, env);

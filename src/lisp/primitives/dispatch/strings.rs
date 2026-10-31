@@ -86,6 +86,19 @@ define_dispatch!(
             "vconcat" => {
                 let mut items = Vec::new();
                 for value in args {
+                    // fns.c:concat_to_vector takes lists, vectors, strings,
+                    // closures and bool-vectors, anything else `sequencep'.
+                    if !matches!(
+                        value.kind(),
+                        Kind::Nil
+                            | Kind::Cons(_)
+                            | Kind::Vector(_)
+                            | Kind::StringObject(_)
+                            | Kind::Closure(_)
+                            | Kind::BoolVector(_)
+                    ) {
+                        return Err(LispError::WrongTypeArgument("sequencep".into(), *value));
+                    }
                     items.extend(sequence_values(value)?);
                 }
                 Ok(Value::vector(items))
@@ -338,18 +351,26 @@ define_dispatch!(
                 Ok(bytes_to_unibyte_value(&bytes))
             }
             "unibyte-string" => {
+                // character.c:Funibyte_string: check_integer_range (0, 255).
                 let bytes = args
                     .iter()
                     .map(|value| {
                         let byte = value.as_integer()?;
-                        u8::try_from(byte).map_err(|_| LispError::Signal("Invalid byte".into()))
+                        u8::try_from(byte).map_err(|_| {
+                            LispError::SignalValue(Value::list([
+                                Value::symbol("args-out-of-range"),
+                                *value,
+                                Value::Integer(0),
+                                Value::Integer(255),
+                            ]))
+                        })
                     })
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(bytes_to_unibyte_value(&bytes))
             }
             "multibyte-char-to-unibyte" => {
                 need_args(name, args, 1)?;
-                let ch = args[0].as_integer()?;
+                let ch = i64::from(check_character(&args[0])?);
                 Ok(if (0..=255).contains(&ch) {
                     Value::Integer(ch)
                 } else if (RAW_BYTE8_BASE as i64 + 0x80..=RAW_BYTE8_BASE as i64 + 0xFF)
@@ -472,7 +493,7 @@ define_dispatch!(
             }
             "byte-to-string" => {
                 need_args(name, args, 1)?;
-                let n = args[0].as_integer()?;
+                let n = args[0].as_fixnum()?;
                 if !(0..=255).contains(&n) {
                     return Err(LispError::Signal("Invalid byte".into()));
                 }
@@ -493,8 +514,7 @@ define_dispatch!(
             }
             "char-syntax" => {
                 need_args(name, args, 1)?;
-                let mut code = u32::try_from(args[0].as_integer()?)
-                    .map_err(|_| LispError::Signal("Invalid character".into()))?;
+                let mut code = check_character(&args[0])?;
                 // GNU syntax.c promotes a raw byte to its byte8 character
                 // before consulting the current table in a unibyte buffer.
                 // This keeps entries installed with
@@ -538,7 +558,9 @@ define_dispatch!(
             }
             "syntax-class-to-char" => {
                 need_args(name, args, 1)?;
-                let class = match args[0].as_integer()? {
+                // syntax.c:Fsyntax_class_to_char: CHECK_FIXNUM, then a class
+                // past syntax_code_spec is args-out-of-range.
+                let class = match args[0].as_fixnum()? {
                     0 => syntax::SyntaxClass::Whitespace,
                     1 => syntax::SyntaxClass::Punctuation,
                     2 => syntax::SyntaxClass::Word,
@@ -555,7 +577,13 @@ define_dispatch!(
                     13 => syntax::SyntaxClass::Inherit,
                     14 => syntax::SyntaxClass::GenericCommentDelimiter,
                     15 => syntax::SyntaxClass::GenericStringDelimiter,
-                    _ => return Err(LispError::Signal("Invalid syntax class".into())),
+                    _ => {
+                        return Err(LispError::SignalValue(Value::list([
+                            Value::symbol("args-out-of-range"),
+                            Value::Integer(15),
+                            args[0],
+                        ])));
+                    }
                 };
                 Ok(Value::Integer(syntax::syntax_class_char(class) as i64))
             }
@@ -578,9 +606,9 @@ define_dispatch!(
             }
             "unibyte-char-to-multibyte" => {
                 need_args(name, args, 1)?;
-                let n = args[0].as_integer()?;
-                if !(0..=255).contains(&n) {
-                    return Err(LispError::Signal("Byte value out of range".into()));
+                let n = i64::from(check_character(&args[0])?);
+                if n >= 0x100 {
+                    return Err(LispError::Signal(format!("Not a unibyte character: {n}")));
                 }
                 // GNU maps bytes 0x80..0xFF to the raw-byte (eight-bit)
                 // codepoints at #x3FFF00; ASCII stays as-is.
@@ -639,9 +667,7 @@ define_dispatch!(
             }
             "char-resolve-modifiers" => {
                 need_args(name, args, 1)?;
-                Ok(Value::Integer(resolve_char_modifiers(
-                    args[0].as_integer()?,
-                )))
+                Ok(Value::Integer(resolve_char_modifiers(args[0].as_fixnum()?)))
             }
         }
     }

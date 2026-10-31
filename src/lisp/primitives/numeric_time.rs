@@ -307,9 +307,12 @@ fn closure_arity_value(
     }
 }
 
+/// eval.c:Ffunc_arity of FUNCTION, reached from ORIGINAL, the object
+/// an `invalid-function' error names.
 pub(crate) fn function_arity_value(
     interp: &Interpreter,
     function: &Value,
+    original: &Value,
     env: &Env,
 ) -> Result<Value, LispError> {
     let positions_enabled = symbols_with_pos_enabled(interp, env);
@@ -322,7 +325,7 @@ pub(crate) fn function_arity_value(
             return Ok(arity);
         }
         let resolved = interp.lookup_function(name, env)?;
-        return function_arity_value(interp, &resolved, env);
+        return function_arity_value(interp, &resolved, original, env);
     }
 
     match function.kind() {
@@ -353,8 +356,7 @@ pub(crate) fn function_arity_value(
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(lambda_arity_value(&parameters))
         }
-        Kind::Cons(_) => Err(invalid_function_arity(function)),
-        _ => Err(LispError::WrongTypeArgument("functionp".into(), *function)),
+        _ => Err(invalid_function_arity(original)),
     }
 }
 
@@ -402,6 +404,23 @@ pub(crate) fn check_number(value: &Value) -> Result<(), LispError> {
     match value.kind() {
         Kind::Integer(_) | Kind::BigInteger(_) | Kind::Float(_) => Ok(()),
         _ => Err(LispError::WrongTypeArgument("numberp".into(), *value)),
+    }
+}
+
+/// lisp.h:CHECK_CHARACTER: a fixnum naming a character (0..MAX_CHAR).
+pub(crate) fn check_character(value: &Value) -> Result<u32, LispError> {
+    match value.kind() {
+        Kind::Integer(code) if (0..=0x3F_FFFF).contains(&code) => Ok(code as u32),
+        _ => Err(LispError::WrongTypeArgument("characterp".into(), *value)),
+    }
+}
+
+/// lisp.h:CHECK_FIXNAT: a non-negative fixnum, any other object
+/// `wholenump'.
+pub(crate) fn check_fixnat(value: &Value) -> Result<i64, LispError> {
+    match value.kind() {
+        Kind::Integer(n) if n >= 0 => Ok(n),
+        _ => Err(LispError::WrongTypeArgument("wholenump".into(), *value)),
     }
 }
 

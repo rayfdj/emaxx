@@ -436,11 +436,17 @@ define_dispatch!(
             }
             "minor-mode-key-binding" => {
                 need_arg_range(name, args, 1, 2)?;
+                // keymap.c:Fminor_mode_key_binding: KEY reaches Flookup_key
+                // only through an active minor mode map.
+                let maps = active_minor_mode_bindings(interp, env)?;
+                if maps.is_empty() {
+                    return Ok(Value::Nil);
+                }
                 let normalized_key = normalize_lucid_key_events(interp, &args[0], env)?;
                 let key_parts = key_sequence_keymap_parts(&normalized_key)?;
                 let accept_default = args.get(1).is_some_and(Value::is_truthy);
                 let mut prefix_bindings = Vec::new();
-                for (mode, map) in active_minor_mode_bindings(interp, env)? {
+                for (mode, map) in maps {
                     let binding = keymap_lookup_sequence_value_with_default(
                         interp,
                         &map,
@@ -1086,7 +1092,7 @@ define_dispatch!(
 
             "funcall-with-delayed-message" => {
                 need_args(name, args, 3)?;
-                let timeout = numeric_to_f64(interp, &args[0])?;
+                let timeout = extract_float(interp, &args[0])?;
                 let delayed = string_text(&args[1])?;
                 let callback = resolve_callable(interp, &args[2], env)?;
                 let buffer_id = interp
@@ -1461,7 +1467,8 @@ define_dispatch!(
             }
             "force-mode-line-update" => {
                 need_arg_range(name, args, 0, 1)?;
-                Ok(Value::Nil)
+                // buffer.c:Fforce_mode_line_update returns ALL.
+                Ok(args.first().copied().unwrap_or(Value::Nil))
             }
             "garbage-collect" => direct_garbage_collect(interp, args, env),
             // alloc.c's watchers of the GC variables (abi's

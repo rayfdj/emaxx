@@ -10882,6 +10882,51 @@ setup_process_coding_systems's check now refuses). A 13-form
   each kind. Local validation: the grouped gate's 3,393 library
   tests, the integration targets and clippy with `--all-targets
   --all-features -D warnings' pass.
+- **Round 214: C primitive arguments checked as their C sources check
+  them.** A battery calling each C primitive once with each of six
+  arguments (a symbol, a string, -1, 1.5, a marker pointing nowhere and
+  nil; GNU crashers dropped) differed from GNU in 195 calls of 52
+  primitives, nearly all in the type a check names or in a check Emaxx
+  skipped. Characters now go through CHECK_CHARACTER (`char-syntax',
+  `matching-paren', `syntax-class-to-char', `unibyte-char-to-multibyte',
+  `multibyte-char-to-unibyte', `encode-char', `decode-char',
+  `make-char', the Big5 and SJIS coders), fixnums through CHECK_FIXNUM
+  (`byte-to-position', `byte-to-string', `char-resolve-modifiers', which
+  also answers -1 for -1, `match-beginning', `match-end'), charsets
+  through CHECK_CHARSET (`charset-plist', `charset-id-internal',
+  `iso-charset'), syntax tables through check_syntax_table
+  (`copy-syntax-table', `set-syntax-table' of a char table of another
+  purpose), and coding systems as coding.c takes them: nil is
+  `no-conversion' to `coding-system-aliases', `coding-system-eol-type'
+  answers nil for a non-coding-system and `coding-system-put' signals
+  `coding-system-p'. `error-message-string' prints as
+  print.c:print_error_message (a peculiar error, a string-valued
+  condition, the file-error forms and a non-symbol head), `find-buffer'
+  reads its variable through Fbuffer_local_value, `func-arity' signals
+  `invalid-function' of the object it was given, `indirect-variable'
+  answers a non-symbol as given and `force-mode-line-update' its
+  argument, `locale-info', `get-truename-buffer' and
+  `minor-mode-key-binding' answer nil for what they cannot use,
+  `compute-motion' checks its arguments in indent.c's order (a detached
+  marker is marker_position's error, a position past ZV an
+  args-out-of-range of BEGV and ZV), `funcall-with-delayed-message'
+  takes its timeout by extract_float, `defconst-1' refuses a constant,
+  `unibyte-string' checks each byte's range, `vconcat' names
+  `sequencep', and `Snarf-documentation' reports a
+  missing file as report_file_errno does. `random' runs glibc's TYPE_3
+  random(3) generator as sysdep.c's get_random does, seeded by
+  init_random or, for a string, by its bytes through seed_random, and
+  draws a bignum limit's limbs as get_random_bignum does, so a string
+  seed answers GNU's numbers. What still differs is nondeterministic
+  (`sxhash-eq' of a fresh object, an unseeded `random'), X-only or a
+  debug build's (`re--describe-compiled', `newline-cache-check'),
+  `read' of nil while a file loads (round 215 binds `standard-input'),
+  and
+  `(Snarf-documentation "")' of a directory, whose negative read GNU
+  does not check. An oracle test pins one call of each kind. Local
+  validation: the grouped gate's 3,394 library tests, the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -12271,6 +12316,11 @@ against 236.9 s (0.930), in all 0.996.
 passed, and frozen (run 41241049461) matched all 7,928 outcomes on the
 first attempt: setup 65.2 s against 55.5 s (1.176), test bodies 226.3 s
 against 242.1 s (0.935), in all 0.997.
+
+**On `b605ad9`** (round 213): the full Rust gate (run 41244095942)
+passed, and frozen (run 41244098431) matched all 7,928 outcomes on the
+first attempt: setup 84.3 s against 68.8 s (1.224), test bodies 260.5 s
+against 277.2 s (0.940), in all 0.987.
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

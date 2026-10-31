@@ -33032,6 +33032,23 @@ fn number_arguments_are_checked_as_floatfns_c_and_markers_coerced_as_marker_c() 
 }
 
 #[test]
+fn c_primitive_arguments_are_checked_and_answered_as_their_c_sources() {
+    // Each call as the C primitive takes its argument: chartab.c and
+    // character.c CHECK_CHARACTER, charset.c CHECK_CHARSET, syntax.c
+    // check_syntax_table, coding.c's nil as `no-conversion' or `undecided'
+    // and CODING_SYSTEM_P without a signal, print.c:print_error_message,
+    // buffer.c's Ffind_buffer through Fbuffer_local_value, eval.c's
+    // invalid-function of the original object, indent.c's check order,
+    // doc.c's report_file_errno, and fns.c's random on glibc's generator,
+    // so a string seed draws GNU's sequence.
+    assert_oracle_contract_matches_interpreter(
+        r##"(with-temp-buffer (insert "abc\ndef") (let ((m (make-marker))) (mapcar (lambda (f) (condition-case e (funcall f) (error e))) (list (lambda () (char-syntax -1)) (lambda () (unibyte-char-to-multibyte 300)) (lambda () (charset-plist 'zz)) (lambda () (encode-char 65 nil)) (lambda () (matching-paren ?\()) (lambda () (matching-paren -1)) (lambda () (syntax-class-to-char 16)) (lambda () (unibyte-string 256)) (lambda () (byte-to-position 'a)) (lambda () (match-beginning -1)) (lambda () (copy-syntax-table 'zz)) (lambda () (condition-case e (set-syntax-table (make-char-table 'foo)) (error (list (car e) (cadr e))))) (lambda () (coding-system-eol-type "str")) (lambda () (coding-system-eol-type 'zz)) (lambda () (coding-system-put nil :mnemonic ?x)) (lambda () (car (coding-system-aliases nil))) (lambda () (unencodable-char-position nil nil nil)) (lambda () (defconst-1 nil 1)) (lambda () (error-message-string 'zz)) (lambda () (error-message-string nil)) (lambda () (error-message-string '(error . "x"))) (lambda () (error-message-string '(foo 1 "two"))) (lambda () (error-message-string '(file-missing "Opening" "No such file" "/x"))) (lambda () (error-message-string '(1 2))) (lambda () (bufferp (find-buffer nil nil))) (lambda () (find-buffer 'zz-unbound-var 1)) (lambda () (get-truename-buffer 7)) (lambda () (force-mode-line-update 'all)) (lambda () (func-arity "str")) (lambda () (indirect-variable "str")) (lambda () (locale-info 1)) (lambda () (minor-mode-key-binding 1.5)) (lambda () (symbol-with-pos-pos 1)) (lambda () (compute-motion -1 -1 -1 -1 -1 -1 -1)) (lambda () (compute-motion m '(0 . 0) 1 nil nil nil nil)) (lambda () (compute-motion 99 '(0 . 0) 1 nil nil nil nil)) (lambda () (funcall-with-delayed-message m "x" #'ignore)) (lambda () (multibyte-char-to-unibyte -1)) (lambda () (decode-sjis-char -1)) (lambda () (list (random "str") (random 1000) (random (expt 2 70)) (random "str"))) (lambda () (random 0)) (lambda () (condition-case e (Snarf-documentation "zz-no-such-doc") (error (list (car e) (cadr e) (caddr e)))))))))"##,
+        r##"((wrong-type-argument characterp -1) (error "Not a unibyte character: 300") (wrong-type-argument charsetp zz) (wrong-type-argument charsetp nil) 41 (wrong-type-argument characterp -1) (args-out-of-range 15 16) (args-out-of-range 256 0 255) (wrong-type-argument fixnump a) (args-out-of-range -1 0) (wrong-type-argument syntax-table-p zz) (wrong-type-argument syntax-table-p) nil nil (wrong-type-argument coding-system-p nil) no-conversion (wrong-type-argument integer-or-marker-p nil) (setting-constant nil) (wrong-type-argument listp zz) "peculiar error" "peculiar error" "peculiar error: 1, \"two\"" "Opening: No such file, /x" (wrong-type-argument symbolp 1) t (void-variable zz-unbound-var) nil all (invalid-function "str") "str" nil nil (wrong-type-argument symbol-with-pos-p 1) (wrong-type-argument consp -1) (error "Marker does not point anywhere") (args-out-of-range 99 1 8) (wrong-type-argument numberp #<marker in no buffer>) (wrong-type-argument characterp -1) (wrong-type-argument wholenump -1) (966237169454791873 783 304627151361558532898 966237169454791873) (args-out-of-range 0) (file-missing "Opening doc string file" "No such file or directory"))"##,
+        "C primitive argument checks",
+    );
+}
+
+#[test]
 fn the_initial_obarray_holds_only_the_symbols_gnu_makes_at_startup() {
     // lread.c:define_symbol interns every DEFSYM but Qunbound, and
     // syms_of_eval, syms_of_editfns and syms_of_print unintern their own

@@ -311,7 +311,7 @@ define_dispatch!(
                     // a random -NNNNNN suffix, so that thousands of
                     // internal buffers do not each scan <2>, <3>, ...
                     let genbase = if base.starts_with(' ') {
-                        let number = (crate::lisp::primitives::next_random_u64() >> 2) % 1_000_000;
+                        let number = crate::lisp::primitives::get_random() % 1_000_000;
                         let genbase = format!("{base}-{number}");
                         if !interp.has_buffer(&genbase) {
                             return Ok(Value::String(genbase.into()));
@@ -903,7 +903,7 @@ define_dispatch!(
                     }
                 };
                 let function = resolve_callable(interp, &args[0], env)?;
-                function_arity_value(interp, &unwrap_macro(&function), env)
+                function_arity_value(interp, &unwrap_macro(&function), &args[0], env)
             }
             "subr-name" => {
                 need_args(name, args, 1)?;
@@ -1075,10 +1075,7 @@ define_dispatch!(
             "decode-char" => {
                 need_args(name, args, 2)?;
                 // CHECK_CHARSET_GET_CHARSET: an unknown charset signals.
-                let charset = args[0].as_symbol()?;
-                if !interp.has_charset(charset) {
-                    return Err(LispError::WrongTypeArgument("charsetp".into(), args[0]));
-                }
+                let charset = check_charset(interp, &args[0])?;
                 let code = u32::try_from(args[1].as_integer()?)
                     .map_err(|_| LispError::Signal("Invalid charset code-point".into()))?;
                 Ok(decode_charset_code(interp, charset, code)
@@ -1087,12 +1084,10 @@ define_dispatch!(
             }
             "encode-char" => {
                 need_args(name, args, 2)?;
-                let character = u32::try_from(args[0].as_integer()?)
-                    .map_err(|_| LispError::Signal("Invalid character".into()))?;
-                let charset = args[1].as_symbol()?;
-                if !interp.has_charset(charset) {
-                    return Err(LispError::WrongTypeArgument("charsetp".into(), args[1]));
-                }
+                // charset.c:Fencode_char: CHECK_CHARSET_GET_ID, then
+                // CHECK_CHARACTER.
+                let charset = check_charset(interp, &args[1])?;
+                let character = check_character(&args[0])?;
                 // ENCODE_CHAR takes GNU's character number as given (a raw
                 // byte at #x3fff80..#x3fffff belongs to `eight-bit' only).
                 Ok(encode_charset_char(interp, charset, character)
@@ -1197,8 +1192,8 @@ define_dispatch!(
                 })
             }
             "charset-id-internal" => {
-                need_args(name, args, 1)?;
-                let symbol = args[0].as_symbol()?;
+                need_arg_range(name, args, 0, 1)?;
+                let symbol = check_charset(interp, args.first().unwrap_or(&Value::Nil))?;
                 Ok(interp
                     .charset_id(symbol)
                     .map(Value::Integer)
@@ -1206,7 +1201,8 @@ define_dispatch!(
             }
             "charset-plist" => {
                 need_args(name, args, 1)?;
-                let symbol = args[0].as_symbol()?;
+                // CHECK_CHARSET_GET_ATTR.
+                let symbol = check_charset(interp, &args[0])?;
                 Ok(interp
                     .charset_plist_value(symbol)
                     .unwrap_or_else(|| default_charset_plist(symbol, interp).unwrap_or(Value::Nil)))
@@ -1444,11 +1440,13 @@ define_dispatch!(
             }
             "iso-charset" => {
                 need_args(name, args, 3)?;
-                let dimension = args[0].as_integer()?;
-                let chars = args[1].as_integer()?;
-                let final_char = args[2].as_integer()?;
+                // charset.c:Fiso_charset: CHECK_FIXNUM of DIMENSION and
+                // CHARS, CHECK_CHARACTER of FINAL-CHAR.
+                let dimension = args[0].as_fixnum()?;
+                let chars = args[1].as_fixnum()?;
+                let final_char = check_character(&args[2])?;
                 Ok(interp
-                    .iso_charset(dimension, chars, final_char as u32)
+                    .iso_charset(dimension, chars, final_char)
                     .map(|value| Value::Symbol(value.into()))
                     .unwrap_or(Value::Nil))
             }
@@ -1582,7 +1580,11 @@ define_dispatch!(
             }
             "coding-system-aliases" => {
                 need_args(name, args, 1)?;
-                let coding = checked_coding_symbol(interp, &args[0])?;
+                let coding = if args[0].is_nil() {
+                    "no-conversion".to_string()
+                } else {
+                    checked_coding_symbol(interp, &args[0])?
+                };
                 Ok(Value::list(
                     interp
                         .coding_system_alias_list(&coding)
@@ -1615,10 +1617,17 @@ define_dispatch!(
             }
             "coding-system-eol-type" => {
                 need_args(name, args, 1)?;
+                // nil is `no-conversion', and what CODING_SYSTEM_P rejects
+                // has no eol type.
                 if args[0].is_nil() {
                     return Ok(Value::Integer(0));
                 }
-                let coding = checked_coding_symbol(interp, &args[0])?;
+                let Some(coding) = args[0]
+                    .symbol_str()
+                    .and_then(|symbol| interp.coding_system_canonical_name(symbol))
+                else {
+                    return Ok(Value::Nil);
+                };
                 if let Some(eol_type) = interp.coding_system_eol_type_value(&coding) {
                     return Ok(Value::Integer(eol_type));
                 }
@@ -1696,13 +1705,10 @@ define_dispatch!(
                 // answers oracle-probed: #x8940 is 38498 here and the
                 // 0208 offset character through decode-coding-string).
                 need_args(name, args, 1)?;
-                let code = args[0].as_fixnum()?;
-                // coding.c CHECK_FIXNAT prints as `wholenump'; any
-                // in-range fixnum passes and oversized codes fall to
-                // the "Invalid code" validation below (oracle rows).
-                if code < 0 {
-                    return Err(LispError::WrongTypeArgument("wholenump".into(), args[0]));
-                }
+                // coding.c CHECK_FIXNAT: any natural fixnum passes and
+                // oversized codes fall to the "Invalid code" validation
+                // below (oracle rows).
+                let code = check_fixnat(&args[0])?;
                 let invalid = || LispError::Signal(format!("Invalid code: {code}"));
                 if code <= 0x7F {
                     return Ok(Value::Integer(code));
@@ -1737,10 +1743,8 @@ define_dispatch!(
                 // stack garbage elsewhere); emaxx takes the error the
                 // docstring promises, disclosed in the ledger.
                 need_args(name, args, 1)?;
-                let character = args[0].as_fixnum()?;
-                if !(0..=0x3FFFFF).contains(&character) {
-                    return Err(LispError::WrongTypeArgument("characterp".into(), args[0]));
-                }
+                // CHECK_CHARACTER.
+                let character = i64::from(check_character(&args[0])?);
                 if character <= 0x7F {
                     return Ok(Value::Integer(character));
                 }
@@ -1765,11 +1769,8 @@ define_dispatch!(
                 // direction happily produces it.  The oracle confirms
                 // both halves of the asymmetry.
                 need_args(name, args, 1)?;
-                let code = args[0].as_fixnum()?;
-                // CHECK_FIXNAT as above: `wholenump', no upper bound.
-                if code < 0 {
-                    return Err(LispError::WrongTypeArgument("wholenump".into(), args[0]));
-                }
+                // CHECK_FIXNAT as above, no upper bound.
+                let code = check_fixnat(&args[0])?;
                 let invalid = || LispError::Signal(format!("Invalid code: {code}"));
                 if code <= 0x7F {
                     return Ok(Value::Integer(code));
@@ -1796,10 +1797,8 @@ define_dispatch!(
                 // Fencode_sjis_char's null-charset read; emaxx signals
                 // the docstring's error instead.
                 need_args(name, args, 1)?;
-                let character = args[0].as_fixnum()?;
-                if !(0..=0x3FFFFF).contains(&character) {
-                    return Err(LispError::WrongTypeArgument("characterp".into(), args[0]));
-                }
+                // CHECK_CHARACTER.
+                let character = i64::from(check_character(&args[0])?);
                 if character <= 0x7F {
                     return Ok(Value::Integer(character));
                 }

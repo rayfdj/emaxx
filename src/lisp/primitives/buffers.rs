@@ -960,34 +960,44 @@ pub(crate) fn normalize_string_index(
     Ok(index)
 }
 
-pub(crate) fn resolve_char_modifiers(value: i64) -> i64 {
-    const SHIFT_BIT: i64 = 1 << 25;
-    const CTRL_BIT: i64 = 1 << 26;
-    const META_BIT: i64 = 1 << 27;
-    const CHAR_MASK: i64 = 0x3F_FFFF;
-
-    let mut base = value & CHAR_MASK;
-    let meta = value & META_BIT;
-    let shift = value & SHIFT_BIT != 0;
-    let ctrl = value & CTRL_BIT != 0;
-
-    if shift
-        && let Some(ch) = char::from_u32(base as u32)
-        && ch.is_ascii_lowercase()
-    {
-        base = ch.to_ascii_uppercase() as i64;
+/// character.c:char_resolve_modifier_mask: the shift and control
+/// modifiers of an ASCII character folded into its code, the others kept.
+pub(crate) fn resolve_char_modifiers(mut c: i64) -> i64 {
+    const CHAR_ALT: i64 = 0x0400000;
+    const CHAR_SUPER: i64 = 0x0800000;
+    const CHAR_HYPER: i64 = 0x1000000;
+    const CHAR_SHIFT: i64 = 0x2000000;
+    const CHAR_CTL: i64 = 0x4000000;
+    const CHAR_META: i64 = 0x8000000;
+    const CHAR_MODIFIER_MASK: i64 =
+        CHAR_ALT | CHAR_SUPER | CHAR_HYPER | CHAR_SHIFT | CHAR_CTL | CHAR_META;
+    // A non-ASCII character can't reflect modifier bits to the code.
+    if !(0..0x80).contains(&(c & !CHAR_MODIFIER_MASK)) {
+        return c;
     }
-
-    if ctrl {
-        base = match base {
-            0x3f => 0x7f,
-            n if (b'a' as i64..=b'z' as i64).contains(&n) => (n - b'a' as i64) + 1,
-            n if (b'A' as i64..=b'Z' as i64).contains(&n) => (n - b'A' as i64) + 1,
-            n => n & 0x1f,
-        };
+    if c & CHAR_SHIFT != 0 {
+        // Shift is valid only with [A-Za-z]; for control characters and
+        // SPC it is ignored.
+        if (i64::from(b'A')..=i64::from(b'Z')).contains(&(c & 0o377)) {
+            c &= !CHAR_SHIFT;
+        } else if (i64::from(b'a')..=i64::from(b'z')).contains(&(c & 0o377)) {
+            c = (c & !CHAR_SHIFT) - i64::from(b'a' - b'A');
+        } else if (c & !CHAR_MODIFIER_MASK) <= 0x20 {
+            c &= !CHAR_SHIFT;
+        }
     }
-
-    base | meta
+    if c & CHAR_CTL != 0 {
+        // As lread.c reads `\C-': `\C- ' and `\C-?' are allowed, and the
+        // control characters come from the letters and 0100..0137.
+        if c & 0o377 == i64::from(b' ') {
+            c &= !0o177 & !CHAR_CTL;
+        } else if c & 0o377 == i64::from(b'?') {
+            c = 0o177 | (c & !0o177 & !CHAR_CTL);
+        } else if (0o101..=0o132).contains(&(c & 0o137)) || (0o100..=0o137).contains(&(c & 0o177)) {
+            c &= 0o37 | (!0o177 & !CHAR_CTL);
+        }
+    }
+    c
 }
 
 pub(crate) fn position_bytes(interp: &Interpreter, pos: usize) -> Option<usize> {

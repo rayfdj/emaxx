@@ -176,12 +176,30 @@ fn charset_superset(interp: &Interpreter, charset: &str) -> Option<Vec<(String, 
 
 /// charset.c:Fmake_char assembles position codes in most-significant-byte
 /// order, filling omitted dimensions from the charset's code space.
+/// charset.h:CHECK_CHARSET: a symbol naming a charset, any other object
+/// `charsetp'.
+pub(crate) fn check_charset<'a>(
+    interp: &Interpreter,
+    charset: &'a Value,
+) -> Result<&'a str, LispError> {
+    match charset.kind() {
+        Kind::Nil | Kind::T | Kind::Symbol(_) => {
+            let name = charset.as_symbol()?;
+            if interp.has_charset(name) {
+                return Ok(name);
+            }
+        }
+        _ => {}
+    }
+    Err(LispError::WrongTypeArgument("charsetp".into(), *charset))
+}
+
 pub(crate) fn make_charset_character(
     interp: &Interpreter,
     charset: &Value,
     positions: &[Value],
 ) -> Result<Value, LispError> {
-    let name = charset.as_symbol()?;
+    let name = check_charset(interp, charset)?;
     let canonical = interp
         .charset_canonical_name(name)
         .ok_or_else(|| LispError::WrongTypeArgument("charsetp".into(), *charset))?;
@@ -587,11 +605,15 @@ pub(crate) fn raw_text_coding_system(interp: &Interpreter, coding: &str) -> Stri
     }
 }
 
+/// coding.h CHECK_CODING_SYSTEM: the canonical name of the coding system
+/// VALUE names.  nil, which Fcheck_coding_system answers without a spec,
+/// is `(wrong-type-argument coding-system-p nil)'.
 pub(crate) fn checked_coding_symbol(
     interp: &Interpreter,
     value: &Value,
 ) -> Result<String, LispError> {
-    checked_coding_name(interp, value)?.ok_or_else(|| coding_system_error(*value))
+    checked_coding_name(interp, value)?
+        .ok_or_else(|| LispError::WrongTypeArgument("coding-system-p".into(), *value))
 }
 
 pub(crate) fn coding_variant_name(
@@ -661,8 +683,10 @@ pub(crate) fn random_temp_suffix() -> String {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    let mut seed =
-        (nanos as u64) ^ counter.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ rand_simple().unsigned_abs();
+    // gen_tempname draws its own bits; `random' is left as it was.
+    let mut seed = (nanos as u64)
+        ^ counter.wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        ^ u64::from(std::process::id()).rotate_left(32);
     let mut suffix = String::with_capacity(6);
     for _ in 0..6 {
         seed = seed
@@ -2645,7 +2669,12 @@ pub(crate) fn unencodable_char_position_value(
     args: &[Value],
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    let coding = checked_coding_symbol(interp, &args[2])?;
+    // setup_coding_system reads nil as `undecided'.
+    let coding = if args[2].is_nil() {
+        "undecided".to_string()
+    } else {
+        checked_coding_symbol(interp, &args[2])?
+    };
     let canonical = interp
         .coding_system_canonical_name(&coding)
         .ok_or_else(|| coding_system_error(args[2]))?;

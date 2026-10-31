@@ -1213,7 +1213,7 @@ define_dispatch!(
             "symbol-with-pos-pos" => {
                 need_args(name, args, 1)?;
                 let (_, position) = symbol_with_pos_parts(interp, &args[0]).ok_or_else(|| {
-                    LispError::TypeError("symbol-with-pos".into(), args[0].type_name())
+                    LispError::WrongTypeArgument("symbol-with-pos-p".into(), args[0])
                 })?;
                 Ok(Value::Integer(position))
             }

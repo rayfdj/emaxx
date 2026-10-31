@@ -233,8 +233,6 @@ pub(crate) fn next_make_symbol_id() -> u64 {
     MAKE_SYMBOL_COUNTER.fetch_add(1, AtomicOrdering::Relaxed)
 }
 static FILE_NOTIFY_DESCRIPTOR_COUNTER: AtomicU64 = AtomicU64::new(1);
-static RANDOM_STATE: AtomicU64 = AtomicU64::new(0x1234_5678_9abc_def0);
-static RANDOM_SEED_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn signal_condition(condition: &str) -> LispError {
     // (signal CONDITION nil): the error object is (CONDITION), not

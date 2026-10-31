@@ -1225,15 +1225,6 @@ pub(crate) fn proper_list_length(value: &Value) -> Option<usize> {
     tail.is_nil().then_some(len)
 }
 
-pub(crate) fn circular_list_signal_p(value: &Value) -> bool {
-    value
-        .to_vec()
-        .ok()
-        .and_then(|items| items.first().cloned())
-        .and_then(|head| head.symbol_str().map(str::to_string))
-        .is_some_and(|symbol| symbol == "circular-list")
-}
-
 pub(crate) fn remove_equal(
     interp: &Interpreter,
     elt: &Value,
