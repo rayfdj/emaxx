@@ -2695,9 +2695,112 @@ fn current_column(interp: &mut Interpreter, env: &mut crate::lisp::types::Env) -
         return column;
     }
     let bol = line_beginning_at(interp, point);
-    let column = column_at(interp, env, bol, point);
+    let column = match plain_current_column(interp, env, bol, point) {
+        Some(column) => column,
+        None => column_at(interp, env, bol, point),
+    };
     remember_current_column(interp, column);
     column
+}
+
+/// indent.c current_column's own scan, back from POINT to the line's
+/// start BOL, of a buffer with no intervals or overlays whose characters
+/// are each one byte (Z == Z_BYTE); None for any other buffer, which
+/// current_column_1 scans.
+fn plain_current_column(
+    interp: &Interpreter,
+    env: &crate::lisp::types::Env,
+    bol: usize,
+    point: usize,
+) -> Option<usize> {
+    {
+        let buffer = interp.buffer.borrow();
+        if buffer.has_interval_tree()
+            || !buffer.overlays.is_empty()
+            || (buffer.is_multibyte() && !buffer.text_is_ascii())
+        {
+            return None;
+        }
+    }
+    // SANE_TAB_WIDTH.
+    let tab_width = interp
+        .lookup_var_key(cached_symbol!("tab-width"), env)
+        .and_then(|value| value.integer_value())
+        .filter(|width| (1..=1000).contains(width))
+        .unwrap_or(8) as usize;
+    let ctl_arrow = interp
+        .lookup_var_key(cached_symbol!("ctl-arrow"), env)
+        .is_some_and(|value| value.is_truthy());
+    let selective_display = interp
+        .lookup_var_key(cached_symbol!("selective-display"), env)
+        .is_some_and(|value| matches!(value.kind(), Kind::T));
+    let display_table = crate::lisp::primitives::buffer_display_table(interp, env);
+    let buffer = interp.buffer.borrow();
+    let (before_gap, after_gap) = buffer.text_halves(bol, point);
+    let (mut col, mut tab_seen, mut post_tab) = (0usize, false, 0usize);
+    let tab = |col: usize| (col + tab_width) / tab_width * tab_width;
+    // One character C, shown as itself or (FROM_VECTOR) as a display
+    // vector's glyph: whether the line's start is reached.
+    let mut step = |c: u32, from_vector: bool| {
+        if (0o40..0o177).contains(&c) {
+            col += 1;
+        } else if c == u32::from(b'\n') || (c == u32::from(b'\r') && selective_display) {
+            return true;
+        } else if c == u32::from(b'\t') {
+            if tab_seen {
+                col = tab(col);
+            }
+            post_tab += col;
+            col = 0;
+            tab_seen = true;
+        } else if from_vector {
+            col += 1;
+        } else {
+            col += if ctl_arrow && c < 0o200 { 2 } else { 4 };
+        }
+        false
+    };
+    'scan: for ch in after_gap.chars().rev().chain(before_gap.chars().rev()) {
+        // The byte: a unibyte buffer's raw byte is stored as its marker.
+        let c = crate::lisp::primitives::raw_byte_from_regex_char(ch).unwrap_or(ch as u8);
+        let charvec = display_table.and_then(|table| match table.get(u32::from(c)).kind() {
+            Kind::Vector(vector) => Some(vector),
+            _ => None,
+        });
+        match charvec {
+            Some(vector) => {
+                let glyphs: Vec<Value> = vector.slots().collect();
+                for glyph in glyphs.iter().rev() {
+                    if step(glyph_code_char(glyph), true) {
+                        break 'scan;
+                    }
+                }
+            }
+            None => {
+                if step(u32::from(c), false) {
+                    break 'scan;
+                }
+            }
+        }
+    }
+    if tab_seen {
+        col = tab(col) + post_tab;
+    }
+    Some(col)
+}
+
+/// GLYPH_CODE_CHAR of a display vector's ENTRY when GLYPH_CODE_P, else a
+/// space.
+fn glyph_code_char(entry: &Value) -> u32 {
+    match entry.kind() {
+        Kind::Integer(code) if code >= 0 => (code & 0x3F_FFFF) as u32,
+        Kind::Cons(_) => entry
+            .car()
+            .ok()
+            .and_then(|car| car.integer_value())
+            .map_or(u32::from(b' '), |code| code as u32),
+        _ => u32::from(b' '),
+    }
 }
 
 /// last_known_column, last_known_column_point and

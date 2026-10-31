@@ -10587,6 +10587,35 @@ setup_process_coding_systems's check now refuses). A 13-form
   Local validation: the grouped gate's 3,381 library tests, the
   integration targets and clippy with `--all-targets --all-features -D
   warnings' pass.
+- **Round 203: current-column as indent.c scans a plain line.**
+  current-column went through current_column_1's forward scan for every
+  line, looking each position's invisibility, display property and
+  composition up even in a buffer with no intervals and no overlays, and
+  the line's start was found a character at a time. A buffer with no
+  intervals or overlays whose characters are each one byte (a unibyte
+  buffer, or a multibyte one holding only ASCII) is now scanned back from
+  point as indent.c current_column scans it: printing characters one
+  column, tabs by SANE_TAB_WIDTH with the columns after the first tab kept
+  apart, control characters two columns under `ctl-arrow' and four
+  otherwise, a carriage return ending the line under `selective-display'
+  t, and a display table's vector entries read glyph by glyph; any other
+  buffer is still scanned by current_column_1. The line's start is found
+  by the buffer's newline search, check_display_width finds nothing in a
+  buffer with no intervals or overlays without looking, and char-charset
+  reads the charset priority list in place rather than copying it.
+  One untabify and tabify of xdisp.c takes 697 M instructions where it
+  took 1,139 M (GNU 871 M), and three take 0.217 s (GNU 0.334 s); one
+  fill-region over NEWS.29 601 M where it took 912 M (GNU 665 M), and
+  three 0.237 s (GNU 0.314 s). A battery
+  of 11 current-column ops (tabs and `tab-width', control characters
+  under both `ctl-arrow' values, a unibyte buffer's bytes, a carriage
+  return under `selective-display', display-table vectors with a newline
+  glyph, narrowing, invisible text, an overlay and non-ASCII text falling
+  back to the full scan, indent-to, char-charset) matches GNU, and an
+  oracle test pins it.
+  Local validation: the grouped gate's 3,382 library tests, the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -11914,6 +11943,11 @@ all 0.970.
 frozen (run 41198054109) matched all 7,928 outcomes on the first attempt:
 setup 67.7 s against 59.4 s (1.140), test bodies 229.9 s against 246.2 s
 (0.934), in all 0.980.
+
+**On `e8688ef`** (round 202): full Rust gate passed (run 41200588471);
+frozen (run 41200590717) matched all 7,928 outcomes on the first attempt:
+setup 76.8 s against 61.2 s (1.254), test bodies 248.8 s against 257.5 s
+(0.966), in all 1.011.
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

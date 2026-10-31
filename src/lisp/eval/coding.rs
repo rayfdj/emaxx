@@ -296,6 +296,11 @@ impl Interpreter {
         self.charset_priority.clone()
     }
 
+    /// Vcharset_ordered_list, borrowed.
+    pub(crate) fn charset_priority(&self) -> &[String] {
+        &self.charset_priority
+    }
+
     pub fn set_charset_priority(&mut self, names: &[String]) {
         // charset.c Fset_charset_priority: the given charsets move to the
         // front in the given order; every other charset keeps its old
@@ -335,6 +340,11 @@ impl Interpreter {
 
     pub fn charset_non_preferred_head(&self) -> Option<String> {
         self.charset_non_preferred_head.clone()
+    }
+
+    /// Vcharset_non_preferred_head, borrowed.
+    pub(crate) fn charset_non_preferred_head_ref(&self) -> Option<&str> {
+        self.charset_non_preferred_head.as_deref()
     }
 
     /// The dump boundary for charset.c's Vcharset_non_preferred_head: the

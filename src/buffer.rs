@@ -1409,7 +1409,7 @@ impl Buffer {
 
     /// Whether every character of the text is one byte, so that a char
     /// index within a chunk is its byte index (the counts are kept).
-    fn text_is_ascii(&self) -> bool {
+    pub(crate) fn text_is_ascii(&self) -> bool {
         self.text.len_chars() == self.text.len_bytes()
     }
 
@@ -3567,6 +3567,12 @@ impl Buffer {
     // ── Line/column helpers ──
 
     /// Return the line number (1-based) at the given position (1-based).
+    /// The text of 1-based [FROM, TO) where it stands, before the gap and
+    /// after it.
+    pub(crate) fn text_halves(&self, from: usize, to: usize) -> (&str, &str) {
+        self.text.range_halves((from - 1)..(to - 1))
+    }
+
     /// xdisp.c count_lines: the newlines from 1-based FROM to TO.
     pub(crate) fn count_newlines(&self, from: usize, to: usize) -> usize {
         let (from, to) = (from.min(to), from.max(to));

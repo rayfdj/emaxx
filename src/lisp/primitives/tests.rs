@@ -32924,3 +32924,17 @@ fn line_number_at_pos_counts_from_begv_as_count_lines() {
         "line-number-at-pos",
     );
 }
+
+#[test]
+fn current_column_scans_back_as_indent_c_in_a_plain_buffer() {
+    // indent.c current_column: a buffer with no intervals or overlays whose
+    // characters are each one byte is scanned back from point, tabs,
+    // control characters, a unibyte buffer's bytes, a carriage return under
+    // selective-display and display-table vectors counted as GNU counts
+    // them; char-charset reads the charset priority list in place.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list (with-temp-buffer (insert "a\tb\t\tc  \td") (list (current-column) (progn (goto-char 3) (current-column)) (progn (goto-char 5) (current-column)) (let ((tab-width 4)) (goto-char (point-max)) (current-column)))) (with-temp-buffer (insert "x\001y\177z") (list (current-column) (let ((ctl-arrow nil)) (goto-char (point-max)) (current-column)))) (with-temp-buffer (set-buffer-multibyte nil) (insert "ab\351\200c") (list (current-column) (let ((ctl-arrow nil)) (current-column)))) (with-temp-buffer (insert "abc\rdef") (list (current-column) (let ((selective-display t)) (goto-char (point-max)) (current-column)))) (with-temp-buffer (let ((buffer-display-table (make-display-table))) (aset buffer-display-table ?a [?x ?y ?z]) (aset buffer-display-table ?\t [?\s]) (aset buffer-display-table ?b (vector (make-glyph-code ?\n))) (insert "qa\tr") (list (current-column) (progn (insert "b") (current-column)) (progn (insert "s") (current-column))))) (with-temp-buffer (insert "line1\n\tab\tc") (list (current-column) (progn (narrow-to-region 9 (point-max)) (goto-char (point-max)) (current-column)))) (with-temp-buffer (insert "    foo\tbar") (list (progn (goto-char 1) (back-to-indentation) (current-column)) (progn (end-of-line) (current-column)) (progn (indent-to 30) (current-column)) (append (buffer-string) nil))) (list (char-charset ?a) (char-charset ?é) (char-charset #x3fffe9) (char-charset ?中)))"##,
+        r##"((33 8 16 17) (7 7) (11 11) (8 8) (6 0 1) (17 9) (4 11 30 (32 32 32 32 102 111 111 9 98 97 114 9 9 32 32 32 32 32 32)) (ascii unicode eight-bit unicode))"##,
+        "plain current-column",
+    );
+}

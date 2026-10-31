@@ -1221,13 +1221,7 @@ pub(crate) fn byte_to_position(interp: &Interpreter, byte: usize) -> Option<usiz
 
 /// find_newline backward from POS to BEGV: the beginning of POS's line.
 pub(crate) fn line_beginning_at(interp: &Interpreter, pos: usize) -> usize {
-    let buffer = interp.buffer.borrow();
-    let begv = buffer.point_min();
-    let mut at = pos.clamp(begv, buffer.point_max());
-    while at > begv && buffer.char_at(at - 1) != Some('\n') {
-        at -= 1;
-    }
-    at
+    interp.buffer.borrow().line_start_at(pos)
 }
 
 /// The columns from LINE_START, the beginning of a line, to POS
@@ -1411,6 +1405,14 @@ fn check_display_width(
     pos: usize,
     col: usize,
 ) -> Option<(usize, usize)> {
+    {
+        // get_char_property_and_overlay finds nothing in a buffer with no
+        // intervals and no overlays.
+        let buffer = interp.buffer.borrow();
+        if !buffer.has_interval_tree() && buffer.overlays.is_empty() {
+            return None;
+        }
+    }
     let (value, overlay) = get_char_property_and_overlay(
         interp,
         &Value::Integer(pos as i64),
