@@ -2018,10 +2018,9 @@ impl<'a> CharacterDisplayContext<'a> {
             layout::LineWrap::Window
         };
         let category_table = match line_wrap {
-            layout::LineWrap::Word { by_category: true } => match local("category-table").kind() {
-                Kind::CharTable(table) => Some(table),
-                _ => interpreter.standard_category_table(),
-            },
+            layout::LineWrap::Word { by_category: true } => interpreter
+                .buffer_category_table_id(buffer_id)
+                .or_else(|| interpreter.standard_category_table()),
             _ => None,
         };
         // buffer.h's SANE_TAB_WIDTH.

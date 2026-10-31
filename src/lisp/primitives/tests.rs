@@ -32938,3 +32938,18 @@ fn current_column_scans_back_as_indent_c_in_a_plain_buffer() {
         "plain current-column",
     );
 }
+
+#[test]
+fn category_table_is_a_buffer_slot_as_category_c_keeps_it() {
+    // BVAR (b, category_table) is a buffer slot with no Lisp variable:
+    // set-category-table binds nothing `local-variable-p' or
+    // `buffer-local-variables' sees; kill-all-local-variables returns it
+    // to the standard table; clone-indirect-buffer copies it and
+    // make-indirect-buffer does not; check_category_table signals
+    // `category-table-p'.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list (with-temp-buffer (set-category-table (make-category-table)) (list (local-variable-p 'category-table) (and (assq 'category-table (buffer-local-variables)) t) (boundp 'category-table) (condition-case e (buffer-local-value 'category-table (current-buffer)) (error (car e))))) (with-temp-buffer (let ((ct (make-category-table))) (set-category-table ct) (list (eq (category-table) ct) (progn (kill-all-local-variables) (eq (category-table) (standard-category-table)))))) (with-temp-buffer (let ((ct (make-category-table))) (set-category-table ct) (let* ((ind (clone-indirect-buffer nil nil)) (r (eq (with-current-buffer ind (category-table)) ct))) (kill-buffer ind) r))) (with-temp-buffer (let ((ct (make-category-table))) (set-category-table ct) (let* ((ind (make-indirect-buffer (current-buffer) "ind-cat")) (r (eq (with-current-buffer ind (category-table)) (standard-category-table)))) (kill-buffer ind) r))) (with-temp-buffer (condition-case e (set-category-table 5) (error e))) (with-temp-buffer (insert "ab cd") (let ((ct (copy-category-table))) (define-category ?Z "zed" ct) (modify-category-entry ?b ?Z ct) (set-category-table ct) (list (category-set-mnemonics (char-category-set ?b)) (with-temp-buffer (category-set-mnemonics (char-category-set ?b)))))))"##,
+        r##"((nil nil nil void-variable) (t t) t t (wrong-type-argument category-table-p 5) (".LZalr" ".Lalr"))"##,
+        "category-table slot",
+    );
+}

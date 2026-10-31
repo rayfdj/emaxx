@@ -78,14 +78,11 @@ fn flags_comment_style(flags: i32, other_flags: i32) -> i32 {
 
 /// SYNTAX_WITH_FLAGS of a syntax-table entry: a descriptor's car, and
 /// whitespace for anything that is not a cons.
-#[inline]
+#[inline(always)]
 pub(super) fn entry_flags(entry: Value) -> i32 {
-    if !entry.is_cons() {
-        return SWHITESPACE;
-    }
-    match entry.car().map(|car| car.kind()) {
-        Ok(Kind::Integer(code)) => code as i32,
-        _ => SWHITESPACE,
+    match entry.cons_ref().and_then(|cell| cell.car.get().fixnum()) {
+        Some(code) => code as i32,
+        None => SWHITESPACE,
     }
 }
 
@@ -175,16 +172,19 @@ impl<'r> Text<'r> {
         }
     }
 
-    /// CHAR_TO_BYTE.
+    /// CHAR_TO_BYTE: a position the scan was given (point, BEGV, ZV) is
+    /// known, as buf_charpos_to_bytepos finds PT, BEGV and ZV at once.
     fn char_to_byte(&self, charpos: usize) -> usize {
         let index = (charpos - 1).min(self.chars);
         if self.ascii {
-            charpos
-        } else {
-            self.text
-                .char_to_byte_near(index, self.known.iter().copied())
-                + 1
+            return charpos;
         }
+        if let Some(&(_, byte)) = self.known.iter().find(|(char, _)| *char == index) {
+            return byte + 1;
+        }
+        self.text
+            .char_to_byte_near(index, self.known.iter().copied())
+            + 1
     }
 
     #[inline]
@@ -334,11 +334,14 @@ pub(super) struct GlState {
     /// Whether `internal--syntax-propertize' has run since this was last
     /// cleared: what a scan read of Lisp state is then stale.
     ran_lisp: bool,
-    /// SYNTAX_WITH_FLAGS of the ASCII characters in `current_syntax_table'
-    /// read so far.  Entries change only through Lisp, after which these
-    /// are cleared.
-    ascii: [i32; 128],
+    /// SYNTAX_ENTRY of the ASCII characters read so far from
+    /// `ascii_table' as it stood at char-table store `ascii_epoch': while
+    /// no char-table has been stored into (or made) since, each is still
+    /// that table's entry, whose code SYNTAX_WITH_FLAGS reads at each use.
+    ascii: [Value; 128],
     ascii_known: u128,
+    ascii_table: Option<CharTableRef>,
+    ascii_epoch: u64,
 }
 
 thread_local! {
@@ -372,8 +375,10 @@ impl GlState {
             lookup_properties: false,
             propertize_done: -1,
             ran_lisp: false,
-            ascii: [0; 128],
+            ascii: [Value::Nil; 128],
             ascii_known: 0,
+            ascii_table: None,
+            ascii_epoch: 0,
         }
     }
 
@@ -393,8 +398,8 @@ impl GlState {
         GL_STATE.set(Some(gl));
     }
 
-    /// What `new' makes for OBJECT, in place: the ASCII entries need no
-    /// clearing, as `ascii_known' forgets them.
+    /// What `new' makes for OBJECT, in place, but for the ASCII entries,
+    /// which `check_ascii' keeps while they are still the table's.
     fn reset(&mut self, interp: &Interpreter, object: GlObject) {
         let buffer_table = interp.current_syntax_table_id();
         self.object = object;
@@ -411,16 +416,17 @@ impl GlState {
         self.backward_i = None;
         self.ran_lisp = false;
         self.buffer_table = buffer_table;
-        self.ascii_known = 0;
+        self.check_ascii();
         self.lookup_properties = false;
         self.propertize_done = -1;
     }
 
-    /// Read what Lisp may have changed: the buffer's syntax table and the
-    /// C variables; SYNTAX's entries are read afresh.
+    /// Read what Lisp may have changed: the buffer's syntax table, the C
+    /// variables and, if a char-table has been stored into, SYNTAX's
+    /// entries.
     fn read_state(&mut self, interp: &Interpreter) {
         self.buffer_table = interp.current_syntax_table_id();
-        self.ascii_known = 0;
+        self.check_ascii();
         self.lookup_properties = interp
             .local_variable_value_key(cached_symbol!("parse-sexp-lookup-properties"))
             .is_some_and(|value| value.is_truthy());
@@ -433,7 +439,19 @@ impl GlState {
     fn set_table(&mut self, table: CharTableRef) {
         if table != self.current_syntax_table {
             self.current_syntax_table = table;
+            self.check_ascii();
+        }
+    }
+
+    /// Forget the ASCII entries held unless they are `current_syntax_table's
+    /// and no char-table has been stored into or made since they were read
+    /// (a table freed and another made in its place is a store).
+    fn check_ascii(&mut self) {
+        let epoch = crate::lisp::alloc::vectors::char_tables::char_table_store_epoch();
+        if self.ascii_table != Some(self.current_syntax_table) || self.ascii_epoch != epoch {
             self.ascii_known = 0;
+            self.ascii_table = Some(self.current_syntax_table);
+            self.ascii_epoch = epoch;
         }
     }
 
@@ -452,21 +470,21 @@ impl GlState {
             return self.global_code;
         }
         if c < 128 && self.ascii_known & (1u128 << c) != 0 {
-            return self.ascii[c as usize];
+            return entry_flags(self.ascii[c as usize]);
         }
         self.table_syntax_with_flags(c)
     }
 
-    /// SYNTAX_WITH_FLAGS read from the table, an ASCII character's
+    /// SYNTAX_WITH_FLAGS read from the table, an ASCII character's entry
     /// remembered.
     #[inline(never)]
     fn table_syntax_with_flags(&mut self, c: u32) -> i32 {
-        let flags = entry_flags(self.current_syntax_table.get(c));
+        let entry = self.current_syntax_table.get(c);
         if c < 128 {
-            self.ascii[c as usize] = flags;
+            self.ascii[c as usize] = entry;
             self.ascii_known |= 1u128 << c;
         }
-        flags
+        entry_flags(entry)
     }
 
     /// SETUP_SYNTAX_TABLE: gl_state for a scan of the current buffer from
@@ -980,15 +998,16 @@ impl<'a, 'r> Scanner<'a, 'r> {
         };
         drop(buffer);
         let gl = std::mem::ManuallyDrop::new(GlState::take(interp, GlObject::Buffer));
+        let [_, (begv, begv_byte), (zv, zv_byte)] = known;
         let mut scanner = Scanner {
             interp,
             env,
             text: Text::new(text, known, multibyte, extended),
             gl,
-            begv: 0,
-            begv_byte: 0,
-            zv: 0,
-            zv_byte: 0,
+            begv: begv + 1,
+            begv_byte: begv_byte + 1,
+            zv: zv + 1,
+            zv_byte: zv_byte + 1,
             parse_sexp_ignore_comments: None,
             comment_end_can_be_escaped: None,
             multibyte_syntax_as_symbol: None,

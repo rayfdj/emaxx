@@ -2245,6 +2245,7 @@ impl Loader<'_> {
             }
         };
         let syntax_table = self.optional_char_table_at(offset + 8 * BUFFER_SYNTAX_TABLE)?;
+        let category_table = self.optional_char_table_at(offset + 8 * BUFFER_CATEGORY_TABLE)?;
         let case_tables = match (
             self.optional_char_table_at(offset + 8 * BUFFER_CASE_TABLE)?,
             self.optional_char_table_at(offset + 8 * BUFFER_UPCASE_TABLE)?,
@@ -2346,6 +2347,9 @@ impl Loader<'_> {
         }
         if let Some(table) = syntax_table {
             self.interp.install_buffer_syntax_table(id, table);
+        }
+        if let Some(table) = category_table {
+            self.interp.install_buffer_category_table(id, table);
         }
         if let Some(tables) = case_tables {
             self.interp.install_buffer_case_tables(id, tables);

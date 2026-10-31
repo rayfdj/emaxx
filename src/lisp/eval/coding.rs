@@ -1047,13 +1047,18 @@ impl Interpreter {
         id
     }
 
+    /// BVAR (current_buffer, category_table), None before the standard
+    /// table exists.
     pub(crate) fn initialized_current_category_table_id(&self) -> Option<CharTableRef> {
-        self.buffer_local_value_key(self.current_buffer_id(), cached_symbol!("category-table"))
-            .and_then(|value| match value.kind() {
-                Kind::CharTable(id) => Some(id),
-                _ => None,
-            })
+        self.buffer_category_tables
+            .get(self.current_buffer_id())
             .or(self.standard_category_table_id)
+    }
+
+    /// Fset_category_table's bset_category_table of the current buffer.
+    pub(crate) fn set_current_category_table(&mut self, table: CharTableRef) {
+        let current_buffer_id = self.current_buffer_id();
+        self.buffer_category_tables.insert(current_buffer_id, table);
     }
 
     pub fn ensure_standard_case_table(&mut self) -> CharTableRef {
@@ -1374,18 +1379,18 @@ impl CaseTables {
     }
 }
 
-/// buffer.h's syntax_table slot of each live buffer whose table is not
-/// the standard one, with the last buffer's found: the scans, the
-/// matcher and `char-syntax' read BVAR (current_buffer, syntax_table)
-/// at each call.
+/// One of buffer.h's char-table slots (syntax_table, category_table) of
+/// each live buffer whose table is not the standard one, with the last
+/// buffer's found: the scans, the matcher, `char-syntax' and the
+/// category lookups read BVAR (current_buffer, ...) at each call.
 #[derive(Clone, Default)]
-pub(crate) struct BufferSyntaxTables {
+pub(crate) struct BufferCharTables {
     tables: HashMap<u64, CharTableRef, crate::lisp::types::IdentityBuildHasher>,
     /// The buffer looked up last and its table, until the tables change.
     last: Cell<Option<(u64, Option<CharTableRef>)>>,
 }
 
-impl BufferSyntaxTables {
+impl BufferCharTables {
     /// BUFFER's own table.
     #[inline]
     pub(crate) fn get(&self, buffer: u64) -> Option<CharTableRef> {

@@ -142,6 +142,10 @@ pub(crate) const ROOTS_RESET_AFTER_LOAD: &[(&str, &str)] = &[
         "actual CharTableRef roots, written in dump_buffer's BUFFER_SYNTAX_TABLE slot and restored by load_buffer through install_buffer_syntax_table",
     ),
     (
+        "buffer_category_tables",
+        "actual CharTableRef roots, written in dump_buffer's BUFFER_CATEGORY_TABLE slot and restored by load_buffer through install_buffer_category_table",
+    ),
+    (
         "buffer_case_tables",
         "actual CharTableRef roots, written in dump_buffer's BUFFER_CASE_TABLE, BUFFER_UPCASE_TABLE, BUFFER_CASE_CANON_TABLE and BUFFER_CASE_EQV_TABLE slots and restored by load_buffer through install_buffer_case_tables",
     ),

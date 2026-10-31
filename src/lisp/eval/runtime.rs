@@ -1275,6 +1275,7 @@ impl Interpreter {
         self.buffer_local_hooks.remove(&id);
         self.buffer_case_tables.remove(id);
         self.reset_buffer_syntax_table(id);
+        self.reset_buffer_category_table(id);
         self.labeled_restrictions
             .retain(|restriction| restriction.buffer_id != id);
         self.indirect_buffers

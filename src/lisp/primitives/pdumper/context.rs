@@ -2033,6 +2033,7 @@ impl DumpContext {
                 BUFFER_CASE_EQV_TABLE,
                 BUFFER_MARK_ACTIVE,
                 BUFFER_UNDO_LIST,
+                BUFFER_CATEGORY_TABLE,
             ] {
                 self.field_lv(
                     start,
@@ -2062,6 +2063,7 @@ impl DumpContext {
             .and_then(|base| interp.buffer_value(base));
         let mark_marker = interp.buffer_mark_marker_id(id).map(Value::Marker);
         let syntax_table = interp.buffer_syntax_table_id(id).map(Value::CharTable);
+        let category_table = interp.buffer_category_table_id(id).map(Value::CharTable);
         let case_tables = interp.buffer_case_tables(id);
         let case_slot = |pick: fn(
             &crate::lisp::eval::coding::CaseTables,
@@ -2157,6 +2159,11 @@ impl DumpContext {
             (
                 BUFFER_SYNTAX_TABLE as usize,
                 syntax_table.unwrap_or(Value::Nil),
+                WEIGHT_STRONG,
+            ),
+            (
+                BUFFER_CATEGORY_TABLE as usize,
+                category_table.unwrap_or(Value::Nil),
                 WEIGHT_STRONG,
             ),
             (
@@ -2902,8 +2909,10 @@ pub(crate) const BUFFER_MARK_ACTIVE: u32 = 26;
 pub(crate) const BUFFER_UNDO_LIST: u32 = 27;
 /// auto_save_modified.
 pub(crate) const BUFFER_AUTOSAVE_MODIFF: u32 = 28;
+/// BVAR (b, category_table), nil when it is the standard table.
+pub(crate) const BUFFER_CATEGORY_TABLE: u32 = 29;
 /// The variable part: the local bindings and the markers.
-pub(crate) const BUFFER_VARIABLE_PART: u32 = 29;
+pub(crate) const BUFFER_VARIABLE_PART: u32 = 30;
 // The flag bits of BUFFER_FLAGS.
 pub(crate) const BUFFER_FLAG_MULTIBYTE: u64 = 1;
 pub(crate) const BUFFER_FLAG_INHIBIT_HOOKS: u64 = 32;

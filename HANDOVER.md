@@ -10616,6 +10616,37 @@ setup_process_coding_systems's check now refuses). A 13-form
   Local validation: the grouped gate's 3,382 library tests, the
   integration targets and clippy with `--all-targets --all-features -D
   warnings' pass.
+- **Round 204: the category table as a buffer slot, and forward-word's
+  per-call costs.** BVAR (b, category_table) was kept as a buffer-local
+  Lisp variable named `category-table': after `set-category-table' the
+  buffer reported it to `local-variable-p', `buffer-local-variables' and
+  `boundp', where GNU has no such variable, and each category lookup read
+  it as a variable. It is now a buffer slot kept as the syntax table's
+  is: reset by kill-all-local-variables and kill-buffer (its per-buffer
+  index is not permanent), copied by clone-indirect-buffer as
+  clone_per_buffer_values copies it and not by make-indirect-buffer,
+  marked by the collector, dumped in a buffer record slot of its own and
+  read by redisplay's word wrap. check_category_table now signals
+  `(wrong-type-argument category-table-p X)' as category.c does. The
+  scanner converts a position it was given (point, BEGV, ZV) without a
+  search, word_boundary_p tests a pair's second category only when its
+  first matches, as GNU's && does, and the ASCII entries SYNTAX read are
+  kept from one scan to the next while the syntax table is the same and no
+  char-table has been stored into or made since (the entry is kept, and
+  its code read from it at each use, so a `setcar' on a shared descriptor
+  is seen as GNU sees it). count-words over NEWS.29 takes 96.6 M
+  instructions where it took 124.9 M (GNU 66.9 M). A battery of 13
+  category-table ops (the variable's absence, kill-all-local-variables,
+  both indirect buffers, `set-category-table' of nil and of a non-table,
+  with-category-table, define-category and char-category-set, a
+  `setq-local' of a `category-table' variable, kill-buffer, forward-word
+  over CJK) and one of 9 syntax ops changing the table between scans
+  (modify-syntax-entry, `aset' of a fresh entry, `setcar' of an entry, a
+  new parent, another buffer's table, with-syntax-table, regexp \w,
+  syntax-table properties) match GNU; an oracle test pins the slot and
+  the pdump round trip carries it. Local validation: the grouped gate's
+  3,383 library tests, the integration targets and clippy with
+  `--all-targets --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -11948,6 +11979,11 @@ setup 67.7 s against 59.4 s (1.140), test bodies 229.9 s against 246.2 s
 frozen (run 41200590717) matched all 7,928 outcomes on the first attempt:
 setup 76.8 s against 61.2 s (1.254), test bodies 248.8 s against 257.5 s
 (0.966), in all 1.011.
+
+**On `502ba6e`** (round 203): full Rust gate passed (run 41203870072);
+frozen (run 41203872386) matched all 7,928 outcomes on the first attempt:
+setup 77.7 s against 64.0 s (1.214), test bodies 253.0 s against 262.5 s
+(0.964), in all 0.995.
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

@@ -1803,6 +1803,7 @@ fn image_round_trips_buffers_markers_finalizers_and_nilled_frames() {
           (put-text-property 1 3 'face 'bold)
           (set (make-local-variable 'zz-dump-local) 42)
           (set-syntax-table (make-char-table 'syntax-table))
+          (set-category-table (make-category-table))
           (set-visited-file-modtime '(0 100))
           (goto-char 4)
           (set-marker (mark-marker) 2)
@@ -1849,6 +1850,10 @@ fn image_round_trips_buffers_markers_finalizers_and_nilled_frames() {
         .buffer_syntax_table_id(source_id)
         .expect("the buffer set a syntax table");
     let source_syntax = printed(&mut interp, &Value::CharTable(source_syntax_table));
+    let source_category_table = interp
+        .buffer_category_table_id(source_id)
+        .expect("the buffer set a category table");
+    let source_category = printed(&mut interp, &Value::CharTable(source_category_table));
     let source_finalizers = interp.finalizer_objects();
     let terminal = Value::Terminal(*interp.terminals.first().expect("initial terminal"));
     let roots = vec![(RootSlot::LoadPath, graph), (RootSlot::QuitFlag, terminal)];
@@ -1952,6 +1957,20 @@ fn image_round_trips_buffers_markers_finalizers_and_nilled_frames() {
         printed(&mut target, &Value::CharTable(loaded_syntax_table)),
         source_syntax
     );
+    // BVAR (b, category_table) is a slot of its own, not a local binding.
+    let loaded_category_table = target
+        .buffer_category_table_id(source_id)
+        .expect("restored category table");
+    assert_ne!(loaded_category_table, source_category_table);
+    assert_eq!(
+        loaded_category_table.purpose(),
+        Value::symbol("category-table")
+    );
+    assert_eq!(
+        printed(&mut target, &Value::CharTable(loaded_category_table)),
+        source_category
+    );
+    assert!(!locals.iter().any(|(symbol, _)| symbol == "category-table"));
     let mark_marker = target
         .buffer_mark_marker_id(source_id)
         .expect("the mark marker relation");

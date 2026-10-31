@@ -522,6 +522,11 @@ pub(super) fn word_boundary_p_with(
     if set2.is_nil() {
         return default_result;
     }
+    // CATEGORY_MEMBER of each set, read as the bool-vector it is.
+    let (set1, set2) = (set1.bool_vector_ref(), set2.bool_vector_ref());
+    let member = |set: Option<crate::lisp::types::BoolVectorRef>, category: u8| {
+        set.is_some_and(|set| set.get(usize::from(category)) == Some(true))
+    };
     let category = |value: Value| {
         value
             .integer_value()
@@ -532,13 +537,13 @@ pub(super) fn word_boundary_p_with(
     while let Some(cell) = tail.cons_ref() {
         if let Some(elt) = cell.car.get().cons_ref() {
             let (first, second) = (elt.car.get(), elt.cdr.get());
-            let first_ok = first.is_nil()
-                || category(first)
-                    .is_some_and(|cat| category_member(&set1, cat) && !category_member(&set2, cat));
-            let second_ok = second.is_nil()
-                || category(second)
-                    .is_some_and(|cat| !category_member(&set1, cat) && category_member(&set2, cat));
-            if first_ok && second_ok {
+            // The pair's second category is tested only when its first
+            // matches, as GNU's && reads them.
+            if (first.is_nil()
+                || category(first).is_some_and(|cat| member(set1, cat) && !member(set2, cat)))
+                && (second.is_nil()
+                    || category(second).is_some_and(|cat| !member(set1, cat) && member(set2, cat)))
+            {
                 return !default_result;
             }
         }
