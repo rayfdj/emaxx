@@ -358,13 +358,20 @@ pub(crate) fn function_arity_value(
     }
 }
 
+/// marker.c:marker_position's error for a marker that points nowhere,
+/// which every coercion of a marker to its position (CHECK_*_COERCE_MARKER,
+/// fix_position) signals.
+pub(crate) fn marker_points_nowhere() -> LispError {
+    LispError::Signal("Marker does not point anywhere".into())
+}
+
 pub(crate) fn integer_like_i64(interp: &Interpreter, value: &Value) -> Result<i64, LispError> {
     match value.kind() {
         Kind::Integer(n) => Ok(n),
         Kind::Marker(id) => interp
             .marker_position(id)
             .map(|pos| pos as i64)
-            .ok_or_else(|| LispError::WrongTypeArgument("number-or-marker-p".into(), *value)),
+            .ok_or_else(marker_points_nowhere),
         _ => Err(LispError::WrongTypeArgument(
             "number-or-marker-p".into(),
             *value,
@@ -382,11 +389,33 @@ pub(crate) fn integer_like_bigint(
         Kind::Marker(id) => interp
             .marker_position(id)
             .map(BigInt::from)
-            .ok_or_else(|| LispError::WrongTypeArgument("number-or-marker-p".into(), *value)),
+            .ok_or_else(marker_points_nowhere),
         _ => Err(LispError::WrongTypeArgument(
             "number-or-marker-p".into(),
             *value,
         )),
+    }
+}
+
+/// lisp.h:CHECK_NUMBER: an integer or a float, no marker.
+pub(crate) fn check_number(value: &Value) -> Result<(), LispError> {
+    match value.kind() {
+        Kind::Integer(_) | Kind::BigInteger(_) | Kind::Float(_) => Ok(()),
+        _ => Err(LispError::WrongTypeArgument("numberp".into(), *value)),
+    }
+}
+
+/// floatfns.c:extract_float: CHECK_NUMBER, then the number as a double.
+pub(crate) fn extract_float(interp: &Interpreter, value: &Value) -> Result<f64, LispError> {
+    check_number(value)?;
+    numeric_to_f64(interp, value)
+}
+
+/// floatfns.c:CHECK_FLOAT: a float's value, any other object `floatp'.
+pub(crate) fn check_float(value: &Value) -> Result<f64, LispError> {
+    match value.kind() {
+        Kind::Float(value) => Ok(value.get()),
+        _ => Err(LispError::WrongTypeArgument("floatp".into(), *value)),
     }
 }
 
@@ -449,6 +478,12 @@ pub(crate) fn integer_rounding_value(
     }
     if float_result && !matches!(args[0].kind(), Kind::Float(_)) {
         return Err(LispError::WrongTypeArgument("floatp".into(), args[0]));
+    }
+    // floatfns.c:rounding_driver: CHECK_NUMBER (n), and CHECK_NUMBER (d)
+    // for a divisor that is not nil.
+    check_number(&args[0])?;
+    if let Some(divisor) = args.get(1).filter(|divisor| !divisor.is_nil()) {
+        check_number(divisor)?;
     }
     // rounding_driver divides a fixnum by a nonzero fixnum specially, for
     // speed.
@@ -660,6 +695,7 @@ pub(crate) fn ldexp_value(significand: f64, exponent: i64) -> f64 {
 }
 
 pub(crate) fn logb_value(interp: &Interpreter, value: &Value) -> Result<Value, LispError> {
+    check_number(value)?;
     match value.kind() {
         Kind::Integer(number) => {
             if number == 0 {
@@ -693,6 +729,9 @@ pub(crate) fn expt_value(
     base: &Value,
     exponent: &Value,
 ) -> Result<Value, LispError> {
+    // floatfns.c:Fexpt: CHECK_NUMBER (arg1), CHECK_NUMBER (arg2).
+    check_number(base)?;
+    check_number(exponent)?;
     let exponent_bigint = integer_like_bigint(interp, exponent);
     if matches!(base.kind(), Kind::Float(_)) || matches!(exponent.kind(), Kind::Float(_)) {
         return Ok(Value::float(
@@ -2146,8 +2185,7 @@ pub(crate) fn numeric_result_value(
         Kind::Marker(id) => Ok(Value::Integer(
             interp
                 .marker_position(id)
-                .ok_or_else(|| LispError::WrongTypeArgument("number-or-marker-p".into(), *value))?
-                as i64,
+                .ok_or_else(marker_points_nowhere)? as i64,
         )),
         _ => Err(LispError::WrongTypeArgument(
             "number-or-marker-p".into(),

@@ -33018,6 +33018,20 @@ fn buffer_local_value_and_mode_reset_read_variables_by_symbol_as_data_c() {
 }
 
 #[test]
+fn number_arguments_are_checked_as_floatfns_c_and_markers_coerced_as_marker_c() {
+    // floatfns.c's functions take numbers by CHECK_NUMBER (no marker, a
+    // `numberp' error), copysign and isnan floats by CHECK_FLOAT and ldexp
+    // its exponent by CHECK_FIXNUM first; arithmetic, comparison and the
+    // position arguments coerce a marker to its position, and one pointing
+    // nowhere is marker_position's error; move_point's count is a fixnum.
+    assert_oracle_contract_matches_interpreter(
+        r##"(with-temp-buffer (insert "abcdef") (let ((m (copy-marker 3)) (d (make-marker))) (mapcar (lambda (f) (condition-case e (funcall f) (error (if (eq (car e) 'wrong-type-argument) (cadr e) (cdr e))))) (list (lambda () (sin m)) (lambda () (abs m)) (lambda () (float 'a)) (lambda () (truncate 7 m)) (lambda () (expt 2 m)) (lambda () (logb m)) (lambda () (frexp m)) (lambda () (copysign 1 1.0)) (lambda () (isnan 1)) (lambda () (ldexp 1.0 2.0)) (lambda () (ldexp 'a 1)) (lambda () (+ d 1)) (lambda () (< d 1)) (lambda () (max 1 d)) (lambda () (logand 1 d)) (lambda () (goto-char d)) (lambda () (char-after d)) (lambda () (char-before d)) (lambda () (narrow-to-region d 1)) (lambda () (line-number-at-pos d)) (lambda () (forward-char (1+ most-positive-fixnum))) (lambda () (+ m 1)) (lambda () (max m 2)) (lambda () (atan 1 m)) (lambda () (isnan 0.0e+NaN)) (lambda () (copysign 2.0 -1.0))))))"##,
+        r##"(numberp numberp numberp numberp numberp numberp numberp floatp floatp fixnump numberp ("Marker does not point anywhere") ("Marker does not point anywhere") ("Marker does not point anywhere") ("Marker does not point anywhere") ("Marker does not point anywhere") ("Marker does not point anywhere") ("Marker does not point anywhere") ("Marker does not point anywhere") ("Marker does not point anywhere") fixnump 4 3 numberp t -2.0)"##,
+        "number and marker argument checks",
+    );
+}
+
+#[test]
 fn the_initial_obarray_holds_only_the_symbols_gnu_makes_at_startup() {
     // lread.c:define_symbol interns every DEFSYM but Qunbound, and
     // syms_of_eval, syms_of_editfns and syms_of_print unintern their own

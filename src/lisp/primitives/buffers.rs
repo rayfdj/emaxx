@@ -276,7 +276,7 @@ pub(crate) fn fix_position(interp: &Interpreter, value: &Value) -> Result<i64, L
         Kind::Marker(id) => interp
             .marker_position(id)
             .map(|pos| pos as i64)
-            .ok_or_else(|| LispError::Signal("Marker does not point anywhere".into())),
+            .ok_or_else(marker_points_nowhere),
         Kind::BigInteger(n) => Ok(if n.sign() == num_bigint::Sign::Minus {
             -(1_i64 << 61)
         } else {
@@ -329,9 +329,7 @@ pub(crate) fn position_from_value(interp: &Interpreter, value: &Value) -> Result
             .to_i64()
             .map(|pos| pos.max(0) as usize)
             .ok_or_else(|| LispError::WrongTypeArgument("integer-or-marker-p".into(), *value)),
-        Kind::Marker(id) => interp
-            .marker_position(id)
-            .ok_or_else(|| LispError::WrongTypeArgument("integer-or-marker-p".into(), *value)),
+        Kind::Marker(id) => interp.marker_position(id).ok_or_else(marker_points_nowhere),
         _ => Err(LispError::WrongTypeArgument(
             "integer-or-marker-p".into(),
             *value,

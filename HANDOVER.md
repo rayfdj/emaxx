@@ -10855,6 +10855,33 @@ setup_process_coding_systems's check now refuses). A 13-form
   reset and a full reset keep. Local validation: the grouped gate's
   3,392 library tests, the integration targets and clippy with
   `--all-targets --all-features -D warnings' pass.
+- **Round 213: number and marker arguments checked as floatfns.c and
+  marker.c.** A differential battery of 107 calls (floatfns, arithmetic,
+  comparison and position arguments given a live marker, a marker
+  pointing nowhere and a non-number) differed from GNU in 61. floatfns.c
+  takes every number by extract_float or CHECK_NUMBER, which refuse a
+  marker with `numberp': Emaxx's `sin', `cos', `tan', `asin', `acos',
+  `atan', `exp', `log', `sqrt', `abs', `float', `frexp', `logb', `expt',
+  `ceiling', `floor', `round' and `truncate' (and the divisor of the last
+  four) answered for a marker's position and named `number-or-marker-p'
+  for a non-number. `copysign' and `isnan' take floats (CHECK_FLOAT:
+  `(isnan 1)' is a `floatp' error where Emaxx answered nil, and
+  `copysign' coerced integers), and `ldexp' checks its exponent with
+  CHECK_FIXNUM before the significand. These now check as GNU does,
+  through `check_number', `extract_float' and `check_float'. Where a
+  marker is coerced to its position (CHECK_NUMBER_COERCE_MARKER,
+  fix_position: arithmetic, the comparisons, `max' and `min', the
+  logical operations, `goto-char', `narrow-to-region', `char-after',
+  `char-before', `line-number-at-pos'), a marker pointing nowhere is
+  marker_position's `(error "Marker does not point anywhere")'; Emaxx
+  named a wrong type, or answered nil from `char-after' and
+  `char-before'. `forward-char' and `backward-char' take their count by
+  CHECK_FIXNUM (a bignum is `fixnump', not `integerp'). The battery,
+  `marker-tests', `floatfns-tests', `data-tests', `editfns-tests' and
+  `buffer-tests' now agree with GNU, and an oracle test pins one call of
+  each kind. Local validation: the grouped gate's 3,393 library
+  tests, the integration targets and clippy with `--all-targets
+  --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -12239,6 +12266,11 @@ against 279.1 s (0.951), in all 0.998.
 passed, and frozen (run 41237900069) matched all 7,928 outcomes on the
 first attempt: setup 62.8 s against 53.2 s (1.180), test bodies 220.3 s
 against 236.9 s (0.930), in all 0.996.
+
+**On `06f76b6`** (round 212): the full Rust gate (run 41241047002)
+passed, and frozen (run 41241049461) matched all 7,928 outcomes on the
+first attempt: setup 65.2 s against 55.5 s (1.176), test bodies 226.3 s
+against 242.1 s (0.935), in all 0.997.
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

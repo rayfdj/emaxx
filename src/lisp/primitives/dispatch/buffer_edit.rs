@@ -1200,9 +1200,9 @@ define_dispatch!(
                             }
                             pos as usize
                         }
-                        Kind::Marker(id) => interp.marker_position(id).ok_or_else(|| {
-                            LispError::WrongTypeArgument("integer-or-marker-p".into(), args[0])
-                        })?,
+                        Kind::Marker(id) => interp
+                            .marker_position(id)
+                            .ok_or_else(marker_points_nowhere)?,
                         _ => {
                             return Err(LispError::WrongTypeArgument(
                                 "integer-or-marker-p".into(),
@@ -2382,10 +2382,11 @@ pub(super) fn direct_forward_char(
     args: &[Value],
     _env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
+    // cmds.c:move_point: CHECK_FIXNUM.
     let n = if args.is_empty() || args[0].is_nil() {
         1
     } else {
-        args[0].as_integer()?
+        args[0].as_fixnum()?
     };
     match interp.buffer.borrow_mut().forward_char(n as isize) {
         Ok(_) => Ok(Value::Nil),
@@ -2399,10 +2400,11 @@ pub(super) fn direct_backward_char(
     args: &[Value],
     _env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
+    // cmds.c:move_point: CHECK_FIXNUM.
     let n = if args.is_empty() || args[0].is_nil() {
         1
     } else {
-        args[0].as_integer()?
+        args[0].as_fixnum()?
     };
     match interp.buffer.borrow_mut().forward_char(-(n as isize)) {
         Ok(_) => Ok(Value::Nil),
@@ -2632,7 +2634,12 @@ pub(super) fn direct_char_after(
         None | Some(Kind::Nil) => Some(interp.buffer.borrow().point()),
         Some(Kind::Integer(position)) if position >= 0 => usize::try_from(position).ok(),
         Some(Kind::Integer(_)) => None,
-        Some(Kind::Marker(id)) => interp.marker_position(id),
+        // marker_byte_position: a marker pointing nowhere is an error.
+        Some(Kind::Marker(id)) => Some(
+            interp
+                .marker_position(id)
+                .ok_or_else(marker_points_nowhere)?,
+        ),
         Some(value) => {
             return Err(LispError::WrongTypeArgument(
                 "integer-or-marker-p".into(),
@@ -2656,7 +2663,12 @@ pub(super) fn direct_char_before(
         None | Some(Kind::Nil) => Some(interp.buffer.borrow().point()),
         Some(Kind::Integer(position)) if position >= 0 => usize::try_from(position).ok(),
         Some(Kind::Integer(_)) => None,
-        Some(Kind::Marker(id)) => interp.marker_position(id),
+        // marker_byte_position: a marker pointing nowhere is an error.
+        Some(Kind::Marker(id)) => Some(
+            interp
+                .marker_position(id)
+                .ok_or_else(marker_points_nowhere)?,
+        ),
         Some(value) => {
             return Err(LispError::WrongTypeArgument(
                 "integer-or-marker-p".into(),
