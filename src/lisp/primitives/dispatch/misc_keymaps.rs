@@ -1409,10 +1409,9 @@ define_dispatch!(
                         }
                         continue;
                     }
-                    let preserve = !kill_permanent
-                        && cached_symbol!("permanent-local")
-                            .with(|property| interp.get_symbol_property_of(name, property))
-                            .is_some_and(|value| value.is_truthy());
+                    let prop = cached_symbol!("permanent-local")
+                        .with(|property| interp.get_symbol_property_of(name, property))
+                        .filter(|value| !kill_permanent && value.is_truthy());
                     interp.notify_variable_watchers(
                         name,
                         Value::Nil,
@@ -1420,9 +1419,26 @@ define_dispatch!(
                         Some(buffer_id),
                         env,
                     )?;
-                    if preserve {
-                        permanent.push((*name, *value));
-                        continue;
+                    match prop {
+                        // A partially permanent hook variable keeps only the
+                        // elements that want to be kept.
+                        Some(prop) if prop.eq_value(Value::symbol("permanent-local-hook")) => {
+                            let newlist = permanent_hook_elements(interp, *value, env)?;
+                            interp.notify_variable_watchers(
+                                name,
+                                newlist,
+                                "makunbound",
+                                Some(buffer_id),
+                                env,
+                            )?;
+                            permanent.push((*name, newlist));
+                            continue;
+                        }
+                        Some(_) => {
+                            permanent.push((*name, *value));
+                            continue;
+                        }
+                        None => {}
                     }
                     interp.mark_buffer_local_special_binding_killed(buffer_id, name);
                 }
@@ -1775,4 +1791,36 @@ fn garbage_collect_report(census: &crate::lisp::eval::LiveObjectCensus) -> Value
             ],
         ),
     ])
+}
+
+/// reset_buffer_local_variables' partially permanent hook: the elements
+/// of LIST that are t or a symbol with a `permanent-local-hook' property,
+/// in order; a LIST that is no cons is what Fnreverse makes of it.
+fn permanent_hook_elements(
+    interp: &mut Interpreter,
+    list: Value,
+    env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    if !list.is_cons() {
+        return super::call(interp, "nreverse", &[list], env);
+    }
+    let mut kept = Vec::new();
+    let mut tail = list;
+    while let Some(cell) = tail.cons_ref() {
+        let element = cell.car.get();
+        if matches!(element.kind(), Kind::T)
+            || (element.is_symbol()
+                && super::call(
+                    interp,
+                    "get",
+                    &[element, Value::symbol("permanent-local-hook")],
+                    env,
+                )?
+                .is_truthy())
+        {
+            kept.push(element);
+        }
+        tail = cell.cdr.get();
+    }
+    Ok(Value::list(kept))
 }

@@ -32982,3 +32982,17 @@ fn local_keymap_is_a_buffer_slot_as_buffer_c_keeps_it() {
         "local keymap slot",
     );
 }
+
+#[test]
+fn kill_all_local_variables_keeps_partially_permanent_hooks_as_buffer_c() {
+    // reset_buffer_local_variables: a local variable whose `permanent-local'
+    // is `permanent-local-hook' (as add-hook marks a hook given a function
+    // with a `permanent-local-hook' property) keeps only t and such
+    // functions, its watchers told nil and then the list kept; a full
+    // reset keeps nothing.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list (with-temp-buffer (defvar zz-hook2 nil) (defun zz-f () nil) (put 'zz-f 'permanent-local-hook t) (add-hook 'zz-hook2 'zz-f nil t) (add-hook 'zz-hook2 'ignore nil t) (kill-all-local-variables) (list zz-hook2 (local-variable-p 'zz-hook2) (get 'zz-hook2 'permanent-local))) (with-temp-buffer (put 'zz-h3 'permanent-local 'permanent-local-hook) (put 'zz-b 'permanent-local-hook t) (setq-local zz-h3 '(zz-a t zz-b (lambda () 1))) (kill-all-local-variables) (list zz-h3 (local-variable-p 'zz-h3))) (with-temp-buffer (defvar zz-h5 nil) (put 'zz-g 'permanent-local-hook t) (let ((log nil)) (add-variable-watcher 'zz-h5 (lambda (&rest a) (push (list (nth 1 a) (nth 2 a)) log))) (add-hook 'zz-h5 'zz-g nil t) (add-hook 'zz-h5 'car nil t) (setq log nil) (kill-all-local-variables) (list log zz-h5))) (with-temp-buffer (put 'zz-h6 'permanent-local 'permanent-local-hook) (setq-local zz-h6 nil) (kill-all-local-variables) (list zz-h6 (local-variable-p 'zz-h6))) (with-temp-buffer (put 'zz-h7 'permanent-local 'permanent-local-hook) (put 'zz-c 'permanent-local-hook t) (setq-local zz-h7 '(zz-c)) (kill-all-local-variables t) (local-variable-p 'zz-h7)))"##,
+        r##"(((zz-f t) t permanent-local-hook) ((t zz-b) t) ((((zz-g t) makunbound) (nil makunbound)) (zz-g t)) (nil t) nil)"##,
+        "partially permanent hooks",
+    );
+}

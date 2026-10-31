@@ -10690,6 +10690,22 @@ setup_process_coding_systems's check now refuses). A 13-form
   it and the pdump round trip carries a local map. Local validation: the
   grouped gate's 3,385 library tests, the integration targets and
   clippy with `--all-targets --all-features -D warnings' pass.
+- **Round 207: partially permanent hooks survive a major mode change.**
+  add-hook marks a buffer-local hook `permanent-local' with the value
+  `permanent-local-hook' when it is given a function that has a
+  `permanent-local-hook' property, and reset_buffer_local_variables then
+  keeps such a hook with only `t' and the functions that carry that
+  property. kill-all-local-variables (and the reset a major mode makes)
+  treated the value as plain `permanent-local' and kept every function of
+  the hook, so a mode change ran functions a mode had added for itself.
+  The reset now keeps the elements GNU keeps, in order (a value that is no
+  list is what Fnreverse makes of it), tells the variable's watchers nil
+  and then the list kept, and a full reset (KILL-PERMANENT) keeps nothing.
+  Batteries of 13 ops over permanent-local variables, hooks, watchers,
+  change-major-mode-hook and the always-local C variables match GNU where
+  four ops did not; an oracle test pins it. Local validation: the grouped
+  gate's 3,386 library tests, the integration targets and clippy with
+  `--all-targets --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -12037,6 +12053,11 @@ setup 58.7 s against 51.4 s (1.143), test bodies 211.9 s against 227.9 s
 frozen (run 41211294637) matched all 7,928 outcomes on the first attempt:
 setup 87.1 s against 71.3 s (1.222), test bodies 266.1 s against 274.8 s
 (0.969), in all 1.020.
+
+**On `035b735`** (round 206): full Rust gate passed (run 41214327793);
+frozen (run 41214329900) matched all 7,928 outcomes on the first attempt:
+setup 75.8 s against 59.8 s (1.269), test bodies 247.0 s against 253.8 s
+(0.973), in all 1.024.
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

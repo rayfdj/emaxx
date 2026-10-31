@@ -617,11 +617,30 @@ impl Interpreter {
             .get(&buffer_id)
             .into_iter()
             .flat_map(|hooks| hooks.iter())
-            .filter(|(name, _)| {
-                self.get_symbol_property(name, "permanent-local")
-                    .is_some_and(|value| value.is_truthy())
+            .filter_map(|(name, values)| {
+                let prop = self
+                    .get_symbol_property(name, "permanent-local")
+                    .filter(|value| value.is_truthy())?;
+                // A partially permanent hook keeps t and the functions with
+                // a `permanent-local-hook' property, as
+                // reset_buffer_local_variables keeps them.
+                let values = if prop.eq_value(Value::symbol("permanent-local-hook")) {
+                    values
+                        .iter()
+                        .copied()
+                        .filter(|element| {
+                            matches!(element.kind(), Kind::T)
+                                || element.symbol_str().is_some_and(|function| {
+                                    self.get_symbol_property(function, "permanent-local-hook")
+                                        .is_some_and(|value| value.is_truthy())
+                                })
+                        })
+                        .collect()
+                } else {
+                    values.clone()
+                };
+                Some((name.clone(), values))
             })
-            .map(|(name, values)| (name.clone(), values.clone()))
             .collect::<Vec<_>>();
         self.remove_buffer_alist_locals(buffer_id);
         if permanent_hooks.is_empty() {
