@@ -593,6 +593,14 @@ pub(crate) fn ring_bell(interp: &mut Interpreter, env: &mut Env) -> Result<(), L
         .lookup_var("ring-bell-function", env)
         .unwrap_or(Value::Nil);
     if function.is_nil() {
+        // FRAME_TERMINAL (f)->ring_bell_hook: the initial terminal (the
+        // batch frame's) has none.
+        if interp
+            .decode_terminal(&Value::Nil)
+            .is_some_and(|terminal| terminal.borrow().kind.is_none())
+        {
+            return Ok(());
+        }
         use std::io::Write as _;
         let mut output = crate::lisp::eval::terminal::output()
             .map_err(|error| LispError::Signal(error.to_string()))?;

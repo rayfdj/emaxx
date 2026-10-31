@@ -173,23 +173,84 @@ pub(crate) fn file_operation_error_value(
     error: &std::io::Error,
     path: &str,
 ) -> Value {
-    let condition = file_error_condition(error);
-    let errstring = Value::String(errno_text(error).into());
-    if condition == "file-already-exists" {
-        return Value::list([
-            Value::Symbol(condition.into()),
-            errstring,
-            Value::String(path.into()),
-        ]);
-    }
-    Value::list([
-        Value::Symbol(condition.into()),
-        Value::String(message.into()),
-        errstring,
-        Value::String(path.into()),
-    ])
+    file_errno_data(message, error, &[path])
 }
 
+/// get_file_errno_data with FILES as the data's list of names (list2
+/// (FILE, NEWNAME) for the two-name primitives).
+fn file_errno_data(message: &str, error: &std::io::Error, files: &[&str]) -> Value {
+    let condition = file_error_condition(error);
+    let mut data = vec![Value::Symbol(condition.into())];
+    if condition != "file-already-exists" {
+        data.push(Value::String(message.into()));
+    }
+    data.push(Value::String(errno_text(error).into()));
+    data.extend(files.iter().map(|file| Value::String((*file).into())));
+    Value::list(data)
+}
+
+/// report_file_errno (MESSAGE, list2 (FILE, NEWNAME), errno) and the like.
+pub(crate) fn file_operation_error_files(
+    message: &str,
+    error: &std::io::Error,
+    files: &[&str],
+) -> LispError {
+    LispError::SignalValue(file_errno_data(message, error, files))
+}
+
+/// fileio.c barf_or_query_if_file_exists.  ABSNAME, unless KNOWN_TO_EXIST
+/// already, is looked up without following a link, a directory being
+/// `(file-error "File is a directory" ABSNAME)'.  An existing file is
+/// `(file-already-exists "File already exists" ABSNAME)' unless
+/// INTERACTIVE and the answer to "File ABSNAME already exists;
+/// QUERYSTRING anyway? " is yes -- `y-or-n-p' when QUICK, else
+/// `yes-or-no-p'.
+pub(crate) fn barf_or_query_if_file_exists(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    absname: &str,
+    mut known_to_exist: bool,
+    querystring: &str,
+    interactive: bool,
+    quick: bool,
+) -> Result<(), LispError> {
+    if !known_to_exist
+        && let Ok(metadata) = fs::symlink_metadata(host_file_name(interp, env, absname)?)
+    {
+        if metadata.is_dir() {
+            return Err(LispError::SignalValue(Value::list([
+                Value::symbol("file-error"),
+                Value::string("File is a directory"),
+                Value::string(absname),
+            ])));
+        }
+        known_to_exist = true;
+    }
+    if !known_to_exist {
+        return Ok(());
+    }
+    if interactive {
+        let prompt = call(
+            interp,
+            "format",
+            &[
+                Value::string("File %s already exists; %s anyway? "),
+                Value::string(absname),
+                Value::string(querystring),
+            ],
+            env,
+        )?;
+        let ask = if quick { "y-or-n-p" } else { "yes-or-no-p" };
+        if call_named_function(interp, ask, &[prompt], env)?.is_truthy() {
+            return Ok(());
+        }
+    }
+    Err(LispError::SignalValue(Value::list([
+        Value::symbol("file-already-exists"),
+        Value::string("File already exists"),
+        Value::string(absname),
+    ])))
+}
 /// fileio.c report_file_errno: EEXIST, ENOENT/ENOTDIR and EACCES have their
 /// own conditions; every other errno is a plain `file-error'.
 pub(crate) fn file_error_condition(error: &std::io::Error) -> &'static str {
@@ -240,19 +301,6 @@ pub(crate) fn file_operation_error(message: &str, error: &std::io::Error, path: 
 
 pub(crate) fn file_input_error_value(error: &std::io::Error, path: &str) -> Value {
     file_operation_error_value("Opening input file", error, path)
-}
-
-pub(crate) fn file_output_error(path: &str, error: &std::io::Error) -> LispError {
-    let rendered = error.to_string();
-    let detail = rendered
-        .split_once(" (os error")
-        .map(|(detail, _)| detail)
-        .unwrap_or(rendered.as_str());
-    LispError::SignalValue(file_error_with_detail_value(
-        "Opening output file",
-        detail,
-        path,
-    ))
 }
 
 pub(crate) fn make_temp_file_internal(
@@ -743,24 +791,8 @@ pub(crate) fn write_region_value_with_logical_path(
     let requested_path = string_text(&args[2])?;
     let path = resolve_file_name_in_env(interp, env, &requested_path);
     let existed_before_write = fs::symlink_metadata(host_file_name(interp, env, &path)?).is_ok();
-    if normalized[6].is_truthy()
-        && normalized[6].symbol_str() != Some("excl")
-        && existed_before_write
-        && !call_named_function(
-            interp,
-            "y-or-n-p",
-            &[Value::String(
-                format!("File {logical_path} already exists; overwrite anyway? ").into(),
-            )],
-            env,
-        )?
-        .is_truthy()
-    {
-        return Err(file_operation_error(
-            "Opening output file",
-            &std::io::Error::from(ErrorKind::AlreadyExists),
-            logical_path,
-        ));
+    if normalized[6].is_truthy() && normalized[6].symbol_str() != Some("excl") {
+        barf_or_query_if_file_exists(interp, env, logical_path, false, "overwrite", true, true)?;
     }
     // write_region saves restriction state even for explicit/string input;
     // nil START temporarily exposes the entire buffer to coding callbacks.
@@ -945,8 +977,14 @@ fn write_region_with_coding(
         flock_file(interp, env, Value::String(lock_path.clone().into()))?;
     }
     let host = host_file_name(interp, env, path)?;
+    // fileio.c:write_region's open, lseek and write, each failure
+    // report_file_errno with its errno: "Opening output file", "Lseek
+    // error", and "Write error" for the write or the close (once the
+    // file is open, after the lock is given back).
+    let mut opened = false;
     let write_result = (|| {
         use std::os::unix::fs::OpenOptionsExt;
+        use std::os::unix::io::IntoRawFd;
         let exclusive = args[6].symbol_str() == Some("excl");
         // An auto-save file is made with auto_save_mode_bits.
         let mode = if auto_saving {
@@ -954,41 +992,63 @@ fn write_region_with_coding(
         } else {
             0o666
         };
-        if args[3].is_nil() && !exclusive && !auto_saving {
-            return fs::write(&host, &bytes).map_err(|error| file_output_error(path, &error));
+        let offset = if matches!(
+            args[3].kind(),
+            Kind::Integer(_) | Kind::BigInteger(_) | Kind::Float(_)
+        ) {
+            Some(file_offset(&args[3])?)
+        } else {
+            None
+        };
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create(true).mode(mode);
+        if exclusive {
+            options.create_new(true);
+        } else if args[3].is_nil() {
+            options.truncate(true);
         }
-        let offset = args
-            .get(3)
-            .filter(|value| value.is_truthy())
-            .and_then(|value| value.integer_value());
-        let append = args[3].is_truthy() && offset.is_none();
-        let mut file = fs::OpenOptions::new()
-            .create(true)
-            .create_new(exclusive)
-            .truncate(args[3].is_nil())
-            .append(append)
-            .write(true)
-            .mode(mode)
+        if offset.is_none() && args[3].is_truthy() {
+            options.append(true);
+        }
+        let mut file = options
             .open(&host)
-            .map_err(|error| {
-                if exclusive && error.kind() == ErrorKind::AlreadyExists {
-                    file_operation_error("Opening output file", &error, logical_path)
-                } else {
-                    file_output_error(path, &error)
-                }
-            })?;
+            .map_err(|error| file_operation_error("Opening output file", &error, path))?;
+        opened = true;
         if let Some(offset) = offset {
-            file.seek(SeekFrom::Start(offset.max(0) as u64))
-                .map_err(|error| file_output_error(path, &error))?;
+            file.seek(SeekFrom::Start(offset as u64))
+                .map_err(|error| file_operation_error("Lseek error", &error, path))?;
         }
         file.write_all(&bytes)
-            .map_err(|error| file_output_error(path, &error))
+            .map_err(|error| file_operation_error("Write error", &error, path))?;
+        // NFS can report a write failure at the close.
+        let fd = file.into_raw_fd();
+        // SAFETY: the descriptor was just released by its File.
+        if unsafe { libc::close(fd) } < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() != ErrorKind::Interrupted {
+                return Err(file_operation_error("Write error", &error, path));
+            }
+        }
+        Ok(())
     })();
     let unlock_result = if auto_saving {
         Ok(())
     } else {
         funlock_file(interp, env, Value::String(lock_path.clone().into()))
     };
+    // A visited file that was opened has its modtime recorded before a
+    // write error is reported, so that the next save sees no change on
+    // disk.
+    let visiting = args
+        .get(4)
+        .is_some_and(|visit| matches!(visit.kind(), Kind::T) || string_like(visit).is_some());
+    if write_result.is_err()
+        && opened
+        && visiting
+        && let Ok(modtime) = file_modtime(interp, env, path)
+    {
+        interp.buffer.borrow_mut().set_visited_file_modtime(modtime);
+    }
     match (write_result, unlock_result) {
         (Err(error), _) | (Ok(()), Err(error)) => return Err(error),
         (Ok(()), Ok(())) => {}

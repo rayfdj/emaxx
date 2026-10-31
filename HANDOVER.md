@@ -9940,6 +9940,66 @@ setup_process_coding_systems's check now refuses). A 13-form
   autorevert-tests pass as many tests as GNU's. Local validation: the
   grouped gate's 3,348 library tests, the seven integration suites,
   clippy with every target and feature, rustfmt and `git diff --check'.
+- **Round 188: copy-file, rename-file, add-name-to-file,
+  make-symbolic-link and write-region's errors as fileio.c's.** An
+  existing NEWNAME was `(file-already-exists "Copying file" "entity
+  already exists" NEWNAME)' and its like (Rust's text for an errno it
+  never had), an integer OK-IF-ALREADY-EXISTS asked add-name-to-file
+  whether to keep the old file (and returned without linking) and
+  make-symbolic-link whether to replace it, copy-file copied with
+  fs::copy whatever FILE was, rename-file refused an existing NEWNAME
+  before trying, and every write-region failure was `(file-error
+  "Opening output file" ...)'. barf_or_query_if_file_exists is ported: a
+  NEWNAME found without following a link that is a directory is
+  `(file-error "File is a directory" NEWNAME)', an existing one
+  `(file-already-exists "File already exists" NEWNAME)' unless an
+  integer OK-IF-ALREADY-EXISTS gets yes from `yes-or-no-p' to "File
+  NEWNAME already exists; QUERY anyway? " (`y-or-n-p' for write-region's
+  MUSTBENEW, whose directory check comes first). copy-file opens FILE
+  non-blocking ("Opening input file", "Input file status"), refuses a
+  file that is not regular (`(file-error "Non-regular file" "Is a
+  directory" FILE)', EINVAL for a device), creates NEWNAME exclusively
+  with FILE's mode (0700 of it with PRESERVE-UID-GID), asks only on
+  EEXIST and then reopens it, refuses the same file ("Input and output
+  files are the same" with both names), copies with copy_file_range then
+  read and write ("Read error", "Write error"), truncates what is left
+  of a longer old file, gives a new file FILE's mode under the creation
+  mask, changes owner and group and adjusts the mode bits as fileio.c
+  does for PRESERVE-UID-GID, sets FILE's whole mode for
+  PRESERVE-PERMISSIONS, sets both times for KEEP-TIME or signals
+  `(file-date-error "Cannot set file date" NEWNAME)', and reports a
+  failed close. rename-file tries renameat2 with RENAME_NOREPLACE first,
+  asks on EEXIST (and checks for a directory on EINVAL, ENOSYS or
+  ENOTSUP) before renaming over, reports any other errno as `(CONDITION
+  "Renaming" ERRSTRING FILE NEWNAME)', and across file systems copies
+  (copy-directory, copy-file keeping time, owner and permissions, or the
+  link) and deletes with `delete-by-moving-to-trash' nil.
+  add-name-to-file and make-symbolic-link ask on EEXIST, remove NEWNAME
+  and try once more, and report `(CONDITION "Adding new name" ... FILE
+  NEWNAME)' and `(CONDITION "Making symbolic link" ... TARGET
+  LINKNAME)'; an ENOSYS link is "Symbolic links are not supported".
+  write-region reports by errno "Opening output file", "Lseek error" (an
+  APPEND offset now through file_offset, so a negative or fractional one
+  is `(wrong-type-argument file-offset X)'), and "Write error" for the
+  write and the close, a visited file that was opened having its modtime
+  recorded first. Emaxx no longer predefines warnings.el's
+  `warning-fill-column', `warning-levels', `warning-minimum-level',
+  `warning-minimum-log-level' and `warning-suppress-log-types', nor
+  cl-lib's `cl--proclaims-deferred', as special globals GNU leaves
+  unbound until those files load: a let of one before then is lexical,
+  as GNU's is, so round 187's unwritable auto-save file now shows its
+  warning under such a binding. The bell of an auto-save error
+  (dispnew.c ring_bell) rings nothing on the initial terminal, which has
+  no ring_bell_hook, where Emaxx wrote a BEL to standard output. A
+  battery of 46 cases (each primitive over existing, missing, directory,
+  device, same and cross-device files, both OK-IF-ALREADY-EXISTS forms,
+  and write-region's errors and offsets) reads as GNU's, as does round
+  187's auto-save battery now in full. Undo runs 1,488,200 instructions
+  a unit (1,488,300 before). fileio-tests, files-tests, files-x-tests,
+  dired-tests, dired-aux-tests and warnings-tests pass as many tests as
+  GNU's. Local validation: the grouped gate's 3,349 library tests,
+  the seven integration suites, clippy with every target and feature,
+  rustfmt and `git diff --check'.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -11161,6 +11221,12 @@ had setup 64.8 s against 56.0 s (1.157), test bodies 229.4 s against
 251.4 s (0.913), in all 0.970, undo-tests' bodies 0.90 s against 0.66 s;
 the second, on a slower runner, 91.2 s against 68.8 s (1.326), 263.5 s
 against 273.8 s (0.962), 1.033, and 1.15 s against 0.91 s.
+
+**On `a901f7d`** (round 187): full Rust gate passed (run 41145497802);
+frozen (run 41145506830) matched all 7,928 outcomes on its first
+attempt. Setup 78.3 s against 63.8 s (1.226), test bodies 253.7 s
+against 263.2 s (0.964), in all 1.002; undo-tests' bodies 1.14 s against
+0.90 s.
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

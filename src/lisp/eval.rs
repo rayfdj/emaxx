@@ -6116,7 +6116,6 @@ impl Interpreter {
             globals: SymbolCells::from_bindings(vec![
                 ("main-thread".into(), Value::Record(main_thread)),
                 ("obarray".into(), Value::Record(standard_obarray)),
-                ("cl--proclaims-deferred".into(), Value::Nil),
                 ("cl-old-struct-compat-mode".into(), Value::Nil),
                 // GNU frame.c defines this native variable before frame.el
                 // and any dumped/preloaded Lisp run.
@@ -6201,32 +6200,9 @@ impl Interpreter {
                     Value::list([Value::symbol("internal-default-signal-process")]),
                 ),
                 ("system-uses-terminfo".into(), Value::T),
-                ("warning-fill-column".into(), Value::Integer(78)),
                 ("warning-fill-prefix".into(), Value::Nil),
-                (
-                    "warning-levels".into(),
-                    Value::list([
-                        Value::list([
-                            Value::symbol(":emergency"),
-                            Value::String("Emergency%s: ".into()),
-                            Value::symbol("ding"),
-                        ]),
-                        Value::list([Value::symbol(":error"), Value::String("Error%s: ".into())]),
-                        Value::list([
-                            Value::symbol(":warning"),
-                            Value::String("Warning%s: ".into()),
-                        ]),
-                        Value::list([Value::symbol(":debug"), Value::String("Debug%s: ".into())]),
-                    ]),
-                ),
-                ("warning-minimum-level".into(), Value::symbol(":warning")),
-                (
-                    "warning-minimum-log-level".into(),
-                    Value::symbol(":warning"),
-                ),
                 ("warning-prefix-function".into(), Value::Nil),
                 ("warning-series".into(), Value::Nil),
-                ("warning-suppress-log-types".into(), Value::Nil),
                 ("warning-suppress-types".into(), Value::Nil),
                 ("warning-type-format".into(), Value::String(" (%s)".into())),
                 ("lread--unescaped-character-literals".into(), Value::Nil),
@@ -6309,7 +6285,6 @@ impl Interpreter {
                 "command-line-args".into(),
                 "command-line-args-left".into(),
                 "command-switch-alist".into(),
-                "cl--proclaims-deferred".into(),
                 "current-load-list".into(),
                 "load-history".into(),
                 "default-frame-alist".into(),
@@ -6355,7 +6330,6 @@ impl Interpreter {
                 "warning-fill-prefix".into(),
                 "warning-prefix-function".into(),
                 "warning-series".into(),
-                "warning-suppress-log-types".into(),
                 "warning-suppress-types".into(),
                 "warning-type-format".into(),
                 "window-system".into(),

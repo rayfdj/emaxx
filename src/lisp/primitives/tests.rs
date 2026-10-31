@@ -722,6 +722,43 @@ world
 }
 
 #[test]
+fn file_operations_report_as_fileio_c() {
+    // fileio.c: barf_or_query_if_file_exists for an existing NEWNAME,
+    // report_file_errno with each primitive's message and its list of
+    // names, Fcopy_file's own checks, write_region's open errors; and
+    // warnings.el's variables unbound until it loads.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let* ((dir (file-name-as-directory (make-temp-file "emaxx-fileops-" t)))
+               (f (lambda (name) (expand-file-name name dir)))
+               (rel (lambda (value)
+                      (if (stringp value) (string-replace dir "D/" value) value)))
+               (try (lambda (thunk)
+                      (condition-case err (funcall thunk) (error (mapcar rel err))))))
+          (unwind-protect
+              (progn
+                (with-temp-file (funcall f "a") (insert "alpha"))
+                (with-temp-file (funcall f "b") (insert "bravo"))
+                (make-directory (funcall f "d"))
+                (list (funcall try (lambda () (copy-file (funcall f "a") (funcall f "b"))))
+                      (funcall try (lambda () (copy-file (funcall f "a") (funcall f "a") t)))
+                      (funcall try (lambda () (copy-file (funcall f "d") (funcall f "e"))))
+                      (funcall try (lambda () (rename-file (funcall f "a") (funcall f "b"))))
+                      (funcall try (lambda () (rename-file (funcall f "nope") (funcall f "z"))))
+                      (funcall try (lambda () (add-name-to-file (funcall f "a") (funcall f "b"))))
+                      (funcall try (lambda () (make-symbolic-link "a" (funcall f "b"))))
+                      (funcall try (lambda ()
+                                     (write-region "z" nil (funcall f "d") nil nil nil t)))
+                      (funcall try (lambda ()
+                                     (write-region "z" nil (funcall f "a") nil nil nil 'excl)))
+                      (funcall try (lambda () (write-region "z" nil (funcall f "nodir/y"))))
+                      (boundp 'warning-minimum-log-level)))
+            (delete-directory dir t)))"#,
+        r#"((file-already-exists "File already exists" "D/b") (file-error "Input and output files are the same" "Success" "D/a" "D/a") (file-error "Non-regular file" "Is a directory" "D/d") (file-already-exists "File already exists" "D/b") (file-missing "Renaming" "No such file or directory" "D/nope" "D/z") (file-already-exists "File already exists" "D/b") (file-already-exists "File already exists" "D/b") (file-error "File is a directory" "D/d") (file-already-exists "File exists" "D/a") (file-missing "Opening output file" "No such file or directory" "D/nodir/y") nil)"#,
+        "file operations",
+    );
+}
+
+#[test]
 fn native_buffer_lookup_preserves_object_identity_after_rename_or_kill() {
     assert_oracle_contract_matches_interpreter(
         r#"(progn

@@ -29,10 +29,6 @@ impl File {
         StdFile::create_new(path).map(Self::from)
     }
 
-    pub(crate) fn options() -> OpenOptions {
-        OpenOptions::new()
-    }
-
     pub(crate) fn metadata(&self) -> io::Result<super::Metadata> {
         super::file_metadata(self)
     }
