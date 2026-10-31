@@ -653,6 +653,17 @@ define_dispatch!(
                     .saturating_add(prompt_length)
                     .min(interp.buffer.borrow().point_max());
                 let end = interp.buffer.borrow().point_max();
+                // minibuf.c: make_buffer_string with properties.
+                if name == "minibuffer-contents" {
+                    crate::lisp::primitives::textprop::update_buffer_properties(
+                        interp, start, end, env,
+                    )?;
+                }
+                let (start, end) = {
+                    let buffer = interp.buffer.borrow();
+                    let end = end.min(buffer.point_max());
+                    (start.min(end), end)
+                };
                 let text = interp
                     .buffer
                     .borrow()

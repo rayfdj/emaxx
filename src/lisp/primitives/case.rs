@@ -113,6 +113,30 @@ pub(crate) fn public_buffer_char_code_at(interp: &Interpreter, position: usize) 
         })
 }
 
+/// Ffollowing_char: the character after point, 0 at ZV.
+pub(crate) fn following_char_code(interp: &Interpreter) -> i64 {
+    let (point, zv) = {
+        let buffer = interp.buffer.borrow();
+        (buffer.point(), buffer.point_max())
+    };
+    if point >= zv {
+        return 0;
+    }
+    public_buffer_char_code_at(interp, point).unwrap_or(0)
+}
+
+/// Fprevious_char: the character before point, 0 at BEGV.
+pub(crate) fn preceding_char_code(interp: &Interpreter) -> i64 {
+    let (point, begv) = {
+        let buffer = interp.buffer.borrow();
+        (buffer.point(), buffer.point_min())
+    };
+    if point <= begv {
+        return 0;
+    }
+    public_buffer_char_code_at(interp, point - 1).unwrap_or(0)
+}
+
 pub(crate) fn single_char_case_mapping(iter: impl Iterator<Item = char>, fallback: u32) -> u32 {
     let mut iter = iter;
     match (iter.next(), iter.next()) {
@@ -343,18 +367,20 @@ pub(crate) fn simple_case_char_for_action(
 }
 
 /// The text INPUT cased, with EXTENDED its side table (offsets of the
-/// characters its Rust view cannot carry, which case by their codes);
-/// returns the cased text and its side table.
-pub(crate) fn casify_string(
+/// characters its Rust view cannot carry, which case by their codes):
+/// the cased text and its side table, with how many characters each of
+/// INPUT's became pushed on PIECES.  GNU prepares the casing context once
+/// per operation, never per character.
+fn casify_string_pieces(
     interp: &mut Interpreter,
     input: &str,
     extended: &[(usize, u32)],
     action: CaseAction,
+    pieces: &mut Vec<usize>,
     env: &mut Env,
 ) -> Result<(String, Vec<(usize, u32)>), LispError> {
-    // GNU prepares the casing context once per operation, never per character.
     let context = CasingContext::prepare(interp, action, env);
-    casify_string_with_context(interp, input, extended, action, &context)
+    casify_string_with_context(interp, input, extended, action, &context, Some(pieces))
 }
 
 fn casify_string_with_context(
@@ -363,6 +389,7 @@ fn casify_string_with_context(
     extended: &[(usize, u32)],
     action: CaseAction,
     context: &CasingContext,
+    mut pieces: Option<&mut Vec<usize>>,
 ) -> Result<(String, Vec<(usize, u32)>), LispError> {
     let case_symbols_as_words = case_symbols_as_words_enabled(interp);
     let (down_table, up_table) = current_case_table_ids(interp)?;
@@ -400,6 +427,9 @@ fn casify_string_with_context(
                 .unwrap_or(code);
             push_character_code(&mut output, &mut output_extended, output_len, mapped);
             output_len += 1;
+            if let Some(pieces) = pieces.as_deref_mut() {
+                pieces.push(1);
+            }
             in_word = is_word;
             continue;
         }
@@ -424,8 +454,12 @@ fn casify_string_with_context(
                 }
             }
         };
-        output_len += piece.chars().count();
+        let piece_len = piece.chars().count();
+        output_len += piece_len;
         output.push_str(&piece);
+        if let Some(pieces) = pieces.as_deref_mut() {
+            pieces.push(piece_len);
+        }
         in_word = is_word;
     }
     Ok((output, output_extended))
@@ -539,8 +573,14 @@ pub(crate) fn casify_value(
             ))
         });
     }
-    let (output, output_extended) =
-        casify_string_with_context(interp, &input.text, &input.extended_chars, action, &context)?;
+    let (output, output_extended) = casify_string_with_context(
+        interp,
+        &input.text,
+        &input.extended_chars,
+        action,
+        &context,
+        None,
+    )?;
     // casefiddle.c:do_casify_multibyte_string makes the cased text a new
     // string (make_multibyte_string), without the source's intervals.
     Ok(string_like_value_with_extended_chars(
@@ -584,11 +624,24 @@ pub(crate) fn casify_buffer_region(
     if lo >= hi {
         return Ok(hi);
     }
-    // casefiddle.c:casify_region: modify_text over the region, the text
-    // cased as the hooks left it, then a signal of the characters that
-    // changed, none when none did.
+    // casefiddle.c:casify_region: after the hooks, modify_text over the
+    // region and record_delete of its text as make_buffer_string makes it
+    // (update_buffer_properties first), changed or not; the text cased as
+    // do_casify_multibyte_region cases it; record_insert of the result;
+    // then a signal of the characters that changed, none when none did.
     modify_current_buffer(interp, lo, hi, false, env, |interp, _, env| {
         let hi = hi.min(interp.buffer.borrow().point_max()).max(lo);
+        interp.buffer.borrow_mut().modify_text(lo, hi);
+        crate::lisp::primitives::textprop::update_buffer_properties(interp, lo, hi, env)?;
+        let hi = hi.min(interp.buffer.borrow().point_max()).max(lo);
+        let multibyte = interp.buffer.borrow().is_multibyte();
+        interp.buffer.borrow_mut().record_casing_deletion(lo, hi);
+        if !multibyte {
+            interp
+                .buffer
+                .borrow_mut()
+                .record_casing_insertion(lo, hi - lo);
+        }
         let (text, extended) = {
             let buffer = interp.buffer.borrow();
             (
@@ -598,10 +651,9 @@ pub(crate) fn casify_buffer_region(
                 buffer.substring_extended_chars(lo, hi),
             )
         };
-        let (mapped, mapped_extended) = casify_string(interp, &text, &extended, action, env)?;
-        if mapped == text && mapped_extended == extended {
-            return Ok((None, hi));
-        }
+        let mut pieces = Vec::new();
+        let (mapped, mapped_extended) =
+            casify_string_pieces(interp, &text, &extended, action, &mut pieces, env)?;
         // The texts compare by character code.
         let codes = |text: &str, extended: &[(usize, u32)]| {
             StringLike {
@@ -617,11 +669,81 @@ pub(crate) fn casify_buffer_region(
         let old_length = hi - lo;
         let new_length = new_codes.len();
         let new_end = lo + new_length;
+        let bytes =
+            |code: &i64| crate::lisp::primitives::buffers::multibyte_char_bytes(*code as u32);
+        // replace_range_2 replaces a character whose casing is another
+        // number of characters or of bytes; memcpy the rest.
+        let replaced = new_length != old_length
+            || (multibyte
+                && old_codes
+                    .iter()
+                    .zip(&new_codes)
+                    .any(|(old, new)| old != new && bytes(old) != bytes(new)));
+        if !replaced {
+            if mapped != text || mapped_extended != extended {
+                interp
+                    .buffer
+                    .borrow_mut()
+                    .replace_text_in_place(lo, hi, &mapped, &mapped_extended);
+            }
+        } else {
+            // do_casify_multibyte_region: such a character is replaced as
+            // replace_range_2 replaces it, its properties kept, and point
+            // follows it as opoint does; the rest are cased where they
+            // stand.
+            let vars = interp.insertion_property_variables();
+            let mut opoint = interp.buffer.borrow().point();
+            let (mut pos, mut out) = (lo, 0);
+            for (old, &count) in old_codes.iter().zip(&pieces) {
+                let new = &new_codes[out..out + count];
+                if new != std::slice::from_ref(old) {
+                    let (mut piece, mut piece_extended) = (String::new(), Vec::new());
+                    for (index, &code) in new.iter().enumerate() {
+                        crate::lisp::primitives::strings::push_character_code(
+                            &mut piece,
+                            &mut piece_extended,
+                            index,
+                            code as u32,
+                        );
+                    }
+                    let mut buffer = interp.buffer.borrow_mut();
+                    if count == 1 && bytes(old) == bytes(&new[0]) {
+                        buffer.replace_text_in_place(pos, pos + 1, &piece, &piece_extended);
+                    } else {
+                        buffer.replace_char_unrecorded(pos, &piece, &piece_extended, &vars);
+                        if opoint > pos {
+                            opoint = opoint + count - 1;
+                        }
+                    }
+                }
+                pos += count;
+                out += count;
+            }
+            let mut buffer = interp.buffer.borrow_mut();
+            if buffer.point() != opoint {
+                buffer.goto_char(opoint);
+            }
+        }
+        if multibyte {
+            interp
+                .buffer
+                .borrow_mut()
+                .record_casing_insertion(lo, new_length);
+        }
+        // The family shares the text, cased or not, and its counts.
+        if replaced || mapped != text || mapped_extended != extended {
+            interp.mirror_in_place_edit_to_related_buffers(lo, hi, new_end);
+        } else {
+            interp.share_text_counters(interp.current_buffer_id());
+        }
         let unchanged_prefix = old_codes
             .iter()
             .zip(&new_codes)
             .take_while(|(old, new)| old == new)
             .count();
+        if unchanged_prefix == old_length && new_length == old_length {
+            return Ok((None, hi));
+        }
         let unchanged_suffix = old_codes
             .iter()
             .rev()
@@ -629,17 +751,6 @@ pub(crate) fn casify_buffer_region(
             .take(old_length.min(new_length) - unchanged_prefix)
             .take_while(|(old, new)| old == new)
             .count();
-        if new_length == old_length {
-            interp.buffer.borrow_mut().replace_region_in_place(
-                lo,
-                hi,
-                &mapped,
-                &mapped_extended,
-                false,
-            );
-        } else {
-            replace_buffer_region_with_text(interp, lo, hi, &mapped, &mapped_extended)?;
-        }
         let changed_start = lo + unchanged_prefix;
         Ok((
             Some(AfterChange::new(

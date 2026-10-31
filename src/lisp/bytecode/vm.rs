@@ -1276,6 +1276,19 @@ fn trace_load_errors() -> bool {
     crate::lisp::trace_load_errors_enabled()
 }
 
+/// Feolp, Feobp, Fbolp or Fbobp, by its op (0o154 to 0o157).
+#[inline]
+fn point_predicate(interp: &Interpreter, op: u8) -> Value {
+    let buffer = interp.buffer.borrow();
+    let answer = match op {
+        0o154 => buffer.eolp(),
+        0o155 => buffer.eobp(),
+        0o156 => buffer.bolp(),
+        _ => buffer.bobp(),
+    };
+    if answer { Value::T } else { Value::Nil }
+}
+
 /// `prim's dispatch facts by the name literal's address and length: an
 /// open-addressed table whose slots, once claimed, keep their name. The
 /// facts depend on the name alone, so every thread shares them.
@@ -2283,6 +2296,20 @@ fn run_verified(
                     push!(Value::Buffer(vm.interp.buffer));
                     at += 1;
                 }
+                // Bfollowing_char, Bpreceding_char, Beolp, Beobp, Bbolp and
+                // Bbobp read the same, as their C functions do.
+                0o147 => {
+                    push!(Value::Integer(primitives::following_char_code(vm.interp)));
+                    at += 1;
+                }
+                0o150 => {
+                    push!(Value::Integer(primitives::preceding_char_code(vm.interp)));
+                    at += 1;
+                }
+                0o154 | 0o155 | 0o156 | 0o157 => {
+                    push!(point_predicate(vm.interp, byte));
+                    at += 1;
+                }
                 super::B_DISCARDN => {
                     let raw = fetch!();
                     let count = usize::from(raw & 0x7f);
@@ -2842,13 +2869,13 @@ fn run_verified(
                 // calls through branches before the table.
                 0o000 | 0o050 | 0o052 | 0o053 | 0o054 | 0o055 | 0o056 | 0o057 | 0o063 | 0o064
                 | 0o065 | 0o066 | 0o067 | 0o112 | 0o113 | 0o114 | 0o115 | 0o117 | 0o120 | 0o121
-                | 0o122 | 0o135 | 0o136 | 0o143 | 0o146 | 0o147 | 0o150 | 0o151 | 0o152 | 0o153
-                | 0o154 | 0o155 | 0o156 | 0o157 | 0o163 | 0o164 | 0o165 | 0o166 | 0o167 | 0o170
-                | 0o171 | 0o172 | 0o173 | 0o174 | 0o175 | 0o176 | 0o177 | 0o200 | 0o212 | 0o213
-                | 0o214 | 0o215 | 0o216 | 0o217 | 0o220 | 0o221 | 0o222 | 0o223 | 0o224 | 0o225
-                | 0o226 | 0o227 | 0o230 | 0o231 | 0o232 | 0o233 | 0o235 | 0o237 | 0o244 | 0o251
-                | 0o252 | 0o253 | 0o254 | 0o255 | 0o256 | 0o257 | 0o260 | 0o261 | 0o264 | 0o265
-                | 0o270 | 0o271 | 0o272 | 0o273 | 0o274 | 0o275 | 0o276 | 0o277 => slow!(),
+                | 0o122 | 0o135 | 0o136 | 0o143 | 0o146 | 0o151 | 0o152 | 0o153 | 0o163 | 0o164
+                | 0o165 | 0o166 | 0o167 | 0o170 | 0o171 | 0o172 | 0o173 | 0o174 | 0o175 | 0o176
+                | 0o177 | 0o200 | 0o212 | 0o213 | 0o214 | 0o215 | 0o216 | 0o217 | 0o220 | 0o221
+                | 0o222 | 0o223 | 0o224 | 0o225 | 0o226 | 0o227 | 0o230 | 0o231 | 0o232 | 0o233
+                | 0o235 | 0o237 | 0o244 | 0o251 | 0o252 | 0o253 | 0o254 | 0o255 | 0o256 | 0o257
+                | 0o260 | 0o261 | 0o264 | 0o265 | 0o270 | 0o271 | 0o272 | 0o273 | 0o274 | 0o275
+                | 0o276 | 0o277 => slow!(),
             }
         };
         if let FastExit::Continued(new_top) = exit {
@@ -3510,22 +3537,21 @@ fn exec_op_inline(vm: &mut VmFrames<'_>, op: Op, pc: &mut usize) -> Result<(), L
             let buffer = interp.buffer;
             push!(Value::Buffer(buffer));
         }
-        Op::FollowingChar
-        | Op::PrecedingChar
-        | Op::CurrentColumn
-        | Op::Eolp
-        | Op::Eobp
-        | Op::Bolp
-        | Op::Bobp
-        | Op::Widen => {
+        // Bfollowing_char, Bpreceding_char and the point predicates call
+        // their C functions, which read PT, BEGV, ZV and the text.
+        Op::FollowingChar => {
+            push!(Value::Integer(primitives::following_char_code(interp)));
+        }
+        Op::PrecedingChar => {
+            push!(Value::Integer(primitives::preceding_char_code(interp)));
+        }
+        Op::Eolp => push!(point_predicate(interp, 0o154)),
+        Op::Eobp => push!(point_predicate(interp, 0o155)),
+        Op::Bolp => push!(point_predicate(interp, 0o156)),
+        Op::Bobp => push!(point_predicate(interp, 0o157)),
+        Op::CurrentColumn | Op::Widen => {
             let name = match op {
-                Op::FollowingChar => "following-char",
-                Op::PrecedingChar => "preceding-char",
                 Op::CurrentColumn => "current-column",
-                Op::Eolp => "eolp",
-                Op::Eobp => "eobp",
-                Op::Bolp => "bolp",
-                Op::Bobp => "bobp",
                 _ => "widen",
             };
             let value = prim(interp, name, [], env)?;

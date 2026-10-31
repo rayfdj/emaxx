@@ -13,9 +13,11 @@
 //! The allocator's other books use the same relaxed load/store pairs: the
 //! mutator is serialized, as GNU's is.
 //!
-//! Not C: text properties are not yet allocated intervals, so nothing
-//! raises `intervals-consed'. It stays at its initial value rather than
-//! counting span vectors as intervals.
+//! An object's intervals are a sequence (see intervals.rs), not one
+//! allocation each, so `intervals-consed' is raised where intervals.c
+//! calls make_interval: create_root_interval, split_interval_left and
+//! split_interval_right, and copy_intervals and reproduce_tree for every
+//! interval they copy.
 
 use std::sync::atomic::{AtomicI64, Ordering};
 
@@ -44,6 +46,15 @@ pub(crate) fn tally(counter: &AtomicI64, amount: i64) {
     counter.store(
         counter.load(Ordering::Relaxed).wrapping_add(amount),
         Ordering::Relaxed,
+    );
+}
+
+/// alloc.c:make_interval's books for COUNT new intervals:
+/// `intervals_consed' and tally_consing of `sizeof (struct interval)'.
+pub(crate) fn note_intervals(count: usize) {
+    tally(&INTERVALS_CONSED, count as i64);
+    crate::lisp::native_comp::note_lisp_allocation(
+        count.saturating_mul(crate::lisp::eval::GNU_INTERVAL_SIZE),
     );
 }
 

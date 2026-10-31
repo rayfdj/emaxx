@@ -415,7 +415,9 @@ pub(crate) fn print_prune_string_charset(
         return Ok(Some(intervals.clone()));
     }
     if !non_charset {
-        // Fset_text_properties of nil over the whole copy.
+        // Fset_text_properties of nil over the whole copy, which
+        // Fcopy_sequence gave every interval (copy_intervals).
+        crate::lisp::alloc::counters::note_intervals(intervals.count());
         return Ok(None);
     }
     // Fremove_text_properties of (charset) over the whole copy.

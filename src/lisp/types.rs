@@ -1740,7 +1740,9 @@ pub enum ReaderForm {
 /// immediates in bits 3 to 7: nil, t and the unbound marker, the kinds
 /// still addressed by an id (bits 8 up).
 /// Copied as a word, compared by `equal' (`PartialEq'), read through
-/// `kind' as C reads `XTYPE' and the pseudovector header.
+/// `kind' as C reads `XTYPE' and the pseudovector header.  A pointer is
+/// the word less its tag, as lisp.h's XUNTAG subtracts it: the
+/// subtraction folds into the load's displacement where a mask does not.
 #[repr(transparent)]
 #[derive(Clone, Copy)]
 pub struct Value(usize, std::marker::PhantomData<*mut ()>);
@@ -2003,7 +2005,9 @@ impl Value {
             TAG_CONS => {
                 // SAFETY: a value's cons is an allocated cell while the
                 // value is reachable (the collector's contract).
-                Kind::Cons(unsafe { SharedCons::from_raw((word & !TAG_MASK) as *const ConsCell) })
+                Kind::Cons(unsafe {
+                    SharedCons::from_raw(word.wrapping_sub(TAG_CONS) as *const ConsCell)
+                })
             }
             TAG_SYMBOL => {
                 match word {
@@ -2022,15 +2026,18 @@ impl Value {
             TAG_STRING => {
                 // SAFETY: every string word names its direct string header.
                 Kind::StringObject(unsafe {
-                    StringObjectRef::from_raw((word & !TAG_MASK) as *mut _)
+                    StringObjectRef::from_raw(word.wrapping_sub(TAG_STRING) as *mut _)
                 })
             }
             TAG_FLOAT => {
                 // SAFETY: as above, a float cell.
-                Kind::Float(unsafe { SharedFloat::from_raw((word & !TAG_MASK) as *mut _) })
+                Kind::Float(unsafe {
+                    SharedFloat::from_raw(word.wrapping_sub(TAG_FLOAT) as *mut _)
+                })
             }
             TAG_VECTORLIKE => {
-                let header = (word & !TAG_MASK) as *mut crate::lisp::alloc::VectorHeader;
+                let header =
+                    word.wrapping_sub(TAG_VECTORLIKE) as *mut crate::lisp::alloc::VectorHeader;
                 // SAFETY: as above, a vector header; each kind's handle is
                 // made from the header the way `alloc::vectors::value_of'
                 // makes it.
@@ -2699,7 +2706,7 @@ impl Value {
     pub(crate) fn cons_ref(self) -> Option<SharedCons> {
         if self.0 & TAG_MASK == TAG_CONS {
             // SAFETY: as `kind's cons arm.
-            Some(unsafe { SharedCons::from_raw((self.0 & !TAG_MASK) as *const ConsCell) })
+            Some(unsafe { SharedCons::from_raw(self.0.wrapping_sub(TAG_CONS) as *const ConsCell) })
         } else {
             None
         }
@@ -2712,7 +2719,7 @@ impl Value {
         if self.0 & TAG_MASK != TAG_VECTORLIKE {
             return None;
         }
-        let header = (self.0 & !TAG_MASK) as *mut crate::lisp::alloc::VectorHeader;
+        let header = self.0.wrapping_sub(TAG_VECTORLIKE) as *mut crate::lisp::alloc::VectorHeader;
         // SAFETY: as `kind's vectorlike arm.
         unsafe {
             (crate::lisp::alloc::vectors::is_subr(header)
@@ -2739,7 +2746,7 @@ impl Value {
         if self.0 & TAG_MASK != TAG_VECTORLIKE {
             return None;
         }
-        let header = (self.0 & !TAG_MASK) as *mut crate::lisp::alloc::VectorHeader;
+        let header = self.0.wrapping_sub(TAG_VECTORLIKE) as *mut crate::lisp::alloc::VectorHeader;
         // SAFETY: as `kind's vectorlike arm.
         unsafe {
             (crate::lisp::alloc::vectors::header_tag(header)
@@ -2754,7 +2761,7 @@ impl Value {
         if self.0 & TAG_MASK != TAG_VECTORLIKE {
             return None;
         }
-        let header = (self.0 & !TAG_MASK) as *mut crate::lisp::alloc::VectorHeader;
+        let header = self.0.wrapping_sub(TAG_VECTORLIKE) as *mut crate::lisp::alloc::VectorHeader;
         // SAFETY: as `kind's vectorlike arm.
         unsafe {
             (crate::lisp::alloc::vectors::header_tag(header)
@@ -2769,7 +2776,7 @@ impl Value {
         if self.0 & TAG_MASK != TAG_VECTORLIKE {
             return None;
         }
-        let header = (self.0 & !TAG_MASK) as *mut crate::lisp::alloc::VectorHeader;
+        let header = self.0.wrapping_sub(TAG_VECTORLIKE) as *mut crate::lisp::alloc::VectorHeader;
         // SAFETY: as `kind's vectorlike arm.
         unsafe {
             (crate::lisp::alloc::vectors::header_tag(header)
@@ -2784,7 +2791,7 @@ impl Value {
         if self.0 & TAG_MASK != TAG_VECTORLIKE {
             return None;
         }
-        let header = (self.0 & !TAG_MASK) as *mut crate::lisp::alloc::VectorHeader;
+        let header = self.0.wrapping_sub(TAG_VECTORLIKE) as *mut crate::lisp::alloc::VectorHeader;
         // SAFETY: as `kind's vectorlike arm.
         unsafe {
             (crate::lisp::alloc::vectors::header_tag(header)
@@ -2800,7 +2807,7 @@ impl Value {
         if self.0 & TAG_MASK != TAG_VECTORLIKE {
             return None;
         }
-        let header = (self.0 & !TAG_MASK) as *mut crate::lisp::alloc::VectorHeader;
+        let header = self.0.wrapping_sub(TAG_VECTORLIKE) as *mut crate::lisp::alloc::VectorHeader;
         // SAFETY: as `kind's vectorlike arm.
         unsafe {
             (crate::lisp::alloc::vectors::is_subr(header)

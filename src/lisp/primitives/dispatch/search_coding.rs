@@ -309,6 +309,11 @@ fn replace_match(
             let to = (from + length)
                 .min(interp.buffer.borrow().point_max())
                 .max(from);
+            // replace_range's make_buffer_string_both of the old text.
+            crate::lisp::primitives::textprop::update_deleted_text_properties(
+                interp, from, to, false, env,
+            )?;
+            let to = to.min(interp.buffer.borrow().point_max()).max(from);
             // insdel.c:replace_range grafts the new text's intervals
             // without inheritance.
             let source = match &props {
@@ -529,6 +534,10 @@ fn apply_buffer_replacement_hunks(
                         let from = target_start + hunk.old_start;
                         let to = target_start + hunk.old_end;
                         if from < to {
+                            // del_range_2's make_buffer_string_both.
+                            crate::lisp::primitives::textprop::update_deleted_text_properties(
+                                interp, from, to, false, env,
+                            )?;
                             interp
                                 .delete_region_current_buffer_unreturned(from, to)
                                 .map_err(|error| LispError::Signal(error.to_string()))?;
@@ -900,13 +909,48 @@ define_dispatch!(
                 };
                 let changed = from + first;
                 let noundo = args.get(4).is_some_and(Value::is_truthy);
-                modify_current_buffer(interp, changed, to, false, env, |interp, _, _| {
+                modify_current_buffer(interp, changed, to, false, env, |interp, _, env| {
                     let to = to.min(interp.buffer.borrow().point_max()).max(changed);
                     let mut codes = buffer_region_codes(interp, changed, to);
                     let Some(last) = codes.iter().rposition(|&code| code == fromc) else {
                         return Ok((None, ()));
                     };
                     codes.truncate(last + 1);
+                    let last_changed = changed + last + 1;
+                    let fontify = !noundo
+                        && !interp
+                            .symbol_value_key(cached_symbol!("buffer-access-fontify-functions"))
+                            .unwrap_or(Value::Nil)
+                            .is_nil();
+                    if fontify {
+                        // Each record_change's make_buffer_string runs
+                        // `buffer-access-fontify-functions' over its
+                        // character, the ones before it substituted.
+                        interp.buffer.borrow_mut().modify_text(changed, to);
+                        let (replacement, extended) = text_from_codes(&[toc], multibyte);
+                        for (offset, &code) in codes.iter().enumerate() {
+                            if code != fromc {
+                                continue;
+                            }
+                            let pos = changed + offset;
+                            crate::lisp::primitives::textprop::update_buffer_properties(
+                                interp,
+                                pos,
+                                pos + 1,
+                                env,
+                            )?;
+                            let mut buffer = interp.buffer.borrow_mut();
+                            if pos >= buffer.point_max() {
+                                break;
+                            }
+                            buffer.record_change(pos, 1);
+                            buffer.replace_text_in_place(pos, pos + 1, &replacement, &extended);
+                            drop(buffer);
+                            interp.mirror_in_place_edit_to_related_buffers(pos, pos + 1, pos + 1);
+                        }
+                        let length = last_changed - changed;
+                        return Ok((Some(AfterChange::new(changed, length, length)), ()));
+                    }
                     let mut buffer = interp.buffer.borrow_mut();
                     // modify_text at the first change, from it to the
                     // region's end, then record_change for each character
@@ -924,13 +968,17 @@ define_dispatch!(
                             *code = toc;
                         }
                     }
-                    let last_changed = changed + last + 1;
                     let (replaced, extended) = text_from_codes(&codes, multibyte);
                     // GNU substitutes characters IN PLACE: text properties
                     // and markers in the region are untouched (fill-region's
                     // newline→space pass must keep erc-button's props intact).
                     buffer.replace_text_in_place(changed, last_changed, &replaced, &extended);
                     drop(buffer);
+                    interp.mirror_in_place_edit_to_related_buffers(
+                        changed,
+                        last_changed,
+                        last_changed,
+                    );
                     let length = last_changed - changed;
                     Ok((Some(AfterChange::new(changed, length, length)), ()))
                 })?;
@@ -988,6 +1036,7 @@ define_dispatch!(
                 // editfns.c:Ftranspose_regions validates each region.
                 let (mut start1, mut end1) = validate_region(interp, &args[0], &args[1])?;
                 let (mut start2, mut end2) = validate_region(interp, &args[2], &args[3])?;
+                let given = [(start1, end1), (start2, end2)];
                 if start2 < end1 {
                     std::mem::swap(&mut start1, &mut start2);
                     std::mem::swap(&mut end1, &mut end2);
@@ -998,98 +1047,58 @@ define_dispatch!(
                 if (start1 == end1 || start2 == end2) && end1 == start2 {
                     return Ok(Value::Nil);
                 }
+                let leave_markers = args.get(4).is_some_and(|value| value.is_truthy());
+                // The spans record_change makes strings of, each running
+                // `buffer-access-fontify-functions': before modify_text
+                // (and so before the change hooks) when the second region
+                // is the shorter in bytes, after it otherwise.
+                let (len1_byte, len2_byte) = {
+                    let buffer = interp.buffer.borrow();
+                    let byte = |position| buffer.marker_byte_position(position);
+                    (byte(end1) - byte(start1), byte(end2) - byte(start2))
+                };
+                let recorded: &[(usize, usize)] = if end1 != start2 && len1_byte == len2_byte {
+                    &[(start1, end1), (start2, end2)]
+                } else {
+                    &[(start1, end2)]
+                };
+                let early = end1 != start2 && len1_byte > len2_byte;
+                if early {
+                    crate::lisp::primitives::textprop::update_buffer_properties(
+                        interp, start1, end2, env,
+                    )?;
+                }
                 // editfns.c: modify_text over both regions and what lies
-                // between, then one change of it all.
-                modify_current_buffer(interp, start1, end2, false, env, |interp, _, _| {
-                    let leave_markers = args.get(4).is_some_and(|value| value.is_truthy());
-                    let saved_markers =
-                        interp.live_marker_positions_for_buffer(interp.current_buffer_id());
-                    let region1_text = interp
-                        .buffer
-                        .borrow()
-                        .buffer_substring(start1, end1)
-                        .map_err(|e| LispError::Signal(e.to_string()))?;
-                    let region1_props = interp.buffer.borrow().copy_intervals(start1, end1);
-                    let region1_extended = interp
-                        .buffer
-                        .borrow()
-                        .substring_extended_chars(start1, end1);
-                    let region2_text = interp
-                        .buffer
-                        .borrow()
-                        .buffer_substring(start2, end2)
-                        .map_err(|e| LispError::Signal(e.to_string()))?;
-                    let region2_props = interp.buffer.borrow().copy_intervals(start2, end2);
-                    let region2_extended = interp
-                        .buffer
-                        .borrow()
-                        .substring_extended_chars(start2, end2);
-                    let gap = interp
-                        .buffer
-                        .borrow()
-                        .buffer_substring(end1, start2)
-                        .map_err(|e| LispError::Signal(e.to_string()))?;
-                    let gap_len = gap.chars().count();
-                    interp
-                        .delete_region_current_buffer_unreturned(start2, end2)
-                        .map_err(|e| LispError::Signal(e.to_string()))?;
-                    interp
-                        .delete_region_current_buffer_unreturned(start1, end1)
-                        .map_err(|e| LispError::Signal(e.to_string()))?;
-                    // Each region's text with its copied intervals grafted
-                    // without inheritance, as Ftranspose_regions grafts
-                    // them.
-                    fn grafted(
-                        props: &Option<crate::intervals::Intervals>,
-                    ) -> crate::buffer::InsertedProperties<'_> {
-                        match props {
-                            Some(source) => crate::buffer::InsertedProperties::Intervals {
-                                source,
-                                inherit: false,
-                            },
-                            None => crate::buffer::InsertedProperties::PLAIN,
+                // between, the text rearranged where it stands, then one
+                // change of it all.
+                modify_current_buffer(interp, start1, end2, false, env, |interp, _, env| {
+                    if !early {
+                        for &(from, to) in recorded {
+                            crate::lisp::primitives::textprop::update_buffer_properties(
+                                interp, from, to, env,
+                            )?;
                         }
                     }
-                    interp.buffer.borrow_mut().goto_char(start1);
-                    interp.insert_current_buffer_with(
-                        &region2_text,
-                        grafted(&region2_props),
-                        false,
-                    );
-                    interp.set_inserted_extended_chars(start1, &region2_extended);
-                    let insert_region1_at = start1 + region2_text.chars().count() + gap_len;
-                    interp.buffer.borrow_mut().goto_char(insert_region1_at);
-                    interp.insert_current_buffer_with(
-                        &region1_text,
-                        grafted(&region1_props),
-                        false,
-                    );
-                    interp.set_inserted_extended_chars(insert_region1_at, &region1_extended);
-                    let len1 = end1 - start1;
-                    let len2 = end2 - start2;
-                    let diff = len2 as isize - len1 as isize;
-                    let amt1 = len2 + (start2 - end1);
-                    let amt2 = len1 + (start2 - end1);
-                    for (marker_id, original) in saved_markers {
-                        let Some(original_pos) = original else {
-                            continue;
-                        };
-                        let new_pos =
-                            if leave_markers || original_pos < start1 || original_pos >= end2 {
-                                original_pos
-                            } else if original_pos < end1 {
-                                original_pos + amt1
-                            } else if original_pos < start2 {
-                                ((original_pos as isize) + diff) as usize
-                            } else {
-                                original_pos - amt2
-                            };
-                        let _ = interp.set_marker(
-                            marker_id,
-                            Some(new_pos),
-                            Some(interp.current_buffer_id()),
-                        );
+                    // GNU rearranges the text the hooks left without looking
+                    // again; text they removed is out of range here.
+                    if end2 > interp.buffer.borrow().size_total() + 1 {
+                        return Err(LispError::SignalValue(Value::list([
+                            Value::symbol("args-out-of-range"),
+                            Value::Integer(start1 as i64),
+                            Value::Integer(end2 as i64),
+                        ])));
                     }
+                    interp.buffer.borrow_mut().transpose_regions(
+                        (start1, end1),
+                        (start2, end2),
+                        given,
+                        leave_markers,
+                    );
+                    interp.mirror_transposition_to_related_buffers(
+                        (start1, end1),
+                        (start2, end2),
+                        leave_markers,
+                    );
                     Ok((
                         Some(AfterChange::new(start1, end2 - start1, end2 - start1)),
                         (),

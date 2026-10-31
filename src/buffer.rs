@@ -248,6 +248,28 @@ struct BufferText {
     positions: Cell<PositionCache>,
 }
 
+/// editfns.c:transpose_markers' move of POSITION: in the first region by
+/// the second's length and the distance between them, between them by the
+/// difference of the lengths, in the second back by the first's length
+/// and that distance.
+fn transposed_position(
+    position: usize,
+    start1: usize,
+    end1: usize,
+    start2: usize,
+    end2: usize,
+) -> usize {
+    if position < start1 || position >= end2 {
+        position
+    } else if position < end1 {
+        position + (end2 - start2) + (start2 - end1)
+    } else if position < start2 {
+        position + (end2 - start2) - (end1 - start1)
+    } else {
+        position - (end1 - start1) - (start2 - end1)
+    }
+}
+
 /// marker.c buf_charpos_to_bytepos's cache, for a text whose characters
 /// are not all one byte: the char and byte offsets of recent conversions,
 /// shifted by an edit before them and dropped by one over them.
@@ -443,6 +465,14 @@ impl BufferText {
     }
 
     fn char_to_byte_counted(&self, index: usize) -> usize {
+        // CONSIDER of BEG and Z, which buf_charpos_to_bytepos returns
+        // before it looks further.
+        if index == 0 {
+            return 0;
+        }
+        if index == self.text.chars() {
+            return self.text.len();
+        }
         let mut positions = self.positions.get();
         if let Some(byte) = positions.by_char(index) {
             return byte;
@@ -464,6 +494,12 @@ impl BufferText {
     }
 
     fn byte_to_char_counted(&self, byte: usize) -> usize {
+        if byte == 0 {
+            return 0;
+        }
+        if byte == self.text.len() {
+            return self.text.chars();
+        }
         let mut positions = self.positions.get();
         if let Some(index) = positions.by_byte(byte) {
             return index;
@@ -650,6 +686,10 @@ struct RopeCharCache {
     start: usize,
     chars: Vec<char>,
     valid: bool,
+    /// The last character read outside the window: a read next to it
+    /// continues a scan, which fills the window, where a read elsewhere
+    /// decodes its character alone.
+    last_single: Option<usize>,
 }
 
 impl RopeCharCache {
@@ -2199,6 +2239,20 @@ impl Buffer {
         if let Some(ch) = self.char_cache.borrow().character(index) {
             return Some(ch);
         }
+        // A read away from the last one (`following-char' at each line's
+        // start) decodes its character where it stands, as FETCH_CHAR does.
+        {
+            let mut cache = self.char_cache.borrow_mut();
+            let scanning = cache
+                .last_single
+                .is_some_and(|last| last.abs_diff(index) <= 1);
+            cache.last_single = Some(index);
+            if !scanning {
+                drop(cache);
+                let byte = self.text.char_to_byte(index);
+                return self.text.rest_at_byte(byte).chars().next();
+            }
+        }
 
         // A window of the half around INDEX, decoded once for the reads
         // near it (a scan's next characters or its previous ones).
@@ -2443,14 +2497,264 @@ impl Buffer {
 
     /// undo.c:record_change: the LENGTH characters at BEG about to be
     /// replaced by as many, recorded as their deletion and an insertion.
+    /// Their string (make_buffer_string, with its properties) is made
+    /// before record_delete looks at the undo list, so a buffer without
+    /// undo still allocates it, as casify_region's record_delete does.
     pub(crate) fn record_change(&mut self, beg: usize, length: usize) {
+        let old = self.text_range_string(beg - 1, beg - 1 + length);
+        let string = self.deleted_text_value(&old, beg, beg + length);
         if self.undo_recording_disabled() {
             return;
         }
-        let old = self.text_range_string(beg - 1, beg - 1 + length);
-        let string = self.deleted_text_value(&old, beg, beg + length);
         self.record_delete(beg, string, length);
         self.record_insert(beg, length);
+    }
+
+    /// editfns.c:Ftranspose_regions after prepare_to_modify_buffer, with
+    /// START1 <= END1 <= START2 <= END2 and the regions not adjacent with
+    /// one empty.  modify_text and record_change as GNU calls them in each
+    /// case (both regions adjacent, separate regions of equal byte length,
+    /// the second longer or shorter in bytes), each region's (and the
+    /// text between's) intervals copied, the properties cleared where GNU
+    /// clears them, the text rearranged where it stands and the copies
+    /// grafted without inheritance where GNU grafts them; then
+    /// transpose_markers (point and the mark included, overlays not)
+    /// unless LEAVE_MARKERS.  GIVEN is the regions as the caller gave them
+    /// (each in order, the two not swapped): GNU clears the properties of
+    /// the span from the first's start to the second's end
+    /// (validate_interval_range of STARTR1 and ENDR2, nothing when they
+    /// are equal), or of each given region when they are equal in bytes.
+    pub(crate) fn transpose_regions(
+        &mut self,
+        (start1, end1): (usize, usize),
+        (start2, end2): (usize, usize),
+        given: [(usize, usize); 2],
+        leave_markers: bool,
+    ) {
+        let (len1, len2, len_mid) = (end1 - start1, end2 - start2, start2 - end1);
+        let byte = |position: usize| self.marker_byte_position(position);
+        let (len1_byte, len2_byte) = (byte(end1) - byte(start1), byte(end2) - byte(start2));
+        let piece = |from: usize, to: usize| {
+            (
+                self.text.string((from - 1)..(to - 1)),
+                self.substring_extended_chars(from, to),
+            )
+        };
+        let (text1, extended1) = piece(start1, end1);
+        let (text_mid, extended_mid) = piece(end1, start2);
+        let (text2, extended2) = piece(start2, end2);
+        let mut text = String::with_capacity(text1.len() + text_mid.len() + text2.len());
+        let mut extended = Vec::new();
+        for (part, part_extended) in [
+            (&text2, &extended2),
+            (&text_mid, &extended_mid),
+            (&text1, &extended1),
+        ] {
+            let offset = text.chars().count();
+            text.push_str(part);
+            extended.extend(part_extended.iter().map(|(at, code)| (offset + at, *code)));
+        }
+        let clear = |buffer: &mut Self, from: usize, to: usize| {
+            if from != to {
+                let _ = buffer.set_text_properties_1(from.min(to), from.max(to), Value::Nil);
+            }
+        };
+        let [(given_start1, given_end1), (given_start2, given_end2)] = given;
+        let graft =
+            |buffer: &mut Self, tree: &Option<Intervals>, position: usize, length: usize| {
+                let props = match tree {
+                    Some(source) => InsertedProperties::Intervals {
+                        source,
+                        inherit: false,
+                    },
+                    None => InsertedProperties::PLAIN,
+                };
+                buffer.graft_intervals(props, position, length);
+            };
+        if end1 == start2 {
+            self.modify_text(start1, end2);
+            self.record_change(start1, len1 + len2);
+            let tree1 = self.copy_intervals(start1, end1);
+            let tree2 = self.copy_intervals(start2, end2);
+            clear(self, given_start1, given_end2);
+            self.replace_text_in_place(start1, end2, &text, &extended);
+            graft(self, &tree1, start1 + len2, len1);
+            graft(self, &tree2, start1, len2);
+        } else if len1_byte == len2_byte {
+            self.modify_text(start1, end2);
+            self.record_change(start1, len1);
+            self.record_change(start2, len2);
+            let tree1 = self.copy_intervals(start1, end1);
+            let tree2 = self.copy_intervals(start2, end2);
+            clear(self, given_start1, given_end1);
+            clear(self, given_start2, given_end2);
+            self.replace_text_in_place(start1, end2, &text, &extended);
+            // GNU's positions, which assume equal lengths in characters.
+            graft(self, &tree1, start2, len1);
+            graft(self, &tree2, start1, len2);
+        } else {
+            // The second region shorter: record_change before modify_text.
+            if len1_byte < len2_byte {
+                self.modify_text(start1, end2);
+                self.record_change(start1, end2 - start1);
+            } else {
+                self.record_change(start1, end2 - start1);
+                self.modify_text(start1, end2);
+            }
+            let tree1 = self.copy_intervals(start1, end1);
+            let tree_mid = self.copy_intervals(end1, start2);
+            let tree2 = self.copy_intervals(start2, end2);
+            clear(self, given_start1, given_end2);
+            self.replace_text_in_place(start1, end2, &text, &extended);
+            graft(self, &tree1, end2 - len1, len1);
+            graft(self, &tree_mid, start1 + len2, len_mid);
+            graft(self, &tree2, start1, len2);
+        }
+        if !leave_markers {
+            self.transpose_markers(start1, end1, start2, end2);
+        }
+    }
+
+    /// editfns.c:transpose_markers: point and each marker in a region
+    /// moved by the other's length and the distance between them, those
+    /// between by the difference of the lengths.
+    fn transpose_markers(&mut self, start1: usize, end1: usize, start2: usize, end2: usize) {
+        self.pt = transposed_position(self.pt, start1, end1, start2, end2);
+        self.transpose_marker_positions(start1, end1, start2, end2);
+    }
+
+    /// transpose_markers over another buffer of the text's indirect
+    /// family, whose point and bounds are markers in GNU while it is not
+    /// current: they move with the mark and the markers.
+    pub(crate) fn transpose_family_positions(
+        &mut self,
+        start1: usize,
+        end1: usize,
+        start2: usize,
+        end2: usize,
+    ) {
+        let moved = |position| transposed_position(position, start1, end1, start2, end2);
+        self.pt = moved(self.pt);
+        self.begv = moved(self.begv);
+        self.zv = moved(self.zv).max(self.begv);
+        self.pt = self.pt.clamp(self.begv, self.zv);
+        self.transpose_marker_positions(start1, end1, start2, end2);
+    }
+
+    fn transpose_marker_positions(
+        &mut self,
+        start1: usize,
+        end1: usize,
+        start2: usize,
+        end2: usize,
+    ) {
+        let moved = |position| transposed_position(position, start1, end1, start2, end2);
+        match &mut self.mark {
+            BufferMark::Position(mark) => *mark = mark.map(moved),
+            BufferMark::Object { owner, .. } => {
+                for marker in owner.markers() {
+                    let position = moved(marker.last_position());
+                    marker.set_positions(position, self.marker_byte_position(position));
+                }
+            }
+        }
+    }
+
+    /// Another buffer of this text's indirect family changed it where it
+    /// stands: [FROM, OLD_TO) is now TEXT (EXTENDED its side table) and the
+    /// whole text has INTERVALS, as GNU's family shares one buffer_text.
+    /// Point, the bounds, the mark and the markers keep their character
+    /// positions, as markers do across an edit in place and
+    /// replace_range_2; nothing is recorded or counted here.
+    pub(crate) fn mirror_in_place_edit(
+        &mut self,
+        from: usize,
+        old_to: usize,
+        text: &str,
+        extended: &[(usize, u32)],
+        intervals: Option<Intervals>,
+    ) {
+        let inschars = text.chars().count();
+        self.text.remove(from - 1..old_to - 1);
+        self.text.insert(from - 1, text);
+        self.invalidate_char_cache();
+        self.adjust_extended_chars_for_delete(from, old_to);
+        self.adjust_extended_chars_for_insert(from, inschars);
+        self.extended_chars
+            .extend(extended.iter().map(|(offset, code)| (from + offset, *code)));
+        self.extended_chars
+            .sort_unstable_by_key(|(position, _)| *position);
+        self.intervals = intervals;
+        let z = self.size_total() + 1;
+        self.zv = self.zv.min(z);
+        self.begv = self.begv.min(self.zv);
+        self.pt = self.pt.clamp(self.begv, self.zv);
+        self.refresh_marker_byte_positions();
+        self.log_edit(from, old_to, from + inschars, true);
+    }
+
+    /// The whole text's intervals, for another buffer of its family.
+    pub(crate) fn intervals_snapshot(&self) -> Option<Intervals> {
+        self.intervals.clone()
+    }
+
+    /// The stored text of [FROM, TO).
+    pub(crate) fn stored_text(&self, from: usize, to: usize) -> String {
+        self.text_range_string(from - 1, to - 1)
+    }
+
+    /// casefiddle.c:casify_region's record_delete of [FROM, TO) as
+    /// make_buffer_string makes it, before the text is cased: the string
+    /// made even in a buffer without undo, as in record_change.
+    pub(crate) fn record_casing_deletion(&mut self, from: usize, to: usize) {
+        let old = self.text_range_string(from - 1, to - 1);
+        let string = self.deleted_text_value(&old, from, to);
+        if self.undo_recording_disabled() {
+            return;
+        }
+        self.record_delete(from, string, to - from);
+    }
+
+    /// casefiddle.c:casify_region's record_insert of the LENGTH characters
+    /// the casing left at FROM.
+    pub(crate) fn record_casing_insertion(&mut self, from: usize, length: usize) {
+        self.record_insert(from, length);
+    }
+
+    /// insdel.c:replace_range_2 without MARKERS, as
+    /// do_casify_multibyte_region calls it: the character at FROM replaced
+    /// by TEXT (EXTENDED its side table) where it stands, unrecorded.
+    /// Markers and overlays keep their character positions (marker byte
+    /// positions follow the new text), the intervals are offset at FROM
+    /// (offset_intervals), point moves as a marker would, and the change
+    /// counts as the characters deleted and inserted.
+    pub(crate) fn replace_char_unrecorded(
+        &mut self,
+        from: usize,
+        text: &str,
+        extended: &[(usize, u32)],
+        vars: &PropertyVariables,
+    ) {
+        let inschars = text.chars().count();
+        let to = from + 1;
+        self.text.remove(from - 1..to - 1);
+        self.text.insert(from - 1, text);
+        self.invalidate_char_cache();
+        self.adjust_extended_chars_for_delete(from, to);
+        self.adjust_extended_chars_for_insert(from, inschars);
+        self.extended_chars
+            .extend(extended.iter().map(|(offset, code)| (from + offset, *code)));
+        self.extended_chars
+            .sort_unstable_by_key(|(position, _)| *position);
+        self.zv = self.zv + inschars - 1;
+        self.offset_intervals(from, inschars as isize - 1, vars);
+        if from < self.pt && inschars != 1 {
+            self.pt = self.pt + inschars - 1;
+        }
+        self.refresh_marker_byte_positions();
+        modiff_incr(&mut self.modiff, 1 + inschars);
+        self.chars_modiff = self.modiff;
+        self.log_edit(from, to, from + inschars, true);
     }
 
     /// [FROM, TO) replaced by TEXT of the same length where it stands,
@@ -3464,8 +3768,14 @@ mod tests {
     fn character_cache_tracks_text_mutation_and_swap() {
         let text = format!("{}λ{}", "a".repeat(1500), "b".repeat(1500));
         let mut buf = Buffer::from_text("cached", &text);
+        // A read alone decodes its character where it stands; the next
+        // one beside it scans, filling the window.
+        assert_eq!(buf.char_at(1500), Some('a'));
+        assert!(!buf.char_cache.borrow().valid);
         assert_eq!(buf.char_at(1501), Some('λ'));
         assert!(buf.char_cache.borrow().valid);
+        assert_eq!(buf.char_at(3001), Some('b'));
+        assert_eq!(buf.char_cache.borrow().start, 1500 - CHAR_CACHE_BEHIND);
 
         buf.goto_char(1);
         buf.insert("z");

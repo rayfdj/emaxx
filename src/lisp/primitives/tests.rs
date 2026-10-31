@@ -5758,6 +5758,40 @@ fn memory_use_counts_counts_actual_allocations_by_category() {
 }
 
 #[test]
+fn intervals_consed_counts_make_interval_calls() {
+    // alloc.c:make_interval raises `intervals-consed' once an interval:
+    // create_root_interval, each split_interval_left and _right, and
+    // copy_intervals and reproduce_tree for every interval they copy
+    // (Fcopy_sequence, substring, buffer-string, the printer's pruned
+    // copy), with the deleted text record_change and casify_region make
+    // even in a buffer without undo.
+    assert_oracle_contract_matches_interpreter(
+        r##"(let ((s3 (concat (propertize "ab" 'face 'bold) "cd" (propertize "ef" 'x 1))))
+            (mapcar (lambda (thunk)
+                      (let ((before intervals-consed))
+                        (funcall thunk)
+                        (- intervals-consed before)))
+                    (list (lambda () (propertize "abc" 'face 'bold))
+                          (lambda () (concat "abc" "def"))
+                          (lambda () (concat (propertize "ab" 'face 'bold) "cd" (propertize "ef" 'x 1)))
+                          (lambda () (copy-sequence s3))
+                          (lambda () (substring s3 1 5))
+                          (lambda () (substring s3 0 1))
+                          (lambda () (let ((s (copy-sequence "abcdef"))) (put-text-property 2 4 'a 1 s)))
+                          (lambda () (format "%s-%s" (propertize "a" 'x 1) "b"))
+                          (lambda () (with-temp-buffer (insert s3) (buffer-string)))
+                          (lambda () (with-temp-buffer (insert "abcdefgh") (put-text-property 2 6 'a 1) (goto-char 4) (insert "XY")))
+                          (lambda () (with-temp-buffer (insert s3) (delete-region 2 5)))
+                          (lambda () (with-temp-buffer (insert s3) (upcase-region 1 7)))
+                          (lambda () (with-temp-buffer (insert s3) (subst-char-in-region 1 7 ?b ?Q)))
+                          (lambda () (car (read-from-string "#(\"abcd\" 0 1 (a 1) 2 4 (b 2))")))
+                          (lambda () (prin1-to-string s3)))))"##,
+        "(1 0 5 3 3 1 3 3 6 5 3 6 4 3 3)",
+        "intervals-consed deltas",
+    );
+}
+
+#[test]
 fn float_returns_a_float_argument_itself() {
     // floatfns.c:Ffloat returns a float argument unchanged (no new object);
     // an integer argument makes a new float.
@@ -9376,6 +9410,188 @@ fn string_and_buffer_edits_keep_intervals_as_gnu() {
  )"##,
         r##"(((0 1 (a 1)) (1 3 (a 1))) ((0 1 nil) (1 2 (a 1)) (2 4 nil)) ((a 1 b 2) t) t t nil (nil "\"abc\"") (nil "\"abc\"") (((0 3 nil)) "\"abc\"") (((0 1 (a 1)) (1 2 nil) (2 3 (a 1))) 1 2) (nil t) #("abc" 0 3 (a 5)) (#("abcde" 0 2 (a 1) 4 5 (b 2)) ((0 2 (a 1)) (2 4 nil) (4 5 (b 2)))) "ab" "ab" ((0 3 (a 1))) ((0 1 (a 1)) (1 2 (b nil a 1)) (2 3 (a 1))) (2 2 4) ((0 1 (a 1)) (1 4 (a 1))) (#("aBcdef" 0 3 (a 1)) ((0 3 (a 1)) (3 6 nil))) ((0 1 (a 1)) (1 2 nil) (2 3 (a 1)) (3 6 nil)) (#("ABCDEF" 0 3 (a 1)) ((0 3 (a 1)) (3 6 nil))) ((0 1 (a 1)) (1 2 (b 2)) (2 3 (a 1))) ((0 2 (a 1)) (2 4 nil) (4 7 nil)) (#("decabf" 2 3 (a 1) 3 5 (a 1)) ((0 2 nil) (2 3 (a 1)) (3 5 (a 1)) (5 6 nil))) ((0 3 (composition nil))) #("ab" 0 1 (a 1) 1 2 (a 1)) (((0 1 (a 1)) (1 2 nil) (2 3 (a 1))) ((0 1 (a 1)) (1 2 nil) (2 3 (a 1)))) (((0 2 (a 1))) ((0 2 (a 1)))))"##,
         "interval edits",
+    );
+}
+
+/// editfns.c:Ftranspose_regions: the text rearranged where it stands,
+/// so point, markers (by transpose_markers unless LEAVE-MARKERS) and
+/// overlays (left alone) end where GNU's do; record_change for both
+/// regions, their span or each equal-length region, the first-change
+/// records when the second region is shorter, and the property changes
+/// of the span from the given first region's start to the given second
+/// region's end (none for adjacent regions given in reverse); and
+/// undoing all of it.
+#[test]
+fn transpose_regions_works_in_place_as_editfns_c() {
+    assert_oracle_contract_matches_interpreter(
+        r##"(let ((s (concat (propertize "ab" 'face 'bold) "cd" (propertize "ef" 'x 1) "gh"))
+             (run (lambda (text args &optional setup)
+                    (with-temp-buffer
+                      (buffer-enable-undo)
+                      (insert text)
+                      (let ((m1 (copy-marker 2)) (m2 (copy-marker 4 t)) (ov (make-overlay 2 5)) (log nil))
+                        (setq buffer-undo-list nil)
+                        (goto-char 3)
+                        (when setup (funcall setup))
+                        (add-hook 'after-change-functions (lambda (b e l) (push (list b e l) log)) nil t)
+                        (apply #'transpose-regions args)
+                        (list (buffer-string) (point) (marker-position m1) (marker-position m2)
+                              (overlay-start ov) (overlay-end ov)
+                              (mapcar (lambda (e) (if (eq (car-safe e) t) t e)) buffer-undo-list)
+                              log
+                              (progn (primitive-undo 20 buffer-undo-list) (buffer-string))))))))
+         (list (funcall run s '(1 3 3 5))
+               (funcall run s '(3 5 1 3))
+               (funcall run s '(1 3 5 7))
+               (funcall run s '(5 7 1 3))
+               (funcall run s '(1 2 4 7))
+               (funcall run s '(1 4 6 7) (lambda () (set-buffer-modified-p nil)))
+               (funcall run s '(1 2 4 7 t))
+               (funcall run "aéxyzbb" '(1 3 5 7))
+               (funcall run "abcdefgh" '(1 3 5 8) (lambda () (set-buffer-multibyte nil)))))"##,
+        r##"((#("cdabefgh" 2 4 (face bold) 4 6 (x 1)) 1 4 2 2 5 ((nil face bold 1 . 3) (1 . 5) (#("abcd" 0 2 (face bold)) . 1)) ((1 5 4)) #("abcdefgh" 0 2 (face bold) 4 6 (x 1))) (#("cdabefgh" 2 4 (face bold) 4 6 (x 1)) 1 4 2 2 5 ((1 . 5) (#("abcd" 0 2 (face bold)) . 1)) ((1 5 4)) #("abcdefgh" 0 2 (face bold) 4 6 (x 1))) (#("efcdabgh" 0 2 (x 1) 4 6 (face bold)) 3 6 4 2 5 ((nil x 1 5 . 7) (nil face bold 1 . 3) (5 . 7) (#("ef" 0 2 (x 1)) . 5) (1 . 3) (#("ab" 0 2 (face bold)) . -1)) ((1 7 6)) #("abcdefgh" 0 2 (face bold) 4 6 (x 1))) (#("efcdabgh" 0 2 (x 1) 4 6 (face bold)) 3 6 4 2 5 ((nil face bold 1 . 3) (nil x 1 5 . 7) (5 . 7) (#("ef" 0 2 (x 1)) . 5) (1 . 3) (#("ab" 0 2 (face bold)) . -1)) ((1 7 6)) #("abcdefgh" 0 2 (face bold) 4 6 (x 1))) (#("defbcagh" 1 3 (x 1) 3 4 (face bold) 5 6 (face bold)) 5 4 1 2 5 ((nil x 1 5 . 7) (nil face bold 1 . 3) (1 . 7) (#("abcdef" 0 2 (face bold) 4 6 (x 1)) . 1)) ((1 7 6)) #("abcdefgh" 0 2 (face bold) 4 6 (x 1))) (#("fdeabcgh" 0 1 (x 1) 2 3 (x 1) 3 5 (face bold)) 6 5 2 2 5 ((nil x 1 5 . 7) (nil face bold 1 . 3) t (1 . 7) t (#("abcdef" 0 2 (face bold) 4 6 (x 1)) . 1) t) ((1 7 6)) #("abcdefgh" 0 2 (face bold) 4 6 (x 1))) (#("defbcagh" 1 3 (x 1) 3 4 (face bold) 5 6 (face bold)) 3 2 4 2 5 ((nil x 1 5 . 7) (nil face bold 1 . 3) (1 . 7) (#("abcdef" 0 2 (face bold) 4 6 (x 1)) . 1)) ((1 7 6)) #("abcdefgh" 0 2 (face bold) 4 6 (x 1))) ("zbxyaéb" 3 6 4 2 5 ((1 . 7) ("aéxyzb" . 1)) ((1 7 6)) "aéxyzbb") ("efgcdabh" 4 7 5 2 5 ((1 . 8) ("abcdefg" . 1) (apply set-buffer-multibyte t)) ((1 8 7)) "abcdefgh"))"##,
+        "transpose-regions",
+    );
+}
+
+/// editfns.c:make_buffer_string_both's update_buffer_properties:
+/// `buffer-access-fontify-functions' runs over the text a deletion takes
+/// when the buffer records undo or the caller wants the text
+/// (delete-and-extract-region, kill-region), over replace-match's old text
+/// with undo, over casing's whole region and every record_change span
+/// (subst-char-in-region with undo, translate-region, transpose-regions)
+/// whether or not the buffer records undo, and over minibuffer-contents.
+#[test]
+fn buffer_access_fontify_functions_run_where_make_buffer_string_does() {
+    assert_oracle_contract_matches_interpreter(
+        r##"(let ((ops (list (lambda () (goto-char 1) (re-search-forward "c") (replace-match "W"))
+                        (lambda () (delete-region 2 4))
+                        (lambda () (delete-and-extract-region 2 4))
+                        (lambda () (goto-char 3) (delete-char -1))
+                        (lambda () (erase-buffer))
+                        (lambda () (upcase-region 2 4))
+                        (lambda () (capitalize-region 1 7))
+                        (lambda () (subst-char-in-region 1 7 ?c ?Q))
+                        (lambda () (subst-char-in-region 1 7 ?c ?Q t))
+                        (lambda () (translate-region 1 7 (let ((tbl (make-string 256 0))) (dotimes (i 256) (aset tbl i i)) (aset tbl ?d ?Z) tbl)))
+                        (lambda () (transpose-regions 1 2 4 5))
+                        (lambda () (transpose-regions 1 2 4 6))
+                        (lambda () (transpose-regions 1 3 4 5))
+                        (lambda () (transpose-regions 1 2 2 4))
+                        (lambda () (kill-region 2 4))
+                        (lambda () (buffer-substring 2 4))
+                        (lambda () (minibuffer-contents))))
+             (result nil))
+         (dolist (undo '(nil t))
+           (dolist (op ops)
+             (let ((log nil))
+               (with-temp-buffer
+                 (when undo (buffer-enable-undo))
+                 (insert "abcdef")
+                 (setq-local buffer-access-fontify-functions
+                             (list (lambda (s e) (push (list s e (buffer-modified-p)) log))))
+                 (funcall op))
+               (push (reverse log) result))))
+         (nreverse result))"##,
+        r##"(nil nil ((2 4 t)) nil nil ((2 4 t)) ((1 7 t)) ((3 4 t)) nil ((4 5 t)) ((1 2 t) (4 5 t)) ((1 6 t)) ((1 5 t)) ((1 4 t)) ((2 4 t)) ((2 4 t)) ((1 7 t)) ((3 4 t)) ((2 4 t)) ((2 4 t)) ((2 3 t)) ((1 7 t)) ((2 4 t)) ((1 7 t)) ((3 4 t)) nil ((4 5 t)) ((1 2 t) (4 5 t)) ((1 6 t)) ((1 5 t)) ((1 4 t)) ((2 4 t)) ((2 4 t)) ((1 7 t)))"##,
+        "buffer-access-fontify-functions",
+    );
+}
+
+/// casefiddle.c:casify_region: modify_text and record_delete of the
+/// region even when its casing changes nothing (the buffer modified, the
+/// undo records made, no after-change call), a character cased to others
+/// than one (or to another byte length) replaced as replace_range_2
+/// replaces it, its properties kept, markers and overlays where they were,
+/// point moved as opoint, record_insert of what was left, and undoing it.
+#[test]
+fn casify_region_records_and_replaces_as_casefiddle_c() {
+    assert_oracle_contract_matches_interpreter(
+        r##"(let ((result nil))
+         (dolist (text (list "ABC def" (concat "a" (propertize "ßﬁx" 'face 'bold) "ǆ yz") "aıb" "İs"))
+           (dolist (f '(upcase-region downcase-region capitalize-region upcase-initials-region))
+             (with-temp-buffer
+               (buffer-enable-undo) (insert text) (set-buffer-modified-p nil) (setq buffer-undo-list nil)
+               (let ((log nil) (m (copy-marker 3)) (ov (make-overlay 2 4)))
+                 (goto-char 3)
+                 (add-hook 'after-change-functions (lambda (b e l) (push (list b e l) log)) nil t)
+                 (funcall f 1 (point-max))
+                 (push (list (buffer-string) (point) (marker-position m) (overlay-start ov) (overlay-end ov)
+                             (buffer-modified-p)
+                             (mapcar (lambda (e) (if (eq (car-safe e) t) t e)) buffer-undo-list)
+                             (reverse log) (buffer-chars-modified-tick)
+                             (progn (primitive-undo 10 buffer-undo-list) (buffer-string)))
+                       result)))))
+         (nreverse result))"##,
+        r##"(("ABC DEF" 3 3 2 4 t ((1 . 8) ("ABC def" . 1) t) ((5 8 3)) 7 "ABC def") ("abc def" 3 3 2 4 t ((1 . 8) ("ABC def" . 1) t) ((1 4 3)) 7 "ABC def") ("Abc Def" 3 3 2 4 t ((1 . 8) ("ABC def" . 1) t) ((2 6 4)) 7 "ABC def") ("ABC Def" 3 3 2 4 t ((1 . 8) ("ABC def" . 1) t) ((5 6 1)) 7 "ABC def") (#("ASSFIXǄ YZ" 2 6 (face bold)) 4 3 2 4 t ((1 . 11) (#("aßﬁxǆ yz" 1 4 (face bold)) . 1) t) ((1 11 8)) 13 #("aßﬁxǆ yz" 1 4 (face bold))) (#("aßﬁxǆ yz" 1 4 (face bold)) 3 3 2 4 t ((1 . 9) (#("aßﬁxǆ yz" 1 4 (face bold)) . 1) t) nil 9 #("aßﬁxǆ yz" 1 4 (face bold))) (#("Aßﬁxǆ Yz" 1 4 (face bold)) 3 3 2 4 t ((1 . 9) (#("aßﬁxǆ yz" 1 4 (face bold)) . 1) t) ((1 8 7)) 9 #("aßﬁxǆ yz" 1 4 (face bold))) (#("Aßﬁxǆ Yz" 1 4 (face bold)) 3 3 2 4 t ((1 . 9) (#("aßﬁxǆ yz" 1 4 (face bold)) . 1) t) ((1 8 7)) 9 #("aßﬁxǆ yz" 1 4 (face bold))) ("AıB" 3 3 2 4 t ((1 . 4) ("aıb" . 1) t) ((1 4 3)) 5 "aıb") ("aıb" 3 3 2 4 t ((1 . 4) ("aıb" . 1) t) nil 5 "aıb") ("Aıb" 3 3 2 4 t ((1 . 4) ("aıb" . 1) t) ((1 2 1)) 5 "aıb") ("Aıb" 3 3 2 4 t ((1 . 4) ("aıb" . 1) t) ((1 2 1)) 5 "aıb") ("İS" 3 3 2 3 t ((1 . 3) ("İs" . -1) t) ((2 3 1)) 5 "İs") ("i̇s" 4 3 2 3 t ((1 . 4) ("İs" . -1) t) ((1 3 1)) 7 "İs") ("İs" 3 3 2 3 t ((1 . 3) ("İs" . -1) t) nil 5 "İs") ("İs" 3 3 2 3 t ((1 . 3) ("İs" . -1) t) nil 5 "İs"))"##,
+        "casify-region",
+    );
+}
+
+/// An indirect family shares one buffer_text in GNU: casing,
+/// subst-char-in-region, translate-region and transpose-regions in the
+/// base (or in the indirect buffer) change the text, intervals and counts
+/// every member sees; the other members' point and bounds stay at their
+/// character positions, as the markers they are, except that
+/// transpose_markers moves them (unless LEAVE-MARKERS).
+#[test]
+fn edits_in_place_reach_the_whole_indirect_family() {
+    assert_oracle_contract_matches_interpreter(
+        r##"(let ((state (lambda (b) (with-current-buffer b (list (buffer-string) (point) (point-min) (point-max) (buffer-modified-tick) (object-intervals (current-buffer))))))
+             (result nil))
+         (dolist (op (list (lambda () (upcase-region 1 4))
+                           (lambda () (upcase-region 1 12))
+                           (lambda () (subst-char-in-region 1 12 ?d ?Q))
+                           (lambda () (translate-region 1 12 (let ((tbl (make-string 256 0))) (dotimes (i 256) (aset tbl i i)) (aset tbl ?g ?Z) tbl)))
+                           (lambda () (transpose-regions 1 3 5 7))
+                           (lambda () (transpose-regions 1 3 5 7 t))
+                           (lambda () (with-current-buffer " ind" (upcase-region 3 6)))))
+           (with-temp-buffer
+             (insert (concat "abc " (propertize "dßf" 'q 1) " ghi"))
+             (let* ((base (current-buffer)) (ind (make-indirect-buffer base " ind"))
+                    (m (copy-marker 6)) (mi (with-current-buffer ind (copy-marker 9))))
+               (with-current-buffer ind (narrow-to-region 2 11) (goto-char 7))
+               (goto-char 6)
+               (funcall op)
+               (push (list (funcall state base) (funcall state ind) (marker-position m) (marker-position mi)) result)
+               (kill-buffer ind))))
+         (nreverse result))"##,
+        r##"(((#("ABC dßf ghi" 4 7 (q 1)) 6 1 12 7 ((0 4 nil) (4 7 (q 1)) (7 11 nil))) (#("BC dßf gh" 3 6 (q 1)) 7 2 11 7 ((0 4 nil) (4 7 (q 1)) (7 11 nil))) 6 9) ((#("ABC DSSF GHI" 4 8 (q 1)) 6 1 13 11 ((0 4 nil) (4 8 (q 1)) (8 12 nil))) (#("BC DSSF G" 3 7 (q 1)) 7 2 11 11 ((0 4 nil) (4 8 (q 1)) (8 12 nil))) 6 9) ((#("abc Qßf ghi" 4 7 (q 1)) 6 1 12 8 ((0 4 nil) (4 7 (q 1)) (7 11 nil))) (#("bc Qßf gh" 3 6 (q 1)) 7 2 11 8 ((0 4 nil) (4 7 (q 1)) (7 11 nil))) 6 9) ((#("abc dßf Zhi" 4 7 (q 1)) 6 1 12 9 ((0 4 nil) (4 7 (q 1)) (7 11 nil))) (#("bc dßf Zh" 3 6 (q 1)) 7 2 11 9 ((0 4 nil) (4 7 (q 1)) (7 11 nil))) 6 9) ((#("dßc abf ghi" 0 2 (q 1) 6 7 (q 1)) 2 1 12 8 ((0 2 (q 1)) (2 4 nil) (4 6 nil) (6 7 (q 1)) (7 11 nil))) (#("bf gh" 1 2 (q 1)) 7 6 11 8 ((0 2 (q 1)) (2 4 nil) (4 6 nil) (6 7 (q 1)) (7 11 nil))) 2 9) ((#("dßc abf ghi" 0 2 (q 1) 6 7 (q 1)) 6 1 12 8 ((0 2 (q 1)) (2 4 nil) (4 6 nil) (6 7 (q 1)) (7 11 nil))) (#("ßc abf gh" 0 1 (q 1) 5 6 (q 1)) 7 2 11 8 ((0 2 (q 1)) (2 4 nil) (4 6 nil) (6 7 (q 1)) (7 11 nil))) 6 9) ((#("abC Dßf ghi" 4 7 (q 1)) 6 1 12 7 ((0 4 nil) (4 7 (q 1)) (7 11 nil))) (#("bC Dßf gh" 3 6 (q 1)) 7 2 11 7 ((0 4 nil) (4 7 (q 1)) (7 11 nil))) 6 9))"##,
+        "indirect family edits in place",
+    );
+}
+
+/// editfns.c:Ftranslate_region_internal: modify_text over the region
+/// first (the buffer modified, the change counted once), a unibyte
+/// table's byte compared with the character before it stands for a raw
+/// byte (so a Latin-1 character mapped to its own code stays), a
+/// same-size translation recorded and written where it stands with its
+/// properties, a longer one through replace_range (its insertion recorded
+/// before its deletion), in multibyte and unibyte buffers.
+#[test]
+fn translate_region_follows_ftranslate_region_internal() {
+    assert_oracle_contract_matches_interpreter(
+        r##"(let ((result nil))
+         (dolist (unibyte '(nil t))
+           (dolist (tblf (list (lambda () (let ((tbl (make-string 256 0))) (dotimes (i 256) (aset tbl i i)) tbl))
+                               (lambda () (let ((tbl (make-string 256 0))) (dotimes (i 256) (aset tbl i i)) (aset tbl ?b ?B) (aset tbl 223 224) tbl))
+                               (lambda () (let ((tbl (make-string 256 ?x t))) (dotimes (i 256) (aset tbl i i)) (aset tbl ?c ?é) tbl))
+                               (lambda () (let ((ct (make-char-table 'translation-table))) (aset ct ?a ?Z) (aset ct ?ß "ss") ct))))
+             (with-temp-buffer
+               (buffer-enable-undo)
+               (when unibyte (set-buffer-multibyte nil))
+               (insert (concat "abc " (propertize "dßf" 'q 1) " ghi"))
+               (set-buffer-modified-p nil) (setq buffer-undo-list nil)
+               (let ((log nil) (m (copy-marker 6)))
+                 (goto-char 7)
+                 (add-hook 'after-change-functions (lambda (b e l) (push (list b e l) log)) nil t)
+                 (let ((r (translate-region 1 12 (funcall tblf))))
+                   (push (list r (append (buffer-string) nil) (object-intervals (current-buffer)) (point) (marker-position m) (buffer-modified-p) (buffer-chars-modified-tick)
+                               (mapcar (lambda (e) (cond ((eq (car-safe e) t) t) ((stringp (car-safe e)) (cons (append (car e) nil) (cdr e))) (t e))) buffer-undo-list) (reverse log))
+                         result))))))
+         (nreverse result))"##,
+        r##"((0 (97 98 99 32 100 223 102 32 103 104 105) ((0 4 nil) (4 7 (q 1)) (7 11 nil)) 7 6 t 9 (t) nil) (2 (97 66 99 32 100 4194272 102 32 103 104 105) ((0 4 nil) (4 7 (q 1)) (7 11 nil)) 7 6 t 9 ((6 . 7) ((223) . -6) (2 . 3) ((98) . 2) t) ((2 3 1) (6 7 1))) (1 (97 98 233 32 100 223 102 32 103 104 105) ((0 2 nil) (2 3 nil) (3 4 nil) (4 7 (q 1)) (7 11 nil)) 7 6 t 11 (((99) . 3) (4 . 5) t) ((3 4 1))) (1 (90 98 99 32 100 223 102 32 103 104 105) ((0 4 nil) (4 7 (q 1)) (7 11 nil)) 7 6 t 9 ((1 . 2) ((97) . 1) t) ((1 2 1))) (0 (97 98 99 32 100 223 102 32 103 104 105) ((0 4 nil) (4 7 (q 1)) (7 11 nil)) 7 6 t 9 (t) nil) (2 (97 66 99 32 100 224 102 32 103 104 105) ((0 4 nil) (4 7 (q 1)) (7 11 nil)) 7 6 t 9 ((6 . 7) ((223) . -6) (2 . 3) ((98) . 2) t) ((2 3 1) (6 7 1))) (1 (97 98 233 32 100 223 102 32 103 104 105) ((0 4 nil) (4 7 (q 1)) (7 11 nil)) 7 6 t 9 ((3 . 4) ((99) . 3) t) ((3 4 1))) (1 (90 98 99 32 100 223 102 32 103 104 105) ((0 4 nil) (4 7 (q 1)) (7 11 nil)) 7 6 t 9 ((1 . 2) ((97) . 1) t) ((1 2 1))))"##,
+        "translate-region",
     );
 }
 
@@ -32280,5 +32496,29 @@ fn symbol_constant_entry_points_follow_actual_aliases() {
         include_str!("../../../tests/fixtures/symbol-constant-entry-points.el"),
         include_str!("../../../tests/fixtures/symbol-constant-entry-points.expected").trim(),
         "constant and default operations preserve actual objects through alias chains",
+    );
+}
+
+/// Bfollowing_char, Bpreceding_char, Beolp, Beobp, Bbolp and Bbobp in
+/// the bytecode loop read as their C functions do, and as the
+/// interpreted calls: a character after ZV (one beyond Unicode included)
+/// or before BEGV is 0.
+#[test]
+fn point_ops_read_as_editfns_at_the_accessible_ends() {
+    assert_oracle_contract_matches_interpreter(
+        r##"(let ((probe (lambda () (list (point) (following-char) (preceding-char) (eolp) (eobp) (bolp) (bobp))))
+               (compiled (byte-compile (lambda () (list (point) (following-char) (preceding-char) (eolp) (eobp) (bolp) (bobp)))))
+               (result nil))
+           (with-temp-buffer
+             (insert "ab" (string #x110000) "\nλ" (string #x3FFF80) "c")
+             (dolist (bounds '((1 8) (1 3) (4 6) (5 8)))
+               (narrow-to-region (car bounds) (cadr bounds))
+               (dolist (pos (list (point-min) (1+ (point-min)) (point-max)))
+                 (goto-char (min pos (point-max)))
+                 (push (list (funcall probe) (funcall compiled)) result))
+               (widen)))
+           (nreverse result))"##,
+        r##"(((1 97 0 nil nil t t) (1 97 0 nil nil t t)) ((2 98 97 nil nil nil nil) (2 98 97 nil nil nil nil)) ((8 0 99 t t nil nil) (8 0 99 t t nil nil)) ((1 97 0 nil nil t t) (1 97 0 nil nil t t)) ((2 98 97 nil nil nil nil) (2 98 97 nil nil nil nil)) ((3 0 98 t t nil nil) (3 0 98 t t nil nil)) ((4 10 0 t nil t t) (4 10 0 t nil t t)) ((5 955 10 nil nil t nil) (5 955 10 nil nil t nil)) ((6 0 955 t t nil nil) (6 0 955 t t nil nil)) ((5 955 0 nil nil t t) (5 955 0 nil nil t t)) ((6 4194176 955 nil nil nil nil) (6 4194176 955 nil nil nil nil)) ((8 0 99 t t nil nil) (8 0 99 t t nil nil)))"##,
+        "point ops at the accessible ends",
     );
 }

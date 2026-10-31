@@ -16,6 +16,7 @@
 //! sequence in a vector, each by its start, which is all a Lisp program
 //! sees of them.
 
+use crate::lisp::alloc::counters::note_intervals;
 use crate::lisp::types::symbols::SymbolKey;
 use crate::lisp::types::{Kind, LispError, Value};
 
@@ -563,6 +564,7 @@ impl Intervals {
     /// properties.
     pub(crate) fn root(origin: usize, end: usize) -> Self {
         debug_assert!(origin < end);
+        note_intervals(1);
         Self {
             items: Items::one(Interval {
                 start: origin,
@@ -685,6 +687,7 @@ impl Intervals {
     /// returned.
     pub(crate) fn split_right(&mut self, i: usize, offset: usize) -> usize {
         debug_assert!(0 < offset && offset < self.length(i));
+        note_intervals(1);
         let start = self.items[i].start + offset;
         self.items.insert(
             i + 1,
@@ -701,6 +704,7 @@ impl Intervals {
     /// keeps its plist and is the one after.
     pub(crate) fn split_left(&mut self, i: usize, offset: usize) -> usize {
         debug_assert!(0 < offset && offset < self.length(i));
+        note_intervals(1);
         let start = self.items[i].start;
         self.items[i].start = start + offset;
         self.items.insert(
@@ -924,6 +928,8 @@ impl Intervals {
             });
             got += self.length(i);
         }
+        // make_interval for the first, split_interval_right for the rest.
+        note_intervals(slots.len());
         Ok(Some(Self {
             items: Items::from_slots(slots),
             end: length,
@@ -2093,6 +2099,8 @@ pub(crate) fn graft_into(
 /// of SOURCE's intervals (from 0) moved to start at ORIGIN, the plists
 /// shared as reproduce_interval shares them.
 pub(crate) fn reproduce(source: &Intervals, origin: usize) -> Intervals {
+    // reproduce_interval's make_interval for each.
+    note_intervals(source.count());
     Intervals {
         items: source
             .items

@@ -547,7 +547,7 @@ pub(crate) fn delete_region_with_hooks(
     to: usize,
     env: &mut crate::lisp::types::Env,
 ) -> Result<String, LispError> {
-    delete_region_with_hooks_then(interp, from, to, env, |_, _, _| ()).map(|(text, ())| text)
+    delete_region_with_hooks_then(interp, from, to, false, env, |_, _, _| ()).map(|(text, ())| text)
 }
 
 /// `delete-and-extract-region': the deleted text as a string, with its
@@ -563,7 +563,7 @@ pub(crate) fn extract_region_with_hooks(
         return Ok(bytes_to_unibyte_value(&[]));
     }
     let (text, (props, multibyte, extended)) =
-        delete_region_with_hooks_then(interp, from, to, env, |interp, from, to| {
+        delete_region_with_hooks_then(interp, from, to, true, env, |interp, from, to| {
             let buffer = interp.buffer.borrow();
             (
                 buffer.string_intervals(from, to),
@@ -576,10 +576,14 @@ pub(crate) fn extract_region_with_hooks(
     ))
 }
 
+/// RET_STRING is del_range_1's: the caller wants the deleted text, so
+/// its string is made (and `buffer-access-fontify-functions' run over it)
+/// even in a buffer without undo.
 fn delete_region_with_hooks_then<R>(
     interp: &mut Interpreter,
     from: usize,
     to: usize,
+    ret_string: bool,
     env: &mut crate::lisp::types::Env,
     before_delete: impl FnOnce(&Interpreter, usize, usize) -> R,
 ) -> Result<(String, R), LispError> {
@@ -592,10 +596,15 @@ fn delete_region_with_hooks_then<R>(
         return Ok((String::new(), before_delete(interp, from, from)));
     }
     let range_length = to - from;
-    modify_current_buffer(interp, from, to, true, env, |interp, from, _| {
+    modify_current_buffer(interp, from, to, true, env, |interp, from, env| {
         let to = (from + range_length)
             .min(interp.buffer.borrow().point_max())
             .max(from);
+        // del_range_2's make_buffer_string_both, before the text goes.
+        crate::lisp::primitives::textprop::update_deleted_text_properties(
+            interp, from, to, ret_string, env,
+        )?;
+        let to = to.min(interp.buffer.borrow().point_max()).max(from);
         let extra = before_delete(interp, from, to);
         let deleted = interp
             .delete_region_current_buffer(from, to)

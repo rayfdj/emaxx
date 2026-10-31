@@ -7050,15 +7050,9 @@ pub(super) fn direct_preceding_char(
     _args: &[Value],
     _env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
-    let pt = interp.buffer.borrow().point();
-    if pt <= interp.buffer.borrow().point_min() {
-        Ok(Value::Integer(0))
-    } else {
-        match public_buffer_char_code_at(interp, pt - 1) {
-            Some(code) => Ok(Value::Integer(code)),
-            None => Ok(Value::Integer(0)),
-        }
-    }
+    Ok(Value::Integer(
+        crate::lisp::primitives::preceding_char_code(interp),
+    ))
 }
 
 /// The `following-char' primitive, callable directly (a subr's function
@@ -7068,10 +7062,9 @@ pub(super) fn direct_following_char(
     _args: &[Value],
     _env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
-    match public_buffer_char_code_at(interp, interp.buffer.borrow().point()) {
-        Some(code) => Ok(Value::Integer(code)),
-        None => Ok(Value::Integer(0)),
-    }
+    Ok(Value::Integer(
+        crate::lisp::primitives::following_char_code(interp),
+    ))
 }
 
 /// The echo area's Lisp value, a root of every collection (xdisp.c

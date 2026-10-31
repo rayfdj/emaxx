@@ -10000,6 +10000,221 @@ setup_process_coding_systems's check now refuses). A 13-form
   GNU's. Local validation: the grouped gate's 3,349 library tests,
   the seven integration suites, clippy with every target and feature,
   rustfmt and `git diff --check'.
+- **Round 189: `intervals-consed' as make_interval counts, and where the
+  frozen setup ratio comes from.** Since round 172 an object's text
+  properties are allocated intervals, but nothing raised
+  `intervals-consed', which stayed at its initial value. It is now raised
+  where intervals.c calls make_interval: create_root_interval, each
+  split_interval_left and split_interval_right, and copy_intervals and
+  reproduce_tree once for every interval they copy, each with
+  tally_consing of `sizeof (struct interval)' (56 bytes) toward the next
+  collection. The printer's pruned copy of a string whose properties are
+  all removed counts the intervals Fcopy_sequence gives it. record_change
+  (translate-region, subst-char-in-region) and casify_region make the
+  deleted text's string, with its intervals, before record_delete looks
+  at the undo list, as undo.c and casefiddle.c do, so a buffer without
+  undo allocates it too. A battery of 45 text-property operations
+  (propertize, concat, copy-sequence, substring, format, insertion with
+  and without inheritance, deletion, insert-buffer-substring, casing,
+  replace-match, the reader, the printer, string-trim, mapconcat,
+  replace-regexp-in-string, buffer-swap-text, set-buffer-multibyte,
+  subst-char, translate-region, compose-string) gives GNU's
+  `intervals-consed' delta for each, and GNU's string counts for the
+  casing, subst-char and translate cases. The tracked empty
+  src/lisp/primitives.rs.tmp (checkpoint 20p) is removed.
+
+  **The frozen setup ratio measures the checked build.** The frozen run
+  times the `gate' profile (debug assertions and overflow checks on, thin
+  LTO in 16 units). Setting up subr-tests (ert, the runner, the file)
+  runs 2,650 M instructions there, 2,586 M without overflow checks,
+  1,946 M without debug assertions, 1,880 M in the release build and
+  1,767 M in GNU's: the assertions are 0.64 G of the gate's excess, spread
+  over std's precondition checks on the VM loop's unchecked code and
+  stack accesses, the checked-build test that every dereferenced cons is
+  still allocated (0.09 G), and thread-local accessors left out of line;
+  none is a walk over a structure. They are the gate's validation and
+  stay. With the release build that setup takes GNU's wall time, a
+  trivial file's startup is faster than GNU's (34 against 37 ms), and
+  mule-tests, semantic-utest-ia and epg-tests, among the frozen run's
+  largest test-body excesses, run within 5% of GNU's (0.95, 1.01,
+  1.04). Loading twenty libraries the first eww test requires takes 74
+  against 66 ms. eww-tests' first test is 16 against 4 ms in the runner,
+  its later ones at GNU's.
+
+  **Found, not fixed:** transpose-regions moves point (GNU keeps it:
+  `(transpose-regions 1 3 5 7)' with point at 4 leaves 4 in GNU and 7
+  here) and records its change as deletions and insertions with marker
+  adjustments where Ftranspose_regions records record_change entries and
+  the property changes; and make_buffer_string_both's
+  update_buffer_properties runs `buffer-access-fontify-functions' only
+  for buffer-substring, buffer-string and field-string here, where GNU
+  also runs it for the text a deletion (with undo), delete-and-extract-
+  region, casing, record_change, replace_range and erase-buffer take.
+  Local validation: the grouped gate's 3,350 library tests, the
+  seven integration suites, clippy with every target and feature,
+  rustfmt and `git diff --check'.
+- **Round 190: transpose-regions as editfns.c's Ftranspose_regions.**
+  Emaxx deleted both regions and inserted them again: point moved with
+  the insertions (`(transpose-regions 1 3 5 7)' with point at 4 left it
+  at 7, GNU at 4), overlays moved and stretched, markers were set back
+  one by one, and the undo list held deletions, insertions and marker
+  adjustments. Buffer::transpose_regions now follows Ftranspose_regions
+  after its modify_text: the text of [START1, END2) is rearranged where
+  it stands (replace_text_in_place, the side table of characters beyond
+  Unicode with it), with record_change over both regions when they are
+  adjacent, over each when they are equal in bytes and over their whole
+  span otherwise (before modify_text when the second is the shorter, so
+  an unmodified buffer gets the first-change records GNU gives it), each
+  region's intervals and the text between's copied (copy_intervals), the
+  properties cleared over the span from the first region's start to the
+  second's end as the caller gave them (validate_interval_range of
+  STARTR1 and ENDR2: regions given in reverse clear that span, adjacent
+  ones in reverse nothing) or over each given region when equal, and the
+  copies grafted without inheritance where GNU grafts them (for
+  byte-equal regions at GNU's character positions). transpose_markers
+  then moves point and every marker (the mark included) unless
+  LEAVE-MARKERS; overlays stay, as in GNU. A battery of 22 cases (each
+  case in both orders, LEAVE-MARKERS, empty and overlapping regions,
+  narrowing, change hooks, an unmodified buffer, read-only text,
+  multibyte text of equal and unequal bytes, raw bytes, a unibyte
+  buffer, a buffer without undo) gives GNU's text, properties, point,
+  markers, overlay, modified flag, undo list, hook calls and undone text,
+  and three transpositions GNU's `intervals-consed' delta. editfns-tests,
+  simple-tests, undo-tests and subr-tests pass as many tests as GNU's.
+  The interpreter's live_marker_positions_for_buffer, used only by the
+  old transposition, is removed. Local validation: the grouped gate's
+  3,351 library tests, the seven integration suites, clippy with
+  every target and feature, rustfmt and `git diff --check'.
+- **Round 191: casify_region as casefiddle.c's, and
+  `buffer-access-fontify-functions' where make_buffer_string runs it.**
+  A casing of a region that changed nothing left the buffer unmodified
+  with no undo records, where casify_region's modify_text and
+  record_delete mark it modified, count the change and record the region
+  ((1 . 4) ("ABC" . 1) and the first-change record for `(upcase-region 1
+  4)' over "ABC"); and a character cased to another number of characters
+  (ß to SS, ﬁ to FI, İ to i̇) made Emaxx delete the whole region and
+  insert the result, dropping its text properties and moving point,
+  markers and overlays. casify_buffer_region now runs modify_text, then
+  update_buffer_properties and record_delete of the region as
+  make_buffer_string makes it, cases the text, and records the insertion
+  (before the casing in a unibyte buffer, after it with the length it
+  then has in a multibyte one); a character whose casing is another
+  number of characters or of bytes is replaced as replace_range_2
+  replaces it (Buffer::replace_char_unrecorded: markers and overlays at
+  their character positions, the intervals offset there so the
+  properties stay, point moved as a marker and set to casefiddle.c's
+  opoint, the change counted), the others where they stand.
+  `buffer-access-fontify-functions' (editfns.c:update_buffer_properties)
+  ran only for buffer-substring, buffer-string and field-string; it now
+  also runs where GNU's make_buffer_string_both does: over the text a
+  deletion takes when the buffer records undo or the caller wants the
+  text (del_range_2: delete-region, delete-char, erase-buffer,
+  replace-buffer-contents' hunks, zlib-decompress-region;
+  delete-and-extract-region and so kill-region always), over
+  replace-match's and translate-region's replace_range text with undo,
+  over every record_change span whether or not the buffer records undo
+  (casing, translate-region's characters, subst-char-in-region's with
+  undo one by one between the substitutions, transpose-regions' spans
+  before the change hooks when the second region is the shorter), and
+  over minibuffer-contents. Batteries of 34 operations with and without
+  undo (each hook call with the buffer's modified flag) and of 20 casings
+  (four functions over plain, ligature, dotless and dotted i, titlecase
+  and propertied text: text, properties, point, marker, overlay, modified
+  flag, undo list, after-change calls, both modification ticks and the
+  undone text) read as GNU's. casefiddle-tests, editfns-tests,
+  textprop-tests, undo-tests, simple-tests, minibuf-tests and
+  subr-x-tests pass as many tests as GNU's.
+
+  **Found, not fixed (next):** an indirect buffer's text is a copy kept
+  in step by mirroring each insertion, deletion and property change, but
+  the edits made where the text stands (casing, subst-char-in-region,
+  translate-region, transpose-regions) reach only the buffer they were
+  made in, and transpose_markers moves only that buffer's markers, where
+  GNU's family shares one buffer_text, its markers (the other buffers'
+  point, BEGV and ZV among them) and its intervals (#359).
+  Local validation: the grouped gate's 3,353 library tests, the
+  seven integration suites, clippy with every target and feature,
+  rustfmt and `git diff --check'.
+- **Round 192: edits in place reach the whole indirect family, and
+  translate-region as Ftranslate_region_internal.** An indirect buffer's
+  text is a copy kept in step by mirroring each insertion, deletion and
+  property change, but the edits made where the text stands (casing,
+  subst-char-in-region, translate-region's same-size characters,
+  transpose-regions) reached only the buffer they were made in, and
+  their counts were not shared: after `(upcase-region 1 4)' in the base,
+  the indirect buffer still read "bc" and an older modified tick. Each now
+  hands the rest of the family the changed span and the whole intervals
+  (Interpreter::mirror_in_place_edit_to_related_buffers,
+  Buffer::mirror_in_place_edit) and shares the counts; the other
+  members' point, bounds, mark and markers keep their character
+  positions, as the markers they are in GNU do across an edit in place
+  and replace_range_2 (so a casing that lengthens the base's text leaves
+  the indirect buffer's ZV where it was), and transpose-regions moves
+  them by transpose_markers unless LEAVE-MARKERS (an indirect buffer
+  whose BEGV lay in the first region gets it moved into the second).
+  translate-region now runs modify_text over its region before
+  translating (the buffer modified and the change counted once, as GNU
+  counts it, even when nothing translates); compares a unibyte table's
+  byte with the character before it stands for a raw byte (ß mapped to
+  its own code 223 stays, where Emaxx made it raw byte 223 and split its
+  interval); records and writes a same-size translation where it stands,
+  a raw byte or a character beyond Unicode included, its properties kept;
+  and makes a longer one through replace_range_current_buffer, whose
+  insertion is recorded before its deletion and whose markers move as
+  replace_range's do, where a deletion and an insertion recorded them the
+  other way round. A battery of seven edits of a family (the base and an
+  indirect buffer narrowed, with a marker in each: text, point, bounds,
+  modified tick and intervals of both) and of eight translations (four
+  tables over a multibyte and a unibyte buffer: result, codes,
+  intervals, point, marker, modified flag, tick, undo list and
+  after-change calls) reads as GNU's. buffer-tests, editfns-tests,
+  casefiddle-tests, undo-tests, simple-tests, textprop-tests,
+  subr-x-tests and subr-tests pass as many tests as GNU's. Local
+  validation: the grouped gate's 3,355 library tests, the seven
+  integration suites, clippy with every target and feature, rustfmt and
+  `git diff --check'.
+- **Round 193: charset ranges, the text's ends and point ops at GNU's
+  cost.** ucs-normalize-tests took 7.65 s against GNU's 5.91 s (1.29),
+  textsec-tests 1.45 times GNU's, both in execute_charset's walk of a
+  range table and the reads a buffer search makes. execute_charset now
+  walks the table in six-byte chunks, the bounds checked once for the
+  table, as EXTRACT_CHARACTER reads it: rule 2 of part 1 costs 80,900
+  instructions a character against 115,100 (GNU's 84,200), the walk
+  itself 39,600 against 74,100 (GNU's 48,900). A value's pointer is its
+  word less its tag, as lisp.h's XUNTAG subtracts it, which folds into
+  each load's displacement where the mask cost two instructions (nconc's
+  tail walk ten instructions an element where it was twelve). A
+  character or byte position at the text's start or end converts at
+  once, as buf_charpos_to_bytepos's CONSIDER of BEG and Z returns, so a
+  search's snapshot of BEGV and ZV costs nothing for an unnarrowed
+  buffer. An overlay property lookup in a buffer with no overlays
+  returns at once. Bfollowing_char, Bpreceding_char, Beolp, Beobp, Bbolp
+  and Bbobp run in the verified loop and the op arms as their C
+  functions read PT, BEGV, ZV and the text, where they looked their
+  primitive up by name for each op; `following-char' at ZV is now 0
+  before a character beyond Unicode too, where Emaxx returned that
+  character. Buffer::char_at decodes a lone read where it stands (the
+  window of 256 characters it decoded for each miss served scans, but a
+  read at each line's start paid it every few lines): 139 instructions a
+  `following-char' where it was 657. textsec's first link test, which
+  parses the 15,675 lines of publicsuffix.txt, costs 130.0M instructions
+  against 147.6M (GNU's 122.7M). Unloaded, ucs-normalize-tests' bodies
+  take 6.15 s against GNU's 6.01 s (1.02) and textsec-tests' 20.0 ms
+  against 20.2 ms; regex-emacs-tests, search-tests, buffer-tests,
+  editfns-tests, textprop-tests, fns-tests, data-tests, bytecomp-tests,
+  subr-tests, simple-tests, casefiddle-tests, syntax-tests, subr-x-tests
+  and thingatpt-tests pass as many tests as GNU's. Measured, not yet
+  fixed: electric-tests' bodies take 1.25 times GNU's (740 ms against
+  591 ms) at fewer instructions (3.04G against 3.17G), and cachegrind
+  counts 77.8M instruction-cache misses against GNU's 19.9M and 52.7M
+  branch mispredictions against 38.6M over them: run_verified is 38.5 KB
+  of code against exec_byte_code's 12.0 KB (op_in_place another 16.0
+  KB), the text 13.2 MB against 3.4 MB; library loads (vc-git,
+  diff-mode, track-changes and their like) likewise cost fewer
+  instructions than GNU's and more time. Local validation: the
+  grouped gate's 3,356 library tests, the seven integration
+  suites, clippy with every target and feature, rustfmt and `git diff
+  --check'.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -11227,6 +11442,40 @@ frozen (run 41145506830) matched all 7,928 outcomes on its first
 attempt. Setup 78.3 s against 63.8 s (1.226), test bodies 253.7 s
 against 263.2 s (0.964), in all 1.002; undo-tests' bodies 1.14 s against
 0.90 s.
+
+**On `8545d50`** (round 188): full Rust gate passed (run 41148747150);
+frozen (run 41148756713) matched all 7,928 outcomes on its first
+attempt. Setup 47.5 s against 41.5 s (1.145), test bodies 195.2 s
+against 207.9 s (0.939), in all 0.962; undo-tests' bodies 0.59 s against
+0.47 s. PR #116 took rounds 181 to 188 into main as `bc45e15`.
+
+**On `5ba7ec7`** (round 189): full Rust gate passed (run 41153636938);
+frozen (run 41153638950) matched all 7,928 outcomes on its first
+attempt. Setup 82.5 s against 68.5 s (1.205), test bodies 259.1 s
+against 271.5 s (0.955), in all 0.994; undo-tests' bodies 1.12 s against
+0.93 s.
+
+**On `b2c2bb3`** (round 190): full Rust gate passed (run 41156316286);
+frozen (run 41156318687) matched all 7,928 outcomes on its first
+attempt. Setup 82.0 s against 67.8 s (1.209), test bodies 258.7 s
+against 268.8 s (0.962), in all 0.998; undo-tests' bodies 1.14 s against
+0.91 s.
+
+**On `dda5af3`** (round 191): full Rust gate passed (run 41159069975).
+Frozen (run 41159072238) matched all 7,928 outcomes on its second
+attempt; the first matched 7,927, the other,
+`eglot-test-rust-completion-exit-function', ending in GNU's run with a
+`jsonrpc-error' from the language server while Emaxx's passed. The
+second attempt had setup 75.1 s against 62.0 s (1.212), test bodies
+248.9 s against 258.4 s (0.963), in all 1.000; undo-tests' bodies 1.11 s
+against 0.86 s (the first: 80.9 s against 67.1 s, 257.1 s against
+271.3 s, 0.985).
+
+**On `8db3ff1`** (round 192): full Rust gate passed (run 41163446783);
+frozen (run 41163448928) matched all 7,928 outcomes on its first
+attempt. Setup 66.7 s against 58.0 s (1.150), test bodies 228.4 s
+against 245.2 s (0.931), in all 0.980; undo-tests' bodies 0.82 s against
+0.65 s.
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'
