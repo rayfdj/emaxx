@@ -47,7 +47,7 @@ pub(crate) mod terminal;
 mod thread_context;
 pub(crate) use dump_roots::{FIELDS_NOT_CARRIED, ROOTS_RESET_AFTER_LOAD, TRANSIENT_ROOTS};
 pub(crate) use image_install::PdumperLoadRecord;
-pub(crate) use local_cells::{LoadedBindings, LocalCells};
+pub(crate) use local_cells::{FIXED_SLOTS, LoadedBindings, LocalCells};
 pub(crate) use macros::LispReadContext;
 mod symbol_cells;
 pub(crate) use symbol_cells::{SymbolCellSnapshot, SymbolCells};
@@ -1827,13 +1827,6 @@ pub(crate) struct BatchErrorBacktrace {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum BufferDisposition {
-    Default,
-    Preserve,
-    Silently,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
 enum ThreadBlocker {
     Mutex(u64),
     ConditionVariable(u64),
@@ -1853,10 +1846,9 @@ enum ThreadStatus {
 #[derive(Clone, Debug)]
 struct ThreadState {
     record_id: u64,
-    name: Option<String>,
+    /// thread.h's name: nil or the string Fmake_thread was given.
+    name: Value,
     buffer_id: u64,
-    buffer_disposition: BufferDisposition,
-    buffer_killed: bool,
     status: ThreadStatus,
     entry: Option<Value>,
     outcome: Option<Value>,
@@ -1872,7 +1864,7 @@ struct ThreadState {
 #[derive(Clone, Debug)]
 struct MutexState {
     record_id: u64,
-    _name: Option<String>,
+    name: Value,
     owner: Option<u64>,
     recursion_depth: usize,
 }
@@ -1881,7 +1873,7 @@ struct MutexState {
 struct ConditionVariableState {
     record_id: u64,
     mutex_id: u64,
-    name: Option<String>,
+    name: Value,
 }
 
 #[derive(Clone, Debug)]
@@ -2523,6 +2515,7 @@ impl Clone for ProcessState {
             record_id: self.record_id,
             kind: self.kind,
             buffer_id: self.buffer_id,
+            buffer: self.buffer,
             mark_marker_id: self.mark_marker_id,
             status: self.status.clone(),
             filter: self.filter,
@@ -2573,6 +2566,9 @@ struct ProcessState {
     record_id: u64,
     kind: ProcessKind,
     buffer_id: Option<u64>,
+    /// process.c's buffer slot: nil or the buffer given, which stays the
+    /// process's buffer when it is killed.
+    buffer: Value,
     mark_marker_id: crate::lisp::types::MarkerRef,
     status: ProcessStatus,
     filter: Option<Value>,
@@ -2876,6 +2872,13 @@ pub(crate) struct FrameState {
     pub(crate) after_make_frame: bool,
     pub(crate) pointer_invisible: bool,
     pub(crate) was_invisible: bool,
+    /// frame.h's buffer_list and buried_buffer_list, by buffer id: the
+    /// buffers selected in the frame, most recent first (record_buffer),
+    /// and those buried from it, most recent first
+    /// (Fbury_buffer_internal). A killed buffer leaves both
+    /// (frames_discard_buffer).
+    pub(crate) buffer_list: Vec<u64>,
+    pub(crate) buried_buffer_list: Vec<u64>,
 }
 
 impl FrameState {
@@ -3889,6 +3892,7 @@ impl LispReachability {
                 if record.kind == RecordKind::Thread
                     && let Some(thread) = interp.find_thread_state(record.id)
                 {
+                    self.enqueue(&thread.name);
                     for value in thread.entry.iter() {
                         self.enqueue(value);
                     }
@@ -3897,6 +3901,14 @@ impl LispReachability {
                     for value in thread.outcome.iter() {
                         self.enqueue(value);
                     }
+                }
+                // A mutex's and a condition variable's name are theirs too.
+                match record.kind {
+                    RecordKind::Mutex => self.enqueue(&interp.mutex_name(record.id)),
+                    RecordKind::ConditionVariable => {
+                        self.enqueue(&interp.condition_variable_name(record.id));
+                    }
+                    _ => {}
                 }
             }
             Kind::ReaderForm(form) => {
@@ -4259,6 +4271,8 @@ impl Interpreter {
                 after_make_frame: true,
                 pointer_invisible: false,
                 was_invisible: false,
+                buffer_list: Vec::new(),
+                buried_buffer_list: Vec::new(),
             },
         )
     }
@@ -4671,6 +4685,7 @@ impl Interpreter {
         }
         for process in &self.process_states {
             mark(&self.record_value(process.record_id));
+            mark(&process.buffer);
             // process.c's Lisp_Process.mark slot: the process mark marker.
             mark(&Value::Marker(process.mark_marker_id));
             for value in [
@@ -5139,6 +5154,7 @@ impl Interpreter {
                     unreachable!()
                 };
                 process.mark_marker_id = marker;
+                process.buffer = c.copy(&process.buffer);
 
                 if let Some(filter) = &process.filter {
                     process.filter = Some(c.copy(filter));
@@ -6083,6 +6099,10 @@ impl Interpreter {
                 after_make_frame: true,
                 pointer_invisible: false,
                 was_invisible: false,
+                // frame.c:make_frame: `list1 (buf)', the buffer its root
+                // window shows (*scratch*, buffer 0).
+                buffer_list: vec![0],
+                buried_buffer_list: Vec::new(),
             },
         );
         initial_terminal.borrow_mut().top_frame = Some(initial_frame);
@@ -6096,7 +6116,6 @@ impl Interpreter {
             globals: SymbolCells::from_bindings(vec![
                 ("main-thread".into(), Value::Record(main_thread)),
                 ("obarray".into(), Value::Record(standard_obarray)),
-                ("cl--proclaims-deferred".into(), Value::Nil),
                 ("cl-old-struct-compat-mode".into(), Value::Nil),
                 // GNU frame.c defines this native variable before frame.el
                 // and any dumped/preloaded Lisp run.
@@ -6181,32 +6200,9 @@ impl Interpreter {
                     Value::list([Value::symbol("internal-default-signal-process")]),
                 ),
                 ("system-uses-terminfo".into(), Value::T),
-                ("warning-fill-column".into(), Value::Integer(78)),
                 ("warning-fill-prefix".into(), Value::Nil),
-                (
-                    "warning-levels".into(),
-                    Value::list([
-                        Value::list([
-                            Value::symbol(":emergency"),
-                            Value::String("Emergency%s: ".into()),
-                            Value::symbol("ding"),
-                        ]),
-                        Value::list([Value::symbol(":error"), Value::String("Error%s: ".into())]),
-                        Value::list([
-                            Value::symbol(":warning"),
-                            Value::String("Warning%s: ".into()),
-                        ]),
-                        Value::list([Value::symbol(":debug"), Value::String("Debug%s: ".into())]),
-                    ]),
-                ),
-                ("warning-minimum-level".into(), Value::symbol(":warning")),
-                (
-                    "warning-minimum-log-level".into(),
-                    Value::symbol(":warning"),
-                ),
                 ("warning-prefix-function".into(), Value::Nil),
                 ("warning-series".into(), Value::Nil),
-                ("warning-suppress-log-types".into(), Value::Nil),
                 ("warning-suppress-types".into(), Value::Nil),
                 ("warning-type-format".into(), Value::String(" (%s)".into())),
                 ("lread--unescaped-character-literals".into(), Value::Nil),
@@ -6289,7 +6285,6 @@ impl Interpreter {
                 "command-line-args".into(),
                 "command-line-args-left".into(),
                 "command-switch-alist".into(),
-                "cl--proclaims-deferred".into(),
                 "current-load-list".into(),
                 "load-history".into(),
                 "default-frame-alist".into(),
@@ -6335,7 +6330,6 @@ impl Interpreter {
                 "warning-fill-prefix".into(),
                 "warning-prefix-function".into(),
                 "warning-series".into(),
-                "warning-suppress-log-types".into(),
                 "warning-suppress-types".into(),
                 "warning-type-format".into(),
                 "window-system".into(),
@@ -6548,10 +6542,8 @@ impl Interpreter {
             lambda_capture_overrides: Vec::new(),
             thread_states: vec![ThreadState {
                 record_id: main_thread_id,
-                name: None,
+                name: Value::Nil,
                 buffer_id: 0,
-                buffer_disposition: BufferDisposition::Default,
-                buffer_killed: false,
                 status: ThreadStatus::Runnable,
                 entry: None,
                 signal_condition: Value::Nil,

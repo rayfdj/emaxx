@@ -42,10 +42,14 @@ fn comparison_range<'a>(
     start: &Value,
     end: &Value,
 ) -> Result<(std::cell::Ref<'a, crate::buffer::Buffer>, usize, usize), LispError> {
+    // Fget_buffer and nsberror, then the buffer's liveness.
     let buffer_id = if buffer.is_nil() {
         interp.current_buffer_id()
     } else {
-        interp.resolve_buffer_id(buffer)?
+        let buffer = interp.get_buffer_or_error(buffer)?;
+        interp
+            .live_buffer_id(buffer)
+            .ok_or_else(|| LispError::Signal("Selecting deleted buffer".into()))?
     };
     let buffer = interp
         .get_buffer_by_id(buffer_id)
@@ -201,34 +205,25 @@ define_dispatch!(
             "current-buffer" => Ok(Value::Buffer(interp.buffer)),
             "get-buffer" => {
                 need_args(name, args, 1)?;
-                match args[0].kind() {
-                    Kind::Buffer(_) => Ok(args[0]),
-                    _ => match with_string_text(&args[0], |name| interp.find_buffer_id(name)) {
-                        Some(Some(id)) => Ok(interp.buffer_value(id).expect("live buffer object")),
-                        Some(None) => Ok(Value::Nil),
-                        None => Err(LispError::TypeError(
-                            "string-or-buffer".into(),
-                            args[0].type_name(),
-                        )),
-                    },
-                }
+                Ok(interp
+                    .get_buffer(&args[0])?
+                    .map_or(Value::Nil, Value::Buffer))
             }
             "get-buffer-create" => {
                 need_args(name, args, 1)?;
                 let inhibit_hooks = args.get(1).is_some_and(|value| value.is_truthy());
                 // buffer.c:Fget_buffer_create returns buffer objects as given,
                 // even when renamed or dead; only strings select by name.
-                if matches!(args[0].kind(), Kind::Buffer(_)) {
-                    return Ok(args[0]);
+                if let Some(buffer) = interp.get_buffer(&args[0])? {
+                    return Ok(Value::Buffer(buffer));
                 }
-                let found = with_string_text(&args[0], |name| interp.find_buffer_id(name))
-                    .ok_or_else(|| {
-                        LispError::TypeError("string-or-buffer".into(), args[0].type_name())
-                    })?;
-                if let Some(id) = found {
-                    Ok(interp.buffer_value(id).expect("live buffer object"))
-                } else {
+                {
                     let buf_name = string_text(&args[0])?;
+                    if buf_name.is_empty() {
+                        return Err(LispError::Signal(
+                            "Empty string for buffer name is not allowed".into(),
+                        ));
+                    }
                     let (id, _) = interp.create_buffer(&buf_name);
                     interp.set_buffer_hooks_inhibited(id, inhibit_hooks);
                     let buffer = interp.buffer_value(id).expect("new buffer object");
@@ -288,8 +283,29 @@ define_dispatch!(
                 if args.len() < 2 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let base_id = interp.resolve_buffer_id(&args[0])?;
+                // buffer.c:Fmake_indirect_buffer: NAME a string no buffer
+                // has, BASE-BUFFER through Fget_buffer and live, NAME not
+                // empty.
                 let new_name = string_text(&args[1])?;
+                if interp.find_buffer_id(&new_name).is_some() {
+                    return Err(LispError::Signal(format!(
+                        "Buffer name `{new_name}' is in use"
+                    )));
+                }
+                let base = interp.get_buffer(&args[0])?.ok_or_else(|| {
+                    LispError::Signal(format!(
+                        "No such buffer: `{}'",
+                        string_text(&args[0]).unwrap_or_default()
+                    ))
+                })?;
+                let base_id = interp
+                    .live_buffer_id(base)
+                    .ok_or_else(|| LispError::Signal("Base buffer has been killed".into()))?;
+                if new_name.is_empty() {
+                    return Err(LispError::Signal(
+                        "Empty string for buffer name is not allowed".into(),
+                    ));
+                }
                 let clone = args.get(2).is_some_and(|value| value.is_truthy());
                 let inhibit_hooks = args.get(3).is_some_and(|value| value.is_truthy());
                 let (new_id, _) = interp.create_buffer(&new_name);
@@ -349,6 +365,8 @@ define_dispatch!(
                     }
                 }
                 interp.register_indirect_buffer(new_id, base_id);
+                // The base's text, and so its modification counts.
+                interp.share_text_counters(base_id);
                 if clone {
                     interp.clone_buffer_local_state(base_id, new_id);
                     // The clone visits no file, has its own display count,
@@ -464,27 +482,22 @@ define_dispatch!(
                 Ok(Value::String(interp.buffer.borrow().name.clone().into()))
             }
             "other-buffer" => {
-                let exclude = if !args.is_empty() {
-                    match args[0].kind() {
-                        Kind::Buffer(buffer) => buffer.borrow().name.to_string(),
-                        _ => interp.buffer.borrow().name.clone(),
-                    }
-                } else {
-                    interp.buffer.borrow().name.clone()
-                };
-                for (id, buf_name) in &interp.buffer_list {
-                    if *buf_name != exclude && !buf_name.starts_with(' ') {
-                        return Ok(interp.buffer_value(*id).expect("live buffer object"));
-                    }
-                }
-                Ok(interp.buffer_value(0).expect("live buffer object"))
+                need_arg_range(name, args, 0, 3)?;
+                let frame = super::frames::decode_live_frame(interp, args.get(2), true)?;
+                other_buffer(
+                    interp,
+                    args.first().copied().unwrap_or(Value::Nil),
+                    args.get(1).is_some_and(Value::is_truthy),
+                    frame,
+                    env,
+                )
             }
             "buffer-base-buffer" => {
                 // buffer.c Fbuffer_base_buffer: a nil BUFFER means the
                 // current buffer, exactly like an omitted argument.
-                let buffer_id = match args.first().map(|v| v.kind()) {
-                    Some(Kind::Nil) | None => interp.current_buffer_id(),
-                    Some(buffer) => interp.resolve_buffer_id(&buffer.value())?,
+                let buffer = interp.decode_buffer(args.first())?;
+                let Some(buffer_id) = interp.live_buffer_id(buffer) else {
+                    return Ok(Value::Nil);
                 };
                 Ok(interp
                     .buffer_base_id(buffer_id)
@@ -497,7 +510,12 @@ define_dispatch!(
             }
             "buffer-swap-text" => {
                 need_args(name, args, 1)?;
-                let other_id = interp.resolve_buffer_id(&args[0])?;
+                let Kind::Buffer(other) = args[0].kind() else {
+                    return Err(LispError::WrongTypeArgument("bufferp".into(), args[0]));
+                };
+                let other_id = interp
+                    .live_buffer_id(other)
+                    .ok_or_else(|| LispError::Signal("Cannot swap a dead buffer's text".into()))?;
                 let current_id = interp.current_buffer_id();
                 interp.swap_buffer_text_state(current_id, other_id)?;
                 Ok(Value::Nil)
@@ -505,7 +523,36 @@ define_dispatch!(
             "buffer-local-value" => {
                 need_args(name, args, 2)?;
                 let symbol = interp.resolve_variable_name(args[0].as_symbol()?)?;
-                let buffer_id = interp.resolve_buffer_id(&args[1])?;
+                // data.c:buffer_local_value: CHECK_BUFFER; a killed buffer
+                // has no locals left and an empty history.
+                let Kind::Buffer(buffer) = args[1].kind() else {
+                    return Err(LispError::WrongTypeArgument("bufferp".into(), args[1]));
+                };
+                if interp.live_buffer_id(buffer).is_none() {
+                    let killed = interp
+                        .killed_buffer_local_slots(&buffer.borrow())
+                        .into_iter()
+                        .find(|(name, _)| *name == symbol.as_str())
+                        .map(|(_, value)| value);
+                    let value = if symbol == "buffer-undo-list" {
+                        Some(crate::lisp::primitives::buffer_undo_list_value(
+                            &buffer.borrow(),
+                        ))
+                    } else if let Some(value) = killed {
+                        (!matches!(value.kind(), Kind::Unbound)).then_some(value)
+                    } else {
+                        interp
+                            .default_value(&symbol)
+                            .or_else(|| interp.symbol_value_cell(&symbol).ok())
+                    };
+                    return value.ok_or_else(|| {
+                        LispError::SignalValue(Value::list([
+                            Value::symbol("void-variable"),
+                            args[0],
+                        ]))
+                    });
+                }
+                let buffer_id = buffer.id;
                 // data.c:buffer_local_value: BUFFER's own alist cell if it
                 // has one (a void cell is void), else the default; another
                 // buffer's local value must not leak through (erc-open's
@@ -535,10 +582,10 @@ define_dispatch!(
                 })
             }
             "buffer-local-variables" => {
-                let buffer_id = match args.first().filter(|value| !value.is_nil()) {
-                    Some(value) => interp.resolve_buffer_id(value)?,
-                    None => interp.current_buffer_id(),
-                };
+                // buffer.c:decode_buffer; a killed buffer has its
+                // always-local slots and an empty history left.
+                let buffer = interp.decode_buffer(args.first())?;
+                let buffer_id = buffer.id;
                 // buffer.c:Fbuffer_local_variables: `buffer-undo-list'
                 // first, then the DEFVAR_PER_BUFFER slots local in BUFFER
                 // (every index -1 one) in struct buffer's order reversed,
@@ -552,16 +599,20 @@ define_dispatch!(
                         Value::cons(Value::Symbol(name.into()), value)
                     }
                 };
-                let undo_list = {
-                    let buffer = interp.get_buffer_by_id(buffer_id).ok_or_else(|| {
-                        LispError::Signal(format!("No buffer with id {}", buffer_id))
-                    })?;
-                    buffer_undo_list_value(&buffer)
-                };
+                let undo_list = buffer_undo_list_value(&buffer.borrow());
                 let mut vars = vec![Value::cons(
                     Value::Symbol("buffer-undo-list".into()),
                     undo_list,
                 )];
+                if interp.live_buffer_id(buffer).is_none() {
+                    vars.extend(
+                        interp
+                            .killed_buffer_local_slots(&buffer.borrow())
+                            .into_iter()
+                            .map(|(name, value)| entry(name, value)),
+                    );
+                    return Ok(Value::list(vars));
+                }
                 // FOR_EACH_PER_BUFFER_OBJECT_AT reads each slot, whatever
                 // its symbol's redirect: a variable makunbound leaves plain
                 // keeps its slot and flag, and an ordinary local made for
@@ -669,12 +720,27 @@ define_dispatch!(
                 Ok(Value::Symbol(symbol))
             }
             "buffer-list" => {
-                let bufs: Vec<Value> = interp
-                    .buffer_list
-                    .iter()
-                    .map(|(id, n)| interp.buffer_value(*id).expect("live buffer object"))
-                    .collect();
-                Ok(Value::list(bufs))
+                need_arg_range(name, args, 0, 1)?;
+                // buffer.c:Fbuffer_list: for a FRAME, its own buffers first,
+                // then the others, then its buried buffers, least recently
+                // buried first.
+                let general = interp.buffer_list.iter().map(|(id, _)| *id);
+                let ids: Vec<u64> = match args.first().map(|frame| frame.kind()) {
+                    Some(Kind::Frame(frame)) => {
+                        let frame = frame.borrow();
+                        let mut ids = frame.buffer_list.clone();
+                        ids.extend(general.filter(|id| {
+                            !frame.buffer_list.contains(id)
+                                && !frame.buried_buffer_list.contains(id)
+                        }));
+                        ids.extend(frame.buried_buffer_list.iter().rev());
+                        ids
+                    }
+                    _ => general.collect(),
+                };
+                Ok(Value::list(
+                    ids.into_iter().filter_map(|id| interp.buffer_value(id)),
+                ))
             }
             "add-variable-watcher" => {
                 need_args(name, args, 2)?;
@@ -1926,4 +1992,68 @@ fn iso_final_chars_in_use(
         }
     }
     Ok(taken)
+}
+
+/// buffer.c:Fother_buffer: the most recently selected buffer other than
+/// BUFFER (when BUFFER is a buffer), live and not hidden
+/// (candidate_buffer), that FRAME's buffer predicate accepts, among
+/// FRAME's buffers and then all of them; one no window shows unless
+/// VISIBLE_OK, else the first one shown; else *scratch*, made when there
+/// is none.
+pub(crate) fn other_buffer(
+    interp: &mut Interpreter,
+    buffer: Value,
+    visible_ok: bool,
+    frame: crate::lisp::types::FrameRef,
+    env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    let predicate = super::frames::frame_parameter_value(interp, frame, "buffer-predicate");
+    let excluded = match buffer.kind() {
+        Kind::Buffer(buffer) => Some(buffer.id),
+        _ => None,
+    };
+    let candidates: Vec<u64> = frame
+        .borrow()
+        .buffer_list
+        .iter()
+        .copied()
+        .chain(interp.buffer_list.iter().map(|(id, _)| *id))
+        .collect();
+    let mut not_so_good = None;
+    for id in candidates {
+        // The predicate may have killed or renamed a buffer.
+        let hidden = match interp.buffer_list.iter().find(|(other, _)| *other == id) {
+            Some((_, name)) => name.starts_with(' '),
+            None => true,
+        };
+        if Some(id) == excluded || hidden {
+            continue;
+        }
+        let candidate = interp.buffer_value(id).expect("live buffer object");
+        if !predicate.is_nil()
+            && call_function_value(interp, &predicate, &[candidate], env)?.is_nil()
+        {
+            continue;
+        }
+        if visible_ok
+            || super::display::buffer_window(interp, id, &Value::symbol("visible")).is_none()
+        {
+            return Ok(candidate);
+        }
+        not_so_good.get_or_insert(candidate);
+    }
+    if let Some(candidate) = not_so_good {
+        return Ok(candidate);
+    }
+    if let Some(id) = interp.find_buffer_id("*scratch*") {
+        return Ok(interp.buffer_value(id).expect("live buffer object"));
+    }
+    let scratch = super::call(
+        interp,
+        "get-buffer-create",
+        &[Value::string("*scratch*"), Value::Nil],
+        env,
+    )?;
+    super::call(interp, "set-buffer-major-mode", &[scratch], env)?;
+    Ok(scratch)
 }

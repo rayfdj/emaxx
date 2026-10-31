@@ -67,17 +67,13 @@ fn default_frame_parameter(
     id: crate::lisp::types::FrameRef,
     parameter: &str,
 ) -> Option<Value> {
+    let buffers =
+        |ids: &[u64]| Value::list(ids.iter().filter_map(|buffer| interp.buffer_value(*buffer)));
     Some(match parameter {
-        "buried-buffer-list"
-        | "unsplittable"
-        | "scroll-bar-background"
-        | "scroll-bar-foreground" => Value::Nil,
-        "buffer-list" => Value::list(
-            interp
-                .buffer_list
-                .iter()
-                .map(|(id, _)| interp.buffer_value(*id).expect("live buffer object")),
-        ),
+        "unsplittable" | "scroll-bar-background" | "scroll-bar-foreground" => Value::Nil,
+        // frame.c:Fframe_parameters' f->buffer_list and buried_buffer_list.
+        "buffer-list" => buffers(&id.borrow().buffer_list),
+        "buried-buffer-list" => buffers(&id.borrow().buried_buffer_list),
         "modeline" | "minibuffer" => Value::T,
         "name" => id.name.get(),
         "font" => Value::string("tty"),
@@ -179,6 +175,27 @@ fn store_frame_parameter(
     if matches!(parameter.as_str(), "width" | "height") {
         // GNU's live TTY frame ignores width/height frame-parameter changes;
         // the native set-frame-{width,height,size} operations own geometry.
+        return;
+    }
+    if matches!(parameter.as_str(), "buffer-list" | "buried-buffer-list") {
+        // frame.c:store_frame_param: the buffer lists are kept apart from
+        // the alist, each of the live buffers in VALUE, in its order.
+        let mut ids = Vec::new();
+        let mut tail = value;
+        while let Some((buffer, rest)) = tail.cons_values() {
+            if let Kind::Buffer(buffer) = buffer.kind()
+                && interp.has_buffer_id(buffer.id)
+            {
+                ids.push(buffer.id);
+            }
+            tail = rest;
+        }
+        let mut frame = id.borrow_mut();
+        if parameter == "buffer-list" {
+            frame.buffer_list = ids;
+        } else {
+            frame.buried_buffer_list = ids;
+        }
         return;
     }
     if parameter == "tty-color-mode" {

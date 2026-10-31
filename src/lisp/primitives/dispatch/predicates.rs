@@ -455,11 +455,8 @@ define_dispatch!(
                 need_arg_range(name, args, 1, 2)?;
                 let symbol = interp
                     .resolve_variable_symbol(&checked_symbol_identity(interp, &args[0], env)?)?;
-                let buffer_id = if let Some(buffer) = args.get(1).filter(|value| !value.is_nil()) {
-                    interp.resolve_buffer_id(buffer)?
-                } else {
-                    interp.current_buffer_id()
-                };
+                // buffer.c:decode_buffer: a killed buffer keeps no alist.
+                let buffer_id = interp.decode_buffer(args.get(1))?.id;
                 // data.c:Flocal_variable_p: an alist cell, bound or void,
                 // or a per-buffer slot that is local in every buffer.
                 Ok(
@@ -476,15 +473,21 @@ define_dispatch!(
                 need_arg_range(name, args, 1, 2)?;
                 let symbol = interp
                     .resolve_variable_symbol(&checked_symbol_identity(interp, &args[0], env)?)?;
-                let buffer_id = if let Some(buffer) = args.get(1).filter(|value| !value.is_nil()) {
-                    interp.resolve_buffer_id(buffer)?
-                } else {
-                    interp.current_buffer_id()
-                };
+                // data.c:Flocal_variable_if_set_p: a variable local when
+                // set, or a per-buffer slot, is t and a plain one nil,
+                // whatever BUFFER is; only a localized one asks
+                // Flocal_variable_p.
+                if interp.is_auto_buffer_local_symbol(&symbol)
+                    || interp.is_per_buffer_symbol(&symbol)
+                {
+                    return Ok(Value::T);
+                }
+                if !interp.is_localized_symbol(&symbol) {
+                    return Ok(Value::Nil);
+                }
+                let buffer_id = interp.decode_buffer(args.get(1))?.id;
                 Ok(
-                    if interp.has_buffer_local_binding_symbol(buffer_id, &symbol)
-                        || interp.is_auto_buffer_local_symbol(&symbol)
-                    {
+                    if interp.has_buffer_local_binding_symbol(buffer_id, &symbol) {
                         Value::T
                     } else {
                         Value::Nil
@@ -636,13 +639,18 @@ define_dispatch!(
                 if args.len() > 2 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
+                // minibuf.c:Fminibufferp: a string through Fget_buffer, nil
+                // for no such buffer, else CHECK_BUFFER; a killed buffer is
+                // in no minibuffer list.
                 let buffer_id = match args.first().map(|v| v.kind()) {
                     None | Some(Kind::Nil) => Some(interp.current_buffer_id()),
-                    Some(value) if string_like(&value.value()).is_some() => {
-                        string_like(&value.value())
-                            .and_then(|name| interp.find_buffer(&name.text).map(|(id, _)| id))
+                    Some(Kind::Buffer(buffer)) => interp.live_buffer_id(buffer),
+                    Some(Kind::StringObject(_)) => interp
+                        .get_buffer(&args[0])?
+                        .and_then(|buffer| interp.live_buffer_id(buffer)),
+                    Some(_) => {
+                        return Err(LispError::WrongTypeArgument("bufferp".into(), args[0]));
                     }
-                    Some(value) => Some(interp.resolve_buffer_id(&value.value())?),
                 };
                 let is_minibuffer = buffer_id
                     .and_then(|buffer_id| interp.get_buffer_by_id(buffer_id))

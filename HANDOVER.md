@@ -9558,6 +9558,448 @@ setup_process_coding_systems's check now refuses). A 13-form
   Local validation: the grouped gate's 3,341 library tests, the
   seven integration suites, clippy with every target and feature,
   rustfmt and `git diff --check'.
+- **Round 181: native code's call of a subr with no word-level path holds
+  nothing across the subr.** `invoke_other_subr', which native code
+  reaches through the freloc table for every subr without a word-level
+  entry, ran inside `with_active', whose closure kept the active call's
+  pointers in saved registers across the subr: each call pushed and
+  popped them and brought the handlers up to date through the general
+  path. The usual call -- the handlers already current, a direct entry
+  taking this many arguments -- now reads the active call once and calls
+  the entry with nothing else live, as native code's own call through
+  the freloc table does; a signal finds the active call again
+  (`remember_active_helper_error'), and any other case is the old body,
+  out of line. `NativeSubr::call' takes the same arity test
+  (`direct_admitting'). Undo runs 1,451,800 instructions a unit against
+  1,464,100, `invoke_other_subr''s own 27,100 -> 16,100.
+  Undo's code footprint against GNU's, from callgrind's cache
+  simulation of the profile-guided build: 60,900 distinct instructions
+  run at least once a unit against GNU's 28,500, on 5,743 code lines
+  against 3,016 (76% of the lines' bytes run, against 61%: the lines are
+  fuller, there are more of them), and 39,100 instruction-cache misses
+  a unit against 20,700. Half the excess is the byte-code loop and its
+  helpers (10,500 misses against exec_byte_code's 1,650; the loop runs
+  375 lines to GNU's 143); then the evaluator's methods (9,200) and the
+  primitives (8,600). Bytecode calls is at GNU's cost in the same
+  simulation (440 instructions an iteration against 468, ten indirect
+  branches mispredicted against nine, no cache misses in either).
+  Tried and not kept: Bcall's subr, native and full paths in one copy
+  after the loop's match, as exec_byte_code's `dofuncall', the closure
+  entry left in each count's arm. The loop's lines 363 -> 326 and undo's
+  instruction-cache misses 54,300 -> 52,800 a unit in the plain build,
+  but 17,000 more instructions (1,451,800 -> 1,468,700), the count no
+  longer a constant in the call's path; the simulated cycles fell under
+  one per cent.
+  A profile-guided build without the hot call-site inlining boost
+  (`-hot-callsite-threshold=225', the round 180 profile) ran undo's
+  same footprint (5,667 lines, 38,900 misses), so that inlining is not
+  where the lines come from either. Local validation: the grouped
+  gate's 3,341 library tests, the seven integration suites,
+  clippy with every target and feature, rustfmt and `git diff --check'.
+- **Round 182: kill-buffer as Fkill_buffer, other-buffer as Fother_buffer,
+  and a buffer's always-local slots made with it.** Emaxx's `kill-buffer'
+  went from its hooks straight to the teardown, which showed the first
+  unhidden buffer of the list in each window that had shown the killed
+  one. GNU's then does the rest of Fkill_buffer: a buffer the hooks
+  killed counts as killed; the minibuffer's buffer is kept; a base
+  buffer's indirect buffers are killed first; window.el's
+  `replace-buffer-in-windows' runs (each window showing the buffer
+  switches to its previous buffer, and every window's previous and next
+  buffers lose it); another buffer is made current with `other-buffer',
+  the buffer kept when none can be (the last *scratch*); and
+  kill_buffer_processes deletes the buffer's connections and hangs up its
+  subprocesses. Each was missing, as GNU showed against the round 181
+  build: an advice on `replace-buffer-in-windows' heard 3 calls against
+  0, a killed buffer stayed in `window-prev-buffers', a killed base's
+  indirect buffer lived on, a pipe process read `open' rather than
+  `closed' and a subprocess kept running, and killing the last *scratch*
+  made another rather than refusing. `other-buffer' excluded by name,
+  ignored VISIBLE-OK and the frame, never preferred a buffer no window
+  shows, and fell back to buffer 0; it is Fother_buffer now
+  (candidate_buffer by object, the frame's `buffer-predicate', a shown
+  buffer only when no other will do, *scratch* made when there is none).
+  The frame's buffer list is still the buffer list itself, so its walk
+  and the walk of all buffers are one.
+  Undo's tests kill two buffers each (ERT's and `with-temp-buffer''s),
+  and GNU spends 8,300 instructions on each kill, 3,200 of them in
+  Fother_buffer's `get-buffer-window' and 2,500 in
+  `replace-buffer-in-windows'. The port as first written cost Emaxx
+  12,000 more a kill (undo 1,455,000 -> 1,552,600 instructions a unit),
+  most of it Rust calling primitives by name (each a name lookup and the
+  dispatch's string match) and `get-buffer-window' consing the window
+  list to find one window. Those are direct now: `kill-buffer' calls
+  Fother_buffer's and Fset_buffer's bodies, `get-buffer-window' and
+  Fother_buffer walk the windows in place (window_loop's
+  GET_BUFFER_WINDOW), and the window tree's walk bounds itself by the
+  count of windows rather than a list of them (1,512,500); Fother_buffer
+  now costs 3,700 a kill against GNU's 3,200, `replace-buffer-in-windows'
+  3,200 against 2,500.
+  A buffer's fourteen always-local slots (buffer_local_flags index -1,
+  those not on the buffer record: `default-directory', `buffer-read-only',
+  `major-mode' ...) were fourteen hash-table nodes made with each buffer,
+  4,900 instructions; they are one block made with it, struct buffer's
+  fields, each found by its symbol among the slots' own (`FixedSlots').
+  Dropping a buffer's bindings unloads their symbols
+  (swap_out_buffer_local_variables) instead of retiring every loaded
+  binding, and `kill-all-local-variables' keeps the block, as
+  reset_buffer_local_variables leaves those fields (it rebuilt them as
+  nodes); and a frame of one window is its own leaf, the window list
+  the first frame's leaves, without a stack or a second list. Undo
+  1,484,400 instructions a unit against GNU's 1,540,900; its allocations
+  583 a unit -> 527, the fourteen nodes' 112 gone and the windows' walks
+  (the frame list, each walk's leaves) adding 56.
+  Tried and not kept: LLVM's extended-TSP block placement
+  (`-enable-ext-tsp-block-placement') in the profile-guided build of
+  round 181, from its own profile. In callgrind's simulation undo's
+  instructions fell 1,352,000 -> 1,332,900 a unit and its modelled
+  cycles 1.1%, bytecode calls' 327 -> 311 an iteration, but
+  interpreted-dynamic's rose 1,380 -> 1,443 and mapcar's 10.3 M ->
+  11.9 M (its mispredicted conditional branches 959 -> 101,000 a unit);
+  the wall pilot (nine rounds, minimum ratio to GNU, median in
+  parentheses), the build as it is against the variant: undo 0.976
+  (1.049) against 1.019 (1.054), bytecode calls 0.870 (0.908) against
+  0.864 (0.975), interpreted-dynamic 0.831 (0.897) against 0.864
+  (0.919), mapcar 0.806 (0.775) against 0.845 (0.799). lld's
+  call-graph ordering does not run in these builds: no call-graph
+  profile reaches the link (`--print-symbol-order' wrote nothing).
+  Nor kept: round 181's fourteen nodes as one chunked table of slots
+  indexed by a map of their own (+3,500 instructions a unit, the
+  simulated cycles +0.2%).
+  Local validation: the grouped gate's 3,342 library tests, the
+  seven integration suites, clippy with every target and feature,
+  rustfmt and `git diff --check'.
+- **Round 181 measured** (its profile-guided build, the locked runner:
+  `tools/core_runtime_perf.py run --diagnostic`, nine rounds, the
+  native files of the round 176 preparation; no calibration, so it
+  certifies nothing). Paired median ratios and their bootstrapped 95%
+  intervals: undo 1.099 [0.965, 1.492], bytecode calls 0.961 [0.854,
+  1.150], interpreted-to-native 0.922 [0.803, 1.258], interpreted-dynamic
+  0.919 [0.765, 0.981], mapcar 0.889 [0.670, 1.004], cons allocation
+  0.822 [0.694, 1.011], explicit GC 0.803, list traversal 0.812,
+  bytecode-to-native 0.778 [0.667, 0.999], native-to-interpreted 0.777,
+  native-to-bytecode 0.767, bindat 0.682, sort 0.658, interpreted-lexical
+  0.632, interpreted calls 0.616, native execution 0.528; geometric mean
+  0.779. Three upper bounds pass 1.03; only undo's median is above 1
+  (bytecode calls and interpreted-to-native from single rounds at 1.22,
+  1.26 and 1.63). Undo's first four rounds (1.20, 1.54, 1.24, 1.49) ran
+  beside this session's own profile analysis, niced but not idle; its
+  other five read 0.97, 0.92, 1.01, 1.10 and 1.01.
+  Wall pilots of profile-guided variants of round 181 (eleven rounds,
+  minimum ratio to GNU, median in parentheses), built from its profile:
+  undo 1.050 (1.036) as built; with `-inline-threshold=75' 1.121
+  (0.975); with `-Copt-level=s' 1.309 (1.213), interpreted-dynamic
+  1.087 (1.093) against 0.816 (0.903), the text 13.2 MB against 15.3 MB.
+  Neither kept. Bcall's shared tail (round 181's note) read 1.129
+  (1.063) against 1.152 (1.076) in one fifteen-round pilot and 1.090
+  (1.076) against 1.050 (1.036) in this one: within this host's spread.
+- **Round 183: each frame's own buffer lists, as frame.h keeps them.**
+  Emaxx answered a frame's `buffer-list' parameter with the buffer list
+  itself (hidden buffers and all), its `buried-buffer-list' with nil,
+  and `buffer-list' ignored its FRAME. A frame now keeps GNU's
+  buffer_list and buried_buffer_list: record_buffer, run by a window's
+  selection, moves the buffer to the front of the selected frame's
+  buffers and out of its buried ones; Fbury_buffer_internal moves it from
+  the one to the front of the other (and runs `buffer-list-update-hook'
+  only for a buffer whose hooks are not inhibited, as
+  run_buffer_list_update_hook); frames_discard_buffer takes a killed
+  buffer out of every frame's; a frame is made with its root window's
+  buffer (the initial frame with *scratch*); store_frame_param keeps the
+  two parameters apart from the alist, of the live buffers given, in
+  their order; Fbuffer_list for a frame lists its buffers, then the
+  others, then its buried ones least recently buried first; and
+  Fother_buffer walks the frame's buffers before all of them. Against
+  GNU before, in batch after three `switch-to-buffer's and a
+  `bury-buffer': the frame's `buffer-list' read every buffer, the
+  hidden ones and the buried "x3" included, rather than ("x2"
+  "*scratch*"), and its `buried-buffer-list' nil rather than ("x3").
+  Undo's units run 1,495,500 instructions (round 182 1,484,400): its
+  kills' `other-buffer' now meets *scratch* first among the frame's
+  buffers and looks for its window once more, as GNU's does.
+  Local validation: the grouped gate's 3,343 library tests, the
+  seven integration suites, clippy with every target and feature,
+  rustfmt and `git diff --check'.
+- **Round 184: kill-buffer spares another thread's buffer; threads keep
+  their names; get-buffer-window as window_loop.** Fkill_buffer returns
+  nil before any query or hook when thread_check_current_buffer finds a
+  live thread other than the current one with the buffer current (a
+  thread not yet run has the buffer it was made in). Emaxx asked only
+  after the hooks, and then killed the buffer unless the thread had been
+  made with a third `make-thread' argument, Emacs 31's buffer
+  disposition, which GNU 30.2's two-argument `make-thread' does not take
+  (and Emaxx's arity already refused); that argument's remnants are gone.
+  Against GNU before, with a thread blocked in `condition-wait' inside
+  `with-current-buffer': `kill-buffer' returned t, ran `kill-buffer-hook'
+  and left the thread in a dead buffer, where GNU returns nil and runs
+  nothing. `make-thread', `make-mutex' and `make-condition-variable'
+  check NAME with CHECK_STRING and keep the string itself, so
+  `thread-name', `mutex-name' and `condition-name' return it (`eq', its
+  properties kept) and a symbol or number is a wrong-type-argument;
+  Emaxx took any string-like NAME, dropped others, and returned a fresh
+  plain copy. The collector marks the names with their objects, and
+  print.c's `#<thread NAME>' prints the string's text.
+  `get-buffer-window' is window_loop's GET_BUFFER_WINDOW: the walk starts
+  from the selected window of the frame ALL-FRAMES names (else of the
+  selected frame), returns the selected window when it shows the buffer
+  (tested first, before any list is made), else the first window that
+  does on the selected frame, else the first that does at all, a
+  minibuffer window counting only while a minibuffer is active and only
+  as minibuf_window. Emaxx returned the first in the cyclic order from
+  the selected window, from another frame's windows too. Undo's units
+  run 1,482,600 instructions (round 183 1,495,500): its kills'
+  `other-buffer' finds *scratch* in the selected window without a list
+  of windows.
+  Local validation: the grouped gate's 3,344 library tests, the
+  seven integration suites, clippy with every target and feature,
+  rustfmt and `git diff --check'.
+- **Round 185: buffer arguments decoded as GNU's primitives decode
+  them.** Most buffer primitives took their argument through one
+  resolver that accepted a buffer or a name, signalled
+  `(wrong-type-argument string-or-buffer "integer")' (a predicate GNU
+  has not, with the type's name for the object) for anything else, and
+  "Selecting deleted buffer" for a killed buffer; `buffer-name' and
+  `buffer-last-name' read the current buffer whatever they were given.
+  Each now follows its C primitive. buffer.c:decode_buffer (nil the
+  current buffer, else CHECK_BUFFER, a killed buffer accepted) for
+  `buffer-name', `buffer-last-name', `buffer-file-name', `buffer-size',
+  `buffer-modified-p', the two ticks and the setter,
+  `buffer-base-buffer', `buffer-local-variables', `local-variable-p',
+  `delete-all-overlays', `newline-cache-check' and
+  `verify-visited-file-modtime'; CHECK_BUFFER for `buffer-local-value',
+  `buffer-swap-text', `bury-buffer-internal', `set-buffer-major-mode',
+  `set-process-buffer' and `treesit-parser-list'; Fget_buffer
+  (CHECK_STRING) with nsberror's "No buffer named NAME" for
+  `set-buffer', `kill-buffer', `insert-buffer-substring',
+  `compare-buffer-substrings', `replace-buffer-contents', `buffer-hash',
+  `buffer-line-statistics' and `buffer-text-pixel-size'; `get-buffer'
+  and `get-buffer-create' CHECK_STRING; `set-window-buffer' CHECK_BUFFER
+  after Fget_buffer; `eval-buffer' and `minibufferp' theirs; and each
+  one's own error for a killed buffer ("Attempt to display deleted
+  buffer", "Cannot swap a dead buffer's text", "Attempt to set major
+  mode for a dead buffer", "Base buffer has been killed", "Reading from
+  killed buffer"). A killed buffer reads as Fkill_buffer leaves it: its
+  size (free_buffer_text keeps the positions), modification state and
+  ticks, last name, file name, an empty history, and its always-local
+  slots as reset_buffer_local_variables leaves them (its mode, mode name
+  and invisibility spec reset, the rest as they were), which
+  `buffer-local-variables' lists and `buffer-local-value' reads. A
+  buffer is made with its name as its last name (*scratch* from the
+  image has none), and `value<' orders killed buffers by Fkill_buffer's
+  mark (it took a buffer without a last name for a live one).
+  `get-buffer-create' and `make-indirect-buffer' refuse an empty name,
+  and `make-indirect-buffer' a name in use (it made a second
+  "*scratch*"); `local-variable-if-set-p' asks about BUFFER only for a
+  localized variable; `barf-if-buffer-read-only' checks POSITION as a
+  fixnum and passes where it has an `inhibit-read-only' property;
+  `set-buffer-major-mode' takes the current buffer's mode when the
+  default is nil and that mode is not special; and a process keeps the
+  buffer object it was given, which `process-buffer' returns after the
+  buffer is killed. A battery of 59 primitives over a missing name, a
+  number, a killed buffer and a symbol now reads as GNU's in every case
+  where GNU does not crash (it does on `bury-buffer-internal',
+  `buffer-hash', `buffer-line-statistics', `buffer-text-pixel-size',
+  `current-bidi-paragraph-direction' and `decode-coding-string' with a
+  killed buffer, where Emaxx signals), and `encode-coding-region' into a
+  killed buffer still signals where GNU returns 0. The library test that
+  expected `buffer-size' to take a name now expects GNU's `bufferp'
+  error. Undo runs 1,491,900 instructions a unit (1,482,600 before: the
+  decoding helpers and the copy of the slots at a kill). Local
+  validation: the grouped gate's 3,345 library tests, the seven
+  integration suites, clippy with every target and feature, rustfmt and
+  `git diff --check'.
+- **Round 186: insert-file-contents as Finsert_file_contents; a killed
+  buffer as a property object and a stream.** insert-file-contents read
+  a file other than a regular one only 8,192 bytes at a time (one read
+  of a pipe), signalled its own "Cannot seek in non-regular file", took
+  any integer for BEG and END, ran the change functions when visiting,
+  none when nothing was read, and asked `after-insert-file-functions'
+  for a cycle before inserting. It now follows fileio.c. Before the
+  file-name handler, a visit in an indirect buffer is refused and a
+  read-only buffer goes through Fbarf_if_buffer_read_only. A visit
+  refuses BEG or END ("Attempt to visit less than an entire file") and a
+  buffer with text without REPLACE; BEG and END are file_offset's (an
+  integer from 0 to the largest off_t, or a float of one, else
+  `(wrong-type-argument file-offset X)'). fstat decides what the file
+  is, a directory counting as regular: another kind takes REPLACE only
+  as `if-regular' (`(file-error "not a regular file" FILE)'), then
+  erasing the accessible portion, refuses BEG (`(file-error "cannot use
+  a start position in a non-seekable file/device" FILE)'), reads to END
+  or, without it, as much as off_t holds when lseek works on it
+  (`/dev/null' or `/dev/zero' is "Maximum buffer size exceeded", which
+  `(insert-file-contents "/dev/zero" nil nil most-positive-fixnum)' was
+  too, after Emaxx aborted for 2^61 bytes of memory) or to the end of a
+  pipe. A regular file reads at most END - BEG bytes from BEG (its size
+  when END is nil, READ_BUF_SIZE for a size of zero), the gap's growth
+  checked first, and a failed read is "Read error" with its errno text
+  after the read. The change is prepared at point when bytes are
+  expected and not visiting (`first-change-hook' and the before-change
+  functions run, at (PT PT), for an empty file too), the text goes in
+  before point, and the after-change functions run for it unless
+  visiting without REPLACE; with nothing read `deactivate-mark' gets its
+  value back and a file the preparation locked is unlocked. A buffer
+  with text decides its coding before the read, an empty one after. With
+  REPLACE, point is a marker the change moves, placed by
+  restore_window_points and gone back to only when the primitive
+  returns, so the format functions see point before the text read. A
+  visit records the file, the modtime, the buffer saved at its size
+  (`buffer-saved-size', which `write-region''s visit now sets too) and
+  releases the locks of the truename and the file, and leaves
+  `buffer-file-truename' to files.el (Emaxx set it); a special file
+  visited is "not a regular file" afterwards. A visited file that cannot
+  be opened completes the visit first: `coding-system-for-read' becomes
+  the buffer's coding, the coding is decided for no text (a unibyte one
+  making the buffer unibyte), `last-coding-system-used' is set and
+  `after-insert-file-set-coding' runs. The tail is GNU's:
+  `after-insert-file-set-coding', then for inserted text `format-decode'
+  and each of `after-insert-file-functions' (walked as FOR_EACH_TAIL, a
+  cycle being `(circular-list TAIL)' after the text is in) with point
+  motion and modification hooks inhibited and undo off, each count
+  checked as RANGED_FIXNUMP (`(wrong-type-argument inserted-chars X)');
+  with REPLACE they run from BEGV with the accessible size and point
+  goes back unless the text's characters changed. The undo list comes
+  back with its last insertion record fitted to the new count, or stays
+  t when one of them signals. A file-name handler's insertion shares the
+  visit's record and the tail. A killed buffer, its text and intervals
+  freed by Fkill_buffer and its bounds kept, now has no text properties:
+  reads return nil, a position outside the bounds it was left with is
+  args-out-of-range, and writes do nothing (GNU makes the killed buffer
+  current and builds intervals for it, undefined behaviour Emaxx does
+  not copy). Printing to a killed buffer is "Selecting deleted buffer"
+  and reading from one `(end-of-file)', as set_buffer_internal and
+  readchar have them. The library test that found a bare visit by its
+  truename now records the truename as files.el does, and two that visit
+  define files.el's `make-lock-file-name', which a visit's unlock calls.
+  Undo runs 1,488,300 instructions a unit (1,491,900 before). Batteries
+  of 71 insert-file-contents cases (special files, a FIFO with and
+  without END, REPLACE, VISIT, the format functions, the change
+  functions) and 22 property and stream cases over a killed buffer read
+  as GNU's. Local validation: the grouped gate's 3,347 library
+  tests, the seven integration suites, clippy with every target and
+  feature, rustfmt and `git diff --check'.
+- **Round 187: auto-saving as fileio.c's Fdo_auto_save; modification
+  counts as buffer.c's.** do-auto-save wrote only the current buffer, to
+  its `buffer-auto-save-file-name' or to a name Emaxx made up (FILE# or
+  a file under the temporary directory), with no hook, list file,
+  messages or checks, and a buffer kept one auto-saved flag that every
+  change cleared, so `recent-auto-save-p' was nil after the next edit.
+  Each buffer now has BUF_AUTOSAVE_MODIFF, a count reset to 0 at
+  creation, not swapped by buffer-swap-text and dumped with the buffer:
+  `buffer-modified-p' is `autosaved' when it equals MODIFF,
+  `recent-auto-save-p' is SAVE_MODIFF below it, `set-buffer-auto-saved'
+  sets it with `buffer-saved-size' and clears the failure time, and an
+  insert-file-contents visit sets it with SAVE_MODIFF (a write-region
+  visit does not). do-auto-save runs `auto-save-hook' (safe_run_hooks),
+  writes the visited and auto-save names of every auto-saving buffer to
+  `auto-save-list-file-name' (its directory made with `make-directory'
+  under umask 077 when missing, any error ignored), and on two passes,
+  those without a file-name handler for the auto-save file first,
+  auto-saves each live non-indirect buffer (only the current one for
+  CURRENT-ONLY) changed since both its last save and its last auto-save
+  whose `buffer-saved-size' is a natural number, skipping one that
+  failed in the last twenty minutes. A buffer visiting a file that
+  shrank by more than a quarter from over 5,000 characters is reported
+  ("Buffer %s has shrunk a lot; ..."), gets `buffer-saved-size' -1 and a
+  second's sleep, unless `auto-save-include-big-deletions' or
+  NO-MESSAGE. auto_save_1 writes the whole buffer with write-region and
+  VISIT `lambda' (t for `auto-save-visited-file-name'), the file made
+  with the visited file's mode plus owner read and write; while
+  auto-saving, write-region uses utf-8-emacs-unix (inheriting the
+  buffer's EOL) unless writing into the visited file, takes no lock,
+  shows no message, and a `lambda' visit into the visited file marks the
+  buffer saved and unlocks it. An error is the bell and a `(auto-save
+  :error)' warning "Auto-saving NAME: MESSAGE" (the buffer still marked
+  auto-saved), and a save over a minute records a failure time.
+  "Auto-saving..." and "Auto-saving...done" are shown unless NO-MESSAGE
+  or a minibuffer is active, an earlier message coming back after a
+  second; `quit-flag' is held off throughout and `minibuffer-auto-raise'
+  bound off. `make-directory-internal' makes its directory with 0777
+  less that umask and reports `(file-error "Creating directory" ...)' by
+  errno, and get_file_errno_data's `file-already-exists' leaves out the
+  message, as GNU's does, for every primitive that reports an errno. A
+  buffer no longer carries a modified flag beside its counts:
+  `buffer-modified-p' is SAVE_MODIFF below MODIFF, so a modified tick
+  set below the saved one by `internal--set-buffer-modified-tick' reads
+  unmodified, and `set-buffer-modified-p' t is modiff_incr from a saved
+  state. restore-buffer-modified-p and set-buffer-modified-p (one
+  function, as buffer.c has) lock or unlock the base buffer's truename,
+  and `autosaved' marks the base buffer. An indirect buffer, whose text
+  Emaxx keeps as a mirrored copy, now shares its base's MODIFF,
+  CHARS_MODIFF and SAVE_MODIFF: given them when made and after each
+  mirrored change, save, visit or tick, so `buffer-modified-tick' and
+  `buffer-modified-p' agree across the family as GNU's one buffer_text
+  has them. Undo runs 1,488,300 instructions a unit, as before.
+  Batteries of 23 auto-save cases (the list file and its private
+  directory, the hook, CURRENT-ONLY, the shrink check, an unwritable
+  file, a buffer with no file, `make-directory-internal') and 13
+  modification-state cases across an indirect family read as GNU's, but
+  for the warning of an unwritable auto-save file when a test let-binds
+  `warning-minimum-log-level' before warnings.el is loaded: Emaxx
+  predefines that variable and four other `warning-' ones and
+  `cl--proclaims-deferred' as special globals GNU leaves unbound, so the
+  binding is dynamic there and lexical in GNU (recorded for the next
+  round). fileio-tests, files-tests, buffer-tests, editfns-tests and
+  autorevert-tests pass as many tests as GNU's. Local validation: the
+  grouped gate's 3,348 library tests, the seven integration suites,
+  clippy with every target and feature, rustfmt and `git diff --check'.
+- **Round 188: copy-file, rename-file, add-name-to-file,
+  make-symbolic-link and write-region's errors as fileio.c's.** An
+  existing NEWNAME was `(file-already-exists "Copying file" "entity
+  already exists" NEWNAME)' and its like (Rust's text for an errno it
+  never had), an integer OK-IF-ALREADY-EXISTS asked add-name-to-file
+  whether to keep the old file (and returned without linking) and
+  make-symbolic-link whether to replace it, copy-file copied with
+  fs::copy whatever FILE was, rename-file refused an existing NEWNAME
+  before trying, and every write-region failure was `(file-error
+  "Opening output file" ...)'. barf_or_query_if_file_exists is ported: a
+  NEWNAME found without following a link that is a directory is
+  `(file-error "File is a directory" NEWNAME)', an existing one
+  `(file-already-exists "File already exists" NEWNAME)' unless an
+  integer OK-IF-ALREADY-EXISTS gets yes from `yes-or-no-p' to "File
+  NEWNAME already exists; QUERY anyway? " (`y-or-n-p' for write-region's
+  MUSTBENEW, whose directory check comes first). copy-file opens FILE
+  non-blocking ("Opening input file", "Input file status"), refuses a
+  file that is not regular (`(file-error "Non-regular file" "Is a
+  directory" FILE)', EINVAL for a device), creates NEWNAME exclusively
+  with FILE's mode (0700 of it with PRESERVE-UID-GID), asks only on
+  EEXIST and then reopens it, refuses the same file ("Input and output
+  files are the same" with both names), copies with copy_file_range then
+  read and write ("Read error", "Write error"), truncates what is left
+  of a longer old file, gives a new file FILE's mode under the creation
+  mask, changes owner and group and adjusts the mode bits as fileio.c
+  does for PRESERVE-UID-GID, sets FILE's whole mode for
+  PRESERVE-PERMISSIONS, sets both times for KEEP-TIME or signals
+  `(file-date-error "Cannot set file date" NEWNAME)', and reports a
+  failed close. rename-file tries renameat2 with RENAME_NOREPLACE first,
+  asks on EEXIST (and checks for a directory on EINVAL, ENOSYS or
+  ENOTSUP) before renaming over, reports any other errno as `(CONDITION
+  "Renaming" ERRSTRING FILE NEWNAME)', and across file systems copies
+  (copy-directory, copy-file keeping time, owner and permissions, or the
+  link) and deletes with `delete-by-moving-to-trash' nil.
+  add-name-to-file and make-symbolic-link ask on EEXIST, remove NEWNAME
+  and try once more, and report `(CONDITION "Adding new name" ... FILE
+  NEWNAME)' and `(CONDITION "Making symbolic link" ... TARGET
+  LINKNAME)'; an ENOSYS link is "Symbolic links are not supported".
+  write-region reports by errno "Opening output file", "Lseek error" (an
+  APPEND offset now through file_offset, so a negative or fractional one
+  is `(wrong-type-argument file-offset X)'), and "Write error" for the
+  write and the close, a visited file that was opened having its modtime
+  recorded first. Emaxx no longer predefines warnings.el's
+  `warning-fill-column', `warning-levels', `warning-minimum-level',
+  `warning-minimum-log-level' and `warning-suppress-log-types', nor
+  cl-lib's `cl--proclaims-deferred', as special globals GNU leaves
+  unbound until those files load: a let of one before then is lexical,
+  as GNU's is, so round 187's unwritable auto-save file now shows its
+  warning under such a binding. The bell of an auto-save error
+  (dispnew.c ring_bell) rings nothing on the initial terminal, which has
+  no ring_bell_hook, where Emaxx wrote a BEL to standard output. A
+  battery of 46 cases (each primitive over existing, missing, directory,
+  device, same and cross-device files, both OK-IF-ALREADY-EXISTS forms,
+  and write-region's errors and offsets) reads as GNU's, as does round
+  187's auto-save battery now in full. Undo runs 1,488,200 instructions
+  a unit (1,488,300 before). fileio-tests, files-tests, files-x-tests,
+  dired-tests, dired-aux-tests and warnings-tests pass as many tests as
+  GNU's. Local validation: the grouped gate's 3,349 library tests,
+  the seven integration suites, clippy with every target and feature,
+  rustfmt and `git diff --check'.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -10732,6 +11174,59 @@ frozen (run 41055391243) matched all 7,928 outcomes on its first
 attempt. Setup 76.2 s against 63.0 s (1.209), test bodies 250.7 s
 against 263.2 s (0.953), in all 0.987; undo-tests' bodies 1.13 s against
 0.88 s.
+
+**On `92995fb`** (round 180): full Rust gate passed (run 41067275249);
+frozen (run 41067279561) matched all 7,928 outcomes on its first
+attempt. Setup 77.6 s against 65.0 s (1.195), test bodies 252.4 s
+against 266.4 s (0.947), in all 0.981; undo-tests' bodies 1.09 s against
+0.91 s.
+
+**On `2ee3cce`** (round 181): full Rust gate passed (run 41073690053);
+frozen (run 41073695376) matched all 7,928 outcomes on its first
+attempt. Setup 71.1 s against 61.4 s (1.158), test bodies 238.4 s
+against 259.1 s (0.920), in all 0.957; undo-tests' bodies 0.91 s against
+0.82 s.
+
+**On `69cab2f`** (round 182): full Rust gate passed (run 41105887806);
+frozen (run 41105892949) matched all 7,928 outcomes on its first
+attempt. Setup 66.5 s against 57.9 s (1.148), test bodies 230.0 s
+against 245.2 s (0.938), in all 0.979; undo-tests' bodies 0.82 s against
+0.69 s.
+
+**On `c4950ba`** (round 183): full Rust gate passed (run 41112978137);
+frozen (run 41112983374) matched all 7,928 outcomes on its first
+attempt. Setup 78.2 s against 62.9 s (1.244), test bodies 252.4 s
+against 272.2 s (0.928), in all 0.971; undo-tests' bodies 1.10 s against
+0.89 s.
+
+**On `b18f8ef`** (round 184): full Rust gate passed (run 41123050944);
+frozen (run 41123055251) matched all 7,928 outcomes on its first
+attempt. Setup 64.5 s against 55.4 s (1.165), test bodies 225.0 s
+against 242.3 s (0.929), in all 0.988; undo-tests' bodies 0.83 s against
+0.65 s.
+
+**On `2d3c6c1`** (round 185): full Rust gate passed (run 41132822618);
+frozen (run 41132826303) matched all 7,928 outcomes on its first
+attempt. Setup 79.5 s against 65.5 s (1.215), test bodies 254.1 s
+against 264.9 s (0.959), in all 0.994; undo-tests' bodies 1.11 s against
+0.91 s.
+
+**On `2af3fd2`** (round 186): full Rust gate passed (run 41139632167).
+Frozen (run 41139642783) failed on both attempts on one outcome only,
+GNU's: the oracle's `eglot-test-rust-completion-exit-function' timed
+out on rust-analyzer's request (`(jsonrpc-error "request id=2 failed:"
+(jsonrpc-error-message . "Timed out"))' after 11.3 s, while indexing)
+and Emaxx passed it; the other 7,927 outcomes matched. The first attempt
+had setup 64.8 s against 56.0 s (1.157), test bodies 229.4 s against
+251.4 s (0.913), in all 0.970, undo-tests' bodies 0.90 s against 0.66 s;
+the second, on a slower runner, 91.2 s against 68.8 s (1.326), 263.5 s
+against 273.8 s (0.962), 1.033, and 1.15 s against 0.91 s.
+
+**On `a901f7d`** (round 187): full Rust gate passed (run 41145497802);
+frozen (run 41145506830) matched all 7,928 outcomes on its first
+attempt. Setup 78.3 s against 63.8 s (1.226), test bodies 253.7 s
+against 263.2 s (0.964), in all 1.002; undo-tests' bodies 1.14 s against
+0.90 s.
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

@@ -631,6 +631,9 @@ impl Interpreter {
                 after_make_frame: true,
                 pointer_invisible: false,
                 was_invisible: false,
+                // frame.c:make_frame: `list1 (buf)', its root window's.
+                buffer_list: vec![buffer_id],
+                buried_buffer_list: Vec::new(),
             },
         );
         self.frame_states.insert(0, frame);

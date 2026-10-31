@@ -101,7 +101,7 @@ pub(crate) fn set_echo_area_message_with_spans(text: String, spans: EchoSpans) {
     ECHO_AREA_MESSAGE.with_borrow_mut(|slot| *slot = message);
 }
 
-fn set_echo_area_message_value(value: Value) -> Result<(), LispError> {
+pub(crate) fn set_echo_area_message_value(value: Value) -> Result<(), LispError> {
     let text = string_text(&value)?;
     let spans = string_face_spans(&value);
     ECHO_FROM_PRINT.with(|flag| flag.set(false));
@@ -593,6 +593,14 @@ pub(crate) fn ring_bell(interp: &mut Interpreter, env: &mut Env) -> Result<(), L
         .lookup_var("ring-bell-function", env)
         .unwrap_or(Value::Nil);
     if function.is_nil() {
+        // FRAME_TERMINAL (f)->ring_bell_hook: the initial terminal (the
+        // batch frame's) has none.
+        if interp
+            .decode_terminal(&Value::Nil)
+            .is_some_and(|terminal| terminal.borrow().kind.is_none())
+        {
+            return Ok(());
+        }
         use std::io::Write as _;
         let mut output = crate::lisp::eval::terminal::output()
             .map_err(|error| LispError::Signal(error.to_string()))?;
@@ -1385,9 +1393,13 @@ fn frame_window_tree_leaf_ids(
     frame: crate::lisp::types::FrameRef,
 ) -> Vec<u64> {
     let root_id = frame.borrow().root_window_id();
+    // A frame of one window is its root.
+    if window_link(interp, root_id, WINDOW_FIRST_CHILD_SLOT).is_none() {
+        return vec![root_id];
+    }
     // A malformed tree (stale sibling links) must not loop forever; no
     // healthy tree revisits a window record.
-    let budget = interp.record_ids_by_type("window").len().saturating_add(1);
+    let budget = interp.record_count_by_type("window").saturating_add(1);
     let mut leaves = Vec::new();
     let mut stack = vec![root_id];
     let mut visited = 0usize;
@@ -3948,13 +3960,108 @@ fn window_list_value(
     start: Option<&Value>,
     frames: &[crate::lisp::types::FrameRef],
 ) -> Value {
+    Value::list(
+        window_list_ids(interp, minibuf, start, frames)
+            .into_iter()
+            .map(|id| interp.record_value(id)),
+    )
+}
+
+/// The frames FRAME_FILTER (window-list-1's ALL-FRAMES) names, in the
+/// frame list's order: every live frame for t, FRAME itself, the selected
+/// terminal's for 0 or `visible', else OWN_FRAME, the frame of the window
+/// the walk starts from.
+fn window_list_frames(
+    interp: &Interpreter,
+    own_frame: crate::lisp::types::FrameRef,
+    frame_filter: &Value,
+) -> Vec<crate::lisp::types::FrameRef> {
+    interp
+        .frame_states
+        .iter()
+        .filter(|frame| frame.is_live())
+        .filter(|frame| match frame_filter.kind() {
+            Kind::T => true,
+            Kind::Frame(id) => **frame == id,
+            Kind::Integer(0) => {
+                frame.borrow().terminal.expect("live frame terminal").id
+                    == interp.selected_terminal_id()
+            }
+            Kind::Symbol(name) if name == "visible" => {
+                frame.borrow().terminal.expect("live frame terminal").id
+                    == interp.selected_terminal_id()
+            }
+            _ => **frame == own_frame,
+        })
+        .copied()
+        .collect()
+}
+
+/// window.c:Fget_buffer_window's window_loop (GET_BUFFER_WINDOW): among
+/// ALL-FRAMES's windows in their cyclic order from the selected window of
+/// the frame ALL-FRAMES names (else of the selected frame), the selected
+/// window if it shows BUFFER_ID, else the first that does on the selected
+/// frame, else the first that does at all.  A minibuffer window counts
+/// only while a minibuffer is active and only as minibuf_window.
+pub(super) fn buffer_window(
+    interp: &Interpreter,
+    buffer_id: u64,
+    all_frames: &Value,
+) -> Option<Value> {
+    let selected_frame = interp.selected_frame_id;
+    let frame = match all_frames.kind() {
+        Kind::Frame(frame) if frame.is_live() => frame,
+        _ => selected_frame,
+    };
+    let selected = interp.selected_window_id();
+    let minibuffer_active = interp.active_minibuffer_buffer_id().is_some();
+    let minibuffer = interp.minibuffer_window_id();
+    let shows = |id: u64| {
+        (is_live_ordinary_window(interp, id) || (minibuffer_active && id == minibuffer))
+            && window_buffer_id(interp, &interp.record_value(id)) == Some(buffer_id)
+    };
+    // The selected window is returned wherever the walk meets it, and it
+    // is among the windows unless ALL-FRAMES names another frame.
+    if frame == selected_frame && shows(selected) {
+        return Some(interp.record_value(selected));
+    }
+    let start = interp.record_value(frame.borrow().selected_window_id());
+    let frames = window_list_frames(interp, frame, all_frames);
+    let mut best = None;
+    let mut on_selected_frame = false;
+    for id in window_list_ids(interp, Some(&Value::T), Some(&start), &frames) {
+        if !shows(id) {
+            continue;
+        }
+        if id == selected {
+            return Some(interp.record_value(id));
+        }
+        if !on_selected_frame && interp.window_frame_id(id) == Some(selected_frame) {
+            best = Some(id);
+            on_selected_frame = true;
+        } else if best.is_none() {
+            best = Some(id);
+        }
+    }
+    best.map(|id| interp.record_value(id))
+}
+
+/// The windows `window_list_value' lists, by record id.
+fn window_list_ids(
+    interp: &Interpreter,
+    minibuf: Option<&Value>,
+    start: Option<&Value>,
+    frames: &[crate::lisp::types::FrameRef],
+) -> Vec<u64> {
     let mut ids = Vec::new();
     for frame in frames {
-        ids.extend(
-            frame_window_tree_leaf_ids(interp, *frame)
-                .into_iter()
-                .filter(|id| is_live_ordinary_window(interp, *id)),
-        );
+        let mut leaves = frame_window_tree_leaf_ids(interp, *frame);
+        leaves.retain(|id| is_live_ordinary_window(interp, *id));
+        if ids.is_empty() {
+            ids = leaves;
+        } else {
+            ids.extend(leaves);
+        }
         // GNU window.c includes the active minibuffer when MINIBUF is nil or
         // omitted, and includes it unconditionally for t.  Any other non-nil
         // value excludes it.  Add it before rotating so an active, selected
@@ -3981,7 +4088,7 @@ fn window_list_value(
     if let Some(index) = ids.iter().position(|id| *id == start_id) {
         ids.rotate_left(index);
     }
-    Value::list(ids.into_iter().map(|id| interp.record_value(id)))
+    ids
 }
 
 /// print.c Fprin1_to_string: OBJECT as `prin1' prints it, or as `princ'
@@ -4626,15 +4733,17 @@ define_dispatch!(
             // ── More buffer ops ──
             "following-char" => direct_following_char(interp, args, env),
             "preceding-char" => direct_preceding_char(interp, args, env),
-            "buffer-last-name" => Ok(Value::String(
-                interp
-                    .buffer
+            "buffer-last-name" => {
+                need_arg_range(name, args, 0, 1)?;
+                // buffer.c: BVAR (decode_buffer (BUFFER), last_name), the
+                // name a buffer was made, renamed or killed with.
+                Ok(interp
+                    .decode_buffer(args.first())?
                     .borrow()
                     .last_name
                     .clone()
-                    .unwrap_or_else(|| interp.buffer.borrow().name.clone())
-                    .into(),
-            )),
+                    .map_or(Value::Nil, |name| Value::String(name.into())))
+            }
 
             // ── Display stubs ──
             "window-system" => {
@@ -5610,8 +5719,15 @@ define_dispatch!(
                 // text and a margin spec removes it from the line flow.
                 need_arg_range(name, args, 0, 4)?;
                 let window_id = live_window_id_or_selected(interp, args.get(1))?;
+                // xdisp.c: Fget_buffer (GNU reads no such buffer, or a
+                // killed one, through XBUFFER regardless).
                 let buffer_id = match args.first().filter(|value| !value.is_nil()) {
-                    Some(buffer) => interp.resolve_buffer_id(buffer)?,
+                    Some(buffer) => {
+                        let buffer = interp.get_buffer_or_error(buffer)?;
+                        interp
+                            .live_buffer_id(buffer)
+                            .ok_or_else(|| LispError::Signal("Selecting deleted buffer".into()))?
+                    }
                     None => interp.current_buffer_id(),
                 };
                 let saved_buffer = interp.current_buffer_id();
@@ -6271,7 +6387,14 @@ define_dispatch!(
                 let Some(window_id) = window_record_id_from_value(interp, &window) else {
                     return Err(LispError::WrongTypeArgument("windowp".into(), window));
                 };
-                let buffer_id = interp.resolve_buffer_id(&args[1])?;
+                // window.c:Fset_window_buffer: Fget_buffer, CHECK_BUFFER,
+                // then the buffer's liveness.
+                let buffer = interp
+                    .get_buffer(&args[1])?
+                    .ok_or_else(|| LispError::WrongTypeArgument("bufferp".into(), Value::Nil))?;
+                let buffer_id = interp
+                    .live_buffer_id(buffer)
+                    .ok_or_else(|| LispError::Signal("Attempt to display deleted buffer".into()))?;
                 let changes_buffer =
                     window_buffer_id(interp, &window).is_some_and(|previous| previous != buffer_id);
                 if changes_buffer {
@@ -6364,26 +6487,8 @@ define_dispatch!(
                 let own_frame = interp
                     .window_frame_id(window)
                     .expect("window stores its owning frame");
-                let frame_filter = args.get(2).unwrap_or(&Value::Nil);
-                let frames: Vec<_> = interp
-                    .frame_states
-                    .iter()
-                    .filter(|frame| frame.is_live())
-                    .filter(|frame| match frame_filter.kind() {
-                        Kind::T => true,
-                        Kind::Frame(id) => **frame == id,
-                        Kind::Integer(0) => {
-                            frame.borrow().terminal.expect("live frame terminal").id
-                                == interp.selected_terminal_id()
-                        }
-                        Kind::Symbol(name) if name == "visible" => {
-                            frame.borrow().terminal.expect("live frame terminal").id
-                                == interp.selected_terminal_id()
-                        }
-                        _ => **frame == own_frame,
-                    })
-                    .copied()
-                    .collect();
+                let frames =
+                    window_list_frames(interp, own_frame, args.get(2).unwrap_or(&Value::Nil));
                 let windows = window_list_value(interp, args.get(1), Some(&current), &frames);
                 if name == "window-list-1" {
                     return Ok(windows);
@@ -6835,29 +6940,10 @@ define_dispatch!(
                 let Some(buffer_id) = buffer_id else {
                     return Ok(Value::Nil);
                 };
-                let windows = call(
-                    interp,
-                    "window-list-1",
-                    &[
-                        interp.selected_window_value(),
-                        Value::T,
-                        args.get(1).cloned().unwrap_or(Value::Nil),
-                    ],
-                    env,
-                )?
-                .to_vec()?;
-                Ok(windows
-                    .into_iter()
-                    .find(|window| {
-                        let Kind::Record(id) = window.kind() else {
-                            return false;
-                        };
-                        (is_live_ordinary_window(interp, id.id)
-                            || (interp.active_minibuffer_buffer_id().is_some()
-                                && id.id == interp.minibuffer_window_id()))
-                            && window_buffer_id(interp, window) == Some(buffer_id)
-                    })
-                    .unwrap_or(Value::Nil))
+                Ok(
+                    buffer_window(interp, buffer_id, args.get(1).unwrap_or(&Value::Nil))
+                        .unwrap_or(Value::Nil),
+                )
             }
             "minibuffer-window" => {
                 need_arg_range(name, args, 0, 1)?;

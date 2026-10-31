@@ -49,7 +49,7 @@ type EqualSeen = HashMap<usize, Vec<Value>>;
 /// lisp.h's FOR_EACH_TAIL bookkeeping (struct for_each_tail_internal):
 /// Brent's tortoise, which moves to the tail in hand after MAX steps
 /// (Q counts them, with N counting each 65,536), MAX doubling each time.
-struct ForEachTail {
+pub(crate) struct ForEachTail {
     tortoise: Value,
     max: isize,
     n: isize,
@@ -57,7 +57,7 @@ struct ForEachTail {
 }
 
 impl ForEachTail {
-    fn new(list: Value) -> Self {
+    pub(crate) fn new(list: Value) -> Self {
         ForEachTail {
             tortoise: list,
             max: 2,
@@ -69,7 +69,7 @@ impl ForEachTail {
     /// The step after TAIL = XCDR (TAIL): whether TAIL is the tortoise,
     /// closing a cycle.
     #[inline]
-    fn step(&mut self, tail: Value) -> bool {
+    pub(crate) fn step(&mut self, tail: Value) -> bool {
         self.q = self.q.wrapping_sub(1);
         if self.q != 0 {
             return tail.eq_value(self.tortoise);
@@ -875,7 +875,7 @@ fn compare_buffer_objects(
     // buffers (nil names) before live ones. Allocation IDs are not order.
     let left = left.borrow();
     let right = right.borrow();
-    match (left.last_name.is_none(), right.last_name.is_none()) {
+    match (!left.killed, !right.killed) {
         (true, true) => compare_plain_symbol_names(&left.name, &right.name),
         (false, true) => ValueOrder::Less,
         (true, false) => ValueOrder::Greater,

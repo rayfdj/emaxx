@@ -336,6 +336,53 @@ impl Interpreter {
         Ok(Value::Symbol(symbol))
     }
 
+    /// buffer.c:decode_buffer: the current buffer for nil, else BUFFER
+    /// itself, live or killed (CHECK_BUFFER).
+    pub(crate) fn decode_buffer(
+        &self,
+        buffer: Option<&Value>,
+    ) -> Result<crate::lisp::types::BufferRef, LispError> {
+        match buffer.map(|value| value.kind()) {
+            None | Some(Kind::Nil) => Ok(self.buffer),
+            Some(Kind::Buffer(buffer)) => Ok(buffer),
+            Some(_) => Err(LispError::WrongTypeArgument(
+                "bufferp".into(),
+                *buffer.expect("a value was given"),
+            )),
+        }
+    }
+
+    /// buffer.c:Fget_buffer: BUFFER-OR-NAME itself when it is a buffer,
+    /// live or killed, else the live buffer of that name (CHECK_STRING),
+    /// or None.
+    pub(crate) fn get_buffer(
+        &self,
+        buffer_or_name: &Value,
+    ) -> Result<Option<crate::lisp::types::BufferRef>, LispError> {
+        if let Kind::Buffer(buffer) = buffer_or_name.kind() {
+            return Ok(Some(buffer));
+        }
+        let id = primitives::with_string_text(buffer_or_name, |name| self.find_buffer_id(name))
+            .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *buffer_or_name))?;
+        Ok(id.and_then(|id| self.buffer_object(id)))
+    }
+
+    /// Fget_buffer, with buffer.c:nsberror when there is no such buffer.
+    pub(crate) fn get_buffer_or_error(
+        &self,
+        buffer_or_name: &Value,
+    ) -> Result<crate::lisp::types::BufferRef, LispError> {
+        self.get_buffer(buffer_or_name)?
+            .ok_or_else(|| nsberror(buffer_or_name))
+    }
+
+    /// BUFFER's id when it is live (BUFFER_LIVE_P), else None.
+    pub(crate) fn live_buffer_id(&self, buffer: crate::lisp::types::BufferRef) -> Option<u64> {
+        self.buffer_object(buffer.id)
+            .is_some_and(|live| live.ptr_eq(&buffer))
+            .then_some(buffer.id)
+    }
+
     /// Resolve a Lisp string-or-buffer value to a live buffer ID.
     pub fn resolve_buffer_id(&self, value: &Value) -> Result<u64, LispError> {
         match value.kind() {
@@ -370,6 +417,8 @@ impl Interpreter {
             .unwrap_or(Value::Nil);
         let id = self.alloc_buffer_id();
         let mut buffer = crate::buffer::Buffer::new(name);
+        // buffer.c:Fget_buffer_create: `bset_last_name (b, name)'.
+        buffer.last_name = Some(name.to_string());
         buffer.text_conversion_style = self.native_text_conversion_style_default();
         // buffer.c:Fget_buffer_create: `bset_undo_list (b, SREF (name, 0)
         // != ' ' ? Qnil : Qt)', no undo kept in a buffer whose name starts
@@ -407,7 +456,9 @@ impl Interpreter {
             .inactive_buffers
             .iter()
             .position(|(buffer_id, _)| *buffer_id == id)
-            .ok_or_else(|| LispError::Signal(format!("No buffer with id {id}")))?;
+            // Fset_buffer's error for a buffer no longer live (print.c's
+            // print_prepare and the others select theirs through it).
+            .ok_or_else(|| LispError::Signal("Selecting deleted buffer".into()))?;
         // buffer.c:set_buffer_internal_2 invalidates the indentation cache.
         self.invalidate_current_column();
         let current_id = self.current_buffer_id;
@@ -455,7 +506,8 @@ impl Interpreter {
         }
     }
 
-    /// Move a buffer to the front of the buffer list (GNU record_buffer).
+    /// buffer.c:record_buffer: a buffer to the front of the buffer list,
+    /// and of the selected frame's, out of the frame's buried buffers.
     pub fn record_buffer_front(&mut self, id: u64) {
         if let Some(index) = self
             .buffer_list
@@ -464,6 +516,29 @@ impl Interpreter {
         {
             let entry = self.buffer_list.remove(index);
             self.buffer_list.insert(0, entry);
+        }
+        let mut frame = self.selected_frame_id.borrow_mut();
+        frame.buffer_list.retain(|buffer| *buffer != id);
+        frame.buffer_list.insert(0, id);
+        frame.buried_buffer_list.retain(|buffer| *buffer != id);
+    }
+
+    /// Fbury_buffer_internal's update of the selected frame's lists: the
+    /// buffer leaves the frame's buffers for the front of its buried ones.
+    pub(crate) fn bury_buffer_in_selected_frame(&mut self, id: u64) {
+        let mut frame = self.selected_frame_id.borrow_mut();
+        frame.buffer_list.retain(|buffer| *buffer != id);
+        frame.buried_buffer_list.retain(|buffer| *buffer != id);
+        frame.buried_buffer_list.insert(0, id);
+    }
+
+    /// frame.c:frames_discard_buffer: a killed buffer leaves every frame's
+    /// lists.
+    fn frames_discard_buffer(&mut self, id: u64) {
+        for frame in &self.frame_states {
+            let mut frame = frame.borrow_mut();
+            frame.buffer_list.retain(|buffer| *buffer != id);
+            frame.buried_buffer_list.retain(|buffer| *buffer != id);
         }
     }
 
@@ -1175,6 +1250,7 @@ impl Interpreter {
 
     /// Kill a buffer by ID, switching away if it is current.
     pub fn kill_buffer_id(&mut self, id: u64) {
+        self.frames_discard_buffer(id);
         self.delete_buffer_overlays(id);
         let selected_window_showed_buffer = self.selected_window_buffer_id() == id;
         self.detach_markers_for_buffer(id);
@@ -1182,6 +1258,19 @@ impl Interpreter {
         let directory = self
             .buffer_local_value(id, "default-directory")
             .unwrap_or(Value::Nil);
+        // The always-local slots the bindings hold, and the mark's state,
+        // as Fkill_buffer leaves them for a killed buffer's readers.
+        let fixed = self
+            .buffer_locals
+            .get(&id)
+            .map(super::LocalCells::fixed_values)
+            .unwrap_or_default();
+        if let Some(mut buffer) = self.get_buffer_by_id_mut(id) {
+            let mut slots = Box::new([None; super::FIXED_SLOTS + 1]);
+            slots[..super::FIXED_SLOTS].copy_from_slice(&fixed);
+            slots[super::FIXED_SLOTS] = Some(buffer.mark_active_value());
+            buffer.killed_locals = Some(slots);
+        }
         self.remove_buffer_locals(id);
         self.buffer_local_hooks.remove(&id);
         self.buffer_case_tables.remove(id);
@@ -1871,6 +1960,13 @@ impl Interpreter {
             .unwrap_or_default()
     }
 
+    /// How many records `record_ids_by_type' would list, without them.
+    pub(crate) fn record_count_by_type(&self, type_name: &str) -> usize {
+        self.record_ids_by_type_index
+            .get(type_name)
+            .map_or(0, |ids| ids.len())
+    }
+
     pub fn register_sqlite_handle(&mut self, id: u64, state: SqliteHandleState) {
         if let Some((_, existing)) = self
             .sqlite_handles
@@ -2414,6 +2510,14 @@ impl Interpreter {
         };
         self.restore_special_dynamic(restore, env)?;
         result
+    }
+}
+
+/// buffer.c:nsberror: "No buffer named NAME" for a string SPEC.
+pub(crate) fn nsberror(spec: &Value) -> LispError {
+    match primitives::string_text(spec) {
+        Ok(name) => LispError::Signal(format!("No buffer named {name}")),
+        Err(_) => LispError::Signal("Invalid buffer argument".into()),
     }
 }
 

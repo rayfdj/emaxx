@@ -277,6 +277,16 @@ fn backtrace_nframes(nframes: Value) -> Result<usize, LispError> {
     }
 }
 
+/// thread.c's NAME argument: nil, or a string kept as given
+/// (CHECK_STRING).
+fn thread_object_name(name: Option<&Value>) -> Result<Value, LispError> {
+    match name {
+        None => Ok(Value::Nil),
+        Some(name) if name.is_nil() || name.is_string() => Ok(*name),
+        Some(name) => Err(LispError::WrongTypeArgument("stringp".into(), *name)),
+    }
+}
+
 fn vector_index_description(index: u32) -> Result<String, LispError> {
     key_sequence_binding_text(&Value::vector([Value::Integer(i64::from(index))]))
 }
@@ -678,7 +688,7 @@ define_dispatch!(
 
             "recent-auto-save-p" => {
                 need_args(name, args, 0)?;
-                Ok(if interp.buffer.borrow().is_autosaved() {
+                Ok(if interp.buffer.borrow().recent_auto_save_p() {
                     Value::T
                 } else {
                     Value::Nil
@@ -686,11 +696,22 @@ define_dispatch!(
             }
             "set-buffer-auto-saved" => {
                 need_args(name, args, 0)?;
+                // The auto-save mark at the text as it is, the size it
+                // was saved at, and no failure.
                 interp.buffer.borrow_mut().set_autosaved();
+                let size = interp.buffer.borrow().size_total();
+                let id = interp.current_buffer_id();
+                interp.set_buffer_local_value_symbol(
+                    id,
+                    &cached_symbol!("buffer-saved-size").with(Clone::clone),
+                    Value::Integer(size as i64),
+                );
+                interp.buffer.borrow_mut().auto_save_failure_time = 0;
                 Ok(Value::Nil)
             }
             "clear-buffer-auto-save-failure" => {
                 need_args(name, args, 0)?;
+                interp.buffer.borrow_mut().auto_save_failure_time = 0;
                 Ok(Value::Nil)
             }
             "next-read-file-uses-dialog-p" => {
@@ -724,19 +745,13 @@ define_dispatch!(
                 )
             }
             "do-auto-save" => {
-                let path = interp
-                    .buffer_local_value(interp.current_buffer_id(), "buffer-auto-save-file-name")
-                    .and_then(|value| string_text(&value).ok())
-                    .unwrap_or_else(|| auto_save_path_for_buffer(&interp.buffer.borrow()));
-                std::fs::write(&path, interp.buffer.borrow().buffer_string())
-                    .map_err(|e| LispError::Signal(e.to_string()))?;
-                interp.set_buffer_local_value(
-                    interp.current_buffer_id(),
-                    "buffer-auto-save-file-name",
-                    Value::String(path.into()),
-                );
-                interp.buffer.borrow_mut().set_autosaved();
-                Ok(Value::Nil)
+                need_arg_range(name, args, 0, 2)?;
+                crate::lisp::primitives::file_io::do_auto_save(
+                    interp,
+                    env,
+                    args.first().copied().unwrap_or(Value::Nil),
+                    args.get(1).copied().unwrap_or(Value::Nil),
+                )
             }
             "unix-sync" => {
                 need_args(name, args, 0)?;
@@ -1244,28 +1259,9 @@ define_dispatch!(
                 Ok(Value::list(interp.live_threads()))
             }
             "make-thread" => {
-                need_arg_range(name, args, 1, 3)?;
-                let thread_name = args.get(1).and_then(|value| {
-                    if value.is_nil() {
-                        None
-                    } else {
-                        string_like(value).map(|string| string.text)
-                    }
-                });
-                let disposition = match args.get(2).map(|v| v.kind()) {
-                    None | Some(Kind::Nil) => BufferDisposition::Default,
-                    Some(Kind::T) => BufferDisposition::Preserve,
-                    Some(Kind::Symbol(symbol)) if symbol == "silently" => {
-                        BufferDisposition::Silently
-                    }
-                    Some(other) => {
-                        return Err(LispError::TypeError(
-                            "thread-buffer-disposition".into(),
-                            other.value().type_name(),
-                        ));
-                    }
-                };
-                interp.make_thread(args[0], thread_name, disposition)
+                need_arg_range(name, args, 1, 2)?;
+                let thread_name = thread_object_name(args.get(1))?;
+                interp.make_thread(args[0], thread_name)
             }
             "thread-live-p" => {
                 need_args(name, args, 1)?;
@@ -1281,10 +1277,7 @@ define_dispatch!(
             }
             "thread-name" => {
                 need_args(name, args, 1)?;
-                Ok(interp
-                    .thread_name(interp.resolve_thread_id(&args[0])?)
-                    .map(|value| Value::String(value.into()))
-                    .unwrap_or(Value::Nil))
+                Ok(interp.thread_name(interp.resolve_thread_id(&args[0])?))
             }
             "thread-signal" => {
                 need_args(name, args, 3)?;
@@ -1300,21 +1293,12 @@ define_dispatch!(
             }
             "make-mutex" => {
                 need_arg_range(name, args, 0, 1)?;
-                let mutex_name = args.first().and_then(|value| {
-                    if value.is_nil() {
-                        None
-                    } else {
-                        string_like(value).map(|string| string.text)
-                    }
-                });
+                let mutex_name = thread_object_name(args.first())?;
                 Ok(interp.make_mutex(mutex_name))
             }
             "mutex-name" => {
                 need_args(name, args, 1)?;
-                Ok(interp
-                    .mutex_name(interp.resolve_mutex_id(&args[0])?)
-                    .map(|value| Value::String(value.into()))
-                    .unwrap_or(Value::Nil))
+                Ok(interp.mutex_name(interp.resolve_mutex_id(&args[0])?))
             }
             "mutex-lock" => {
                 need_args(name, args, 1)?;
@@ -1327,13 +1311,7 @@ define_dispatch!(
             "make-condition-variable" => {
                 need_arg_range(name, args, 1, 2)?;
                 let mutex_id = interp.resolve_mutex_id(&args[0])?;
-                let condvar_name = args.get(1).and_then(|value| {
-                    if value.is_nil() {
-                        None
-                    } else {
-                        string_like(value).map(|string| string.text)
-                    }
-                });
+                let condvar_name = thread_object_name(args.get(1))?;
                 Ok(interp.make_condition_variable(mutex_id, condvar_name))
             }
             "condition-mutex" => {
@@ -1348,10 +1326,7 @@ define_dispatch!(
             }
             "condition-name" => {
                 need_args(name, args, 1)?;
-                Ok(interp
-                    .condition_variable_name(interp.resolve_condition_variable_id(&args[0])?)
-                    .map(|value| Value::String(value.into()))
-                    .unwrap_or(Value::Nil))
+                Ok(interp.condition_variable_name(interp.resolve_condition_variable_id(&args[0])?))
             }
             "condition-wait" => {
                 need_args(name, args, 1)?;

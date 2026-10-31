@@ -5574,9 +5574,14 @@ fn unix_file_metadata_buffer_lookup_and_exec_path_use_host_facts() {
                                    (file-attributes path 'integer))
                                   (user-uid))
                                (consp (visited-file-modtime))
-                               (eq (find-buffer 'buffer-file-truename
-                                                (file-truename path))
-                                   (current-buffer))
+                               ;; files.el records the truename, not
+                               ;; insert-file-contents.
+                               (null buffer-file-truename)
+                               (progn
+                                 (setq buffer-file-truename (file-truename path))
+                                 (eq (find-buffer 'buffer-file-truename
+                                                  (file-truename path))
+                                     (current-buffer)))
                                (let ((exec-path
                                       (list (file-name-directory path))))
                                  (equal path
@@ -5584,7 +5589,7 @@ fn unix_file_metadata_buffer_lookup_and_exec_path_use_host_facts() {
                                          (file-name-nondirectory path)))))))
                    (delete-file path)))"#,
         ),
-        Value::list([Value::T, Value::T, Value::T, Value::T])
+        Value::list([Value::T, Value::T, Value::T, Value::T, Value::T])
     );
 }
 

@@ -439,6 +439,326 @@ fn buffer_lookup_preserves_object_identity_after_rename_or_kill() {
 }
 
 #[test]
+fn kill_buffer_replaces_it_in_windows_and_kills_its_dependents_as_gnu() {
+    // buffer.c:Fkill_buffer calls window.el's `replace-buffer-in-windows'
+    // (which drops the buffer from the windows' previous buffers), kills a
+    // base buffer's indirect buffers first and deletes its connections;
+    // Fother_buffer prefers a buffer no window shows unless VISIBLE-OK.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let* ((calls 0) (count (lambda (&rest _) (setq calls (1+ calls)))))
+             (advice-add 'replace-buffer-in-windows :before count)
+             (unwind-protect
+                 (let* ((a (get-buffer-create "kb-a")) (b (get-buffer-create "kb-b"))
+                        (base (get-buffer-create "kb-base"))
+                        (pipe (make-pipe-process :name "kb-pipe" :buffer base :noquery t))
+                        indirect)
+                   (switch-to-buffer a) (switch-to-buffer b)
+                   (switch-to-buffer a) (switch-to-buffer b)
+                   (kill-buffer b)
+                   (with-current-buffer base (insert "x"))
+                   (setq indirect (make-indirect-buffer base "kb-indirect"))
+                   (kill-buffer base)
+                   (prog1 (list calls
+                                (buffer-name (window-buffer))
+                                (memq b (mapcar #'car (window-prev-buffers)))
+                                (buffer-live-p indirect)
+                                (process-status pipe)
+                                (with-temp-buffer (buffer-name (other-buffer)))
+                                (with-temp-buffer (buffer-name (other-buffer nil t)))
+                                (buffer-name (other-buffer a)))
+                     (kill-buffer a)))
+               (advice-remove 'replace-buffer-in-windows count)))"#,
+        r#"(3 "kb-a" nil nil closed "*scratch*" "kb-a" "*scratch*")"#,
+        "kill-buffer's windows, indirect buffers, connections; other-buffer",
+    );
+}
+
+#[test]
+fn frames_keep_their_own_buffer_lists_as_gnu() {
+    // frame.h's buffer_list and buried_buffer_list: record_buffer (a
+    // window's selection), Fbury_buffer_internal and frames_discard_buffer
+    // keep them; store_frame_param keeps their live buffers apart from the
+    // alist; Fbuffer_list for a frame puts them around the others, and
+    // Fother_buffer walks the frame's first.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let* ((names (lambda (l) (mapcar (lambda (b) (if (buffer-live-p b) (buffer-name b) b))
+                                          (seq-remove (lambda (b) (string-prefix-p " " (buffer-name b))) l))))
+               (a (get-buffer-create "fb-a")) (b (get-buffer-create "fb-b")) (c (get-buffer-create "fb-c"))
+               (dead (get-buffer-create "fb-dead")))
+          (kill-buffer dead)
+          (unwind-protect
+              (progn
+                (switch-to-buffer a) (switch-to-buffer b) (switch-to-buffer c)
+                (bury-buffer c) (bury-buffer b)
+                (let ((before (list (funcall names (frame-parameter nil 'buffer-list))
+                                    (funcall names (frame-parameter nil 'buried-buffer-list))
+                                    (funcall names (buffer-list (selected-frame))))))
+                  (modify-frame-parameters nil (list (cons 'buffer-list (list c dead 7 a))
+                                                     (cons 'buried-buffer-list (list b))))
+                  (list before
+                        (funcall names (frame-parameter nil 'buffer-list))
+                        (funcall names (frame-parameter nil 'buried-buffer-list))
+                        (funcall names (cdr (assq 'buffer-list (frame-parameters))))
+                        (buffer-name (other-buffer))
+                        (progn (kill-buffer a) (funcall names (frame-parameter nil 'buffer-list))))))
+            (dolist (x (list a b c)) (when (buffer-live-p x) (kill-buffer x)))))"#,
+        r#"((("fb-a" "*scratch*") ("fb-b" "fb-c") ("fb-a" "*scratch*" "*Messages*" "fb-c" "fb-b")) ("fb-c" "fb-a") ("fb-b") ("fb-c" "fb-a") "fb-a" ("fb-c"))"#,
+        "frame buffer lists",
+    );
+}
+
+#[test]
+fn kill_buffer_spares_another_threads_buffer_and_thread_names_are_strings_as_gnu() {
+    // thread.c:thread_check_current_buffer keeps Fkill_buffer from a
+    // buffer another thread has current, before any hook; Fmake_thread,
+    // Fmake_mutex and Fmake_condition_variable CHECK_STRING their NAME and
+    // keep it as given.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let* ((b (get-buffer-create "kt-b"))
+               (m (make-mutex)) (cv (make-condition-variable m))
+               (go nil) (inside nil) (hook-ran nil)
+               (th (make-thread (lambda ()
+                                  (with-current-buffer b
+                                    (setq inside t)
+                                    (with-mutex m (while (not go) (condition-wait cv))))))))
+          (while (not inside) (thread-yield))
+          (with-current-buffer b
+            (add-hook 'kill-buffer-hook (lambda () (setq hook-ran t)) nil t))
+          (let ((during (list (kill-buffer b) (buffer-live-p b) hook-ran)))
+            (with-mutex m (setq go t) (condition-notify cv))
+            (thread-join th)
+            (let ((name (propertize "nm" 'face 'bold)))
+              (list during (kill-buffer b) (buffer-live-p b) hook-ran
+                    (eq (thread-name (make-thread #'ignore name)) name)
+                    (eq (mutex-name (make-mutex name)) name)
+                    (eq (condition-name (make-condition-variable (make-mutex) name)) name)
+                    (condition-case e (make-thread #'ignore 'foo) (error e))
+                    (condition-case e (make-mutex 7) (error e))
+                    (condition-case e (make-condition-variable (make-mutex) 'x) (error e))
+                    (format "%S" (make-mutex "mx"))))))"#,
+        r##"((nil t nil) t nil t t t t (wrong-type-argument stringp foo) (wrong-type-argument stringp 7) (wrong-type-argument stringp x) "#<mutex mx>")"##,
+        "threads and kill-buffer",
+    );
+}
+
+#[test]
+fn buffer_arguments_are_decoded_as_gnu() {
+    // buffer.c:decode_buffer (CHECK_BUFFER, a killed buffer read as
+    // Fkill_buffer left it) and Fget_buffer (CHECK_STRING) with nsberror,
+    // each primitive's own errors for a killed buffer, and a process
+    // keeping the buffer object it was given.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let* ((dead (let ((b (get-buffer-create "dk")))
+                        (with-current-buffer b (insert "abc") (setq default-directory "/tmp/"))
+                        (kill-buffer b) b))
+               (tc (lambda (f) (condition-case e (funcall f) (error e)))))
+          (list (funcall tc (lambda () (set-buffer "no-such-buf")))
+                (funcall tc (lambda () (kill-buffer 7)))
+                (funcall tc (lambda () (buffer-name "x")))
+                (funcall tc (lambda () (get-buffer 'sym)))
+                (buffer-size dead) (buffer-modified-p dead) (buffer-last-name dead) (buffer-name dead)
+                (buffer-local-value 'default-directory dead)
+                (cdr (assq 'major-mode (buffer-local-variables dead)))
+                (funcall tc (lambda () (set-window-buffer nil "no-such-buf")))
+                (funcall tc (lambda () (set-window-buffer nil dead)))
+                (funcall tc (lambda () (make-indirect-buffer "*scratch*" "*scratch*")))
+                (funcall tc (lambda () (get-buffer-create "")))
+                (funcall tc (lambda () (barf-if-buffer-read-only "x")))
+                (local-variable-if-set-p 'fill-column 7)
+                (funcall tc (lambda () (eval-buffer "no-such-buf")))
+                (funcall tc (lambda () (buffer-swap-text dead)))
+                (let ((p (make-pipe-process :name "dkp" :noquery t)))
+                  (prog1 (list (set-process-buffer p dead) (eq (process-buffer p) dead))
+                    (delete-process p)))))"#,
+        r##"((error "No buffer named no-such-buf") (wrong-type-argument stringp 7) (wrong-type-argument bufferp "x") (wrong-type-argument stringp sym) 3 t "dk" nil "/tmp/" fundamental-mode (wrong-type-argument bufferp nil) (error "Attempt to display deleted buffer") (error "Buffer name `*scratch*' is in use") (error "Empty string for buffer name is not allowed") (wrong-type-argument fixnump "x") t (error "No such buffer") (error "Cannot swap a dead buffer's text") (#<killed buffer> t))"##,
+        "buffer arguments",
+    );
+}
+
+#[test]
+fn insert_file_contents_reads_files_as_finsert_file_contents() {
+    // fileio.c:Finsert_file_contents: the checks before the handler and
+    // of a visit, file_offset, fstat's kinds (a special file's REPLACE,
+    // BEG and unbounded read), the change functions at point, the
+    // format functions and their counts, the undo record they fit, and
+    // FOR_EACH_TAIL's cycle.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let* ((f (make-temp-file "ifc" nil nil "hello\nworld\n"))
+               (tc (lambda (g)
+                     (condition-case e (with-temp-buffer (funcall g))
+                       (error (if (equal (car (last e)) f) (butlast e) e)))))
+               (grow (lambda (n) (save-excursion (insert "XX")) (+ n 2))))
+          (unwind-protect
+              (list (funcall tc (lambda () (insert-file-contents "/dev/null")))
+                    (funcall tc (lambda () (insert-file-contents "/dev/null" nil nil nil t)))
+                    (funcall tc (lambda () (insert-file-contents "/dev/null" nil 0)))
+                    (funcall tc (lambda () (list (cadr (insert-file-contents "/dev/zero" nil nil 10)) (buffer-size))))
+                    (funcall tc (lambda () (insert "x") (insert-file-contents "/dev/null" nil nil nil 'if-regular)))
+                    (funcall tc (lambda () (insert-file-contents "/")))
+                    (funcall tc (lambda () (insert-file-contents f t 1)))
+                    (funcall tc (lambda () (insert "x") (insert-file-contents f t)))
+                    (funcall tc (lambda () (insert-file-contents f nil 1.5)))
+                    (funcall tc (lambda () (insert-file-contents f nil -3)))
+                    (funcall tc (lambda () (list (cadr (insert-file-contents f nil 0.0 2.0)) (buffer-string))))
+                    (funcall tc (lambda () (list (cadr (insert-file-contents f nil 3 1)) (buffer-size))))
+                    (funcall tc (lambda () (let ((buffer-read-only t)) (insert-file-contents 5))))
+                    (funcall tc (lambda ()
+                                  (let ((log nil))
+                                    (add-hook 'before-change-functions (lambda (b e) (push (list b e) log)) nil t)
+                                    (add-hook 'after-change-functions (lambda (b e l) (push (list b e l) log)) nil t)
+                                    (insert-file-contents "/dev/null" nil nil 1)
+                                    (insert-file-contents f t)
+                                    (list log buffer-saved-size (buffer-modified-p)))))
+                    (funcall tc (lambda ()
+                                  (buffer-enable-undo) (insert "ab") (undo-boundary)
+                                  (let ((after-insert-file-functions (list grow)))
+                                    (list (cadr (insert-file-contents f)) (point) (car buffer-undo-list)))))
+                    (funcall tc (lambda ()
+                                  (insert "zzz") (goto-char 2)
+                                  (let ((after-insert-file-functions (list grow)))
+                                    (list (cadr (insert-file-contents f nil nil nil t)) (point) (buffer-string)))))
+                    (funcall tc (lambda ()
+                                  (buffer-enable-undo)
+                                  (let ((after-insert-file-functions (list (lambda (_) (error "boom")))))
+                                    (list (condition-case e (insert-file-contents f) (error e)) buffer-undo-list))))
+                    (funcall tc (lambda () (let ((after-insert-file-functions (list (lambda (_) 1000)))) (insert-file-contents f))))
+                    (funcall tc (lambda ()
+                                  (let ((after-insert-file-functions (list 'identity)))
+                                    (setcdr after-insert-file-functions after-insert-file-functions)
+                                    (condition-case e (insert-file-contents f) (circular-list (list (car e) (buffer-size)))))))
+                    (funcall tc (lambda () (setq deactivate-mark 'keep) (insert-file-contents "/dev/null" nil nil 2) deactivate-mark)))
+            (delete-file f)))"#,
+        r##"((error "Maximum buffer size exceeded") (file-error "not a regular file" "/dev/null") (file-error "cannot use a start position in a non-seekable file/device" "/dev/null") (10 10) (error "Maximum buffer size exceeded") (file-error "Read error" "Is a directory" "/") (error "Attempt to visit less than an entire file") (error "Cannot do file visiting in a non-empty buffer") (wrong-type-argument file-offset 1.5) (wrong-type-argument file-offset -3) (2 "he") (0 0) (buffer-read-only #<killed buffer>) (((1 1)) 12 nil) (14 3 (3 . 17)) (14 7 "XXhello
+world
+") ((error "boom") t) (wrong-type-argument inserted-chars 1000) (circular-list 12) keep)"##,
+        "insert-file-contents",
+    );
+}
+
+#[test]
+fn killed_buffer_holds_no_text_properties_as_gnu() {
+    // Fkill_buffer frees the text and its intervals and keeps BEGV and
+    // ZV; Fset_buffer, set_buffer_internal and readchar refuse it.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((dead (let ((b (generate-new-buffer "kt")))
+                      (with-current-buffer b (insert "abc") (put-text-property 1 3 'face 'bold))
+                      (kill-buffer b) b))
+              (tc (lambda (f) (condition-case e (funcall f) (error e)))))
+          (list (get-text-property 1 'face dead)
+                (text-properties-at 2 dead)
+                (funcall tc (lambda () (get-text-property 9 'face dead)))
+                (next-single-property-change 1 'face dead)
+                (get-char-property 1 'face dead)
+                (funcall tc (lambda () (next-single-char-property-change 1 'face dead)))
+                (funcall tc (lambda () (previous-single-char-property-change 3 'face dead)))
+                (funcall tc (lambda () (prin1 'x dead)))
+                (car (funcall tc (lambda () (read dead))))))"#,
+        r##"(nil nil (args-out-of-range 9 9) nil nil (error "Selecting deleted buffer") (error "Selecting deleted buffer") (error "Selecting deleted buffer") end-of-file)"##,
+        "killed buffer properties",
+    );
+}
+
+#[test]
+fn auto_save_and_modification_counts_follow_gnu() {
+    // fileio.c:Fdo_auto_save marks each buffer it saves with
+    // BUF_AUTOSAVE_MODIFF; buffer.c:Frestore_buffer_modified_p moves
+    // SAVE_MODIFF and MODIFF of the text an indirect buffer shares with its
+    // base, and marks the base auto-saved; Fmake_directory_internal reports
+    // as get_file_errno_data does.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let* ((dir (make-temp-file "emaxx-autosave-" t))
+               (file (expand-file-name "a.txt" dir))
+               (auto-save-list-file-name nil)
+               results)
+          (unwind-protect
+              (progn
+                (with-temp-file file (insert "hello\n"))
+                (with-current-buffer (find-file-noselect file)
+                  (auto-save-mode 1)
+                  (push (list (buffer-modified-p) (recent-auto-save-p)) results)
+                  (goto-char (point-max))
+                  (insert "world\n")
+                  (push (list (buffer-modified-p) (recent-auto-save-p)) results)
+                  (do-auto-save t)
+                  (push (list (buffer-modified-p) (recent-auto-save-p) buffer-saved-size
+                              (let ((name buffer-auto-save-file-name))
+                                (with-temp-buffer
+                                  (insert-file-contents name)
+                                  (buffer-string))))
+                        results)
+                  (set-buffer-modified-p nil)
+                  (push (list (buffer-modified-p) (recent-auto-save-p)) results)
+                  (restore-buffer-modified-p 'autosaved)
+                  (push (list (buffer-modified-p) (recent-auto-save-p)) results)
+                  (set-buffer-modified-p nil)
+                  (kill-buffer))
+                (with-temp-buffer
+                  (insert "abc")
+                  (let ((indirect (make-indirect-buffer (current-buffer) " emaxx-indirect")))
+                    (with-current-buffer indirect (insert "x"))
+                    (push (list (= (buffer-modified-tick) (buffer-modified-tick indirect))
+                                (buffer-modified-p indirect))
+                          results)
+                    (set-buffer-modified-p nil)
+                    (push (buffer-modified-p indirect) results)
+                    (with-current-buffer indirect (restore-buffer-modified-p 'autosaved))
+                    (push (list (buffer-modified-p) (buffer-modified-p indirect)) results)
+                    (kill-buffer indirect))
+                  (set-buffer-modified-p nil)
+                  (internal--set-buffer-modified-tick 1)
+                  (push (buffer-modified-p) results))
+                (dolist (name (list dir (expand-file-name "q/r" dir)))
+                  (push (condition-case err
+                            (make-directory-internal name)
+                          (file-error (list (car err) (length err))))
+                        results))
+                (nreverse results))
+            (delete-directory dir t)))"#,
+        r#"((nil nil) (t nil) (autosaved t 12 "hello
+world
+") (nil nil) (autosaved t) (t t) nil (autosaved t) nil (file-already-exists 3) (file-missing 4))"#,
+        "auto-save and modification counts",
+    );
+}
+
+#[test]
+fn file_operations_report_as_fileio_c() {
+    // fileio.c: barf_or_query_if_file_exists for an existing NEWNAME,
+    // report_file_errno with each primitive's message and its list of
+    // names, Fcopy_file's own checks, write_region's open errors; and
+    // warnings.el's variables unbound until it loads.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let* ((dir (file-name-as-directory (make-temp-file "emaxx-fileops-" t)))
+               (f (lambda (name) (expand-file-name name dir)))
+               (rel (lambda (value)
+                      (if (stringp value) (string-replace dir "D/" value) value)))
+               (try (lambda (thunk)
+                      (condition-case err (funcall thunk) (error (mapcar rel err))))))
+          (unwind-protect
+              (progn
+                (with-temp-file (funcall f "a") (insert "alpha"))
+                (with-temp-file (funcall f "b") (insert "bravo"))
+                (make-directory (funcall f "d"))
+                (list (funcall try (lambda () (copy-file (funcall f "a") (funcall f "b"))))
+                      (funcall try (lambda () (copy-file (funcall f "a") (funcall f "a") t)))
+                      (funcall try (lambda () (copy-file (funcall f "d") (funcall f "e"))))
+                      (funcall try (lambda () (rename-file (funcall f "a") (funcall f "b"))))
+                      (funcall try (lambda () (rename-file (funcall f "nope") (funcall f "z"))))
+                      (funcall try (lambda () (add-name-to-file (funcall f "a") (funcall f "b"))))
+                      (funcall try (lambda () (make-symbolic-link "a" (funcall f "b"))))
+                      (funcall try (lambda ()
+                                     (write-region "z" nil (funcall f "d") nil nil nil t)))
+                      (funcall try (lambda ()
+                                     (write-region "z" nil (funcall f "a") nil nil nil 'excl)))
+                      (funcall try (lambda () (write-region "z" nil (funcall f "nodir/y"))))
+                      (boundp 'warning-minimum-log-level)))
+            (delete-directory dir t)))"#,
+        r#"((file-already-exists "File already exists" "D/b") (file-error "Input and output files are the same" "Success" "D/a" "D/a") (file-error "Non-regular file" "Is a directory" "D/d") (file-already-exists "File already exists" "D/b") (file-missing "Renaming" "No such file or directory" "D/nope" "D/z") (file-already-exists "File already exists" "D/b") (file-already-exists "File already exists" "D/b") (file-error "File is a directory" "D/d") (file-already-exists "File exists" "D/a") (file-missing "Opening output file" "No such file or directory" "D/nodir/y") nil)"#,
+        "file operations",
+    );
+}
+
+#[test]
 fn native_buffer_lookup_preserves_object_identity_after_rename_or_kill() {
     assert_oracle_contract_matches_interpreter(
         r#"(progn
@@ -10254,10 +10574,31 @@ fn dumped_directory_family_ignores_the_test_harness_variable() {
     assert_eq!(values.to_string(), expected);
 }
 
+/// filelock.c names a lock with files.el's `make-lock-file-name', which a
+/// bare interpreter has not loaded: its value with no
+/// `lock-file-name-transforms'.
+fn define_make_lock_file_name(interp: &mut Interpreter, env: &mut crate::lisp::types::Env) {
+    let definition = Reader::new(
+        "(fset 'make-lock-file-name
+               (function
+                (lambda (filename)
+                  (concat (file-name-directory filename) \".#\"
+                          (file-name-nondirectory filename)))))",
+    )
+    .read()
+    .expect("read make-lock-file-name")
+    .expect("a definition");
+    interp
+        .eval(&definition, env)
+        .expect("define make-lock-file-name");
+}
+
 #[test]
 fn insert_file_contents_reports_missing_input_as_file_missing() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
+    // A visit unlocks the file before it signals.
+    define_make_lock_file_name(&mut interp, &mut env);
     let path = std::env::temp_dir().join(format!(
         "emaxx-missing-input-{}",
         std::time::SystemTime::now()
@@ -10293,6 +10634,7 @@ fn insert_file_contents_reports_missing_input_as_file_missing() {
 fn insert_file_contents_replace_collapses_point_in_the_differing_middle() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
+    define_make_lock_file_name(&mut interp, &mut env);
     let path = std::env::temp_dir().join(format!(
         "emaxx-replace-point-{}",
         std::time::SystemTime::now()
@@ -12409,22 +12751,7 @@ fn native_file_lock_primitives_share_the_buffer_lock_state_machine() {
 
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
-    // filelock.c names a lock with files.el's `make-lock-file-name', which
-    // a bare interpreter has not loaded: its value with no
-    // `lock-file-name-transforms'.
-    let definition = Reader::new(
-        "(fset 'make-lock-file-name
-               (function
-                (lambda (filename)
-                  (concat (file-name-directory filename) \".#\"
-                          (file-name-nondirectory filename)))))",
-    )
-    .read()
-    .expect("read make-lock-file-name")
-    .expect("a definition");
-    interp
-        .eval(&definition, &mut env)
-        .expect("define make-lock-file-name");
+    define_make_lock_file_name(&mut interp, &mut env);
     let path = std::env::temp_dir().join(format!(
         "lock-primitive-{}-{}",
         std::process::id(),

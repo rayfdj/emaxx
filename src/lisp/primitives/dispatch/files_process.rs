@@ -136,7 +136,12 @@ fn bury_buffer_in_lists(
     {
         let entry = interp.buffer_list.remove(index);
         interp.buffer_list.push(entry);
-        run_named_hooks(interp, "buffer-list-update-hook", env, Some(buffer_id))?;
+        interp.bury_buffer_in_selected_frame(buffer_id);
+        // run_buffer_list_update_hook: not for a buffer whose hooks are
+        // inhibited.
+        if !interp.buffer_hooks_inhibited(buffer_id) {
+            run_named_hooks(interp, "buffer-list-update-hook", env, Some(buffer_id))?;
+        }
     }
     Ok(())
 }
@@ -545,16 +550,20 @@ define_dispatch!(
         match name {
             "set-buffer" => {
                 need_args(name, args, 1)?;
-                let id = interp.resolve_buffer_id(&args[0])?;
+                // buffer.c:Fset_buffer: Fget_buffer and nsberror, then the
+                // buffer's liveness.
+                let buffer = interp.get_buffer_or_error(&args[0])?;
+                let id = interp
+                    .live_buffer_id(buffer)
+                    .ok_or_else(|| LispError::Signal("Selecting deleted buffer".into()))?;
                 interp.set_current_buffer_id(id)?;
-                Ok(interp.buffer_value(id).expect("live buffer object"))
+                Ok(Value::Buffer(buffer))
             }
             "buffer-file-name" => {
                 need_arg_range(name, args, 0, 1)?;
-                let requested = args.first().filter(|value| !value.is_nil());
-                if let Some(Kind::Buffer(buffer)) = requested.map(|v| v.kind())
-                    && !buffer.ptr_eq(&interp.buffer)
-                {
+                // buffer.c:decode_buffer: a buffer, live or killed.
+                let buffer = interp.decode_buffer(args.first())?;
+                if !buffer.ptr_eq(&interp.buffer) {
                     return Ok(buffer
                         .borrow()
                         .file
@@ -562,25 +571,13 @@ define_dispatch!(
                         .map(|value| Value::String(value.into()))
                         .unwrap_or(Value::Nil));
                 }
-                let buffer_id = if let Some(buffer) = requested {
-                    interp.resolve_buffer_id(buffer)?
-                } else {
-                    interp.current_buffer_id()
-                };
                 // `buffer-file-name' is a per-buffer special variable.  A
                 // dynamic binding in the current buffer is observable both
                 // through the variable and through this primitive; reading
                 // only the host Buffer field lost bindings used by ordinary
                 // save code (including backup creation).
-                if buffer_id == interp.current_buffer_id() {
-                    return Ok(interp
-                        .lookup_var("buffer-file-name", env)
-                        .unwrap_or(Value::Nil));
-                }
                 Ok(interp
-                    .get_buffer_by_id(buffer_id)
-                    .and_then(|buffer| buffer.file.clone())
-                    .map(|value| Value::String(value.into()))
+                    .lookup_var("buffer-file-name", env)
                     .unwrap_or(Value::Nil))
             }
             "visited-file-modtime" => Ok(interp
@@ -591,14 +588,13 @@ define_dispatch!(
                 .unwrap_or(Value::Integer(0))),
             "verify-visited-file-modtime" => {
                 need_arg_range(name, args, 0, 1)?;
-                let buffer_id = match args.first().map(|v| v.kind()) {
-                    None | Some(Kind::Nil) => interp.current_buffer_id(),
-                    Some(buffer) => interp.resolve_buffer_id(&buffer.value())?,
-                };
-                let remote_visit = interp.buffer_remote_prefix(buffer_id).is_some();
-                let Some(buffer) = interp.get_buffer_by_id(buffer_id) else {
-                    return Ok(Value::Nil);
-                };
+                // fileio.c: decode_buffer, so a killed buffer's file and
+                // time are read as it left them.
+                let buffer = interp.decode_buffer(args.first())?;
+                let remote_visit = interp
+                    .live_buffer_id(buffer)
+                    .is_some_and(|id| interp.buffer_remote_prefix(id).is_some());
+                let buffer = buffer.borrow();
                 let Some(path) = buffer.file.as_deref() else {
                     return Ok(Value::T);
                 };
@@ -638,24 +634,35 @@ define_dispatch!(
             }
             "set-buffer-major-mode" => {
                 need_args(name, args, 1)?;
-                let buffer_id = interp.resolve_buffer_id(&args[0])?;
-                let buffer_name = interp
-                    .get_buffer_by_id(buffer_id)
-                    .map(|buffer| buffer.name.clone())
-                    .ok_or_else(|| {
-                        LispError::Signal("Attempt to set major mode for a dead buffer".into())
-                    })?;
+                let Kind::Buffer(buffer) = args[0].kind() else {
+                    return Err(LispError::WrongTypeArgument("bufferp".into(), args[0]));
+                };
+                let buffer_id = interp.live_buffer_id(buffer).ok_or_else(|| {
+                    LispError::Signal("Attempt to set major mode for a dead buffer".into())
+                })?;
+                let buffer_name = buffer.borrow().name.clone();
                 let mode = if buffer_name == "*scratch*" {
                     interp
                         .lookup_var("initial-major-mode", env)
                         .unwrap_or(Value::Nil)
                 } else {
-                    super::call(
+                    let mode = super::call(
                         interp,
                         "default-value",
                         &[Value::Symbol("major-mode".into())],
                         env,
-                    )?
+                    )?;
+                    // buffer.c: a nil default takes the current buffer's
+                    // mode unless that is a special mode.
+                    let current = interp.lookup_var("major-mode", env).unwrap_or(Value::Nil);
+                    if mode.is_nil()
+                        && super::call(interp, "get", &[current, Value::symbol("mode-class")], env)?
+                            .is_nil()
+                    {
+                        current
+                    } else {
+                        mode
+                    }
                 };
                 if mode.is_nil() {
                     return Ok(Value::Nil);
@@ -1200,89 +1207,356 @@ define_dispatch!(
             }
             "copy-file" => {
                 need_arg_range(name, args, 2, 6)?;
-                let source = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
-                validate_file_name(&source)?;
-                let mut target = resolve_file_name_in_env(interp, env, &string_text(&args[1])?);
-                validate_file_name(&target)?;
-                if directory_name_p(&target) {
-                    target = file_name_concat(&[target, file_name_nondirectory(&source)]);
+                // fileio.c:Fcopy_file, past the handler lookup that
+                // expanded FILE and NEWNAME.
+                use std::io::{Read, Write};
+                use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+                use std::os::unix::io::{AsRawFd, IntoRawFd};
+                let file = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
+                validate_file_name(&file)?;
+                let mut newname = resolve_file_name_in_env(interp, env, &string_text(&args[1])?);
+                validate_file_name(&newname)?;
+                if directory_name_p(&newname) {
+                    newname = file_name_concat(&[newname, file_name_nondirectory(&file)]);
                 }
-                let host_source = host_file_name(interp, env, &source)?;
-                let host_target = host_file_name(interp, env, &target)?;
-                let target_existed = fs::symlink_metadata(&host_target).is_ok();
-                if target_existed && args.get(2).is_none_or(Value::is_nil) {
+                let ok_if_already_exists = args.get(2).copied().unwrap_or(Value::Nil);
+                let interactive = matches!(ok_if_already_exists.kind(), Kind::Integer(_));
+                let keep_time = args.get(3).is_some_and(Value::is_truthy);
+                let preserve_uid_gid = args.get(4).is_some_and(Value::is_truthy);
+                let preserve_permissions = args.get(5).is_some_and(Value::is_truthy);
+                let host_file = host_file_name(interp, env, &file)?;
+                let host_newname = host_file_name(interp, env, &newname)?;
+                let mut input = fs::OpenOptions::new()
+                    .read(true)
+                    .custom_flags(libc::O_NONBLOCK)
+                    .open(&host_file)
+                    .map_err(|error| file_operation_error("Opening input file", &error, &file))?;
+                let st = input
+                    .metadata()
+                    .map_err(|error| file_operation_error("Input file status", &error, &file))?;
+                // We can copy only regular files.
+                if !st.is_file() {
+                    return Err(LispError::SignalValue(file_errno_error_value(
+                        "Non-regular file",
+                        if st.is_dir() {
+                            libc::EISDIR
+                        } else {
+                            libc::EINVAL
+                        },
+                        &file,
+                    )));
+                }
+                let new_mask = st.mode() & if preserve_uid_gid { 0o700 } else { 0o777 };
+                let mut already_exists = false;
+                let mut output = match fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .mode(new_mask)
+                    .open(&host_newname)
+                {
+                    Ok(output) => output,
+                    Err(error) if error.kind() == ErrorKind::AlreadyExists => {
+                        if ok_if_already_exists.is_nil() || interactive {
+                            barf_or_query_if_file_exists(
+                                interp,
+                                env,
+                                &newname,
+                                true,
+                                "copy to it",
+                                interactive,
+                                false,
+                            )?;
+                        }
+                        already_exists = true;
+                        fs::OpenOptions::new()
+                            .write(true)
+                            .open(&host_newname)
+                            .map_err(|error| {
+                                file_operation_error("Opening output file", &error, &newname)
+                            })?
+                    }
+                    Err(error) => {
+                        return Err(file_operation_error(
+                            "Opening output file",
+                            &error,
+                            &newname,
+                        ));
+                    }
+                };
+                let mut oldsize = 0;
+                if already_exists {
+                    let out_st = output.metadata().map_err(|error| {
+                        file_operation_error("Output file status", &error, &newname)
+                    })?;
+                    if st.dev() == out_st.dev() && st.ino() == out_st.ino() {
+                        return Err(file_operation_error_files(
+                            "Input and output files are the same",
+                            &std::io::Error::from_raw_os_error(0),
+                            &[&file, &newname],
+                        ));
+                    }
+                    if out_st.is_file() {
+                        oldsize = out_st.len();
+                    }
+                }
+                interp.maybe_quit(env)?;
+                let (ifd, ofd) = (input.as_raw_fd(), output.as_raw_fd());
+                let insize = st.len();
+                let mut newsize = 0;
+                #[cfg(target_os = "linux")]
+                while newsize < insize {
+                    // At most 1 GiB a call, as fileio.c's COPY_MAX.
+                    let len = (insize - newsize).min(1 << 30) as usize;
+                    // SAFETY: both descriptors are open; null offsets use
+                    // and advance the files' own.
+                    let copied = unsafe {
+                        libc::copy_file_range(
+                            ifd,
+                            std::ptr::null_mut(),
+                            ofd,
+                            std::ptr::null_mut(),
+                            len,
+                            0,
+                        )
+                    };
+                    if copied <= 0 {
+                        break;
+                    }
+                    newsize += copied as u64;
+                    interp.maybe_quit(env)?;
+                }
+                // read+write when copy_file_range failed or the input is
+                // empty and so could be a /proc file; it either succeeds
+                // or reports the error more precisely.
+                if newsize != insize || insize == 0 {
+                    let mut buf = [0u8; 16 * 1024];
+                    loop {
+                        let copied = match input.read(&mut buf) {
+                            Ok(0) => break,
+                            Ok(copied) => copied,
+                            Err(error) if error.kind() == ErrorKind::Interrupted => continue,
+                            Err(error) => {
+                                return Err(file_operation_error("Read error", &error, &file));
+                            }
+                        };
+                        output.write_all(&buf[..copied]).map_err(|error| {
+                            file_operation_error("Write error", &error, &newname)
+                        })?;
+                        newsize += copied as u64;
+                    }
+                }
+                // Truncate an existing output file after writing the data.
+                if newsize < oldsize {
+                    output.set_len(newsize).map_err(|error| {
+                        file_operation_error("Truncating output file", &error, &newname)
+                    })?;
+                }
+                // The original file's permissions, and if requested its
+                // owner and group.
+                let realmask = (!interp.default_file_modes & 0o777) as u32;
+                let mut preserved_permissions = st.mode() & 0o7777;
+                let mut default_permissions = st.mode() & 0o777 & !realmask;
+                if preserve_uid_gid {
+                    // SAFETY: fchown on the open output descriptor; -1
+                    // keeps the owner.
+                    let changed = unsafe { libc::fchown(ofd, st.uid(), st.gid()) } == 0;
+                    if !changed {
+                        if unsafe { libc::fchown(ofd, libc::uid_t::MAX, st.gid()) } == 0 {
+                            preserved_permissions &= !0o4000;
+                        } else {
+                            // The group is wrong: no setuid or setgid, and
+                            // the other bits as the group's.
+                            preserved_permissions &= !0o6000;
+                            preserved_permissions &= !0o70;
+                            preserved_permissions |= (preserved_permissions & 7) << 3;
+                            default_permissions &= !0o70;
+                            default_permissions |= (default_permissions & 7) << 3;
+                        }
+                    }
+                }
+                // qcopy_acl of a file with no ACL beyond its mode sets the
+                // mode; otherwise a new file gets the default permissions
+                // its creation mask did not give it.
+                let chmod = if preserve_permissions {
+                    Some(preserved_permissions)
+                } else if already_exists || (new_mask & !realmask) == default_permissions {
+                    None
+                } else {
+                    Some(default_permissions)
+                };
+                // SAFETY: fchmod on the open output descriptor.
+                if let Some(mode) = chmod
+                    && unsafe { libc::fchmod(ofd, mode as libc::mode_t) } != 0
+                {
                     return Err(file_operation_error(
-                        "Copying file",
-                        &std::io::Error::from(ErrorKind::AlreadyExists),
-                        &target,
+                        "Copying permissions to",
+                        &std::io::Error::last_os_error(),
+                        &newname,
                     ));
                 }
-                fs::copy(&host_source, &host_target).map_err(|error| {
-                    let path = if error.kind() == ErrorKind::NotFound
-                        && fs::symlink_metadata(&host_source).is_err()
-                    {
-                        &source
-                    } else {
-                        &target
-                    };
-                    file_operation_error("Copying file", &error, path)
-                })?;
-                // fileio.c:Fcopy_file KEEP-TIME: give the copy the same
-                // last-modified (and access) time as the original.  Dired's
-                // default `dired-copy-preserve-time' rides on this.
-                if args.get(3).is_some_and(Value::is_truthy)
-                    && let Ok(metadata) = fs::metadata(&host_source)
-                {
-                    let mut times = fs::FileTimes::new();
-                    if let Ok(modified) = metadata.modified() {
-                        times = times.set_modified(modified);
-                    }
-                    if let Ok(accessed) = metadata.accessed() {
-                        times = times.set_accessed(accessed);
-                    }
-                    // fileio.c only warns ("Cannot set file date") when this
-                    // fails; the copy itself already succeeded.
-                    if let Ok(file) = fs::File::options().write(true).open(&host_target) {
-                        let _ = file.set_times(times);
+                if keep_time {
+                    let times = [
+                        libc::timespec {
+                            tv_sec: st.atime() as libc::time_t,
+                            tv_nsec: st.atime_nsec() as _,
+                        },
+                        libc::timespec {
+                            tv_sec: st.mtime() as libc::time_t,
+                            tv_nsec: st.mtime_nsec() as _,
+                        },
+                    ];
+                    // SAFETY: futimens reads the two timespecs.
+                    if unsafe { libc::futimens(ofd, times.as_ptr()) } != 0 {
+                        return Err(LispError::SignalValue(Value::list([
+                            Value::symbol("file-date-error"),
+                            Value::string("Cannot set file date"),
+                            Value::string(&newname),
+                        ])));
                     }
                 }
-                if !target_existed {
-                    dispatch_file_notification(interp, env, &target, "created")?;
+                // emacs_close: a close interrupted by a signal closed.
+                let ofd = output.into_raw_fd();
+                // SAFETY: the descriptor was just released by its File.
+                if unsafe { libc::close(ofd) } < 0 {
+                    let error = std::io::Error::last_os_error();
+                    if error.kind() != ErrorKind::Interrupted {
+                        return Err(file_operation_error("Write error", &error, &newname));
+                    }
                 }
-                dispatch_file_notification(interp, env, &target, "changed")?;
+                drop(input);
+                if !already_exists {
+                    dispatch_file_notification(interp, env, &newname, "created")?;
+                }
+                dispatch_file_notification(interp, env, &newname, "changed")?;
                 Ok(Value::Nil)
             }
             "rename-file" => {
                 need_arg_range(name, args, 2, 3)?;
-                let source = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
-                validate_file_name(&source)?;
-                let mut target = resolve_file_name_in_env(interp, env, &string_text(&args[1])?);
-                validate_file_name(&target)?;
-                if directory_name_p(&target) {
-                    target = file_name_concat(&[target, file_name_nondirectory(&source)]);
+                // fileio.c:Frename_file, past the handler lookup that
+                // expanded FILE and NEWNAME (under FILE's directory file
+                // name when NEWNAME is a directory name).
+                let file = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
+                validate_file_name(&file)?;
+                let mut newname = resolve_file_name_in_env(interp, env, &string_text(&args[1])?);
+                validate_file_name(&newname)?;
+                if directory_name_p(&newname) {
+                    newname = file_name_concat(&[
+                        newname,
+                        file_name_nondirectory(&directory_file_name(&file)),
+                    ]);
                 }
-                let host_source = host_file_name(interp, env, &source)?;
-                let host_target = host_file_name(interp, env, &target)?;
-                let target_metadata = fs::symlink_metadata(&host_target);
-                if target_metadata.is_ok() && args.get(2).is_none_or(Value::is_nil) {
-                    return Err(file_operation_error(
-                        "Renaming file",
-                        &std::io::Error::from(ErrorKind::AlreadyExists),
-                        &target,
-                    ));
+                let mut ok_if_already_exists = args.get(2).copied().unwrap_or(Value::Nil);
+                let interactive = matches!(ok_if_already_exists.kind(), Kind::Integer(_));
+                let host_file = host_file_name(interp, env, &file)?;
+                let host_newname = host_file_name(interp, env, &newname)?;
+                let mut plain_rename = ok_if_already_exists.is_truthy() && !interactive;
+                let mut rename_errno = 0;
+                if !plain_rename {
+                    match renameat_noreplace(&host_file, &host_newname) {
+                        Ok(()) => {
+                            interp.queue_file_rename_notification(&file, &newname);
+                            interp.invalidate_file_notify_watches_for_path(&file);
+                            return Ok(Value::Nil);
+                        }
+                        Err(errno) => {
+                            rename_errno = errno;
+                            if matches!(
+                                errno,
+                                libc::EEXIST | libc::EINVAL | libc::ENOSYS | libc::ENOTSUP
+                            ) {
+                                barf_or_query_if_file_exists(
+                                    interp,
+                                    env,
+                                    &newname,
+                                    errno == libc::EEXIST,
+                                    "rename to it",
+                                    interactive,
+                                    false,
+                                )?;
+                                plain_rename = true;
+                            }
+                        }
+                    }
                 }
-                fs::rename(&host_source, &host_target).map_err(|error| {
-                    let path = if error.kind() == ErrorKind::NotFound
-                        && fs::symlink_metadata(&host_source).is_err()
-                    {
-                        &source
-                    } else {
-                        &target
-                    };
-                    file_operation_error("Renaming file", &error, path)
-                })?;
-                interp.queue_file_rename_notification(&source, &target);
-                interp.invalidate_file_notify_watches_for_path(&source);
+                if plain_rename {
+                    match fs::rename(&host_file, &host_newname) {
+                        Ok(()) => {
+                            interp.queue_file_rename_notification(&file, &newname);
+                            interp.invalidate_file_notify_watches_for_path(&file);
+                            return Ok(Value::Nil);
+                        }
+                        Err(error) => rename_errno = error.raw_os_error().unwrap_or(libc::EIO),
+                    }
+                    // Don't prompt again.
+                    ok_if_already_exists = Value::T;
+                } else if ok_if_already_exists.is_truthy() {
+                    ok_if_already_exists = Value::T;
+                }
+                let renaming_error = |errno: i32| {
+                    file_operation_error_files(
+                        "Renaming",
+                        &std::io::Error::from_raw_os_error(errno),
+                        &[&file, &newname],
+                    )
+                };
+                if rename_errno != libc::EXDEV {
+                    return Err(renaming_error(rename_errno));
+                }
+                // Across file systems: copy, then delete the original.
+                let mut dirp = directory_name_p(&file);
+                let mut file_type = None;
+                if !dirp {
+                    let metadata = fs::symlink_metadata(&host_file).map_err(|error| {
+                        renaming_error(error.raw_os_error().unwrap_or(libc::EIO))
+                    })?;
+                    dirp = metadata.is_dir();
+                    file_type = Some(metadata.file_type());
+                }
+                let (file_value, newname_value) = (Value::string(&file), Value::string(&newname));
+                if dirp {
+                    call_named_function(
+                        interp,
+                        "copy-directory",
+                        &[file_value, newname_value, Value::T, Value::Nil],
+                        env,
+                    )?;
+                } else if file_type.is_some_and(|kind| kind.is_file()) {
+                    call(
+                        interp,
+                        "copy-file",
+                        &[
+                            file_value,
+                            newname_value,
+                            ok_if_already_exists,
+                            Value::T,
+                            Value::T,
+                            Value::T,
+                        ],
+                        env,
+                    )?;
+                } else if file_type.is_some_and(|kind| kind.is_symlink()) {
+                    let target = fs::read_link(&host_file).map_err(|error| {
+                        renaming_error(error.raw_os_error().unwrap_or(libc::EIO))
+                    })?;
+                    let target = decode_host_file_name(interp, env, &target)?;
+                    call(
+                        interp,
+                        "make-symbolic-link",
+                        &[target, newname_value, ok_if_already_exists],
+                        env,
+                    )?;
+                } else {
+                    return Err(renaming_error(rename_errno));
+                }
+                let binding =
+                    interp.bind_special_dynamic("delete-by-moving-to-trash", Value::Nil, env)?;
+                let deleted = if dirp {
+                    call_named_function(interp, "delete-directory", &[file_value, Value::T], env)
+                } else {
+                    call_named_function(interp, "delete-file", &[file_value, Value::Nil], env)
+                };
+                interp.restore_special_dynamic(binding, env)?;
+                deleted?;
                 Ok(Value::Nil)
             }
             "system-move-file-to-trash" => {
@@ -1338,45 +1612,52 @@ define_dispatch!(
             "make-directory-internal" => {
                 need_args(name, args, 1)?;
                 let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
-                fs::create_dir(host_file_name(interp, env, &path)?)
-                    .map_err(|error| LispError::Signal(error.to_string()))?;
+                // Fmake_directory_internal: emacs_mkdir (dir, 0777 &
+                // ~auto_saving_dir_umask), report_file_error ("Creating
+                // directory", directory).
+                use std::os::unix::fs::DirBuilderExt;
+                std::fs::DirBuilder::new()
+                    .mode(0o777 & !crate::lisp::primitives::file_io::auto_saving_dir_umask())
+                    .create(host_file_name(interp, env, &path)?)
+                    .map_err(|error| file_operation_error("Creating directory", &error, &path))?;
                 dispatch_file_notification(interp, env, &path, "created")?;
                 Ok(Value::Nil)
             }
             "add-name-to-file" => {
                 need_arg_range(name, args, 2, 3)?;
-                let source = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
-                let mut target = resolve_file_name_in_env(interp, env, &string_text(&args[1])?);
-                if directory_name_p(&target) {
-                    target = file_name_concat(&[target, file_name_nondirectory(&source)]);
+                // fileio.c:Fadd_name_to_file, past the handler lookups that
+                // expanded FILE and NEWNAME.
+                let file = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
+                let mut newname = resolve_file_name_in_env(interp, env, &string_text(&args[1])?);
+                if directory_name_p(&newname) {
+                    newname = file_name_concat(&[newname, file_name_nondirectory(&file)]);
                 }
-                let host_source = host_file_name(interp, env, &source)?;
-                let host_target = host_file_name(interp, env, &target)?;
-                if fs::symlink_metadata(&host_target).is_ok() {
-                    let accept_existing = match args.get(2).map(|v| v.kind()) {
-                        Some(Kind::Integer(_)) => call_named_function(
+                let ok_if_already_exists = args.get(2).copied().unwrap_or(Value::Nil);
+                let interactive = matches!(ok_if_already_exists.kind(), Kind::Integer(_));
+                let host_file = host_file_name(interp, env, &file)?;
+                let host_newname = host_file_name(interp, env, &newname)?;
+                let mut linked = fs::hard_link(&host_file, &host_newname);
+                if linked
+                    .as_ref()
+                    .is_err_and(|error| error.kind() == ErrorKind::AlreadyExists)
+                {
+                    if ok_if_already_exists.is_nil() || interactive {
+                        barf_or_query_if_file_exists(
                             interp,
-                            "yes-or-no-p",
-                            &[Value::String(
-                                format!("File {target} exists; keep it? ").into(),
-                            )],
                             env,
-                        )?
-                        .is_truthy(),
-                        Some(value) => value.value().is_truthy(),
-                        None => false,
-                    };
-                    if accept_existing {
-                        return Ok(Value::Nil);
+                            &newname,
+                            true,
+                            "make it a new name",
+                            interactive,
+                            false,
+                        )?;
                     }
-                    return Err(file_operation_error(
-                        "Adding new name",
-                        &std::io::Error::from(ErrorKind::AlreadyExists),
-                        &target,
-                    ));
+                    let _ = fs::remove_file(&host_newname);
+                    linked = fs::hard_link(&host_file, &host_newname);
                 }
-                fs::hard_link(&host_source, &host_target)
-                    .map_err(|error| file_operation_error("Adding new name", &error, &target))?;
+                linked.map_err(|error| {
+                    file_operation_error_files("Adding new name", &error, &[&file, &newname])
+                })?;
                 Ok(Value::Nil)
             }
             "make-temp-file-internal" => {
@@ -1884,49 +2165,50 @@ define_dispatch!(
                 if args.len() < 2 || args.len() > 3 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
+                // fileio.c:Fmake_symbolic_link, past the handler lookup
+                // that expanded LINKNAME (and, for an integer
+                // OK-IF-ALREADY-EXISTS, a `~' or `/:' TARGET).
                 let target = string_text(&args[0])?;
-                let mut link = resolve_file_name_in_env(interp, env, &string_text(&args[1])?);
-                if directory_name_p(&link) {
-                    link = file_name_concat(&[link, file_name_nondirectory(&target)]);
+                let mut linkname = resolve_file_name_in_env(interp, env, &string_text(&args[1])?);
+                if directory_name_p(&linkname) {
+                    linkname = file_name_concat(&[linkname, file_name_nondirectory(&target)]);
                 }
+                let ok_if_already_exists = args.get(2).copied().unwrap_or(Value::Nil);
+                let interactive = matches!(ok_if_already_exists.kind(), Kind::Integer(_));
                 let host_target = host_file_name(interp, env, &target)?;
-                let host_link = host_file_name(interp, env, &link)?;
-                if fs::symlink_metadata(&host_link).is_ok() {
-                    let replace = match args.get(2).map(|v| v.kind()) {
-                        Some(Kind::Integer(_)) => call_named_function(
-                            interp,
-                            "yes-or-no-p",
-                            &[Value::String(
-                                format!("File {link} exists; replace it? ").into(),
-                            )],
-                            env,
-                        )?
-                        .is_truthy(),
-                        Some(value) => value.value().is_truthy(),
-                        None => false,
-                    };
-                    if !replace {
-                        return Err(file_operation_error(
-                            "Making symbolic link",
-                            &std::io::Error::from(ErrorKind::AlreadyExists),
-                            &link,
-                        ));
+                let host_link = host_file_name(interp, env, &linkname)?;
+                let mut linked = symlink(&host_target, &host_link);
+                if let Err(error) = &linked {
+                    if error.raw_os_error() == Some(libc::ENOSYS) {
+                        return Err(LispError::SignalValue(Value::list([
+                            Value::symbol("file-error"),
+                            Value::string("Symbolic links are not supported"),
+                        ])));
                     }
-                    fs::remove_file(&host_link).map_err(|error| {
-                        file_operation_error("Removing old name", &error, &link)
-                    })?;
+                    if error.kind() == ErrorKind::AlreadyExists {
+                        if ok_if_already_exists.is_nil() || interactive {
+                            barf_or_query_if_file_exists(
+                                interp,
+                                env,
+                                &linkname,
+                                true,
+                                "make it a link",
+                                interactive,
+                                false,
+                            )?;
+                        }
+                        let _ = fs::remove_file(&host_link);
+                        linked = symlink(&host_target, &host_link);
+                    }
                 }
-                #[cfg(unix)]
-                {
-                    symlink(&host_target, &host_link).map_err(|error| {
-                        file_operation_error("Making symbolic link", &error, &link)
-                    })?;
-                    Ok(Value::Nil)
-                }
-                #[cfg(not(unix))]
-                {
-                    Err(LispError::Signal("make-symbolic-link not supported".into()))
-                }
+                linked.map_err(|error| {
+                    file_operation_error_files(
+                        "Making symbolic link",
+                        &error,
+                        &[&target, &linkname],
+                    )
+                })?;
+                Ok(Value::Nil)
             }
             "call-process" => {
                 // callproc.c Fcall_process: INFILE (nil for the null device)
@@ -1971,10 +2253,7 @@ define_dispatch!(
             "process-buffer" => {
                 need_args(name, args, 1)?;
                 let process_id = interp.resolve_process_id(&args[0])?;
-                Ok(interp
-                    .process_buffer_id(process_id)
-                    .and_then(|buffer_id| interp.buffer_identity_value(buffer_id))
-                    .unwrap_or(Value::Nil))
+                Ok(interp.process_buffer_value(process_id))
             }
             "process-mark" => {
                 need_args(name, args, 1)?;
@@ -2113,12 +2392,14 @@ define_dispatch!(
             "set-process-buffer" => {
                 need_args(name, args, 2)?;
                 let process_id = interp.resolve_process_id(&args[0])?;
-                let buffer_id = if args[1].is_nil() {
-                    None
-                } else {
-                    Some(interp.resolve_buffer_id(&args[1])?)
+                // process.c: CHECK_BUFFER; a killed buffer leaves the
+                // process with no live buffer.
+                let buffer_id = match args[1].kind() {
+                    Kind::Nil => None,
+                    Kind::Buffer(buffer) => interp.live_buffer_id(buffer),
+                    _ => return Err(LispError::WrongTypeArgument("bufferp".into(), args[1])),
                 };
-                interp.set_process_buffer_id(process_id, buffer_id);
+                interp.set_process_buffer_id(process_id, buffer_id, args[1]);
                 Ok(args[1])
             }
             "process-sentinel" => {
@@ -2755,17 +3036,23 @@ define_dispatch!(
             }
             "kill-buffer" => {
                 need_arg_range(name, args, 0, 1)?;
-                let id = if let Some(buffer) = args.first().filter(|buffer| !buffer.is_nil()) {
-                    match interp.resolve_buffer_id(buffer) {
-                        Ok(id) => id,
-                        Err(_) if matches!(buffer.kind(), Kind::Buffer(_)) => {
+                // Fget_buffer and nsberror; a killed buffer is not killed
+                // again.
+                let id = match args.first().filter(|buffer| !buffer.is_nil()) {
+                    Some(buffer) => {
+                        let buffer = interp.get_buffer_or_error(buffer)?;
+                        let Some(id) = interp.live_buffer_id(buffer) else {
                             return Ok(Value::Nil);
-                        }
-                        Err(error) => return Err(error),
+                        };
+                        id
                     }
-                } else {
-                    interp.current_buffer_id()
+                    None => interp.current_buffer_id(),
                 };
+                // thread.c:thread_check_current_buffer: a buffer another
+                // thread has current is not killed, nor asked about.
+                if interp.thread_check_current_buffer(id) {
+                    return Ok(Value::Nil);
+                }
                 let inhibit_hooks = interp.buffer_hooks_inhibited(id);
                 let saved = interp.current_buffer_id();
                 let switched = saved != id;
@@ -2857,12 +3144,102 @@ define_dispatch!(
                 if !proceed {
                     return Ok(Value::Nil);
                 }
-                if !interp.allow_kill_buffer_for_threads(id) {
+                // buffer.c:Fkill_buffer once nothing more is asked: a buffer
+                // the hooks killed is reported killed, and the minibuffer
+                // now current is not killed.
+                if !interp.has_buffer_id(id) {
+                    return Ok(Value::T);
+                }
+                let buffer = interp.buffer_value(id).expect("live buffer object");
+                let minibuffer_buffer = |interp: &Interpreter| {
+                    crate::lisp::primitives::window::window_buffer_id(
+                        interp,
+                        &interp.minibuffer_window_value(),
+                    )
+                };
+                if minibuffer_buffer(interp) == Some(id) {
+                    return Ok(Value::Nil);
+                }
+                // A base buffer's indirect buffers are killed first, in the
+                // buffer list's order, so that nothing terrible happens if
+                // they ask questions or their hooks fail.
+                if interp.buffer_base_id(id).is_none() {
+                    let indirect: Vec<u64> = interp
+                        .buffer_list
+                        .iter()
+                        .map(|(other, _)| *other)
+                        .filter(|other| interp.buffer_base_id(*other) == Some(id))
+                        .collect();
+                    if !indirect.is_empty() {
+                        for other in indirect {
+                            let Some(value) = interp.buffer_value(other) else {
+                                continue;
+                            };
+                            super::call(interp, "kill-buffer", &[value], env)?;
+                            if let Some(survivor) = interp.get_buffer_by_id(other) {
+                                return Err(LispError::Signal(format!(
+                                    "Unable to kill buffer whose indirect buffer `{}' cannot be killed",
+                                    survivor.name
+                                )));
+                            }
+                        }
+                        if !interp.has_buffer_id(id) {
+                            return Ok(Value::T);
+                        }
+                    }
+                }
+                // replace_buffer_in_windows, before another buffer is made
+                // current: window.el's `replace-buffer-in-windows' shows
+                // another buffer in each window showing this one and
+                // removes it from every window's buffer lists.
+                let replace = cached_symbol!("replace-buffer-in-windows").with(Clone::clone);
+                if interp
+                    .raw_function_binding_symbol(&replace, env)
+                    .is_some_and(|function| !function.is_nil())
+                {
+                    call_function_value(interp, &Value::Symbol(replace), &[buffer], env)?;
+                }
+                if !interp.has_buffer_id(id) {
+                    return Ok(Value::T);
+                }
+                // This buffer stops being current (Fset_buffer of
+                // Fother_buffer); when no other buffer can be, it is not
+                // killed.
+                let frame = interp.selected_frame_id;
+                if id == interp.current_buffer_id() {
+                    let other =
+                        super::buffer_meta::other_buffer(interp, buffer, false, frame, env)?;
+                    let other = interp.resolve_buffer_id(&other)?;
+                    interp.set_current_buffer_id(other)?;
+                    if id == interp.current_buffer_id() {
+                        return Ok(Value::Nil);
+                    }
+                }
+                // Nor when the buffer now current is the minibuffer's and
+                // this one is the sole other buffer.
+                if minibuffer_buffer(interp) == Some(interp.current_buffer_id())
+                    && super::buffer_meta::other_buffer(interp, buffer, false, frame, env)?.word()
+                        == buffer.word()
+                {
                     return Ok(Value::Nil);
                 }
                 // GNU releases the target buffer's lock only after every query
                 // and hook has accepted the kill, immediately before teardown.
                 unlock_buffer(interp, env, id)?;
+                // kill_buffer_processes: the buffer's connections are
+                // deleted and its subprocesses hung up.
+                for (process_id, connection) in interp.buffer_processes(id) {
+                    if connection {
+                        delete_process_notifying(interp, process_id, env)?;
+                    } else {
+                        #[cfg(unix)]
+                        interp.signal_process_group(process_id, libc::SIGHUP, &Value::Nil)?;
+                    }
+                }
+                // Their sentinels may have killed it.
+                if !interp.has_buffer_id(id) {
+                    return Ok(Value::T);
+                }
                 interp.kill_buffer_id(id);
                 if !inhibit_hooks {
                     run_named_hooks(interp, "buffer-list-update-hook", env, None)?;
@@ -2875,10 +3252,16 @@ define_dispatch!(
                 } else {
                     need_arg_range(name, args, 0, 1)?;
                 }
-                let id = if let Some(buffer) = args.first().filter(|value| !value.is_nil()) {
-                    interp.resolve_buffer_id(buffer)?
-                } else {
-                    interp.current_buffer_id()
+                // buffer.c: CHECK_BUFFER; a killed buffer is in no list.
+                let id = match args.first().map(|value| value.kind()) {
+                    None | Some(Kind::Nil) => interp.current_buffer_id(),
+                    Some(Kind::Buffer(buffer)) => match interp.live_buffer_id(buffer) {
+                        Some(id) => id,
+                        None => return Ok(Value::Nil),
+                    },
+                    Some(_) => {
+                        return Err(LispError::WrongTypeArgument("bufferp".into(), args[0]));
+                    }
                 };
                 bury_buffer_in_lists(interp, id, env)?;
                 if name == "bury-buffer-internal" {
@@ -3623,5 +4006,39 @@ fn file_name_bytes(value: &Value) -> Result<(Vec<u8>, bool), LispError> {
             Ok((state.bytes().to_vec(), state.is_multibyte()))
         }
         _ => Err(wrong_type_argument("stringp", *value)),
+    }
+}
+
+/// gnulib renameatu with RENAME_NOREPLACE (fileio.c
+/// emacs_renameat_noreplace): FROM renamed to TO unless TO exists, else
+/// the errno -- ENOSYS where the system cannot refuse to replace.
+fn renameat_noreplace(from: &std::path::Path, to: &std::path::Path) -> Result<(), i32> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let from = std::ffi::CString::new(from.as_os_str().as_bytes()).map_err(|_| libc::EINVAL)?;
+        let to = std::ffi::CString::new(to.as_os_str().as_bytes()).map_err(|_| libc::EINVAL)?;
+        // SAFETY: both names are NUL-terminated and live across the call.
+        let result = unsafe {
+            libc::renameat2(
+                libc::AT_FDCWD,
+                from.as_ptr(),
+                libc::AT_FDCWD,
+                to.as_ptr(),
+                libc::RENAME_NOREPLACE,
+            )
+        };
+        if result == 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error()
+                .raw_os_error()
+                .unwrap_or(libc::EIO))
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (from, to);
+        Err(libc::ENOSYS)
     }
 }

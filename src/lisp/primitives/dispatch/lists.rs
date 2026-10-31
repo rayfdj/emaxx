@@ -1412,13 +1412,31 @@ define_dispatch!(
             }
             "barf-if-buffer-read-only" => {
                 need_arg_range(name, args, 0, 1)?;
+                // buffer.c: POSITION point for nil, else CHECK_FIXNUM; an
+                // `inhibit-read-only' property there lets it pass.
+                let position = match args.first().map(|value| value.kind()) {
+                    None | Some(Kind::Nil) => Value::Integer(interp.buffer.borrow().point() as i64),
+                    Some(Kind::Integer(_)) => args[0],
+                    Some(_) => {
+                        return Err(LispError::WrongTypeArgument("fixnump".into(), args[0]));
+                    }
+                };
                 let read_only = interp
                     .lookup_var("buffer-read-only", env)
                     .is_some_and(|value| value.is_truthy());
                 let inhibited = interp
                     .lookup_var("inhibit-read-only", env)
                     .is_some_and(|value| value.is_truthy());
-                if read_only && !inhibited {
+                if read_only
+                    && !inhibited
+                    && super::call(
+                        interp,
+                        "get-text-property",
+                        &[position, Value::symbol("inhibit-read-only")],
+                        env,
+                    )?
+                    .is_nil()
+                {
                     return Err(LispError::SignalValue(Value::list([
                         Value::Symbol("buffer-read-only".into()),
                         Value::Buffer(interp.buffer),

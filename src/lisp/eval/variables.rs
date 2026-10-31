@@ -88,6 +88,25 @@ impl BacktraceFrame {
     }
 }
 
+/// The always-local slots a buffer made with `reset_always_local_slots'
+/// holds in its bindings' fixed block, in that block's order.
+pub(crate) const FIXED_SLOT_NAMES: [&str; FIXED_SLOTS] = [
+    "default-directory",
+    "buffer-backed-up",
+    "buffer-saved-size",
+    "buffer-auto-save-file-name",
+    "buffer-read-only",
+    "major-mode",
+    "local-minor-modes",
+    "mode-name",
+    "buffer-file-format",
+    "buffer-auto-save-file-format",
+    "point-before-scroll",
+    "buffer-invisibility-spec",
+    "buffer-display-count",
+    "buffer-display-time",
+];
+
 impl Interpreter {
     pub(crate) fn begin_minibuffer_runtime(
         &mut self,
@@ -242,23 +261,7 @@ impl Interpreter {
     /// BVAR (BUFFER, SLOT); None for no live buffer.
     fn buffer_field_value(&self, buffer_id: u64, slot: BufferFieldSlot) -> Option<Value> {
         let buffer = self.get_buffer_by_id(buffer_id)?;
-        let file = |name: &Option<String>| {
-            name.clone()
-                .map_or(Value::Nil, |name| Value::String(name.into()))
-        };
-        Some(match slot {
-            BufferFieldSlot::FileName => file(&buffer.file),
-            BufferFieldSlot::FileTruename => file(&buffer.file_truename),
-            BufferFieldSlot::MarkActive => buffer.mark_active_value(),
-            BufferFieldSlot::Multibyte => {
-                if buffer.is_multibyte() {
-                    Value::T
-                } else {
-                    Value::Nil
-                }
-            }
-            BufferFieldSlot::UndoList => buffer.undo_list(),
-        })
+        Some(buffer_field_of(&buffer, slot))
     }
 
     /// bset_* of SLOT in BUFFER.  `enable-multibyte-characters' is a
@@ -289,7 +292,8 @@ impl Interpreter {
     /// its own from the start, DIRECTORY the creating buffer's; the slots
     /// on the buffer record are reset with it.
     pub(crate) fn reset_always_local_slots(&mut self, buffer_id: u64, directory: Value) {
-        const SLOTS: [crate::lisp::types::symbols::SymbolKey; 14] = [
+        // In FIXED_SLOT_NAMES' order.
+        const SLOTS: [crate::lisp::types::symbols::SymbolKey; super::local_cells::FIXED_SLOTS] = [
             cached_symbol!("default-directory"),
             cached_symbol!("buffer-backed-up"),
             cached_symbol!("buffer-saved-size"),
@@ -305,30 +309,43 @@ impl Interpreter {
             cached_symbol!("buffer-display-count"),
             cached_symbol!("buffer-display-time"),
         ];
-        // A buffer just made has no bindings yet: its cells go in at once.
-        let fresh = !self.buffer_locals.contains_key(&buffer_id);
-        let mut cells = super::LocalCells::with_capacity(SLOTS.len());
-        for key in SLOTS {
-            let symbol = key.with(Clone::clone);
-            let value = match symbol.as_str() {
-                "default-directory" => directory,
-                "buffer-saved-size" | "buffer-display-count" => Value::Integer(0),
-                "major-mode" => {
-                    Value::Symbol(cached_symbol!("fundamental-mode").with(Clone::clone))
-                }
-                "mode-name" => self.fundamental_mode_name,
-                "buffer-auto-save-file-format" | "buffer-invisibility-spec" => Value::T,
-                _ => Value::Nil,
-            };
-            if fresh {
-                self.globals.set_flag(&symbol, LOCALIZED);
-                cells.insert_fresh(&symbol, value);
-            } else {
-                self.set_buffer_local_value_symbol(buffer_id, &symbol, value);
+        let symbols = SLOTS.map(|key| key.with(Clone::clone));
+        debug_assert!(
+            symbols
+                .iter()
+                .zip(FIXED_SLOT_NAMES)
+                .all(|(symbol, name)| symbol.as_str() == name)
+        );
+        let values = [
+            directory,
+            Value::Nil,
+            Value::Integer(0),
+            Value::Nil,
+            Value::Nil,
+            Value::Symbol(cached_symbol!("fundamental-mode").with(Clone::clone)),
+            Value::Nil,
+            self.fundamental_mode_name,
+            Value::Nil,
+            Value::T,
+            Value::Nil,
+            Value::T,
+            Value::Integer(0),
+            Value::Nil,
+        ];
+        // A buffer just made has no bindings yet: its slots are made at
+        // once, each with its symbol.
+        if !self.buffer_locals.contains_key(&buffer_id) {
+            for symbol in &symbols {
+                self.globals.set_flag(symbol, LOCALIZED);
             }
+            self.buffer_locals.insert(
+                buffer_id,
+                super::LocalCells::with_fixed_slots(symbols, values),
+            );
+            return;
         }
-        if fresh {
-            self.buffer_locals.insert(buffer_id, cells);
+        for (symbol, value) in symbols.iter().zip(values) {
+            self.set_buffer_local_value_symbol(buffer_id, symbol, value);
         }
     }
 
@@ -564,7 +581,7 @@ impl Interpreter {
 
     pub fn clear_buffer_local_state(&mut self, buffer_id: u64) {
         self.reset_buffer_text_conversion_style(buffer_id);
-        self.remove_buffer_locals(buffer_id);
+        self.remove_buffer_alist_locals(buffer_id);
         self.buffer_local_hooks.remove(&buffer_id);
         crate::lisp::primitives::casetab::reset_buffer_case_tables(self, buffer_id);
         self.reset_buffer_syntax_table(buffer_id);
@@ -576,7 +593,28 @@ impl Interpreter {
     pub(super) fn remove_buffer_locals(&mut self, buffer_id: u64) {
         let refresh =
             buffer_id == self.current_buffer_id() && self.has_forwarded_eval_local(buffer_id);
-        self.buffer_locals.remove(&buffer_id);
+        if let Some(locals) = self.buffer_locals.remove(&buffer_id) {
+            locals.discard(&self.loaded_bindings);
+        }
+        if refresh {
+            self.refresh_forwarded_eval_cells();
+        }
+    }
+
+    /// reset_buffer_local_variables's reset of BUFFER_ID's local_var_alist:
+    /// its bindings go, the always-local slots made with the buffer (struct
+    /// buffer's fields) stay. A current buffer's evaluator cells return to
+    /// the global values.
+    fn remove_buffer_alist_locals(&mut self, buffer_id: u64) {
+        let refresh =
+            buffer_id == self.current_buffer_id() && self.has_forwarded_eval_local(buffer_id);
+        let state = &mut **self;
+        if let Some(locals) = state.buffer_locals.get_mut(&buffer_id) {
+            locals.discard_cells(&state.loaded_bindings);
+            if locals.is_empty() {
+                self.buffer_locals.remove(&buffer_id);
+            }
+        }
         if refresh {
             self.refresh_forwarded_eval_cells();
         }
@@ -598,7 +636,7 @@ impl Interpreter {
             })
             .map(|(name, values)| (name.clone(), values.clone()))
             .collect::<Vec<_>>();
-        self.remove_buffer_locals(buffer_id);
+        self.remove_buffer_alist_locals(buffer_id);
         if permanent_hooks.is_empty() {
             self.buffer_local_hooks.remove(&buffer_id);
         } else {
@@ -780,6 +818,44 @@ impl Interpreter {
 
     pub(crate) fn is_always_buffer_local_symbol(&self, symbol: &SymbolName) -> bool {
         self.globals.has_flag(symbol, ALWAYS_LOCAL)
+    }
+
+    /// buffer.c:reset_buffer_local_variables (B, 1) as Fkill_buffer leaves
+    /// a killed BUFFER's slots: the always-local ones as they were, but
+    /// for its mode, mode name and invisibility spec, in
+    /// Fbuffer_local_variables' order (Unbound for a void one).
+    pub(crate) fn killed_buffer_local_slots(
+        &self,
+        buffer: &crate::buffer::Buffer,
+    ) -> Vec<(&'static str, Value)> {
+        BUFFER_LOCAL_VARIABLES_ORDER
+            .iter()
+            .filter(|name| native_per_buffer_slot(name).is_some_and(|slot| slot.always_local))
+            .filter_map(|name| {
+                let value = match *name {
+                    "major-mode" => Value::symbol("fundamental-mode"),
+                    "mode-name" => self.fundamental_mode_name,
+                    "buffer-invisibility-spec" => Value::T,
+                    "mark-active" => buffer.killed_locals.as_ref()?[FIXED_SLOTS]?,
+                    _ => match FIXED_SLOT_NAMES.iter().position(|fixed| fixed == name) {
+                        Some(slot) => buffer.killed_locals.as_ref()?[slot]?,
+                        None => buffer_field_of(buffer, buffer_field_slot(name)?),
+                    },
+                };
+                Some((*name, value))
+            })
+            .collect()
+    }
+
+    /// A per-buffer slot's symbol (data.c's BUFFER_OBJFWD forwarding).
+    pub(crate) fn is_per_buffer_symbol(&self, symbol: &SymbolName) -> bool {
+        self.globals.has_flag(symbol, PER_BUFFER)
+    }
+
+    /// data.c's SYMBOL_LOCALIZED redirect: SYMBOL has been made
+    /// buffer-local, in some buffer or when set.
+    pub(crate) fn is_localized_symbol(&self, symbol: &SymbolName) -> bool {
+        self.globals.has_flag(symbol, LOCALIZED)
     }
 
     /// data.c:let_shadows_buffer_binding_p: a SPECPDL_LET_DEFAULT
@@ -4121,6 +4197,27 @@ enum BufferFieldSlot {
     MarkActive,
     Multibyte,
     UndoList,
+}
+
+/// BVAR (BUFFER, SLOT) of a slot held as a Buffer field.
+fn buffer_field_of(buffer: &crate::buffer::Buffer, slot: BufferFieldSlot) -> Value {
+    let file = |name: &Option<String>| {
+        name.clone()
+            .map_or(Value::Nil, |name| Value::String(name.into()))
+    };
+    match slot {
+        BufferFieldSlot::FileName => file(&buffer.file),
+        BufferFieldSlot::FileTruename => file(&buffer.file_truename),
+        BufferFieldSlot::MarkActive => buffer.mark_active_value(),
+        BufferFieldSlot::Multibyte => {
+            if buffer.is_multibyte() {
+                Value::T
+            } else {
+                Value::Nil
+            }
+        }
+        BufferFieldSlot::UndoList => buffer.undo_list(),
+    }
 }
 
 fn buffer_field_slot(name: &str) -> Option<BufferFieldSlot> {

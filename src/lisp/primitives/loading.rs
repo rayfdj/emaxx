@@ -309,8 +309,14 @@ pub(crate) fn eval_buffer_impl(
             args.len(),
         ));
     }
+    // lread.c:Feval_buffer: Fget_buffer, then its own two errors.
     let buffer_id = if let Some(buffer) = args.first().filter(|value| !value.is_nil()) {
-        interp.resolve_buffer_id(buffer)?
+        let buffer = interp
+            .get_buffer(buffer)?
+            .ok_or_else(|| LispError::Signal("No such buffer".into()))?;
+        interp
+            .live_buffer_id(buffer)
+            .ok_or_else(|| LispError::Signal("Reading from killed buffer".into()))?
     } else {
         interp.current_buffer_id()
     };

@@ -238,6 +238,30 @@ impl Interpreter {
         )
     }
 
+    /// The processes process.c:kill_buffer_processes acts on for a buffer
+    /// being killed: those on the process alist whose buffer it is, in the
+    /// alist's order, each with whether it is a connection (a network,
+    /// serial or pipe process), which Fdelete_process deletes, rather than
+    /// a subprocess, which is sent SIGHUP while its input is open.
+    pub(crate) fn buffer_processes(&self, buffer_id: u64) -> Vec<(u64, bool)> {
+        self.process_states
+            .iter()
+            .rev()
+            .filter(|process| {
+                Self::in_process_alist(process) && process.buffer_id == Some(buffer_id)
+            })
+            .filter_map(|process| match process.kind {
+                ProcessKind::Real => process
+                    .runtime
+                    .is_some()
+                    .then_some((process.record_id, false)),
+                ProcessKind::Pipe | ProcessKind::Network | ProcessKind::Serial => {
+                    Some((process.record_id, true))
+                }
+            })
+            .collect()
+    }
+
     pub fn set_process_plist_value(&mut self, record_id: u64, plist: Value) -> bool {
         if let Some(process) = self.find_process_state_mut(record_id) {
             process.plist = plist;
@@ -571,10 +595,14 @@ impl Interpreter {
         };
         let thread_id = Some(self.active_thread_id);
         let readmax = self.process_readmax();
+        let buffer = buffer_id
+            .and_then(|id| self.buffer_value(id))
+            .unwrap_or(Value::Nil);
         self.process_states.push(ProcessState {
             record_id: record_id.id,
             kind,
             buffer_id,
+            buffer,
             mark_marker_id,
             status: ProcessStatus::Run,
             filter: None,
@@ -666,10 +694,14 @@ impl Interpreter {
         self.set_marker(mark_marker_id, initial_position, buffer_id)?;
         let thread_id = Some(self.active_thread_id);
         let readmax = self.process_readmax();
+        let buffer = buffer_id
+            .and_then(|id| self.buffer_value(id))
+            .unwrap_or(Value::Nil);
         self.process_states.push(ProcessState {
             record_id: record_id.id,
             kind: ProcessKind::Network,
             buffer_id,
+            buffer,
             mark_marker_id,
             status,
             filter,
@@ -747,10 +779,12 @@ impl Interpreter {
         self.set_marker(mark_marker_id, initial_position, Some(buffer_id))?;
         let thread_id = Some(self.active_thread_id);
         let readmax = self.process_readmax();
+        let buffer = self.buffer_value(buffer_id).unwrap_or(Value::Nil);
         self.process_states.push(ProcessState {
             record_id: record_id.id,
             kind: ProcessKind::Serial,
             buffer_id: Some(buffer_id),
+            buffer,
             mark_marker_id,
             status: ProcessStatus::Open,
             filter,
@@ -1576,15 +1610,29 @@ impl Interpreter {
         Self::refresh_process_state(process)
     }
 
-    pub fn set_process_buffer_id(&mut self, record_id: u64, buffer_id: Option<u64>) -> bool {
+    /// Fset_process_buffer: BUFFER (nil or a buffer object) is the
+    /// process's buffer; BUFFER_ID its id while it is live.
+    pub fn set_process_buffer_id(
+        &mut self,
+        record_id: u64,
+        buffer_id: Option<u64>,
+        buffer: Value,
+    ) -> bool {
         let Some(process) = self.find_process_state_mut(record_id) else {
             return false;
         };
         process.buffer_id = buffer_id;
+        process.buffer = buffer;
         let mark_id = process.mark_marker_id;
         let position = buffer_id.and_then(|id| self.get_buffer_by_id(id).map(|b| b.point_max()));
         let _ = self.set_marker(mark_id, position, buffer_id);
         true
+    }
+
+    /// The process's buffer object, live or killed, or nil.
+    pub(crate) fn process_buffer_value(&self, record_id: u64) -> Value {
+        self.find_process_state(record_id)
+            .map_or(Value::Nil, |process| process.buffer)
     }
 
     pub fn process_buffer_id(&self, record_id: u64) -> Option<u64> {
@@ -3741,12 +3789,7 @@ impl Interpreter {
         self.record_value(self.active_thread_id)
     }
 
-    pub(crate) fn make_thread(
-        &mut self,
-        function: Value,
-        name: Option<String>,
-        disposition: BufferDisposition,
-    ) -> Result<Value, LispError> {
+    pub(crate) fn make_thread(&mut self, function: Value, name: Value) -> Result<Value, LispError> {
         // thread.c:Fmake_thread stores FUNCTION unchanged. Callability is
         // checked by the child's ordinary funcall, not by a body classifier.
         let continuation = continuations::ThreadContinuation::new(function)
@@ -3760,8 +3803,6 @@ impl Interpreter {
             record_id: record_id.id,
             name,
             buffer_id,
-            buffer_disposition: disposition,
-            buffer_killed: false,
             status: ThreadStatus::Runnable,
             entry: Some(function),
             outcome: None,
@@ -3822,9 +3863,8 @@ impl Interpreter {
         if thread_id == self.active_thread_id {
             return Ok(());
         }
-        let owner = self
-            .thread_name(thread_id)
-            .unwrap_or_else(|| format!("#<thread id:{thread_id}>"));
+        let owner = crate::lisp::primitives::string_text(&self.thread_name(thread_id))
+            .unwrap_or_else(|_| format!("#<thread id:{thread_id}>"));
         Err(LispError::Signal(format!(
             "Attempt to accept output from process {} locked to thread {owner}",
             process.name
@@ -3839,21 +3879,21 @@ impl Interpreter {
         }
     }
 
-    pub fn make_mutex(&mut self, name: Option<String>) -> Value {
+    pub fn make_mutex(&mut self, name: Value) -> Value {
         let value = self.create_pseudovector(RecordKind::Mutex, "mutex", Vec::new());
         let Kind::Record(record_id) = value.kind() else {
             unreachable!("mutex records are always record values");
         };
         self.mutex_states.push(MutexState {
             record_id: record_id.id,
-            _name: name,
+            name,
             owner: None,
             recursion_depth: 0,
         });
         Value::Record(record_id)
     }
 
-    pub fn make_condition_variable(&mut self, mutex_id: u64, name: Option<String>) -> Value {
+    pub fn make_condition_variable(&mut self, mutex_id: u64, name: Value) -> Value {
         let value = self.create_pseudovector(
             RecordKind::ConditionVariable,
             "condition-variable",
@@ -3870,9 +3910,11 @@ impl Interpreter {
         Value::Record(record_id)
     }
 
-    pub fn thread_name(&self, record_id: u64) -> Option<String> {
+    /// The NAME a thread, mutex or condition variable was made with: nil
+    /// or the string itself.
+    pub fn thread_name(&self, record_id: u64) -> Value {
         self.find_thread_state(record_id)
-            .and_then(|thread| thread.name.clone())
+            .map_or(Value::Nil, |thread| thread.name)
     }
 
     pub fn condition_variable_mutex_id(&self, record_id: u64) -> Option<u64> {
@@ -3880,16 +3922,16 @@ impl Interpreter {
             .map(|condvar| condvar.mutex_id)
     }
 
-    pub fn condition_variable_name(&self, record_id: u64) -> Option<String> {
+    pub fn condition_variable_name(&self, record_id: u64) -> Value {
         self.find_condition_variable_state(record_id)
-            .and_then(|condvar| condvar.name.clone())
+            .map_or(Value::Nil, |condvar| condvar.name)
     }
 
-    pub fn mutex_name(&self, record_id: u64) -> Option<String> {
+    pub fn mutex_name(&self, record_id: u64) -> Value {
         self.mutex_states
             .iter()
             .find(|mutex| mutex.record_id == record_id)
-            .and_then(|mutex| mutex._name.clone())
+            .map_or(Value::Nil, |mutex| mutex.name)
     }
 
     pub fn thread_live(&self, record_id: u64) -> bool {
@@ -4365,24 +4407,15 @@ impl Interpreter {
         self.reacquire_condition_mutex(mutex_id, depth, env)
     }
 
-    pub fn allow_kill_buffer_for_threads(&mut self, buffer_id: u64) -> bool {
-        let mut blocked = false;
-        let main_thread_id = self.main_thread_id;
-        for thread in self.thread_states.iter_mut() {
-            if thread.record_id == main_thread_id
-                || thread.buffer_id != buffer_id
-                || matches!(thread.status, ThreadStatus::Finished)
-            {
-                continue;
-            }
-            match thread.buffer_disposition {
-                BufferDisposition::Preserve => blocked = true,
-                BufferDisposition::Default | BufferDisposition::Silently => {
-                    thread.buffer_killed = true;
-                }
-            }
-        }
-        !blocked
+    /// thread.c:thread_check_current_buffer: whether a live thread other
+    /// than the current one has BUFFER_ID current (a thread not yet run
+    /// has the buffer it was made in).
+    pub(crate) fn thread_check_current_buffer(&self, buffer_id: u64) -> bool {
+        self.thread_states.iter().any(|thread| {
+            thread.record_id != self.active_thread_id
+                && thread.buffer_id == buffer_id
+                && !matches!(thread.status, ThreadStatus::Finished)
+        })
     }
 
     pub(super) fn try_lock_mutex(&mut self, thread_id: u64, mutex_id: u64) -> bool {

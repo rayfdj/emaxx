@@ -71,6 +71,22 @@ pub struct Buffer {
     /// The text.
     text: BufferText,
 
+    /// Whether Fkill_buffer killed the buffer (GNU's nil name).
+    pub(crate) killed: bool,
+
+    /// BUF_Z - BUF_BEG, BUF_BEGV and BUF_ZV as a killed buffer's freed
+    /// text left them: GNU's free_buffer_text frees the text and keeps its
+    /// positions.
+    killed_size: usize,
+    killed_bounds: (usize, usize),
+
+    /// A killed buffer's always-local slots held apart from its fields, as
+    /// they were when it was killed: the fixed slots in their order
+    /// (`FIXED_SLOT_NAMES'), None for one that was not a binding, then
+    /// `mark-active'; None for a live buffer.
+    #[allow(clippy::type_complexity)]
+    pub(crate) killed_locals: Option<Box<[Option<Value>; crate::lisp::eval::FIXED_SLOTS + 1]>>,
+
     /// Derived character view of the text around the last character read.
     /// Syntax and motion code commonly scan adjacent characters through
     /// `char_at`; retaining a decoded window avoids a conversion per
@@ -115,11 +131,13 @@ pub struct Buffer {
     /// Value of modiff at last save.
     save_modiff: ModCount,
 
-    /// Explicit modified flag used by `set-buffer-modified-p'.
-    forced_modified: bool,
+    /// BUF_AUTOSAVE_MODIFF: the modification count at the last auto-save
+    /// (0 before any).
+    autosave_modiff: ModCount,
 
-    /// True when the buffer is modified but its contents were auto-saved.
-    autosaved: bool,
+    /// auto_save_failure_time: when an auto-save last took over a minute
+    /// (seconds since the epoch), 0 for none.
+    pub(crate) auto_save_failure_time: i64,
 
     /// Narrowing: accessible region [begv, zv] (1-based, inclusive of begv,
     /// exclusive of zv in the sense that zv is one past the last accessible char).
@@ -180,6 +198,10 @@ impl Clone for Buffer {
             name: self.name.clone(),
             last_name: self.last_name.clone(),
             text: self.text.clone(),
+            killed: self.killed,
+            killed_size: self.killed_size,
+            killed_bounds: self.killed_bounds,
+            killed_locals: self.killed_locals.clone(),
             char_cache: self.char_cache.clone(),
             pt: self.pt,
             mark: self.mark.clone(),
@@ -190,8 +212,8 @@ impl Clone for Buffer {
             text_edit_serial: self.text_edit_serial,
             edits: self.edits.clone(),
             save_modiff: self.save_modiff,
-            forced_modified: self.forced_modified,
-            autosaved: self.autosaved,
+            autosave_modiff: self.autosave_modiff,
+            auto_save_failure_time: self.auto_save_failure_time,
             begv: self.begv,
             zv: self.zv,
             file: self.file.clone(),
@@ -676,8 +698,7 @@ pub(crate) struct BufferImage {
     pub(crate) modiff: ModCount,
     pub(crate) chars_modiff: ModCount,
     pub(crate) save_modiff: ModCount,
-    pub(crate) forced_modified: bool,
-    pub(crate) autosaved: bool,
+    pub(crate) autosave_modiff: ModCount,
     pub(crate) begv: usize,
     pub(crate) zv: usize,
     pub(crate) file: Option<String>,
@@ -851,6 +872,10 @@ impl Buffer {
             name: name.to_string(),
             last_name: None,
             text,
+            killed: false,
+            killed_size: 0,
+            killed_bounds: (1, 1),
+            killed_locals: None,
             char_cache: RefCell::new(RopeCharCache::default()),
             pt: 1,
             mark: BufferMark::Position(None),
@@ -861,8 +886,8 @@ impl Buffer {
             edit_serial: 0,
             text_edit_serial: 0,
             edits: std::collections::VecDeque::new(),
-            forced_modified: false,
-            autosaved: false,
+            autosave_modiff: 0,
+            auto_save_failure_time: 0,
             begv: 1,
             zv: 1, // empty buffer: zv = 1
             file: None,
@@ -888,6 +913,10 @@ impl Buffer {
             name: name.to_string(),
             last_name: None,
             text,
+            killed: false,
+            killed_size: 0,
+            killed_bounds: (1, 1),
+            killed_locals: None,
             char_cache: RefCell::new(RopeCharCache::default()),
             pt: 1,
             mark: BufferMark::Position(None),
@@ -898,8 +927,8 @@ impl Buffer {
             edit_serial: 0,
             text_edit_serial: 0,
             edits: std::collections::VecDeque::new(),
-            forced_modified: false,
-            autosaved: false,
+            autosave_modiff: 0,
+            auto_save_failure_time: 0,
             begv: 1,
             zv: len + 1,
             file: None,
@@ -1067,6 +1096,17 @@ impl Buffer {
     /// Total characters in the buffer (ignoring narrowing).
     pub fn size_total(&self) -> usize {
         self.text.len_chars()
+    }
+
+    /// A killed buffer's size as Fkill_buffer left it (editfns.c's
+    /// buffer-size reads it).
+    pub(crate) fn killed_size(&self) -> usize {
+        self.killed_size
+    }
+
+    /// A killed buffer's BEGV and ZV as Fkill_buffer left them.
+    pub(crate) fn killed_bounds(&self) -> (usize, usize) {
+        self.killed_bounds
     }
 
     // ── Position predicates ──
@@ -1705,6 +1745,13 @@ impl Buffer {
             }
         }
         visit(&self.undo_list);
+        for value in self
+            .killed_locals
+            .iter()
+            .flat_map(|slots| slots.iter().flatten())
+        {
+            visit(value);
+        }
         self.overlays.visit_lisp_values(visit);
     }
 
@@ -1829,7 +1876,6 @@ impl Buffer {
         }
         modiff_incr(&mut self.modiff, 1);
         self.log_edit(start, end, end, false);
-        self.autosaved = false;
     }
 
     /// The intervals [START, END) of a change made, created where there
@@ -2345,7 +2391,6 @@ impl Buffer {
         modiff_incr(&mut self.modiff, nchars);
         self.chars_modiff = self.modiff;
         self.log_edit(insert_at, insert_at, insert_at + nchars, true);
-        self.autosaved = false;
         self.pt
     }
 
@@ -2391,6 +2436,9 @@ impl Buffer {
         if self.save_modiff == self.modiff - 1 {
             self.save_modiff = self.modiff;
         }
+        if self.autosave_modiff == self.modiff - 1 {
+            self.autosave_modiff = self.modiff;
+        }
     }
 
     /// undo.c:record_change: the LENGTH characters at BEG about to be
@@ -2425,7 +2473,6 @@ impl Buffer {
         self.invalidate_char_cache();
         self.refresh_marker_byte_positions();
         self.log_edit(from, to, to, true);
-        self.autosaved = false;
     }
 
     /// insdel.c:replace_range's buffer change: [FROM, TO) replaced by
@@ -2526,7 +2573,6 @@ impl Buffer {
         modiff_incr(&mut self.modiff, nchars_del + inschars);
         self.chars_modiff = self.modiff;
         self.log_edit(from, to, from + inschars, true);
-        self.autosaved = false;
         from
     }
 
@@ -2639,7 +2685,6 @@ impl Buffer {
         modiff_incr(&mut self.modiff, nchars);
         self.chars_modiff = self.modiff;
         self.log_edit(from, to, from, true);
-        self.autosaved = false;
         Ok(deleted)
     }
 
@@ -2693,13 +2738,11 @@ impl Buffer {
     // ── Modification state ──
 
     pub fn is_modified(&self) -> bool {
-        self.forced_modified || self.modiff != self.save_modiff
+        self.save_modiff < self.modiff
     }
 
     pub fn set_unmodified(&mut self) {
         self.save_modiff = self.modiff;
-        self.forced_modified = false;
-        self.autosaved = false;
     }
 
     pub fn visited_file_modtime(&self) -> Option<FileModTime> {
@@ -2710,22 +2753,52 @@ impl Buffer {
         self.visited_file_modtime = modtime;
     }
 
+    /// Frestore_buffer_modified_p's non-nil FLAG: when SAVE_MODIFF >=
+    /// MODIFF, SAVE_MODIFF = modiff_incr (&MODIFF, 1).
     pub fn set_modified(&mut self) {
-        if !self.is_modified() {
-            self.modiff = self.modiff.saturating_add(1);
+        if self.save_modiff >= self.modiff {
+            self.save_modiff = self.modiff;
+            modiff_incr(&mut self.modiff, 1);
         }
-        self.forced_modified = true;
-        self.autosaved = false;
     }
 
+    /// Fbuffer_modified_p's `autosaved': modified, and auto-saved since.
     pub fn is_autosaved(&self) -> bool {
-        self.is_modified() && self.autosaved
+        self.is_modified() && self.autosave_modiff == self.modiff
     }
 
+    /// Frecent_auto_save_p: auto-saved since last read or saved.
+    pub fn recent_auto_save_p(&self) -> bool {
+        self.save_modiff < self.autosave_modiff
+    }
+
+    /// BUF_AUTOSAVE_MODIFF = MODIFF.
     pub fn set_autosaved(&mut self) {
-        if self.is_modified() {
-            self.autosaved = true;
-        }
+        self.autosave_modiff = self.modiff;
+    }
+
+    /// BUF_AUTOSAVE_MODIFF = COUNT, a count of the text this buffer
+    /// shares as an indirect family's base.
+    pub(crate) fn set_autosave_modiff(&mut self, count: ModCount) {
+        self.autosave_modiff = count;
+    }
+
+    /// The counts of struct buffer_text: MODIFF, CHARS_MODIFF and
+    /// SAVE_MODIFF, which an indirect buffer shares with its base.
+    pub(crate) fn text_counters(&self) -> [ModCount; 3] {
+        [self.modiff, self.chars_modiff, self.save_modiff]
+    }
+
+    pub(crate) fn set_text_counters(&mut self, [modiff, chars_modiff, save_modiff]: [ModCount; 3]) {
+        self.modiff = modiff;
+        self.chars_modiff = chars_modiff;
+        self.save_modiff = save_modiff;
+    }
+
+    /// Fdo_auto_save's test: changed since the last real save and since
+    /// the last auto-save.
+    pub(crate) fn changed_since_saves(&self) -> bool {
+        self.save_modiff < self.modiff && self.autosave_modiff < self.modiff
     }
 
     // ── Undo (undo.c) ──
@@ -2882,6 +2955,9 @@ impl Buffer {
     /// retains the buffer object.  GNU Fkill_buffer clears undo, intervals
     /// and overlays and frees text; file slots remain readable afterwards.
     pub(crate) fn release_killed_storage(&mut self) {
+        self.killed = true;
+        self.killed_size = self.size_total();
+        self.killed_bounds = (self.point_min(), self.point_max());
         self.text = BufferText::default();
         *self.char_cache.get_mut() = RopeCharCache::default();
         self.edits = std::collections::VecDeque::new();
@@ -2913,8 +2989,7 @@ impl Buffer {
             modiff: self.modiff,
             chars_modiff: self.chars_modiff,
             save_modiff: self.save_modiff,
-            forced_modified: self.forced_modified,
-            autosaved: self.autosaved,
+            autosave_modiff: self.autosave_modiff,
             begv: self.begv,
             zv: self.zv,
             file: self.file.clone(),
@@ -2938,6 +3013,10 @@ impl Buffer {
             name: parts.name,
             last_name: None,
             text: BufferText::from_str(&parts.text),
+            killed: false,
+            killed_size: 0,
+            killed_bounds: (1, 1),
+            killed_locals: None,
             char_cache: RefCell::new(RopeCharCache::default()),
             pt: parts.pt,
             mark: BufferMark::Position(parts.mark),
@@ -2948,8 +3027,8 @@ impl Buffer {
             text_edit_serial: 0,
             edits: std::collections::VecDeque::new(),
             save_modiff: parts.save_modiff,
-            forced_modified: parts.forced_modified,
-            autosaved: parts.autosaved,
+            autosave_modiff: parts.autosave_modiff,
+            auto_save_failure_time: 0,
             begv: parts.begv,
             zv: parts.zv,
             file: parts.file,
@@ -2991,8 +3070,6 @@ impl Buffer {
         std::mem::swap(&mut self.modiff, &mut other.modiff);
         std::mem::swap(&mut self.chars_modiff, &mut other.chars_modiff);
         std::mem::swap(&mut self.save_modiff, &mut other.save_modiff);
-        std::mem::swap(&mut self.forced_modified, &mut other.forced_modified);
-        std::mem::swap(&mut self.autosaved, &mut other.autosaved);
         std::mem::swap(&mut self.begv, &mut other.begv);
         std::mem::swap(&mut self.zv, &mut other.zv);
         std::mem::swap(&mut self.undo_list, &mut other.undo_list);

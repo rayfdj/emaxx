@@ -159,16 +159,42 @@ impl NativeSubr {
         args: &[crate::lisp::types::Value],
         env: &mut crate::lisp::types::Env,
     ) -> Result<crate::lisp::types::Value, crate::lisp::types::LispError> {
-        let maximum = self.max_args_word;
-        match self.direct_entry() {
-            Some(direct)
-                if args.len() >= usize::from(self.min_args)
-                    && (maximum < 0 || args.len() <= maximum as usize) =>
-            {
-                direct(interp, args, env)
-            }
-            _ => self.call_by_facts(interp, args, env),
+        match self.direct_admitting(args.len()) {
+            Some(direct) => direct(interp, args, env),
+            None => self.call_by_facts(interp, args, env),
         }
+    }
+
+    /// The direct entry when the subr has one and COUNT arguments lie in
+    /// its range, read from its own arity words.
+    #[inline(always)]
+    pub(crate) fn direct_admitting(
+        &'static self,
+        count: usize,
+    ) -> Option<crate::lisp::primitives::DirectPrimitive> {
+        let maximum = self.max_args_word;
+        self.direct_entry().filter(|_| {
+            count >= usize::from(self.min_args) && (maximum < 0 || count <= maximum as usize)
+        })
+    }
+
+    /// `direct_admitting' without resolving an entry not yet looked up,
+    /// which answers None: a call that must not make one.
+    #[inline(always)]
+    pub(crate) fn resolved_direct_admitting(
+        &'static self,
+        count: usize,
+    ) -> Option<crate::lisp::primitives::DirectPrimitive> {
+        let word = self.direct.load(std::sync::atomic::Ordering::Relaxed);
+        let maximum = self.max_args_word;
+        (word > 1
+            && count >= usize::from(self.min_args)
+            && (maximum < 0 || count <= maximum as usize))
+            // SAFETY: a word past 1 was stored from a function pointer of
+            // this type (`direct_entry_slow').
+            .then(|| unsafe {
+                std::mem::transmute::<usize, crate::lisp::primitives::DirectPrimitive>(word)
+            })
     }
 
     /// `call' of a subr with no direct entry, or of ARGS outside its range:

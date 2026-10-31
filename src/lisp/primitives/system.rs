@@ -1193,13 +1193,15 @@ pub(crate) fn resolve_file_name_in_env(interp: &Interpreter, env: &Env, path: &s
     unquote_local_file_name(&expanded).unwrap_or(expanded)
 }
 
-/// Return the canonical name recorded in `buffer-file-truename'.
+/// The canonical name files.el records in `buffer-file-truename', for
+/// the tests' expectations.
 ///
 /// Visiting APIs keep the spelling requested by Lisp in `buffer-file-name',
 /// while this companion value resolves host aliases such as macOS's
 /// `/var' -> `/private/var' symlink.  If the final component does not exist,
 /// retain the expanded name, matching `file-truename' at our current host
 /// abstraction boundary.
+#[cfg(test)]
 pub(crate) fn canonical_file_name(
     interp: &Interpreter,
     env: &Env,
@@ -2040,6 +2042,13 @@ pub(crate) fn dispatch_file_name_handler(
     // expand_cp_target (a directory NEWNAME becomes NEWNAME/basename);
     // Frename_file feeds directory-file-name FILE to expand_cp_target;
     // Fmake_symbolic_link leaves TARGET verbatim and joins only LINKNAME.
+    // Finsert_file_contents checks the buffer before it looks for a
+    // handler.
+    let empty_undo_list_p = if operation == "insert-file-contents" {
+        super::file_io::insert_file_contents_prologue(interp, env, args)?
+    } else {
+        false
+    };
     let normalized = normalize_copy_family_args(interp, env, operation, args)?;
     let args = normalized.as_deref().unwrap_or(args);
     let mut candidates = specification
@@ -2115,14 +2124,30 @@ pub(crate) fn dispatch_file_name_handler(
                 result
             };
         if operation == "insert-file-contents" {
+            // The count in the handler's value when it is one, then the
+            // visit's record: an undo list emptied for an empty one, the
+            // buffer saved at its size.
+            let room = {
+                let buffer = interp.buffer.borrow();
+                buffer.point_max().saturating_sub(buffer.point())
+            };
             let inserted = result
-                .to_vec()
-                .ok()
-                .and_then(|items| items.get(1).cloned())
-                .and_then(|value| value.integer_value())
-                .and_then(|value| usize::try_from(value).ok())
+                .cons_values()
+                .and_then(|(_, rest)| rest.cons_values())
+                .and_then(|(count, _)| match count.kind() {
+                    Kind::Integer(count) if count >= 0 && count as usize <= room => {
+                        Some(count as usize)
+                    }
+                    _ => None,
+                })
                 .unwrap_or(0);
-            finish_insert_file_contents(interp, env, inserted, &args[1..])?;
+            if args.get(1).is_some_and(Value::is_truthy) {
+                if empty_undo_list_p {
+                    interp.buffer.borrow_mut().set_undo_list(Value::Nil);
+                }
+                super::file_io::record_insert_visit_saved(interp);
+            }
+            finish_insert_file_contents(interp, env, inserted, &args[1..], empty_undo_list_p)?;
         }
         if operation == "write-region"
             && let Some(visit) = args.get(4)
@@ -2145,7 +2170,7 @@ pub(crate) fn dispatch_file_name_handler(
             };
             interp.buffer.borrow_mut().file =
                 Some(expand_file_name_runtime(interp, env, &visited_name, None)?);
-            interp.buffer.borrow_mut().set_unmodified();
+            super::file_io::record_visit_saved(interp);
         }
         return Ok(FileNameDispatch::Handled(result));
     }

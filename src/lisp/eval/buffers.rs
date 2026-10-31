@@ -83,6 +83,28 @@ impl Interpreter {
             .collect()
     }
 
+    /// An indirect family's buffers share one struct buffer_text in GNU,
+    /// whose counts Emaxx keeps in each member: BUFFER_ID's counts given to
+    /// the rest of its family.
+    pub(crate) fn share_text_counters(&mut self, buffer_id: u64) {
+        if self.indirect_buffers.is_empty() {
+            return;
+        }
+        let Some(counters) = self
+            .get_buffer_by_id(buffer_id)
+            .map(|buffer| buffer.text_counters())
+        else {
+            return;
+        };
+        for id in self.related_buffer_ids(buffer_id) {
+            if id != buffer_id
+                && let Some(mut buffer) = self.get_buffer_by_id_mut(id)
+            {
+                buffer.set_text_counters(counters);
+            }
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) fn mirror_insert_to_related_buffers(
         &mut self,
@@ -116,6 +138,9 @@ impl Interpreter {
             }
             self.adjust_markers_for_insert(*buffer_id, pos, nchars, before_markers);
         }
+        if related.len() > 1 {
+            self.share_text_counters(current_id);
+        }
     }
 
     pub(super) fn mirror_delete_to_related_buffers(
@@ -145,6 +170,9 @@ impl Interpreter {
                 buffer.goto_char(restored);
             }
             self.adjust_markers_for_delete(*buffer_id, from, to);
+        }
+        if related.len() > 1 {
+            self.share_text_counters(current_id);
         }
     }
 
@@ -177,6 +205,7 @@ impl Interpreter {
                 applied = true;
             }
         }
+        self.share_text_counters(target_id);
         applied
     }
 

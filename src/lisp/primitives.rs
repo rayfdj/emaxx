@@ -1,4 +1,4 @@
-use super::eval::{BufferDisposition, Interpreter, RunningProcess, SpawnedChild};
+use super::eval::{Interpreter, RunningProcess, SpawnedChild};
 use super::json::{self, JsonArrayType, JsonObjectType, JsonParseOptions};
 use super::sqlite;
 use super::types::{EmacsTermination, Env, LispError, StringObjectRef, Value};

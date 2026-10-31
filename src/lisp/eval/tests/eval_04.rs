@@ -2066,14 +2066,16 @@ fn buffer_size_honors_optional_buffer_like_emacs() {
                           (list (buffer-size)
                                 (buffer-size nil)
                                 (buffer-size other)
-                                (buffer-size " *buffer-size-other*"))))
+                                (condition-case nil
+                                    (buffer-size " *buffer-size-other*")
+                                  (wrong-type-argument -1)))))
                     (kill-buffer other)))"#
         ),
         Value::list([
             Value::Integer(2),
             Value::Integer(2),
             Value::Integer(4),
-            Value::Integer(4),
+            Value::Integer(-1),
         ])
     );
 }

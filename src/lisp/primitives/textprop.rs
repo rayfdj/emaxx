@@ -8,10 +8,11 @@ use crate::intervals::{self, PropertySetType};
 use crate::lisp::types::{Kind, PropertyKey, PropertyName};
 
 /// The object a text-property search names: a buffer (nil the current
-/// one) or a string.
+/// one), a killed buffer by the BEGV and ZV it was left with, or a string.
 #[derive(Clone, Copy)]
 pub(crate) enum SearchObject {
     Buffer(u64),
+    Killed(usize, usize),
     String(Value),
 }
 
@@ -24,11 +25,32 @@ pub(crate) fn search_object(
     match object.kind() {
         Kind::Nil => Ok(SearchObject::Buffer(interp.current_buffer_id())),
         Kind::StringObject(_) => Ok(SearchObject::String(object)),
-        Kind::Buffer(_) => Ok(SearchObject::Buffer(interp.resolve_buffer_id(&object)?)),
+        // Fkill_buffer frees a buffer's text and its intervals and keeps
+        // its bounds: a killed buffer holds no properties.
+        Kind::Buffer(buffer) => Ok(match interp.live_buffer_id(buffer) {
+            Some(id) => SearchObject::Buffer(id),
+            None => {
+                let (begv, zv) = buffer.borrow().killed_bounds();
+                SearchObject::Killed(begv, zv)
+            }
+        }),
         _ => Err(LispError::WrongTypeArgument(
             "buffer-or-string-p".into(),
             object,
         )),
+    }
+}
+
+/// BUFFER's BEGV and ZV, a killed buffer's as Fkill_buffer left them.
+fn buffer_object_bounds(
+    interp: &Interpreter,
+    buffer: crate::lisp::types::BufferRef,
+) -> (usize, usize) {
+    let state = buffer.borrow();
+    if interp.live_buffer_id(buffer).is_some() {
+        (state.point_min(), state.point_max())
+    } else {
+        state.killed_bounds()
     }
 }
 
@@ -73,6 +95,11 @@ fn with_search_text<R>(
                 intervals: buffer.property_intervals().filter(|_| min < max),
             })
         }
+        SearchObject::Killed(min, max) => f(&SearchText {
+            min,
+            max,
+            intervals: None,
+        }),
         SearchObject::String(value) => {
             let Kind::StringObject(state) = value.kind() else {
                 unreachable!("a string search names a string");
@@ -580,17 +607,22 @@ pub(crate) fn get_char_property_and_overlay(
     } else {
         object
     };
-    if let Kind::Buffer(_) = object.kind() {
-        let buffer_id = interp.resolve_buffer_id(&object)?;
-        let buffer = interp
-            .get_buffer_by_id(buffer_id)
-            .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?;
-        if !((buffer.point_min() as i64) <= pos && pos <= buffer.point_max() as i64) {
+    // A position outside BEGV..ZV, a killed buffer's as it left them.
+    if let Kind::Buffer(object) = object.kind() {
+        let (begv, zv) = buffer_object_bounds(interp, object);
+        if !((begv as i64) <= pos && pos <= zv as i64) {
             return Err(LispError::SignalValue(Value::list([
                 Value::symbol("args-out-of-range"),
                 *position,
             ])));
         }
+    }
+    if let Kind::Buffer(object) = object.kind()
+        && let Some(buffer_id) = interp.live_buffer_id(object)
+    {
+        let buffer = interp
+            .get_buffer_by_id(buffer_id)
+            .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?;
         if let Some((value, overlay)) = highest_priority_overlay_property_with_id(
             interp,
             &buffer,
@@ -637,13 +669,8 @@ pub(crate) fn text_property_stickiness(
     let default = crate::intervals::assq_by(|car| prop.is(car), defaults)?;
     let begv = match buffer.kind() {
         Kind::Nil => interp.buffer.borrow().point_min(),
-        _ => {
-            let id = interp.resolve_buffer_id(&buffer)?;
-            interp
-                .get_buffer_by_id(id)
-                .ok_or_else(|| LispError::Signal(format!("No buffer with id {id}")))?
-                .point_min()
-        }
+        Kind::Buffer(object) => buffer_object_bounds(interp, object).0,
+        _ => return Err(LispError::WrongTypeArgument("bufferp".into(), buffer)),
     } as i64;
     let ignore_previous_character = pos <= begv;
     let mut is_rear_sticky = true;
@@ -712,8 +739,10 @@ pub(crate) fn get_pos_property(
     if !matches!(object.kind(), Kind::Buffer(_)) {
         return get_text_property(interp, &position, prop, object);
     }
-    let begv = {
-        let buffer_id = interp.resolve_buffer_id(&object)?;
+    let Kind::Buffer(buffer_object) = object.kind() else {
+        unreachable!("a buffer was matched");
+    };
+    let begv = if let Some(buffer_id) = interp.live_buffer_id(buffer_object) {
         let buffer = interp
             .get_buffer_by_id(buffer_id)
             .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?;
@@ -724,6 +753,9 @@ pub(crate) fn get_pos_property(
             return Ok(value);
         }
         buffer.point_min() as i64
+    } else {
+        // A killed buffer has no overlays left.
+        buffer_object_bounds(interp, buffer_object).0 as i64
     };
     match text_property_stickiness(interp, prop, pos, object)? {
         stickiness if stickiness > 0 => get_text_property(interp, &position, prop, object),
@@ -772,18 +804,37 @@ pub(crate) fn previous_char_property_change(
     previous_property_change(interp, position, Value::Nil, Value::Integer(temp))
 }
 
-/// F with OBJECT's buffer current when OBJECT is a buffer other than the
-/// current one (record_unwind_current_buffer and set_buffer_internal),
-/// the current buffer restored after, an error too.
+/// F with OBJECT's buffer current as Fset_buffer makes it, which a
+/// killed buffer cannot be.
+fn with_set_buffer<R>(
+    interp: &mut Interpreter,
+    object: &Value,
+    f: impl FnOnce(&mut Interpreter) -> Result<R, LispError>,
+) -> Result<R, LispError> {
+    if let Kind::Buffer(buffer) = object.kind()
+        && interp.live_buffer_id(buffer).is_none()
+    {
+        return Err(LispError::Signal("Selecting deleted buffer".into()));
+    }
+    with_object_buffer(interp, object, f)
+}
+
+/// F with OBJECT's buffer current when OBJECT is a live buffer other
+/// than the current one (record_unwind_current_buffer and
+/// set_buffer_internal), the current buffer restored after, an error
+/// too.  modify_text_properties would make a killed buffer current,
+/// which Emaxx does not: F finds it holds no text.
 pub(crate) fn with_object_buffer<R>(
     interp: &mut Interpreter,
     object: &Value,
     f: impl FnOnce(&mut Interpreter) -> Result<R, LispError>,
 ) -> Result<R, LispError> {
-    let Kind::Buffer(_) = object.kind() else {
+    let Kind::Buffer(buffer) = object.kind() else {
         return f(interp);
     };
-    let id = interp.resolve_buffer_id(object)?;
+    let Some(id) = interp.live_buffer_id(buffer) else {
+        return f(interp);
+    };
     let original = interp.current_buffer_id();
     if id == original {
         return f(interp);
@@ -828,7 +879,7 @@ pub(crate) fn next_single_char_property_change(
         return Err(wrong_type_argument("bufferp", object));
     }
     let name = PropertyName::new(prop);
-    with_object_buffer(interp, &object, |interp| {
+    with_set_buffer(interp, &object, |interp| {
         let mut position = fixnum_coerce_marker(interp, position)?;
         let initial = get_char_property(interp, &Value::Integer(position), name, object)?;
         let zv = interp.buffer.borrow().point_max() as i64;
@@ -877,7 +928,7 @@ pub(crate) fn previous_single_char_property_change(
         return Err(wrong_type_argument("bufferp", object));
     }
     let name = PropertyName::new(prop);
-    with_object_buffer(interp, &object, |interp| {
+    with_set_buffer(interp, &object, |interp| {
         let mut position = fixnum_coerce_marker(interp, position)?;
         let begv = interp.buffer.borrow().point_min() as i64;
         let limit = if limit.is_nil() {
@@ -966,6 +1017,7 @@ fn add_text_properties_1(
                     destructive,
                 )
             }
+            SearchObject::Killed(..) => Ok(false),
             SearchObject::Buffer(id) => modify_buffer_text_properties(
                 interp,
                 id,
@@ -1085,6 +1137,7 @@ pub(crate) fn set_text_properties(
                     properties,
                 )
             }
+            SearchObject::Killed(..) => Ok(false),
             SearchObject::Buffer(id) => modify_buffer_text_properties(
                 interp,
                 id,
@@ -1190,6 +1243,7 @@ pub(crate) fn remove_text_properties(
                     &mut intervals::NoRecord,
                 )
             }
+            SearchObject::Killed(..) => Ok(false),
             SearchObject::Buffer(id) => modify_buffer_text_properties(
                 interp,
                 id,

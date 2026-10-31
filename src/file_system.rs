@@ -14,7 +14,6 @@ pub(crate) use owned_file::{File, OpenOptions};
 #[cfg(unix)]
 pub(crate) use posix::{
     Metadata, file_metadata, metadata, read, read_open_file, read_to_string, symlink_metadata,
-    write,
 };
 
 #[cfg(not(unix))]
@@ -256,11 +255,6 @@ mod posix {
                 "stream did not contain valid UTF-8",
             )
         })
-    }
-
-    pub(crate) fn write(path: impl AsRef<Path>, contents: impl AsRef<[u8]>) -> io::Result<()> {
-        use std::io::Write;
-        File::create(path)?.write_all(contents.as_ref())
     }
 
     #[cfg(test)]
