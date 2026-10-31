@@ -2443,12 +2443,15 @@ impl Buffer {
 
     /// undo.c:record_change: the LENGTH characters at BEG about to be
     /// replaced by as many, recorded as their deletion and an insertion.
+    /// Their string (make_buffer_string, with its properties) is made
+    /// before record_delete looks at the undo list, so a buffer without
+    /// undo still allocates it, as casify_region's record_delete does.
     pub(crate) fn record_change(&mut self, beg: usize, length: usize) {
+        let old = self.text_range_string(beg - 1, beg - 1 + length);
+        let string = self.deleted_text_value(&old, beg, beg + length);
         if self.undo_recording_disabled() {
             return;
         }
-        let old = self.text_range_string(beg - 1, beg - 1 + length);
-        let string = self.deleted_text_value(&old, beg, beg + length);
         self.record_delete(beg, string, length);
         self.record_insert(beg, length);
     }

@@ -5758,6 +5758,40 @@ fn memory_use_counts_counts_actual_allocations_by_category() {
 }
 
 #[test]
+fn intervals_consed_counts_make_interval_calls() {
+    // alloc.c:make_interval raises `intervals-consed' once an interval:
+    // create_root_interval, each split_interval_left and _right, and
+    // copy_intervals and reproduce_tree for every interval they copy
+    // (Fcopy_sequence, substring, buffer-string, the printer's pruned
+    // copy), with the deleted text record_change and casify_region make
+    // even in a buffer without undo.
+    assert_oracle_contract_matches_interpreter(
+        r##"(let ((s3 (concat (propertize "ab" 'face 'bold) "cd" (propertize "ef" 'x 1))))
+            (mapcar (lambda (thunk)
+                      (let ((before intervals-consed))
+                        (funcall thunk)
+                        (- intervals-consed before)))
+                    (list (lambda () (propertize "abc" 'face 'bold))
+                          (lambda () (concat "abc" "def"))
+                          (lambda () (concat (propertize "ab" 'face 'bold) "cd" (propertize "ef" 'x 1)))
+                          (lambda () (copy-sequence s3))
+                          (lambda () (substring s3 1 5))
+                          (lambda () (substring s3 0 1))
+                          (lambda () (let ((s (copy-sequence "abcdef"))) (put-text-property 2 4 'a 1 s)))
+                          (lambda () (format "%s-%s" (propertize "a" 'x 1) "b"))
+                          (lambda () (with-temp-buffer (insert s3) (buffer-string)))
+                          (lambda () (with-temp-buffer (insert "abcdefgh") (put-text-property 2 6 'a 1) (goto-char 4) (insert "XY")))
+                          (lambda () (with-temp-buffer (insert s3) (delete-region 2 5)))
+                          (lambda () (with-temp-buffer (insert s3) (upcase-region 1 7)))
+                          (lambda () (with-temp-buffer (insert s3) (subst-char-in-region 1 7 ?b ?Q)))
+                          (lambda () (car (read-from-string "#(\"abcd\" 0 1 (a 1) 2 4 (b 2))")))
+                          (lambda () (prin1-to-string s3)))))"##,
+        "(1 0 5 3 3 1 3 3 6 5 3 6 4 3 3)",
+        "intervals-consed deltas",
+    );
+}
+
+#[test]
 fn float_returns_a_float_argument_itself() {
     // floatfns.c:Ffloat returns a float argument unchanged (no new object);
     // an integer argument makes a new float.

@@ -10000,6 +10000,59 @@ setup_process_coding_systems's check now refuses). A 13-form
   GNU's. Local validation: the grouped gate's 3,349 library tests,
   the seven integration suites, clippy with every target and feature,
   rustfmt and `git diff --check'.
+- **Round 189: `intervals-consed' as make_interval counts, and where the
+  frozen setup ratio comes from.** Since round 172 an object's text
+  properties are allocated intervals, but nothing raised
+  `intervals-consed', which stayed at its initial value. It is now raised
+  where intervals.c calls make_interval: create_root_interval, each
+  split_interval_left and split_interval_right, and copy_intervals and
+  reproduce_tree once for every interval they copy, each with
+  tally_consing of `sizeof (struct interval)' (56 bytes) toward the next
+  collection. The printer's pruned copy of a string whose properties are
+  all removed counts the intervals Fcopy_sequence gives it. record_change
+  (translate-region, subst-char-in-region) and casify_region make the
+  deleted text's string, with its intervals, before record_delete looks
+  at the undo list, as undo.c and casefiddle.c do, so a buffer without
+  undo allocates it too. A battery of 45 text-property operations
+  (propertize, concat, copy-sequence, substring, format, insertion with
+  and without inheritance, deletion, insert-buffer-substring, casing,
+  replace-match, the reader, the printer, string-trim, mapconcat,
+  replace-regexp-in-string, buffer-swap-text, set-buffer-multibyte,
+  subst-char, translate-region, compose-string) gives GNU's
+  `intervals-consed' delta for each, and GNU's string counts for the
+  casing, subst-char and translate cases. The tracked empty
+  src/lisp/primitives.rs.tmp (checkpoint 20p) is removed.
+
+  **The frozen setup ratio measures the checked build.** The frozen run
+  times the `gate' profile (debug assertions and overflow checks on, thin
+  LTO in 16 units). Setting up subr-tests (ert, the runner, the file)
+  runs 2,650 M instructions there, 2,586 M without overflow checks,
+  1,946 M without debug assertions, 1,880 M in the release build and
+  1,767 M in GNU's: the assertions are 0.64 G of the gate's excess, spread
+  over std's precondition checks on the VM loop's unchecked code and
+  stack accesses, the checked-build test that every dereferenced cons is
+  still allocated (0.09 G), and thread-local accessors left out of line;
+  none is a walk over a structure. They are the gate's validation and
+  stay. With the release build that setup takes GNU's wall time, a
+  trivial file's startup is faster than GNU's (34 against 37 ms), and
+  mule-tests, semantic-utest-ia and epg-tests, among the frozen run's
+  largest test-body excesses, run within 5% of GNU's (0.95, 1.01,
+  1.04). Loading twenty libraries the first eww test requires takes 74
+  against 66 ms. eww-tests' first test is 16 against 4 ms in the runner,
+  its later ones at GNU's.
+
+  **Found, not fixed:** transpose-regions moves point (GNU keeps it:
+  `(transpose-regions 1 3 5 7)' with point at 4 leaves 4 in GNU and 7
+  here) and records its change as deletions and insertions with marker
+  adjustments where Ftranspose_regions records record_change entries and
+  the property changes; and make_buffer_string_both's
+  update_buffer_properties runs `buffer-access-fontify-functions' only
+  for buffer-substring, buffer-string and field-string here, where GNU
+  also runs it for the text a deletion (with undo), delete-and-extract-
+  region, casing, record_change, replace_range and erase-buffer take.
+  Local validation: the grouped gate's 3,350 library tests, the
+  seven integration suites, clippy with every target and feature,
+  rustfmt and `git diff --check'.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -11227,6 +11280,12 @@ frozen (run 41145506830) matched all 7,928 outcomes on its first
 attempt. Setup 78.3 s against 63.8 s (1.226), test bodies 253.7 s
 against 263.2 s (0.964), in all 1.002; undo-tests' bodies 1.14 s against
 0.90 s.
+
+**On `8545d50`** (round 188): full Rust gate passed (run 41148747150);
+frozen (run 41148756713) matched all 7,928 outcomes on its first
+attempt. Setup 47.5 s against 41.5 s (1.145), test bodies 195.2 s
+against 207.9 s (0.939), in all 0.962; undo-tests' bodies 0.59 s against
+0.47 s. PR #116 took rounds 181 to 188 into main as `bc45e15`.
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'
