@@ -1,5 +1,5 @@
 use super::eval::{Interpreter, RunningProcess, SpawnedChild};
-use super::json::{self, JsonArrayType, JsonObjectType, JsonParseOptions};
+use super::json::{self, JsonParseOptions};
 use super::sqlite;
 use super::types::{EmacsTermination, Env, LispError, StringObjectRef, Value};
 use crate::file_system as fs;

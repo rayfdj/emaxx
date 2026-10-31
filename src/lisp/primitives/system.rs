@@ -2,70 +2,12 @@ use super::*;
 use crate::lisp::types::Kind;
 
 pub(crate) fn json_parse_options(args: &[Value]) -> Result<JsonParseOptions, LispError> {
-    let mut options = JsonParseOptions {
-        object_type: JsonObjectType::HashTable,
-        array_type: JsonArrayType::Vector,
-        null_object: Value::Symbol(":null".into()),
-        false_object: Value::Symbol(":false".into()),
-    };
-    let mut index = 0usize;
-    while index + 1 < args.len() {
-        let key = args[index].as_symbol()?;
-        let value = args[index + 1];
-        match key {
-            ":object-type" => {
-                options.object_type = match value.kind() {
-                    Kind::Symbol(symbol) if symbol == "hash-table" => JsonObjectType::HashTable,
-                    Kind::Symbol(symbol) if symbol == "alist" => JsonObjectType::Alist,
-                    Kind::Symbol(symbol) if symbol == "plist" => JsonObjectType::Plist,
-                    other => {
-                        return Err(LispError::WrongTypeArgument(
-                            "symbolp".into(),
-                            other.value(),
-                        ));
-                    }
-                };
-            }
-            ":array-type" => {
-                options.array_type = match value.kind() {
-                    Kind::Symbol(symbol) if symbol == "vector" => JsonArrayType::Vector,
-                    Kind::Symbol(symbol) if symbol == "list" => JsonArrayType::List,
-                    other => {
-                        return Err(LispError::WrongTypeArgument(
-                            "symbolp".into(),
-                            other.value(),
-                        ));
-                    }
-                };
-            }
-            ":null-object" => options.null_object = value,
-            ":false-object" => options.false_object = value,
-            _ => {
-                return Err(LispError::TypeError("json-option".into(), key.into()));
-            }
-        }
-        index += 2;
-    }
-    Ok(options)
+    crate::lisp::json::parse_args(args, true)
 }
 
 pub(crate) fn json_serialize_options(args: &[Value]) -> Result<(Value, Value), LispError> {
-    let mut null_object = Value::Symbol(":null".into());
-    let mut false_object = Value::Symbol(":false".into());
-    let mut index = 0usize;
-    while index + 1 < args.len() {
-        let key = args[index].as_symbol()?;
-        let value = args[index + 1];
-        match key {
-            ":null-object" => null_object = value,
-            ":false-object" => false_object = value,
-            _ => {
-                return Err(LispError::TypeError("json-option".into(), key.into()));
-            }
-        }
-        index += 2;
-    }
-    Ok((null_object, false_object))
+    let conf = crate::lisp::json::parse_args(args, false)?;
+    Ok((conf.null_object, conf.false_object))
 }
 
 pub(crate) fn current_group_id() -> Result<u32, LispError> {
@@ -1070,30 +1012,143 @@ pub(crate) fn expand_file_name(path: &str, base: Option<&str>) -> String {
     expand_file_name_with_home(path, base, home.as_deref())
 }
 
+/// fileio.c:Fexpand_file_name on POSIX, its handlers and the buffer's
+/// `default-directory' settled: an absolute NAME with no `/.', `/..' or
+/// repeated slash (a leading `//' aside) as it is; else `~' (HOME) or
+/// `~USER' (a known user's home) expanded, a relative name put under BASE
+/// (itself expanded first when not absolute), and the result canonicalized
+/// as the C loop does: `/.' dropped, `/foo/..' dropped (a leading `/..',
+/// the superroot, kept), repeated slashes collapsed but a leading `//'.
 fn expand_file_name_with_home(path: &str, base: Option<&str>, home: Option<&str>) -> String {
-    let preserve_directory_syntax = path.ends_with(std::path::MAIN_SEPARATOR);
-    let expanded = expand_home_prefix_with_home(path, home);
-    let candidate = PathBuf::from(expanded);
-    let absolute = if candidate.is_absolute() {
-        candidate
-    } else {
-        let base_dir = base
-            .map(|base| PathBuf::from(expand_home_prefix_with_home(base, home)))
-            .filter(|path| !path.as_os_str().is_empty())
-            .unwrap_or_else(|| PathBuf::from(default_directory()));
-        if base_dir.is_absolute() {
-            base_dir.join(candidate)
-        } else {
-            std::env::current_dir()
-                .unwrap_or_else(|_| PathBuf::from("."))
-                .join(base_dir)
-                .join(candidate)
+    let nm = path.as_bytes();
+    let sep = |at: usize| nm.get(at) == Some(&b'/');
+    let end = |at: usize| at >= nm.len();
+    if sep(0) {
+        let lose = (0..nm.len()).any(|p| {
+            sep(p)
+                && ((nm.get(p + 1) == Some(&b'.')
+                    && (sep(p + 2)
+                        || end(p + 2)
+                        || (nm.get(p + 2) == Some(&b'.') && (sep(p + 3) || end(p + 3)))))
+                    || (sep(p + 1) && (p != 0 || sep(p + 2))))
+        });
+        if !lose {
+            return path.to_string();
         }
-    };
-    if preserve_directory_syntax {
-        path_to_directory_string(&absolute)
-    } else {
-        normalize_path(&absolute).display().to_string()
+    }
+    let mut rest = path;
+    let mut newdir: Option<String> = None;
+    if let Some(after) = path.strip_prefix('~') {
+        if after.is_empty() || after.starts_with('/') {
+            // get_homedir: HOME, else the passwd entry's directory, else
+            // ""; a relative one spliced onto the directory Emacs started
+            // in (emacs_wd, the process's working directory here).
+            newdir = Some(
+                match home
+                    .map(str::to_string)
+                    .or_else(current_user_home_directory)
+                {
+                    None => String::new(),
+                    Some(home) if home.starts_with('/') => home,
+                    Some(home) => default_directory() + &home,
+                },
+            );
+            rest = after;
+        } else {
+            let user = after.split('/').next().unwrap_or(after);
+            if let Some(user_home) = user_home_directory(user) {
+                newdir = Some(user_home);
+                rest = &after[user.len()..];
+            }
+        }
+    }
+    if newdir.is_none() && !rest.starts_with('/') {
+        let base = base.map(str::to_string).unwrap_or_else(default_directory);
+        // A DEFAULT-DIRECTORY that is not absolute is expanded first.
+        newdir = Some(if base.starts_with('/') || base == path {
+            base
+        } else {
+            expand_file_name_with_home(&base, None, home)
+        });
+    }
+    let mut target = String::with_capacity(rest.len() + newdir.as_ref().map_or(0, String::len) + 2);
+    if let Some(newdir) = &newdir {
+        // Any slash at newdir's end ignored, unless it is just "/" or "//".
+        let bytes = newdir.as_bytes();
+        let mut length = bytes.len();
+        while length > 1 && bytes[length - 1] == b'/' && !(length == 2 && bytes[0] == b'/') {
+            length -= 1;
+        }
+        let newdir = &newdir[..length];
+        if rest.is_empty() || rest.starts_with('/') {
+            target.push_str(newdir);
+        } else if newdir.is_empty() {
+            target.push_str("./");
+        } else {
+            target.push_str(newdir);
+            if !newdir.ends_with('/') {
+                target.push('/');
+            }
+        }
+    }
+    target.push_str(rest);
+    canonicalize_expanded_file_name(&target)
+}
+
+/// The canonicalization loop of Fexpand_file_name on POSIX.
+fn canonicalize_expanded_file_name(target: &str) -> String {
+    let p = target.as_bytes();
+    let mut o: Vec<u8> = Vec::with_capacity(p.len());
+    let sep = |at: usize| p.get(at) == Some(&b'/');
+    let end = |at: usize| at >= p.len();
+    let mut i = 0;
+    while i < p.len() {
+        if p[i] != b'/' {
+            o.push(p[i]);
+            i += 1;
+        } else if p.get(i + 1) == Some(&b'.') && (sep(i + 2) || end(i + 2)) {
+            // "/." as the whole name keeps its "/"; otherwise it goes.
+            if o.is_empty() && end(i + 2) {
+                o.push(b'/');
+            }
+            i += 2;
+        } else if p.get(i + 1) == Some(&b'.')
+            && p.get(i + 2) == Some(&b'.')
+            && !o.is_empty()
+            && (sep(i + 3) || end(i + 3))
+        {
+            while let Some(byte) = o.pop() {
+                if byte == b'/' {
+                    break;
+                }
+            }
+            // The initial "/" is kept only when this is the whole name.
+            if o.is_empty() && target.starts_with('/') && end(i + 3) {
+                o.push(b'/');
+            }
+            i += 3;
+        } else if sep(i + 1) && (i != 0 || sep(i + 2)) {
+            // Repeated slashes collapse, a leading "//" aside.
+            i += 1;
+        } else {
+            o.push(p[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(o)
+        .unwrap_or_else(|error| String::from_utf8_lossy(error.as_bytes()).into_owned())
+}
+
+/// get_homedir's fallback: the passwd entry of the user running Emacs.
+fn current_user_home_directory() -> Option<String> {
+    #[cfg(unix)]
+    {
+        user_account(UserAccountQuery::Uid(unsafe { libc::getuid() }))
+            .and_then(|account| account.home)
+    }
+    #[cfg(not(unix))]
+    {
+        None
     }
 }
 
@@ -1314,10 +1369,24 @@ pub(crate) fn lisp_environment_string(
         .and_then(|value| string_like(&value).map(|string| string.text))
 }
 
+/// fileio.c:search_embedded_absfilename: where an absolute file name
+/// starts after a slash in TEXT (`//', `/~/', or `/~USER/' for a known
+/// USER), the earliest; None when none does.
+fn search_embedded_absfilename(text: &str) -> Option<usize> {
+    let bytes = text.as_bytes();
+    (1..bytes.len()).find(|&p| bytes[p - 1] == b'/' && file_name_absolute_p(&text[p..]))
+}
+
 fn substitute_in_file_name_with(
     path: &str,
     mut environment_value: impl FnMut(&str) -> Option<String>,
 ) -> String {
+    // Fsubstitute_in_file_name: if /~ or // appears, everything through
+    // the slash before it is discarded and the rest substituted afresh.
+    let mut path = path;
+    while let Some(start) = search_embedded_absfilename(path) {
+        path = &path[start..];
+    }
     let mut result = String::new();
     let chars: Vec<char> = path.chars().collect();
     let mut index = 0usize;
@@ -1368,13 +1437,15 @@ fn substitute_in_file_name_with(
         }
         index = end;
     }
-    // Each doubled slash discards everything before its second slash.  This
-    // is GNU's long-standing local-name rule and is also the primitive tail
-    // used by Tramp after it has separated a remote prefix.
-    if let Some(index) = result.rfind("//") {
-        result[index + 1..].to_string()
-    } else {
+    // And again in the substituted name.
+    let mut start = 0;
+    while let Some(next) = search_embedded_absfilename(&result[start..]) {
+        start += next;
+    }
+    if start == 0 {
         result
+    } else {
+        result[start..].to_string()
     }
 }
 

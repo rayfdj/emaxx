@@ -142,6 +142,10 @@ pub(crate) const ROOTS_RESET_AFTER_LOAD: &[(&str, &str)] = &[
         "actual CharTableRef roots, written in dump_buffer's BUFFER_SYNTAX_TABLE slot and restored by load_buffer through install_buffer_syntax_table",
     ),
     (
+        "buffer_category_tables",
+        "actual CharTableRef roots, written in dump_buffer's BUFFER_CATEGORY_TABLE slot and restored by load_buffer through install_buffer_category_table",
+    ),
+    (
         "buffer_case_tables",
         "actual CharTableRef roots, written in dump_buffer's BUFFER_CASE_TABLE, BUFFER_UPCASE_TABLE, BUFFER_CASE_CANON_TABLE and BUFFER_CASE_EQV_TABLE slots and restored by load_buffer through install_buffer_case_tables",
     ),
@@ -262,7 +266,6 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
         "terminal.c resets its allocation counter for the new process; restored nilled terminals advance it",
     ),
     ("next_buffer_id", "carried in the remembered scalars"),
-    ("syntax_segment_cache", "a cache"),
     (
         "loaded_bindings",
         "a cache of the buffer-local bindings last used (data.c's blv where and valcell), loaded again on use",

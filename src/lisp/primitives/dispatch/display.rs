@@ -4698,18 +4698,45 @@ define_dispatch!(
             // ── More string/char ops ──
             "char-equal" => {
                 need_args(name, args, 2)?;
-                let a = args[0].as_integer()?;
-                let b = args[1].as_integer()?;
-                let case_fold = interp
-                    .lookup_var("case-fold-search", env)
-                    .map(|v| v.is_truthy())
-                    .unwrap_or(false);
-                let eq = if case_fold {
-                    a == b || (a as u8 as char).eq_ignore_ascii_case(&(b as u8 as char))
-                } else {
-                    a == b
+                // editfns.c:Fchar_equal: CHECK_CHARACTER of both; equal
+                // codes are equal, else unequal without case-fold-search,
+                // else equal when their downcase agrees, a unibyte buffer
+                // reading 0x80..0xFF as raw bytes (UNIBYTE_TO_CHAR).
+                let character = |value: &Value| match value.kind() {
+                    Kind::Integer(code) if (0..=0x3F_FFFF).contains(&code) => Ok(code as u32),
+                    _ => Err(LispError::WrongTypeArgument("characterp".into(), *value)),
                 };
-                Ok(if eq { Value::T } else { Value::Nil })
+                let (mut a, mut b) = (character(&args[0])?, character(&args[1])?);
+                if a == b {
+                    return Ok(Value::T);
+                }
+                if !interp
+                    .lookup_var("case-fold-search", env)
+                    .is_some_and(|value| value.is_truthy())
+                {
+                    return Ok(Value::Nil);
+                }
+                if !interp.buffer.borrow().is_multibyte() {
+                    for code in [&mut a, &mut b] {
+                        if (0x80..0x100).contains(code) {
+                            *code += RAW_BYTE8_BASE;
+                        }
+                    }
+                }
+                // buffer.h:downcase, the current downcase table's entry.
+                let table = interp.current_case_table_id();
+                let downcase = |code: u32| {
+                    interp
+                        .char_table_get(table, code)
+                        .and_then(|value| value.integer_value())
+                        .and_then(|mapped| u32::try_from(mapped).ok())
+                        .unwrap_or(code)
+                };
+                Ok(if downcase(a) == downcase(b) {
+                    Value::T
+                } else {
+                    Value::Nil
+                })
             }
             "key-description" => {
                 need_arg_range(name, args, 1, 2)?;

@@ -327,16 +327,6 @@ fn character_byte_value(character: Option<char>, multibyte: bool) -> Result<Valu
     Ok(Value::Integer(i64::from(code & 0xff)))
 }
 
-fn utf8_sequence_width(first: u8) -> usize {
-    match first {
-        0x00..=0x7f => 1,
-        0xc2..=0xdf => 2,
-        0xe0..=0xef => 3,
-        0xf0..=0xf4 => 4,
-        _ => 0,
-    }
-}
-
 fn unibyte_text_bytes(text: &str) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(text.len());
     for character in text.chars() {
@@ -351,51 +341,92 @@ fn unibyte_text_bytes(text: &str) -> Vec<u8> {
     bytes
 }
 
-fn multibyte_buffer_text(text: &str, preserve_utf8_sequences: bool) -> (String, Vec<usize>) {
+/// buffer.c:Fset_buffer_multibyte's conversion to multibyte: each byte of
+/// the unibyte TEXT kept, an ASCII one as itself, the bytes of a valid
+/// internal sequence (multibyte_length without ALLOW_8BIT, so not a byte8
+/// head) as their
+/// character when FLAG is t, any other byte as its eight-bit character.
+/// The text, the new position of every old one (point-max's included),
+/// and the characters the text's view cannot carry, by position.
+fn multibyte_buffer_text(
+    text: &str,
+    preserve_utf8_sequences: bool,
+) -> (String, Vec<usize>, Vec<(usize, u32)>) {
     let bytes = unibyte_text_bytes(text);
     let mut converted = String::new();
+    let mut extended = Vec::new();
     let mut position_map = vec![1; bytes.len() + 1];
     let mut byte_index = 0;
     let mut new_position = 1;
 
     while byte_index < bytes.len() {
         position_map[byte_index] = new_position;
-        // buffer.c:Fset_buffer_multibyte preserves ASCII for every non-nil
-        // flag. Only recognition of multi-byte sequences depends on FLAG=t.
-        let width = if bytes[byte_index].is_ascii() {
+        let byte = bytes[byte_index];
+        let width = if byte.is_ascii() {
             1
         } else if preserve_utf8_sequences {
-            utf8_sequence_width(bytes[byte_index])
+            crate::lisp::types::string_data::multibyte_length(&bytes[byte_index..], false)
         } else {
             0
         };
-        let character = (width > 0 && byte_index + width <= bytes.len())
-            .then(|| std::str::from_utf8(&bytes[byte_index..byte_index + width]).ok())
+        let consumed = match (width > 0)
+            .then(|| {
+                crate::lisp::types::string_data::decode_character(
+                    &bytes[byte_index..byte_index + width],
+                )
+                .ok()
+            })
             .flatten()
-            .and_then(|valid| valid.chars().next());
-        let consumed = if let Some(character) = character {
-            converted.push(character);
-            width
-        } else {
-            converted.push(raw_byte_regex_char(bytes[byte_index]));
-            1
+        {
+            Some((code, _)) => {
+                crate::lisp::primitives::push_character_code(
+                    &mut converted,
+                    &mut extended,
+                    new_position,
+                    code,
+                );
+                width
+            }
+            None => {
+                converted.push(raw_byte_regex_char(byte));
+                1
+            }
         };
         new_position += 1;
         position_map[byte_index + 1..=byte_index + consumed].fill(new_position);
         byte_index += consumed;
     }
-    (converted, position_map)
+    (converted, position_map, extended)
 }
 
-fn unibyte_buffer_text(text: &str) -> (String, Vec<usize>) {
+/// buffer.c:Fset_buffer_multibyte's conversion to unibyte: the bytes of
+/// each character's internal representation, an eight-bit character's
+/// own byte (EXTENDED holds the codes the text's view cannot carry, by
+/// character index), each a unibyte character.
+fn unibyte_buffer_text(text: &str, extended: &[(usize, u32)]) -> (String, Vec<usize>) {
     let mut converted = String::with_capacity(text.len());
     let mut position_map = Vec::with_capacity(text.chars().count() + 1);
     position_map.push(1);
     // Each byte of a character's encoding becomes one unibyte character;
     // the map records the count after each source character.
     let mut count = 0;
-    for character in text.chars() {
-        if let Some(byte) = raw_byte_from_regex_char(character) {
+    let mut sidecar = extended.iter().peekable();
+    for (index, character) in text.chars().enumerate() {
+        let code = match sidecar.peek() {
+            Some(&&(at, code)) if at == index => {
+                sidecar.next();
+                Some(code)
+            }
+            _ => None,
+        };
+        if let Some(code) = code {
+            let (encoded, width) = crate::lisp::types::string_data::encode_character(code)
+                .expect("a buffer character's code");
+            for &byte in &encoded[..width] {
+                converted.push(char::from(byte));
+                count += 1;
+            }
+        } else if let Some(byte) = raw_byte_from_regex_char(character) {
             converted.push(char::from(byte));
             count += 1;
         } else {
@@ -686,11 +717,30 @@ define_dispatch!(
             }
             "invisible-p" => {
                 need_args(name, args, 1)?;
-                let invisible = match position_from_value(interp, &args[0]) {
-                    Ok(position) if position >= 1 => char_is_invisible(interp, position, env)?,
-                    _ => invisibility_value_is_hidden(interp, &args[0], env),
+                // xdisp.c:Finvisible_p: a natural number or marker is a
+                // position whose `invisible' char-property is read, any
+                // other object the property's value itself; nil, t, or 2
+                // for text replaced by an ellipsis.
+                let prop = match args[0].kind() {
+                    Kind::Integer(position) if position >= 0 => get_char_property(
+                        interp,
+                        &args[0],
+                        PropertyName::symbol("invisible"),
+                        Value::Nil,
+                    )?,
+                    Kind::Marker(_) => get_char_property(
+                        interp,
+                        &args[0],
+                        PropertyName::symbol("invisible"),
+                        Value::Nil,
+                    )?,
+                    _ => args[0],
                 };
-                Ok(if invisible { Value::T } else { Value::Nil })
+                Ok(match invisibility_level(interp, &prop, env) {
+                    0 => Value::Nil,
+                    1 => Value::T,
+                    level => Value::Integer(i64::from(level)),
+                })
             }
             "buffer-size" => {
                 need_arg_range(name, args, 0, 1)?;
@@ -809,15 +859,20 @@ define_dispatch!(
 
                 let original = interp.buffer.borrow().full_buffer_string();
                 let preserve_utf8_sequences = matches!(args[0].kind(), Kind::T);
-                let (converted, positions) = if enabled {
+                let (converted, positions, extended) = if enabled {
                     multibyte_buffer_text(&original, preserve_utf8_sequences)
                 } else {
-                    unibyte_buffer_text(&original)
+                    let buffer = interp.buffer.borrow();
+                    let (converted, positions) = unibyte_buffer_text(
+                        &original,
+                        &buffer.substring_extended_chars(1, usize::MAX),
+                    );
+                    (converted, positions, Vec::new())
                 };
                 interp
                     .buffer
                     .borrow_mut()
-                    .set_multibyte_representation(enabled, converted, &positions);
+                    .set_multibyte_representation(enabled, converted, &positions, extended);
                 // The conversion is not recorded; a list kept for undo
                 // takes one entry for it instead.
                 let old_undo = interp.buffer.borrow().undo_list();
@@ -1179,12 +1234,8 @@ define_dispatch!(
                         interp.buffer.borrow().point_max(),
                     )
                 };
-                let line = interp
-                    .buffer
-                    .borrow()
-                    .line_number_at_pos(pos)
-                    .saturating_sub(interp.buffer.borrow().line_number_at_pos(start))
-                    + 1;
+                // fns.c: count_lines (start_byte, pos_byte) + 1.
+                let line = interp.buffer.borrow().count_newlines(start, pos) + 1;
                 Ok(Value::Integer(line as i64))
             }
             "line-number-display-width" => {
@@ -2363,26 +2414,26 @@ pub(super) fn direct_backward_char(
 pub(super) fn direct_skip_chars_forward(
     interp: &mut Interpreter,
     args: &[Value],
-    _env: &mut crate::lisp::types::Env,
+    env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
     let name = "skip-chars-forward";
     if args.is_empty() || args.len() > 2 {
         return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
     }
-    regexp::skip_chars_forward_impl(interp, &args[0], args.get(1))
+    regexp::skip_chars_forward_impl(interp, &args[0], args.get(1), env)
 }
 
 /// The `skip-chars-backward' primitive, callable directly (a subr's function pointer).
 pub(super) fn direct_skip_chars_backward(
     interp: &mut Interpreter,
     args: &[Value],
-    _env: &mut crate::lisp::types::Env,
+    env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
     let name = "skip-chars-backward";
     if args.is_empty() || args.len() > 2 {
         return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
     }
-    regexp::skip_chars_backward_impl(interp, &args[0], args.get(1))
+    regexp::skip_chars_backward_impl(interp, &args[0], args.get(1), env)
 }
 
 /// The `skip-syntax-forward' primitive, callable directly (a subr's function pointer).
@@ -2644,9 +2695,112 @@ fn current_column(interp: &mut Interpreter, env: &mut crate::lisp::types::Env) -
         return column;
     }
     let bol = line_beginning_at(interp, point);
-    let column = column_at(interp, env, bol, point);
+    let column = match plain_current_column(interp, env, bol, point) {
+        Some(column) => column,
+        None => column_at(interp, env, bol, point),
+    };
     remember_current_column(interp, column);
     column
+}
+
+/// indent.c current_column's own scan, back from POINT to the line's
+/// start BOL, of a buffer with no intervals or overlays whose characters
+/// are each one byte (Z == Z_BYTE); None for any other buffer, which
+/// current_column_1 scans.
+fn plain_current_column(
+    interp: &Interpreter,
+    env: &crate::lisp::types::Env,
+    bol: usize,
+    point: usize,
+) -> Option<usize> {
+    {
+        let buffer = interp.buffer.borrow();
+        if buffer.has_interval_tree()
+            || !buffer.overlays.is_empty()
+            || (buffer.is_multibyte() && !buffer.text_is_ascii())
+        {
+            return None;
+        }
+    }
+    // SANE_TAB_WIDTH.
+    let tab_width = interp
+        .lookup_var_key(cached_symbol!("tab-width"), env)
+        .and_then(|value| value.integer_value())
+        .filter(|width| (1..=1000).contains(width))
+        .unwrap_or(8) as usize;
+    let ctl_arrow = interp
+        .lookup_var_key(cached_symbol!("ctl-arrow"), env)
+        .is_some_and(|value| value.is_truthy());
+    let selective_display = interp
+        .lookup_var_key(cached_symbol!("selective-display"), env)
+        .is_some_and(|value| matches!(value.kind(), Kind::T));
+    let display_table = crate::lisp::primitives::buffer_display_table(interp, env);
+    let buffer = interp.buffer.borrow();
+    let (before_gap, after_gap) = buffer.text_halves(bol, point);
+    let (mut col, mut tab_seen, mut post_tab) = (0usize, false, 0usize);
+    let tab = |col: usize| (col + tab_width) / tab_width * tab_width;
+    // One character C, shown as itself or (FROM_VECTOR) as a display
+    // vector's glyph: whether the line's start is reached.
+    let mut step = |c: u32, from_vector: bool| {
+        if (0o40..0o177).contains(&c) {
+            col += 1;
+        } else if c == u32::from(b'\n') || (c == u32::from(b'\r') && selective_display) {
+            return true;
+        } else if c == u32::from(b'\t') {
+            if tab_seen {
+                col = tab(col);
+            }
+            post_tab += col;
+            col = 0;
+            tab_seen = true;
+        } else if from_vector {
+            col += 1;
+        } else {
+            col += if ctl_arrow && c < 0o200 { 2 } else { 4 };
+        }
+        false
+    };
+    'scan: for ch in after_gap.chars().rev().chain(before_gap.chars().rev()) {
+        // The byte: a unibyte buffer's raw byte is stored as its marker.
+        let c = crate::lisp::primitives::raw_byte_from_regex_char(ch).unwrap_or(ch as u8);
+        let charvec = display_table.and_then(|table| match table.get(u32::from(c)).kind() {
+            Kind::Vector(vector) => Some(vector),
+            _ => None,
+        });
+        match charvec {
+            Some(vector) => {
+                let glyphs: Vec<Value> = vector.slots().collect();
+                for glyph in glyphs.iter().rev() {
+                    if step(glyph_code_char(glyph), true) {
+                        break 'scan;
+                    }
+                }
+            }
+            None => {
+                if step(u32::from(c), false) {
+                    break 'scan;
+                }
+            }
+        }
+    }
+    if tab_seen {
+        col = tab(col) + post_tab;
+    }
+    Some(col)
+}
+
+/// GLYPH_CODE_CHAR of a display vector's ENTRY when GLYPH_CODE_P, else a
+/// space.
+fn glyph_code_char(entry: &Value) -> u32 {
+    match entry.kind() {
+        Kind::Integer(code) if code >= 0 => (code & 0x3F_FFFF) as u32,
+        Kind::Cons(_) => entry
+            .car()
+            .ok()
+            .and_then(|car| car.integer_value())
+            .map_or(u32::from(b' '), |code| code as u32),
+        _ => u32::from(b' '),
+    }
 }
 
 /// last_known_column, last_known_column_point and
@@ -2757,6 +2911,29 @@ fn buffer_substring_named(
     let (start, end) = validate_region(interp, &args[0], &args[1])?;
     if name == "buffer-substring" {
         update_buffer_properties(interp, start, end, env)?;
+    }
+    // make_buffer_string_both copies the text from where it stands: a span
+    // one side of the gap holds, with no character beyond Unicode, goes
+    // into the string with no copy between.
+    {
+        let buffer = interp.buffer.borrow();
+        if !buffer.has_extended_chars_in(start, end)
+            && let Some(text) = buffer.contiguous_text(start, end)
+        {
+            let props = if name == "buffer-substring" {
+                buffer.string_intervals(start, end)
+            } else {
+                None
+            };
+            return Ok(Value::StringObject(
+                crate::lisp::types::StringObjectRef::from_text_ref(
+                    text,
+                    crate::lisp::types::string_data::StringProperties::new(props),
+                    buffer.is_multibyte(),
+                    &[],
+                ),
+            ));
+        }
     }
     match interp.buffer.borrow().buffer_substring(start, end) {
         Ok(s) => {

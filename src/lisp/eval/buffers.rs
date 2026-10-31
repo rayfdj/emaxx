@@ -377,10 +377,24 @@ impl Interpreter {
     ) -> usize {
         let current_id = self.current_buffer_id();
         let related = self.related_buffer_ids(current_id);
-        let (from, to) = {
+        let (from, to, multibyte) = {
             let buffer = self.buffer.borrow();
             let from = from.max(buffer.point_min());
-            (from, to.min(buffer.point_max()).max(from))
+            (
+                from,
+                to.min(buffer.point_max()).max(from),
+                buffer.is_multibyte(),
+            )
+        };
+        // copy_text: a unibyte buffer takes each character's byte.
+        let unibyte_copy = if multibyte {
+            None
+        } else {
+            crate::lisp::primitives::unibyte_buffer_copy(text, extended)
+        };
+        let (text, extended) = match &unibyte_copy {
+            Some(copy) => (copy.as_str(), &[][..]),
+            None => (text, extended),
         };
         let inschars = text.chars().count();
         let vars = self.insertion_property_variables();

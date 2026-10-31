@@ -275,16 +275,44 @@ impl GapText {
         index: usize,
         more: impl Iterator<Item = (usize, usize)>,
     ) -> usize {
+        self.char_to_byte_counting(index, more).0
+    }
+
+    /// `char_to_byte_near', and how many characters it counted: as
+    /// buf_charpos_to_bytepos CONSIDERs each known position, the nearest
+    /// below INDEX and above it bracket it, and when the text between them
+    /// is all one-byte characters (as many bytes as characters) the
+    /// offset is interpolated; else it is counted from the nearer.
+    pub(crate) fn char_to_byte_counting(
+        &self,
+        index: usize,
+        more: impl Iterator<Item = (usize, usize)>,
+    ) -> (usize, usize) {
         if self.is_ascii() {
-            return index;
+            return (index, 0);
         }
-        let best = self
-            .known()
-            .into_iter()
-            .chain(more)
-            .min_by_key(|&(char, _)| char.abs_diff(index))
-            .expect("known positions");
-        self.char_to_byte_from(best, index)
+        let mut below = (0, 0);
+        let mut above = (self.data.chars, self.data.len());
+        for (char, byte) in self.known().into_iter().chain(more) {
+            if char == index {
+                return (byte, 0);
+            } else if char > index {
+                if char < above.0 {
+                    above = (char, byte);
+                }
+            } else if char > below.0 {
+                below = (char, byte);
+            }
+        }
+        if above.0 - below.0 == above.1 - below.1 {
+            return (below.1 + (index - below.0), 0);
+        }
+        let from = if index - below.0 < above.0 - index {
+            below
+        } else {
+            above
+        };
+        (self.char_to_byte_from(from, index), index.abs_diff(from.0))
     }
 
     /// `char_to_byte_near' with the known positions alone.
@@ -328,20 +356,46 @@ impl GapText {
         byte: usize,
         more: impl Iterator<Item = (usize, usize)>,
     ) -> usize {
+        self.byte_to_char_counting(byte, more).0
+    }
+
+    /// `byte_to_char_near', and how many bytes it counted, bracketing BYTE
+    /// as `char_to_byte_counting' brackets a character.
+    pub(crate) fn byte_to_char_counting(
+        &self,
+        byte: usize,
+        more: impl Iterator<Item = (usize, usize)>,
+    ) -> (usize, usize) {
         if self.is_ascii() {
-            return byte;
+            return (byte, 0);
         }
-        let (from, from_byte) = self
-            .known()
-            .into_iter()
-            .chain(more)
-            .min_by_key(|&(_, at)| at.abs_diff(byte))
-            .expect("known positions");
-        if byte >= from_byte {
+        let mut below = (0, 0);
+        let mut above = (self.data.chars, self.data.len());
+        for (char, at) in self.known().into_iter().chain(more) {
+            if at == byte {
+                return (char, 0);
+            } else if at > byte {
+                if at < above.1 {
+                    above = (char, at);
+                }
+            } else if at > below.1 {
+                below = (char, at);
+            }
+        }
+        if above.0 - below.0 == above.1 - below.1 {
+            return (below.0 + (byte - below.1), 0);
+        }
+        let (from, from_byte) = if byte - below.1 < above.1 - byte {
+            below
+        } else {
+            above
+        };
+        let char = if byte >= from_byte {
             from + self.chars_in(from_byte..byte)
         } else {
             from - self.chars_in(byte..from_byte)
-        }
+        };
+        (char, byte.abs_diff(from_byte))
     }
 
     /// `byte_to_char_near' with the known positions alone.

@@ -40,16 +40,6 @@ pub(crate) fn normalize_case_key(key: u32) -> u32 {
     raw_case_byte(key).unwrap_or(key)
 }
 
-pub(crate) fn denormalize_case_key(template: u32, mapped: u32) -> u32 {
-    if RAW_BYTE8_CHARS.contains(&template) && (0x80..=0xFF).contains(&mapped) {
-        RAW_BYTE8_BASE + mapped
-    } else if RAW_BYTE_MARKERS.contains(&template) && (0x80..=0xFF).contains(&mapped) {
-        RAW_BYTE_REGEX_BASE + mapped
-    } else {
-        mapped
-    }
-}
-
 pub(crate) fn alternate_case_key(key: u32) -> Option<u32> {
     if (0x80..=0xFF).contains(&key) {
         Some(RAW_BYTE8_BASE + key)
@@ -208,17 +198,6 @@ impl CasingContext {
         )?;
         u32::try_from(value.integer_value()?).ok()
     }
-
-    fn special_string(&self, interp: &Interpreter, property: &str, code: u32) -> Option<String> {
-        let table_id = match property {
-            "special-uppercase" => self.special_upcase,
-            "special-lowercase" => self.special_downcase,
-            _ => self.special_titlecase,
-        }?;
-        let value =
-            crate::lisp::primitives::dispatch::strings::uniprop_table_ref(interp, table_id, code)?;
-        crate::lisp::primitives::string_like(&value).map(|string| string.text)
-    }
 }
 
 pub(crate) fn current_case_table_ids(
@@ -271,73 +250,15 @@ pub(crate) fn case_symbols_as_words_enabled(interp: &Interpreter) -> bool {
         .is_some_and(|value| value.is_truthy())
 }
 
+/// Whether CH is a word constituent as casefiddle.c and Freplace_match
+/// read it: SYNTAX of the character, a raw byte as its eight-bit character
+/// (make_char_multibyte), not the byte's Latin-1 namesake.
 pub(crate) fn case_word_char(interp: &Interpreter, ch: char, case_symbols_as_words: bool) -> bool {
-    syntax::current_syntax_word_char(interp, normalize_case_key(ch as u32), case_symbols_as_words)
-}
-
-pub(crate) fn full_upcase_string(
-    interp: &Interpreter,
-    context: &CasingContext,
-    up_table: CharTableRef,
-    ch: char,
-) -> String {
-    let code = ch as u32;
-    if let Some(mapped) = context.special_string(interp, "special-uppercase", code) {
-        return mapped;
-    }
-    if let Some(mapped) = case_table_mapping(interp, up_table, code) {
-        return char::from_u32(denormalize_case_key(code, mapped))
-            .unwrap_or(ch)
-            .to_string();
-    }
-    ch.to_string()
-}
-
-pub(crate) fn full_downcase_string(
-    interp: &Interpreter,
-    context: &CasingContext,
-    down_table: CharTableRef,
-    ch: char,
-    final_sigma: bool,
-) -> String {
-    let code = ch as u32;
-    let mapped = context
-        .special_string(interp, "special-lowercase", code)
-        .unwrap_or_else(|| {
-            case_table_mapping(interp, down_table, code)
-                .and_then(|mapped| char::from_u32(denormalize_case_key(code, mapped)))
-                .unwrap_or(ch)
-                .to_string()
-        });
-    // casefiddle.c applies final sigma only if casing actually changed it.
-    if code == 0x03A3 && final_sigma && mapped != ch.to_string() {
-        '\u{03C2}'.to_string()
-    } else {
-        mapped
-    }
-}
-
-pub(crate) fn full_titlecase_string(
-    interp: &Interpreter,
-    context: &CasingContext,
-    up_table: CharTableRef,
-    ch: char,
-) -> String {
-    let code = ch as u32;
-    if let Some(mapped) = context.special_string(interp, "special-titlecase", code) {
-        return mapped;
-    }
-    // casefiddle.c consults the `titlecase' uniprop before the case-table
-    // upcase mapping.
-    if let Some(mapped) = context.titlecase_char(interp, code) {
-        return char::from_u32(mapped).unwrap_or(ch).to_string();
-    }
-    if let Some(mapped) = case_table_mapping(interp, up_table, code) {
-        return char::from_u32(denormalize_case_key(code, mapped))
-            .unwrap_or(ch)
-            .to_string();
-    }
-    ch.to_string()
+    syntax::current_syntax_word_char(
+        interp,
+        string_character_code(true, ch) as u32,
+        case_symbols_as_words,
+    )
 }
 
 pub(crate) fn simple_case_char_for_action(
@@ -366,103 +287,290 @@ pub(crate) fn simple_case_char_for_action(
     }
 }
 
-/// The text INPUT cased, with EXTENDED its side table (offsets of the
-/// characters its Rust view cannot carry, which case by their codes):
-/// the cased text and its side table, with how many characters each of
-/// INPUT's became pushed on PIECES.  GNU prepares the casing context once
-/// per operation, never per character.
-fn casify_string_pieces(
-    interp: &mut Interpreter,
-    input: &str,
-    extended: &[(usize, u32)],
-    action: CaseAction,
-    pieces: &mut Vec<usize>,
-    env: &mut Env,
-) -> Result<(String, Vec<(usize, u32)>), LispError> {
-    let context = CasingContext::prepare(interp, action, env);
-    casify_string_with_context(interp, input, extended, action, &context, Some(pieces))
+/// syntax.h SYNTAX_FLAGS_PREFIX: a syntax entry's prefix flag (`p').
+const SYNTAX_PREFIX_FLAG: i32 = 1 << 20;
+const SYNTAX_CLASS_WORD: i32 = 2;
+const SYNTAX_CLASS_SYMBOL: i32 = 3;
+const GREEK_CAPITAL_LETTER_SIGMA: u32 = 0x03A3;
+const GREEK_SMALL_LETTER_FINAL_SIGMA: u32 = 0x03C2;
+
+/// casefiddle.c's casing_str_buf: a character's casing, at most
+/// sizeof data's six bytes of characters.
+#[derive(Clone, Copy)]
+struct Cased {
+    codes: [u32; 6],
+    len: usize,
 }
 
-fn casify_string_with_context(
-    interp: &mut Interpreter,
-    input: &str,
-    extended: &[(usize, u32)],
-    action: CaseAction,
-    context: &CasingContext,
-    mut pieces: Option<&mut Vec<usize>>,
-) -> Result<(String, Vec<(usize, u32)>), LispError> {
-    let case_symbols_as_words = case_symbols_as_words_enabled(interp);
-    let (down_table, up_table) = current_case_table_ids(interp)?;
-    let chars: Vec<char> = input.chars().collect();
-    let code_at = |idx: usize| {
-        extended
-            .binary_search_by_key(&idx, |(at, _)| *at)
-            .ok()
-            .map(|found| extended[found].1)
-    };
-    let word_at = |idx: usize| match code_at(idx) {
-        Some(code) => syntax::current_syntax_word_char(interp, code, case_symbols_as_words),
-        None => case_word_char(interp, chars[idx], case_symbols_as_words),
-    };
-    let mut output = String::new();
-    let mut output_extended = Vec::new();
-    let mut output_len = 0;
-    let mut in_word = false;
-    for (idx, ch) in chars.iter().copied().enumerate() {
-        let is_word = word_at(idx);
-        if let Some(code) = code_at(idx) {
-            // casefiddle.c's case_character on the character's code: the
-            // case table's mapping, if any.
-            let table = match action {
-                CaseAction::Up => Some(up_table),
-                CaseAction::Down => Some(down_table),
-                CaseAction::Capitalize | CaseAction::UpcaseInitials if is_word && !in_word => {
-                    Some(up_table)
-                }
-                CaseAction::Capitalize => Some(down_table),
-                CaseAction::UpcaseInitials => None,
+impl Cased {
+    fn one(code: u32) -> Self {
+        let mut codes = [0; 6];
+        codes[0] = code;
+        Cased { codes, len: 1 }
+    }
+
+    fn codes(&self) -> &[u32] {
+        &self.codes[..self.len]
+    }
+}
+
+/// casefiddle.c's struct casing_context, with the current buffer's case
+/// and syntax tables and case-symbols-as-words read once.
+struct Casing<'a> {
+    interp: &'a Interpreter,
+    tables: CasingContext,
+    flag: CaseAction,
+    inbuffer: bool,
+    inword: bool,
+    down: CharTableRef,
+    up: CharTableRef,
+    syntax: CharTableRef,
+    symbols_as_words: bool,
+}
+
+/// buffer.h downcase and upcase: TABLE's entry for CH when a natnum.
+fn case_table_natnum(table: CharTableRef, ch: u32) -> u32 {
+    match table.get(ch).kind() {
+        Kind::Integer(mapped) if mapped >= 0 => mapped as u32,
+        _ => ch,
+    }
+}
+
+impl<'a> Casing<'a> {
+    /// prepare_casing_context: CONTEXT the tables FLAG may consult,
+    /// INBUFFER whether a buffer is cased.
+    fn new(
+        interp: &'a mut Interpreter,
+        context: CasingContext,
+        flag: CaseAction,
+        inbuffer: bool,
+    ) -> Result<Self, LispError> {
+        let symbols_as_words = case_symbols_as_words_enabled(interp);
+        let (down, up) = current_case_table_ids(interp)?;
+        let syntax = interp.current_syntax_table_id();
+        Ok(Casing {
+            interp,
+            tables: context,
+            flag,
+            inbuffer,
+            inword: false,
+            down,
+            up,
+            syntax,
+            symbols_as_words,
+        })
+    }
+
+    fn syntax_flags(&self, ch: u32) -> i32 {
+        super::syntax_scan::entry_flags(self.syntax.get(ch))
+    }
+
+    /// case_ch_is_word of a syntax entry's FLAGS.
+    fn is_word(&self, flags: i32) -> bool {
+        let class = flags & 0xff;
+        class == SYNTAX_CLASS_WORD || (self.symbols_as_words && class == SYNTAX_CLASS_SYMBOL)
+    }
+
+    /// case_character_impl: CH cased, the special casing strings read
+    /// when SPECIAL (a casing_str_buf given); whether it changed.
+    fn case_impl(&mut self, ch: u32, special: bool) -> (Cased, bool) {
+        let was_inword = self.inword;
+        let flags = self.syntax_flags(ch);
+        self.inword = self.is_word(flags)
+            && (!self.inbuffer || was_inword || flags & SYNTAX_PREFIX_FLAG == 0);
+        let flag = match self.flag {
+            CaseAction::Capitalize if was_inword => CaseAction::Down,
+            CaseAction::UpcaseInitials if was_inword => return (Cased::one(ch), false),
+            CaseAction::UpcaseInitials => CaseAction::Capitalize,
+            flag => flag,
+        };
+        if special {
+            let table = match flag {
+                CaseAction::Up => self.tables.special_upcase,
+                CaseAction::Down => self.tables.special_downcase,
+                _ => self.tables.special_titlecase,
             };
-            let mapped = table
-                .and_then(|table| case_table_mapping(interp, table, code))
-                .unwrap_or(code);
-            push_character_code(&mut output, &mut output_extended, output_len, mapped);
-            output_len += 1;
-            if let Some(pieces) = pieces.as_deref_mut() {
-                pieces.push(1);
+            if let Some(table) = table
+                && let Some(prop) = crate::lisp::primitives::dispatch::strings::uniprop_table_ref(
+                    self.interp,
+                    table,
+                    ch,
+                )
+                && let Kind::StringObject(string) = prop.kind()
+            {
+                let string = string.borrow();
+                if string.bytes().len() <= 6 {
+                    let mut cased = Cased {
+                        codes: [0; 6],
+                        len: 0,
+                    };
+                    for code in string.codes() {
+                        cased.codes[cased.len] = code;
+                        cased.len += 1;
+                    }
+                    return (cased, true);
+                }
             }
-            in_word = is_word;
+        }
+        let cased = if flag == CaseAction::Down {
+            case_table_natnum(self.down, ch)
+        } else {
+            self.tables
+                .titlecase_char(self.interp, ch)
+                .filter(|&cased| cased <= 0x3F_FFFF)
+                .unwrap_or_else(|| case_table_natnum(self.up, ch))
+        };
+        (Cased::one(cased), cased != ch)
+    }
+
+    /// case_single_character.
+    fn case_single(&mut self, ch: u32) -> u32 {
+        self.case_impl(ch, false).0.codes[0]
+    }
+
+    /// case_character: case_impl with special casing, and a capital sigma
+    /// that ends a word (NEXT, the next character, not a word one, or
+    /// none) a final sigma.
+    fn case_character(&mut self, ch: u32, next: Option<u32>) -> (Cased, bool) {
+        let was_inword = self.inword;
+        let (mut cased, changed) = self.case_impl(ch, true);
+        if was_inword
+            && ch == GREEK_CAPITAL_LETTER_SIGMA
+            && changed
+            && next.is_none_or(|next| !self.is_word(self.syntax_flags(next)))
+        {
+            cased = Cased::one(GREEK_SMALL_LETTER_FINAL_SIGMA);
+        }
+        (cased, changed)
+    }
+}
+
+/// The code of the character CH at INDEX of a multibyte text view whose
+/// side table is EXTENDED (from NEXT_EXTENDED on): a raw byte's marker
+/// is its eight-bit character.
+fn view_code(ch: char, index: usize, extended: &[(usize, u32)], next_extended: &mut usize) -> u32 {
+    if let Some(&(at, code)) = extended.get(*next_extended)
+        && at == index
+    {
+        *next_extended += 1;
+        return code;
+    }
+    match raw_byte_from_regex_char(ch) {
+        Some(byte) => RAW_BYTE8_BASE + u32::from(byte),
+        None => ch as u32,
+    }
+}
+
+/// A multibyte text cased: the text and its side table, how many
+/// characters each character became, and do_casify_multibyte_region's
+/// account of the change (positions counted from 0).
+struct CasedText {
+    text: String,
+    extended: Vec<(usize, u32)>,
+    pieces: Vec<u8>,
+    /// The first and last (exclusive, in the cased text) characters that
+    /// changed, if any did.
+    changed: Option<(usize, usize)>,
+    /// Characters added.
+    added: isize,
+    /// Whether a character became another number of characters or of
+    /// bytes, which replace_range_2 replaces.
+    replace: bool,
+    /// The cased characters' codes, when asked for.
+    codes: Vec<u32>,
+}
+
+/// do_casify_multibyte_string and do_casify_multibyte_region's loop over
+/// TEXT (a multibyte view, side table EXTENDED), the cased codes kept when
+/// RECORD.
+fn casify_multibyte_text(
+    casing: &mut Casing<'_>,
+    text: &str,
+    extended: &[(usize, u32)],
+    record: bool,
+) -> CasedText {
+    let mut out = CasedText {
+        text: String::with_capacity(text.len()),
+        extended: Vec::new(),
+        pieces: Vec::with_capacity(text.len()),
+        changed: None,
+        added: 0,
+        replace: false,
+        codes: Vec::new(),
+    };
+    let mut next_extended = 0;
+    let mut pos = 0;
+    let mut chars = text.chars().enumerate().peekable();
+    while let Some((index, ch)) = chars.next() {
+        let code = view_code(ch, index, extended, &mut next_extended);
+        let next = if code == GREEK_CAPITAL_LETTER_SIGMA {
+            chars.peek().map(|&(next_index, next_ch)| {
+                let mut lookahead = next_extended;
+                view_code(next_ch, next_index, extended, &mut lookahead)
+            })
+        } else {
+            None
+        };
+        let has_next = chars.peek().is_some();
+        let (cased, changed) = casing.case_character(code, if has_next { next } else { None });
+        for &cased_code in cased.codes() {
+            push_character_code(&mut out.text, &mut out.extended, pos, cased_code);
+            pos += 1;
+        }
+        if record {
+            out.codes.extend_from_slice(cased.codes());
+        }
+        out.pieces.push(cased.len as u8);
+        if changed {
+            let start = pos - cased.len;
+            out.changed = Some((out.changed.map_or(start, |(first, _)| first), pos));
+            let bytes = crate::lisp::primitives::buffers::multibyte_char_bytes;
+            if !(cased.len == 1 && bytes(cased.codes[0]) == bytes(code)) {
+                out.replace = true;
+                out.added += cased.len as isize - 1;
+            }
+        }
+    }
+    out
+}
+
+/// do_casify_unibyte_region's loop over a unibyte buffer's TEXT: each byte
+/// cased as its character (make_char_multibyte) by case_single_character
+/// and stored as the byte make_char_unibyte makes of the result.
+fn casify_unibyte_text(casing: &mut Casing<'_>, text: &str) -> CasedText {
+    let mut out = CasedText {
+        text: String::with_capacity(text.len()),
+        extended: Vec::new(),
+        pieces: Vec::new(),
+        changed: None,
+        added: 0,
+        replace: false,
+        codes: Vec::new(),
+    };
+    for (pos, ch) in text.chars().enumerate() {
+        let byte = raw_byte_from_regex_char(ch).unwrap_or(ch as u8);
+        let code = if byte < 0x80 {
+            u32::from(byte)
+        } else {
+            RAW_BYTE8_BASE + u32::from(byte)
+        };
+        let cased = casing.case_single(code);
+        if cased == code {
+            out.text.push(ch);
             continue;
         }
-        let next_is_word = idx + 1 < chars.len() && word_at(idx + 1);
-        let piece = match action {
-            CaseAction::Up => full_upcase_string(interp, context, up_table, ch),
-            CaseAction::Down => {
-                full_downcase_string(interp, context, down_table, ch, in_word && !next_is_word)
-            }
-            CaseAction::Capitalize => {
-                if is_word && !in_word {
-                    full_titlecase_string(interp, context, up_table, ch)
-                } else {
-                    full_downcase_string(interp, context, down_table, ch, in_word && !next_is_word)
-                }
-            }
-            CaseAction::UpcaseInitials => {
-                if is_word && !in_word {
-                    full_titlecase_string(interp, context, up_table, ch)
-                } else {
-                    ch.to_string()
-                }
-            }
+        out.changed = Some((out.changed.map_or(pos, |(first, _)| first), pos + 1));
+        // make_char_unibyte: ASCII as is, else CHAR_TO_BYTE8.
+        let byte = if cased < 0x80 {
+            cased as u8
+        } else if RAW_BYTE8_CHARS.contains(&cased) {
+            (cased - RAW_BYTE8_BASE) as u8
+        } else {
+            (cased & 0xFF) as u8
         };
-        let piece_len = piece.chars().count();
-        output_len += piece_len;
-        output.push_str(&piece);
-        if let Some(pieces) = pieces.as_deref_mut() {
-            pieces.push(piece_len);
-        }
-        in_word = is_word;
+        out.text.push(raw_byte_regex_char(byte));
     }
-    Ok((output, output_extended))
+    out
 }
 
 pub(crate) fn casify_value(
@@ -573,21 +681,17 @@ pub(crate) fn casify_value(
             ))
         });
     }
-    let (output, output_extended) = casify_string_with_context(
-        interp,
-        &input.text,
-        &input.extended_chars,
-        action,
-        &context,
-        None,
-    )?;
+    let cased = {
+        let mut casing = Casing::new(interp, context, action, false)?;
+        casify_multibyte_text(&mut casing, &input.text, &input.extended_chars, false)
+    };
     // casefiddle.c:do_casify_multibyte_string makes the cased text a new
     // string (make_multibyte_string), without the source's intervals.
     Ok(string_like_value_with_extended_chars(
-        output,
+        cased.text,
         None,
         input.multibyte,
-        output_extended,
+        cased.extended,
     ))
 }
 
@@ -632,6 +736,7 @@ pub(crate) fn casify_buffer_region(
     modify_current_buffer(interp, lo, hi, false, env, |interp, _, env| {
         let hi = hi.min(interp.buffer.borrow().point_max()).max(lo);
         interp.buffer.borrow_mut().modify_text(lo, hi);
+        let context = CasingContext::prepare(interp, action, env);
         crate::lisp::primitives::textprop::update_buffer_properties(interp, lo, hi, env)?;
         let hi = hi.min(interp.buffer.borrow().point_max()).max(lo);
         let multibyte = interp.buffer.borrow().is_multibyte();
@@ -651,63 +756,41 @@ pub(crate) fn casify_buffer_region(
                 buffer.substring_extended_chars(lo, hi),
             )
         };
-        let mut pieces = Vec::new();
-        let (mapped, mapped_extended) =
-            casify_string_pieces(interp, &text, &extended, action, &mut pieces, env)?;
-        // The texts compare by character code.
-        let codes = |text: &str, extended: &[(usize, u32)]| {
-            StringLike {
-                text: text.to_owned(),
-                props: None,
-                multibyte: true,
-                extended_chars: extended.to_vec(),
+        let cased = {
+            let mut casing = Casing::new(interp, context, action, true)?;
+            if multibyte {
+                casify_multibyte_text(&mut casing, &text, &extended, false)
+            } else {
+                casify_unibyte_text(&mut casing, &text)
             }
-            .character_codes()
         };
-        let old_codes = codes(&text, &extended);
-        let new_codes = codes(&mapped, &mapped_extended);
-        let old_length = hi - lo;
-        let new_length = new_codes.len();
-        let new_end = lo + new_length;
-        let bytes =
-            |code: &i64| crate::lisp::primitives::buffers::multibyte_char_bytes(*code as u32);
-        // replace_range_2 replaces a character whose casing is another
-        // number of characters or of bytes; memcpy the rest.
-        let replaced = new_length != old_length
-            || (multibyte
-                && old_codes
-                    .iter()
-                    .zip(&new_codes)
-                    .any(|(old, new)| old != new && bytes(old) != bytes(new)));
-        if !replaced {
-            if mapped != text || mapped_extended != extended {
-                interp
-                    .buffer
-                    .borrow_mut()
-                    .replace_text_in_place(lo, hi, &mapped, &mapped_extended);
-            }
-        } else {
-            // do_casify_multibyte_region: such a character is replaced as
+        if cased.replace {
+            // do_casify_multibyte_region: a character cased to another
+            // number of characters or of bytes is replaced as
             // replace_range_2 replaces it, its properties kept, and point
             // follows it as opoint does; the rest are cased where they
-            // stand.
+            // stand.  The casing is done again for the characters each
+            // became.
+            let codes = {
+                let mut casing = Casing::new(interp, context, action, true)?;
+                casify_multibyte_text(&mut casing, &text, &extended, true).codes
+            };
             let vars = interp.insertion_property_variables();
             let mut opoint = interp.buffer.borrow().point();
+            let mut next_extended = 0;
             let (mut pos, mut out) = (lo, 0);
-            for (old, &count) in old_codes.iter().zip(&pieces) {
-                let new = &new_codes[out..out + count];
-                if new != std::slice::from_ref(old) {
+            let bytes = crate::lisp::primitives::buffers::multibyte_char_bytes;
+            for ((index, ch), &count) in text.chars().enumerate().zip(&cased.pieces) {
+                let old = view_code(ch, index, &extended, &mut next_extended);
+                let count = usize::from(count);
+                let new = &codes[out..out + count];
+                if new != [old] {
                     let (mut piece, mut piece_extended) = (String::new(), Vec::new());
-                    for (index, &code) in new.iter().enumerate() {
-                        crate::lisp::primitives::strings::push_character_code(
-                            &mut piece,
-                            &mut piece_extended,
-                            index,
-                            code as u32,
-                        );
+                    for (offset, &code) in new.iter().enumerate() {
+                        push_character_code(&mut piece, &mut piece_extended, offset, code);
                     }
                     let mut buffer = interp.buffer.borrow_mut();
-                    if count == 1 && bytes(old) == bytes(&new[0]) {
+                    if count == 1 && bytes(old) == bytes(new[0]) {
                         buffer.replace_text_in_place(pos, pos + 1, &piece, &piece_extended);
                     } else {
                         buffer.replace_char_unrecorded(pos, &piece, &piece_extended, &vars);
@@ -723,42 +806,37 @@ pub(crate) fn casify_buffer_region(
             if buffer.point() != opoint {
                 buffer.goto_char(opoint);
             }
+        } else if cased.changed.is_some() {
+            interp
+                .buffer
+                .borrow_mut()
+                .replace_text_in_place(lo, hi, &cased.text, &cased.extended);
         }
+        let new_end = (hi as isize + cased.added) as usize;
         if multibyte {
             interp
                 .buffer
                 .borrow_mut()
-                .record_casing_insertion(lo, new_length);
+                .record_casing_insertion(lo, new_end - lo);
         }
         // The family shares the text, cased or not, and its counts.
-        if replaced || mapped != text || mapped_extended != extended {
+        if cased.changed.is_some() {
             interp.mirror_in_place_edit_to_related_buffers(lo, hi, new_end);
         } else {
             interp.share_text_counters(interp.current_buffer_id());
         }
-        let unchanged_prefix = old_codes
-            .iter()
-            .zip(&new_codes)
-            .take_while(|(old, new)| old == new)
-            .count();
-        if unchanged_prefix == old_length && new_length == old_length {
-            return Ok((None, hi));
-        }
-        let unchanged_suffix = old_codes
-            .iter()
-            .rev()
-            .zip(new_codes.iter().rev())
-            .take(old_length.min(new_length) - unchanged_prefix)
-            .take_while(|(old, new)| old == new)
-            .count();
-        let changed_start = lo + unchanged_prefix;
-        Ok((
-            Some(AfterChange::new(
-                changed_start,
-                hi - unchanged_suffix - changed_start,
-                new_end - unchanged_suffix - changed_start,
-            )),
-            new_end,
-        ))
+        // casify_region: signal_after_change (start, end - start - added,
+        // end - start) over the first to the last character changed.
+        Ok(match cased.changed {
+            None => (None, new_end),
+            Some((first, last)) => (
+                Some(AfterChange::new(
+                    lo + first,
+                    (last as isize - first as isize - cased.added) as usize,
+                    last - first,
+                )),
+                new_end,
+            ),
+        })
     })
 }

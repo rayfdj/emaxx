@@ -860,7 +860,10 @@ fn find_composition(
                 return Err(wrong_type_argument("integer-or-marker-p", value.value()));
             }
         };
-        Some(raw.clamp(minimum as i64, maximum as i64) as usize)
+        // composite.c clips LIMIT to the current buffer's ZV, a string's
+        // search included; a negative one is no limit.
+        let clipped = raw.min(interp.buffer.borrow().point_max() as i64);
+        (clipped >= 0).then(|| clipped.clamp(minimum as i64, maximum as i64) as usize)
     };
     let ranges = composition_ranges(interp, string)?;
     if let Some(range) = find_static_composition(&ranges, position, limit) {

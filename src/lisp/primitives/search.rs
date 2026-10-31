@@ -522,6 +522,11 @@ pub(super) fn word_boundary_p_with(
     if set2.is_nil() {
         return default_result;
     }
+    // CATEGORY_MEMBER of each set, read as the bool-vector it is.
+    let (set1, set2) = (set1.bool_vector_ref(), set2.bool_vector_ref());
+    let member = |set: Option<crate::lisp::types::BoolVectorRef>, category: u8| {
+        set.is_some_and(|set| set.get(usize::from(category)) == Some(true))
+    };
     let category = |value: Value| {
         value
             .integer_value()
@@ -532,13 +537,13 @@ pub(super) fn word_boundary_p_with(
     while let Some(cell) = tail.cons_ref() {
         if let Some(elt) = cell.car.get().cons_ref() {
             let (first, second) = (elt.car.get(), elt.cdr.get());
-            let first_ok = first.is_nil()
-                || category(first)
-                    .is_some_and(|cat| category_member(&set1, cat) && !category_member(&set2, cat));
-            let second_ok = second.is_nil()
-                || category(second)
-                    .is_some_and(|cat| !category_member(&set1, cat) && category_member(&set2, cat));
-            if first_ok && second_ok {
+            // The pair's second category is tested only when its first
+            // matches, as GNU's && reads them.
+            if (first.is_nil()
+                || category(first).is_some_and(|cat| member(set1, cat) && !member(set2, cat)))
+                && (second.is_nil()
+                    || category(second).is_some_and(|cat| !member(set1, cat) && member(set2, cat)))
+            {
                 return !default_result;
             }
         }
@@ -1685,6 +1690,342 @@ fn text_match(
         None if haystack.is_ascii() => start,
         None => ropey::str_utils::byte_to_char_idx(haystack, start),
     }))
+}
+
+/// syntax.c:skip_chars's set: a fastmap of bytes (of ASCII characters
+/// when the scan reads multibyte text), the non-ASCII characters by range,
+/// and the `[:CLASS:]'es, each tested with re_iswctype.
+struct SkipChars {
+    negate: bool,
+    fastmap: [bool; 256],
+    ranges: Vec<(u32, u32)>,
+    /// The classes named, in a fixed array as skip_chars's `classes'.
+    classes: [rx::WcType; 17],
+    nclasses: usize,
+    /// The string's non-ASCII characters were multibyte ones; it named an
+    /// eight-bit byte.
+    string_multibyte: bool,
+    string_has_eight_bit: bool,
+}
+
+impl SkipChars {
+    /// The set a string of internal BYTES (MULTIBYTE_STRING its
+    /// multibyteness) names, as skip_chars builds it before it knows the
+    /// text (`finish' does the rest): a leading `^' complements it, a
+    /// backslash quotes the next character, `-' between two characters is
+    /// a range (an empty one when they are out of order) and `[:NAME:]' a
+    /// class, an unknown NAME an error.
+    fn parse(set: &mut SkipChars, bytes: &[u8], multibyte_string: bool) -> Result<(), LispError> {
+        let string_multibyte = multibyte_string && !bytes.is_ascii();
+        set.string_multibyte = string_multibyte;
+        // A short unibyte string's codes on the stack, its bytes.
+        let mut short = [0u32; 64];
+        let long: Vec<u32>;
+        let codes: &[u32] = if string_multibyte {
+            let mut codes = Vec::with_capacity(bytes.len());
+            let mut at = 0;
+            while at < bytes.len() {
+                let (code, len) = crate::lisp::types::string_data::decode_character(&bytes[at..])?;
+                codes.push(code);
+                at += len.max(1);
+            }
+            long = codes;
+            &long
+        } else if bytes.len() <= short.len() {
+            for (slot, &byte) in short.iter_mut().zip(bytes) {
+                *slot = u32::from(byte);
+            }
+            &short[..bytes.len()]
+        } else {
+            long = bytes.iter().map(|&byte| u32::from(byte)).collect();
+            &long
+        };
+        let size = codes.len();
+        let mut i = 0;
+        if codes.first() == Some(&u32::from(b'^')) {
+            set.negate = true;
+            i = 1;
+        }
+        let mut string_has_eight_bit = false;
+        while i < size {
+            if let Some((class, end)) = rx::re_wctype_parse(codes, i) {
+                if class == rx::WcType::Error {
+                    return Err(LispError::Signal("Invalid ISO C character class".into()));
+                }
+                if !set.classes[..set.nclasses].contains(&class) {
+                    set.classes[set.nclasses] = class;
+                    set.nclasses += 1;
+                }
+                i = end;
+                continue;
+            }
+            let mut c = codes[i];
+            i += 1;
+            if c == u32::from(b'\\') {
+                if i == size {
+                    break;
+                }
+                c = codes[i];
+                i += 1;
+            }
+            // `-' makes a range only when another character follows.
+            if i + 1 < size && codes[i] == u32::from(b'-') {
+                i += 1;
+                let mut c2 = codes[i];
+                i += 1;
+                if c2 == u32::from(b'\\') && i < size {
+                    c2 = codes[i];
+                    i += 1;
+                }
+                if c > c2 {
+                    continue;
+                }
+                if !string_multibyte {
+                    set.fastmap[c as usize..=c2 as usize].fill(true);
+                    string_has_eight_bit |= c2 >= 0x80;
+                } else {
+                    while c <= c2 && c < 0x80 {
+                        set.fastmap[c as usize] = true;
+                        c += 1;
+                    }
+                    if c <= c2 {
+                        set.ranges.push((c, c2));
+                    }
+                }
+            } else if !string_multibyte || c < 0x80 {
+                set.fastmap[c as usize] = true;
+                string_has_eight_bit |= c >= 0x80;
+            } else {
+                set.ranges.push((c, c));
+            }
+        }
+        set.string_has_eight_bit = string_has_eight_bit;
+        Ok(())
+    }
+
+    /// The rest of the set for a scan of multibyte text (MULTIBYTE) or of
+    /// bytes.
+    fn finish(&mut self, multibyte: bool) {
+        let set = self;
+        let string_multibyte = set.string_multibyte;
+        if !string_multibyte && multibyte && set.string_has_eight_bit {
+            // A unibyte string's eight-bit bytes name the raw-byte
+            // characters of multibyte text.
+            let mut byte = 0x80;
+            while byte < 0x100 {
+                if !set.fastmap[byte] {
+                    byte += 1;
+                    continue;
+                }
+                let start = byte;
+                while byte < 0x100 && set.fastmap[byte] {
+                    set.fastmap[byte] = false;
+                    byte += 1;
+                }
+                set.ranges.push((
+                    rx::unibyte_to_char(start as u32),
+                    rx::unibyte_to_char(byte as u32 - 1),
+                ));
+            }
+        } else if string_multibyte && !multibyte && !set.ranges.is_empty() {
+            // A multibyte string's raw-byte characters name bytes
+            // (CHAR_TO_BYTE_SAFE); its other non-ASCII ones none.
+            set.fastmap[0x80..].fill(false);
+            for &(from, to) in &set.ranges {
+                for c in from.max(RAW_BYTE8_BASE + 0x80)..=to.min(RAW_BYTE8_BASE + 0xFF) {
+                    set.fastmap[(c - RAW_BYTE8_BASE) as usize] = true;
+                }
+            }
+        }
+        if set.negate {
+            let end = if multibyte { 0x80 } else { 0x100 };
+            for slot in &mut set.fastmap[..end] {
+                *slot = !*slot;
+            }
+        }
+    }
+
+    /// in_classes: whether C is in one of the set's classes.
+    fn in_classes(&self, menv: &mut LispMatchEnv, c: u32) -> bool {
+        self.classes[..self.nclasses]
+            .iter()
+            .any(|&class| rx::re_iswctype(menv, c, class))
+    }
+
+    /// Whether the scan skips the character (multibyte) or byte C, its
+    /// classes aside.
+    fn admits_without_classes(&self, c: u32, multibyte: bool) -> bool {
+        if !multibyte || c < 0x80 {
+            self.fastmap.get(c as usize).copied().unwrap_or(false)
+        } else {
+            self.ranges.iter().any(|&(from, to)| from <= c && c <= to) != self.negate
+        }
+    }
+}
+
+/// syntax.c:skip_chars: move point forward (FORWARD) or back over the
+/// characters STRING names, no farther than LIM (point-max or point-min
+/// when nil, clipped to the accessible portion); the distance moved.  The
+/// scan reads multibyte text when the buffer is multibyte and the span to
+/// LIM holds a non-ASCII character, else bytes, which `[:CLASS:]' tests as
+/// the characters of those codes.
+pub(super) fn skip_chars(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    forward: bool,
+    string: &Value,
+    lim: Option<&Value>,
+) -> Result<Value, LispError> {
+    let Kind::StringObject(spec) = string.kind() else {
+        return Err(LispError::WrongTypeArgument("stringp".into(), *string));
+    };
+    let (start, begv, zv, buffer_multibyte) = {
+        let buffer = interp.buffer.borrow();
+        (
+            buffer.point(),
+            buffer.point_min(),
+            buffer.point_max(),
+            buffer.is_multibyte(),
+        )
+    };
+    let lim = match lim.filter(|value| !value.is_nil()) {
+        None if forward => zv,
+        None => begv,
+        Some(value) => {
+            super::buffers::fix_position(interp, value)?.clamp(begv as i64, zv as i64) as usize
+        }
+    };
+    let (from, to) = (start.min(lim), start.max(lim));
+    // A forward scan with LIM before point, or a backward one with LIM
+    // after it, moves nowhere (its stop is already behind it).
+    let reaches = if forward { lim > start } else { lim < start };
+    let mut set = SkipChars {
+        negate: false,
+        fastmap: [false; 256],
+        ranges: Vec::new(),
+        classes: [rx::WcType::Error; 17],
+        nclasses: 0,
+        string_multibyte: false,
+        string_has_eight_bit: false,
+    };
+    {
+        let spec = spec.borrow();
+        SkipChars::parse(&mut set, spec.bytes(), spec.is_multibyte())?;
+    }
+    if !reaches {
+        return Ok(Value::Integer(0));
+    }
+    // The classes read the syntax and case tables, and a character beyond
+    // Unicode its code from the side table.  The text is read in place
+    // while each character is decided without them (no classes, or an ASCII
+    // character already tested); the first that needs them is tested with
+    // the text let go, and the scan goes on after it.
+    let buffer = interp.buffer;
+    let mut menv = (set.nclasses > 0).then(|| LispMatchEnv::new(interp, env, None));
+    let mut ascii_memo = [None::<bool>; 128];
+    let mut pos = start;
+    // The span's bytes, and point's as the scan moves it.
+    let (from_byte, to_byte, multibyte, extended) = {
+        let text = buffer.borrow();
+        let (from_byte, to_byte) = text.span_bytes(from, to);
+        let multibyte = buffer_multibyte && to_byte - from_byte != to - from;
+        let extended = multibyte && text.has_extended_chars_in(from, to);
+        (from_byte, to_byte, multibyte, extended)
+    };
+    set.finish(multibyte);
+    let mut pos_byte = if forward { from_byte } else { to_byte };
+    loop {
+        let mut pending = None;
+        {
+            let text = buffer.borrow();
+            let (first, second) = if forward {
+                text.byte_halves(pos_byte, to_byte)
+            } else {
+                text.byte_halves(from_byte, pos_byte)
+            };
+            let set = &set;
+            let decide = |code: u32| {
+                if set.nclasses == 0 {
+                    Some(set.admits_without_classes(code, multibyte))
+                } else if code < 0x80 {
+                    ascii_memo[code as usize].map(|classed| {
+                        if classed {
+                            !set.negate
+                        } else {
+                            set.fastmap[code as usize]
+                        }
+                    })
+                } else {
+                    None
+                }
+            };
+            let code_of = |position: usize, ch: char| match extended
+                .then(|| text.extended_char_at(position))
+                .flatten()
+            {
+                Some(code) => code,
+                None => string_character_code(multibyte, ch) as u32,
+            };
+            if forward {
+                for ch in first.chars().chain(second.chars()) {
+                    let code = code_of(pos, ch);
+                    match decide(code) {
+                        Some(true) => {
+                            pos += 1;
+                            pos_byte += ch.len_utf8();
+                        }
+                        Some(false) => break,
+                        None => {
+                            pending = Some((code, ch.len_utf8()));
+                            break;
+                        }
+                    }
+                }
+            } else {
+                for ch in second.chars().rev().chain(first.chars().rev()) {
+                    let code = code_of(pos - 1, ch);
+                    match decide(code) {
+                        Some(true) => {
+                            pos -= 1;
+                            pos_byte -= ch.len_utf8();
+                        }
+                        Some(false) => break,
+                        None => {
+                            pending = Some((code, ch.len_utf8()));
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        let (Some((code, width)), Some(menv)) = (pending, menv.as_mut()) else {
+            break;
+        };
+        let classed = set.in_classes(menv, code);
+        if code < 0x80 {
+            ascii_memo[code as usize] = Some(classed);
+        }
+        let admitted = if classed {
+            !set.negate
+        } else {
+            set.admits_without_classes(code, multibyte)
+        };
+        if !admitted {
+            break;
+        }
+        if forward {
+            pos += 1;
+            pos_byte += width;
+        } else {
+            pos -= 1;
+            pos_byte -= width;
+        }
+    }
+    drop(menv);
+    let mut text = buffer.borrow_mut();
+    text.note_position(pos, pos_byte);
+    text.goto_char(pos);
+    Ok(Value::Integer(pos as i64 - start as i64))
 }
 
 /// fast_c_string_match_ignore_case: whether REGEXP matches the unibyte

@@ -17534,7 +17534,7 @@ fn subr_arity_answers_the_host_inotify_primitives() {
 
 #[test]
 fn skip_chars_word_class_includes_ascii_digits() {
-    // The SkipSyntaxSnapshot classifies each segment by sampling its START,
+    // A former SkipSyntaxSnapshot classified each segment by sampling its START,
     // which is only correct where the class is uniform across the window.
     // `default_syntax_entry' varies per character INSIDE ASCII, and with
     // boundaries drawn only from explicit char-table entries the window
@@ -32520,5 +32520,436 @@ fn point_ops_read_as_editfns_at_the_accessible_ends() {
            (nreverse result))"##,
         r##"(((1 97 0 nil nil t t) (1 97 0 nil nil t t)) ((2 98 97 nil nil nil nil) (2 98 97 nil nil nil nil)) ((8 0 99 t t nil nil) (8 0 99 t t nil nil)) ((1 97 0 nil nil t t) (1 97 0 nil nil t t)) ((2 98 97 nil nil nil nil) (2 98 97 nil nil nil nil)) ((3 0 98 t t nil nil) (3 0 98 t t nil nil)) ((4 10 0 t nil t t) (4 10 0 t nil t t)) ((5 955 10 nil nil t nil) (5 955 10 nil nil t nil)) ((6 0 955 t t nil nil) (6 0 955 t t nil nil)) ((5 955 0 nil nil t t) (5 955 0 nil nil t t)) ((6 4194176 955 nil nil nil nil) (6 4194176 955 nil nil nil nil)) ((8 0 99 t t nil nil) (8 0 99 t t nil nil)))"##,
         "point ops at the accessible ends",
+    );
+}
+
+/// buffer.c:Fset_buffer_multibyte: to unibyte, each character's internal
+/// bytes (a character beyond Unicode, a surrogate and a real U+E000 as
+/// theirs, a raw byte as its own); to multibyte with t, each valid
+/// internal sequence as its character, any other byte as eight-bit.
+#[test]
+fn set_buffer_multibyte_converts_as_fset_buffer_multibyte() {
+    assert_oracle_contract_matches_interpreter(
+        r##" (let ((result nil)
+       (state (lambda () (list (append (buffer-string) nil) (point) (point-max) (multibyte-string-p (buffer-string))))))
+   (with-temp-buffer
+     (insert "a" (string #x3BB #x3FFF80 #x110000 #x3FFF7F #xD800 #xE000 #xE0FF #x3FFFFF) "z")
+     (goto-char 6)
+     (let ((m (copy-marker 9)))
+       (set-buffer-multibyte nil)
+       (push (list (funcall state) (marker-position m)) result)
+       (set-buffer-multibyte t)
+       (push (list (funcall state) (marker-position m)) result)
+       (set-buffer-multibyte nil)
+       (set-buffer-multibyte 'other)
+       (push (list (funcall state) (marker-position m)) result)))
+   (with-temp-buffer
+     (set-buffer-multibyte nil)
+     (insert "\xf4\x90\x80\x80|\xed\xa0\x80|\xf8\x88\x80\x80\x80|\xc0\x80|\xc1\xbf|\xe0\x80\x80|\xce\xbb|\xee\x80\x80|\xff")
+     (goto-char 10)
+     (set-buffer-multibyte t)
+     (push (funcall state) result)
+     (push (list (append (buffer-substring 1 3) nil) (char-after 1) (char-after 3)) result))
+   (nreverse result))"##,
+        r##"((((97 206 187 128 244 144 128 128 248 143 191 189 191 237 160 128 238 128 128 238 131 191 255 122) 14 25 nil) 23) (((97 955 4194176 1114112 4194175 55296 57344 57599 4194303 122) 6 11 t) 9) (((97 4194254 4194235 4194176 4194292 4194192 4194176 4194176 4194296 4194191 4194239 4194237 4194239 4194285 4194208 4194176 4194286 4194176 4194176 4194286 4194179 4194239 4194303 122) 14 25 t) 23) ((1114112 124 55296 124 2097152 124 4194240 4194176 124 4194241 4194239 124 4194272 4194176 4194176 124 955 124 57344 124 4194303) 5 22 t) ((1114112 124) 1114112 55296))"##,
+        "set-buffer-multibyte conversions",
+    );
+}
+
+/// buffer-substring of spans on one side of the gap and across it, with
+/// properties, raw bytes and a character beyond Unicode, multibyte and
+/// unibyte.
+#[test]
+fn buffer_substring_reads_each_side_of_the_gap() {
+    assert_oracle_contract_matches_interpreter(
+        r##" (let ((result nil))
+   (with-temp-buffer
+     (insert "ab" (propertize "cλd" 'p 1) (string #x3FFF80) "e" (string #x110000) "f\ngh")
+     (goto-char 4) (insert "Z") (goto-char 9)
+     (dolist (span '((1 3) (1 13) (3 7) (4 6) (6 9) (8 11) (10 14) (2 2)))
+       (let ((s (buffer-substring (car span) (cadr span))))
+         (push (list (append s nil) (object-intervals s) (multibyte-string-p s)
+                     (object-intervals (buffer-substring-no-properties (car span) (cadr span))))
+               result)))
+     (set-buffer-multibyte nil)
+     (dolist (span '((1 4) (5 12)))
+       (let ((s (buffer-substring (car span) (cadr span))))
+         (push (list (append s nil) (multibyte-string-p s)) result))))
+   (nreverse result))"##,
+        r##"(((97 98) nil t nil) ((97 98 99 90 955 100 4194176 101 1114112 102 10 103) ((0 2 nil) (2 3 (p 1)) (3 4 nil) (4 6 (p 1)) (6 7 nil) (7 8 nil) (8 9 nil) (9 12 nil)) t nil) ((99 90 955 100) ((0 1 (p 1)) (1 2 nil) (2 4 (p 1))) t nil) ((90 955) ((0 1 nil) (1 2 (p 1))) t nil) ((100 4194176 101) ((0 1 (p 1)) (1 2 nil) (2 3 nil)) t nil) ((101 1114112 102) nil t nil) ((102 10 103 104) nil t nil) (nil nil t nil) ((97 98 99) nil) ((206 187 100 128 101 244 144) nil))"##,
+        "buffer-substring across the gap",
+    );
+}
+
+/// string-as-multibyte reads a unibyte string as parse_str_as_multibyte
+/// does, a byte8 head (#xC0, #xC1) never starting a sequence, and the
+/// conversions back and to multibyte agree with fns.c.
+#[test]
+fn string_as_multibyte_parses_without_eight_bit_heads() {
+    assert_oracle_contract_matches_interpreter(
+        r##"(let ((u (unibyte-string 97 #xf4 #x90 #x80 #x80 #xc0 #x80 #xc1 #xbf #xce #xbb #xed #xa0 #x80 #xff 122)))
+   (mapcar (lambda (s) (list (append s nil) (multibyte-string-p s) (string-bytes s)))
+           (list (string-as-multibyte u) (string-to-multibyte u) (string-as-unibyte (string-as-multibyte u)))))"##,
+        r##"(((97 1114112 4194240 4194176 4194241 4194239 955 55296 4194303 122) t 21) ((97 4194292 4194192 4194176 4194176 4194240 4194176 4194241 4194239 4194254 4194235 4194285 4194208 4194176 4194303 122) t 30) ((97 244 144 128 128 192 128 193 191 206 187 237 160 128 255 122) nil 16))"##,
+        "string-as-multibyte conversions",
+    );
+}
+
+/// A unibyte buffer takes each inserted character's byte as copy_text
+/// does (`c & 0xFF', a raw byte its own), from insert,
+/// insert-buffer-substring, princ, insert-before-markers and
+/// replace-match alike, properties kept.
+#[test]
+fn unibyte_buffer_insertions_copy_each_characters_byte() {
+    assert_oracle_contract_matches_interpreter(
+        r##"(let ((m (string ?a #x3BB #x3FFF80 #x110000 #x3FFF7F #xD800 #xE000 #xE0FF #x3FFFFF ?z))
+       (result nil)
+       (state (lambda () (list (append (buffer-string) nil) (point) (multibyte-string-p (buffer-string))))))
+   (with-temp-buffer
+     (set-buffer-multibyte nil)
+     (insert "<" (propertize m 'p 1) ">")
+     (push (list (funcall state) (get-text-property 3 'p) (buffer-size)) result)
+     (let ((source (current-buffer)))
+       (with-temp-buffer
+         (insert m)
+         (let ((multibyte (current-buffer)))
+           (with-current-buffer source
+             (erase-buffer)
+             (insert-buffer-substring multibyte 2 6)
+             (princ m (current-buffer))
+             (insert-before-markers (string #x3FFF90 #x100))
+             (push (funcall state) result)
+             (goto-char 1)
+             (re-search-forward "\xbb")
+             (replace-match (string #x3BB #x1FF) t t)
+             (push (list (funcall state) (match-beginning 0) (match-end 0)) result)))))
+     (set-buffer-multibyte t)
+     (push (funcall state) result))
+   (nreverse result))"##,
+        r##"((((60 97 187 128 0 127 0 0 255 255 122 62) 13 nil) 1 12) ((187 128 0 127 97 187 128 0 127 0 0 255 255 122 144 0) 17 nil) (((187 255 128 0 127 97 187 128 0 127 0 0 255 255 122 144 0) 3 nil) 1 3) ((4194235 4194303 4194176 0 127 97 4194235 4194176 0 127 0 0 4194303 4194303 122 4194192 0) 3 t))"##,
+        "unibyte buffer insertions",
+    );
+}
+
+/// Casing reads a raw byte as its eight-bit character, a word constituent,
+/// in unibyte and multibyte buffers and strings, as casefiddle.c's
+/// make_char_multibyte and Freplace_match's case test do.
+#[test]
+fn casing_reads_raw_bytes_as_eight_bit_characters() {
+    assert_oracle_contract_matches_interpreter(
+        r##"(let ((result nil))
+   (with-temp-buffer
+     (set-buffer-multibyte nil)
+     (insert "a\xbbz b\xe9x \x80y")
+     (capitalize-region 1 (point-max))
+     (push (append (buffer-string) nil) result)
+     (goto-char 1)
+     (re-search-forward "A\xbbz")
+     (replace-match "qrs")
+     (push (append (buffer-string) nil) result))
+   (with-temp-buffer
+     (insert "a" (string #x3FFFBB) "z a»z")
+     (upcase-initials-region 1 (point-max))
+     (push (append (buffer-string) nil) result))
+   (push (append (capitalize (string-to-unibyte (string ?a #x3FFFBB ?z ?\s ?q))) nil) result)
+   (push (append (capitalize (string ?a #x3FFFBB ?z ?\s ?q #xBB ?r)) nil) result)
+   (nreverse result))"##,
+        r##"((65 187 122 32 66 233 120 32 128 121) (81 114 115 32 66 233 120 32 128 121) (65 4194235 122 32 65 187 90) (65 187 122 32 81) (65 4194235 122 32 81 187 82))"##,
+        "raw-byte casing",
+    );
+}
+
+/// char-equal as editfns.c (CHECK_CHARACTER, the current downcase table,
+/// a unibyte buffer's 0x80..0xFF as raw bytes), string-distance by
+/// character code, and find-composition-internal's LIMIT clipped to the
+/// current buffer's ZV, a string's search included.
+#[test]
+fn char_equal_string_distance_and_composition_limits_as_gnu() {
+    assert_oracle_contract_matches_interpreter(
+        r##"(list
+   (char-equal ?\xbb #x3FFFBB) (char-equal 233 201) (let ((case-fold-search nil)) (char-equal 233 201))
+   (with-temp-buffer (set-buffer-multibyte nil) (list (char-equal 233 201) (char-equal 233 #x3FFFE9) (char-equal ?a ?A) (char-equal #xbb #x3FFFBB)))
+   (condition-case e (char-equal -1 1) (error e)) (condition-case e (char-equal ?a 'b) (error e))
+   (with-temp-buffer (let ((table (copy-case-table (standard-case-table)))) (set-case-syntax-pair ?Q ?z table) (set-case-table table) (list (char-equal ?Q ?z) (char-equal ?q ?z))))
+   (string-distance "\xbb" (string #x3FFFBB)) (string-distance (string #x110000) (string #x110001))
+   (string-distance "\xbb" (string #x3FFFBB) t) (string-distance "a\xbbc" "abc")
+   (with-temp-buffer
+     (let ((s (copy-sequence "abcd")))
+       (compose-string-internal s 1 3 nil 'ignore)
+       (list (find-composition-internal 0 4 s nil)
+             (progn (insert "0123456789") (find-composition-internal 0 4 s nil))
+             (find-composition-internal 0 -1 s nil)
+             (find-composition-internal 4 0 s nil)
+             (erase-buffer)
+             (find-composition-internal 4 0 s nil)
+             (find-composition-internal 4 2 s nil)))))"##,
+        r##"(nil t nil (nil t t t) (wrong-type-argument characterp -1) (wrong-type-argument characterp b) (t nil) 1 1 1 2 (nil (1 3 t) nil (1 3 t) nil (1 3 t) (1 3 t)))"##,
+        "char-equal, string-distance and composition limits",
+    );
+}
+
+/// skip-chars-forward and -backward as syntax.c:skip_chars reads their
+/// set: a backslash quoting the next character, `-' a range only before
+/// another character and empty out of order, an unknown or empty
+/// `[:NAME:]' an error, the classes re_iswctype's (a unibyte scan's bytes
+/// tested as those codes), eight-bit bytes naming raw bytes of multibyte
+/// text, and a LIM behind point moving nowhere.
+#[test]
+fn skip_chars_reads_its_set_as_syntax_c() {
+    assert_oracle_contract_matches_interpreter(
+        r##"(let ((sk (lambda (spec text &optional back)
+            (with-temp-buffer (insert text) (goto-char (if back (point-max) 1))
+              (condition-case err (list (if back (skip-chars-backward spec) (skip-chars-forward spec)) (point)) (error err)))))
+      (ub (lambda (spec text) (with-temp-buffer (set-buffer-multibyte nil) (insert text) (goto-char 1) (list (skip-chars-forward spec) (point))))))
+  (list (funcall sk "\\-a" "-a-b") (funcall sk "a\\-c" "a-c b") (funcall sk "^\\^" "ab^") (funcall sk "a\\" "aa\\")
+        (funcall sk "z-a" "zab") (funcall sk "[:foo:]" "ab") (funcall sk "[::]" "[::]x") (funcall sk "[:alpha" "[:alpha")
+        (funcall sk "[:alpha:]" "é́ǅʰאः⃝Ⅰ²x1") (funcall sk "[:alnum:]" "a1١²Ⅰ_")
+        (funcall sk "[:upper:]" "İǅa") (funcall sk "[:blank:]" " \t 　 x") (funcall sk "[:print:]" "\x7fx")
+        (funcall sk "^[:alpha:]" "12ab") (funcall sk "[:space:]" "a  " t) (funcall sk "\\-" "a--" t)
+        (funcall ub "\x80-\xff" "\xa0\xff\x41") (funcall ub "[:alpha:]" "a\xe9b") (funcall ub "é" "\xe9a")
+        (funcall sk "\x80-\xff" "éa") (funcall sk "a-λ" "zλν")
+        (with-temp-buffer (insert "abcdef") (goto-char 4) (list (skip-chars-forward "a-z" 1) (point) (skip-chars-backward "a-z" 6) (point)))))"##,
+        r##"((3 4) (3 4) (2 3) (2 3) (0 1) (error "Invalid ISO C character class") (error "Invalid ISO C character class") (7 8) (8 9) (3 4) (0 1) (4 5) (0 1) (2 3) (-2 2) (-2 2) (2 3) (1 2) (0 1) (0 1) (2 3) (0 4 0 4))"##,
+        "skip-chars sets",
+    );
+}
+
+/// invisible-p as xdisp.c:Finvisible_p: a natural number or marker read
+/// as a position (args-out-of-range outside the buffer), anything else as
+/// the property's value, TEXT_PROP_MEANS_INVISIBLE's EQ walk of the spec
+/// answering 2 for an entry asking for an ellipsis.
+#[test]
+fn invisible_p_reads_the_spec_as_invisible_prop() {
+    assert_oracle_contract_matches_interpreter(
+        r##"(with-temp-buffer (insert "0123456789") (put-text-property 2 4 'invisible 'foo) (put-text-property 5 7 'invisible '(bar baz)) (put-text-property 8 9 'invisible "s")
+     (list (let ((buffer-invisibility-spec '((foo . t) bar))) (list (invisible-p 2) (invisible-p 5) (invisible-p 8) (invisible-p 1)))
+           (let ((buffer-invisibility-spec '((baz) (foo . nil)))) (list (invisible-p 2) (invisible-p 5)))
+           (let ((buffer-invisibility-spec t)) (list (invisible-p 2) (invisible-p 8) (invisible-p 9)))
+           (let ((buffer-invisibility-spec nil)) (list (invisible-p 2) (invisible-p 5)))
+           (let ((buffer-invisibility-spec 'foo)) (list (invisible-p 2)))
+           (condition-case err (invisible-p 0) (error err)) (condition-case err (invisible-p 100) (error err)) (invisible-p -1) (invisible-p 'foo) (invisible-p nil) (invisible-p (copy-marker 3))))"##,
+        r##"((2 t nil nil) (t t) (t t nil) (nil nil) (nil) (args-out-of-range 0) (args-out-of-range 100) t t nil t)"##,
+        "invisible-p levels",
+    );
+}
+
+#[test]
+fn expand_file_name_canonicalizes_as_fileio_c() {
+    // fileio.c:Fexpand_file_name keeps a leading `/..' (the superroot) and
+    // a leading `//', and substitute-in-file-name restarts at an embedded
+    // absolute name (search_embedded_absfilename) before and after it
+    // substitutes.
+    assert_oracle_contract_matches_interpreter(
+        r##"(let ((process-environment (cons "HOME=/h/" process-environment)))
+  (list (expand-file-name "/../a") (expand-file-name "//a/b")
+        (expand-file-name "/a/../../b") (expand-file-name "a/./b/../c" "/x/y/")
+        (expand-file-name "" "/tmp/") (expand-file-name "." "/tmp")
+        (expand-file-name "///a//b/") (expand-file-name "/a/b/.")
+        (expand-file-name "/a/b/..") (expand-file-name "/./") (expand-file-name "/..")
+        (expand-file-name "//") (expand-file-name "///")
+        (expand-file-name "~") (expand-file-name "~/x") (expand-file-name "x" "~/d")
+        (expand-file-name "~nosuchuserq/x" "/b")
+        (substitute-in-file-name "/a/~/b") (substitute-in-file-name "/a//b")
+        (substitute-in-file-name "/a/b//c/~/d") (substitute-in-file-name "/x/$$y")))"##,
+        r##"("/../a" "//a/b" "/../b" "/x/y/a/c" "/tmp" "/tmp" "/a/b/" "/a/b" "/a" "/" "/.." "//" "/" "/h" "/h/x" "/h/d/x" "/b/~nosuchuserq/x" "~/b" "/b" "~/d" "/x/$y")"##,
+        "expand-file-name superroot, leading //, embedded absolute names",
+    );
+}
+
+#[test]
+fn relative_home_is_spliced_onto_the_startup_directory() {
+    // fileio.c:get_homedir: a relative or empty HOME names a directory
+    // under emacs_wd, the directory Emacs started in, whatever
+    // default-directory is.
+    assert_oracle_contract_matches_interpreter(
+        r##"(let ((process-environment (cons "HOME=a/b" process-environment)) (default-directory "/q/")) (list (file-name-absolute-p (expand-file-name "~/x")) (string-suffix-p "/a/b/x" (expand-file-name "~/x")) (string-prefix-p "/q/" (expand-file-name "~/x")) (let ((process-environment (cons "HOME=" process-environment))) (list (file-name-absolute-p (expand-file-name "~")) (string-suffix-p "/x" (expand-file-name "~/x")) (string-prefix-p "/q/" (expand-file-name "~/x"))))))"##,
+        r##"(t t nil (t t nil))"##,
+        "relative and empty HOME",
+    );
+}
+
+#[test]
+fn json_parse_errors_carry_line_column_and_position_as_json_c() {
+    // json.c json_signal_error: each error's data are the line, the column
+    // and the position the parser reached, counted as json.c counts them;
+    // a number out of range, a bad escape and a lone surrogate have their
+    // own conditions.
+    assert_oracle_contract_matches_interpreter(
+        r##"(mapcar (lambda (s) (condition-case err (json-parse-string s) (error err))) '("[1, 2, 3" "{\"a\" 1}" "{\"a\":1,}" "[1 2]" "\"abc" "tru" "nulll" "[-]" "[1.]" "[1e]" "\"\\uD83D\"" "\"\\uDE00\"" "\"\\x\"" "\"\\u12\"" "1e400" "-1e400" "[1, 2,\n  3,\n  x]" "{\n\"a\": \"\\q\"}" "\n\n  \"\\uD83D\\u0041\"" "" " " "[" "{" "{\"a\"" "{\"a\":" "\"\\" "\"\\u" "[1," "truex" "true-" "true ," "falsex" "[nul]" "01" "-01" "1.5x" "  [  ] x" "[]x" "{}{}"))"##,
+        r##"((json-end-of-file 1 8 8) (json-parse-error 1 6 6) (json-parse-error 1 8 8) (json-parse-error 1 4 4) (json-end-of-file 1 4 4) (json-parse-error 1 1 1) (json-parse-error 1 1 1) (json-parse-error 1 3 3) (json-parse-error 1 4 4) (json-parse-error 1 4 4) (json-invalid-surrogate-error 1 8 8) (json-invalid-surrogate-error 1 7 7) (json-escape-sequence-error 1 3 3) (json-escape-sequence-error 1 6 6) (json-number-out-of-range-error 1 5 5) (json-number-out-of-range-error 1 6 6) (json-parse-error 3 3 15) (json-escape-sequence-error 2 8 10) (json-invalid-surrogate-error 3 15 17) (json-end-of-file 1 0 0) (json-end-of-file 1 1 1) (json-end-of-file 1 1 1) (json-end-of-file 1 1 1) (json-end-of-file 1 4 4) (json-end-of-file 1 5 5) (json-end-of-file 1 2 2) (json-end-of-file 1 3 3) (json-end-of-file 1 3 3) (json-parse-error 1 1 1) (json-parse-error 1 1 1) (json-trailing-content 1 6 6) (json-parse-error 1 1 1) (json-parse-error 1 2 2) (json-trailing-content 1 2 2) (json-trailing-content 1 3 3) (json-trailing-content 1 4 4) (json-trailing-content 1 8 8) (json-trailing-content 1 3 3) (json-trailing-content 1 3 3))"##,
+        "json-parse-string errors",
+    );
+}
+
+#[test]
+fn json_parse_values_follow_json_c() {
+    // json.c: integers summed while read, overflowing ones read as
+    // string_to_number reads them; floats by strtod; strings strict UTF-8,
+    // multibyte even when ASCII; a hash table's later member with an equal
+    // key sets the earlier one's value.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list (json-parse-string "123456789012345678") (json-parse-string "1234567890123456789") (json-parse-string "-9223372036854775808") (json-parse-string "-9223372036854775809") (json-parse-string "99999999999999999999999") (json-parse-string "-0") (json-parse-string "0.0") (json-parse-string "-1.5e-3") (json-parse-string "1E+2") (json-parse-string "1e-400") (json-parse-string "\"é\\u00e9λ\"") (append (json-parse-string "\"\\/\\b\\f\\n\\r\\t\\u0000\\u0080\\uFFFF\\uD83D\\uDE00\"") nil) (json-parse-string "[true,false,null]") (multibyte-string-p (json-parse-string "\"a\"")) (json-parse-string "{\"a\":1,\"b\":{\"a\":2},\"a\":3}" :object-type 'plist) (json-parse-string "{\"x y\":[true,false,null]}" :object-type 'alist :array-type 'list :false-object 'F :null-object 'N) (let ((h (json-parse-string "{\"k\":[],\"k\":{}}"))) (list (hash-table-count h) (gethash "k" h) (hash-table-test h))))"##,
+        r##"(123456789012345678 1234567890123456789 -9223372036854775808 -9223372036854775809 99999999999999999999999 0 0.0 -0.0015 100.0 0.0 "ééλ" (47 8 12 10 13 9 0 128 65535 128512) [t :false :null] t (:a 1 :b (:a 2) :a 3) ((x\ y t F N)) (1 #s(hash-table test equal) equal))"##,
+        "json-parse-string values",
+    );
+}
+
+#[test]
+fn json_parse_string_reads_the_string_bytes_as_emacs_holds_them() {
+    // json.c Fjson_parse_string: CHECK_STRING first, then SDATA read as
+    // strict UTF-8, so a unibyte string's UTF-8 bytes are its text and a
+    // raw byte or a character beyond Unicode is a decode error.
+    assert_oracle_contract_matches_interpreter(
+        r##"(mapcar (lambda (s) (condition-case err (json-parse-string s) (error err))) (list (string-to-unibyte "[1,\"a\"]") (encode-coding-string "\"é\"" 'utf-8) (string-to-unibyte "\"\377\"") (string-to-multibyte "\"\377\"") (concat "\"" (string #x3fff80) "\"") (concat "[\"" (string #x200000) "\"]") 1 'a))"##,
+        r##"([1 "a"] "é" (json-utf8-decode-error 1 2 2) (json-utf8-decode-error 1 2 2) (json-utf8-decode-error 1 2 2) (json-utf8-decode-error 1 3 3) (wrong-type-argument stringp 1) (wrong-type-argument stringp a))"##,
+        "json-parse-string sources",
+    );
+}
+
+#[test]
+fn json_parse_buffer_moves_point_past_the_value_as_json_c() {
+    // json.c Fjson_parse_buffer: point to Z read as the buffer's bytes,
+    // point moved by the characters (bytes, unibyte) of the value; an
+    // error leaves point.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list (with-temp-buffer (insert "  {\"a\": [1, {\"b\": null}]}  [2] \"x\" ") (goto-char 1) (let (r) (dotimes (_ 4) (push (condition-case err (json-parse-buffer :object-type 'alist :null-object 'N) (error err)) r) (push (point) r)) (nreverse r))) (with-temp-buffer (insert "é [1, ") (goto-char 3) (list (condition-case err (json-parse-buffer) (error err)) (point))) (with-temp-buffer (set-buffer-multibyte nil) (insert "\"\303\251\" [1]") (goto-char 1) (list (json-parse-buffer) (point) (json-parse-buffer) (point))) (with-temp-buffer (insert "[1,\n2,\n\"é\" é]") (goto-char 1) (list (condition-case err (json-parse-buffer) (error err)) (point))) (with-temp-buffer (insert "[\"" (string #x3fff80) "\"]") (goto-char 1) (condition-case err (json-parse-buffer) (error err))) (with-temp-buffer (insert "[1, 2] x") (narrow-to-region 1 4) (goto-char 1) (json-parse-buffer)) (with-temp-buffer (insert "x\"é\"") (goto-char 2) (list (json-parse-buffer) (point))))"##,
+        r##"((((a . [1 ((b . N))])) 26 [2] 31 "x" 35 (json-end-of-file 1 1 1) 35) ((json-end-of-file 1 4 4) 3) ("é" 5 [1] 9) ((json-parse-error 3 5 12) 1) (json-utf8-decode-error 1 3 3) [1 2] ("é" 5))"##,
+        "json-parse-buffer positions",
+    );
+}
+
+#[test]
+fn json_parse_nesting_is_limited_as_json_c() {
+    // json.c json_parser: available_depth starts at 10000 and each
+    // non-empty array or object takes one.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list (vectorp (json-parse-string (concat (make-string 10001 ?\[) (make-string 10001 ?\])))) (condition-case err (json-parse-string (concat (make-string 10002 ?\[) (make-string 10002 ?\]))) (error err)) (condition-case err (json-parse-string (concat (apply #'concat (make-list 10001 "{\"a\":")) "1")) (error err)) (condition-case err (json-parse-string (concat (apply #'concat (make-list 10000 "{\"a\":")) "[]")) (error err)))"##,
+        r##"(t (json-object-too-deep 1 10002 10002) (json-object-too-deep 1 50002 50002) (json-end-of-file 1 50002 50002))"##,
+        "json nesting limit",
+    );
+}
+
+#[test]
+fn json_serialize_floats_and_json_error_conditions_as_json_c() {
+    // json.c json_out_float: `float-output-format' bound to nil, Inf and
+    // NaN an error; syms_of_json's conditions and pure json functions.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list (json-serialize 1e100) (json-serialize [1.5 2e-7 123456789.0 1e21 -0.0 0.1]) (let ((float-output-format "%.3e")) (json-serialize [1.0 0.5])) (condition-case err (json-serialize 1.0e+INF) (error err)) (condition-case err (json-serialize -1.0e+INF) (error err)) (with-temp-buffer (json-insert [1.5 1e100]) (buffer-string)) (get 'json-escape-sequence-error 'error-conditions) (get 'json-number-out-of-range-error 'error-message) (get 'json-invalid-surrogate-error 'error-conditions) (get 'json-object-too-deep 'error-message) (get 'json-out-of-memory 'error-conditions) (get 'json-serialize 'pure) (get 'json-parse-string 'side-effect-free))"##,
+        r##"("1e+100" "[1.5,2e-07,123456789.0,1e+21,-0.0,0.1]" "[1.0,0.5]" (error "JSON does not allow Inf or NaN" 1.0e+INF) (error "JSON does not allow Inf or NaN" -1.0e+INF) "[1.5,1e+100]" (json-escape-sequence-error json-parse-error json-error error) "number out of range" (json-invalid-surrogate-error json-error error) "object cyclic or Lisp evaluation too deep" (json-out-of-memory json-error error) t t)"##,
+        "json floats and conditions",
+    );
+}
+
+#[test]
+fn json_keyword_arguments_are_read_as_json_parse_args() {
+    // json.c json_parse_args: the pairs read from the back, so a keyword's
+    // first value wins; an odd count is not a plist, and an unknown keyword
+    // or value signals data.c's wrong_choice with the value.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list (json-parse-string "[1]" :array-type 'array) (condition-case e (json-parse-string "[1]" :array-type 'vector) (error e)) (condition-case e (json-parse-string "[1]" :foo 1) (error e)) (condition-case e (json-serialize 1 :foo 1) (error e)) (condition-case e (json-serialize 1 :object-type 1) (error e)) (condition-case e (json-parse-string "[1]" :object-type 'alist :object-type 'bad) (error e)) (json-parse-string "{}" :object-type 'alist :object-type 'plist) (condition-case e (json-parse-string "[1]" "x" 1) (error e)) (condition-case e (json-serialize 1 :null-object) (error e)) (condition-case e (json-parse-string 1 :object-type 'foo) (error e)) (condition-case e (json-parse-string "1" :object-type 'foo) (error e)) (condition-case e (with-temp-buffer (json-insert 1 :array-type 'list)) (error e)) (json-serialize '(:a nil) :null-object nil :null-object 0))"##,
+        r##"([1] (error "One of array or list should be specified" vector) (error "One of :object-type, :array-type, :null-object or :false-object should be specified" 1) (error "One of :null-object or :false-object should be specified" 1) (error "One of :null-object or :false-object should be specified" 1) (error "One of hash-table, alist or plist should be specified" bad) nil (error "One of :object-type, :array-type, :null-object or :false-object should be specified" 1) (wrong-type-argument plistp (:null-object)) (wrong-type-argument stringp 1) (error "One of hash-table, alist or plist should be specified" foo) (error "One of :null-object or :false-object should be specified" list) "{\"a\":null}")"##,
+        "json keyword arguments",
+    );
+}
+
+#[test]
+fn json_objects_make_tables_of_their_member_count() {
+    // json.c json_parse_object: make_hash_table of the members' count,
+    // duplicates included, which later growth starts from.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list (hash-table-size (json-parse-string "{\"a\":1,\"b\":2,\"c\":3}")) (hash-table-size (json-parse-string "{}")) (hash-table-size (json-parse-string "{\"a\":1}")) (hash-table-size (json-parse-string "{\"a\":1,\"a\":2}")) (let ((h (json-parse-string "{\"a\":1}"))) (puthash "b" 2 h) (puthash "c" 2 h) (list (hash-table-size h) (hash-table-count h))) (hash-table-size (json-parse-string (concat "{" (mapconcat (lambda (i) (format "\"k%d\":1" i)) (number-sequence 1 70) ",") "}"))))"##,
+        r##"(3 0 1 2 (24 3) 70)"##,
+        "json object table sizes",
+    );
+}
+
+#[test]
+fn json_serialize_writes_as_json_out_something() {
+    // json.c json_out_something: alist and plist keys by identity, the
+    // first occurrence kept, a plist key's leading colon dropped; strings
+    // checked as Unicode; anything else not a JSON value.
+    assert_oracle_contract_matches_interpreter(
+        r##"(mapcar (lambda (x) (condition-case err (decode-coding-string (json-serialize x) 'utf-8) (error (list (car err) (cadr err))))) (list '((a . 1) (b . 2) (a . 3)) '(:a 1 :b 2 :a 3) '(: 1 :: 2 a 3) '((:a . 1)) (list (cons (make-symbol "k") 1) (cons (make-symbol "k") 2)) '((nil . 1) (t . 2)) '((a . 1) b) '(:a 1 :b) '((1 . 2)) '(1 2) '((a . 1) . b) '(:a 1 . b) '("a" 1) "a\"b\\c\n\t\r\f\b\x01\x1f/é😀" (string-to-unibyte "abc") "\377" (string-to-multibyte "\377") (string #x3fff80) (string #x110000) 'sym [1 [2 [3]] "x" :null :false t nil] 123456789012345678901234567890 -5 (record 'foo 1) '((a . [1 (b . 2)])) 1e100 -0.0))"##,
+        r##"("{\"a\":1,\"b\":2}" "{\"a\":1,\"b\":2}" "{\":\":1,\":\":2,\"a\":3}" "{\":a\":1}" "{\"k\":1,\"k\":2}" "{\"nil\":1,\"t\":2}" (wrong-type-argument consp) (wrong-type-argument consp) (wrong-type-argument symbolp) (wrong-type-argument symbolp) (wrong-type-argument listp) (wrong-type-argument listp) (wrong-type-argument symbolp) "\"a\\\"b\\\\c\\n\\t\\r\\f\\b\\u0001\\u001F/é😀\"" "\"abc\"" (wrong-type-argument json-value-p) (wrong-type-argument json-value-p) (wrong-type-argument json-value-p) (wrong-type-argument json-value-p) (wrong-type-argument json-value-p) "[1,[2,[3]],\"x\",null,false,true,{}]" "123456789012345678901234567890" "-5" (wrong-type-argument json-value-p) (wrong-type-argument consp) "1e+100" "-0.0")"##,
+        "json-serialize values",
+    );
+}
+
+#[test]
+fn json_serialize_nesting_cycles_and_insertion_as_json_c() {
+    // json.c: FOR_EACH_TAIL's circular-list, json_out_nest's depth of 50,
+    // CHECK_STRING of hash keys, the configured objects by EQ, and
+    // Fjson_insert's characters into a multibyte buffer and bytes into a
+    // unibyte one.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list (let ((x (list (cons 'a 1)))) (setcdr x x) (condition-case err (json-serialize x) (error (car err)))) (let ((x (list :a 1))) (setcdr (cdr x) x) (condition-case err (json-serialize x) (error (car err)))) (let ((v (make-vector 1 nil))) (aset v 0 v) (condition-case err (json-serialize v) (error err))) (length (json-serialize (let ((l 1)) (dotimes (_ 50) (setq l (vector l))) l))) (condition-case err (json-serialize (let ((l 1)) (dotimes (_ 51) (setq l (vector l))) l)) (error err)) (let ((h (make-hash-table :test 'equal))) (puthash "a" 1 h) (puthash 'k 1 h) (condition-case err (json-serialize h) (error err))) (json-serialize 1.5 :null-object 1.5) (json-serialize 'x :null-object 'x) (json-serialize '(:a nil) :null-object nil :null-object 0) (with-temp-buffer (json-insert '((a . "é😀") (b . [1.5]))) (list (buffer-string) (point))) (with-temp-buffer (set-buffer-multibyte nil) (json-insert "é") (list (point) (buffer-size))) (with-temp-buffer (insert "xy") (goto-char 2) (json-insert [1]) (list (buffer-string) (point))) (multibyte-string-p (json-serialize "é")) (string-bytes (json-serialize "é")))"##,
+        r##"(circular-list circular-list (error "Maximum JSON serialization depth exceeded") 101 (error "Maximum JSON serialization depth exceeded") (wrong-type-argument stringp k) "1.5" "null" "{\"a\":null}" ("{\"a\":\"é😀\",\"b\":[1.5]}" 21) (5 4) ("x[1]y" 5) nil 4)"##,
+        "json-serialize nesting and json-insert",
+    );
+}
+
+#[test]
+fn casify_region_cases_as_do_casify_multibyte_region() {
+    // casefiddle.c casify_region: special casing (ß, ﬁ, İ), title case,
+    // the final sigma, and one signal_after_change from the first to the
+    // last character changed, with the characters added.
+    assert_oracle_contract_matches_interpreter(
+        r##"(let* ((log nil) (rec (lambda (b e l) (push (list b e l) log)))) (list (with-temp-buffer (insert "straße ﬁne İx ǆ ǅ ΣΑΣ ΌΣΟΣ σς") (let ((after-change-functions (list rec))) (setq log nil) (goto-char 9) (upcase-region 1 (point-max)) (list (buffer-string) (point) log))) (with-temp-buffer (insert "straße ﬁne İx ǆ ǅ ΣΑΣ ΌΣΟΣ σς") (let ((after-change-functions (list rec))) (setq log nil) (downcase-region 1 (point-max)) (list (buffer-string) log))) (with-temp-buffer (insert "straße ﬁne İx ǆ ǅ ΣΑΣ ΌΣΟΣ σς hello-world foo_bar") (let ((after-change-functions (list rec))) (setq log nil) (capitalize-region 1 (point-max)) (list (buffer-string) log))) (with-temp-buffer (insert "straße ﬁne İx ǆ ǅ hello-world foo_bar") (upcase-initials-region 1 (point-max)) (buffer-string)) (with-temp-buffer (insert "ABC def") (let ((after-change-functions (list rec))) (setq log nil) (upcase-region 1 4) (upcase-region 5 8) (downcase-region 1 2) (list (buffer-string) log)))))"##,
+        r##"(("STRASSE FINE İX Ǆ Ǆ ΣΑΣ ΌΣΟΣ ΣΣ" 11 ((1 32 29))) ("straße ﬁne i̇x ǆ ǆ σας όσος σς" ((12 28 15))) ("Straße Fine İx ǅ ǅ Σας Όσος Σς Hello-World Foo_Bar" ((1 49 47))) "Straße Fine İx ǅ ǅ Hello-World Foo_Bar" ("aBC DEF" ((1 2 1) (5 8 3))))"##,
+        "region casing",
+    );
+}
+
+#[test]
+fn casing_strings_characters_and_buffers_as_casefiddle_c() {
+    // casefiddle.c: do_casify_multibyte_string, case_single_character for
+    // characters, replace_range_2's markers, point, undo records and
+    // properties where a character becomes two, raw bytes and characters
+    // beyond Unicode left alone, and a unibyte buffer's bytes cased as
+    // their characters.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list (upcase "straße ﬁne İx ǆ ΣΑΣ") (downcase "ΣΑΣ ΌΣΟΣ İ") (capitalize "straße ﬁne ǆ hello-world 'foo") (upcase-initials "ǆx ﬁne 'foo") (with-temp-buffer (insert "aßb") (let ((m (copy-marker 3)) (m2 (copy-marker 4))) (goto-char 3) (upcase-region 1 4) (list (buffer-string) (point) (marker-position m) (marker-position m2)))) (with-temp-buffer (buffer-enable-undo) (insert "abc ßx") (undo-boundary) (upcase-region 1 (point-max)) (list (buffer-string) (car buffer-undo-list) (cadr buffer-undo-list) (caddr buffer-undo-list))) (with-temp-buffer (insert (propertize "aßc" 'face 'bold)) (upcase-region 1 (point-max)) (list (buffer-string) (get-text-property 2 'face) (get-text-property 3 'face))) (with-temp-buffer (insert "abc" (string #x3fff80 #x3fffe9) "déf" (string #x110000)) (upcase-region 1 (point-max)) (append (buffer-string) nil)) (with-temp-buffer (set-buffer-multibyte nil) (insert "abc\351\311xyz") (upcase-region 1 (point-max)) (list (append (buffer-string) nil) (progn (capitalize-region 1 (point-max)) (append (buffer-string) nil)))) (with-temp-buffer (emacs-lisp-mode) (insert "'foo `bar ,baz #'qux ?a") (capitalize-region 1 (point-max)) (buffer-string)) (list (upcase ?ß) (upcase ?ﬁ) (capitalize ?ǆ) (upcase-initials ?ǆ) (downcase ?Σ) (upcase #x3fffe9) (downcase ?İ)))"##,
+        r##"("STRASSE FINE İX Ǆ ΣΑΣ" "σας όσος i̇" "Straße Fine ǅ Hello-World 'Foo" "ǅx Fine 'Foo" ("ASSB" 4 3 4) ("ABC SSX" (1 . 8) ("abc ßx" . -1) 7) (#("ASSC" 0 4 (face bold)) bold bold) (65 66 67 4194176 4194281 68 201 70 1114112) ((65 66 67 233 201 88 89 90) (65 98 99 233 201 120 121 122)) "'Foo `Bar ,Baz #'Qux ?A" (7838 64257 453 453 963 4194281 304))"##,
+        "string and buffer casing",
+    );
+}
+
+#[test]
+fn line_number_at_pos_counts_from_begv_as_count_lines() {
+    // fns.c Fline_number_at_pos: count_lines from BEGV (BEG when ABSOLUTE)
+    // to the position, clipped to the accessible region unless ABSOLUTE.
+    assert_oracle_contract_matches_interpreter(
+        r##"(with-temp-buffer (insert "a\nb\nc\nd\ne") (list (progn (narrow-to-region 3 7) (list (line-number-at-pos 5) (line-number-at-pos 3) (line-number-at-pos 7) (line-number-at-pos 5 t) (line-number-at-pos 1 t) (line-number-at-pos 1) (line-number-at-pos 10) (condition-case err (line-number-at-pos 11) (error err)) (count-lines 3 7))) (progn (widen) (list (count-lines 2 6) (count-lines 6 2) (count-lines 1 10) (count-lines 1 1) (line-number-at-pos)))))"##,
+        r##"((2 1 3 3 1 1 3 (args-out-of-range 11 1 10) 2) (3 3 5 0 4))"##,
+        "line-number-at-pos",
+    );
+}
+
+#[test]
+fn current_column_scans_back_as_indent_c_in_a_plain_buffer() {
+    // indent.c current_column: a buffer with no intervals or overlays whose
+    // characters are each one byte is scanned back from point, tabs,
+    // control characters, a unibyte buffer's bytes, a carriage return under
+    // selective-display and display-table vectors counted as GNU counts
+    // them; char-charset reads the charset priority list in place.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list (with-temp-buffer (insert "a\tb\t\tc  \td") (list (current-column) (progn (goto-char 3) (current-column)) (progn (goto-char 5) (current-column)) (let ((tab-width 4)) (goto-char (point-max)) (current-column)))) (with-temp-buffer (insert "x\001y\177z") (list (current-column) (let ((ctl-arrow nil)) (goto-char (point-max)) (current-column)))) (with-temp-buffer (set-buffer-multibyte nil) (insert "ab\351\200c") (list (current-column) (let ((ctl-arrow nil)) (current-column)))) (with-temp-buffer (insert "abc\rdef") (list (current-column) (let ((selective-display t)) (goto-char (point-max)) (current-column)))) (with-temp-buffer (let ((buffer-display-table (make-display-table))) (aset buffer-display-table ?a [?x ?y ?z]) (aset buffer-display-table ?\t [?\s]) (aset buffer-display-table ?b (vector (make-glyph-code ?\n))) (insert "qa\tr") (list (current-column) (progn (insert "b") (current-column)) (progn (insert "s") (current-column))))) (with-temp-buffer (insert "line1\n\tab\tc") (list (current-column) (progn (narrow-to-region 9 (point-max)) (goto-char (point-max)) (current-column)))) (with-temp-buffer (insert "    foo\tbar") (list (progn (goto-char 1) (back-to-indentation) (current-column)) (progn (end-of-line) (current-column)) (progn (indent-to 30) (current-column)) (append (buffer-string) nil))) (list (char-charset ?a) (char-charset ?é) (char-charset #x3fffe9) (char-charset ?中)))"##,
+        r##"((33 8 16 17) (7 7) (11 11) (8 8) (6 0 1) (17 9) (4 11 30 (32 32 32 32 102 111 111 9 98 97 114 9 9 32 32 32 32 32 32)) (ascii unicode eight-bit unicode))"##,
+        "plain current-column",
+    );
+}
+
+#[test]
+fn category_table_is_a_buffer_slot_as_category_c_keeps_it() {
+    // BVAR (b, category_table) is a buffer slot with no Lisp variable:
+    // set-category-table binds nothing `local-variable-p' or
+    // `buffer-local-variables' sees; kill-all-local-variables returns it
+    // to the standard table; clone-indirect-buffer copies it and
+    // make-indirect-buffer does not; check_category_table signals
+    // `category-table-p'.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list (with-temp-buffer (set-category-table (make-category-table)) (list (local-variable-p 'category-table) (and (assq 'category-table (buffer-local-variables)) t) (boundp 'category-table) (condition-case e (buffer-local-value 'category-table (current-buffer)) (error (car e))))) (with-temp-buffer (let ((ct (make-category-table))) (set-category-table ct) (list (eq (category-table) ct) (progn (kill-all-local-variables) (eq (category-table) (standard-category-table)))))) (with-temp-buffer (let ((ct (make-category-table))) (set-category-table ct) (let* ((ind (clone-indirect-buffer nil nil)) (r (eq (with-current-buffer ind (category-table)) ct))) (kill-buffer ind) r))) (with-temp-buffer (let ((ct (make-category-table))) (set-category-table ct) (let* ((ind (make-indirect-buffer (current-buffer) "ind-cat")) (r (eq (with-current-buffer ind (category-table)) (standard-category-table)))) (kill-buffer ind) r))) (with-temp-buffer (condition-case e (set-category-table 5) (error e))) (with-temp-buffer (insert "ab cd") (let ((ct (copy-category-table))) (define-category ?Z "zed" ct) (modify-category-entry ?b ?Z ct) (set-category-table ct) (list (category-set-mnemonics (char-category-set ?b)) (with-temp-buffer (category-set-mnemonics (char-category-set ?b)))))))"##,
+        r##"((nil nil nil void-variable) (t t) t t (wrong-type-argument category-table-p 5) (".LZalr" ".Lalr"))"##,
+        "category-table slot",
     );
 }

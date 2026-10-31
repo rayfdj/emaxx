@@ -56,14 +56,21 @@ pub(crate) struct Intervals {
 /// copy_text_properties' from the last interval back, a graft's from the
 /// first on) cost a move of the gap and not each a move of every interval
 /// after it, where GNU's balanced tree splits in logarithmic time.  The
-/// first few are held in place: a string's intervals (propertize's one,
-/// concat's few) take one allocation, as GNU's take one block slot each.
-/// The gap's slots hold stale copies.
+/// slots after the gap hold their starts less SHIFT, so text inserted or
+/// deleted at the gap moves every interval after it by one change of
+/// SHIFT, where GNU's tree adjusts the total lengths on one path: a pass
+/// of edits from the start of the text on (dired indenting each line of
+/// a listing) moves the gap a slot an edit.  The first few are held in
+/// place: a string's intervals (propertize's one, concat's few) take one
+/// allocation, as GNU's take one block slot each.  The gap's slots hold
+/// stale copies.
 #[derive(Clone, Debug)]
 struct Items {
     slots: smallvec::SmallVec<[Interval; 3]>,
     gap_start: usize,
     gap_end: usize,
+    /// Added (wrapping) to the start a slot after the gap holds.
+    shift: usize,
 }
 
 impl Items {
@@ -73,6 +80,7 @@ impl Items {
             slots,
             gap_start: len,
             gap_end: len,
+            shift: 0,
         }
     }
 
@@ -96,14 +104,55 @@ impl Items {
         }
     }
 
-    #[inline]
-    fn get(&self, i: usize) -> Option<&Interval> {
-        self.slots.get(self.slot(i))
+    /// The start of the interval in SLOT.
+    #[inline(always)]
+    fn slot_start(&self, slot: usize) -> usize {
+        let start = self.slots[slot].start;
+        if slot >= self.gap_end {
+            start.wrapping_add(self.shift)
+        } else {
+            start
+        }
     }
 
-    /// The Ith interval and the start of the one after it, if any.
+    /// The Ith interval's start.
     #[inline]
-    fn with_next_start(&self, i: usize) -> (&Interval, Option<usize>) {
+    fn start(&self, i: usize) -> usize {
+        self.slot_start(self.slot(i))
+    }
+
+    /// The Ith interval's start, if there are I + 1.
+    #[inline]
+    fn get_start(&self, i: usize) -> Option<usize> {
+        (i < self.len()).then(|| self.start(i))
+    }
+
+    /// The Ith interval made to start at START.
+    #[inline]
+    fn set_start(&mut self, i: usize, start: usize) {
+        let slot = self.slot(i);
+        self.slots[slot].start = if slot >= self.gap_end {
+            start.wrapping_sub(self.shift)
+        } else {
+            start
+        };
+    }
+
+    #[inline]
+    fn plist(&self, i: usize) -> Value {
+        self.slots[self.slot(i)].plist
+    }
+
+    #[inline]
+    fn set_plist(&mut self, i: usize, plist: Value) {
+        let slot = self.slot(i);
+        self.slots[slot].plist = plist;
+    }
+
+    /// The Ith interval's start and plist, and the start of the one after
+    /// it, if any.
+    #[inline]
+    fn with_next_start(&self, i: usize) -> (usize, Value, Option<usize>) {
         let slot = self.slot(i);
         let next = if slot + 1 == self.gap_start {
             self.gap_end
@@ -111,25 +160,37 @@ impl Items {
             slot + 1
         };
         (
-            &self.slots[slot],
-            self.slots.get(next).map(|next| next.start),
+            self.slot_start(slot),
+            self.slots[slot].plist,
+            (next < self.slots.len()).then(|| self.slot_start(next)),
         )
     }
 
-    /// The gap moved to before the Ith interval.
+    /// The gap moved to before the Ith interval, the starts that cross it
+    /// read through SHIFT or made relative to it.
     fn move_gap(&mut self, to: usize) {
+        let shift = self.shift;
         if to < self.gap_start {
             let count = self.gap_start - to;
             self.slots
                 .copy_within(to..self.gap_start, self.gap_end - count);
             self.gap_start = to;
             self.gap_end -= count;
+            for item in &mut self.slots[self.gap_end..self.gap_end + count] {
+                item.start = item.start.wrapping_sub(shift);
+            }
         } else if to > self.gap_start {
             let count = to - self.gap_start;
+            for item in &mut self.slots[self.gap_end..self.gap_end + count] {
+                item.start = item.start.wrapping_add(shift);
+            }
             self.slots
                 .copy_within(self.gap_end..self.gap_end + count, self.gap_start);
             self.gap_start = to;
             self.gap_end += count;
+        }
+        if self.gap_end == self.slots.len() {
+            self.shift = 0;
         }
     }
 
@@ -152,35 +213,55 @@ impl Items {
         assert!(i < self.len(), "interval index out of range");
         self.move_gap(i);
         self.gap_end += 1;
+        if self.gap_end == self.slots.len() {
+            self.shift = 0;
+        }
     }
 
-    fn iter(&self) -> impl Iterator<Item = &Interval> + '_ {
+    /// Every interval from the Ith on moved DELTA characters on (wrapping,
+    /// so a move back is its two's complement): the gap moved before the
+    /// Ith, one change of SHIFT.
+    fn shift_from(&mut self, i: usize, delta: usize) {
+        self.move_gap(i);
+        if self.gap_end < self.slots.len() {
+            self.shift = self.shift.wrapping_add(delta);
+        }
+    }
+
+    /// Each interval, its start read through SHIFT.
+    fn iter(&self) -> impl Iterator<Item = Interval> + '_ {
+        let shift = self.shift;
         self.slots[..self.gap_start]
             .iter()
-            .chain(&self.slots[self.gap_end..])
+            .copied()
+            .chain(self.slots[self.gap_end..].iter().map(move |item| Interval {
+                start: item.start.wrapping_add(shift),
+                plist: item.plist,
+            }))
     }
 
-    /// The intervals from the Ith on.
-    fn iter_mut_from(&mut self, from: usize) -> impl Iterator<Item = &mut Interval> + '_ {
+    /// Each interval's plist, to rewrite.
+    fn plists_mut(&mut self) -> impl Iterator<Item = &mut Value> + '_ {
         let (gap_start, gap_end) = (self.gap_start, self.gap_end);
         let (before, after) = self.slots.split_at_mut(gap_end);
-        let (left, right) = if from < gap_start {
-            (&mut before[from..gap_start], after)
-        } else {
-            (&mut before[..0], &mut after[from - gap_start..])
-        };
-        left.iter_mut().chain(right.iter_mut())
+        before[..gap_start]
+            .iter_mut()
+            .chain(after.iter_mut())
+            .map(|item| &mut item.plist)
     }
 
-    /// The count of the leading intervals PRED holds of, which holds of
-    /// a prefix of them.
-    fn partition_point(&self, pred: impl Fn(&Interval) -> bool) -> usize {
+    /// The count of the leading intervals whose start PRED holds of,
+    /// which holds of a prefix of them.
+    fn partition_point(&self, pred: impl Fn(usize) -> bool) -> usize {
         let before = &self.slots[..self.gap_start];
-        let point = before.partition_point(&pred);
+        let point = before.partition_point(|item| pred(item.start));
         if point < before.len() {
             return point;
         }
-        point + self.slots[self.gap_end..].partition_point(pred)
+        let shift = self.shift;
+        point
+            + self.slots[self.gap_end..]
+                .partition_point(|item| pred(item.start.wrapping_add(shift)))
     }
 
     /// The intervals as one slice, the gap moved after them.
@@ -195,23 +276,6 @@ impl Items {
         self.slots.truncate(len);
         self.gap_start = len;
         self.gap_end = len;
-    }
-}
-
-impl std::ops::Index<usize> for Items {
-    type Output = Interval;
-
-    #[inline(always)]
-    fn index(&self, i: usize) -> &Interval {
-        &self.slots[self.slot(i)]
-    }
-}
-
-impl std::ops::IndexMut<usize> for Items {
-    #[inline(always)]
-    fn index_mut(&mut self, i: usize) -> &mut Interval {
-        let slot = self.slot(i);
-        &mut self.slots[slot]
     }
 }
 
@@ -594,7 +658,7 @@ impl Intervals {
     }
 
     pub(crate) fn origin(&self) -> usize {
-        self.items[0].start
+        self.items.start(0)
     }
 
     pub(crate) fn end(&self) -> usize {
@@ -613,20 +677,20 @@ impl Intervals {
 
     #[inline]
     pub(crate) fn start(&self, i: usize) -> usize {
-        self.items[i].start
+        self.items.start(i)
     }
 
     /// INTERVAL_LAST_POS: where interval I ends.
     #[inline]
     pub(crate) fn last_pos(&self, i: usize) -> usize {
-        self.items.get(i + 1).map_or(self.end, |next| next.start)
+        self.items.get_start(i + 1).unwrap_or(self.end)
     }
 
     /// Interval I's start, INTERVAL_LAST_POS and plist.
     #[inline]
     pub(crate) fn bounds(&self, i: usize) -> (usize, usize, Value) {
-        let (item, next) = self.items.with_next_start(i);
-        (item.start, next.unwrap_or(self.end), item.plist)
+        let (start, plist, next) = self.items.with_next_start(i);
+        (start, next.unwrap_or(self.end), plist)
     }
 
     /// LENGTH.
@@ -636,12 +700,12 @@ impl Intervals {
 
     #[inline]
     pub(crate) fn plist(&self, i: usize) -> Value {
-        self.items[i].plist
+        self.items.plist(i)
     }
 
     /// set_interval_plist.
     pub(crate) fn set_plist(&mut self, i: usize, plist: Value) {
-        self.items[i].plist = plist;
+        self.items.set_plist(i, plist);
     }
 
     /// Each interval's (start, end, plist).
@@ -656,8 +720,8 @@ impl Intervals {
 
     /// Each plist rewritten through COPY.
     pub(crate) fn rewrite_plists(&mut self, mut copy: impl FnMut(Value) -> Value) {
-        for item in self.items.iter_mut_from(0) {
-            item.plist = copy(item.plist);
+        for plist in self.items.plists_mut() {
+            *plist = copy(*plist);
         }
     }
 
@@ -666,7 +730,7 @@ impl Intervals {
     pub(crate) fn find(&self, pos: usize) -> usize {
         debug_assert!(self.origin() <= pos && pos <= self.end);
         self.items
-            .partition_point(|item| item.start <= pos)
+            .partition_point(|start| start <= pos)
             .saturating_sub(1)
     }
 
@@ -688,7 +752,7 @@ impl Intervals {
     pub(crate) fn split_right(&mut self, i: usize, offset: usize) -> usize {
         debug_assert!(0 < offset && offset < self.length(i));
         note_intervals(1);
-        let start = self.items[i].start + offset;
+        let start = self.items.start(i) + offset;
         self.items.insert(
             i + 1,
             Interval {
@@ -705,8 +769,8 @@ impl Intervals {
     pub(crate) fn split_left(&mut self, i: usize, offset: usize) -> usize {
         debug_assert!(0 < offset && offset < self.length(i));
         note_intervals(1);
-        let start = self.items[i].start;
-        self.items[i].start = start + offset;
+        let start = self.items.start(i);
+        self.items.set_start(i, start + offset);
         self.items.insert(
             i,
             Interval {
@@ -729,9 +793,9 @@ impl Intervals {
     /// plist the merged interval keeps; the successor returned.
     pub(crate) fn merge_right(&mut self, i: usize) -> usize {
         debug_assert!(i + 1 < self.items.len());
-        let start = self.items[i].start;
+        let start = self.items.start(i);
         self.items.remove(i);
-        self.items[i].start = start;
+        self.items.set_start(i, start);
         i
     }
 
@@ -742,19 +806,17 @@ impl Intervals {
         source: Value,
         target: usize,
     ) -> Result<(), LispError> {
-        if source.is_nil() && self.items[target].plist.is_nil() {
+        if source.is_nil() && self.items.plist(target).is_nil() {
             return Ok(());
         }
-        self.items[target].plist = copy_plist(source)?;
+        self.items.set_plist(target, copy_plist(source)?);
         Ok(())
     }
 
     /// The text grew by LENGTH characters at POSITION, after interval
     /// I's start: every interval after I moves.
     fn grow(&mut self, i: usize, length: usize) {
-        for item in self.items.iter_mut_from(i + 1) {
-            item.start += length;
-        }
+        self.items.shift_from(i + 1, length);
         self.end += length;
     }
 
@@ -877,23 +939,21 @@ impl Intervals {
         // The intervals after the one holding START: those that began in
         // the deleted text begin at START, the rest move back.
         let holder = self.find(start);
-        for item in self.items.iter_mut_from(holder + 1) {
-            if item.start >= to {
-                item.start -= length;
-            } else {
-                item.start = start;
-            }
+        let after = self.items.partition_point(|begins| begins < to);
+        for i in holder + 1..after {
+            self.items.set_start(i, start);
         }
+        self.items.shift_from(after, length.wrapping_neg());
         self.end -= length;
         // Delete each interval left with no text: one whose start the
         // next interval (or the end) now shares, all of them from HOLDER
         // to the first interval beginning after START.
         let mut i = holder;
         while i < self.items.len() {
-            let next_start = self.items.get(i + 1).map_or(self.end, |next| next.start);
-            if self.items[i].start == next_start {
+            let next_start = self.items.get_start(i + 1).unwrap_or(self.end);
+            if self.items.start(i) == next_start {
                 self.items.remove(i);
-            } else if self.items[i].start > start {
+            } else if self.items.start(i) > start {
                 break;
             } else {
                 i += 1;
@@ -958,13 +1018,13 @@ impl Intervals {
     /// their order; an interval left with no text goes (the rounding of
     /// set_intervals_multibyte).
     pub(crate) fn remap(&mut self, mut remap: impl FnMut(usize) -> usize) {
-        for item in self.items.iter_mut_from(0) {
+        for item in self.items.make_contiguous() {
             item.start = remap(item.start);
         }
         self.end = remap(self.end);
-        let origin = self.items[0].start;
+        let origin = self.items.start(0);
         self.drop_empty();
-        self.items[0].start = origin;
+        self.items.set_start(0, origin);
     }
 
     /// Each interval with no text dropped, in place: one whose start the
@@ -2161,36 +2221,119 @@ mod tests {
             }
             assert_eq!(gapped.len(), plain.len());
             let probe = next(plain.len());
-            assert_eq!(gapped[probe].start, plain[probe].start);
+            assert_eq!(gapped.start(probe), plain[probe].start);
         }
         let starts = |items: &Items| items.iter().map(|item| item.start).collect::<Vec<_>>();
         assert_eq!(
             starts(&gapped),
             plain.iter().map(|item| item.start).collect::<Vec<_>>()
         );
-        let from = plain.len() / 3;
-        for item in gapped.iter_mut_from(from) {
-            item.start += 1;
+        // Shifts at moving places, on and back, read through the gap.
+        for _ in 0..200 {
+            let from = next(plain.len() + 1);
+            let delta = next(5);
+            gapped.shift_from(from, delta);
+            for item in &mut plain[from..] {
+                item.start = item.start.wrapping_add(delta);
+            }
+            let back = next(plain.len() + 1);
+            gapped.shift_from(back, 1_usize.wrapping_neg());
+            for item in &mut plain[back..] {
+                item.start = item.start.wrapping_sub(1);
+            }
+            let probe = next(plain.len());
+            assert_eq!(gapped.start(probe), plain[probe].start);
+            let at = next(plain.len() + 1);
+            plain.insert(at, item(at));
+            gapped.insert(at, item(at));
+            assert_eq!(
+                starts(&gapped),
+                plain.iter().map(|item| item.start).collect::<Vec<_>>()
+            );
         }
-        for item in &mut plain[from..] {
-            item.start += 1;
-        }
-        assert_eq!(
-            starts(&gapped),
-            plain.iter().map(|item| item.start).collect::<Vec<_>>()
-        );
         // A sorted run, searched across the gap wherever it lies.
         let mut sorted = Items::from_iter((0..50).map(|n| item(n * 2)));
         sorted.insert(20, item(39));
         sorted.remove(20);
         for pos in 0..100 {
-            assert_eq!(
-                sorted.partition_point(|item| item.start <= pos),
-                pos / 2 + 1
-            );
+            assert_eq!(sorted.partition_point(|start| start <= pos), pos / 2 + 1);
         }
         sorted.truncate(10);
         assert_eq!(starts(&sorted), (0..10).map(|n| n * 2).collect::<Vec<_>>());
+    }
+
+    /// Splits, insertions and deletions at wandering places against
+    /// the starts a plain list gets: each edit's shift of the intervals
+    /// after it read back through the gap, wherever the gap was left.
+    #[test]
+    fn edits_shift_the_intervals_after_them_through_the_gap() {
+        let mut intervals = Intervals::root(1, 2_001);
+        let mut starts = vec![1_usize];
+        let mut end = 2_001_usize;
+        let mut seed = 98_765_u64;
+        let mut next = |bound: usize| {
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            (seed >> 33) as usize % bound
+        };
+        let mut host = PropertyVariables::NONE;
+        for _ in 0..3_000 {
+            match next(4) {
+                0 => {
+                    let i = next(starts.len());
+                    let length = starts.get(i + 1).copied().unwrap_or(end) - starts[i];
+                    if length > 1 {
+                        let offset = 1 + next(length - 1);
+                        assert_eq!(intervals.split_right(i, offset), i + 1);
+                        starts.insert(i + 1, starts[i] + offset);
+                    }
+                }
+                1 | 2 => {
+                    let position = 1 + next(end);
+                    let length = 1 + next(5);
+                    intervals
+                        .adjust_for_insertion(&mut host, position, length)
+                        .expect("no properties to read");
+                    // The interval before POSITION takes the text: those
+                    // after it move, the first never.
+                    for start in &mut starts {
+                        if *start > position || (*start == position && position > 1) {
+                            *start += length;
+                        }
+                    }
+                    end += length;
+                }
+                _ => {
+                    let start = 1 + next(end - 1);
+                    let length = next((end - start).min(8) + 1);
+                    if end - 1 - length == 0 {
+                        continue;
+                    }
+                    assert!(intervals.adjust_for_deletion(start, length));
+                    let to = start + length;
+                    for begins in &mut starts[1..] {
+                        if *begins >= to {
+                            *begins -= length;
+                        } else if *begins > start {
+                            *begins = start;
+                        }
+                    }
+                    end -= length;
+                    starts.dedup();
+                    if starts.last() == Some(&end) {
+                        starts.pop();
+                    }
+                }
+            }
+            assert_eq!(intervals.end(), end);
+            assert_eq!(
+                intervals
+                    .iter()
+                    .map(|(start, _, _)| start)
+                    .collect::<Vec<_>>(),
+                starts
+            );
+        }
+        assert!(intervals.count() > 100);
     }
 
     #[test]

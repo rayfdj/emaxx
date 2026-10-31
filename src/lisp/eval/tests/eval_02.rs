@@ -2868,6 +2868,8 @@ fn invisible_p_tracks_invisible_text_properties() {
 
 #[test]
 fn invisible_p_accepts_raw_invisibility_property_values() {
+    // GNU's invisible_prop gives 2 for a spec element (ATOM . ELLIPSIS)
+    // with a non-nil ELLIPSIS.
     assert_eq!(
         eval_str(
             "(let ((buffer-invisibility-spec '(outline (secret . t) t)))
@@ -2877,7 +2879,7 @@ fn invisible_p_accepts_raw_invisibility_property_values() {
                     (invisible-p t)
                     (invisible-p 'visible)))"
         ),
-        Value::list([Value::T, Value::T, Value::T, Value::Nil])
+        Value::list([Value::T, Value::Integer(2), Value::T, Value::Nil])
     );
 }
 

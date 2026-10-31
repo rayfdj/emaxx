@@ -1275,6 +1275,7 @@ impl Interpreter {
         self.buffer_local_hooks.remove(&id);
         self.buffer_case_tables.remove(id);
         self.reset_buffer_syntax_table(id);
+        self.reset_buffer_category_table(id);
         self.labeled_restrictions
             .retain(|restriction| restriction.buffer_id != id);
         self.indirect_buffers
@@ -1634,41 +1635,6 @@ impl Interpreter {
             table.insert(hash, key, value);
         }
         Ok(true)
-    }
-
-    #[inline]
-    /// The current canonical graph, including mutable descriptors. Unlike a
-    /// Rust mutation stamp this observes raw native stores as well. The regex
-    /// backend compiles tables into classes, so its derived caches must compare
-    /// their actual inputs; ordinary table lookup never pays for this walk.
-    pub(crate) fn char_table_chain_signature(
-        &self,
-        table: CharTableRef,
-    ) -> CharTableChainSignature {
-        CharTableChainSignature::capture(table)
-    }
-
-    pub(crate) fn cached_syntax_segments(
-        &self,
-        table_id: CharTableRef,
-    ) -> Option<std::rc::Rc<Vec<(u32, u32, crate::lisp::primitives::syntax::SyntaxClass)>>> {
-        self.syntax_segment_cache
-            .borrow()
-            .as_ref()
-            .filter(|cache| cache.table_id == table_id && cache.chain.matches(Some(table_id)))
-            .map(|cache| cache.segments.clone())
-    }
-
-    pub(crate) fn cache_syntax_segments(
-        &self,
-        table_id: CharTableRef,
-        segments: std::rc::Rc<Vec<(u32, u32, crate::lisp::primitives::syntax::SyntaxClass)>>,
-    ) {
-        *self.syntax_segment_cache.borrow_mut() = Some(crate::lisp::eval::SyntaxSegmentCache {
-            table_id,
-            chain: self.char_table_chain_signature(table_id),
-            segments,
-        });
     }
 
     #[inline]

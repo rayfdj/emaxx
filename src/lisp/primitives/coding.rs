@@ -2426,9 +2426,12 @@ pub(crate) fn char_charset_ordered(
 }
 
 pub(crate) fn char_charset(interp: &Interpreter, ch: u32) -> (String, u32) {
-    let ordered = interp.charset_priority_list();
-    let head = interp.charset_non_preferred_head();
-    char_charset_ordered(interp, &ordered, head.as_deref(), ch)
+    char_charset_ordered(
+        interp,
+        interp.charset_priority(),
+        interp.charset_non_preferred_head_ref(),
+        ch,
+    )
 }
 
 /// Fdefine_coding_system_internal's `charset_valids' vector for a

@@ -543,6 +543,48 @@ fn batch_symbol_readers_answer_piped_stdin_like_gnu() {
 }
 
 #[test]
+fn batch_minibuffer_reads_stdin_lines_as_read_minibuf_noninteractive() {
+    // minibuf.c:read_minibuf_noninteractive: a line ends at a newline or a
+    // carriage return, its bytes become a unibyte string as they came, an
+    // empty answer takes the default, `read-minibuffer' signals trailing
+    // text as string_to_object does, and end of input is end-of-file.
+    // The expected output is what `emacs -Q -batch' prints for this input.
+    let program = r#"(prin1
+          (list (read-string "A: ")
+                (read-string "B: ")
+                (string-to-list (read-string "C: "))
+                (read-string "D: " nil nil "dflt")
+                (condition-case e (read-minibuffer "E: ") (error e))
+                (condition-case e (read-string "F: ") (error e))))"#;
+    let mut child = Command::new(common::emaxx(false))
+        .args(["--quick", "--batch", "--eval", program])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"ab\rcd\n\xff\xce\xbb\n\n(1 2) x\n")
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+
+    assert!(
+        output.status.success(),
+        "batch minibuffer reads failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "A: B: C: D: E: F: (\"ab\" \"cd\" (255 206 187) \"dflt\" \
+         (invalid-read-syntax \"Trailing garbage following expression\") \
+         (end-of-file \"Error reading from stdin\"))"
+    );
+}
+
+#[test]
 fn batch_accepts_gnu_single_dash_long_spellings_and_rejects_dash_b() {
     let output = Command::new(common::emaxx(false))
         .args([

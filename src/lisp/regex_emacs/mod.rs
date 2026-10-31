@@ -19,7 +19,7 @@ mod exec;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use compile::compile;
+pub(crate) use compile::{WcType, compile, re_iswctype, re_wctype_parse};
 pub(crate) use exec::{re_match, re_search};
 
 /// The opcodes of a compiled pattern (regex-emacs.c's `re_opcode_t'), in

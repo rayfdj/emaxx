@@ -243,39 +243,29 @@ fn delete_from_list(
     Ok(head)
 }
 
+/// BVAR (current_buffer, category_table).
 fn current_category_table_id(interp: &mut Interpreter) -> CharTableRef {
     interp
-        .buffer_local_value(interp.current_buffer_id(), "category-table")
-        .and_then(|value| match value.kind() {
-            Kind::CharTable(id) => Some(id),
-            _ => None,
-        })
+        .initialized_current_category_table_id()
         .unwrap_or_else(|| interp.ensure_standard_category_table())
 }
 
+/// check_category_table: nil is the current buffer's table (the standard
+/// one for DEFAULT_TO_STANDARD, as Fcopy_category_table reads nil), any
+/// other non-category-table a wrong-type-argument `category-table-p'.
 fn category_table_arg(
     interp: &mut Interpreter,
     value: Option<&Value>,
     default_to_standard: bool,
 ) -> Result<CharTableRef, LispError> {
-    let id = match value.map(|v| v.kind()) {
-        Some(Kind::CharTable(id)) => id,
-        Some(Kind::Nil) | None if default_to_standard => interp.ensure_standard_category_table(),
-        Some(Kind::Nil) | None => current_category_table_id(interp),
-        Some(other) => {
-            return Err(LispError::TypeError(
-                "category-table".into(),
-                other.value().type_name(),
-            ));
+    match value.map(|v| v.kind()) {
+        Some(Kind::Nil) | None if default_to_standard => {
+            Ok(interp.ensure_standard_category_table())
         }
-    };
-    if !id.has_purpose("category-table") {
-        return Err(LispError::TypeError(
-            "category-table".into(),
-            "char-table".into(),
-        ));
+        Some(Kind::Nil) | None => Ok(current_category_table_id(interp)),
+        Some(Kind::CharTable(id)) if id.has_purpose("category-table") => Ok(id),
+        Some(other) => Err(wrong_type_argument("category-table-p", other.value())),
     }
-    Ok(id)
 }
 
 /// data.c's `enum bool_vector_op'.
@@ -1457,9 +1447,9 @@ define_dispatch!(
 
             "set-category-table" => {
                 need_args(name, args, 1)?;
-                let table = Value::CharTable(category_table_arg(interp, args.first(), false)?);
-                interp.set_buffer_local_value(interp.current_buffer_id(), "category-table", table);
-                Ok(table)
+                let table = category_table_arg(interp, args.first(), false)?;
+                interp.set_current_category_table(table);
+                Ok(Value::CharTable(table))
             }
 
             "define-category" => {

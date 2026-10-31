@@ -1317,31 +1317,41 @@ define_dispatch!(
                 if args.is_empty() {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
+                // json.c Fjson_parse_string: CHECK_STRING, then the
+                // arguments, then the string's bytes as Emacs holds them.
+                let Kind::StringObject(string) = args[0].kind() else {
+                    return Err(LispError::WrongTypeArgument("stringp".into(), args[0]));
+                };
                 let options = json_parse_options(&args[1..])?;
-                Ok(json::parse_value_source(interp, &args[0], &options, true)?.value)
+                let input = string.borrow().bytes().to_vec();
+                json::parse_string_bytes(interp, &input, &options)
             }
             "json-parse-buffer" => {
                 let options = json_parse_options(args)?;
-                let start = interp.buffer.borrow().point();
-                let text = interp
-                    .buffer
-                    .borrow()
-                    .buffer_substring(start, interp.buffer.borrow().point_max())
-                    .map_err(|error| LispError::Signal(error.to_string()))?;
-                let multibyte = interp.buffer.borrow().is_multibyte();
-                let parsed = json::parse_text_source(interp, &text, multibyte, &options, false)?;
-                interp
-                    .buffer
-                    .borrow_mut()
-                    .goto_char(start + parsed.consumed_source_pos.saturating_sub(1));
-                Ok(parsed.value)
+                // json.c Fjson_parse_buffer reads from point to Z, the
+                // narrowing ignored.  It leaves point past the value even
+                // beyond ZV; point here stays within the narrowing.
+                let (start, text, extended, multibyte) = {
+                    let buffer = interp.buffer.borrow();
+                    let start = buffer.point();
+                    (
+                        start,
+                        buffer.text_to_z(start),
+                        buffer.substring_extended_chars(start, buffer.size_total() + 1),
+                        buffer.is_multibyte(),
+                    )
+                };
+                let (value, moved) =
+                    json::parse_buffer_text(interp, &text, multibyte, &extended, &options)?;
+                interp.buffer.borrow_mut().goto_char(start + moved);
+                Ok(value)
             }
             "json-serialize" => {
                 if args.is_empty() {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
                 let (null_object, false_object) = json_serialize_options(&args[1..])?;
-                Ok(json::serialize(interp, &args[0], &null_object, &false_object)?.bytes_value)
+                Ok(json::serialize(interp, &args[0], &null_object, &false_object)?.into_value())
             }
             "json-insert" => {
                 if args.is_empty() {
@@ -1352,19 +1362,23 @@ define_dispatch!(
                 // json.c Fjson_insert copies the UTF-8 bytes into the gap: a
                 // multibyte buffer reads them as its own characters, a real
                 // U+E000..U+E0FF included.
-                let (text, extended) = if interp.buffer.borrow().is_multibyte() {
-                    let extended: Vec<(usize, u32)> = serialized
-                        .text
-                        .chars()
-                        .enumerate()
-                        .filter(|(_, ch)| raw_byte_from_regex_char(*ch).is_some())
-                        .map(|(index, ch)| (index, ch as u32))
-                        .collect();
-                    (&serialized.text, extended)
+                if interp.buffer.borrow().is_multibyte() {
+                    let text = serialized.text();
+                    let extended: Vec<(usize, u32)> =
+                        if memchr::memchr(0xEE, text.as_bytes()).is_some() {
+                            text.chars()
+                                .enumerate()
+                                .filter(|(_, ch)| raw_byte_from_regex_char(*ch).is_some())
+                                .map(|(index, ch)| (index, ch as u32))
+                                .collect()
+                        } else {
+                            Vec::new()
+                        };
+                    insert_text_with_hooks(interp, text, None, &extended, false, false, env)?;
                 } else {
-                    (&serialized.bytes_text, Vec::new())
-                };
-                insert_text_with_hooks(interp, text, None, &extended, false, false, env)?;
+                    let text = serialized.unibyte_text();
+                    insert_text_with_hooks(interp, &text, None, &[], false, false, env)?;
+                }
                 Ok(Value::Nil)
             }
 

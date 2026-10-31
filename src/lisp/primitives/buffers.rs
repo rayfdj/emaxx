@@ -1221,13 +1221,7 @@ pub(crate) fn byte_to_position(interp: &Interpreter, byte: usize) -> Option<usiz
 
 /// find_newline backward from POS to BEGV: the beginning of POS's line.
 pub(crate) fn line_beginning_at(interp: &Interpreter, pos: usize) -> usize {
-    let buffer = interp.buffer.borrow();
-    let begv = buffer.point_min();
-    let mut at = pos.clamp(begv, buffer.point_max());
-    while at > begv && buffer.char_at(at - 1) != Some('\n') {
-        at -= 1;
-    }
-    at
+    interp.buffer.borrow().line_start_at(pos)
 }
 
 /// The columns from LINE_START, the beginning of a line, to POS
@@ -1411,6 +1405,14 @@ fn check_display_width(
     pos: usize,
     col: usize,
 ) -> Option<(usize, usize)> {
+    {
+        // get_char_property_and_overlay finds nothing in a buffer with no
+        // intervals and no overlays.
+        let buffer = interp.buffer.borrow();
+        if !buffer.has_interval_tree() && buffer.overlays.is_empty() {
+            return None;
+        }
+    }
     let (value, overlay) = get_char_property_and_overlay(
         interp,
         &Value::Integer(pos as i64),
@@ -1528,47 +1530,16 @@ pub(crate) fn char_is_invisible(
 }
 
 pub(crate) fn invisibility_value_is_hidden(interp: &Interpreter, value: &Value, env: &Env) -> bool {
+    invisibility_level(interp, value, env) != 0
+}
+
+/// TEXT_PROP_MEANS_INVISIBLE of VALUE under the current buffer's
+/// `buffer-invisibility-spec': 0, 1, or 2 for text shown as an ellipsis.
+pub(crate) fn invisibility_level(interp: &Interpreter, value: &Value, env: &Env) -> u8 {
     let spec = interp
         .lookup_var("buffer-invisibility-spec", env)
         .unwrap_or(Value::T);
-    invisibility_spec_matches(&spec, value)
-}
-
-pub(crate) fn invisibility_spec_matches(spec: &Value, value: &Value) -> bool {
-    if value.is_nil() {
-        return false;
-    }
-    match spec.kind() {
-        Kind::Nil => false,
-        Kind::T => value.is_truthy(),
-        _ => {
-            if spec == value {
-                return true;
-            }
-            if let Some((car, _)) = spec.cons_values()
-                && car == *value
-            {
-                return true;
-            }
-            if let Ok(items) = spec.to_vec() {
-                if items.iter().any(|entry| entry == value) {
-                    return true;
-                }
-                if items
-                    .iter()
-                    .any(|entry| entry.cons_values().is_some_and(|(car, _)| car == *value))
-                {
-                    return true;
-                }
-            }
-            if let Ok(items) = value.to_vec() {
-                return items
-                    .into_iter()
-                    .any(|item| invisibility_spec_matches(spec, &item));
-            }
-            false
-        }
-    }
+    super::invisibility::text_prop_means_invisible(*value, spec)
 }
 
 pub(crate) fn compare_buffer_substrings(

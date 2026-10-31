@@ -385,29 +385,189 @@ fn read_minibuffer_queued_commands(
     active_minibuffer_text(interp, env).map(Some)
 }
 
-fn read_minibuffer_text_from_batch_stdin(prompt: &Value) -> Result<String, LispError> {
-    // minibuf.c read_minibuf_noninteractive: fputs the prompt, fflush stdout.
-    crate::lisp::primitives::batch_stdout::write(string_text(prompt)?.as_bytes())
+/// The bytes read from standard input and not yet consumed, as stdio's
+/// buffer behind getchar keeps them between reads.
+static BATCH_STDIN: std::sync::Mutex<std::collections::VecDeque<u8>> =
+    std::sync::Mutex::new(std::collections::VecDeque::new());
+
+/// getchar on standard input: the next byte, None at end of file or on an
+/// error other than EINTR.  A wait for input runs a pending fatal signal
+/// (SIGTERM, SIGHUP; SIGINT in batch) as its handler would, by
+/// `kill-emacs'.
+#[cfg(unix)]
+fn batch_stdin_byte(interp: &mut Interpreter, env: &mut Env) -> Result<Option<u8>, LispError> {
+    loop {
+        if let Some(byte) = BATCH_STDIN
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .pop_front()
+        {
+            return Ok(Some(byte));
+        }
+        if crate::lisp::primitives::fatal_signal_pending() {
+            crate::lisp::primitives::run_pending_fatal_signal(interp, env)?;
+        }
+        // poll is never restarted after a handler, so a signal ends the
+        // wait; the timeout covers one that lands just before it.
+        let mut fds = libc::pollfd {
+            fd: libc::STDIN_FILENO,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: FDS is one valid pollfd.
+        let ready = unsafe { libc::poll(&mut fds, 1, 1000) };
+        if ready <= 0 {
+            if ready < 0
+                && std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted
+            {
+                return Ok(None);
+            }
+            continue;
+        }
+        let mut chunk = [0u8; 4096];
+        // SAFETY: CHUNK is writable for its length.
+        let read =
+            unsafe { libc::read(libc::STDIN_FILENO, chunk.as_mut_ptr().cast(), chunk.len()) };
+        match read {
+            0 => return Ok(None),
+            n if n < 0 => {
+                if std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
+                    return Ok(None);
+                }
+            }
+            n => BATCH_STDIN
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .extend(&chunk[..n as usize]),
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn batch_stdin_byte(_interp: &mut Interpreter, _env: &mut Env) -> Result<Option<u8>, LispError> {
+    use std::io::Read;
+    let mut byte = [0u8];
+    Ok(match std::io::stdin().read(&mut byte) {
+        Ok(1) => Some(byte[0]),
+        _ => None,
+    })
+}
+
+/// minibuf.c:read_minibuf_noninteractive: the prompt written to standard
+/// output, then one line read a byte at a time to a newline or carriage
+/// return, made a string as make_string makes one; an empty read at end of
+/// file signals end-of-file.  With `read-hide-char' a character, the tty
+/// (when standard input is one) stops echoing and each byte read shows as
+/// that character, a newline after.
+fn read_minibuffer_value_from_batch_stdin(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    prompt: &Value,
+) -> Result<Value, LispError> {
+    let hide_char = interp
+        .lookup_var("read-hide-char", env)
+        .and_then(|value| match value.kind() {
+            Kind::Integer(code) if (0..=0x3F_FFFF).contains(&code) => Some(code as u8),
+            _ => None,
+        });
+    #[cfg(unix)]
+    let saved_tty = hide_char.and_then(|_| {
+        // SAFETY: TERMIOS is written by tcgetattr before it is read.
+        unsafe {
+            let mut termios: libc::termios = std::mem::zeroed();
+            (libc::tcgetattr(libc::STDIN_FILENO, &mut termios) == 0).then(|| {
+                let mut quiet = termios;
+                quiet.c_lflag &= !(libc::ICANON | libc::ECHO);
+                libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &quiet);
+                termios
+            })
+        }
+    });
+    // fwrite of the prompt's internal bytes.
+    let prompt_bytes = match prompt.kind() {
+        Kind::StringObject(state) => state.borrow().bytes().to_vec(),
+        _ => Vec::new(),
+    };
+    crate::lisp::primitives::batch_stdout::write(&prompt_bytes)
         .and_then(|()| crate::lisp::primitives::batch_stdout::flush())
         .map_err(|error| LispError::Signal(error.to_string()))?;
-    let mut line = String::new();
-    if std::io::stdin()
-        .read_line(&mut line)
-        .map_err(|error| LispError::Signal(error.to_string()))?
-        == 0
-    {
+    let mut line = Vec::new();
+    let mut terminated = false;
+    let read = loop {
+        match batch_stdin_byte(interp, env) {
+            Ok(Some(b'\n' | b'\r')) => {
+                terminated = true;
+                break Ok(());
+            }
+            Ok(Some(byte)) => {
+                if let Some(hide) = hide_char {
+                    let _ = crate::lisp::primitives::batch_stdout::write(&[hide]);
+                }
+                line.push(byte);
+            }
+            Ok(None) => break Ok(()),
+            Err(error) => break Err(error),
+        }
+    };
+    if hide_char.is_some() {
+        let _ = crate::lisp::primitives::batch_stdout::write(b"\n");
+        let _ = crate::lisp::primitives::batch_stdout::flush();
+        #[cfg(unix)]
+        if let Some(termios) = saved_tty {
+            // SAFETY: TERMIOS is the state tcgetattr returned.
+            unsafe {
+                libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &termios);
+            }
+        }
+    }
+    read?;
+    if line.is_empty() && !terminated {
         return Err(LispError::SignalValue(Value::list([
             Value::Symbol("end-of-file".into()),
             Value::String("Error reading from stdin".into()),
         ])));
     }
-    if line.ends_with('\n') {
-        line.pop();
-        if line.ends_with('\r') {
-            line.pop();
+    crate::lisp::primitives::make_string(line)
+        .map_err(|error| string_storage_error(interp, env, error))
+}
+
+/// minibuf.c:string_to_object: an empty VAL replaced by DEFALT (or its
+/// car) when that is a string, then read; anything but whitespace after
+/// the expression signals invalid-read-syntax ("Trailing garbage
+/// following expression").
+fn string_to_object(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    val: Value,
+    defalt: Value,
+) -> Result<Value, LispError> {
+    let mut val = val;
+    if string_like(&val).is_some_and(|string| string.text.is_empty()) {
+        if string_like(&defalt).is_some() {
+            val = defalt;
+        } else if let Some((car, _)) = defalt.cons_values()
+            && string_like(&car).is_some()
+        {
+            val = car;
         }
     }
-    Ok(line)
+    let expr_and_pos = super::call(interp, "read-from-string", &[val], env)?;
+    let (expr, pos) = expr_and_pos
+        .cons_values()
+        .unwrap_or((expr_and_pos, Value::Nil));
+    if let (Kind::Integer(pos), Some(text)) = (pos.kind(), string_like(&val)) {
+        let trailing = text.text.chars().skip(pos.max(0) as usize);
+        if trailing
+            .into_iter()
+            .any(|ch| !matches!(ch, ' ' | '\t' | '\n'))
+        {
+            return Err(LispError::SignalValue(Value::list([
+                Value::Symbol("invalid-read-syntax".into()),
+                Value::String("Trailing garbage following expression".into()),
+            ])));
+        }
+    }
+    Ok(expr)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -421,11 +581,7 @@ fn read_minibuffer_text_without_queued_events(
     history: Value,
     batch_stdin: bool,
 ) -> Result<String, LispError> {
-    // read_minibuf_noninteractive returns before any minibuffer is
-    // chosen: no buffer, no setup or exit hook.
-    if batch_stdin {
-        return read_minibuffer_text_from_batch_stdin(prompt);
-    }
+    debug_assert!(!batch_stdin, "the batch reader returns a string of its own");
     let minibuffer = activate_minibuffer(interp, prompt, initial_value, *local_map, env)?;
     run_active_minibuffer(interp, env, minibuffer, |interp, env| {
         if crate::lisp::primitives::has_tty_event_reader() {
@@ -1632,6 +1788,22 @@ define_dispatch!(
                     && interp
                         .lookup_var("executing-kbd-macro", env)
                         .is_none_or(|value| value.is_nil());
+                if batch_stdin {
+                    // read_minibuf_noninteractive returns before any
+                    // minibuffer is chosen: no buffer, no setup or exit hook,
+                    // no history.
+                    let value = read_minibuffer_value_from_batch_stdin(interp, env, &prompt)?;
+                    if name == "read-from-minibuffer" && args.get(3).is_some_and(Value::is_truthy) {
+                        return string_to_object(interp, env, value, default);
+                    }
+                    if name == "read-string"
+                        && string_like(&value).is_some_and(|string| string.text.is_empty())
+                        && !default.is_nil()
+                    {
+                        return Ok(default.cons_values().map_or(default, |(head, _)| head));
+                    }
+                    return Ok(value);
+                }
                 let mut contents = None;
                 if !batch_stdin {
                     contents = read_minibuffer_text_from_unread_events(
@@ -1689,13 +1861,12 @@ define_dispatch!(
                         }
                     }
                     if name == "read-from-minibuffer" && args.get(3).is_some_and(Value::is_truthy) {
-                        let parsed = super::call(
+                        return string_to_object(
                             interp,
-                            "read-from-string",
-                            &[Value::String(contents.into())],
                             env,
-                        )?;
-                        return Ok(parsed.cons_values().map(|(car, _)| car).unwrap_or(parsed));
+                            Value::String(contents.into()),
+                            default,
+                        );
                     }
                     if contents.is_empty() {
                         // GNU read-string returns DEFAULT-VALUE unchanged on

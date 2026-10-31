@@ -10215,6 +10215,438 @@ setup_process_coding_systems's check now refuses). A 13-form
   grouped gate's 3,356 library tests, the seven integration
   suites, clippy with every target and feature, rustfmt and `git diff
   --check'.
+- **Round 194: set-buffer-multibyte as Fset_buffer_multibyte, and
+  buffer-substring, get-char-property and line ends at GNU's cost.**
+  `(set-buffer-multibyte nil)' on a buffer holding a character beyond
+  Unicode left that character's sidecar entry in the unibyte buffer,
+  and the next string made of its text panicked ("unibyte string holds
+  character 0x110000"); a real U+E000..U+E0FF became one raw byte where
+  GNU keeps its three, and `(set-buffer-multibyte t)' took the bytes of a
+  surrogate or of a character beyond Unicode (and any five-byte
+  sequence) as raw bytes, Rust's UTF-8 refusing them. The conversion to
+  unibyte now writes each character's internal bytes, the sidecar's codes
+  included (encode_character), and keeps no sidecar; the conversion to
+  multibyte with t takes each valid internal sequence as its character as
+  Fset_buffer_multibyte does (MULTIBYTE_LENGTH, a byte8 head never),
+  those its text view cannot carry into the sidecar. buffer-substring
+  copies a span that one side of the gap holds straight from the text, as
+  make_buffer_string_both does, where it built a Rust string and copied
+  that; get-char-property in the current buffer with no overlays checks
+  BEGV and ZV and reads the text property, where it looked the buffer up
+  by id twice and walked the overlays; and a newline scan remembers the
+  newline it found by character and byte, as find_newline returns both, so
+  the line end that buffer-substring or forward-line converts next is
+  known. textsec's first link test (publicsuffix.txt's 15,675 lines)
+  costs 122.6M instructions against GNU's 122.7M (130.0M at round 193);
+  per call buffer-substring 742 instructions against 712 (1,243),
+  get-char-property 292 against 272 (474). A battery of round trips
+  through set-buffer-multibyte (nil, t and another flag; a character
+  beyond Unicode, the largest, a surrogate, U+E000, U+E0FF, raw bytes,
+  overlong and eight-bit sequences; point and a marker) and of
+  buffer-substring across the gap with properties reads as GNU's, where
+  Emaxx panicked on both. mule-tests, coding-tests, mule-util-tests,
+  fileio-tests, files-tests, buffer-tests, arc-mode-tests, ccl-tests,
+  character-tests, bytecomp-tests, textprop-tests, editfns-tests,
+  simple-tests, subr-tests, minibuf-tests, subr-x-tests, search-tests,
+  textsec-tests, thingatpt-tests, syntax-tests, casefiddle-tests,
+  undo-tests, url-domsuf-tests, elisp-mode-tests pass as many tests as
+  GNU's. Local validation: the grouped gate's 3,358 library tests,
+  the seven integration suites, clippy with every target and feature,
+  rustfmt and `git diff --check'.
+- **Round 193 measured** (its profile-guided build, `tools/pgo-build.sh`
+  afresh, the locked runner: `tools/core_runtime_perf.py run
+  --diagnostic`, nine rounds, the native files of the round 176
+  preparation, the host otherwise idle; no calibration, so it certifies
+  nothing). Paired median ratios and their bootstrapped 95% intervals:
+  interpreted-to-native 0.758 [0.691, 1.091], undo 0.970 [0.895, 1.058],
+  bytecode calls 0.971 [0.912, 0.996], cons allocation 0.899 [0.767,
+  0.927], mapcar 0.809 [0.757, 0.926], bytecode-to-native 0.837 [0.802,
+  0.893], explicit GC 0.777, list traversal 0.779, interpreted-dynamic
+  0.657, bindat 0.647, sort 0.644, native-to-bytecode 0.671,
+  native-to-interpreted 0.639, interpreted calls 0.560,
+  interpreted-lexical 0.607, native execution 0.496; geometric mean 0.720
+  (round 181's 0.779). Every median is below 1; two upper bounds pass
+  1.03, from single rounds: interpreted-to-native's 1.091 and 1.105 among
+  0.685 to 0.913, undo's 1.075 and 1.058 among 0.812 to 1.002 (the load
+  average read 0.9 to 1.0 throughout, this session's own processes).
+  Bytecode calls' bound, 1.150 at round 181, is 0.996.
+  The VM's call paths out of line (`call_plain' and
+  `call_native_nested_by_count' not inlined, the closure entry kept):
+  run_verified 25,102 bytes against 38,551, electric-tests' whole run
+  124.3M instruction-cache misses against 129.9M, 96.3M mispredictions
+  against 94.5M, 6.109G instructions against 6.062G; its bodies over five
+  interleaved runs read medians of 759 ms against 818 ms within a 728 to
+  970 ms spread. Not kept: the instructions it adds cost about what the
+  misses it saves do, and the core workloads' calls take that path.
+- **Round 195: unibyte text, raw bytes and char-equal as GNU reads
+  them.** Edge-case batteries run op by op against GNU (each op its own
+  process, the outputs compared) found these. Inserting a multibyte
+  string into a unibyte buffer stored its characters unconverted, so
+  the buffer held λ or a character beyond Unicode and the next
+  buffer-string panicked ("unibyte string holds character 0x3bb");
+  insert, insert-buffer-substring, princ to a buffer,
+  insert-before-markers and replace-match now copy each character's
+  byte as insdel.c:copy_text does (`c & 0xFF', a raw byte its own),
+  where the text is inserted (`insert_text_and_signal') or replaced
+  (`replace_range_current_buffer'), properties kept; unibyte text passes
+  unchanged. string-as-multibyte read #xC0 #x80 as one raw byte, its
+  internal sequence, where parse_str_as_multibyte calls multibyte_length
+  without ALLOW_8BIT and reads two (Fset_buffer_multibyte's conversion
+  now makes the same call where it tested the byte8 heads itself).
+  Casing asked the syntax of a raw byte's Latin-1 namesake, so in a
+  unibyte buffer "a\xbbz" capitalized as "A\xbbZ" (» punctuation);
+  casefiddle.c reads SYNTAX of the eight-bit character
+  (make_char_multibyte), a word constituent, as Freplace_match's case
+  test does, and `case_word_char' now does too, for regions, strings and
+  replace-match. char-equal folded only the ASCII case of each code's
+  low byte: #x3FFFBB equalled #xBB, é did not equal É, a case table's
+  own pairs went unread and a non-character passed; it is now
+  editfns.c:Fchar_equal (CHECK_CHARACTER, the current downcase table,
+  a unibyte buffer reading 0x80..0xFF as raw bytes). string-distance
+  compared the text view's characters, so a unibyte byte equalled its
+  raw-byte character and every character beyond Unicode every other; it
+  compares character codes as FETCH_STRING_CHAR_ADVANCE reads them.
+  find-composition-internal clamped LIMIT to the string's bounds where
+  composite.c clips it to the current buffer's ZV, a string's search
+  included (so GNU's string-glyph-split spins in an empty current buffer
+  on "a" followed by a combining acute: the backward search finds the
+  composition ending at POS). Local validation: the grouped gate's
+  3,362 library tests, the integration targets (cli, cli_parity,
+  ert_runner, native_comp_identity, native_thread_continuations,
+  package_lifecycle, runtime_ownership) and clippy with
+  `--all-targets --all-features -D warnings' pass; four new oracle tests
+  fail before (one panics) and pass after. The batteries (raw-byte
+  strings, unibyte buffers, casing; 175 ops) now match GNU op for op,
+  string-glyph-split's spin included.
+- **Round 196: skip-chars as syntax.c's skip_chars.** A battery of 17
+  skip-chars ops run against GNU differed on seven. The set was parsed
+  without backslash quoting ("\\-a" skipped nothing where GNU skips
+  "-a-"), an unknown or empty `[:NAME:]' was accepted where skip_chars
+  signals "Invalid ISO C character class", and the classes were Rust's
+  Unicode predicates plus a syntax snapshot sampled from the table, so
+  `[:alpha:]' stopped at a combining mark, a titlecase letter or a
+  letter number, `[:alnum:]' at an Arabic-Indic digit, `[:upper:]' and
+  `[:lower:]' ignored the case table for U+0130 and U+01C5, `[:blank:]'
+  took U+2028 and `[:print:]' DEL. The set is now parsed as skip_chars
+  parses it (`SkipChars' in search.rs: re_wctype_parse at each position,
+  a backslash quoting the next character, `-' a range only when another
+  character follows and empty out of order, ASCII and a unibyte string's
+  bytes in a fastmap and the multibyte string's characters by range, a
+  unibyte string's eight-bit bytes naming the raw bytes of multibyte text
+  and a multibyte string's raw bytes the bytes of a unibyte scan), the
+  scan multibyte only when the buffer is and the span to LIM holds a
+  non-ASCII character, and each class tested with the regexp engine's
+  re_iswctype (in_classes first, a unibyte scan's bytes as those codes);
+  a LIM behind point moves nowhere. The scan reads the text where it
+  stands, an ASCII character's class verdict kept for the rest of the
+  call, and records the byte offset it stops at in the text's position
+  cache, as GNU keeps PT_BYTE with PT, so the next call starts from a
+  known position; re_wctype_parse compares a class name where it stands
+  where it built a String of it (the regexp compiler's too). The sampled
+  `SkipSyntaxSnapshot', the interpreter's syntax-segment cache and
+  `char_table_snapshot.rs', whose chain signature only that cache read,
+  are gone. On a class-heavy loop (four skip-chars calls a word over 500
+  lines, ten passes, interpreted) skip_chars costs 109M instructions where
+  it cost 188M when first ported (GNU's 56M), the whole run 233M against
+  GNU's 164M beyond startup; a plain-set loop runs at GNU's (0.019 s to
+  0.024 s against 0.019 s). Local validation: the grouped gate's
+  3,362 library tests, the integration targets and clippy with
+  `--all-targets --all-features -D warnings' pass; the new oracle test
+  differs from GNU on 15 of its 22 cases before.
+- **Round 197: invisible-p, expand-file-name and the batch minibuffer as
+  GNU reads them.** invisible-p walked the spec its own way: an element
+  whose cdr is non-nil (an ellipsis) gave t where xdisp.c's
+  invisible_prop gives 2, a spec that is neither t nor a list (a bare
+  symbol) hid what it named where GNU's walk of a non-list finds
+  nothing, and a position outside the buffer answered t or nil where
+  get-char-property signals args-out-of-range. It is now Finvisible_p:
+  a natural number or a marker is a position whose `invisible' property
+  get-char-property reads, any other argument the property itself, and
+  TEXT_PROP_MEANS_INVISIBLE over the spec (`invisible_prop' and
+  `text_prop_means_invisible' in invisibility.rs, an EQ walk), which the
+  buffer's invisibility test (`invisibility_level') reads too; an older
+  test that expected t of `(secret extra)' under a `(secret . t)' spec
+  now expects GNU's 2.
+  expand-file-name dropped a leading `/..' ("/../a" gave "/a" where GNU
+  keeps the superroot) and collapsed a leading `//', and
+  substitute-in-file-name restarted at a `//' but not at a `/~', so
+  "/a/~/b" stayed whole where GNU gives "~/b"; expand_file_name_with_home
+  is now Fexpand_file_name on POSIX (the already-canonical fast path,
+  `~' from HOME or the passwd entry, `~USER', a relative name under
+  DEFAULT-DIRECTORY expanded first when not absolute, then the C
+  canonicalization loop), and search_embedded_absfilename runs before
+  and after substitution. In batch, read-string and its kin read stdin
+  through Rust's line reader: a carriage return did not end a line, a
+  line not valid UTF-8 signalled "stream did not contain valid UTF-8",
+  read-minibuffer ignored text after the expression, an empty answer to
+  a READ with a default signalled end-of-file, and a SIGTERM while
+  reading was retried away (SA_RESTART) so the process never exited. The
+  reader is now minibuf.c:read_minibuf_noninteractive: bytes from fd 0
+  polled a second at a time with pending fatal signals run between, a
+  line ending at a newline or a carriage return, its bytes a unibyte
+  string as they came, `read-hide-char' echoed per byte with the
+  terminal's echo off, end of input with nothing read signalling
+  end-of-file "Error reading from stdin", and string_to_object for READ
+  (the default when the answer is empty, invalid-read-syntax "Trailing
+  garbage following expression" for text after it). Nine further
+  batteries (reader syntax, strings and format, JSON, base64, hashing and
+  hash tables, overlays, keymaps, coding systems, markers, fields,
+  change hooks and undo, indentation and motion commands, numbers,
+  bool-vectors, char-tables and sequences; 107 ops) match GNU op for op.
+  A release sweep of the 40 test files with the largest test-body ratio
+  in the frozen run (its checked build) finds most within run-to-run
+  noise of GNU; dired-aux-tests stands out, recorded with round 198.
+  Local validation: the grouped gate's 3,364 library tests, the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass; the invisible-p and expand-file-name oracle tests and
+  the batch minibuffer CLI test fail before.
+- **Round 198: an edit moves the intervals after it in one step.** A
+  release sweep of the frozen run's slowest test files found
+  dired-aux-tests at twice GNU's time where /tmp is large: `(dired
+  "/tmp")' over 14,404 entries ran 23.2 G instructions, 85% of them in
+  Buffer::offset_intervals and Intervals::grow. The intervals were a gap
+  vector of absolute starts, so every insertion or deletion rewrote the
+  start of each interval after it, and dired's passes that edit each line
+  of a listing in turn (indenting it, putting a mark on it) cost the
+  square of its length, where GNU's tree adjusts the total lengths on one
+  path. The slots after the gap now hold their starts less a SHIFT that
+  Items keeps, a slot's start read through it, and the starts that cross
+  the gap made absolute or relative as it moves; an insertion or a
+  deletion moves the gap to the first interval after the edit and changes
+  SHIFT once (`shift_from'), the intervals inside a deletion set to its
+  start as before. On a 15,000-file directory dired takes 0.343 s
+  against GNU's 0.349 s (0.985 s before), revert-buffer 0.281 s against
+  0.324 s (1.062 s) and dired-mark-files-regexp 0.162 s against 0.148 s
+  (0.687 s); inserting a character on each of 20,000 propertized lines
+  takes 0.016 s forward and 0.012 s backward against GNU's 0.033 s and
+  0.040 s (0.318 s and 0.590 s), and dired-aux-tests' bodies run in
+  0.94 s against GNU's 1.04 s (2.0 s). A battery of ten interval shapes
+  after edits (stickiness, deletions across intervals, undo, grafts,
+  casing, unibyte round trips) matches GNU op for op; a new randomized
+  test checks splits, insertions and deletions at wandering places
+  against a plain list of starts. Markers (20,000 live: 0.217 s against
+  0.213 s) and overlays (0.025 s against 0.039 s) already shift as fast
+  as GNU's.
+
+  **Found, not fixed:** a multibyte buffer's characters outside Unicode
+  (raw bytes among them) live in a sorted side table that every edit
+  walks and every byte position counts through, so deleting a character
+  on each of 20,000 lines holding a raw byte takes 0.199 s against GNU's
+  0.013 s. Local validation: the grouped gate's 3,365 library tests,
+  the integration targets and clippy with `--all-targets --all-features
+  -D warnings' pass.
+- **Round 199: raw-byte counts from the nearest known offset, and a
+  relative HOME.** A raw
+  byte in a multibyte buffer is stored as a three-byte marker
+  (U+E080..U+E0FF) where GNU stores two bytes, so a byte position counts
+  the markers before it, and BufferText::raw_markers_before counted them
+  from the start of the text each time: with one raw byte anywhere in a
+  740 KB buffer, 2,000 position-bytes calls took 0.132 s against GNU's
+  0.001 s, and deleting a character on each of 20,000 lines holding a raw
+  byte took 0.199 s against 0.013 s (delete_region_1's two byte
+  positions, 82% of the run in count_raw_markers). The text now keeps the
+  count at the offset the last count reached (`raw_anchor'), moved by an
+  insertion or deletion before it and reset by one across it, and a count
+  scans from the nearest of that offset, the start and the end, as
+  buf_charpos_to_bytepos starts from the nearest known position: the
+  deletions take 0.011 s and the position-bytes calls too little to
+  measure. The unused raw_markers_in and remove_bytes are gone, the
+  checked build verifies the anchor with the other counts, and a new test
+  reads byte positions in and out of order between insertions and
+  deletions before, inside and after the anchor against a count from the
+  start. The round 195 batteries (raw-byte strings, unibyte buffers,
+  casing) still match GNU op for op.
+
+  Round 197's frozen run failed `fileio-tests--relative-HOME': with HOME
+  "a/b/c", `(expand-file-name "~/foo")' gave "a/b/c/foo" where GNU's
+  get_homedir splices a relative or empty HOME onto emacs_wd, the
+  directory Emacs started in (before round 197 Emaxx expanded it against
+  `default-directory', so a let-bound one moved it). The home a `~'
+  names is now spliced onto the process's working directory, which only
+  `--chdir' changes, as emacs_wd follows it; a new oracle test binds
+  `default-directory' elsewhere and reads a relative and an empty HOME.
+  Rounds 198 and 199 are pushed together, so no head carries the
+  failure. Local validation: the grouped gate's 3,367 library tests,
+  the integration targets and clippy with `--all-targets --all-features
+  -D warnings' pass.
+- **Round 200: char and byte positions as buf_charpos_to_bytepos finds
+  them.** Large-buffer operations timed against GNU on simple.el and
+  subr.el together (795 KB, four lines not ASCII) ran at or under GNU's
+  times except sort-lines (4.09 s against 0.10 s) and forward-word (0.29 s
+  against 0.16 s). sort-lines spent 39.5 G instructions, 97% of them
+  converting character positions to byte offsets: compare-buffer-
+  substrings asked for positions all through the text, and each
+  conversion counted the characters from the nearest of the text's ends,
+  the gap and four recent conversions. marker.c brackets the position
+  between the nearest known positions below and above it, interpolates
+  when the text between them is all one-byte characters, and counts from
+  the nearer only otherwise, keeping a marker until the next GC where it
+  counted more than 5000 characters. GapText's conversions now bracket
+  and interpolate the same way (`char_to_byte_counting' and
+  `byte_to_char_counting', which also say how far they counted), and
+  BufferText keeps a checkpoint, in order and moved by edits as markers
+  are, where a conversion counted more than 5000 characters (at most 4096,
+  then started again). forward-word's scan also leaves the byte offset
+  where it stopped in the text's position cache, as GNU keeps PT_BYTE
+  with the point it sets, so the next scan's conversion of point is a
+  hit. sort-lines takes 0.094 s against GNU's 0.067 s and forward-word
+  over the buffer three times 0.193 s against 0.139 s (constrain-to-
+  field's four field lookups cost 0.68 G instructions there against
+  GNU's 0.58 G, the scan's syntax-table updates 0.18 G against 0.12 G).
+  A new test reads
+  positions all through a long non-ASCII text, in and out of order
+  between edits, against a count from the start, and checks that the
+  checkpoints stay in order and true. Local validation: the grouped
+  gate's 3,368 library tests, the integration targets and clippy
+  with `--all-targets --all-features -D warnings' pass.
+- **Round 201: JSON as json.c parses and writes it.** The parser was a
+  converted copy of the text read into a node tree, its errors data of the
+  shape `(CONDITION MESSAGE nil POSITION)' where json.c signals
+  `(CONDITION LINE COLUMN POSITION)', and json-parse-string of 20,000
+  objects took 0.127 s against GNU's 0.050 s. It is now json.c's parser:
+  json-parse-string reads the string's bytes (SDATA) and json-parse-buffer
+  the buffer's from point to Z, past a narrowing as json.c does, byte by
+  byte with json.c's line and column accounting; strings strictly UTF-8,
+  made multibyte with their character count as json_parse_string counts
+  it, `\u' escapes and surrogate pairs as json_parse_unicode reads them;
+  numbers summed while read, an overflowing integer read again as
+  string_to_number reads it and a float that overflows strtod
+  `json-number-out-of-range-error'; values made as they are read, an
+  array's elements and an object's members gathered in a workspace until
+  the vector or table that holds them is made, a table of the members'
+  count (`hash-table-size' 3 for three members where it was 6); nesting
+  limited by json_parser's available depth of 10000. json-out-of-memory,
+  json-object-too-deep, json-invalid-surrogate-error,
+  json-number-out-of-range-error and json-escape-sequence-error are
+  defined as syms_of_json defines them, and json-serialize and
+  json-parse-string carry its `pure' and `side-effect-free' properties.
+  The keyword arguments are json_parse_args: read from the back so a
+  keyword's first value wins, an odd count `(wrong-type-argument plistp
+  ARGS)', `:array-type 'array' accepted where `vector' was, and an unknown
+  keyword or value data.c's wrong_choice ("One of array or list should be
+  specified"). The serializer is json_out_t: one output buffer, the
+  configured null and false objects by EQ (eql before), an alist's or
+  plist's keys deduplicated by identity in json.c's symset, floats written
+  with `float-output-format' bound to nil (it was honored) and Inf or NaN
+  `(error "JSON does not allow Inf or NaN" FLOAT)'. json-parse-string of
+  the 20,000 objects three times takes 0.061 s (ten parses 1,687 M
+  instructions against GNU's 1,509 M, 2,046 M before); json-serialize of
+  them three times 0.027 s against GNU's 0.028 s
+  (0.055 s before; ten serializations 1,025 M instructions against
+  GNU's 842 M). Recorded difference: json-parse-buffer
+  in a narrowed buffer reads past ZV as GNU does but leaves point at ZV
+  where GNU's SET_PT_BOTH leaves it past ZV, a position no other GNU
+  primitive produces. Round 197's statement that the JSON battery matched
+  GNU was wrong: that loop passed `NAME:COUNT.el' as the file for four of
+  its batteries (reader syntax, strings, JSON, overlays), which therefore
+  never ran; run properly, only the JSON battery differed. Its 11 ops,
+  three further batteries (10 parse and buffer ops, 15 error-data, depth,
+  float and argument ops, 11 serializer ops) and the JSON ERT files
+  (test/src/json-tests.el, test/lisp/json-tests.el, jsonrpc-tests) match
+  GNU. Eleven oracle tests pin the error data, values, sources, buffer
+  positions, nesting limits, keyword arguments, table sizes, serializer
+  output and json-insert. Local validation: the grouped gate's 3,378
+  library tests, the integration targets and clippy with `--all-targets
+  --all-features -D warnings' pass.
+- **Round 202: casing as casefiddle.c cases, and line numbers counted
+  from BEGV.** upcase-region and downcase-region over xdisp.c took 0.175 s
+  against GNU's 0.064 s (1,639 M instructions against 627 M): each region
+  was cased by a string routine that looked every character's syntax up
+  twice, allocated a string for each cased character, read the special
+  casing tables through a property name compared per character and the
+  case tables through a key normalization meant for raw-byte markers, and
+  then built two code vectors of the region to compare old and new. The
+  casing is now casefiddle.c's: case_character_impl (the word state from
+  SYNTAX with syntax_prefix_flag_p in buffers, the flag normalized as GNU
+  normalizes it, the special casing table for that flag, then the
+  titlecase table or the buffer's case table entry read as downcase and
+  upcase read it) and case_character's final sigma, driven by
+  do_casify_multibyte_string, do_casify_multibyte_region and
+  do_casify_unibyte_region, the last casing each byte as its character by
+  case_single_character and storing make_char_unibyte of the result.
+  casify_region signals the change from the first to the last character
+  changed with the characters added, as GNU computes them; a region in
+  which a character becomes another number of characters or bytes is cased
+  again keeping the codes and replaced character by character as
+  replace_range_2 replaces them. Up- and downcasing xdisp.c takes 0.070 s
+  (902 M instructions). occur over xdisp.c spent 60% of its time in
+  line-number-at-pos, which counted the newlines from the buffer's start to
+  the position and to BEGV and subtracted; it now counts from BEGV (BEG
+  when ABSOLUTE) to the position as Fline_number_at_pos's count_lines
+  does, and five occurs take 0.241 s where they took 0.515 s (GNU 0.246
+  s; one occur 217 M instructions against GNU's 363 M). Recorded
+  difference: GNU hangs on `(line-number-at-pos POS t)' for a POS past ZV
+  in a narrowed buffer, display_count_lines never reaching a limit beyond
+  ZV; Emaxx counts to POS. A casing battery of 16 ops (special casing,
+  final sigma, title case, after-change data, markers and point across
+  an expansion, undo records, properties, raw bytes, a unibyte buffer,
+  prefix-syntax word starts) and round 195's 22 casing ops match GNU;
+  three oracle tests pin region casing, string and buffer casing, and
+  line-number-at-pos. count-words remains 1.4x GNU (0.044 s against 0.031
+  s): forward-word's scanner setup costs about 660 instructions a call.
+  Local validation: the grouped gate's 3,381 library tests, the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass.
+- **Round 203: current-column as indent.c scans a plain line.**
+  current-column went through current_column_1's forward scan for every
+  line, looking each position's invisibility, display property and
+  composition up even in a buffer with no intervals and no overlays, and
+  the line's start was found a character at a time. A buffer with no
+  intervals or overlays whose characters are each one byte (a unibyte
+  buffer, or a multibyte one holding only ASCII) is now scanned back from
+  point as indent.c current_column scans it: printing characters one
+  column, tabs by SANE_TAB_WIDTH with the columns after the first tab kept
+  apart, control characters two columns under `ctl-arrow' and four
+  otherwise, a carriage return ending the line under `selective-display'
+  t, and a display table's vector entries read glyph by glyph; any other
+  buffer is still scanned by current_column_1. The line's start is found
+  by the buffer's newline search, check_display_width finds nothing in a
+  buffer with no intervals or overlays without looking, and char-charset
+  reads the charset priority list in place rather than copying it.
+  One untabify and tabify of xdisp.c takes 697 M instructions where it
+  took 1,139 M (GNU 871 M), and three take 0.217 s (GNU 0.334 s); one
+  fill-region over NEWS.29 601 M where it took 912 M (GNU 665 M), and
+  three 0.237 s (GNU 0.314 s). A battery
+  of 11 current-column ops (tabs and `tab-width', control characters
+  under both `ctl-arrow' values, a unibyte buffer's bytes, a carriage
+  return under `selective-display', display-table vectors with a newline
+  glyph, narrowing, invisible text, an overlay and non-ASCII text falling
+  back to the full scan, indent-to, char-charset) matches GNU, and an
+  oracle test pins it.
+  Local validation: the grouped gate's 3,382 library tests, the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass.
+- **Round 204: the category table as a buffer slot, and forward-word's
+  per-call costs.** BVAR (b, category_table) was kept as a buffer-local
+  Lisp variable named `category-table': after `set-category-table' the
+  buffer reported it to `local-variable-p', `buffer-local-variables' and
+  `boundp', where GNU has no such variable, and each category lookup read
+  it as a variable. It is now a buffer slot kept as the syntax table's
+  is: reset by kill-all-local-variables and kill-buffer (its per-buffer
+  index is not permanent), copied by clone-indirect-buffer as
+  clone_per_buffer_values copies it and not by make-indirect-buffer,
+  marked by the collector, dumped in a buffer record slot of its own and
+  read by redisplay's word wrap. check_category_table now signals
+  `(wrong-type-argument category-table-p X)' as category.c does. The
+  scanner converts a position it was given (point, BEGV, ZV) without a
+  search, word_boundary_p tests a pair's second category only when its
+  first matches, as GNU's && does, and the ASCII entries SYNTAX read are
+  kept from one scan to the next while the syntax table is the same and no
+  char-table has been stored into or made since (the entry is kept, and
+  its code read from it at each use, so a `setcar' on a shared descriptor
+  is seen as GNU sees it). count-words over NEWS.29 takes 96.6 M
+  instructions where it took 124.9 M (GNU 66.9 M). A battery of 13
+  category-table ops (the variable's absence, kill-all-local-variables,
+  both indirect buffers, `set-category-table' of nil and of a non-table,
+  with-category-table, define-category and char-category-set, a
+  `setq-local' of a `category-table' variable, kill-buffer, forward-word
+  over CJK) and one of 9 syntax ops changing the table between scans
+  (modify-syntax-entry, `aset' of a fresh entry, `setcar' of an entry, a
+  new parent, another buffer's table, with-syntax-table, regexp \w,
+  syntax-table properties) match GNU; an oracle test pins the slot and
+  the pdump round trip carries it. Local validation: the grouped gate's
+  3,383 library tests, the integration targets and clippy with
+  `--all-targets --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -11476,6 +11908,82 @@ frozen (run 41163448928) matched all 7,928 outcomes on its first
 attempt. Setup 66.7 s against 58.0 s (1.150), test bodies 228.4 s
 against 245.2 s (0.931), in all 0.980; undo-tests' bodies 0.82 s against
 0.65 s.
+
+**On `5d3513c`** (round 193): full Rust gate passed (run 41165504740);
+frozen (run 41165506464) matched all 7,928 outcomes on its first
+attempt. Setup 77.9 s against 63.9 s (1.220), test bodies 253.1 s
+against 263.3 s (0.961), in all 0.994; undo-tests' bodies 1.13 s against
+0.89 s. The frozen run's gate-profile build still reads textsec-tests'
+bodies at 71 ms against 34 ms and ucs-normalize-tests' (its part 1 not
+run) at 176 ms against 93 ms, where the release build reads them at
+GNU's.
+
+**On `6ed3ac4`** (round 194): full Rust gate passed (run 41172015730);
+frozen (run 41172017709) matched all 7,928 outcomes on its first
+attempt. Setup 54.9 s against 48.2 s (1.139), test bodies 206.6 s
+against 222.5 s (0.929), in all 0.973, on a faster runner than round
+193's (setup 77.9 s against 63.9 s); undo-tests' bodies 0.68 s against
+0.58 s. The gate-profile build reads textsec-tests' bodies at 43 ms
+against 20 ms and ucs-normalize-tests' at 111 ms against 56 ms, still
+about twice GNU's where the release build reads them at GNU's.
+
+**On `1846813`** (round 195): full Rust gate passed (run 41175324206);
+frozen (run 41175326151) matched all 7,928 outcomes on its first
+attempt. Setup 76.2 s against 65.2 s (1.170), test bodies 247.1 s
+against 264.3 s (0.935), in all 0.968; undo-tests' bodies 0.98 s against
+0.88 s.
+
+**On `5658e5c`** (round 196): full Rust gate passed (run 41180758035);
+frozen (run 41180759767) matched all 7,928 outcomes on its first
+attempt. Setup 77.9 s against 62.8 s (1.240), test bodies 250.9 s
+against 260.0 s (0.965), in all 1.001; undo-tests' bodies 1.11 s against
+0.88 s.
+
+**On `18dd5d6`** (round 197): full Rust gate passed (run 41184426831);
+frozen (run 41184428857) matched 7,927 of 7,928 outcomes: fileio-tests'
+`fileio-tests--relative-HOME' failed, round 197's expand-file-name
+leaving a relative HOME relative where get_homedir splices it onto
+emacs_wd (fixed with round 199). Setup 61.5 s against 54.2 s (1.135),
+test bodies 214.0 s against 229.1 s (0.934), in all 0.980; undo-tests'
+bodies 0.66 s against 0.55 s.
+
+**On `2f7c378`** (rounds 198 and 199): full Rust gate passed (run
+41190185669); frozen (run 41190187346) matched 7,927 of 7,928 outcomes on
+its first attempt, the one mismatch the oracle's
+`eglot-test-rust-completion-exit-function' failing while Emaxx passed (the
+language server flake); fileio-tests' relative-HOME test now matches. Setup
+64.0 s against 55.5 s (1.153), test bodies 224.7 s against 244.7 s
+(0.918), in all 0.979. The failed job was rerun once; its result is
+recorded with round 201.
+
+**On `2f7c378`**, the frozen job's rerun (run 41190187346, second
+attempt) matched all 7,928 outcomes: setup 57.5 s against 51.1 s (1.126),
+test bodies 211.2 s against 226.9 s (0.931), in all 0.977.
+
+**On `92339c1`** (round 200): full Rust gate passed (run 41192916041);
+frozen (run 41192917943) matched 7,927 of 7,928 outcomes on both attempts,
+the one mismatch each time the oracle's
+`eglot-test-rust-completion-exit-function' failing while Emaxx passed
+(Emaxx 0 unexpected outcomes; the language server flake, as with round
+187). First attempt: setup 80.2 s against 66.6 s (1.205), test bodies
+254.6 s against 270.3 s (0.942), in all 0.981; second: setup 63.3 s
+against 55.1 s (1.147), test bodies 225.4 s against 247.7 s (0.910), in
+all 0.970.
+
+**On `4ba8dde`** (round 201): full Rust gate passed (run 41198052241);
+frozen (run 41198054109) matched all 7,928 outcomes on the first attempt:
+setup 67.7 s against 59.4 s (1.140), test bodies 229.9 s against 246.2 s
+(0.934), in all 0.980.
+
+**On `e8688ef`** (round 202): full Rust gate passed (run 41200588471);
+frozen (run 41200590717) matched all 7,928 outcomes on the first attempt:
+setup 76.8 s against 61.2 s (1.254), test bodies 248.8 s against 257.5 s
+(0.966), in all 1.011.
+
+**On `502ba6e`** (round 203): full Rust gate passed (run 41203870072);
+frozen (run 41203872386) matched all 7,928 outcomes on the first attempt:
+setup 77.7 s against 64.0 s (1.214), test bodies 253.0 s against 262.5 s
+(0.964), in all 0.995.
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

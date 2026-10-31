@@ -306,6 +306,19 @@ impl StringObjectRef {
         )
     }
 
+    /// alloc.c make_multibyte_string: a multibyte string of BYTES, in the
+    /// internal encoding already, holding CHARACTERS characters.
+    pub(crate) fn multibyte_from_internal(bytes: &[u8], characters: usize) -> Self {
+        debug_assert!(check_character_count(bytes, characters, true).is_ok());
+        Self::from_slice(
+            bytes,
+            characters,
+            true,
+            StringProperties::default(),
+            StringAllocation::Ordinary,
+        )
+    }
+
     pub(crate) fn from_storage(
         bytes: Vec<u8>,
         characters: usize,

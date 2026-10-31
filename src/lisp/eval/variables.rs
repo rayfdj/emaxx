@@ -390,28 +390,6 @@ impl Interpreter {
             .flatten()
     }
 
-    /// `buffer_local_value' of a symbol held through `cached_symbol!'.
-    pub(crate) fn buffer_local_value_key(
-        &self,
-        buffer_id: u64,
-        key: crate::lisp::types::symbols::SymbolKey,
-    ) -> Option<Value> {
-        key.with(|symbol| {
-            if self.has_native_text_conversion_style(symbol.as_str()) {
-                return self
-                    .get_buffer_by_id(buffer_id)
-                    .map(|buffer| buffer.text_conversion_style);
-            }
-            if let Some(slot) = self.buffer_field_slot_of(symbol) {
-                return self.buffer_field_value(buffer_id, slot);
-            }
-            self.buffer_locals
-                .get(&buffer_id)
-                .and_then(|locals| locals.binding(symbol))
-                .flatten()
-        })
-    }
-
     /// `assq_no_quit (symbol, BVAR (buffer, local_var_alist))': `Some(None)'
     /// is a binding whose value is void.
     pub(crate) fn buffer_local_binding(&self, buffer_id: u64, name: &str) -> Option<Option<Value>> {
@@ -585,6 +563,7 @@ impl Interpreter {
         self.buffer_local_hooks.remove(&buffer_id);
         crate::lisp::primitives::casetab::reset_buffer_case_tables(self, buffer_id);
         self.reset_buffer_syntax_table(buffer_id);
+        self.reset_buffer_category_table(buffer_id);
     }
 
     /// Drop every local binding of BUFFER_ID. A current buffer's evaluator
@@ -644,9 +623,11 @@ impl Interpreter {
                 .insert(buffer_id, super::ordered_hooks(permanent_hooks));
         }
         crate::lisp::primitives::casetab::reset_buffer_case_tables(self, buffer_id);
-        // The syntax table's per-buffer index is not permanent
-        // (buffer_permanent_local_flags), so it returns to the default.
+        // The syntax and category tables' per-buffer indices are not
+        // permanent (buffer_permanent_local_flags), so they return to the
+        // defaults.
         self.reset_buffer_syntax_table(buffer_id);
+        self.reset_buffer_category_table(buffer_id);
     }
 
     pub fn clone_buffer_local_state(&mut self, from_buffer_id: u64, to_buffer_id: u64) {
@@ -687,9 +668,13 @@ impl Interpreter {
         if let Some(tables) = self.buffer_case_tables(from_buffer_id) {
             self.install_buffer_case_tables(to_buffer_id, tables);
         }
-        // clone_per_buffer_values copies BVAR (from, syntax_table) too.
+        // clone_per_buffer_values copies BVAR (from, syntax_table) and
+        // BVAR (from, category_table) too.
         if let Some(table) = self.buffer_syntax_table_id(from_buffer_id) {
             self.install_buffer_syntax_table(to_buffer_id, table);
+        }
+        if let Some(table) = self.buffer_category_table_id(from_buffer_id) {
+            self.install_buffer_category_table(to_buffer_id, table);
         }
     }
 

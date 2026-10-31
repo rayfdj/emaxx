@@ -171,9 +171,12 @@ pub(crate) fn string_distance_value(
         let right_bytes = internal_string_bytes(&right_string)?;
         levenshtein_distance(&left_bytes, &right_bytes)
     } else {
-        let left_chars = left_string.text.chars().collect::<Vec<_>>();
-        let right_chars = right_string.text.chars().collect::<Vec<_>>();
-        levenshtein_distance(&left_chars, &right_chars)
+        // fns.c: FETCH_STRING_CHAR_ADVANCE's codes, a unibyte string's bytes
+        // themselves and a character beyond Unicode its own.
+        levenshtein_distance(
+            &left_string.character_codes(),
+            &right_string.character_codes(),
+        )
     };
 
     Ok(Value::Integer(distance as i64))

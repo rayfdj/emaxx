@@ -594,6 +594,30 @@ pub(crate) fn get_char_property_and_overlay(
     object: Value,
 ) -> Result<(Value, Option<crate::overlay::OverlayRef>), LispError> {
     let pos = fix_position(interp, position)?;
+    // The current buffer with no overlays: BEGV and ZV checked, its text
+    // property is the answer, as the overlay loop finds nothing.
+    if object.is_nil() {
+        let (begv, zv, overlays) = {
+            let buffer = interp.buffer.borrow();
+            (
+                buffer.point_min(),
+                buffer.point_max(),
+                !buffer.overlays.is_empty(),
+            )
+        };
+        if !((begv as i64) <= pos && pos <= zv as i64) {
+            return Err(LispError::SignalValue(Value::list([
+                Value::symbol("args-out-of-range"),
+                *position,
+            ])));
+        }
+        if !overlays {
+            return Ok((
+                get_text_property(interp, &Value::Integer(pos), prop, Value::Nil)?,
+                None,
+            ));
+        }
+    }
     let mut window = None;
     let object = if object.is_nil() {
         Value::Buffer(interp.buffer)

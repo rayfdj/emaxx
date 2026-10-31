@@ -148,6 +148,57 @@ pub(crate) fn invisibility_atom_eq(a: &Value, b: &Value) -> bool {
     }
 }
 
+/// xdisp.c:invisible_prop on Lisp values: 1 when PROPVAL, or else an
+/// element of a list PROPVAL, is EQ to an element of LIST or to the car of
+/// one whose cdr is nil, 2 when to the car of one whose cdr is not (the
+/// text shows an ellipsis), else 0.
+pub(crate) fn invisible_prop(propval: Value, list: Value) -> u8 {
+    let lookup = |elt: Value| {
+        let mut tail = list;
+        while let Kind::Cons(_) = tail.kind() {
+            let tem = tail.car().unwrap_or(Value::Nil);
+            if tem.eq_value(elt) {
+                return 1;
+            }
+            if let Kind::Cons(_) = tem.kind()
+                && tem.car().is_ok_and(|car| car.eq_value(elt))
+            {
+                return if tem.cdr().is_ok_and(|cdr| cdr.is_nil()) {
+                    1
+                } else {
+                    2
+                };
+            }
+            tail = tail.cdr().unwrap_or(Value::Nil);
+        }
+        0
+    };
+    let direct = lookup(propval);
+    if direct != 0 {
+        return direct;
+    }
+    let mut tail = propval;
+    while let Kind::Cons(_) = tail.kind() {
+        let found = lookup(tail.car().unwrap_or(Value::Nil));
+        if found != 0 {
+            return found;
+        }
+        tail = tail.cdr().unwrap_or(Value::Nil);
+    }
+    0
+}
+
+/// intervals.h:TEXT_PROP_MEANS_INVISIBLE: with SPEC (the current buffer's
+/// `buffer-invisibility-spec') t, any non-nil PROP hides its text;
+/// otherwise invisible_prop's answer.
+pub(crate) fn text_prop_means_invisible(prop: Value, spec: Value) -> u8 {
+    if matches!(spec.kind(), Kind::T) {
+        u8::from(!prop.is_nil())
+    } else {
+        invisible_prop(prop, spec)
+    }
+}
+
 /// xdisp.c invisible_prop: 0 visible, 1 invisible, 2 invisible with the
 /// ellipsis.
 pub(crate) fn invisible_value_class(spec: &InvisibilitySpec, value: &Value) -> u8 {

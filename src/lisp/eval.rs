@@ -22,9 +22,7 @@ use hashlink::LinkedHashMap;
 use regex::Regex;
 
 mod bindings;
-mod char_table_snapshot;
 pub(crate) use bindings::dynamic_library_suffix_values;
-pub(crate) use char_table_snapshot::CharTableChainSignature;
 mod bootstrap;
 mod buffers;
 pub(crate) mod coding;
@@ -942,6 +940,11 @@ fn builtin_error_symbol_properties() -> Vec<(String, Vec<(String, Value)>)> {
         // such as `condition-case' and ERT match through this hierarchy.
         ("json-error", &["json-error", "error"], "generic JSON error"),
         (
+            "json-out-of-memory",
+            &["json-out-of-memory", "json-error", "error"],
+            "not enough memory for creating JSON object",
+        ),
+        (
             "json-parse-error",
             &["json-parse-error", "json-error", "error"],
             "could not parse JSON stream",
@@ -967,9 +970,34 @@ fn builtin_error_symbol_properties() -> Vec<(String, Vec<(String, Value)>)> {
             "trailing content after JSON stream",
         ),
         (
+            "json-object-too-deep",
+            &["json-object-too-deep", "json-error", "error"],
+            "object cyclic or Lisp evaluation too deep",
+        ),
+        (
             "json-utf8-decode-error",
             &["json-utf8-decode-error", "json-error", "error"],
             "invalid utf-8 encoding",
+        ),
+        (
+            "json-invalid-surrogate-error",
+            &["json-invalid-surrogate-error", "json-error", "error"],
+            "invalid surrogate pair",
+        ),
+        (
+            "json-number-out-of-range-error",
+            &["json-number-out-of-range-error", "json-error", "error"],
+            "number out of range",
+        ),
+        (
+            "json-escape-sequence-error",
+            &[
+                "json-escape-sequence-error",
+                "json-parse-error",
+                "json-error",
+                "error",
+            ],
+            "invalid escape sequence",
         ),
         // comp.c registers the native compiler and loader condition tree in
         // C, independently of comp.el.  Keep that ownership here: these are
@@ -1252,13 +1280,6 @@ pub struct CharTableEntry {
     pub start: u32,
     pub end: u32,
     pub value: Value,
-}
-
-#[derive(Clone)]
-pub(crate) struct SyntaxSegmentCache {
-    table_id: CharTableRef,
-    chain: CharTableChainSignature,
-    pub(crate) segments: std::rc::Rc<Vec<(u32, u32, crate::lisp::primitives::syntax::SyntaxClass)>>,
 }
 
 /// GNU vectorlike representation carried by Emaxx's shared record arena.
@@ -4190,6 +4211,17 @@ impl Interpreter {
         self.buffer_syntax_tables.remove(id);
     }
 
+    /// BVAR (b, category_table) when the buffer has set one.
+    pub(crate) fn buffer_category_table_id(&self, id: u64) -> Option<CharTableRef> {
+        self.buffer_category_tables.get(id)
+    }
+
+    /// reset_buffer_local_variables's category table: as the syntax
+    /// table's, BUFFER's slot returns to buffer_defaults'.
+    pub(crate) fn reset_buffer_category_table(&mut self, id: u64) {
+        self.buffer_category_tables.remove(id);
+    }
+
     /// BUFFER's four case tables when they are not the standard ones.
     pub(crate) fn buffer_case_tables(&self, id: u64) -> Option<coding::CaseTables> {
         self.buffer_case_tables.get(id)
@@ -4309,6 +4341,10 @@ impl Interpreter {
 
     pub(crate) fn install_buffer_syntax_table(&mut self, id: u64, table: CharTableRef) {
         self.buffer_syntax_tables.insert(id, table);
+    }
+
+    pub(crate) fn install_buffer_category_table(&mut self, id: u64, table: CharTableRef) {
+        self.buffer_category_tables.insert(id, table);
     }
 
     pub(crate) fn install_buffer_case_tables(&mut self, id: u64, tables: coding::CaseTables) {
@@ -4546,7 +4582,11 @@ impl Interpreter {
         ) {
             mark(&Value::CharTable(table));
         }
-        for table in self.buffer_syntax_tables.values() {
+        for table in self
+            .buffer_syntax_tables
+            .values()
+            .chain(self.buffer_category_tables.values())
+        {
             mark(&Value::CharTable(*table));
         }
         for (_, value) in &self.charset_plists {
@@ -5016,6 +5056,9 @@ impl Interpreter {
             for table in clone.buffer_syntax_tables.values_mut() {
                 *table = copy_table(c, *table);
             }
+            for table in clone.buffer_category_tables.values_mut() {
+                *table = copy_table(c, *table);
+            }
             for (_, tables) in clone.buffer_case_tables.iter_mut() {
                 *tables = tables.map(|table| copy_table(c, table));
             }
@@ -5177,7 +5220,6 @@ impl Interpreter {
         // every cached verdict keyed by (or holding) template cells is
         // stale.  All of these repopulate lazily.
         *clone.known_symbols_cache.get_mut() = None;
-        *clone.syntax_segment_cache.get_mut() = None;
         clone.bc_stack = crate::lisp::bytecode::vm::BcStack::new();
         clone.bc_frames = Default::default();
         clone.bc_handlers = Default::default();
@@ -5519,12 +5561,6 @@ pub struct InterpreterState {
     pub buffer_list: Vec<(u64, String)>,
     /// Next buffer ID for identity tracking.
     next_buffer_id: u64,
-    /// The rendered current-table syntax classes are expensive to derive and
-    /// are reused by many different compiled patterns.  This small cache
-    /// is stamped with the table identity and its chain signature; regexp
-    /// code declines to populate it for tables containing mutable Lisp
-    /// entry objects whose in-place changes bypass the table mutation door.
-    syntax_segment_cache: RefCell<Option<SyntaxSegmentCache>>,
     /// Charset aliases defined at runtime.
     charset_aliases: Vec<(String, String)>,
     /// Registered charsets and their stable GNU-compatible numeric IDs.
@@ -5679,7 +5715,11 @@ pub struct InterpreterState {
     loaded_bindings: LoadedBindings,
     /// BVAR (b, syntax_table) for each buffer whose table is not the
     /// standard one (buffer_defaults'), keyed by buffer id.
-    buffer_syntax_tables: coding::BufferSyntaxTables,
+    buffer_syntax_tables: coding::BufferCharTables,
+    /// BVAR (b, category_table) for each buffer whose table is not the
+    /// standard one (buffer_defaults'), keyed by buffer id: a slot, not a
+    /// Lisp variable.
+    buffer_category_tables: coding::BufferCharTables,
     /// Active dynamic special bindings in stack order.
     active_special_restores: Vec<SpecialBindingRestore>,
     next_special_binding_id: u64,
@@ -6369,7 +6409,6 @@ impl Interpreter {
             // buffer exists, below.
             buffer_list: vec![(0, "*scratch*".to_string())],
             next_buffer_id: 2,
-            syntax_segment_cache: RefCell::new(None),
             charset_aliases: Vec::new(),
             charset_ids: C_CHARSETS
                 .iter()
@@ -6473,7 +6512,8 @@ impl Interpreter {
             buffer_local_hooks: HashMap::default(),
             buffer_locals: HashMap::default(),
             loaded_bindings: LoadedBindings::default(),
-            buffer_syntax_tables: coding::BufferSyntaxTables::default(),
+            buffer_syntax_tables: coding::BufferCharTables::default(),
+            buffer_category_tables: coding::BufferCharTables::default(),
             active_special_restores: Vec::new(),
             next_special_binding_id: 1,
             labeled_restrictions: Vec::new(),
@@ -7400,6 +7440,12 @@ impl Interpreter {
         // mode changes (erc-d's canned-dialog buffers register their
         // cleanup before switching to lisp-data-mode).
         interp.put_symbol_property("kill-buffer-hook", "permanent-local", Value::T);
+        // json.c syms_of_json: json-serialize and json-parse-string are
+        // pure and side-effect-free, so the byte compiler may fold them.
+        for name in ["json-serialize", "json-parse-string"] {
+            interp.put_symbol_property(name, "pure", Value::T);
+            interp.put_symbol_property(name, "side-effect-free", Value::T);
+        }
         // files.el keeps `write-file-functions' global by default: a local
         // binding is allowed and survives a mode change, but ordinary global
         // additions must remain visible in every buffer.  The two legacy and
