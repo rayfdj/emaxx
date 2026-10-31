@@ -717,11 +717,30 @@ define_dispatch!(
             }
             "invisible-p" => {
                 need_args(name, args, 1)?;
-                let invisible = match position_from_value(interp, &args[0]) {
-                    Ok(position) if position >= 1 => char_is_invisible(interp, position, env)?,
-                    _ => invisibility_value_is_hidden(interp, &args[0], env),
+                // xdisp.c:Finvisible_p: a natural number or marker is a
+                // position whose `invisible' char-property is read, any
+                // other object the property's value itself; nil, t, or 2
+                // for text replaced by an ellipsis.
+                let prop = match args[0].kind() {
+                    Kind::Integer(position) if position >= 0 => get_char_property(
+                        interp,
+                        &args[0],
+                        PropertyName::symbol("invisible"),
+                        Value::Nil,
+                    )?,
+                    Kind::Marker(_) => get_char_property(
+                        interp,
+                        &args[0],
+                        PropertyName::symbol("invisible"),
+                        Value::Nil,
+                    )?,
+                    _ => args[0],
                 };
-                Ok(if invisible { Value::T } else { Value::Nil })
+                Ok(match invisibility_level(interp, &prop, env) {
+                    0 => Value::Nil,
+                    1 => Value::T,
+                    level => Value::Integer(i64::from(level)),
+                })
             }
             "buffer-size" => {
                 need_arg_range(name, args, 0, 1)?;

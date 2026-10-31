@@ -1528,47 +1528,16 @@ pub(crate) fn char_is_invisible(
 }
 
 pub(crate) fn invisibility_value_is_hidden(interp: &Interpreter, value: &Value, env: &Env) -> bool {
+    invisibility_level(interp, value, env) != 0
+}
+
+/// TEXT_PROP_MEANS_INVISIBLE of VALUE under the current buffer's
+/// `buffer-invisibility-spec': 0, 1, or 2 for text shown as an ellipsis.
+pub(crate) fn invisibility_level(interp: &Interpreter, value: &Value, env: &Env) -> u8 {
     let spec = interp
         .lookup_var("buffer-invisibility-spec", env)
         .unwrap_or(Value::T);
-    invisibility_spec_matches(&spec, value)
-}
-
-pub(crate) fn invisibility_spec_matches(spec: &Value, value: &Value) -> bool {
-    if value.is_nil() {
-        return false;
-    }
-    match spec.kind() {
-        Kind::Nil => false,
-        Kind::T => value.is_truthy(),
-        _ => {
-            if spec == value {
-                return true;
-            }
-            if let Some((car, _)) = spec.cons_values()
-                && car == *value
-            {
-                return true;
-            }
-            if let Ok(items) = spec.to_vec() {
-                if items.iter().any(|entry| entry == value) {
-                    return true;
-                }
-                if items
-                    .iter()
-                    .any(|entry| entry.cons_values().is_some_and(|(car, _)| car == *value))
-                {
-                    return true;
-                }
-            }
-            if let Ok(items) = value.to_vec() {
-                return items
-                    .into_iter()
-                    .any(|item| invisibility_spec_matches(spec, &item));
-            }
-            false
-        }
-    }
+    super::invisibility::text_prop_means_invisible(*value, spec)
 }
 
 pub(crate) fn compare_buffer_substrings(

@@ -32713,3 +32713,45 @@ fn skip_chars_reads_its_set_as_syntax_c() {
         "skip-chars sets",
     );
 }
+
+/// invisible-p as xdisp.c:Finvisible_p: a natural number or marker read
+/// as a position (args-out-of-range outside the buffer), anything else as
+/// the property's value, TEXT_PROP_MEANS_INVISIBLE's EQ walk of the spec
+/// answering 2 for an entry asking for an ellipsis.
+#[test]
+fn invisible_p_reads_the_spec_as_invisible_prop() {
+    assert_oracle_contract_matches_interpreter(
+        r##"(with-temp-buffer (insert "0123456789") (put-text-property 2 4 'invisible 'foo) (put-text-property 5 7 'invisible '(bar baz)) (put-text-property 8 9 'invisible "s")
+     (list (let ((buffer-invisibility-spec '((foo . t) bar))) (list (invisible-p 2) (invisible-p 5) (invisible-p 8) (invisible-p 1)))
+           (let ((buffer-invisibility-spec '((baz) (foo . nil)))) (list (invisible-p 2) (invisible-p 5)))
+           (let ((buffer-invisibility-spec t)) (list (invisible-p 2) (invisible-p 8) (invisible-p 9)))
+           (let ((buffer-invisibility-spec nil)) (list (invisible-p 2) (invisible-p 5)))
+           (let ((buffer-invisibility-spec 'foo)) (list (invisible-p 2)))
+           (condition-case err (invisible-p 0) (error err)) (condition-case err (invisible-p 100) (error err)) (invisible-p -1) (invisible-p 'foo) (invisible-p nil) (invisible-p (copy-marker 3))))"##,
+        r##"((2 t nil nil) (t t) (t t nil) (nil nil) (nil) (args-out-of-range 0) (args-out-of-range 100) t t nil t)"##,
+        "invisible-p levels",
+    );
+}
+
+#[test]
+fn expand_file_name_canonicalizes_as_fileio_c() {
+    // fileio.c:Fexpand_file_name keeps a leading `/..' (the superroot) and
+    // a leading `//', and substitute-in-file-name restarts at an embedded
+    // absolute name (search_embedded_absfilename) before and after it
+    // substitutes.
+    assert_oracle_contract_matches_interpreter(
+        r##"(let ((process-environment (cons "HOME=/h/" process-environment)))
+  (list (expand-file-name "/../a") (expand-file-name "//a/b")
+        (expand-file-name "/a/../../b") (expand-file-name "a/./b/../c" "/x/y/")
+        (expand-file-name "" "/tmp/") (expand-file-name "." "/tmp")
+        (expand-file-name "///a//b/") (expand-file-name "/a/b/.")
+        (expand-file-name "/a/b/..") (expand-file-name "/./") (expand-file-name "/..")
+        (expand-file-name "//") (expand-file-name "///")
+        (expand-file-name "~") (expand-file-name "~/x") (expand-file-name "x" "~/d")
+        (expand-file-name "~nosuchuserq/x" "/b")
+        (substitute-in-file-name "/a/~/b") (substitute-in-file-name "/a//b")
+        (substitute-in-file-name "/a/b//c/~/d") (substitute-in-file-name "/x/$$y")))"##,
+        r##"("/../a" "//a/b" "/../b" "/x/y/a/c" "/tmp" "/tmp" "/a/b/" "/a/b" "/a" "/" "/.." "//" "/" "/h" "/h/x" "/h/d/x" "/b/~nosuchuserq/x" "~/b" "/b" "~/d" "/x/$y")"##,
+        "expand-file-name superroot, leading //, embedded absolute names",
+    );
+}

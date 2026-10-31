@@ -10353,6 +10353,53 @@ setup_process_coding_systems's check now refuses). A 13-form
   3,362 library tests, the integration targets and clippy with
   `--all-targets --all-features -D warnings' pass; the new oracle test
   differs from GNU on 15 of its 22 cases before.
+- **Round 197: invisible-p, expand-file-name and the batch minibuffer as
+  GNU reads them.** invisible-p walked the spec its own way: an element
+  whose cdr is non-nil (an ellipsis) gave t where xdisp.c's
+  invisible_prop gives 2, a spec that is neither t nor a list (a bare
+  symbol) hid what it named where GNU's walk of a non-list finds
+  nothing, and a position outside the buffer answered t or nil where
+  get-char-property signals args-out-of-range. It is now Finvisible_p:
+  a natural number or a marker is a position whose `invisible' property
+  get-char-property reads, any other argument the property itself, and
+  TEXT_PROP_MEANS_INVISIBLE over the spec (`invisible_prop' and
+  `text_prop_means_invisible' in invisibility.rs, an EQ walk), which the
+  buffer's invisibility test (`invisibility_level') reads too; an older
+  test that expected t of `(secret extra)' under a `(secret . t)' spec
+  now expects GNU's 2.
+  expand-file-name dropped a leading `/..' ("/../a" gave "/a" where GNU
+  keeps the superroot) and collapsed a leading `//', and
+  substitute-in-file-name restarted at a `//' but not at a `/~', so
+  "/a/~/b" stayed whole where GNU gives "~/b"; expand_file_name_with_home
+  is now Fexpand_file_name on POSIX (the already-canonical fast path,
+  `~' from HOME or the passwd entry, `~USER', a relative name under
+  DEFAULT-DIRECTORY expanded first when not absolute, then the C
+  canonicalization loop), and search_embedded_absfilename runs before
+  and after substitution. In batch, read-string and its kin read stdin
+  through Rust's line reader: a carriage return did not end a line, a
+  line not valid UTF-8 signalled "stream did not contain valid UTF-8",
+  read-minibuffer ignored text after the expression, an empty answer to
+  a READ with a default signalled end-of-file, and a SIGTERM while
+  reading was retried away (SA_RESTART) so the process never exited. The
+  reader is now minibuf.c:read_minibuf_noninteractive: bytes from fd 0
+  polled a second at a time with pending fatal signals run between, a
+  line ending at a newline or a carriage return, its bytes a unibyte
+  string as they came, `read-hide-char' echoed per byte with the
+  terminal's echo off, end of input with nothing read signalling
+  end-of-file "Error reading from stdin", and string_to_object for READ
+  (the default when the answer is empty, invalid-read-syntax "Trailing
+  garbage following expression" for text after it). Nine further
+  batteries (reader syntax, strings and format, JSON, base64, hashing and
+  hash tables, overlays, keymaps, coding systems, markers, fields,
+  change hooks and undo, indentation and motion commands, numbers,
+  bool-vectors, char-tables and sequences; 107 ops) match GNU op for op.
+  A release sweep of the 40 test files with the largest test-body ratio
+  in the frozen run (its checked build) finds most within run-to-run
+  noise of GNU; dired-aux-tests stands out, recorded with round 198.
+  Local validation: the grouped gate's 3,364 library tests, the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass; the invisible-p and expand-file-name oracle tests and
+  the batch minibuffer CLI test fail before.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -11637,6 +11684,12 @@ about twice GNU's where the release build reads them at GNU's.
 frozen (run 41175326151) matched all 7,928 outcomes on its first
 attempt. Setup 76.2 s against 65.2 s (1.170), test bodies 247.1 s
 against 264.3 s (0.935), in all 0.968; undo-tests' bodies 0.98 s against
+0.88 s.
+
+**On `5658e5c`** (round 196): full Rust gate passed (run 41180758035);
+frozen (run 41180759767) matched all 7,928 outcomes on its first
+attempt. Setup 77.9 s against 62.8 s (1.240), test bodies 250.9 s
+against 260.0 s (0.965), in all 1.001; undo-tests' bodies 1.11 s against
 0.88 s.
 
 **Findings recorded, not fixed:**
