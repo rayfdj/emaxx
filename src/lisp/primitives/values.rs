@@ -2064,9 +2064,8 @@ pub(crate) fn describe_buffer_bindings(
         }
         let (local, is_buffer_map, major) =
             with_keymap_description_buffer(interp, buffer, |interp| {
-                let normal = interp
-                    .lookup_var("current-local-map", env)
-                    .unwrap_or(Value::Nil);
+                // BVAR (current_buffer, keymap).
+                let normal = interp.buffer.borrow().keymap();
                 let local = local_map_at_active_position(interp, None)?.unwrap_or(normal);
                 let major = interp.lookup_var("major-mode", env).unwrap_or(Value::Nil);
                 Ok((local, values_eq_in_env(interp, &local, &normal, env), major))
@@ -2597,12 +2596,12 @@ pub(crate) fn active_command_keymaps_for(
     maps.extend(active_minor_mode_maps(interp, env)?);
     if let Some(map) = local_map_at_active_position(interp, posn)? {
         maps.push(map);
-    } else if let Some(map) = interp
-        .lookup_var("current-local-map", env)
-        .filter(Value::is_truthy)
-        && is_keymap_value(interp, &map)
-    {
-        maps.push(map);
+    } else {
+        // get_local_map's BVAR (current_buffer, keymap).
+        let map = interp.buffer.borrow().keymap();
+        if map.is_truthy() && is_keymap_value(interp, &map) {
+            maps.push(map);
+        }
     }
     Ok(maps)
 }

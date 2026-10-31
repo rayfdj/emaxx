@@ -535,10 +535,8 @@ define_dispatch!(
                 } else {
                     get_keymap(interp, args[0], true, true, env)?
                 };
-                let buffer_id = interp.current_buffer_id();
-                cached_symbol!("current-local-map").with(|symbol| {
-                    interp.set_buffer_local_value_symbol(buffer_id, symbol, keymap);
-                });
+                // bset_keymap: a slot of the buffer, no Lisp variable.
+                interp.buffer.borrow_mut().set_keymap(keymap);
                 Ok(Value::Nil)
             }
             "use-global-map" => {
@@ -549,9 +547,7 @@ define_dispatch!(
             }
             "current-local-map" => {
                 need_args(name, args, 0)?;
-                Ok(interp
-                    .lookup_var("current-local-map", env)
-                    .unwrap_or(Value::Nil))
+                Ok(interp.buffer.borrow().keymap())
             }
             "current-global-map" => {
                 need_args(name, args, 0)?;

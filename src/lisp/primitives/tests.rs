@@ -32968,3 +32968,17 @@ fn compare_buffer_substrings_compares_character_codes_as_editfns_c() {
         "compare-buffer-substrings codes",
     );
 }
+
+#[test]
+fn local_keymap_is_a_buffer_slot_as_buffer_c_keeps_it() {
+    // BVAR (b, keymap) is a buffer slot with no Lisp variable:
+    // `use-local-map' binds nothing `local-variable-p' or
+    // `buffer-local-variables' sees, a `current-local-map' variable is
+    // another thing, reset_buffer_local_variables empties the slot,
+    // clone-indirect-buffer copies it and make-indirect-buffer does not.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list (with-temp-buffer (use-local-map (make-sparse-keymap)) (list (local-variable-p 'current-local-map) (boundp 'current-local-map) (and (assq 'current-local-map (buffer-local-variables)) t) (condition-case e (buffer-local-value 'current-local-map (current-buffer)) (error (car e))))) (with-temp-buffer (let ((m (make-sparse-keymap))) (use-local-map m) (list (eq (current-local-map) m) (progn (kill-all-local-variables) (current-local-map))))) (with-temp-buffer (let ((m (make-sparse-keymap))) (use-local-map m) (let* ((ind (clone-indirect-buffer nil nil)) (r (eq (with-current-buffer ind (current-local-map)) m))) (kill-buffer ind) (let* ((ind2 (make-indirect-buffer (current-buffer) "ind-km")) (r2 (with-current-buffer ind2 (current-local-map)))) (kill-buffer ind2) (list r r2))))) (with-temp-buffer (let ((m (make-sparse-keymap))) (use-local-map m) (setq-local current-local-map 5) (list (eq (current-local-map) m) current-local-map (let ((current-local-map 7)) (eq (current-local-map) m))))) (with-temp-buffer (list (condition-case e (use-local-map 5) (error e)) (use-local-map nil) (current-local-map))) (with-temp-buffer (let ((m (make-sparse-keymap))) (define-key m "a" 'forward-char) (use-local-map m) (list (key-binding "a") (local-key-binding "a"))))  (let ((b (generate-new-buffer "kmk"))) (with-current-buffer b (use-local-map (make-sparse-keymap))) (kill-buffer b) (condition-case e (buffer-local-value 'current-local-map b) (error (car e)))))"##,
+        r##"((nil nil nil void-variable) (t nil) (t nil) (t 5 t) ((wrong-type-argument keymapp 5) nil nil) (forward-char forward-char) void-variable)"##,
+        "local keymap slot",
+    );
+}

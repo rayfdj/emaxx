@@ -157,6 +157,10 @@ pub struct Buffer {
     /// kept, otherwise the list undo.c's record_* functions push onto.
     undo_list: Value,
 
+    /// BVAR (b, keymap): the map `use-local-map' installed, a slot with no
+    /// Lisp variable.
+    keymap: Value,
+
     /// keyboard.c's `point_before_last_command_or_undo', held by the one
     /// buffer `buffer_before_last_command_or_undo' names (the interpreter
     /// clears it in the buffer that held it before): where point stood
@@ -220,6 +224,7 @@ impl Clone for Buffer {
             file_truename: self.file_truename.clone(),
             visited_file_modtime: self.visited_file_modtime,
             undo_list: self.undo_list,
+            keymap: self.keymap,
             point_before_last_command_or_undo: self.point_before_last_command_or_undo,
             overlays: crate::overlay::OverlayTree::default(),
             intervals: self.intervals.clone(),
@@ -843,6 +848,7 @@ pub(crate) struct BufferImage {
     pub(crate) file_truename: Option<String>,
     pub(crate) visited_file_modtime: Option<FileModTime>,
     pub(crate) undo_list: Value,
+    pub(crate) keymap: Value,
     pub(crate) intervals: Option<Intervals>,
     pub(crate) extended_chars: Vec<(usize, u32)>,
     pub(crate) inhibit_hooks: bool,
@@ -1032,6 +1038,7 @@ impl Buffer {
             file_truename: None,
             visited_file_modtime: None,
             undo_list: Value::Nil,
+            keymap: Value::Nil,
             point_before_last_command_or_undo: None,
             overlays: crate::overlay::OverlayTree::default(),
             intervals: None,
@@ -1073,6 +1080,7 @@ impl Buffer {
             file_truename: None,
             visited_file_modtime: None,
             undo_list: Value::Nil,
+            keymap: Value::Nil,
             point_before_last_command_or_undo: None,
             overlays: crate::overlay::OverlayTree::default(),
             intervals: None,
@@ -1876,6 +1884,7 @@ impl Buffer {
             intervals.rewrite_plists(|plist| copy(&plist));
         }
         self.undo_list = copy(&self.undo_list);
+        self.keymap = copy(&self.keymap);
     }
 
     /// Visit every Lisp value retained by this buffer.  Garbage collection
@@ -1894,6 +1903,7 @@ impl Buffer {
             }
         }
         visit(&self.undo_list);
+        visit(&self.keymap);
         for value in self
             .killed_locals
             .iter()
@@ -3216,6 +3226,17 @@ impl Buffer {
 
     // ── Undo (undo.c) ──
 
+    /// BVAR (b, keymap): Fcurrent_local_map's value.
+    pub(crate) fn keymap(&self) -> Value {
+        self.keymap
+    }
+
+    /// bset_keymap: Fuse_local_map, reset_buffer_local_variables and
+    /// clone_per_buffer_values store it.
+    pub(crate) fn set_keymap(&mut self, keymap: Value) {
+        self.keymap = keymap;
+    }
+
     /// BVAR (b, undo_list).
     pub fn undo_list(&self) -> Value {
         self.undo_list
@@ -3409,6 +3430,7 @@ impl Buffer {
             file_truename: self.file_truename.clone(),
             visited_file_modtime: self.visited_file_modtime,
             undo_list: self.undo_list,
+            keymap: self.keymap,
             intervals: self.intervals.clone(),
             extended_chars: self.extended_chars.clone(),
             inhibit_hooks: self.inhibit_hooks,
@@ -3448,6 +3470,7 @@ impl Buffer {
             file_truename: parts.file_truename,
             visited_file_modtime: parts.visited_file_modtime,
             undo_list: parts.undo_list,
+            keymap: parts.keymap,
             point_before_last_command_or_undo: None,
             overlays: crate::overlay::OverlayTree::default(),
             intervals: parts.intervals,

@@ -10669,6 +10669,27 @@ setup_process_coding_systems's check now refuses). A 13-form
   Local validation: the grouped gate's 3,384 library tests, the
   integration targets and clippy with `--all-targets --all-features -D
   warnings' pass.
+- **Round 206: the local keymap as a buffer slot.** `use-local-map' kept
+  BVAR (b, keymap) as a buffer-local Lisp variable named
+  `current-local-map': once a major mode had installed its map the buffer
+  reported that variable to `local-variable-p', `boundp' and
+  `buffer-local-variables', a `setq-local' or `let' of a variable of that
+  name changed what `current-local-map' returned and which map key lookup
+  used, and `buffer-local-value' of it on a killed buffer returned a map
+  where GNU signals void-variable. The map is now a field of the buffer,
+  as mark_active and undo_list are: Fuse_local_map and the minibuffer
+  store it, Fcurrent_local_map, key lookup (get_local_map's fallback) and
+  `describe-buffer-bindings' read it, reset_buffer_local_variables and
+  kill-buffer empty it, clone-indirect-buffer copies it, the collector
+  visits it and the pdump writes it in a buffer record slot of its own. A
+  battery of 10 ops (the variable's absence, kill-all-local-variables,
+  both indirect buffers, `setq-local' and `let' of a `current-local-map'
+  variable, a non-keymap argument, key-binding and local-key-binding,
+  text-mode and fundamental-mode, a killed buffer, another buffer's map,
+  emacs-lisp-mode) matches GNU where four ops did not; an oracle test pins
+  it and the pdump round trip carries a local map. Local validation: the
+  grouped gate's 3,385 library tests, the integration targets and
+  clippy with `--all-targets --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -12011,6 +12032,11 @@ setup 77.7 s against 64.0 s (1.214), test bodies 253.0 s against 262.5 s
 frozen (run 41208461059) matched all 7,928 outcomes on the first attempt:
 setup 58.7 s against 51.4 s (1.143), test bodies 211.9 s against 227.9 s
 (0.930), in all 0.981.
+
+**On `258132e`** (round 205): full Rust gate passed (run 41211292707);
+frozen (run 41211294637) matched all 7,928 outcomes on the first attempt:
+setup 87.1 s against 71.3 s (1.222), test bodies 266.1 s against 274.8 s
+(0.969), in all 1.020.
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

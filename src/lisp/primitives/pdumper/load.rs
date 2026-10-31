@@ -2319,6 +2319,7 @@ impl Loader<'_> {
             file_truename,
             visited_file_modtime,
             undo_list: self.value_at(offset + 8 * BUFFER_UNDO_LIST)?,
+            keymap: self.value_at(offset + 8 * BUFFER_KEYMAP)?,
             intervals,
             extended_chars: extended_chars
                 .into_iter()

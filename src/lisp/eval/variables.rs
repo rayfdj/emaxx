@@ -564,6 +564,14 @@ impl Interpreter {
         crate::lisp::primitives::casetab::reset_buffer_case_tables(self, buffer_id);
         self.reset_buffer_syntax_table(buffer_id);
         self.reset_buffer_category_table(buffer_id);
+        self.reset_buffer_keymap(buffer_id);
+    }
+
+    /// reset_buffer_local_variables's bset_keymap (b, Qnil).
+    fn reset_buffer_keymap(&mut self, buffer_id: u64) {
+        if let Some(mut buffer) = self.get_buffer_by_id_mut(buffer_id) {
+            buffer.set_keymap(Value::Nil);
+        }
     }
 
     /// Drop every local binding of BUFFER_ID. A current buffer's evaluator
@@ -628,6 +636,7 @@ impl Interpreter {
         // defaults.
         self.reset_buffer_syntax_table(buffer_id);
         self.reset_buffer_category_table(buffer_id);
+        self.reset_buffer_keymap(buffer_id);
     }
 
     pub fn clone_buffer_local_state(&mut self, from_buffer_id: u64, to_buffer_id: u64) {
@@ -675,6 +684,13 @@ impl Interpreter {
         }
         if let Some(table) = self.buffer_category_table_id(from_buffer_id) {
             self.install_buffer_category_table(to_buffer_id, table);
+        }
+        // And BVAR (from, keymap).
+        let keymap = self
+            .get_buffer_by_id(from_buffer_id)
+            .map_or(Value::Nil, |buffer| buffer.keymap());
+        if let Some(mut buffer) = self.get_buffer_by_id_mut(to_buffer_id) {
+            buffer.set_keymap(keymap);
         }
     }
 

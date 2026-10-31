@@ -2034,6 +2034,7 @@ impl DumpContext {
                 BUFFER_MARK_ACTIVE,
                 BUFFER_UNDO_LIST,
                 BUFFER_CATEGORY_TABLE,
+                BUFFER_KEYMAP,
             ] {
                 self.field_lv(
                     start,
@@ -2197,6 +2198,7 @@ impl DumpContext {
                 WEIGHT_STRONG,
             ),
             (BUFFER_UNDO_LIST as usize, parts.undo_list, WEIGHT_STRONG),
+            (BUFFER_KEYMAP as usize, parts.keymap, WEIGHT_STRONG),
         ];
         let mut props_fixups: Vec<(usize, crate::intervals::Intervals)> = Vec::new();
         if let Some(intervals) = &parts.intervals {
@@ -2911,8 +2913,10 @@ pub(crate) const BUFFER_UNDO_LIST: u32 = 27;
 pub(crate) const BUFFER_AUTOSAVE_MODIFF: u32 = 28;
 /// BVAR (b, category_table), nil when it is the standard table.
 pub(crate) const BUFFER_CATEGORY_TABLE: u32 = 29;
+/// BVAR (b, keymap), any Lisp object.
+pub(crate) const BUFFER_KEYMAP: u32 = 30;
 /// The variable part: the local bindings and the markers.
-pub(crate) const BUFFER_VARIABLE_PART: u32 = 30;
+pub(crate) const BUFFER_VARIABLE_PART: u32 = 31;
 // The flag bits of BUFFER_FLAGS.
 pub(crate) const BUFFER_FLAG_MULTIBYTE: u64 = 1;
 pub(crate) const BUFFER_FLAG_INHIBIT_HOOKS: u64 = 32;

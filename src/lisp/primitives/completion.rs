@@ -1792,7 +1792,9 @@ pub(crate) fn activate_minibuffer(
         exit_result?;
         return Err(error);
     }
-    interp.set_buffer_local_value(buffer_id, "current-local-map", local_map);
+    if let Some(mut buffer) = interp.get_buffer_by_id_mut(buffer_id) {
+        buffer.set_keymap(local_map);
+    }
     Ok(active)
 }
 

@@ -1804,6 +1804,7 @@ fn image_round_trips_buffers_markers_finalizers_and_nilled_frames() {
           (set (make-local-variable 'zz-dump-local) 42)
           (set-syntax-table (make-char-table 'syntax-table))
           (set-category-table (make-category-table))
+          (use-local-map (let ((map (make-sparse-keymap))) (define-key map "z" 'zz-dump-command) map))
           (set-visited-file-modtime '(0 100))
           (goto-char 4)
           (set-marker (mark-marker) 2)
@@ -1971,6 +1972,21 @@ fn image_round_trips_buffers_markers_finalizers_and_nilled_frames() {
         source_category
     );
     assert!(!locals.iter().any(|(symbol, _)| symbol == "category-table"));
+    // BVAR (b, keymap) likewise.
+    assert!(
+        !locals
+            .iter()
+            .any(|(symbol, _)| symbol == "current-local-map")
+    );
+    let loaded_keymap = target
+        .buffer_object(source_id)
+        .expect("restored buffer")
+        .borrow()
+        .keymap();
+    assert_eq!(
+        printed(&mut target, &loaded_keymap),
+        "(keymap (122 . zz-dump-command))"
+    );
     let mark_marker = target
         .buffer_mark_marker_id(source_id)
         .expect("the mark marker relation");
