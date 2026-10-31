@@ -1458,6 +1458,27 @@ define_dispatch!(
                 Ok(Value::Nil)
             }
             "garbage-collect" => direct_garbage_collect(interp, args, env),
+            // alloc.c's watchers of the GC variables (abi's
+            // C_VARIABLE_WATCHERS): the stored value retunes
+            // consing_until_gc with the other variable's current value.
+            "watch_gc_cons_threshold" => {
+                need_args(name, args, 4)?;
+                if let Some(threshold) = args[1].integer_value() {
+                    let (_, percentage) = crate::lisp::native_comp::gc_tuning(interp, env);
+                    crate::lisp::native_comp::bump_consing_until_gc(interp, threshold, percentage);
+                }
+                Ok(Value::Nil)
+            }
+            "watch_gc_cons_percentage" => {
+                need_args(name, args, 4)?;
+                let (threshold, _) = crate::lisp::native_comp::gc_tuning(interp, env);
+                let percentage = match args[1].kind() {
+                    Kind::Float(value) => Some(value.get()),
+                    _ => None,
+                };
+                crate::lisp::native_comp::bump_consing_until_gc(interp, threshold, percentage);
+                Ok(Value::Nil)
+            }
             "garbage-collect-maybe" => {
                 need_args(name, args, 1)?;
                 let Kind::Integer(factor) = args[0].kind() else {

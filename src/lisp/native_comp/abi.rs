@@ -332,7 +332,8 @@ impl From<crate::lisp::types::SymbolName> for BuiltinRef {
 }
 
 /// The subr named NAME: the first of that name in the table, through an
-/// index built on first use (the table is in defsubr order).
+/// index built on first use (the table is in defsubr order), or one of
+/// alloc.c's own watchers.
 pub(crate) fn find_builtin(name: &str) -> Option<BuiltinRef> {
     static BY_NAME: std::sync::OnceLock<
         std::collections::HashMap<&'static str, u16, crate::lisp::primitives::FnvBuildHasher>,
@@ -351,22 +352,69 @@ pub(crate) fn find_builtin(name: &str) -> Option<BuiltinRef> {
     index
         .get(name)
         .map(|&position| BuiltinRef(&subrs[usize::from(position)]))
+        .or_else(|| {
+            C_VARIABLE_WATCHERS
+                .iter()
+                .find(|subr| subr.name == name)
+                .map(BuiltinRef)
+        })
 }
 
 /// Checked external-word decoding: validate the allocation start without
 /// dereferencing arbitrary pointers or inventing an identity registry.
 pub(crate) fn builtin_at_address(address: usize) -> Option<BuiltinRef> {
-    let subrs = native_subrs();
-    let offset = address.checked_sub(subrs.as_ptr() as usize)?;
-    let size = std::mem::size_of::<NativeSubr>();
-    if !offset.is_multiple_of(size) {
-        return None;
-    }
-    subrs.get(offset / size).map(BuiltinRef)
+    let in_table = |subrs: &'static [NativeSubr]| {
+        let offset = address.checked_sub(subrs.as_ptr() as usize)?;
+        let size = std::mem::size_of::<NativeSubr>();
+        if !offset.is_multiple_of(size) {
+            return None;
+        }
+        subrs.get(offset / size).map(BuiltinRef)
+    };
+    in_table(native_subrs()).or_else(|| in_table(&C_VARIABLE_WATCHERS))
 }
 
 pub(crate) fn native_subrs() -> &'static [NativeSubr] {
     &super::generated_native_subrs::NATIVE_SUBRS
+}
+
+/// alloc.c's watchers of `gc-cons-threshold' and `gc-cons-percentage':
+/// subrs syms_of_alloc makes for itself, under no symbol and outside the
+/// defsubr table (whose order is the .eln ABI's).  Each bumps
+/// consing_until_gc for the store it is told of.
+pub(crate) static C_VARIABLE_WATCHERS: [NativeSubr; 2] = [
+    NativeSubr::new(
+        c"watch_gc_cons_threshold",
+        4,
+        NativeMaxArgs::Fixed(4),
+        watch_gc_cons_threshold_entry as *const std::ffi::c_void,
+        u32::MAX - 1,
+    ),
+    NativeSubr::new(
+        c"watch_gc_cons_percentage",
+        4,
+        NativeMaxArgs::Fixed(4),
+        watch_gc_cons_percentage_entry as *const std::ffi::c_void,
+        u32::MAX,
+    ),
+];
+
+extern "C" fn watch_gc_cons_threshold_entry(
+    symbol: super::runtime::NativeWord,
+    newval: super::runtime::NativeWord,
+    operation: super::runtime::NativeWord,
+    place: super::runtime::NativeWord,
+) -> super::runtime::NativeWord {
+    super::runtime::invoke_subr_object(&C_VARIABLE_WATCHERS[0], &[symbol, newval, operation, place])
+}
+
+extern "C" fn watch_gc_cons_percentage_entry(
+    symbol: super::runtime::NativeWord,
+    newval: super::runtime::NativeWord,
+    operation: super::runtime::NativeWord,
+    place: super::runtime::NativeWord,
+) -> super::runtime::NativeWord {
+    super::runtime::invoke_subr_object(&C_VARIABLE_WATCHERS[1], &[symbol, newval, operation, place])
 }
 
 pub(crate) const LISP_CONS_SIZE: usize = 2 * std::mem::size_of::<usize>();

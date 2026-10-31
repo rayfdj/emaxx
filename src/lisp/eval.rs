@@ -6649,6 +6649,18 @@ impl Interpreter {
             interp.mark_special_variable(&name);
         }
         interp.initialize_native_face_variables();
+        // alloc.c:syms_of_alloc's Fadd_variable_watcher calls.
+        for (variable, watcher) in ["gc-cons-threshold", "gc-cons-percentage"]
+            .into_iter()
+            .zip(&crate::lisp::native_comp::abi::C_VARIABLE_WATCHERS)
+        {
+            interp
+                .add_variable_watcher(
+                    variable,
+                    Value::BuiltinFunc(crate::lisp::types::BuiltinRef::from_subr(watcher)),
+                )
+                .expect("a C variable takes a watcher");
+        }
         // gnutls.c publishes both variables before preloading gnutls.el.
         // The shared library is resolved dynamically here, so availability
         // refreshes the version value while preserving GNU's unavailable

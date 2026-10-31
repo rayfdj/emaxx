@@ -557,6 +557,37 @@ impl SymbolOwner {
         self.0.names.borrow().bucket_lists()
     }
 
+    /// The initial obarray's size_bits.
+    pub(crate) fn size_bits(&self) -> u32 {
+        self.0.names.borrow().size_bits()
+    }
+
+    /// The initial obarray as pdumper.c's dumped one holds it: 2^BITS
+    /// buckets whose chains DOOBARRAY walks in ORDER.  A symbol the
+    /// buckets hold that ORDER does not list is filed after them, as
+    /// intern_sym files it.
+    pub(crate) fn restore_dumped_order(&self, bits: u32, order: &[SymbolName]) {
+        let mut names = self.0.names.borrow_mut();
+        let present = names.symbols();
+        let listed: HashSet<SymbolName> = order.iter().copied().collect();
+        names.reset(bits);
+        names.set_count(0);
+        let mut count = 0;
+        for &symbol in order.iter().rev() {
+            let index = super::obarray::name_bucket(symbol, bits);
+            symbol.cell().next.set(names.head(index));
+            names.set_head(index, Some(symbol));
+            count += 1;
+        }
+        names.set_count(count);
+        for symbol in present {
+            if !listed.contains(&symbol) {
+                let index = super::obarray::name_bucket(symbol, names.size_bits());
+                names.insert(symbol, index);
+            }
+        }
+    }
+
     pub(crate) fn mark_roots(&self, mark: &mut dyn FnMut(&Value)) {
         mark_names(&self.0, mark);
     }

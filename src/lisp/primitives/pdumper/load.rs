@@ -46,6 +46,8 @@ pub(crate) struct LoadedImage {
     pub(crate) symbols: Vec<LoadedSymbol>,
     /// The initial obarray record's symbols in image order.
     pub(crate) obarray: Vec<SymbolName>,
+    /// The initial obarray's size_bits; 0 for an image without it.
+    pub(crate) obarray_size_bits: u32,
     /// The cells of `nil' and `t'.
     pub(crate) builtin_cells: Vec<LoadedSymbol>,
     /// RELOC_NATIVE_COMP_UNIT: the native compilation unit records, in
@@ -1063,6 +1065,7 @@ impl Loader<'_> {
 
         // Phase 3: relocate the fields of the published containers.
         let mut obarray = Vec::new();
+        let mut obarray_size_bits = 0;
         self.relocate_conses()?;
         self.relocate_vectors()?;
         self.relocate_symbols()?;
@@ -1119,8 +1122,13 @@ impl Loader<'_> {
             native_functions.push(crate::lisp::native_comp::DumpedNativeFunction { function });
         }
         for (offset, id, nslots) in obarray_records {
-            let count_at = offset + 32 + 8 * nslots as u32;
+            let bits_at = offset + 32 + 8 * nslots as u32;
+            let count_at = bits_at + 8;
             let count = self.reader.word(count_at)? as usize;
+            if self.interp.is_standard_obarray_id(id) {
+                obarray_size_bits = u32::try_from(self.reader.word(bits_at)?)
+                    .map_err(|_| LoadError::Error("obarray size out of range".into()))?;
+            }
             for index in 0..count {
                 let value = self.value_at(count_at + 8 * (index as u32 + 1))?;
                 let symbol = symbol_of(value, "obarray entry")?;
@@ -1299,6 +1307,7 @@ impl Loader<'_> {
             roots,
             symbols,
             obarray,
+            obarray_size_bits,
             builtin_cells,
             native_units,
             native_functions,
@@ -1979,6 +1988,11 @@ impl Loader<'_> {
                     Kind::StringObject(state) => std::str::from_utf8(state.borrow().bytes())
                         .ok()
                         .and_then(crate::lisp::native_comp::abi::find_builtin),
+                    Kind::Integer(index) => usize::try_from(index).ok().and_then(|index| {
+                        crate::lisp::native_comp::abi::C_VARIABLE_WATCHERS
+                            .get(index)
+                            .map(crate::lisp::types::BuiltinRef::from_subr)
+                    }),
                     _ => None,
                 }
                 .ok_or_else(|| {

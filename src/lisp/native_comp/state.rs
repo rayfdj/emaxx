@@ -83,6 +83,10 @@ impl NativeCompilerState {
         self.runtime.garbage_collection_due(threshold, percentage)
     }
 
+    pub(crate) fn bump_consing_until_gc(&mut self, threshold: i64, percentage: Option<f64>) {
+        self.runtime.bump_consing_until_gc(threshold, percentage);
+    }
+
     pub(crate) fn version() -> Option<(i32, i32, i32)> {
         gccjit::version()
     }

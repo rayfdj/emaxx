@@ -1086,6 +1086,11 @@ impl Interpreter {
         symbols
     }
 
+    /// The initial obarray's size_bits, as pdumper.c dumps its vector.
+    pub(crate) fn standard_obarray_size_bits(&self) -> u32 {
+        self.globals.initial_size_bits()
+    }
+
     pub(crate) fn note_obarray_removal(&mut self) {
         self.obarray_epoch = self.obarray_epoch.wrapping_add(1);
     }

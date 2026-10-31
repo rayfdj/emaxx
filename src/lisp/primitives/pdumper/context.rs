@@ -1715,7 +1715,14 @@ impl DumpContext {
         // Defsubr already interned this name. Reuse its Lisp string on
         // every dump pass: allocating another string while writing copied
         // objects would create a graph edge after the scan has finished.
-        let name = SymbolName::intern_str(subr.as_str()).lisp_name();
+        // A subr made under no name (alloc.c's watchers) is its index.
+        let name = match crate::lisp::native_comp::abi::C_VARIABLE_WATCHERS
+            .iter()
+            .position(|watcher| std::ptr::eq(watcher, subr.descriptor()))
+        {
+            Some(index) => Value::Integer(index as i64),
+            None => SymbolName::intern_str(subr.as_str()).lisp_name(),
+        };
         self.field_lv(start, &mut words, 0, &name, WEIGHT_STRONG);
         self.object_finish(&words)
     }
@@ -1904,10 +1911,15 @@ impl DumpContext {
         type_tag: &Value,
         slots: &[Value],
     ) -> Result<u32, DumpError> {
-        let names = if interp.is_standard_obarray_id(id) {
-            interp.known_symbol_names()
+        // pdumper.c dumps the obarray vector itself: its size, and its
+        // chains in DOOBARRAY's order.
+        let (bits, names) = if interp.is_standard_obarray_id(id) {
+            (
+                interp.standard_obarray_size_bits(),
+                interp.known_symbol_names(),
+            )
         } else {
-            Vec::new()
+            (0, Vec::new())
         };
         let start = self.object_start()?;
         let mut words = vec![
@@ -1922,6 +1934,7 @@ impl DumpContext {
             words.push(0);
             self.field_lv(start, &mut words, index, slot, WEIGHT_STRONG);
         }
+        words.push(u64::from(bits));
         words.push(names.len() as u64);
         for name in &names {
             let index = words.len();

@@ -6120,12 +6120,16 @@ fn every_literal_native_dispatch_arm_is_owned_by_gnu_c() {
 
     // Dispatch source is a cross-platform union.  An arm must belong to at
     // least one contracted GNU host, while `is_builtin' separately selects
-    // only the current host's generated ownership manifest.
+    // only the current host's generated ownership manifest.  alloc.c's
+    // variable watchers are GNU subrs made without DEFUN.
     let non_gnu = names
         .iter()
         .filter(|(name, _)| {
-            super::generated_gnu_c_primitives::generated_gnu_c_primitive_available(name)
-                != Some(true)
+            !crate::lisp::native_comp::abi::C_VARIABLE_WATCHERS
+                .iter()
+                .any(|subr| subr.name == name.as_str())
+                && super::generated_gnu_c_primitives::generated_gnu_c_primitive_available(name)
+                    != Some(true)
                 && super::generated_gnu_c_primitives_linux::generated_gnu_c_primitive_available(
                     name,
                 ) != Some(true)
@@ -33054,5 +33058,17 @@ fn variable_watchers_are_the_watchers_property_as_data_c_keeps_them() {
         r#"(let (log) (defvar zz-w 1) (defvaralias 'zz-wa 'zz-w) (defvar zz-r 1) (list (add-variable-watcher 'zz-w (lambda (&rest a) (push (cons 'first (nth 2 a)) log))) (add-variable-watcher 'zz-wa (lambda (&rest a) (push (cons 'second (nth 2 a)) log))) (add-variable-watcher 'zz-w 'ignore) (add-variable-watcher 'zz-w 'ignore) (length (get-variable-watchers 'zz-wa)) (length (get 'zz-w 'watchers)) (get 'zz-wa 'watchers) (progn (setq zz-wa 2) (prog1 (reverse log) (setq log nil))) (remove-variable-watcher 'zz-wa 'ignore) (length (get 'zz-w 'watchers)) (progn (put 'zz-w 'watchers nil) (setq zz-w 3) (prog1 (reverse log) (setq log nil))) (get-variable-watchers 'zz-w) (remove-variable-watcher 'zz-w 'nothing) (progn (add-variable-watcher 'zz-r (lambda (s n o w) (push (list s n o (get-variable-watchers s)) log) (setq zz-r (1+ n)))) (setq zz-r 10) (list zz-r (prog1 log (setq log nil)))) (mapcar (lambda (v) (length (get v 'watchers))) '(mode-line-format truncate-lines line-spacing display-line-numbers))))"#,
         r#"(nil nil nil nil 3 3 nil ((second . set) (first . set)) nil 2 nil nil nil (10 ((zz-r 10 set nil))) (1 1 1 1))"#,
         "variable watchers",
+    );
+}
+
+#[test]
+fn gc_variables_are_watched_by_alloc_c_s_own_subrs() {
+    // syms_of_alloc watches `gc-cons-threshold' and `gc-cons-percentage'
+    // with subrs made under no symbol, which bump consing_until_gc for the
+    // value stored: a `let' of a low threshold collects within its body.
+    assert_oracle_contract_matches_interpreter(
+        r#"(list (mapcar (lambda (v) (mapcar #'subr-name (get-variable-watchers v))) '(gc-cons-threshold gc-cons-percentage)) (mapcar #'subr-arity (get 'gc-cons-threshold 'watchers)) (intern-soft "watch_gc_cons_threshold") (progn (garbage-collect) (let ((n gcs-done)) (let ((gc-cons-percentage 0.0) (gc-cons-threshold 100000)) (dotimes (_ 40000) (cons 1 2))) (> gcs-done n))))"#,
+        r#"((("watch_gc_cons_threshold") ("watch_gc_cons_percentage")) ((4 . 4)) nil t)"#,
+        "GC variable watchers",
     );
 }

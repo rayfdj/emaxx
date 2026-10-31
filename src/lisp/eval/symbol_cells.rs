@@ -71,6 +71,16 @@ impl SymbolCells {
         self.symbols.len()
     }
 
+    /// The initial obarray's size_bits.
+    pub(crate) fn initial_size_bits(&self) -> u32 {
+        self.symbols.size_bits()
+    }
+
+    /// The initial obarray's buckets as a dumped image holds them.
+    pub(crate) fn restore_initial_order(&self, bits: u32, order: &[SymbolName]) {
+        self.symbols.restore_dumped_order(bits, order);
+    }
+
     /// oblookup in this owner's initial obarray; None for a marked key.
     pub(crate) fn find_initial_name(&self, name: &str) -> Option<SymbolName> {
         self.symbols.find_initial(name)

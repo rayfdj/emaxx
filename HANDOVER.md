@@ -10773,6 +10773,37 @@ setup_process_coding_systems's check now refuses). A 13-form
   startup difference. Local validation: the grouped gate's 3,390
   library tests, the integration targets and clippy with `--all-targets
   --all-features -D warnings' pass.
+- **Round 210: alloc.c's watchers of the GC variables; the image keeps
+  the obarray's order.** syms_of_alloc watches `gc-cons-threshold' and
+  `gc-cons-percentage' with two subrs it makes for itself,
+  `watch_gc_cons_threshold' and `watch_gc_cons_percentage', which no
+  symbol names; each runs bump_consing_until_gc for the value being
+  stored, so a `let' of a low threshold (or a high one) moves the next
+  collection at once. Emaxx retuned the counter only when its old budget
+  ran out, and `get-variable-watchers' of either variable answered nil.
+  The two subrs now exist beside the defsubr table (whose order is the
+  .eln ABI's, so they are kept out of it): named by their C functions,
+  arity (4 . 4), dispatched by name, found by the image loader under
+  their index rather than an interned name, and installed as the
+  variables' watchers at construction; their bodies retune the counter
+  on the active native heap or the interpreter's with the stored value
+  and the other variable's current one. The audit that every literal
+  dispatch arm is a GNU C primitive takes these two as alloc.c's. An
+  oracle test pins the watchers and a collection inside a `let' of a low
+  threshold, which GNU makes and Emaxx did not.
+  The round 209 CI failure (below) was the image's obarray: the loader
+  interns each symbol as it reads its cell, so the buckets' chains came
+  out in the image's cell order, and an image dumped from an
+  interpreter that was itself started from an image walked `mapatoms' in
+  another order than its template. pdumper.c dumps the obarray vector
+  itself, so its size and chains survive; the dumped obarray record now
+  carries the size bits before its DOOBARRAY-ordered symbols, and image
+  installation files the buckets again in that order (a symbol the
+  loader interned that the record does not list is filed after them, as
+  intern_sym files it). The image round-trip test passes locally with
+  the image template, as the CI runs it. Local validation: the grouped
+  gate's 3391 library tests, the integration targets and clippy
+  with `--all-targets --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -12135,6 +12166,17 @@ setup 66.0 s against 57.5 s (1.148), test bodies 227.0 s against 245.3 s
 frozen (run 41220468442) matched all 7,928 outcomes on the first attempt:
 setup 54.9 s against 48.3 s (1.137), test bodies 206.2 s against 221.2 s
 (0.933), in all 0.969.
+
+**On `2e0f272`** (round 209): frozen (run 41224269635) matched all 7,928
+outcomes on the first attempt: setup 59.4 s against 52.3 s (1.137), test
+bodies 216.9 s against 229.3 s (0.946), in all 0.981. The full Rust gate
+(run 41224267424) failed one test,
+`batch_startup_image_round_trip_or_explicit_native_image_limit`: an image
+dumped by an interpreter that was itself started from an image walked its
+obarray in another order (`mapatoms' met `tab-switcher-unmark' first
+where the template met `eval-print-last-sexp'), because the loader filed
+the symbols in the order it read their cells. Round 209's plists moved
+that order; round 210 restores the dumped buckets.
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

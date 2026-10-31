@@ -89,6 +89,14 @@ impl Interpreter {
         for (slot, value) in &image.roots {
             self.install_root_slot(*slot, value);
         }
+        // The loader interned the symbols in the order it read their
+        // cells; the buckets are filed again as the dumped obarray held
+        // them, so `mapatoms' walks them in the same order.
+        if image.obarray_size_bits != 0 {
+            self.globals
+                .restore_initial_order(image.obarray_size_bits, &image.obarray);
+            self.note_obarray_removal();
+        }
         *self.known_symbols_cache.borrow_mut() = None;
         self.pdumper_loaded = Some(record);
         Ok(())
