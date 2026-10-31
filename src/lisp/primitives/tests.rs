@@ -9528,6 +9528,73 @@ fn casify_region_records_and_replaces_as_casefiddle_c() {
     );
 }
 
+/// An indirect family shares one buffer_text in GNU: casing,
+/// subst-char-in-region, translate-region and transpose-regions in the
+/// base (or in the indirect buffer) change the text, intervals and counts
+/// every member sees; the other members' point and bounds stay at their
+/// character positions, as the markers they are, except that
+/// transpose_markers moves them (unless LEAVE-MARKERS).
+#[test]
+fn edits_in_place_reach_the_whole_indirect_family() {
+    assert_oracle_contract_matches_interpreter(
+        r##"(let ((state (lambda (b) (with-current-buffer b (list (buffer-string) (point) (point-min) (point-max) (buffer-modified-tick) (object-intervals (current-buffer))))))
+             (result nil))
+         (dolist (op (list (lambda () (upcase-region 1 4))
+                           (lambda () (upcase-region 1 12))
+                           (lambda () (subst-char-in-region 1 12 ?d ?Q))
+                           (lambda () (translate-region 1 12 (let ((tbl (make-string 256 0))) (dotimes (i 256) (aset tbl i i)) (aset tbl ?g ?Z) tbl)))
+                           (lambda () (transpose-regions 1 3 5 7))
+                           (lambda () (transpose-regions 1 3 5 7 t))
+                           (lambda () (with-current-buffer " ind" (upcase-region 3 6)))))
+           (with-temp-buffer
+             (insert (concat "abc " (propertize "dßf" 'q 1) " ghi"))
+             (let* ((base (current-buffer)) (ind (make-indirect-buffer base " ind"))
+                    (m (copy-marker 6)) (mi (with-current-buffer ind (copy-marker 9))))
+               (with-current-buffer ind (narrow-to-region 2 11) (goto-char 7))
+               (goto-char 6)
+               (funcall op)
+               (push (list (funcall state base) (funcall state ind) (marker-position m) (marker-position mi)) result)
+               (kill-buffer ind))))
+         (nreverse result))"##,
+        r##"(((#("ABC dßf ghi" 4 7 (q 1)) 6 1 12 7 ((0 4 nil) (4 7 (q 1)) (7 11 nil))) (#("BC dßf gh" 3 6 (q 1)) 7 2 11 7 ((0 4 nil) (4 7 (q 1)) (7 11 nil))) 6 9) ((#("ABC DSSF GHI" 4 8 (q 1)) 6 1 13 11 ((0 4 nil) (4 8 (q 1)) (8 12 nil))) (#("BC DSSF G" 3 7 (q 1)) 7 2 11 11 ((0 4 nil) (4 8 (q 1)) (8 12 nil))) 6 9) ((#("abc Qßf ghi" 4 7 (q 1)) 6 1 12 8 ((0 4 nil) (4 7 (q 1)) (7 11 nil))) (#("bc Qßf gh" 3 6 (q 1)) 7 2 11 8 ((0 4 nil) (4 7 (q 1)) (7 11 nil))) 6 9) ((#("abc dßf Zhi" 4 7 (q 1)) 6 1 12 9 ((0 4 nil) (4 7 (q 1)) (7 11 nil))) (#("bc dßf Zh" 3 6 (q 1)) 7 2 11 9 ((0 4 nil) (4 7 (q 1)) (7 11 nil))) 6 9) ((#("dßc abf ghi" 0 2 (q 1) 6 7 (q 1)) 2 1 12 8 ((0 2 (q 1)) (2 4 nil) (4 6 nil) (6 7 (q 1)) (7 11 nil))) (#("bf gh" 1 2 (q 1)) 7 6 11 8 ((0 2 (q 1)) (2 4 nil) (4 6 nil) (6 7 (q 1)) (7 11 nil))) 2 9) ((#("dßc abf ghi" 0 2 (q 1) 6 7 (q 1)) 6 1 12 8 ((0 2 (q 1)) (2 4 nil) (4 6 nil) (6 7 (q 1)) (7 11 nil))) (#("ßc abf gh" 0 1 (q 1) 5 6 (q 1)) 7 2 11 8 ((0 2 (q 1)) (2 4 nil) (4 6 nil) (6 7 (q 1)) (7 11 nil))) 6 9) ((#("abC Dßf ghi" 4 7 (q 1)) 6 1 12 7 ((0 4 nil) (4 7 (q 1)) (7 11 nil))) (#("bC Dßf gh" 3 6 (q 1)) 7 2 11 7 ((0 4 nil) (4 7 (q 1)) (7 11 nil))) 6 9))"##,
+        "indirect family edits in place",
+    );
+}
+
+/// editfns.c:Ftranslate_region_internal: modify_text over the region
+/// first (the buffer modified, the change counted once), a unibyte
+/// table's byte compared with the character before it stands for a raw
+/// byte (so a Latin-1 character mapped to its own code stays), a
+/// same-size translation recorded and written where it stands with its
+/// properties, a longer one through replace_range (its insertion recorded
+/// before its deletion), in multibyte and unibyte buffers.
+#[test]
+fn translate_region_follows_ftranslate_region_internal() {
+    assert_oracle_contract_matches_interpreter(
+        r##"(let ((result nil))
+         (dolist (unibyte '(nil t))
+           (dolist (tblf (list (lambda () (let ((tbl (make-string 256 0))) (dotimes (i 256) (aset tbl i i)) tbl))
+                               (lambda () (let ((tbl (make-string 256 0))) (dotimes (i 256) (aset tbl i i)) (aset tbl ?b ?B) (aset tbl 223 224) tbl))
+                               (lambda () (let ((tbl (make-string 256 ?x t))) (dotimes (i 256) (aset tbl i i)) (aset tbl ?c ?é) tbl))
+                               (lambda () (let ((ct (make-char-table 'translation-table))) (aset ct ?a ?Z) (aset ct ?ß "ss") ct))))
+             (with-temp-buffer
+               (buffer-enable-undo)
+               (when unibyte (set-buffer-multibyte nil))
+               (insert (concat "abc " (propertize "dßf" 'q 1) " ghi"))
+               (set-buffer-modified-p nil) (setq buffer-undo-list nil)
+               (let ((log nil) (m (copy-marker 6)))
+                 (goto-char 7)
+                 (add-hook 'after-change-functions (lambda (b e l) (push (list b e l) log)) nil t)
+                 (let ((r (translate-region 1 12 (funcall tblf))))
+                   (push (list r (append (buffer-string) nil) (object-intervals (current-buffer)) (point) (marker-position m) (buffer-modified-p) (buffer-chars-modified-tick)
+                               (mapcar (lambda (e) (cond ((eq (car-safe e) t) t) ((stringp (car-safe e)) (cons (append (car e) nil) (cdr e))) (t e))) buffer-undo-list) (reverse log))
+                         result))))))
+         (nreverse result))"##,
+        r##"((0 (97 98 99 32 100 223 102 32 103 104 105) ((0 4 nil) (4 7 (q 1)) (7 11 nil)) 7 6 t 9 (t) nil) (2 (97 66 99 32 100 4194272 102 32 103 104 105) ((0 4 nil) (4 7 (q 1)) (7 11 nil)) 7 6 t 9 ((6 . 7) ((223) . -6) (2 . 3) ((98) . 2) t) ((2 3 1) (6 7 1))) (1 (97 98 233 32 100 223 102 32 103 104 105) ((0 2 nil) (2 3 nil) (3 4 nil) (4 7 (q 1)) (7 11 nil)) 7 6 t 11 (((99) . 3) (4 . 5) t) ((3 4 1))) (1 (90 98 99 32 100 223 102 32 103 104 105) ((0 4 nil) (4 7 (q 1)) (7 11 nil)) 7 6 t 9 ((1 . 2) ((97) . 1) t) ((1 2 1))) (0 (97 98 99 32 100 223 102 32 103 104 105) ((0 4 nil) (4 7 (q 1)) (7 11 nil)) 7 6 t 9 (t) nil) (2 (97 66 99 32 100 224 102 32 103 104 105) ((0 4 nil) (4 7 (q 1)) (7 11 nil)) 7 6 t 9 ((6 . 7) ((223) . -6) (2 . 3) ((98) . 2) t) ((2 3 1) (6 7 1))) (1 (97 98 233 32 100 223 102 32 103 104 105) ((0 4 nil) (4 7 (q 1)) (7 11 nil)) 7 6 t 9 ((3 . 4) ((99) . 3) t) ((3 4 1))) (1 (90 98 99 32 100 223 102 32 103 104 105) ((0 4 nil) (4 7 (q 1)) (7 11 nil)) 7 6 t 9 ((1 . 2) ((97) . 1) t) ((1 2 1))))"##,
+        "translate-region",
+    );
+}
+
 /// Property changes' undo records, the deletion record's intervals, the
 /// stickiness of text-property-default-nonsticky and front-sticky t,
 /// categories, char-property-alias-alist, default-text-properties, the

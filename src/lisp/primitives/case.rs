@@ -706,6 +706,12 @@ pub(crate) fn casify_buffer_region(
                 .borrow_mut()
                 .record_casing_insertion(lo, new_length);
         }
+        // The family shares the text, cased or not, and its counts.
+        if replaced || mapped != text || mapped_extended != extended {
+            interp.mirror_in_place_edit_to_related_buffers(lo, hi, new_end);
+        } else {
+            interp.share_text_counters(interp.current_buffer_id());
+        }
         let unchanged_prefix = old_codes
             .iter()
             .zip(&new_codes)

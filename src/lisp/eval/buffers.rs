@@ -176,6 +176,71 @@ impl Interpreter {
         }
     }
 
+    /// An edit of the current buffer's text where it stands, [FROM, OLD_TO)
+    /// now [FROM, NEW_TO) (casing, subst-char-in-region, translate-region,
+    /// transpose-regions): GNU's indirect family shares that text, so the
+    /// rest of the family is given it with the intervals, their positions
+    /// left where markers leave them, and the text's counts.
+    pub(crate) fn mirror_in_place_edit_to_related_buffers(
+        &mut self,
+        from: usize,
+        old_to: usize,
+        new_to: usize,
+    ) {
+        if self.indirect_buffers.is_empty() {
+            return;
+        }
+        let current_id = self.current_buffer_id();
+        let related = self.related_buffer_ids(current_id);
+        if related.len() < 2 {
+            return;
+        }
+        let (text, extended, intervals) = {
+            let buffer = self.buffer.borrow();
+            (
+                buffer.stored_text(from, new_to),
+                buffer.substring_extended_chars(from, new_to),
+                buffer.intervals_snapshot(),
+            )
+        };
+        for buffer_id in related {
+            if buffer_id == current_id {
+                continue;
+            }
+            if let Some(mut buffer) = self.get_buffer_by_id_mut(buffer_id) {
+                buffer.mirror_in_place_edit(from, old_to, &text, &extended, intervals.clone());
+            }
+        }
+        self.share_text_counters(current_id);
+    }
+
+    /// transpose-regions of the current buffer seen by the rest of its
+    /// family: the text, and unless LEAVE_MARKERS transpose_markers over
+    /// their markers, point and bounds (markers of the shared text in GNU).
+    pub(crate) fn mirror_transposition_to_related_buffers(
+        &mut self,
+        (start1, end1): (usize, usize),
+        (start2, end2): (usize, usize),
+        leave_markers: bool,
+    ) {
+        if self.indirect_buffers.is_empty() {
+            return;
+        }
+        self.mirror_in_place_edit_to_related_buffers(start1, end2, end2);
+        if leave_markers {
+            return;
+        }
+        let current_id = self.current_buffer_id();
+        for buffer_id in self.related_buffer_ids(current_id) {
+            if buffer_id == current_id {
+                continue;
+            }
+            if let Some(mut buffer) = self.get_buffer_by_id_mut(buffer_id) {
+                buffer.transpose_family_positions(start1, end1, start2, end2);
+            }
+        }
+    }
+
     /// The same family-wide property mirroring for an explicit target
     /// buffer.  Returns whether any buffer received the change.
     pub fn apply_text_property_change_shared_for(

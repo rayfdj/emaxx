@@ -945,6 +945,8 @@ define_dispatch!(
                             }
                             buffer.record_change(pos, 1);
                             buffer.replace_text_in_place(pos, pos + 1, &replacement, &extended);
+                            drop(buffer);
+                            interp.mirror_in_place_edit_to_related_buffers(pos, pos + 1, pos + 1);
                         }
                         let length = last_changed - changed;
                         return Ok((Some(AfterChange::new(changed, length, length)), ()));
@@ -972,6 +974,11 @@ define_dispatch!(
                     // newline→space pass must keep erc-button's props intact).
                     buffer.replace_text_in_place(changed, last_changed, &replaced, &extended);
                     drop(buffer);
+                    interp.mirror_in_place_edit_to_related_buffers(
+                        changed,
+                        last_changed,
+                        last_changed,
+                    );
                     let length = last_changed - changed;
                     Ok((Some(AfterChange::new(changed, length, length)), ()))
                 })?;
@@ -1085,6 +1092,11 @@ define_dispatch!(
                         (start1, end1),
                         (start2, end2),
                         given,
+                        leave_markers,
+                    );
+                    interp.mirror_transposition_to_related_buffers(
+                        (start1, end1),
+                        (start2, end2),
                         leave_markers,
                     );
                     Ok((

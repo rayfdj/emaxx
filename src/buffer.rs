@@ -248,6 +248,28 @@ struct BufferText {
     positions: Cell<PositionCache>,
 }
 
+/// editfns.c:transpose_markers' move of POSITION: in the first region by
+/// the second's length and the distance between them, between them by the
+/// difference of the lengths, in the second back by the first's length
+/// and that distance.
+fn transposed_position(
+    position: usize,
+    start1: usize,
+    end1: usize,
+    start2: usize,
+    end2: usize,
+) -> usize {
+    if position < start1 || position >= end2 {
+        position
+    } else if position < end1 {
+        position + (end2 - start2) + (start2 - end1)
+    } else if position < start2 {
+        position + (end2 - start2) - (end1 - start1)
+    } else {
+        position - (end1 - start1) - (start2 - end1)
+    }
+}
+
 /// marker.c buf_charpos_to_bytepos's cache, for a text whose characters
 /// are not all one byte: the char and byte offsets of recent conversions,
 /// shifted by an edit before them and dropped by one over them.
@@ -2565,18 +2587,36 @@ impl Buffer {
     /// moved by the other's length and the distance between them, those
     /// between by the difference of the lengths.
     fn transpose_markers(&mut self, start1: usize, end1: usize, start2: usize, end2: usize) {
-        let moved = |position: usize| {
-            if position < start1 || position >= end2 {
-                position
-            } else if position < end1 {
-                position + (end2 - start2) + (start2 - end1)
-            } else if position < start2 {
-                position + (end2 - start2) - (end1 - start1)
-            } else {
-                position - (end1 - start1) - (start2 - end1)
-            }
-        };
+        self.pt = transposed_position(self.pt, start1, end1, start2, end2);
+        self.transpose_marker_positions(start1, end1, start2, end2);
+    }
+
+    /// transpose_markers over another buffer of the text's indirect
+    /// family, whose point and bounds are markers in GNU while it is not
+    /// current: they move with the mark and the markers.
+    pub(crate) fn transpose_family_positions(
+        &mut self,
+        start1: usize,
+        end1: usize,
+        start2: usize,
+        end2: usize,
+    ) {
+        let moved = |position| transposed_position(position, start1, end1, start2, end2);
         self.pt = moved(self.pt);
+        self.begv = moved(self.begv);
+        self.zv = moved(self.zv).max(self.begv);
+        self.pt = self.pt.clamp(self.begv, self.zv);
+        self.transpose_marker_positions(start1, end1, start2, end2);
+    }
+
+    fn transpose_marker_positions(
+        &mut self,
+        start1: usize,
+        end1: usize,
+        start2: usize,
+        end2: usize,
+    ) {
+        let moved = |position| transposed_position(position, start1, end1, start2, end2);
         match &mut self.mark {
             BufferMark::Position(mark) => *mark = mark.map(moved),
             BufferMark::Object { owner, .. } => {
@@ -2586,6 +2626,49 @@ impl Buffer {
                 }
             }
         }
+    }
+
+    /// Another buffer of this text's indirect family changed it where it
+    /// stands: [FROM, OLD_TO) is now TEXT (EXTENDED its side table) and the
+    /// whole text has INTERVALS, as GNU's family shares one buffer_text.
+    /// Point, the bounds, the mark and the markers keep their character
+    /// positions, as markers do across an edit in place and
+    /// replace_range_2; nothing is recorded or counted here.
+    pub(crate) fn mirror_in_place_edit(
+        &mut self,
+        from: usize,
+        old_to: usize,
+        text: &str,
+        extended: &[(usize, u32)],
+        intervals: Option<Intervals>,
+    ) {
+        let inschars = text.chars().count();
+        self.text.remove(from - 1..old_to - 1);
+        self.text.insert(from - 1, text);
+        self.invalidate_char_cache();
+        self.adjust_extended_chars_for_delete(from, old_to);
+        self.adjust_extended_chars_for_insert(from, inschars);
+        self.extended_chars
+            .extend(extended.iter().map(|(offset, code)| (from + offset, *code)));
+        self.extended_chars
+            .sort_unstable_by_key(|(position, _)| *position);
+        self.intervals = intervals;
+        let z = self.size_total() + 1;
+        self.zv = self.zv.min(z);
+        self.begv = self.begv.min(self.zv);
+        self.pt = self.pt.clamp(self.begv, self.zv);
+        self.refresh_marker_byte_positions();
+        self.log_edit(from, old_to, from + inschars, true);
+    }
+
+    /// The whole text's intervals, for another buffer of its family.
+    pub(crate) fn intervals_snapshot(&self) -> Option<Intervals> {
+        self.intervals.clone()
+    }
+
+    /// The stored text of [FROM, TO).
+    pub(crate) fn stored_text(&self, from: usize, to: usize) -> String {
+        self.text_range_string(from - 1, to - 1)
     }
 
     /// casefiddle.c:casify_region's record_delete of [FROM, TO) as

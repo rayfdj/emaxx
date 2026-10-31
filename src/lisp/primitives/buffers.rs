@@ -407,6 +407,10 @@ pub(crate) fn translate_region_internal(
         TranslationTable::Chars(_) => None,
     };
     let prepared = prepare_to_modify_buffer(interp, from, to, false, env)?;
+    // The rest of modify_text: the first change recorded, and the change
+    // of the whole region counted once.
+    interp.buffer.borrow_mut().modify_text(from, to);
+    interp.share_text_counters(interp.current_buffer_id());
     with_overlay_hook_roots(interp, &prepared.overlay_calls, |interp| {
         let mut pos = from;
         let mut end_pos = to;
@@ -436,7 +440,9 @@ pub(crate) fn translate_region_internal(
                         } else {
                             (code, 1)
                         };
-                        simple = Some((nc, bytes));
+                        // GNU compares the table's own byte with the
+                        // character, before it stands for a raw byte.
+                        simple = Some((nc, bytes, code));
                     }
                 }
                 (TranslationTable::Chars(table_id), None) => {
@@ -449,7 +455,7 @@ pub(crate) fn translate_region_internal(
                             } else {
                                 1
                             };
-                            simple = Some((nc, bytes));
+                            simple = Some((nc, bytes, nc));
                         }
                         Some(Kind::Cons(_)) => {
                             let source: Vec<u32> = (pos..end_pos)
@@ -478,8 +484,8 @@ pub(crate) fn translate_region_internal(
                 }
                 (TranslationTable::String(_), None) => unreachable!("string table read above"),
             }
-            if let Some((nc, new_bytes)) = simple
-                && nc != oc
+            if let Some((nc, new_bytes, compared)) = simple
+                && compared != oc
             {
                 if new_bytes != old_bytes {
                     replace_range_with_hooks(interp, pos, pos + 1, &[nc], env)?;
@@ -515,34 +521,30 @@ pub(crate) fn translate_region_internal(
 }
 
 /// One character at POS replaced by NC where the text stands, its
-/// properties and markers kept, the change recorded for undo.
+/// properties and markers kept, the change recorded for undo: as
+/// Ftranslate_region_internal's record_change and memcpy of a character
+/// whose replacement keeps its size (a raw byte and a character beyond
+/// Unicode included); the region's modify_text counted the change.
 fn replace_character_in_place(
     interp: &mut Interpreter,
     pos: usize,
     nc: u32,
 ) -> Result<(), LispError> {
-    if let Some(character) = char::from_u32(nc)
-        && raw_byte_from_regex_char(character).is_none()
-        && interp.buffer.borrow().extended_char_at(pos).is_none()
-    {
-        let mut text = [0u8; 4];
-        interp.buffer.borrow_mut().replace_region_in_place(
-            pos,
-            pos + 1,
-            character.encode_utf8(&mut text),
-            &[],
-            false,
-        );
-        return Ok(());
-    }
-    // A raw byte, or a character the text view keeps in the extended
-    // sidecar: replaced as deleted and inserted text.
-    replace_characters_unsignalled(interp, pos, pos + 1, &[nc])
+    let multibyte = interp.buffer.borrow().is_multibyte();
+    let (mut text, mut extended) = (String::new(), Vec::new());
+    push_buffer_character(&mut text, &mut extended, 0, nc, multibyte);
+    let mut buffer = interp.buffer.borrow_mut();
+    buffer.record_change(pos, 1);
+    buffer.replace_text_in_place(pos, pos + 1, &text, &extended);
+    drop(buffer);
+    interp.mirror_in_place_edit_to_related_buffers(pos, pos + 1, pos + 1);
+    Ok(())
 }
 
 /// insdel.c:replace_range over [FROM, TO) by the characters REPLACEMENT,
-/// with its own prepare_to_modify_buffer and signal_after_change; point
-/// moves as a marker would.
+/// with its own prepare_to_modify_buffer and signal_after_change, without
+/// inheritance and with markers (and point) moved as replace_range moves
+/// them; the insertion recorded for undo before the deletion.
 pub(crate) fn replace_range_with_hooks(
     interp: &mut Interpreter,
     from: usize,
@@ -560,43 +562,23 @@ pub(crate) fn replace_range_with_hooks(
             interp, from, to, false, env,
         )?;
         let to = to.min(interp.buffer.borrow().point_max()).max(from);
-        replace_characters_unsignalled(interp, from, to, replacement)?;
+        let multibyte = interp.buffer.borrow().is_multibyte();
+        let (mut text, mut extended) = (String::new(), Vec::new());
+        for (index, &character) in replacement.iter().enumerate() {
+            push_buffer_character(&mut text, &mut extended, index, character, multibyte);
+        }
+        interp.replace_range_current_buffer(
+            from,
+            to,
+            &text,
+            &extended,
+            crate::buffer::InsertedProperties::PLAIN,
+        );
         Ok((
             Some(AfterChange::new(from, to - from, replacement.len())),
             (),
         ))
     })
-}
-
-fn replace_characters_unsignalled(
-    interp: &mut Interpreter,
-    from: usize,
-    to: usize,
-    replacement: &[u32],
-) -> Result<(), LispError> {
-    let multibyte = interp.buffer.borrow().is_multibyte();
-    let mut text = String::new();
-    let mut extended_chars = Vec::new();
-    for (index, &character) in replacement.iter().enumerate() {
-        push_buffer_character(&mut text, &mut extended_chars, index, character, multibyte);
-    }
-    let point = interp.buffer.borrow().point();
-    interp
-        .delete_region_current_buffer_unreturned(from, to)
-        .map_err(|e| LispError::Signal(e.to_string()))?;
-    interp.buffer.borrow_mut().goto_char(from);
-    interp.insert_current_buffer(&text);
-    interp.set_inserted_extended_chars(from, &extended_chars);
-    let inserted = replacement.len();
-    let point = if point >= to {
-        point + inserted - (to - from)
-    } else if point > from {
-        from
-    } else {
-        point
-    };
-    interp.buffer.borrow_mut().goto_char(point);
-    Ok(())
 }
 
 fn translation_characters(value: &Value) -> Option<Vec<u32>> {

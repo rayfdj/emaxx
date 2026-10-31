@@ -10135,6 +10135,44 @@ setup_process_coding_systems's check now refuses). A 13-form
   Local validation: the grouped gate's 3,353 library tests, the
   seven integration suites, clippy with every target and feature,
   rustfmt and `git diff --check'.
+- **Round 192: edits in place reach the whole indirect family, and
+  translate-region as Ftranslate_region_internal.** An indirect buffer's
+  text is a copy kept in step by mirroring each insertion, deletion and
+  property change, but the edits made where the text stands (casing,
+  subst-char-in-region, translate-region's same-size characters,
+  transpose-regions) reached only the buffer they were made in, and
+  their counts were not shared: after `(upcase-region 1 4)' in the base,
+  the indirect buffer still read "bc" and an older modified tick. Each now
+  hands the rest of the family the changed span and the whole intervals
+  (Interpreter::mirror_in_place_edit_to_related_buffers,
+  Buffer::mirror_in_place_edit) and shares the counts; the other
+  members' point, bounds, mark and markers keep their character
+  positions, as the markers they are in GNU do across an edit in place
+  and replace_range_2 (so a casing that lengthens the base's text leaves
+  the indirect buffer's ZV where it was), and transpose-regions moves
+  them by transpose_markers unless LEAVE-MARKERS (an indirect buffer
+  whose BEGV lay in the first region gets it moved into the second).
+  translate-region now runs modify_text over its region before
+  translating (the buffer modified and the change counted once, as GNU
+  counts it, even when nothing translates); compares a unibyte table's
+  byte with the character before it stands for a raw byte (ß mapped to
+  its own code 223 stays, where Emaxx made it raw byte 223 and split its
+  interval); records and writes a same-size translation where it stands,
+  a raw byte or a character beyond Unicode included, its properties kept;
+  and makes a longer one through replace_range_current_buffer, whose
+  insertion is recorded before its deletion and whose markers move as
+  replace_range's do, where a deletion and an insertion recorded them the
+  other way round. A battery of seven edits of a family (the base and an
+  indirect buffer narrowed, with a marker in each: text, point, bounds,
+  modified tick and intervals of both) and of eight translations (four
+  tables over a multibyte and a unibyte buffer: result, codes,
+  intervals, point, marker, modified flag, tick, undo list and
+  after-change calls) reads as GNU's. buffer-tests, editfns-tests,
+  casefiddle-tests, undo-tests, simple-tests, textprop-tests,
+  subr-x-tests and subr-tests pass as many tests as GNU's. Local
+  validation: the grouped gate's 3,355 library tests, the seven
+  integration suites, clippy with every target and feature, rustfmt and
+  `git diff --check'.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -11380,6 +11418,16 @@ frozen (run 41156318687) matched all 7,928 outcomes on its first
 attempt. Setup 82.0 s against 67.8 s (1.209), test bodies 258.7 s
 against 268.8 s (0.962), in all 0.998; undo-tests' bodies 1.14 s against
 0.91 s.
+
+**On `dda5af3`** (round 191): full Rust gate passed (run 41159069975).
+Frozen (run 41159072238) matched all 7,928 outcomes on its second
+attempt; the first matched 7,927, the other,
+`eglot-test-rust-completion-exit-function', ending in GNU's run with a
+`jsonrpc-error' from the language server while Emaxx's passed. The
+second attempt had setup 75.1 s against 62.0 s (1.212), test bodies
+248.9 s against 258.4 s (0.963), in all 1.000; undo-tests' bodies 1.11 s
+against 0.86 s (the first: 80.9 s against 67.1 s, 257.1 s against
+271.3 s, 0.985).
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'
