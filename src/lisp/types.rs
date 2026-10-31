@@ -515,7 +515,7 @@ impl SymbolName {
         })
     }
 
-    /// A symbol of a private obarray or an abbrev table, by its marked key.
+    /// A symbol of a private obarray, by its marked key.
     fn intern_private(text: String, lisp_name: Option<Value>) -> Self {
         symbols::with_private_names_mut(|names| {
             if let Some(name) = names.get(text.as_str()) {
@@ -2430,8 +2430,8 @@ pub(crate) fn is_uninterned_symbol(symbol: &str) -> bool {
     symbol.contains(UNINTERNED_SYMBOL_MARKER_CHAR)
 }
 
-/// A symbol interned in a private obarray (or an abbrev table): its own
-/// object, whose Lisp name can equal an initial-obarray symbol's.
+/// A symbol interned in a private obarray: its own object, whose Lisp
+/// name can equal an initial-obarray symbol's.
 pub(crate) fn is_private_obarray_symbol(symbol: &str) -> bool {
     symbol.contains(OBARRAY_SYMBOL_MARKER)
 }

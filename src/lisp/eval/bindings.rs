@@ -468,6 +468,7 @@ impl Interpreter {
             | "indicate-buffer-boundaries"
             | "indicate-empty-lines"
             | "left-fringe-width"
+            | "local-abbrev-table"
             | "local-minor-modes"
             | "point-before-scroll"
             | "right-fringe-width"

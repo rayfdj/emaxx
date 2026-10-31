@@ -1027,23 +1027,6 @@ fn nreverse_list_cells(value: &Value) -> Result<Value, LispError> {
     Ok(prev)
 }
 
-/// A property list's pairs: any object names a property, as textprop.c
-/// takes each plist's names as they are.
-pub(crate) fn plist_pairs(value: &Value) -> Result<Vec<(PropertyName, Value)>, LispError> {
-    let items = value.to_vec()?;
-    let mut props = Vec::new();
-    let mut i = 0;
-    while i + 1 < items.len() {
-        props.push((PropertyName::new(items[i]), items[i + 1]));
-        i += 2;
-    }
-    Ok(props)
-}
-
-pub(crate) fn plist_value(props: &[(PropertyName, Value)]) -> Value {
-    Value::list(props.iter().flat_map(|(key, value)| [key.value(), *value]))
-}
-
 /// textprop.c:Fobject_intervals: each interval of a string or buffer as
 /// (START END PLIST), counted from 0 as traverse_intervals counts them,
 /// PLIST the interval's own; nil for an object without intervals.

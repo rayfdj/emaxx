@@ -1188,10 +1188,6 @@ impl Interpreter {
         self.globals.plist(symbol)
     }
 
-    pub fn set_symbol_plist(&mut self, name: &str, plist: Value) -> Result<Value, LispError> {
-        self.set_symbol_plist_symbol(&SymbolName::intern_str(name), plist)
-    }
-
     pub(crate) fn set_symbol_plist_symbol(
         &mut self,
         symbol: &SymbolName,

@@ -1050,6 +1050,27 @@ fn a_loaded_image_interns_no_symbol_of_its_own_bookkeeping() {
     );
 }
 
+#[test]
+fn the_standard_abbrev_tables_are_the_obarrays_abbrev_el_makes() {
+    // abbrev.el and text-mode.el define them while loadup runs, as
+    // make-abbrev-table obarrays holding their properties on the "" symbol,
+    // in the order abbrev-table-name-list then has.
+    let program = r#"(prin1 (list (intern-soft "abbrev-table") (last abbrev-table-name-list 2) (length (memq 'text-mode-abbrev-table abbrev-table-name-list)) (type-of text-mode-abbrev-table) (let ((p (symbol-plist 'text-mode-abbrev-table)) r) (while p (push (car p) r) (setq p (cddr p))) (nreverse r)) (get 'text-mode-abbrev-table 'definition-name) (abbrev-table-get global-abbrev-table :abbrev-table-modiff) (let ((n 0)) (obarray-map (lambda (_) (setq n (1+ n))) global-abbrev-table) n) (prin1-to-string fundamental-mode-abbrev-table)))"#;
+    let output = Command::new(common::emaxx(false))
+        .args(["--quick", "--batch", "--eval", program])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "emaxx --eval failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "(nil (fundamental-mode-abbrev-table global-abbrev-table) 15 obarray (definition-name variable-documentation) text-mode 0 1 \"#<obarray n=1>\")"
+    );
+}
+
 /// GNU's batch stdout is C stdio, block-buffered when it is a pipe or a
 /// file; stderr is unbuffered.  A child whose two streams feed one
 /// descriptor -- what `call-process' with a merged DESTINATION captures --

@@ -10804,6 +10804,27 @@ setup_process_coding_systems's check now refuses). A 13-form
   the image template, as the CI runs it. Local validation: the grouped
   gate's 3391 library tests, the integration targets and clippy
   with `--all-targets --all-features -D warnings' pass.
+- **Round 211: the standard abbrev tables as abbrev.el makes them.**
+  Emaxx bound `fundamental-mode-abbrev-table', `global-abbrev-table' and
+  `text-mode-abbrev-table' at construction (and again when `abbrev' was
+  provided) to records of a type `abbrev-table' of its own, which interned
+  that symbol, carried their entries as a list beside a property list, and
+  had cases of their own in `obarray-clear', the bucket walk and
+  `intern'. abbrev.el's `defvar's then kept them, `define-derived-mode'
+  (which puts `definition-name' only on an abbrev table it defines) left
+  `text-mode-abbrev-table' without one, and `abbrev-table-name-list'
+  listed the three in an order GNU's loadup never makes. The records and
+  every case for them are removed, with the plist helpers only they used:
+  the tables are the `make-abbrev-table' obarrays abbrev.el and
+  text-mode.el define while loadup runs, holding their properties on the
+  "" symbol, and the obarray census counts obarrays alone.
+  `local-abbrev-table' starts nil, as buffer.c's `buffer_defaults' has
+  it, until abbrev.el's `setq-default' gives it the fundamental-mode
+  table (the construction-time binding had hidden that). An oracle test
+  pins the loaded image's tables, their order, plist, modiff and printed
+  form against GNU's. Local validation: the grouped gate's 3,391
+  library tests, the integration targets and clippy with
+  `--all-targets --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -12177,6 +12198,12 @@ obarray in another order (`mapatoms' met `tab-switcher-unmark' first
 where the template met `eval-print-last-sexp'), because the loader filed
 the symbols in the order it read their cells. Round 209's plists moved
 that order; round 210 restores the dumped buckets.
+
+**On `025a240`** (round 210): the full Rust gate (run 41232204392)
+passed, the image round-trip of an image-started interpreter included,
+and frozen (run 41232206605) matched all 7,928 outcomes on the first
+attempt: setup 87.2 s against 72.5 s (1.202), test bodies 265.5 s
+against 279.1 s (0.951), in all 0.998.
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

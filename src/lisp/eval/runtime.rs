@@ -1974,9 +1974,6 @@ impl Interpreter {
                     .map(|value| Value::Symbol(value.into())),
             ),
         );
-        if feature == "abbrev" {
-            primitives::ensure_standard_abbrev_tables(self);
-        }
     }
 
     fn record_provide_in_load_history(&mut self, feature: &str) {

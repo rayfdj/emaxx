@@ -2973,7 +2973,7 @@ pub(crate) fn symbol_flags_word(
         SYMBOL_UNINTERNED
     } else if crate::lisp::types::is_private_obarray_symbol(symbol.as_str()) {
         // lisp.h: interned in some other obarray -- a private obarray's
-        // or an abbrev table's own symbol object.
+        // own symbol object.
         SYMBOL_INTERNED
     } else {
         SYMBOL_INTERNED_IN_INITIAL_OBARRAY

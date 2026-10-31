@@ -13,9 +13,9 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::rc::Rc;
 
-/// Not GNU: the symbols of private obarrays and abbrev tables by their
-/// host keys, which carry the obarray's mark (see `make_obarray_symbol_name');
-/// a name-keyed caller finds them here, and they are roots, as they were
+/// Not GNU: the symbols of private obarrays by their host keys, which
+/// carry the obarray's mark (see `make_obarray_symbol_name'); a
+/// name-keyed caller finds them here, and they are roots, as they were
 /// when one table held every interned key.
 type PrivateNames = HashSet<NameEntry, ObarrayBuildHasher>;
 /// Host text's address with its length in the high bits a user-space

@@ -6238,7 +6238,7 @@ fn ordered_global_and_property_indexes_survive_middle_removal() {
 
     interp.remove_global_binding("emaxx-index-b");
     interp
-        .set_symbol_plist("emaxx-index-b", Value::Nil)
+        .set_symbol_plist_symbol(&SymbolName::intern_str("emaxx-index-b"), Value::Nil)
         .unwrap();
 
     assert_eq!(

@@ -4838,21 +4838,18 @@ impl Interpreter {
 
     fn gnu_hash_storage_bytes(&self, symbol_count: usize) -> usize {
         let mut bytes = crate::lisp::alloc::vectors::hash_tables::live_array_bytes();
-        // The obarray-kind records are the obarrays and the abbrev tables:
-        // the census, which runs after every collection, finds them by type
-        // in the index rather than by a walk of the whole registry.
-        let obarray_ids = [
-            crate::lisp::primitives::OBARRAY_RECORD_TYPE,
-            crate::lisp::primitives::ABBREV_TABLE_RECORD_TYPE,
-        ]
-        .into_iter()
-        .filter_map(|type_name| self.record_ids_by_type_index.get(type_name))
-        .flatten()
-        .copied()
-        .filter(|&id| {
-            self.record_ref(id)
-                .is_some_and(|record| record.kind == RecordKind::Obarray)
-        });
+        // The census, which runs after every collection, finds the obarrays
+        // by type in the index rather than by a walk of the whole registry.
+        let obarray_ids = self
+            .record_ids_by_type_index
+            .get(crate::lisp::primitives::OBARRAY_RECORD_TYPE)
+            .into_iter()
+            .flatten()
+            .copied()
+            .filter(|&id| {
+                self.record_ref(id)
+                    .is_some_and(|record| record.kind == RecordKind::Obarray)
+            });
         let mut obarrays = 0_usize;
         for id in obarray_ids {
             obarrays += 1;
@@ -4863,8 +4860,8 @@ impl Interpreter {
                 }
                 capacity
             } else {
-                // A private obarray's buckets; an abbrev table keeps
-                // lread.c's obarray_default_bits.
+                // A private obarray's buckets, or lread.c's
+                // obarray_default_bits.
                 self.record_ref(id)
                     .filter(|record| crate::lisp::types::obarray::is_record_slots(&record.slots))
                     .map_or(1_usize << 3, |record| record.slots.len() - 2)
@@ -4877,7 +4874,7 @@ impl Interpreter {
                 .values()
                 .filter(|record| record.kind == RecordKind::Obarray)
                 .count(),
-            "an obarray-kind record is outside the obarray and abbrev-table types"
+            "an obarray-kind record is outside the obarray type"
         );
         bytes
     }
@@ -7189,7 +7186,6 @@ impl Interpreter {
             "minor-mode-list",
             Value::list([Value::Symbol("visual-line-mode".into())]),
         );
-        primitives::ensure_standard_abbrev_tables(&mut interp);
         interp.define_per_buffer_special("visual-line-mode", Value::Nil);
         for hook in [
             "visual-line-mode-hook",
