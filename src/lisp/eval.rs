@@ -4185,6 +4185,20 @@ impl Interpreter {
             .unwrap_or_default()
     }
 
+    /// The buffer's `local_var_alist' alone: its local bindings but the
+    /// always-local slots it was made with (struct buffer's fields).
+    pub(crate) fn buffer_alist_cells(&self, id: u64) -> Vec<(SymbolName, Value)> {
+        self.buffer_locals
+            .get(&id)
+            .map(|cells| {
+                cells
+                    .alist_iter()
+                    .map(|(symbol, value)| (*symbol, value))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// The buffer's local hook lists (GNU: the local bindings of the
     /// hook variables), in first-binding order.
     pub(crate) fn buffer_local_hook_lists(&self, id: u64) -> Vec<(String, Vec<Value>)> {

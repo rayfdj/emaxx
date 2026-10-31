@@ -210,6 +210,7 @@ const KEY_NAMES: &[&str] = &[
     "buffer-access-fontify-functions",
     "buffer-access-fontified-property",
     "buffer-saved-size",
+    "buffer-undo-list",
     "search-spaces-regexp",
     "unicode-category-table",
     "char-script-table",

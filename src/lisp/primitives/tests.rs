@@ -33003,6 +33003,21 @@ fn kill_all_local_variables_keeps_partially_permanent_hooks_as_buffer_c() {
 }
 
 #[test]
+fn buffer_local_value_and_mode_reset_read_variables_by_symbol_as_data_c() {
+    // data.c:Fbuffer_local_value checks VARIABLE with CHECK_SYMBOL (a
+    // symbol with position counts while symbols-with-pos-enabled), follows
+    // its alias chain and reads BUFFER's binding or the default;
+    // reset_buffer_local_variables keeps the always-local slots (but the
+    // three it assigns) and the permanent locals, and a full reset only
+    // the slots.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list (let ((symbols-with-pos-enabled t)) (buffer-local-value (position-symbol 'fill-column 5) (current-buffer))) (with-temp-buffer (setq-local fill-column 33) (let ((b (current-buffer))) (with-temp-buffer (list (buffer-local-value 'fill-column b) (buffer-local-value 'fill-column (current-buffer)))))) (progn (defvaralias 'zz-blv-alias 'fill-column) (with-temp-buffer (setq fill-column 41) (buffer-local-value 'zz-blv-alias (current-buffer)))) (with-temp-buffer (setq buffer-read-only t) (setq-local zz-perm 1) (put 'zz-perm 'permanent-local t) (setq-local zz-tmp 2) (setq fill-column 12) (setq major-mode 'text-mode mode-name "Text") (setq buffer-invisibility-spec '(a)) (kill-all-local-variables) (list buffer-read-only (local-variable-p 'zz-perm) zz-perm (local-variable-p 'zz-tmp) (local-variable-p 'fill-column) fill-column major-mode mode-name buffer-invisibility-spec (local-variable-p 'buffer-read-only))) (with-temp-buffer (setq-local zz-perm2 1) (put 'zz-perm2 'permanent-local t) (setq buffer-read-only t) (kill-all-local-variables t) (list (local-variable-p 'zz-perm2) buffer-read-only)))"##,
+        r##"(70 (33 70) 41 (t t 1 nil nil 70 fundamental-mode "Fundamental" t t) (nil t))"##,
+        "buffer-local-value and kill-all-local-variables",
+    );
+}
+
+#[test]
 fn the_initial_obarray_holds_only_the_symbols_gnu_makes_at_startup() {
     // lread.c:define_symbol interns every DEFSYM but Qunbound, and
     // syms_of_eval, syms_of_editfns and syms_of_print unintern their own

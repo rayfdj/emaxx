@@ -1397,11 +1397,17 @@ define_dispatch!(
                 // DEFVAR_PER_BUFFER slots are reset directly: an index -1
                 // slot is kept (but for the three assigned below), an
                 // indexed one returns to its default unless
-                // buffer_permanent_local_flags keeps it.
-                let locals = interp.buffer_local_cells(buffer_id);
+                // buffer_permanent_local_flags keeps it.  The always-local
+                // slots a buffer is made with stay where they are, so the
+                // walk is of the other bindings.
+                let locals = interp.buffer_alist_cells(buffer_id);
                 let mut permanent = Vec::new();
                 for (name, value) in &locals {
-                    if let Some(slot) = crate::lisp::eval::native_per_buffer_slot(name.as_str()) {
+                    if let Some(slot) = interp
+                        .is_per_buffer_symbol(name)
+                        .then(|| crate::lisp::eval::native_per_buffer_slot(name.as_str()))
+                        .flatten()
+                    {
                         if slot.always_local || (slot.permanent && !kill_permanent) {
                             permanent.push((*name, *value));
                         } else {

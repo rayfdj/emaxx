@@ -10825,6 +10825,36 @@ setup_process_coding_systems's check now refuses). A 13-form
   form against GNU's. Local validation: the grouped gate's 3,391
   library tests, the integration targets and clippy with
   `--all-targets --all-features -D warnings' pass.
+- **Round 212: `kill-all-local-variables' and `buffer-local-value' by
+  symbol.** Every major mode's `kill-all-local-variables' looked each of
+  the buffer's bindings up in the per-buffer table by name (a linear
+  search with string compares), the fourteen always-local slots a buffer
+  is made with among them, and then stored every such slot back over
+  itself after the reset; the reset also recounted the evaluator cells
+  among those slots, which never hold one. In a buffer with no locals of
+  its own a call cost some 8,000 instructions against the few hundred of
+  reset_buffer_local_variables; it now walks the local_var_alist alone (the fixed slots stay where they are), asks the
+  table only about a symbol flagged as a per-buffer slot (the check
+  `kill-local-variable' already makes) and leaves the count at zero, so
+  `(with-temp-buffer (kill-all-local-variables))' runs 18,926
+  instructions against GNU's 19,390 (with-temp-buffer alone 16,933
+  against 17,931). `buffer-local-value' copied its variable's resolved
+  name, compared it as text and read the binding by name; it now checks
+  VARIABLE as CHECK_SYMBOL does, so a symbol with position is accepted
+  while `symbols-with-pos-enabled' (GNU answers the value where Emaxx
+  signalled), and reads by the symbol: 837 instructions a call in a
+  compiled loop where it took 1,469 (GNU 581). Measured but not changed:
+  `run-mode-hooks' costs 11,400 instructions beyond with-temp-buffer
+  against GNU's 4,700, spread over the buffer-local reads and the
+  bindings the `defvar-local' stores make (about 100 instructions a read
+  missing the loaded binding, where GNU's swap_in walks a short alist),
+  and the instruction-cache misses of a with-temp-buffer are 1,230
+  against GNU's 217 at fewer instructions, the code-footprint gap
+  recorded before. An oracle test pins the symbol-with-position read,
+  the alias, another buffer's local and the slots and permanent locals a
+  reset and a full reset keep. Local validation: the grouped gate's
+  3,392 library tests, the integration targets and clippy with
+  `--all-targets --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -12204,6 +12234,11 @@ passed, the image round-trip of an image-started interpreter included,
 and frozen (run 41232206605) matched all 7,928 outcomes on the first
 attempt: setup 87.2 s against 72.5 s (1.202), test bodies 265.5 s
 against 279.1 s (0.951), in all 0.998.
+
+**On `300ef8c`** (round 211): the full Rust gate (run 41237897509)
+passed, and frozen (run 41237900069) matched all 7,928 outcomes on the
+first attempt: setup 62.8 s against 53.2 s (1.180), test bodies 220.3 s
+against 236.9 s (0.930), in all 0.996.
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

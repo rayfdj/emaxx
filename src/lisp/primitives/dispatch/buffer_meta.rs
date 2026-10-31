@@ -573,19 +573,22 @@ define_dispatch!(
             }
             "buffer-local-value" => {
                 need_args(name, args, 2)?;
-                let symbol = interp.resolve_variable_name(args[0].as_symbol()?)?;
-                // data.c:buffer_local_value: CHECK_BUFFER; a killed buffer
-                // has no locals left and an empty history.
+                // data.c:buffer_local_value: CHECK_SYMBOL, the alias chain's
+                // end by its symbols, CHECK_BUFFER; a killed buffer has no
+                // locals left and an empty history.
+                let symbol = interp
+                    .resolve_variable_symbol(&checked_symbol_identity(interp, &args[0], env)?)?;
                 let Kind::Buffer(buffer) = args[1].kind() else {
                     return Err(LispError::WrongTypeArgument("bufferp".into(), args[1]));
                 };
+                let undo_list = cached_symbol!("buffer-undo-list").with(|undo| symbol == *undo);
                 if interp.live_buffer_id(buffer).is_none() {
                     let killed = interp
                         .killed_buffer_local_slots(&buffer.borrow())
                         .into_iter()
                         .find(|(name, _)| *name == symbol.as_str())
                         .map(|(_, value)| value);
-                    let value = if symbol == "buffer-undo-list" {
+                    let value = if undo_list {
                         Some(crate::lisp::primitives::buffer_undo_list_value(
                             &buffer.borrow(),
                         ))
@@ -593,8 +596,8 @@ define_dispatch!(
                         (!matches!(value.kind(), Kind::Unbound)).then_some(value)
                     } else {
                         interp
-                            .default_value(&symbol)
-                            .or_else(|| interp.symbol_value_cell(&symbol).ok())
+                            .default_value_symbol(&symbol)?
+                            .or_else(|| interp.symbol_value_cell_symbol(&symbol).ok())
                     };
                     return value.ok_or_else(|| {
                         LispError::SignalValue(Value::list([
@@ -609,23 +612,20 @@ define_dispatch!(
                 // buffer's local value must not leak through (erc-open's
                 // prior-session detection reads `erc--target').  Fbuffer_local_value
                 // signals void-variable with VARIABLE as given.
-                let value = if interp.has_native_text_conversion_style(&symbol) {
-                    interp.buffer_local_value(buffer_id, &symbol)
-                } else if symbol == "buffer-undo-list"
-                    && crate::lisp::types::SymbolName::find(&symbol)
-                        .is_some_and(|symbol| symbol.cell().has_c_slot())
-                {
+                let value = if interp.has_native_text_conversion_style(symbol.as_str()) {
+                    interp.buffer_local_value(buffer_id, symbol.as_str())
+                } else if undo_list && symbol.cell().has_c_slot() {
                     // BVAR (b, undo_list): BUFFER's own history, t while
                     // it keeps none, held by the buffer and not its locals.
                     interp
                         .get_buffer_by_id(buffer_id)
                         .map(|buffer| crate::lisp::primitives::buffer_undo_list_value(&buffer))
                 } else {
-                    match interp.buffer_local_binding(buffer_id, &symbol) {
+                    match interp.buffer_local_binding_symbol(buffer_id, &symbol) {
                         Some(local) => local,
                         None => interp
-                            .default_value(&symbol)
-                            .or_else(|| interp.symbol_value_cell(&symbol).ok()),
+                            .default_value_symbol(&symbol)?
+                            .or_else(|| interp.symbol_value_cell_symbol(&symbol).ok()),
                     }
                 };
                 value.ok_or_else(|| {
