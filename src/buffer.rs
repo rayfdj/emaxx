@@ -1736,21 +1736,12 @@ impl Buffer {
         Some(low)
     }
 
-    /// The characters `buffer_substring' returns for [FROM, TO), read from
-    /// the text's halves in place.
-    pub fn substring_chars(
-        &self,
-        from: usize,
-        to: usize,
-    ) -> Result<impl Iterator<Item = char> + '_, BufferError> {
-        let (from, to) = if from <= to { (from, to) } else { (to, from) };
-        let from = from.max(self.begv);
-        let to = to.min(self.zv);
-        if from > to {
-            return Err(BufferError::InvalidPosition(from));
-        }
-        let (first, second) = self.text.range_halves(from - 1..to - 1);
-        Ok(first.chars().chain(second.chars()))
+    /// The text from 1-based FROM to Z as it stands, the part before the
+    /// gap and the part after: FROM's byte offset is the one conversion,
+    /// as a scan from FROM converts only where it starts.
+    pub(crate) fn text_from(&self, from: usize) -> (&str, &str) {
+        let start = self.text.char_to_byte(from - 1);
+        self.text.text.range_halves(start..self.text.len_bytes())
     }
 
     /// The byte offsets in the text of positions FROM and TO (1-based).
@@ -1771,24 +1762,6 @@ impl Buffer {
     /// a scan that counted both finds it (GNU keeps PT_BYTE with PT).
     pub(crate) fn note_position(&self, pos: usize, byte: usize) {
         self.text.note_position(pos - 1, byte);
-    }
-
-    /// [FROM, TO) (1-based) of an ASCII text as a slice of the half of the
-    /// text holding it, so nothing is decoded; None when the text has a
-    /// multibyte character or the range crosses the gap.
-    pub(crate) fn ascii_chunk_range(&self, from: usize, to: usize) -> Option<&str> {
-        if self.text.len_bytes() != self.text.len_chars() || from == 0 || from > to {
-            return None;
-        }
-        let (start, end) = (from - 1, to - 1);
-        if end > self.text.len_bytes() {
-            return None;
-        }
-        if start == end {
-            return Some("");
-        }
-        let (chunk, chunk_start, _) = self.text.chunk_at_byte(start);
-        chunk.get(start - chunk_start..end - chunk_start)
     }
 
     /// Get a substring. Positions are 1-based, range is [from, to).

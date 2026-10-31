@@ -1542,34 +1542,6 @@ pub(crate) fn invisibility_level(interp: &Interpreter, value: &Value, env: &Env)
     super::invisibility::text_prop_means_invisible(*value, spec)
 }
 
-pub(crate) fn compare_buffer_substrings(
-    mut left_chars: impl Iterator<Item = char>,
-    mut right_chars: impl Iterator<Item = char>,
-    mut canonicalize: impl FnMut(char) -> u32,
-) -> i64 {
-    let mut matched = 0i64;
-
-    loop {
-        match (left_chars.next(), right_chars.next()) {
-            (Some(left), Some(right)) => {
-                let left = canonicalize(left);
-                let right = canonicalize(right);
-                if left != right {
-                    return if left < right {
-                        -matched - 1
-                    } else {
-                        matched + 1
-                    };
-                }
-                matched += 1;
-            }
-            (Some(_), None) => return matched + 1,
-            (None, Some(_)) => return -matched - 1,
-            (None, None) => return 0,
-        }
-    }
-}
-
 pub(crate) fn prefix_numeric_value(value: &Value) -> Result<Value, LispError> {
     Ok(match value.kind() {
         Kind::Nil => Value::Integer(1),

@@ -36,12 +36,12 @@ fn coding_charset_list_is_ascii_compatible(interp: &Interpreter, value: &Value) 
 /// One `compare-buffer-substrings' operand: its buffer and ordered bounds,
 /// nil bounds meaning the buffer's accessible region. editfns.c signals
 /// `args-out-of-range' with the original bounds for a range outside it.
-fn comparison_range<'a>(
-    interp: &'a Interpreter,
+fn comparison_range(
+    interp: &Interpreter,
     buffer: &Value,
     start: &Value,
     end: &Value,
-) -> Result<(std::cell::Ref<'a, crate::buffer::Buffer>, usize, usize), LispError> {
+) -> Result<(u64, usize, usize), LispError> {
     // Fget_buffer and nsberror, then the buffer's liveness.
     let buffer_id = if buffer.is_nil() {
         interp.current_buffer_id()
@@ -72,7 +72,104 @@ fn comparison_range<'a>(
             *end,
         ])));
     }
-    Ok((buffer, from, to))
+    Ok((buffer_id, from, to))
+}
+
+/// The characters of BUFFER from FROM on, as BUF_FETCH_MULTIBYTE_CHAR
+/// reads a multibyte buffer's and make_char_multibyte makes a unibyte
+/// buffer's bytes characters.
+fn char_codes_from(buffer: &crate::buffer::Buffer, from: usize) -> impl Iterator<Item = u32> + '_ {
+    use crate::lisp::primitives::case::{RAW_BYTE8_BASE, public_buffer_char_code};
+    let (first, second) = buffer.text_from(from);
+    let multibyte = buffer.is_multibyte();
+    first
+        .chars()
+        .chain(second.chars())
+        .zip(from..)
+        .map(move |(ch, position)| {
+            if ch == crate::lisp::regex_emacs::EXTENDED_PLACEHOLDER
+                && let Some(code) = buffer.extended_char_at(position)
+            {
+                return code;
+            }
+            let code = public_buffer_char_code(ch, multibyte) as u32;
+            if multibyte || code < 0x80 {
+                code
+            } else {
+                code + RAW_BYTE8_BASE
+            }
+        })
+}
+
+/// editfns.c:Fcompare_buffer_substrings: the ranges' characters compared
+/// from their starts, each start's byte position the one conversion, to
+/// the first that differs once `case-fold-search' translates both through
+/// the current buffer's case_canon_table (even when neither range is in
+/// it); the buffers are let go at each 65536th character for rarely_quit.
+fn compare_buffer_substrings(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    let trt = interp
+        .case_fold_search_active()
+        .then(|| interp.current_case_tables().canon);
+    let (buffer1, begp1, endp1) = comparison_range(interp, &args[0], &args[1], &args[2])?;
+    let (buffer2, begp2, endp2) = comparison_range(interp, &args[3], &args[4], &args[5])?;
+    // char_table_translate: the entry when it is a character, else C.
+    let translate = |c: u32| match trt {
+        Some(table) => table
+            .get(c)
+            .fixnum()
+            .filter(|code| (0..=i64::from(crate::lisp::regex_emacs::MAX_CHAR)).contains(code))
+            .map_or(c, |code| code as u32),
+        None => c,
+    };
+    let (length1, length2) = (endp1 - begp1, endp2 - begp2);
+    let limit = length1.min(length2);
+    let mut chars = 0usize;
+    while chars < limit {
+        let stretch_end = limit.min((chars | 0xFFFF) + 1);
+        let differ = {
+            let live = |id: u64| {
+                interp
+                    .get_buffer_by_id(id)
+                    .ok_or_else(|| LispError::Signal("Selecting deleted buffer".into()))
+            };
+            let (left, right) = (live(buffer1)?, live(buffer2)?);
+            let mut codes1 = char_codes_from(&left, begp1 + chars);
+            let mut codes2 = char_codes_from(&right, begp2 + chars);
+            let mut differ = None;
+            while chars < stretch_end {
+                let (Some(c1), Some(c2)) = (codes1.next(), codes2.next()) else {
+                    break;
+                };
+                let (c1, c2) = (translate(c1), translate(c2));
+                if c1 != c2 {
+                    differ = Some(c1 < c2);
+                    break;
+                }
+                chars += 1;
+            }
+            differ
+        };
+        let matched = chars as i64;
+        match differ {
+            Some(true) => return Ok(Value::Integer(-1 - matched)),
+            Some(false) => return Ok(Value::Integer(matched + 1)),
+            None if chars & 0xFFFF == 0 => interp.maybe_quit(env)?,
+            None => {}
+        }
+    }
+    // The strings match as far as they go; a shorter one is less.
+    let matched = chars as i64;
+    Ok(Value::Integer(if chars < length1 {
+        matched + 1
+    } else if chars < length2 {
+        -matched - 1
+    } else {
+        0
+    }))
 }
 
 define_dispatch!(
@@ -89,53 +186,7 @@ define_dispatch!(
             }
             "compare-buffer-substrings" => {
                 need_args(name, args, 6)?;
-                // GNU editfns.c consults `case-fold-search' and the
-                // case_canon_table of the current buffer, even when either
-                // substring belongs to another buffer.
-                let canonical_table = interp
-                    .case_fold_search_active()
-                    .then(|| interp.current_case_tables().canon);
-                // Both operands are read in place, as editfns.c reads the
-                // buffer text; neither is copied.
-                let interp = &*interp;
-                let substring_error =
-                    |error: crate::buffer::BufferError| LispError::Signal(error.to_string());
-                let (left_buffer, left_start, left_end) =
-                    comparison_range(interp, &args[0], &args[1], &args[2])?;
-                let (right_buffer, right_start, right_end) =
-                    comparison_range(interp, &args[3], &args[4], &args[5])?;
-                // Two ASCII ranges, each on one side of its buffer's gap, are
-                // compared as bytes; a byte is its character there.
-                if canonical_table.is_none()
-                    && let Some(left) = left_buffer.ascii_chunk_range(left_start, left_end)
-                    && let Some(right) = right_buffer.ascii_chunk_range(right_start, right_end)
-                {
-                    return Ok(Value::Integer(compare_buffer_substrings(
-                        left.bytes().map(char::from),
-                        right.bytes().map(char::from),
-                        |character| character as u32,
-                    )));
-                }
-                let left = left_buffer
-                    .substring_chars(left_start, left_end)
-                    .map_err(substring_error)?;
-                let right = right_buffer
-                    .substring_chars(right_start, right_end)
-                    .map_err(substring_error)?;
-                Ok(Value::Integer(compare_buffer_substrings(
-                    left,
-                    right,
-                    |character| {
-                        let code = character as u32;
-                        let Some(table) = canonical_table else {
-                            return code;
-                        };
-                        match interp.char_table_get(table, code).map(|v| v.kind()) {
-                            Some(Kind::Integer(mapped)) => u32::try_from(mapped).unwrap_or(code),
-                            _ => code,
-                        }
-                    },
-                )))
+                compare_buffer_substrings(interp, args, env)
             }
             "field-beginning" | "field-end" => {
                 need_arg_range(name, args, 0, 3)?;

@@ -10647,6 +10647,28 @@ setup_process_coding_systems's check now refuses). A 13-form
   the pdump round trip carries it. Local validation: the grouped gate's
   3,383 library tests, the integration targets and clippy with
   `--all-targets --all-features -D warnings' pass.
+- **Round 205: compare-buffer-substrings as editfns.c compares.**
+  compare-buffer-substrings compared the stored Rust characters of its
+  ranges, so a raw byte (stored as a private-use character) ordered below
+  an emoji, and a character past #x10FFFF (stored as a placeholder) by the
+  placeholder; and it converted both ends of both ranges on every call,
+  which sort-lines makes once per comparison. It is now
+  Fcompare_buffer_substrings: the starts' byte positions are the only
+  conversions, each character is read as BUF_FETCH_MULTIBYTE_CHAR reads it
+  (a unibyte buffer's bytes made characters by make_char_multibyte),
+  `case-fold-search' translates both through the current buffer's
+  case_canon_table by char_table_translate, the walk stops at the first
+  difference, and the buffers are let go at each 65536th character for
+  rarely_quit. sort-lines over simple.el and subr.el takes 863 M
+  instructions where it took 1,024 M (GNU 744 M). A battery of 12 ops
+  (raw bytes, codes past #x10FFFF and emoji in both orders, unibyte
+  against multibyte, case folding of ASCII and Latin-1, prefixes, swapped
+  and empty ranges, out-of-range, missing and killed buffers, a marker
+  bound, narrowing, a 6,000-character prefix, sort-lines over raw bytes
+  and an emoji) matches GNU where two ops did not; an oracle test pins it.
+  Local validation: the grouped gate's 3,384 library tests, the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -11984,6 +12006,11 @@ setup 76.8 s against 61.2 s (1.254), test bodies 248.8 s against 257.5 s
 frozen (run 41203872386) matched all 7,928 outcomes on the first attempt:
 setup 77.7 s against 64.0 s (1.214), test bodies 253.0 s against 262.5 s
 (0.964), in all 0.995.
+
+**On `72427b4`** (round 204): full Rust gate passed (run 41208458712);
+frozen (run 41208461059) matched all 7,928 outcomes on the first attempt:
+setup 58.7 s against 51.4 s (1.143), test bodies 211.9 s against 227.9 s
+(0.930), in all 0.981.
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

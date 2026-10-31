@@ -32953,3 +32953,18 @@ fn category_table_is_a_buffer_slot_as_category_c_keeps_it() {
         "category-table slot",
     );
 }
+
+#[test]
+fn compare_buffer_substrings_compares_character_codes_as_editfns_c() {
+    // Fcompare_buffer_substrings compares the characters' codes from each
+    // range's start: a raw byte (#x3FFF80 and up) orders above every
+    // other character, those past #x10FFFF included, a unibyte buffer's
+    // bytes are make_char_multibyte's characters,
+    // `case-fold-search' translates through case_canon_table, and the
+    // ranges are checked against their buffers' accessible regions.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list (with-temp-buffer (insert "\U0001F600") (insert (string-to-multibyte "\200")) (insert (char-to-string #x3FFFE9)) (insert (char-to-string #x200000)) (insert "a") (list (compare-buffer-substrings nil 1 2 nil 2 3) (compare-buffer-substrings nil 2 3 nil 1 2) (compare-buffer-substrings nil 3 4 nil 4 5) (compare-buffer-substrings nil 4 5 nil 1 2) (compare-buffer-substrings nil 4 5 nil 5 6))) (with-temp-buffer (set-buffer-multibyte nil) (insert "\200a\351") (let ((u (current-buffer))) (with-temp-buffer (insert (string-to-multibyte "\200b") "é") (list (compare-buffer-substrings u 1 3 nil 1 3) (compare-buffer-substrings u 1 2 nil 1 2) (compare-buffer-substrings u 3 4 nil 3 4))))) (with-temp-buffer (insert "abcABC ÉCOLE école") (list (compare-buffer-substrings nil 1 4 nil 4 7) (let ((case-fold-search t)) (list (compare-buffer-substrings nil 1 4 nil 4 7) (compare-buffer-substrings nil 8 13 nil 14 19))) (let ((case-fold-search nil)) (compare-buffer-substrings nil 8 13 nil 14 19)))) (with-temp-buffer (insert "hello world") (list (compare-buffer-substrings nil 1 3 nil 1 6) (compare-buffer-substrings nil 6 1 nil 1 6) (compare-buffer-substrings nil 3 3 nil 5 5) (condition-case e (compare-buffer-substrings nil 1 3 nil 1 99) (error e)))) (let ((s (make-string 3000 ?a))) (with-temp-buffer (insert s "é" s "b") (let ((n (point-max))) (list (compare-buffer-substrings nil 1 3001 nil 3002 (1- n)) (compare-buffer-substrings nil 1 (1- n) nil 1 n))))) (with-temp-buffer (insert "b\U0001F600\nb\200\nb\n") (sort-lines nil (point-min) (point-max)) (append (buffer-string) nil)))"##,
+        r##"((-1 1 1 1 1) (-2 0 1) (0 (0 0) -1) (-3 0 0 (args-out-of-range 1 99)) (0 -6002) (98 10 98 128512 10 98 4194176 10))"##,
+        "compare-buffer-substrings codes",
+    );
+}
