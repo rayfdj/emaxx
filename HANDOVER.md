@@ -10927,6 +10927,36 @@ setup_process_coding_systems's check now refuses). A 13-form
   validation: the grouped gate's 3,394 library tests, the
   integration targets and clippy with `--all-targets --all-features -D
   warnings' pass.
+- **Round 215: readevalloop binds `standard-input' and reads at the
+  buffer's point.** lread.c:readevalloop binds `standard-input' to the
+  buffer it reads, so a form calling `read' takes the text after it, and
+  `eval-buffer' reads each form live at the buffer's point, so a form
+  that moves point, narrows or edits the buffer decides what is read
+  next. Emaxx read every form from a copy of the text taken before
+  evaluating any, left `standard-input' alone (a `read' in a loaded file
+  read stdin in batch) and restored point when `eval-region' ended. A
+  battery of eleven calls (a loaded file reading its own data, forms
+  moving point, narrowing and inserting, `eval-region' from a moved
+  point, a source buffer other than the current one, printed values)
+  differed in all eleven. `eval-buffer' now binds `eval-buffer-list',
+  `standard-output', `current-load-list', `lexical-binding' and
+  `standard-input' as Feval_buffer does, saves an excursion, starts at
+  BEGV and reads each form at point after skipping whitespace and
+  comments as read0 does; `eval-region' binds `standard-input' to the
+  buffer and reads from a marker inside a save-restriction narrowed to
+  the region (point restored around each read, as readevalloop's
+  record_unwind_protect_excursion does), stopping when an explicit
+  region's end is reached, and prints values through `prin1' onto
+  `values' and `standard-output'; `load-read-function' takes the same
+  path. lread.c and keyboard.c clear the special flag of `values' and
+  `top-level' after defining them, so a lexical `let' of either binds
+  lexically; Emaxx marked both special, and with values now pushed onto
+  `values', faceup-tests' lexical `let' of `values' around `eval-defun'
+  caught them. Both stay forwarded C variables without the flag. The
+  battery now matches GNU, and an oracle test pins it. Local
+  validation: the grouped gate's 3,395 library tests, the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -12321,6 +12351,11 @@ against 242.1 s (0.935), in all 0.997.
 passed, and frozen (run 41244098431) matched all 7,928 outcomes on the
 first attempt: setup 84.3 s against 68.8 s (1.224), test bodies 260.5 s
 against 277.2 s (0.940), in all 0.987.
+
+**On `c2bfb07`** (round 214): the full Rust gate (run 41247004945)
+passed, and frozen (run 41247006663) matched all 7,928 outcomes on the
+first attempt: setup 77.6 s against 63.7 s (1.218), test bodies 251.3 s
+against 261.2 s (0.962), in all 0.995.
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

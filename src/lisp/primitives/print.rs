@@ -833,14 +833,14 @@ impl BufferReadSource {
         }
     }
 
-    /// The characters before byte OFFSET.
-    pub(crate) fn characters_before(&self, offset: usize) -> usize {
+    /// The characters from byte FROM to byte TO.
+    pub(crate) fn characters_between(&self, from: usize, to: usize) -> usize {
         match self {
-            Self::Buffer(text, range) => text.chars_in(range.start..range.start + offset),
+            Self::Buffer(text, range) => text.chars_in(range.start + from..range.start + to),
             Self::Encoded(bytes) => {
-                let mut position = 0;
+                let mut position = from;
                 let mut count = 0;
-                while position < offset {
+                while position < to {
                     position +=
                         crate::lisp::types::string_data::multibyte_length(&bytes[position..], true)
                             .max(1);

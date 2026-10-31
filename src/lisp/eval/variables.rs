@@ -901,6 +901,9 @@ impl Interpreter {
         }
     }
 
+    /// eval.c:Finternal_make_var_non_special: clear `declared_special',
+    /// whichever path set it (a forwarded C variable's flag is set without
+    /// an entry in `special_variables').
     pub fn unmark_special_variable(&mut self, name: &str) {
         if let Some(index) = self
             .special_variables
@@ -908,8 +911,8 @@ impl Interpreter {
             .rposition(|existing| existing == name)
         {
             self.special_variables.remove(index);
-            self.globals.clear_flag_by_name(name, SPECIAL);
         }
+        self.globals.clear_flag_by_name(name, SPECIAL);
     }
 
     /// Fdefvar without a value under lexical binding:

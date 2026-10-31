@@ -68,9 +68,13 @@ mod ert;
 // for `load-path', and readers/loaders use the same contract for the rest of
 // this group, so keep the source manifest together instead of adding isolated
 // compatibility exceptions as tests happen to exercise them.
+/// lread.c and keyboard.c clear declared_special after their DEFVAR_LISPs
+/// of `values' and `top-level': both stay forwarded C variables, but a
+/// lexical `let' of either binds lexically.
+pub(crate) const GNU_NON_SPECIAL_C_VARIABLES: [&str; 2] = ["values", "top-level"];
+
 const GNU_LREAD_SPECIAL_VARIABLES: &[&str] = &[
     "obarray",
-    "values",
     "standard-input",
     "read-circle",
     "load-path",
@@ -7937,6 +7941,9 @@ impl Interpreter {
         // image's symbols carry (`for_image').
         if !image {
             interp.define_static_symbols();
+        }
+        for name in GNU_NON_SPECIAL_C_VARIABLES {
+            interp.unmark_special_variable(name);
         }
         // editfns.c:init_editfns: emacs.c:main computes the user names
         // once in every process.

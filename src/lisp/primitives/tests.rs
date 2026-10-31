@@ -33049,6 +33049,27 @@ fn c_primitive_arguments_are_checked_and_answered_as_their_c_sources() {
 }
 
 #[test]
+fn readevalloop_reads_at_the_buffers_point_with_standard_input_bound_to_it() {
+    // lread.c:readevalloop binds `standard-input' to the buffer it reads,
+    // so a form's `read' takes the text after it; eval-buffer reads each
+    // form live at the buffer's point (a form moving point, narrowing or
+    // editing the buffer decides what is read next), while eval-region
+    // reads from a marker with point restored after each read, and
+    // printed values go onto `values' and to `standard-output'.  lread.c
+    // and keyboard.c clear the special flag of `values' and `top-level',
+    // so a lexical `let' of either binds lexically.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list (with-temp-buffer (insert "(setq zz-b (list (eq standard-input (current-buffer)) (read))) bar-data (setq zz-c (read)) 42") (eval-buffer) (list zz-b zz-c (point))) (with-temp-buffer (insert "(setq zz-d 1) (goto-char (point-max)) (setq zz-d 2)") (eval-buffer) (list zz-d (point))) (with-temp-buffer (insert "(setq zz-e 1) (save-excursion (goto-char (point-max)) (insert \" (setq zz-e 3)\"))") (eval-buffer) zz-e) (with-temp-buffer (insert "(goto-char 5) (setq zz-f (point))") (goto-char 2) (eval-region (point-min) (point-max)) (list zz-f (point))) (with-temp-buffer (insert "(setq zz-g (list (eq standard-input (current-buffer)) (point)))") (goto-char 3) (eval-region (point-min) (point-max)) (list zz-g (point))) (with-temp-buffer (insert "(setq zz-h (read)) 77 (setq zz-i 1)") (goto-char 20) (list (eval-region (point-min) (point-max)) zz-h (point))) (let (src) (with-temp-buffer (setq src (current-buffer)) (insert "(setq zz-j 5)") (goto-char 4) (with-temp-buffer (eval-buffer src)) (list zz-j (with-current-buffer src (point))))) (with-temp-buffer (insert "(setq zz-k 1) (narrow-to-region (point) (point)) (setq zz-k 2)") (eval-buffer) (list zz-k (point-min) (point-max))) (with-temp-buffer (insert "(setq zz-n 1) (insert \"(setq zz-n 9)\") (setq zz-o (point))") (eval-buffer) (list zz-n zz-o)) (with-temp-buffer (insert "1 2") (setq values nil) (eval-buffer nil (current-buffer)) (list values (buffer-string) (special-variable-p 'values) (special-variable-p 'top-level) (eval '(let ((values 7)) (symbol-value 'values)) t))))"##,
+        r##"(((t bar-data) 42 94) (1 52) 3 (5 5) ((t 3) 3) (nil 77 22) (5 14) (1 49 49) (1 72) ((2 1) "1
+1
+ 2
+2
+" nil nil (2 1)))"##,
+        "readevalloop reading and standard-input",
+    );
+}
+
+#[test]
 fn the_initial_obarray_holds_only_the_symbols_gnu_makes_at_startup() {
     // lread.c:define_symbol interns every DEFSYM but Qunbound, and
     // syms_of_eval, syms_of_editfns and syms_of_print unintern their own
