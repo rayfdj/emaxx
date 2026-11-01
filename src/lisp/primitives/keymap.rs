@@ -270,7 +270,9 @@ fn apply_modifiers(
     let new_symbol = match cached {
         Some(symbol) => symbol,
         None => {
-            let symbol = Value::symbol(&modified_event_symbol_name(modifiers, base_name));
+            let symbol = crate::lisp::primitives::intern_modified_event_symbol(
+                &modified_event_symbol_name(modifiers, base_name),
+            );
             symbol_put(
                 interp,
                 base,

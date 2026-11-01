@@ -302,10 +302,29 @@ pub(crate) fn render_prin1_symbol(
         out.push_str("##");
         return;
     }
+    // print.c reads the name with fetch_string_char_advance, which takes
+    // each byte of a unibyte name as the character of that code: a byte
+    // 0xC0 prints as `À', not as a raw byte.
+    let unibyte_bytes = if visible.is_ascii() {
+        None
+    } else {
+        match symbol.lisp_name().kind() {
+            Kind::StringObject(name) => {
+                let name = name.borrow();
+                (!name.is_multibyte()).then(|| name.bytes().to_vec())
+            }
+            _ => None,
+        }
+    };
     // print.c quotes a symbol's confusing characters only under
     // `escapeflag'; `princ' writes the name as it stands.
     if !options.escape {
-        out.push_str(visible);
+        match unibyte_bytes {
+            Some(bytes) => bytes
+                .iter()
+                .for_each(|&byte| out.push_code(u32::from(byte))),
+            None => out.push_str(visible),
+        }
         return;
     }
     let first = visible.chars().next();
@@ -318,6 +337,16 @@ pub(crate) fn render_prin1_symbol(
         ) || ch <= ' '
             || ch == '\u{00A0}'
     };
+    if let Some(bytes) = unibyte_bytes {
+        for byte in bytes {
+            if quoted(char::from(byte)) || confusing {
+                out.push('\\');
+                confusing = false;
+            }
+            out.push_code(u32::from(byte));
+        }
+        return;
+    }
     if visible.is_ascii() {
         for byte in visible.bytes() {
             if quoted(char::from(byte)) || confusing {
@@ -668,21 +697,6 @@ fn end_of_file_error(interp: &Interpreter, env: &Env) -> LispError {
     }
 }
 
-/// lread.c:readchar returns bytes 0..255 from an unibyte string, rather
-/// than the byte8 character codes it returns from an unibyte buffer.
-/// The reader must therefore see literal Latin-1 characters in this source;
-/// multibyte raw-byte characters and explicit escapes keep their meaning.
-pub(crate) fn reader_string_source_text(source: &Value) -> Result<String, LispError> {
-    let text = string_text(source)?;
-    if string_argument_multibyte(source) || text.is_ascii() {
-        return Ok(text);
-    }
-    Ok(text
-        .chars()
-        .map(|character| raw_byte_from_regex_char(character).map_or(character, char::from))
-        .collect())
-}
-
 pub(crate) fn read_encoded_form_in_env(
     interp: &mut Interpreter,
     bytes: &[u8],
@@ -698,11 +712,13 @@ pub(crate) fn read_encoded_form_in_env(
 }
 
 pub(crate) enum LispReaderInput<'a> {
-    Text(&'a str),
     Encoded(&'a [u8], bool),
     /// A buffer's text, read in place in its parts before the gap and
-    /// after it.
-    Buffer(crate::lisp::regex_emacs::GapRange<'a>),
+    /// after it, and whether the buffer is multibyte.
+    Buffer(crate::lisp::regex_emacs::GapRange<'a>, bool),
+    /// A buffer's text in its internal multibyte bytes, and whether the
+    /// buffer is multibyte.
+    BufferBytes(&'a [u8], bool),
 }
 
 fn read_one_from_reader(
@@ -717,14 +733,15 @@ fn read_one_from_reader(
     let read = (|| {
         let mut context = crate::lisp::eval::LispReadContext::current(interp, env);
         let reader = match input {
-            LispReaderInput::Text(text) => {
-                crate::lisp::reader::Reader::with_symbol_shorthands(text, shorthands)
-            }
             LispReaderInput::Encoded(bytes, multibyte) => {
                 crate::lisp::reader::Reader::from_encoded(bytes, multibyte, shorthands)
             }
-            LispReaderInput::Buffer(parts) => {
-                crate::lisp::reader::Reader::from_buffer_parts(parts, shorthands)
+            LispReaderInput::Buffer(parts, multibyte) => {
+                crate::lisp::reader::Reader::from_buffer_parts(parts, multibyte, shorthands)
+            }
+            LispReaderInput::BufferBytes(bytes, multibyte) => {
+                crate::lisp::reader::Reader::from_encoded(bytes, true, shorthands)
+                    .reporting_multibyte(multibyte)
             }
         };
         let mut reader = reader.with_read_context(&mut context);
@@ -771,9 +788,10 @@ fn read_one_from_reader(
 /// it cannot carry (one beyond Unicode, or a real U+E000..U+E0FF): then
 /// the reader takes the range's internal multibyte bytes.
 pub(crate) enum BufferReadSource {
-    /// The buffer's text and the byte range of the range in it.
-    Buffer(crate::buffer::ScanText, std::ops::Range<usize>),
-    Encoded(Vec<u8>),
+    /// The buffer's text and the byte range of the range in it, and
+    /// whether the buffer is multibyte.
+    Buffer(crate::buffer::ScanText, std::ops::Range<usize>, bool),
+    Encoded(Vec<u8>, bool),
 }
 
 impl BufferReadSource {
@@ -807,15 +825,16 @@ impl BufferReadSource {
                     - 1
             };
             let range = byte(start)..byte(end);
-            return Ok(Self::Buffer(text, range));
+            return Ok(Self::Buffer(text, range, buffer.is_multibyte()));
         }
         let text = buffer
             .buffer_substring(start, end)
             .map_err(|error| LispError::Signal(error.to_string()))?;
         let extended = buffer.substring_extended_chars(start, end);
-        Ok(Self::Encoded(crate::lisp::types::string_data::encode_text(
-            &text, true, &extended,
-        )?))
+        Ok(Self::Encoded(
+            crate::lisp::types::string_data::encode_text(&text, true, &extended)?,
+            buffer.is_multibyte(),
+        ))
     }
 
     pub(crate) fn input(&self) -> LispReaderInput<'_> {
@@ -825,19 +844,24 @@ impl BufferReadSource {
     /// The source from byte OFFSET on.
     pub(crate) fn input_from(&self, offset: usize) -> LispReaderInput<'_> {
         match self {
-            Self::Buffer(text, range) => {
+            Self::Buffer(text, range, multibyte) => {
                 let (first, second) = text.range_halves(range.start + offset..range.end);
-                LispReaderInput::Buffer(crate::lisp::regex_emacs::GapRange::new(first, second))
+                LispReaderInput::Buffer(
+                    crate::lisp::regex_emacs::GapRange::new(first, second),
+                    *multibyte,
+                )
             }
-            Self::Encoded(bytes) => LispReaderInput::Encoded(&bytes[offset..], true),
+            Self::Encoded(bytes, multibyte) => {
+                LispReaderInput::BufferBytes(&bytes[offset..], *multibyte)
+            }
         }
     }
 
     /// The characters from byte FROM to byte TO.
     pub(crate) fn characters_between(&self, from: usize, to: usize) -> usize {
         match self {
-            Self::Buffer(text, range) => text.chars_in(range.start + from..range.start + to),
-            Self::Encoded(bytes) => {
+            Self::Buffer(text, range, _) => text.chars_in(range.start + from..range.start + to),
+            Self::Encoded(bytes, _) => {
                 let mut position = from;
                 let mut count = 0;
                 while position < to {
@@ -952,10 +976,18 @@ pub(crate) fn read_positioning_symbols_from_lisp_source(
             interp.set_marker(id, Some((start + consumed).min(end)), Some(buffer_id))?;
             result.map(|(value, _)| value)
         }
-        Kind::StringObject(_) => {
-            let text = reader_string_source_text(source)?;
-            read_one_positioned_form(interp, env, LispReaderInput::Text(&text), 0, &mut 0)
-                .map(|(value, _)| value)
+        // readchar's report for a string is its multibyteness, as for
+        // `read'.
+        Kind::StringObject(state) => {
+            let contents = state.borrow();
+            read_one_positioned_form(
+                interp,
+                env,
+                LispReaderInput::Encoded(contents.bytes(), contents.is_multibyte()),
+                0,
+                &mut 0,
+            )
+            .map(|(value, _)| value)
         }
         // lread.c:readchar calls the remaining stream objects, including
         // bytecode closures, through the ordinary function dispatcher.
@@ -979,11 +1011,6 @@ fn read_one_positioned_form(
     let read = (|| {
         let mut context = crate::lisp::eval::LispReadContext::current(interp, env);
         let reader = match input {
-            LispReaderInput::Text(text) => crate::lisp::reader::Reader::with_positioned_symbols(
-                text,
-                symbol_shorthands,
-                base_position,
-            ),
             LispReaderInput::Encoded(bytes, multibyte) => {
                 crate::lisp::reader::Reader::from_encoded_positioned(
                     bytes,
@@ -992,12 +1019,22 @@ fn read_one_positioned_form(
                     base_position,
                 )
             }
-            LispReaderInput::Buffer(parts) => {
+            LispReaderInput::Buffer(parts, multibyte) => {
                 crate::lisp::reader::Reader::from_buffer_parts_positioned(
                     parts,
+                    multibyte,
                     symbol_shorthands,
                     base_position,
                 )
+            }
+            LispReaderInput::BufferBytes(bytes, multibyte) => {
+                crate::lisp::reader::Reader::from_encoded_positioned(
+                    bytes,
+                    true,
+                    symbol_shorthands,
+                    base_position,
+                )
+                .reporting_multibyte(multibyte)
             }
         };
         let mut reader = reader.with_read_context(&mut context);
@@ -1108,7 +1145,7 @@ impl CallableReader<'_> {
 }
 
 impl crate::lisp::reader::ReadContext for CallableReader<'_> {
-    fn intern(&mut self, name: &str) -> Result<Value, LispError> {
+    fn intern(&mut self, name: &str, _multibyte: bool) -> Result<Value, LispError> {
         crate::lisp::reader::ReaderStream::intern_symbol(self, name, false)
     }
 

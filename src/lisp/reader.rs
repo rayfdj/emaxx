@@ -108,7 +108,9 @@ enum AtomSyntax {
 /// reader without a context leaves `ReaderForm' placeholders for the
 /// interpreter to finish (`materialize_read_object_literals').
 pub(crate) trait ReadContext {
-    fn intern(&mut self, name: &str) -> Result<Value, LispError>;
+    /// read0's intern of NAME in the current obarray, a new symbol named
+    /// by a string of the multibyteness readchar reported (MULTIBYTE).
+    fn intern(&mut self, name: &str, multibyte: bool) -> Result<Value, LispError>;
     fn build(&mut self, form: ReaderForm) -> Result<Value, LispError>;
     /// Vload_file_name, the value `#$' reads as.
     fn load_file_name(&mut self) -> Value;
@@ -491,6 +493,11 @@ pub struct Reader<'a> {
     /// FROM_FILE_P: the bytes of a file `load' reads directly, where `#@'
     /// skips by byte count and lazily loaded code is read at once.
     from_file: bool,
+    /// What lread.c's readchar reports through READCHAR_REPORT_MULTIBYTE
+    /// for the source's characters: a multibyte string or buffer, or a
+    /// file `load' reads, but not a unibyte string or buffer or a
+    /// function.  read0 makes a new symbol's name of this multibyteness.
+    multibyte_source: bool,
     /// The read root stack's depth when this reader began: its roots lie
     /// above it, and go when it does.
     roots_base: usize,
@@ -537,19 +544,26 @@ impl<'a> Reader<'a> {
             position_cursor_byte: 0,
             position_cursor_char: 0,
             from_file: false,
+            multibyte_source: false,
         }
     }
 
-    /// `read-positioning-symbols': record each symbol occurrence's
-    /// character position, offset by BASE.
-    pub fn with_positioned_symbols(
+    /// This reader with readchar's report for its source's characters
+    /// set to MULTIBYTE: a buffer's text read through its internal bytes.
+    pub(crate) fn reporting_multibyte(mut self, multibyte: bool) -> Self {
+        self.multibyte_source = multibyte;
+        self
+    }
+
+    /// A reader of text `load' decodes into a multibyte buffer
+    /// (load-with-code-conversion), whose characters readchar reports as
+    /// multibyte.
+    pub(crate) fn from_multibyte_text(
         input: &'a str,
         symbol_shorthands: Vec<(String, String)>,
-        position_base: i64,
     ) -> Self {
         let mut reader = Self::with_symbol_shorthands(input, symbol_shorthands);
-        reader.locate_symbols = true;
-        reader.position_base = position_base;
+        reader.multibyte_source = true;
         reader
     }
 
@@ -572,6 +586,7 @@ impl<'a> Reader<'a> {
             lenient: false,
         };
         reader.slice = bytes;
+        reader.multibyte_source = multibyte;
         reader
     }
 
@@ -604,26 +619,31 @@ impl<'a> Reader<'a> {
             lenient: true,
         };
         reader.slice = bytes;
+        reader.multibyte_source = true;
         reader
     }
 
-    /// A buffer's text, read in place in its two parts.
+    /// A buffer's text, read in place in its two parts; MULTIBYTE is the
+    /// buffer's `enable-multibyte-characters'.
     pub(crate) fn from_buffer_parts(
         parts: crate::lisp::regex_emacs::GapRange<'a>,
+        multibyte: bool,
         symbol_shorthands: Vec<(String, String)>,
     ) -> Self {
         let mut reader = Self::with_symbol_shorthands("", symbol_shorthands);
         reader.input = Input::buffer(parts);
+        reader.multibyte_source = multibyte;
         reader
     }
 
     /// `read-positioning-symbols' on a buffer's text, as on encoded text.
     pub(crate) fn from_buffer_parts_positioned(
         parts: crate::lisp::regex_emacs::GapRange<'a>,
+        multibyte: bool,
         symbol_shorthands: Vec<(String, String)>,
         position_base: i64,
     ) -> Self {
-        let mut reader = Self::from_buffer_parts(parts, symbol_shorthands);
+        let mut reader = Self::from_buffer_parts(parts, multibyte, symbol_shorthands);
         reader.locate_symbols = true;
         reader.position_base = position_base;
         reader
@@ -740,8 +760,10 @@ impl<'a> Reader<'a> {
         if let Input::Function(input) = &mut self.input {
             return input.stream.intern_symbol(name, false);
         }
+        // `##' interns lread.c's empty_unibyte_string.
+        let multibyte = self.multibyte_source && !name.is_empty();
         match self.context.as_mut() {
-            Some(context) => context.intern(name),
+            Some(context) => context.intern(name, multibyte),
             None => Ok(Value::symbol(name)),
         }
     }
@@ -2258,7 +2280,26 @@ impl<'a> Reader<'a> {
     ) -> Result<Value, LispError> {
         let symbol = if syntax == AtomSyntax::Uninterned {
             let id = READER_UNINTERNED_SYMBOL_COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
-            Value::Symbol(make_uninterned_symbol_name(name, id).into())
+            let marked = make_uninterned_symbol_name(name, id);
+            // read0's Fmake_symbol of make_specified_string's name, of the
+            // multibyteness readchar reported.
+            // `#:' before a terminator makes its symbol of
+            // empty_unibyte_string.
+            let multibyte = self.multibyte_source
+                && !name.is_empty()
+                && !matches!(self.input, Input::Function(_));
+            let lisp_name = if multibyte == !name.is_ascii() {
+                None
+            } else {
+                crate::lisp::types::string_data::encode_text(name, multibyte, &[])
+                    .ok()
+                    .and_then(|bytes| {
+                        crate::lisp::primitives::make_specified_string(bytes, multibyte).ok()
+                    })
+            };
+            Value::Symbol(crate::lisp::types::SymbolName::intern_with_lisp_name(
+                marked, lisp_name,
+            ))
         } else if let Input::Function(input) = &mut self.input {
             input
                 .stream
@@ -2577,7 +2618,8 @@ mod tests {
 
     #[test]
     fn positioning_reader_returns_final_native_words_without_materialization() {
-        let mut reader = Reader::with_positioned_symbols("(alpha [β alpha t nil])", vec![], 17);
+        let mut reader =
+            Reader::from_encoded_positioned("(alpha [β alpha t nil])".as_bytes(), true, vec![], 17);
         let form = reader.read().expect("read positions").expect("one form");
         assert!(!reader.emitted_reader_forms());
         assert!(!read_object_needs_resolution(&form));

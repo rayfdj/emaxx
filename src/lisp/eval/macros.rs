@@ -45,14 +45,14 @@ impl<'i> LispReadContext<'i> {
 }
 
 impl crate::lisp::reader::ReadContext for LispReadContext<'_> {
-    fn intern(&mut self, name: &str) -> Result<Value, LispError> {
+    fn intern(&mut self, name: &str, multibyte: bool) -> Result<Value, LispError> {
         // read0 interns each symbol in `check_obarray (Vobarray)', read
         // as the symbol is: Lisp run in the middle of a read can bind it.
         let obarray = self
             .interp
             .symbol_value_key(cached_symbol!("obarray"))
             .unwrap_or(Value::Nil);
-        crate::lisp::primitives::intern_in_obarray(self.interp, &obarray, name)
+        crate::lisp::primitives::intern_read_symbol(self.interp, &obarray, name, multibyte)
     }
 
     fn build(&mut self, form: ReaderForm) -> Result<Value, LispError> {

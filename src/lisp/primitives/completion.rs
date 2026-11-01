@@ -212,6 +212,69 @@ pub(crate) fn intern_in_obarray(
     })
 }
 
+/// lread.c read0's intern of a symbol token NAME read from a source whose
+/// characters readchar reported as MULTIBYTE (READCHAR_REPORT_MULTIBYTE):
+/// oblookup by the token's bytes and characters, then on a miss
+/// intern_driver with make_specified_string's name of that multibyteness.
+/// A multibyte source makes even an ASCII name multibyte; a unibyte one
+/// keeps each character as one byte, raw bytes included.
+pub(crate) fn intern_read_symbol(
+    interp: &mut Interpreter,
+    obarray: &Value,
+    symbol_name: &str,
+    multibyte: bool,
+) -> Result<Value, LispError> {
+    if multibyte != symbol_name.is_ascii() {
+        // An ASCII name from a unibyte source, or a non-ASCII one from a
+        // multibyte source: the name made from the text is that string.
+        return intern_in_obarray(interp, obarray, symbol_name);
+    }
+    let read_name = || {
+        let bytes = crate::lisp::types::string_data::encode_text(symbol_name, multibyte, &[])?;
+        super::strings::make_specified_string(bytes, multibyte)
+            .map_err(|error| LispError::Signal(error.to_string()))
+    };
+    if multibyte {
+        // ASCII: the lookup by the text is oblookup's, and the name is
+        // made only for a new symbol.
+        if let Kind::Record(id) = obarray.kind()
+            && interp.is_standard_obarray_id(id.id)
+        {
+            let mut made = None;
+            let symbol =
+                crate::lisp::types::SymbolName::intern_initial_with(
+                    symbol_name,
+                    || match read_name() {
+                        Ok(name) => name,
+                        Err(error) => {
+                            made = Some(error);
+                            Value::string(symbol_name)
+                        }
+                    },
+                );
+            if let Some(error) = made {
+                return Err(error);
+            }
+            return Ok(Value::Symbol(symbol));
+        }
+        return intern_in_obarray_with_name(interp, obarray, symbol_name, |_| read_name());
+    }
+    // Raw bytes from a unibyte source: oblookup compares the name's own
+    // bytes, which are not the text's.
+    let name = read_name()?;
+    if let Kind::Record(id) = obarray.kind()
+        && interp.is_standard_obarray_id(id.id)
+    {
+        return Ok(Value::Symbol(
+            crate::lisp::types::SymbolName::intern_with_lisp_name(
+                symbol_name.to_owned(),
+                Some(name),
+            ),
+        ));
+    }
+    intern_in_obarray_with_name(interp, obarray, symbol_name, |_| Ok(name))
+}
+
 /// lread.c:intern_driver is reached only after oblookup misses. In particular,
 /// Fintern must not allocate/purecopy a name string when a symbol already exists.
 pub(crate) fn intern_in_obarray_with_name(

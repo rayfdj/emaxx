@@ -40,6 +40,21 @@ pub(crate) fn solitary_event_modifier(name: &str) -> i64 {
     }
 }
 
+/// keyboard.c:apply_modifiers_uncached's Fintern of the prefixed NAME,
+/// which it builds as a multibyte string: the symbol of that name, or a
+/// new one named by that string.
+pub(crate) fn intern_modified_event_symbol(name: &str) -> Value {
+    Value::Symbol(crate::lisp::types::SymbolName::intern_initial_with(
+        name,
+        || {
+            crate::lisp::types::string_data::encode_text(name, true, &[])
+                .ok()
+                .and_then(|bytes| super::strings::make_specified_string(bytes, true).ok())
+                .unwrap_or_else(|| Value::string(name))
+        },
+    ))
+}
+
 pub(crate) fn modified_event_symbol_name(modifiers: i64, base: &str) -> String {
     let mut name = String::new();
     for (bit, prefix) in [
@@ -138,6 +153,7 @@ pub(crate) fn event_convert_list_value(
         }
         Kind::Symbol(base) => {
             let modified = modified_event_symbol_name(modifiers, &base);
+            let symbol = intern_modified_event_symbol(&modified);
             if let Some(kind) = interp.get_symbol_property(&base, "event-kind") {
                 interp.put_symbol_property(&modified, "event-kind", kind);
             }
@@ -146,7 +162,7 @@ pub(crate) fn event_convert_list_value(
             // (`event-symbol-element-mask'/`event-symbol-elements') --
             // observable on any batch GNU after bindings.el's keypad
             // `define-key' loop runs.
-            let modified = Value::Symbol(modified.into());
+            let modified = symbol;
             interp.intern_symbols_in_value(&modified);
             parse_event_symbol_modifiers(interp, &modified)?;
             Ok(modified)
@@ -484,7 +500,9 @@ pub(crate) fn keymap_parts_from_events(
                 // keyboard.c:reorder_modifiers interns the canonical event
                 // name, including a previously uninterned plain symbol.
                 let (modifiers, base) = event_symbol_name_modifiers(&name);
-                parts.push(Value::symbol(&modified_event_symbol_name(modifiers, base)));
+                parts.push(intern_modified_event_symbol(&modified_event_symbol_name(
+                    modifiers, base,
+                )));
             }
             _ => parts.push(event),
         }

@@ -885,7 +885,7 @@ pub(crate) fn read_next_load_input_form(
         let mut context = eval::LispReadContext::current(interp, env);
         let (reader, base) = match input {
             LoadInput::Text(source) => (
-                reader::Reader::with_symbol_shorthands(&source[*offset..], shorthands),
+                reader::Reader::from_multibyte_text(&source[*offset..], shorthands),
                 *offset,
             ),
             LoadInput::File(bytes) => (reader::Reader::from_file(bytes, *offset, shorthands), 0),

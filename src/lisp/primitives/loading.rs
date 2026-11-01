@@ -963,14 +963,15 @@ fn read_next_eval_form(
     let (value, consumed, needs_materialization, unescaped) = {
         let mut context = crate::lisp::eval::LispReadContext::current(interp, env);
         let reader = match source.input_from(*offset) {
-            LispReaderInput::Text(text) => {
-                crate::lisp::reader::Reader::with_symbol_shorthands(text, shorthands)
-            }
             LispReaderInput::Encoded(bytes, multibyte) => {
                 crate::lisp::reader::Reader::from_encoded(bytes, multibyte, shorthands)
             }
-            LispReaderInput::Buffer(parts) => {
-                crate::lisp::reader::Reader::from_buffer_parts(parts, shorthands)
+            LispReaderInput::Buffer(parts, multibyte) => {
+                crate::lisp::reader::Reader::from_buffer_parts(parts, multibyte, shorthands)
+            }
+            LispReaderInput::BufferBytes(bytes, multibyte) => {
+                crate::lisp::reader::Reader::from_encoded(bytes, true, shorthands)
+                    .reporting_multibyte(multibyte)
             }
         };
         let mut reader = reader.with_read_context(&mut context);

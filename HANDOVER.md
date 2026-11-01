@@ -11324,6 +11324,39 @@ setup_process_coding_systems's check now refuses). A 13-form
   An oracle test pins these results. Local validation: the grouped
   gate's 3,417 library tests, the integration targets and clippy
   with `--all-targets --all-features -D warnings' pass.
+- **Round 228: symbol names as read0 and apply_modifiers make them.**
+  Two probes of 130 symbol names' multibyteness and printing differed
+  from GNU wherever lread.c read0 interns a new symbol under
+  make_specified_string of the multibyteness READCHAR_REPORT_MULTIBYTE
+  gave for its first character: a multibyte string or buffer, or a file
+  `load' reads, names it with a multibyte string, ASCII or not; a
+  unibyte string or buffer, or a function, with a unibyte one, each
+  character a byte; `##' and an empty `#:' with empty_unibyte_string.
+  Emaxx made every ASCII name unibyte and every other one multibyte, so
+  a raw byte read from a unibyte string named a symbol `intern' did not
+  find. The reader now carries its source's report, `load',
+  `eval-buffer' and `read' from a buffer, string or marker included, and
+  interns on a miss with the name read0 makes.
+  keyboard.c:apply_modifiers_uncached also interns a multibyte name,
+  which the modifier symbols the preloaded keymaps build have. print.c
+  reads a name with fetch_string_char_advance, so a unibyte name's byte
+  0xC0 prints as `À', not a raw byte. The dumped obarray now holds 5,845
+  multibyte names against GNU's 5,884: 46 of GNU's are symbols Emaxx's
+  startup interns before loadup reads them (Lisp-owned variables it
+  still pre-sets, such as `mark-ring' and `shell-command-history'), and
+  7 of Emaxx's are symbols GNU's syms_of_* functions intern with
+  intern_c_string (keyboard.c's modifier names `drag' and `double',
+  callint.c's `mark', the X selection names), which the DEFSYM manifest
+  does not cover. `read-positioning-symbols' reads a string with its
+  multibyteness as `read' does, and keymap.c:Flookup_key's menu fallback
+  garbles a multibyte name whose conversion changes a character's byte
+  length (Turkish `I' to `ı'), matching no binding, as GNU's in-place
+  copy does; the oracle tests' interpreter side reads the ASCII program
+  GNU's `--eval' gets from a unibyte string, as GNU reads it. An oracle
+  test pins the names and their printing. Local validation, with rounds
+  229 to 231 on top: the grouped gate's 3,420 library tests, the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -12796,6 +12829,14 @@ it produced where decode_coding_object moves it by the bytes, so
 rmail-mime-insert-decoded-text's newline split a character (fixed with
 round 231). Setup 79.0 s against 64.8 s (1.220), test bodies 254.9 s
 against 263.3 s (0.968), in all 1.000.
+
+**On `6a789be`** (round 227): frozen (run 41302510895) matched 7,926 of
+7,928 outcomes: rmailmm-tests' `rmailmm-test-handler' as on the round
+226 head (fixed with round 231), and eglot-tests'
+`eglot-test-rust-completion-exit-function', which the GNU oracle failed
+on a rust-analyzer `jsonrpc-error' and Emaxx passed. Setup 81.0 s
+against 67.6 s (1.198), test bodies 256.9 s against 273.4 s (0.940), in
+all 0.978. The full Rust gate (run 41302508908) passed.
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

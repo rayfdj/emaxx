@@ -16385,9 +16385,13 @@ fn assert_oracle_contract_matches_interpreter(program: &str, expected: &str, lab
 fn assert_interpreter_prints(program: &str, expected: &str, label: &str) {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = crate::lisp::types::Env::new();
-    let form = crate::lisp::read_next_load_form(&mut interp, program, &mut 0, &mut env)
-        .unwrap_or_else(|error| panic!("read {label} program: {error:?}"))
-        .unwrap_or_else(|| panic!("{label} program has a form"));
+    // Read as the oracle reads it: the program `--eval' hands GNU, its
+    // non-ASCII characters escaped, read from that unibyte string (so its
+    // symbols are named as read0 names them from one).
+    let ascii = crate::test_support::oracle_program_ascii(program);
+    let (form, _) =
+        super::print::read_encoded_form_in_env(&mut interp, ascii.as_bytes(), false, &mut env)
+            .unwrap_or_else(|error| panic!("read {label} program: {error:?}"));
     // Compare through the interpreter's own printer, as the oracle side is
     // compared through GNU's: the Rust Display form is not print.c (it
     // renders a shared sublist as circular and does not escape quotes).
@@ -33346,6 +33350,22 @@ fn integers_obey_integer_width_and_floats_round_as_floatfns_c() {
         r##"(mapcar (lambda (f) (condition-case e (eval f t) (error e))) '((let ((integer-width -1)) (logb (expt 2 200))) (let ((integer-width 128)) (expt 2 128)) (let ((integer-width 10)) (logb (expt 2 127))) (let ((x (expt 2 200))) (let ((integer-width 10)) (logior x 1))) (let ((x (expt 2 200))) (let ((integer-width 10)) (logb (read (number-to-string x))))) (let ((integer-width 10)) (truncate 1e100 3)) (let ((integer-width most-positive-fixnum)) (expt 3 most-positive-fixnum)) (let ((integer-width most-positive-fixnum)) (ash 1 most-positive-fixnum)) (expt 2 65536) (logb (expt 2 65535)) (expt 2 -1) (expt (expt 2 100) -1) (expt -1 (expt 2 70)) (expt 0 (expt 2 70)) (expt 2 (expt 2 70)) (expt 7 (expt 2 63)) (frexp 5e-324) (frexp 1.0e+INF) (frexp 0.0e+NaN) (frexp -0.0) (frexp (expt 2 2000)) (truncate 1 1.0e+INF) (floor -1 1.0e+INF) (round 1.0e+INF 1.0e+INF) (truncate 0 0.0e+NaN) (round 5e-324 5e-324) (logb (floor 1e308 5e-324)) (truncate most-negative-fixnum -1) (round 2.5 1) (round 3.5 1.0) (ldexp 5e-324 1100) (ldexp 1.0 -1074) (ldexp 3.0 -1075) (logb 5e-324)))"##,
         r##"(200 (overflow-error) 127 (overflow-error) 200 (overflow-error) (overflow-error) (overflow-error) (overflow-error) 65535 0.5 7.888609052210118e-31 1 0 (overflow-error) (overflow-error) (0.5 . -1073) (1.0e+INF . 0) (0.0e+NaN . 0) (-0.0 . 0) (1.0e+INF . 0) 0 0 (overflow-error) (overflow-error) 1 2097 2305843009213693952 2 4 67108864.0 5e-324 1e-323 -1074)"##,
         "integer-width and float rounding",
+    );
+}
+
+#[test]
+fn read_symbols_are_named_with_the_multibyteness_readchar_reports() {
+    // lread.c read0 makes a new symbol's name with make_specified_string
+    // of the multibyteness READCHAR_REPORT_MULTIBYTE gives: multibyte for
+    // a multibyte string or buffer and for a file `load' reads, unibyte
+    // (each character one byte) for a unibyte string or buffer or a
+    // function; `##' and an empty `#:' use empty_unibyte_string.
+    // keyboard.c:apply_modifiers_uncached interns a multibyte name, and
+    // print.c reads a unibyte name's bytes as characters 0..255.
+    assert_oracle_contract_matches_interpreter(
+        r###"(list (multibyte-string-p (symbol-name (read (string-to-multibyte "zz-r228a")))) (multibyte-string-p (symbol-name (read "zz-r228b"))) (with-temp-buffer (insert "zz-r228c") (goto-char 1) (multibyte-string-p (symbol-name (read (current-buffer))))) (with-temp-buffer (set-buffer-multibyte nil) (insert "zz-r228d") (goto-char 1) (multibyte-string-p (symbol-name (read (current-buffer))))) (let ((s (read "zz-r228e\377"))) (list (multibyte-string-p (symbol-name s)) (string-to-list (symbol-name s)) (eq s (intern "zz-r228e\377")))) (multibyte-string-p (symbol-name (read (string-to-multibyte "#:zz-r228f")))) (multibyte-string-p (symbol-name (read "#:zz-r228g"))) (let ((f (make-temp-file "zz-r228" nil ".el"))) (unwind-protect (progn (with-temp-file f (insert "(setq zz-r228-v 'zz-r228h)")) (load f nil t) (multibyte-string-p (symbol-name zz-r228-v))) (delete-file f))) (with-temp-buffer (insert "(setq zz-r228-w 'zz-r228i)") (eval-buffer) (multibyte-string-p (symbol-name zz-r228-w))) (prin1-to-string (intern "zz-r228j\300")) (string-to-list (prin1-to-string (make-symbol "\377"))) (format "%S %s" (intern "zz-r228k\301") (intern "zz-r228k\301")) (let ((n 0)) (multibyte-string-p (symbol-name (read (lambda (&optional c) (if c nil (setq n (1+ n)) (if (< n 4) ?y ?\s))))))) (let ((s (intern "zz-r228l\302"))) (list (prin1-to-string s t) (string-to-list (format "%s" s)) (with-output-to-string (princ s)))) (eq (read (string-to-multibyte "zz-r228m")) (read "zz-r228m")) (multibyte-string-p (symbol-name (caar (read-from-string (string-to-multibyte "(zz-r228n)"))))) (multibyte-string-p (symbol-name (event-convert-list '(control meta zz-r228o)))) (multibyte-string-p (symbol-name (read (string-to-multibyte "##")))) (multibyte-string-p (symbol-name (read (string-to-multibyte "#:")))))"###,
+        r###"(t nil t nil (nil (122 122 45 114 50 50 56 101 255) t) t nil t t "zz-r228jÀ" (255) "zz-r228kÁ zz-r228k\301" nil ("zz-r228lÂ" (122 122 45 114 50 50 56 108 194) "zz-r228lÂ") t t t nil nil)"###,
+        "read symbol name multibyteness",
     );
 }
 
