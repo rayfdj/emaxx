@@ -11060,6 +11060,26 @@ setup_process_coding_systems's check now refuses). A 13-form
   insertions. Local validation: the grouped gate's 3,400 library
   tests, the integration targets and clippy with `--all-targets
   --all-features -D warnings' pass.
+- **Round 220: `current-indentation' as indent.c's
+  position_indentation.** An extended editing battery (the round 219
+  programs with field, property and overlay queries logged, kills and
+  yanks, word casing, whitespace commands, `indent-rigidly', `insert-char'
+  and `reverse-region' added) differed from GNU after `indent-rigidly'
+  over a line whose first characters were invisible: Emaxx skipped only
+  spaces and tabs and stopped at the invisible text, where
+  position_indentation skips it as skip_invisible does when counting
+  columns (text invisible with an ellipsis still counts, and the skip
+  runs past newlines), counts a unibyte buffer's no-break space and a
+  multibyte character of the space category one column each, and stops
+  at any other character. `current-indentation' now scans as it does,
+  reading the invisibility spec only when the blanks it found meet
+  invisible text. The battery's other differences, in the length of the
+  undo list, were the marker adjustments of unreachable markers GNU
+  keeps chained until a collection: with `gc-cons-threshold' at its
+  maximum in both, sixty seeds of sixty programs match. An oracle test
+  pins the cases. Local validation: the grouped gate's 3,401 library
+  tests, the integration targets and clippy with `--all-targets
+  --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -12482,6 +12502,11 @@ against 269.1 s (0.963), in all 1.006.
 passed, and frozen (run 41265757335) matched all 7,928 outcomes on the
 first attempt: setup 83.4 s against 68.7 s (1.214), test bodies 259.4 s
 against 270.6 s (0.959), in all 1.000.
+
+**On `4d7013f`** (round 219): the full Rust gate (run 41272831624)
+passed, and frozen (run 41272833494) matched all 7,928 outcomes on the
+first attempt: setup 82.2 s against 66.9 s (1.229), test bodies 258.4 s
+against 267.4 s (0.967), in all 1.005.
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

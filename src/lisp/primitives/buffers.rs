@@ -1024,6 +1024,86 @@ pub(crate) fn column_at(
     scan_for_column(interp, env, line_start, pos, None).col
 }
 
+/// indent.c:position_indentation: the columns of the blanks from POS, a
+/// line's start, to the first other character or ZV.  A space counts
+/// one, a tab to the next tab stop, a unibyte buffer's no-break space
+/// one, and so does a multibyte character of the space category; text
+/// invisible without an ellipsis is skipped as skip_invisible skips it
+/// for counting columns, newlines and all.
+pub(crate) fn position_indentation(interp: &mut Interpreter, env: &mut Env, pos: usize) -> usize {
+    // SANE_TAB_WIDTH.
+    let tab_width = interp
+        .lookup_var_key(cached_symbol!("tab-width"), env)
+        .and_then(|value| value.integer_value())
+        .filter(|width| (1..=1000).contains(width))
+        .unwrap_or(8) as usize;
+    let zv = interp.buffer.borrow().point_max();
+    // The blanks as they stand bound the text whose invisibility can
+    // matter: with none of it invisible they are the answer.
+    let (column, end) = indentation_scan(interp, pos, zv, tab_width, None);
+    let near = {
+        let buffer = interp.buffer.borrow();
+        resolve_buffer_invisibility_in(
+            interp,
+            &buffer,
+            interp.current_buffer_id(),
+            pos,
+            (end + 1).min(zv),
+        )
+    };
+    if !near.active {
+        return column;
+    }
+    let spec = {
+        let buffer = interp.buffer.borrow();
+        resolve_buffer_invisibility_in(interp, &buffer, interp.current_buffer_id(), pos, zv)
+    };
+    indentation_scan(interp, pos, zv, tab_width, Some(&spec)).0
+}
+
+/// position_indentation's scan from POS: the column reached and where it
+/// stopped, invisible text skipped under SPEC.
+fn indentation_scan(
+    interp: &mut Interpreter,
+    mut pos: usize,
+    zv: usize,
+    tab_width: usize,
+    spec: Option<&InvisibilitySpec>,
+) -> (usize, usize) {
+    let multibyte = interp.buffer.borrow().is_multibyte();
+    let mut categories = None;
+    let mut column = 0;
+    loop {
+        if let Some(spec) = spec {
+            while pos < zv && invisible_class_at(&interp.buffer.borrow(), spec, pos) == 1 {
+                pos += 1;
+            }
+        }
+        if pos >= zv {
+            return (column, pos);
+        }
+        let Some(code) = public_buffer_char_code_at(interp, pos) else {
+            return (column, pos);
+        };
+        match code {
+            0x20 => column += 1,
+            0x09 => column += tab_width - column % tab_width,
+            0xA0 if !multibyte => column += 1,
+            code if code < 0x80 || !multibyte => return (column, pos),
+            code => {
+                let table = *categories
+                    .get_or_insert_with(|| super::search::current_category_table(interp));
+                if category_member(&table.get(code as u32), b' ') {
+                    column += 1;
+                } else {
+                    return (column, pos);
+                }
+            }
+        }
+        pos += 1;
+    }
+}
+
 /// What indent.c scan_for_column leaves.
 pub(crate) struct ColumnScan {
     /// The column reached.

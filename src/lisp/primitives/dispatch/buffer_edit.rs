@@ -1088,28 +1088,11 @@ define_dispatch!(
             }
             "current-column" => Ok(Value::Integer(current_column(interp, env) as i64)),
             "current-indentation" => {
-                let saved = interp.buffer.borrow().point();
-                interp.buffer.borrow_mut().beginning_of_line();
-                while matches!(
-                    interp
-                        .buffer
-                        .borrow()
-                        .char_at(interp.buffer.borrow().point()),
-                    Some(' ' | '\t')
-                ) {
-                    let _ = interp.buffer.borrow_mut().forward_char(1);
-                }
-                let pt = interp.buffer.borrow().point();
-                let bol = {
-                    let saved = interp.buffer.borrow().point();
-                    interp.buffer.borrow_mut().beginning_of_line();
-                    let bol = interp.buffer.borrow().point();
-                    interp.buffer.borrow_mut().goto_char(saved);
-                    bol
-                };
-                let indentation = column_at(interp, env, bol, pt) as i64;
-                interp.buffer.borrow_mut().goto_char(saved);
-                Ok(Value::Integer(indentation))
+                // indent.c:Fcurrent_indentation: position_indentation from
+                // the line's start.
+                let point = interp.buffer.borrow().point();
+                let bol = line_beginning_at(interp, point);
+                Ok(Value::Integer(position_indentation(interp, env, bol) as i64))
             }
             "indent-to" => {
                 need_arg_range(name, args, 1, 2)?;

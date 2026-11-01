@@ -33115,6 +33115,20 @@ fn insert_buffer_substring_takes_the_intervals_as_insert_from_buffer_1() {
 }
 
 #[test]
+fn current_indentation_skips_invisible_text_as_position_indentation() {
+    // indent.c:position_indentation counts the blanks from the line's
+    // start, skipping text invisible without an ellipsis (as
+    // skip_invisible does when counting columns, past newlines too), a
+    // unibyte buffer's no-break space and a multibyte character of the
+    // space category counting one column; any other character ends it.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list (with-temp-buffer (insert "\u00e9a ") (put-text-property 1 3 'invisible 2) (goto-char 1) (list (current-indentation) (current-column) (progn (end-of-line) (current-column)))) (with-temp-buffer (insert "ab c") (put-text-property 1 3 'invisible t) (current-indentation)) (with-temp-buffer (insert "ab \tc") (put-text-property 1 3 'invisible t) (current-indentation)) (with-temp-buffer (insert " ab c") (put-text-property 2 4 'invisible t) (current-indentation)) (with-temp-buffer (insert " ab\n  c") (put-text-property 2 5 'invisible t) (goto-char 1) (current-indentation)) (with-temp-buffer (insert " ab c") (overlay-put (make-overlay 2 4) 'invisible t) (current-indentation)) (with-temp-buffer (insert " ab c") (setq buffer-invisibility-spec '((zz . t))) (put-text-property 2 4 'invisible 'zz) (current-indentation)) (with-temp-buffer (insert " ab c") (setq buffer-invisibility-spec '(zz)) (put-text-property 2 4 'invisible 'zz) (current-indentation)) (with-temp-buffer (insert " ab c") (setq buffer-invisibility-spec nil) (put-text-property 2 4 'invisible t) (current-indentation)) (with-temp-buffer (insert "　　x") (current-indentation)) (with-temp-buffer (insert " x") (current-indentation)) (with-temp-buffer (insert "  x") (current-indentation)) (with-temp-buffer (set-buffer-multibyte nil) (insert "\240 x") (current-indentation)) (with-temp-buffer (set-buffer-multibyte nil) (insert "\241 x") (current-indentation)) (with-temp-buffer (insert "\t \tx") (let ((tab-width 4)) (current-indentation))) (with-temp-buffer (insert "  ") (current-indentation)) (with-temp-buffer (insert "  x\n   y") (narrow-to-region 2 7) (goto-char 5) (current-indentation)) (with-temp-buffer (insert "  ab") (put-text-property 3 5 'invisible t) (current-indentation)))"##,
+        r##"((1 0 1) 1 8 2 3 2 1 2 1 0 0 0 2 0 8 2 2 2)"##,
+        "current-indentation",
+    );
+}
+
+#[test]
 fn readevalloop_reads_at_the_buffers_point_with_standard_input_bound_to_it() {
     // lread.c:readevalloop binds `standard-input' to the buffer it reads,
     // so a form's `read' takes the text after it; eval-buffer reads each
