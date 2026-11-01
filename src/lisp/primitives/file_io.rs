@@ -304,8 +304,8 @@ pub(crate) fn file_input_error_value(error: &std::io::Error, path: &str) -> Valu
 }
 
 pub(crate) fn make_temp_file_internal(
-    interp: &Interpreter,
-    env: &Env,
+    interp: &mut Interpreter,
+    env: &mut Env,
     prefix: &str,
     dir_flag: &Value,
     suffix: &str,
@@ -341,14 +341,35 @@ pub(crate) fn make_temp_file_internal(
             }
             match options.open(&candidate) {
                 Ok(mut file) => {
-                    if let Some(text) = text.and_then(string_like) {
-                        file.write_all(text.text.as_bytes()).map_err(|error| {
-                            LispError::SignalValue(file_operation_error_value(
-                                "Creating file with prefix",
-                                &error,
-                                prefix,
-                            ))
-                        })?;
+                    // write_region of a nonempty TEXT into the descriptor
+                    // made, under the file's name: its coding chosen and
+                    // recorded as for any write, no lock taken.
+                    if let Some(text) = text.copied()
+                        && string_like(&text).is_some_and(|string| !string.text.is_empty())
+                    {
+                        let args = [
+                            text,
+                            Value::Nil,
+                            Value::string(&last),
+                            Value::Nil,
+                            Value::Nil,
+                            Value::Nil,
+                            Value::Nil,
+                        ];
+                        let saved = interp.save_restriction_state();
+                        interp.restore_labeled_restrictions(interp.current_buffer_id(), Vec::new());
+                        let written = write_region_with_coding(
+                            interp,
+                            &args,
+                            &last,
+                            false,
+                            &last,
+                            None,
+                            Some(&mut file),
+                            env,
+                        );
+                        interp.restore_restriction_state(saved);
+                        written?;
                     }
                     return Ok(last);
                 }
@@ -808,6 +829,7 @@ pub(crate) fn write_region_value_with_logical_path(
         existed_before_write,
         logical_path,
         logical_lock_path,
+        None,
         env,
     );
     interp.restore_restriction_state(saved);
@@ -922,6 +944,7 @@ fn encode_region_for_write(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn write_region_with_coding(
     interp: &mut Interpreter,
     args: &[Value; 7],
@@ -929,6 +952,9 @@ fn write_region_with_coding(
     existed_before_write: bool,
     logical_path: &str,
     logical_lock_path: Option<&str>,
+    // write_region's DESC: a file already open, which is neither locked,
+    // opened nor closed here.
+    mut descriptor: Option<&mut fs::File>,
     env: &mut Env,
 ) -> Result<Value, LispError> {
     let mut selected_args = *args;
@@ -1011,7 +1037,8 @@ fn write_region_with_coding(
     // `create-lockfiles' makes no lock), Funlock_file once it is written.
     // An auto-save neither locks nor unlocks.
     let auto_saving = auto_saving();
-    if !auto_saving {
+    let open_and_close_file = descriptor.is_none();
+    if open_and_close_file && !auto_saving {
         flock_file(interp, env, Value::String(lock_path.clone().into()))?;
     }
     let host = host_file_name(interp, env, path)?;
@@ -1023,6 +1050,12 @@ fn write_region_with_coding(
     let write_result = (|| {
         use std::os::unix::fs::OpenOptionsExt;
         use std::os::unix::io::IntoRawFd;
+        if let Some(file) = descriptor.as_deref_mut() {
+            opened = true;
+            return file
+                .write_all(&bytes)
+                .map_err(|error| file_operation_error("Write error", &error, path));
+        }
         let exclusive = args[6].symbol_str() == Some("excl");
         // An auto-save file is made with auto_save_mode_bits.
         let mode = if auto_saving {
@@ -1069,7 +1102,7 @@ fn write_region_with_coding(
         }
         Ok(())
     })();
-    let unlock_result = if auto_saving {
+    let unlock_result = if auto_saving || !open_and_close_file {
         Ok(())
     } else {
         funlock_file(interp, env, Value::String(lock_path.clone().into()))
@@ -2428,17 +2461,19 @@ fn insert_file_bytes(
         let mut inserted_chars = decoded.char_count();
         let start = interp.buffer.borrow().point();
         if !decoded.text.is_empty() {
-            // insert_from_gap: the text, with produce_charset's `charset'
-            // properties, before point.
-            let source = match charset_props.as_ref() {
-                Some(intervals) => crate::buffer::InsertedProperties::Intervals {
-                    source: intervals,
-                    inherit: false,
-                },
-                None => crate::buffer::InsertedProperties::None { inherit: false },
-            };
-            interp.insert_current_buffer_with(&decoded.text, source, false);
-            interp.set_inserted_extended_chars(start, &decoded.extended);
+            // decode_coding_gap's decode_coding: the text before point,
+            // produce_charset's `charset' runs put through
+            // Fput_text_property, a visit's among them.
+            crate::lisp::primitives::insert_converted_text_at(
+                interp,
+                start,
+                &decoded.text,
+                charset_props.as_ref(),
+                &decoded.extended,
+                inserted_chars,
+                true,
+                env,
+            )?;
             interp.buffer.borrow_mut().goto_char(start);
         }
         // decode_coding_gap's post-read conversion: called with point at
@@ -2516,6 +2551,7 @@ fn replace_file_contents(
     let FileDecode {
         decoded,
         coding: coding_used,
+        charset_props,
         ..
     } = decode_file_contents(interp, env, bytes, literal, path, operation_args, false)?;
     let mut inserted_chars = decoded.char_count();
@@ -2572,6 +2608,12 @@ fn replace_file_contents(
             .filter(|(index, _)| (prefix..new_end).contains(index))
             .map(|&(index, code)| (index - prefix, code))
             .collect::<Vec<_>>();
+        // insert_from_buffer of the conversion buffer's middle, the
+        // `charset' runs its decoding put there going with it.
+        let replacement_props = match charset_props.as_ref() {
+            Some(intervals) => intervals.copy(prefix, new_end - prefix)?,
+            None => None,
+        };
         let replacement_len = replacement.chars().count();
         inserted_chars = replacement.chars().count();
         if start != end {
@@ -2584,7 +2626,7 @@ fn replace_file_contents(
             crate::lisp::primitives::insert_text_with_hooks(
                 interp,
                 &replacement,
-                None,
+                replacement_props.as_ref(),
                 &replacement_extended,
                 false,
                 false,

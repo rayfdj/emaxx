@@ -11433,6 +11433,22 @@ setup_process_coding_systems's check now refuses). A 13-form
   Local validation: the grouped gate's 3,420 library tests, the
   integration targets and clippy with `--all-targets --all-features -D
   warnings' pass.
+- **Round 232: file decodes put charset runs as decode_coding; temp file
+  text written as write_region.** `insert-file-contents' decodes
+  through round 231's insertion of a conversion's text: with undo off,
+  the characters produced recorded after, and each `charset' run put
+  through Fput_text_property with its change hooks, a visit's included
+  (GNU's modification count is one higher for each run); a REPLACE that
+  decodes inserts its middle with the runs the conversion buffer gave
+  it, as insert_from_buffer does. make-temp-file-internal writes a
+  nonempty TEXT through write_region on the descriptor it made, the
+  coding chosen and recorded and no lock taken, where Emaxx wrote its
+  own representation's bytes (10 for GNU's 6 for a unibyte TEXT with
+  two raw bytes). An oracle test pins the hooks, ticks and properties of
+  plain, visiting and replacing decodes and the temp file's size and
+  coding. Local validation: the grouped gate's 3421 library tests,
+  the integration targets and clippy with `--all-targets --all-features
+  -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -12913,6 +12929,12 @@ against 263.3 s (0.968), in all 1.000.
 on a rust-analyzer `jsonrpc-error' and Emaxx passed. Setup 81.0 s
 against 67.6 s (1.198), test bodies 256.9 s against 273.4 s (0.940), in
 all 0.978. The full Rust gate (run 41302508908) passed.
+
+**On `d121573`** (rounds 228 to 231): frozen (run 41312077653) matched
+all 7,928 outcomes, rmailmm-tests' `rmailmm-test-handler' again among
+them. Setup 85.0 s against 69.8 s (1.218), test bodies 260.2 s against
+272.7 s (0.954), in all 1.002. The full Rust gate (run 41312075247)
+passed.
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

@@ -33408,6 +33408,21 @@ fn region_conversions_put_back_point_and_markers_as_coding_c() {
 }
 
 #[test]
+fn file_decodes_put_charset_runs_and_temp_text_is_written_as_write_region() {
+    // fileio.c:Finsert_file_contents decodes through decode_coding_gap,
+    // whose produce_charset puts each `charset' run through
+    // Fput_text_property with its change hooks, a visit's included; a
+    // REPLACE inserts the conversion buffer's middle with its runs.
+    // Fmake_temp_file_internal writes TEXT through write_region, which
+    // chooses and records the coding.
+    assert_oracle_contract_matches_interpreter(
+        r##"(let ((f (make-temp-file "zz232" nil ".txt" "ab\372\304!\n")) (coding-system-for-read 'koi8-r))  (prog1 (list   (with-temp-buffer (let (log) (add-hook 'after-change-functions (lambda (b e l) (push (list 'a b e l) log)) nil t) (add-hook 'before-change-functions (lambda (b e) (push (list 'b b e) log)) nil t) (list (cadr (insert-file-contents f)) (nreverse log) (buffer-modified-tick) (get-text-property 3 'charset))))   (with-temp-buffer (let (log) (add-hook 'after-change-functions (lambda (b e l) (push (list 'a b e l) log)) nil t) (list (cadr (insert-file-contents f t)) (nreverse log) (buffer-modified-tick) (buffer-modified-p))))   (with-temp-buffer (insert "ab\372\304") (let (log) (add-hook 'after-change-functions (lambda (b e l) (push (list 'a b e l) log)) nil t) (list (cadr (insert-file-contents f nil nil nil t)) (nreverse log) (get-text-property 1 'charset) (get-text-property 3 'charset) (point))))   (let ((g (make-temp-file "zz232m" nil nil "ab\372\304!\n"))) (prog1 (list (file-attribute-size (file-attributes g)) last-coding-system-used) (delete-file g))))   (delete-file f)))"##,
+        r##"((6 ((b 1 1) (b 1 7) (a 1 7 6) (a 1 7 0)) 5 koi8-r) (6 ((a 1 7 6)) 5 nil) (4 ((a 3 3 2) (a 3 7 0)) nil koi8-r 7) (6 utf-8-unix))"##,
+        "file decodes and temp file text",
+    );
+}
+
+#[test]
 fn readevalloop_reads_at_the_buffers_point_with_standard_input_bound_to_it() {
     // lread.c:readevalloop binds `standard-input' to the buffer it reads,
     // so a form's `read' takes the text after it; eval-buffer reads each
