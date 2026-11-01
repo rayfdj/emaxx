@@ -244,7 +244,7 @@ pub(crate) fn symbol_put(
 /// keyboard.c:apply_modifiers: BASE with MODIFIERS, through BASE's
 /// `modifier-cache' (the click modifier never figures in its indices), the
 /// new symbol taking BASE's `event-kind' when it has none.
-fn apply_modifiers(
+pub(crate) fn apply_modifiers(
     interp: &mut Interpreter,
     modifiers: i64,
     base: Value,

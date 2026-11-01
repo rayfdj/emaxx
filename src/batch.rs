@@ -777,20 +777,6 @@ fn initialize_interpreter_attempt(
         Value::T,
         &mut crate::lisp::types::Env::new(),
     );
-    // emacs.c handles --batch before syms_of_undo: in an uninitialized
-    // builder, syms_of_undo reinstalls 24000000 before loadup runs. Leave
-    // that raw initializer intact here; a fresh batch session clears it below.
-    interpreter.set_variable(
-        "command-line-args-left",
-        Value::list(
-            options
-                .args_left
-                .iter()
-                .cloned()
-                .map(|value| Value::String(value.into())),
-        ),
-        &mut crate::lisp::types::Env::new(),
-    );
     // Loading the dumped Lisp owners below corresponds to GNU's pre-dump
     // phase, where delayed Custom initializers accumulate until startup;
     // an image carries the accumulated list.
@@ -894,6 +880,25 @@ fn initialize_interpreter_attempt(
     // host's name, or nil after `--no-build-details'; the image carries
     // the dumping host's.
     interpreter.set_global_binding("system-name", lisp::primitives::system_name_lisp_value());
+    // The arguments left for the top level.  startup.el defines
+    // `command-line-args-left'; the process that builds the image
+    // (`--temacs') loads it only after this, and GNU's C never sets it.
+    if !temacs {
+        interpreter.set_variable(
+            "command-line-args-left",
+            Value::list(
+                options
+                    .args_left
+                    .iter()
+                    .cloned()
+                    .map(|value| Value::String(value.into())),
+            ),
+            &mut crate::lisp::types::Env::new(),
+        );
+    }
+    // emacs.c handles --batch before syms_of_undo: in an uninitialized
+    // builder, syms_of_undo reinstalls 24000000 before loadup runs, and the
+    // raw initializer stays for it; a fresh batch session clears it here.
     if noninteractive {
         interpreter.set_variable(
             "undo-outer-limit",

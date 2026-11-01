@@ -990,7 +990,66 @@ impl Interpreter {
                 window.slots[primitives::WINDOW_BASE_LINE_SLOT] = Value::Nil;
             }
         }
+        self.stamp_buffer_display(buffer_id);
         self.wset_redisplay(window_id);
+    }
+
+    /// buffer.c:reset_buffer: the visited file, its modification time,
+    /// the auto-save state and the display stamps forgotten, `default-
+    /// directory' the current buffer's, as get_minibuffer gives a
+    /// minibuffer it reuses (whose overlays it deletes first).
+    pub(crate) fn reset_buffer(&mut self, buffer_id: u64) {
+        let directory = self
+            .buffer_local_value(self.current_buffer_id, "default-directory")
+            .unwrap_or(Value::Nil);
+        if let Some(mut buffer) = self.get_buffer_by_id_mut(buffer_id) {
+            buffer.file = None;
+            buffer.file_truename = None;
+            buffer.set_visited_file_modtime(None);
+            buffer.set_autosave_modiff(0);
+            buffer.auto_save_failure_time = 0;
+            buffer.set_mark_active_value(Value::Nil);
+        }
+        self.buffer_last_window_start.insert(buffer_id, 1);
+        for (name, value) in [
+            ("default-directory", directory),
+            ("buffer-saved-size", Value::Integer(0)),
+            ("buffer-backed-up", Value::Nil),
+            ("local-minor-modes", Value::Nil),
+            ("buffer-auto-save-file-name", Value::Nil),
+            ("buffer-read-only", Value::Nil),
+            ("point-before-scroll", Value::Nil),
+            ("buffer-file-format", Value::Nil),
+            ("buffer-auto-save-file-format", Value::T),
+            ("buffer-display-count", Value::Integer(0)),
+            ("buffer-display-time", Value::Nil),
+        ] {
+            self.set_buffer_local_value(buffer_id, name, value);
+        }
+    }
+
+    /// window.c:set_window_buffer's time stamps of buffer display: an
+    /// integer `buffer-display-count' counts up, and `buffer-display-time'
+    /// becomes the current time.
+    pub(crate) fn stamp_buffer_display(&mut self, buffer_id: u64) {
+        let count = self
+            .buffer_local_value(buffer_id, "buffer-display-count")
+            .unwrap_or(Value::Nil);
+        let count = match count.kind() {
+            Kind::Integer(count) => Some(primitives::normalize_bigint_value(
+                num_bigint::BigInt::from(count) + 1,
+            )),
+            Kind::BigInteger(count) => Some(primitives::normalize_bigint_value(
+                num_bigint::BigInt::from(count) + 1,
+            )),
+            _ => None,
+        };
+        if let Some(count) = count {
+            self.set_buffer_local_value(buffer_id, "buffer-display-count", count);
+        }
+        if let Ok(now) = primitives::lisp_current_time(self) {
+            self.set_buffer_local_value(buffer_id, "buffer-display-time", now);
+        }
     }
 
     pub(crate) fn selected_frame_value(&self) -> Value {

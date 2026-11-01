@@ -520,120 +520,6 @@ pub(crate) fn native_per_buffer_slot(name: &str) -> Option<PerBufferSlot> {
         })
 }
 
-// Edebug specs that GNU Emacs registers through `declare (debug ...)` forms
-// in preloaded Lisp files for macros emaxx implements natively.
-fn builtin_edebug_form_specs() -> Vec<(String, Vec<(String, Value)>)> {
-    [
-        (
-            "lambda",
-            "(&define lambda-list lambda-doc [&optional (\"interactive\" interactive)] def-body)",
-        ),
-        ("when", "t"),
-        ("unless", "t"),
-        ("dolist", "((symbolp form &optional form) body)"),
-        ("dotimes", "((symbolp form &optional form) body)"),
-        ("push", "(form gv-place)"),
-        ("pop", "(gv-place)"),
-        ("setq-default", "setq"),
-        ("setq-local", "setq"),
-        ("buffer-local-set-state", "setq"),
-        ("defvar-local", "defvar"),
-        ("ignore-errors", "t"),
-        ("ignore-error", "t"),
-        ("letrec", "let"),
-        ("dlet", "let"),
-        (
-            "if-let*",
-            "((&rest [&or symbolp (symbolp form) (form)]) body)",
-        ),
-        ("when-let*", "if-let*"),
-        ("and-let*", "if-let*"),
-        (
-            "if-let",
-            "([&or (symbolp form) (&rest [&or symbolp (symbolp form) (form)])] body)",
-        ),
-        ("when-let", "if-let"),
-        ("while-let", "if-let"),
-        ("with-current-buffer", "t"),
-        ("with-temp-buffer", "t"),
-        ("with-temp-message", "t"),
-        ("with-local-quit", "t"),
-        ("while-no-input", "t"),
-        ("save-window-excursion", "t"),
-        ("with-selected-window", "t"),
-        ("with-selected-frame", "t"),
-        ("atomic-change-group", "t"),
-        ("with-syntax-table", "t"),
-        ("with-demoted-errors", "t"),
-        ("condition-case-unless-debug", "condition-case"),
-        ("delay-mode-hooks", "t"),
-        ("track-mouse", "(def-body)"),
-        ("noreturn", "t"),
-        (
-            "cl-defmethod",
-            "(&define [&name [sexp [&rest cl-generic--method-qualifier-p] listp] cl--generic-edebug-make-name nil] lambda-doc def-body)",
-        ),
-        (
-            "cl-defgeneric",
-            "(&define &interpose [&name sexp] cl--generic-edebug-remember-name listp lambda-doc [&rest [&or (\"declare\" &rest sexp) (\":argument-precedence-order\" &rest sexp) (&define \":method\" [&name [[&rest cl-generic--method-qualifier-p] listp] cl--generic-edebug-make-name in:method] lambda-doc def-body)]] def-body)",
-        ),
-        ("1value", "t"),
-    ]
-    .into_iter()
-    .filter_map(|(symbol, spec_text)| {
-        let spec = crate::lisp::reader::Reader::new(spec_text)
-            .read_all()
-            .ok()?
-            .into_iter()
-            .next()?;
-        Some((
-            symbol.to_string(),
-            vec![("edebug-form-spec".to_string(), spec)],
-        ))
-    })
-    .collect()
-}
-
-// Declaration specs GNU registers in byte-run.el and gv.el so Edebug can
-// instrument handler lambdas inside `(declare ...)' forms.
-fn builtin_edebug_declaration_specs() -> Vec<(String, Vec<(String, Value)>)> {
-    let spec_text = "(&or symbolp (\"lambda\" &define lambda-list lambda-doc def-body))";
-    ["compiler-macro", "gv-expander", "gv-setter"]
-        .into_iter()
-        .filter_map(|symbol| {
-            let spec = crate::lisp::reader::Reader::new(spec_text)
-                .read_all()
-                .ok()?
-                .into_iter()
-                .next()?;
-            Some((
-                symbol.to_string(),
-                vec![("edebug-declaration-spec".to_string(), spec)],
-            ))
-        })
-        .collect()
-}
-
-// gv.el's `def-edebug-elem-spec' of `gv-place', which `push' and `pop'
-// name.  cl-macs.el's element specs are its own: it loads, as it does in
-// GNU, before anything that names them is instrumented.
-fn builtin_edebug_elem_specs() -> Vec<(String, Vec<(String, Value)>)> {
-    [("gv-place", "(form)")]
-        .into_iter()
-        .filter_map(|(symbol, spec_text)| {
-            let spec = crate::lisp::reader::Reader::new(spec_text)
-                .read_all()
-                .ok()?
-                .into_iter()
-                .next()?;
-            Some((
-                symbol.to_string(),
-                vec![("edebug-elem-spec".to_string(), spec)],
-            ))
-        })
-        .collect()
-}
-
 fn builtin_error_symbol_properties() -> Vec<(String, Vec<(String, Value)>)> {
     let definitions: &[(&str, &[&str], &str)] = &[
         ("error", &["error"], "error"),
@@ -1076,35 +962,9 @@ fn builtin_error_symbol_properties() -> Vec<(String, Vec<(String, Value)>)> {
 }
 
 fn builtin_symbol_properties() -> Vec<(String, Value)> {
-    let mut properties: Vec<(String, Vec<(String, Value)>)> = [
-        ("autoload", 3),
-        ("defadvice", 3),
-        ("defalias", 3),
-        ("defconst", 3),
-        ("defconstant", 3),
-        ("defmacro", 3),
-        ("defmethod", 3),
-        ("defparameter", 3),
-        ("defsubst", 3),
-        ("defun", 3),
-        ("defvar", 3),
-        ("defvaralias", 3),
-        ("define-category", 2),
-        ("define-compiler-macro", 3),
-        ("define-setf-expander", 3),
-    ]
-    .into_iter()
-    .map(|(symbol, doc_index)| {
-        (
-            symbol.to_string(),
-            vec![("doc-string-elt".to_string(), Value::Integer(doc_index))],
-        )
-    })
-    .collect();
-    properties.extend(builtin_edebug_form_specs());
-    properties.extend(builtin_edebug_declaration_specs());
-    properties.extend(builtin_edebug_elem_specs());
-    properties.extend(builtin_error_symbol_properties());
+    // byte-run.el, subr.el and lisp-mode.el put the definition forms'
+    // `doc-string-elt' and Edebug specs as they are loaded.
+    let mut properties: Vec<(String, Vec<(String, Value)>)> = builtin_error_symbol_properties();
     // buffer.c:syms_of_buffer's Fput calls: plain plist entries.
     properties.push((
         "vertical-scroll-bar".to_string(),
@@ -1151,12 +1011,6 @@ fn builtin_symbol_properties() -> Vec<(String, Value)> {
             )
         }),
     );
-    // GNU: (function-put 'lambda 'doc-string-elt 2); pp's code formatter
-    // keeps only pre-docstring elements on the first line.
-    properties.push((
-        "lambda".to_string(),
-        vec![("doc-string-elt".to_string(), Value::Integer(2))],
-    ));
     properties.extend(c_initializer_properties());
     // Each entry is a run of Fput calls: a symbol's properties are put in
     // the order they come, a property put again keeping its place.
@@ -6045,28 +5899,6 @@ pub(crate) enum InternalHandlers {
     Error,
 }
 
-fn make_visual_line_mode_map(interp: &mut Interpreter) -> Value {
-    // simple.el: (define-key map [remap COMMAND] REPLACEMENT) in a sparse
-    // keymap.
-    let map = primitives::make_runtime_keymap(interp, Value::Nil);
-    for (command, replacement) in [
-        ("kill-line", "kill-visual-line"),
-        ("move-beginning-of-line", "beginning-of-visual-line"),
-        ("move-end-of-line", "end-of-visual-line"),
-    ] {
-        let key = Value::vector([Value::symbol("remap"), Value::symbol(command)]);
-        let _ = primitives::define_key(
-            interp,
-            map,
-            key,
-            Value::symbol(replacement),
-            false,
-            &mut crate::lisp::types::Env::new(),
-        );
-    }
-    map
-}
-
 impl Default for Interpreter {
     fn default() -> Self {
         Self::new()
@@ -6140,12 +5972,6 @@ impl Interpreter {
             .unwrap_or_else(|_| Value::Symbol("wall".into()));
         let frame_name =
             primitives::make_shared_string_value_with_multibyte("F1".into(), None, true);
-        let fringe_bitmaps = Value::list(
-            primitives::STANDARD_FRINGE_BITMAPS
-                .iter()
-                .rev()
-                .map(|name| Value::symbol(name)),
-        );
         let fringe_bitmap_states = primitives::STANDARD_FRINGE_BITMAPS
             .iter()
             .enumerate()
@@ -6206,7 +6032,6 @@ impl Interpreter {
             globals: SymbolCells::from_bindings(vec![
                 ("main-thread".into(), Value::Record(main_thread)),
                 ("obarray".into(), Value::Record(standard_obarray)),
-                ("cl-old-struct-compat-mode".into(), Value::Nil),
                 // GNU frame.c defines this native variable before frame.el
                 // and any dumped/preloaded Lisp run.
                 ("default-frame-alist".into(), Value::Nil),
@@ -6231,7 +6056,6 @@ impl Interpreter {
                 // value is populated from the standard DOC file during the
                 // reconstructed dump/startup phase.
                 ("build-files".into(), Value::Nil),
-                ("case-replace".into(), Value::T),
                 // xdisp.c publishes the complete overlay-arrow value-cell
                 // cluster before loadup.el begins.  simple.el extends the
                 // variable list while it is preloaded, so the list and its
@@ -6290,11 +6114,6 @@ impl Interpreter {
                     Value::list([Value::symbol("internal-default-signal-process")]),
                 ),
                 ("system-uses-terminfo".into(), Value::T),
-                ("warning-fill-prefix".into(), Value::Nil),
-                ("warning-prefix-function".into(), Value::Nil),
-                ("warning-series".into(), Value::Nil),
-                ("warning-suppress-types".into(), Value::Nil),
-                ("warning-type-format".into(), Value::String(" (%s)".into())),
                 ("lread--unescaped-character-literals".into(), Value::Nil),
                 (
                     "standard-output".into(),
@@ -6377,8 +6196,6 @@ impl Interpreter {
                 "char-code-property-alist".into(),
                 "load-read-function".into(),
                 "command-line-args".into(),
-                "command-line-args-left".into(),
-                "command-switch-alist".into(),
                 "current-load-list".into(),
                 "load-history".into(),
                 "default-frame-alist".into(),
@@ -6421,11 +6238,6 @@ impl Interpreter {
                 "read-process-output-max".into(),
                 "selection-converter-alist".into(),
                 "signal-process-functions".into(),
-                "warning-fill-prefix".into(),
-                "warning-prefix-function".into(),
-                "warning-series".into(),
-                "warning-suppress-types".into(),
-                "warning-type-format".into(),
                 "window-system".into(),
                 "scroll-preserve-screen-position".into(),
                 "scroll-up-aggressively".into(),
@@ -7126,10 +6938,9 @@ impl Interpreter {
         interp.define_special_variable("eol-mnemonic-dos", Value::String("\\".into()));
         interp.define_special_variable("eol-mnemonic-mac", Value::String("/".into()));
         interp.define_special_variable("eol-mnemonic-undecided", Value::String(":".into()));
-        interp.define_special_variable("fringe-bitmaps", fringe_bitmaps);
-        for (index, name) in primitives::STANDARD_FRINGE_BITMAPS.iter().enumerate() {
-            interp.put_symbol_property(name, "fringe", Value::Integer((index + 1) as i64));
-        }
+        // fringe.c starts `fringe-bitmaps' empty; fringe.el pushes the
+        // standard bitmaps' names and gives each its `fringe' number.
+        interp.define_special_variable("fringe-bitmaps", Value::Nil);
         for name in GNU_LREAD_SPECIAL_VARIABLES {
             interp.mark_special_variable(name);
         }
@@ -7239,27 +7050,9 @@ impl Interpreter {
                 );
             }
         }
-        // `visual-line-mode' deliberately stays native in Emaxx, so its
-        // native bootstrap owns the same complete mode contract that GNU's
-        // dumped simple.el creates: a stable map, mode variable, hook family,
-        // and minor-mode registry entry.
-        let visual_line_mode_map = make_visual_line_mode_map(&mut interp);
-        interp.define_special_variable("visual-line-mode-map", visual_line_mode_map);
-        interp.set_global_binding(
-            "minor-mode-map-alist",
-            Value::list([Value::cons(
-                Value::Symbol("visual-line-mode".into()),
-                visual_line_mode_map,
-            )]),
-        );
-        interp.set_global_binding(
-            "minor-mode-list",
-            Value::list([Value::Symbol("visual-line-mode".into())]),
-        );
-        interp.define_per_buffer_special("visual-line-mode", Value::Nil);
-        // define-minor-mode defines the mode hook; the -on-hook and
-        // -off-hook it runs stay void.
-        interp.define_special_variable("visual-line-mode-hook", Value::Nil);
+        // keymap.c: DEFVAR_LISP's nil.  subr.el and simple.el's
+        // `define-minor-mode' forms fill this and `minor-mode-list'.
+        interp.set_global_binding("minor-mode-map-alist", Value::Nil);
         interp.define_per_buffer_special("font-lock-mode", Value::Nil);
         interp.define_per_buffer_special("font-lock-fontified", Value::Nil);
         // buffer_defaults' slots (every buffer has its own; see
@@ -7315,8 +7108,10 @@ impl Interpreter {
             interp
                 .char_table_set_range(table_id, 32, 126, Value::T)
                 .expect("initialize ASCII printable characters");
+            // character.c: 160 up to MAX_5_BYTE_CHAR; raw bytes are not
+            // printable.
             interp
-                .char_table_set_range(table_id, 160, 0x3f_ffff, Value::T)
+                .char_table_set_range(table_id, 160, 0x3f_ff7f, Value::T)
                 .expect("initialize multibyte printable characters");
             interp.define_special_variable("printable-chars", Value::CharTable(table_id));
         }
@@ -7408,33 +7203,6 @@ impl Interpreter {
                 Value::Nil
             },
         );
-        // simple.el is dumped by GNU.  Gnus, Ibuffer, Dired, and Tramp read
-        // this shell-command state without requiring simple.el, so keep the
-        // adjacent public defaults together instead of discovering them one
-        // void variable at a time.
-        for (name, value) in [
-            (
-                "shell-command-buffer-name",
-                Value::String("*Shell Command Output*".into()),
-            ),
-            (
-                "shell-command-buffer-name-async",
-                Value::String("*Async Shell Command*".into()),
-            ),
-            ("shell-command-history", Value::Nil),
-            ("shell-command-default-error-buffer", Value::Nil),
-            (
-                "async-shell-command-buffer",
-                Value::Symbol("confirm-new-buffer".into()),
-            ),
-            ("async-shell-command-display-buffer", Value::T),
-            ("async-shell-command-width", Value::Nil),
-            ("shell-command-prompt-show-cwd", Value::Nil),
-            ("shell-command-dont-erase-buffer", Value::Nil),
-            ("shell-command-saved-pos", Value::Nil),
-        ] {
-            interp.define_special_variable(name, value);
-        }
         // fns.c initializes this true.  subr.el consumes the C-owned policy
         // but does not replace its value during loadup.
         interp.define_special_variable("use-dialog-box", Value::T);
@@ -7488,14 +7256,14 @@ impl Interpreter {
         // and Lisp navigation/indentation code dynamically binds it while
         // calling separately defined helpers.
         interp.define_special_variable("open-paren-in-column-0-is-defun-start", Value::T);
-        // GNU textprop.c supplies syntax-table/display, and the dumped Lisp
-        // image adds composition/fill-space.  `insert-and-inherit' consults
-        // this process-wide special when deciding which adjacent properties
-        // may propagate onto newly inserted text.
+        // textprop.c supplies syntax-table and display, composite.c conses
+        // composition on, and fill.el adds fill-space as loadup loads it.
+        // `insert-and-inherit' consults this process-wide special when
+        // deciding which adjacent properties may propagate onto newly
+        // inserted text.
         interp.define_special_variable(
             "text-property-default-nonsticky",
             Value::list([
-                Value::cons(Value::Symbol("fill-space".into()), Value::T),
                 Value::cons(Value::Symbol("composition".into()), Value::T),
                 Value::cons(Value::Symbol("syntax-table".into()), Value::T),
                 Value::cons(Value::Symbol("display".into()), Value::T),
@@ -7512,12 +7280,9 @@ impl Interpreter {
             interp.put_symbol_property(name, "pure", Value::T);
             interp.put_symbol_property(name, "side-effect-free", Value::T);
         }
-        // files.el keeps `write-file-functions' global by default: a local
-        // binding is allowed and survives a mode change, but ordinary global
-        // additions must remain visible in every buffer.  The two legacy and
-        // contents hooks are genuinely `defvar-local'.
-        interp.define_special_variable("write-file-functions", Value::Nil);
-        interp.put_symbol_property("write-file-functions", "permanent-local", Value::T);
+        // files.el's `defvar-local' hooks.  `write-file-functions',
+        // `buffer-offer-save' and `backup-inhibited' are its own, with their
+        // `permanent-local' put after their documentation.
         interp.define_per_buffer_special("local-write-file-hooks", Value::Nil);
         interp.put_symbol_property("local-write-file-hooks", "permanent-local", Value::T);
         interp.define_per_buffer_special("write-contents-functions", Value::Nil);
@@ -7532,27 +7297,8 @@ impl Interpreter {
             interp.define_special_variable(name, value);
         }
         interp.define_special_variable("require-final-newline", Value::Nil);
-        // files.el defines this as nil and then calls
-        // `make-variable-buffer-local'.  Merely carrying the property is not
-        // enough: otherwise setting it in one buffer changes every buffer's
-        // save policy.
-        interp.define_per_buffer_special("buffer-offer-save", Value::Nil);
-        interp.put_symbol_property("buffer-offer-save", "permanent-local", Value::T);
-        interp.put_symbol_property("backup-inhibited", "permanent-local", Value::T);
-        // mule.el is dumped before files.el.  Save/revert code reads this
-        // automatically buffer-local coding choice directly.
-        interp.define_per_buffer_special("buffer-file-coding-system-explicit", Value::Nil);
-        interp.put_symbol_property(
-            "buffer-file-coding-system-explicit",
-            "permanent-local",
-            Value::T,
-        );
-        // GNU loadup preloads vc-hooks.el and uniquify.el before files.el.
-        // files.el reads these bindings directly, without boundp guards.
-        // vc-hooks.el makes `vc-mode' buffer-local with no `defvar'.
-        interp.set_global_binding("vc-mode", Value::Nil);
-        interp.mark_auto_buffer_local("vc-mode");
-        interp.put_symbol_property("vc-mode", "permanent-local", Value::T);
+        // mule.el's `buffer-file-coding-system-explicit' and vc-hooks.el's
+        // `vc-mode' (buffer-local with no `defvar') are theirs as well.
         for (name, value) in [
             (
                 "uniquify-buffer-name-style",
@@ -7613,31 +7359,6 @@ impl Interpreter {
         );
         crate::startup::initialize_exec_path(&mut interp)
             .expect("callproc.c:init_callproc's exec-path");
-        interp.define_per_buffer_special("mark-ring", Value::Nil);
-        interp.put_symbol_property("mark-ring", "permanent-local", Value::T);
-        interp.set_global_binding("mark-ring-max", Value::Integer(16));
-        interp.put_symbol_property(
-            "mark-ring-max",
-            "standard-value",
-            Value::list([quoted_literal(&Value::Integer(16))]),
-        );
-        interp.put_symbol_property(
-            "mark-ring-max",
-            "custom-type",
-            Value::Symbol("natnum".into()),
-        );
-        interp.set_global_binding("global-mark-ring", Value::Nil);
-        interp.set_global_binding("global-mark-ring-max", Value::Integer(16));
-        interp.put_symbol_property(
-            "global-mark-ring-max",
-            "standard-value",
-            Value::list([quoted_literal(&Value::Integer(16))]),
-        );
-        interp.put_symbol_property(
-            "global-mark-ring-max",
-            "custom-type",
-            Value::Symbol("natnum".into()),
-        );
         // callint.c DEFVAR_KBOARD/DEFVAR_LISP variables.  Command helpers
         // dynamically bind these around calls into separately defined
         // functions, so lexical code must still observe the active prefix.
@@ -7744,19 +7465,11 @@ impl Interpreter {
             "eldoc-echo-area-use-multiline-p",
             Value::Symbol("truncate-sym-name-if-fit".into()),
         );
-        interp.set_global_binding("tab-bar-new-tab-choice", Value::T);
         interp.define_special_variable("max-lisp-eval-depth", Value::Integer(1600));
-        interp.put_symbol_property(
-            "tab-bar-new-tab-choice",
-            "custom-type",
-            tab_bar_new_tab_choice_custom_type(),
-        );
-        interp.set_global_binding("search-upper-case", Value::Symbol("not-yanks".into()));
         // search.c primitive DEFVARs.  Search helpers bind these around
         // calls into separately defined code, so both are dynamic specials.
         interp.define_special_variable("search-spaces-regexp", Value::Nil);
         interp.define_special_variable("inhibit-changing-match-data", Value::Nil);
-        interp.set_global_binding("search-whitespace-regexp", Value::String("[ \t]+".into()));
         // GNU preloads window.el, whose `defcustom' both initializes this
         // user action table and declares it special.  Buffer-display policy
         // is commonly let-bound in a lexical caller and consumed by a
@@ -7975,7 +7688,12 @@ impl Interpreter {
         if let Some(window) = interp.find_record_mut(selected_window_id) {
             window.slots[primitives::WINDOW_USE_TIME_SLOT] = Value::Integer(1);
         }
-        let (minibuffer_buffer_id, _) = primitives::get_minibuffer(&mut interp, 0);
+        // frame.c:make_frame shows the current buffer in the root window
+        // through set_window_buffer, and the minibuffer in the minibuffer
+        // window.
+        interp.stamp_buffer_display(interp.current_buffer_id);
+        let minibuffer_buffer_id = primitives::get_minibuffer(&mut interp, 0);
+        interp.stamp_buffer_display(minibuffer_buffer_id);
         interp.buffer_list.push((1, "*Messages*".to_string()));
         let minibuffer_window = interp.create_pseudovector(
             RecordKind::Window,
@@ -8108,6 +7826,18 @@ impl Interpreter {
                     self.intern_symbol_name(defsym.name);
                 }
             }
+        }
+        // Names syms_of_* interns with intern_c_string outside DEFSYM:
+        // syms_of_keyboard's modifier_symbols and syms_of_callint's
+        // preserved_fns.
+        for name in [
+            "up", "down", "drag", "click", "double", "triple", "alt", "super", "hyper", "shift",
+            "control", "meta",
+        ] {
+            self.intern_symbol_name(name);
+        }
+        for name in ["region-beginning", "region-end", "point", "mark"] {
+            self.intern_symbol_name(name);
         }
     }
 
@@ -8266,10 +7996,6 @@ fn symbol_name(value: &Value) -> Option<String> {
         Kind::Symbol(name) => Some(name.to_string()),
         _ => None,
     }
-}
-
-fn quoted_literal(value: &Value) -> Value {
-    Value::list([Value::Symbol("quote".into()), *value])
 }
 
 pub(crate) fn error_condition_value(error: &LispError) -> Value {

@@ -189,7 +189,7 @@ impl Interpreter {
             )?;
         }
         self.set_buffer_local_value(scratch, "default-directory", directory);
-        let (minibuffer, _) = primitives::get_minibuffer(self, 0);
+        let minibuffer = primitives::get_minibuffer(self, 0);
         self.set_buffer_local_value(minibuffer, "default-directory", directory);
         // emacs.c:init_cmdargs.
         self.set_global_binding("command-line-args", primitives::command_line_args_value());

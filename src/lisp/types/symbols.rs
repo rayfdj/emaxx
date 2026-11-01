@@ -377,6 +377,9 @@ const KEY_NAMES: &[&str] = &[
     "replace-buffer-in-windows",
     "mark-active",
     "integer-width",
+    "overlay-arrow-variable-list",
+    "last-arrow-position",
+    "last-arrow-string",
 ];
 
 struct Symbols {

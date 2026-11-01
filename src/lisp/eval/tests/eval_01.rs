@@ -7067,8 +7067,9 @@ fn builtin_text_codings_expose_complete_eol_variant_families() {
 
 #[test]
 fn dumped_simple_shell_command_state_is_available_at_startup() {
+    // simple.el's options, as GNU's loadup loads them.
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             "(list shell-command-buffer-name
                    shell-command-buffer-name-async
                    shell-command-history

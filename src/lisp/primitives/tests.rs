@@ -13433,7 +13433,9 @@ fn native_fringe_bitmap_registry_family_matches_gnu() {
     let expected_printed = "((24 1 24) (t t t t nil t t nil nil nil) ((wrong-type-argument symbolp) (wrong-type-argument arrayp) (args-out-of-range 0) (args-out-of-range 17) (error \"Bad align argument\") (error \"Undefined fringe bitmap\") (wrong-type-argument symbolp)) (nil nil args-out-of-range wrong-type-argument))";
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected_printed);
 
-    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    // fringe.el, which defines the standard bitmaps' names as GNU's
+    // loadup loads it, among the preloaded Lisp.
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
@@ -33366,6 +33368,24 @@ fn read_symbols_are_named_with_the_multibyteness_readchar_reports() {
         r###"(list (multibyte-string-p (symbol-name (read (string-to-multibyte "zz-r228a")))) (multibyte-string-p (symbol-name (read "zz-r228b"))) (with-temp-buffer (insert "zz-r228c") (goto-char 1) (multibyte-string-p (symbol-name (read (current-buffer))))) (with-temp-buffer (set-buffer-multibyte nil) (insert "zz-r228d") (goto-char 1) (multibyte-string-p (symbol-name (read (current-buffer))))) (let ((s (read "zz-r228e\377"))) (list (multibyte-string-p (symbol-name s)) (string-to-list (symbol-name s)) (eq s (intern "zz-r228e\377")))) (multibyte-string-p (symbol-name (read (string-to-multibyte "#:zz-r228f")))) (multibyte-string-p (symbol-name (read "#:zz-r228g"))) (let ((f (make-temp-file "zz-r228" nil ".el"))) (unwind-protect (progn (with-temp-file f (insert "(setq zz-r228-v 'zz-r228h)")) (load f nil t) (multibyte-string-p (symbol-name zz-r228-v))) (delete-file f))) (with-temp-buffer (insert "(setq zz-r228-w 'zz-r228i)") (eval-buffer) (multibyte-string-p (symbol-name zz-r228-w))) (prin1-to-string (intern "zz-r228j\300")) (string-to-list (prin1-to-string (make-symbol "\377"))) (format "%S %s" (intern "zz-r228k\301") (intern "zz-r228k\301")) (let ((n 0)) (multibyte-string-p (symbol-name (read (lambda (&optional c) (if c nil (setq n (1+ n)) (if (< n 4) ?y ?\s))))))) (let ((s (intern "zz-r228l\302"))) (list (prin1-to-string s t) (string-to-list (format "%s" s)) (with-output-to-string (princ s)))) (eq (read (string-to-multibyte "zz-r228m")) (read "zz-r228m")) (multibyte-string-p (symbol-name (caar (read-from-string (string-to-multibyte "(zz-r228n)"))))) (multibyte-string-p (symbol-name (event-convert-list '(control meta zz-r228o)))) (multibyte-string-p (symbol-name (read (string-to-multibyte "##")))) (multibyte-string-p (symbol-name (read (string-to-multibyte "#:")))))"###,
         r###"(t nil t nil (nil (122 122 45 114 50 50 56 101 255) t) t nil t t "zz-r228jÀ" (255) "zz-r228kÁ zz-r228k\301" nil ("zz-r228lÂ" (122 122 45 114 50 50 56 108 194) "zz-r228lÂ") t t t nil nil)"###,
         "read symbol name multibyteness",
+    );
+}
+
+#[test]
+fn startup_lisp_state_events_and_display_stamps_are_as_gnu_makes_them() {
+    // keyboard.c:Fevent_convert_list walks its argument as
+    // FOR_EACH_TAIL_SAFE does, takes a one-character symbol as its name's
+    // first byte and modifies the base through apply_modifiers, whose
+    // `modifier-cache' is the base's; xdisp.c:update_overlay_arrows (-1)
+    // marks the arrows when a window is made inaccurate; window.c's
+    // set_window_buffer stamps the buffer's display count and time.  The
+    // preloaded Lisp, not Emaxx's startup, makes `minor-mode-list',
+    // `minor-mode-map-alist', `fringe-bitmaps' and the definition forms'
+    // properties, in its own order.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list (event-convert-list '()) (event-convert-list 'foo) (event-convert-list '(control . a)) (event-convert-list '(control t)) (event-convert-list (list 'control (intern "\351"))) (condition-case e (event-convert-list '(control a b)) (error e)) (condition-case e (event-convert-list '(meta 1.5 . x)) (error e)) (event-convert-list '(meta 97 . x)) (progn (event-convert-list '(control zzr229a)) (list (symbol-plist 'zzr229a) (symbol-plist 'C-zzr229a))) (progn (put 'zzr229b 'event-kind 'mouse-click) (event-convert-list '(double zzr229b)) (symbol-plist 'double-zzr229b)) (progn (defvar zzr229c nil) (let ((overlay-arrow-variable-list '(zzr229c 1))) (force-window-update (selected-window))) (symbol-plist 'zzr229c)) (progn (defvar zzr229d (make-marker)) (let ((overlay-arrow-variable-list '(zzr229d))) (redraw-frame)) (symbol-plist 'zzr229d)) (let ((b (generate-new-buffer "zz229"))) (prog1 (list (buffer-local-value 'buffer-display-count b) (progn (set-window-buffer nil b) (buffer-local-value 'buffer-display-count b)) (consp (buffer-local-value 'buffer-display-time b)) (progn (set-window-buffer nil b) (buffer-local-value 'buffer-display-count b))) (kill-buffer b))) (with-current-buffer "*scratch*" (list buffer-display-count (consp buffer-display-time))) (let (r (p (symbol-plist 'when))) (while p (push (car p) r) (setq p (cddr p))) (nreverse r)) (let (r (p (symbol-plist 'write-file-functions))) (while p (push (car p) r) (setq p (cddr p))) (nreverse r)) (last minor-mode-list 2) (assq 'visual-line-mode minor-mode-map-alist) (length fringe-bitmaps) (aref printable-chars #x3fff7f) (aref printable-chars #x3fff80) (get 'defmacro 'doc-string-elt))"##,
+        r##"(nil nil control 20 67109097 (error "Two bases given in one event") (error "Invalid base event") 134217825 ((modifier-cache ((67108864 . C-zzr229a))) nil) (event-kind mouse-click) (last-arrow-position t last-arrow-string t) (last-arrow-position t last-arrow-string t) (0 1 t 2) (2 t) (lisp-indent-function edebug-form-spec) (variable-documentation permanent-local) (view-mode hs-minor-mode) (visual-line-mode keymap (remap keymap (move-end-of-line . end-of-visual-line) (move-beginning-of-line . beginning-of-visual-line) (kill-line . kill-visual-line))) 24 t nil 3)"##,
+        "startup Lisp state, events and display stamps",
     );
 }
 

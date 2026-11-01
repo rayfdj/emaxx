@@ -7597,8 +7597,9 @@ fn sentence_end_double_space_defaults_to_t() {
 
 #[test]
 fn core_definition_forms_have_doc_string_slots() {
+    // byte-run.el and lisp-mode.el put these as GNU's loadup loads them.
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             "(list (function-get 'defun 'doc-string-elt)
                    (function-get 'defmacro 'doc-string-elt)
                    (function-get 'defvar 'doc-string-elt)

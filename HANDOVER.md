@@ -11357,6 +11357,44 @@ setup_process_coding_systems's check now refuses). A 13-form
   229 to 231 on top: the grouped gate's 3,420 library tests, the
   integration targets and clippy with `--all-targets --all-features -D
   warnings' pass.
+- **Round 229: the startup state preloaded Lisp makes; events and
+  display stamps as GNU's.** A comparison of every symbol's property
+  order and of the startup values of 47 variables against GNU found the
+  rest of the 46 names round 228 traced to Rust pre-sets of Lisp-owned
+  state. Emaxx's startup no longer sets simple.el's `visual-line-mode',
+  its map, hook and `minor-mode-map-alist'/`minor-mode-list' entries
+  (whose pre-set `minor-mode-list' kept subr.el's initial one from
+  taking effect), the shell-command and mark-ring options, isearch's,
+  replace.el's and tab-bar.el's options, loaddefs.el's `warning-'
+  variables and `cl-old-struct-compat-mode', startup.el's
+  `command-line-args-left' (now set after loadup, never by the image
+  builder) and `command-switch-alist', the `permanent-local' of
+  files.el's, mule.el's and vc-hooks.el's variables, fringe.el's
+  `fringe-bitmaps' (doubled when fringe.el pushed onto it), fill.el's
+  `fill-space' in `text-property-default-nonsticky', or the Edebug specs
+  and `doc-string-elt' byte-run.el, subr.el and lisp-mode.el put on the
+  definition forms; `printable-chars' ends at MAX_5_BYTE_CHAR, and
+  syms_of_keyboard's modifier names and syms_of_callint's preserved
+  functions are interned at startup. keyboard.c:Fevent_convert_list now
+  walks its argument as FOR_EACH_TAIL_SAFE does (a dotted, empty or
+  non-list description no longer signals), takes a one-character symbol
+  as its name's first byte, and modifies a symbol through
+  apply_modifiers, whose `modifier-cache' is the base's. Overlay arrow
+  variables get xdisp.c:update_overlay_arrows (-1)'s marks from
+  `force-window-update' and `redraw-frame'; set_window_buffer stamps
+  `buffer-display-count' and `buffer-display-time' (make_frame's windows
+  too), and get_minibuffer gives a minibuffer it reuses buffer.c's
+  reset_buffer. The multibyte-name census matches GNU's 5,884 but for
+  the four X-only names Emaxx's platform taxonomy leaves out (`latin-1',
+  `compound-text', `dont-save', `x-gtk-use-system-tooltips'); the 220
+  remaining property-order differences are X and touch-screen properties
+  (`x-frame-parameter', touch-screen.el's maps) and the `default' face's
+  `face' number, which Emaxx's tty frame makes before faces.el defines
+  the face. An oracle test pins the events, the overlay arrows, the
+  display stamps and the Lisp-made startup state. Local validation, with
+  rounds 230 and 231 on top: the grouped gate's 3,420 library
+  tests, the integration targets and clippy with `--all-targets
+  --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's

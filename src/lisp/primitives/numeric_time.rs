@@ -962,6 +962,22 @@ pub(crate) fn bigint_gcd(mut left: BigInt, mut right: BigInt) -> BigInt {
     left.abs()
 }
 
+/// timefns.c:Fcurrent_time.
+pub(crate) fn lisp_current_time(interp: &Interpreter) -> Result<Value, LispError> {
+    if let Some(value) = current_time_without_bignums(interp) {
+        return Ok(value);
+    }
+    // timefns.c make_lisp_time: the old-style list under
+    // `current-time-list', else the nanosecond (TICKS . 1000000000) pair,
+    // never reduced.
+    let now = current_time_value()?;
+    if current_time_list_is_set(interp) {
+        exact_time_to_old_style(&now)
+    } else {
+        exact_time_to_scaled_pair(&now, &BigInt::from(1_000_000_000u64))
+    }
+}
+
 pub(crate) fn current_time_value() -> Result<ExactTimeValue, LispError> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1891,18 +1907,7 @@ define_dispatch!(
             }
             "current-time" => {
                 need_arg_range(name, args, 0, 0)?;
-                if let Some(value) = current_time_without_bignums(interp) {
-                    return Ok(value);
-                }
-                // timefns.c make_lisp_time: the old-style list under
-                // `current-time-list', else the nanosecond
-                // (TICKS . 1000000000) pair, never reduced.
-                let now = current_time_value()?;
-                if current_time_list_is_set(interp) {
-                    exact_time_to_old_style(&now)
-                } else {
-                    exact_time_to_scaled_pair(&now, &BigInt::from(1_000_000_000u64))
-                }
+                lisp_current_time(interp)
             }
             "current-time-string" => {
                 need_arg_range(name, args, 0, 2)?;

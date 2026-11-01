@@ -1651,24 +1651,13 @@ pub(crate) fn activate_minibuffer(
     });
     let saved_windows = interp.snapshot_window_configuration();
     let depth = interp.minibuffer_depth().saturating_add(1);
-    let (buffer_id, reused) = get_minibuffer(interp, depth);
+    let buffer_id = get_minibuffer(interp, depth);
     let saved_buffer_id = interp.current_buffer_id();
     let saved_selected_window_id = interp.selected_window_id();
     let saved_selected_window_buffer_id = interp.selected_window_buffer_id();
     let previous_minibuffer_selected_window_id =
         interp.replace_minibuffer_selected_window_id(Some(saved_selected_window_id));
     let default_directory = interp.lookup_var("default-directory", env);
-    if reused {
-        // GNU get_minibuffer deletes both overlay trees before reset_buffer.
-        // Reusing a minibuffer without this step leaves completion UI from
-        // the preceding read (for example M-x's Vertico count) attached to
-        // the next Consult prompt.
-        interp
-            .get_buffer_by_id_mut(buffer_id)
-            .expect("reused minibuffer remains live")
-            .overlays
-            .clear();
-    }
     // read_minibuf's set_minibuffer_mode: `minibuffer-mode', whose
     // kill-all-local-variables drops what the previous read left local.
     set_minibuffer_mode(interp, buffer_id, depth, env)?;
@@ -1873,19 +1862,25 @@ pub(crate) fn minibuffer_innermost_command_loop_p(interp: &Interpreter, buffer: 
         && interp.minibuffer_command_loop_level(depth) == Some(interp.command_loop_recursion_depth)
 }
 
-/// minibuf.c:get_minibuffer: the DEPTHth minibuffer and whether it was
-/// reused; a new one has undo enabled ("Although the buffer's name starts
-/// with a space, undo should be enabled in it").
-pub(crate) fn get_minibuffer(interp: &mut Interpreter, depth: usize) -> (u64, bool) {
+/// minibuf.c:get_minibuffer: the DEPTHth minibuffer; a new one has undo
+/// enabled ("Although the buffer's name starts with a space, undo should be
+/// enabled in it").
+pub(crate) fn get_minibuffer(interp: &mut Interpreter, depth: usize) -> u64 {
     let name = format!(" *Minibuf-{depth}*");
     if let Some((id, _)) = interp.find_buffer(&name) {
-        return (id, true);
+        // A live one has both overlay lists emptied, so no overlay thinks
+        // it still belongs to the buffer, and is reset_buffer's.
+        if let Some(mut buffer) = interp.get_buffer_by_id_mut(id) {
+            buffer.overlays.clear();
+        }
+        interp.reset_buffer(id);
+        return id;
     }
     let id = interp.create_buffer(&name).0;
     if let Some(mut buffer) = interp.get_buffer_by_id_mut(id) {
         buffer.enable_undo();
     }
-    (id, false)
+    id
 }
 
 /// minibuf.c:set_minibuffer_mode: in BUFFER, `minibuffer-mode' for an
@@ -1927,7 +1922,7 @@ fn set_minibuffer_mode(
 /// emacs.c's set_initial_minibuffer_mode, before the top level: the
 /// level-0 minibuffer in its inactive mode.
 pub(crate) fn set_initial_minibuffer_mode(interp: &mut Interpreter) -> Result<(), LispError> {
-    let (buffer_id, _) = get_minibuffer(interp, 0);
+    let buffer_id = get_minibuffer(interp, 0);
     set_minibuffer_mode(interp, buffer_id, 0, &mut Env::new())
 }
 
