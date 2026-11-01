@@ -346,6 +346,30 @@ pub(crate) fn eval_buffer_impl(
     )?
     .is_truthy()
         && !string_like(&source_file).is_some_and(|file| file.text.ends_with(".elc"));
+    // lread.c:Feval_buffer binds `eval-buffer-list' and `standard-output'
+    // (`symbolp' unless values are printed or printing is allowed), saves
+    // the current buffer's point, and reads the buffer from BEGV.
+    let readcharfun = interp.buffer_value(buffer_id).expect("live buffer object");
+    let printflag = args.get(1).copied().unwrap_or(Value::Nil);
+    let output = if printflag.is_nil() && args.get(4).is_none_or(Value::is_nil) {
+        Value::symbol("symbolp")
+    } else {
+        printflag
+    };
+    let eval_buffer_list = interp
+        .lookup_var("eval-buffer-list", env)
+        .unwrap_or(Value::Nil);
+    let previous_eval_buffer_list = interp.bind_special_variable(
+        "eval-buffer-list",
+        Value::cons(readcharfun, eval_buffer_list),
+        env,
+    )?;
+    let previous_output = interp.bind_special_variable("standard-output", output, env)?;
+    let excursion = interp.save_excursion_state();
+    if let Some(mut buffer) = interp.get_buffer_by_id_mut(buffer_id) {
+        let begv = buffer.point_min();
+        buffer.goto_char(begv);
+    }
     let previous_load_list =
         interp.bind_special_variable("current-load-list", Value::list([source_file]), env)?;
     // Feval_buffer specbinds the Lisp variable `lexical-binding' to the
@@ -365,16 +389,38 @@ pub(crate) fn eval_buffer_impl(
         if cookie_lexical { Value::T } else { Value::Nil },
         env,
     )?;
+    // readevalloop reads from `standard-input', bound to the buffer.
+    let previous_input = interp.bind_special_variable("standard-input", readcharfun, env)?;
     // Feval_buffer returns nil whatever the last form evaluated to.
-    let result = eval_buffer_forms(interp, buffer_id, eager_macroexpand, env).map(|_| Value::Nil);
+    let mut result = eval_buffer_forms(
+        interp,
+        buffer_id,
+        eager_macroexpand,
+        !printflag.is_nil(),
+        env,
+    )
+    .map(|_| Value::Nil);
     if result.is_ok() {
         let current = interp
             .lookup_var("current-load-list", env)
             .unwrap_or(Value::Nil);
         interp.commit_entire_load_history(&source_file, current);
     }
-    interp.restore_special_binding(previous_lexical_binding, env)?;
-    interp.restore_special_binding(previous_load_list, env)?;
+    for restore in [previous_input, previous_lexical_binding, previous_load_list] {
+        if let Err(error) = interp.restore_special_binding(restore, env)
+            && result.is_ok()
+        {
+            result = Err(error);
+        }
+    }
+    interp.restore_excursion_state(excursion);
+    for restore in [previous_output, previous_eval_buffer_list] {
+        if let Err(error) = interp.restore_special_binding(restore, env)
+            && result.is_ok()
+        {
+            result = Err(error);
+        }
+    }
     result
 }
 
@@ -399,20 +445,18 @@ pub(crate) fn eval_region_impl(
         ])));
     }
     let print_flag = args.get(2).cloned().unwrap_or(Value::Nil);
-    // lread.c readevalloop: a nil READ-FUNCTION means `load-read-function',
-    // and only the built-in `read' takes the native reading path.
-    let read_function = args
-        .get(3)
-        .filter(|value| !value.is_nil())
-        .cloned()
-        .or_else(|| {
-            interp
-                .lookup_var("load-read-function", env)
-                .filter(|value| !matches!(value.kind(), Kind::Symbol(symbol) if symbol == "read"))
-        });
+    // lread.c readevalloop: READ-FUNCTION reads each form, else
+    // `load-read-function'; only the built-in `read' takes the native
+    // reading path.
+    let explicit_reader = args.get(3).filter(|value| !value.is_nil()).copied();
+    let read_function = explicit_reader.or_else(|| {
+        interp
+            .lookup_var("load-read-function", env)
+            .filter(|value| !matches!(value.kind(), Kind::Symbol(symbol) if symbol == "read"))
+    });
     let buffer_id = interp.current_buffer_id();
     let source_file = interp.buffer.borrow().file.clone();
-    let saved_point = interp.buffer.borrow().point();
+    let readcharfun = interp.buffer_value(buffer_id).expect("live buffer object");
 
     // lread.c dynamically binds these around `readevalloop'.  In
     // particular, the file load context lets macros expanded by eval-defun
@@ -429,10 +473,7 @@ pub(crate) fn eval_region_impl(
         .unwrap_or(Value::Nil);
     restores.push(interp.bind_special_variable(
         "eval-buffer-list",
-        Value::cons(
-            interp.buffer_value(buffer_id).expect("live buffer object"),
-            eval_buffer_list,
-        ),
+        Value::cons(readcharfun, eval_buffer_list),
         env,
     )?);
     if let Some(file) = source_file {
@@ -442,6 +483,8 @@ pub(crate) fn eval_region_impl(
             env,
         )?);
     }
+    // readevalloop reads from `standard-input', bound to the buffer.
+    restores.push(interp.bind_special_variable("standard-input", readcharfun, env)?);
 
     // readevalloop reads the buffer-local `lexical-binding' and runs the
     // forms in a fresh interpreter environment — the caller's lexical
@@ -449,45 +492,34 @@ pub(crate) fn eval_region_impl(
     let lexical = interp
         .lookup_var("lexical-binding", env)
         .is_some_and(|value| value.is_truthy());
+    let print = !print_flag.is_nil();
     let mut result = with_fresh_eval_environment(interp, lexical, |interp, eval_env| {
         if let Some(read_function) = read_function {
             return eval_region_via_read_function(
                 interp,
                 buffer_id,
-                start,
-                end,
+                (start, end),
                 &read_function,
-                &print_flag,
+                explicit_reader.is_some(),
+                print,
                 eval_env,
             );
         }
         read_eval_buffer_forms(
             interp,
             buffer_id,
-            start,
-            end,
+            Some((start, end)),
             eval_env,
             |interp, form, eval_env| {
                 let result = eager_expand_eval(interp, &form, eval_env)?;
-                if !print_flag.is_nil() {
-                    let _ = crate::lisp::primitives::call(
-                        interp,
-                        "print",
-                        &[result, print_flag],
-                        eval_env,
-                    )?;
+                if print {
+                    readevalloop_print(interp, result, eval_env)?;
                 }
                 Ok(result)
             },
         )
     });
 
-    if interp.current_buffer_id() == buffer_id {
-        {
-            let point = saved_point.min(interp.buffer.borrow().point_max());
-            interp.buffer.borrow_mut().goto_char(point);
-        }
-    }
     for restore in restores.into_iter().rev() {
         if let Err(error) = interp.restore_special_binding(restore, env)
             && result.is_ok()
@@ -498,44 +530,185 @@ pub(crate) fn eval_region_impl(
     result.map(|_| Value::Nil)
 }
 
+/// readevalloop's printing of a form's VALUE: onto `values', then to
+/// `standard-output', prin1'd when that is t and printed otherwise.
+fn readevalloop_print(
+    interp: &mut Interpreter,
+    value: Value,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    let values = interp.lookup_var("values", env).unwrap_or(Value::Nil);
+    interp.set_variable("values", Value::cons(value, values), env);
+    let printer = match interp.lookup_var("standard-output", env).map(|v| v.kind()) {
+        Some(Kind::T) => "prin1",
+        _ => "print",
+    };
+    crate::lisp::primitives::call(interp, printer, &[value], env)?;
+    Ok(())
+}
+
+/// A marker at POSITION in the buffer BUFFER_ID, as Fpoint_marker makes.
+fn readevalloop_marker(
+    interp: &mut Interpreter,
+    buffer_id: u64,
+    position: usize,
+) -> crate::lisp::types::MarkerRef {
+    let Kind::Marker(id) = interp.make_marker().kind() else {
+        unreachable!("make_marker returns a marker");
+    };
+    interp
+        .set_marker(id, Some(position), Some(buffer_id))
+        .expect("a fresh marker accepts a live buffer");
+    id
+}
+
+/// readevalloop's skip before each form, from POS to END of the buffer:
+/// whitespace (space, tab, newline, formfeed, return and no-break space)
+/// and `;' comments.  Where the next form starts, or END.
+fn skip_readevalloop_separators(
+    interp: &Interpreter,
+    buffer_id: u64,
+    mut pos: usize,
+    end: usize,
+) -> usize {
+    let Some(buffer) = interp.get_buffer_by_id(buffer_id) else {
+        return end;
+    };
+    while pos < end {
+        match buffer.char_at(pos) {
+            Some(';') => {
+                while pos < end && buffer.char_at(pos) != Some('\n') {
+                    pos += 1;
+                }
+            }
+            Some(' ' | '\t' | '\n' | '\u{c}' | '\r' | '\u{a0}') => pos += 1,
+            _ => break,
+        }
+    }
+    pos
+}
+
+/// readevalloop over the current buffer from START to END with
+/// READ-FUNCTION (EXPLICIT) or `load-read-function': each form is read
+/// with the buffer current, narrowed to END and with point at the next
+/// form, and the excursion is restored before it is evaluated.  A
+/// READ-FUNCTION that leaves point at the end stops the reading after
+/// its form.
 fn eval_region_via_read_function(
     interp: &mut Interpreter,
     buffer_id: u64,
-    start: usize,
-    end: usize,
+    (start, end): (usize, usize),
     read_function: &Value,
-    print_flag: &Value,
+    explicit: bool,
+    print: bool,
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    interp.buffer.borrow_mut().goto_char(start);
-    let stream = interp.buffer_value(buffer_id).expect("live buffer object");
-    let mut result = Value::Nil;
-    while interp.buffer.borrow().point() < end {
-        // As many comments as the text has characters: a fixnum, which
-        // forward-comment's count must be.
-        let comments = interp.buffer.borrow().size_total() as i64 + 1;
-        let _ = crate::lisp::primitives::call(
+    let start = readevalloop_marker(interp, buffer_id, start);
+    let end = readevalloop_marker(interp, buffer_id, end);
+    let mut result = Ok(Value::Nil);
+    loop {
+        let read = read_region_form(
             interp,
-            "forward-comment",
-            &[Value::Integer(comments)],
+            buffer_id,
+            (start, end),
+            read_function,
+            explicit,
             env,
         );
-        if interp.buffer.borrow().point() >= end {
+        let (form, stop) = match read {
+            Ok(Some(read)) => read,
+            Ok(None) => break,
+            Err(error) => {
+                result = Err(error);
+                break;
+            }
+        };
+        let value = match eager_expand_eval(interp, &form, env) {
+            Ok(value) => value,
+            Err(error) => {
+                result = Err(error);
+                break;
+            }
+        };
+        if print && let Err(error) = readevalloop_print(interp, value, env) {
+            result = Err(error);
             break;
         }
-        // readevalloop calls the Lisp reader without a handler: its
-        // `end-of-file' propagates; the loop itself stops at END.
-        let form =
-            interp.call_function_value(*read_function, None, std::slice::from_ref(&stream), env)?;
-        // No `intern_symbols_in_value' here: when reading is delegated to a
-        // Lisp reader GNU interns nothing beyond what that reader interned,
-        // so a deliberately `unintern'-ed symbol it returns stays dead.
-        result = eager_expand_eval(interp, &form, env)?;
-        if !print_flag.is_nil() {
-            let _ = crate::lisp::primitives::call(interp, "print", &[result, *print_flag], env)?;
+        result = Ok(value);
+        if stop {
+            break;
         }
     }
-    Ok(result)
+    let _ = interp.set_marker(start, None, None);
+    let _ = interp.set_marker(end, None, None);
+    result
+}
+
+/// One form of eval-region's loop with a Lisp reader: the excursion,
+/// the buffer made current, point at START narrowed to END, the
+/// separators skipped and READ-FUNCTION called, START then where it
+/// stopped; None at the end.  The second value says to stop reading.
+fn read_region_form(
+    interp: &mut Interpreter,
+    buffer_id: u64,
+    (start, end): (crate::lisp::types::MarkerRef, crate::lisp::types::MarkerRef),
+    read_function: &Value,
+    explicit: bool,
+    env: &mut Env,
+) -> Result<Option<(Value, bool)>, LispError> {
+    if !interp.has_buffer_id(buffer_id) {
+        return Err(LispError::Signal("Reading from killed buffer".into()));
+    }
+    let outer = interp.save_excursion_state();
+    if let Err(error) = interp.set_current_buffer_id(buffer_id) {
+        interp.restore_excursion_state(outer);
+        return Err(error);
+    }
+    let inner = interp.save_excursion_state();
+    let restriction = interp.save_restriction_state();
+    interp.restore_labeled_restrictions(buffer_id, Vec::new());
+    let read = (|| {
+        let stream = interp.buffer_value(buffer_id).expect("live buffer object");
+        let (begv, zv) = {
+            let buffer = interp.buffer.borrow();
+            (buffer.point_min(), buffer.point_max())
+        };
+        let from = interp
+            .marker_position(start)
+            .unwrap_or(begv)
+            .clamp(begv, zv);
+        interp.buffer.borrow_mut().goto_char(from);
+        let limit = interp.marker_position(end).unwrap_or(zv);
+        crate::lisp::primitives::call(
+            interp,
+            "narrow-to-region",
+            &[Value::Integer(begv as i64), Value::Integer(limit as i64)],
+            env,
+        )?;
+        let (point, zv) = {
+            let buffer = interp.buffer.borrow();
+            (buffer.point(), buffer.point_max())
+        };
+        let position = skip_readevalloop_separators(interp, buffer_id, point, zv);
+        interp.buffer.borrow_mut().goto_char(position);
+        if position >= zv {
+            return Ok(None);
+        }
+        let form = interp.call_function_value(*read_function, None, &[stream], env)?;
+        let (point, zv) = {
+            let buffer = interp.buffer.borrow();
+            (buffer.point(), buffer.point_max())
+        };
+        let stop = explicit && point == zv;
+        if !stop {
+            let _ = interp.set_marker(start, Some(point), Some(buffer_id));
+        }
+        Ok(Some((form, stop)))
+    })();
+    interp.restore_restriction_state(restriction);
+    interp.restore_excursion_state(inner);
+    interp.restore_excursion_state(outer);
+    read
 }
 
 /// lread.c lisp_file_lexical_cookie: the `lexical-binding' file variable
@@ -571,6 +744,7 @@ fn eval_buffer_forms(
     interp: &mut Interpreter,
     buffer_id: u64,
     eager_macroexpand: bool,
+    print: bool,
     env: &mut Env,
 ) -> Result<Value, LispError> {
     let load_read = interp
@@ -588,79 +762,160 @@ fn eval_buffer_forms(
     // is called from inside a lexical closure (testcover's
     // instrumentation runner is exactly that caller).
     let lexical = lisp_file_lexical_cookie(&text).unwrap_or(false);
-    if !matches!(load_read.kind(), Kind::Symbol(symbol) if symbol == "read") {
-        // A customized reader (like `edebug--read') reads from the buffer
-        // itself, form by form, moving point like `readevalloop' does.
-        return with_fresh_eval_environment(interp, lexical, |interp, eval_env| {
-            eval_buffer_via_load_read_function(
-                interp,
-                buffer_id,
-                &load_read,
-                eager_macroexpand,
-                eval_env,
-            )
-        });
-    }
-    let (start, end, saved_point) = {
-        let buffer = interp
-            .get_buffer_by_id(buffer_id)
-            .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?;
-        (buffer.point_min(), buffer.point_max(), buffer.point())
+    let evaluate = move |interp: &mut Interpreter, form: Value, eval_env: &mut Env| {
+        let value = if eager_macroexpand {
+            eager_expand_eval(interp, &form, eval_env)?
+        } else {
+            interp.eval(&form, eval_env)?
+        };
+        if print {
+            readevalloop_print(interp, value, eval_env)?;
+        }
+        Ok(value)
     };
-    let result = with_fresh_eval_environment(interp, lexical, |interp, eval_env| {
-        read_eval_buffer_forms(
-            interp,
-            buffer_id,
-            start,
-            end,
-            eval_env,
-            |interp, form, eval_env| {
-                if eager_macroexpand {
-                    eager_expand_eval(interp, &form, eval_env)
-                } else {
-                    interp.eval(&form, eval_env)
-                }
-            },
+    with_fresh_eval_environment(interp, lexical, |interp, eval_env| {
+        if matches!(load_read.kind(), Kind::Symbol(symbol) if symbol == "read") {
+            read_eval_buffer_forms(interp, buffer_id, None, eval_env, evaluate)
+        } else {
+            // A customized reader (like `edebug--read') reads from the
+            // buffer itself, form by form, moving point.
+            eval_buffer_via_load_read_function(interp, buffer_id, &load_read, eval_env, evaluate)
+        }
+    })
+}
+
+/// The text a readevalloop's forms are read from, and what the buffer
+/// was when it was taken: it serves while the buffer's characters, its
+/// accessible region, the end of the reading and where the next form
+/// starts are as the last read left them.
+struct ReadevalloopSource {
+    text: BufferReadSource,
+    state: (crate::buffer::ModCount, bool, usize, usize),
+    end: usize,
+    offset: usize,
+    position: usize,
+}
+
+/// What a buffer's text was for a readevalloop source.
+fn readevalloop_text_state(
+    interp: &Interpreter,
+    buffer_id: u64,
+) -> (crate::buffer::ModCount, bool, usize, usize) {
+    interp
+        .get_buffer_by_id(buffer_id)
+        .map_or((0, false, 0, 0), |buffer| {
+            (
+                buffer.chars_modified_tick(),
+                buffer.is_multibyte(),
+                buffer.point_min(),
+                buffer.size_total(),
+            )
+        })
+}
+
+/// readevalloop with the built-in `read' over a buffer, each form read
+/// by `read' on it (its frame on the backtrace while the reader runs)
+/// and handed to EVAL, the last value returned.  For eval-buffer (REGION
+/// nil) a form is read at the buffer's point, which the reader leaves
+/// after it and the forms may move; for eval-region from START, a marker
+/// the reader's end becomes, to END, a marker too, the buffer's point
+/// untouched.  The reader takes the buffer's characters as lread.c's
+/// readchar does; an `invalid-read-syntax' carries the line and column
+/// where reading stopped.
+fn read_eval_buffer_forms(
+    interp: &mut Interpreter,
+    buffer_id: u64,
+    region: Option<(usize, usize)>,
+    env: &mut Env,
+    mut eval: impl FnMut(&mut Interpreter, Value, &mut Env) -> Result<Value, LispError>,
+) -> Result<Value, LispError> {
+    let markers = region.map(|(start, end)| {
+        (
+            readevalloop_marker(interp, buffer_id, start),
+            readevalloop_marker(interp, buffer_id, end),
         )
     });
-    // Feval_buffer's record_unwind_protect_excursion: point comes back
-    // however the forms end, a read error's position included.
-    if let Some(mut buffer) = interp.get_buffer_by_id_mut(buffer_id) {
-        let point = saved_point.min(buffer.point_max());
-        buffer.goto_char(point);
+    let result = read_eval_buffer_loop(interp, buffer_id, markers, env, &mut eval);
+    if let Some((start, end)) = markers {
+        let _ = interp.set_marker(start, None, None);
+        let _ = interp.set_marker(end, None, None);
     }
     result
 }
 
-/// readevalloop with the built-in `read': the forms of the buffer from
-/// START to END, each read by `read' on the buffer (its frame on the
-/// backtrace while the reader runs) and handed to EVAL, the last value
-/// returned.  The reader takes the buffer's characters as lread.c's
-/// readchar does; an `invalid-read-syntax' leaves point where reading
-/// stopped and carries that line and column.
-fn read_eval_buffer_forms(
+fn read_eval_buffer_loop(
     interp: &mut Interpreter,
     buffer_id: u64,
-    start: usize,
-    end: usize,
+    markers: Option<(crate::lisp::types::MarkerRef, crate::lisp::types::MarkerRef)>,
     env: &mut Env,
-    mut eval: impl FnMut(&mut Interpreter, Value, &mut Env) -> Result<Value, LispError>,
+    eval: &mut impl FnMut(&mut Interpreter, Value, &mut Env) -> Result<Value, LispError>,
 ) -> Result<Value, LispError> {
-    let source = BufferReadSource::new(interp, buffer_id, start, end)?;
     let readcharfun = interp.buffer_value(buffer_id).expect("live buffer object");
-    let mut offset = 0;
+    let mut source: Option<ReadevalloopSource> = None;
     let mut result = Value::Nil;
     loop {
+        if !interp.has_buffer_id(buffer_id) {
+            return Err(LispError::Signal("Reading from killed buffer".into()));
+        }
+        let (begv, point, zv) = {
+            let buffer = interp
+                .get_buffer_by_id(buffer_id)
+                .expect("a live buffer is registered");
+            (buffer.point_min(), buffer.point(), buffer.point_max())
+        };
+        // eval-region's Fgoto_char (start) and Fnarrow_to_region (BEGV,
+        // end) keep both in the accessible text.
+        let (position, end) = match markers {
+            None => (point, zv),
+            Some((start, end)) => {
+                let end = interp.marker_position(end).unwrap_or(zv).clamp(begv, zv);
+                let start = interp
+                    .marker_position(start)
+                    .unwrap_or(begv)
+                    .clamp(begv, end);
+                (start, end)
+            }
+        };
+        let state = readevalloop_text_state(interp, buffer_id);
+        let current = source.as_ref().is_some_and(|source| {
+            source.state == state && source.position == position && source.end == end
+        });
+        if !current {
+            source = Some(ReadevalloopSource {
+                text: BufferReadSource::new(interp, buffer_id, position, end)?,
+                state,
+                end,
+                offset: 0,
+                position,
+            });
+        }
+        let source = source.as_mut().expect("a source was just taken");
         interp.push_backtrace_frame(Value::symbol("read"), &[readcharfun]);
-        let form = match read_next_eval_form(interp, &source, &mut offset, env) {
+        let before = source.offset;
+        let read = read_next_eval_form(interp, &source.text, &mut source.offset, env);
+        let reached = source.position + source.text.characters_between(before, source.offset);
+        source.position = reached;
+        let form = match read {
             Ok(form) => form,
             Err(error) => {
                 let error = reader_end_of_file(interp, error, env);
+                // The reader moved point to where it stopped; eval-region's
+                // excursion then restores it.
                 let error = if matches!(error.kind(), LispErrorKind::ReadError(_)) {
+                    let saved = interp
+                        .get_buffer_by_id(buffer_id)
+                        .map(|buffer| buffer.point());
                     if let Some(mut buffer) = interp.get_buffer_by_id_mut(buffer_id) {
-                        buffer.goto_char((start + source.characters_before(offset)).min(end));
+                        buffer.goto_char(reached.min(end));
                     }
-                    invalid_syntax_in_buffer(interp, buffer_id, error, env)
+                    let error = invalid_syntax_in_buffer(interp, buffer_id, error, env);
+                    if markers.is_some()
+                        && let Some(saved) = saved
+                        && let Some(mut buffer) = interp.get_buffer_by_id_mut(buffer_id)
+                    {
+                        buffer.goto_char(saved);
+                    }
+                    error
                 } else {
                     error
                 };
@@ -670,6 +925,20 @@ fn read_eval_buffer_forms(
             }
         };
         interp.pop_backtrace_frame();
+        match markers {
+            // readchar moved the buffer's point past what it read.
+            None => {
+                if let Some(mut buffer) = interp.get_buffer_by_id_mut(buffer_id) {
+                    buffer.goto_char(reached);
+                }
+            }
+            Some((start, _)) => {
+                if form.is_some() {
+                    let _ = interp.set_marker(start, Some(reached), Some(buffer_id));
+                    source.position = reached;
+                }
+            }
+        }
         let Some(form) = form else {
             return Ok(result);
         };
@@ -828,68 +1097,37 @@ fn eval_buffer_via_load_read_function(
     interp: &mut Interpreter,
     buffer_id: u64,
     load_read: &Value,
-    eager_macroexpand: bool,
     env: &mut Env,
+    mut eval: impl FnMut(&mut Interpreter, Value, &mut Env) -> Result<Value, LispError>,
 ) -> Result<Value, LispError> {
-    let previous_buffer = interp.current_buffer_id();
-    interp.switch_to_buffer_id(buffer_id)?;
-    let saved_point = interp.buffer.borrow().point();
-    let minimum = interp.buffer.borrow().point_min();
-    interp.buffer.borrow_mut().goto_char(minimum);
-    let stream = crate::lisp::primitives::call(interp, "current-buffer", &[], env)?;
-    let mut result = Ok(Value::Nil);
+    // readevalloop with `load-read-function' over a buffer it does not
+    // make current: each form read at the buffer's point, past the
+    // separators, and evaluated.  Deliberately NO `intern_symbols_in_value'
+    // here: GNU interns nothing beyond what that reader interned, so a
+    // deliberately `unintern'-ed symbol it returns stays dead.
+    let stream = interp.buffer_value(buffer_id).expect("live buffer object");
+    let mut result = Value::Nil;
     loop {
-        // As many comments as the text has characters: a fixnum, which
-        // forward-comment's count must be.
-        let comments = interp.buffer.borrow().size_total() as i64 + 1;
-        let _ = crate::lisp::primitives::call(
-            interp,
-            "forward-comment",
-            &[Value::Integer(comments)],
-            env,
-        );
-        if interp.buffer.borrow().point() >= interp.buffer.borrow().point_max() {
-            break;
+        if !interp.has_buffer_id(buffer_id) {
+            return Err(LispError::Signal("Reading from killed buffer".into()));
         }
-        let form = match interp.call_function_value(
-            *load_read,
-            None,
-            std::slice::from_ref(&stream),
-            env,
-        ) {
-            Ok(form) => form,
-            Err(error) => {
-                if error.condition_type() == "end-of-file" {
-                    break;
-                }
-                result = Err(error);
-                break;
-            }
+        let (point, zv) = {
+            let buffer = interp
+                .get_buffer_by_id(buffer_id)
+                .expect("a live buffer is registered");
+            (buffer.point(), buffer.point_max())
         };
-        // Deliberately NO `intern_symbols_in_value' here.  When reading is
-        // delegated to a Lisp `load-read-function', GNU interns nothing extra
-        // -- the form's symbols are whatever that function produced.  Walking
-        // it re-interns symbols GNU leaves alone: a reader returning a
-        // deliberately `unintern'-ed symbol made Emaxx resurrect it while GNU
-        // still answered nil.  An earlier revision added the walk here for
-        // "symmetry" with `eval-region' below, which achieved symmetry by
-        // copying that path's defect (finding 120) rather than fixing it.
-        match if eager_macroexpand {
-            eager_expand_eval(interp, &form, env)
-        } else {
-            interp.eval(&form, env)
-        } {
-            Ok(value) => result = Ok(value),
-            Err(error) => {
-                result = Err(error);
-                break;
-            }
+        let position = skip_readevalloop_separators(interp, buffer_id, point, zv);
+        if let Some(mut buffer) = interp.get_buffer_by_id_mut(buffer_id) {
+            buffer.goto_char(position);
         }
+        if position >= zv {
+            return Ok(result);
+        }
+        let form =
+            interp.call_function_value(*load_read, None, std::slice::from_ref(&stream), env)?;
+        result = eval(interp, form, env)?;
     }
-    let target = saved_point.min(interp.buffer.borrow().point_max());
-    interp.buffer.borrow_mut().goto_char(target);
-    interp.switch_to_buffer_id(previous_buffer)?;
-    result
 }
 
 pub(crate) fn resolve_load_target_in_env(

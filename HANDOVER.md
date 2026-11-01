@@ -10647,6 +10647,392 @@ setup_process_coding_systems's check now refuses). A 13-form
   the pdump round trip carries it. Local validation: the grouped gate's
   3,383 library tests, the integration targets and clippy with
   `--all-targets --all-features -D warnings' pass.
+- **Round 205: compare-buffer-substrings as editfns.c compares.**
+  compare-buffer-substrings compared the stored Rust characters of its
+  ranges, so a raw byte (stored as a private-use character) ordered below
+  an emoji, and a character past #x10FFFF (stored as a placeholder) by the
+  placeholder; and it converted both ends of both ranges on every call,
+  which sort-lines makes once per comparison. It is now
+  Fcompare_buffer_substrings: the starts' byte positions are the only
+  conversions, each character is read as BUF_FETCH_MULTIBYTE_CHAR reads it
+  (a unibyte buffer's bytes made characters by make_char_multibyte),
+  `case-fold-search' translates both through the current buffer's
+  case_canon_table by char_table_translate, the walk stops at the first
+  difference, and the buffers are let go at each 65536th character for
+  rarely_quit. sort-lines over simple.el and subr.el takes 863 M
+  instructions where it took 1,024 M (GNU 744 M). A battery of 12 ops
+  (raw bytes, codes past #x10FFFF and emoji in both orders, unibyte
+  against multibyte, case folding of ASCII and Latin-1, prefixes, swapped
+  and empty ranges, out-of-range, missing and killed buffers, a marker
+  bound, narrowing, a 6,000-character prefix, sort-lines over raw bytes
+  and an emoji) matches GNU where two ops did not; an oracle test pins it.
+  Local validation: the grouped gate's 3,384 library tests, the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass.
+- **Round 206: the local keymap as a buffer slot.** `use-local-map' kept
+  BVAR (b, keymap) as a buffer-local Lisp variable named
+  `current-local-map': once a major mode had installed its map the buffer
+  reported that variable to `local-variable-p', `boundp' and
+  `buffer-local-variables', a `setq-local' or `let' of a variable of that
+  name changed what `current-local-map' returned and which map key lookup
+  used, and `buffer-local-value' of it on a killed buffer returned a map
+  where GNU signals void-variable. The map is now a field of the buffer,
+  as mark_active and undo_list are: Fuse_local_map and the minibuffer
+  store it, Fcurrent_local_map, key lookup (get_local_map's fallback) and
+  `describe-buffer-bindings' read it, reset_buffer_local_variables and
+  kill-buffer empty it, clone-indirect-buffer copies it, the collector
+  visits it and the pdump writes it in a buffer record slot of its own. A
+  battery of 10 ops (the variable's absence, kill-all-local-variables,
+  both indirect buffers, `setq-local' and `let' of a `current-local-map'
+  variable, a non-keymap argument, key-binding and local-key-binding,
+  text-mode and fundamental-mode, a killed buffer, another buffer's map,
+  emacs-lisp-mode) matches GNU where four ops did not; an oracle test pins
+  it and the pdump round trip carries a local map. Local validation: the
+  grouped gate's 3,385 library tests, the integration targets and
+  clippy with `--all-targets --all-features -D warnings' pass.
+- **Round 207: partially permanent hooks survive a major mode change.**
+  add-hook marks a buffer-local hook `permanent-local' with the value
+  `permanent-local-hook' when it is given a function that has a
+  `permanent-local-hook' property, and reset_buffer_local_variables then
+  keeps such a hook with only `t' and the functions that carry that
+  property. kill-all-local-variables (and the reset a major mode makes)
+  treated the value as plain `permanent-local' and kept every function of
+  the hook, so a mode change ran functions a mode had added for itself.
+  The reset now keeps the elements GNU keeps, in order (a value that is no
+  list is what Fnreverse makes of it), tells the variable's watchers nil
+  and then the list kept, and a full reset (KILL-PERMANENT) keeps nothing.
+  Batteries of 13 ops over permanent-local variables, hooks, watchers,
+  change-major-mode-hook and the always-local C variables match GNU where
+  four ops did not; an oracle test pins it. Local validation: the grouped
+  gate's 3,386 library tests, the integration targets and clippy with
+  `--all-targets --all-features -D warnings' pass.
+- **Round 208: the startup obarray and the C initializers' properties as
+  GNU's.** A `-Q' session's obarray held 161 symbols GNU's does not: every
+  cached key (`edebug-entered', `ert-test-failed', `ert-test-skipped'
+  among them) was interned at construction, the debugger probe interned
+  `edebug-entered' for itself, Snarf-documentation interned every name DOC
+  lists (DOC carries the DEFUNs of `#if 0', GLYPH_DEBUG and the other
+  platforms' files) where doc.c finds them with oblookup, the DEFSYM pass
+  interned `unbound' (lread.c:define_symbol leaves Qunbound out) and the
+  three symbols syms_of_eval, syms_of_editfns and syms_of_print unintern,
+  the image's own scalars were named by symbols, and cl-macs.el's edebug
+  element specs were seeded although cl-macs.el, which loads before
+  anything names them, defines them. The keys GNU has no DEFSYM for are
+  gone (the two ERT error kinds were never made), the probe holds
+  `edebug-entered' once edebug's defvar makes the interned symbol special,
+  Snarf looks names up without interning them, the DEFSYM pass leaves out
+  what GNU leaves out, the scalars are named by strings, and the seeds
+  GNU's `-Q' lacks (the cl-macs specs, cl-macrolet's form spec,
+  `defgeneric''s doc-string position, `display-table''s extra slots) are
+  dropped; one remains, `abbrev-table', which names Emaxx's record form of
+  an abbrev table (GNU's abbrev tables are obarrays). Five C hooks
+  (`pre-command-hook', `post-command-hook', `show-help-function',
+  `after-delete-frame-functions', `x-pre-popup-menu-hook') were bound only
+  when Lisp first set them, after loadup's Snarf, so the image carried no
+  documentation for them; they are bound from construction as their
+  DEFVARs bind them. The C initializers' Fput calls that their own code
+  reads back are made at startup: coding.c's `target-idx' of the six I/O
+  operations, buffer.c's disabled `erase-buffer' and `protected-field'
+  error, window.c's `scroll-command' of scroll-up and scroll-down,
+  emacs.c's risky `dynamic-library-alist' and keyboard.c's head_table
+  event kinds; property seeds for one symbol now merge as Fput puts them.
+  find-operation-coding-system is Ffind_operation_coding_system: the
+  target is the argument OPERATION's `target-idx' names (a user operation
+  with the property works), checked as coding.c checks it, and an alist
+  value is a cons, a coding system (nil among them, returned as given) or
+  a function whose answer is used the same way, anything else nil; it
+  aborted on a string value, errored on an unbound function and returned
+  canonical names. Oracle tests pin the obarray, the properties and the
+  function, and CLI tests check a loaded image's obarray and the hooks'
+  documentation. Local validation: the grouped gate's 3,389 library
+  tests, the integration targets and clippy with `--all-targets
+  --all-features -D warnings' pass.
+- **Round 209: variable watchers kept as data.c keeps them.** Emaxx held
+  each variable's watch functions in a table of its own:
+  `add-variable-watcher' and `remove-variable-watcher' answered the
+  function where GNU answers nil, a new watcher went behind the older ones
+  and was called after them, `(get VAR 'watchers)' was nil and storing
+  into that property changed nothing, frame.el's set-buffer-redisplay
+  watchers on `mode-line-format', `truncate-lines' and twenty other
+  display variables were invisible, and a watcher that stored into its own
+  variable recursed until `excessive-lisp-nesting' (GNU's watcher runs
+  with the variable's stores untrapped, so its store notifies no one and
+  the outer store then lands). The watchers are now the `watchers'
+  property of the base variable: Fadd_variable_watcher traps the
+  variable's stores and conses the function in front unless an `equal' one
+  is there, Fremove_variable_watcher deletes it and untraps with the last,
+  Fget_variable_watchers reads the property while the stores are trapped,
+  and notify_variable_watchers calls what the property holds, newest
+  first, as the base variable, untrapping the variable for the call and
+  trapping it again however the watchers return; `defvaralias' notifies
+  the alias's watchers and gives the alias its base's trap. The image
+  carries the trap in the symbol's flags and the watchers in its plist
+  (the separate watcher list of a symbol record is gone). An oracle test
+  pins the protocol; the GC variables' C watchers (alloc.c's
+  watch_gc_cons_threshold and watch_gc_cons_percentage) remain the one
+  startup difference. Local validation: the grouped gate's 3,390
+  library tests, the integration targets and clippy with `--all-targets
+  --all-features -D warnings' pass.
+- **Round 210: alloc.c's watchers of the GC variables; the image keeps
+  the obarray's order.** syms_of_alloc watches `gc-cons-threshold' and
+  `gc-cons-percentage' with two subrs it makes for itself,
+  `watch_gc_cons_threshold' and `watch_gc_cons_percentage', which no
+  symbol names; each runs bump_consing_until_gc for the value being
+  stored, so a `let' of a low threshold (or a high one) moves the next
+  collection at once. Emaxx retuned the counter only when its old budget
+  ran out, and `get-variable-watchers' of either variable answered nil.
+  The two subrs now exist beside the defsubr table (whose order is the
+  .eln ABI's, so they are kept out of it): named by their C functions,
+  arity (4 . 4), dispatched by name, found by the image loader under
+  their index rather than an interned name, and installed as the
+  variables' watchers at construction; their bodies retune the counter
+  on the active native heap or the interpreter's with the stored value
+  and the other variable's current one. The audit that every literal
+  dispatch arm is a GNU C primitive takes these two as alloc.c's. An
+  oracle test pins the watchers and a collection inside a `let' of a low
+  threshold, which GNU makes and Emaxx did not.
+  The round 209 CI failure (below) was the image's obarray: the loader
+  interns each symbol as it reads its cell, so the buckets' chains came
+  out in the image's cell order, and an image dumped from an
+  interpreter that was itself started from an image walked `mapatoms' in
+  another order than its template. pdumper.c dumps the obarray vector
+  itself, so its size and chains survive; the dumped obarray record now
+  carries the size bits before its DOOBARRAY-ordered symbols, and image
+  installation files the buckets again in that order (a symbol the
+  loader interned that the record does not list is filed after them, as
+  intern_sym files it). The image round-trip test passes locally with
+  the image template, as the CI runs it. Local validation: the grouped
+  gate's 3391 library tests, the integration targets and clippy
+  with `--all-targets --all-features -D warnings' pass.
+- **Round 211: the standard abbrev tables as abbrev.el makes them.**
+  Emaxx bound `fundamental-mode-abbrev-table', `global-abbrev-table' and
+  `text-mode-abbrev-table' at construction (and again when `abbrev' was
+  provided) to records of a type `abbrev-table' of its own, which interned
+  that symbol, carried their entries as a list beside a property list, and
+  had cases of their own in `obarray-clear', the bucket walk and
+  `intern'. abbrev.el's `defvar's then kept them, `define-derived-mode'
+  (which puts `definition-name' only on an abbrev table it defines) left
+  `text-mode-abbrev-table' without one, and `abbrev-table-name-list'
+  listed the three in an order GNU's loadup never makes. The records and
+  every case for them are removed, with the plist helpers only they used:
+  the tables are the `make-abbrev-table' obarrays abbrev.el and
+  text-mode.el define while loadup runs, holding their properties on the
+  "" symbol, and the obarray census counts obarrays alone.
+  `local-abbrev-table' starts nil, as buffer.c's `buffer_defaults' has
+  it, until abbrev.el's `setq-default' gives it the fundamental-mode
+  table (the construction-time binding had hidden that). An oracle test
+  pins the loaded image's tables, their order, plist, modiff and printed
+  form against GNU's. Local validation: the grouped gate's 3,391
+  library tests, the integration targets and clippy with
+  `--all-targets --all-features -D warnings' pass.
+- **Round 212: `kill-all-local-variables' and `buffer-local-value' by
+  symbol.** Every major mode's `kill-all-local-variables' looked each of
+  the buffer's bindings up in the per-buffer table by name (a linear
+  search with string compares), the fourteen always-local slots a buffer
+  is made with among them, and then stored every such slot back over
+  itself after the reset; the reset also recounted the evaluator cells
+  among those slots, which never hold one. In a buffer with no locals of
+  its own a call cost some 8,000 instructions against the few hundred of
+  reset_buffer_local_variables; it now walks the local_var_alist alone (the fixed slots stay where they are), asks the
+  table only about a symbol flagged as a per-buffer slot (the check
+  `kill-local-variable' already makes) and leaves the count at zero, so
+  `(with-temp-buffer (kill-all-local-variables))' runs 18,926
+  instructions against GNU's 19,390 (with-temp-buffer alone 16,933
+  against 17,931). `buffer-local-value' copied its variable's resolved
+  name, compared it as text and read the binding by name; it now checks
+  VARIABLE as CHECK_SYMBOL does, so a symbol with position is accepted
+  while `symbols-with-pos-enabled' (GNU answers the value where Emaxx
+  signalled), and reads by the symbol: 837 instructions a call in a
+  compiled loop where it took 1,469 (GNU 581). Measured but not changed:
+  `run-mode-hooks' costs 11,400 instructions beyond with-temp-buffer
+  against GNU's 4,700, spread over the buffer-local reads and the
+  bindings the `defvar-local' stores make (about 100 instructions a read
+  missing the loaded binding, where GNU's swap_in walks a short alist),
+  and the instruction-cache misses of a with-temp-buffer are 1,230
+  against GNU's 217 at fewer instructions, the code-footprint gap
+  recorded before. An oracle test pins the symbol-with-position read,
+  the alias, another buffer's local and the slots and permanent locals a
+  reset and a full reset keep. Local validation: the grouped gate's
+  3,392 library tests, the integration targets and clippy with
+  `--all-targets --all-features -D warnings' pass.
+- **Round 213: number and marker arguments checked as floatfns.c and
+  marker.c.** A differential battery of 107 calls (floatfns, arithmetic,
+  comparison and position arguments given a live marker, a marker
+  pointing nowhere and a non-number) differed from GNU in 61. floatfns.c
+  takes every number by extract_float or CHECK_NUMBER, which refuse a
+  marker with `numberp': Emaxx's `sin', `cos', `tan', `asin', `acos',
+  `atan', `exp', `log', `sqrt', `abs', `float', `frexp', `logb', `expt',
+  `ceiling', `floor', `round' and `truncate' (and the divisor of the last
+  four) answered for a marker's position and named `number-or-marker-p'
+  for a non-number. `copysign' and `isnan' take floats (CHECK_FLOAT:
+  `(isnan 1)' is a `floatp' error where Emaxx answered nil, and
+  `copysign' coerced integers), and `ldexp' checks its exponent with
+  CHECK_FIXNUM before the significand. These now check as GNU does,
+  through `check_number', `extract_float' and `check_float'. Where a
+  marker is coerced to its position (CHECK_NUMBER_COERCE_MARKER,
+  fix_position: arithmetic, the comparisons, `max' and `min', the
+  logical operations, `goto-char', `narrow-to-region', `char-after',
+  `char-before', `line-number-at-pos'), a marker pointing nowhere is
+  marker_position's `(error "Marker does not point anywhere")'; Emaxx
+  named a wrong type, or answered nil from `char-after' and
+  `char-before'. `forward-char' and `backward-char' take their count by
+  CHECK_FIXNUM (a bignum is `fixnump', not `integerp'). The battery,
+  `marker-tests', `floatfns-tests', `data-tests', `editfns-tests' and
+  `buffer-tests' now agree with GNU, and an oracle test pins one call of
+  each kind. Local validation: the grouped gate's 3,393 library
+  tests, the integration targets and clippy with `--all-targets
+  --all-features -D warnings' pass.
+- **Round 214: C primitive arguments checked as their C sources check
+  them.** A battery calling each C primitive once with each of six
+  arguments (a symbol, a string, -1, 1.5, a marker pointing nowhere and
+  nil; GNU crashers dropped) differed from GNU in 195 calls of 52
+  primitives, nearly all in the type a check names or in a check Emaxx
+  skipped. Characters now go through CHECK_CHARACTER (`char-syntax',
+  `matching-paren', `syntax-class-to-char', `unibyte-char-to-multibyte',
+  `multibyte-char-to-unibyte', `encode-char', `decode-char',
+  `make-char', the Big5 and SJIS coders), fixnums through CHECK_FIXNUM
+  (`byte-to-position', `byte-to-string', `char-resolve-modifiers', which
+  also answers -1 for -1, `match-beginning', `match-end'), charsets
+  through CHECK_CHARSET (`charset-plist', `charset-id-internal',
+  `iso-charset'), syntax tables through check_syntax_table
+  (`copy-syntax-table', `set-syntax-table' of a char table of another
+  purpose), and coding systems as coding.c takes them: nil is
+  `no-conversion' to `coding-system-aliases', `coding-system-eol-type'
+  answers nil for a non-coding-system and `coding-system-put' signals
+  `coding-system-p'. `error-message-string' prints as
+  print.c:print_error_message (a peculiar error, a string-valued
+  condition, the file-error forms and a non-symbol head), `find-buffer'
+  reads its variable through Fbuffer_local_value, `func-arity' signals
+  `invalid-function' of the object it was given, `indirect-variable'
+  answers a non-symbol as given and `force-mode-line-update' its
+  argument, `locale-info', `get-truename-buffer' and
+  `minor-mode-key-binding' answer nil for what they cannot use,
+  `compute-motion' checks its arguments in indent.c's order (a detached
+  marker is marker_position's error, a position past ZV an
+  args-out-of-range of BEGV and ZV), `funcall-with-delayed-message'
+  takes its timeout by extract_float, `defconst-1' refuses a constant,
+  `unibyte-string' checks each byte's range, `vconcat' names
+  `sequencep', and `Snarf-documentation' reports a
+  missing file as report_file_errno does. `random' runs glibc's TYPE_3
+  random(3) generator as sysdep.c's get_random does, seeded by
+  init_random or, for a string, by its bytes through seed_random, and
+  draws a bignum limit's limbs as get_random_bignum does, so a string
+  seed answers GNU's numbers. What still differs is nondeterministic
+  (`sxhash-eq' of a fresh object, an unseeded `random'), X-only or a
+  debug build's (`re--describe-compiled', `newline-cache-check'),
+  `read' of nil while a file loads (round 215 binds `standard-input'),
+  and
+  `(Snarf-documentation "")' of a directory, whose negative read GNU
+  does not check. An oracle test pins one call of each kind. Local
+  validation: the grouped gate's 3,394 library tests, the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass.
+- **Round 215: readevalloop binds `standard-input' and reads at the
+  buffer's point.** lread.c:readevalloop binds `standard-input' to the
+  buffer it reads, so a form calling `read' takes the text after it, and
+  `eval-buffer' reads each form live at the buffer's point, so a form
+  that moves point, narrows or edits the buffer decides what is read
+  next. Emaxx read every form from a copy of the text taken before
+  evaluating any, left `standard-input' alone (a `read' in a loaded file
+  read stdin in batch) and restored point when `eval-region' ended. A
+  battery of eleven calls (a loaded file reading its own data, forms
+  moving point, narrowing and inserting, `eval-region' from a moved
+  point, a source buffer other than the current one, printed values)
+  differed in all eleven. `eval-buffer' now binds `eval-buffer-list',
+  `standard-output', `current-load-list', `lexical-binding' and
+  `standard-input' as Feval_buffer does, saves an excursion, starts at
+  BEGV and reads each form at point after skipping whitespace and
+  comments as read0 does; `eval-region' binds `standard-input' to the
+  buffer and reads from a marker inside a save-restriction narrowed to
+  the region (point restored around each read, as readevalloop's
+  record_unwind_protect_excursion does), stopping when an explicit
+  region's end is reached, and prints values through `prin1' onto
+  `values' and `standard-output'; `load-read-function' takes the same
+  path. lread.c and keyboard.c clear the special flag of `values' and
+  `top-level' after defining them, so a lexical `let' of either binds
+  lexically; Emaxx marked both special, and with values now pushed onto
+  `values', faceup-tests' lexical `let' of `values' around `eval-defun'
+  caught them. Both stay forwarded C variables without the flag. The
+  battery now matches GNU, and an oracle test pins it. Local
+  validation: the grouped gate's 3,395 library tests, the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass.
+- **Round 216: Fload's .elc checks and messages as lread.c makes them.**
+  lread.c:Fload checks an .elc's header for the byte compiler's version
+  line and refuses one without it (`(error "File `%s' was not compiled
+  in Emacs")'); with `load-prefer-newer' nil and a source newer than its
+  .elc it loads the .elc anyway, its "Loading" message saying
+  "(compiled; note, source file is newer)", or, when the load is quiet
+  and `force-load-messages' is nil, messaging "Source file `%s' newer
+  than byte-compiled file; using older file" (skipped for an mtime at
+  the epoch, as GNU skips it). Emaxx loaded the bad .elc and gave no
+  note. Load messages now go through message_with_string, which in batch
+  writes to stderr and leaves `*Messages*' as it was, where Emaxx logged
+  them. Four loader tests whose .elc fixtures lacked the version line,
+  which GNU refuses as well, now write the header the byte compiler
+  writes. An oracle test pins the refusal, the older .elc's value and
+  the untouched `*Messages*'. Local validation: the grouped gate's
+  3,396 library tests, the integration targets and clippy with
+  `--all-targets --all-features -D warnings' pass.
+- **Round 217: two-argument C primitive calls answered as their C
+  sources answer.** A battery calling each C primitive with each pair of
+  seven arguments (nil, 0, 5, a string, a symbol, a cons and the current
+  buffer, with bignums, floats and characters for the numeric ones:
+  8,127 calls, GNU crashers dropped) differed from GNU in 40 lines.
+  `char-after', `char-before' and `charset-after' answer nil for a
+  bignum, which fix_position takes as a position outside any buffer,
+  where Emaxx signalled `integer-or-marker-p'. `documentation-property'
+  reads PROP with Fget, whatever PROP is, looks a missing
+  `variable-documentation' up on the `indirect-variable', and evaluates
+  a form with Feval's nil lexical environment, as doc.c does; Emaxx
+  signalled `symbolp' for a non-symbol PROP. `find-composition-internal'
+  checks POS and LIMIT through fix_position before it checks the string
+  (a non-number LIMIT is `integer-or-marker-p', not args-out-of-range).
+  `expand-file-name' expands against "/" for a DEFAULT-DIRECTORY that is
+  neither nil nor a string, as fileio.c does, so `locate-file-internal'
+  walks a path of non-strings as openp does where Emaxx signalled
+  `stringp'. `logb' answers -1.0e+INF for zero and an infinity's
+  magnitude for an infinity (NaN as given), as floatfns.c does, where
+  Emaxx signalled an arithmetic error. `user-full-name' looks a string
+  up with getpwnam, so "" and an unknown login answer nil. What still
+  differs is nondeterministic (`sxhash-eq' and `sxhash-eql' of fresh
+  objects, an unseeded `random'), a debug build's
+  (`newline-cache-check') or GNU's unchecked read of a directory
+  (`(Snarf-documentation "")'). An oracle test pins one call of each
+  kind. Local validation: the grouped gate's 3,397 library tests,
+  the integration targets and clippy with `--all-targets --all-features
+  -D warnings' pass.
+- **Round 218: `message-box' and its dialog as editfns.c and menu.c
+  make them.** Run with its output and errors apart, the one-argument
+  battery's standard error differed from GNU's: Emaxx printed the
+  messages of `message-box' and `message-or-box', which GNU leaves
+  unprinted in batch. editfns.c's `message-box' clears the echo area for
+  nil and otherwise formats its message into a dialog with one "OK"
+  button for `x-popup-dialog'; no terminal of Emaxx's (and no tty of
+  GNU's) has a dialog hook, so menu.c's emulate_dialog_with_menu asks
+  `x-popup-menu' for a menu of the dialog with its prompt centred on the
+  frame, which a batch session's initial frame never draws. Emaxx sent
+  both functions to `message'. `message-or-box' now takes the dialog
+  after a mouse event (or before any) while `use-dialog-box' is set, and
+  `message' otherwise, as Fmessage_or_box does. `x-popup-dialog' decodes
+  POSITION as menu.c does (a decoded non-window is the `windowp' datum,
+  a dead window `window-live-p') and redisplays first. `x-popup-menu'
+  checks an old-fashioned menu as list_of_panes and list_of_items do (a
+  pane without items is `consp', an item name no string `stringp'), and
+  on a tty shows one of a single pane as tty_menu_activate shows its
+  only pane: under the pane's name, a string item disabled, a (NAME .
+  VALUE) item answering VALUE. POSITION is read as x_popup_menu_1 reads
+  it: ((XOFFSET YOFFSET) WINDOW) counts from WINDOW's corner, where
+  Emaxx placed the menu at the frame's origin; cancelling a menu that no
+  click opened signals `quit' (TTYM_NO_SELECT without MENU_FOR_CLICK);
+  and the next and previous menu keys leave a list menu only under
+  MENU_KBD_NAVIGATION, the menu bar opened from the keyboard, keymap
+  menus keeping their menu-bar cycling. A menu of several panes, which
+  tty_menu_activate cascades from a menu of the pane names, is still
+  not drawn. An oracle test pins the dialogs' values, the messages they
+  leave in `*Messages*' and the parse errors. Local validation: the
+  grouped gate's 3,398 library tests, the integration targets and
+  clippy with `--all-targets --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -11984,6 +12370,86 @@ setup 76.8 s against 61.2 s (1.254), test bodies 248.8 s against 257.5 s
 frozen (run 41203872386) matched all 7,928 outcomes on the first attempt:
 setup 77.7 s against 64.0 s (1.214), test bodies 253.0 s against 262.5 s
 (0.964), in all 0.995.
+
+**On `72427b4`** (round 204): full Rust gate passed (run 41208458712);
+frozen (run 41208461059) matched all 7,928 outcomes on the first attempt:
+setup 58.7 s against 51.4 s (1.143), test bodies 211.9 s against 227.9 s
+(0.930), in all 0.981.
+
+**On `258132e`** (round 205): full Rust gate passed (run 41211292707);
+frozen (run 41211294637) matched all 7,928 outcomes on the first attempt:
+setup 87.1 s against 71.3 s (1.222), test bodies 266.1 s against 274.8 s
+(0.969), in all 1.020.
+
+**On `035b735`** (round 206): full Rust gate passed (run 41214327793);
+frozen (run 41214329900) matched all 7,928 outcomes on the first attempt:
+setup 75.8 s against 59.8 s (1.269), test bodies 247.0 s against 253.8 s
+(0.973), in all 1.024.
+
+**On `315168d`** (round 207): full Rust gate passed (run 41217426228);
+frozen (run 41217428179) matched all 7,928 outcomes on the first attempt:
+setup 66.0 s against 57.5 s (1.148), test bodies 227.0 s against 245.3 s
+(0.926), in all 0.977.
+
+**On `4a172df`** (round 208): full Rust gate passed (run 41220466282);
+frozen (run 41220468442) matched all 7,928 outcomes on the first attempt:
+setup 54.9 s against 48.3 s (1.137), test bodies 206.2 s against 221.2 s
+(0.933), in all 0.969.
+
+**On `2e0f272`** (round 209): frozen (run 41224269635) matched all 7,928
+outcomes on the first attempt: setup 59.4 s against 52.3 s (1.137), test
+bodies 216.9 s against 229.3 s (0.946), in all 0.981. The full Rust gate
+(run 41224267424) failed one test,
+`batch_startup_image_round_trip_or_explicit_native_image_limit`: an image
+dumped by an interpreter that was itself started from an image walked its
+obarray in another order (`mapatoms' met `tab-switcher-unmark' first
+where the template met `eval-print-last-sexp'), because the loader filed
+the symbols in the order it read their cells. Round 209's plists moved
+that order; round 210 restores the dumped buckets.
+
+**On `025a240`** (round 210): the full Rust gate (run 41232204392)
+passed, the image round-trip of an image-started interpreter included,
+and frozen (run 41232206605) matched all 7,928 outcomes on the first
+attempt: setup 87.2 s against 72.5 s (1.202), test bodies 265.5 s
+against 279.1 s (0.951), in all 0.998.
+
+**On `300ef8c`** (round 211): the full Rust gate (run 41237897509)
+passed, and frozen (run 41237900069) matched all 7,928 outcomes on the
+first attempt: setup 62.8 s against 53.2 s (1.180), test bodies 220.3 s
+against 236.9 s (0.930), in all 0.996.
+
+**On `06f76b6`** (round 212): the full Rust gate (run 41241047002)
+passed, and frozen (run 41241049461) matched all 7,928 outcomes on the
+first attempt: setup 65.2 s against 55.5 s (1.176), test bodies 226.3 s
+against 242.1 s (0.935), in all 0.997.
+
+**On `b605ad9`** (round 213): the full Rust gate (run 41244095942)
+passed, and frozen (run 41244098431) matched all 7,928 outcomes on the
+first attempt: setup 84.3 s against 68.8 s (1.224), test bodies 260.5 s
+against 277.2 s (0.940), in all 0.987.
+
+**On `c2bfb07`** (round 214): the full Rust gate (run 41247004945)
+passed, and frozen (run 41247006663) matched all 7,928 outcomes on the
+first attempt: setup 77.6 s against 63.7 s (1.218), test bodies 251.3 s
+against 261.2 s (0.962), in all 0.995.
+
+**On `d832621`** (round 215): the full Rust gate (run 41254349988)
+passed, and frozen (run 41254351837) matched all 7,928 outcomes on the
+first attempt: setup 85.3 s against 69.9 s (1.219), test bodies 264.2 s
+against 274.3 s (0.963), in all 1.012.
+
+**On `2a5effd`** (round 216): the full Rust gate (run 41257801612)
+passed. Frozen (run 41257803781) matched 7,927 of 7,928 outcomes on the
+first attempt, the GNU oracle's `eglot-test-rust-completion-exit-function'
+failing (the rust-analyzer flake recorded before); the rerun matched all
+7,928: setup 89.4 s against 65.2 s (1.373), test bodies 260.6 s against
+265.4 s (0.982), in all 1.048. The first attempt's timings, on another
+runner, were 1.162, 0.912 and 0.961.
+
+**On `a6819f9`** (round 217): the full Rust gate (run 41263044644)
+passed, and frozen (run 41263047151) matched all 7,928 outcomes on the
+first attempt: setup 83.0 s against 68.1 s (1.218), test bodies 259.1 s
+against 269.1 s (0.963), in all 1.006.
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

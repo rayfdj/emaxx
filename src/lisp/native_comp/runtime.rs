@@ -1002,6 +1002,23 @@ pub(crate) fn maybe_gc(interpreter: &mut Interpreter, environment: &mut Env) {
 /// alloc.c:maybe_garbage_collect.
 #[cold]
 #[inline(never)]
+/// alloc.c:bump_consing_until_gc for a watcher of the GC variables: the
+/// counter retuned for THRESHOLD and PERCENTAGE at once, on the active
+/// native heap or the interpreter's.
+pub(crate) fn bump_consing_until_gc(
+    interpreter: &mut Interpreter,
+    threshold: i64,
+    percentage: Option<f64>,
+) {
+    if with_current_runtime(|runtime| runtime.bump_consing_until_gc(threshold, percentage))
+        .is_none()
+    {
+        interpreter
+            .native_compiler
+            .bump_consing_until_gc(threshold, percentage);
+    }
+}
+
 fn maybe_garbage_collect(interpreter: &mut Interpreter, environment: &mut Env) {
     if interpreter.garbage_collection_is_inhibited() {
         return;
@@ -1564,6 +1581,10 @@ impl NativeRuntime {
         percentage: Option<f64>,
     ) -> bool {
         self.heap.collection_due(threshold, percentage)
+    }
+
+    pub(crate) fn bump_consing_until_gc(&mut self, threshold: i64, percentage: Option<f64>) {
+        self.heap.bump_consing_until_gc(threshold, percentage);
     }
 
     pub(crate) fn garbage_collection_finished(
@@ -2486,6 +2507,15 @@ fn invoke_kind_subr(index: usize, kind: DirectSubr, arguments: &[NativeWord]) ->
 /// freloc table does, so it saves no registers: any other case is
 /// `invoke_other_subr_slow's, and a signal finds the active call again.
 #[inline(never)]
+/// `invoke_subr' of a subr outside the defsubr table, whose entry passes
+/// itself.
+pub(crate) fn invoke_subr_object(
+    subroutine: &'static super::abi::NativeSubr,
+    arguments: &[NativeWord],
+) -> NativeWord {
+    invoke_other_subr(subroutine, arguments)
+}
+
 fn invoke_other_subr(
     subroutine: &'static super::abi::NativeSubr,
     arguments: &[NativeWord],
@@ -5586,6 +5616,11 @@ impl NativeHeap {
     fn collection_due(&mut self, threshold: i64, percentage: Option<f64>) -> bool {
         self.gc.synchronize_allocations();
         self.gc.collection_due(threshold, percentage)
+    }
+
+    fn bump_consing_until_gc(&mut self, threshold: i64, percentage: Option<f64>) {
+        self.gc.synchronize_allocations();
+        self.gc.bump_consing_until_gc(threshold, percentage);
     }
 
     fn collection_might_be_due(&mut self) -> bool {

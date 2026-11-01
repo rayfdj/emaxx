@@ -268,10 +268,12 @@ impl LocalCells {
             loaded.unload(symbol);
         }
         self.cells.clear();
-        self.forwarded_eval = self
-            .fixed_bindings()
-            .filter(|(symbol, _)| super::variables::is_forwarded_eval_cell(symbol))
-            .count();
+        // No fixed slot is a forwarded evaluator cell (`with_fixed_slots').
+        debug_assert!(
+            self.fixed_bindings()
+                .all(|(symbol, _)| !super::variables::is_forwarded_eval_cell(symbol))
+        );
+        self.forwarded_eval = 0;
     }
 
     /// Whether a variable whose evaluator cell holds the current buffer's
@@ -286,6 +288,14 @@ impl LocalCells {
 
     pub(crate) fn is_empty(&self) -> bool {
         self.present == 0 && self.cells.is_empty()
+    }
+
+    /// The bindings but the fixed slots (the local_var_alist), in
+    /// first-binding order.
+    pub(crate) fn alist_iter(&self) -> impl Iterator<Item = (&SymbolName, Value)> {
+        self.cells
+            .iter()
+            .map(|(symbol, value)| (symbol, value.get()))
     }
 
     /// Bindings in first-binding order, a void local as `Value::Unbound'.

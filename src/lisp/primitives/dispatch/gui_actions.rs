@@ -82,6 +82,22 @@ fn validate_popup_menu(interp: &Interpreter, menu: &Value) -> Result<(), LispErr
         if !pane_title.is_string() {
             return Err(wrong_type_argument("stringp", pane_title));
         }
+        // menu.c:list_of_panes CHECK_CONSes the pane's items, and
+        // list_of_items CHECK_STRINGs the name of each (NAME . VALUE).
+        if pane_items.len() < 2 {
+            return Err(wrong_type_argument(
+                "consp",
+                pane.cdr().unwrap_or(Value::Nil),
+            ));
+        }
+        for item in &pane_items[1..] {
+            if let Kind::Cons(_) = item.kind() {
+                let name = item.car().unwrap_or(Value::Nil);
+                if !name.is_string() {
+                    return Err(wrong_type_argument("stringp", name));
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -112,6 +128,209 @@ fn popup_position_xy(position: &Value) -> Option<(i64, i64)> {
     }
 }
 
+/// x_popup_menu_1's reading of POSITION on a tty frame: the
+/// frame-relative column and row, MENU_FOR_CLICK (POSITION is a click
+/// event, not t, a bar position or ((XOFFSET YOFFSET) WINDOW)) and
+/// MENU_KBD_NAVIGATION (a click on the menu bar made by hand, not the
+/// last real event).
+struct PopupPlace {
+    x: i64,
+    y: i64,
+    for_click: bool,
+    kbd_navigation: bool,
+}
+
+/// The column and row of WINDOW's top-left corner on its frame, the
+/// frame's origin for anything else.
+fn popup_window_origin(interp: &mut Interpreter, window: &Value) -> (i64, i64) {
+    if let Kind::Record(id) = window.kind() {
+        let layout = crate::lisp::primitives::window_render_layout(interp);
+        if let Some(info) = layout.iter().find(|info| info.window_id == id.id) {
+            return (info.left as i64, info.top as i64);
+        }
+    }
+    (0, 0)
+}
+
+fn popup_place(interp: &mut Interpreter, position: &Value) -> PopupPlace {
+    let head = position.car().unwrap_or(Value::Nil);
+    let second = position
+        .cdr()
+        .and_then(|tail| tail.car())
+        .unwrap_or(Value::Nil);
+    if let Kind::Cons(_) = head.kind() {
+        // ((XOFFSET YOFFSET) WINDOW): offsets from WINDOW's edges, or
+        // from the frame's origin when WINDOW is a frame.
+        let x = head
+            .car()
+            .ok()
+            .and_then(|v| v.as_integer().ok())
+            .unwrap_or(0);
+        let y = head
+            .cdr()
+            .and_then(|tail| tail.car())
+            .ok()
+            .and_then(|v| v.as_integer().ok())
+            .unwrap_or(0);
+        let (left, top) = popup_window_origin(interp, &second);
+        return PopupPlace {
+            x: x + left,
+            y: y + top,
+            for_click: false,
+            kbd_navigation: false,
+        };
+    }
+    let bar = *position == Value::T
+        || matches!(head.symbol_str(), Some("menu-bar" | "tab-bar" | "tool-bar"))
+        || second.symbol_str() == Some("tab-bar");
+    let (mut x, mut y) = popup_position_xy(position).unwrap_or((0, 0));
+    if bar {
+        return PopupPlace {
+            x,
+            y,
+            for_click: false,
+            kbd_navigation: false,
+        };
+    }
+    // A click event's posn carries window-relative coordinates; the
+    // dropdown draws in frame coordinates (Fx_popup_menu converts the
+    // same way before calling the terminal's menu hook).
+    let window = second.car().unwrap_or(Value::Nil);
+    let (left, top) = popup_window_origin(interp, &window);
+    x += left;
+    y += top;
+    // POSN_POSN of the event's start: (menu-bar) for the menu bar.  A
+    // posn other than the last real event's was made by hand, as
+    // menu-bar-open makes one for F10.
+    let posn_posn = |value: &Value| {
+        value
+            .cdr()
+            .and_then(|tail| tail.car())
+            .unwrap_or(Value::Nil)
+    };
+    let area = posn_posn(&second);
+    let last = interp
+        .lookup_var("last-nonmenu-event", &crate::lisp::types::Env::new())
+        .unwrap_or(Value::Nil);
+    let kbd_navigation = !posn_posn(&last).eq_value(posn_posn(position))
+        && matches!(area.kind(), Kind::Cons(_))
+        && area
+            .car()
+            .is_ok_and(|head| head.symbol_str() == Some("menu-bar"));
+    PopupPlace {
+        x,
+        y,
+        for_click: true,
+        kbd_navigation,
+    }
+}
+
+/// term.c:tty_menu_show's activation of PANE at X, Y under
+/// `tty-menu-navigation-map', through the frontend's dropdown.
+fn run_tty_pane(
+    interp: &mut Interpreter,
+    env: &mut crate::lisp::types::Env,
+    pane: &crate::lisp::primitives::TtyMenuPane,
+    x: i64,
+    y: i64,
+) -> Result<Option<crate::lisp::primitives::TtyMenuOutcome>, LispError> {
+    let x0 = x.max(1) as usize;
+    let y0 = y.max(1) as usize;
+    // GNU specbinds overriding-terminal-local-map to the navigation map
+    // for the whole activation, so ordinary key resolution answers the
+    // tty-menu-* commands.
+    let navigation = interp
+        .lookup_var("tty-menu-navigation-map", env)
+        .unwrap_or(Value::Nil);
+    let restore = interp.bind_special_dynamic("overriding-terminal-local-map", navigation, env)?;
+    let outcome = crate::lisp::primitives::run_tty_menu_executor(interp, env, pane, x0, y0);
+    match &outcome {
+        Err(error) => interp
+            .with_lisp_stack_roots(error, |interp| interp.restore_special_dynamic(restore, env)),
+        Ok(_) => interp.restore_special_dynamic(restore, env),
+    }?;
+    outcome
+}
+
+/// tty_menu_show's TTYM_NO_SELECT: "Cancel" is C-g unless the menu was
+/// opened by a click.
+fn tty_menu_cancelled(place: &PopupPlace) -> Result<Value, LispError> {
+    if place.for_click {
+        Ok(Value::Nil)
+    } else {
+        Err(LispError::SignalValue(Value::list([Value::symbol("quit")])))
+    }
+}
+
+/// menu.c's list_of_panes and list_of_items for an old-fashioned
+/// (TITLE (PANE-NAME ITEM...)) menu of one pane, which tty_menu_activate
+/// shows as its only pane under the pane's name: a string ITEM is
+/// disabled, (NAME . VALUE) answers VALUE, and anything else (a dialog's
+/// left-right boundary) shows nothing on a tty.
+fn tty_popup_list_menu(
+    interp: &mut Interpreter,
+    position: &Value,
+    menu: &Value,
+) -> Result<Value, LispError> {
+    let panes = menu
+        .cdr()
+        .and_then(|panes| panes.to_vec())
+        .unwrap_or_default();
+    // Several panes cascade from a menu of their names, which the
+    // frontend's dropdown does not draw.
+    let [pane] = panes.as_slice() else {
+        return Ok(Value::Nil);
+    };
+    let entries = pane.to_vec().unwrap_or_default();
+    let Some(title) = entries.first().and_then(string_like) else {
+        return Ok(Value::Nil);
+    };
+    let mut items = Vec::new();
+    for entry in &entries[1..] {
+        match entry.kind() {
+            Kind::StringObject(_) => items.push(crate::lisp::primitives::TtyMenuPaneItem {
+                text: string_text(entry)?,
+                enabled: false,
+                key: Value::Nil,
+            }),
+            Kind::Cons(_) => items.push(crate::lisp::primitives::TtyMenuPaneItem {
+                text: string_text(&entry.car()?)?,
+                enabled: true,
+                key: entry.cdr()?,
+            }),
+            _ => {}
+        }
+    }
+    if items.is_empty() {
+        return Ok(Value::Nil);
+    }
+    let width = items
+        .iter()
+        .map(|item| item.text.chars().count())
+        .max()
+        .unwrap_or(0);
+    let place = popup_place(interp, position);
+    let pane = crate::lisp::primitives::TtyMenuPane {
+        title: title.text,
+        items,
+        width,
+        kbd_navigation: place.kbd_navigation,
+    };
+    let mut env = crate::lisp::types::Env::new();
+    match run_tty_pane(interp, &mut env, &pane, place.x, place.y)? {
+        Some(crate::lisp::primitives::TtyMenuOutcome::Selected(index)) => Ok(pane
+            .items
+            .get(index)
+            .map(|item| item.key)
+            .unwrap_or(Value::Nil)),
+        Some(crate::lisp::primitives::TtyMenuOutcome::Quit) => tty_menu_cancelled(&place),
+        // The adjacent menu-bar menu's coordinates are a keymap menu's
+        // answer; tty_menu_new_item_coords is reached only under
+        // KBD_NAVIGATION.
+        Some(_) | None => Ok(Value::Nil),
+    }
+}
+
 /// term.c's tty_menu_show for a single menu keymap: draw and activate
 /// the dropdown through the frontend, under tty-menu-navigation-map.
 fn tty_popup_menu(
@@ -120,25 +339,8 @@ fn tty_popup_menu(
     menu: &Value,
 ) -> Result<Value, LispError> {
     let mut env = crate::lisp::types::Env::new();
-    let (mut x, mut y) = popup_position_xy(position).unwrap_or((0, 0));
-    // A click event's posn carries window-relative coordinates; the
-    // dropdown draws in frame coordinates (Fx_popup_menu converts the
-    // same way before calling the terminal's menu hook).
-    if let Some(window_id) = position
-        .to_vec()
-        .ok()
-        .and_then(|items| items.get(1)?.to_vec().ok())
-        .and_then(|posn| match posn.first().map(|v| v.kind()) {
-            Some(Kind::Record(id)) => Some(id),
-            _ => None,
-        })
-    {
-        let layout = crate::lisp::primitives::window_render_layout(interp);
-        if let Some(info) = layout.iter().find(|info| info.window_id == window_id.id) {
-            x += info.left as i64;
-            y += info.top as i64;
-        }
-    }
+    let place = popup_place(interp, position);
+    let (x, y) = (place.x, place.y);
     // The pane title is the menu keymap's prompt string ("File").
     let title = {
         let mut title = String::new();
@@ -158,24 +360,7 @@ fn tty_popup_menu(
     if pane.items.is_empty() {
         return Ok(Value::Nil);
     }
-    let x0 = x.max(1) as usize;
-    let y0 = y.max(1) as usize;
-    // GNU specbinds overriding-terminal-local-map to the navigation map
-    // for the whole activation, so ordinary key resolution answers the
-    // tty-menu-* commands.
-    let navigation = interp
-        .lookup_var("tty-menu-navigation-map", &env)
-        .unwrap_or(Value::Nil);
-    let restore =
-        interp.bind_special_dynamic("overriding-terminal-local-map", navigation, &mut env)?;
-    let outcome = crate::lisp::primitives::run_tty_menu_executor(interp, &mut env, &pane, x0, y0);
-    match &outcome {
-        Err(error) => interp.with_lisp_stack_roots(error, |interp| {
-            interp.restore_special_dynamic(restore, &mut env)
-        }),
-        Ok(_) => interp.restore_special_dynamic(restore, &mut env),
-    }?;
-    match outcome? {
+    match run_tty_pane(interp, &mut env, &pane, x, y)? {
         Some(crate::lisp::primitives::TtyMenuOutcome::Selected(index)) => Ok(Value::list([pane
             .items
             .get(index)
@@ -207,12 +392,10 @@ fn tty_popup_menu(
             ))
         }
         Some(crate::lisp::primitives::TtyMenuOutcome::NoSelect) => Ok(Value::Nil),
-        Some(crate::lisp::primitives::TtyMenuOutcome::Quit) => {
-            // TTYM_NO_SELECT with MENU_FOR_CLICK: the event-shaped
-            // menu-bar position counts as a click, so cancelling answers
-            // nil without signalling quit (no "Quit" echo, as GNU).
-            Ok(Value::Nil)
-        }
+        // TTYM_NO_SELECT: the event-shaped menu-bar position counts as
+        // a click, so cancelling it answers nil without signalling quit
+        // (no "Quit" echo, as GNU).
+        Some(crate::lisp::primitives::TtyMenuOutcome::Quit) => tty_menu_cancelled(&place),
         None => Ok(Value::Nil),
     }
 }
@@ -317,26 +500,64 @@ define_dispatch!(
             }
             "x-popup-dialog" => {
                 need_arg_range(name, args, 2, 3)?;
-                match args[0].kind() {
-                    Kind::T => {}
-                    Kind::Frame(id) if interp.frame_is_live(id) => {}
+                let mut env = crate::lisp::types::Env::new();
+                let (position, contents) = (args[0], args[1]);
+                // menu.c:Fx_popup_dialog: the window or frame POSITION
+                // names, the selected window for t or a bar position.
+                let head = position.car().unwrap_or(Value::Nil);
+                let window = if position == Value::T
+                    || matches!(head.symbol_str(), Some("menu-bar" | "tab-bar" | "tool-bar"))
+                {
+                    interp.selected_window_value()
+                } else if let Kind::Cons(_) = position.kind() {
+                    let rest = position.cdr()?;
+                    if let Kind::Cons(_) = head.kind() {
+                        super::call(interp, "car", &[rest], &mut env)?
+                    } else {
+                        let start = super::call(interp, "car", &[rest], &mut env)?;
+                        super::call(interp, "car", &[start], &mut env)?
+                    }
+                } else if matches!(position.kind(), Kind::Frame(_) | Kind::Record(_)) {
+                    position
+                } else {
+                    Value::Nil
+                };
+                let frame = match window.kind() {
+                    Kind::Frame(_) => window,
                     Kind::Record(id)
                         if interp.find_record(id).is_some_and(|record| {
                             record.kind == crate::lisp::eval::RecordKind::Window
-                        }) => {}
-                    Kind::Cons(_) => {}
-                    _ => return Err(wrong_type_argument("windowp", Value::Nil)),
+                        }) =>
+                    {
+                        if super::call(interp, "window-live-p", &[window], &mut env)?.is_nil() {
+                            return Err(wrong_type_argument("window-live-p", window));
+                        }
+                        super::call(interp, "window-frame", &[window], &mut env)?
+                    }
+                    _ => return Err(wrong_type_argument("windowp", window)),
+                };
+                super::call(interp, "redisplay", &[Value::T], &mut env)?;
+                // No terminal of Emaxx's has a popup_dialog_hook, so
+                // emulate_dialog_with_menu asks x-popup-menu for a menu of
+                // CONTENTS whose prompt is centred on the frame.
+                let prompt = super::call(interp, "car", &[contents], &mut env)?;
+                let mut x =
+                    super::call(interp, "frame-text-cols", &[frame], &mut env)?.as_integer()?;
+                if let Some(text) = string_like(&prompt) {
+                    x -= text.text.chars().count() as i64;
                 }
-                let contents = args[1]
-                    .to_vec()
-                    .map_err(|_| wrong_type_argument("listp", args[1]))?;
-                let title = contents.first().cloned().unwrap_or(Value::Nil);
-                if !title.is_string() {
-                    return Err(wrong_type_argument("stringp", title));
-                }
-                // GNU's initial batch frame has no menu hook, so a well-formed
-                // dialog is parsed but cannot produce a selection.
-                Ok(Value::Nil)
+                let y =
+                    super::call(interp, "frame-total-lines", &[frame], &mut env)?.as_integer()?;
+                let newpos = Value::list([
+                    Value::list([Value::Integer(x / 2), Value::Integer(y / 2)]),
+                    frame,
+                ]);
+                super::call(
+                    interp,
+                    "x-popup-menu",
+                    &[newpos, Value::list([prompt, contents])],
+                    &mut env,
+                )
             }
             "x-popup-menu" => {
                 need_args(name, args, 2)?;
@@ -349,10 +570,13 @@ define_dispatch!(
                 validate_popup_menu(interp, &args[1])?;
                 // A live tty frontend shows the real dropdown (term.c's
                 // tty_menu_show); batch keeps GNU's menu-hook-less answer.
-                if crate::lisp::primitives::has_tty_menu_executor()
-                    && is_keymap_value(interp, &args[1])
-                {
-                    return tty_popup_menu(interp, &args[0], &args[1]);
+                if crate::lisp::primitives::has_tty_menu_executor() {
+                    if is_keymap_value(interp, &args[1]) {
+                        return tty_popup_menu(interp, &args[0], &args[1]);
+                    }
+                    if args[1].car().is_ok_and(|title| title.is_string()) {
+                        return tty_popup_list_menu(interp, &args[0], &args[1]);
+                    }
                 }
                 Ok(Value::Nil)
             }

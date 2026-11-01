@@ -810,36 +810,41 @@ define_dispatch!(
                 }
             }
             "random" => {
-                if args.is_empty() || args[0].is_nil() {
-                    Ok(Value::Integer(random_fixnum()))
-                } else {
-                    match args[0].kind() {
-                        Kind::T => {
-                            set_random_seed(nondeterministic_random_seed());
-                            Ok(Value::Integer(random_fixnum()))
-                        }
-                        Kind::StringObject(_) => {
-                            let seed = string_like(&args[0])
-                                .expect("string variants should be string-like")
-                                .text;
-                            set_random_seed(random_seed_from_bytes(seed.as_bytes()));
-                            Ok(Value::Integer(random_fixnum()))
-                        }
-                        Kind::Integer(_) | Kind::BigInteger(_) => {
-                            let limit = integer_like_bigint(interp, &args[0])?;
-                            if limit <= BigInt::zero() {
-                                Err(LispError::SignalValue(Value::list([
-                                    Value::Symbol("args-out-of-range".into()),
-                                    args[0],
-                                ])))
-                            } else {
-                                Ok(normalize_bigint_value(random_bigint_below(&limit)))
-                            }
-                        }
-                        // Frandom treats other objects like an omitted limit.
-                        _ => Ok(Value::Integer(random_fixnum())),
+                need_arg_range(name, args, 0, 1)?;
+                let limit = args.first().copied().unwrap_or(Value::Nil);
+                let out_of_range = || {
+                    LispError::SignalValue(Value::list([
+                        Value::Symbol("args-out-of-range".into()),
+                        limit,
+                    ]))
+                };
+                // fns.c:Frandom: t reseeds from entropy and a string from
+                // its bytes, each then drawing a fixnum as any other object.
+                match limit.kind() {
+                    Kind::T => init_random(),
+                    Kind::StringObject(state) => seed_random(state.borrow().bytes()),
+                    Kind::Integer(lim) => {
+                        return if lim <= 0 {
+                            Err(out_of_range())
+                        } else {
+                            Ok(Value::Integer(get_random_fixnum(lim)))
+                        };
                     }
+                    Kind::BigInteger(_) => {
+                        let lim = integer_like_bigint(interp, &limit)?;
+                        if lim <= BigInt::zero() {
+                            return Err(out_of_range());
+                        }
+                        return Ok(match lim.to_i64() {
+                            Some(lim) if lim <= MOST_POSITIVE_FIXNUM => {
+                                Value::Integer(get_random_fixnum(lim))
+                            }
+                            _ => normalize_bigint_value(get_random_bignum(&lim)),
+                        });
+                    }
+                    _ => {}
                 }
+                Ok(Value::Integer(random_fixnum()))
             }
 
             "vector" => Ok(Value::vector(args.iter().copied())),
@@ -1064,7 +1069,11 @@ define_dispatch!(
             }
             "locale-info" => {
                 need_args(name, args, 1)?;
-                let item = args[0].as_symbol()?;
+                // fns.c:Flocale_info compares ITEM with EQ, so what is no
+                // symbol has no answer.
+                let Some(item) = args[0].symbol_str() else {
+                    return Ok(Value::Nil);
+                };
                 // fns.c:Flocale_info -- real langinfo(3) answers.  This was
                 // a stub returning nil for every ITEM, which sent GNU's own
                 // set-locale-environment down the no-codeset branch at boot
@@ -1344,22 +1353,10 @@ define_dispatch!(
                 if args.len() > 1 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let source = match args.first().map(|v| v.kind()) {
-                    Some(Kind::CharTable(id)) => id,
-                    Some(Kind::Nil) | None => interp.standard_syntax_table_id(),
-                    Some(other) => {
-                        return Err(LispError::WrongTypeArgument(
-                            "char-table-p".into(),
-                            other.value(),
-                        ));
-                    }
+                let source = match args.first().filter(|table| !table.is_nil()) {
+                    Some(table) => syntax::check_syntax_table(table)?,
+                    None => interp.standard_syntax_table_id(),
                 };
-                if !source.has_purpose("syntax-table") {
-                    return Err(LispError::TypeError(
-                        "syntax-table".into(),
-                        "char-table".into(),
-                    ));
-                }
                 interp.copy_syntax_table(source)
             }
 
@@ -1372,9 +1369,7 @@ define_dispatch!(
 
             "set-syntax-table" => {
                 need_args(name, args, 1)?;
-                let Kind::CharTable(id) = args[0].kind() else {
-                    return Err(LispError::WrongTypeArgument("char-table-p".into(), args[0]));
-                };
+                let id = syntax::check_syntax_table(&args[0])?;
                 interp.set_current_syntax_table(id);
                 Ok(args[0])
             }
@@ -1389,23 +1384,18 @@ define_dispatch!(
                     let code = table_character(&args[0])?;
                     (code, code)
                 };
+                // syntax.c:Fmodify_syntax_entry uses the current table for
+                // nil, including native calls' padded optional slot, and
+                // checks the table before the description.
+                let table_id = match args.get(2).filter(|table| !table.is_nil()) {
+                    Some(table) => syntax::check_syntax_table(table)?,
+                    None => interp.current_syntax_table_id(),
+                };
                 let syntax = string_text(&args[1])?;
                 let entry = syntax::parse_syntax_spec(&syntax).ok_or_else(|| {
                     let letter = syntax.chars().next().unwrap_or('\0');
                     LispError::Signal(format!("Invalid syntax description letter: {letter}"))
                 })?;
-                let table_id = match args.get(2).map(|v| v.kind()) {
-                    Some(Kind::CharTable(id)) => id,
-                    // syntax.c:Fmodify_syntax_entry uses the current table
-                    // for nil, including native calls' padded optional slot.
-                    Some(Kind::Nil) | None => interp.current_syntax_table_id(),
-                    Some(other) => {
-                        return Err(LispError::WrongTypeArgument(
-                            "char-table-p".into(),
-                            other.value(),
-                        ));
-                    }
-                };
                 interp.char_table_set_range(
                     table_id,
                     start,

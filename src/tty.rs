@@ -9572,8 +9572,14 @@ fn make_menu_executor(
                     };
                     match name {
                         "tty-menu-exit" => break TtyMenuOutcome::Quit,
-                        "tty-menu-next-menu" => break TtyMenuOutcome::NextMenu,
-                        "tty-menu-prev-menu" => break TtyMenuOutcome::PrevMenu,
+                        // MI_NEXT_ITEM and MI_PREV_ITEM leave only under
+                        // KBD_NAVIGATION; otherwise the menu stays up.
+                        "tty-menu-next-menu" if pane.kbd_navigation => {
+                            break TtyMenuOutcome::NextMenu;
+                        }
+                        "tty-menu-prev-menu" if pane.kbd_navigation => {
+                            break TtyMenuOutcome::PrevMenu;
+                        }
                         "tty-menu-next-item" => {
                             // Below the last visible row GNU scrolls forward
                             // (MI_SCROLL_FORWARD): the window advances until

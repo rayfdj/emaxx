@@ -602,7 +602,12 @@ pub(crate) fn call_process_arguments(
             .map_or(Value::Nil, |(_, encoding)| encoding)
     };
     let coding = complement_process_encoding_system(interp, env, coding)?;
-    let mut coding = checked_coding_symbol(interp, &coding)?;
+    // setup_coding_system reads nil as `undecided'.
+    let mut coding = if coding.is_nil() {
+        "undecided".to_string()
+    } else {
+        checked_coding_symbol(interp, &coding)?
+    };
     let canonical = interp
         .coding_system_canonical_name(&coding)
         .unwrap_or_else(|| coding.clone());

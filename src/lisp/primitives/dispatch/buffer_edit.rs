@@ -817,7 +817,8 @@ define_dispatch!(
             }
             "byte-to-position" => {
                 need_args(name, args, 1)?;
-                let byte = args[0].as_integer()?;
+                // editfns.c:Fbyte_to_position: CHECK_FIXNUM.
+                let byte = args[0].as_fixnum()?;
                 if byte <= 0 {
                     return Ok(Value::Nil);
                 }
@@ -893,21 +894,12 @@ define_dispatch!(
             "char-before" => direct_char_before(interp, args, env),
             "matching-paren" => {
                 need_args(name, args, 1)?;
-                let ch = args[0].as_integer()? as u32;
-                let matching = match char::from_u32(ch) {
-                    Some('(') => Some(')'),
-                    Some(')') => Some('('),
-                    Some('[') => Some(']'),
-                    Some(']') => Some('['),
-                    Some('{') => Some('}'),
-                    Some('}') => Some('{'),
-                    Some('<') => Some('>'),
-                    Some('>') => Some('<'),
-                    _ => None,
-                };
-                Ok(matching
-                    .map(|ch| Value::Integer(ch as i64))
-                    .unwrap_or(Value::Nil))
+                // syntax.c:Fmatching_paren: CHECK_CHARACTER, then the
+                // current syntax table's match for an open or close paren.
+                let code = check_character(&args[0])?;
+                Ok(crate::lisp::primitives::syntax::matching_paren_value(
+                    interp, code,
+                ))
             }
             "get-byte" => {
                 if let Some(string_value) = args.get(1).filter(|value| !value.is_nil()) {
@@ -1200,14 +1192,12 @@ define_dispatch!(
                             }
                             pos as usize
                         }
-                        Kind::Marker(id) => interp.marker_position(id).ok_or_else(|| {
-                            LispError::WrongTypeArgument("integer-or-marker-p".into(), args[0])
-                        })?,
+                        Kind::Marker(id) => interp
+                            .marker_position(id)
+                            .ok_or_else(marker_points_nowhere)?,
+                        // Fline_number_at_pos: CHECK_FIXNUM.
                         _ => {
-                            return Err(LispError::WrongTypeArgument(
-                                "integer-or-marker-p".into(),
-                                args[0],
-                            ));
+                            return Err(LispError::WrongTypeArgument("fixnump".into(), args[0]));
                         }
                     }
                 };
@@ -1899,26 +1889,29 @@ fn live_motion_window(interp: &Interpreter, value: &Value) -> Result<Value, Lisp
     Ok(window)
 }
 
+/// CHECK_CONS of VALUE and CHECK_FIXNUM of its car and cdr.
 fn motion_pair(value: &Value) -> Result<(i64, i64), LispError> {
     let (horizontal, vertical) = value
         .cons_values()
         .ok_or_else(|| wrong_type_argument("consp", *value))?;
-    Ok((horizontal.as_integer()?, vertical.as_integer()?))
+    Ok((horizontal.as_fixnum()?, vertical.as_fixnum()?))
 }
 
-fn checked_motion_position(interp: &Interpreter, value: &Value) -> Result<usize, LispError> {
-    let position = position_from_value(interp, value)?;
-    if position < interp.buffer.borrow().point_min()
-        || position > interp.buffer.borrow().point_max()
-    {
+/// POSITION within BEGV..ZV, else `(args-out-of-range POSITION BEGV ZV)'.
+fn checked_motion_position(interp: &Interpreter, position: i64) -> Result<usize, LispError> {
+    let (begv, zv) = {
+        let buffer = interp.buffer.borrow();
+        (buffer.point_min(), buffer.point_max())
+    };
+    if position < begv as i64 || position > zv as i64 {
         return Err(LispError::SignalValue(Value::list([
             Value::symbol("args-out-of-range"),
-            *value,
-            Value::Integer(interp.buffer.borrow().point_min() as i64),
-            Value::Integer(interp.buffer.borrow().point_max() as i64),
+            Value::Integer(position),
+            Value::Integer(begv as i64),
+            Value::Integer(zv as i64),
         ])));
     }
-    Ok(position)
+    Ok(position as usize)
 }
 
 fn display_motion_width(
@@ -2017,10 +2010,37 @@ pub(super) fn display_motion(
     args: &[Value],
     stop_on_glyph: bool,
 ) -> Result<DisplayMotion, LispError> {
-    let from = checked_motion_position(interp, &args[0])?;
+    // indent.c:Fcompute_motion checks its arguments in this order, then
+    // decodes WINDOW, then ranges the positions it coerced.
+    let from = crate::lisp::primitives::textprop::fixnum_coerce_marker(interp, &args[0])?;
     let (mut hpos, mut vpos) = motion_pair(&args[1])?;
-    let to = checked_motion_position(interp, &args[2])?;
+    let to = crate::lisp::primitives::textprop::fixnum_coerce_marker(interp, &args[2])?;
+    let topos = if args[3].is_nil() {
+        None
+    } else {
+        Some(motion_pair(&args[3])?)
+    };
+    let width = if args[4].is_nil() {
+        None
+    } else {
+        Some(args[4].as_fixnum()?)
+    };
+    let (hscroll, mut tab_offset) = if args[5].is_nil() {
+        (0, 0)
+    } else {
+        let (hscroll, tab_offset) = motion_pair(&args[5])?;
+        if hscroll < 0 || !(0..=i64::from(i32::MAX)).contains(&tab_offset) {
+            return Err(LispError::SignalValue(Value::list([
+                Value::symbol("args-out-of-range"),
+                Value::Integer(hscroll),
+                Value::Integer(tab_offset),
+            ])));
+        }
+        (hscroll, tab_offset)
+    };
     let window = live_motion_window(interp, &args[6])?;
+    let from = checked_motion_position(interp, from)?;
+    let to = checked_motion_position(interp, to)?;
 
     let body_width = super::call(
         interp,
@@ -2036,16 +2056,8 @@ pub(super) fn display_motion(
         env,
     )?
     .as_integer()?;
-    let (target_hpos, target_vpos) = if args[3].is_nil() {
-        ((body_width - 1).max(0), body_height)
-    } else {
-        motion_pair(&args[3])?
-    };
-    let mut width = if args[4].is_nil() {
-        body_width - 1
-    } else {
-        args[4].as_integer()?
-    };
+    let (target_hpos, target_vpos) = topos.unwrap_or(((body_width - 1).max(0), body_height));
+    let mut width = width.unwrap_or(body_width - 1);
     if width < 0 {
         width = body_width - 1;
     }
@@ -2053,20 +2065,6 @@ pub(super) fn display_motion(
     // redisplay engine still guarantees forward progress through one
     // canonical display cell.
     width = width.max(1);
-
-    let (hscroll, mut tab_offset) = if args[5].is_nil() {
-        (0, 0)
-    } else {
-        let (hscroll, tab_offset) = motion_pair(&args[5])?;
-        if hscroll < 0 || tab_offset < 0 {
-            return Err(LispError::SignalValue(Value::list([
-                Value::symbol("args-out-of-range"),
-                Value::Integer(hscroll),
-                Value::Integer(tab_offset),
-            ])));
-        }
-        (hscroll, tab_offset)
-    };
     let truncates_partial_window = match interp
         .lookup_var("truncate-partial-width-windows", env)
         .map(|v| v.kind())
@@ -2382,10 +2380,11 @@ pub(super) fn direct_forward_char(
     args: &[Value],
     _env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
+    // cmds.c:move_point: CHECK_FIXNUM.
     let n = if args.is_empty() || args[0].is_nil() {
         1
     } else {
-        args[0].as_integer()?
+        args[0].as_fixnum()?
     };
     match interp.buffer.borrow_mut().forward_char(n as isize) {
         Ok(_) => Ok(Value::Nil),
@@ -2399,10 +2398,11 @@ pub(super) fn direct_backward_char(
     args: &[Value],
     _env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
+    // cmds.c:move_point: CHECK_FIXNUM.
     let n = if args.is_empty() || args[0].is_nil() {
         1
     } else {
-        args[0].as_integer()?
+        args[0].as_fixnum()?
     };
     match interp.buffer.borrow_mut().forward_char(-(n as isize)) {
         Ok(_) => Ok(Value::Nil),
@@ -2631,8 +2631,15 @@ pub(super) fn direct_char_after(
     let pos = match args.first().map(|v| v.kind()) {
         None | Some(Kind::Nil) => Some(interp.buffer.borrow().point()),
         Some(Kind::Integer(position)) if position >= 0 => usize::try_from(position).ok(),
-        Some(Kind::Integer(_)) => None,
-        Some(Kind::Marker(id)) => interp.marker_position(id),
+        // fix_position takes a bignum as the farthest fixnum, outside
+        // any buffer.
+        Some(Kind::Integer(_) | Kind::BigInteger(_)) => None,
+        // marker_byte_position: a marker pointing nowhere is an error.
+        Some(Kind::Marker(id)) => Some(
+            interp
+                .marker_position(id)
+                .ok_or_else(marker_points_nowhere)?,
+        ),
         Some(value) => {
             return Err(LispError::WrongTypeArgument(
                 "integer-or-marker-p".into(),
@@ -2655,8 +2662,15 @@ pub(super) fn direct_char_before(
     let pos = match args.first().map(|v| v.kind()) {
         None | Some(Kind::Nil) => Some(interp.buffer.borrow().point()),
         Some(Kind::Integer(position)) if position >= 0 => usize::try_from(position).ok(),
-        Some(Kind::Integer(_)) => None,
-        Some(Kind::Marker(id)) => interp.marker_position(id),
+        // fix_position takes a bignum as the farthest fixnum, outside
+        // any buffer.
+        Some(Kind::Integer(_) | Kind::BigInteger(_)) => None,
+        // marker_byte_position: a marker pointing nowhere is an error.
+        Some(Kind::Marker(id)) => Some(
+            interp
+                .marker_position(id)
+                .ok_or_else(marker_points_nowhere)?,
+        ),
         Some(value) => {
             return Err(LispError::WrongTypeArgument(
                 "integer-or-marker-p".into(),

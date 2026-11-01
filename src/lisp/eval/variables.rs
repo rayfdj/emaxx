@@ -564,6 +564,14 @@ impl Interpreter {
         crate::lisp::primitives::casetab::reset_buffer_case_tables(self, buffer_id);
         self.reset_buffer_syntax_table(buffer_id);
         self.reset_buffer_category_table(buffer_id);
+        self.reset_buffer_keymap(buffer_id);
+    }
+
+    /// reset_buffer_local_variables's bset_keymap (b, Qnil).
+    fn reset_buffer_keymap(&mut self, buffer_id: u64) {
+        if let Some(mut buffer) = self.get_buffer_by_id_mut(buffer_id) {
+            buffer.set_keymap(Value::Nil);
+        }
     }
 
     /// Drop every local binding of BUFFER_ID. A current buffer's evaluator
@@ -609,11 +617,30 @@ impl Interpreter {
             .get(&buffer_id)
             .into_iter()
             .flat_map(|hooks| hooks.iter())
-            .filter(|(name, _)| {
-                self.get_symbol_property(name, "permanent-local")
-                    .is_some_and(|value| value.is_truthy())
+            .filter_map(|(name, values)| {
+                let prop = self
+                    .get_symbol_property(name, "permanent-local")
+                    .filter(|value| value.is_truthy())?;
+                // A partially permanent hook keeps t and the functions with
+                // a `permanent-local-hook' property, as
+                // reset_buffer_local_variables keeps them.
+                let values = if prop.eq_value(Value::symbol("permanent-local-hook")) {
+                    values
+                        .iter()
+                        .copied()
+                        .filter(|element| {
+                            matches!(element.kind(), Kind::T)
+                                || element.symbol_str().is_some_and(|function| {
+                                    self.get_symbol_property(function, "permanent-local-hook")
+                                        .is_some_and(|value| value.is_truthy())
+                                })
+                        })
+                        .collect()
+                } else {
+                    values.clone()
+                };
+                Some((name.clone(), values))
             })
-            .map(|(name, values)| (name.clone(), values.clone()))
             .collect::<Vec<_>>();
         self.remove_buffer_alist_locals(buffer_id);
         if permanent_hooks.is_empty() {
@@ -628,6 +655,7 @@ impl Interpreter {
         // defaults.
         self.reset_buffer_syntax_table(buffer_id);
         self.reset_buffer_category_table(buffer_id);
+        self.reset_buffer_keymap(buffer_id);
     }
 
     pub fn clone_buffer_local_state(&mut self, from_buffer_id: u64, to_buffer_id: u64) {
@@ -675,6 +703,13 @@ impl Interpreter {
         }
         if let Some(table) = self.buffer_category_table_id(from_buffer_id) {
             self.install_buffer_category_table(to_buffer_id, table);
+        }
+        // And BVAR (from, keymap).
+        let keymap = self
+            .get_buffer_by_id(from_buffer_id)
+            .map_or(Value::Nil, |buffer| buffer.keymap());
+        if let Some(mut buffer) = self.get_buffer_by_id_mut(to_buffer_id) {
+            buffer.set_keymap(keymap);
         }
     }
 
@@ -866,6 +901,9 @@ impl Interpreter {
         }
     }
 
+    /// eval.c:Finternal_make_var_non_special: clear `declared_special',
+    /// whichever path set it (a forwarded C variable's flag is set without
+    /// an entry in `special_variables').
     pub fn unmark_special_variable(&mut self, name: &str) {
         if let Some(index) = self
             .special_variables
@@ -873,8 +911,8 @@ impl Interpreter {
             .rposition(|existing| existing == name)
         {
             self.special_variables.remove(index);
-            self.globals.clear_flag_by_name(name, SPECIAL);
         }
+        self.globals.clear_flag_by_name(name, SPECIAL);
     }
 
     /// Fdefvar without a value under lexical binding:
@@ -1153,10 +1191,6 @@ impl Interpreter {
         self.globals.plist(symbol)
     }
 
-    pub fn set_symbol_plist(&mut self, name: &str, plist: Value) -> Result<Value, LispError> {
-        self.set_symbol_plist_symbol(&SymbolName::intern_str(name), plist)
-    }
-
     pub(crate) fn set_symbol_plist_symbol(
         &mut self,
         symbol: &SymbolName,
@@ -1166,96 +1200,61 @@ impl Interpreter {
         Ok(plist)
     }
 
-    pub(super) fn variable_watcher_index(&self, name: &str) -> Option<usize> {
-        self.variable_watchers
-            .iter()
-            .rposition(|(symbol, _)| symbol.as_str() == name)
+    /// The `watchers' property in which data.c keeps a variable's watch
+    /// functions, newest first.
+    fn watchers_property(&self, symbol: &SymbolName) -> Value {
+        cached_symbol!("watchers")
+            .with(|property| self.get_symbol_property_of(symbol, property))
+            .unwrap_or(Value::Nil)
     }
 
-    /// data.c's SYMBOL_TRAPPED_WRITE test for the symbol in hand: whether
-    /// any watcher is registered under its object identity.  The symbol's
-    /// flag is set whenever one is, so an unwatched symbol answers by it.
-    fn variable_is_watched(&self, symbol: &SymbolName) -> bool {
-        symbol.cell().is_trapped_write()
-            && self
-                .variable_watchers
-                .iter()
-                .any(|(watched, _)| watched == symbol)
-    }
-
-    /// The watchers' entry at INDEX is gone: its symbol's stores stop
-    /// notifying unless another entry names it.
-    pub(super) fn remove_variable_watcher_entry(&mut self, index: usize) {
-        let (symbol, _) = self.variable_watchers.remove(index);
-        if !self
-            .variable_watchers
-            .iter()
-            .any(|(watched, _)| *watched == symbol)
-        {
-            symbol.cell().set_trapped_write(false);
-        }
-    }
-
-    pub fn variable_watchers(&self, name: &str) -> Vec<Value> {
-        let resolved = self
-            .resolve_variable_name(name)
-            .unwrap_or_else(|_| name.to_string());
-        self.variable_watcher_index(&resolved)
-            .map(|index| self.variable_watchers[index].1.clone())
-            .unwrap_or_default()
-    }
-
-    pub fn add_variable_watcher(&mut self, name: &str, watcher: Value) -> Result<Value, LispError> {
-        let resolved = self.resolve_variable_name(name)?;
-        if let Some(index) = self.variable_watcher_index(&resolved) {
-            self.variable_watchers[index]
-                .0
-                .cell()
-                .set_trapped_write(true);
-            if !self.variable_watchers[index]
-                .1
-                .iter()
-                .any(|existing| existing == &watcher)
-            {
-                self.variable_watchers[index].1.push(watcher);
-            }
+    /// data.c:Fget_variable_watchers: the variable's watchers while its
+    /// stores are trapped (not while they are being notified).
+    pub fn variable_watchers(&self, name: &str) -> Result<Value, LispError> {
+        let symbol = self.resolve_variable_symbol(&SymbolName::intern_str(name))?;
+        Ok(if symbol.cell().is_trapped_write() {
+            self.watchers_property(&symbol)
         } else {
-            self.variable_watchers
-                .push((SymbolName::intern_str(&resolved), vec![watcher]));
-        }
-        // data.c:Fadd_variable_watcher sets SYMBOL_TRAPPED_WRITE: the
-        // symbol's stores notify from now on.
-        let symbol = SymbolName::intern_str(&resolved);
+            Value::Nil
+        })
+    }
+
+    /// data.c:Fadd_variable_watcher: the variable's stores are trapped, and
+    /// WATCHER goes in front of its watchers unless one is `equal' to it.
+    pub fn add_variable_watcher(&mut self, name: &str, watcher: Value) -> Result<(), LispError> {
+        let symbol = self.resolve_variable_symbol(&SymbolName::intern_str(name))?;
         symbol.cell().set_trapped_write(true);
         self.globals.set_plain_store(&symbol, false);
-        Ok(watcher)
+        let watchers = self.watchers_property(&symbol);
+        let member =
+            crate::lisp::primitives::call(self, "member", &[watcher, watchers], &mut Env::new())?;
+        if member.is_nil() {
+            self.put_symbol_property_on(&symbol, "watchers", Value::cons(watcher, watchers));
+        }
+        Ok(())
     }
 
+    /// data.c:Fremove_variable_watcher: WATCHER is deleted from the
+    /// variable's watchers, and with the last of them its stores are no
+    /// longer trapped.
     pub fn remove_variable_watcher(
         &mut self,
         name: &str,
         watcher: &Value,
-    ) -> Result<Value, LispError> {
-        let resolved = self.resolve_variable_name(name)?;
-        if let Some(index) = self.variable_watcher_index(&resolved) {
-            self.variable_watchers[index]
-                .1
-                .retain(|existing| existing != watcher);
-            if self.variable_watchers[index].1.is_empty() {
-                self.remove_variable_watcher_entry(index);
-            }
+    ) -> Result<(), LispError> {
+        let symbol = self.resolve_variable_symbol(&SymbolName::intern_str(name))?;
+        let watchers = self.watchers_property(&symbol);
+        let watchers =
+            crate::lisp::primitives::call(self, "delete", &[*watcher, watchers], &mut Env::new())?;
+        if watchers.is_nil() {
+            symbol.cell().set_trapped_write(false);
         }
-        Ok(*watcher)
+        self.put_symbol_property_on(&symbol, "watchers", watchers);
+        Ok(())
     }
 
-    pub fn clear_variable_watchers(&mut self, name: &str) {
-        if let Some(index) = self.variable_watcher_index(name) {
-            self.remove_variable_watcher_entry(index);
-        }
-    }
-
-    /// `notify_variable_watchers' for the symbol in hand: nothing to do,
-    /// decided by id, unless a watcher is registered under it.
+    /// `notify_variable_watchers' of the variable that is SYMBOL itself (no
+    /// alias): nothing to do unless its stores are trapped.
     pub(crate) fn notify_variable_watchers_symbol(
         &mut self,
         symbol: &SymbolName,
@@ -1264,10 +1263,45 @@ impl Interpreter {
         buffer_id: Option<u64>,
         env: &mut Env,
     ) -> Result<(), LispError> {
-        if !self.variable_is_watched(symbol) {
+        if !symbol.cell().is_trapped_write() {
             return Ok(());
         }
-        self.notify_variable_watchers(symbol.as_str(), value, action, buffer_id, env)
+        // Avoid recursion: a watcher's own stores to the variable notify
+        // no one.  restore_symbol_trapped_write traps it again however the
+        // watchers return, and a store made meanwhile learned no plain path
+        // around them.
+        symbol.cell().set_trapped_write(false);
+        let result = self.call_variable_watchers(symbol, value, action, buffer_id, env);
+        symbol.cell().set_trapped_write(true);
+        self.globals.set_plain_store(symbol, false);
+        result
+    }
+
+    fn call_variable_watchers(
+        &mut self,
+        symbol: &SymbolName,
+        value: Value,
+        action: &str,
+        buffer_id: Option<u64>,
+        env: &mut Env,
+    ) -> Result<(), LispError> {
+        let buffer = buffer_id
+            .and_then(|id| self.buffer_identity_value(id))
+            .unwrap_or(Value::Nil);
+        let operation = Value::symbol(action);
+        let mut watchers = self.watchers_property(symbol);
+        while let Some((watcher, rest)) = watchers.cons_values() {
+            self.with_lisp_stack_roots(&(rest, (value, buffer)), |interp| {
+                interp.call_function_value(
+                    watcher,
+                    None,
+                    &[Value::Symbol(*symbol), value, operation, buffer],
+                    env,
+                )
+            })?;
+            watchers = rest;
+        }
+        Ok(())
     }
 
     /// data.c:set_internal notifies before changing locality. Its native
@@ -1299,6 +1333,9 @@ impl Interpreter {
         Ok(())
     }
 
+    /// data.c:notify_variable_watchers: the variable NAME is an alias of
+    /// (or NAME itself) tells its watchers, as the variable it is, of the
+    /// store of VALUE by ACTION in the buffer BUFFER_ID.
     pub fn notify_variable_watchers(
         &mut self,
         name: &str,
@@ -1307,27 +1344,8 @@ impl Interpreter {
         buffer_id: Option<u64>,
         env: &mut Env,
     ) -> Result<(), LispError> {
-        let Some(index) = self.variable_watcher_index(name) else {
-            return Ok(());
-        };
-        let watchers = self.variable_watchers[index].1.clone();
-        let buffer = buffer_id
-            .and_then(|id| self.buffer_identity_value(id))
-            .unwrap_or(Value::Nil);
-        for watcher in watchers {
-            self.call_function_value(
-                watcher,
-                None,
-                &[
-                    Value::Symbol(name.to_string().into()),
-                    value,
-                    Value::Symbol(action.to_string().into()),
-                    buffer,
-                ],
-                env,
-            )?;
-        }
-        Ok(())
+        let symbol = self.resolve_variable_symbol(&SymbolName::intern_str(name))?;
+        self.notify_variable_watchers_symbol(&symbol, value, action, buffer_id, env)
     }
 
     pub(super) fn direct_variable_alias(&self, name: &str) -> Option<String> {
@@ -2274,7 +2292,7 @@ impl Interpreter {
                     | FWD_BOOL
                     | FWD_INT,
             )
-            && self.variable_watcher_index(name).is_none()
+            && !symbol.cell().is_trapped_write()
             && !self.forwarded_variable_detached(name)
             && !symbol.cell().is_constant()
             && !symbol.cell().has_c_slot();
@@ -3042,10 +3060,10 @@ impl Interpreter {
         // GNU's Qsymbol belongs to the editor that owns its value and
         // declared-special flag. Keep a direct reference in this owner;
         // neither a process-wide id nor a name/TLS lookup is needed here.
-        self.globals.edebug_is_special()
-            && self
-                .symbol_value_key(cached_symbol!("edebug-entered"))
-                .is_some_and(|value| value.is_truthy())
+        self.globals
+            .special_edebug_entered()
+            .and_then(|symbol| self.symbol_value_symbol(&symbol))
+            .is_some_and(|value| value.is_truthy())
     }
 
     #[inline(always)]

@@ -829,7 +829,16 @@ fn find_composition(
     args: &[Value],
 ) -> Result<Value, LispError> {
     let string = &args[2];
-    let position = position_from_value(interp, &args[0])?;
+    // composite.c: fix_position of POS and of LIMIT, then STRING checked
+    // and POS ranged.
+    let fixed_pos = crate::lisp::primitives::textprop::fixnum_coerce_marker(interp, &args[0])?;
+    let raw_limit = if args[1].is_nil() {
+        None
+    } else {
+        Some(crate::lisp::primitives::textprop::fixnum_coerce_marker(
+            interp, &args[1],
+        )?)
+    };
     let (minimum, maximum) = if string.is_nil() {
         (
             interp.buffer.borrow().point_min(),
@@ -839,7 +848,7 @@ fn find_composition(
         let string = string_like(string).ok_or_else(|| wrong_type_argument("stringp", *string))?;
         (0, string.text.chars().count())
     };
-    if !(minimum..=maximum).contains(&position) {
+    if !(minimum as i64..=maximum as i64).contains(&fixed_pos) {
         let object = if string.is_nil() {
             current_buffer_value(interp)
         } else {
@@ -847,24 +856,14 @@ fn find_composition(
         };
         return Err(args_out_of_range([object, args[0]]));
     }
-    let limit = if args[1].is_nil() {
-        None
-    } else {
-        let raw = match args[1].kind() {
-            Kind::Integer(value) => value,
-            Kind::Marker(id) => interp
-                .marker_position(id)
-                .map(|position| position as i64)
-                .ok_or_else(|| wrong_type_argument("integer-or-marker-p", args[1]))?,
-            value => {
-                return Err(wrong_type_argument("integer-or-marker-p", value.value()));
-            }
-        };
-        // composite.c clips LIMIT to the current buffer's ZV, a string's
-        // search included; a negative one is no limit.
-        let clipped = raw.min(interp.buffer.borrow().point_max() as i64);
+    let position = fixed_pos as usize;
+    // composite.c clips LIMIT to the current buffer's ZV, a string's
+    // search included; a negative one is no limit.
+    let zv = interp.buffer.borrow().point_max() as i64;
+    let limit = raw_limit.and_then(|raw| {
+        let clipped = raw.min(zv);
         (clipped >= 0).then(|| clipped.clamp(minimum as i64, maximum as i64) as usize)
-    };
+    });
     let ranges = composition_ranges(interp, string)?;
     if let Some(range) = find_static_composition(&ranges, position, limit) {
         if !(range.start <= position && position < range.end) {

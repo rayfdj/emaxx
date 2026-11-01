@@ -289,7 +289,6 @@ impl Interpreter {
                 Err(e) => {
                     // `ert-skip' signals ert-test-skipped directly.
                     let status = match e.kind() {
-                        LispErrorKind::TestSkipped(_) => TestStatus::Skipped,
                         LispErrorKind::SignalValue(condition)
                             if matches!(condition.car().map(|v| v.kind()), Ok(Kind::Symbol(kind))
                                 if kind == "ert-test-skipped") =>

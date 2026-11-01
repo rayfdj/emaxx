@@ -36,12 +36,12 @@ fn coding_charset_list_is_ascii_compatible(interp: &Interpreter, value: &Value) 
 /// One `compare-buffer-substrings' operand: its buffer and ordered bounds,
 /// nil bounds meaning the buffer's accessible region. editfns.c signals
 /// `args-out-of-range' with the original bounds for a range outside it.
-fn comparison_range<'a>(
-    interp: &'a Interpreter,
+fn comparison_range(
+    interp: &Interpreter,
     buffer: &Value,
     start: &Value,
     end: &Value,
-) -> Result<(std::cell::Ref<'a, crate::buffer::Buffer>, usize, usize), LispError> {
+) -> Result<(u64, usize, usize), LispError> {
     // Fget_buffer and nsberror, then the buffer's liveness.
     let buffer_id = if buffer.is_nil() {
         interp.current_buffer_id()
@@ -72,7 +72,104 @@ fn comparison_range<'a>(
             *end,
         ])));
     }
-    Ok((buffer, from, to))
+    Ok((buffer_id, from, to))
+}
+
+/// The characters of BUFFER from FROM on, as BUF_FETCH_MULTIBYTE_CHAR
+/// reads a multibyte buffer's and make_char_multibyte makes a unibyte
+/// buffer's bytes characters.
+fn char_codes_from(buffer: &crate::buffer::Buffer, from: usize) -> impl Iterator<Item = u32> + '_ {
+    use crate::lisp::primitives::case::{RAW_BYTE8_BASE, public_buffer_char_code};
+    let (first, second) = buffer.text_from(from);
+    let multibyte = buffer.is_multibyte();
+    first
+        .chars()
+        .chain(second.chars())
+        .zip(from..)
+        .map(move |(ch, position)| {
+            if ch == crate::lisp::regex_emacs::EXTENDED_PLACEHOLDER
+                && let Some(code) = buffer.extended_char_at(position)
+            {
+                return code;
+            }
+            let code = public_buffer_char_code(ch, multibyte) as u32;
+            if multibyte || code < 0x80 {
+                code
+            } else {
+                code + RAW_BYTE8_BASE
+            }
+        })
+}
+
+/// editfns.c:Fcompare_buffer_substrings: the ranges' characters compared
+/// from their starts, each start's byte position the one conversion, to
+/// the first that differs once `case-fold-search' translates both through
+/// the current buffer's case_canon_table (even when neither range is in
+/// it); the buffers are let go at each 65536th character for rarely_quit.
+fn compare_buffer_substrings(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    let trt = interp
+        .case_fold_search_active()
+        .then(|| interp.current_case_tables().canon);
+    let (buffer1, begp1, endp1) = comparison_range(interp, &args[0], &args[1], &args[2])?;
+    let (buffer2, begp2, endp2) = comparison_range(interp, &args[3], &args[4], &args[5])?;
+    // char_table_translate: the entry when it is a character, else C.
+    let translate = |c: u32| match trt {
+        Some(table) => table
+            .get(c)
+            .fixnum()
+            .filter(|code| (0..=i64::from(crate::lisp::regex_emacs::MAX_CHAR)).contains(code))
+            .map_or(c, |code| code as u32),
+        None => c,
+    };
+    let (length1, length2) = (endp1 - begp1, endp2 - begp2);
+    let limit = length1.min(length2);
+    let mut chars = 0usize;
+    while chars < limit {
+        let stretch_end = limit.min((chars | 0xFFFF) + 1);
+        let differ = {
+            let live = |id: u64| {
+                interp
+                    .get_buffer_by_id(id)
+                    .ok_or_else(|| LispError::Signal("Selecting deleted buffer".into()))
+            };
+            let (left, right) = (live(buffer1)?, live(buffer2)?);
+            let mut codes1 = char_codes_from(&left, begp1 + chars);
+            let mut codes2 = char_codes_from(&right, begp2 + chars);
+            let mut differ = None;
+            while chars < stretch_end {
+                let (Some(c1), Some(c2)) = (codes1.next(), codes2.next()) else {
+                    break;
+                };
+                let (c1, c2) = (translate(c1), translate(c2));
+                if c1 != c2 {
+                    differ = Some(c1 < c2);
+                    break;
+                }
+                chars += 1;
+            }
+            differ
+        };
+        let matched = chars as i64;
+        match differ {
+            Some(true) => return Ok(Value::Integer(-1 - matched)),
+            Some(false) => return Ok(Value::Integer(matched + 1)),
+            None if chars & 0xFFFF == 0 => interp.maybe_quit(env)?,
+            None => {}
+        }
+    }
+    // The strings match as far as they go; a shorter one is less.
+    let matched = chars as i64;
+    Ok(Value::Integer(if chars < length1 {
+        matched + 1
+    } else if chars < length2 {
+        -matched - 1
+    } else {
+        0
+    }))
 }
 
 define_dispatch!(
@@ -89,53 +186,7 @@ define_dispatch!(
             }
             "compare-buffer-substrings" => {
                 need_args(name, args, 6)?;
-                // GNU editfns.c consults `case-fold-search' and the
-                // case_canon_table of the current buffer, even when either
-                // substring belongs to another buffer.
-                let canonical_table = interp
-                    .case_fold_search_active()
-                    .then(|| interp.current_case_tables().canon);
-                // Both operands are read in place, as editfns.c reads the
-                // buffer text; neither is copied.
-                let interp = &*interp;
-                let substring_error =
-                    |error: crate::buffer::BufferError| LispError::Signal(error.to_string());
-                let (left_buffer, left_start, left_end) =
-                    comparison_range(interp, &args[0], &args[1], &args[2])?;
-                let (right_buffer, right_start, right_end) =
-                    comparison_range(interp, &args[3], &args[4], &args[5])?;
-                // Two ASCII ranges, each on one side of its buffer's gap, are
-                // compared as bytes; a byte is its character there.
-                if canonical_table.is_none()
-                    && let Some(left) = left_buffer.ascii_chunk_range(left_start, left_end)
-                    && let Some(right) = right_buffer.ascii_chunk_range(right_start, right_end)
-                {
-                    return Ok(Value::Integer(compare_buffer_substrings(
-                        left.bytes().map(char::from),
-                        right.bytes().map(char::from),
-                        |character| character as u32,
-                    )));
-                }
-                let left = left_buffer
-                    .substring_chars(left_start, left_end)
-                    .map_err(substring_error)?;
-                let right = right_buffer
-                    .substring_chars(right_start, right_end)
-                    .map_err(substring_error)?;
-                Ok(Value::Integer(compare_buffer_substrings(
-                    left,
-                    right,
-                    |character| {
-                        let code = character as u32;
-                        let Some(table) = canonical_table else {
-                            return code;
-                        };
-                        match interp.char_table_get(table, code).map(|v| v.kind()) {
-                            Some(Kind::Integer(mapped)) => u32::try_from(mapped).unwrap_or(code),
-                            _ => code,
-                        }
-                    },
-                )))
+                compare_buffer_substrings(interp, args, env)
             }
             "field-beginning" | "field-end" => {
                 need_arg_range(name, args, 0, 3)?;
@@ -260,7 +311,7 @@ define_dispatch!(
                     // a random -NNNNNN suffix, so that thousands of
                     // internal buffers do not each scan <2>, <3>, ...
                     let genbase = if base.starts_with(' ') {
-                        let number = (crate::lisp::primitives::next_random_u64() >> 2) % 1_000_000;
+                        let number = crate::lisp::primitives::get_random() % 1_000_000;
                         let genbase = format!("{base}-{number}");
                         if !interp.has_buffer(&genbase) {
                             return Ok(Value::String(genbase.into()));
@@ -522,19 +573,22 @@ define_dispatch!(
             }
             "buffer-local-value" => {
                 need_args(name, args, 2)?;
-                let symbol = interp.resolve_variable_name(args[0].as_symbol()?)?;
-                // data.c:buffer_local_value: CHECK_BUFFER; a killed buffer
-                // has no locals left and an empty history.
+                // data.c:buffer_local_value: CHECK_SYMBOL, the alias chain's
+                // end by its symbols, CHECK_BUFFER; a killed buffer has no
+                // locals left and an empty history.
+                let symbol = interp
+                    .resolve_variable_symbol(&checked_symbol_identity(interp, &args[0], env)?)?;
                 let Kind::Buffer(buffer) = args[1].kind() else {
                     return Err(LispError::WrongTypeArgument("bufferp".into(), args[1]));
                 };
+                let undo_list = cached_symbol!("buffer-undo-list").with(|undo| symbol == *undo);
                 if interp.live_buffer_id(buffer).is_none() {
                     let killed = interp
                         .killed_buffer_local_slots(&buffer.borrow())
                         .into_iter()
                         .find(|(name, _)| *name == symbol.as_str())
                         .map(|(_, value)| value);
-                    let value = if symbol == "buffer-undo-list" {
+                    let value = if undo_list {
                         Some(crate::lisp::primitives::buffer_undo_list_value(
                             &buffer.borrow(),
                         ))
@@ -542,8 +596,8 @@ define_dispatch!(
                         (!matches!(value.kind(), Kind::Unbound)).then_some(value)
                     } else {
                         interp
-                            .default_value(&symbol)
-                            .or_else(|| interp.symbol_value_cell(&symbol).ok())
+                            .default_value_symbol(&symbol)?
+                            .or_else(|| interp.symbol_value_cell_symbol(&symbol).ok())
                     };
                     return value.ok_or_else(|| {
                         LispError::SignalValue(Value::list([
@@ -558,23 +612,20 @@ define_dispatch!(
                 // buffer's local value must not leak through (erc-open's
                 // prior-session detection reads `erc--target').  Fbuffer_local_value
                 // signals void-variable with VARIABLE as given.
-                let value = if interp.has_native_text_conversion_style(&symbol) {
-                    interp.buffer_local_value(buffer_id, &symbol)
-                } else if symbol == "buffer-undo-list"
-                    && crate::lisp::types::SymbolName::find(&symbol)
-                        .is_some_and(|symbol| symbol.cell().has_c_slot())
-                {
+                let value = if interp.has_native_text_conversion_style(symbol.as_str()) {
+                    interp.buffer_local_value(buffer_id, symbol.as_str())
+                } else if undo_list && symbol.cell().has_c_slot() {
                     // BVAR (b, undo_list): BUFFER's own history, t while
                     // it keeps none, held by the buffer and not its locals.
                     interp
                         .get_buffer_by_id(buffer_id)
                         .map(|buffer| crate::lisp::primitives::buffer_undo_list_value(&buffer))
                 } else {
-                    match interp.buffer_local_binding(buffer_id, &symbol) {
+                    match interp.buffer_local_binding_symbol(buffer_id, &symbol) {
                         Some(local) => local,
                         None => interp
-                            .default_value(&symbol)
-                            .or_else(|| interp.symbol_value_cell(&symbol).ok()),
+                            .default_value_symbol(&symbol)?
+                            .or_else(|| interp.symbol_value_cell_symbol(&symbol).ok()),
                     }
                 };
                 value.ok_or_else(|| {
@@ -745,16 +796,16 @@ define_dispatch!(
             "add-variable-watcher" => {
                 need_args(name, args, 2)?;
                 interp.add_variable_watcher(args[0].as_symbol()?, args[1])?;
-                Ok(args[1])
+                Ok(Value::Nil)
             }
             "remove-variable-watcher" => {
                 need_args(name, args, 2)?;
                 interp.remove_variable_watcher(args[0].as_symbol()?, &args[1])?;
-                Ok(args[1])
+                Ok(Value::Nil)
             }
             "get-variable-watchers" => {
                 need_args(name, args, 1)?;
-                Ok(Value::list(interp.variable_watchers(args[0].as_symbol()?)))
+                interp.variable_watchers(args[0].as_symbol()?)
             }
             "command-modes" => {
                 need_args(name, args, 1)?;
@@ -852,7 +903,7 @@ define_dispatch!(
                     }
                 };
                 let function = resolve_callable(interp, &args[0], env)?;
-                function_arity_value(interp, &unwrap_macro(&function), env)
+                function_arity_value(interp, &unwrap_macro(&function), &args[0], env)
             }
             "subr-name" => {
                 need_args(name, args, 1)?;
@@ -1024,10 +1075,7 @@ define_dispatch!(
             "decode-char" => {
                 need_args(name, args, 2)?;
                 // CHECK_CHARSET_GET_CHARSET: an unknown charset signals.
-                let charset = args[0].as_symbol()?;
-                if !interp.has_charset(charset) {
-                    return Err(LispError::WrongTypeArgument("charsetp".into(), args[0]));
-                }
+                let charset = check_charset(interp, &args[0])?;
                 let code = u32::try_from(args[1].as_integer()?)
                     .map_err(|_| LispError::Signal("Invalid charset code-point".into()))?;
                 Ok(decode_charset_code(interp, charset, code)
@@ -1036,12 +1084,10 @@ define_dispatch!(
             }
             "encode-char" => {
                 need_args(name, args, 2)?;
-                let character = u32::try_from(args[0].as_integer()?)
-                    .map_err(|_| LispError::Signal("Invalid character".into()))?;
-                let charset = args[1].as_symbol()?;
-                if !interp.has_charset(charset) {
-                    return Err(LispError::WrongTypeArgument("charsetp".into(), args[1]));
-                }
+                // charset.c:Fencode_char: CHECK_CHARSET_GET_ID, then
+                // CHECK_CHARACTER.
+                let charset = check_charset(interp, &args[1])?;
+                let character = check_character(&args[0])?;
                 // ENCODE_CHAR takes GNU's character number as given (a raw
                 // byte at #x3fff80..#x3fffff belongs to `eight-bit' only).
                 Ok(encode_charset_char(interp, charset, character)
@@ -1146,8 +1192,8 @@ define_dispatch!(
                 })
             }
             "charset-id-internal" => {
-                need_args(name, args, 1)?;
-                let symbol = args[0].as_symbol()?;
+                need_arg_range(name, args, 0, 1)?;
+                let symbol = check_charset(interp, args.first().unwrap_or(&Value::Nil))?;
                 Ok(interp
                     .charset_id(symbol)
                     .map(Value::Integer)
@@ -1155,7 +1201,8 @@ define_dispatch!(
             }
             "charset-plist" => {
                 need_args(name, args, 1)?;
-                let symbol = args[0].as_symbol()?;
+                // CHECK_CHARSET_GET_ATTR.
+                let symbol = check_charset(interp, &args[0])?;
                 Ok(interp
                     .charset_plist_value(symbol)
                     .unwrap_or_else(|| default_charset_plist(symbol, interp).unwrap_or(Value::Nil)))
@@ -1393,11 +1440,13 @@ define_dispatch!(
             }
             "iso-charset" => {
                 need_args(name, args, 3)?;
-                let dimension = args[0].as_integer()?;
-                let chars = args[1].as_integer()?;
-                let final_char = args[2].as_integer()?;
+                // charset.c:Fiso_charset: CHECK_FIXNUM of DIMENSION and
+                // CHARS, CHECK_CHARACTER of FINAL-CHAR.
+                let dimension = args[0].as_fixnum()?;
+                let chars = args[1].as_fixnum()?;
+                let final_char = check_character(&args[2])?;
                 Ok(interp
-                    .iso_charset(dimension, chars, final_char as u32)
+                    .iso_charset(dimension, chars, final_char)
                     .map(|value| Value::Symbol(value.into()))
                     .unwrap_or(Value::Nil))
             }
@@ -1447,14 +1496,8 @@ define_dispatch!(
             }
             "coding-system-p" => {
                 need_args(name, args, 1)?;
-                Ok(if args[0].is_nil() {
+                Ok(if coding_system_p(interp, &args[0]) {
                     Value::T
-                } else if let Kind::Symbol(symbol) = args[0].kind() {
-                    if interp.has_coding_system(&symbol) {
-                        Value::T
-                    } else {
-                        Value::Nil
-                    }
                 } else {
                     Value::Nil
                 })
@@ -1537,7 +1580,11 @@ define_dispatch!(
             }
             "coding-system-aliases" => {
                 need_args(name, args, 1)?;
-                let coding = checked_coding_symbol(interp, &args[0])?;
+                let coding = if args[0].is_nil() {
+                    "no-conversion".to_string()
+                } else {
+                    checked_coding_symbol(interp, &args[0])?
+                };
                 Ok(Value::list(
                     interp
                         .coding_system_alias_list(&coding)
@@ -1570,10 +1617,17 @@ define_dispatch!(
             }
             "coding-system-eol-type" => {
                 need_args(name, args, 1)?;
+                // nil is `no-conversion', and what CODING_SYSTEM_P rejects
+                // has no eol type.
                 if args[0].is_nil() {
                     return Ok(Value::Integer(0));
                 }
-                let coding = checked_coding_symbol(interp, &args[0])?;
+                let Some(coding) = args[0]
+                    .symbol_str()
+                    .and_then(|symbol| interp.coding_system_canonical_name(symbol))
+                else {
+                    return Ok(Value::Nil);
+                };
                 if let Some(eol_type) = interp.coding_system_eol_type_value(&coding) {
                     return Ok(Value::Integer(eol_type));
                 }
@@ -1651,13 +1705,10 @@ define_dispatch!(
                 // answers oracle-probed: #x8940 is 38498 here and the
                 // 0208 offset character through decode-coding-string).
                 need_args(name, args, 1)?;
-                let code = args[0].as_fixnum()?;
-                // coding.c CHECK_FIXNAT prints as `wholenump'; any
-                // in-range fixnum passes and oversized codes fall to
-                // the "Invalid code" validation below (oracle rows).
-                if code < 0 {
-                    return Err(LispError::WrongTypeArgument("wholenump".into(), args[0]));
-                }
+                // coding.c CHECK_FIXNAT: any natural fixnum passes and
+                // oversized codes fall to the "Invalid code" validation
+                // below (oracle rows).
+                let code = check_fixnat(&args[0])?;
                 let invalid = || LispError::Signal(format!("Invalid code: {code}"));
                 if code <= 0x7F {
                     return Ok(Value::Integer(code));
@@ -1692,10 +1743,8 @@ define_dispatch!(
                 // stack garbage elsewhere); emaxx takes the error the
                 // docstring promises, disclosed in the ledger.
                 need_args(name, args, 1)?;
-                let character = args[0].as_fixnum()?;
-                if !(0..=0x3FFFFF).contains(&character) {
-                    return Err(LispError::WrongTypeArgument("characterp".into(), args[0]));
-                }
+                // CHECK_CHARACTER.
+                let character = i64::from(check_character(&args[0])?);
                 if character <= 0x7F {
                     return Ok(Value::Integer(character));
                 }
@@ -1720,11 +1769,8 @@ define_dispatch!(
                 // direction happily produces it.  The oracle confirms
                 // both halves of the asymmetry.
                 need_args(name, args, 1)?;
-                let code = args[0].as_fixnum()?;
-                // CHECK_FIXNAT as above: `wholenump', no upper bound.
-                if code < 0 {
-                    return Err(LispError::WrongTypeArgument("wholenump".into(), args[0]));
-                }
+                // CHECK_FIXNAT as above, no upper bound.
+                let code = check_fixnat(&args[0])?;
                 let invalid = || LispError::Signal(format!("Invalid code: {code}"));
                 if code <= 0x7F {
                     return Ok(Value::Integer(code));
@@ -1751,10 +1797,8 @@ define_dispatch!(
                 // Fencode_sjis_char's null-charset read; emaxx signals
                 // the docstring's error instead.
                 need_args(name, args, 1)?;
-                let character = args[0].as_fixnum()?;
-                if !(0..=0x3FFFFF).contains(&character) {
-                    return Err(LispError::WrongTypeArgument("characterp".into(), args[0]));
-                }
+                // CHECK_CHARACTER.
+                let character = i64::from(check_character(&args[0])?);
                 if character <= 0x7F {
                     return Ok(Value::Integer(character));
                 }

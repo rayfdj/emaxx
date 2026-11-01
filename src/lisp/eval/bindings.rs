@@ -468,6 +468,7 @@ impl Interpreter {
             | "indicate-buffer-boundaries"
             | "indicate-empty-lines"
             | "left-fringe-width"
+            | "local-abbrev-table"
             | "local-minor-modes"
             | "point-before-scroll"
             | "right-fringe-width"
@@ -1084,6 +1085,11 @@ impl Interpreter {
             symbols: Rc::clone(&symbols),
         });
         symbols
+    }
+
+    /// The initial obarray's size_bits, as pdumper.c dumps its vector.
+    pub(crate) fn standard_obarray_size_bits(&self) -> u32 {
+        self.globals.initial_size_bits()
     }
 
     pub(crate) fn note_obarray_removal(&mut self) {

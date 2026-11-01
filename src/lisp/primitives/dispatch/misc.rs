@@ -1238,9 +1238,9 @@ define_dispatch!(
                             let resolved = interp.resolve_variable_symbol(&base)?;
                             let stored =
                                 interp.prepare_forwarded_assignment_symbol(&resolved, value)?;
-                            if !interp.variable_watchers(&base).is_empty() {
-                                interp.notify_variable_watchers(&base, value, "let", None, env)?;
-                            }
+                            interp.notify_variable_watchers_symbol(
+                                &resolved, value, "let", None, env,
+                            )?;
                             interp.set_symbol_value_cell_resolved(&resolved, stored);
                         }
                     }
@@ -1279,19 +1279,20 @@ define_dispatch!(
                         visible(&alias)
                     )));
                 }
-                if !interp.variable_watchers(&alias).is_empty() {
-                    interp.notify_variable_watchers(
-                        &alias,
-                        Value::Symbol(base),
-                        "defvaralias",
-                        None,
-                        env,
-                    )?;
-                    interp.clear_variable_watchers(&alias);
-                }
+                interp.notify_variable_watchers(
+                    &alias,
+                    Value::Symbol(base),
+                    "defvaralias",
+                    None,
+                    env,
+                )?;
                 interp.mark_special_variable_symbol(&alias);
                 interp.mark_special_variable_symbol(&base);
                 interp.set_variable_alias_symbol(&alias, &base)?;
+                // The alias's stores are trapped as its base's are.
+                alias
+                    .cell()
+                    .set_trapped_write(base.cell().is_trapped_write());
                 // LOADHIST_ATTACH (new_alias): the bare symbol, as for defvar.
                 interp.record_symbol_definition_in_load_history("defvar", &alias);
                 // "Even if docstring is nil: remove old docstring."
@@ -1310,7 +1311,10 @@ define_dispatch!(
             }
             "indirect-variable" => {
                 need_args(name, args, 1)?;
-                let symbol = checked_symbol_identity(interp, &args[0], env)?;
+                // data.c:Findirect_variable answers a non-symbol as given.
+                let Ok(symbol) = checked_symbol_identity(interp, &args[0], env) else {
+                    return Ok(args[0]);
+                };
                 Ok(Value::Symbol(interp.resolve_variable_symbol(&symbol)?))
             }
             "internal--define-uninitialized-variable" => {
@@ -1356,7 +1360,9 @@ define_dispatch!(
                     interp.put_symbol_property(&symbol_name, "variable-documentation", doc);
                 }
                 let value = purecopy_value(interp, &args[1], env)?;
-                interp.set_variable(&symbol_name, value, &mut crate::lisp::types::Env::new());
+                // eval.c:Fdefconst_1 stores with Fset_default, which refuses
+                // a constant.
+                super::call(interp, "set-default", &[args[0], value], env)?;
                 interp.put_symbol_property(&symbol_name, "risky-local-variable", Value::T);
                 Ok(Value::Symbol(symbol_name.into()))
             }
@@ -2020,12 +2026,17 @@ fn snarf_documentation(
     let directory = interp
         .lookup_var("doc-directory", env)
         .unwrap_or(Value::Nil);
-    let path = doc_path(&directory, filename)?;
+    // doc.c names the file by appending FILENAME to `doc-directory'.
+    let directory = string_like(&directory)
+        .ok_or_else(|| wrong_type_argument("stringp", directory))?
+        .text;
+    let path = directory + &string_text(filename)?;
     let bytes = std::fs::read(&path).map_err(|error| {
-        LispError::SignalValue(file_error_value(
-            &format!("Opening doc string file: {error}"),
-            &path.to_string_lossy(),
-        ))
+        crate::lisp::primitives::file_io::file_operation_error(
+            "Opening doc string file",
+            &error,
+            &path,
+        )
     })?;
     let entries = parse_doc_file_entries(&bytes)?;
     interp.set_variable("internal-doc-file-name", *filename, env);
@@ -2051,20 +2062,27 @@ fn snarf_documentation(
         if entry.skip {
             continue;
         }
+        // doc.c finds each entry's symbol with oblookup: the DEFUNs and
+        // DEFVARs DOC lists under `#if 0', GLYPH_DEBUG or another
+        // platform's file name no symbol, and none is made for them.
+        let Some(symbol) = crate::lisp::types::SymbolName::find(&entry.name) else {
+            continue;
+        };
         match entry.kind {
             b'F' => {
-                if let Ok(Kind::BuiltinFunc(native_name)) =
-                    interp.lookup_function(&entry.name, env).map(|v| v.kind())
+                if let Ok(Kind::BuiltinFunc(native_name)) = interp
+                    .lookup_function_symbol(&symbol, env)
+                    .map(|v| v.kind())
                 {
                     interp
                         .builtin_doc_offsets
                         .insert(native_name.to_string(), entry.offset);
                 }
             }
-            b'V' if interp.lookup_var(&entry.name, env).is_some()
-                || delayed.iter().any(
-                    |value| matches!(value.kind(), Kind::Symbol(name) if name.as_str() == entry.name.as_str()),
-                ) =>
+            b'V' if interp.lookup_var_symbol(&symbol, env).is_some()
+                || delayed
+                    .iter()
+                    .any(|value| matches!(value.kind(), Kind::Symbol(name) if name == symbol)) =>
             {
                 interp.put_symbol_property(
                     &entry.name,
@@ -2125,30 +2143,23 @@ fn documentation_property(
     args: &[Value],
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    let symbol = args[0]
-        .as_symbol()
-        .map_err(|_| wrong_type_argument("symbolp", args[0]))?;
-    let property = args[1]
-        .as_symbol()
-        .map_err(|_| wrong_type_argument("symbolp", args[1]))?;
-    let mut doc = interp
-        .get_symbol_property(symbol, property)
-        .unwrap_or(Value::Nil);
-    if doc.is_nil()
-        && property == "variable-documentation"
-        && let Ok(target) = interp.resolve_variable_name(symbol)
-        && target != symbol
-    {
-        doc = interp
-            .get_symbol_property(&target, property)
-            .unwrap_or(Value::Nil);
+    // doc.c:Fdocumentation_property: Fget of PROP, whatever it is; a
+    // missing `variable-documentation' is looked for on the indirect
+    // variable.
+    let mut doc = super::call(interp, "get", &[args[0], args[1]], env)?;
+    if doc.is_nil() && args[1].eq_value(Value::symbol("variable-documentation")) {
+        let indirect = super::call(interp, "indirect-variable", &[args[0]], env)?;
+        if !indirect.is_nil() {
+            doc = super::call(interp, "get", &[indirect, args[1]], env)?;
+        }
     }
     if doc == Value::Integer(0) {
         doc = Value::Nil;
     } else if is_doc_reference(&doc) {
         doc = resolve_doc_reference(interp, &doc, env)?.unwrap_or(Value::Nil);
     } else if string_like(&doc).is_none() && !doc.is_nil() {
-        doc = interp.eval(&doc, env)?;
+        // Feval (tem, Qnil): dynamically, outside the caller's scope.
+        doc = interp.eval(&doc, &mut Env::new())?;
     }
     substitute_doc_keys(interp, doc, args.get(2).is_some_and(Value::is_truthy), env)
 }

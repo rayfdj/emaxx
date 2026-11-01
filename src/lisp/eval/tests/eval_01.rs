@@ -6803,12 +6803,16 @@ fn native_overlay_arrow_cluster_matches_xdisp_startup_contract() {
 fn startup_global_values_and_special_declarations_share_one_registry() {
     let interp = Interpreter::new();
     for (name, _) in &interp.globals {
-        assert!(
-            interp.is_special_variable_symbol(&crate::lisp::types::SymbolName::intern_str(
-                name.as_str()
-            )),
-            "startup global `{name}` was not registered as special"
-        );
+        let special = interp
+            .is_special_variable_symbol(&crate::lisp::types::SymbolName::intern_str(name.as_str()));
+        if GNU_NON_SPECIAL_C_VARIABLES.contains(&name.as_str()) {
+            assert!(!special, "`{name}` is a C variable GNU leaves non-special");
+        } else {
+            assert!(
+                special,
+                "startup global `{name}` was not registered as special"
+            );
+        }
     }
     let names = interp.special_variable_names();
     let unique = names.iter().collect::<std::collections::HashSet<_>>();

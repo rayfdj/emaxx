@@ -892,8 +892,16 @@ fn image_records_symbol_cells_from_the_interpreter() {
         plain.flags & super::context::FLAG_TRAPPED_WRITE,
         super::context::FLAG_TRAPPED_WRITE
     );
-    assert_eq!(plain.watchers, vec![Value::symbol("ignore")]);
-    assert_eq!(plain.plist.to_vec().ok().map(|plist| plist.len()), Some(2));
+    // data.c keeps the watchers in the `watchers' property.
+    assert_eq!(
+        plain.plist.to_vec().ok(),
+        Some(vec![
+            Value::symbol("zz-prop"),
+            Value::string("value"),
+            Value::symbol("watchers"),
+            Value::list([Value::symbol("ignore")]),
+        ])
+    );
     let function = mapped(3, "zz-dump-fn");
     assert_eq!(function.cell().function.get(), Value::symbol("car"));
     assert_eq!(mapped(4, "zz-dump-void").cell().value(), None);
@@ -1804,6 +1812,7 @@ fn image_round_trips_buffers_markers_finalizers_and_nilled_frames() {
           (set (make-local-variable 'zz-dump-local) 42)
           (set-syntax-table (make-char-table 'syntax-table))
           (set-category-table (make-category-table))
+          (use-local-map (let ((map (make-sparse-keymap))) (define-key map "z" 'zz-dump-command) map))
           (set-visited-file-modtime '(0 100))
           (goto-char 4)
           (set-marker (mark-marker) 2)
@@ -1971,6 +1980,21 @@ fn image_round_trips_buffers_markers_finalizers_and_nilled_frames() {
         source_category
     );
     assert!(!locals.iter().any(|(symbol, _)| symbol == "category-table"));
+    // BVAR (b, keymap) likewise.
+    assert!(
+        !locals
+            .iter()
+            .any(|(symbol, _)| symbol == "current-local-map")
+    );
+    let loaded_keymap = target
+        .buffer_object(source_id)
+        .expect("restored buffer")
+        .borrow()
+        .keymap();
+    assert_eq!(
+        printed(&mut target, &loaded_keymap),
+        "(keymap (122 . zz-dump-command))"
+    );
     let mark_marker = target
         .buffer_mark_marker_id(source_id)
         .expect("the mark marker relation");

@@ -1433,9 +1433,15 @@ fn match_bound_named(
     _env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
     need_args(name, args, 1)?;
-    let index = args[0].as_integer()?;
+    // search.c:match_limit: CHECK_FIXNUM, a negative subexpression
+    // args-out-of-range against 0.
+    let index = args[0].as_fixnum()?;
     if index < 0 {
-        return Err(LispError::Signal("Args out of range".into()));
+        return Err(LispError::SignalValue(Value::list([
+            Value::symbol("args-out-of-range"),
+            args[0],
+            Value::Integer(0),
+        ])));
     }
     let match_data = interp
         .last_match_data

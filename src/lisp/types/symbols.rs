@@ -13,9 +13,9 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::rc::Rc;
 
-/// Not GNU: the symbols of private obarrays and abbrev tables by their
-/// host keys, which carry the obarray's mark (see `make_obarray_symbol_name');
-/// a name-keyed caller finds them here, and they are roots, as they were
+/// Not GNU: the symbols of private obarrays by their host keys, which
+/// carry the obarray's mark (see `make_obarray_symbol_name'); a
+/// name-keyed caller finds them here, and they are roots, as they were
 /// when one table held every interned key.
 type PrivateNames = HashSet<NameEntry, ObarrayBuildHasher>;
 /// Host text's address with its length in the high bits a user-space
@@ -210,6 +210,7 @@ const KEY_NAMES: &[&str] = &[
     "buffer-access-fontify-functions",
     "buffer-access-fontified-property",
     "buffer-saved-size",
+    "buffer-undo-list",
     "search-spaces-regexp",
     "unicode-category-table",
     "char-script-table",
@@ -290,9 +291,7 @@ const KEY_NAMES: &[&str] = &[
     "void-variable",
     "void-function",
     "wrong-number-of-arguments",
-    "ert-test-failed",
     "no-catch",
-    "ert-test-skipped",
     "end-of-file",
     "invalid-read-syntax",
     "messages-buffer-name",
@@ -353,12 +352,11 @@ const KEY_NAMES: &[&str] = &[
     "identity",
     "case-symbols-as-words",
     "face--new-frame-defaults",
-    "edebug-entered",
     "event-symbol-element-mask",
     "event-symbol-elements",
     "modifier-cache",
     "event-kind",
-    "current-local-map",
+    "watchers",
     "tab-width",
     "ctl-arrow",
     "selective-display",
@@ -558,6 +556,37 @@ impl SymbolOwner {
     /// Finternal__obarray_buckets of the initial obarray.
     pub(crate) fn bucket_lists(&self) -> Vec<Vec<SymbolName>> {
         self.0.names.borrow().bucket_lists()
+    }
+
+    /// The initial obarray's size_bits.
+    pub(crate) fn size_bits(&self) -> u32 {
+        self.0.names.borrow().size_bits()
+    }
+
+    /// The initial obarray as pdumper.c's dumped one holds it: 2^BITS
+    /// buckets whose chains DOOBARRAY walks in ORDER.  A symbol the
+    /// buckets hold that ORDER does not list is filed after them, as
+    /// intern_sym files it.
+    pub(crate) fn restore_dumped_order(&self, bits: u32, order: &[SymbolName]) {
+        let mut names = self.0.names.borrow_mut();
+        let present = names.symbols();
+        let listed: HashSet<SymbolName> = order.iter().copied().collect();
+        names.reset(bits);
+        names.set_count(0);
+        let mut count = 0;
+        for &symbol in order.iter().rev() {
+            let index = super::obarray::name_bucket(symbol, bits);
+            symbol.cell().next.set(names.head(index));
+            names.set_head(index, Some(symbol));
+            count += 1;
+        }
+        names.set_count(count);
+        for symbol in present {
+            if !listed.contains(&symbol) {
+                let index = super::obarray::name_bucket(symbol, names.size_bits());
+                names.insert(symbol, index);
+            }
+        }
     }
 
     pub(crate) fn mark_roots(&self, mark: &mut dyn FnMut(&Value)) {

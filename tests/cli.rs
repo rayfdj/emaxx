@@ -1012,6 +1012,65 @@ fn batch_eval_interns_the_symbols_it_reads_like_gnu() {
     );
 }
 
+#[test]
+fn c_variables_are_bound_when_loadup_snarfs_their_documentation() {
+    // GNU's DEFVARs bind these hooks before loadup.el's Snarf-documentation
+    // runs, so the dumped image carries their DOC offsets.
+    let program = r#"(prin1 (mapcar (lambda (v) (integerp (get v 'variable-documentation))) '(pre-command-hook post-command-hook show-help-function after-delete-frame-functions x-pre-popup-menu-hook delete-frame-functions)))"#;
+    let output = Command::new(common::emaxx(false))
+        .args(["--quick", "--batch", "--eval", program])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "emaxx --eval failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "(t t t t t t)");
+}
+
+#[test]
+fn a_loaded_image_interns_no_symbol_of_its_own_bookkeeping() {
+    // The dumped interpreter scalars are named by strings and DOC's
+    // entries are found without interning, so the image a session starts
+    // from adds nothing to GNU's obarray.
+    let program = r#"(prin1 (mapcar #'intern-soft '("next-buffer-id" "next-record-id" "next-special-binding-id" "special-variables" "builtin-doc-offsets" "face-change-count" "finalizers-run" "w32-shell-execute" "edebug-entered" "unbound")))"#;
+    let output = Command::new(common::emaxx(false))
+        .args(["--quick", "--batch", "--eval", program])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "emaxx --eval failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "(nil nil nil nil nil nil nil nil nil nil)"
+    );
+}
+
+#[test]
+fn the_standard_abbrev_tables_are_the_obarrays_abbrev_el_makes() {
+    // abbrev.el and text-mode.el define them while loadup runs, as
+    // make-abbrev-table obarrays holding their properties on the "" symbol,
+    // in the order abbrev-table-name-list then has.
+    let program = r#"(prin1 (list (intern-soft "abbrev-table") (last abbrev-table-name-list 2) (length (memq 'text-mode-abbrev-table abbrev-table-name-list)) (type-of text-mode-abbrev-table) (let ((p (symbol-plist 'text-mode-abbrev-table)) r) (while p (push (car p) r) (setq p (cddr p))) (nreverse r)) (get 'text-mode-abbrev-table 'definition-name) (abbrev-table-get global-abbrev-table :abbrev-table-modiff) (let ((n 0)) (obarray-map (lambda (_) (setq n (1+ n))) global-abbrev-table) n) (prin1-to-string fundamental-mode-abbrev-table)))"#;
+    let output = Command::new(common::emaxx(false))
+        .args(["--quick", "--batch", "--eval", program])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "emaxx --eval failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "(nil (fundamental-mode-abbrev-table global-abbrev-table) 15 obarray (definition-name variable-documentation) text-mode 0 1 \"#<obarray n=1>\")"
+    );
+}
+
 /// GNU's batch stdout is C stdio, block-buffered when it is a pipe or a
 /// file; stderr is unbuffered.  A child whose two streams feed one
 /// descriptor -- what `call-process' with a merged DESTINATION captures --

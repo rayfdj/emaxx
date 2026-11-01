@@ -686,45 +686,46 @@ define_dispatch!(
             }
             "get-truename-buffer" => {
                 need_args(name, args, 1)?;
-                let file = string_text(&args[0])?;
-                Ok(interp
+                // buffer.c:Fget_truename_buffer compares each string
+                // truename with Fstring_equal, so a symbol is taken by its
+                // name and FILENAME is only checked once a truename meets it.
+                let truenames = interp
                     .buffer_list
                     .iter()
-                    .find_map(|(id, name)| {
-                        interp
-                            .get_buffer_by_id(*id)
-                            .filter(|buffer| buffer.file_truename.as_deref() == Some(file.as_str()))
-                            .map(|_| interp.buffer_value(*id).expect("live buffer object"))
+                    .filter_map(|(id, _)| {
+                        let truename = interp.get_buffer_by_id(*id)?.file_truename.clone()?;
+                        Some((*id, truename))
                     })
+                    .collect::<Vec<_>>();
+                if truenames.is_empty() {
+                    return Ok(Value::Nil);
+                }
+                let file = match args[0].symbol_str() {
+                    Some(symbol) => symbol.to_string(),
+                    None => string_text(&args[0])?,
+                };
+                Ok(truenames
+                    .into_iter()
+                    .find(|(_, truename)| *truename == file)
+                    .map(|(id, _)| interp.buffer_value(id).expect("live buffer object"))
                     .unwrap_or(Value::Nil))
             }
             "find-buffer" => {
                 need_args(name, args, 2)?;
-                let variable = args[0].as_symbol()?;
-                let candidates = interp
+                // buffer.c:Ffind_buffer: the first live buffer whose
+                // Fbuffer_local_value of VARIABLE is `equal' to VALUE.
+                let buffers = interp
                     .buffer_list
                     .iter()
-                    .filter_map(|(id, name)| {
-                        let value = match variable {
-                            "buffer-file-name" => interp.get_buffer_by_id(*id).and_then(|buffer| {
-                                buffer.file.clone().map(|value| Value::String(value.into()))
-                            }),
-                            "buffer-file-truename" => {
-                                interp.get_buffer_by_id(*id).and_then(|buffer| {
-                                    buffer
-                                        .file_truename
-                                        .clone()
-                                        .map(|value| Value::String(value.into()))
-                                })
-                            }
-                            _ => interp.buffer_local_value(*id, variable),
-                        };
-                        value.map(|value| (*id, value))
-                    })
+                    .map(|(id, _)| *id)
                     .collect::<Vec<_>>();
-                for (id, value) in candidates {
-                    if values_equal(interp, &value, &args[1])? {
-                        return Ok(interp.buffer_value(id).expect("live buffer object"));
+                for id in buffers {
+                    let Some(buffer) = interp.buffer_value(id) else {
+                        continue;
+                    };
+                    let value = super::call(interp, "buffer-local-value", &[args[0], buffer], env)?;
+                    if values_equal(interp, &args[1], &value)? {
+                        return Ok(buffer);
                     }
                 }
                 Ok(Value::Nil)
@@ -734,8 +735,11 @@ define_dispatch!(
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
                 let path = string_text(&args[0])?;
+                // fileio.c: a DEFAULT-DIRECTORY that is no string is the root.
                 let base = match args.get(1) {
-                    Some(value) if !value.is_nil() => Some(string_text(value)?),
+                    Some(value) if !value.is_nil() => {
+                        Some(string_like(value).map_or_else(|| "/".to_string(), |s| s.text))
+                    }
                     _ => interp
                         .lookup_var("default-directory", env)
                         .and_then(|value| string_like(&value).map(|string| string.text)),

@@ -224,11 +224,36 @@ fn load_with_context(
         let warning =
             interp.bind_special_variable("lread--unescaped-character-literals", Value::Nil, env)?;
         let mut result = (|| {
-            let compiled = path.extension().is_some_and(|extension| extension == "elc")
+            let is_elc = path.extension().is_some_and(|extension| extension == "elc");
+            // version 1 is an empty file, which loads as source.
+            let mut version = -1;
+            let compiled = is_elc
                 || match found.file.as_mut() {
-                    Some(file) => safe_to_load_version(interp, &request.file, file, env)? > 1,
+                    Some(file) => {
+                        version = safe_to_load_version(interp, &request.file, file, env)?;
+                        version > 1
+                    }
                     None => false,
                 };
+            let mut newer = false;
+            if compiled && let Some(file) = found.file.as_mut() {
+                if version < 0 {
+                    version = safe_to_load_version(interp, &request.file, file, env)?;
+                    if version == 0 {
+                        return Err(LispError::Signal(format!(
+                            "File `{}' was not compiled in Emacs",
+                            string_text(&found.name)?
+                        )));
+                    }
+                }
+                // openp already checked for newness with load-prefer-newer.
+                let prefer_newer = interp
+                    .forwarded_c_value("load-prefer-newer", &Env::new())
+                    .is_some_and(|value| value.is_truthy());
+                if !prefer_newer && is_elc {
+                    newer = source_newer_than_compiled(interp, request, &path, env)?;
+                }
+            }
             let source_loader = interp
                 .forwarded_c_value("load-source-file-function", &Env::new())
                 .unwrap_or(Value::Nil);
@@ -271,10 +296,12 @@ fn load_with_context(
                 " (module)"
             } else if native {
                 " (native compiled elisp)"
-            } else if compiled {
-                ""
-            } else {
+            } else if !compiled {
                 " (source)"
+            } else if newer {
+                " (compiled; note, source file is newer)"
+            } else {
+                ""
             };
             load_message(interp, request, kind, false, env)?;
             if native || module {
@@ -326,16 +353,12 @@ fn load_message(
             .forwarded_c_value("force-load-messages", &Env::new())
             .is_some_and(|value| value.is_truthy())
     {
-        super::super::call(
+        // lread.c's message_with_string, which in batch only writes to
+        // stderr, logging nothing in *Messages*.
+        super::super::dispatch::display::message_with_string(
             interp,
-            "message",
-            &[
-                Value::string(&format!(
-                    "Loading %s{kind}...{}",
-                    if done { "done" } else { "" }
-                )),
-                request.file,
-            ],
+            &format!("Loading %s{kind}...{}", if done { "done" } else { "" }),
+            request.file,
             env,
         )?;
     }
@@ -384,6 +407,44 @@ fn emit_load_warning(
         )?;
     }
     Ok(())
+}
+
+/// Fload's test of an .elc file PATH against its source: whether the
+/// source's modification time is later, and if so, when no load message
+/// will say so, the message that the older file is used (not for the
+/// bootstrap's "compile-first" files, whose times are the epoch).
+fn source_newer_than_compiled(
+    interp: &mut Interpreter,
+    request: &LoadRequest,
+    path: &std::path::Path,
+    env: &mut Env,
+) -> Result<bool, LispError> {
+    let mut source = path.as_os_str().to_owned();
+    let Some(text) = source.to_str() else {
+        return Ok(false);
+    };
+    source = std::ffi::OsString::from(&text[..text.len() - 1]);
+    let mtime =
+        |path: &std::path::Path| fs::metadata(path).and_then(|metadata| metadata.modified());
+    let (Ok(compiled), Ok(source_time)) = (mtime(path), mtime(std::path::Path::new(&source)))
+    else {
+        return Ok(false);
+    };
+    if compiled >= source_time {
+        return Ok(false);
+    }
+    let force = interp
+        .forwarded_c_value("force-load-messages", &Env::new())
+        .is_some_and(|value| value.is_truthy());
+    if request.nomessage.is_truthy() && !force && compiled != std::time::UNIX_EPOCH {
+        super::super::dispatch::display::message_with_string(
+            interp,
+            "Source file `%s' newer than byte-compiled file; using older file",
+            Value::string(&source.to_string_lossy()),
+            env,
+        )?;
+    }
+    Ok(true)
 }
 
 fn safe_to_load_version(

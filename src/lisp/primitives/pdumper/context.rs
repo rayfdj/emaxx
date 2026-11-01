@@ -140,7 +140,7 @@ fn mapped_symbol_state(
     };
     (!string.is_empty_singleton()
         && interp.standard_obarray_contains_object(symbol)
-        && interp.variable_watchers(symbol.as_str()).is_empty())
+        && !symbol.cell().is_trapped_write())
     .then_some(state)
 }
 
@@ -996,7 +996,7 @@ impl DumpContext {
         Ok(())
     }
 
-    /// The function cell, plist and watchers of `nil' or `t'.
+    /// The function cell and plist of `nil' or `t'.
     fn dump_builtin_symbol_cells(
         &mut self,
         interp: &Interpreter,
@@ -1008,21 +1008,14 @@ impl DumpContext {
             .raw_function_binding(name, &crate::lisp::types::Env::new())
             .unwrap_or(Value::Nil);
         let plist = interp.symbol_plist(name);
-        let watchers = interp.variable_watchers(name);
         let start = self.object_start()?;
         let mut words = vec![
-            symbol_flags_word(&symbol, &cell, !watchers.is_empty(), false),
+            symbol_flags_word(&symbol, &cell, symbol.cell().is_trapped_write(), false),
             0,
             0,
-            watchers.len() as u64,
         ];
         self.field_lv(start, &mut words, 1, &function, WEIGHT_NORMAL);
         self.field_lv(start, &mut words, 2, &plist, WEIGHT_NORMAL);
-        for watcher in &watchers {
-            let index = words.len();
-            words.push(0);
-            self.field_lv(start, &mut words, index, watcher, WEIGHT_NORMAL);
-        }
         let offset = self.object_finish(&words)?;
         if self.flags.dump_object_contents && self.flags.record_object_starts {
             self.object_starts
@@ -1496,14 +1489,13 @@ impl DumpContext {
             .raw_function_binding_symbol(&symbol, &crate::lisp::types::Env::new())
             .unwrap_or(Value::Nil);
         let plist = interp.symbol_plist_symbol(&symbol);
-        let watchers = interp.variable_watchers(symbol.as_str());
         let start = self.object_start()?;
         let uninterned_from_obarray = false; // Object state now owns membership.
         let mut words = vec![
             symbol_flags_word(
                 &symbol,
                 &cell,
-                !watchers.is_empty(),
+                symbol.cell().is_trapped_write(),
                 uninterned_from_obarray,
             ),
             0,
@@ -1527,12 +1519,6 @@ impl DumpContext {
             _ => Value::Integer(0),
         };
         self.field_lv(start, &mut words, 5, &next, WEIGHT_NORMAL);
-        words.push(watchers.len() as u64);
-        for watcher in &watchers {
-            let index = words.len();
-            words.push(0);
-            self.field_lv(start, &mut words, index, watcher, WEIGHT_NORMAL);
-        }
         // Not GNU: the host key the symbol keeps beside its name, its length
         // and its bytes, which the loaded symbol keeps where the image
         // holds them: an uninterned symbol's visible name (it gets a fresh
@@ -1729,7 +1715,14 @@ impl DumpContext {
         // Defsubr already interned this name. Reuse its Lisp string on
         // every dump pass: allocating another string while writing copied
         // objects would create a graph edge after the scan has finished.
-        let name = SymbolName::intern_str(subr.as_str()).lisp_name();
+        // A subr made under no name (alloc.c's watchers) is its index.
+        let name = match crate::lisp::native_comp::abi::C_VARIABLE_WATCHERS
+            .iter()
+            .position(|watcher| std::ptr::eq(watcher, subr.descriptor()))
+        {
+            Some(index) => Value::Integer(index as i64),
+            None => SymbolName::intern_str(subr.as_str()).lisp_name(),
+        };
         self.field_lv(start, &mut words, 0, &name, WEIGHT_STRONG);
         self.object_finish(&words)
     }
@@ -1918,10 +1911,15 @@ impl DumpContext {
         type_tag: &Value,
         slots: &[Value],
     ) -> Result<u32, DumpError> {
-        let names = if interp.is_standard_obarray_id(id) {
-            interp.known_symbol_names()
+        // pdumper.c dumps the obarray vector itself: its size, and its
+        // chains in DOOBARRAY's order.
+        let (bits, names) = if interp.is_standard_obarray_id(id) {
+            (
+                interp.standard_obarray_size_bits(),
+                interp.known_symbol_names(),
+            )
         } else {
-            Vec::new()
+            (0, Vec::new())
         };
         let start = self.object_start()?;
         let mut words = vec![
@@ -1936,6 +1934,7 @@ impl DumpContext {
             words.push(0);
             self.field_lv(start, &mut words, index, slot, WEIGHT_STRONG);
         }
+        words.push(u64::from(bits));
         words.push(names.len() as u64);
         for name in &names {
             let index = words.len();
@@ -2034,6 +2033,7 @@ impl DumpContext {
                 BUFFER_MARK_ACTIVE,
                 BUFFER_UNDO_LIST,
                 BUFFER_CATEGORY_TABLE,
+                BUFFER_KEYMAP,
             ] {
                 self.field_lv(
                     start,
@@ -2197,6 +2197,7 @@ impl DumpContext {
                 WEIGHT_STRONG,
             ),
             (BUFFER_UNDO_LIST as usize, parts.undo_list, WEIGHT_STRONG),
+            (BUFFER_KEYMAP as usize, parts.keymap, WEIGHT_STRONG),
         ];
         let mut props_fixups: Vec<(usize, crate::intervals::Intervals)> = Vec::new();
         if let Some(intervals) = &parts.intervals {
@@ -2911,8 +2912,10 @@ pub(crate) const BUFFER_UNDO_LIST: u32 = 27;
 pub(crate) const BUFFER_AUTOSAVE_MODIFF: u32 = 28;
 /// BVAR (b, category_table), nil when it is the standard table.
 pub(crate) const BUFFER_CATEGORY_TABLE: u32 = 29;
+/// BVAR (b, keymap), any Lisp object.
+pub(crate) const BUFFER_KEYMAP: u32 = 30;
 /// The variable part: the local bindings and the markers.
-pub(crate) const BUFFER_VARIABLE_PART: u32 = 30;
+pub(crate) const BUFFER_VARIABLE_PART: u32 = 31;
 // The flag bits of BUFFER_FLAGS.
 pub(crate) const BUFFER_FLAG_MULTIBYTE: u64 = 1;
 pub(crate) const BUFFER_FLAG_INHIBIT_HOOKS: u64 = 32;
@@ -2970,7 +2973,7 @@ pub(crate) fn symbol_flags_word(
         SYMBOL_UNINTERNED
     } else if crate::lisp::types::is_private_obarray_symbol(symbol.as_str()) {
         // lisp.h: interned in some other obarray -- a private obarray's
-        // or an abbrev table's own symbol object.
+        // own symbol object.
         SYMBOL_INTERNED
     } else {
         SYMBOL_INTERNED_IN_INITIAL_OBARRAY

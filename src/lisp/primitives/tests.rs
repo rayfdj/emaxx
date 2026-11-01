@@ -6120,12 +6120,16 @@ fn every_literal_native_dispatch_arm_is_owned_by_gnu_c() {
 
     // Dispatch source is a cross-platform union.  An arm must belong to at
     // least one contracted GNU host, while `is_builtin' separately selects
-    // only the current host's generated ownership manifest.
+    // only the current host's generated ownership manifest.  alloc.c's
+    // variable watchers are GNU subrs made without DEFUN.
     let non_gnu = names
         .iter()
         .filter(|(name, _)| {
-            super::generated_gnu_c_primitives::generated_gnu_c_primitive_available(name)
-                != Some(true)
+            !crate::lisp::native_comp::abi::C_VARIABLE_WATCHERS
+                .iter()
+                .any(|subr| subr.name == name.as_str())
+                && super::generated_gnu_c_primitives::generated_gnu_c_primitive_available(name)
+                    != Some(true)
                 && super::generated_gnu_c_primitives_linux::generated_gnu_c_primitive_available(
                     name,
                 ) != Some(true)
@@ -13085,7 +13089,7 @@ fn native_message_dialog_fallbacks_share_the_headless_message_contract() {
     assert_eq!(
         interp
             .eval(&form, &mut env)
-            .expect("headless dialog messages should use the message path"),
+            .expect("headless dialog messages should answer their formatted text"),
         Value::list([
             Value::String("value=7".into()),
             Value::String("value=8".into()),
@@ -20716,6 +20720,7 @@ fn set_buffer_redisplay_is_a_callable_variable_watcher() {
     let watcher = interp
         .lookup_function("set-buffer-redisplay", &env)
         .expect("xdisp watcher primitive should be prebound");
+    // data.c:Fadd_variable_watcher returns nil.
     assert_eq!(
         call(
             &mut interp,
@@ -20724,7 +20729,7 @@ fn set_buffer_redisplay_is_a_callable_variable_watcher() {
             &mut env,
         )
         .expect("install redisplay watcher"),
-        watcher
+        Value::Nil
     );
     let form = Reader::new(
         "(setq header-line-format
@@ -32951,5 +32956,233 @@ fn category_table_is_a_buffer_slot_as_category_c_keeps_it() {
         r##"(list (with-temp-buffer (set-category-table (make-category-table)) (list (local-variable-p 'category-table) (and (assq 'category-table (buffer-local-variables)) t) (boundp 'category-table) (condition-case e (buffer-local-value 'category-table (current-buffer)) (error (car e))))) (with-temp-buffer (let ((ct (make-category-table))) (set-category-table ct) (list (eq (category-table) ct) (progn (kill-all-local-variables) (eq (category-table) (standard-category-table)))))) (with-temp-buffer (let ((ct (make-category-table))) (set-category-table ct) (let* ((ind (clone-indirect-buffer nil nil)) (r (eq (with-current-buffer ind (category-table)) ct))) (kill-buffer ind) r))) (with-temp-buffer (let ((ct (make-category-table))) (set-category-table ct) (let* ((ind (make-indirect-buffer (current-buffer) "ind-cat")) (r (eq (with-current-buffer ind (category-table)) (standard-category-table)))) (kill-buffer ind) r))) (with-temp-buffer (condition-case e (set-category-table 5) (error e))) (with-temp-buffer (insert "ab cd") (let ((ct (copy-category-table))) (define-category ?Z "zed" ct) (modify-category-entry ?b ?Z ct) (set-category-table ct) (list (category-set-mnemonics (char-category-set ?b)) (with-temp-buffer (category-set-mnemonics (char-category-set ?b)))))))"##,
         r##"((nil nil nil void-variable) (t t) t t (wrong-type-argument category-table-p 5) (".LZalr" ".Lalr"))"##,
         "category-table slot",
+    );
+}
+
+#[test]
+fn compare_buffer_substrings_compares_character_codes_as_editfns_c() {
+    // Fcompare_buffer_substrings compares the characters' codes from each
+    // range's start: a raw byte (#x3FFF80 and up) orders above every
+    // other character, those past #x10FFFF included, a unibyte buffer's
+    // bytes are make_char_multibyte's characters,
+    // `case-fold-search' translates through case_canon_table, and the
+    // ranges are checked against their buffers' accessible regions.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list (with-temp-buffer (insert "\U0001F600") (insert (string-to-multibyte "\200")) (insert (char-to-string #x3FFFE9)) (insert (char-to-string #x200000)) (insert "a") (list (compare-buffer-substrings nil 1 2 nil 2 3) (compare-buffer-substrings nil 2 3 nil 1 2) (compare-buffer-substrings nil 3 4 nil 4 5) (compare-buffer-substrings nil 4 5 nil 1 2) (compare-buffer-substrings nil 4 5 nil 5 6))) (with-temp-buffer (set-buffer-multibyte nil) (insert "\200a\351") (let ((u (current-buffer))) (with-temp-buffer (insert (string-to-multibyte "\200b") "é") (list (compare-buffer-substrings u 1 3 nil 1 3) (compare-buffer-substrings u 1 2 nil 1 2) (compare-buffer-substrings u 3 4 nil 3 4))))) (with-temp-buffer (insert "abcABC ÉCOLE école") (list (compare-buffer-substrings nil 1 4 nil 4 7) (let ((case-fold-search t)) (list (compare-buffer-substrings nil 1 4 nil 4 7) (compare-buffer-substrings nil 8 13 nil 14 19))) (let ((case-fold-search nil)) (compare-buffer-substrings nil 8 13 nil 14 19)))) (with-temp-buffer (insert "hello world") (list (compare-buffer-substrings nil 1 3 nil 1 6) (compare-buffer-substrings nil 6 1 nil 1 6) (compare-buffer-substrings nil 3 3 nil 5 5) (condition-case e (compare-buffer-substrings nil 1 3 nil 1 99) (error e)))) (let ((s (make-string 3000 ?a))) (with-temp-buffer (insert s "é" s "b") (let ((n (point-max))) (list (compare-buffer-substrings nil 1 3001 nil 3002 (1- n)) (compare-buffer-substrings nil 1 (1- n) nil 1 n))))) (with-temp-buffer (insert "b\U0001F600\nb\200\nb\n") (sort-lines nil (point-min) (point-max)) (append (buffer-string) nil)))"##,
+        r##"((-1 1 1 1 1) (-2 0 1) (0 (0 0) -1) (-3 0 0 (args-out-of-range 1 99)) (0 -6002) (98 10 98 128512 10 98 4194176 10))"##,
+        "compare-buffer-substrings codes",
+    );
+}
+
+#[test]
+fn local_keymap_is_a_buffer_slot_as_buffer_c_keeps_it() {
+    // BVAR (b, keymap) is a buffer slot with no Lisp variable:
+    // `use-local-map' binds nothing `local-variable-p' or
+    // `buffer-local-variables' sees, a `current-local-map' variable is
+    // another thing, reset_buffer_local_variables empties the slot,
+    // clone-indirect-buffer copies it and make-indirect-buffer does not.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list (with-temp-buffer (use-local-map (make-sparse-keymap)) (list (local-variable-p 'current-local-map) (boundp 'current-local-map) (and (assq 'current-local-map (buffer-local-variables)) t) (condition-case e (buffer-local-value 'current-local-map (current-buffer)) (error (car e))))) (with-temp-buffer (let ((m (make-sparse-keymap))) (use-local-map m) (list (eq (current-local-map) m) (progn (kill-all-local-variables) (current-local-map))))) (with-temp-buffer (let ((m (make-sparse-keymap))) (use-local-map m) (let* ((ind (clone-indirect-buffer nil nil)) (r (eq (with-current-buffer ind (current-local-map)) m))) (kill-buffer ind) (let* ((ind2 (make-indirect-buffer (current-buffer) "ind-km")) (r2 (with-current-buffer ind2 (current-local-map)))) (kill-buffer ind2) (list r r2))))) (with-temp-buffer (let ((m (make-sparse-keymap))) (use-local-map m) (setq-local current-local-map 5) (list (eq (current-local-map) m) current-local-map (let ((current-local-map 7)) (eq (current-local-map) m))))) (with-temp-buffer (list (condition-case e (use-local-map 5) (error e)) (use-local-map nil) (current-local-map))) (with-temp-buffer (let ((m (make-sparse-keymap))) (define-key m "a" 'forward-char) (use-local-map m) (list (key-binding "a") (local-key-binding "a"))))  (let ((b (generate-new-buffer "kmk"))) (with-current-buffer b (use-local-map (make-sparse-keymap))) (kill-buffer b) (condition-case e (buffer-local-value 'current-local-map b) (error (car e)))))"##,
+        r##"((nil nil nil void-variable) (t nil) (t nil) (t 5 t) ((wrong-type-argument keymapp 5) nil nil) (forward-char forward-char) void-variable)"##,
+        "local keymap slot",
+    );
+}
+
+#[test]
+fn kill_all_local_variables_keeps_partially_permanent_hooks_as_buffer_c() {
+    // reset_buffer_local_variables: a local variable whose `permanent-local'
+    // is `permanent-local-hook' (as add-hook marks a hook given a function
+    // with a `permanent-local-hook' property) keeps only t and such
+    // functions, its watchers told nil and then the list kept; a full
+    // reset keeps nothing.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list (with-temp-buffer (defvar zz-hook2 nil) (defun zz-f () nil) (put 'zz-f 'permanent-local-hook t) (add-hook 'zz-hook2 'zz-f nil t) (add-hook 'zz-hook2 'ignore nil t) (kill-all-local-variables) (list zz-hook2 (local-variable-p 'zz-hook2) (get 'zz-hook2 'permanent-local))) (with-temp-buffer (put 'zz-h3 'permanent-local 'permanent-local-hook) (put 'zz-b 'permanent-local-hook t) (setq-local zz-h3 '(zz-a t zz-b (lambda () 1))) (kill-all-local-variables) (list zz-h3 (local-variable-p 'zz-h3))) (with-temp-buffer (defvar zz-h5 nil) (put 'zz-g 'permanent-local-hook t) (let ((log nil)) (add-variable-watcher 'zz-h5 (lambda (&rest a) (push (list (nth 1 a) (nth 2 a)) log))) (add-hook 'zz-h5 'zz-g nil t) (add-hook 'zz-h5 'car nil t) (setq log nil) (kill-all-local-variables) (list log zz-h5))) (with-temp-buffer (put 'zz-h6 'permanent-local 'permanent-local-hook) (setq-local zz-h6 nil) (kill-all-local-variables) (list zz-h6 (local-variable-p 'zz-h6))) (with-temp-buffer (put 'zz-h7 'permanent-local 'permanent-local-hook) (put 'zz-c 'permanent-local-hook t) (setq-local zz-h7 '(zz-c)) (kill-all-local-variables t) (local-variable-p 'zz-h7)))"##,
+        r##"(((zz-f t) t permanent-local-hook) ((t zz-b) t) ((((zz-g t) makunbound) (nil makunbound)) (zz-g t)) (nil t) nil)"##,
+        "partially permanent hooks",
+    );
+}
+
+#[test]
+fn buffer_local_value_and_mode_reset_read_variables_by_symbol_as_data_c() {
+    // data.c:Fbuffer_local_value checks VARIABLE with CHECK_SYMBOL (a
+    // symbol with position counts while symbols-with-pos-enabled), follows
+    // its alias chain and reads BUFFER's binding or the default;
+    // reset_buffer_local_variables keeps the always-local slots (but the
+    // three it assigns) and the permanent locals, and a full reset only
+    // the slots.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list (let ((symbols-with-pos-enabled t)) (buffer-local-value (position-symbol 'fill-column 5) (current-buffer))) (with-temp-buffer (setq-local fill-column 33) (let ((b (current-buffer))) (with-temp-buffer (list (buffer-local-value 'fill-column b) (buffer-local-value 'fill-column (current-buffer)))))) (progn (defvaralias 'zz-blv-alias 'fill-column) (with-temp-buffer (setq fill-column 41) (buffer-local-value 'zz-blv-alias (current-buffer)))) (with-temp-buffer (setq buffer-read-only t) (setq-local zz-perm 1) (put 'zz-perm 'permanent-local t) (setq-local zz-tmp 2) (setq fill-column 12) (setq major-mode 'text-mode mode-name "Text") (setq buffer-invisibility-spec '(a)) (kill-all-local-variables) (list buffer-read-only (local-variable-p 'zz-perm) zz-perm (local-variable-p 'zz-tmp) (local-variable-p 'fill-column) fill-column major-mode mode-name buffer-invisibility-spec (local-variable-p 'buffer-read-only))) (with-temp-buffer (setq-local zz-perm2 1) (put 'zz-perm2 'permanent-local t) (setq buffer-read-only t) (kill-all-local-variables t) (list (local-variable-p 'zz-perm2) buffer-read-only)))"##,
+        r##"(70 (33 70) 41 (t t 1 nil nil 70 fundamental-mode "Fundamental" t t) (nil t))"##,
+        "buffer-local-value and kill-all-local-variables",
+    );
+}
+
+#[test]
+fn number_arguments_are_checked_as_floatfns_c_and_markers_coerced_as_marker_c() {
+    // floatfns.c's functions take numbers by CHECK_NUMBER (no marker, a
+    // `numberp' error), copysign and isnan floats by CHECK_FLOAT and ldexp
+    // its exponent by CHECK_FIXNUM first; arithmetic, comparison and the
+    // position arguments coerce a marker to its position, and one pointing
+    // nowhere is marker_position's error; move_point's count is a fixnum.
+    assert_oracle_contract_matches_interpreter(
+        r##"(with-temp-buffer (insert "abcdef") (let ((m (copy-marker 3)) (d (make-marker))) (mapcar (lambda (f) (condition-case e (funcall f) (error (if (eq (car e) 'wrong-type-argument) (cadr e) (cdr e))))) (list (lambda () (sin m)) (lambda () (abs m)) (lambda () (float 'a)) (lambda () (truncate 7 m)) (lambda () (expt 2 m)) (lambda () (logb m)) (lambda () (frexp m)) (lambda () (copysign 1 1.0)) (lambda () (isnan 1)) (lambda () (ldexp 1.0 2.0)) (lambda () (ldexp 'a 1)) (lambda () (+ d 1)) (lambda () (< d 1)) (lambda () (max 1 d)) (lambda () (logand 1 d)) (lambda () (goto-char d)) (lambda () (char-after d)) (lambda () (char-before d)) (lambda () (narrow-to-region d 1)) (lambda () (line-number-at-pos d)) (lambda () (forward-char (1+ most-positive-fixnum))) (lambda () (+ m 1)) (lambda () (max m 2)) (lambda () (atan 1 m)) (lambda () (isnan 0.0e+NaN)) (lambda () (copysign 2.0 -1.0))))))"##,
+        r##"(numberp numberp numberp numberp numberp numberp numberp floatp floatp fixnump numberp ("Marker does not point anywhere") ("Marker does not point anywhere") ("Marker does not point anywhere") ("Marker does not point anywhere") ("Marker does not point anywhere") ("Marker does not point anywhere") ("Marker does not point anywhere") ("Marker does not point anywhere") ("Marker does not point anywhere") fixnump 4 3 numberp t -2.0)"##,
+        "number and marker argument checks",
+    );
+}
+
+#[test]
+fn c_primitive_arguments_are_checked_and_answered_as_their_c_sources() {
+    // Each call as the C primitive takes its argument: chartab.c and
+    // character.c CHECK_CHARACTER, charset.c CHECK_CHARSET, syntax.c
+    // check_syntax_table, coding.c's nil as `no-conversion' or `undecided'
+    // and CODING_SYSTEM_P without a signal, print.c:print_error_message,
+    // buffer.c's Ffind_buffer through Fbuffer_local_value, eval.c's
+    // invalid-function of the original object, indent.c's check order,
+    // doc.c's report_file_errno, and fns.c's random on glibc's generator,
+    // so a string seed draws GNU's sequence.
+    assert_oracle_contract_matches_interpreter(
+        r##"(with-temp-buffer (insert "abc\ndef") (let ((m (make-marker))) (mapcar (lambda (f) (condition-case e (funcall f) (error e))) (list (lambda () (char-syntax -1)) (lambda () (unibyte-char-to-multibyte 300)) (lambda () (charset-plist 'zz)) (lambda () (encode-char 65 nil)) (lambda () (matching-paren ?\()) (lambda () (matching-paren -1)) (lambda () (syntax-class-to-char 16)) (lambda () (unibyte-string 256)) (lambda () (byte-to-position 'a)) (lambda () (match-beginning -1)) (lambda () (copy-syntax-table 'zz)) (lambda () (condition-case e (set-syntax-table (make-char-table 'foo)) (error (list (car e) (cadr e))))) (lambda () (coding-system-eol-type "str")) (lambda () (coding-system-eol-type 'zz)) (lambda () (coding-system-put nil :mnemonic ?x)) (lambda () (car (coding-system-aliases nil))) (lambda () (unencodable-char-position nil nil nil)) (lambda () (defconst-1 nil 1)) (lambda () (error-message-string 'zz)) (lambda () (error-message-string nil)) (lambda () (error-message-string '(error . "x"))) (lambda () (error-message-string '(foo 1 "two"))) (lambda () (error-message-string '(file-missing "Opening" "No such file" "/x"))) (lambda () (error-message-string '(1 2))) (lambda () (bufferp (find-buffer nil nil))) (lambda () (find-buffer 'zz-unbound-var 1)) (lambda () (get-truename-buffer 7)) (lambda () (force-mode-line-update 'all)) (lambda () (func-arity "str")) (lambda () (indirect-variable "str")) (lambda () (locale-info 1)) (lambda () (minor-mode-key-binding 1.5)) (lambda () (symbol-with-pos-pos 1)) (lambda () (compute-motion -1 -1 -1 -1 -1 -1 -1)) (lambda () (compute-motion m '(0 . 0) 1 nil nil nil nil)) (lambda () (compute-motion 99 '(0 . 0) 1 nil nil nil nil)) (lambda () (funcall-with-delayed-message m "x" #'ignore)) (lambda () (multibyte-char-to-unibyte -1)) (lambda () (decode-sjis-char -1)) (lambda () (list (random "str") (random 1000) (random (expt 2 70)) (random "str"))) (lambda () (random 0)) (lambda () (condition-case e (Snarf-documentation "zz-no-such-doc") (error (list (car e) (cadr e) (caddr e)))))))))"##,
+        r##"((wrong-type-argument characterp -1) (error "Not a unibyte character: 300") (wrong-type-argument charsetp zz) (wrong-type-argument charsetp nil) 41 (wrong-type-argument characterp -1) (args-out-of-range 15 16) (args-out-of-range 256 0 255) (wrong-type-argument fixnump a) (args-out-of-range -1 0) (wrong-type-argument syntax-table-p zz) (wrong-type-argument syntax-table-p) nil nil (wrong-type-argument coding-system-p nil) no-conversion (wrong-type-argument integer-or-marker-p nil) (setting-constant nil) (wrong-type-argument listp zz) "peculiar error" "peculiar error" "peculiar error: 1, \"two\"" "Opening: No such file, /x" (wrong-type-argument symbolp 1) t (void-variable zz-unbound-var) nil all (invalid-function "str") "str" nil nil (wrong-type-argument symbol-with-pos-p 1) (wrong-type-argument consp -1) (error "Marker does not point anywhere") (args-out-of-range 99 1 8) (wrong-type-argument numberp #<marker in no buffer>) (wrong-type-argument characterp -1) (wrong-type-argument wholenump -1) (966237169454791873 783 304627151361558532898 966237169454791873) (args-out-of-range 0) (file-missing "Opening doc string file" "No such file or directory"))"##,
+        "C primitive argument checks",
+    );
+}
+
+#[test]
+fn two_argument_c_primitive_calls_answer_as_their_c_sources() {
+    // fix_position takes a bignum as a position outside any buffer;
+    // doc.c's Fdocumentation_property reads PROP with Fget and falls back
+    // to the indirect variable's documentation; composite.c checks POS
+    // and LIMIT with fix_position before the string; fileio.c expands
+    // against "/" for a DEFAULT-DIRECTORY that is no string, which openp
+    // walks into; floatfns.c's logb of zero and of infinities; editfns.c
+    // looks a string UID up with getpwnam.
+    assert_oracle_contract_matches_interpreter(
+        r##"(with-temp-buffer (insert "abc") (let ((big (1+ most-positive-fixnum))) (defvaralias 'zz-alias217 'zz-base217) (put 'zz-base217 'variable-documentation "Base doc.") (mapcar (lambda (f) (condition-case e (funcall f) (error e))) (list (lambda () (list (char-after big) (char-before big) (charset-after big))) (lambda () (list (documentation-property 'zz-sym217 0) (documentation-property nil "str") (documentation-property 'zz-alias217 'variable-documentation))) (lambda () (find-composition-internal 1 "str" nil nil)) (lambda () (find-composition-internal 1 (current-buffer) nil nil)) (lambda () (find-composition-internal 1 99 nil nil)) (lambda () (find-composition-internal (make-marker) nil nil nil)) (lambda () (expand-file-name "str" 1)) (lambda () (expand-file-name "str" '(1 . 2))) (lambda () (locate-file-internal "str" '(1 . 2))) (lambda () (list (logb 0) (logb 0.0) (logb 1.0e+INF) (logb -1.0e+INF) (logb 8) (logb -8.0))) (lambda () (list (user-full-name "") (user-full-name "zz-no-such-user-217")))))))"##,
+        r##"((nil nil nil) (nil nil "Base doc.") (wrong-type-argument integer-or-marker-p "str") (wrong-type-argument integer-or-marker-p #<killed buffer>) nil (error "Marker does not point anywhere") "/str" "/str" nil (-1.0e+INF -1.0e+INF 1.0e+INF 1.0e+INF 3 3) (nil nil))"##,
+        "two-argument C primitive calls",
+    );
+}
+
+#[test]
+fn message_box_pops_a_dialog_that_a_batch_frame_never_draws() {
+    // editfns.c:Fmessage_box formats its message into an "OK" dialog,
+    // which menu.c:Fx_popup_dialog emulates with x-popup-menu on a
+    // terminal without a dialog hook and the initial frame never shows;
+    // Fmessage_or_box takes that path after a mouse event (or none)
+    // while `use-dialog-box' is set, and messages otherwise.  The dialog
+    // is parsed as list_of_panes parses a menu.
+    assert_oracle_contract_matches_interpreter(
+        r##"(let ((start (with-current-buffer (messages-buffer) (point-max)))) (list (mapcar (lambda (f) (condition-case e (funcall f) (error e))) (list (lambda () (message-box "zz-box %d" 5)) (lambda () (message-or-box "zz-or-box")) (lambda () (let ((use-dialog-box nil)) (message-or-box "zz-no-dialog"))) (lambda () (let ((last-nonmenu-event ?a)) (message-or-box "zz-after-key"))) (lambda () (let ((last-nonmenu-event '(mouse-1))) (message-or-box "zz-after-mouse"))) (lambda () (message-box nil)) (lambda () (message-box "")) (lambda () (x-popup-dialog t '("Q"))) (lambda () (x-popup-dialog t '("Q" (1 . t)))) (lambda () (x-popup-dialog t '(nil ("OK" . t)))) (lambda () (x-popup-dialog t 42)) (lambda () (x-popup-dialog '((1 2) 7) '("Q" ("OK" . t)))) (lambda () (x-popup-dialog 42 '("Q" ("OK" . t)))) (lambda () (x-popup-dialog (selected-frame) '("Q" "note" nil ("OK" . t)))) (lambda () (x-popup-menu t '("T" ("P")))) (lambda () (x-popup-menu t '("T" ("P" (2 . 3))))))) (with-current-buffer (messages-buffer) (buffer-substring-no-properties start (point-max)))))"##,
+        r##"(("zz-box 5" "zz-or-box" "zz-no-dialog" "zz-after-key" "zz-after-mouse" nil "" (wrong-type-argument consp nil) (wrong-type-argument stringp 1) (wrong-type-argument stringp nil) (wrong-type-argument listp 42) (wrong-type-argument windowp 7) (wrong-type-argument windowp nil) nil (wrong-type-argument consp nil) (wrong-type-argument stringp 2)) "zz-no-dialog
+zz-after-key
+")"##,
+        "message-box dialogs",
+    );
+}
+
+#[test]
+fn readevalloop_reads_at_the_buffers_point_with_standard_input_bound_to_it() {
+    // lread.c:readevalloop binds `standard-input' to the buffer it reads,
+    // so a form's `read' takes the text after it; eval-buffer reads each
+    // form live at the buffer's point (a form moving point, narrowing or
+    // editing the buffer decides what is read next), while eval-region
+    // reads from a marker with point restored after each read, and
+    // printed values go onto `values' and to `standard-output'.  lread.c
+    // and keyboard.c clear the special flag of `values' and `top-level',
+    // so a lexical `let' of either binds lexically.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list (with-temp-buffer (insert "(setq zz-b (list (eq standard-input (current-buffer)) (read))) bar-data (setq zz-c (read)) 42") (eval-buffer) (list zz-b zz-c (point))) (with-temp-buffer (insert "(setq zz-d 1) (goto-char (point-max)) (setq zz-d 2)") (eval-buffer) (list zz-d (point))) (with-temp-buffer (insert "(setq zz-e 1) (save-excursion (goto-char (point-max)) (insert \" (setq zz-e 3)\"))") (eval-buffer) zz-e) (with-temp-buffer (insert "(goto-char 5) (setq zz-f (point))") (goto-char 2) (eval-region (point-min) (point-max)) (list zz-f (point))) (with-temp-buffer (insert "(setq zz-g (list (eq standard-input (current-buffer)) (point)))") (goto-char 3) (eval-region (point-min) (point-max)) (list zz-g (point))) (with-temp-buffer (insert "(setq zz-h (read)) 77 (setq zz-i 1)") (goto-char 20) (list (eval-region (point-min) (point-max)) zz-h (point))) (let (src) (with-temp-buffer (setq src (current-buffer)) (insert "(setq zz-j 5)") (goto-char 4) (with-temp-buffer (eval-buffer src)) (list zz-j (with-current-buffer src (point))))) (with-temp-buffer (insert "(setq zz-k 1) (narrow-to-region (point) (point)) (setq zz-k 2)") (eval-buffer) (list zz-k (point-min) (point-max))) (with-temp-buffer (insert "(setq zz-n 1) (insert \"(setq zz-n 9)\") (setq zz-o (point))") (eval-buffer) (list zz-n zz-o)) (with-temp-buffer (insert "1 2") (setq values nil) (eval-buffer nil (current-buffer)) (list values (buffer-string) (special-variable-p 'values) (special-variable-p 'top-level) (eval '(let ((values 7)) (symbol-value 'values)) t))))"##,
+        r##"(((t bar-data) 42 94) (1 52) 3 (5 5) ((t 3) 3) (nil 77 22) (5 14) (1 49 49) (1 72) ((2 1) "1
+1
+ 2
+2
+" nil nil (2 1)))"##,
+        "readevalloop reading and standard-input",
+    );
+}
+
+#[test]
+fn load_checks_an_elc_as_lread_c_and_notes_a_newer_source() {
+    // lread.c:Fload refuses an .elc without the byte compiler's version
+    // line, and with load-prefer-newer nil loads an .elc older than its
+    // source, its message noting the newer source (or, without one, a
+    // message saying so); batch messages from message_with_string go to
+    // stderr and leave *Messages* as it was.
+    assert_oracle_contract_matches_interpreter(
+        r##"(let* ((dir (make-temp-file "zz-elc" t)) (el (expand-file-name "zzn.el" dir)) (elc (concat el "c")) (bad (expand-file-name "zzb.elc" dir)) (start (with-current-buffer (messages-buffer) (point-max)))) (unwind-protect (progn (with-temp-file el (insert "(setq zz-newer 'source)\n")) (let ((coding-system-for-write 'no-conversion)) (with-temp-file elc (set-buffer-multibyte nil) (insert ";ELC\x1e\0\0\0\n;;; in Emacs version 30.2\n(setq zz-newer 'compiled)\n")) (with-temp-file bad (set-buffer-multibyte nil) (insert ";ELC\x1e\0\0\0\n(setq zz-bad 1)\n"))) (set-file-times elc (encode-time '(0 0 0 1 1 2020 nil nil t))) (load (file-name-sans-extension el) nil nil) (setq zz-newer nil) (load (file-name-sans-extension el) nil t) (list zz-newer (boundp 'zz-bad) (condition-case e (load bad nil t) (error (string-replace dir "D" (cadr e)))) (string-replace dir "D" (with-current-buffer (messages-buffer) (buffer-substring start (point-max)))))) (delete-directory dir t)))"##,
+        r##"(compiled nil "File `D/zzb.elc' was not compiled in Emacs" "")"##,
+        "load of an .elc",
+    );
+}
+
+#[test]
+fn the_initial_obarray_holds_only_the_symbols_gnu_makes_at_startup() {
+    // lread.c:define_symbol interns every DEFSYM but Qunbound, and
+    // syms_of_eval, syms_of_editfns and syms_of_print unintern their own
+    // symbol again; Snarf-documentation finds DOC's names with oblookup
+    // (DOC also lists `#if 0', GLYPH_DEBUG and other platforms' DEFUNs);
+    // edebug, ERT and cl-macs make their symbols when they load.
+    assert_oracle_contract_matches_interpreter(
+        r#"(mapcar #'intern-soft '("edebug-entered" "ert-test-failed" "ert-test-skipped" "unbound" "internal-interpreter-environment" "outermost-restriction" "print--unreadable-callback-buffer" "w32-shell-execute" "ns-hide-emacs" "dump-glyph-matrix" "trace-redisplay" "insert-startup-screen" "cl-lambda-list" "cl-type-spec" "defgeneric"))"#,
+        "(nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil)",
+        "startup obarray",
+    );
+}
+
+#[test]
+fn c_initializers_put_the_properties_c_reads_back() {
+    // coding.c's `target-idx', buffer.c's `disabled' erase-buffer and
+    // protected-field error, window.c's `scroll-command', emacs.c's risky
+    // `dynamic-library-alist' and keyboard.c's head_table event kinds are
+    // properties from startup; `display-table''s extra slots, cl-macrolet's
+    // edebug spec and `defgeneric''s doc string position are put by Lisp
+    // files -Q has not loaded.
+    assert_oracle_contract_matches_interpreter(
+        r#"(list (get 'write-region 'target-idx) (get 'call-process 'target-idx) (get 'open-network-stream 'target-idx) (get 'erase-buffer 'disabled) (get 'scroll-up 'scroll-command) (get 'dynamic-library-alist 'risky-local-variable) (get 'focus-in 'event-kind) (get 'select-window 'event-kind) (get 'scroll-bar-movement 'event-kind) (get 'touchscreen-begin 'event-symbol-elements) (get 'protected-field 'error-conditions) (get 'protected-field 'error-message) (get 'display-table 'char-table-extra-slots) (get 'cl-macrolet 'edebug-form-spec) (get 'defgeneric 'doc-string-elt))"#,
+        r#"(2 0 3 t t t focus-in switch-frame mouse-movement (touchscreen-begin) (protected-field error) "Attempt to modify a protected field" nil nil nil)"#,
+        "C initializer properties",
+    );
+}
+
+#[test]
+fn find_operation_coding_system_reads_the_operation_s_target_idx_as_coding_c() {
+    // Ffind_operation_coding_system: the target is the argument OPERATION's
+    // `target-idx' names, checked to be a string (a (FILE . BUFFER) cons
+    // for insert-file-contents, a port or t for open-network-stream); an
+    // alist value is a cons, a coding system (nil among them) or a function
+    // whose answer is used the same way, and anything else gives nil.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((file-coding-system-alist '(("\\.zz\\'" . utf-8) ("\\.yy\\'" . zz-fop) ("\\.xx\\'" latin-1 . utf-8) ("\\.ww\\'" . "str") ("\\.vv\\'" . zz-unbound-fop) ("\\.uu\\'" . nil))) (process-coding-system-alist '(("zzproc" . undecided))) (network-coding-system-alist '((8080 . utf-8)))) (defalias 'zz-fop (lambda (args) (list 'called (car args)))) (put 'zz-op 'target-idx 1) (list (find-operation-coding-system 'insert-file-contents "a.zz") (find-operation-coding-system 'write-region 1 2 "b.yy") (find-operation-coding-system 'insert-file-contents "c.xx") (find-operation-coding-system 'insert-file-contents "d.ww") (find-operation-coding-system 'insert-file-contents "e.vv") (find-operation-coding-system 'insert-file-contents "f.uu") (find-operation-coding-system 'insert-file-contents (cons "a.zz" (current-buffer))) (find-operation-coding-system 'zz-op 'x "zzproc") (find-operation-coding-system 'open-network-stream 'n 'b 'h 8080) (find-operation-coding-system 'open-network-stream 'n 'b 'h t) (condition-case e (find-operation-coding-system 'car "x") (error e)) (condition-case e (find-operation-coding-system "car" "x") (error e)) (condition-case e (find-operation-coding-system 'write-region "x") (error e)) (condition-case e (find-operation-coding-system 'insert-file-contents 'sym) (error e)) (condition-case e (find-operation-coding-system 'insert-file-contents (cons "a" "b")) (error e)) (condition-case e (find-operation-coding-system 'insert-file-contents) (error e))))"#,
+        r#"((utf-8 . utf-8) (called write-region) (latin-1 . utf-8) nil nil (nil) (utf-8 . utf-8) (undecided . undecided) (utf-8 . utf-8) nil (error "Invalid first argument") (error "Invalid first argument") (error "Too few arguments for operation `write-region'") (error "Invalid argument 1 of operation `insert-file-contents'") (error "Invalid argument 1 of operation `insert-file-contents'") (error "Too few arguments"))"#,
+        "find-operation-coding-system",
+    );
+}
+
+#[test]
+fn variable_watchers_are_the_watchers_property_as_data_c_keeps_them() {
+    // Fadd_variable_watcher puts the function in front of the base
+    // variable's `watchers' property unless an `equal' one is there, and
+    // answers nil as Fremove_variable_watcher does; notify_variable_watchers
+    // calls what the property holds, newest first, with the variable's
+    // stores untrapped, so a watcher's own store notifies no one and
+    // get-variable-watchers answers nil inside it; frame.el's
+    // set-buffer-redisplay watchers are in place from startup.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let (log) (defvar zz-w 1) (defvaralias 'zz-wa 'zz-w) (defvar zz-r 1) (list (add-variable-watcher 'zz-w (lambda (&rest a) (push (cons 'first (nth 2 a)) log))) (add-variable-watcher 'zz-wa (lambda (&rest a) (push (cons 'second (nth 2 a)) log))) (add-variable-watcher 'zz-w 'ignore) (add-variable-watcher 'zz-w 'ignore) (length (get-variable-watchers 'zz-wa)) (length (get 'zz-w 'watchers)) (get 'zz-wa 'watchers) (progn (setq zz-wa 2) (prog1 (reverse log) (setq log nil))) (remove-variable-watcher 'zz-wa 'ignore) (length (get 'zz-w 'watchers)) (progn (put 'zz-w 'watchers nil) (setq zz-w 3) (prog1 (reverse log) (setq log nil))) (get-variable-watchers 'zz-w) (remove-variable-watcher 'zz-w 'nothing) (progn (add-variable-watcher 'zz-r (lambda (s n o w) (push (list s n o (get-variable-watchers s)) log) (setq zz-r (1+ n)))) (setq zz-r 10) (list zz-r (prog1 log (setq log nil)))) (mapcar (lambda (v) (length (get v 'watchers))) '(mode-line-format truncate-lines line-spacing display-line-numbers))))"#,
+        r#"(nil nil nil nil 3 3 nil ((second . set) (first . set)) nil 2 nil nil nil (10 ((zz-r 10 set nil))) (1 1 1 1))"#,
+        "variable watchers",
+    );
+}
+
+#[test]
+fn gc_variables_are_watched_by_alloc_c_s_own_subrs() {
+    // syms_of_alloc watches `gc-cons-threshold' and `gc-cons-percentage'
+    // with subrs made under no symbol, which bump consing_until_gc for the
+    // value stored: a `let' of a low threshold collects within its body.
+    assert_oracle_contract_matches_interpreter(
+        r#"(list (mapcar (lambda (v) (mapcar #'subr-name (get-variable-watchers v))) '(gc-cons-threshold gc-cons-percentage)) (mapcar #'subr-arity (get 'gc-cons-threshold 'watchers)) (intern-soft "watch_gc_cons_threshold") (progn (garbage-collect) (let ((n gcs-done)) (let ((gc-cons-percentage 0.0) (gc-cons-threshold 100000)) (dotimes (_ 40000) (cons 1 2))) (> gcs-done n))))"#,
+        r#"((("watch_gc_cons_threshold") ("watch_gc_cons_percentage")) ((4 . 4)) nil t)"#,
+        "GC variable watchers",
     );
 }

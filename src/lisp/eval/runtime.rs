@@ -1281,6 +1281,8 @@ impl Interpreter {
         self.indirect_buffers
             .retain(|(buffer_id, base_id)| *buffer_id != id && *base_id != id);
         if let Some(mut buffer) = self.get_buffer_by_id_mut(id) {
+            // reset_buffer_local_variables (b, 1): bset_keymap (b, Qnil).
+            buffer.set_keymap(Value::Nil);
             buffer.release_killed_storage();
         }
         if id == self.current_buffer_id {
@@ -1972,9 +1974,6 @@ impl Interpreter {
                     .map(|value| Value::Symbol(value.into())),
             ),
         );
-        if feature == "abbrev" {
-            primitives::ensure_standard_abbrev_tables(self);
-        }
     }
 
     fn record_provide_in_load_history(&mut self, feature: &str) {

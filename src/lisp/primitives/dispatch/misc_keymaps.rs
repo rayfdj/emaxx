@@ -436,11 +436,17 @@ define_dispatch!(
             }
             "minor-mode-key-binding" => {
                 need_arg_range(name, args, 1, 2)?;
+                // keymap.c:Fminor_mode_key_binding: KEY reaches Flookup_key
+                // only through an active minor mode map.
+                let maps = active_minor_mode_bindings(interp, env)?;
+                if maps.is_empty() {
+                    return Ok(Value::Nil);
+                }
                 let normalized_key = normalize_lucid_key_events(interp, &args[0], env)?;
                 let key_parts = key_sequence_keymap_parts(&normalized_key)?;
                 let accept_default = args.get(1).is_some_and(Value::is_truthy);
                 let mut prefix_bindings = Vec::new();
-                for (mode, map) in active_minor_mode_bindings(interp, env)? {
+                for (mode, map) in maps {
                     let binding = keymap_lookup_sequence_value_with_default(
                         interp,
                         &map,
@@ -535,10 +541,8 @@ define_dispatch!(
                 } else {
                     get_keymap(interp, args[0], true, true, env)?
                 };
-                let buffer_id = interp.current_buffer_id();
-                cached_symbol!("current-local-map").with(|symbol| {
-                    interp.set_buffer_local_value_symbol(buffer_id, symbol, keymap);
-                });
+                // bset_keymap: a slot of the buffer, no Lisp variable.
+                interp.buffer.borrow_mut().set_keymap(keymap);
                 Ok(Value::Nil)
             }
             "use-global-map" => {
@@ -549,9 +553,7 @@ define_dispatch!(
             }
             "current-local-map" => {
                 need_args(name, args, 0)?;
-                Ok(interp
-                    .lookup_var("current-local-map", env)
-                    .unwrap_or(Value::Nil))
+                Ok(interp.buffer.borrow().keymap())
             }
             "current-global-map" => {
                 need_args(name, args, 0)?;
@@ -644,10 +646,8 @@ define_dispatch!(
                     Kind::Integer(_) | Kind::BigInteger(_) | Kind::Float(_) => {
                         user_full_name_from_uid(legacy_unsigned_id(requested)?)
                     }
-                    Kind::StringObject(_) => {
-                        let login = string_text(requested)?;
-                        user_full_name(Some(&login))
-                    }
+                    // editfns.c: getpwnam of the string, nil where none.
+                    Kind::StringObject(_) => user_full_name_from_login(&string_text(requested)?),
                     _ => return Err(LispError::Signal("Invalid UID specification".into())),
                 };
                 Ok(full_name
@@ -1090,7 +1090,7 @@ define_dispatch!(
 
             "funcall-with-delayed-message" => {
                 need_args(name, args, 3)?;
-                let timeout = numeric_to_f64(interp, &args[0])?;
+                let timeout = extract_float(interp, &args[0])?;
                 let delayed = string_text(&args[1])?;
                 let callback = resolve_callable(interp, &args[2], env)?;
                 let buffer_id = interp
@@ -1401,11 +1401,17 @@ define_dispatch!(
                 // DEFVAR_PER_BUFFER slots are reset directly: an index -1
                 // slot is kept (but for the three assigned below), an
                 // indexed one returns to its default unless
-                // buffer_permanent_local_flags keeps it.
-                let locals = interp.buffer_local_cells(buffer_id);
+                // buffer_permanent_local_flags keeps it.  The always-local
+                // slots a buffer is made with stay where they are, so the
+                // walk is of the other bindings.
+                let locals = interp.buffer_alist_cells(buffer_id);
                 let mut permanent = Vec::new();
                 for (name, value) in &locals {
-                    if let Some(slot) = crate::lisp::eval::native_per_buffer_slot(name.as_str()) {
+                    if let Some(slot) = interp
+                        .is_per_buffer_symbol(name)
+                        .then(|| crate::lisp::eval::native_per_buffer_slot(name.as_str()))
+                        .flatten()
+                    {
                         if slot.always_local || (slot.permanent && !kill_permanent) {
                             permanent.push((*name, *value));
                         } else {
@@ -1413,10 +1419,9 @@ define_dispatch!(
                         }
                         continue;
                     }
-                    let preserve = !kill_permanent
-                        && cached_symbol!("permanent-local")
-                            .with(|property| interp.get_symbol_property_of(name, property))
-                            .is_some_and(|value| value.is_truthy());
+                    let prop = cached_symbol!("permanent-local")
+                        .with(|property| interp.get_symbol_property_of(name, property))
+                        .filter(|value| !kill_permanent && value.is_truthy());
                     interp.notify_variable_watchers(
                         name,
                         Value::Nil,
@@ -1424,9 +1429,26 @@ define_dispatch!(
                         Some(buffer_id),
                         env,
                     )?;
-                    if preserve {
-                        permanent.push((*name, *value));
-                        continue;
+                    match prop {
+                        // A partially permanent hook variable keeps only the
+                        // elements that want to be kept.
+                        Some(prop) if prop.eq_value(Value::symbol("permanent-local-hook")) => {
+                            let newlist = permanent_hook_elements(interp, *value, env)?;
+                            interp.notify_variable_watchers(
+                                name,
+                                newlist,
+                                "makunbound",
+                                Some(buffer_id),
+                                env,
+                            )?;
+                            permanent.push((*name, newlist));
+                            continue;
+                        }
+                        Some(_) => {
+                            permanent.push((*name, *value));
+                            continue;
+                        }
+                        None => {}
                     }
                     interp.mark_buffer_local_special_binding_killed(buffer_id, name);
                 }
@@ -1443,9 +1465,31 @@ define_dispatch!(
             }
             "force-mode-line-update" => {
                 need_arg_range(name, args, 0, 1)?;
-                Ok(Value::Nil)
+                // buffer.c:Fforce_mode_line_update returns ALL.
+                Ok(args.first().copied().unwrap_or(Value::Nil))
             }
             "garbage-collect" => direct_garbage_collect(interp, args, env),
+            // alloc.c's watchers of the GC variables (abi's
+            // C_VARIABLE_WATCHERS): the stored value retunes
+            // consing_until_gc with the other variable's current value.
+            "watch_gc_cons_threshold" => {
+                need_args(name, args, 4)?;
+                if let Some(threshold) = args[1].integer_value() {
+                    let (_, percentage) = crate::lisp::native_comp::gc_tuning(interp, env);
+                    crate::lisp::native_comp::bump_consing_until_gc(interp, threshold, percentage);
+                }
+                Ok(Value::Nil)
+            }
+            "watch_gc_cons_percentage" => {
+                need_args(name, args, 4)?;
+                let (threshold, _) = crate::lisp::native_comp::gc_tuning(interp, env);
+                let percentage = match args[1].kind() {
+                    Kind::Float(value) => Some(value.get()),
+                    _ => None,
+                };
+                crate::lisp::native_comp::bump_consing_until_gc(interp, threshold, percentage);
+                Ok(Value::Nil)
+            }
             "garbage-collect-maybe" => {
                 need_args(name, args, 1)?;
                 let Kind::Integer(factor) = args[0].kind() else {
@@ -1779,4 +1823,36 @@ fn garbage_collect_report(census: &crate::lisp::eval::LiveObjectCensus) -> Value
             ],
         ),
     ])
+}
+
+/// reset_buffer_local_variables' partially permanent hook: the elements
+/// of LIST that are t or a symbol with a `permanent-local-hook' property,
+/// in order; a LIST that is no cons is what Fnreverse makes of it.
+fn permanent_hook_elements(
+    interp: &mut Interpreter,
+    list: Value,
+    env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    if !list.is_cons() {
+        return super::call(interp, "nreverse", &[list], env);
+    }
+    let mut kept = Vec::new();
+    let mut tail = list;
+    while let Some(cell) = tail.cons_ref() {
+        let element = cell.car.get();
+        if matches!(element.kind(), Kind::T)
+            || (element.is_symbol()
+                && super::call(
+                    interp,
+                    "get",
+                    &[element, Value::symbol("permanent-local-hook")],
+                    env,
+                )?
+                .is_truthy())
+        {
+            kept.push(element);
+        }
+        tail = cell.cdr.get();
+    }
+    Ok(Value::list(kept))
 }

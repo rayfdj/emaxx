@@ -27,8 +27,8 @@ pub(crate) use loader::{DumpedNativeFunction, RegistrationKind, UnitLibrary, ope
 pub(crate) use runtime::NestedCall;
 pub(crate) use runtime::with_thread_suspended;
 pub(crate) use runtime::{
-    collection_cannot_be_due, decode_active_backtrace_arguments, garbage_collection_maybe_due,
-    gc_tuning, maybe_gc, note_lisp_allocation,
+    bump_consing_until_gc, collection_cannot_be_due, decode_active_backtrace_arguments,
+    garbage_collection_maybe_due, gc_tuning, maybe_gc, note_lisp_allocation,
 };
 pub(crate) use runtime::{
     hash_table_compare_eql, hash_table_compare_equal, hash_table_compare_user, hash_table_hash_eq,

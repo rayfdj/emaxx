@@ -189,6 +189,8 @@ define_dispatch!(
             }
             "abs" => {
                 need_args(name, args, 1)?;
+                // floatfns.c:Fabs: CHECK_NUMBER.
+                check_number(&args[0])?;
                 if let Kind::Float(value) = args[0].kind() {
                     Ok(Value::float(value.abs()))
                 } else if matches!(args[0].kind(), Kind::BigInteger(_)) {
@@ -205,32 +207,32 @@ define_dispatch!(
             }
             "sin" => {
                 need_args(name, args, 1)?;
-                Ok(Value::float(numeric_to_f64(interp, &args[0])?.sin()))
+                Ok(Value::float(extract_float(interp, &args[0])?.sin()))
             }
             "cos" => {
                 need_args(name, args, 1)?;
-                Ok(Value::float(numeric_to_f64(interp, &args[0])?.cos()))
+                Ok(Value::float(extract_float(interp, &args[0])?.cos()))
             }
             "tan" => {
                 need_args(name, args, 1)?;
-                Ok(Value::float(numeric_to_f64(interp, &args[0])?.tan()))
+                Ok(Value::float(extract_float(interp, &args[0])?.tan()))
             }
             "asin" => {
                 need_args(name, args, 1)?;
-                Ok(Value::float(numeric_to_f64(interp, &args[0])?.asin()))
+                Ok(Value::float(extract_float(interp, &args[0])?.asin()))
             }
             "acos" => {
                 need_args(name, args, 1)?;
-                Ok(Value::float(numeric_to_f64(interp, &args[0])?.acos()))
+                Ok(Value::float(extract_float(interp, &args[0])?.acos()))
             }
             "atan" => {
                 if args.is_empty() || args.len() > 2 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let y = numeric_to_f64(interp, &args[0])?;
+                let y = extract_float(interp, &args[0])?;
                 Ok(Value::float(
                     if let Some(x) = args.get(1).filter(|x| !x.is_nil()) {
-                        y.atan2(numeric_to_f64(interp, x)?)
+                        y.atan2(extract_float(interp, x)?)
                     } else {
                         y.atan()
                     },
@@ -238,29 +240,22 @@ define_dispatch!(
             }
             "copysign" => {
                 need_args(name, args, 2)?;
-                Ok(Value::float(
-                    numeric_to_f64(interp, &args[0])?.copysign(numeric_to_f64(interp, &args[1])?),
-                ))
+                // floatfns.c:Fcopysign: CHECK_FLOAT of both.
+                let magnitude = check_float(&args[0])?;
+                Ok(Value::float(magnitude.copysign(check_float(&args[1])?)))
             }
             "isnan" => {
                 need_args(name, args, 1)?;
-                let value = match args[0].kind() {
-                    Kind::Float(value) => value.get(),
-                    Kind::Integer(_) | Kind::BigInteger(_) => {
-                        return Ok(Value::Nil);
-                    }
-                    _ => {
-                        return Err(LispError::WrongTypeArgument(
-                            "number-or-marker-p".into(),
-                            args[0],
-                        ));
-                    }
-                };
-                Ok(if value.is_nan() { Value::T } else { Value::Nil })
+                // floatfns.c:Fisnan: CHECK_FLOAT.
+                Ok(if check_float(&args[0])?.is_nan() {
+                    Value::T
+                } else {
+                    Value::Nil
+                })
             }
             "exp" => {
                 need_args(name, args, 1)?;
-                Ok(Value::float(numeric_to_f64(interp, &args[0])?.exp()))
+                Ok(Value::float(extract_float(interp, &args[0])?.exp()))
             }
             "expt" => {
                 need_args(name, args, 2)?;
@@ -270,11 +265,11 @@ define_dispatch!(
                 if args.is_empty() || args.len() > 2 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let value = numeric_to_f64(interp, &args[0])?;
+                let value = extract_float(interp, &args[0])?;
                 // floatfns.c:Flog treats a nil BASE as the natural log.
                 // Native fixed-arity calls include this optional nil slot.
                 let result = if let Some(base) = args.get(1).filter(|base| !base.is_nil()) {
-                    let base = numeric_to_f64(interp, base)?;
+                    let base = extract_float(interp, base)?;
                     if base == 10.0 {
                         value.log10()
                     } else if base == 2.0 {
@@ -289,7 +284,7 @@ define_dispatch!(
             }
             "sqrt" => {
                 need_args(name, args, 1)?;
-                Ok(Value::float(numeric_to_f64(interp, &args[0])?.sqrt()))
+                Ok(Value::float(extract_float(interp, &args[0])?.sqrt()))
             }
             "float" => {
                 need_args(name, args, 1)?;
@@ -298,18 +293,20 @@ define_dispatch!(
                 if matches!(args[0].kind(), Kind::Float(_)) {
                     return Ok(args[0]);
                 }
-                Ok(Value::float(numeric_to_f64(interp, &args[0])?))
+                Ok(Value::float(extract_float(interp, &args[0])?))
             }
 
             "frexp" => {
                 need_args(name, args, 1)?;
-                let (sig, exp) = frexp_parts(numeric_to_f64(interp, &args[0])?);
+                let (sig, exp) = frexp_parts(extract_float(interp, &args[0])?);
                 Ok(Value::cons(Value::float(sig), Value::Integer(exp)))
             }
             "ldexp" => {
                 need_args(name, args, 2)?;
-                let significand = numeric_to_f64(interp, &args[0])?;
-                let exponent = integer_like_i64(interp, &args[1])?;
+                // floatfns.c:Fldexp: CHECK_FIXNUM (exponent), then the
+                // significand by extract_float.
+                let exponent = args[1].as_fixnum()?;
+                let significand = extract_float(interp, &args[0])?;
                 Ok(Value::float(ldexp_value(significand, exponent)))
             }
             "logb" => {
