@@ -5,7 +5,7 @@
 //! (coding->src_multibyte) it gives an ASCII character, and a raw-byte
 //! character's two-byte form, as the byte, and any other character as its
 //! negated code, which every decoder handles as its invalid code.  A
-//! decoder runs until its source ends or its charbuf (CHARBUF_SIZE ints,
+//! decoder runs until its source ends or its charbuf (`charbuf_size' ints,
 //! less the room it keeps for annotations) is full; decode_coding calls
 //! it again from where it stopped, so its local state (the byte after a
 //! CR, the open `charset' run) starts afresh at each call.
@@ -26,15 +26,26 @@ macro_rules! one_more {
     }};
 }
 
-/// coding.c CHARBUF_SIZE.
-pub(crate) const CHARBUF_SIZE: usize = 0x4000;
+/// coding.c MAX_CHARBUF_SIZE.
+const MAX_CHARBUF_SIZE: usize = 0x4000;
 /// coding.c MAX_ANNOTATION_LENGTH.
 pub(crate) const MAX_ANNOTATION_LENGTH: usize = 5;
+/// coding.c MAX_CHARBUF_EXTRA_SIZE.
+const MAX_CHARBUF_EXTRA_SIZE: usize = MAX_ANNOTATION_LENGTH * 3 + 1;
+
+/// decode_coding's ALLOC_CONVERSION_WORK_AREA: a charbuf of as many ints
+/// as SRC's bytes (coding->src_bytes) and MAX_CHARBUF_EXTRA_SIZE more, up
+/// to MAX_CHARBUF_SIZE, so that a short source's annotations can fill it.
+pub(crate) fn charbuf_size<S: Units + ?Sized>(src: &S) -> usize {
+    (src.source_bytes() + MAX_CHARBUF_EXTRA_SIZE).min(MAX_CHARBUF_SIZE)
+}
 /// The ints ADD_CHARSET_DATA stores.
 pub(crate) const CHARSET_DATA_LENGTH: usize = 4;
 
 pub(crate) trait Units {
     fn len(&self) -> usize;
+    /// The bytes of the source (its multibyte form's, for a multibyte one).
+    fn source_bytes(&self) -> usize;
     /// ONE_MORE_BYTE's unit at INDEX.
     fn at(&self, index: usize) -> i32;
     /// The bytes of a unibyte source, for the decoders' fast paths.
@@ -54,6 +65,10 @@ pub(crate) trait Units {
 impl Units for [u8] {
     #[inline]
     fn len(&self) -> usize {
+        <[u8]>::len(self)
+    }
+
+    fn source_bytes(&self) -> usize {
         <[u8]>::len(self)
     }
 
@@ -85,26 +100,35 @@ impl Units for [u8] {
     }
 }
 
-/// A multibyte source's units.
-pub(crate) struct CharUnits(Vec<i32>);
+/// A multibyte source's units, and the bytes of its multibyte form.
+pub(crate) struct CharUnits(Vec<i32>, usize);
 
 impl CharUnits {
     /// The units of the character CODES (raw-byte characters as
     /// #x3FFF80..#x3FFFFF).
     pub(crate) fn from_codes(codes: impl Iterator<Item = u32>) -> Self {
-        CharUnits(
-            codes
-                .map(|code| {
-                    if code < 0x80 {
-                        code as i32
-                    } else if RAW_BYTE8_CHARS.contains(&code) {
-                        (code - RAW_BYTE8_BASE) as i32
-                    } else {
-                        -(code as i32)
-                    }
-                })
-                .collect(),
-        )
+        let mut bytes = 0;
+        let units = codes
+            .map(|code| {
+                // CHAR_BYTES.
+                bytes += match code {
+                    0..0x80 => 1,
+                    0x80..0x800 => 2,
+                    0x800..0x1_0000 => 3,
+                    0x1_0000..0x20_0000 => 4,
+                    _ if RAW_BYTE8_CHARS.contains(&code) => 2,
+                    _ => 5,
+                };
+                if code < 0x80 {
+                    code as i32
+                } else if RAW_BYTE8_CHARS.contains(&code) {
+                    (code - RAW_BYTE8_BASE) as i32
+                } else {
+                    -(code as i32)
+                }
+            })
+            .collect();
+        CharUnits(units, bytes)
     }
 }
 
@@ -159,6 +183,10 @@ impl Units for CharUnits {
     #[inline]
     fn len(&self) -> usize {
         self.0.len()
+    }
+
+    fn source_bytes(&self) -> usize {
+        self.1
     }
 
     #[inline]

@@ -11660,6 +11660,40 @@ setup_process_coding_systems's check now refuses). A 13-form
   validation: the grouped gate's 3,429 library tests, the
   integration targets and clippy with `--all-targets --all-features -D
   warnings' pass.
+- **Round 239: decoders fill a charbuf the size of their source.**
+  `units::charbuf_size` is decode_coding's ALLOC_CONVERSION_WORK_AREA,
+  the source's bytes (`Units::source_bytes`, a multibyte source's
+  internal ones) and MAX_CHARBUF_EXTRA_SIZE more ints up to
+  MAX_CHARBUF_SIZE, which each decoder's room is taken from where it was
+  16384: a short text's `charset' annotations fill it, so the call ends
+  with its run closed and a byte after a CR unread for the next call or
+  decode_coding's flush (emacs-mule-dos "\206\324\r\272" keeps
+  #x3FFFBA). `decode_into_work_buffer` inserts a string's decode of more
+  than one call, or one decode_eol changed, a call at a time with
+  `insert_converted_text_at`, as a buffer destination's (round 235), so
+  each call after the first gets an interval of its own and decode_eol's
+  deletions move them. utf-8's run of valid bytes leaves every CR it
+  ends with to the slow path, where the last of the CRs ending a dos
+  source is lost as in GNU ("a\r\r" is "a\r"). A battery of 5,700
+  decodes (300 random texts under 19 codings) reads as GNU's but for two
+  emacs-mule texts with composition sequences (#414), and the round 234
+  to 238 batteries as before; an oracle test pins the cases. Encoders
+  still run in one pass where encode_coding's charbuf takes src_chars
+  and 16 more, which no output shows. Batteries of 10,200 encodes (300
+  random texts of characters across scripts, raw bytes, PUA and
+  non-Unicode characters, some with `charset' properties, under each of
+  34 codings) and of 2,400 region decodes and re-encodes in unibyte and
+  multibyte buffers (markers, point, `charset' runs) read as GNU's but
+  for emacs-mule's compositions and one GNU artifact: raw-text-dos over
+  a region that ends in a CR short of the buffer's end leaves a NUL
+  where that CR was, the byte decode_coding's flush reads from where the
+  text was in the gap ("\r\r" decoded from 1 to 3 is "\r\0"); Emaxx
+  keeps the CR. ERT pass counts match GNU's for coding, mule, mule-util,
+  ucs-normalize, fileio, files, editfns, buffer, textsec, rmailmm,
+  mm-decode, ccl, process, sgml-mode, qp, mailcap, json, fns, subr,
+  arc-mode and tar-mode. Local validation: the grouped gate's 3,430
+  library tests, the integration targets and clippy with `--all-targets
+  --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -13183,6 +13217,17 @@ GNU's on average (10.4 s over 519 files, a median of 106 ms against
 gaps are semantic-utest-ia (3,340 ms against 2,325), mule-tests (2,599
 against 1,741), electric-tests (900 against 519) and edebug-tests
 (1,365 against 1,014).
+
+**On `33ac8ac`** (round 238): frozen (run 41355327812) matched all
+7,928 outcomes. Setup 65.2 s against 55.4 s (1.176), test bodies 225.3
+s against 241.3 s (0.934), in all 0.994; ucs-normalize-tests' bodies
+took 122 ms against 74 (140 against 85 on the round 237 head). The full
+Rust gate (run 41355318385) passed. Per file, the setup is 19 ms over
+GNU's on average (9.8 s over 519 files, a median of 101 ms against 85),
+electric-tests' the most (670 against 469), and the widest body gaps are
+comp-tests (14,553 ms against 12,742), tramp-tests (16,565 against
+15,367), semantic-utest-ia (3,305 against 2,422) and mule-tests (2,391
+against 1,591).
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

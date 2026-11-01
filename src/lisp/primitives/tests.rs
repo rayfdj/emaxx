@@ -33444,7 +33444,7 @@ fn decoders_read_the_unit_after_a_cr_and_fill_a_charbuf_at_a_time() {
     // invalid sequence is lost (invalid_code stores the unit after it, as
     // ASCII or BYTE8_TO_CHAR by the decoder's rule), as is a multibyte
     // source's character there.  decode_coding calls the decoder a
-    // charbuf (CHARBUF_SIZE ints less its annotation room) at a time,
+    // charbuf (its ints less its annotation room) at a time,
     // closing the `charset' run at each call's end.
     assert_oracle_contract_matches_interpreter(
         r##"(let ((x (string #x80a)) (ivs (lambda (s) (mapcar (lambda (i) (list (car i) (cadr i) (plist-get (nth 2 i) 'charset))) (object-intervals s))))) (list (mapcar (lambda (cs) (append (decode-coding-string "a\r\377b\r\200\nc\r\r\240d" cs) nil)) '(utf-8-dos shift_jis-dos big5-dos euc-jp-dos latin-1-dos emacs-mule-dos cp1252-dos utf-8-with-signature-dos)) (append (decode-coding-string "a\0\r\0\200\0b\0\r\0" 'utf-16le-dos) nil) (mapcar (lambda (cs) (append (decode-coding-string (concat "a\r" x x "b\r" (string-to-multibyte "\377") x "c\r" x "\nd") cs) nil)) '(utf-8-dos shift_jis-dos big5-dos iso-2022-jp-dos emacs-mule-dos utf-16le-dos cp1252-dos)) (funcall ivs (decode-coding-string (apply #'concat (make-list 17000 "\202\240")) 'shift_jis)) (funcall ivs (decode-coding-string (concat "\e$B" (apply #'concat (make-list 17000 "$\"")) "\e(B") 'iso-2022-jp)) (funcall ivs (decode-coding-string (apply #'concat (make-list 17000 "\222\244\242")) 'emacs-mule)) (with-temp-buffer (insert (apply #'concat (make-list 33000 "\351"))) (decode-coding-region (point-min) (point-max) 'latin-1) (funcall ivs (current-buffer)))))"##,
@@ -33514,6 +33514,23 @@ fn file_reads_detected_as_utf_8_insert_their_bytes_as_decode_coding_gap() {
         r##"(let ((f (make-temp-file "zz-r238"))) (unwind-protect (mapcar (lambda (c) (with-temp-buffer (set-buffer-multibyte nil) (insert (cdr c)) (let ((coding-system-for-write 'binary)) (write-region nil nil f nil 0))) (with-temp-buffer (let ((coding-system-for-read (car c))) (insert-file-contents f)) (list (append (buffer-string) nil) last-coding-system-used))) (list (cons nil "a\300\200b") (cons nil "a\301\277b\r\n") (cons nil "a\340\201\201b") (cons nil "a\355\240\200b") (cons nil "a\364\220\200\200b") (cons nil "a\367\277\277\277b") (cons nil "a\356\202\200b\303\251") (cons 'utf-8-auto "\357\273\277ab\303\251") (cons 'prefer-utf-8 "x\300\201\r\ny") (cons nil "\357\273\277ab\300\200"))) (delete-file f)))"##,
         r##"(((97 4194176 98) utf-8) ((97 4194303 98 10) utf-8-dos) ((97 65 98) utf-8) ((97 55296 98) utf-8) ((97 1114112 98) utf-8) ((97 2097151 98) utf-8) ((97 57472 98 233) utf-8) ((97 98 233) utf-8-with-signature) ((120 4194177 10 121) utf-8-dos) ((97 98 4194240 4194176) utf-8-with-signature))"##,
         "file reads detected as utf-8",
+    );
+}
+
+#[test]
+fn decode_coding_fills_a_charbuf_the_size_of_its_source_as_coding_c() {
+    // decode_coding's ALLOC_CONVERSION_WORK_AREA gives the charbuf as many
+    // ints as the source's bytes and MAX_CHARBUF_EXTRA_SIZE more, so the
+    // `charset' annotations of a short text fill it: the call ends, its
+    // run closes, a byte after a CR is unread and the next call or
+    // decode_coding's flush takes it, and a string's work buffer gets each
+    // call's characters by an insert_from_gap of their own.  Of CRs ending
+    // a utf-8-dos source, the last is read as the one before's
+    // byte_after_cr and lost.
+    assert_oracle_contract_matches_interpreter(
+        r##"(let ((ivs (lambda (s) (mapcar (lambda (i) (list (car i) (cadr i) (plist-get (nth 2 i) 'charset))) (object-intervals s))))) (list (mapcar (lambda (c) (let ((d (decode-coding-string (cdr c) (car c)))) (list (append d nil) (funcall ivs d)))) (list (cons 'emacs-mule-dos "\206\324\r\272") (cons 'emacs-mule-dos "a\r\272") (cons 'utf-8-dos "a\r\r") (cons 'utf-8-dos "\e\361c\r\r\r") (cons 'utf-8-dos "a\r\rb\r\r\n") (cons 'shift_jis "\302\346d\320a\r\nb\rd\223\337\rac\360\203\r") (cons 'euc-jp "\r\e\n\r\226\rb\302aaJaa\216\315\ec\252") (cons 'undecided-dos "\237b\r\250\303B\331") (cons 'undecided-dos "a\204\251\311bdBb\317\n\344d"))) (with-temp-buffer (insert "\302\346d\320a\r\nb\rd\223\337\rac\360\203\r") (decode-coding-region (point-min) (point-max) 'shift_jis-dos) (list (append (buffer-string) nil) (funcall ivs (current-buffer))))))"##,
+        r##"((((932 13 4194234) ((0 1 greek-iso8859-7) (1 2 nil) (2 3 nil))) ((97 13) nil) ((97 13) nil) ((27 4194289 99 13 13) nil) ((97 13 13 98 13 10) nil) ((65410 35382 65424 97 10 98 13 100 37027 13 97 99 4194288 4194179 13) ((0 1 katakana-jisx0201) (1 2 japanese-jisx0208) (2 8 katakana-jisx0201) (8 11 japanese-jisx0208) (11 15 nil))) ((13 27 10 13 4194198 13 98 4194242 97 97 74 97 97 65421 27 99 4194218) ((0 7 nil) (7 13 japanese-jisx0208) (13 15 katakana-jisx0201) (15 16 nil) (16 17 nil))) ((4194207 98 13 4194216 4194243 66 4194265) ((0 1 eight-bit) (1 3 nil) (3 7 nil))) ((97 352 4194249 98 100 66 98 4194255 10 4194276 100) ((0 1 nil) (1 3 latin-iso8859-4) (3 8 nil) (8 11 nil)))) ((65410 35382 65424 97 10 98 13 100 37027 13 97 99 4194288 4194179 13) ((0 1 katakana-jisx0201) (1 2 japanese-jisx0208) (2 8 katakana-jisx0201) (8 14 japanese-jisx0208) (14 15 nil))))"##,
+        "charbuf sized by the source",
     );
 }
 

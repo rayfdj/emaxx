@@ -2,7 +2,7 @@
 //! when its charbuf is full or its source runs out, and decode_coding's
 //! loop of those calls.
 
-use super::units::{CHARBUF_SIZE, CallEnd, CallRuns, MAX_ANNOTATION_LENGTH, Units};
+use super::units::{CallEnd, CallRuns, MAX_ANNOTATION_LENGTH, Units, charbuf_size};
 use super::*;
 
 /// decode_coding_utf_8 over a whole unibyte text without a BOM or a dos
@@ -102,7 +102,7 @@ pub(super) fn utf_8_call<S: Units + ?Sized>(
 ) -> CallEnd {
     let mut p = start;
     let mut src_base;
-    let mut room = CHARBUF_SIZE;
+    let mut room = charbuf_size(src);
     let mut byte_after_cr: i32 = -1;
     'call: {
         if bom && !spec.bom_done {
@@ -146,7 +146,12 @@ pub(super) fn utf_8_call<S: Units + ?Sized>(
                     Ok(_) => window.len(),
                     Err(error) => error.valid_up_to(),
                 };
-                if eol_dos && valid > 0 && rest[valid - 1] == b'\r' {
+                // A CR the run ends with reads the unit after it as
+                // byte_after_cr, so the CRs it ends with wait for the slow
+                // path: of CRs that end the source, the last is read as the
+                // one before's byte_after_cr and its own finds no more
+                // source, so neither stores it nor leaves it to the flush.
+                while eol_dos && valid > 0 && rest[valid - 1] == b'\r' {
                     valid -= 1;
                 }
                 room -= window[..valid]
@@ -265,7 +270,7 @@ pub(super) fn charset_call<S: Units + ?Sized>(
     out: &mut DecodedText,
 ) -> CallEnd {
     let CharsetDecode { valids, single } = charsets;
-    let limit = CHARBUF_SIZE - MAX_ANNOTATION_LENGTH * 2;
+    let limit = charbuf_size(src) - MAX_ANNOTATION_LENGTH * 2;
     let mut used = 0;
     let mut runs = CallRuns::new();
     let mut p = start;
@@ -415,7 +420,7 @@ pub(super) fn sjis_call<S: Units + ?Sized>(
     eol_dos: bool,
     out: &mut DecodedText,
 ) -> CallEnd {
-    let limit = CHARBUF_SIZE - MAX_ANNOTATION_LENGTH * 2;
+    let limit = charbuf_size(src) - MAX_ANNOTATION_LENGTH * 2;
     let mut used = 0;
     let mut runs = CallRuns::new();
     let mut p = start;
@@ -497,7 +502,7 @@ pub(super) fn big5_call<S: Units + ?Sized>(
     eol_dos: bool,
     out: &mut DecodedText,
 ) -> CallEnd {
-    let limit = CHARBUF_SIZE - MAX_ANNOTATION_LENGTH * 2;
+    let limit = charbuf_size(src) - MAX_ANNOTATION_LENGTH * 2;
     let mut used = 0;
     let mut runs = CallRuns::new();
     let mut p = start;
@@ -579,7 +584,7 @@ pub(super) fn utf_16_call<S: Units + ?Sized>(
     spec: &mut DecoderSpec,
     out: &mut DecodedText,
 ) -> CallEnd {
-    let limit = CHARBUF_SIZE - 2;
+    let limit = charbuf_size(src) - 2;
     let mut used = 0;
     let mut p = start;
     let mut src_base;
@@ -768,7 +773,7 @@ pub(super) fn emacs_mule_call<S: Units + ?Sized>(
     eol_dos: bool,
     out: &mut DecodedText,
 ) -> CallEnd {
-    let limit = CHARBUF_SIZE - MAX_ANNOTATION_LENGTH * 3 - 1;
+    let limit = charbuf_size(src) - MAX_ANNOTATION_LENGTH * 3 - 1;
     let mut used = 0;
     let mut runs = CallRuns::new();
     let mut p = start;

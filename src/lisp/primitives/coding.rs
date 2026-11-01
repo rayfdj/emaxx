@@ -576,13 +576,16 @@ pub(crate) fn pre_write_for_file(
 
 /// decode_coding_object for a string destination: DECODED, with its
 /// `charset' properties, is the text of a work buffer (multibyte unless
-/// the coding is for unibyte text), where a post-read conversion runs
+/// the coding is for unibyte text), put there a decoder call at a time
+/// as a buffer destination's is when LAYOUT says the decode took more
+/// than one insertion or decode_eol changed it; a post-read conversion runs
 /// through safe_calln with the characters produced and point at BEG; its
 /// value must be a natural number (CHECK_FIXNAT).  The result is
 /// Fbuffer_string of the buffer current then.
 pub(crate) fn decode_into_work_buffer(
     interp: &mut Interpreter,
     decoded: &StringLike,
+    layout: Option<&DecodeLayout>,
     post_read: Value,
     env: &mut Env,
 ) -> Result<StringLike, LispError> {
@@ -592,7 +595,25 @@ pub(crate) fn decode_into_work_buffer(
     let work = code_conversion_save(interp, decoded.multibyte, env)?;
     let result = (|| -> Result<StringLike, LispError> {
         interp.set_current_buffer_id(work.id)?;
-        insert_conversion_source(interp, decoded);
+        match layout {
+            // decode_coding's insert_from_gap a call at a time into the
+            // work buffer, then decode_eol's change there.
+            Some(layout) => {
+                let start = interp.buffer.borrow().point();
+                crate::lisp::primitives::insert_converted_text_at(
+                    interp,
+                    start,
+                    &decoded.text,
+                    None,
+                    &decoded.extended_chars,
+                    decoded.text.chars().count(),
+                    true,
+                    Some(layout),
+                    env,
+                )?;
+            }
+            None => insert_conversion_source(interp, decoded),
+        }
         if !post_read.is_nil() {
             let produced = decoded.text.chars().count() as i64;
             {
@@ -3859,7 +3880,7 @@ fn decode_coding_parts(
     // A string destination: decode_coding_object decodes into the work
     // buffer, multibyte unless the coding detect_coding settled on is for
     // unibyte text, and the post-read conversion runs there.
-    let converted = decode_into_work_buffer(interp, &decoded, post_read, env)?;
+    let converted = decode_into_work_buffer(interp, &decoded, layout.as_ref(), post_read, env)?;
     // code_convert_string records CODING_ID_NAME once decode_coding_object,
     // post-read conversion included, has returned.
     if record_used {

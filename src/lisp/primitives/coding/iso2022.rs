@@ -6,7 +6,7 @@
 //! decoded text with; the encoder honors a `charset' text property as
 //! the preferred charset, like CODING_ANNOTATE_CHARSET_MASK does.
 
-use super::units::{CHARBUF_SIZE, CallEnd, CallRuns, MAX_ANNOTATION_LENGTH, Units};
+use super::units::{CallEnd, CallRuns, MAX_ANNOTATION_LENGTH, Units, charbuf_size};
 use super::*;
 use crate::lisp::eval::coding::*;
 use crate::lisp::types::Kind;
@@ -375,7 +375,7 @@ pub(crate) fn decode_call<S: Units + ?Sized>(
     let mut charset_id_1 = state.invoked_charset(1);
     let mut runs = CallRuns::new();
     // The charbuf: the characters stored and the annotations' ints.
-    let limit = CHARBUF_SIZE - MAX_ANNOTATION_LENGTH * 3;
+    let limit = charbuf_size(src) - MAX_ANNOTATION_LENGTH * 3;
     let base = out.char_count();
     let mut annotations = 0;
     let mut byte_after_cr: i32 = -1;
