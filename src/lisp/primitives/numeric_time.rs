@@ -713,31 +713,31 @@ pub(crate) fn ldexp_value(significand: f64, exponent: i64) -> f64 {
     significand * 2.0_f64.powi(exponent as i32)
 }
 
+/// floatfns.c:Flogb: the binary exponent; zero is -infinity, and an
+/// infinite or NaN float answers its magnitude or itself.
 pub(crate) fn logb_value(interp: &Interpreter, value: &Value) -> Result<Value, LispError> {
     check_number(value)?;
     match value.kind() {
-        Kind::Integer(number) => {
-            if number == 0 {
-                return Err(LispError::Signal("Arithmetic error".into()));
-            }
-            Ok(Value::Integer(
-                i64::BITS as i64 - 1 - number.unsigned_abs().leading_zeros() as i64,
-            ))
-        }
-        Kind::BigInteger(number) => {
-            if number.is_zero() {
-                return Err(LispError::Signal("Arithmetic error".into()));
-            }
-            Ok(Value::Integer(
-                number.abs().to_str_radix(2).len() as i64 - 1,
-            ))
-        }
+        Kind::Integer(0) => Ok(Value::float(f64::NEG_INFINITY)),
+        Kind::Integer(number) => Ok(Value::Integer(
+            i64::BITS as i64 - 1 - number.unsigned_abs().leading_zeros() as i64,
+        )),
+        Kind::BigInteger(number) => Ok(Value::Integer(
+            number.abs().to_str_radix(2).len() as i64 - 1,
+        )),
         _ => {
-            let value = numeric_to_f64(interp, value)?;
-            if !value.is_finite() || value == 0.0 {
-                return Err(LispError::Signal("Arithmetic error".into()));
+            let float = numeric_to_f64(interp, value)?;
+            if float == 0.0 {
+                return Ok(Value::float(f64::NEG_INFINITY));
             }
-            let (_sig, exponent) = frexp_parts(value.abs());
+            if !float.is_finite() {
+                return Ok(if float < 0.0 {
+                    Value::float(-float)
+                } else {
+                    *value
+                });
+            }
+            let (_sig, exponent) = frexp_parts(float.abs());
             Ok(Value::Integer(exponent - 1))
         }
     }

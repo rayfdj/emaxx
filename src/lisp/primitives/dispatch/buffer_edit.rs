@@ -2631,7 +2631,9 @@ pub(super) fn direct_char_after(
     let pos = match args.first().map(|v| v.kind()) {
         None | Some(Kind::Nil) => Some(interp.buffer.borrow().point()),
         Some(Kind::Integer(position)) if position >= 0 => usize::try_from(position).ok(),
-        Some(Kind::Integer(_)) => None,
+        // fix_position takes a bignum as the farthest fixnum, outside
+        // any buffer.
+        Some(Kind::Integer(_) | Kind::BigInteger(_)) => None,
         // marker_byte_position: a marker pointing nowhere is an error.
         Some(Kind::Marker(id)) => Some(
             interp
@@ -2660,7 +2662,9 @@ pub(super) fn direct_char_before(
     let pos = match args.first().map(|v| v.kind()) {
         None | Some(Kind::Nil) => Some(interp.buffer.borrow().point()),
         Some(Kind::Integer(position)) if position >= 0 => usize::try_from(position).ok(),
-        Some(Kind::Integer(_)) => None,
+        // fix_position takes a bignum as the farthest fixnum, outside
+        // any buffer.
+        Some(Kind::Integer(_) | Kind::BigInteger(_)) => None,
         // marker_byte_position: a marker pointing nowhere is an error.
         Some(Kind::Marker(id)) => Some(
             interp

@@ -33049,6 +33049,22 @@ fn c_primitive_arguments_are_checked_and_answered_as_their_c_sources() {
 }
 
 #[test]
+fn two_argument_c_primitive_calls_answer_as_their_c_sources() {
+    // fix_position takes a bignum as a position outside any buffer;
+    // doc.c's Fdocumentation_property reads PROP with Fget and falls back
+    // to the indirect variable's documentation; composite.c checks POS
+    // and LIMIT with fix_position before the string; fileio.c expands
+    // against "/" for a DEFAULT-DIRECTORY that is no string, which openp
+    // walks into; floatfns.c's logb of zero and of infinities; editfns.c
+    // looks a string UID up with getpwnam.
+    assert_oracle_contract_matches_interpreter(
+        r##"(with-temp-buffer (insert "abc") (let ((big (1+ most-positive-fixnum))) (defvaralias 'zz-alias217 'zz-base217) (put 'zz-base217 'variable-documentation "Base doc.") (mapcar (lambda (f) (condition-case e (funcall f) (error e))) (list (lambda () (list (char-after big) (char-before big) (charset-after big))) (lambda () (list (documentation-property 'zz-sym217 0) (documentation-property nil "str") (documentation-property 'zz-alias217 'variable-documentation))) (lambda () (find-composition-internal 1 "str" nil nil)) (lambda () (find-composition-internal 1 (current-buffer) nil nil)) (lambda () (find-composition-internal 1 99 nil nil)) (lambda () (find-composition-internal (make-marker) nil nil nil)) (lambda () (expand-file-name "str" 1)) (lambda () (expand-file-name "str" '(1 . 2))) (lambda () (locate-file-internal "str" '(1 . 2))) (lambda () (list (logb 0) (logb 0.0) (logb 1.0e+INF) (logb -1.0e+INF) (logb 8) (logb -8.0))) (lambda () (list (user-full-name "") (user-full-name "zz-no-such-user-217")))))))"##,
+        r##"((nil nil nil) (nil nil "Base doc.") (wrong-type-argument integer-or-marker-p "str") (wrong-type-argument integer-or-marker-p #<killed buffer>) nil (error "Marker does not point anywhere") "/str" "/str" nil (-1.0e+INF -1.0e+INF 1.0e+INF 1.0e+INF 3 3) (nil nil))"##,
+        "two-argument C primitive calls",
+    );
+}
+
+#[test]
 fn readevalloop_reads_at_the_buffers_point_with_standard_input_bound_to_it() {
     // lread.c:readevalloop binds `standard-input' to the buffer it reads,
     // so a form's `read' takes the text after it; eval-buffer reads each

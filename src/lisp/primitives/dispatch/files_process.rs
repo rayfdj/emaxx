@@ -735,8 +735,11 @@ define_dispatch!(
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
                 let path = string_text(&args[0])?;
+                // fileio.c: a DEFAULT-DIRECTORY that is no string is the root.
                 let base = match args.get(1) {
-                    Some(value) if !value.is_nil() => Some(string_text(value)?),
+                    Some(value) if !value.is_nil() => {
+                        Some(string_like(value).map_or_else(|| "/".to_string(), |s| s.text))
+                    }
                     _ => interp
                         .lookup_var("default-directory", env)
                         .and_then(|value| string_like(&value).map(|string| string.text)),

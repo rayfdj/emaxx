@@ -1583,13 +1583,6 @@ pub(crate) fn system_configuration() -> String {
     env!("EMAXX_SYSTEM_CONFIGURATION").to_string()
 }
 
-pub(crate) fn user_full_name(name: Option<&str>) -> Option<String> {
-    match name {
-        None | Some("") => current_user_full_name(),
-        Some(name) => user_full_name_from_login(name),
-    }
-}
-
 pub(crate) fn file_name_directory(path: &str) -> Option<String> {
     path.rfind('/').map(|index| path[..=index].to_string())
 }

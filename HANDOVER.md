@@ -10974,6 +10974,34 @@ setup_process_coding_systems's check now refuses). A 13-form
   the untouched `*Messages*'. Local validation: the grouped gate's
   3,396 library tests, the integration targets and clippy with
   `--all-targets --all-features -D warnings' pass.
+- **Round 217: two-argument C primitive calls answered as their C
+  sources answer.** A battery calling each C primitive with each pair of
+  seven arguments (nil, 0, 5, a string, a symbol, a cons and the current
+  buffer, with bignums, floats and characters for the numeric ones:
+  8,127 calls, GNU crashers dropped) differed from GNU in 40 lines.
+  `char-after', `char-before' and `charset-after' answer nil for a
+  bignum, which fix_position takes as a position outside any buffer,
+  where Emaxx signalled `integer-or-marker-p'. `documentation-property'
+  reads PROP with Fget, whatever PROP is, looks a missing
+  `variable-documentation' up on the `indirect-variable', and evaluates
+  a form with Feval's nil lexical environment, as doc.c does; Emaxx
+  signalled `symbolp' for a non-symbol PROP. `find-composition-internal'
+  checks POS and LIMIT through fix_position before it checks the string
+  (a non-number LIMIT is `integer-or-marker-p', not args-out-of-range).
+  `expand-file-name' expands against "/" for a DEFAULT-DIRECTORY that is
+  neither nil nor a string, as fileio.c does, so `locate-file-internal'
+  walks a path of non-strings as openp does where Emaxx signalled
+  `stringp'. `logb' answers -1.0e+INF for zero and an infinity's
+  magnitude for an infinity (NaN as given), as floatfns.c does, where
+  Emaxx signalled an arithmetic error. `user-full-name' looks a string
+  up with getpwnam, so "" and an unknown login answer nil. What still
+  differs is nondeterministic (`sxhash-eq' and `sxhash-eql' of fresh
+  objects, an unseeded `random'), a debug build's
+  (`newline-cache-check') or GNU's unchecked read of a directory
+  (`(Snarf-documentation "")'). An oracle test pins one call of each
+  kind. Local validation: the grouped gate's 3,397 library tests,
+  the integration targets and clippy with `--all-targets --all-features
+  -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -12378,6 +12406,14 @@ against 261.2 s (0.962), in all 0.995.
 passed, and frozen (run 41254351837) matched all 7,928 outcomes on the
 first attempt: setup 85.3 s against 69.9 s (1.219), test bodies 264.2 s
 against 274.3 s (0.963), in all 1.012.
+
+**On `2a5effd`** (round 216): the full Rust gate (run 41257801612)
+passed. Frozen (run 41257803781) matched 7,927 of 7,928 outcomes on the
+first attempt, the GNU oracle's `eglot-test-rust-completion-exit-function'
+failing (the rust-analyzer flake recorded before); the rerun matched all
+7,928: setup 89.4 s against 65.2 s (1.373), test bodies 260.6 s against
+265.4 s (0.982), in all 1.048. The first attempt's timings, on another
+runner, were 1.162, 0.912 and 0.961.
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

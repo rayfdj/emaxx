@@ -2143,30 +2143,23 @@ fn documentation_property(
     args: &[Value],
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    let symbol = args[0]
-        .as_symbol()
-        .map_err(|_| wrong_type_argument("symbolp", args[0]))?;
-    let property = args[1]
-        .as_symbol()
-        .map_err(|_| wrong_type_argument("symbolp", args[1]))?;
-    let mut doc = interp
-        .get_symbol_property(symbol, property)
-        .unwrap_or(Value::Nil);
-    if doc.is_nil()
-        && property == "variable-documentation"
-        && let Ok(target) = interp.resolve_variable_name(symbol)
-        && target != symbol
-    {
-        doc = interp
-            .get_symbol_property(&target, property)
-            .unwrap_or(Value::Nil);
+    // doc.c:Fdocumentation_property: Fget of PROP, whatever it is; a
+    // missing `variable-documentation' is looked for on the indirect
+    // variable.
+    let mut doc = super::call(interp, "get", &[args[0], args[1]], env)?;
+    if doc.is_nil() && args[1].eq_value(Value::symbol("variable-documentation")) {
+        let indirect = super::call(interp, "indirect-variable", &[args[0]], env)?;
+        if !indirect.is_nil() {
+            doc = super::call(interp, "get", &[indirect, args[1]], env)?;
+        }
     }
     if doc == Value::Integer(0) {
         doc = Value::Nil;
     } else if is_doc_reference(&doc) {
         doc = resolve_doc_reference(interp, &doc, env)?.unwrap_or(Value::Nil);
     } else if string_like(&doc).is_none() && !doc.is_nil() {
-        doc = interp.eval(&doc, env)?;
+        // Feval (tem, Qnil): dynamically, outside the caller's scope.
+        doc = interp.eval(&doc, &mut Env::new())?;
     }
     substitute_doc_keys(interp, doc, args.get(2).is_some_and(Value::is_truthy), env)
 }

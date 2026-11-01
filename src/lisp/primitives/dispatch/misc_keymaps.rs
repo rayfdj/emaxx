@@ -646,10 +646,8 @@ define_dispatch!(
                     Kind::Integer(_) | Kind::BigInteger(_) | Kind::Float(_) => {
                         user_full_name_from_uid(legacy_unsigned_id(requested)?)
                     }
-                    Kind::StringObject(_) => {
-                        let login = string_text(requested)?;
-                        user_full_name(Some(&login))
-                    }
+                    // editfns.c: getpwnam of the string, nil where none.
+                    Kind::StringObject(_) => user_full_name_from_login(&string_text(requested)?),
                     _ => return Err(LispError::Signal("Invalid UID specification".into())),
                 };
                 Ok(full_name
