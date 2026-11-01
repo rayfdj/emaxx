@@ -822,7 +822,7 @@ fn insert_text_and_signal(
                         } else {
                             source
                                 .intervals()
-                                .map(crate::intervals::Intervals::shared_from_zero)
+                                .map(|intervals| intervals.shared_from_zero())
                         }
                     });
                     match &copied {

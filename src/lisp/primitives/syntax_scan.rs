@@ -606,7 +606,8 @@ impl GlState {
             GlObject::Buffer => {
                 let buffer = interp.buffer.borrow();
                 let bounds = (buffer.point_min(), buffer.point_max());
-                let intervals = buffer.property_intervals();
+                let intervals = buffer.intervals();
+                let intervals = intervals.as_deref().map(PropertyIntervals::new);
                 self.update_in(interp, intervals, Some(bounds), charpos, count, init)
             }
             GlObject::String(string) => {

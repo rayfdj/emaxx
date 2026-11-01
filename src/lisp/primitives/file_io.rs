@@ -1161,8 +1161,6 @@ fn write_region_with_coding(
         // Quietly: an auto-save into the visited file saves it.
         if into_visited_file {
             interp.buffer.borrow_mut().set_unmodified();
-            let buffer_id = interp.current_buffer_id();
-            interp.share_text_counters(buffer_id);
             funlock_file(interp, env, Value::String(lock_path.into()))?;
         }
         return Ok(Value::Nil);
@@ -1936,8 +1934,6 @@ fn auto_coding_in_empty_buffer(
         buffer.set_modified_tick(modiff);
         buffer.set_chars_modified_tick(chars_modiff);
         drop(buffer);
-        let buffer_id = interp.current_buffer_id();
-        interp.share_text_counters(buffer_id);
         interp.set_variable("buffer-undo-list", undo_list, &mut decide_env);
     }
     result
@@ -2121,7 +2117,7 @@ pub(crate) fn record_visit_saved(interp: &mut Interpreter) {
     interp.buffer.borrow_mut().set_unmodified();
     let size = interp.buffer.borrow().size_total();
     let buffer_id = interp.current_buffer_id();
-    interp.share_text_counters(buffer_id);
+
     interp.set_buffer_local_value_symbol(
         buffer_id,
         &cached_symbol!("buffer-saved-size").with(Clone::clone),

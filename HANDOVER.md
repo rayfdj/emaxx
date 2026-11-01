@@ -11449,6 +11449,41 @@ setup_process_coding_systems's check now refuses). A 13-form
   coding. Local validation: the grouped gate's 3421 library tests,
   the integration targets and clippy with `--all-targets --all-features
   -D warnings' pass.
+- **Round 233: indirect buffers share their base's text and its
+  markers (#359).** A buffer's text is an `Rc<RefCell<BufferText>>`
+  holding what GNU's struct buffer_text holds (the gap text, the
+  modification, chars and save ticks, the edit serials and log, the
+  intervals, the side table of characters beyond Unicode and the
+  character cache); `make-indirect-buffer` gives the new buffer its
+  base's, and `BufferValue::base` puts its markers on the base's chain,
+  so `BufferRef::markers` walks every marker of the text as BUF_MARKERS
+  does. The mirroring of each edit into a copy (`mirror_*`,
+  `share_text_counters`, `Buffer::mirror_in_place_edit` and
+  `transpose_family_positions`) is gone. A buffer whose text is shared
+  has GNU's pt_marker, begv_marker and zv_marker
+  (`Buffer::position_markers`), recorded when it stops being current
+  and fetched when it becomes current; after an edit the family's other
+  buffers fetch theirs (`Interpreter::fetch_family_positions`), and a
+  change of the point or bounds of a buffer not current (a window's
+  point set in its buffer) goes into its markers. The family's window
+  slots and overlays follow each edit, conversions mark and settle the
+  one chain once, and `buffer-base-buffer` reads the buffer's own base
+  link, kept after it is killed. `set-buffer-multibyte` refuses an
+  indirect buffer and passes a base's new status to its family;
+  `buffer-swap-text` refuses families. An image's indirect buffers are
+  loaded sharing their base's text, their chains rebuilt and their
+  position markers made anew (`buffer_marker_ids` dumps a buffer's own
+  markers, the position markers left out). Batteries of 25 and 12
+  family edits (the six of #359's that differed included: narrowing,
+  erase, transposition, decoding in place and both refusals) and an
+  oracle test (bounds and points moved as markers, insert-before-markers,
+  transpose_markers, decoding in place, the refusals, a clone's stale
+  point marker, undo's marker adjustment naming the other buffer's
+  point, windows, evaporating overlays, the multibyte conversion, a
+  killed indirect buffer's base and the selected window's point) read
+  as GNU's. Local validation: the grouped gate's 3422 library
+  tests, the integration targets and clippy with `--all-targets
+  --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -12935,6 +12970,11 @@ all 7,928 outcomes, rmailmm-tests' `rmailmm-test-handler' again among
 them. Setup 85.0 s against 69.8 s (1.218), test bodies 260.2 s against
 272.7 s (0.954), in all 1.002. The full Rust gate (run 41312075247)
 passed.
+
+**On `c1f00fe`** (round 232): frozen (run 41315769902) matched all
+7,928 outcomes. Setup 70.4 s against 62.0 s (1.135), test bodies 233.6
+s against 252.5 s (0.925), in all 0.964. The full Rust gate (run
+41315767036) passed.
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

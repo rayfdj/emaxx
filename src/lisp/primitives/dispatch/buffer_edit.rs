@@ -46,7 +46,7 @@ fn restore_buffer_modified_p(
             }
         }
     }
-    interp.share_text_counters(current);
+
     Ok(flag)
 }
 
@@ -829,6 +829,11 @@ define_dispatch!(
             "set-buffer-multibyte" => {
                 need_args(name, args, 1)?;
                 let enabled = args[0].is_truthy();
+                if interp.buffer_base_id(interp.current_buffer_id()).is_some() {
+                    return Err(LispError::Signal(
+                        "Cannot do `set-buffer-multibyte' on an indirect buffer".into(),
+                    ));
+                }
                 if enabled == interp.buffer.borrow().is_multibyte() {
                     return Ok(args[0]);
                 }
@@ -864,6 +869,18 @@ define_dispatch!(
                     .buffer
                     .borrow_mut()
                     .set_multibyte_representation(enabled, converted, &positions, extended);
+                // Its indirect buffers take its new multibyte status, and
+                // their point and bounds from their converted markers.
+                let current_id = interp.current_buffer_id();
+                let related = interp.related_buffer_ids(current_id);
+                for buffer_id in &related {
+                    if *buffer_id != current_id
+                        && let Some(mut buffer) = interp.get_buffer_by_id_mut(*buffer_id)
+                    {
+                        buffer.set_multibyte(enabled);
+                    }
+                }
+                interp.fetch_family_positions(&related);
                 // The conversion is not recorded; a list kept for undo
                 // takes one entry for it instead.
                 let old_undo = interp.buffer.borrow().undo_list();
@@ -1286,9 +1303,7 @@ define_dispatch!(
                 let buffer = interp.decode_buffer(args.get(1))?;
                 buffer.borrow_mut().set_modified_tick(tick);
                 // BUF_MODIFF of the text a live buffer's family shares.
-                if let Some(id) = interp.live_buffer_id(buffer) {
-                    interp.share_text_counters(id);
-                }
+                if let Some(id) = interp.live_buffer_id(buffer) {}
                 Ok(Value::Nil)
             }
             "set-buffer-modified-p" => {
@@ -2914,7 +2929,7 @@ fn buffer_substring_named(
             };
             return Ok(Value::StringObject(
                 crate::lisp::types::StringObjectRef::from_text_ref(
-                    text,
+                    &text,
                     crate::lisp::types::string_data::StringProperties::new(props),
                     buffer.is_multibyte(),
                     &[],

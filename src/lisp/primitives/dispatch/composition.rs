@@ -122,7 +122,7 @@ fn composition_ranges(
     string: &Value,
 ) -> Result<Vec<CompositionRange>, LispError> {
     let intervals = if string.is_nil() {
-        interp.buffer.borrow().intervals().cloned()
+        interp.buffer.borrow().intervals().as_deref().cloned()
     } else {
         let string = string_like(string).ok_or_else(|| wrong_type_argument("stringp", *string))?;
         string.props

@@ -631,6 +631,10 @@ impl Interpreter {
         self.current_buffer_id = id;
         if !self.indirect_buffers.is_empty() {
             self.share_undo_list_with_base(current_id, id);
+            // record_buffer_markers of the old buffer, fetch_buffer_markers
+            // of the new.
+            current_buffer.borrow_mut().leave_position_markers();
+            self.buffer.borrow_mut().enter_position_markers();
         }
         // A localized GNU forwarding symbol loads the newly current
         // buffer's cell into its C variable during a buffer switch.
@@ -1465,6 +1469,10 @@ impl Interpreter {
         self.delete_buffer_overlays(id);
         let selected_window_showed_buffer = self.selected_window_buffer_id() == id;
         self.detach_markers_for_buffer(id);
+        // An indirect buffer stops sharing its base's text (and chain).
+        if let Some(object) = self.buffer_object(id) {
+            object.leave_marker_chain();
+        }
         // A *scratch* made to replace the last buffer inherits its directory.
         let directory = self
             .buffer_local_value(id, "default-directory")
@@ -1517,6 +1525,7 @@ impl Interpreter {
                 let (_, next_buffer) = self.inactive_buffers.swap_remove(position);
                 self.buffer = next_buffer;
                 self.current_buffer_id = next_id;
+                self.buffer.borrow_mut().enter_position_markers();
             } else {
                 let scratch_id = self.alloc_buffer_id();
                 self.buffer = crate::lisp::types::BufferRef::new(

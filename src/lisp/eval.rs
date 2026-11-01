@@ -4024,10 +4024,22 @@ impl Interpreter {
     }
 
     /// `own_text.markers': the weak chain of markers pointing into this buffer.
+    /// The markers of buffer ID in its text's chain order: the markers
+    /// of the rest of an indirect family, which share the chain, and the
+    /// point and bounds markers, which a loaded family makes anew, left
+    /// out.
     pub(crate) fn buffer_marker_ids(&self, id: u64) -> Vec<crate::lisp::types::MarkerRef> {
-        self.buffer_object(id)
-            .into_iter()
-            .flat_map(|buffer| buffer.markers())
+        let Some(buffer) = self.buffer_object(id) else {
+            return Vec::new();
+        };
+        let positions = buffer.borrow().position_markers();
+        buffer
+            .markers()
+            .filter(|marker| marker.buffer().is_some_and(|owner| owner.ptr_eq(&buffer)))
+            .filter(|marker| {
+                positions
+                    .is_none_or(|markers| ![markers.pt, markers.begv, markers.zv].contains(marker))
+            })
             .collect()
     }
 

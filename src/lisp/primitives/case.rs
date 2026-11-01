@@ -798,11 +798,9 @@ pub(crate) fn casify_buffer_region(
                 .borrow_mut()
                 .record_casing_insertion(lo, new_end - lo);
         }
-        // The family shares the text, cased or not, and its counts.
+        // The rest of the family shares the cased text and its counts.
         if cased.changed.is_some() {
-            interp.mirror_in_place_edit_to_related_buffers(lo, hi, new_end);
-        } else {
-            interp.share_text_counters(interp.current_buffer_id());
+            interp.family_after_in_place_edit();
         }
         // casify_region: signal_after_change (start, end - start - added,
         // end - start) over the first to the last character changed.

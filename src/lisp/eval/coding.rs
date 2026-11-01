@@ -1251,6 +1251,9 @@ impl Interpreter {
     fn adjust_window_marker_slots(&mut self, buffer_id: u64, adjust: impl Fn(usize) -> usize) {
         // The window index walked in place, its ids not copied out: this
         // runs on every insertion and deletion.
+        // The windows of the buffer's whole indirect family: their
+        // markers are the one text's.
+        let related = self.related_buffer_ids(buffer_id);
         let Some(windows) = self.record_ids_by_type_index.get("window") else {
             return;
         };
@@ -1264,7 +1267,7 @@ impl Interpreter {
             let record = unsafe { &mut *record.as_ptr() };
             let shows_buffer = matches!(
                 record.slots.get(crate::lisp::primitives::WINDOW_BUFFER_SLOT).map(|v| v.kind()),
-                Some(Kind::Integer(id)) if id == buffer_id as i64
+                Some(Kind::Integer(id)) if related.contains(&(id as u64))
             );
             if !shows_buffer {
                 continue;
@@ -1342,13 +1345,9 @@ impl Interpreter {
         to: usize,
     ) -> Vec<(u64, usize)> {
         let related = self.related_buffer_ids(self.current_buffer_id());
-        for buffer_id in &related {
-            if let Some(buffer) = self.buffer_object(*buffer_id) {
-                for marker in buffer.markers() {
-                    let at = if marker.insertion_type() { from } else { to };
-                    marker.set_need_adjustment(marker.position() == Some(at));
-                }
-            }
+        for marker in self.buffer.markers() {
+            let at = if marker.insertion_type() { from } else { to };
+            marker.set_need_adjustment(marker.position() == Some(at));
         }
         let mut marked = Vec::new();
         let Some(windows) = self.record_ids_by_type_index.get("window") else {
@@ -1383,18 +1382,15 @@ impl Interpreter {
         from: usize,
         end: usize,
     ) {
-        let related = self.related_buffer_ids(self.current_buffer_id());
-        for buffer_id in &related {
-            if let Some(buffer) = self.buffer_object(*buffer_id) {
-                let state = buffer.borrow();
-                let limit = state.size_total() + 1;
-                for marker in buffer.markers() {
-                    if marker.need_adjustment() {
-                        marker.set_need_adjustment(false);
-                        let position = if marker.insertion_type() { from } else { end };
-                        let position = position.clamp(1, limit);
-                        marker.set_positions(position, state.marker_byte_position(position));
-                    }
+        {
+            let state = self.buffer.borrow();
+            let limit = state.size_total() + 1;
+            for marker in self.buffer.markers() {
+                if marker.need_adjustment() {
+                    marker.set_need_adjustment(false);
+                    let position = if marker.insertion_type() { from } else { end };
+                    let position = position.clamp(1, limit);
+                    marker.set_positions(position, state.marker_byte_position(position));
                 }
             }
         }
@@ -1406,6 +1402,7 @@ impl Interpreter {
                 *value = Value::Integer(end as i64);
             }
         }
+        self.family_after_in_place_edit();
     }
 
     pub fn adjust_markers_for_delete(&mut self, buffer_id: u64, from: usize, to: usize) {

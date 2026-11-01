@@ -411,7 +411,7 @@ pub(crate) fn translate_region_internal(
     // The rest of modify_text: the first change recorded, and the change
     // of the whole region counted once.
     interp.buffer.borrow_mut().modify_text(from, to);
-    interp.share_text_counters(interp.current_buffer_id());
+
     with_overlay_hook_roots(interp, &prepared.overlay_calls, |interp| {
         let mut pos = from;
         let mut end_pos = to;
@@ -538,7 +538,7 @@ fn replace_character_in_place(
     buffer.record_change(pos, 1);
     buffer.replace_text_in_place(pos, pos + 1, &text, &extended);
     drop(buffer);
-    interp.mirror_in_place_edit_to_related_buffers(pos, pos + 1, pos + 1);
+    interp.family_after_in_place_edit();
     Ok(())
 }
 
