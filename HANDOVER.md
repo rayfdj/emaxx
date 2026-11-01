@@ -11204,6 +11204,27 @@ setup_process_coding_systems's check now refuses). A 13-form
   validation: the grouped gate's 3,410 library tests, the
   integration targets and clippy with `--all-targets --all-features -D
   warnings' pass.
+- **Round 224: `byte-boolean-vars' and `word-wrap-by-category'.**
+  lread.c's defvar_bool conses each DEFVAR_BOOL onto
+  `byte-boolean-vars' as the syms_of_* functions run, and syms_of_lread
+  empties it partway, so the list holds the booleans defined after that,
+  newest first, in the order the build's own syms_of_* calls make them;
+  neither the members nor the order follow from the sources without the
+  build's configuration. Emaxx left it nil. It is now the contracted
+  oracle's list at `-Q --batch' (114 names, X ones included, as
+  byte-opt.el sees them there), in a generated Linux manifest that a new
+  mandatory anti-cheat gate re-prints from the pinned oracle and requires
+  byte identity with, as the forwarded-defaults manifest is; off Linux
+  the list stays nil until an oracle is probed there. xdisp.c writes
+  `DEFVAR_BOOL(' for `word-wrap-by-category' with no space, which the
+  DEFVAR_BOOL, DEFVAR_INT and forwarded-variable generators' patterns
+  missed, so Emaxx let it be aliased and kept a stored 5 where GNU
+  refuses the alias and stores t; it is in the boolean and forwarded
+  manifests now and the patterns allow any blanks before the
+  parenthesis. An oracle test pins the alias error, the stored value and
+  the list's length, ends and members. Local validation: the grouped
+  gate's 3,412 library tests, the integration targets and clippy
+  with `--all-targets --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -12652,6 +12673,11 @@ line, and its gate ran the whole library.
 passed, and frozen (run 41283568958) matched all 7,928 outcomes on the
 first attempt: setup 82.7 s against 67.3 s (1.229), test bodies 257.8 s
 against 273.8 s (0.941), in all 0.988.
+
+**On `5d365f0`** (round 223): the full Rust gate (run 41288376067)
+passed, and frozen (run 41288377810) matched all 7,928 outcomes on the
+first attempt: setup 59.9 s against 52.0 s (1.152), test bodies 216.9 s
+against 231.9 s (0.935), in all 0.993.
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

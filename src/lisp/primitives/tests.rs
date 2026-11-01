@@ -17003,7 +17003,7 @@ fn gnu_c_bool_variables_match_fresh_grep() {
     // coercion in prepare_variable_assignment keys on it, so it must not
     // drift from the sources.
     let source_root = upstream_emacs_repo().join("src");
-    let pattern = regex::Regex::new(r#"DEFVAR_BOOL \("([^"]+)""#).expect("valid pattern");
+    let pattern = regex::Regex::new(r#"DEFVAR_BOOL\s*\("([^"]+)""#).expect("valid pattern");
     let mut names = std::collections::BTreeSet::new();
     for entry in std::fs::read_dir(&source_root).expect("read oracle src directory") {
         let path = entry.expect("directory entry").path();
@@ -33254,6 +33254,19 @@ fn startup_values_are_the_ones_gnus_c_and_preloaded_lisp_make() {
         r##"(list (last features 3) (cadr (memq 'base64 features)) (progn (provide 'zz-r223-probe) (car features)) dynamic-library-suffixes load-suffixes image-types default-frame-scroll-bars frame-inhibit-implied-resize (assq 4 mouse-wheel-buttons) read-file-name-function (equal charset-map-path (list (expand-file-name "charsets" data-directory))) (null (member "" exec-path)) (special-variable-p 'read-file-name-function))"##,
         r##"((make-network-process native-compile emacs) format zz-r223-probe (".so" "") (".so" ".elc" ".el") (svg webp png gif tiff jpeg xpm xbm pbm) left (tab-bar-lines tool-bar-lines) (4 . wheel-up) read-file-name-default t t t)"##,
         "startup values",
+    );
+}
+
+#[test]
+fn byte_boolean_vars_lists_the_builds_late_defvar_bools() {
+    // lread.c:defvar_bool conses each DEFVAR_BOOL onto `byte-boolean-vars'
+    // and syms_of_lread empties it on the way (so `load-in-progress' is
+    // not there); xdisp.c's `word-wrap-by-category', written
+    // `DEFVAR_BOOL(' with no space, is a forwarded boolean like the rest.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list (condition-case e (defvaralias 'word-wrap-by-category 'zz-r224-alias) (error e)) (let ((word-wrap-by-category 5)) word-wrap-by-category) (length byte-boolean-vars) (car byte-boolean-vars) (car (last byte-boolean-vars)) (and (memq 'word-wrap-by-category byte-boolean-vars) t) (memq 'load-in-progress byte-boolean-vars) (and (memq 'case-fold-search byte-boolean-vars) t))"##,
+        r##"((error "Cannot make a built-in variable an alias: word-wrap-by-category") t 114 font-use-system-font load-dangerous-libraries t nil nil)"##,
+        "byte-boolean-vars",
     );
 }
 

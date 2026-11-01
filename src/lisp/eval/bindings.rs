@@ -657,7 +657,13 @@ impl Interpreter {
             // load-with-code-conversion after the coding owners are loaded.
             "load-source-file-function" => Some(Value::Nil),
             "load-force-doc-strings" | "load-convert-to-unibyte" => Some(Value::Nil),
-            "preloaded-file-list" | "byte-boolean-vars" => Some(Value::Nil),
+            "preloaded-file-list" => Some(Value::Nil),
+            // lread.c:defvar_bool's record of the build's DEFVAR_BOOLs.
+            "byte-boolean-vars" => Some(Value::list(
+                crate::lisp::primitives::gnu_byte_boolean_variables()
+                    .iter()
+                    .map(|name| Value::symbol(name)),
+            )),
             "load-dangerous-libraries" | "force-load-messages" => Some(Value::Nil),
             "bytecomp-version-regexp" => Some(Value::String(
                 "^;;;.\\(?:in Emacs version\\|bytecomp version FSF\\)".into(),

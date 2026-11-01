@@ -162,6 +162,7 @@ pub(crate) const GNU_C_BOOL_VARIABLES: &[&str] = &[
     "w32-use-visible-system-caret",
     "w32-yes-no-dialog-show-cancel",
     "window-resize-pixelwise",
+    "word-wrap-by-category",
     "words-include-escapes",
     "write-region-inhibit-fsync",
     "x-dnd-disable-motif-drag",

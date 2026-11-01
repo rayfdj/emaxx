@@ -1335,7 +1335,7 @@ pub(crate) fn gnu_c_bool_variable_manifest_matches_fresh_regeneration() {
         source_root.is_dir(),
         "pinned GNU sibling checkout required for the DEFVAR_BOOL manifest regeneration gate"
     );
-    let pattern = regex::Regex::new(r#"DEFVAR_BOOL \("([^"]+)""#)
+    let pattern = regex::Regex::new(r#"DEFVAR_BOOL\s*\("([^"]+)""#)
         .expect("compile DEFVAR_BOOL source pattern");
     let mut names = std::collections::BTreeSet::new();
     for entry in fs::read_dir(&source_root).expect("read pinned GNU src directory") {
@@ -1724,8 +1724,8 @@ pub(crate) fn gnu_c_int_variable_manifest_matches_fresh_regeneration() {
         source_root.is_dir(),
         "pinned GNU sibling checkout required for the DEFVAR_INT manifest regeneration gate"
     );
-    let pattern =
-        regex::Regex::new(r#"DEFVAR_INT \("([^"]+)""#).expect("compile DEFVAR_INT source pattern");
+    let pattern = regex::Regex::new(r#"DEFVAR_INT\s*\("([^"]+)""#)
+        .expect("compile DEFVAR_INT source pattern");
     let mut names = std::collections::BTreeSet::new();
     for entry in fs::read_dir(&source_root).expect("read pinned GNU src directory") {
         let path = entry.expect("read pinned GNU src entry").path();
@@ -1809,8 +1809,8 @@ pub(crate) fn gnu_c_forwarded_variable_manifest_matches_fresh_regeneration() {
         return;
     }
     let source_root = root.join("../emacs/src");
-    let pattern =
-        regex::Regex::new(r#"DEFVAR_[A-Z_]+ \("([^"]+)""#).expect("compile DEFVAR source pattern");
+    let pattern = regex::Regex::new(r#"DEFVAR_[A-Z_]+\s*\("([^"]+)""#)
+        .expect("compile DEFVAR source pattern");
     let mut candidates = std::collections::BTreeSet::new();
     for entry in fs::read_dir(&source_root).expect("read pinned GNU src directory") {
         let path = entry.expect("read pinned GNU src entry").path();
@@ -1833,6 +1833,40 @@ pub(crate) fn gnu_c_forwarded_variable_manifest_matches_fresh_regeneration() {
         crate::lisp::primitives::gnu_c_localized_forwarded_variables(),
         fresh_localized.as_slice(),
         "committed GNU C localized-forwarded manifest does not match fresh regeneration from the pinned oracle"
+    );
+}
+
+pub(crate) fn gnu_byte_boolean_vars_manifest_matches_fresh_regeneration() {
+    // `byte-boolean-vars' tells byte-opt.el which variables are always t
+    // or nil; its members and order are the oracle build's own (see the
+    // manifest's header), so re-print it from the pinned oracle and
+    // require byte identity.
+    let root = repo_root();
+    let oracle = root.join("../emacs/src/emacs");
+    assert!(
+        oracle.exists(),
+        "pinned GNU sibling checkout required for the byte-boolean-vars manifest gate"
+    );
+    let committed = crate::lisp::primitives::gnu_byte_boolean_variables();
+    if committed.is_empty() {
+        return;
+    }
+    let output = std::process::Command::new(&oracle)
+        .args([
+            "-Q",
+            "--batch",
+            "--eval",
+            "(princ (mapconcat #'symbol-name byte-boolean-vars \"\\n\"))",
+        ])
+        .output()
+        .expect("run the byte-boolean-vars probe with the oracle binary");
+    assert!(output.status.success(), "byte-boolean-vars probe failed");
+    let text = String::from_utf8_lossy(&output.stdout);
+    let fresh = text.lines().collect::<Vec<_>>();
+    assert_eq!(
+        committed,
+        fresh.as_slice(),
+        "committed GNU byte-boolean-vars manifest does not match fresh regeneration from the pinned oracle"
     );
 }
 
@@ -1986,6 +2020,10 @@ fn enforce_all_owned() -> Result<(), Vec<String>> {
             gnu_c_forwarded_defaults_manifest_matches_fresh_regeneration as fn(),
         ),
         (
+            "gnu_byte_boolean_vars_manifest_matches_fresh_regeneration",
+            gnu_byte_boolean_vars_manifest_matches_fresh_regeneration as fn(),
+        ),
+        (
             "builtin_arities_match_fresh_regeneration",
             builtin_arities_match_fresh_regeneration as fn(),
         ),
@@ -2128,6 +2166,11 @@ mod gate_tests {
     #[test]
     fn gnu_c_forwarded_defaults_manifest_matches_fresh_regeneration() {
         super::gnu_c_forwarded_defaults_manifest_matches_fresh_regeneration();
+    }
+
+    #[test]
+    fn gnu_byte_boolean_vars_manifest_matches_fresh_regeneration() {
+        super::gnu_byte_boolean_vars_manifest_matches_fresh_regeneration();
     }
 
     #[test]
