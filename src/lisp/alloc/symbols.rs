@@ -154,11 +154,7 @@ pub(crate) const BUFFER_SLOT_VARIABLES: [&str; 2] = ["buffer-undo-list", "text-c
 
 /// The C variables whose store converts the value as their own C code
 /// does (`prepare_variable_assignment_with').
-pub(crate) const STORE_CONVERTING_VARIABLES: [&str; 3] = [
-    "display-hourglass",
-    "scroll-up-aggressively",
-    "vertical-scroll-bar",
-];
+pub(crate) const STORE_CONVERTING_VARIABLES: [&str; 1] = ["display-hourglass"];
 
 /// The forwarded variables `Interpreter::set_global_binding_resolved' does
 /// more for than store the cell: the evaluator's own C cells, the buffers'

@@ -2311,13 +2311,8 @@ pub(crate) fn decimal_number_prefix(text: &str) -> Option<&str> {
         let special_exponent = positive_special
             && chars
                 .get(index..index + 3)
-                .map(|suffix| {
-                    suffix
-                        .iter()
-                        .map(|(_, ch)| ch.to_ascii_uppercase())
-                        .collect::<String>()
-                })
-                .is_some_and(|suffix| matches!(suffix.as_str(), "INF" | "NAN"));
+                .map(|suffix| suffix.iter().map(|(_, ch)| *ch).collect::<String>())
+                .is_some_and(|suffix| matches!(suffix.as_str(), "INF" | "NaN"));
         if special_exponent {
             index += 3;
             end = index;

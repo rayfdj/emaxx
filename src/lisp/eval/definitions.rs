@@ -73,6 +73,16 @@ impl Interpreter {
                     Some(self.current_buffer_id()),
                     env,
                 )?;
+                // `setq-local' made the variable local before its set.
+                if let Err(error) = self.check_per_buffer_predicate(&resolved, val, env) {
+                    crate::lisp::primitives::call(
+                        self,
+                        "make-local-variable",
+                        &[Value::Symbol(resolved)],
+                        env,
+                    )?;
+                    return Err(error);
+                }
                 self.set_buffer_local_value(self.current_buffer_id(), resolved.as_str(), val);
             } else {
                 self.setq_variable_symbol(&resolved, val, env)?;

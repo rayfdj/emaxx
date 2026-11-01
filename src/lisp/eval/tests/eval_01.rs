@@ -6392,7 +6392,7 @@ fn buffer_local_variables_order_lists_every_native_slot_once() {
     let mut manifest = GNU_NATIVE_PER_BUFFER_VARIABLES
         .iter()
         .map(|variable| variable.name)
-        .filter(|name| !matches!(*name, "buffer-undo-list" | "syntax-propertize--done"))
+        .filter(|name| *name != "buffer-undo-list")
         .collect::<Vec<_>>();
     ordered.sort_unstable();
     manifest.sort_unstable();
@@ -6805,8 +6805,13 @@ fn startup_global_values_and_special_declarations_share_one_registry() {
     for (name, _) in &interp.globals {
         let special = interp
             .is_special_variable_symbol(&crate::lisp::types::SymbolName::intern_str(name.as_str()));
-        if GNU_NON_SPECIAL_C_VARIABLES.contains(&name.as_str()) {
-            assert!(!special, "`{name}` is a C variable GNU leaves non-special");
+        if crate::lisp::eval::gnu_non_special_startup_globals()
+            .any(|global| global == name.as_str())
+        {
+            assert!(
+                !special,
+                "`{name}` is a startup global GNU leaves non-special"
+            );
         } else {
             assert!(
                 special,

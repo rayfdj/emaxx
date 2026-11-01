@@ -69,9 +69,32 @@ mod ert;
 // this group, so keep the source manifest together instead of adding isolated
 // compatibility exceptions as tests happen to exercise them.
 /// lread.c and keyboard.c clear declared_special after their DEFVAR_LISPs
-/// of `values' and `top-level': both stay forwarded C variables, but a
-/// lexical `let' of either binds lexically.
-pub(crate) const GNU_NON_SPECIAL_C_VARIABLES: [&str; 2] = ["values", "top-level"];
+/// of `values' and `top-level', and fns.c unmarks `features' with
+/// Fmake_var_non_special: all stay forwarded C variables, but a lexical
+/// `let' of any binds lexically.
+pub(crate) const GNU_NON_SPECIAL_C_VARIABLES: [&str; 3] = ["values", "top-level", "features"];
+
+/// The value cells syms_of_coding, syms_of_fns, syms_of_keyboard and
+/// syms_of_minibuf make with Fset and nothing preloaded declares special
+/// (coding.c's `coding-category-*' symbols are made the same way).
+pub(crate) const GNU_C_FSET_VARIABLES: [&str; 5] = [
+    "coding-system-history",
+    "yes-or-no-p-history",
+    "echo-area-clear-hook",
+    "custom-variable-history",
+    "buffer-name-history",
+];
+
+/// The startup globals GNU's -Q session leaves non-special: the C
+/// variables above, the C Fset cells, and vc-hooks.el's `vc-mode', which it
+/// makes buffer-local when set without a `defvar'.
+pub(crate) fn gnu_non_special_startup_globals() -> impl Iterator<Item = &'static str> {
+    GNU_NON_SPECIAL_C_VARIABLES
+        .into_iter()
+        .chain(GNU_C_FSET_VARIABLES)
+        .chain(coding::CODING_CATEGORY_NAMES)
+        .chain(["vc-mode"])
+}
 
 const GNU_LREAD_SPECIAL_VARIABLES: &[&str] = &[
     "obarray",
@@ -420,8 +443,6 @@ const GNU_NATIVE_PER_BUFFER_VARIABLES: &[NativePerBufferVariable] = &[
     NativePerBufferVariable::new("scroll-up-aggressively"),
     NativePerBufferVariable::new("selective-display"),
     NativePerBufferVariable::new("selective-display-ellipses"),
-    // syntax.c defines this native value cell and then makes it buffer-local.
-    NativePerBufferVariable::new("syntax-propertize--done"),
     NativePerBufferVariable::new("tab-line-format"),
     NativePerBufferVariable::new("tab-width"),
     NativePerBufferVariable::new("text-conversion-style"),
@@ -498,8 +519,7 @@ pub(crate) const BUFFER_LOCAL_VARIABLES_ORDER: &[&str] = &[
 
 /// A DEFVAR_PER_BUFFER slot (BUFFER_OBJFWD) as buffer.c treats it:
 /// whether its buffer_local_flags index is -1 (always local) and whether
-/// buffer_permanent_local_flags keeps it.  syntax.c's
-/// `syntax-propertize--done' is an ordinary buffer-local variable there.
+/// buffer_permanent_local_flags keeps it.
 #[derive(Clone, Copy)]
 pub(crate) struct PerBufferSlot {
     pub(crate) always_local: bool,
@@ -509,7 +529,7 @@ pub(crate) struct PerBufferSlot {
 pub(crate) fn native_per_buffer_slot(name: &str) -> Option<PerBufferSlot> {
     GNU_NATIVE_PER_BUFFER_VARIABLES
         .iter()
-        .find(|variable| variable.name == name && name != "syntax-propertize--done")
+        .find(|variable| variable.name == name)
         .map(|variable| PerBufferSlot {
             always_local: variable.always_local,
             permanent: variable.permanent,
@@ -1595,6 +1615,9 @@ pub(crate) struct SpecialBindingRestore {
     /// binding wrote the default and the unbind writes it back through
     /// set_default_internal, whose watchers hear `set' with no buffer.
     let_default: bool,
+    /// The specpdl record's where.buf: the buffer current when the
+    /// binding was made.
+    where_buffer_id: u64,
     // `kill-all-local-variables' can remove a buffer-local value while a
     // dynamic binding of that value is active.  The binding then stops
     // participating in lookup and assignment.  On unwind GNU restores the
@@ -4576,11 +4599,9 @@ impl Interpreter {
             mark(value);
         }
         mark(&self.frame_and_buffer_state);
-        for buffer in self
-            .last_thing_searched
-            .iter()
-            .chain(&self.saved_search_regs.last_thing_searched)
-        {
+        let searched = &self.last_thing_searched;
+        let saved = &self.saved_search_regs.last_thing_searched;
+        for buffer in searched.iter().chain(saved) {
             mark(&Value::Buffer(*buffer));
         }
         for call in &self.pending_funcalls {
@@ -6834,7 +6855,6 @@ impl Interpreter {
             ("display-monitors-changed-functions", Value::Nil),
             ("display-pixels-per-inch", Value::float(72.0)),
             ("dynamic-library-alist", Value::Nil),
-            ("echo-area-clear-hook", Value::Nil),
             (
                 "emacs-copyright",
                 Value::String(primitives::EMACS_COPYRIGHT.into()),
@@ -7051,6 +7071,10 @@ impl Interpreter {
                 &mut crate::lisp::types::Env::new(),
             );
         }
+        // The history lists and hook the other syms_of_* functions Fset.
+        for name in GNU_C_FSET_VARIABLES {
+            interp.set_global_binding(name, Value::Nil);
+        }
         // Its two Fdefine_coding_system_internal calls, for `no-conversion'
         // and then `undecided' with its eol subsidiaries, record their names.
         for name in [
@@ -7135,9 +7159,6 @@ impl Interpreter {
                 interp.put_symbol_property(variable.name, "permanent-local", Value::T);
             }
         }
-        // search.c uses its own Lisp variable rather than a Buffer field, but
-        // GNU gives it the same always-buffer-local behavior.
-        interp.mark_per_buffer_special("case-fold-search");
         // buffer.c init_buffer_once makes the first buffer with its slots,
         // init_buffer gives it the working directory.
         interp.fundamental_mode_name = Value::string("Fundamental");
@@ -7237,16 +7258,11 @@ impl Interpreter {
             Value::list([Value::Symbol("visual-line-mode".into())]),
         );
         interp.define_per_buffer_special("visual-line-mode", Value::Nil);
-        for hook in [
-            "visual-line-mode-hook",
-            "visual-line-mode-on-hook",
-            "visual-line-mode-off-hook",
-        ] {
-            interp.define_special_variable(hook, Value::Nil);
-        }
+        // define-minor-mode defines the mode hook; the -on-hook and
+        // -off-hook it runs stay void.
+        interp.define_special_variable("visual-line-mode-hook", Value::Nil);
         interp.define_per_buffer_special("font-lock-mode", Value::Nil);
         interp.define_per_buffer_special("font-lock-fontified", Value::Nil);
-        interp.define_per_buffer_special("header-line-indent-mode", Value::Nil);
         // buffer_defaults' slots (every buffer has its own; see
         // `reset_always_local_slots').
         interp.set_global_binding("major-mode", Value::Symbol("fundamental-mode".into()));
@@ -7326,7 +7342,6 @@ impl Interpreter {
         ] {
             interp.define_special_variable(name, value);
         }
-        interp.define_per_buffer_special("read-only-mode", Value::Nil);
         // No `lisp-indent-function' properties are seeded here.  GNU's C never
         // sets that property (zero occurrences in src/*.c); every one comes from
         // `(declare (indent N))' processed by byte-run.el, `lisp-mode.el''s
@@ -7355,7 +7370,7 @@ impl Interpreter {
         // sets one.  Treating it as an always-local buffer slot makes
         // `local-variable-p' lie and suppresses bytecomp's missing-cookie
         // warning.
-        interp.define_per_buffer_special("lexical-binding", Value::Nil);
+        interp.define_special_variable("lexical-binding", Value::Nil);
         // GNU preloads files.el, where this defcustom is globally bound.
         // abbrev.el consumes it without requiring files.el itself.
         interp.define_special_variable("save-abbrevs", Value::T);
@@ -7531,7 +7546,9 @@ impl Interpreter {
         );
         // GNU loadup preloads vc-hooks.el and uniquify.el before files.el.
         // files.el reads these bindings directly, without boundp guards.
-        interp.define_per_buffer_special("vc-mode", Value::Nil);
+        // vc-hooks.el makes `vc-mode' buffer-local with no `defvar'.
+        interp.set_global_binding("vc-mode", Value::Nil);
+        interp.mark_auto_buffer_local("vc-mode");
         interp.put_symbol_property("vc-mode", "permanent-local", Value::T);
         for (name, value) in [
             (
@@ -7881,10 +7898,17 @@ impl Interpreter {
         // never leak into the global default.
         interp.mark_auto_buffer_local("comment-end-can-be-escaped");
         // The other C variables the syms_of_* functions make buffer-local
-        // when set: keyboard.c's `deactivate-mark' (a command's request
-        // stays with the buffer it ran in), casefiddle.c's, and xdisp.c's
-        // display controls.
+        // when set: buffer.c's `case-fold-search', syntax.c's
+        // `syntax-propertize--done' and lread.c's `lexical-binding' (a
+        // DEFVAR_LISP, a DEFVAR_INT and a DEFVAR_LISP, not BUFFER_OBJFWD
+        // slots, so their lets, watchers and make-local-variable take the
+        // SYMBOL_LOCALIZED paths), keyboard.c's
+        // `deactivate-mark' (a command's request stays with the buffer it
+        // ran in), casefiddle.c's, and xdisp.c's display controls.
         for name in [
+            "case-fold-search",
+            "syntax-propertize--done",
+            "lexical-binding",
             "deactivate-mark",
             "case-symbols-as-words",
             "make-window-start-visible",
@@ -7974,7 +7998,7 @@ impl Interpreter {
         if !image {
             interp.define_static_symbols();
         }
-        for name in GNU_NON_SPECIAL_C_VARIABLES {
+        for name in gnu_non_special_startup_globals() {
             interp.unmark_special_variable(name);
         }
         // editfns.c:init_editfns: emacs.c:main computes the user names

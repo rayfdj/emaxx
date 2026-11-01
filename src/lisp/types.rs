@@ -2491,12 +2491,13 @@ pub(crate) fn format_float(value: f64) -> String {
             "-1.0e+INF".into()
         };
     }
+    // print.c:float_to_string: a NaN's payload, the significand without
+    // its quiet bit, as the integer before `.0e+NaN'.
     if value.is_nan() {
-        return if value.is_sign_negative() {
-            "-0.0e+NaN".into()
-        } else {
-            "0.0e+NaN".into()
-        };
+        let bits = value.to_bits();
+        let payload = bits & 0x0007_FFFF_FFFF_FFFF;
+        let sign = if bits >> 63 != 0 { "-" } else { "" };
+        return format!("{sign}{payload}.0e+NaN");
     }
 
     // GNU's dtoastr starts at DBL_DIG significant digits (at one for a

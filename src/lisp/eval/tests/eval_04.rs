@@ -432,17 +432,23 @@ fn assigning_features_stays_authoritative_across_later_provides() {
 
 #[test]
 fn dynamic_features_bindings_keep_the_native_feature_index_in_sync() {
+    // fns.c unmarks `features' (Fmake_var_non_special): a dynamic let of
+    // it is what `featurep' reads, a lexical let only shadows it.
     assert_eq!(
         eval_str(
             "(progn
                (provide 'sample-dynamic-feature)
                (list
+                (eval '(let ((features
+                              (delq 'sample-dynamic-feature (copy-sequence features))))
+                         (featurep 'sample-dynamic-feature))
+                      nil)
                 (let ((features
                        (delq 'sample-dynamic-feature (copy-sequence features))))
                   (featurep 'sample-dynamic-feature))
                 (featurep 'sample-dynamic-feature)))"
         ),
-        Value::list([Value::Nil, Value::T])
+        Value::list([Value::Nil, Value::T, Value::T])
     );
 }
 
@@ -2361,8 +2367,9 @@ fn glyphless_char_display_defaults_to_char_table() {
 }
 
 #[test]
-fn header_line_indent_mode_defaults_to_nil() {
-    assert_eq!(eval_str("header-line-indent-mode"), Value::Nil);
+fn header_line_indent_mode_is_void_until_its_library_loads() {
+    // display-line-numbers.el defines it; GNU preloads no such file.
+    assert_eq!(eval_str("(boundp 'header-line-indent-mode)"), Value::Nil);
 }
 
 #[test]

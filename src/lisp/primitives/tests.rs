@@ -33171,6 +33171,79 @@ fn process_filters_and_sentinels_run_with_the_match_data_protected() {
 }
 
 #[test]
+fn per_buffer_stores_check_their_buffer_c_predicates() {
+    // buffer.c's DEFVAR_PER_BUFFER predicates, checked as set_internal
+    // stores into a BUFFER_OBJFWD slot: a type predicate signals
+    // wrong-type-argument, `choice' and `range' properties an error naming
+    // the allowed values; nil always passes, `setq-default' and a
+    // localized C variable are never checked, and a failed
+    // `setq-local' leaves the variable local all the same.
+    assert_oracle_contract_matches_interpreter(
+        r##"(with-temp-buffer (list (condition-case e (setq tab-width "s") (error e)) tab-width (setq tab-width nil) tab-width (condition-case e (set 'fill-column 'x) (error e)) (condition-case e (let ((tab-width 'q)) tab-width) (error e)) (local-variable-p 'tab-width) (condition-case e (setq major-mode "m") (error e)) (condition-case e (setq overwrite-mode 'foo) (error e)) (setq overwrite-mode 'overwrite-mode-binary) (condition-case e (setq vertical-scroll-bar 'up) (error e)) (condition-case e (setq scroll-up-aggressively 2) (error e)) (condition-case e (setq scroll-up-aggressively 'x) (error e)) (setq scroll-up-aggressively 0.5) (condition-case e (setq line-spacing 'x) (error e)) (condition-case e (setq left-margin-width 1.0) (error e)) (condition-case e (setq buffer-file-name 'f) (error e)) (with-temp-buffer (list (condition-case e (setq-local tab-width "z") (error e)) (local-variable-p 'tab-width))) (setq case-fold-search "anything") (condition-case e (setq indent-tabs-mode 5) (error e)) (let ((d (default-value 'tab-width))) (prog1 (list (setq-default tab-width "d") (default-value 'tab-width)) (setq-default tab-width d)))))"##,
+        r##"((wrong-type-argument integerp "s") 8 nil nil (wrong-type-argument integerp x) (wrong-type-argument integerp q) t (wrong-type-argument symbolp "m") (error "One of nil, overwrite-mode-textual or overwrite-mode-binary should be specified" foo) overwrite-mode-binary (error "One of nil, t, left or right should be specified" up) (error "Value should be from 0.0 to 1.0" 2) (error "Value should be from 0.0 to 1.0" x) 0.5 (wrong-type-argument numberp x) (wrong-type-argument integerp 1.0) (wrong-type-argument stringp f) ((wrong-type-argument integerp "z") t) "anything" 5 ("d" "d"))"##,
+        "per-buffer predicates",
+    );
+}
+
+#[test]
+fn nan_payloads_and_infinity_syntax_read_as_lread_c() {
+    // lread.c reads a NaN's payload from the integer before the point
+    // (wrapping, the largest when there is none) and its sign from the
+    // mantissa; INF and NaN are case-sensitive, as is the mantissa
+    // syntax, so anything else is a symbol, and print.c prints the
+    // payload back as the integer part.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list (mapcar (lambda (s) (condition-case e (read s) (error e))) '("1.0e+NaN" "0.0e+NaN" "-0.0e+NaN" "-1.0e+NaN" "2.0e+NaN" "12.0e+NaN" ".5e+NaN" "1.0e+nan" "1.0e+inf" "1.0e+INF" "-1.0e+INF" "+1.0e+NaN" "1.e+NaN" "-.e+NaN" "3e+NaN" "1.0e+NaNx" "+INF" "1.5e+NaN")) (format "%S" (read "7.0e+NaN")) (mapcar #'string-to-number '("1.0e+NaN" "1.0e+nan" "1.0e+INF" "-2.0e+NaN" "1.0e+Inf")))"##,
+        r##"((1.0e+NaN 0.0e+NaN -0.0e+NaN -1.0e+NaN 2.0e+NaN 12.0e+NaN 2251799813685246.0e+NaN 1.0e+nan 1.0e+inf 1.0e+INF -1.0e+INF 1.0e+NaN 1.0e+NaN -.e+NaN 3.0e+NaN 1.0e+NaNx +INF 1.0e+NaN) "7.0e+NaN" (1.0e+NaN 1.0 1.0e+INF -2.0e+NaN 1.0))"##,
+        "NaN payloads",
+    );
+}
+
+#[test]
+fn make_local_variable_reports_a_let_binding_of_a_localized_variable() {
+    // data.c:Fmake_local_variable messages when a SPECPDL_LET_DEFAULT
+    // binding made in this buffer shadows the new local: only for a
+    // localized variable without a cell here (`case-fold-search' is one),
+    // never for a plain variable, whose let is SPECPDL_LET, nor a
+    // BUFFER_OBJFWD slot, which only gets its flag.
+    assert_oracle_contract_matches_interpreter(
+        r##"(progn (defvar zz-r222-plain 0) (defvar-local zz-r222-local 0) (with-temp-buffer (let ((start (with-current-buffer (get-buffer-create "*Messages*") (point-max)))) (let ((zz-r222-plain 1)) (make-local-variable 'zz-r222-plain)) (let ((zz-r222-local 1)) (make-local-variable 'zz-r222-local)) (let ((case-fold-search 1)) (make-local-variable 'case-fold-search)) (let ((fill-column 3)) (make-local-variable 'fill-column)) (setq-local zz-r222-local 2) (let ((zz-r222-local 3)) (make-local-variable 'zz-r222-local)) (list (local-variable-p 'zz-r222-plain) (local-variable-p 'zz-r222-local) (local-variable-p 'case-fold-search) (local-variable-p 'fill-column) (with-current-buffer "*Messages*" (buffer-substring-no-properties start (point-max)))))))"##,
+        r##"(t t t t "Making zz-r222-local buffer-local while locally let-bound!
+Making case-fold-search buffer-local while locally let-bound!
+")"##,
+        "let-bound make-local-variable message",
+    );
+}
+
+#[test]
+fn watchers_hear_localized_c_variables_as_symbol_localized_bindings() {
+    // Watchers hear `case-fold-search' and `syntax-propertize--done' as
+    // localized variables: a let of the default is `let' in the current
+    // buffer, its unbinding a `set' of the default, and
+    // kill-local-variable a `makunbound' in the buffer; a BUFFER_OBJFWD
+    // slot's let and kill-local-variable go through set_default_internal
+    // or nothing, and a plain variable's kill-local-variable tells no one.
+    assert_oracle_contract_matches_interpreter(
+        r##"(progn (defvar zz-r222-wv 0) (let* ((log nil) (f (lambda (s n o w) (push (list s n o (and w (buffer-name w))) log))) (vars '(case-fold-search fill-column zz-r222-wv syntax-propertize--done))) (dolist (v vars) (add-variable-watcher v f)) (unwind-protect (with-temp-buffer (rename-buffer " zz-w") (let ((case-fold-search 'x)) nil) (let ((fill-column 3)) nil) (let ((syntax-propertize--done 5)) nil) (list (kill-local-variable 'zz-r222-wv) (kill-local-variable 'fill-column)) (makunbound 'zz-r222-wv) (setq zz-r222-wv 1) (setq-local case-fold-search nil) (kill-local-variable 'case-fold-search) (list (reverse log) (local-variable-if-set-p 'case-fold-search) (local-variable-p 'case-fold-search) (local-variable-if-set-p 'syntax-propertize--done) (default-value 'syntax-propertize--done))) (dolist (v vars) (remove-variable-watcher v f)))))"##,
+        r##"(((case-fold-search x let " zz-w") (case-fold-search t set nil) (fill-column 3 set nil) (fill-column 70 set nil) (syntax-propertize--done 5 let " zz-w") (syntax-propertize--done -1 set nil) (zz-r222-wv nil makunbound nil) (zz-r222-wv 1 set nil) (case-fold-search nil set " zz-w") (case-fold-search nil makunbound " zz-w")) t nil t -1)"##,
+        "localized C variable watchers",
+    );
+}
+
+#[test]
+fn startup_globals_are_special_only_where_gnu_declares_them() {
+    // fns.c unmarks `features'; the syms_of_* functions make the history
+    // lists, `echo-area-clear-hook' and the coding categories with Fset;
+    // vc-hooks.el makes `vc-mode' buffer-local without a `defvar'.  None
+    // is special, and the mode variables GNU never defines stay void.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list (special-variable-p 'features) (special-variable-p 'vc-mode) (local-variable-if-set-p 'vc-mode) (special-variable-p 'echo-area-clear-hook) (boundp 'buffer-name-history) (special-variable-p 'buffer-name-history) (boundp 'yes-or-no-p-history) (special-variable-p 'coding-category-utf-8) (boundp 'read-only-mode) (boundp 'header-line-indent-mode) (boundp 'visual-line-mode-on-hook) (special-variable-p 'case-fold-search) (local-variable-if-set-p 'syntax-propertize--done))"##,
+        r##"(nil nil t nil t nil t nil nil nil nil t t)"##,
+        "startup global specialness",
+    );
+}
+
+#[test]
 fn readevalloop_reads_at_the_buffers_point_with_standard_input_bound_to_it() {
     // lread.c:readevalloop binds `standard-input' to the buffer it reads,
     // so a form's `read' takes the text after it; eval-buffer reads each

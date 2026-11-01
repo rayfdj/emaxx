@@ -2491,26 +2491,38 @@ fn parse_decimal_token(token: &str) -> Option<Value> {
     None
 }
 
+/// lread.c:string_to_number's `e+INF' and `e+NaN' floats: after digits
+/// with an optional point (a digit before or after it), `+INF' and
+/// `+NaN' spelled exactly so.  The NaN is quiet, its payload the integer
+/// before the point (modulo 2^64, -2 as unsigned with no digit there), and a
+/// minus sign negates either.
 pub(crate) fn parse_special_float_token(token: &str) -> Option<f64> {
     let (mantissa, suffix) = token.split_once(['e', 'E'])?;
-    let mantissa_value = mantissa.parse::<f64>().ok()?;
-    let upper_suffix = suffix.to_ascii_uppercase();
-    if upper_suffix == "+NAN" {
-        let sign = if mantissa_value.is_sign_negative() {
-            -1.0
-        } else {
-            1.0
-        };
-        return Some(f64::NAN.copysign(sign));
+    let negative = mantissa.starts_with('-');
+    let unsigned = mantissa.strip_prefix(['+', '-']).unwrap_or(mantissa);
+    let (lead, trail) = unsigned.split_once('.').unwrap_or((unsigned, ""));
+    if !lead.bytes().all(|byte| byte.is_ascii_digit())
+        || !trail.bytes().all(|byte| byte.is_ascii_digit())
+        || lead.is_empty() && trail.is_empty()
+    {
+        return None;
     }
-    if upper_suffix == "+INF" {
-        return Some(if mantissa_value.is_sign_negative() {
-            f64::NEG_INFINITY
-        } else {
-            f64::INFINITY
-        });
-    }
-    None
+    let value = match suffix {
+        "+INF" => f64::INFINITY,
+        "+NaN" => {
+            // digit_to_number's -2 for the point, as unsigned.
+            let n = if lead.is_empty() {
+                u64::MAX - 1
+            } else {
+                lead.bytes().fold(0u64, |n, digit| {
+                    n.wrapping_mul(10).wrapping_add(u64::from(digit - b'0'))
+                })
+            };
+            f64::from_bits(0x7FF8_0000_0000_0000 | (n & 0x0007_FFFF_FFFF_FFFF))
+        }
+        _ => return None,
+    };
+    Some(if negative { -value } else { value })
 }
 
 fn normalize_bigint(value: BigInt) -> Value {

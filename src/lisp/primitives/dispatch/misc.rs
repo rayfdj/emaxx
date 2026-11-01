@@ -399,6 +399,7 @@ pub(crate) fn set_internal_symbol(
     // the watcher must receive the caller's original object.
     let stored = interp.prepare_forwarded_assignment_symbol(&resolved, value)?;
     interp.notify_assignment_symbol(&resolved, value, env)?;
+    interp.check_per_buffer_set(&resolved, value, env)?;
     interp.set_symbol_value_cell_resolved(&resolved, stored);
     if resolved == *symbol {
         interp.learn_plain_store(symbol);
@@ -1241,6 +1242,7 @@ define_dispatch!(
                             interp.notify_variable_watchers_symbol(
                                 &resolved, value, "let", None, env,
                             )?;
+                            interp.check_per_buffer_predicate(&resolved, value, env)?;
                             interp.set_symbol_value_cell_resolved(&resolved, stored);
                         }
                     }

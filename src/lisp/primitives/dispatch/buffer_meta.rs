@@ -715,6 +715,14 @@ define_dispatch!(
                     }
                     return Ok(args[0]);
                 }
+                // A SYMBOL_PLAINVAL or other SYMBOL_FORWARDED symbol has no
+                // binding in any buffer: VARIABLE comes back unchanged and
+                // no watcher hears of it.  Only a localized one is told
+                // makunbound, whether or not this buffer has a cell.
+                if !interp.is_localized_symbol(&crate::lisp::types::SymbolName::intern_str(&symbol))
+                {
+                    return Ok(args[0]);
+                }
                 interp.notify_variable_watchers(
                     &symbol,
                     Value::Nil,
@@ -752,7 +760,10 @@ define_dispatch!(
                 if !interp.is_always_buffer_local_symbol(&symbol)
                     && !interp.has_buffer_local_binding_symbol(buffer_id, &symbol)
                 {
-                    if interp.let_shadows_buffer_binding(&symbol) {
+                    // A BUFFER_OBJFWD variable has its per-buffer flag set
+                    // and returns; the message is a SYMBOL_LOCALIZED one's.
+                    let buffer_objfwd = interp.is_buffer_objfwd_symbol(&symbol);
+                    if !buffer_objfwd && interp.let_shadows_buffer_binding(&symbol) {
                         call_named_function(
                             interp,
                             "message",

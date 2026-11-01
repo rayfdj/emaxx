@@ -1205,6 +1205,7 @@ impl Interpreter {
             return Ok(());
         }
         self.notify_assignment_symbol(resolved, value, env)?;
+        self.check_per_buffer_set(resolved, value, env)?;
         self.set_symbol_value_cell_resolved(resolved, value);
         Ok(())
     }

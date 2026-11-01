@@ -11118,6 +11118,60 @@ setup_process_coding_systems's check now refuses). A 13-form
   sentinel frames. Local validation: the grouped gate's 3,404
   library tests, the integration targets and clippy with `--all-targets
   --all-features -D warnings' pass.
+- **Round 222: per-buffer predicates, localized C variables, the
+  startup globals GNU leaves non-special, and NaN payloads.** A random
+  variable battery (setq, set, set-default, setq-local,
+  make-local-variable, kill-local-variable, let and let across
+  set-buffer, permanent-local, kill-all-local-variables and variable
+  watchers over plain, defvar-local and C per-buffer variables in two
+  buffers) differed from GNU in three ways. buffer.c's DEFVAR_PER_BUFFER
+  predicates were not checked: store_symval_forwarding checks the stores
+  set_internal makes (a SPECPDL_LET_LOCAL let's included), a type
+  predicate signalling `wrong-type-argument', a predicate symbol's
+  `choice' property naming the values allowed and its `range' property
+  bounding a number, with data.c's messages; nil always passes, a
+  `set-default' or a let of the default is not checked, and what
+  set_internal did first (make the variable local, or store the default
+  under a let of it made in this buffer) stays done when the check fails.
+  Emaxx's two conversions of its own (`vertical-scroll-bar',
+  `scroll-up-aggressively') are gone. buffer.c's `case-fold-search',
+  syntax.c's `syntax-propertize--done' and lread.c's `lexical-binding'
+  are DEFVARs their syms_of_* functions make buffer-local, not
+  BUFFER_OBJFWD slots, and a slot is now only a variable the generated
+  DEFVAR_PER_BUFFER manifest names, so the per-buffer variables Lisp
+  defines (`buffer-offer-save', `mark-ring', `font-lock-mode',
+  `visual-line-mode', `write-contents-functions' and the rest) are
+  SYMBOL_LOCALIZED too: watchers hear their lets as `let' in the current
+  buffer, and `make-local-variable' under a let of the default messages
+  `Making ... buffer-local while locally let-bound!' as it does for any
+  localized variable without a cell (let_shadows_buffer_binding_p now
+  asks for a SPECPDL_LET_DEFAULT made in this buffer, never a slot's).
+  `kill-local-variable' of a plain or other forwarded variable tells no
+  watcher and returns VARIABLE as given. A table of every bound symbol's
+  boundp, special-variable-p and local-variable-if-set-p then differed
+  (outside the X, GTK and touch-screen variables the tty build lacks) in
+  the startup globals GNU leaves non-special: `features'
+  (Fmake_var_non_special), the cells syms_of_* make with Fset
+  (`buffer-name-history', `custom-variable-history',
+  `coding-system-history', `yes-or-no-p-history', `echo-area-clear-hook'
+  and the `coding-category-*' symbols) and vc-hooks.el's `vc-mode';
+  Emaxx made them special, and left the four histories void. It also
+  bound `read-only-mode', `header-line-indent-mode' and
+  `visual-line-mode-on-hook'/`-off-hook', which GNU leaves void. lread.c
+  reads `INF' and `NaN' spelled exactly so after a mantissa of digits
+  with an optional point, a NaN's payload being the integer before the
+  point (the largest when there is none) and print.c printing it back;
+  Emaxx folded case, took any float mantissa and printed every NaN as
+  0.0e+NaN. Oracle tests pin the predicates, the NaN syntax, the
+  let-bound message, the localized variables' watcher operations and
+  which startup globals are special; the tests that expected a special
+  `features' or a bound `header-line-indent-mode' now check what GNU
+  does. The mark phase reads `last_thing_searched' and the saved
+  registers on one line, as the test of roots reset after load searches
+  for them (round 221's head failed it; see its CI below).
+  Local validation: the grouped gate's 3,409 library tests, the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -12550,6 +12604,17 @@ against 267.4 s (0.967), in all 1.005.
 passed, and frozen (run 41275445266) matched all 7,928 outcomes on the
 first attempt: setup 69.2 s against 59.4 s (1.164), test bodies 232.9 s
 against 244.9 s (0.951), in all 0.992.
+
+**On `f061bb2`** (round 221): frozen (run 41278055086) matched all
+7,928 outcomes on the first attempt: setup 50.9 s against 43.9 s
+(1.160), test bodies 200.7 s against 214.4 s (0.936), in all 0.965. The
+Rust gate failed one library test (run 41278053360),
+`every_reset_root_is_a_mark_phase_root': round 221 moved
+`last_thing_searched' and `saved_search_regs' to the roots reset after
+load once its grouped gate had run, rerunning only the test that had
+asked for it, and the mark phase read the first through a line break
+the test's text search does not follow. Round 222 reads both on one
+line, and its gate ran the whole library.
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'
