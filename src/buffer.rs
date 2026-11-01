@@ -387,13 +387,22 @@ impl PositionCache {
 /// change.
 pub type ScanText = GapText;
 
-/// What the maker of a text to insert already counted of it: its
-/// characters and its raw-byte markers (`count_raw_markers'), which the
-/// buffer then need not scan it for.
-#[derive(Clone, Copy, Debug)]
-pub struct TextCounts {
-    pub chars: usize,
-    pub raw_markers: usize,
+/// What an insertion puts in the text: characters, or a unibyte
+/// insertion's bytes, HIGH of them above 0x7F, written into the gap as
+/// their characters.
+#[derive(Clone, Copy)]
+enum Inserted<'a> {
+    Text(&'a str),
+    RawBytes(&'a [u8], usize),
+}
+
+impl Inserted<'_> {
+    fn is_empty(&self) -> bool {
+        match self {
+            Inserted::Text(s) => s.is_empty(),
+            Inserted::RawBytes(bytes, _) => bytes.is_empty(),
+        }
+    }
 }
 
 /// The raw-byte markers U+E080..U+E0FF (EE 82 80 .. EE 83 BF) in BYTES,
@@ -710,41 +719,45 @@ impl BufferText {
     }
 
     fn insert(&mut self, char_index: usize, text: &str) {
-        self.insert_counted(char_index, text, None);
-    }
-
-    /// `insert' of a TEXT whose COUNTS its maker already has.
-    fn insert_counted(&mut self, char_index: usize, text: &str, counts: Option<TextCounts>) {
-        let (added, raw_markers) = match counts {
-            Some(counts) => {
-                debug_assert_eq!(
-                    (counts.chars, counts.raw_markers),
-                    (
-                        ropey::str_utils::byte_to_char_idx(text, text.len()),
-                        count_raw_markers(text.as_bytes())
-                    )
-                );
-                (counts.chars, counts.raw_markers)
-            }
-            None => (
-                ropey::str_utils::byte_to_char_idx(text, text.len()),
-                count_raw_markers(text.as_bytes()),
-            ),
-        };
+        let added = ropey::str_utils::byte_to_char_idx(text, text.len());
+        let raw_markers = count_raw_markers(text.as_bytes());
         let byte = self.char_to_byte(char_index);
         self.text.insert(byte, char_index, text, added);
-        self.positions
-            .get_mut()
-            .inserted(char_index, added, text.len());
+        self.inserted(char_index, byte, added, text.len(), raw_markers);
+    }
+
+    /// insert_from_gap_1 of BYTES into a unibyte text, HIGH of them above
+    /// 0x7F: their raw-byte characters written into the gap.
+    fn insert_raw_bytes(&mut self, char_index: usize, bytes: &[u8], high: usize) {
+        let len = bytes.len() + 2 * high;
+        let byte = self.char_to_byte(char_index);
+        self.text
+            .insert_with(byte, char_index, len, bytes.len(), |gap| {
+                crate::lisp::primitives::write_raw_byte_text(gap, bytes)
+            });
+        self.inserted(char_index, byte, bytes.len(), len, high);
+    }
+
+    /// The counts after ADDED characters of LEN bytes, RAW_MARKERS of
+    /// them raw-byte characters, went in at CHAR_INDEX, byte BYTE.
+    fn inserted(
+        &mut self,
+        char_index: usize,
+        byte: usize,
+        added: usize,
+        len: usize,
+        raw_markers: usize,
+    ) {
+        self.positions.get_mut().inserted(char_index, added, len);
         let checkpoints = self.checkpoints.get_mut();
         let after = checkpoints.partition_point(|&(char, _)| char <= char_index);
         for entry in &mut checkpoints[after..] {
-            *entry = (entry.0 + added, entry.1 + text.len());
+            *entry = (entry.0 + added, entry.1 + len);
         }
         self.raw_markers += raw_markers;
         let (at, count) = self.raw_anchor.get();
         if at > byte {
-            self.raw_anchor.set((at + text.len(), count + raw_markers));
+            self.raw_anchor.set((at + len, count + raw_markers));
         }
         self.check_counts();
     }
@@ -2620,7 +2633,6 @@ impl Buffer {
             s,
             InsertedProperties::PLAIN,
             false,
-            None,
             &PropertyVariables::NONE,
         )
     }
@@ -2634,38 +2646,11 @@ impl Buffer {
         before_markers: bool,
         vars: &PropertyVariables,
     ) -> usize {
-        self.insert_text(s, props, before_markers, None, vars)
-    }
-
-    /// `insert' of a text whose COUNTS its maker already has.
-    pub fn insert_counted(&mut self, s: &str, counts: TextCounts) -> usize {
-        self.insert_text(
-            s,
-            InsertedProperties::PLAIN,
-            false,
-            Some(counts),
-            &PropertyVariables::NONE,
-        )
-    }
-
-    /// `insert_counted' with the variables VARS an insertion reads.
-    pub(crate) fn insert_counted_with(
-        &mut self,
-        s: &str,
-        counts: TextCounts,
-        vars: &PropertyVariables,
-    ) -> usize {
-        self.insert_text(s, InsertedProperties::PLAIN, false, Some(counts), vars)
+        self.insert_text(s, props, before_markers, vars)
     }
 
     pub(crate) fn insert_before_markers(&mut self, s: &str) -> usize {
-        self.insert_text(
-            s,
-            InsertedProperties::PLAIN,
-            true,
-            None,
-            &PropertyVariables::NONE,
-        )
+        self.insert_text(s, InsertedProperties::PLAIN, true, &PropertyVariables::NONE)
     }
 
     /// intervals.c:offset_intervals for NCHARS characters inserted at
@@ -2738,10 +2723,33 @@ impl Buffer {
         s: &str,
         props: InsertedProperties<'_>,
         before_markers: bool,
-        counts: Option<TextCounts>,
         vars: &PropertyVariables,
     ) -> usize {
-        if s.is_empty() {
+        self.insert_inserted(Inserted::Text(s), props, before_markers, vars)
+    }
+
+    /// insdel.c's insert_from_gap_1 of BYTES into this unibyte buffer
+    /// at point, their characters' text written straight into the gap,
+    /// with no text properties.
+    pub(crate) fn insert_raw_bytes(&mut self, bytes: &[u8], vars: &PropertyVariables) -> usize {
+        debug_assert!(!self.multibyte);
+        let high = crate::lisp::primitives::high_byte_count(bytes);
+        self.insert_inserted(
+            Inserted::RawBytes(bytes, high),
+            InsertedProperties::PLAIN,
+            false,
+            vars,
+        )
+    }
+
+    fn insert_inserted(
+        &mut self,
+        inserted: Inserted<'_>,
+        props: InsertedProperties<'_>,
+        before_markers: bool,
+        vars: &PropertyVariables,
+    ) -> usize {
+        if inserted.is_empty() {
             return self.pt;
         }
 
@@ -2749,7 +2757,12 @@ impl Buffer {
         let idx0 = self.pt - 1; // 0-based
         // The text keeps its length; what it grew by is the insertion's.
         let before = self.text.borrow().len_chars();
-        self.text.borrow_mut().insert_counted(idx0, s, counts);
+        match inserted {
+            Inserted::Text(s) => self.text.borrow_mut().insert(idx0, s),
+            Inserted::RawBytes(bytes, high) => {
+                self.text.borrow_mut().insert_raw_bytes(idx0, bytes, high)
+            }
+        }
         let nchars = self.text.borrow().len_chars() - before;
         self.invalidate_char_cache();
         self.record_insert(insert_at, nchars);
@@ -2769,11 +2782,14 @@ impl Buffer {
                 }
             }
             BufferMark::Object { owner, .. } => {
-                // A unibyte buffer's character is a byte.
-                let nbytes = if self.multibyte {
-                    crate::lisp::primitives::lisp_string_storage_byte_len(s, true, &[])
-                } else {
-                    nchars
+                // A unibyte buffer's character is a byte, a multibyte
+                // one's raw byte two.
+                let nbytes = match inserted {
+                    _ if !self.multibyte => nchars,
+                    Inserted::Text(s) => {
+                        crate::lisp::primitives::lisp_string_storage_byte_len(s, true, &[])
+                    }
+                    Inserted::RawBytes(bytes, high) => bytes.len() + high,
                 };
                 for marker in owner.markers() {
                     let position = marker.last_position();

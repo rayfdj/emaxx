@@ -11627,6 +11627,39 @@ setup_process_coding_systems's check now refuses). A 13-form
   editfns and dired. Local validation: the grouped gate's 3,428
   library tests, the integration targets and clippy with `--all-targets
   --all-features -D warnings' pass.
+- **Round 238: file reads take bytes detected as UTF-8 as they are and
+  decide their coding in the gap.** decode_coding_gap's ASCII
+  optimization inserts bytes detect_coding_utf_8 accepted to their end
+  as they are, each sequence the character string_char_and_length reads
+  from it (C0 80 #x3FFF80, E0 81 81 A, ED A0 80 #xD800, F4 90 80 80
+  #x110000), where Emaxx decoded them again with decode_coding_utf_8 and
+  made eight-bit characters of such sequences. `detect_utf_8` records
+  detected_utf8_chars and whether every sequence was standard UTF-8 of a
+  character the text view keeps (no overlong form, surrogate, code above
+  U+10FFFF or U+E080..U+E0FF); `decode_coding` takes the read's vector
+  (`DecodeSource::Gap`) and makes it the text, or reads the other
+  sequences with `decoders::decode_detected_utf_8`, a BOM the settled
+  coding has dropped. `Buffer::insert_raw_bytes` writes the unibyte text
+  an empty buffer decides its coding in straight into the gap
+  (`GapText::insert_with`, `write_raw_byte_text`), where the text view
+  was built as a string and copied; the read no longer zero-fills its
+  vector (it reads through std's File), a gap made in an empty text is a
+  zeroed allocation, and `TextCounts` with the counted insertion goes. A
+  read of NormalizationTest.txt takes 57M instructions where it took 94M
+  (GNU 67M), five of them 9,163 minor page faults where they took 18,462
+  (GNU 6,900), and a read 7.8 ms over 20 (GNU 6.9). Still to do: an
+  overlong sequence's character takes its own length in GNU's buffer (E0
+  80 80 is a NUL of three bytes) and its character's in Emaxx's, so
+  `position-bytes' after one differs. Batteries of 289 file reads (24
+  byte sequences under six codings, into empty and non-empty buffers,
+  and a visit) read as GNU's but for those byte positions, as do the
+  round 237 battery; an oracle test pins the characters. ERT pass counts
+  match GNU's for coding, mule, mule-util, ucs-normalize, fileio, files,
+  files-x, editfns, buffer, lread, textsec, rmailmm, mm-decode,
+  tar-mode, arc-mode, ccl, process, sgml-mode and autorevert. Local
+  validation: the grouped gate's 3,429 library tests, the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -13139,6 +13172,17 @@ s against 223.3 s (0.932), in all 0.980. The full Rust gate (run
 s against 244.3 s (0.947), in all 0.990; ucs-normalize-tests' bodies
 took 154 ms against 149 (365 against 57 on the round 235 head). The full
 Rust gate (run 41340487608) passed.
+
+**On `4fcf3a1`** (round 237): frozen (run 41346996624) matched all
+7,928 outcomes. Setup 68.9 s against 58.4 s (1.179), test bodies 233.6
+s against 249.3 s (0.937), in all 0.993; ucs-normalize-tests' bodies
+took 140 ms against 85 (154 against 149 on the round 236 head). The full
+Rust gate (run 41346989436) passed. Per file, the setup is 20 ms over
+GNU's on average (10.4 s over 519 files, a median of 106 ms against
+89), electric-tests' the most (681 against 466), and the widest body
+gaps are semantic-utest-ia (3,340 ms against 2,325), mule-tests (2,599
+against 1,741), electric-tests (900 against 519) and edebug-tests
+(1,365 against 1,014).
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

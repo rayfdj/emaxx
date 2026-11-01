@@ -24,6 +24,45 @@ pub(crate) fn decode_utf_8_whole(bytes: &[u8]) -> DecodedText {
     out
 }
 
+/// decode_coding_gap's insert_from_gap of BYTES that detect_coding_utf_8
+/// accepted to their end: each sequence is the character
+/// string_char_and_length reads from it, an overlong sequence or a
+/// surrogate as its code (C0 and C1 leading the internal form of an
+/// eight-bit character) and a four-octet one up to #x1FFFFF.
+pub(crate) fn decode_detected_utf_8(bytes: &[u8]) -> DecodedText {
+    let mut out = DecodedText::with_capacity(bytes.len());
+    let mut p = 0;
+    while p < bytes.len() {
+        let rest = &bytes[p..];
+        let valid = match std::str::from_utf8(rest) {
+            Ok(_) => rest.len(),
+            Err(error) => error.valid_up_to(),
+        };
+        if valid > 0 {
+            // SAFETY: from_utf8 validated these bytes.
+            out.push_str(unsafe { std::str::from_utf8_unchecked(&rest[..valid]) });
+            p += valid;
+            continue;
+        }
+        let tail = |n: usize| u32::from(rest[n] & 0x3F);
+        let c = u32::from(rest[0]);
+        let (code, len) = if c & 0x20 == 0 {
+            let d = ((c & 0x1F) << 6) | tail(1);
+            (if c < 0xC2 { d + 0x3F_FF80 } else { d }, 2)
+        } else if c & 0x10 == 0 {
+            (((c & 0x0F) << 12) | (tail(1) << 6) | tail(2), 3)
+        } else {
+            (
+                ((c & 0x07) << 18) | (tail(1) << 12) | (tail(2) << 6) | tail(3),
+                4,
+            )
+        };
+        out.push_code(code);
+        p += len;
+    }
+    out
+}
+
 /// UTF_8_EXTRA_OCTET_P.
 #[inline]
 fn extra_octet(c: i32) -> bool {

@@ -33502,6 +33502,22 @@ l") (0 0) (36011 36014 "abcédef
 }
 
 #[test]
+fn file_reads_detected_as_utf_8_insert_their_bytes_as_decode_coding_gap() {
+    // decode_coding_gap's ASCII optimization: bytes detect_coding_utf_8
+    // accepted to their end go into the buffer as they are
+    // (insert_from_gap), less a BOM the settled coding has, so each
+    // sequence is the character string_char_and_length reads from it:
+    // C0 and C1 lead an eight-bit character, an overlong or surrogate
+    // sequence is its code, a four-octet one reaches #x1FFFFF.  A BOM
+    // under undecided settles utf-8-with-signature through the decoder.
+    assert_oracle_contract_matches_interpreter(
+        r##"(let ((f (make-temp-file "zz-r238"))) (unwind-protect (mapcar (lambda (c) (with-temp-buffer (set-buffer-multibyte nil) (insert (cdr c)) (let ((coding-system-for-write 'binary)) (write-region nil nil f nil 0))) (with-temp-buffer (let ((coding-system-for-read (car c))) (insert-file-contents f)) (list (append (buffer-string) nil) last-coding-system-used))) (list (cons nil "a\300\200b") (cons nil "a\301\277b\r\n") (cons nil "a\340\201\201b") (cons nil "a\355\240\200b") (cons nil "a\364\220\200\200b") (cons nil "a\367\277\277\277b") (cons nil "a\356\202\200b\303\251") (cons 'utf-8-auto "\357\273\277ab\303\251") (cons 'prefer-utf-8 "x\300\201\r\ny") (cons nil "\357\273\277ab\300\200"))) (delete-file f)))"##,
+        r##"(((97 4194176 98) utf-8) ((97 4194303 98 10) utf-8-dos) ((97 65 98) utf-8) ((97 55296 98) utf-8) ((97 1114112 98) utf-8) ((97 2097151 98) utf-8) ((97 57472 98 233) utf-8) ((97 98 233) utf-8-with-signature) ((120 4194177 10 121) utf-8-dos) ((97 98 4194240 4194176) utf-8-with-signature))"##,
+        "file reads detected as utf-8",
+    );
+}
+
+#[test]
 fn indirect_buffers_share_their_base_text_and_its_markers() {
     // buffer.c:Fmake_indirect_buffer gives the indirect buffer its base's
     // buffer_text, whose one chain holds every marker of the family, the

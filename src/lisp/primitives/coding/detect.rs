@@ -74,6 +74,12 @@ struct DetectInfo {
     /// coding->detected_utf8_bytes: how far detect_coding_utf_8 read the
     /// source when it accepted it.
     utf8_bytes: Option<usize>,
+    /// coding->detected_utf8_chars: the characters it counted then.
+    utf8_chars: usize,
+    /// Each sequence it accepted is standard UTF-8 of a character other
+    /// than those the text view gives raw bytes (U+E080..U+E0FF), so the
+    /// bytes it read are their characters' text as they are.
+    utf8_standard: bool,
 }
 
 /// The units a detector reads: a unibyte source's bytes as they are, or
@@ -315,6 +321,7 @@ fn detect_utf_8(src: &DetectSource, head_ascii: usize, info: &mut DetectInfo) ->
     let mut p = head_ascii;
     let mut nchars = head_ascii;
     let mut bom_found = false;
+    let mut standard = true;
     info.checked |= MASK_UTF_8;
     if p == 0 && src.bom_units > 0 {
         bom_found = true;
@@ -345,6 +352,8 @@ fn detect_utf_8(src: &DetectSource, head_ascii: usize, info: &mut DetectInfo) ->
             return false;
         }
         if (c & 0xE0) == 0xC0 {
+            // C0 and C1 lead an overlong sequence.
+            standard &= c >= 0xC2;
             nchars += 1;
             continue;
         }
@@ -358,6 +367,11 @@ fn detect_utf_8(src: &DetectSource, head_ascii: usize, info: &mut DetectInfo) ->
             return false;
         }
         if (c & 0xF0) == 0xE0 {
+            // An overlong sequence, a surrogate, or U+E080..U+E0FF.
+            standard &= !matches!(
+                (c, c1),
+                (0xE0, 0x80..=0x9F) | (0xED, 0xA0..) | (0xEE, 0x82 | 0x83)
+            );
             nchars += 1;
             continue;
         }
@@ -371,6 +385,8 @@ fn detect_utf_8(src: &DetectSource, head_ascii: usize, info: &mut DetectInfo) ->
             return false;
         }
         if (c & 0xF8) == 0xF0 {
+            // An overlong sequence, or a code above U+10FFFF.
+            standard &= !matches!((c, c1), (0xF0, 0x80..=0x8F) | (0xF4, 0x90..) | (0xF5.., _));
             nchars += 1;
             continue;
         }
@@ -384,6 +400,7 @@ fn detect_utf_8(src: &DetectSource, head_ascii: usize, info: &mut DetectInfo) ->
             return false;
         }
         if (c & 0xFC) == 0xF8 && c < MAX_MULTIBYTE_LEADING_CODE {
+            standard = false;
             nchars += 1;
             continue;
         }
@@ -396,6 +413,8 @@ fn detect_utf_8(src: &DetectSource, head_ascii: usize, info: &mut DetectInfo) ->
         return false;
     }
     info.utf8_bytes = Some(src_base);
+    info.utf8_chars = nchars;
+    info.utf8_standard = standard;
     if bom_found {
         info.found |= MASK_UTF_8_AUTO | MASK_UTF_8_SIG | MASK_UTF_8_NOSIG;
     } else {
@@ -1590,6 +1609,11 @@ pub(crate) struct DetectOutcome {
     /// detect_coding_utf_8 accepted the source up to its end
     /// (detected_utf8_bytes == src_bytes).
     pub(crate) utf8_whole: bool,
+    /// detected_utf8_chars, when it did.
+    pub(crate) utf8_chars: usize,
+    /// Each sequence it accepted was standard UTF-8 of a character the
+    /// text view keeps as itself.
+    pub(crate) utf8_standard: bool,
 }
 
 /// coding.c detect_coding, the decode-time detection: the coding system
@@ -1672,6 +1696,8 @@ pub(crate) fn detect_coding_outcome(
                 Some(pair.1)
             } else if detect_utf_8(src, 0, &mut info) {
                 outcome.utf8_whole = info.utf8_bytes == Some(src.units.len());
+                outcome.utf8_chars = info.utf8_chars;
+                outcome.utf8_standard = info.utf8_standard;
                 Some(if info.found & MASK_UTF_8_SIG != 0 {
                     pair.0
                 } else {
@@ -1811,5 +1837,7 @@ pub(crate) fn detect_coding_outcome(
         found,
         eol_seen: Some(eol_seen),
         utf8_whole: info.utf8_bytes == Some(src.units.len()),
+        utf8_chars: info.utf8_chars,
+        utf8_standard: info.utf8_standard,
     }
 }

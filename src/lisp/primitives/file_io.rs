@@ -573,19 +573,13 @@ impl InsertFileSource {
             if want == 0 {
                 break;
             }
-            let len = bytes.len();
-            bytes.resize(len + want, 0);
-            match self.file.read(&mut bytes[len..]) {
-                Ok(0) => {
-                    bytes.truncate(len);
-                    break;
-                }
-                Ok(read) => bytes.truncate(len + read),
-                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
-                    bytes.truncate(len)
-                }
+            // emacs_read_quit of WANT bytes, an EINTR read again, into
+            // the room past the bytes read, which std's File reads into
+            // without filling it first.
+            match (&*self.file).take(want as u64).read_to_end(&mut bytes) {
+                Ok(0) => break,
+                Ok(_) => {}
                 Err(error) => {
-                    bytes.truncate(len);
                     return Ok(InsertFileRead {
                         bytes,
                         error: Some(error),
@@ -1904,10 +1898,7 @@ fn auto_coding_in_empty_buffer(
     };
     interp.buffer.borrow_mut().set_multibyte(false);
     interp.set_variable("buffer-undo-list", Value::T, &mut decide_env);
-    {
-        let (text, counts) = decode_raw_text_counted(bytes);
-        interp.insert_current_buffer_counted(&text, counts);
-    }
+    interp.insert_current_buffer_raw_bytes(bytes);
     let inserted_tick = {
         let mut buffer = interp.buffer.borrow_mut();
         buffer.goto_char(1);
@@ -1993,7 +1984,7 @@ pub(crate) fn decode_file_contents(
     decode_file_bytes(
         interp,
         env,
-        decided_bytes.as_deref().unwrap_or(bytes),
+        decided_bytes.unwrap_or_else(|| bytes.to_vec()),
         coding,
         make_unibyte,
     )
@@ -2065,7 +2056,7 @@ pub(crate) fn decide_file_coding(
 pub(crate) fn decode_file_bytes(
     interp: &mut Interpreter,
     env: &Env,
-    bytes: &[u8],
+    bytes: Vec<u8>,
     coding: String,
     make_unibyte: bool,
 ) -> Result<FileDecode, LispError> {
@@ -2465,7 +2456,7 @@ fn insert_file_bytes(
         } = decode_file_bytes(
             interp,
             env,
-            decided_bytes.as_deref().unwrap_or(&bytes),
+            decided_bytes.unwrap_or(bytes),
             coding,
             visit && !replacing,
         )?;

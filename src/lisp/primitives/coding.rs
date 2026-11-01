@@ -1361,20 +1361,38 @@ fn encode_coding_big5(interp: &Interpreter, codes: &[u32], coding: &str) -> Vec<
     out
 }
 
-/// The length of the ASCII run BYTES starts with, a word at a time.
-fn ascii_prefix_len(bytes: &[u8]) -> usize {
-    let mut i = 0;
-    while let Some(word) = bytes.get(i..i + 8) {
-        let word = u64::from_ne_bytes(word.try_into().expect("eight bytes"));
-        if word & 0x8080_8080_8080_8080 != 0 {
-            break;
+/// The bytes of BYTES above 0x7F.
+pub(crate) fn high_byte_count(bytes: &[u8]) -> usize {
+    bytes
+        .chunks(1 << 20)
+        .map(|chunk| chunk.iter().map(|&byte| u32::from(byte >> 7)).sum::<u32>() as usize)
+        .sum()
+}
+
+/// The text view of BYTES written into DST, its length: an ASCII byte
+/// as itself, any other as the three bytes of its raw-byte character
+/// (EE 82 80 to EE 83 BF), a word of ASCII bytes at a time.
+pub(crate) fn write_raw_byte_text(dst: &mut [u8], bytes: &[u8]) {
+    let mut at = 0;
+    for chunk in bytes.chunks(8) {
+        if let Ok(word) = <[u8; 8]>::try_from(chunk)
+            && u64::from_ne_bytes(word) & 0x8080_8080_8080_8080 == 0
+        {
+            dst[at..at + 8].copy_from_slice(chunk);
+            at += 8;
+            continue;
         }
-        i += 8;
+        for &byte in chunk {
+            if byte < 0x80 {
+                dst[at] = byte;
+                at += 1;
+            } else {
+                dst[at..at + 3].copy_from_slice(&[0xEE, 0x80 | (byte >> 6), 0x80 | (byte & 0x3F)]);
+                at += 3;
+            }
+        }
     }
-    while bytes.get(i).is_some_and(u8::is_ascii) {
-        i += 1;
-    }
-    i
+    debug_assert_eq!(at, dst.len());
 }
 
 /// coding.c decode_coding_raw_text: each byte as itself, a non-ASCII one
@@ -1387,18 +1405,6 @@ pub(crate) fn decode_coding_raw_text(bytes: &[u8]) -> DecodedText {
 
 pub(crate) fn decode_raw_text_bytes(bytes: &[u8]) -> String {
     decode_coding_raw_text(bytes).text
-}
-
-/// decode_raw_text_bytes with the counts a buffer keeps of the text: a
-/// character a byte, a raw-byte one each byte above 0x7F.
-pub(crate) fn decode_raw_text_counted(bytes: &[u8]) -> (String, crate::buffer::TextCounts) {
-    let mut out = DecodedText::new();
-    let raw_markers = out.push_raw_bytes(bytes);
-    let counts = crate::buffer::TextCounts {
-        chars: bytes.len(),
-        raw_markers,
-    };
-    (out.text, counts)
 }
 
 /// coding.c decode_coding_utf_8 over a whole unibyte text.
@@ -2056,6 +2062,19 @@ impl DecodedText {
         }
     }
 
+    /// TEXT, of CHARS characters and none of U+E080..U+E0FF, as it is.
+    pub(crate) fn from_plain_text(text: String, chars: usize) -> Self {
+        debug_assert_eq!(text.chars().count(), chars);
+        debug_assert!(!crate::lisp::types::string_data::has_raw_byte_markers(
+            text.as_bytes()
+        ));
+        Self {
+            text,
+            chars,
+            ..Self::default()
+        }
+    }
+
     /// The number of characters produced so far.
     pub(crate) fn char_count(&self) -> usize {
         self.chars
@@ -2132,37 +2151,15 @@ impl DecodedText {
     /// a non-ASCII byte's character, U+E080..U+E0FF, as its three bytes;
     /// the count of those bytes.
     pub(crate) fn push_raw_bytes(&mut self, run: &[u8]) -> usize {
-        let high: usize = run
-            .chunks(1 << 20)
-            .map(|chunk| chunk.iter().map(|&byte| u32::from(byte >> 7)).sum::<u32>() as usize)
-            .sum();
-        self.text.reserve(run.len() + 2 * high);
+        let high = high_byte_count(run);
         // SAFETY: only ASCII bytes and the whole sequences EE 82 80 to
         // EE 83 BF go in.
         let out = unsafe { self.text.as_mut_vec() };
-        let mut rest = run;
-        while !rest.is_empty() {
-            let ascii = ascii_prefix_len(rest);
-            out.extend_from_slice(&rest[..ascii]);
-            rest = &rest[ascii..];
-            while let Some((&byte, after)) = rest.split_first()
-                && byte >= 0x80
-            {
-                out.extend_from_slice(&[0xEE, 0x80 | (byte >> 6), 0x80 | (byte & 0x3F)]);
-                rest = after;
-            }
-        }
+        let len = out.len();
+        out.resize(len + run.len() + 2 * high, 0);
+        write_raw_byte_text(&mut out[len..], run);
         self.chars += run.len();
         high
-    }
-
-    /// Store the ASCII run RUN.
-    pub(crate) fn push_ascii(&mut self, run: &[u8]) {
-        debug_assert!(run.is_ascii());
-        // SAFETY: ASCII is UTF-8.
-        self.text
-            .push_str(unsafe { std::str::from_utf8_unchecked(run) });
-        self.chars += run.len();
     }
 
     /// decode_eol's scan of the produced text: the EOL_SEEN bits, with
@@ -3326,6 +3323,9 @@ pub(crate) fn charset_spans_to_props(
     staged: &str,
     crlf_conversion: Option<bool>,
 ) -> Option<crate::intervals::Intervals> {
+    if charsets.is_empty() {
+        return None;
+    }
     let removed = crlf_conversion.map(|crlf| eol_removed_prefix(staged, crlf));
     let adjust = |offset: usize| match &removed {
         Some(removed) => {
@@ -3359,6 +3359,9 @@ pub(crate) enum DecodeSource<'a> {
     /// The bytes of a unibyte text: a unibyte string's or buffer's, a
     /// file's or a process's.
     Bytes(&'a [u8]),
+    /// A file's bytes, read into the gap: what decode_coding_gap inserts
+    /// as they are becomes the text without a copy.
+    Gap(Vec<u8>),
     /// A string's or a buffer region's characters.
     Text(&'a StringLike),
 }
@@ -3436,14 +3439,14 @@ pub(crate) fn decode_coding_block(
 pub(crate) fn decode_coding_gap(
     interp: &Interpreter,
     env: &Env,
-    bytes: &[u8],
+    bytes: Vec<u8>,
     coding: &str,
     dst_multibyte: bool,
 ) -> Result<CodingDecode, LispError> {
     decode_coding(
         interp,
         env,
-        DecodeSource::Bytes(bytes),
+        DecodeSource::Gap(bytes),
         coding,
         Some(dst_multibyte),
         true,
@@ -3476,6 +3479,7 @@ fn decode_coding(
             }
             _ => (std::borrow::Cow::Borrowed(bytes), None),
         },
+        DecodeSource::Gap(bytes) => (std::borrow::Cow::Owned(bytes), None),
         DecodeSource::Text(string) if !string.multibyte => (
             std::borrow::Cow::Owned(encode_raw_text_bytes(&string.text)?),
             None,
@@ -3536,18 +3540,35 @@ fn decode_coding(
         && !decode_translation_table_p(interp, &settled, env)
     {
         let mut decoded = if bytes.is_ascii() {
-            let mut decoded = DecodedText::new();
-            decoded.push_ascii(&bytes);
-            decoded
+            let len = bytes.len();
+            // SAFETY: ASCII is UTF-8.
+            let text = unsafe { String::from_utf8_unchecked(bytes.into_owned()) };
+            DecodedText::from_plain_text(text, len)
         } else {
-            decode_coding_utf_8(&bytes)
+            // insert_from_gap of the bytes as they are, less the BOM at
+            // their head when the settled coding has one
+            // (CODING_UTF_8_BOM not utf_without_bom).
+            let bom = bytes.starts_with(&[0xEF, 0xBB, 0xBF])
+                && coding_system_property(interp, &settled, ":bom")
+                    .is_some_and(|value| !value.is_nil());
+            let skip = if bom { 3 } else { 0 };
+            if detection.utf8_standard {
+                let mut bytes = bytes.into_owned();
+                bytes.drain(..skip);
+                // SAFETY: detect_coding_utf_8 found each sequence standard.
+                let text = unsafe { String::from_utf8_unchecked(bytes) };
+                DecodedText::from_plain_text(text, detection.utf8_chars - usize::from(bom))
+            } else {
+                decoders::decode_detected_utf_8(&bytes[skip..])
+            }
         };
         let mut eol_type = coding_eol_type(interp, &settled);
         if eol_type.is_none() {
             let seen = match detection.eol_seen {
                 Some(seen) => seen,
+                // The text holds the bytes' newlines as they are.
                 None if inhibit_eol_conversion => {
-                    if bytes.contains(&b'\n') {
+                    if decoded.text.as_bytes().contains(&b'\n') {
                         detect::EOL_SEEN_LF
                     } else {
                         detect::EOL_SEEN_NONE
