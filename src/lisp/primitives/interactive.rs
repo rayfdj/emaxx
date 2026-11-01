@@ -2269,6 +2269,10 @@ pub(crate) struct TtyMenuPane {
     /// Pane text width (the widest NAME+DESCRIP); the drawn box adds
     /// the two padding blanks.
     pub width: usize,
+    /// tty_menu_activate's KBD_NAVIGATION: the next and previous menu
+    /// commands leave the menu (for its caller to open the adjacent
+    /// menu-bar menu) only when it was opened from the keyboard.
+    pub kbd_navigation: bool,
 }
 
 pub(crate) struct TtyMenuPaneItem {
@@ -2451,6 +2455,7 @@ pub(crate) fn tty_menu_pane_from_keymap(
         title: title.to_string(),
         items,
         width,
+        kbd_navigation: true,
     }
 }
 

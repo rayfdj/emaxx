@@ -13089,7 +13089,7 @@ fn native_message_dialog_fallbacks_share_the_headless_message_contract() {
     assert_eq!(
         interp
             .eval(&form, &mut env)
-            .expect("headless dialog messages should use the message path"),
+            .expect("headless dialog messages should answer their formatted text"),
         Value::list([
             Value::String("value=7".into()),
             Value::String("value=8".into()),
@@ -33061,6 +33061,23 @@ fn two_argument_c_primitive_calls_answer_as_their_c_sources() {
         r##"(with-temp-buffer (insert "abc") (let ((big (1+ most-positive-fixnum))) (defvaralias 'zz-alias217 'zz-base217) (put 'zz-base217 'variable-documentation "Base doc.") (mapcar (lambda (f) (condition-case e (funcall f) (error e))) (list (lambda () (list (char-after big) (char-before big) (charset-after big))) (lambda () (list (documentation-property 'zz-sym217 0) (documentation-property nil "str") (documentation-property 'zz-alias217 'variable-documentation))) (lambda () (find-composition-internal 1 "str" nil nil)) (lambda () (find-composition-internal 1 (current-buffer) nil nil)) (lambda () (find-composition-internal 1 99 nil nil)) (lambda () (find-composition-internal (make-marker) nil nil nil)) (lambda () (expand-file-name "str" 1)) (lambda () (expand-file-name "str" '(1 . 2))) (lambda () (locate-file-internal "str" '(1 . 2))) (lambda () (list (logb 0) (logb 0.0) (logb 1.0e+INF) (logb -1.0e+INF) (logb 8) (logb -8.0))) (lambda () (list (user-full-name "") (user-full-name "zz-no-such-user-217")))))))"##,
         r##"((nil nil nil) (nil nil "Base doc.") (wrong-type-argument integer-or-marker-p "str") (wrong-type-argument integer-or-marker-p #<killed buffer>) nil (error "Marker does not point anywhere") "/str" "/str" nil (-1.0e+INF -1.0e+INF 1.0e+INF 1.0e+INF 3 3) (nil nil))"##,
         "two-argument C primitive calls",
+    );
+}
+
+#[test]
+fn message_box_pops_a_dialog_that_a_batch_frame_never_draws() {
+    // editfns.c:Fmessage_box formats its message into an "OK" dialog,
+    // which menu.c:Fx_popup_dialog emulates with x-popup-menu on a
+    // terminal without a dialog hook and the initial frame never shows;
+    // Fmessage_or_box takes that path after a mouse event (or none)
+    // while `use-dialog-box' is set, and messages otherwise.  The dialog
+    // is parsed as list_of_panes parses a menu.
+    assert_oracle_contract_matches_interpreter(
+        r##"(let ((start (with-current-buffer (messages-buffer) (point-max)))) (list (mapcar (lambda (f) (condition-case e (funcall f) (error e))) (list (lambda () (message-box "zz-box %d" 5)) (lambda () (message-or-box "zz-or-box")) (lambda () (let ((use-dialog-box nil)) (message-or-box "zz-no-dialog"))) (lambda () (let ((last-nonmenu-event ?a)) (message-or-box "zz-after-key"))) (lambda () (let ((last-nonmenu-event '(mouse-1))) (message-or-box "zz-after-mouse"))) (lambda () (message-box nil)) (lambda () (message-box "")) (lambda () (x-popup-dialog t '("Q"))) (lambda () (x-popup-dialog t '("Q" (1 . t)))) (lambda () (x-popup-dialog t '(nil ("OK" . t)))) (lambda () (x-popup-dialog t 42)) (lambda () (x-popup-dialog '((1 2) 7) '("Q" ("OK" . t)))) (lambda () (x-popup-dialog 42 '("Q" ("OK" . t)))) (lambda () (x-popup-dialog (selected-frame) '("Q" "note" nil ("OK" . t)))) (lambda () (x-popup-menu t '("T" ("P")))) (lambda () (x-popup-menu t '("T" ("P" (2 . 3))))))) (with-current-buffer (messages-buffer) (buffer-substring-no-properties start (point-max)))))"##,
+        r##"(("zz-box 5" "zz-or-box" "zz-no-dialog" "zz-after-key" "zz-after-mouse" nil "" (wrong-type-argument consp nil) (wrong-type-argument stringp 1) (wrong-type-argument stringp nil) (wrong-type-argument listp 42) (wrong-type-argument windowp 7) (wrong-type-argument windowp nil) nil (wrong-type-argument consp nil) (wrong-type-argument stringp 2)) "zz-no-dialog
+zz-after-key
+")"##,
+        "message-box dialogs",
     );
 }
 

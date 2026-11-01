@@ -4224,13 +4224,48 @@ define_dispatch!(
                     Ok(formatted.unwrap_or_else(|| Value::String(text.into())))
                 }
             }
-            "message-box" | "message-or-box" => {
+            "message-box" => {
                 if args.is_empty() {
                     return Err(LispError::WrongNumberOfArgs(name.into(), 0));
                 }
-                // Emaxx currently has no graphical frame, so GNU's documented
-                // dialog fallback is the ordinary echo-area message path.
-                super::call(interp, "message", args, env)
+                // editfns.c:Fmessage_box: nil clears the echo area as
+                // message1 (0) does; anything else is formatted and shown
+                // in a dialog with an "OK" button, which a frame with no
+                // menu hook (a batch session's) never draws.
+                if args[0].is_nil() {
+                    super::call(interp, "message", &[Value::Nil], env)?;
+                    return Ok(Value::Nil);
+                }
+                let formatted = super::call(interp, "format-message", args, env)?;
+                let pane = Value::list([Value::cons(Value::string("OK"), Value::T)]);
+                super::call(
+                    interp,
+                    "x-popup-dialog",
+                    &[Value::T, Value::cons(formatted, pane), Value::T],
+                    env,
+                )?;
+                Ok(formatted)
+            }
+            "message-or-box" => {
+                if args.is_empty() {
+                    return Err(LispError::WrongNumberOfArgs(name.into(), 0));
+                }
+                // editfns.c:Fmessage_or_box: a dialog after a mouse event
+                // (or before any) while `use-dialog-box' is non-nil.
+                let last_nonmenu_event = interp
+                    .lookup_var("last-nonmenu-event", env)
+                    .unwrap_or(Value::Nil);
+                let use_dialog_box = interp
+                    .lookup_var("use-dialog-box", env)
+                    .is_some_and(|value| value.is_truthy());
+                let after_mouse = last_nonmenu_event.is_nil()
+                    || matches!(last_nonmenu_event.kind(), Kind::Cons(_));
+                let function = if after_mouse && use_dialog_box {
+                    "message-box"
+                } else {
+                    "message"
+                };
+                super::call(interp, function, args, env)
             }
             "current-message" => {
                 need_args(name, args, 0)?;

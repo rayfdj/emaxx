@@ -11002,6 +11002,37 @@ setup_process_coding_systems's check now refuses). A 13-form
   kind. Local validation: the grouped gate's 3,397 library tests,
   the integration targets and clippy with `--all-targets --all-features
   -D warnings' pass.
+- **Round 218: `message-box' and its dialog as editfns.c and menu.c
+  make them.** Run with its output and errors apart, the one-argument
+  battery's standard error differed from GNU's: Emaxx printed the
+  messages of `message-box' and `message-or-box', which GNU leaves
+  unprinted in batch. editfns.c's `message-box' clears the echo area for
+  nil and otherwise formats its message into a dialog with one "OK"
+  button for `x-popup-dialog'; no terminal of Emaxx's (and no tty of
+  GNU's) has a dialog hook, so menu.c's emulate_dialog_with_menu asks
+  `x-popup-menu' for a menu of the dialog with its prompt centred on the
+  frame, which a batch session's initial frame never draws. Emaxx sent
+  both functions to `message'. `message-or-box' now takes the dialog
+  after a mouse event (or before any) while `use-dialog-box' is set, and
+  `message' otherwise, as Fmessage_or_box does. `x-popup-dialog' decodes
+  POSITION as menu.c does (a decoded non-window is the `windowp' datum,
+  a dead window `window-live-p') and redisplays first. `x-popup-menu'
+  checks an old-fashioned menu as list_of_panes and list_of_items do (a
+  pane without items is `consp', an item name no string `stringp'), and
+  on a tty shows one of a single pane as tty_menu_activate shows its
+  only pane: under the pane's name, a string item disabled, a (NAME .
+  VALUE) item answering VALUE. POSITION is read as x_popup_menu_1 reads
+  it: ((XOFFSET YOFFSET) WINDOW) counts from WINDOW's corner, where
+  Emaxx placed the menu at the frame's origin; cancelling a menu that no
+  click opened signals `quit' (TTYM_NO_SELECT without MENU_FOR_CLICK);
+  and the next and previous menu keys leave a list menu only under
+  MENU_KBD_NAVIGATION, the menu bar opened from the keyboard, keymap
+  menus keeping their menu-bar cycling. A menu of several panes, which
+  tty_menu_activate cascades from a menu of the pane names, is still
+  not drawn. An oracle test pins the dialogs' values, the messages they
+  leave in `*Messages*' and the parse errors. Local validation: the
+  grouped gate's 3,398 library tests, the integration targets and
+  clippy with `--all-targets --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -12414,6 +12445,11 @@ failing (the rust-analyzer flake recorded before); the rerun matched all
 7,928: setup 89.4 s against 65.2 s (1.373), test bodies 260.6 s against
 265.4 s (0.982), in all 1.048. The first attempt's timings, on another
 runner, were 1.162, 0.912 and 0.961.
+
+**On `a6819f9`** (round 217): the full Rust gate (run 41263044644)
+passed, and frozen (run 41263047151) matched all 7,928 outcomes on the
+first attempt: setup 83.0 s against 68.1 s (1.218), test bodies 259.1 s
+against 269.1 s (0.963), in all 1.006.
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'
