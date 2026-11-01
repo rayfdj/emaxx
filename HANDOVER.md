@@ -11033,6 +11033,33 @@ setup_process_coding_systems's check now refuses). A 13-form
   leave in `*Messages*' and the parse errors. Local validation: the
   grouped gate's 3,398 library tests, the integration targets and
   clippy with `--all-targets --all-features -D warnings' pass.
+- **Round 219: inserted text properties as graft_intervals_into_buffer
+  and insert_from_buffer_1 take them.** A random editing battery (each
+  program a sequence of insertions, deletions, property and overlay
+  changes, narrowing, casing and undo on a fresh buffer, its buffer
+  string, point, markers, overlays and undo list printed after each)
+  found two divergences. Inserting a propertized string into an empty
+  buffer left the buffer's intervals sharing the string's plists, so a
+  later `put-text-property' or `add-face-text-property' on the buffer,
+  which change a plist's value cell in place, changed the string as
+  well (an undo record's string or a `buffer-substring' copy among
+  them): graft_intervals_into_buffer reproduces the string's tree for
+  text that is the whole buffer, and reproduce_interval copies each
+  plist with copy_properties, as the graft under text already in the
+  buffer does; Emaxx's reproduce now copies them too (the values stay
+  shared, as Fcopy_sequence shares them). `insert-buffer-substring'
+  took its intervals before the before-change hooks ran and before the
+  text went in; insert_from_buffer_1 reads them after both, so a hook's
+  change to the source's properties is what gets inserted, and text of
+  the current buffer's own text is copied, as copy_intervals of the tree
+  offset_intervals has already adjusted for the insertion, from the old
+  start moved past the insertion only when the source is the current
+  buffer itself and point was at or before it (another buffer of its
+  indirect family shares the text in GNU, and its start is not moved).
+  Oracle tests pin the copies, the hook order and the self and indirect
+  insertions. Local validation: the grouped gate's 3,400 library
+  tests, the integration targets and clippy with `--all-targets
+  --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -12450,6 +12477,11 @@ runner, were 1.162, 0.912 and 0.961.
 passed, and frozen (run 41263047151) matched all 7,928 outcomes on the
 first attempt: setup 83.0 s against 68.1 s (1.218), test bodies 259.1 s
 against 269.1 s (0.963), in all 1.006.
+
+**On `ac4e08e`** (round 218): the full Rust gate (run 41265755260)
+passed, and frozen (run 41265757335) matched all 7,928 outcomes on the
+first attempt: setup 83.4 s against 68.7 s (1.214), test bodies 259.4 s
+against 270.6 s (0.959), in all 1.000.
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

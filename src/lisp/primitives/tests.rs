@@ -33082,6 +33082,39 @@ zz-after-key
 }
 
 #[test]
+fn inserted_text_properties_are_copies_of_the_strings_plists() {
+    // intervals.c:graft_intervals_into_buffer gives the inserted text
+    // copies of the inserted string's plists: copy_properties under text
+    // already in the buffer, and reproduce_interval's copy_properties when
+    // the text is the whole buffer (insert-buffer-substring of a whole
+    // buffer grafts that buffer's own tree), so changing the buffer's
+    // properties afterwards leaves the string's alone; the property values
+    // themselves stay shared, as Fcopy_sequence shares them.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list (with-temp-buffer (let ((s (propertize "y" 'face 'bold))) (insert s) (put-text-property 1 2 'face 'italic) (list s (buffer-string)))) (with-temp-buffer (insert (propertize "v" 'face 'bold 'zz 1)) (let ((s (buffer-substring 1 2))) (erase-buffer) (insert s) (put-text-property 1 2 'face 'italic) (list s (buffer-string)))) (with-temp-buffer (insert (propertize "u" 'face nil 'zz 1)) (let ((s (buffer-substring 1 2))) (erase-buffer) (insert s) (add-face-text-property 1 2 'italic t) (list s (buffer-string)))) (let ((s (propertize "ab" 'zz 1))) (with-temp-buffer (insert "-") (insert s) (put-text-property 2 4 'zz 2) (list s (buffer-string)))) (let ((src (generate-new-buffer " zz-src"))) (with-current-buffer src (insert (propertize "w" 'zz 1))) (prog1 (with-temp-buffer (insert-buffer-substring src) (put-text-property 1 2 'zz 2) (list (with-current-buffer src (buffer-string)) (buffer-string))) (kill-buffer src))) (with-temp-buffer (let ((s (propertize "t" 'zz (list 1)))) (insert s) (setcar (get-text-property 1 'zz) 2) (list s (buffer-string) (eq (get-text-property 0 'zz s) (get-text-property 1 'zz))))))"##,
+        r##"((#("y" 0 1 (face bold)) #("y" 0 1 (face italic))) (#("v" 0 1 (face bold zz 1)) #("v" 0 1 (face italic zz 1))) (#("u" 0 1 (face nil zz 1)) #("u" 0 1 (face (nil italic) zz 1))) (#("ab" 0 2 (zz 1)) #("-ab" 1 3 (zz 2))) (#("w" 0 1 (zz 1)) #("w" 0 1 (zz 2))) (#("t" 0 1 (zz (2))) #("t" 0 1 (zz (2))) t))"##,
+        "inserted text property plists",
+    );
+}
+
+#[test]
+fn insert_buffer_substring_takes_the_intervals_as_insert_from_buffer_1() {
+    // insdel.c:insert_from_buffer_1 reads the source's intervals after
+    // the before-change hooks and after offset_intervals: a hook's change
+    // to the source's properties is inserted, and text of the current
+    // buffer's own text is copied from the tree already adjusted for the
+    // insertion, from its old start, moved past the insertion only when
+    // the source is the current buffer itself and point was at or before
+    // it (another buffer of its indirect family shares the text, its start
+    // unmoved).
+    assert_oracle_contract_matches_interpreter(
+        r##"(let ((zz-ins (lambda (text props pt from to) (with-temp-buffer (insert text) (dolist (p props) (put-text-property (nth 0 p) (nth 1 p) (nth 2 p) (nth 3 p))) (goto-char pt) (insert-buffer-substring (current-buffer) from to) (buffer-string))))) (list (funcall zz-ins "wxyz" '((1 3 face nil)) 3 1 5) (funcall zz-ins "ab" '((2 3 zz 1)) 1 2 3) (funcall zz-ins "abc" '((1 2 zz 1) (3 4 zz 3)) 4 1 4) (funcall zz-ins "abcd" '((1 2 zz 1) (2 3 zz 2) (4 5 zz 4)) 3 1 5) (funcall zz-ins "abcd" '((1 2 zz 1) (2 3 zz 2) (4 5 zz 4)) 2 2 4) (funcall zz-ins "abcd" '((1 5 zz 1)) 3 1 3) (funcall zz-ins "abcd" '((2 3 zz 2)) 1 2 3) (with-temp-buffer (insert "abcd") (put-text-property 1 3 'zz 1) (put-text-property 1 5 'rear-nonsticky t) (goto-char 3) (insert-buffer-substring (current-buffer) 1 5) (buffer-string)) (let ((src (generate-new-buffer " zz-src"))) (with-current-buffer src (insert "xyz") (put-text-property 1 2 'zz 1)) (prog1 (with-temp-buffer (insert "--") (let ((before-change-functions (list (lambda (_b _e) (with-current-buffer src (put-text-property 1 4 'zz 9)))))) (insert-buffer-substring src 1 3)) (buffer-string)) (kill-buffer src))) (let ((src (generate-new-buffer " zz-src2"))) (with-current-buffer src (insert "xyz") (put-text-property 1 2 'zz 1)) (prog1 (with-temp-buffer (let ((before-change-functions (list (lambda (_b _e) (with-current-buffer src (put-text-property 1 4 'zz 9)))))) (insert-buffer-substring src)) (buffer-string)) (kill-buffer src))) (with-temp-buffer (insert "abcd") (put-text-property 1 3 'zz 1) (let ((base (current-buffer)) (ind (make-indirect-buffer (current-buffer) " zz-ind"))) (prog1 (with-current-buffer ind (goto-char 3) (insert-buffer-substring base 1 5) (list (buffer-string) (with-current-buffer base (buffer-string)))) (kill-buffer ind)))) (with-temp-buffer (insert "abcd") (put-text-property 3 5 'zz 3) (let ((base (current-buffer)) (ind (make-indirect-buffer (current-buffer) " zz-ind2"))) (prog1 (with-current-buffer ind (goto-char 1) (insert-buffer-substring base 3 5) (buffer-string)) (kill-buffer ind)))) (with-temp-buffer (insert "abcd") (put-text-property 3 5 'zz 3) (let ((before-change-functions (list (lambda (_b _e) (put-text-property 1 5 'zz 7))))) (goto-char 1) (insert-buffer-substring (current-buffer) 3 5)) (buffer-string))))"##,
+        r##"(#("wxwxyzyz" 0 2 (face nil) 2 6 (face nil)) #("bab" 0 1 (zz 1) 2 3 (zz 1)) #("abcabc" 0 1 (zz 1) 2 3 (zz 3) 3 4 (zz 1) 5 6 (zz 3)) #("ababcdcd" 0 1 (zz 1) 1 2 (zz 2) 2 3 (zz 1) 3 6 (zz 2) 7 8 (zz 4)) #("abcbcd" 0 1 (zz 1) 1 2 (zz 2) 3 4 (zz 2) 5 6 (zz 4)) #("ababcd" 0 2 (zz 1) 2 4 (zz 1) 4 6 (zz 1)) #("babcd" 0 1 (zz 2) 2 3 (zz 2)) #("ababcdcd" 0 2 (rear-nonsticky t zz 1) 2 4 (rear-nonsticky t zz 1) 6 8 (rear-nonsticky t)) #("--xy" 2 3 (zz 9) 3 4 (zz 9)) #("xyz" 0 1 (zz 9) 1 3 (zz 9)) (#("ababcdcd" 0 2 (zz 1) 2 6 (zz 1)) #("ababcdcd" 0 2 (zz 1) 2 6 (zz 1))) #("cdabcd" 4 6 (zz 3)) #("cdabcd" 0 2 (zz 7) 2 4 (zz 7) 4 6 (zz 7)))"##,
+        "insert-buffer-substring intervals",
+    );
+}
+
+#[test]
 fn readevalloop_reads_at_the_buffers_point_with_standard_input_bound_to_it() {
     // lread.c:readevalloop binds `standard-input' to the buffer it reads,
     // so a form's `read' takes the text after it; eval-buffer reads each

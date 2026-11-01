@@ -531,24 +531,14 @@ define_dispatch!(
                 let text = source
                     .buffer_substring(start, end)
                     .map_err(|e| LispError::Signal(e.to_string()))?;
-                // insdel.c:insert_from_buffer_1: the source's intervals,
-                // copied for part of its text, the tree itself for all.
-                let props = if end - start < source.size_total() {
-                    source.copy_intervals(start, end)
-                } else {
-                    source
-                        .intervals()
-                        .map(crate::intervals::Intervals::shared_from_zero)
-                };
                 let extended_chars = source.substring_extended_chars(start, end);
                 drop(source);
-                insert_text_with_hooks(
+                insert_buffer_text_with_hooks(
                     interp,
                     &text,
-                    props.as_ref(),
+                    buffer_id,
+                    start,
                     &extended_chars,
-                    false,
-                    false,
                     env,
                 )?;
                 Ok(Value::Nil)

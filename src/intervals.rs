@@ -2156,22 +2156,25 @@ pub(crate) fn graft_into(
 }
 
 /// intervals.c:reproduce_tree for text that is the whole buffer: a copy
-/// of SOURCE's intervals (from 0) moved to start at ORIGIN, the plists
-/// shared as reproduce_interval shares them.
-pub(crate) fn reproduce(source: &Intervals, origin: usize) -> Intervals {
+/// of SOURCE's intervals (from 0) moved to start at ORIGIN, each plist
+/// copied as reproduce_interval's copy_properties copies it.
+pub(crate) fn reproduce(source: &Intervals, origin: usize) -> Result<Intervals, LispError> {
     // reproduce_interval's make_interval for each.
     note_intervals(source.count());
-    Intervals {
-        items: source
-            .items
-            .iter()
-            .map(|item| Interval {
+    let items = source
+        .items
+        .iter()
+        .map(|item| {
+            Ok(Interval {
                 start: item.start + origin,
-                plist: item.plist,
+                plist: copy_plist(item.plist)?,
             })
-            .collect(),
+        })
+        .collect::<Result<_, LispError>>()?;
+    Ok(Intervals {
+        items,
         end: source.end + origin,
-    }
+    })
 }
 
 #[cfg(test)]

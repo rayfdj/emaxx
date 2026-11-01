@@ -956,6 +956,13 @@ pub(crate) enum InsertedProperties<'a> {
         source: &'a Intervals,
         inherit: bool,
     },
+    /// insdel.c:insert_from_buffer_1 of text of the buffer's own text:
+    /// the intervals of the inserted length from FROM, copied once
+    /// offset_intervals has made room for the insertion, FROM moving with
+    /// it when CURRENT (the text the current buffer's, not another
+    /// buffer's of its indirect family) and the insertion is at or before
+    /// FROM.
+    OwnText { from: usize, current: bool },
 }
 
 impl InsertedProperties<'_> {
@@ -2492,7 +2499,9 @@ impl Buffer {
                 if self.size_total() == length {
                     // The inserted text is the whole buffer: a copy of the
                     // interval structure.
-                    self.intervals = Some(intervals::reproduce(source, 1));
+                    if let Ok(tree) = intervals::reproduce(source, 1) {
+                        self.intervals = Some(tree);
+                    }
                     return;
                 }
                 if self.intervals.is_none() {
@@ -2500,6 +2509,22 @@ impl Buffer {
                 }
                 let tree = self.intervals.as_mut().expect("intervals for the graft");
                 let _ = intervals::graft_into(tree, source, position, inherit);
+            }
+            InsertedProperties::OwnText { from, current } => {
+                let from = if current && position <= from {
+                    from + length
+                } else {
+                    from
+                };
+                let copy = self.copy_intervals(from, from + length);
+                let props = match &copy {
+                    Some(source) => InsertedProperties::Intervals {
+                        source,
+                        inherit: false,
+                    },
+                    None => InsertedProperties::PLAIN,
+                };
+                self.graft_intervals(props, position, length);
             }
         }
     }

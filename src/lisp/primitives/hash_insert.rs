@@ -616,13 +616,49 @@ pub(crate) fn insert_text_with_hooks(
     insert_text_and_signal(
         interp,
         text,
-        props,
+        InsertedIntervals::Given(props),
         extended_chars,
         inherit,
         before_markers,
         None,
         env,
     )
+}
+
+/// insdel.c:insert_from_buffer: TEXT, BUFFER_ID's text from FROM, inserted
+/// at point with the intervals insert_from_buffer_1 takes for it once the
+/// before-change hooks have run.
+pub(crate) fn insert_buffer_text_with_hooks(
+    interp: &mut Interpreter,
+    text: &str,
+    buffer_id: u64,
+    from: usize,
+    extended_chars: &[(usize, u32)],
+    env: &mut crate::lisp::types::Env,
+) -> Result<(), LispError> {
+    insert_text_and_signal(
+        interp,
+        text,
+        InsertedIntervals::Buffer { buffer_id, from },
+        extended_chars,
+        false,
+        false,
+        None,
+        env,
+    )
+}
+
+/// Where an insertion's intervals come from.
+#[derive(Clone, Copy)]
+enum InsertedIntervals<'a> {
+    /// A string's, or none.
+    Given(Option<&'a crate::intervals::Intervals>),
+    /// insert_from_buffer_1's of a buffer's text from FROM: the buffer's
+    /// tree itself for all its text, else copy_intervals of the part, read
+    /// after the before-change hooks; for the current buffer's own text
+    /// (its indirect family's in GNU, one text) read once the insertion
+    /// has offset the intervals.
+    Buffer { buffer_id: u64, from: usize },
 }
 
 /// What encode_coding_object and decode_coding_object do for a buffer
@@ -642,7 +678,7 @@ pub(crate) fn insert_text_before_point(
     insert_text_and_signal(
         interp,
         text,
-        props,
+        InsertedIntervals::Given(props),
         extended_chars,
         false,
         false,
@@ -655,7 +691,7 @@ pub(crate) fn insert_text_before_point(
 fn insert_text_and_signal(
     interp: &mut Interpreter,
     text: &str,
-    props: Option<&crate::intervals::Intervals>,
+    props: InsertedIntervals<'_>,
     extended_chars: &[(usize, u32)],
     inherit: bool,
     before_markers: bool,
@@ -685,12 +721,42 @@ fn insert_text_and_signal(
         // the string's intervals (copied over the text, or with INHERIT
         // merged into what the insertion gave it), or with no intervals
         // and no INHERIT the new text's properties cleared.
+        let copied;
         let source = match props {
-            Some(intervals) => crate::buffer::InsertedProperties::Intervals {
-                source: intervals,
-                inherit,
-            },
-            None => crate::buffer::InsertedProperties::None { inherit },
+            InsertedIntervals::Given(Some(intervals)) => {
+                crate::buffer::InsertedProperties::Intervals {
+                    source: intervals,
+                    inherit,
+                }
+            }
+            InsertedIntervals::Given(None) => crate::buffer::InsertedProperties::None { inherit },
+            InsertedIntervals::Buffer { buffer_id, from } => {
+                let current = interp.current_buffer_id();
+                if interp.related_buffer_ids(current).contains(&buffer_id) {
+                    crate::buffer::InsertedProperties::OwnText {
+                        from,
+                        current: buffer_id == current,
+                    }
+                } else {
+                    let nchars = text.chars().count();
+                    copied = interp.get_buffer_by_id(buffer_id).and_then(|source| {
+                        if nchars < source.size_total() {
+                            source.copy_intervals(from, from + nchars)
+                        } else {
+                            source
+                                .intervals()
+                                .map(crate::intervals::Intervals::shared_from_zero)
+                        }
+                    });
+                    match &copied {
+                        Some(intervals) => crate::buffer::InsertedProperties::Intervals {
+                            source: intervals,
+                            inherit,
+                        },
+                        None => crate::buffer::InsertedProperties::None { inherit },
+                    }
+                }
+            }
         };
         interp.insert_current_buffer_with(text, source, before_markers);
         interp.set_inserted_extended_chars(start, extended_chars);
