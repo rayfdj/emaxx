@@ -33333,6 +33333,23 @@ fn encoding_writes_the_bom_and_records_the_coding_after_its_conversion() {
 }
 
 #[test]
+fn integers_obey_integer_width_and_floats_round_as_floatfns_c() {
+    // bignum.c:make_integer_mpz signals `overflow-error' for a result
+    // wider than both `integer-width' (compared unsigned) and 128 bits,
+    // while the reader's make_bignum_str does not check; emacs_mpz_pow_ui
+    // and emacs_mpz_mul_2exp refuse results past GMP's limb limit.
+    // floatfns.c:Fexpt is expt_integer only for a natural exponent, which
+    // must fit an unsigned long; frexp is libc's, ldexp rounds once, and
+    // rounding_driver scales floats to integers (an infinite or NaN
+    // operand overflows, a finite one over an infinity is zero).
+    assert_oracle_contract_matches_interpreter(
+        r##"(mapcar (lambda (f) (condition-case e (eval f t) (error e))) '((let ((integer-width -1)) (logb (expt 2 200))) (let ((integer-width 128)) (expt 2 128)) (let ((integer-width 10)) (logb (expt 2 127))) (let ((x (expt 2 200))) (let ((integer-width 10)) (logior x 1))) (let ((x (expt 2 200))) (let ((integer-width 10)) (logb (read (number-to-string x))))) (let ((integer-width 10)) (truncate 1e100 3)) (let ((integer-width most-positive-fixnum)) (expt 3 most-positive-fixnum)) (let ((integer-width most-positive-fixnum)) (ash 1 most-positive-fixnum)) (expt 2 65536) (logb (expt 2 65535)) (expt 2 -1) (expt (expt 2 100) -1) (expt -1 (expt 2 70)) (expt 0 (expt 2 70)) (expt 2 (expt 2 70)) (expt 7 (expt 2 63)) (frexp 5e-324) (frexp 1.0e+INF) (frexp 0.0e+NaN) (frexp -0.0) (frexp (expt 2 2000)) (truncate 1 1.0e+INF) (floor -1 1.0e+INF) (round 1.0e+INF 1.0e+INF) (truncate 0 0.0e+NaN) (round 5e-324 5e-324) (logb (floor 1e308 5e-324)) (truncate most-negative-fixnum -1) (round 2.5 1) (round 3.5 1.0) (ldexp 5e-324 1100) (ldexp 1.0 -1074) (ldexp 3.0 -1075) (logb 5e-324)))"##,
+        r##"(200 (overflow-error) 127 (overflow-error) 200 (overflow-error) (overflow-error) (overflow-error) (overflow-error) 65535 0.5 7.888609052210118e-31 1 0 (overflow-error) (overflow-error) (0.5 . -1073) (1.0e+INF . 0) (0.0e+NaN . 0) (-0.0 . 0) (1.0e+INF . 0) 0 0 (overflow-error) (overflow-error) 1 2097 2305843009213693952 2 4 67108864.0 5e-324 1e-323 -1074)"##,
+        "integer-width and float rounding",
+    );
+}
+
+#[test]
 fn readevalloop_reads_at_the_buffers_point_with_standard_input_bound_to_it() {
     // lread.c:readevalloop binds `standard-input' to the buffer it reads,
     // so a form's `read' takes the text after it; eval-buffer reads each

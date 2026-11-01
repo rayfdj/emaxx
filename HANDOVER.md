@@ -11299,6 +11299,31 @@ setup_process_coding_systems's check now refuses). A 13-form
   `suspended_bytecode_observes_live_constant_vector_mutation' (the
   weak table's last count after `garbage-collect'), which passed alone
   and in a rerun of the whole group on the same build, 858 of 858.
+- **Round 227: integers within `integer-width', floats rounded as
+  floatfns.c rounds them.** A battery of 5,204 numeric forms (the arithmetic,
+  logical, shift, rounding and float functions over fixnums, bignums, signed zeros,
+  subnormals, infinities and NaNs) and a probe of `integer-width'
+  differed from GNU where bignum.c:make_bignum_bits signals
+  `overflow-error' for a result wider than both `integer-width' and 128
+  bits (the width compared as the unsigned bit count, so a negative one
+  admits every size): Emaxx made bignums of any size, and (ash 1
+  most-positive-fixnum) aborted the process on a 2**58-byte allocation.
+  make_integer_mpz's check now covers the arithmetic, logical, shift,
+  `expt', rounding and `random' results and `format''s conversion of a
+  large float, while the reader and `string-to-number' skip it as
+  make_bignum_str does, and emacs_mpz_mul, emacs_mpz_mul_2exp and
+  emacs_mpz_pow_ui refuse a result past GMP's limb limit before
+  computing it. Fexpt is expt_integer only for a natural exponent that
+  fits an unsigned long (a bignum base with a negative exponent is now
+  pow's float, not a wrong-type error); rounding_driver scales floats by
+  double_integer_scale and divides exactly, so a NaN or infinite
+  operand overflows rather than giving `arith-error', a finite one over
+  an infinity is zero, and `most-negative-fixnum' over -1 is a bignum.
+  `frexp' follows libc (an infinity or NaN keeps exponent zero, a
+  subnormal its true exponent) and `ldexp' rounds once as scalbn does.
+  An oracle test pins these results. Local validation: the grouped
+  gate's 3,417 library tests, the integration targets and clippy
+  with `--all-targets --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -12762,6 +12787,15 @@ against 260.8 s (0.963), in all 0.998.
 passed, and frozen (run 41294604357) matched all 7,928 outcomes on the
 first attempt: setup 81.7 s against 68.0 s (1.200), test bodies 256.5 s
 against 270.5 s (0.948), in all 0.987.
+
+**On `72b065e`** (round 226): the full Rust gate (run 41299121760)
+passed; frozen (run 41299123973) matched 7,927 of 7,928 outcomes:
+rmailmm-tests' `rmailmm-test-handler' failed, round 226's
+decode-coding-region moving point in a unibyte buffer by the characters
+it produced where decode_coding_object moves it by the bytes, so
+rmail-mime-insert-decoded-text's newline split a character (fixed with
+round 231). Setup 79.0 s against 64.8 s (1.220), test bodies 254.9 s
+against 263.3 s (0.968), in all 1.000.
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

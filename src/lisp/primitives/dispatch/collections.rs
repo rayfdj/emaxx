@@ -835,12 +835,14 @@ define_dispatch!(
                         if lim <= BigInt::zero() {
                             return Err(out_of_range());
                         }
-                        return Ok(match lim.to_i64() {
+                        return match lim.to_i64() {
                             Some(lim) if lim <= MOST_POSITIVE_FIXNUM => {
-                                Value::Integer(get_random_fixnum(lim))
+                                Ok(Value::Integer(get_random_fixnum(lim)))
                             }
-                            _ => normalize_bigint_value(get_random_bignum(&lim)),
-                        });
+                            // bignum.c:get_random_bignum makes its result
+                            // with make_integer_mpz.
+                            _ => make_integer(interp, get_random_bignum(&lim)),
+                        };
                     }
                     _ => {}
                 }
