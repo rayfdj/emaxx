@@ -4579,6 +4579,7 @@ impl Interpreter {
         }
         mark(&self.local_time_zone_rule);
         mark(&self.signaling_function);
+        mark(&self.autoload_queue);
         if let Some(value) = &self.current_global_map {
             mark(value);
         }
@@ -5025,6 +5026,7 @@ impl Interpreter {
             }
             clone.local_time_zone_rule = c.copy(&clone.local_time_zone_rule.clone());
             clone.signaling_function = c.copy(&clone.signaling_function);
+            clone.autoload_queue = c.copy(&clone.autoload_queue);
             if let Some(map) = &clone.current_global_map {
                 clone.current_global_map = Some(c.copy(map));
             }
@@ -5462,6 +5464,14 @@ pub struct InterpreterState {
     /// eval.c's Vsignaling_function: the function signal_or_quit found
     /// below `signal''s frame (and `error''s), for cmd_error to report.
     pub(crate) signaling_function: Value,
+    /// eval.c's Vautoload_queue: nil, or while an autoload's or
+    /// `require''s file loads t followed by the definitions `defalias'
+    /// replaced and the `features' lists `provide' replaced, newest first,
+    /// for un_autoload to put back if the load signals.
+    pub(crate) autoload_queue: Value,
+    /// emacs.c's clearing of gflags.will_dump_ before the error an
+    /// autoload or `require' in the dumping process signals.
+    pub(crate) will_dump_reported: bool,
     /// macros.c's C `executing_kbd_macro', the macro most recently started:
     /// unlike `executing-kbd-macro' it outlives an error that unwinds the
     /// macro, so cmd_error can say how far the macro got.
@@ -6310,6 +6320,8 @@ impl Interpreter {
             call_depth_gate: if core::profiling() { i64::MIN } else { 1600 },
             debug_on_next_call: false,
             signaling_function: Value::Nil,
+            autoload_queue: Value::Nil,
+            will_dump_reported: false,
             executing_kbd_macro: false,
             kbd_macro_iterations: 0,
             symbols_with_positions_enabled: Box::new(Cell::new(false)),

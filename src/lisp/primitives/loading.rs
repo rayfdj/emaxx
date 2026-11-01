@@ -128,9 +128,10 @@ pub(crate) fn call_interactively_impl(
         return Err(LispError::WrongNumberOfArgs("call-interactively".into(), 0));
     }
     let mut func = resolve_callable(interp, &args[0], env)?;
-    if let (Some(symbol), Some((file, _, _))) = (args[0].symbol_str(), autoload_parts(&func)) {
-        interp.load_autoload_target(&file, env)?;
-        func = interp.lookup_function(symbol, env)?;
+    if autoload_parts(&func).is_some() {
+        // callint.c's `interactive-form' call loads it
+        // (Fautoload_do_load with FUNCTION as the name).
+        func = interp.autoload_do_load(func, args[0], Value::Nil, env)?;
     }
     // callint.c requires an interactive form, including forms supplied by
     // the Lisp generic for closures and advice.

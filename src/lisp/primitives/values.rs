@@ -1881,11 +1881,11 @@ pub(crate) fn load_autoloaded_prefix_map(
     let Ok(function) = interp.lookup_function(&name, env) else {
         return Ok(());
     };
-    if let Some((file, _, Kind::Symbol(kind))) =
+    if let Some((_, _, Kind::Symbol(kind))) =
         autoload_parts(&function).map(|(a0, a1, a2)| (a0, a1, a2.kind()))
         && kind == "keymap"
     {
-        interp.load_autoload_target(&file, env)?;
+        interp.autoload_do_load(function, *binding, Value::Nil, &mut env.clone())?;
     }
     Ok(())
 }

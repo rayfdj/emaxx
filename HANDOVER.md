@@ -11225,6 +11225,39 @@ setup_process_coding_systems's check now refuses). A 13-form
   the list's length, ends and members. Local validation: the grouped
   gate's 3,412 library tests, the integration targets and clippy
   with `--all-targets --all-features -D warnings' pass.
+- **Round 225: autoloads and `require' through eval.c's
+  load_with_autoload_queue.** Fautoload_do_load and Frequire bind
+  `Vautoload_queue' to t around their load; `defalias' (data.c's
+  defalias, under `autoload' and native subr registration too) queues
+  each symbol whose definition it replaces and `provide' queues
+  `(0 . FEATURES)' with the list it replaces, and when the load signals,
+  un_autoload sets `features' back and fsets each queued symbol to the
+  definition `function-history' saved (the history itself stays), newest
+  first. Emaxx kept everything a failed autoload or `require' had
+  defined and provided, so a broken file left a half-loaded library that
+  looked loaded. Every GNU caller of Fautoload_do_load (eval_sub,
+  funcall, Fmacroexpand with MACRO-ONLY `macro', Finteractive_form,
+  call-interactively through it, and the keymap autoloads) now reaches
+  one port of it. NOERROR goes to Fload, where it excuses only the
+  file's absence: `require' had mapped any `file-error' the found file
+  raised to nil, and the best-effort MACRO-ONLY load had swallowed every
+  error. An autoload's file is loaded with MUST-SUFFIX t, as is a
+  feature's own name, and FILENAME is no longer checked to be a string
+  before `features' is. "Autoloading file ... failed to define
+  function" names `(car (car load-history))', the absolute file name,
+  as Frequire's message does. `--temacs=pdump' signals temacs's
+  "Attempt to autoload ... while preparing to dump" and "(require ...)
+  while preparing to dump" once, and `provide' takes SUBFEATURES through
+  CHECK_LIST (a dotted list passes). Fautoload is now Fdefalias of the
+  stub, which holds FILE itself (Emaxx stored a copy and set the cell
+  directly, past `defalias-fset-function' and the queue), and data.c's
+  defalias records no autoload in `load-history' in the dumping process:
+  the release image had 2,669 `(defun . NAME)' entries for functions
+  still autoloaded, loaddefs.el's, where GNU's has none. Oracle tests pin
+  the undone definitions and features, the NOERROR scope, the suffix
+  rule, the message, the stub's FILE and its fset hook. Local validation: the grouped gate's 3,414 library tests,
+  the integration targets and clippy with `--all-targets --all-features
+  -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -12678,6 +12711,11 @@ against 273.8 s (0.941), in all 0.988.
 passed, and frozen (run 41288377810) matched all 7,928 outcomes on the
 first attempt: setup 59.9 s against 52.0 s (1.152), test bodies 216.9 s
 against 231.9 s (0.935), in all 0.993.
+
+**On `1ad9f68`** (round 224): the full Rust gate (run 41291572709)
+passed, and frozen (run 41291574970) matched all 7,928 outcomes on the
+first attempt: setup 77.6 s against 64.2 s (1.208), test bodies 251.2 s
+against 260.8 s (0.963), in all 0.998.
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

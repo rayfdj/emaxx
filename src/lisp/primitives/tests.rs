@@ -33271,6 +33271,35 @@ fn byte_boolean_vars_lists_the_builds_late_defvar_bools() {
 }
 
 #[test]
+fn a_failed_autoload_or_require_undoes_its_definitions_and_features() {
+    // eval.c:load_with_autoload_queue: while an autoload's or `require''s
+    // file loads, `defalias' queues each symbol whose definition it
+    // replaces and `provide' the `features' list it replaces; when the
+    // load signals, un_autoload puts back `features' and each
+    // definition `function-history' saved.  NOERROR excuses only a
+    // missing file, a function's own name must carry a suffix, and a
+    // file that defines nothing is named as `load-history' records it.
+    assert_oracle_contract_matches_interpreter(
+        r##"(let* ((dir (make-temp-file "zz-r225" t)) (load-path (list dir)) (write (lambda (name text) (with-temp-file (expand-file-name name dir) (insert text))))) (funcall write "zz-r225a.el" "(defalias 'zz-r225-g (lambda () 'new)) (defalias 'zz-r225-f (lambda () 'f)) (provide 'zz-r225a) (error \"boom\")") (funcall write "zz-r225b.el" "(provide 'zz-r225b) (defalias 'zz-r225-g2 (lambda () 'new2)) (signal 'file-missing '(\"x\"))") (funcall write "zz-r225c.el" "(provide 'zz-r225c)") (funcall write "zz-r225e.el" "(error \"inner\")") (funcall write "zz-r225s" "(defalias 'zz-r225-s (lambda () 's))") (fset 'zz-r225-g (lambda () 'old)) (fset 'zz-r225-g2 (lambda () 'old2)) (autoload 'zz-r225-f "zz-r225a") (autoload 'zz-r225-h "zz-r225c") (autoload 'zz-r225-s "zz-r225s") (unwind-protect (list (condition-case e (zz-r225-f) (error e)) (featurep 'zz-r225a) (funcall 'zz-r225-g) (autoloadp (symbol-function 'zz-r225-f)) (length (get 'zz-r225-g 'function-history)) (condition-case e (require 'zz-r225b nil t) (error (car e))) (featurep 'zz-r225b) (funcall 'zz-r225-g2) (condition-case e (zz-r225-h) (error (equal (cadr e) (format "Autoloading file %s failed to define function zz-r225-h" (expand-file-name "zz-r225c.el" dir))))) (featurep 'zz-r225c) (condition-case e (autoload-do-load '(autoload "zz-r225e") 'zz-r225-x t) (error e)) (autoload-do-load '(autoload "zz-r225-missing") 'zz-r225-x t) (condition-case e (zz-r225-s) (error (car e))) (condition-case e (require 'zz-r225-nofile nil t) (error e))) (delete-directory dir t)))"##,
+        r##"((error "boom") nil old t 2 file-missing nil old2 t t (error "inner") nil file-missing nil)"##,
+        "autoload queue",
+    );
+}
+
+#[test]
+fn autoload_defaliases_its_stub_and_provide_checks_subfeatures_as_a_list() {
+    // eval.c:Fautoload is Fdefalias of (autoload FILE ...) holding FILE
+    // itself, so `defalias-fset-function' installs it; fns.c's Fprovide
+    // takes SUBFEATURES through CHECK_LIST and Frequire hands FILENAME
+    // to Fload only when the feature is missing.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list (eq (nth 1 (symbol-function (progn (autoload 'zz-r225-q "zz-file") 'zz-r225-q))) (nth 1 (symbol-function 'zz-r225-q))) (let ((f "zz-file2")) (autoload 'zz-r225-q2 f) (eq f (nth 1 (symbol-function 'zz-r225-q2)))) (progn (put 'zz-r225-q3 'defalias-fset-function (lambda (s d) (fset s (list 'autoload "hooked")))) (autoload 'zz-r225-q3 "orig") (symbol-function 'zz-r225-q3)) (condition-case e (provide 'zz-r225-p '(a . b)) (error e)) (get 'zz-r225-p 'subfeatures) (condition-case e (require 'emacs 5) (error e)) (condition-case e (autoload 'zz-r225-q4 'notstring) (error e)))"##,
+        r##"(t t (autoload "hooked") zz-r225-p (a . b) emacs (wrong-type-argument stringp notstring))"##,
+        "autoload as defalias",
+    );
+}
+
+#[test]
 fn readevalloop_reads_at_the_buffers_point_with_standard_input_bound_to_it() {
     // lread.c:readevalloop binds `standard-input' to the buffer it reads,
     // so a form's `read' takes the text after it; eval-buffer reads each

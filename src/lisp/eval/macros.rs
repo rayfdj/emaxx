@@ -388,7 +388,15 @@ impl Interpreter {
             function = crate::lisp::primitives::purecopy_value(self, &function, env)?;
         }
         let old_definition = self.logical_function_binding(&name, &Env::new());
-        self.record_definition_in_load_history("defun", &name);
+        // data.c:defalias records no autoload in the dumping process
+        // (loaddefs.el's would fill the image's `load-history').
+        let autoload = matches!(
+            function.cons_values().map(|(head, _)| head.kind()),
+            Some(Kind::Symbol(head)) if head == "autoload"
+        );
+        if !autoload || !self.will_dump(env) {
+            self.record_definition_in_load_history("defun", &name);
+        }
         if let Some(old_definition) = old_definition {
             self.record_function_redefinition(&name, old_definition);
         }
@@ -551,15 +559,16 @@ impl Interpreter {
             {
                 return Ok(None);
             }
-            let Some((file, _, _kind)) = crate::lisp::primitives::autoload_parts(&function) else {
+            if crate::lisp::primitives::autoload_parts(&function).is_none() {
                 return Ok(None);
-            };
+            }
             let loads_macro =
                 crate::lisp::primitives::autoload_is_macro(self, Some(name), &function);
             if !loads_macro {
                 return Ok(None);
             }
-            self.load_autoload_target(&file, env)?;
+            // eval.c:Fmacroexpand: Fautoload_do_load with MACRO-ONLY `macro'.
+            self.autoload_do_load(function, Value::symbol(name), Value::symbol("macro"), env)?;
             attempted_autoload = true;
         }
     }
