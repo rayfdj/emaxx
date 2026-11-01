@@ -128,9 +128,10 @@ pub(crate) fn call_interactively_impl(
         return Err(LispError::WrongNumberOfArgs("call-interactively".into(), 0));
     }
     let mut func = resolve_callable(interp, &args[0], env)?;
-    if let (Some(symbol), Some((file, _, _))) = (args[0].symbol_str(), autoload_parts(&func)) {
-        interp.load_autoload_target(&file, env)?;
-        func = interp.lookup_function(symbol, env)?;
+    if autoload_parts(&func).is_some() {
+        // callint.c's `interactive-form' call loads it
+        // (Fautoload_do_load with FUNCTION as the name).
+        func = interp.autoload_do_load(func, args[0], Value::Nil, env)?;
     }
     // callint.c requires an interactive form, including forms supplied by
     // the Lisp generic for closures and advice.
@@ -962,14 +963,15 @@ fn read_next_eval_form(
     let (value, consumed, needs_materialization, unescaped) = {
         let mut context = crate::lisp::eval::LispReadContext::current(interp, env);
         let reader = match source.input_from(*offset) {
-            LispReaderInput::Text(text) => {
-                crate::lisp::reader::Reader::with_symbol_shorthands(text, shorthands)
-            }
             LispReaderInput::Encoded(bytes, multibyte) => {
                 crate::lisp::reader::Reader::from_encoded(bytes, multibyte, shorthands)
             }
-            LispReaderInput::Buffer(parts) => {
-                crate::lisp::reader::Reader::from_buffer_parts(parts, shorthands)
+            LispReaderInput::Buffer(parts, multibyte) => {
+                crate::lisp::reader::Reader::from_buffer_parts(parts, multibyte, shorthands)
+            }
+            LispReaderInput::BufferBytes(bytes, multibyte) => {
+                crate::lisp::reader::Reader::from_encoded(bytes, true, shorthands)
+                    .reporting_multibyte(multibyte)
             }
         };
         let mut reader = reader.with_read_context(&mut context);
@@ -1169,7 +1171,7 @@ fn find_load_file(
         let has_suffix = [".el", ".elc", ".eln"]
             .iter()
             .any(|suffix| target.ends_with(suffix))
-            || crate::lisp::eval::dynamic_library_suffix_values()
+            || crate::lisp::eval::module_suffix_values()
                 .iter()
                 .any(|suffix| {
                     string_like(suffix).is_some_and(|suffix| target.ends_with(&suffix.text))

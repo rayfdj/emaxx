@@ -13433,7 +13433,9 @@ fn native_fringe_bitmap_registry_family_matches_gnu() {
     let expected_printed = "((24 1 24) (t t t t nil t t nil nil nil) ((wrong-type-argument symbolp) (wrong-type-argument arrayp) (args-out-of-range 0) (args-out-of-range 17) (error \"Bad align argument\") (error \"Undefined fringe bitmap\") (wrong-type-argument symbolp)) (nil nil args-out-of-range wrong-type-argument))";
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected_printed);
 
-    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    // fringe.el, which defines the standard bitmaps' names as GNU's
+    // loadup loads it, among the preloaded Lisp.
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
@@ -16385,9 +16387,13 @@ fn assert_oracle_contract_matches_interpreter(program: &str, expected: &str, lab
 fn assert_interpreter_prints(program: &str, expected: &str, label: &str) {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = crate::lisp::types::Env::new();
-    let form = crate::lisp::read_next_load_form(&mut interp, program, &mut 0, &mut env)
-        .unwrap_or_else(|error| panic!("read {label} program: {error:?}"))
-        .unwrap_or_else(|| panic!("{label} program has a form"));
+    // Read as the oracle reads it: the program `--eval' hands GNU, its
+    // non-ASCII characters escaped, read from that unibyte string (so its
+    // symbols are named as read0 names them from one).
+    let ascii = crate::test_support::oracle_program_ascii(program);
+    let (form, _) =
+        super::print::read_encoded_form_in_env(&mut interp, ascii.as_bytes(), false, &mut env)
+            .unwrap_or_else(|error| panic!("read {label} program: {error:?}"));
     // Compare through the interpreter's own printer, as the oracle side is
     // compared through GNU's: the Rust Display form is not print.c (it
     // renders a shared sublist as circular and does not escape quotes).
@@ -17003,7 +17009,7 @@ fn gnu_c_bool_variables_match_fresh_grep() {
     // coercion in prepare_variable_assignment keys on it, so it must not
     // drift from the sources.
     let source_root = upstream_emacs_repo().join("src");
-    let pattern = regex::Regex::new(r#"DEFVAR_BOOL \("([^"]+)""#).expect("valid pattern");
+    let pattern = regex::Regex::new(r#"DEFVAR_BOOL\s*\("([^"]+)""#).expect("valid pattern");
     let mut names = std::collections::BTreeSet::new();
     for entry in std::fs::read_dir(&source_root).expect("read oracle src directory") {
         let path = entry.expect("directory entry").path();
@@ -33078,6 +33084,408 @@ fn message_box_pops_a_dialog_that_a_batch_frame_never_draws() {
 zz-after-key
 ")"##,
         "message-box dialogs",
+    );
+}
+
+#[test]
+fn inserted_text_properties_are_copies_of_the_strings_plists() {
+    // intervals.c:graft_intervals_into_buffer gives the inserted text
+    // copies of the inserted string's plists: copy_properties under text
+    // already in the buffer, and reproduce_interval's copy_properties when
+    // the text is the whole buffer (insert-buffer-substring of a whole
+    // buffer grafts that buffer's own tree), so changing the buffer's
+    // properties afterwards leaves the string's alone; the property values
+    // themselves stay shared, as Fcopy_sequence shares them.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list (with-temp-buffer (let ((s (propertize "y" 'face 'bold))) (insert s) (put-text-property 1 2 'face 'italic) (list s (buffer-string)))) (with-temp-buffer (insert (propertize "v" 'face 'bold 'zz 1)) (let ((s (buffer-substring 1 2))) (erase-buffer) (insert s) (put-text-property 1 2 'face 'italic) (list s (buffer-string)))) (with-temp-buffer (insert (propertize "u" 'face nil 'zz 1)) (let ((s (buffer-substring 1 2))) (erase-buffer) (insert s) (add-face-text-property 1 2 'italic t) (list s (buffer-string)))) (let ((s (propertize "ab" 'zz 1))) (with-temp-buffer (insert "-") (insert s) (put-text-property 2 4 'zz 2) (list s (buffer-string)))) (let ((src (generate-new-buffer " zz-src"))) (with-current-buffer src (insert (propertize "w" 'zz 1))) (prog1 (with-temp-buffer (insert-buffer-substring src) (put-text-property 1 2 'zz 2) (list (with-current-buffer src (buffer-string)) (buffer-string))) (kill-buffer src))) (with-temp-buffer (let ((s (propertize "t" 'zz (list 1)))) (insert s) (setcar (get-text-property 1 'zz) 2) (list s (buffer-string) (eq (get-text-property 0 'zz s) (get-text-property 1 'zz))))))"##,
+        r##"((#("y" 0 1 (face bold)) #("y" 0 1 (face italic))) (#("v" 0 1 (face bold zz 1)) #("v" 0 1 (face italic zz 1))) (#("u" 0 1 (face nil zz 1)) #("u" 0 1 (face (nil italic) zz 1))) (#("ab" 0 2 (zz 1)) #("-ab" 1 3 (zz 2))) (#("w" 0 1 (zz 1)) #("w" 0 1 (zz 2))) (#("t" 0 1 (zz (2))) #("t" 0 1 (zz (2))) t))"##,
+        "inserted text property plists",
+    );
+}
+
+#[test]
+fn insert_buffer_substring_takes_the_intervals_as_insert_from_buffer_1() {
+    // insdel.c:insert_from_buffer_1 reads the source's intervals after
+    // the before-change hooks and after offset_intervals: a hook's change
+    // to the source's properties is inserted, and text of the current
+    // buffer's own text is copied from the tree already adjusted for the
+    // insertion, from its old start, moved past the insertion only when
+    // the source is the current buffer itself and point was at or before
+    // it (another buffer of its indirect family shares the text, its start
+    // unmoved).
+    assert_oracle_contract_matches_interpreter(
+        r##"(let ((zz-ins (lambda (text props pt from to) (with-temp-buffer (insert text) (dolist (p props) (put-text-property (nth 0 p) (nth 1 p) (nth 2 p) (nth 3 p))) (goto-char pt) (insert-buffer-substring (current-buffer) from to) (buffer-string))))) (list (funcall zz-ins "wxyz" '((1 3 face nil)) 3 1 5) (funcall zz-ins "ab" '((2 3 zz 1)) 1 2 3) (funcall zz-ins "abc" '((1 2 zz 1) (3 4 zz 3)) 4 1 4) (funcall zz-ins "abcd" '((1 2 zz 1) (2 3 zz 2) (4 5 zz 4)) 3 1 5) (funcall zz-ins "abcd" '((1 2 zz 1) (2 3 zz 2) (4 5 zz 4)) 2 2 4) (funcall zz-ins "abcd" '((1 5 zz 1)) 3 1 3) (funcall zz-ins "abcd" '((2 3 zz 2)) 1 2 3) (with-temp-buffer (insert "abcd") (put-text-property 1 3 'zz 1) (put-text-property 1 5 'rear-nonsticky t) (goto-char 3) (insert-buffer-substring (current-buffer) 1 5) (buffer-string)) (let ((src (generate-new-buffer " zz-src"))) (with-current-buffer src (insert "xyz") (put-text-property 1 2 'zz 1)) (prog1 (with-temp-buffer (insert "--") (let ((before-change-functions (list (lambda (_b _e) (with-current-buffer src (put-text-property 1 4 'zz 9)))))) (insert-buffer-substring src 1 3)) (buffer-string)) (kill-buffer src))) (let ((src (generate-new-buffer " zz-src2"))) (with-current-buffer src (insert "xyz") (put-text-property 1 2 'zz 1)) (prog1 (with-temp-buffer (let ((before-change-functions (list (lambda (_b _e) (with-current-buffer src (put-text-property 1 4 'zz 9)))))) (insert-buffer-substring src)) (buffer-string)) (kill-buffer src))) (with-temp-buffer (insert "abcd") (put-text-property 1 3 'zz 1) (let ((base (current-buffer)) (ind (make-indirect-buffer (current-buffer) " zz-ind"))) (prog1 (with-current-buffer ind (goto-char 3) (insert-buffer-substring base 1 5) (list (buffer-string) (with-current-buffer base (buffer-string)))) (kill-buffer ind)))) (with-temp-buffer (insert "abcd") (put-text-property 3 5 'zz 3) (let ((base (current-buffer)) (ind (make-indirect-buffer (current-buffer) " zz-ind2"))) (prog1 (with-current-buffer ind (goto-char 1) (insert-buffer-substring base 3 5) (buffer-string)) (kill-buffer ind)))) (with-temp-buffer (insert "abcd") (put-text-property 3 5 'zz 3) (let ((before-change-functions (list (lambda (_b _e) (put-text-property 1 5 'zz 7))))) (goto-char 1) (insert-buffer-substring (current-buffer) 3 5)) (buffer-string))))"##,
+        r##"(#("wxwxyzyz" 0 2 (face nil) 2 6 (face nil)) #("bab" 0 1 (zz 1) 2 3 (zz 1)) #("abcabc" 0 1 (zz 1) 2 3 (zz 3) 3 4 (zz 1) 5 6 (zz 3)) #("ababcdcd" 0 1 (zz 1) 1 2 (zz 2) 2 3 (zz 1) 3 6 (zz 2) 7 8 (zz 4)) #("abcbcd" 0 1 (zz 1) 1 2 (zz 2) 3 4 (zz 2) 5 6 (zz 4)) #("ababcd" 0 2 (zz 1) 2 4 (zz 1) 4 6 (zz 1)) #("babcd" 0 1 (zz 2) 2 3 (zz 2)) #("ababcdcd" 0 2 (rear-nonsticky t zz 1) 2 4 (rear-nonsticky t zz 1) 6 8 (rear-nonsticky t)) #("--xy" 2 3 (zz 9) 3 4 (zz 9)) #("xyz" 0 1 (zz 9) 1 3 (zz 9)) (#("ababcdcd" 0 2 (zz 1) 2 6 (zz 1)) #("ababcdcd" 0 2 (zz 1) 2 6 (zz 1))) #("cdabcd" 4 6 (zz 3)) #("cdabcd" 0 2 (zz 7) 2 4 (zz 7) 4 6 (zz 7)))"##,
+        "insert-buffer-substring intervals",
+    );
+}
+
+#[test]
+fn current_indentation_skips_invisible_text_as_position_indentation() {
+    // indent.c:position_indentation counts the blanks from the line's
+    // start, skipping text invisible without an ellipsis (as
+    // skip_invisible does when counting columns, past newlines too), a
+    // unibyte buffer's no-break space and a multibyte character of the
+    // space category counting one column; any other character ends it.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list (with-temp-buffer (insert "\u00e9a ") (put-text-property 1 3 'invisible 2) (goto-char 1) (list (current-indentation) (current-column) (progn (end-of-line) (current-column)))) (with-temp-buffer (insert "ab c") (put-text-property 1 3 'invisible t) (current-indentation)) (with-temp-buffer (insert "ab \tc") (put-text-property 1 3 'invisible t) (current-indentation)) (with-temp-buffer (insert " ab c") (put-text-property 2 4 'invisible t) (current-indentation)) (with-temp-buffer (insert " ab\n  c") (put-text-property 2 5 'invisible t) (goto-char 1) (current-indentation)) (with-temp-buffer (insert " ab c") (overlay-put (make-overlay 2 4) 'invisible t) (current-indentation)) (with-temp-buffer (insert " ab c") (setq buffer-invisibility-spec '((zz . t))) (put-text-property 2 4 'invisible 'zz) (current-indentation)) (with-temp-buffer (insert " ab c") (setq buffer-invisibility-spec '(zz)) (put-text-property 2 4 'invisible 'zz) (current-indentation)) (with-temp-buffer (insert " ab c") (setq buffer-invisibility-spec nil) (put-text-property 2 4 'invisible t) (current-indentation)) (with-temp-buffer (insert "　　x") (current-indentation)) (with-temp-buffer (insert " x") (current-indentation)) (with-temp-buffer (insert "  x") (current-indentation)) (with-temp-buffer (set-buffer-multibyte nil) (insert "\240 x") (current-indentation)) (with-temp-buffer (set-buffer-multibyte nil) (insert "\241 x") (current-indentation)) (with-temp-buffer (insert "\t \tx") (let ((tab-width 4)) (current-indentation))) (with-temp-buffer (insert "  ") (current-indentation)) (with-temp-buffer (insert "  x\n   y") (narrow-to-region 2 7) (goto-char 5) (current-indentation)) (with-temp-buffer (insert "  ab") (put-text-property 3 5 'invisible t) (current-indentation)))"##,
+        r##"((1 0 1) 1 8 2 3 2 1 2 1 0 0 0 2 0 8 2 2 2)"##,
+        "current-indentation",
+    );
+}
+
+#[test]
+fn match_data_ends_with_the_searched_buffer_even_once_killed() {
+    // search.c keeps last_thing_searched, the buffer object of the last
+    // buffer match, whose death does not change it: `match-data' with
+    // INTEGERS appends it, live or killed (into a reused list too), and
+    // without INTEGERS makes markers that a killed buffer leaves pointing
+    // nowhere.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list (progn (with-temp-buffer (insert "abc") (goto-char 1) (looking-at "b*")) (match-data t)) (progn (with-temp-buffer (insert "abc") (goto-char 1) (looking-at "a\\(b\\)")) (match-data)) (progn (with-temp-buffer (insert "abc") (goto-char 1) (looking-at "a\\(b\\)")) (let ((l (list 1 2 3 4 5 6 7))) (match-data t l))) (progn (with-temp-buffer (insert "abc") (goto-char 1) (looking-at "a\\(b\\)")) (let ((l (list 1 2))) (match-data t l) l)) (progn (with-temp-buffer (insert "abc") (goto-char 1) (looking-at "a")) (match-data nil nil t)) (let ((b (generate-new-buffer " zz"))) (with-current-buffer b (insert "abc") (goto-char 1) (looking-at "a")) (kill-buffer b) (list (match-beginning 0) (match-end 0) (match-data t))) (progn (with-temp-buffer (insert "abc") (goto-char 1) (looking-at "a")) (set-match-data (match-data t)) (match-data t)) (progn (with-temp-buffer (insert "abc") (goto-char 1) (looking-at "a")) (save-match-data (string-match "x" "x")) (match-data t)))"##,
+        r##"((1 1 #<killed buffer>) (#<marker in no buffer> #<marker in no buffer> #<marker in no buffer> #<marker in no buffer>) (1 3 2 3 #<killed buffer> nil nil) (1 3 2 3 #<killed buffer>) (#<marker in no buffer> #<marker in no buffer>) (1 2 (1 2 #<killed buffer>)) (1 2 #<killed buffer>) (0 0))"##,
+        "match-data of a killed buffer",
+    );
+}
+
+#[test]
+fn search_registers_grow_as_regex_emacs_and_set_match_data_allocate_them() {
+    // search.c's search_regs.num_regs is the registers allocated, never
+    // shrunk: a match needing more grows them by half (at least to its
+    // groups), `set-match-data' as xpalloc does, and a search under
+    // `inhibit-changing-match-data' not at all.  `replace-match' checks
+    // SUBEXP against them, and `\\N' below them names a register whether
+    // or not the regexp had the group.
+    assert_oracle_contract_matches_interpreter(
+        r##"(let ((re (apply #'concat (make-list 100 "\\(a\\)"))) (s (make-string 100 ?a))) (list (progn (string-match re s) (condition-case e (replace-match "x" nil nil s 999) (error e))) (progn (set-match-data (number-sequence 1 240)) (condition-case e (replace-match "x" nil nil nil 999) (error e))) (let ((inhibit-changing-match-data t)) (string-match (apply #'concat (make-list 200 "\\(a\\)")) (make-string 200 ?a)) (condition-case e (replace-match "x" nil nil s 999) (error e))) (with-temp-buffer (insert "abc") (goto-char 1) (re-search-forward "\\(a\\)") (list (condition-case e (replace-match "\\9") (error e)) (buffer-string))) (progn (string-match "\\(a\\)" "abc") (replace-match "<\\9>" nil nil "abc"))))"##,
+        r##"((args-out-of-range 999 0 100) (args-out-of-range 999 0 150) (args-out-of-range 999 0 150) (nil "bc") "<>bc")"##,
+        "search register growth",
+    );
+}
+
+#[test]
+fn process_filters_and_sentinels_run_with_the_match_data_protected() {
+    // process.c runs a filter or sentinel with running_asynch_code set, so
+    // its first search puts aside the interrupted code's match data
+    // (save_search_regs), restored when it returns; `inhibit-quit' and
+    // `last-nonmenu-event' are bound to t, and the current buffer is kept.
+    assert_oracle_contract_matches_interpreter(
+        r##"(let* ((log nil) (b0 (current-buffer)) (p (make-process :name "zz" :command '("printf" "hello world") :filter (lambda (_p s) (push (list 'filter (match-data) (string-match "o\\(r\\)" s) (match-data) inhibit-quit last-nonmenu-event) log) (set-buffer (get-buffer-create " zz-filter"))) :sentinel (lambda (_p e) (push (list 'sentinel (string-match "fin" e) (match-data) inhibit-quit) log) (set-buffer (get-buffer-create " zz-sentinel")))))) (string-match "\\(b\\)c" "abc") (while (process-live-p p) (accept-process-output p 0.1)) (accept-process-output nil 0.1) (list (match-data) (eq (current-buffer) b0) (reverse log)))"##,
+        r##"((1 3 1 2) t ((filter (1 3 1 2) 7 (7 9 8 9) t t) (sentinel 0 (0 3) t)))"##,
+        "filter and sentinel frames",
+    );
+}
+
+#[test]
+fn per_buffer_stores_check_their_buffer_c_predicates() {
+    // buffer.c's DEFVAR_PER_BUFFER predicates, checked as set_internal
+    // stores into a BUFFER_OBJFWD slot: a type predicate signals
+    // wrong-type-argument, `choice' and `range' properties an error naming
+    // the allowed values; nil always passes, `setq-default' and a
+    // localized C variable are never checked, and a failed
+    // `setq-local' leaves the variable local all the same.
+    assert_oracle_contract_matches_interpreter(
+        r##"(with-temp-buffer (list (condition-case e (setq tab-width "s") (error e)) tab-width (setq tab-width nil) tab-width (condition-case e (set 'fill-column 'x) (error e)) (condition-case e (let ((tab-width 'q)) tab-width) (error e)) (local-variable-p 'tab-width) (condition-case e (setq major-mode "m") (error e)) (condition-case e (setq overwrite-mode 'foo) (error e)) (setq overwrite-mode 'overwrite-mode-binary) (condition-case e (setq vertical-scroll-bar 'up) (error e)) (condition-case e (setq scroll-up-aggressively 2) (error e)) (condition-case e (setq scroll-up-aggressively 'x) (error e)) (setq scroll-up-aggressively 0.5) (condition-case e (setq line-spacing 'x) (error e)) (condition-case e (setq left-margin-width 1.0) (error e)) (condition-case e (setq buffer-file-name 'f) (error e)) (with-temp-buffer (list (condition-case e (setq-local tab-width "z") (error e)) (local-variable-p 'tab-width))) (setq case-fold-search "anything") (condition-case e (setq indent-tabs-mode 5) (error e)) (let ((d (default-value 'tab-width))) (prog1 (list (setq-default tab-width "d") (default-value 'tab-width)) (setq-default tab-width d)))))"##,
+        r##"((wrong-type-argument integerp "s") 8 nil nil (wrong-type-argument integerp x) (wrong-type-argument integerp q) t (wrong-type-argument symbolp "m") (error "One of nil, overwrite-mode-textual or overwrite-mode-binary should be specified" foo) overwrite-mode-binary (error "One of nil, t, left or right should be specified" up) (error "Value should be from 0.0 to 1.0" 2) (error "Value should be from 0.0 to 1.0" x) 0.5 (wrong-type-argument numberp x) (wrong-type-argument integerp 1.0) (wrong-type-argument stringp f) ((wrong-type-argument integerp "z") t) "anything" 5 ("d" "d"))"##,
+        "per-buffer predicates",
+    );
+}
+
+#[test]
+fn nan_payloads_and_infinity_syntax_read_as_lread_c() {
+    // lread.c reads a NaN's payload from the integer before the point
+    // (wrapping, the largest when there is none) and its sign from the
+    // mantissa; INF and NaN are case-sensitive, as is the mantissa
+    // syntax, so anything else is a symbol, and print.c prints the
+    // payload back as the integer part.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list (mapcar (lambda (s) (condition-case e (read s) (error e))) '("1.0e+NaN" "0.0e+NaN" "-0.0e+NaN" "-1.0e+NaN" "2.0e+NaN" "12.0e+NaN" ".5e+NaN" "1.0e+nan" "1.0e+inf" "1.0e+INF" "-1.0e+INF" "+1.0e+NaN" "1.e+NaN" "-.e+NaN" "3e+NaN" "1.0e+NaNx" "+INF" "1.5e+NaN")) (format "%S" (read "7.0e+NaN")) (mapcar #'string-to-number '("1.0e+NaN" "1.0e+nan" "1.0e+INF" "-2.0e+NaN" "1.0e+Inf")))"##,
+        r##"((1.0e+NaN 0.0e+NaN -0.0e+NaN -1.0e+NaN 2.0e+NaN 12.0e+NaN 2251799813685246.0e+NaN 1.0e+nan 1.0e+inf 1.0e+INF -1.0e+INF 1.0e+NaN 1.0e+NaN -.e+NaN 3.0e+NaN 1.0e+NaNx +INF 1.0e+NaN) "7.0e+NaN" (1.0e+NaN 1.0 1.0e+INF -2.0e+NaN 1.0))"##,
+        "NaN payloads",
+    );
+}
+
+#[test]
+fn make_local_variable_reports_a_let_binding_of_a_localized_variable() {
+    // data.c:Fmake_local_variable messages when a SPECPDL_LET_DEFAULT
+    // binding made in this buffer shadows the new local: only for a
+    // localized variable without a cell here (`case-fold-search' is one),
+    // never for a plain variable, whose let is SPECPDL_LET, nor a
+    // BUFFER_OBJFWD slot, which only gets its flag.
+    assert_oracle_contract_matches_interpreter(
+        r##"(progn (defvar zz-r222-plain 0) (defvar-local zz-r222-local 0) (with-temp-buffer (let ((start (with-current-buffer (get-buffer-create "*Messages*") (point-max)))) (let ((zz-r222-plain 1)) (make-local-variable 'zz-r222-plain)) (let ((zz-r222-local 1)) (make-local-variable 'zz-r222-local)) (let ((case-fold-search 1)) (make-local-variable 'case-fold-search)) (let ((fill-column 3)) (make-local-variable 'fill-column)) (setq-local zz-r222-local 2) (let ((zz-r222-local 3)) (make-local-variable 'zz-r222-local)) (list (local-variable-p 'zz-r222-plain) (local-variable-p 'zz-r222-local) (local-variable-p 'case-fold-search) (local-variable-p 'fill-column) (with-current-buffer "*Messages*" (buffer-substring-no-properties start (point-max)))))))"##,
+        r##"(t t t t "Making zz-r222-local buffer-local while locally let-bound!
+Making case-fold-search buffer-local while locally let-bound!
+")"##,
+        "let-bound make-local-variable message",
+    );
+}
+
+#[test]
+fn watchers_hear_localized_c_variables_as_symbol_localized_bindings() {
+    // Watchers hear `case-fold-search' and `syntax-propertize--done' as
+    // localized variables: a let of the default is `let' in the current
+    // buffer, its unbinding a `set' of the default, and
+    // kill-local-variable a `makunbound' in the buffer; a BUFFER_OBJFWD
+    // slot's let and kill-local-variable go through set_default_internal
+    // or nothing, and a plain variable's kill-local-variable tells no one.
+    assert_oracle_contract_matches_interpreter(
+        r##"(progn (defvar zz-r222-wv 0) (let* ((log nil) (f (lambda (s n o w) (push (list s n o (and w (buffer-name w))) log))) (vars '(case-fold-search fill-column zz-r222-wv syntax-propertize--done))) (dolist (v vars) (add-variable-watcher v f)) (unwind-protect (with-temp-buffer (rename-buffer " zz-w") (let ((case-fold-search 'x)) nil) (let ((fill-column 3)) nil) (let ((syntax-propertize--done 5)) nil) (list (kill-local-variable 'zz-r222-wv) (kill-local-variable 'fill-column)) (makunbound 'zz-r222-wv) (setq zz-r222-wv 1) (setq-local case-fold-search nil) (kill-local-variable 'case-fold-search) (list (reverse log) (local-variable-if-set-p 'case-fold-search) (local-variable-p 'case-fold-search) (local-variable-if-set-p 'syntax-propertize--done) (default-value 'syntax-propertize--done))) (dolist (v vars) (remove-variable-watcher v f)))))"##,
+        r##"(((case-fold-search x let " zz-w") (case-fold-search t set nil) (fill-column 3 set nil) (fill-column 70 set nil) (syntax-propertize--done 5 let " zz-w") (syntax-propertize--done -1 set nil) (zz-r222-wv nil makunbound nil) (zz-r222-wv 1 set nil) (case-fold-search nil set " zz-w") (case-fold-search nil makunbound " zz-w")) t nil t -1)"##,
+        "localized C variable watchers",
+    );
+}
+
+#[test]
+fn startup_globals_are_special_only_where_gnu_declares_them() {
+    // fns.c unmarks `features'; the syms_of_* functions make the history
+    // lists, `echo-area-clear-hook' and the coding categories with Fset;
+    // vc-hooks.el makes `vc-mode' buffer-local without a `defvar'.  None
+    // is special, and the mode variables GNU never defines stay void.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list (special-variable-p 'features) (special-variable-p 'vc-mode) (local-variable-if-set-p 'vc-mode) (special-variable-p 'echo-area-clear-hook) (boundp 'buffer-name-history) (special-variable-p 'buffer-name-history) (boundp 'yes-or-no-p-history) (special-variable-p 'coding-category-utf-8) (boundp 'read-only-mode) (boundp 'header-line-indent-mode) (boundp 'visual-line-mode-on-hook) (special-variable-p 'case-fold-search) (local-variable-if-set-p 'syntax-propertize--done))"##,
+        r##"(nil nil t nil t nil t nil nil nil nil t t)"##,
+        "startup global specialness",
+    );
+}
+
+#[test]
+fn startup_values_are_the_ones_gnus_c_and_preloaded_lisp_make() {
+    // fns.c's Fprovide conses each feature onto `features', the C ones
+    // first (`emacs' last of all); lread.c's suffix lists, image.c's
+    // registration order, frame.c's defaults for the contracted build,
+    // charset.c's map directory and callproc.c's `exec-path' as GNU makes
+    // them; mouse.el and minibuffer.el define their own variables.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list (last features 3) (cadr (memq 'base64 features)) (progn (provide 'zz-r223-probe) (car features)) dynamic-library-suffixes load-suffixes image-types default-frame-scroll-bars frame-inhibit-implied-resize (assq 4 mouse-wheel-buttons) read-file-name-function (equal charset-map-path (list (expand-file-name "charsets" data-directory))) (null (member "" exec-path)) (special-variable-p 'read-file-name-function))"##,
+        r##"((make-network-process native-compile emacs) format zz-r223-probe (".so" "") (".so" ".elc" ".el") (svg webp png gif tiff jpeg xpm xbm pbm) left (tab-bar-lines tool-bar-lines) (4 . wheel-up) read-file-name-default t t t)"##,
+        "startup values",
+    );
+}
+
+#[test]
+fn byte_boolean_vars_lists_the_builds_late_defvar_bools() {
+    // lread.c:defvar_bool conses each DEFVAR_BOOL onto `byte-boolean-vars'
+    // and syms_of_lread empties it on the way (so `load-in-progress' is
+    // not there); xdisp.c's `word-wrap-by-category', written
+    // `DEFVAR_BOOL(' with no space, is a forwarded boolean like the rest.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list (condition-case e (defvaralias 'word-wrap-by-category 'zz-r224-alias) (error e)) (let ((word-wrap-by-category 5)) word-wrap-by-category) (length byte-boolean-vars) (car byte-boolean-vars) (car (last byte-boolean-vars)) (and (memq 'word-wrap-by-category byte-boolean-vars) t) (memq 'load-in-progress byte-boolean-vars) (and (memq 'case-fold-search byte-boolean-vars) t))"##,
+        r##"((error "Cannot make a built-in variable an alias: word-wrap-by-category") t 114 font-use-system-font load-dangerous-libraries t nil nil)"##,
+        "byte-boolean-vars",
+    );
+}
+
+#[test]
+fn a_failed_autoload_or_require_undoes_its_definitions_and_features() {
+    // eval.c:load_with_autoload_queue: while an autoload's or `require''s
+    // file loads, `defalias' queues each symbol whose definition it
+    // replaces and `provide' the `features' list it replaces; when the
+    // load signals, un_autoload puts back `features' and each
+    // definition `function-history' saved.  NOERROR excuses only a
+    // missing file, a function's own name must carry a suffix, and a
+    // file that defines nothing is named as `load-history' records it.
+    assert_oracle_contract_matches_interpreter(
+        r##"(let* ((dir (make-temp-file "zz-r225" t)) (load-path (list dir)) (write (lambda (name text) (with-temp-file (expand-file-name name dir) (insert text))))) (funcall write "zz-r225a.el" "(defalias 'zz-r225-g (lambda () 'new)) (defalias 'zz-r225-f (lambda () 'f)) (provide 'zz-r225a) (error \"boom\")") (funcall write "zz-r225b.el" "(provide 'zz-r225b) (defalias 'zz-r225-g2 (lambda () 'new2)) (signal 'file-missing '(\"x\"))") (funcall write "zz-r225c.el" "(provide 'zz-r225c)") (funcall write "zz-r225e.el" "(error \"inner\")") (funcall write "zz-r225s" "(defalias 'zz-r225-s (lambda () 's))") (fset 'zz-r225-g (lambda () 'old)) (fset 'zz-r225-g2 (lambda () 'old2)) (autoload 'zz-r225-f "zz-r225a") (autoload 'zz-r225-h "zz-r225c") (autoload 'zz-r225-s "zz-r225s") (unwind-protect (list (condition-case e (zz-r225-f) (error e)) (featurep 'zz-r225a) (funcall 'zz-r225-g) (autoloadp (symbol-function 'zz-r225-f)) (length (get 'zz-r225-g 'function-history)) (condition-case e (require 'zz-r225b nil t) (error (car e))) (featurep 'zz-r225b) (funcall 'zz-r225-g2) (condition-case e (zz-r225-h) (error (equal (cadr e) (format "Autoloading file %s failed to define function zz-r225-h" (expand-file-name "zz-r225c.el" dir))))) (featurep 'zz-r225c) (condition-case e (autoload-do-load '(autoload "zz-r225e") 'zz-r225-x t) (error e)) (autoload-do-load '(autoload "zz-r225-missing") 'zz-r225-x t) (condition-case e (zz-r225-s) (error (car e))) (condition-case e (require 'zz-r225-nofile nil t) (error e))) (delete-directory dir t)))"##,
+        r##"((error "boom") nil old t 2 file-missing nil old2 t t (error "inner") nil file-missing nil)"##,
+        "autoload queue",
+    );
+}
+
+#[test]
+fn autoload_defaliases_its_stub_and_provide_checks_subfeatures_as_a_list() {
+    // eval.c:Fautoload is Fdefalias of (autoload FILE ...) holding FILE
+    // itself, so `defalias-fset-function' installs it; fns.c's Fprovide
+    // takes SUBFEATURES through CHECK_LIST and Frequire hands FILENAME
+    // to Fload only when the feature is missing.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list (eq (nth 1 (symbol-function (progn (autoload 'zz-r225-q "zz-file") 'zz-r225-q))) (nth 1 (symbol-function 'zz-r225-q))) (let ((f "zz-file2")) (autoload 'zz-r225-q2 f) (eq f (nth 1 (symbol-function 'zz-r225-q2)))) (progn (put 'zz-r225-q3 'defalias-fset-function (lambda (s d) (fset s (list 'autoload "hooked")))) (autoload 'zz-r225-q3 "orig") (symbol-function 'zz-r225-q3)) (condition-case e (provide 'zz-r225-p '(a . b)) (error e)) (get 'zz-r225-p 'subfeatures) (condition-case e (require 'emacs 5) (error e)) (condition-case e (autoload 'zz-r225-q4 'notstring) (error e)))"##,
+        r##"(t t (autoload "hooked") zz-r225-p (a . b) emacs (wrong-type-argument stringp notstring))"##,
+        "autoload as defalias",
+    );
+}
+
+#[test]
+fn conversions_run_in_codings_work_buffer_through_safe_call() {
+    // coding.c:code_conversion_save keeps one " *code-conversion-work*"
+    // buffer (undo off, `inhibit-modification-hooks' local) that a
+    // string decode fills; encode_coding_object runs a pre-write
+    // conversion there and decode_coding_object a post-read one, each
+    // through safe_calln, which logs and mutes an error (CHECK_FIXNAT then
+    // rejects the nil a post-read gave back).  A region's post-read runs
+    // in its own buffer, and a buffer the pre-write switched to is killed.
+    assert_oracle_contract_matches_interpreter(
+        r##"(progn (defun zz-r226-pw-err (_b _e) (error "pw boom")) (defun zz-r226-pr-err (_n) (error "pr boom")) (defvar zz-r226-shown nil) (defvar zz-r226-shown2 nil) (defun zz-r226-pw-show (b e) (setq zz-r226-shown (list (buffer-name) b e (point) (buffer-string) enable-multibyte-characters buffer-undo-list)) (goto-char (point-max)) (insert "!")) (defun zz-r226-pr-show (n) (setq zz-r226-shown2 (list (buffer-name) n (point) (buffer-string) buffer-undo-list)) (goto-char (point-max)) (insert "?") 5) (defun zz-r226-pw-new (_b _e) (set-buffer (generate-new-buffer "zz-r226-new")) (insert "NEW")) (define-coding-system 'zz-r226-a "x" :coding-type 'utf-8 :mnemonic ?z :pre-write-conversion 'zz-r226-pw-err :post-read-conversion 'zz-r226-pr-err) (define-coding-system 'zz-r226-b "x" :coding-type 'utf-8 :mnemonic ?z :pre-write-conversion 'zz-r226-pw-show :post-read-conversion 'zz-r226-pr-show) (define-coding-system 'zz-r226-c "x" :coding-type 'utf-8 :mnemonic ?z :pre-write-conversion 'zz-r226-pw-new) (list (progn (decode-coding-string "\351" 'latin-1) (buffer-live-p (get-buffer " *code-conversion-work*"))) (with-current-buffer " *code-conversion-work*" (list (buffer-string) buffer-undo-list enable-multibyte-characters (local-variable-p 'inhibit-modification-hooks))) (condition-case e (string-to-list (encode-coding-string "é" 'zz-r226-a)) (error e)) (condition-case e (decode-coding-string "\303\251" 'zz-r226-a) (error e)) (string-to-list (encode-coding-string "é" 'zz-r226-b)) zz-r226-shown (with-temp-buffer (insert "ab") (encode-coding-region 1 3 'zz-r226-b) (list (buffer-string) zz-r226-shown)) (decode-coding-string "\303\251x" 'zz-r226-b) zz-r226-shown2 (with-temp-buffer (insert "\303\251y") (list (decode-coding-region 1 (point-max) 'zz-r226-b) (buffer-string) (car zz-r226-shown2) (cdr zz-r226-shown2) (point))) (encode-coding-string "é" 'zz-r226-c) (get-buffer "zz-r226-new") (let ((n 0)) (dolist (b (buffer-list)) (when (string-prefix-p " *code-conversion-work" (buffer-name b)) (setq n (1+ n)))) n)))"##,
+        r##"(t (#("é" 0 1 (charset iso-8859-1)) t t t) (195 169) (wrong-type-argument wholenump nil) (195 169 33) (" *code-conversion-work*" 1 2 2 "é" t t) ("ab!" (" *code-conversion-work*" 1 3 3 "ab" nil t)) "éx?" (" *code-conversion-work*" 2 1 "éx" t) (3 "éy?" " *temp*" (2 1 "éy" t) 4) "NEW" nil 1)"##,
+        "coding work buffer",
+    );
+}
+
+#[test]
+fn encoding_writes_the_bom_and_records_the_coding_after_its_conversion() {
+    // encode_coding_utf_8 writes a BOM unless CODING_UTF_8_BOM is
+    // utf_without_bom (`utf-8-auto' included); code_convert_string and
+    // code_convert_region set `last-coding-system-used' once the encoding,
+    // pre-write conversion and all, is done; write-region's e_write runs
+    // the pre-write conversion (`utf-7' writes UTF-7) after choosing the
+    // coding.
+    assert_oracle_contract_matches_interpreter(
+        r##"(let ((f (make-temp-file "zz-r226")) r) (unwind-protect (dolist (cs '(utf-7 utf-8-auto) (nreverse r)) (push (list (string-to-list (encode-coding-string "é" cs)) (progn (encode-coding-string "x" cs) last-coding-system-used) (string-to-list (encode-coding-string "" cs)) (with-temp-buffer (insert "été") (encode-coding-region (point-min) (point-max) cs) (list (string-to-list (buffer-string)) last-coding-system-used)) (progn (with-temp-buffer (insert "été\n") (let ((coding-system-for-write cs)) (write-region nil nil f nil 'silent))) last-coding-system-used) (with-temp-buffer (set-buffer-multibyte nil) (insert-file-contents-literally f) (string-to-list (buffer-string))) (with-temp-buffer (let ((coding-system-for-read cs)) (insert-file-contents f)) (list (buffer-string) buffer-file-coding-system))) r)) (delete-file f)))"##,
+        r##"(((43 65 79 107) utf-7 nil ((43 65 79 107 45 116 43 65 79 107) utf-7) utf-16be (43 65 79 107 45 116 43 65 79 107 45 10) ("été
+" utf-7-unix)) ((239 187 191 195 169) utf-8-auto (239 187 191) ((4194287 4194235 4194239 4194243 4194217 116 4194243 4194217) utf-8-auto) utf-8-auto-unix (239 187 191 195 169 116 195 169 10) ("été
+" utf-8-with-signature-unix)))"##,
+        "encode BOM and coding used",
+    );
+}
+
+#[test]
+fn integers_obey_integer_width_and_floats_round_as_floatfns_c() {
+    // bignum.c:make_integer_mpz signals `overflow-error' for a result
+    // wider than both `integer-width' (compared unsigned) and 128 bits,
+    // while the reader's make_bignum_str does not check; emacs_mpz_pow_ui
+    // and emacs_mpz_mul_2exp refuse results past GMP's limb limit.
+    // floatfns.c:Fexpt is expt_integer only for a natural exponent, which
+    // must fit an unsigned long; frexp is libc's, ldexp rounds once, and
+    // rounding_driver scales floats to integers (an infinite or NaN
+    // operand overflows, a finite one over an infinity is zero).
+    assert_oracle_contract_matches_interpreter(
+        r##"(mapcar (lambda (f) (condition-case e (eval f t) (error e))) '((let ((integer-width -1)) (logb (expt 2 200))) (let ((integer-width 128)) (expt 2 128)) (let ((integer-width 10)) (logb (expt 2 127))) (let ((x (expt 2 200))) (let ((integer-width 10)) (logior x 1))) (let ((x (expt 2 200))) (let ((integer-width 10)) (logb (read (number-to-string x))))) (let ((integer-width 10)) (truncate 1e100 3)) (let ((integer-width most-positive-fixnum)) (expt 3 most-positive-fixnum)) (let ((integer-width most-positive-fixnum)) (ash 1 most-positive-fixnum)) (expt 2 65536) (logb (expt 2 65535)) (expt 2 -1) (expt (expt 2 100) -1) (expt -1 (expt 2 70)) (expt 0 (expt 2 70)) (expt 2 (expt 2 70)) (expt 7 (expt 2 63)) (frexp 5e-324) (frexp 1.0e+INF) (frexp 0.0e+NaN) (frexp -0.0) (frexp (expt 2 2000)) (truncate 1 1.0e+INF) (floor -1 1.0e+INF) (round 1.0e+INF 1.0e+INF) (truncate 0 0.0e+NaN) (round 5e-324 5e-324) (logb (floor 1e308 5e-324)) (truncate most-negative-fixnum -1) (round 2.5 1) (round 3.5 1.0) (ldexp 5e-324 1100) (ldexp 1.0 -1074) (ldexp 3.0 -1075) (logb 5e-324)))"##,
+        r##"(200 (overflow-error) 127 (overflow-error) 200 (overflow-error) (overflow-error) (overflow-error) (overflow-error) 65535 0.5 7.888609052210118e-31 1 0 (overflow-error) (overflow-error) (0.5 . -1073) (1.0e+INF . 0) (0.0e+NaN . 0) (-0.0 . 0) (1.0e+INF . 0) 0 0 (overflow-error) (overflow-error) 1 2097 2305843009213693952 2 4 67108864.0 5e-324 1e-323 -1074)"##,
+        "integer-width and float rounding",
+    );
+}
+
+#[test]
+fn read_symbols_are_named_with_the_multibyteness_readchar_reports() {
+    // lread.c read0 makes a new symbol's name with make_specified_string
+    // of the multibyteness READCHAR_REPORT_MULTIBYTE gives: multibyte for
+    // a multibyte string or buffer and for a file `load' reads, unibyte
+    // (each character one byte) for a unibyte string or buffer or a
+    // function; `##' and an empty `#:' use empty_unibyte_string.
+    // keyboard.c:apply_modifiers_uncached interns a multibyte name, and
+    // print.c reads a unibyte name's bytes as characters 0..255.
+    assert_oracle_contract_matches_interpreter(
+        r###"(list (multibyte-string-p (symbol-name (read (string-to-multibyte "zz-r228a")))) (multibyte-string-p (symbol-name (read "zz-r228b"))) (with-temp-buffer (insert "zz-r228c") (goto-char 1) (multibyte-string-p (symbol-name (read (current-buffer))))) (with-temp-buffer (set-buffer-multibyte nil) (insert "zz-r228d") (goto-char 1) (multibyte-string-p (symbol-name (read (current-buffer))))) (let ((s (read "zz-r228e\377"))) (list (multibyte-string-p (symbol-name s)) (string-to-list (symbol-name s)) (eq s (intern "zz-r228e\377")))) (multibyte-string-p (symbol-name (read (string-to-multibyte "#:zz-r228f")))) (multibyte-string-p (symbol-name (read "#:zz-r228g"))) (let ((f (make-temp-file "zz-r228" nil ".el"))) (unwind-protect (progn (with-temp-file f (insert "(setq zz-r228-v 'zz-r228h)")) (load f nil t) (multibyte-string-p (symbol-name zz-r228-v))) (delete-file f))) (with-temp-buffer (insert "(setq zz-r228-w 'zz-r228i)") (eval-buffer) (multibyte-string-p (symbol-name zz-r228-w))) (prin1-to-string (intern "zz-r228j\300")) (string-to-list (prin1-to-string (make-symbol "\377"))) (format "%S %s" (intern "zz-r228k\301") (intern "zz-r228k\301")) (let ((n 0)) (multibyte-string-p (symbol-name (read (lambda (&optional c) (if c nil (setq n (1+ n)) (if (< n 4) ?y ?\s))))))) (let ((s (intern "zz-r228l\302"))) (list (prin1-to-string s t) (string-to-list (format "%s" s)) (with-output-to-string (princ s)))) (eq (read (string-to-multibyte "zz-r228m")) (read "zz-r228m")) (multibyte-string-p (symbol-name (caar (read-from-string (string-to-multibyte "(zz-r228n)"))))) (multibyte-string-p (symbol-name (event-convert-list '(control meta zz-r228o)))) (multibyte-string-p (symbol-name (read (string-to-multibyte "##")))) (multibyte-string-p (symbol-name (read (string-to-multibyte "#:")))))"###,
+        r###"(t nil t nil (nil (122 122 45 114 50 50 56 101 255) t) t nil t t "zz-r228jÀ" (255) "zz-r228kÁ zz-r228k\301" nil ("zz-r228lÂ" (122 122 45 114 50 50 56 108 194) "zz-r228lÂ") t t t nil nil)"###,
+        "read symbol name multibyteness",
+    );
+}
+
+#[test]
+fn startup_lisp_state_events_and_display_stamps_are_as_gnu_makes_them() {
+    // keyboard.c:Fevent_convert_list walks its argument as
+    // FOR_EACH_TAIL_SAFE does, takes a one-character symbol as its name's
+    // first byte and modifies the base through apply_modifiers, whose
+    // `modifier-cache' is the base's; xdisp.c:update_overlay_arrows (-1)
+    // marks the arrows when a window is made inaccurate; window.c's
+    // set_window_buffer stamps the buffer's display count and time.  The
+    // preloaded Lisp, not Emaxx's startup, makes `minor-mode-list',
+    // `minor-mode-map-alist', `fringe-bitmaps' and the definition forms'
+    // properties, in its own order.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list (event-convert-list '()) (event-convert-list 'foo) (event-convert-list '(control . a)) (event-convert-list '(control t)) (event-convert-list (list 'control (intern "\351"))) (condition-case e (event-convert-list '(control a b)) (error e)) (condition-case e (event-convert-list '(meta 1.5 . x)) (error e)) (event-convert-list '(meta 97 . x)) (progn (event-convert-list '(control zzr229a)) (list (symbol-plist 'zzr229a) (symbol-plist 'C-zzr229a))) (progn (put 'zzr229b 'event-kind 'mouse-click) (event-convert-list '(double zzr229b)) (symbol-plist 'double-zzr229b)) (progn (defvar zzr229c nil) (let ((overlay-arrow-variable-list '(zzr229c 1))) (force-window-update (selected-window))) (symbol-plist 'zzr229c)) (progn (defvar zzr229d (make-marker)) (let ((overlay-arrow-variable-list '(zzr229d))) (redraw-frame)) (symbol-plist 'zzr229d)) (let ((b (generate-new-buffer "zz229"))) (prog1 (list (buffer-local-value 'buffer-display-count b) (progn (set-window-buffer nil b) (buffer-local-value 'buffer-display-count b)) (consp (buffer-local-value 'buffer-display-time b)) (progn (set-window-buffer nil b) (buffer-local-value 'buffer-display-count b))) (kill-buffer b))) (with-current-buffer "*scratch*" (list buffer-display-count (consp buffer-display-time))) (let (r (p (symbol-plist 'when))) (while p (push (car p) r) (setq p (cddr p))) (nreverse r)) (let (r (p (symbol-plist 'write-file-functions))) (while p (push (car p) r) (setq p (cddr p))) (nreverse r)) (last minor-mode-list 2) (assq 'visual-line-mode minor-mode-map-alist) (length fringe-bitmaps) (aref printable-chars #x3fff7f) (aref printable-chars #x3fff80) (get 'defmacro 'doc-string-elt))"##,
+        r##"(nil nil control 20 67109097 (error "Two bases given in one event") (error "Invalid base event") 134217825 ((modifier-cache ((67108864 . C-zzr229a))) nil) (event-kind mouse-click) (last-arrow-position t last-arrow-string t) (last-arrow-position t last-arrow-string t) (0 1 t 2) (2 t) (lisp-indent-function edebug-form-spec) (variable-documentation permanent-local) (view-mode hs-minor-mode) (visual-line-mode keymap (remap keymap (move-end-of-line . end-of-visual-line) (move-beginning-of-line . beginning-of-visual-line) (kill-line . kill-visual-line))) 24 t nil 3)"##,
+        "startup Lisp state, events and display stamps",
+    );
+}
+
+#[test]
+fn region_conversions_put_back_point_and_markers_as_coding_c() {
+    // coding.c:decode_coding_object and encode_coding_object convert a
+    // region of the current buffer (nil or the buffer itself as
+    // DESTINATION) where it stands: point after the region moves by the
+    // bytes produced in a unibyte buffer, the characters in a multibyte
+    // one, and the markers at the region's end (its start for an
+    // insertion-type one) go back as `need_adjustment' marked them.
+    // decode_coding inserts with undo off, puts each `charset' run
+    // through Fput_text_property, change hooks and all, and records the
+    // characters produced, which the after-change functions are told of.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list  (with-temp-buffer (set-buffer-multibyte nil) (insert "ab\n\372\304!") (decode-coding-region 4 (point) 'koi8-r-dos) (list (point) (point-max) (bolp)))  (with-temp-buffer (set-buffer-multibyte nil) (insert "ab\n\303\251x") (goto-char 2) (list (decode-coding-region 1 (point-max) 'utf-8 (current-buffer)) (point) (point-max) (string-to-list (buffer-string))))  (with-temp-buffer (insert "ab\néèxzz") (let ((ms (list (copy-marker 4) (copy-marker 4 t) (copy-marker 7) (copy-marker 7 t) (copy-marker 5)))) (goto-char 9) (list (encode-coding-region 4 7 'utf-8) (point) (mapcar #'marker-position ms))))  (with-temp-buffer (set-buffer-multibyte nil) (insert "ab\n\303\251\303\250xzz") (let ((ms (list (copy-marker 4) (copy-marker 4 t) (copy-marker 9) (copy-marker 9 t) (copy-marker 5)))) (goto-char 11) (list (decode-coding-region 4 9 'utf-8) (point) (mapcar #'marker-position ms))))  (let (log) (with-temp-buffer (set-buffer-multibyte nil) (insert "ab\n\372\304!") (add-hook 'after-change-functions (lambda (b e l) (push (list 'a b e l) log)) nil t) (add-hook 'before-change-functions (lambda (b e) (push (list 'b b e) log)) nil t) (decode-coding-region 4 7 'koi8-r) (nreverse log)))  (let ((b (generate-new-buffer "zz231"))) (prog1 (with-current-buffer b (buffer-enable-undo) (set-buffer-multibyte nil) (insert "ab\n\372\304!") (undo-boundary) (setq buffer-undo-list (list nil)) (decode-coding-region 4 7 'koi8-r) (list (car buffer-undo-list) (cons (string-to-list (car (cadr buffer-undo-list))) (cdr (cadr buffer-undo-list))))) (kill-buffer b)))  (let ((o (generate-new-buffer "zz231o")) log) (prog1 (progn (with-current-buffer o (set-buffer-multibyte nil) (add-hook 'after-change-functions (lambda (b e l) (push (list 'a b e l) log)) nil t)) (with-temp-buffer (insert "\372\304!") (decode-coding-region 1 4 'koi8-r o)) (with-current-buffer o (list (point) (point-max) (get-text-property 1 'charset) (nreverse log)))) (kill-buffer o))))"##,
+        r##"((9 9 nil) (5 1 7 (97 98 10 195 169 120)) (5 11 (4 4 9 9 4)) (3 11 (4 4 9 9 4)) ((b 4 7) (b 4 7) (a 4 7 3) (a 4 7 3)) ((4 . 7) ((250 196 33) . 4)) (1 6 koi8-r ((a 1 4 3) (a 1 4 0))))"##,
+        "region conversions in place",
+    );
+}
+
+#[test]
+fn file_decodes_put_charset_runs_and_temp_text_is_written_as_write_region() {
+    // fileio.c:Finsert_file_contents decodes through decode_coding_gap,
+    // whose produce_charset puts each `charset' run through
+    // Fput_text_property with its change hooks, a visit's included; a
+    // REPLACE inserts the conversion buffer's middle with its runs.
+    // Fmake_temp_file_internal writes TEXT through write_region, which
+    // chooses and records the coding.
+    assert_oracle_contract_matches_interpreter(
+        r##"(let ((f (make-temp-file "zz232" nil ".txt" "ab\372\304!\n")) (coding-system-for-read 'koi8-r))  (prog1 (list   (with-temp-buffer (let (log) (add-hook 'after-change-functions (lambda (b e l) (push (list 'a b e l) log)) nil t) (add-hook 'before-change-functions (lambda (b e) (push (list 'b b e) log)) nil t) (list (cadr (insert-file-contents f)) (nreverse log) (buffer-modified-tick) (get-text-property 3 'charset))))   (with-temp-buffer (let (log) (add-hook 'after-change-functions (lambda (b e l) (push (list 'a b e l) log)) nil t) (list (cadr (insert-file-contents f t)) (nreverse log) (buffer-modified-tick) (buffer-modified-p))))   (with-temp-buffer (insert "ab\372\304") (let (log) (add-hook 'after-change-functions (lambda (b e l) (push (list 'a b e l) log)) nil t) (list (cadr (insert-file-contents f nil nil nil t)) (nreverse log) (get-text-property 1 'charset) (get-text-property 3 'charset) (point))))   (let ((g (make-temp-file "zz232m" nil nil "ab\372\304!\n"))) (prog1 (list (file-attribute-size (file-attributes g)) last-coding-system-used) (delete-file g))))   (delete-file f)))"##,
+        r##"((6 ((b 1 1) (b 1 7) (a 1 7 6) (a 1 7 0)) 5 koi8-r) (6 ((a 1 7 6)) 5 nil) (4 ((a 3 3 2) (a 3 7 0)) nil koi8-r 7) (6 utf-8-unix))"##,
+        "file decodes and temp file text",
+    );
+}
+
+#[test]
+fn multibyte_sources_decode_in_one_pass_as_decode_coding() {
+    // coding.c:decode_coding_object over a multibyte source runs the
+    // decoder over ONE_MORE_BYTE's units: a raw-byte character is its
+    // byte and any other character an invalid code, which comes through
+    // without closing the `charset' run, an ISO 2022 decoder going back
+    // to ASCII in G0; a dos utf-8 decoder loses a character read as the
+    // byte after a CR, and no BOM is found behind one.
+    assert_oracle_contract_matches_interpreter(
+        r##"(let ((x (string #x80a)) (runs (lambda (s) (let (r (i 0)) (while (< i (length s)) (let ((n (next-single-property-change i 'charset s (length s)))) (when (get-text-property i 'charset s) (push (list i n (get-text-property i 'charset s)) r)) (setq i n))) (nreverse r)))) (result nil)) (dolist (case (list (list 'latin-1 (concat "a\351" x "\351b")) (list 'latin-1 (concat "a\r" x "\nb")) (list 'cp1252 (concat (string-to-multibyte "\202") x (string-to-multibyte "\240"))) (list 'shift_jis (concat (string-to-multibyte "\202\240") x "a\n")) (list 'euc-jp (concat (string-to-multibyte "\351") x (string-to-multibyte "\351"))) (list 'big5 (concat (string-to-multibyte "\244\242") x "b")) (list 'iso-2022-jp (concat "\e$B$\"" x "$$\e(B")) (list 'iso-2022-kr (concat "\e$)C\x0e!!" x "\x0e!!\x0f")) (list 'ctext (concat "\e$)A\x0e!!\x0f" x "\x0e!!\x0f")) (list 'iso-2022-7bit (concat "\e(I1" x "1")) (list 'utf-8-dos (concat "a\r" x "\nb")) (list 'utf-8-dos (concat "a\r" x "c")) (list 'utf-8-with-signature (concat x "\357\273\277a")))) (let ((s (decode-coding-string (cadr case) (car case)))) (push (list (car case) (append s nil) (funcall runs s)) result))) (nreverse result))"##,
+        r##"((latin-1 (97 233 2058 233 98) ((0 5 iso-8859-1))) (latin-1 (97 13 2058 10 98) ((0 5 iso-8859-1))) (cp1252 (8218 2058 160) ((0 3 windows-1252))) (shift_jis (12354 2058 97 10) ((0 4 japanese-jisx0208))) (euc-jp (4194281 2058 4194281) ((0 2 japanese-jisx0208))) (big5 (19984 2058 98) ((0 3 big5))) (iso-2022-jp (12354 2058 36 36) ((0 4 japanese-jisx0208))) (iso-2022-kr (12288 2058 12288) ((0 3 korean-ksc5601))) (ctext (12288 2058 12288) ((0 3 chinese-gb2312))) (iso-2022-7bit (65393 2058 49) ((0 3 katakana-jisx0201))) (utf-8-dos (97 10 98) nil) (utf-8-dos (97 13 99) nil) (utf-8-with-signature (2058 65279 97) nil))"##,
+        "multibyte sources decoded in one pass",
+    );
+}
+
+#[test]
+fn decoders_read_the_unit_after_a_cr_and_fill_a_charbuf_at_a_time() {
+    // Under a dos eol each coding.c decoder reads the unit after a CR as
+    // byte_after_cr, the next character's first unit: one that starts an
+    // invalid sequence is lost (invalid_code stores the unit after it, as
+    // ASCII or BYTE8_TO_CHAR by the decoder's rule), as is a multibyte
+    // source's character there.  decode_coding calls the decoder a
+    // charbuf (CHARBUF_SIZE ints less its annotation room) at a time,
+    // closing the `charset' run at each call's end.
+    assert_oracle_contract_matches_interpreter(
+        r##"(let ((x (string #x80a)) (ivs (lambda (s) (mapcar (lambda (i) (list (car i) (cadr i) (plist-get (nth 2 i) 'charset))) (object-intervals s))))) (list (mapcar (lambda (cs) (append (decode-coding-string "a\r\377b\r\200\nc\r\r\240d" cs) nil)) '(utf-8-dos shift_jis-dos big5-dos euc-jp-dos latin-1-dos emacs-mule-dos cp1252-dos utf-8-with-signature-dos)) (append (decode-coding-string "a\0\r\0\200\0b\0\r\0" 'utf-16le-dos) nil) (mapcar (lambda (cs) (append (decode-coding-string (concat "a\r" x x "b\r" (string-to-multibyte "\377") x "c\r" x "\nd") cs) nil)) '(utf-8-dos shift_jis-dos big5-dos iso-2022-jp-dos emacs-mule-dos utf-16le-dos cp1252-dos)) (funcall ivs (decode-coding-string (apply #'concat (make-list 17000 "\202\240")) 'shift_jis)) (funcall ivs (decode-coding-string (concat "\e$B" (apply #'concat (make-list 17000 "$\"")) "\e(B") 'iso-2022-jp)) (funcall ivs (decode-coding-string (apply #'concat (make-list 17000 "\222\244\242")) 'emacs-mule)) (with-temp-buffer (insert (apply #'concat (make-list 33000 "\351"))) (decode-coding-region (point-min) (point-max) 'latin-1) (funcall ivs (current-buffer)))))"##,
+        r##"(((97 13 98 10 99 13 13 100) (97 13 4194146 13 4194058 99 13 13 4194148) (97 13 4194146 13 4194058 99 13 13 4194148) (97 13 98 10 99 13 13 100) (97 13 255 98 13 128 10 99 13 13 160 100) (97 13 98 10 99 13 13 100) (97 13 255 98 13 8364 10 99 13 13 160 100) (97 13 98 10 99 13 13 100)) (97 13 128 98 13 0) ((97 13 2058 98 13 4191990 99 10 100) (97 13 2058 98 13 2058 99 10 100) (97 13 2058 98 13 2058 99 10 100) (97 13 2058 98 13 2058 99 10 100) (97 13 2058 98 13 2058 99 10 100) (3425 2058 2058 3426 4194303 2058 3427 2058 25610) (97 13 2058 98 13 255 2058 99 10 100)) ((0 16374 japanese-jisx0208) (16374 17000 japanese-jisx0208)) ((0 16369 japanese-jisx0208) (16369 17000 japanese-jisx0208)) ((0 16368 japanese-jisx0208) (16368 17000 japanese-jisx0208)) ((0 16374 iso-8859-1) (16374 32748 iso-8859-1) (32748 33000 iso-8859-1)))"##,
+        "decoders' byte after a CR and charbuf calls",
+    );
+}
+
+#[test]
+fn buffer_decodes_insert_each_call_s_characters_as_insert_from_gap() {
+    // coding.c:produce_chars inserts each decoder call's characters into a
+    // buffer destination with insert_from_gap (a modification tick a
+    // chunk, no hooks), produce_annotation puts that call's `charset' runs
+    // with Fput_text_property (whose change hooks run for each run) and
+    // decode_eol deletes a dos CR at a time with del_range_2 (a tick each,
+    // no hooks, no undo); the markers, overlays, point and undo record of
+    // the decoded region come out as those edits leave them.
+    assert_oracle_contract_matches_interpreter(
+        r##"(let* ((mk (lambda (n s) (apply #'concat (make-list n s)))) (run (lambda (in cs hooks) (with-temp-buffer (insert in) (let ((m (buffer-modified-tick)) (c (buffer-chars-modified-tick)) (zz-log nil)) (when hooks (add-hook 'before-change-functions (lambda (b e) (push (list 'b b e) zz-log)) nil t) (add-hook 'after-change-functions (lambda (b e l) (push (list 'a b e l) zz-log)) nil t)) (decode-coding-region (point-min) (point-max) cs) (list (buffer-size) (- (buffer-modified-tick) m) (- (buffer-chars-modified-tick) c) (length (object-intervals (current-buffer))) (nreverse zz-log)))))) (f (make-temp-file "zz-tick"))) (unwind-protect (list (funcall run (funcall mk 20000 "\303\251") 'utf-8 nil) (funcall run (funcall mk 20000 "\351") 'latin-1 t) (funcall run (funcall mk 10 "a\r\n") 'utf-8-dos t) (funcall run (funcall mk 20000 "a\r\n") 'utf-8-dos nil) (funcall run (funcall mk 10 "a\r") 'utf-8-mac nil) (funcall run (funcall mk 20000 "\202\240\r\n") 'shift_jis-dos nil) (progn (with-temp-file f (set-buffer-multibyte nil) (insert (funcall mk 40000 "\351\r\n"))) (mapcar (lambda (cs) (with-temp-buffer (let ((m (buffer-modified-tick)) (coding-system-for-read cs) (zz-log nil)) (add-hook 'before-change-functions (lambda (b e) (push (list 'b b e) zz-log)) nil t) (add-hook 'after-change-functions (lambda (b e l) (push (list 'a b e l) zz-log)) nil t) (insert-file-contents f) (list (buffer-size) (- (buffer-modified-tick) m) (length (object-intervals (current-buffer))) (length zz-log) (seq-take (nreverse zz-log) 5))))) '(latin-1-dos utf-8-dos))) (with-temp-buffer (insert "xyz") (goto-char 2) (let ((m (buffer-modified-tick)) (coding-system-for-read 'latin-1-dos)) (insert-file-contents f) (list (buffer-size) (- (buffer-modified-tick) m) (length (object-intervals (current-buffer)))))) (with-temp-buffer (let ((m (buffer-modified-tick)) (coding-system-for-read 'latin-1-dos)) (call-process "cat" f t nil) (list (buffer-size) (- (buffer-modified-tick) m) (length (object-intervals (current-buffer)))))) (with-temp-buffer (buffer-enable-undo) (insert "xy") (undo-boundary) (let ((m1 (copy-marker 2)) (m2 (copy-marker 2 t)) (m3 (copy-marker 3))) (goto-char 2) (insert (funcall mk 30 "\351\r\n")) (undo-boundary) (setq buffer-undo-list nil) (decode-coding-region 2 (- (point-max) 1) 'latin-1-dos) (list (buffer-size) (point) (marker-position m1) (marker-position m2) (marker-position m3) (length buffer-undo-list) (cdr (car buffer-undo-list)) (length (car (cadr buffer-undo-list)))))) (with-temp-buffer (insert (funcall mk 20000 "\202\240")) (let ((ov (make-overlay 1 3)) (ov2 (make-overlay 16374 16376))) (decode-coding-region (point-min) (point-max) 'shift_jis) (list (overlay-start ov) (overlay-end ov) (overlay-start ov2) (overlay-end ov2) (point)))) (with-temp-buffer (insert "ab") (let ((dst (generate-new-buffer "zz-dst"))) (with-current-buffer dst (insert "0123") (goto-char 3)) (insert (funcall mk 20 "\351\r\n")) (prog1 (let ((m (with-current-buffer dst (buffer-modified-tick)))) (decode-coding-region 3 (point-max) 'latin-1-dos dst) (with-current-buffer dst (list (buffer-size) (point) (- (buffer-modified-tick) m) (object-intervals (current-buffer))))) (kill-buffer dst))))) (delete-file f)))"##,
+        r##"((20000 43 43 0 nil) (20000 43 42 2 ((b 1 20001) (b 1 16375) (a 1 16375 16374) (b 16375 20001) (a 16375 20001 3626) (a 1 20001 20000))) (20 20 20 0 ((b 1 31) (a 1 21 30))) (40000 20075 20075 0 nil) (20 10 10 0 nil) (40000 20077 20077 4 nil) ((80000 40119 8 18 ((b 1 1) (b 1 16375) (a 1 16375 16374) (b 16375 32749) (a 16375 32749 16374))) (80000 40118 0 2 ((b 1 1) (a 1 80001 0)))) (80003 40119 10) (80000 40154 15) (62 62 2 62 63 3 62 90) (1 1 1 1 20001) (44 3 27 ((0 2 nil) (2 42 (charset iso-8859-1)) (42 44 nil))))"##,
+        "buffer decodes a call at a time",
+    );
+}
+
+#[test]
+fn indirect_buffers_share_their_base_text_and_its_markers() {
+    // buffer.c:Fmake_indirect_buffer gives the indirect buffer its base's
+    // buffer_text, whose one chain holds every marker of the family, the
+    // pt_marker, begv_marker and zv_marker of a buffer not current among
+    // them (zv's of insertion type t): an edit in one buffer moves the
+    // others' point and bounds as markers (record_buffer_markers and
+    // fetch_buffer_markers at each switch), transpose_markers and a
+    // conversion's need_adjustment included, and undo's
+    // record_marker_adjustments names them.  A clone copies its base's
+    // markers as they were when the base was last left.
+    // set-buffer-multibyte refuses an indirect buffer and buffer-swap-text
+    // a family; the windows and overlays of each buffer follow the text.
+    assert_oracle_contract_matches_interpreter(
+        r##"(let ((fresh (lambda (&optional s) (let ((b (generate-new-buffer "base"))) (with-current-buffer b (insert (or s "abcdefghij"))) b))) (ul (lambda (l) (mapcar (lambda (e) (if (markerp (car-safe e)) (list 'M (buffer-name (marker-buffer (car e))) (marker-position (car e)) (cdr e)) e)) l))) (result nil)) (let* ((b (funcall fresh)) (i (make-indirect-buffer b "ind3"))) (with-current-buffer b (narrow-to-region 3 6)) (with-current-buffer i (goto-char 3) (insert "Q") (goto-char 7) (insert "R") (goto-char 1) (delete-char 1)) (push (with-current-buffer b (list (point-min) (point-max) (buffer-string))) result) (kill-buffer b)) (let* ((b (funcall fresh)) (i (make-indirect-buffer b "ind16"))) (with-current-buffer b (narrow-to-region 3 6) (goto-char 4)) (with-current-buffer i (erase-buffer) (insert "new text")) (push (with-current-buffer b (list (point) (point-min) (point-max) (buffer-string))) result) (kill-buffer b)) (let* ((b (funcall fresh)) (i (make-indirect-buffer b "i1i"))) (with-current-buffer i (goto-char 4) (narrow-to-region 4 7)) (with-current-buffer b (goto-char 4) (insert-before-markers "XX") (goto-char 9) (insert-before-markers "YY")) (push (with-current-buffer i (list (point) (point-min) (point-max) (buffer-string))) result) (kill-buffer b)) (let* ((b (funcall fresh)) (m (with-current-buffer b (copy-marker 2))) (i (make-indirect-buffer b "ind15"))) (with-current-buffer b (goto-char 9)) (with-current-buffer i (transpose-regions 1 3 7 10)) (push (list (with-current-buffer b (list (buffer-string) (point))) (marker-position m)) result) (kill-buffer b)) (let* ((b (generate-new-buffer "b13")) i m) (with-current-buffer b (set-buffer-multibyte nil) (insert "ab\303\251cd") (setq m (copy-marker 7))) (setq i (make-indirect-buffer b "ind13")) (push (with-current-buffer i (decode-coding-region 1 7 'utf-8) (list (append (buffer-string) nil) (point))) result) (push (list (with-current-buffer b (list (point) enable-multibyte-characters)) (marker-position m)) result) (kill-buffer b)) (let* ((b (funcall fresh)) (i (make-indirect-buffer b "ind9")) (c (funcall fresh "zz"))) (push (list (condition-case e (with-current-buffer i (set-buffer-multibyte nil)) (error e)) (condition-case e (with-current-buffer i (buffer-swap-text c)) (error e)) (condition-case e (with-current-buffer b (buffer-swap-text c)) (error e))) result) (kill-buffer b) (kill-buffer c)) (let* ((b (funcall fresh)) c1 c2) (with-current-buffer b (goto-char 3) (setq c1 (clone-indirect-buffer "c1" nil)) (goto-char 8) (setq c2 (clone-indirect-buffer "c2" nil))) (push (list (with-current-buffer c1 (point)) (with-current-buffer c2 (point)) (with-current-buffer b (point))) result) (kill-buffer b)) (let* ((b (funcall fresh)) (i (make-indirect-buffer b "u1i"))) (with-current-buffer i (goto-char 5)) (with-current-buffer b (buffer-enable-undo) (setq buffer-undo-list nil) (let ((m (copy-marker 6))) (delete-region 3 8) (push (list (funcall ul buffer-undo-list) (marker-position m)) result))) (push (with-current-buffer i (point)) result) (kill-buffer b)) (let* ((b (funcall fresh)) (i (make-indirect-buffer b "w1i")) o) (set-window-buffer nil i) (set-window-point nil 6) (set-window-start nil 3) (with-current-buffer i (setq o (make-overlay 3 5)) (overlay-put o 'evaporate t)) (with-current-buffer b (goto-char 2) (insert "QQQ") (goto-char 1) (delete-char 1) (delete-region 5 9)) (push (list (window-point) (window-start) (overlay-buffer o)) result) (set-window-buffer nil (other-buffer)) (kill-buffer b)) (let* ((b (funcall fresh "a\351\x20ac;bcd")) (i (make-indirect-buffer b "mbi"))) (with-current-buffer i (goto-char 4)) (with-current-buffer b (set-buffer-multibyte nil)) (push (with-current-buffer i (list (point) (point-max) enable-multibyte-characters)) result) (kill-buffer b)) (let* ((b (funcall fresh)) (i (make-indirect-buffer b "k1i"))) (kill-buffer i) (push (list (eq (buffer-base-buffer i) b) (buffer-live-p i)) result) (kill-buffer b)) (let* ((b (funcall fresh)) (i (make-indirect-buffer b "wp"))) (set-window-buffer nil b) (set-window-point nil 6) (with-current-buffer i (goto-char 1) (insert "WW")) (push (list (window-point) (with-current-buffer b (point))) result) (set-window-buffer nil (other-buffer)) (kill-buffer b)) (nreverse result))"##,
+        r##"((2 7 "QcdeR") (1 1 9 "new text") (6 6 11 "defYY") (("abj" 3) 9) ((97 98 195 169 99 100) 7) ((7 nil) 7) ((error "Cannot do `set-buffer-multibyte' on an indirect buffer") (error "Cannot swap indirect buffers's text") (error "One of the buffers to swap has indirect buffers")) (3 3 8) ((("cdefg" . 3) (M "u1i" 3 -2) (M "base" 3 -3)) 3) 3 (5 5 nil) (6 10 nil) (t nil) (8 8))"##,
+        "indirect buffers sharing their base's text",
     );
 }
 

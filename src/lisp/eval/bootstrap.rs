@@ -118,65 +118,6 @@ pub(super) fn initial_syntax_table(codes: Value) -> CharTableRef {
     table
 }
 
-pub(super) fn current_exec_path() -> Value {
-    match std::env::var_os("PATH") {
-        Some(path) => Value::list(
-            std::env::split_paths(&path)
-                .map(|entry| Value::String(entry.display().to_string().into())),
-        ),
-        None => Value::Nil,
-    }
-}
-
-pub(super) fn tab_bar_new_tab_choice_custom_type() -> Value {
-    Value::list([
-        Value::Symbol("choice".into()),
-        Value::list([
-            Value::Symbol("const".into()),
-            Value::Symbol(":tag".into()),
-            Value::String("Current buffer".into()),
-            Value::T,
-        ]),
-        Value::list([
-            Value::Symbol("const".into()),
-            Value::Symbol(":tag".into()),
-            Value::String("Current window".into()),
-            Value::Symbol("window".into()),
-        ]),
-        Value::list([
-            Value::Symbol("string".into()),
-            Value::Symbol(":tag".into()),
-            Value::String("Buffer".into()),
-            Value::String("*scratch*".into()),
-        ]),
-        Value::list([
-            Value::Symbol("directory".into()),
-            Value::Symbol(":tag".into()),
-            Value::String("Directory".into()),
-            Value::Symbol(":value".into()),
-            Value::String("~/".into()),
-        ]),
-        Value::list([
-            Value::Symbol("file".into()),
-            Value::Symbol(":tag".into()),
-            Value::String("File".into()),
-            Value::Symbol(":value".into()),
-            Value::String("~/.emacs".into()),
-        ]),
-        Value::list([
-            Value::Symbol("function".into()),
-            Value::Symbol(":tag".into()),
-            Value::String("Function".into()),
-        ]),
-        Value::list([
-            Value::Symbol("const".into()),
-            Value::Symbol(":tag".into()),
-            Value::String("Duplicate tab".into()),
-            Value::Symbol("clone".into()),
-        ]),
-    ])
-}
-
 pub(super) fn builtin_coding_systems() -> Vec<CodingSystemState> {
     // coding.c calls Fdefine_coding_system_internal exactly twice, for
     // `no-conversion' and `undecided'.  Every other coding system GNU has

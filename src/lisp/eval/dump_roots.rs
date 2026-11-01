@@ -153,6 +153,18 @@ pub(crate) const ROOTS_RESET_AFTER_LOAD: &[(&str, &str)] = &[
         "signaling_function",
         "eval.c's Vsignaling_function, staticpro'd but nil outside the report of a signal; init_eval_once leaves it nil",
     ),
+    (
+        "autoload_queue",
+        "eval.c's Vautoload_queue, staticpro'd but nil outside an autoload's or require's load; init_eval_once leaves it nil",
+    ),
+    (
+        "last_thing_searched",
+        "thread.h's m_last_thing_searched is the running thread's, which pdumper.c does not write",
+    ),
+    (
+        "saved_search_regs",
+        "thread.h's m_saved_search_regs and m_saved_last_thing_searched are the running thread's, which pdumper.c does not write",
+    ),
 ];
 
 /// The interpreter's remaining fields, none of them a Lisp root, each
@@ -340,7 +352,11 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
         "last_match_data",
         "search.c's search_regs are the running process's",
     ),
-    ("last_match_data_buffer_id", "as last_match_data"),
+    ("search_regs_num_regs", "as last_match_data"),
+    (
+        "running_asynch_code",
+        "a filter's or sentinel's run, which no image holds",
+    ),
     ("search_registers", "a search's scratch registers"),
     (
         "last_known_column",
@@ -392,6 +408,15 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
     ),
     ("builtin_doc_offsets", "carried in the remembered scalars"),
     ("require_nesting", "the running load"),
+    (
+        "will_dump_reported",
+        "emacs.c's gflags, the running process's",
+    ),
+    (
+        "code_conversion_reused_workbuf",
+        "a buffer id; the next conversion finds the buffer by name, as Fget_buffer_create does",
+    ),
+    ("reused_workbuf_in_use", "the running conversion"),
     ("lambda_capture_overrides", "the running evaluation"),
     ("mutex_states", "mutex objects are refused by the writer"),
     (

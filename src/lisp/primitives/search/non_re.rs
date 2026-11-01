@@ -503,11 +503,12 @@ pub(super) fn search_buffer_non_re(
 
     let set_search_regs = |interp: &mut Interpreter, (start, end): (usize, usize)| {
         if modify_match_data_allowed(interp) {
+            allocate_plain_match_registers(interp);
             let mut match_data = interp.last_match_data.take().unwrap_or_default();
             match_data.clear();
             match_data.push(Some((position(start), position(end))));
             interp.last_match_data = Some(match_data);
-            interp.last_match_data_buffer_id = Some(interp.current_buffer_id());
+            interp.last_thing_searched = Some(interp.buffer);
         }
     };
     match outcome {

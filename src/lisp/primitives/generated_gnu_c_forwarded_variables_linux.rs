@@ -683,6 +683,7 @@ pub(crate) const GNU_C_FORWARDED_VARIABLES: &[&str] = &[
     "word-combining-categories",
     "word-separating-categories",
     "word-wrap",
+    "word-wrap-by-category",
     "words-include-escapes",
     "wrap-prefix",
     "write-region-annotate-functions",

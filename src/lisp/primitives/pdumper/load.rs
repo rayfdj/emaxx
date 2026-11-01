@@ -1149,14 +1149,52 @@ impl Loader<'_> {
         for (offset, number, id) in buffers {
             marker_chains.push(self.load_buffer(offset, number, id)?);
         }
+        // An indirect buffer's text and marker chain are its base's.
+        let mut families = Vec::new();
+        for (buffer, _) in &marker_chains {
+            if let Some(base) = self
+                .interp
+                .buffer_base_id(buffer.id)
+                .and_then(|base| self.interp.buffer_object(base))
+            {
+                buffer.share_marker_chain(base);
+                buffer.borrow_mut().share_text_of(&base.borrow(), base);
+                families.push((*buffer, base));
+            }
+        }
         for (offset, marker) in markers {
             self.load_marker(offset, marker)?;
         }
+        // Each text's chain: its own buffer's markers, then those of each
+        // indirect buffer in image order.
+        let mut chains: Vec<(
+            crate::lisp::types::BufferRef,
+            Vec<crate::lisp::types::MarkerRef>,
+        )> = Vec::with_capacity(marker_chains.len());
         for (buffer, chain) in marker_chains {
+            let owner = buffer.chain_owner();
+            match chains.iter_mut().find(|(text, _)| text.ptr_eq(&owner)) {
+                Some((_, markers)) => markers.extend(chain),
+                None => chains.push((owner, chain)),
+            }
+        }
+        for (buffer, chain) in chains {
             if !buffer.restore_marker_order(&chain) {
                 return Err(LoadError::Error(
                     "buffer marker chain does not match marker fields".into(),
                 ));
+            }
+        }
+        // Fmake_indirect_buffer's markers for the family's points and
+        // bounds.
+        let current_id = self.interp.current_buffer_id();
+        for (buffer, base) in families {
+            for object in [base, buffer] {
+                let mut state = object.borrow_mut();
+                if state.position_markers().is_none() {
+                    let at = (state.point(), state.point_min(), state.point_max());
+                    state.make_position_markers(object, at, object.id == current_id);
+                }
             }
         }
         for (offset, overlay) in overlays {

@@ -2239,7 +2239,7 @@ impl Interpreter {
         }
         let func = match func.kind() {
             Kind::Cons(_) => {
-                if let Some((file, _, _)) = crate::lisp::primitives::autoload_parts(&func) {
+                if crate::lisp::primitives::autoload_parts(&func).is_some() {
                     let Some(name) = original_name.map(CallName::as_str) else {
                         return Err(LispError::SignalValue(Value::list([
                             Value::Symbol("invalid-function".into()),
@@ -2253,7 +2253,7 @@ impl Interpreter {
                     // bound through an autoload, and the marker was
                     // unchained by the load's collection).
                     let loaded = self.with_lisp_stack_roots(&args, |interp| {
-                        interp.load_autoload_target(&file, env)
+                        interp.autoload_do_load(func, Value::symbol(name), Value::Nil, env)
                     });
                     match loaded {
                         Ok(_) => self.lookup_function(name, env)?,

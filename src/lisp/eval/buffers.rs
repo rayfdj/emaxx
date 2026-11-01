@@ -83,195 +83,92 @@ impl Interpreter {
             .collect()
     }
 
-    /// An indirect family's buffers share one struct buffer_text in GNU,
-    /// whose counts Emaxx keeps in each member: BUFFER_ID's counts given to
-    /// the rest of its family.
-    pub(crate) fn share_text_counters(&mut self, buffer_id: u64) {
-        if self.indirect_buffers.is_empty() {
-            return;
-        }
-        let Some(counters) = self
-            .get_buffer_by_id(buffer_id)
-            .map(|buffer| buffer.text_counters())
-        else {
-            return;
-        };
-        for id in self.related_buffer_ids(buffer_id) {
-            if id != buffer_id
-                && let Some(mut buffer) = self.get_buffer_by_id_mut(id)
-            {
-                buffer.set_text_counters(counters);
-            }
-        }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn mirror_insert_to_related_buffers(
-        &mut self,
-        related: &[u64],
-        pos: usize,
-        s: &str,
-        nchars: usize,
-        props: crate::buffer::InsertedProperties<'_>,
-        before_markers: bool,
-        vars: &crate::intervals::PropertyVariables,
-    ) {
-        let current_id = self.current_buffer_id();
-        for buffer_id in related {
-            if *buffer_id == current_id {
-                continue;
-            }
-            if let Some(mut buffer) = self.get_buffer_by_id_mut(*buffer_id) {
-                let saved_point = buffer.point();
-                buffer.goto_char(pos);
-                // The text is one text in GNU, the change recorded once.
-                let undo_list = buffer.undo_list();
-                buffer.set_undo_list(Value::T);
-                buffer.insert_with(s, props, before_markers, vars);
-                buffer.set_undo_list(undo_list);
-                let restored = if saved_point > pos || (saved_point == pos && before_markers) {
-                    saved_point + nchars
-                } else {
-                    saved_point
-                };
-                buffer.goto_char(restored);
-            }
-            self.adjust_markers_for_insert(*buffer_id, pos, nchars, before_markers);
-        }
-        if related.len() > 1 {
-            self.share_text_counters(current_id);
-        }
-    }
-
-    pub(super) fn mirror_delete_to_related_buffers(
-        &mut self,
-        related: &[u64],
-        from: usize,
-        to: usize,
-    ) {
-        let current_id = self.current_buffer_id();
-        for buffer_id in related {
-            if *buffer_id == current_id {
-                continue;
-            }
-            if let Some(mut buffer) = self.get_buffer_by_id_mut(*buffer_id) {
-                let saved_point = buffer.point();
-                let undo_list = buffer.undo_list();
-                buffer.set_undo_list(Value::T);
-                let _ = buffer.delete_region(from, to);
-                buffer.set_undo_list(undo_list);
-                let restored = if saved_point > to {
-                    saved_point - (to - from)
-                } else if saved_point > from {
-                    from
-                } else {
-                    saved_point
-                };
-                buffer.goto_char(restored);
-            }
-            self.adjust_markers_for_delete(*buffer_id, from, to);
-        }
-        if related.len() > 1 {
-            self.share_text_counters(current_id);
-        }
-    }
-
-    /// An edit of the current buffer's text where it stands, [FROM, OLD_TO)
-    /// now [FROM, NEW_TO) (casing, subst-char-in-region, translate-region,
-    /// transpose-regions): GNU's indirect family shares that text, so the
-    /// rest of the family is given it with the intervals, their positions
-    /// left where markers leave them, and the text's counts.
-    pub(crate) fn mirror_in_place_edit_to_related_buffers(
-        &mut self,
-        from: usize,
-        old_to: usize,
-        new_to: usize,
-    ) {
-        if self.indirect_buffers.is_empty() {
-            return;
-        }
-        let current_id = self.current_buffer_id();
-        let related = self.related_buffer_ids(current_id);
+    /// BUF_PT, BUF_BEGV and BUF_ZV of the rest of RELATED, the current
+    /// buffer's indirect family, after an edit of their one text: where
+    /// their markers now stand.
+    pub(crate) fn fetch_family_positions(&mut self, related: &[u64]) {
         if related.len() < 2 {
             return;
         }
-        let (text, extended, intervals) = {
-            let buffer = self.buffer.borrow();
-            (
-                buffer.stored_text(from, new_to),
-                buffer.substring_extended_chars(from, new_to),
-                buffer.intervals_snapshot(),
-            )
-        };
+        let current_id = self.current_buffer_id();
         for buffer_id in related {
-            if buffer_id == current_id {
-                continue;
-            }
-            if let Some(mut buffer) = self.get_buffer_by_id_mut(buffer_id) {
-                buffer.mirror_in_place_edit(from, old_to, &text, &extended, intervals.clone());
+            if *buffer_id != current_id
+                && let Some(mut buffer) = self.get_buffer_by_id_mut(*buffer_id)
+            {
+                buffer.fetch_position_markers();
             }
         }
-        self.share_text_counters(current_id);
     }
 
-    /// transpose-regions of the current buffer seen by the rest of its
-    /// family: the text, and unless LEAVE_MARKERS transpose_markers over
-    /// their markers, point and bounds (markers of the shared text in GNU).
-    pub(crate) fn mirror_transposition_to_related_buffers(
+    /// insdel.c's adjust_overlays_for_insert over the rest of RELATED,
+    /// whose overlays are their own over the one text, then their
+    /// positions.
+    fn family_after_insert(
         &mut self,
-        (start1, end1): (usize, usize),
-        (start2, end2): (usize, usize),
-        leave_markers: bool,
+        related: &[u64],
+        pos: usize,
+        nchars: usize,
+        before_markers: bool,
     ) {
-        if self.indirect_buffers.is_empty() {
-            return;
-        }
-        self.mirror_in_place_edit_to_related_buffers(start1, end2, end2);
-        if leave_markers {
+        if related.len() < 2 {
             return;
         }
         let current_id = self.current_buffer_id();
-        for buffer_id in self.related_buffer_ids(current_id) {
-            if buffer_id == current_id {
-                continue;
-            }
-            if let Some(mut buffer) = self.get_buffer_by_id_mut(buffer_id) {
-                buffer.transpose_family_positions(start1, end1, start2, end2);
+        for buffer_id in related {
+            if *buffer_id != current_id
+                && let Some(mut buffer) = self.get_buffer_by_id_mut(*buffer_id)
+            {
+                buffer.overlays.insert_gap(pos, nchars, before_markers);
             }
         }
+        self.fetch_family_positions(related);
     }
 
-    /// The same family-wide property mirroring for an explicit target
-    /// buffer.  Returns whether any buffer received the change.
+    /// adjust_overlays_for_delete over the rest of RELATED (their empty
+    /// overlays that evaporate going), then their positions.
+    fn family_after_delete(&mut self, related: &[u64], from: usize, to: usize) {
+        if related.len() < 2 {
+            return;
+        }
+        let current_id = self.current_buffer_id();
+        for buffer_id in related {
+            if *buffer_id != current_id
+                && let Some(mut buffer) = self.get_buffer_by_id_mut(*buffer_id)
+            {
+                buffer.overlays.delete_gap(from, to - from);
+            }
+        }
+        self.fetch_family_positions(related);
+    }
+
+    /// An edit of the current buffer's text where it stands (casing,
+    /// subst-char-in-region, translate-region, transpose-regions): the rest
+    /// of its family shares the text and its markers, and reads its point
+    /// and bounds from them.
+    pub(crate) fn family_after_in_place_edit(&mut self) {
+        if self.indirect_buffers.is_empty() {
+            return;
+        }
+        let related = self.related_buffer_ids(self.current_buffer_id());
+        self.fetch_family_positions(&related);
+    }
+
+    /// A change of the text properties of TARGET_ID's text, which its
+    /// indirect family shares.  Whether the buffer is live.
     pub fn apply_text_property_change_shared_for(
         &mut self,
         target_id: u64,
         apply: &dyn Fn(&mut crate::buffer::Buffer),
     ) -> bool {
-        let current_id = self.current_buffer_id();
-        if self.indirect_buffers.is_empty() {
-            if target_id == current_id {
-                apply(&mut self.buffer.borrow_mut());
-                return true;
-            }
-            if let Some(mut buffer) = self.get_buffer_by_id_mut(target_id) {
-                apply(&mut buffer);
-                return true;
-            }
-            return false;
+        if target_id == self.current_buffer_id() {
+            apply(&mut self.buffer.borrow_mut());
+            return true;
         }
-        let mut applied = false;
-        for buffer_id in self.related_buffer_ids(target_id) {
-            if buffer_id == current_id {
-                apply(&mut self.buffer.borrow_mut());
-                applied = true;
-            } else if let Some(mut buffer) = self.get_buffer_by_id_mut(buffer_id) {
-                apply(&mut buffer);
-                applied = true;
-            }
+        if let Some(mut buffer) = self.get_buffer_by_id_mut(target_id) {
+            apply(&mut buffer);
+            return true;
         }
-        self.share_text_counters(target_id);
-        applied
+        false
     }
 
     /// The variables an insertion into the current buffer reads, when its
@@ -302,15 +199,7 @@ impl Interpreter {
             .insert_with(s, props, before_markers, &vars)
             - pos;
         self.adjust_markers_for_insert(self.current_buffer_id(), pos, nchars, before_markers);
-        self.mirror_insert_to_related_buffers(
-            &related,
-            pos,
-            s,
-            nchars,
-            props,
-            before_markers,
-            &vars,
-        );
+        self.family_after_insert(&related, pos, nchars, before_markers);
     }
 
     pub fn insert_current_buffer(&mut self, s: &str) {
@@ -332,15 +221,7 @@ impl Interpreter {
             .insert_counted_with(s, counts, &vars)
             - pos;
         self.adjust_markers_for_insert(self.current_buffer_id(), pos, nchars, false);
-        self.mirror_insert_to_related_buffers(
-            &related,
-            pos,
-            s,
-            nchars,
-            crate::buffer::InsertedProperties::PLAIN,
-            false,
-            &vars,
-        );
+        self.family_after_insert(&related, pos, nchars, false);
     }
 
     /// Attach non-Unicode GNU character codes to text just inserted into the
@@ -349,19 +230,9 @@ impl Interpreter {
         if chars.is_empty() {
             return;
         }
-        let current_id = self.current_buffer_id();
-        let related = self.related_buffer_ids(current_id);
         self.buffer
             .borrow_mut()
             .set_inserted_extended_chars(start, chars);
-        for buffer_id in related {
-            if buffer_id == current_id {
-                continue;
-            }
-            if let Some(mut buffer) = self.get_buffer_by_id_mut(buffer_id) {
-                buffer.set_inserted_extended_chars(start, chars);
-            }
-        }
     }
 
     /// insdel.c:replace_range's change of the current buffer (see
@@ -402,23 +273,20 @@ impl Interpreter {
             .borrow_mut()
             .replace_range(from, to, text, extended, true, props, &vars);
         self.adjust_markers_for_replace(current_id, from, to, inschars);
-        for buffer_id in &related {
-            if *buffer_id == current_id {
-                continue;
+        if related.len() > 1 {
+            // replace_range's adjust_overlays_for_insert at TO, then for
+            // the deletion, in each other buffer of the family.
+            for buffer_id in &related {
+                if *buffer_id != current_id
+                    && let Some(mut buffer) = self.get_buffer_by_id_mut(*buffer_id)
+                {
+                    buffer.overlays.insert_gap(to, inschars, true);
+                    if to > from {
+                        buffer.overlays.delete_gap(from, to - from);
+                    }
+                }
             }
-            if let Some(mut buffer) = self.get_buffer_by_id_mut(*buffer_id) {
-                let saved_point = buffer.point();
-                buffer.replace_range(from, to, text, extended, true, props, &vars);
-                let restored = if saved_point >= to {
-                    saved_point + inschars - (to - from)
-                } else if saved_point > from {
-                    from
-                } else {
-                    saved_point
-                };
-                buffer.goto_char(restored);
-            }
-            self.adjust_markers_for_replace(*buffer_id, from, to, inschars);
+            self.fetch_family_positions(&related);
         }
         from
     }
@@ -430,6 +298,28 @@ impl Interpreter {
     ) -> Result<String, crate::buffer::BufferError> {
         self.delete_region_current_buffer_1(from, to, true)
             .map(Option::unwrap_or_default)
+    }
+
+    /// `Buffer::delete_chars_each' in the current buffer, its windows'
+    /// points and starts and its indirect family moved as each deletion
+    /// moves them.
+    pub(crate) fn delete_chars_each_current_buffer(&mut self, positions: &[usize]) {
+        if positions.is_empty() {
+            return;
+        }
+        let related = self.related_buffer_ids(self.current_buffer_id());
+        self.buffer.borrow_mut().delete_chars_each(positions);
+        let original: Vec<usize> = positions
+            .iter()
+            .enumerate()
+            .map(|(index, &position)| position + index)
+            .collect();
+        self.adjust_window_marker_slots(self.current_buffer_id(), |position| {
+            position - original.partition_point(|&deleted| deleted < position)
+        });
+        for &position in positions {
+            self.family_after_delete(&related, position, position + 1);
+        }
     }
 
     /// `delete_region_current_buffer' for a caller that has no use for the
@@ -471,7 +361,9 @@ impl Interpreter {
             .borrow_mut()
             .record_marker_adjustments(marker_adjustments);
         self.adjust_markers_for_delete(self.current_buffer_id(), from, to);
-        self.mirror_delete_to_related_buffers(&related, from, to);
+        if from < to {
+            self.family_after_delete(&related, from, to);
+        }
         Ok(deleted)
     }
 

@@ -399,6 +399,7 @@ pub(crate) fn set_internal_symbol(
     // the watcher must receive the caller's original object.
     let stored = interp.prepare_forwarded_assignment_symbol(&resolved, value)?;
     interp.notify_assignment_symbol(&resolved, value, env)?;
+    interp.check_per_buffer_set(&resolved, value, env)?;
     interp.set_symbol_value_cell_resolved(&resolved, stored);
     if resolved == *symbol {
         interp.learn_plain_store(symbol);
@@ -599,14 +600,12 @@ define_dispatch!(
                 // while `symbols-with-pos-enabled' is dynamically non-nil.
                 let feature = checked_symbol_name(interp, &args[0], env)?;
                 let subfeatures = args.get(1).cloned().unwrap_or(Value::Nil);
-                // GNU rejects improper/non-list subfeature values even when the
-                // feature was already present.
-                subfeatures.to_vec()?;
-                if subfeatures.is_truthy() {
-                    interp.put_symbol_property(&feature, "subfeatures", subfeatures);
+                // CHECK_LIST, even when the feature was already present.
+                if !matches!(subfeatures.kind(), Kind::Nil | Kind::Cons(_)) {
+                    return Err(wrong_type_argument("listp", subfeatures));
                 }
                 interp
-                    .provide_feature_with_after_load(&feature, env)
+                    .provide_feature_with_after_load(&feature, subfeatures, env)
                     .map(|_| args[0])
             }
             "require" => {
@@ -614,23 +613,12 @@ define_dispatch!(
                 // Like `provide', GNU's Frequire accepts a positioned symbol
                 // through CHECK_SYMBOL and returns the original object.
                 let feature = checked_symbol_identity(interp, &args[0], env)?;
-                let target = match args.get(1) {
-                    Some(value) if value.is_truthy() => Some(string_text(value)?),
-                    _ => None,
-                };
-                let noerror = args.get(2).is_some_and(Value::is_truthy);
-                let result = interp.require_feature_with_target(feature, target.as_deref(), env);
-                // GNU's NOERROR only suppresses failure to locate/open the file;
-                // errors raised after a file was found still propagate.
-                if noerror
-                    && let Err(LispErrorKind::SignalValue(condition)) =
-                        result.as_ref().map_err(LispError::kind)
-                    && matches!(condition.car().map(|v| v.kind()), Ok(Kind::Symbol(kind))
-                    if kind == "file-missing" || kind == "file-error")
-                {
-                    return Ok(Value::Nil);
-                }
-                result.map(|_| args[0])
+                let filename = args.get(1).cloned().unwrap_or(Value::Nil);
+                let noerror = args.get(2).cloned().unwrap_or(Value::Nil);
+                // NOERROR goes to Fload, where it excuses only the file's
+                // absence: an error the found file signals propagates.
+                let loaded = interp.require_feature_with_target(feature, filename, noerror, env)?;
+                Ok(if loaded.is_nil() { Value::Nil } else { args[0] })
             }
             "define-fringe-bitmap" => {
                 need_arg_range(name, args, 2, 5)?;
@@ -816,8 +804,12 @@ define_dispatch!(
                 if args.len() < 2 || args.len() > 5 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let function = args[0].as_symbol()?.to_string();
-                let file = string_text(&args[1])?;
+                // eval.c:Fautoload: CHECK_SYMBOL, CHECK_STRING, then
+                // Fdefalias of the stub, which holds FILE itself.
+                let function = checked_symbol_name(interp, &args[0], env)?;
+                if !matches!(args[1].kind(), Kind::StringObject(_)) {
+                    return Err(wrong_type_argument("stringp", args[1]));
+                }
                 let docstring = args.get(2).cloned().unwrap_or(Value::Nil);
                 let interactive = args.get(3).cloned().unwrap_or(Value::Nil);
                 let kind = args.get(4).cloned().unwrap_or(Value::Nil);
@@ -834,67 +826,18 @@ define_dispatch!(
                 }
                 let autoload = Value::list([
                     Value::Symbol("autoload".into()),
-                    Value::String(file.into()),
+                    args[1],
                     docstring,
                     interactive,
                     kind,
                 ]);
-                interp.record_definition_in_load_history("defun", &function);
-                if let Some(old_definition) = old_definition {
-                    interp.record_function_redefinition(&function, old_definition);
-                }
-                interp.set_function_binding(&function, Some(autoload));
-                Ok(Value::Symbol(function.into()))
+                interp.defalias_value(&[args[0], autoload], env)
             }
             "autoload-do-load" => {
                 need_arg_range(name, args, 1, 3)?;
-                let fundef = args[0];
-                if !matches!(
-                    fundef.cons_values().map(|(head, _)| head.kind()),
-                    Some(Kind::Symbol(head)) if head == "autoload"
-                ) {
-                    return Ok(fundef);
-                }
-                // eval.c:Fautoload_do_load reads the stub with ordinary
-                // nth/car/cdr operations.  A malformed autoload must signal,
-                // rather than be mistaken for a non-autoload and retried.
-                let kind = super::lists::direct_nth(interp, &[Value::Integer(4), fundef], env)?;
                 let funname = args.get(1).cloned().unwrap_or(Value::Nil);
                 let macro_only = args.get(2).cloned().unwrap_or(Value::Nil);
-                let loads_macro = matches!(kind.kind(), Kind::T)
-                    || matches!(kind.kind(), Kind::Symbol(symbol) if symbol == "t" || symbol == "macro");
-                if matches!(macro_only.kind(), Kind::Symbol(symbol) if symbol == "macro")
-                    && !loads_macro
-                {
-                    return Ok(fundef);
-                }
-                checked_symbol_name(interp, &funname, env)?;
-                let file_value = fundef.cdr()?.car()?;
-                let file = string_like(&file_value)
-                    .ok_or_else(|| wrong_type_argument("stringp", file_value))?
-                    .text;
-                let ignore_errors = !loads_macro && macro_only.is_truthy();
-                match interp.load_autoload_target(&file, env) {
-                    Ok(_) => {}
-                    Err(_) if ignore_errors => return Ok(Value::Nil),
-                    Err(error) => return Err(error),
-                }
-                if funname.is_nil() || ignore_errors {
-                    return Ok(Value::Nil);
-                }
-                let function = super::call(
-                    interp,
-                    "indirect-function",
-                    std::slice::from_ref(&funname),
-                    env,
-                )?;
-                if values_equal(interp, &function, &fundef)? {
-                    let symbol = funname.as_symbol()?;
-                    return Err(LispError::Signal(format!(
-                        "Autoloading file {file} failed to define function {symbol}"
-                    )));
-                }
-                Ok(function)
+                interp.autoload_do_load(args[0], funname, macro_only, env)
             }
             "set" => {
                 need_args(name, args, 2)?;
@@ -1011,11 +954,11 @@ define_dispatch!(
                         env,
                     );
                 }
-                if let (Some(symbol), Some((file, _, _))) =
-                    (args[0].symbol_str(), autoload_parts(&value))
-                {
-                    interp.load_autoload_target(&file, env)?;
-                    value = interp.lookup_function(symbol, env)?;
+                // data.c: an autoload's form is that of what loading it
+                // defines (Fautoload_do_load with CMD as the name).
+                if autoload_parts(&value).is_some() {
+                    let loaded = interp.autoload_do_load(value, args[0], Value::Nil, env)?;
+                    return super::call(interp, "interactive-form", &[loaded], env);
                 }
                 Ok(callable_interactive_form_items(interp, &value)
                     .map(Value::list)
@@ -1241,6 +1184,7 @@ define_dispatch!(
                             interp.notify_variable_watchers_symbol(
                                 &resolved, value, "let", None, env,
                             )?;
+                            interp.check_per_buffer_predicate(&resolved, value, env)?;
                             interp.set_symbol_value_cell_resolved(&resolved, stored);
                         }
                     }

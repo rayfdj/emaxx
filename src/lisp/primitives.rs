@@ -92,6 +92,21 @@ pub(crate) fn gnu_c_forwarded_variables() -> &'static [&'static str] {
 }
 
 #[cfg(target_os = "linux")]
+pub(crate) mod generated_gnu_byte_boolean_vars_linux;
+/// The contracted oracle's `byte-boolean-vars' at `-Q --batch', in its
+/// order; empty off Linux, where no oracle has been probed for it.
+pub(crate) fn gnu_byte_boolean_variables() -> &'static [&'static str] {
+    #[cfg(target_os = "linux")]
+    {
+        generated_gnu_byte_boolean_vars_linux::GNU_BYTE_BOOLEAN_VARIABLES
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        &[]
+    }
+}
+
+#[cfg(target_os = "linux")]
 pub(crate) mod generated_gnu_c_forwarded_defaults_linux;
 /// The `-Q --batch' values the contracted oracle gives the C-forwarded
 /// variables Emaxx has no C owner for, as `(name, printed value)'; empty
@@ -290,6 +305,7 @@ pub(crate) use search::category_member;
 pub(crate) use search::fast_string_match;
 #[cfg(test)]
 pub(crate) use search::{elisp_regex_compile_count, reset_elisp_regex_compile_count};
+pub(crate) use search::{restore_search_regs, save_search_regs, xpalloc_registers};
 
 #[cfg(test)]
 mod tests;

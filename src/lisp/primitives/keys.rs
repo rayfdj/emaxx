@@ -40,6 +40,21 @@ pub(crate) fn solitary_event_modifier(name: &str) -> i64 {
     }
 }
 
+/// keyboard.c:apply_modifiers_uncached's Fintern of the prefixed NAME,
+/// which it builds as a multibyte string: the symbol of that name, or a
+/// new one named by that string.
+pub(crate) fn intern_modified_event_symbol(name: &str) -> Value {
+    Value::Symbol(crate::lisp::types::SymbolName::intern_initial_with(
+        name,
+        || {
+            crate::lisp::types::string_data::encode_text(name, true, &[])
+                .ok()
+                .and_then(|bytes| super::strings::make_specified_string(bytes, true).ok())
+                .unwrap_or_else(|| Value::string(name))
+        },
+    ))
+}
+
 pub(crate) fn modified_event_symbol_name(modifiers: i64, base: &str) -> String {
     let mut name = String::new();
     for (bit, prefix) in [
@@ -88,16 +103,26 @@ fn make_ctrl_event_code(code: i64) -> i64 {
     c | upper
 }
 
+/// keyboard.c:Fevent_convert_list: EVENT-DESC walked as FOR_EACH_TAIL_SAFE
+/// walks it, each symbol with a cons after it a modifier if it names one;
+/// the base event (nil when there is none) takes them through
+/// apply_modifiers, a one-character symbol first becoming its name's first
+/// byte.
 pub(crate) fn event_convert_list_value(
     interp: &mut Interpreter,
     event_description: &Value,
 ) -> Result<Value, LispError> {
-    let items = event_description.to_vec()?;
-    let mut base = None;
+    let mut base = Value::Nil;
+    let mut found_base = false;
     let mut modifiers = 0;
-    for (index, item) in items.iter().enumerate() {
-        let modifier = if index + 1 < items.len() {
-            item.as_symbol()
+    let mut tail = *event_description;
+    let mut walk = crate::lisp::types::TailWalk::new(tail);
+    while let Some(cell) = tail.cons_ref() {
+        let element = cell.car.get();
+        let rest = cell.cdr.get();
+        let modifier = if rest.is_cons() {
+            element
+                .as_symbol()
                 .ok()
                 .map(solitary_event_modifier)
                 .unwrap_or(0)
@@ -106,50 +131,53 @@ pub(crate) fn event_convert_list_value(
         };
         if modifier != 0 {
             modifiers |= modifier;
-        } else if base.is_some() {
+        } else if found_base {
             return Err(LispError::Signal("Two bases given in one event".into()));
         } else {
-            base = Some(*item);
+            base = element;
+            found_base = true;
+        }
+        tail = rest;
+        if walk.cycled_no_quit(tail) {
+            break;
         }
     }
 
-    let mut base = base.unwrap_or(Value::Nil);
-    if let Kind::Symbol(symbol) = base.kind()
-        && symbol.chars().count() == 1
+    // Let the symbol A refer to the character A.
+    let name = match base.kind() {
+        Kind::Nil => Some(crate::lisp::types::symbols::builtin_boolean(false).lisp_name()),
+        Kind::T => Some(crate::lisp::types::symbols::builtin_boolean(true).lisp_name()),
+        Kind::Symbol(symbol) => Some(symbol.lisp_name()),
+        _ => None,
+    };
+    if let Some(name) = name
+        && let Kind::StringObject(state) = name.kind()
     {
-        base = Value::Integer(symbol.chars().next().expect("one character") as i64);
+        let state = state.borrow();
+        if state.len() == 1 {
+            base = Value::Integer(i64::from(state.bytes()[0]));
+        }
     }
     match base.kind() {
         Kind::Integer(mut code) => {
+            // Turn (shift a) into A.
             if modifiers & KEY_DESCRIPTION_SHIFT_BIT != 0
                 && (b'a' as i64..=b'z' as i64).contains(&code)
             {
                 code -= i64::from(b'a' - b'A');
                 modifiers &= !KEY_DESCRIPTION_SHIFT_BIT;
             }
+            // Turn (control a) into C-a, through make_ctrl_char, which may
+            // keep the control bit (C-9) or add a shift bit (control of a
+            // shifted letter).
             if modifiers & KEY_DESCRIPTION_CTRL_BIT != 0 {
-                // keyboard.c:Fevent_convert_list: the control fold goes
-                // through make_ctrl_char, which may keep the control bit
-                // (C-9) or add a shift bit (control of a shifted letter).
                 code = make_ctrl_event_code(code);
                 modifiers &= !KEY_DESCRIPTION_CTRL_BIT;
             }
             Ok(Value::Integer(code | modifiers))
         }
-        Kind::Symbol(base) => {
-            let modified = modified_event_symbol_name(modifiers, &base);
-            if let Some(kind) = interp.get_symbol_property(&base, "event-kind") {
-                interp.put_symbol_property(&modified, "event-kind", kind);
-            }
-            // keyboard.c reaches this through apply_modifiers, which interns
-            // the modified symbol and stamps its parse cache
-            // (`event-symbol-element-mask'/`event-symbol-elements') --
-            // observable on any batch GNU after bindings.el's keypad
-            // `define-key' loop runs.
-            let modified = Value::Symbol(modified.into());
-            interp.intern_symbols_in_value(&modified);
-            parse_event_symbol_modifiers(interp, &modified)?;
-            Ok(modified)
+        Kind::Nil | Kind::T | Kind::Symbol(_) => {
+            crate::lisp::primitives::keymap::apply_modifiers(interp, modifiers, base)
         }
         _ => Err(LispError::Signal("Invalid base event".into())),
     }
@@ -484,7 +512,9 @@ pub(crate) fn keymap_parts_from_events(
                 // keyboard.c:reorder_modifiers interns the canonical event
                 // name, including a previously uninterned plain symbol.
                 let (modifiers, base) = event_symbol_name_modifiers(&name);
-                parts.push(Value::symbol(&modified_event_symbol_name(modifiers, base)));
+                parts.push(intern_modified_event_symbol(&modified_event_symbol_name(
+                    modifiers, base,
+                )));
             }
             _ => parts.push(event),
         }

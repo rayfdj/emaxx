@@ -43,10 +43,6 @@ fn replacement_case_action(interp: &Interpreter, matched: &str) -> Option<CaseAc
     }
 }
 
-/// GNU's RE_NREGS: the registers a search allocates at least, so a
-/// `\\N' or SUBEXP below it names a group whether or not the regexp had it.
-const RE_NREGS: usize = 30;
-
 fn invalid_backslash() -> LispError {
     LispError::Signal("Invalid use of `\\' in replacement text".into())
 }
@@ -74,12 +70,14 @@ fn replace_match(
     // Most replacement texts have no backslash directive: the fast path.
     let literal =
         args.get(2).is_some_and(Value::is_truthy) || !newtext_ref.borrow().bytes().contains(&b'\\');
-    let Some(regs) = interp.last_match_data.clone() else {
+    // search_regs.num_regs: a `\\N' or SUBEXP below it names a register
+    // whether or not the regexp had the group.
+    let num_regs = interp.search_regs_num_regs;
+    let Some(regs) = interp.last_match_data.clone().filter(|_| num_regs > 0) else {
         return Err(LispError::Signal(
             "`replace-match' called before any match found".into(),
         ));
     };
-    let num_regs = regs.len().max(RE_NREGS);
     let sub = match subexp {
         None => 0,
         Some(value) => {
@@ -294,7 +292,6 @@ fn replace_match(
     };
     let inschars = text.chars().count();
     let newpoint = sub_start + inschars;
-    let num_regs_before = regs.len();
     // replace_range (prepare, no inherit, markers, adjusting the match
     // data, its own change hooks inhibited); the case conversion follows,
     // a change of its own, then the replacement's signal_after_change.
@@ -335,11 +332,7 @@ fn replace_match(
                     .map_or(from, |(start, _)| start);
                 casify_buffer_region(interp, start, newpoint, action, env)?;
             }
-            if interp
-                .last_match_data
-                .as_ref()
-                .is_none_or(|match_data| match_data.len() != num_regs_before)
-            {
+            if interp.search_regs_num_regs != num_regs {
                 return Err(LispError::Signal(
                     "Match data clobbered by buffer modification hooks".into(),
                 ));
@@ -615,7 +608,7 @@ define_dispatch!(
                 let source_buffer_id = if use_integers {
                     None
                 } else {
-                    interp.last_match_data_buffer_id
+                    interp.last_thing_searched.map(|buffer| buffer.id)
                 };
                 let mut items = Vec::new();
                 let match_data = interp.last_match_data.clone().unwrap_or_default();
@@ -650,11 +643,10 @@ define_dispatch!(
                         }
                     }
                 }
-                if use_integers
-                    && let Some(buffer_id) = interp.last_match_data_buffer_id
-                    && let Some(buffer) = interp.buffer_identity_value(buffer_id)
-                {
-                    items.push(buffer);
+                // search.c:Fmatch_data: with INTEGERS the buffer searched
+                // last, live or killed, ends the list.
+                if use_integers && let Some(buffer) = interp.last_thing_searched {
+                    items.push(Value::Buffer(buffer));
                 }
                 let Some(reuse) = args
                     .get(1)
@@ -681,18 +673,31 @@ define_dispatch!(
             }
             "set-match-data" => {
                 need_arg_range(name, args, 1, 2)?;
+                if interp.running_asynch_code {
+                    crate::lisp::primitives::save_search_regs(interp);
+                }
                 if args[0].is_nil() {
                     // GNU clears every allocated search register but keeps
                     // the register state established.  `match-data' still
                     // returns nil, while `match-beginning'/'match-end' return
-                    // nil rather than reporting that no search ever ran.
-                    interp.last_match_data = Some(vec![None]);
-                    interp.last_match_data_buffer_id = None;
+                    // nil rather than reporting that no search ever ran
+                    // (unless none ever did: no registers are allocated).
+                    interp.last_match_data = (interp.search_regs_num_regs > 0).then(|| vec![None]);
+                    interp.last_thing_searched = None;
                     return Ok(Value::Nil);
                 }
                 let items = args[0].to_vec()?;
+                // The registers grown to the list's pairs (list_length
+                // halved, a trailing buffer counted) as xpalloc grows them.
+                let length = items.len() / 2;
+                if length > interp.search_regs_num_regs {
+                    interp.search_regs_num_regs = crate::lisp::primitives::xpalloc_registers(
+                        interp.search_regs_num_regs,
+                        length - interp.search_regs_num_regs,
+                    );
+                }
                 let mut restored = Vec::new();
-                let mut restored_buffer_id = None;
+                let mut restored_buffer = None;
                 // search.c:Fset_match_data coerces detached markers to zero;
                 // ordinary buffer-position coercion correctly rejects them.
                 let match_position = |value: &Value| match value.kind() {
@@ -702,14 +707,16 @@ define_dispatch!(
                 let mut index = 0usize;
                 while index + 1 < items.len() {
                     if let Kind::Buffer(buffer) = items[index].kind() {
-                        restored_buffer_id = Some(buffer.id);
+                        restored_buffer = Some(buffer);
                         break;
                     }
                     for item in [&items[index], &items[index + 1]] {
                         if let Kind::Marker(marker_id) = item.kind()
-                            && restored_buffer_id.is_none()
+                            && restored_buffer.is_none()
                         {
-                            restored_buffer_id = interp.marker_buffer_id(marker_id);
+                            restored_buffer = interp
+                                .marker_buffer_id(marker_id)
+                                .and_then(|id| interp.buffer_object(id));
                         }
                     }
                     let start = if items[index].is_nil() {
@@ -729,7 +736,7 @@ define_dispatch!(
                     index += 2;
                 }
                 if let Some(Kind::Buffer(buffer)) = items.get(index).map(|v| v.kind()) {
-                    restored_buffer_id = Some(buffer.id);
+                    restored_buffer = Some(buffer);
                 }
                 if args.get(1).is_some_and(Value::is_truthy) {
                     let mut tail = args[0];
@@ -745,8 +752,8 @@ define_dispatch!(
                         tail = cell.cdr.get();
                     }
                 }
-                interp.last_match_data = Some(restored);
-                interp.last_match_data_buffer_id = restored_buffer_id;
+                interp.last_match_data = (interp.search_regs_num_regs > 0).then_some(restored);
+                interp.last_thing_searched = restored_buffer;
                 Ok(Value::Nil)
             }
             "match-data--translate" => {
@@ -946,7 +953,7 @@ define_dispatch!(
                             buffer.record_change(pos, 1);
                             buffer.replace_text_in_place(pos, pos + 1, &replacement, &extended);
                             drop(buffer);
-                            interp.mirror_in_place_edit_to_related_buffers(pos, pos + 1, pos + 1);
+                            interp.family_after_in_place_edit();
                         }
                         let length = last_changed - changed;
                         return Ok((Some(AfterChange::new(changed, length, length)), ()));
@@ -974,11 +981,7 @@ define_dispatch!(
                     // newline→space pass must keep erc-button's props intact).
                     buffer.replace_text_in_place(changed, last_changed, &replaced, &extended);
                     drop(buffer);
-                    interp.mirror_in_place_edit_to_related_buffers(
-                        changed,
-                        last_changed,
-                        last_changed,
-                    );
+                    interp.family_after_in_place_edit();
                     let length = last_changed - changed;
                     Ok((Some(AfterChange::new(changed, length, length)), ()))
                 })?;
@@ -1094,11 +1097,7 @@ define_dispatch!(
                         given,
                         leave_markers,
                     );
-                    interp.mirror_transposition_to_related_buffers(
-                        (start1, end1),
-                        (start2, end2),
-                        leave_markers,
-                    );
+                    interp.family_after_in_place_edit();
                     Ok((
                         Some(AfterChange::new(start1, end2 - start1, end2 - start1)),
                         (),
@@ -1123,12 +1122,15 @@ define_dispatch!(
                 }
                 // coding.c:code_convert_region: CHECK_BUFFER of a
                 // destination other than nil and t, then validate_region.
+                // Nil is the current buffer, and the current buffer given
+                // is the source itself, converted where it stands.
                 let destination = match args.get(3).map(|v| v.kind()) {
                     None | Some(Kind::Nil) => Destination::Replace,
                     Some(Kind::T) => Destination::Return,
-                    Some(Kind::Buffer(_)) => {
-                        Destination::Buffer(interp.resolve_buffer_id(&args[3])?)
-                    }
+                    Some(Kind::Buffer(_)) => match interp.resolve_buffer_id(&args[3])? {
+                        id if id == interp.current_buffer_id() => Destination::Replace,
+                        id => Destination::Buffer(id),
+                    },
                     Some(_) => return Err(LispError::WrongTypeArgument("bufferp".into(), args[3])),
                 };
                 let (start, end) = validate_region(interp, &args[0], &args[1])?;
@@ -1154,8 +1156,14 @@ define_dispatch!(
                     )
                 };
                 let return_string = matches!(destination, Destination::Return);
+                let mut buffer_decode = None;
                 let transformed = if name == "encode-coding-region" {
-                    encode_coding_value(interp, &region, coding.as_deref(), return_string, env)?
+                    crate::lisp::primitives::coding::encode_coding_region_value(
+                        interp,
+                        &region,
+                        coding.as_deref(),
+                        env,
+                    )?
                 } else {
                     // decode_coding_object decodes into the destination
                     // buffer as it is, multibyte or not; a string result
@@ -1167,89 +1175,147 @@ define_dispatch!(
                             .get_buffer_by_id(id)
                             .map(|buffer| buffer.is_multibyte()),
                     };
-                    decode_coding_text(
-                        interp,
-                        &region,
-                        coding.as_deref(),
-                        return_string,
-                        true,
-                        dst_multibyte,
-                        env,
-                    )?
+                    match dst_multibyte {
+                        Some(dst_multibyte) => {
+                            let decoded =
+                                crate::lisp::primitives::coding::decode_coding_text_for_buffer(
+                                    interp,
+                                    &region,
+                                    coding.as_deref(),
+                                    dst_multibyte,
+                                    env,
+                                )?;
+                            let value = decoded.value;
+                            buffer_decode = Some(decoded);
+                            value
+                        }
+                        None => decode_coding_text(
+                            interp,
+                            &region,
+                            coding.as_deref(),
+                            return_string,
+                            true,
+                            None,
+                            env,
+                        )?,
+                    }
                 };
                 let transformed_string = string_like(&transformed)
                     .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), transformed))?;
+                // coding->produced_char: the characters converted, however
+                // many bytes they take in a unibyte buffer.
                 let transformed_length = transformed_string.text.chars().count();
-                // produce_charset's `charset' properties land in the
-                // destination buffer along with the decoded text.
-                let transformed_props = transformed_string.props.clone();
-                // The text (with its characters beyond Unicode) the
-                // destination stores.
-                let text_for_buffer =
-                    |multibyte: bool| -> Result<(String, Vec<(usize, u32)>), LispError> {
-                        let form = if name == "decode-coding-region"
-                            && !multibyte
+                let decoding = name == "decode-coding-region";
+                match destination {
+                    Destination::Return => Ok(transformed),
+                    Destination::Replace => {
+                        // produce_charset's `charset' properties go on
+                        // with the text, at its characters' offsets even
+                        // in a unibyte buffer.
+                        let transformed_props = transformed_string.props.clone();
+                        // A decode inserted a call at a time takes its
+                        // characters, written into a unibyte buffer as
+                        // each call's are.
+                        let layout = buffer_decode
+                            .as_ref()
+                            .and_then(|decode| decode.layout.as_ref());
+                        let (decoded_text, decoded_extended) = match layout {
+                            Some(_) => (
+                                transformed_string.text.clone(),
+                                transformed_string.extended_chars.clone(),
+                            ),
+                            None => (String::new(), Vec::new()),
+                        };
+                        let form = if decoding
+                            && !interp.buffer.borrow().is_multibyte()
                             && transformed_string.multibyte
                         {
                             unibyte_destination_form(&transformed_string)?
                         } else {
-                            transformed_string.clone()
+                            transformed_string
                         };
-                        Ok((form.text, form.extended_chars))
-                    };
-                match destination {
-                    Destination::Return => Ok(transformed),
-                    Destination::Replace => {
-                        let (text, extended) =
-                            text_for_buffer(interp.buffer.borrow().is_multibyte())?;
+                        let inserted = form.text.chars().count();
                         let old_length = end - start;
-                        let new_end = start + text.chars().count();
-                        modify_current_buffer(interp, start, end, false, env, |interp, _, _| {
-                            replace_buffer_region_with_text(interp, start, end, &text, &extended)?;
-                            // decode_coding counts produced characters even
-                            // into a unibyte destination, so the spans keep
-                            // their character offsets there.
-                            if let Some(intervals) = &transformed_props {
-                                for (from, to, plist) in intervals.iter() {
-                                    if !plist.is_nil() {
-                                        let _ =
-                                            interp.buffer.borrow_mut().add_text_properties_range(
-                                                start + from,
-                                                start + to,
-                                                plist,
-                                                crate::intervals::PropertySetType::Replace,
-                                                true,
-                                            );
-                                    }
-                                }
-                            }
-                            Ok((
-                                Some(AfterChange::new(start, old_length, new_end - start)),
-                                Value::Integer(transformed_length as i64),
-                            ))
-                        })
-                    }
-                    Destination::Buffer(buffer_id) => {
-                        let saved_buffer_id = interp.current_buffer_id();
-                        interp.switch_to_buffer_id(buffer_id)?;
-                        let insert_at = interp.buffer.borrow().point();
-                        let (text, extended) =
-                            text_for_buffer(interp.buffer.borrow().is_multibyte())?;
-                        let insertion = insert_text_with_hooks(
+                        // decode_coding_object and encode_coding_object
+                        // save point and mark the markers to put back
+                        // before the hooks and the deletion, which a
+                        // decoding makes with point at FROM.
+                        let saved_pt = interp.buffer.borrow().point();
+                        let marked_windows = interp.mark_markers_for_conversion(start, end);
+                        if decoding {
+                            interp.buffer.borrow_mut().goto_char(start);
+                        }
+                        let replaced = modify_current_buffer(
                             interp,
-                            &text,
-                            transformed_props.as_ref(),
-                            &extended,
-                            false,
+                            start,
+                            end,
                             false,
                             env,
+                            |interp, _, env| {
+                                interp
+                                    .delete_region_current_buffer_unreturned(start, end)
+                                    .map_err(|error| LispError::Signal(error.to_string()))?;
+                                interp.buffer.borrow_mut().goto_char(start);
+                                let (text, extended) = match layout {
+                                    Some(_) => (&decoded_text, &decoded_extended),
+                                    None => (&form.text, &form.extended_chars),
+                                };
+                                insert_converted_text_at(
+                                    interp,
+                                    start,
+                                    text,
+                                    transformed_props.as_ref(),
+                                    extended,
+                                    transformed_length,
+                                    decoding,
+                                    layout,
+                                    env,
+                                )?;
+                                Ok((
+                                    Some(AfterChange::new(start, old_length, transformed_length)),
+                                    (),
+                                ))
+                            },
                         );
-                        interp.buffer.borrow_mut().goto_char(insert_at);
-                        let restore = interp.switch_to_buffer_id(saved_buffer_id);
-                        insertion?;
-                        restore?;
-                        Ok(Value::Integer(transformed_length as i64))
+                        // The post-read conversion where the text was
+                        // decoded, its additions counted in what was
+                        // produced.
+                        let produced = replaced.and_then(|()| match &buffer_decode {
+                            Some(decode) => crate::lisp::primitives::coding::finish_buffer_decode(
+                                interp,
+                                decode,
+                                start,
+                                transformed_length,
+                                env,
+                            ),
+                            None => Ok(transformed_length),
+                        });
+                        // Where the converted text now ends: coding->produced
+                        // past FROM in a unibyte buffer, produced_char in a
+                        // multibyte one, the conversion's change included.
+                        let new_end = (start
+                            + inserted
+                            + produced.as_ref().copied().unwrap_or(transformed_length))
+                        .saturating_sub(transformed_length);
+                        interp.settle_markers_after_conversion(&marked_windows, start, new_end);
+                        let produced = produced?;
+                        let point = if saved_pt < start {
+                            saved_pt
+                        } else if saved_pt < end {
+                            start
+                        } else {
+                            (saved_pt + new_end).saturating_sub(end)
+                        };
+                        interp.buffer.borrow_mut().goto_char(point);
+                        Ok(Value::Integer(produced as i64))
                     }
+                    Destination::Buffer(buffer_id) => insert_converted_text(
+                        interp,
+                        buffer_id,
+                        &transformed,
+                        buffer_decode.as_ref(),
+                        env,
+                    ),
                 }
             }
 
@@ -1278,7 +1344,7 @@ define_dispatch!(
                     false,
                     env,
                 )?;
-                insert_converted_text(interp, buffer_id, &encoded, env)
+                insert_converted_text(interp, buffer_id, &encoded, None, env)
             }
 
             "decode-coding-string" => {
@@ -1299,18 +1365,28 @@ define_dispatch!(
                         .get_buffer_by_id(id)
                         .map(|buffer| buffer.is_multibyte())
                 });
-                let decoded = decode_coding_text(
-                    interp,
-                    &args[0],
-                    coding.as_deref(),
-                    nocopy,
-                    destination.is_some(),
-                    dst_multibyte,
-                    env,
-                )?;
-                match destination {
-                    Some(buffer_id) => insert_converted_text(interp, buffer_id, &decoded, env),
-                    None => Ok(decoded),
+                match (destination, dst_multibyte) {
+                    (Some(buffer_id), Some(dst_multibyte)) => {
+                        let decoded =
+                            crate::lisp::primitives::coding::decode_coding_text_for_buffer(
+                                interp,
+                                &args[0],
+                                coding.as_deref(),
+                                dst_multibyte,
+                                env,
+                            )?;
+                        let value = decoded.value;
+                        insert_converted_text(interp, buffer_id, &value, Some(&decoded), env)
+                    }
+                    _ => decode_coding_text(
+                        interp,
+                        &args[0],
+                        coding.as_deref(),
+                        nocopy,
+                        false,
+                        None,
+                        env,
+                    ),
                 }
             }
             "json-parse-string" => {
@@ -1519,33 +1595,50 @@ fn insert_converted_text(
     interp: &mut Interpreter,
     buffer_id: u64,
     converted: &Value,
+    decode: Option<&crate::lisp::primitives::coding::BufferDecode>,
     env: &mut Env,
 ) -> Result<Value, LispError> {
     let converted = string_like(converted)
         .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *converted))?;
     let produced = converted.text.chars().count();
+    // produce_charset's runs, at the characters' offsets even in a
+    // unibyte destination.
+    let props = converted.props.clone();
+    let layout = decode.and_then(|decode| decode.layout.as_ref());
     let saved_buffer_id = interp.current_buffer_id();
     interp.switch_to_buffer_id(buffer_id)?;
-    let converted = if converted.multibyte && !interp.buffer.borrow().is_multibyte() {
-        match unibyte_destination_form(&converted) {
-            Ok(converted) => converted,
-            Err(error) => {
-                let _ = interp.switch_to_buffer_id(saved_buffer_id);
-                return Err(error);
+    let dst_pos = interp.buffer.borrow().point();
+    // A decode inserted a call at a time writes each call's characters
+    // into a unibyte buffer itself.
+    let converted =
+        if layout.is_none() && converted.multibyte && !interp.buffer.borrow().is_multibyte() {
+            match unibyte_destination_form(&converted) {
+                Ok(converted) => converted,
+                Err(error) => {
+                    let _ = interp.switch_to_buffer_id(saved_buffer_id);
+                    return Err(error);
+                }
             }
-        }
-    } else {
-        converted
-    };
+        } else {
+            converted
+        };
     let inserted = insert_text_before_point(
         interp,
         &converted.text,
-        converted.props.as_ref(),
+        props.as_ref(),
         &converted.extended_chars,
         produced,
+        decode.is_some(),
+        layout,
         env,
     );
+    // decode_coding_object finishes in the destination buffer.
+    let produced = inserted.and_then(|_| match decode {
+        Some(decode) => crate::lisp::primitives::coding::finish_buffer_decode(
+            interp, decode, dst_pos, produced, env,
+        ),
+        None => Ok(produced),
+    });
     let _ = interp.switch_to_buffer_id(saved_buffer_id);
-    inserted?;
-    Ok(Value::Integer(produced as i64))
+    Ok(Value::Integer(produced? as i64))
 }

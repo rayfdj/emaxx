@@ -598,16 +598,6 @@ fn integer_to_machine(value: &Value) -> Option<(bool, u64)> {
     }
 }
 
-/// bignum.c double_to_integer: the truncated D, which must be finite.
-fn double_to_integer(d: f64) -> Result<BigInt, LispError> {
-    if !d.is_finite() {
-        return Err(LispError::SignalValue(Value::list([Value::symbol(
-            "overflow-error",
-        )])));
-    }
-    bigint_from_truncated_float(d)
-}
-
 /// The SYMBOL_NAME of ARG when C's SYMBOLP admits it.
 fn c_symbol_name(interp: &Interpreter, arg: &Value, env: &Env) -> Option<Value> {
     if !matches!(
@@ -1127,7 +1117,10 @@ pub(crate) fn styled_format(
                     if abs_d < u64::MAX as f64 + 1.0 {
                         Some((d <= -1.0, abs_d as u64))
                     } else {
-                        bignum = Some(double_to_integer(d)?);
+                        // bignum.c:double_to_integer, which also checks
+                        // `integer-width'.
+                        let integer = double_to_integer(interp, d)?;
+                        bignum = Some(integer_like_bigint(interp, &integer)?);
                         None
                     }
                 }

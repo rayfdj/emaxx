@@ -22,6 +22,19 @@ pub(crate) struct PdumperLoadRecord {
 }
 
 impl Interpreter {
+    /// charset.c:init_charset's `charset-map-path': the "charsets"
+    /// directory under `data-directory'.
+    pub(crate) fn charset_map_path(&mut self) -> Result<Value, LispError> {
+        let data_directory = self.global_value("data-directory").unwrap_or(Value::Nil);
+        let directory = primitives::call(
+            self,
+            "expand-file-name",
+            &[Value::string("charsets"), data_directory],
+            &mut crate::lisp::types::Env::new(),
+        )?;
+        Ok(Value::list([directory]))
+    }
+
     /// dump_loaded_p.
     pub(crate) fn dump_loaded_p(&self) -> bool {
         self.pdumper_loaded.is_some()
@@ -176,7 +189,7 @@ impl Interpreter {
             )?;
         }
         self.set_buffer_local_value(scratch, "default-directory", directory);
-        let (minibuffer, _) = primitives::get_minibuffer(self, 0);
+        let minibuffer = primitives::get_minibuffer(self, 0);
         self.set_buffer_local_value(minibuffer, "default-directory", directory);
         // emacs.c:init_cmdargs.
         self.set_global_binding("command-line-args", primitives::command_line_args_value());
@@ -190,7 +203,6 @@ impl Interpreter {
             }
         }
         // callproc.c:init_callproc.
-        self.set_global_binding("exec-path", current_exec_path());
         for name in ["shell-file-name", "data-directory", "doc-directory"] {
             if let Some(value) = self.builtin_var_value(name) {
                 self.set_global_binding(name, value);
@@ -203,6 +215,10 @@ impl Interpreter {
                     .unwrap_or_else(primitives::default_directory),
             ),
         );
+        crate::startup::initialize_exec_path(self)?;
+        // charset.c:init_charset.
+        let charset_map_path = self.charset_map_path()?;
+        self.set_global_binding("charset-map-path", charset_map_path);
         // timefns.c:init_timefns takes the new process's TZ.
         self.local_time_zone_rule = std::env::var("TZ")
             .map(|value| Value::String(value.into()))
@@ -271,16 +287,8 @@ impl Interpreter {
     }
 
     /// The derived state a value carries beside its cell: the forwarded C
-    /// slots and the feature list (`set_global_binding' keeps them too).
+    /// slots (`set_global_binding' keeps them too).
     fn note_installed_value(&mut self, name: &str, value: &Value) {
-        if name == "features" {
-            self.provided_features = value
-                .to_vec()
-                .unwrap_or_default()
-                .into_iter()
-                .filter_map(|feature| feature.symbol_str().map(str::to_string))
-                .collect();
-        }
         self.update_forwarded_eval_cell(name, value);
     }
 

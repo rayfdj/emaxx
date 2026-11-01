@@ -576,7 +576,12 @@ impl Interpreter {
                 .is_some_and(|value| value.is_truthy()),
         );
         let margin = menu + tab;
-        let (mini_buffer_id, _) = crate::lisp::primitives::get_minibuffer(self, 0);
+        // frame.c:make_frame: the first of `minibuffer-list', which
+        // get_minibuffer makes only when there is none.
+        let mini_buffer_id = match self.find_buffer(" *Minibuf-0*") {
+            Some((id, _)) => id,
+            None => crate::lisp::primitives::get_minibuffer(self, 0),
+        };
         let mut make_window = |buffer, point, kind, geometry| {
             let Kind::Record(window_id) = self
                 .create_pseudovector(
@@ -602,6 +607,9 @@ impl Interpreter {
             Value::symbol(p::MINIBUFFER_WINDOW_KIND),
             (width, 1, 0, height - 1),
         );
+        // Each through set_window_buffer, which stamps the buffer's display.
+        self.stamp_buffer_display(buffer_id);
+        self.stamp_buffer_display(mini_buffer_id);
         let frame = crate::lisp::types::FrameRef::new(
             Value::string(&format!("F{id}")),
             super::FrameState {

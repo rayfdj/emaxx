@@ -695,27 +695,6 @@ pub(crate) fn casify_value(
     ))
 }
 
-pub(crate) fn replace_buffer_region_with_text(
-    interp: &mut Interpreter,
-    start: usize,
-    end: usize,
-    text: &str,
-    extended: &[(usize, u32)],
-) -> Result<usize, LispError> {
-    interp.buffer.borrow_mut().goto_char(start);
-    interp
-        .buffer
-        .borrow_mut()
-        .delete_region(start, end)
-        .map_err(|error| LispError::Signal(error.to_string()))?;
-    interp.buffer.borrow_mut().insert(text);
-    interp
-        .buffer
-        .borrow_mut()
-        .set_inserted_extended_chars(start, extended);
-    Ok(start + text.chars().count())
-}
-
 pub(crate) fn casify_buffer_region(
     interp: &mut Interpreter,
     start: usize,
@@ -819,11 +798,9 @@ pub(crate) fn casify_buffer_region(
                 .borrow_mut()
                 .record_casing_insertion(lo, new_end - lo);
         }
-        // The family shares the text, cased or not, and its counts.
+        // The rest of the family shares the cased text and its counts.
         if cased.changed.is_some() {
-            interp.mirror_in_place_edit_to_related_buffers(lo, hi, new_end);
-        } else {
-            interp.share_text_counters(interp.current_buffer_id());
+            interp.family_after_in_place_edit();
         }
         // casify_region: signal_after_change (start, end - start - added,
         // end - start) over the first to the last character changed.

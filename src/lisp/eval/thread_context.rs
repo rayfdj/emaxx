@@ -11,7 +11,9 @@ pub(super) struct ThreadExecutionContext {
     lisp_eval_depth: usize,
     current_load_file: Option<String>,
     last_match_data: Option<Vec<Option<(usize, usize)>>>,
-    last_match_data_buffer_id: Option<u64>,
+    last_thing_searched: Option<crate::lisp::types::BufferRef>,
+    search_regs_num_regs: usize,
+    saved_search_regs: SavedSearchRegs,
     interactive_call_depth: usize,
     lambda_capture_overrides: Vec<bool>,
     pub(super) active_special_restores: Vec<SpecialBindingRestore>,
@@ -40,7 +42,9 @@ impl ThreadExecutionContext {
             lisp_eval_depth,
             current_load_file,
             last_match_data,
-            last_match_data_buffer_id,
+            last_thing_searched,
+            search_regs_num_regs,
+            saved_search_regs,
             interactive_call_depth,
             lambda_capture_overrides,
             active_special_restores,
@@ -84,6 +88,13 @@ impl TraceLispRoots for ThreadExecutionContext {
         }
         for local in &self.frame_locals {
             marker.value(&local.value);
+        }
+        for buffer in self
+            .last_thing_searched
+            .iter()
+            .chain(&self.saved_search_regs.last_thing_searched)
+        {
+            marker.value(&Value::Buffer(*buffer));
         }
         if let Some(snapshot) = &self.batch_error_backtrace {
             for (_, function, arguments, _) in &snapshot.frames {

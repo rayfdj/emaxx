@@ -1918,6 +1918,7 @@ fn image_round_trips_buffers_markers_finalizers_and_nilled_frames() {
         Value::symbol("bold")
     );
     assert!(intervals.plist(1).is_nil());
+    drop(intervals);
     assert_eq!(
         buffer
             .visited_file_modtime()

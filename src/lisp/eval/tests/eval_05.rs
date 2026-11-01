@@ -325,8 +325,9 @@ fn delay_mode_hooks_evaluates_body_as_special_form() {
 
 #[test]
 fn warning_series_variables_have_default_bindings() {
+    // loaddefs.el's autoloaded defvars of warnings.el.
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             "(list warning-series warning-prefix-function warning-fill-prefix warning-type-format warning-suppress-types)"
         ),
         Value::list([

@@ -1041,7 +1041,7 @@ pub(crate) fn object_intervals_value(
             let buffer = interp
                 .get_buffer_by_id(buffer_id)
                 .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?;
-            buffer.intervals().cloned()
+            buffer.intervals().as_deref().cloned()
         }
         _ => {
             return Err(LispError::WrongTypeArgument(

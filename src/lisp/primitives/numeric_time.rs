@@ -51,6 +51,93 @@ pub(crate) fn normalize_bigint_value(value: BigInt) -> Value {
     }
 }
 
+/// bignum.c:make_integer_mpz: VALUE as a fixnum when it is in range, else
+/// as make_bignum_bits makes a bignum.  One wider than both
+/// `integer-width' and twice the machine integer width signals
+/// `overflow-error'; the width is compared as the unsigned bit count, so a
+/// negative one admits every size.  Only make_bignum_str (the reader and
+/// `string-to-number') skips the check.
+pub(crate) fn make_integer(interp: &Interpreter, value: BigInt) -> Result<Value, LispError> {
+    const TWICE_INTMAX_WIDTH: u64 = 2 * u64::BITS as u64;
+    let bits = value.bits();
+    if TWICE_INTMAX_WIDTH < bits && (integer_width(interp) as u64) < bits {
+        return Err(overflow_error());
+    }
+    Ok(normalize_bigint_value(value))
+}
+
+/// alloc.c's DEFVAR_INT `integer-width': the binding in effect, which its
+/// store kept an integer in intmax_t range.
+fn integer_width(interp: &Interpreter) -> i64 {
+    interp
+        .symbol_value_key(cached_symbol!("integer-width"))
+        .and_then(|width| match width.kind() {
+            Kind::Integer(width) => Some(width),
+            Kind::BigInteger(width) => width.to_i64(),
+            _ => None,
+        })
+        .unwrap_or(1 << 16)
+}
+
+pub(crate) fn overflow_error() -> LispError {
+    LispError::SignalValue(Value::list([Value::symbol("overflow-error")]))
+}
+
+/// bignum.c's limb counts on a 64-bit host: GMP_NUMB_BITS, and
+/// GMP_NLIMBS_MAX (min (INT_MAX, ULONG_MAX / GMP_NUMB_BITS)), which also
+/// bounds NLIMBS_LIMIT there.
+const GMP_NUMB_BITS: u64 = 64;
+const GMP_NLIMBS_MAX: i64 = i32::MAX as i64;
+const NLIMBS_LIMIT: i64 = GMP_NLIMBS_MAX;
+
+/// bignum.c:emacs_mpz_size: the limbs of VALUE's magnitude.
+fn emacs_mpz_size(value: &BigInt) -> i64 {
+    value.bits().div_ceil(GMP_NUMB_BITS) as i64
+}
+
+/// bignum.c:emacs_mpz_mul: X times Y, `overflow-error' when the factors'
+/// limbs together pass NLIMBS_LIMIT.
+pub(crate) fn emacs_mpz_mul(x: &BigInt, y: &BigInt) -> Result<BigInt, LispError> {
+    if NLIMBS_LIMIT - emacs_mpz_size(x) < emacs_mpz_size(y) {
+        return Err(overflow_error());
+    }
+    Ok(x * y)
+}
+
+/// bignum.c:emacs_mpz_mul_2exp: X shifted left by the nonnegative COUNT,
+/// `overflow-error' when the result's limbs could pass mpz_mul_2exp's
+/// limit (one extra limb).
+pub(crate) fn emacs_mpz_mul_2exp(x: &BigInt, count: i64) -> Result<BigInt, LispError> {
+    const LIM: i64 = GMP_NLIMBS_MAX - 1;
+    if LIM - emacs_mpz_size(x) < count / GMP_NUMB_BITS as i64 {
+        return Err(overflow_error());
+    }
+    Ok(x << count as u64)
+}
+
+/// bignum.c:emacs_mpz_pow_ui: BASE to the power EXP, `overflow-error'
+/// when BASE's limbs times EXP do not fit an int or pass mpz_n_pow_ui's
+/// limit (five extra limbs).
+fn emacs_mpz_pow_ui(base: &BigInt, exp: u64) -> Result<BigInt, LispError> {
+    const LIM: u128 = (GMP_NLIMBS_MAX - 5) as u128;
+    let limbs = emacs_mpz_size(base) as u128 * u128::from(exp);
+    if limbs > i32::MAX as u128 || LIM < limbs {
+        return Err(overflow_error());
+    }
+    // A base of at least one limb leaves EXP within an int.
+    Ok(base.pow(exp as u32))
+}
+
+/// bignum.c:double_to_integer: D with any fraction discarded,
+/// `overflow-error' when it is not finite, made as make_integer_mpz
+/// makes it.
+pub(crate) fn double_to_integer(interp: &Interpreter, d: f64) -> Result<Value, LispError> {
+    if !d.is_finite() {
+        return Err(overflow_error());
+    }
+    make_integer(interp, bigint_from_truncated_float(d)?)
+}
+
 /// fns.c:Fstring_version_lessp passes the actual bytes and lengths to
 /// GNU lib/filevercmp.c:filenvercmp (LGPL-3.0-or-later). Follow its empty
 /// and dot-name ordering, suffix passes and Debian digit-run comparison.
@@ -448,22 +535,8 @@ pub(crate) fn numeric_to_f64(interp: &Interpreter, value: &Value) -> Result<f64,
     }
 }
 
-pub(crate) fn bigint_from_integral_float(value: f64) -> Option<BigInt> {
-    if !value.is_finite() || value.fract() != 0.0 {
-        return None;
-    }
-    bigint_from_truncated_float(value).ok()
-}
-
-pub(crate) fn apply_rounding_kind(kind: RoundingKind, value: f64) -> Result<f64, LispError> {
-    if !value.is_finite() {
-        return Err(LispError::SignalValue(Value::list([Value::symbol(
-            "overflow-error",
-        )])));
-    }
-    Ok(round_float(kind, value))
-}
-
+/// floatfns.c's DOUBLE_ROUND for each kind: ceil, floor, emacs_rint (rint,
+/// to even on a tie) and trunc.
 fn round_float(kind: RoundingKind, value: f64) -> f64 {
     match kind {
         RoundingKind::Ceiling => value.ceil(),
@@ -473,6 +546,8 @@ fn round_float(kind: RoundingKind, value: f64) -> f64 {
     }
 }
 
+/// `ceiling', `floor', `round' and `truncate' (and with FLOAT_RESULT
+/// their f-prefixed float forms) on ARGS.
 pub(crate) fn integer_rounding_value(
     interp: &Interpreter,
     kind: RoundingKind,
@@ -495,82 +570,128 @@ pub(crate) fn integer_rounding_value(
             args.len(),
         ));
     }
-    if float_result && !matches!(args[0].kind(), Kind::Float(_)) {
-        return Err(LispError::WrongTypeArgument("floatp".into(), args[0]));
-    }
-    // floatfns.c:rounding_driver: CHECK_NUMBER (n), and CHECK_NUMBER (d)
-    // for a divisor that is not nil.
-    check_number(&args[0])?;
-    if let Some(divisor) = args.get(1).filter(|divisor| !divisor.is_nil()) {
-        check_number(divisor)?;
-    }
-    // rounding_driver divides a fixnum by a nonzero fixnum specially, for
-    // speed.
-    if let [numerator, divisor] = args
-        && let (Some(numerator), Some(divisor)) = (numerator.fixnum(), divisor.fixnum())
-        && divisor != 0
-    {
-        return Ok(Value::Integer(fixnum_divide(kind, numerator, divisor)));
-    }
-
-    // floatfns.c:rounding_driver receives a fixed second C argument and uses
-    // NILP (d), so funcall_subr's padded Qnil and an explicit nil have the
-    // same no-divisor behavior.
-    if args.len() == 1 || (!float_result && args[1].is_nil()) {
-        if float_result {
-            // GNU's f* family returns an integral float and deliberately
-            // preserves infinities and NaNs.  Only the integer-returning
-            // family signals `overflow-error' for non-finite input.
-            return Ok(Value::float(round_float(
-                kind,
-                numeric_to_f64(interp, &args[0])?,
-            )));
-        }
-        return match args[0].kind() {
-            Kind::Integer(_) | Kind::BigInteger(_) => Ok(args[0]),
-            _ => rounded_f64_to_number_value(apply_rounding_kind(
-                kind,
-                numeric_to_f64(interp, &args[0])?,
-            )?),
-        };
-    }
-
-    if let Some(rounded) = exact_numeric_division_round(interp, kind, &args[0], &args[1])? {
-        return if float_result {
-            Ok(Value::float(numeric_to_f64(interp, &rounded)?))
-        } else {
-            Ok(rounded)
-        };
-    }
-
-    if let (Some(numerator), Some(divisor)) = (
-        integer_like_bigint_for_rounding(interp, &args[0]),
-        integer_like_bigint_for_rounding(interp, &args[1]),
-    ) {
-        if divisor.is_zero() {
-            return Err(arith_error());
-        }
-        let rounded = exact_integer_division_round(kind, numerator, divisor);
-        return if float_result {
-            Ok(Value::float(
-                numeric_to_f64(interp, &rounded).unwrap_or(f64::NAN),
-            ))
-        } else {
-            Ok(rounded)
-        };
-    }
-
-    let divisor = numeric_to_f64(interp, &args[1])?;
-    if divisor == 0.0 || divisor.is_nan() {
-        return Err(arith_error());
-    }
-    let quotient = numeric_to_f64(interp, &args[0])? / divisor;
-    let rounded = apply_rounding_kind(kind, quotient)?;
     if float_result {
-        Ok(Value::float(rounded))
-    } else {
-        rounded_f64_to_number_value(rounded)
+        // floatfns.c:Ffceiling and the rest: CHECK_FLOAT, and the rounded
+        // double, infinities and NaNs as they are.
+        return Ok(Value::float(round_float(kind, check_float(&args[0])?)));
     }
+    // funcall_subr pads a missing DIVISOR with nil, which rounding_driver
+    // tests with NILP.
+    rounding_driver(
+        interp,
+        args[0],
+        args.get(1).copied().unwrap_or(Value::Nil),
+        kind,
+    )
+}
+
+/// floatfns.c: DBL_MANT_DIG - DBL_MIN_EXP, the largest scale
+/// double_integer_scale gives a finite double.
+const MAX_DOUBLE_SCALE: i32 = f64::MANTISSA_DIGITS as i32 - f64::MIN_EXP;
+
+/// floatfns.c:double_integer_scale: the exponent E for which D * 2**E is
+/// an integer of D's precision.  Zero and subnormals (ilogb below
+/// DBL_MIN_EXP - 1) take MAX_DOUBLE_SCALE, an infinity one more and a NaN
+/// two more.
+fn double_integer_scale(d: f64) -> i32 {
+    if d.is_nan() {
+        return MAX_DOUBLE_SCALE + 2;
+    }
+    if d.is_infinite() {
+        return MAX_DOUBLE_SCALE + 1;
+    }
+    match ((d.to_bits() >> 52) & 0x7ff) as i32 {
+        0 => MAX_DOUBLE_SCALE,
+        biased => f64::MANTISSA_DIGITS as i32 - 1 - (biased - 1023),
+    }
+}
+
+/// mpz_set_d (scalbn (D, double_integer_scale (D))) for a finite D: its
+/// significand, as an integer of D's sign.
+fn scaled_double_integer(d: f64) -> BigInt {
+    let bits = d.to_bits();
+    let fraction = bits & ((1 << 52) - 1);
+    let significand = BigInt::from(if (bits >> 52) & 0x7ff == 0 {
+        fraction
+    } else {
+        fraction | 1 << 52
+    });
+    if bits >> 63 == 0 {
+        significand
+    } else {
+        -significand
+    }
+}
+
+/// floatfns.c:rescale_for_division: the number N as an integer, scaled
+/// by the larger of NSCALE and DSCALE.  NSCALE is nonzero only for a
+/// float, and an infinite or NaN one (a scale past MAX_DOUBLE_SCALE)
+/// signals `overflow-error'.
+fn rescale_for_division(n: &Value, nscale: i32, dscale: i32) -> Result<BigInt, LispError> {
+    let value = match n.kind() {
+        Kind::Float(float) => {
+            if MAX_DOUBLE_SCALE < nscale {
+                return Err(overflow_error());
+            }
+            scaled_double_integer(float.get())
+        }
+        Kind::Integer(n) => BigInt::from(n),
+        Kind::BigInteger(n) => n.into(),
+        _ => return Err(LispError::WrongTypeArgument("numberp".into(), *n)),
+    };
+    if nscale < dscale {
+        return emacs_mpz_mul_2exp(&value, i64::from(dscale - nscale));
+    }
+    Ok(value)
+}
+
+/// floatfns.c:rounding_driver: N, or N divided by the non-nil D, rounded
+/// as KIND says.  A fixnum over a fixnum divides directly; otherwise
+/// floats are scaled to integers of a common scale and divided exactly.
+fn rounding_driver(
+    interp: &Interpreter,
+    n: Value,
+    d: Value,
+    kind: RoundingKind,
+) -> Result<Value, LispError> {
+    check_number(&n)?;
+    if d.is_nil() {
+        return match n.kind() {
+            Kind::Float(float) => double_to_integer(interp, round_float(kind, float.get())),
+            _ => Ok(n),
+        };
+    }
+    check_number(&d)?;
+    let mut dscale = 0;
+    match d.kind() {
+        Kind::Integer(0) => return Err(arith_error()),
+        Kind::Integer(divisor) => {
+            if let Kind::Integer(numerator) = n.kind() {
+                return Ok(normalize_integer_value(fixnum_divide(
+                    kind, numerator, divisor,
+                )));
+            }
+        }
+        Kind::Float(divisor) => {
+            if divisor.get() == 0.0 {
+                return Err(arith_error());
+            }
+            dscale = double_integer_scale(divisor.get());
+        }
+        _ => {}
+    }
+    let nscale = match n.kind() {
+        Kind::Float(float) => double_integer_scale(float.get()),
+        _ => 0,
+    };
+    // A finite numerator over an infinite denominator is zero, without
+    // the impossible rescaling of the denominator.
+    if dscale == MAX_DOUBLE_SCALE + 1 && nscale < dscale {
+        return Ok(Value::Integer(0));
+    }
+    let numerator = rescale_for_division(&n, nscale, dscale)?;
+    let denominator = rescale_for_division(&d, dscale, nscale)?;
+    make_integer(interp, integer_divide(kind, &numerator, &denominator))
 }
 
 /// floatfns.c's ceiling2, floor2, truncate2 and round2: N divided by D,
@@ -596,121 +717,82 @@ fn fixnum_divide(kind: RoundingKind, n: i64, d: i64) -> i64 {
     }
 }
 
-pub(crate) fn rounded_f64_to_number_value(value: f64) -> Result<Value, LispError> {
-    Ok(normalize_bigint_value(bigint_from_truncated_float(value)?))
-}
-
-pub(crate) fn integer_like_bigint_for_rounding(
-    interp: &Interpreter,
-    value: &Value,
-) -> Option<BigInt> {
-    match value.kind() {
-        Kind::Float(value) => bigint_from_integral_float(value.get()),
-        _ => integer_like_bigint(interp, value).ok(),
+/// GMP's mpz_cdiv_q, mpz_fdiv_q and mpz_tdiv_q, and floatfns.c's
+/// rounddiv_q (round2 on mpz_t): N divided by the nonzero D.
+fn integer_divide(kind: RoundingKind, n: &BigInt, d: &BigInt) -> BigInt {
+    let q = n / d;
+    let r = n - &q * d;
+    if r.is_zero() {
+        return q;
     }
-}
-
-pub(crate) fn exact_numeric_division_round(
-    interp: &Interpreter,
-    kind: RoundingKind,
-    numerator: &Value,
-    divisor: &Value,
-) -> Result<Option<Value>, LispError> {
-    let Some((num_sig, num_exp)) = exact_binary_rational(interp, numerator)? else {
-        return Ok(None);
-    };
-    let Some((div_sig, div_exp)) = exact_binary_rational(interp, divisor)? else {
-        return Ok(None);
-    };
-    if div_sig.is_zero() {
-        return Err(arith_error());
-    }
-    let mut scaled_num = num_sig;
-    let mut scaled_div = div_sig;
-    let exponent_delta = num_exp - div_exp;
-    if exponent_delta >= 0 {
-        scaled_num <<= exponent_delta as usize;
-    } else {
-        scaled_div <<= (-exponent_delta) as usize;
-    }
-    Ok(Some(exact_integer_division_round(
-        kind, scaled_num, scaled_div,
-    )))
-}
-
-pub(crate) fn exact_integer_division_round(
-    kind: RoundingKind,
-    numerator: BigInt,
-    divisor: BigInt,
-) -> Value {
-    let quotient = &numerator / &divisor;
-    let remainder = &numerator % &divisor;
-    if remainder.is_zero() {
-        return normalize_bigint_value(quotient);
-    }
-    let same_sign = numerator.sign() == divisor.sign();
-    let adjusted = match kind {
-        RoundingKind::Truncate => quotient,
-        RoundingKind::Floor => {
-            if same_sign {
-                quotient
-            } else {
-                quotient - 1
-            }
-        }
-        RoundingKind::Ceiling => {
-            if same_sign {
-                quotient + 1
-            } else {
-                quotient
-            }
-        }
+    let same_signs = r.is_negative() == d.is_negative();
+    match kind {
+        RoundingKind::Ceiling if same_signs => q + 1,
+        RoundingKind::Floor if !same_signs => q - 1,
+        RoundingKind::Ceiling | RoundingKind::Floor | RoundingKind::Truncate => q,
         RoundingKind::Round => {
-            let twice_remainder = remainder.abs() * 2;
-            let divisor_abs = divisor.abs();
-            if twice_remainder < divisor_abs {
-                quotient
-            } else if twice_remainder > divisor_abs {
-                if same_sign {
-                    quotient + 1
-                } else {
-                    quotient - 1
-                }
-            } else if (&quotient & BigInt::from(1u8)).is_zero() {
-                quotient
-            } else if same_sign {
-                quotient + 1
+            let abs_r = r.abs();
+            let abs_r1 = d.abs() - &abs_r;
+            let odd = q.bit(0);
+            if abs_r1 < abs_r || (odd && abs_r1 == abs_r) {
+                if same_signs { q + 1 } else { q - 1 }
             } else {
-                quotient - 1
+                q
             }
         }
-    };
-    normalize_bigint_value(adjusted)
+    }
 }
 
+/// floatfns.c:Ffrexp's libc frexp: VALUE's significand, at least 0.5 and
+/// below 1 in magnitude, and its exponent.  Zero, an infinity and a NaN
+/// are themselves with exponent zero.
 pub(crate) fn frexp_parts(value: f64) -> (f64, i64) {
-    if value == 0.0 {
+    if value == 0.0 || !value.is_finite() {
         return (value, 0);
     }
-    let exponent = value.abs().log2().floor() as i64 + 1;
-    let significand = value / ldexp_value(1.0, exponent);
-    (significand, exponent)
+    // A subnormal is normalized first, as an exact product.
+    let (value, adjust) = if value.abs() < f64::MIN_POSITIVE {
+        (value * two_to_the(54), -54)
+    } else {
+        (value, 0)
+    };
+    let bits = value.to_bits();
+    let biased = ((bits >> 52) & 0x7ff) as i64;
+    let significand = f64::from_bits((bits & !(0x7ff << 52)) | (1022 << 52));
+    (significand, biased - 1022 + adjust)
 }
 
+/// 2**N as a double, for N a normal binary exponent (-1022 to 1023).
+fn two_to_the(n: i32) -> f64 {
+    f64::from_bits(((0x3ff + n) as u64) << 52)
+}
+
+/// floatfns.c:Fldexp: EXPONENT clamped to an int, then libc ldexp (C99
+/// scalbn), SIGNIFICAND times 2**EXPONENT rounded once.  The scaling
+/// steps are musl's: past 1023 in up to two steps of 2**1023, below -1022
+/// in steps of 2**-969 that leave the last one below -53, so a subnormal
+/// result is not rounded twice.
 pub(crate) fn ldexp_value(significand: f64, exponent: i64) -> f64 {
-    if exponent > i32::MAX as i64 {
-        return if significand == 0.0 {
-            0.0
-        } else if significand.is_sign_negative() {
-            f64::NEG_INFINITY
-        } else {
-            f64::INFINITY
-        };
+    let mut n = exponent.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
+    let mut y = significand;
+    if n > 1023 {
+        y *= two_to_the(1023);
+        n -= 1023;
+        if n > 1023 {
+            y *= two_to_the(1023);
+            n -= 1023;
+            n = n.min(1023);
+        }
+    } else if n < -1022 {
+        y *= two_to_the(-1022) * two_to_the(53);
+        n += 1022 - 53;
+        if n < -1022 {
+            y *= two_to_the(-1022) * two_to_the(53);
+            n += 1022 - 53;
+            n = n.max(-1022);
+        }
     }
-    if exponent < i32::MIN as i64 {
-        return 0.0_f64.copysign(significand);
-    }
-    significand * 2.0_f64.powi(exponent as i32)
+    y * two_to_the(n)
 }
 
 /// floatfns.c:Flogb: the binary exponent; zero is -infinity, and an
@@ -743,47 +825,64 @@ pub(crate) fn logb_value(interp: &Interpreter, value: &Value) -> Result<Value, L
     }
 }
 
+/// floatfns.c:Fexpt: an integer to a natural power is data.c's
+/// expt_integer (Common Lisp's rule: no promotion when both are integers
+/// and the result is not fractional); anything else is pow of the two
+/// numbers as doubles.
 pub(crate) fn expt_value(
     interp: &Interpreter,
     base: &Value,
     exponent: &Value,
 ) -> Result<Value, LispError> {
-    // floatfns.c:Fexpt: CHECK_NUMBER (arg1), CHECK_NUMBER (arg2).
     check_number(base)?;
     check_number(exponent)?;
-    let exponent_bigint = integer_like_bigint(interp, exponent);
-    if matches!(base.kind(), Kind::Float(_)) || matches!(exponent.kind(), Kind::Float(_)) {
-        return Ok(Value::float(
-            numeric_to_f64(interp, base)?.powf(numeric_to_f64(interp, exponent)?),
-        ));
+    let natural = match exponent.kind() {
+        Kind::Integer(exponent) => exponent >= 0,
+        Kind::BigInteger(exponent) => !exponent.is_negative(),
+        _ => false,
+    };
+    if natural && matches!(base.kind(), Kind::Integer(_) | Kind::BigInteger(_)) {
+        return expt_integer(interp, base, exponent);
     }
-    let exponent_bigint = exponent_bigint?;
-    if exponent_bigint.is_negative() {
-        let base_value = integer_like_i64(interp, base)? as f64;
-        let exponent_value = exponent_bigint
-            .to_f64()
-            .ok_or_else(|| LispError::WrongTypeArgument("number-or-marker-p".into(), *exponent))?;
-        return Ok(Value::float(base_value.powf(exponent_value)));
-    }
+    Ok(Value::float(
+        numeric_to_f64(interp, base)?.powf(numeric_to_f64(interp, exponent)?),
+    ))
+}
 
-    let base_bigint = integer_like_bigint(interp, base)?;
-    if exponent_bigint.is_zero() {
-        return Ok(Value::Integer(1));
+/// data.c:expt_integer: the integer X to the natural power Y.  -1, 0 and 1
+/// never overflow; any other base needs Y to fit an unsigned long, and
+/// emacs_mpz_pow_ui's and make_integer_mpz's limits.
+fn expt_integer(interp: &Interpreter, x: &Value, y: &Value) -> Result<Value, LispError> {
+    match x.kind() {
+        Kind::Integer(1) => return Ok(*x),
+        Kind::Integer(0) => {
+            return Ok(if matches!(y.kind(), Kind::Integer(0)) {
+                Value::Integer(1)
+            } else {
+                *x
+            });
+        }
+        Kind::Integer(-1) => {
+            let odd = match y.kind() {
+                Kind::Integer(y) => y & 1 != 0,
+                Kind::BigInteger(y) => y.bit(0),
+                _ => false,
+            };
+            return Ok(if odd { *x } else { Value::Integer(1) });
+        }
+        _ => {}
     }
-    if base_bigint.is_zero() {
-        return Ok(Value::Integer(0));
-    }
-    if base_bigint == BigInt::from(1) {
-        return Ok(Value::Integer(1));
-    }
-    if base_bigint == BigInt::from(-1) {
-        let even = (&exponent_bigint & BigInt::from(1u8)).is_zero();
-        return Ok(Value::Integer(if even { 1 } else { -1 }));
-    }
-    let exponent_u32 = exponent_bigint
-        .to_u32()
-        .ok_or_else(|| LispError::Signal("Exponent too large".into()))?;
-    Ok(normalize_bigint_value(base_bigint.pow(exponent_u32)))
+    let exp = match y.kind() {
+        Kind::Integer(y) => y as u64,
+        Kind::BigInteger(y) => y.to_u64().ok_or_else(overflow_error)?,
+        _ => return Err(LispError::WrongTypeArgument("natnump".into(), *y)),
+    };
+    let base = match x.kind() {
+        Kind::Integer(x) => BigInt::from(x),
+        Kind::BigInteger(x) => BigInt::from(x),
+        _ => return Err(LispError::WrongTypeArgument("integerp".into(), *x)),
+    };
+    make_integer(interp, emacs_mpz_pow_ui(&base, exp)?)
 }
 
 pub(crate) fn exact_binary_rational(
@@ -861,6 +960,22 @@ pub(crate) fn bigint_gcd(mut left: BigInt, mut right: BigInt) -> BigInt {
         right = remainder;
     }
     left.abs()
+}
+
+/// timefns.c:Fcurrent_time.
+pub(crate) fn lisp_current_time(interp: &Interpreter) -> Result<Value, LispError> {
+    if let Some(value) = current_time_without_bignums(interp) {
+        return Ok(value);
+    }
+    // timefns.c make_lisp_time: the old-style list under
+    // `current-time-list', else the nanosecond (TICKS . 1000000000) pair,
+    // never reduced.
+    let now = current_time_value()?;
+    if current_time_list_is_set(interp) {
+        exact_time_to_old_style(&now)
+    } else {
+        exact_time_to_scaled_pair(&now, &BigInt::from(1_000_000_000u64))
+    }
 }
 
 pub(crate) fn current_time_value() -> Result<ExactTimeValue, LispError> {
@@ -1792,18 +1907,7 @@ define_dispatch!(
             }
             "current-time" => {
                 need_arg_range(name, args, 0, 0)?;
-                if let Some(value) = current_time_without_bignums(interp) {
-                    return Ok(value);
-                }
-                // timefns.c make_lisp_time: the old-style list under
-                // `current-time-list', else the nanosecond
-                // (TICKS . 1000000000) pair, never reduced.
-                let now = current_time_value()?;
-                if current_time_list_is_set(interp) {
-                    exact_time_to_old_style(&now)
-                } else {
-                    exact_time_to_scaled_pair(&now, &BigInt::from(1_000_000_000u64))
-                }
+                lisp_current_time(interp)
             }
             "current-time-string" => {
                 need_arg_range(name, args, 0, 2)?;
@@ -2311,13 +2415,8 @@ pub(crate) fn decimal_number_prefix(text: &str) -> Option<&str> {
         let special_exponent = positive_special
             && chars
                 .get(index..index + 3)
-                .map(|suffix| {
-                    suffix
-                        .iter()
-                        .map(|(_, ch)| ch.to_ascii_uppercase())
-                        .collect::<String>()
-                })
-                .is_some_and(|suffix| matches!(suffix.as_str(), "INF" | "NAN"));
+                .map(|suffix| suffix.iter().map(|(_, ch)| *ch).collect::<String>())
+                .is_some_and(|suffix| matches!(suffix.as_str(), "INF" | "NaN"));
         if special_exponent {
             index += 3;
             end = index;

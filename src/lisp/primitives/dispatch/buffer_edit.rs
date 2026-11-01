@@ -46,7 +46,7 @@ fn restore_buffer_modified_p(
             }
         }
     }
-    interp.share_text_counters(current);
+
     Ok(flag)
 }
 
@@ -531,24 +531,14 @@ define_dispatch!(
                 let text = source
                     .buffer_substring(start, end)
                     .map_err(|e| LispError::Signal(e.to_string()))?;
-                // insdel.c:insert_from_buffer_1: the source's intervals,
-                // copied for part of its text, the tree itself for all.
-                let props = if end - start < source.size_total() {
-                    source.copy_intervals(start, end)
-                } else {
-                    source
-                        .intervals()
-                        .map(crate::intervals::Intervals::shared_from_zero)
-                };
                 let extended_chars = source.substring_extended_chars(start, end);
                 drop(source);
-                insert_text_with_hooks(
+                insert_buffer_text_with_hooks(
                     interp,
                     &text,
-                    props.as_ref(),
+                    buffer_id,
+                    start,
                     &extended_chars,
-                    false,
-                    false,
                     env,
                 )?;
                 Ok(Value::Nil)
@@ -839,6 +829,11 @@ define_dispatch!(
             "set-buffer-multibyte" => {
                 need_args(name, args, 1)?;
                 let enabled = args[0].is_truthy();
+                if interp.buffer_base_id(interp.current_buffer_id()).is_some() {
+                    return Err(LispError::Signal(
+                        "Cannot do `set-buffer-multibyte' on an indirect buffer".into(),
+                    ));
+                }
                 if enabled == interp.buffer.borrow().is_multibyte() {
                     return Ok(args[0]);
                 }
@@ -874,6 +869,18 @@ define_dispatch!(
                     .buffer
                     .borrow_mut()
                     .set_multibyte_representation(enabled, converted, &positions, extended);
+                // Its indirect buffers take its new multibyte status, and
+                // their point and bounds from their converted markers.
+                let current_id = interp.current_buffer_id();
+                let related = interp.related_buffer_ids(current_id);
+                for buffer_id in &related {
+                    if *buffer_id != current_id
+                        && let Some(mut buffer) = interp.get_buffer_by_id_mut(*buffer_id)
+                    {
+                        buffer.set_multibyte(enabled);
+                    }
+                }
+                interp.fetch_family_positions(&related);
                 // The conversion is not recorded; a list kept for undo
                 // takes one entry for it instead.
                 let old_undo = interp.buffer.borrow().undo_list();
@@ -1098,28 +1105,11 @@ define_dispatch!(
             }
             "current-column" => Ok(Value::Integer(current_column(interp, env) as i64)),
             "current-indentation" => {
-                let saved = interp.buffer.borrow().point();
-                interp.buffer.borrow_mut().beginning_of_line();
-                while matches!(
-                    interp
-                        .buffer
-                        .borrow()
-                        .char_at(interp.buffer.borrow().point()),
-                    Some(' ' | '\t')
-                ) {
-                    let _ = interp.buffer.borrow_mut().forward_char(1);
-                }
-                let pt = interp.buffer.borrow().point();
-                let bol = {
-                    let saved = interp.buffer.borrow().point();
-                    interp.buffer.borrow_mut().beginning_of_line();
-                    let bol = interp.buffer.borrow().point();
-                    interp.buffer.borrow_mut().goto_char(saved);
-                    bol
-                };
-                let indentation = column_at(interp, env, bol, pt) as i64;
-                interp.buffer.borrow_mut().goto_char(saved);
-                Ok(Value::Integer(indentation))
+                // indent.c:Fcurrent_indentation: position_indentation from
+                // the line's start.
+                let point = interp.buffer.borrow().point();
+                let bol = line_beginning_at(interp, point);
+                Ok(Value::Integer(position_indentation(interp, env, bol) as i64))
             }
             "indent-to" => {
                 need_arg_range(name, args, 1, 2)?;
@@ -1313,9 +1303,7 @@ define_dispatch!(
                 let buffer = interp.decode_buffer(args.get(1))?;
                 buffer.borrow_mut().set_modified_tick(tick);
                 // BUF_MODIFF of the text a live buffer's family shares.
-                if let Some(id) = interp.live_buffer_id(buffer) {
-                    interp.share_text_counters(id);
-                }
+                if let Some(id) = interp.live_buffer_id(buffer) {}
                 Ok(Value::Nil)
             }
             "set-buffer-modified-p" => {
@@ -2941,7 +2929,7 @@ fn buffer_substring_named(
             };
             return Ok(Value::StringObject(
                 crate::lisp::types::StringObjectRef::from_text_ref(
-                    text,
+                    &text,
                     crate::lisp::types::string_data::StringProperties::new(props),
                     buffer.is_multibyte(),
                     &[],

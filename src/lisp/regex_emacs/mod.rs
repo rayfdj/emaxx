@@ -168,10 +168,11 @@ pub(crate) struct Pattern {
     pub(crate) multibyte: bool,
     /// Whether matching translates text characters (case folding).
     pub(crate) translate: bool,
-    /// The fastmap's verdict on each ASCII character of a text, for a
-    /// translation stamp and a multibyte or unibyte text: bit B is set
+    /// The fastmap's verdicts on the ASCII characters of a text met so far,
+    /// for a translation stamp and a multibyte or unibyte text: bit B of
+    /// the first mask is set once B has been tested, and of the second
     /// when B, translated, can start a match.
-    pub(crate) ascii_admits: Option<(u64, bool, u128)>,
+    pub(crate) ascii_admits: Option<(u64, bool, u128, u128)>,
 }
 
 /// How many bytes a pattern's fastmap admits.

@@ -872,22 +872,30 @@ impl Interpreter {
         self.globals.has_flag(symbol, PER_BUFFER)
     }
 
+    /// A buffer.c DEFVAR_PER_BUFFER slot (BUFFER_OBJFWD), as opposed to a
+    /// variable C or Lisp made buffer-local when set (SYMBOL_LOCALIZED),
+    /// which Emaxx may also keep per buffer.
+    pub(crate) fn is_buffer_objfwd_symbol(&self, symbol: &SymbolName) -> bool {
+        symbol.cell().has_c_slot()
+            && self.globals.has_flag(symbol, PER_BUFFER)
+            && super::native_per_buffer_slot(symbol.as_str()).is_some()
+    }
+
     /// data.c's SYMBOL_LOCALIZED redirect: SYMBOL has been made
     /// buffer-local, in some buffer or when set.
     pub(crate) fn is_localized_symbol(&self, symbol: &SymbolName) -> bool {
         self.globals.has_flag(symbol, LOCALIZED)
     }
 
-    /// data.c:let_shadows_buffer_binding_p: a SPECPDL_LET_DEFAULT
+    /// eval.c:let_shadows_buffer_binding_p: a SPECPDL_LET_DEFAULT
     /// record for NAME made in the current buffer (not LET_LOCAL).
     pub(crate) fn let_shadows_buffer_binding(&self, name: &str) -> bool {
         let current = self.current_buffer_id();
         self.active_special_restores.iter().any(|restore| {
             restore.name == name
-                && match restore.scope {
-                    SpecialBindingScope::BufferLocal(_) => false,
-                    SpecialBindingScope::Global => restore.binding_buffer_id == Some(current),
-                }
+                && restore.let_default
+                && matches!(restore.scope, SpecialBindingScope::Global)
+                && restore.where_buffer_id == current
         })
     }
 
@@ -1809,14 +1817,6 @@ impl Interpreter {
         if self.set_terminal_keyboard_value(name, &value) {
             return;
         }
-        if name == "features" {
-            self.provided_features = value
-                .to_vec()
-                .unwrap_or_default()
-                .into_iter()
-                .filter_map(|feature| feature.symbol_str().map(str::to_string))
-                .collect();
-        }
         if self
             .buffer_locals
             .get(&self.current_buffer_id())
@@ -2202,30 +2202,109 @@ impl Interpreter {
         if has_flag(FWD_BOOL) {
             return Ok(if value.is_nil() { Value::Nil } else { Value::T });
         }
-        // Three names convert their value here; another's is stored as it
-        // is, its text not compared with theirs.
-        if !matches!(name.as_bytes().first(), Some(b'd' | b's' | b'v')) {
-            return Ok(value);
+        // One name converts its value here; another's is stored as it is.
+        // (A per-buffer variable's predicate is set_internal's check,
+        // `check_per_buffer_predicate'.)
+        if name == "display-hourglass" {
+            return Ok(if value.is_nil() { Value::Nil } else { Value::T });
         }
-        match name {
-            "display-hourglass" => Ok(if value.is_nil() { Value::Nil } else { Value::T }),
-            "scroll-up-aggressively" => match value.kind() {
-                Kind::Nil => Ok(Value::Nil),
-                Kind::Integer(number) if (0..=1).contains(&number) => Ok(Value::Integer(number)),
-                Kind::Float(number) if (0.0..=1.0).contains(&number.get()) => {
-                    Ok(Value::Float(number))
-                }
-                other => Err(wrong_type_argument("numberp", other.value())),
-            },
-            "vertical-scroll-bar" => match value.kind() {
-                Kind::Nil => Ok(Value::Nil),
-                Kind::Symbol(ref symbol) if matches!(symbol.as_str(), "left" | "right") => {
-                    Ok(value)
-                }
-                other => Err(wrong_type_argument("symbolp", other.value())),
-            },
-            _ => Ok(value),
+        Ok(value)
+    }
+
+    /// data.c:store_symval_forwarding's check of a Lisp_Fwd_Buffer_Obj
+    /// variable's predicate (buffer.c's DEFVAR_PER_BUFFER), for the stores
+    /// set_internal makes, not set_default_internal's: nil always passes;
+    /// a `choice' property of the predicate symbol lists the values
+    /// allowed, a `range' property bounds a number between its car and
+    /// cdr, and otherwise a function predicate must answer non-nil.
+    pub(crate) fn check_per_buffer_predicate(
+        &mut self,
+        symbol: &SymbolName,
+        value: Value,
+        env: &mut Env,
+    ) -> Result<(), LispError> {
+        if value.is_nil() || !symbol.cell().has_c_slot() {
+            return Ok(());
         }
+        let Some(predicate) = per_buffer_predicate(symbol.as_str()) else {
+            return Ok(());
+        };
+        let predicate = Value::symbol(predicate);
+        let choice =
+            crate::lisp::primitives::call(self, "get", &[predicate, Value::symbol("choice")], env)?;
+        if !choice.is_nil() {
+            let allowed = crate::lisp::primitives::call(self, "memq", &[value, choice], env)?;
+            if allowed.is_nil() {
+                return Err(wrong_choice(self, choice, value, env)?);
+            }
+            return Ok(());
+        }
+        let range =
+            crate::lisp::primitives::call(self, "get", &[predicate, Value::symbol("range")], env)?;
+        if let Some((min, max)) = range.cons_values() {
+            let within = crate::lisp::primitives::call(self, "numberp", &[value], env)?.is_truthy()
+                && crate::lisp::primitives::call(self, "<=", &[min, value, max], env)?.is_truthy();
+            if !within {
+                let min_text =
+                    crate::lisp::primitives::call(self, "number-to-string", &[min], env)?;
+                let max_text =
+                    crate::lisp::primitives::call(self, "number-to-string", &[max], env)?;
+                let message = crate::lisp::primitives::call(
+                    self,
+                    "concat",
+                    &[
+                        Value::string("Value should be from "),
+                        min_text,
+                        Value::string(" to "),
+                        max_text,
+                    ],
+                    env,
+                )?;
+                return Err(LispError::SignalValue(Value::list([
+                    Value::symbol("error"),
+                    message,
+                    value,
+                ])));
+            }
+            return Ok(());
+        }
+        if crate::lisp::primitives::call(self, "functionp", &[predicate], env)?.is_truthy()
+            && crate::lisp::primitives::call_function_value(self, &predicate, &[value], env)?
+                .is_nil()
+        {
+            return Err(LispError::SignalValue(Value::list([
+                Value::symbol("wrong-type-argument"),
+                predicate,
+                value,
+            ])));
+        }
+        Ok(())
+    }
+
+    /// set_internal's SET of VALUE into SYMBOL, checked as
+    /// store_symval_forwarding checks a per-buffer variable: what
+    /// set_internal did before the check stays done when it fails.  A
+    /// variable local when set but not local here was made local (with
+    /// the value it had), or, under a `let' of its default made in this
+    /// buffer, had VALUE stored as the default first.
+    pub(crate) fn check_per_buffer_set(
+        &mut self,
+        symbol: &SymbolName,
+        value: Value,
+        env: &mut Env,
+    ) -> Result<(), LispError> {
+        let Err(error) = self.check_per_buffer_predicate(symbol, value, env) else {
+            return Ok(());
+        };
+        let variable = Value::Symbol(*symbol);
+        if crate::lisp::primitives::call(self, "local-variable-p", &[variable], env)?.is_nil() {
+            if self.let_shadows_buffer_binding(symbol.as_str()) {
+                crate::lisp::primitives::call(self, "set-default", &[variable, value], env)?;
+            } else {
+                crate::lisp::primitives::call(self, "make-local-variable", &[variable], env)?;
+            }
+        }
+        Err(error)
     }
 
     pub(crate) fn bind_special_variable(
@@ -2545,6 +2624,7 @@ impl Interpreter {
         if !self.globals.replace_bound_value(symbol, value) {
             self.globals.insert(symbol, value);
         }
+        let where_buffer_id = self.current_buffer_id();
         self.active_special_restores.push(SpecialBindingRestore {
             binding_id,
             name: *symbol,
@@ -2553,6 +2633,7 @@ impl Interpreter {
             keyboard_terminal_id: None,
             previous,
             let_default: false,
+            where_buffer_id,
             local_binding_killed: false,
         });
         Some(binding_id)
@@ -2590,6 +2671,7 @@ impl Interpreter {
                 keyboard_terminal_id: None,
                 previous: Some(previous),
                 let_default: false,
+                where_buffer_id: buffer_id,
                 local_binding_killed: false,
             };
             self.active_special_restores.push(restore);
@@ -2600,6 +2682,9 @@ impl Interpreter {
         let restore = if let Some(local) = self.buffer_local_binding_symbol(buffer_id, &resolved) {
             let previous = Some(local.unwrap_or(Value::Unbound));
             self.notify_variable_watchers_symbol(&resolved, value, "let", Some(buffer_id), env)?;
+            // SPECPDL_LET_LOCAL's set_internal checks a per-buffer
+            // variable's predicate (a let of its default does not).
+            self.check_per_buffer_predicate(&resolved, value, env)?;
             self.set_buffer_local_value_symbol(buffer_id, &resolved, value);
             SpecialBindingRestore {
                 binding_id,
@@ -2609,6 +2694,7 @@ impl Interpreter {
                 keyboard_terminal_id: None,
                 previous,
                 let_default: false,
+                where_buffer_id: buffer_id,
                 local_binding_killed: false,
             }
         } else {
@@ -2639,7 +2725,8 @@ impl Interpreter {
                 .globals
                 .has_flag(&resolved, LOCAL_IF_SET | PER_BUFFER)
                 .then_some(buffer_id);
-            let (action, where_heard) = if native_style {
+            let buffer_objfwd = self.is_buffer_objfwd_symbol(&resolved);
+            let (action, where_heard) = if native_style || buffer_objfwd {
                 // do_specbind's BUFFER_OBJFWD/LET_DEFAULT path calls
                 // set_default_internal, whose watcher operation is set.
                 ("set", None)
@@ -2662,6 +2749,7 @@ impl Interpreter {
                 binding_buffer_id,
                 previous,
                 let_default,
+                where_buffer_id: buffer_id,
                 local_binding_killed: false,
             }
         };
@@ -4266,6 +4354,63 @@ fn wants_debugger(list: Value, conditions: &[SymbolName]) -> bool {
         }
         false
     })
+}
+
+/// buffer.c's DEFVAR_PER_BUFFER predicates other than nil, by variable.
+fn per_buffer_predicate(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "major-mode" => "symbolp",
+        "fill-column"
+        | "left-margin"
+        | "tab-width"
+        | "buffer-saved-size"
+        | "left-margin-width"
+        | "right-margin-width"
+        | "left-fringe-width"
+        | "right-fringe-width"
+        | "scroll-bar-width"
+        | "scroll-bar-height"
+        | "buffer-display-count" => "integerp",
+        "default-directory"
+        | "buffer-file-name"
+        | "buffer-file-truename"
+        | "buffer-auto-save-file-name" => "stringp",
+        "overwrite-mode" => "overwrite-mode",
+        "vertical-scroll-bar" => "vertical-scroll-bar",
+        "scroll-up-aggressively" | "scroll-down-aggressively" => "fraction",
+        "line-spacing" => "numberp",
+        _ => return None,
+    })
+}
+
+/// data.c:wrong_choice: (error "One of A, B or C should be specified" WRONG).
+fn wrong_choice(
+    interp: &mut Interpreter,
+    choice: Value,
+    wrong: Value,
+    env: &mut Env,
+) -> Result<LispError, LispError> {
+    let mut message = String::from("One of ");
+    let mut tail = choice;
+    while let Some((item, rest)) = tail.cons_values() {
+        let name = crate::lisp::primitives::call(interp, "symbol-name", &[item], env)?;
+        if let Some(text) = crate::lisp::primitives::string_like(&name) {
+            message.push_str(&text.text);
+        }
+        message.push_str(if rest.is_nil() {
+            " should be specified"
+        } else if rest.cons_values().is_some_and(|(_, after)| after.is_nil()) {
+            " or "
+        } else {
+            ", "
+        });
+        tail = rest;
+    }
+    Ok(LispError::SignalValue(Value::list([
+        Value::symbol("error"),
+        Value::string(&message),
+        wrong,
+    ])))
 }
 
 #[cfg(test)]

@@ -78,9 +78,12 @@ fn comparison_range(
 /// The characters of BUFFER from FROM on, as BUF_FETCH_MULTIBYTE_CHAR
 /// reads a multibyte buffer's and make_char_multibyte makes a unibyte
 /// buffer's bytes characters.
-fn char_codes_from(buffer: &crate::buffer::Buffer, from: usize) -> impl Iterator<Item = u32> + '_ {
+fn char_codes_from<'a>(
+    buffer: &'a crate::buffer::Buffer,
+    (first, second): &'a (std::cell::Ref<'a, str>, std::cell::Ref<'a, str>),
+    from: usize,
+) -> impl Iterator<Item = u32> + 'a {
     use crate::lisp::primitives::case::{RAW_BYTE8_BASE, public_buffer_char_code};
-    let (first, second) = buffer.text_from(from);
     let multibyte = buffer.is_multibyte();
     first
         .chars()
@@ -137,8 +140,12 @@ fn compare_buffer_substrings(
                     .ok_or_else(|| LispError::Signal("Selecting deleted buffer".into()))
             };
             let (left, right) = (live(buffer1)?, live(buffer2)?);
-            let mut codes1 = char_codes_from(&left, begp1 + chars);
-            let mut codes2 = char_codes_from(&right, begp2 + chars);
+            let (text1, text2) = (
+                left.text_from(begp1 + chars),
+                right.text_from(begp2 + chars),
+            );
+            let mut codes1 = char_codes_from(&left, &text1, begp1 + chars);
+            let mut codes2 = char_codes_from(&right, &text2, begp2 + chars);
             let mut differ = None;
             while chars < stretch_end {
                 let (Some(c1), Some(c2)) = (codes1.next(), codes2.next()) else {
@@ -359,65 +366,79 @@ define_dispatch!(
                 }
                 let clone = args.get(2).is_some_and(|value| value.is_truthy());
                 let inhibit_hooks = args.get(3).is_some_and(|value| value.is_truthy());
+                // No double indirection: an indirect buffer's base is a
+                // buffer with its own text.
+                let base_id = interp.root_buffer_id(base_id);
                 let (new_id, _) = interp.create_buffer(&new_name);
-                let (text, props, point, mark, mark_active, base_overlays, restriction, multibyte) = {
-                    let base = interp.get_buffer_by_id(base_id).ok_or_else(|| {
-                        LispError::Signal(format!("No buffer with id {}", base_id))
-                    })?;
-                    (
-                        base.full_buffer_string(),
-                        base.intervals().cloned(),
-                        base.point(),
-                        base.mark(),
-                        base.mark_active_value(),
-                        base.overlays.iter().collect::<Vec<_>>(),
-                        base.restriction(),
-                        base.is_multibyte(),
-                    )
-                };
-                if let Some(object) = interp.buffer_object(new_id) {
-                    let mut state = crate::buffer::Buffer::from_text(&new_name, &text);
-                    state.text_conversion_style = interp.native_text_conversion_style_default();
-                    object.replace_state(state);
+                let (base_object, object) =
+                    match (interp.buffer_object(base_id), interp.buffer_object(new_id)) {
+                        (Some(base), Some(object)) => (base, object),
+                        _ => {
+                            return Err(LispError::Signal(format!(
+                                "No buffer with id {}",
+                                base_id
+                            )));
+                        }
+                    };
+                let mut state = crate::buffer::Buffer::new(&new_name);
+                state.text_conversion_style = interp.native_text_conversion_style_default();
+                object.replace_state(state);
+                // Use the base buffer's text object, and its chain of
+                // markers.
+                object.share_marker_chain(base_object);
+                let base_overlays = {
+                    let mut base = base_object.borrow_mut();
                     let mut buffer = object.borrow_mut();
-                    // GNU indirect buffers share their base buffer's text,
-                    // but never visit its file themselves.  In particular,
-                    // make-indirect-buffer clears both buffer-file-name and
+                    buffer.share_text_of(&base, base_object);
+                    // GNU indirect buffers never visit their base's file:
+                    // make-indirect-buffer clears buffer-file-name and
                     // buffer-file-truename even when CLONE is non-nil.
                     buffer.inhibit_hooks = inhibit_hooks;
-                    buffer.set_multibyte(multibyte);
-                    buffer.restore_restriction(restriction.0, restriction.1);
-                    buffer.goto_char(point);
-                    // A fresh mark pointing nowhere and `mark-active' nil
-                    // (reset_buffer), unless clone_per_buffer_values copies
-                    // the base's mark and `mark-active'.
+                    let (begv, zv) = base.restriction();
+                    buffer.restore_restriction(begv, zv);
+                    buffer.goto_char(base.point());
+                    // Make sure the base buffer has markers for its
+                    // narrowing.
+                    if base.position_markers().is_none() {
+                        let at = (base.point(), begv, zv);
+                        let current = base_id == interp.current_buffer_id();
+                        base.make_position_markers(base_object, at, current);
+                    }
                     if clone {
-                        if let Some(mark) = mark {
+                        // clone_per_buffer_values: the base's mark and
+                        // `mark-active', and its markers copied.
+                        if let Some(mark) = base.mark() {
                             buffer.set_mark_position(mark);
                         }
-                        buffer.set_mark_active_value(mark_active);
+                        buffer.set_mark_active_value(base.mark_active_value());
+                        let markers = base.position_markers().expect("the base's markers");
+                        let at = (
+                            markers.pt.last_position(),
+                            markers.begv.last_position(),
+                            markers.zv.last_position(),
+                        );
+                        buffer.make_position_markers(object, at, false);
+                        base.overlays.iter().collect::<Vec<_>>()
+                    } else {
+                        // A fresh mark pointing nowhere and `mark-active'
+                        // nil (reset_buffer); markers for its narrowing.
+                        let at = (buffer.point(), begv, zv);
+                        buffer.make_position_markers(object, at, false);
+                        Vec::new()
                     }
-                    // GNU's indirect buffer shares its base's text and so
-                    // its intervals: the same intervals here, their plists
-                    // the base's own.
-                    buffer.set_intervals(props);
-                    drop(buffer);
-                    if clone {
-                        // buffer.c:copy_overlays walks ascending intervals,
-                        // allocates new objects, and copies only plist spines.
-                        for source in base_overlays {
-                            let overlay = crate::overlay::OverlayRef::new(
-                                source.front_advance(),
-                                source.rear_advance(),
-                            );
-                            overlay.set_plist(Value::list(source.plist().to_vec()?));
-                            overlay.move_to(object, source.beg(), source.end());
-                        }
-                    }
+                };
+                // buffer.c:copy_overlays walks ascending intervals,
+                // allocates new objects, and copies only plist spines.
+                for source in base_overlays {
+                    let overlay = crate::overlay::OverlayRef::new(
+                        source.front_advance(),
+                        source.rear_advance(),
+                    );
+                    overlay.set_plist(Value::list(source.plist().to_vec()?));
+                    overlay.move_to(object, source.beg(), source.end());
                 }
                 interp.register_indirect_buffer(new_id, base_id);
-                // The base's text, and so its modification counts.
-                interp.share_text_counters(base_id);
+
                 if clone {
                     interp.clone_buffer_local_state(base_id, new_id);
                     // The clone visits no file, has its own display count,
@@ -546,18 +567,10 @@ define_dispatch!(
             "buffer-base-buffer" => {
                 // buffer.c Fbuffer_base_buffer: a nil BUFFER means the
                 // current buffer, exactly like an omitted argument.
+                // A killed indirect buffer keeps its base.
                 let buffer = interp.decode_buffer(args.first())?;
-                let Some(buffer_id) = interp.live_buffer_id(buffer) else {
-                    return Ok(Value::Nil);
-                };
-                Ok(interp
-                    .buffer_base_id(buffer_id)
-                    .and_then(|base_id| {
-                        interp
-                            .get_buffer_by_id(base_id)
-                            .map(|buffer| interp.buffer_value(base_id).expect("live buffer object"))
-                    })
-                    .unwrap_or(Value::Nil))
+                let base = buffer.borrow().base_buffer();
+                Ok(base.map_or(Value::Nil, Value::Buffer))
             }
             "buffer-swap-text" => {
                 need_args(name, args, 1)?;
@@ -568,6 +581,20 @@ define_dispatch!(
                     .live_buffer_id(other)
                     .ok_or_else(|| LispError::Signal("Cannot swap a dead buffer's text".into()))?;
                 let current_id = interp.current_buffer_id();
+                if interp.buffer_base_id(other_id).is_some()
+                    || interp.buffer_base_id(current_id).is_some()
+                {
+                    return Err(LispError::Signal(
+                        "Cannot swap indirect buffers's text".into(),
+                    ));
+                }
+                if interp.related_buffer_ids(other_id).len() > 1
+                    || interp.related_buffer_ids(current_id).len() > 1
+                {
+                    return Err(LispError::Signal(
+                        "One of the buffers to swap has indirect buffers".into(),
+                    ));
+                }
                 interp.swap_buffer_text_state(current_id, other_id)?;
                 Ok(Value::Nil)
             }
@@ -715,6 +742,14 @@ define_dispatch!(
                     }
                     return Ok(args[0]);
                 }
+                // A SYMBOL_PLAINVAL or other SYMBOL_FORWARDED symbol has no
+                // binding in any buffer: VARIABLE comes back unchanged and
+                // no watcher hears of it.  Only a localized one is told
+                // makunbound, whether or not this buffer has a cell.
+                if !interp.is_localized_symbol(&crate::lisp::types::SymbolName::intern_str(&symbol))
+                {
+                    return Ok(args[0]);
+                }
                 interp.notify_variable_watchers(
                     &symbol,
                     Value::Nil,
@@ -752,7 +787,10 @@ define_dispatch!(
                 if !interp.is_always_buffer_local_symbol(&symbol)
                     && !interp.has_buffer_local_binding_symbol(buffer_id, &symbol)
                 {
-                    if interp.let_shadows_buffer_binding(&symbol) {
+                    // A BUFFER_OBJFWD variable has its per-buffer flag set
+                    // and returns; the message is a SYMBOL_LOCALIZED one's.
+                    let buffer_objfwd = interp.is_buffer_objfwd_symbol(&symbol);
+                    if !buffer_objfwd && interp.let_shadows_buffer_binding(&symbol) {
                         call_named_function(
                             interp,
                             "message",

@@ -99,7 +99,9 @@ fn lookup_key_value(
         &vec![keymap, key, new_key, Value::CharTable(local)],
         |interp| {
             for table in [unicode, local] {
-                for index in 0..original.len() {
+                // The items whose name the conversion garbled.
+                let mut garbled = vec![false; original.len()];
+                for (index, item_garbled) in garbled.iter_mut().enumerate() {
                     let item = original.get(index).expect("vector length is fixed");
                     if !item.is_symbol()
                         && !(symbols_with_pos_enabled(interp, env)
@@ -113,6 +115,12 @@ fn lookup_key_value(
                     let lowered = if !string.multibyte {
                         super::strings::call(interp, "downcase", &[name], env)?
                     } else {
+                        // Flookup_key writes each converted character at
+                        // the byte its original started at and keeps the
+                        // original's byte count, so a conversion that
+                        // changes a character's length (Turkish `I' to
+                        // `ı') garbles the name past any symbol's: that
+                        // item stands for no binding but a default one.
                         let mut text = String::new();
                         let mut extended = Vec::new();
                         for (position, code) in string.character_codes().into_iter().enumerate() {
@@ -123,19 +131,32 @@ fn lookup_key_value(
                             if !(0..=0x3f_ffff).contains(&mapped) {
                                 return Err(LispError::Signal("Invalid character".into()));
                             }
+                            let width = |code: u32| {
+                                crate::lisp::types::string_data::encode_character(code)
+                                    .map(|(_, width)| width)
+                            };
+                            if width(mapped as u32)? != width(code as u32)? {
+                                *item_garbled = true;
+                            }
                             push_character_code(&mut text, &mut extended, position, mapped as u32);
                         }
                         make_shared_string_value_with_extended_chars(text, None, true, extended)
                     };
-                    converted.set(index, super::call(interp, "intern", &[lowered], env)?);
+                    let converted_item = if *item_garbled {
+                        super::call(interp, "make-symbol", &[lowered], env)?
+                    } else {
+                        super::call(interp, "intern", &[lowered], env)?
+                    };
+                    converted.set(index, converted_item);
                 }
                 found = lookup_key_once(interp, keymap, new_key, accept_default, env)?;
                 if !found.is_nil() && !is_number_value(&found) {
                     break;
                 }
-                for index in 0..converted.len() {
+                for (index, &item_garbled) in garbled.iter().enumerate() {
                     let item = converted.get(index).expect("vector length is fixed");
-                    if !item.is_symbol() {
+                    // A garbled name stays garbled with its spaces dashed.
+                    if !item.is_symbol() || item_garbled {
                         continue;
                     }
                     let name = direct_symbol_name(interp, &[item], env)?;

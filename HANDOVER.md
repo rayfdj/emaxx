@@ -11033,6 +11033,538 @@ setup_process_coding_systems's check now refuses). A 13-form
   leave in `*Messages*' and the parse errors. Local validation: the
   grouped gate's 3,398 library tests, the integration targets and
   clippy with `--all-targets --all-features -D warnings' pass.
+- **Round 219: inserted text properties as graft_intervals_into_buffer
+  and insert_from_buffer_1 take them.** A random editing battery (each
+  program a sequence of insertions, deletions, property and overlay
+  changes, narrowing, casing and undo on a fresh buffer, its buffer
+  string, point, markers, overlays and undo list printed after each)
+  found two divergences. Inserting a propertized string into an empty
+  buffer left the buffer's intervals sharing the string's plists, so a
+  later `put-text-property' or `add-face-text-property' on the buffer,
+  which change a plist's value cell in place, changed the string as
+  well (an undo record's string or a `buffer-substring' copy among
+  them): graft_intervals_into_buffer reproduces the string's tree for
+  text that is the whole buffer, and reproduce_interval copies each
+  plist with copy_properties, as the graft under text already in the
+  buffer does; Emaxx's reproduce now copies them too (the values stay
+  shared, as Fcopy_sequence shares them). `insert-buffer-substring'
+  took its intervals before the before-change hooks ran and before the
+  text went in; insert_from_buffer_1 reads them after both, so a hook's
+  change to the source's properties is what gets inserted, and text of
+  the current buffer's own text is copied, as copy_intervals of the tree
+  offset_intervals has already adjusted for the insertion, from the old
+  start moved past the insertion only when the source is the current
+  buffer itself and point was at or before it (another buffer of its
+  indirect family shares the text in GNU, and its start is not moved).
+  Oracle tests pin the copies, the hook order and the self and indirect
+  insertions. Local validation: the grouped gate's 3,400 library
+  tests, the integration targets and clippy with `--all-targets
+  --all-features -D warnings' pass.
+- **Round 220: `current-indentation' as indent.c's
+  position_indentation.** An extended editing battery (the round 219
+  programs with field, property and overlay queries logged, kills and
+  yanks, word casing, whitespace commands, `indent-rigidly', `insert-char'
+  and `reverse-region' added) differed from GNU after `indent-rigidly'
+  over a line whose first characters were invisible: Emaxx skipped only
+  spaces and tabs and stopped at the invisible text, where
+  position_indentation skips it as skip_invisible does when counting
+  columns (text invisible with an ellipsis still counts, and the skip
+  runs past newlines), counts a unibyte buffer's no-break space and a
+  multibyte character of the space category one column each, and stops
+  at any other character. `current-indentation' now scans as it does,
+  reading the invisibility spec only when the blanks it found meet
+  invisible text. The battery's other differences, in the length of the
+  undo list, were the marker adjustments of unreachable markers GNU
+  keeps chained until a collection: with `gc-cons-threshold' at its
+  maximum in both, sixty seeds of sixty programs match. An oracle test
+  pins the cases. Local validation: the grouped gate's 3,401 library
+  tests, the integration targets and clippy with `--all-targets
+  --all-features -D warnings' pass.
+- **Round 221: the match data as search.c keeps it: the searched
+  buffer, the registers, filters and sentinels.** A random regexp
+  battery (six hundred regexps of atoms, classes, syntax and category
+  escapes, anchors, groups, shy and explicitly numbered groups,
+  back-references and repetitions, each matched case-folded and not
+  against fourteen strings, replaced with `\&', and counted forward and
+  backward through a buffer) differed from GNU only in `(match-data t)'
+  after a buffer match whose buffer was then killed: search.c's
+  last_thing_searched holds the buffer object, appended to the list
+  with INTEGERS whether live or killed (into a reused list too); Emaxx
+  kept only the buffer's id and lost a killed buffer. It now holds the
+  object, a root of collection, saved per thread. A `replace-match'
+  battery (case conversion, `\&', `\N', `\\' and `\?' under FIXEDCASE
+  and LITERAL, SUBEXP given or not) then differed for `\9' in a buffer:
+  search_regs.num_regs, the registers allocated for the match data, is
+  history in GNU, unallocated until a search, two for a plain search,
+  at least RE_NREGS for the first regexp match, grown by half (at least
+  to the regexp's groups) when a match needs more, grown as xpalloc
+  grows by `set-match-data', and never shrunk; `replace-match' checks
+  SUBEXP against it (its `args-out-of-range' data names it) and takes a
+  `\N' below it as a register, signalling `Invalid use of `\\' in
+  replacement text' above it in a buffer. Emaxx assumed thirty always;
+  it now keeps the count as GNU does, and a batch session's startup
+  leaves it at seven, as GNU's does. Process filters and sentinels now
+  run in process.c's frame (read_process_output with
+  read_and_dispose_of_process_output, exec_sentinel): running_asynch_code
+  set, so their first search or `set-match-data' puts aside the
+  interrupted code's match data (save_search_regs), restored when they
+  return, a run inside another's restoring the outer saved data and
+  keeping the current data across itself as GNU's recursive case does;
+  `inhibit-quit' and `last-nonmenu-event' bound to t; the current buffer
+  and `deactivate-mark' kept. Emaxx let a filter's search clobber the
+  match data of the code waiting in `accept-process-output', bound
+  neither variable, and left a sentinel's buffer current. Oracle tests
+  pin the killed buffer, the register growth and the filter and
+  sentinel frames. Local validation: the grouped gate's 3,404
+  library tests, the integration targets and clippy with `--all-targets
+  --all-features -D warnings' pass.
+- **Round 222: per-buffer predicates, localized C variables, the
+  startup globals GNU leaves non-special, and NaN payloads.** A random
+  variable battery (setq, set, set-default, setq-local,
+  make-local-variable, kill-local-variable, let and let across
+  set-buffer, permanent-local, kill-all-local-variables and variable
+  watchers over plain, defvar-local and C per-buffer variables in two
+  buffers) differed from GNU in three ways. buffer.c's DEFVAR_PER_BUFFER
+  predicates were not checked: store_symval_forwarding checks the stores
+  set_internal makes (a SPECPDL_LET_LOCAL let's included), a type
+  predicate signalling `wrong-type-argument', a predicate symbol's
+  `choice' property naming the values allowed and its `range' property
+  bounding a number, with data.c's messages; nil always passes, a
+  `set-default' or a let of the default is not checked, and what
+  set_internal did first (make the variable local, or store the default
+  under a let of it made in this buffer) stays done when the check fails.
+  Emaxx's two conversions of its own (`vertical-scroll-bar',
+  `scroll-up-aggressively') are gone. buffer.c's `case-fold-search',
+  syntax.c's `syntax-propertize--done' and lread.c's `lexical-binding'
+  are DEFVARs their syms_of_* functions make buffer-local, not
+  BUFFER_OBJFWD slots, and a slot is now only a variable the generated
+  DEFVAR_PER_BUFFER manifest names, so the per-buffer variables Lisp
+  defines (`buffer-offer-save', `mark-ring', `font-lock-mode',
+  `visual-line-mode', `write-contents-functions' and the rest) are
+  SYMBOL_LOCALIZED too: watchers hear their lets as `let' in the current
+  buffer, and `make-local-variable' under a let of the default messages
+  `Making ... buffer-local while locally let-bound!' as it does for any
+  localized variable without a cell (let_shadows_buffer_binding_p now
+  asks for a SPECPDL_LET_DEFAULT made in this buffer, never a slot's).
+  `kill-local-variable' of a plain or other forwarded variable tells no
+  watcher and returns VARIABLE as given. A table of every bound symbol's
+  boundp, special-variable-p and local-variable-if-set-p then differed
+  (outside the X, GTK and touch-screen variables the tty build lacks) in
+  the startup globals GNU leaves non-special: `features'
+  (Fmake_var_non_special), the cells syms_of_* make with Fset
+  (`buffer-name-history', `custom-variable-history',
+  `coding-system-history', `yes-or-no-p-history', `echo-area-clear-hook'
+  and the `coding-category-*' symbols) and vc-hooks.el's `vc-mode';
+  Emaxx made them special, and left the four histories void. It also
+  bound `read-only-mode', `header-line-indent-mode' and
+  `visual-line-mode-on-hook'/`-off-hook', which GNU leaves void. lread.c
+  reads `INF' and `NaN' spelled exactly so after a mantissa of digits
+  with an optional point, a NaN's payload being the integer before the
+  point (the largest when there is none) and print.c printing it back;
+  Emaxx folded case, took any float mantissa and printed every NaN as
+  0.0e+NaN. Oracle tests pin the predicates, the NaN syntax, the
+  let-bound message, the localized variables' watcher operations and
+  which startup globals are special; the tests that expected a special
+  `features' or a bound `header-line-indent-mode' now check what GNU
+  does. The mark phase reads `last_thing_searched' and the saved
+  registers on one line, as the test of roots reset after load searches
+  for them (round 221's head failed it; see its CI below).
+  Local validation: the grouped gate's 3,409 library tests, the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass.
+- **Round 223: startup features and values as GNU's C and preloaded
+  Lisp make them.** A table of every bound symbol's default value at
+  `-Q --batch' (X, GTK, touch-screen and build-path values aside)
+  differed from GNU in `features': fns.c's Fprovide conses FEATURE onto
+  the front unless `memq' finds it, and runs its `after-load-alist'
+  entry through Fassq and Fmapc, while Emaxx kept a Rust copy of the
+  list, appended to it and rebuilt `features' from the copy, oldest
+  first and dropping anything Lisp had stored there. The Lisp list is
+  now the only one, started with the features the C code provides
+  (threads, inotify or kqueue, lcms2, multi-tty, make-network-process,
+  native-compile, emacs, newest first); bindings.el's base64, md5,
+  sha1, overlay and text-properties come with loadup, as in temacs,
+  and the store-effect hook that kept the copy is gone. The table also
+  found `dynamic-library-suffixes' without lread.c's empty secondary
+  suffix (now separate from the module suffixes `load-suffixes' and
+  `load' use, the secondary first on macOS), `exec-path' without
+  callproc.c's exec directory after PATH (now through startup.rs's
+  decode_env_path, EMACSPATH's entries when set), `charset-map-path'
+  nil where charset.c sets the charsets directory, `image-types' out of
+  image.c's registration order, and frame.c's window-system defaults
+  for a non-GTK build (the contracted oracle's) wrong:
+  `default-frame-scroll-bars' left, `frame-inhibit-implied-resize'
+  (tab-bar-lines tool-bar-lines). Native pre-sets of
+  `read-file-name-function' and `mouse-wheel-buttons' kept
+  minibuffer.el's and mouse.el's definitions from taking effect; both
+  are gone. Remaining differences in the table are the X build's own
+  variables, build paths, timings and counters, plus
+  `byte-boolean-vars', which Emaxx still leaves nil. An
+  oracle test pins the feature order and the startup values. Local
+  validation: the grouped gate's 3,410 library tests, the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass.
+- **Round 224: `byte-boolean-vars' and `word-wrap-by-category'.**
+  lread.c's defvar_bool conses each DEFVAR_BOOL onto
+  `byte-boolean-vars' as the syms_of_* functions run, and syms_of_lread
+  empties it partway, so the list holds the booleans defined after that,
+  newest first, in the order the build's own syms_of_* calls make them;
+  neither the members nor the order follow from the sources without the
+  build's configuration. Emaxx left it nil. It is now the contracted
+  oracle's list at `-Q --batch' (114 names, X ones included, as
+  byte-opt.el sees them there), in a generated Linux manifest that a new
+  mandatory anti-cheat gate re-prints from the pinned oracle and requires
+  byte identity with, as the forwarded-defaults manifest is; off Linux
+  the list stays nil until an oracle is probed there. xdisp.c writes
+  `DEFVAR_BOOL(' for `word-wrap-by-category' with no space, which the
+  DEFVAR_BOOL, DEFVAR_INT and forwarded-variable generators' patterns
+  missed, so Emaxx let it be aliased and kept a stored 5 where GNU
+  refuses the alias and stores t; it is in the boolean and forwarded
+  manifests now and the patterns allow any blanks before the
+  parenthesis. An oracle test pins the alias error, the stored value and
+  the list's length, ends and members. Local validation: the grouped
+  gate's 3,412 library tests, the integration targets and clippy
+  with `--all-targets --all-features -D warnings' pass.
+- **Round 225: autoloads and `require' through eval.c's
+  load_with_autoload_queue.** Fautoload_do_load and Frequire bind
+  `Vautoload_queue' to t around their load; `defalias' (data.c's
+  defalias, under `autoload' and native subr registration too) queues
+  each symbol whose definition it replaces and `provide' queues
+  `(0 . FEATURES)' with the list it replaces, and when the load signals,
+  un_autoload sets `features' back and fsets each queued symbol to the
+  definition `function-history' saved (the history itself stays), newest
+  first. Emaxx kept everything a failed autoload or `require' had
+  defined and provided, so a broken file left a half-loaded library that
+  looked loaded. Every GNU caller of Fautoload_do_load (eval_sub,
+  funcall, Fmacroexpand with MACRO-ONLY `macro', Finteractive_form,
+  call-interactively through it, and the keymap autoloads) now reaches
+  one port of it. NOERROR goes to Fload, where it excuses only the
+  file's absence: `require' had mapped any `file-error' the found file
+  raised to nil, and the best-effort MACRO-ONLY load had swallowed every
+  error. An autoload's file is loaded with MUST-SUFFIX t, as is a
+  feature's own name, and FILENAME is no longer checked to be a string
+  before `features' is. "Autoloading file ... failed to define
+  function" names `(car (car load-history))', the absolute file name,
+  as Frequire's message does. `--temacs=pdump' signals temacs's
+  "Attempt to autoload ... while preparing to dump" and "(require ...)
+  while preparing to dump" once, and `provide' takes SUBFEATURES through
+  CHECK_LIST (a dotted list passes). Fautoload is now Fdefalias of the
+  stub, which holds FILE itself (Emaxx stored a copy and set the cell
+  directly, past `defalias-fset-function' and the queue), and data.c's
+  defalias records no autoload in `load-history' in the dumping process:
+  the release image had 2,669 `(defun . NAME)' entries for functions
+  still autoloaded, loaddefs.el's, where GNU's has none. Oracle tests pin
+  the undone definitions and features, the NOERROR scope, the suffix
+  rule, the message, the stub's FILE and its fset hook. Local validation: the grouped gate's 3,414 library tests,
+  the integration targets and clippy with `--all-targets --all-features
+  -D warnings' pass.
+- **Round 226: coding conversions in coding.c's work buffer, BOMs and
+  the coding used.** A battery of 40 coding systems decoding 22 byte
+  strings and encoding 15 strings differed from GNU in `utf-8-auto''s
+  encoding, which had no BOM (encode_coding_utf_8 writes one unless
+  CODING_UTF_8_BOM is utf_without_bom, which a `:bom' pair is not), and
+  in `last-coding-system-used' after a `utf-7' encode, which showed the
+  utf-16be of the pre-write conversion's own encoding: code_convert_string
+  and code_convert_region set it once encode_coding_object is done.
+  Following that up found write-region writing a `utf-7' file in UTF-8:
+  e_write encodes through encode_coding_object, and Emaxx's file encoder
+  never ran a pre-write conversion; it does now, on the text with its
+  properties. The conversions themselves now run as coding.c runs them:
+  code_conversion_save's one " *code-conversion-work*" buffer, made with
+  its hooks inhibited and never killed (another named after it, killed
+  afterwards, while it is in use), erased, undo off,
+  `inhibit-modification-hooks' local and t, multibyte as the conversion
+  asks; decode_coding_object decodes every non-ASCII string there;
+  encode_coding_object's pre-write conversion gets BEG and Z there with
+  point after the text, the buffer multibyte only for text with more
+  bytes than characters, and the text encoded is that of the buffer
+  current afterwards, killed when it is not the work buffer; a post-read
+  conversion runs with undo off and point at the start of the decoded
+  text, in the work buffer for a string and in the region's own buffer
+  for a region (point then put back as decode_coding_object restores it,
+  the region's length counting what the conversion added). Both go
+  through safe_calln: an error is logged ("Error muted by safe_call")
+  and gives nil, which a post-read conversion's CHECK_FIXNAT then
+  rejects with `wholenump'. Emaxx had made and killed a fresh work buffer
+  per conversion, propagated their errors, dropped the decoded text's
+  `charset' properties after a post-read conversion, run a region's
+  post-read conversion outside the region, and skipped an ASCII region's
+  pre-write conversion through code_convert_string's fast path, which
+  only strings take. Oracle tests pin the work buffer, the muted errors,
+  both conversions' buffers, arguments and point, and the BOM, coding
+  used and file bytes for `utf-7' and `utf-8-auto'. Local validation: the
+  grouped gate's 3,416 library tests, the integration targets and
+  clippy with `--all-targets --all-features -D warnings' pass; the
+  gate's first run of the primitives group failed
+  `suspended_bytecode_observes_live_constant_vector_mutation' (the
+  weak table's last count after `garbage-collect'), which passed alone
+  and in a rerun of the whole group on the same build, 858 of 858.
+- **Round 227: integers within `integer-width', floats rounded as
+  floatfns.c rounds them.** A battery of 5,204 numeric forms (the arithmetic,
+  logical, shift, rounding and float functions over fixnums, bignums, signed zeros,
+  subnormals, infinities and NaNs) and a probe of `integer-width'
+  differed from GNU where bignum.c:make_bignum_bits signals
+  `overflow-error' for a result wider than both `integer-width' and 128
+  bits (the width compared as the unsigned bit count, so a negative one
+  admits every size): Emaxx made bignums of any size, and (ash 1
+  most-positive-fixnum) aborted the process on a 2**58-byte allocation.
+  make_integer_mpz's check now covers the arithmetic, logical, shift,
+  `expt', rounding and `random' results and `format''s conversion of a
+  large float, while the reader and `string-to-number' skip it as
+  make_bignum_str does, and emacs_mpz_mul, emacs_mpz_mul_2exp and
+  emacs_mpz_pow_ui refuse a result past GMP's limb limit before
+  computing it. Fexpt is expt_integer only for a natural exponent that
+  fits an unsigned long (a bignum base with a negative exponent is now
+  pow's float, not a wrong-type error); rounding_driver scales floats by
+  double_integer_scale and divides exactly, so a NaN or infinite
+  operand overflows rather than giving `arith-error', a finite one over
+  an infinity is zero, and `most-negative-fixnum' over -1 is a bignum.
+  `frexp' follows libc (an infinity or NaN keeps exponent zero, a
+  subnormal its true exponent) and `ldexp' rounds once as scalbn does.
+  An oracle test pins these results. Local validation: the grouped
+  gate's 3,417 library tests, the integration targets and clippy
+  with `--all-targets --all-features -D warnings' pass.
+- **Round 228: symbol names as read0 and apply_modifiers make them.**
+  Two probes of 130 symbol names' multibyteness and printing differed
+  from GNU wherever lread.c read0 interns a new symbol under
+  make_specified_string of the multibyteness READCHAR_REPORT_MULTIBYTE
+  gave for its first character: a multibyte string or buffer, or a file
+  `load' reads, names it with a multibyte string, ASCII or not; a
+  unibyte string or buffer, or a function, with a unibyte one, each
+  character a byte; `##' and an empty `#:' with empty_unibyte_string.
+  Emaxx made every ASCII name unibyte and every other one multibyte, so
+  a raw byte read from a unibyte string named a symbol `intern' did not
+  find. The reader now carries its source's report, `load',
+  `eval-buffer' and `read' from a buffer, string or marker included, and
+  interns on a miss with the name read0 makes.
+  keyboard.c:apply_modifiers_uncached also interns a multibyte name,
+  which the modifier symbols the preloaded keymaps build have. print.c
+  reads a name with fetch_string_char_advance, so a unibyte name's byte
+  0xC0 prints as `À', not a raw byte. The dumped obarray now holds 5,845
+  multibyte names against GNU's 5,884: 46 of GNU's are symbols Emaxx's
+  startup interns before loadup reads them (Lisp-owned variables it
+  still pre-sets, such as `mark-ring' and `shell-command-history'), and
+  7 of Emaxx's are symbols GNU's syms_of_* functions intern with
+  intern_c_string (keyboard.c's modifier names `drag' and `double',
+  callint.c's `mark', the X selection names), which the DEFSYM manifest
+  does not cover. `read-positioning-symbols' reads a string with its
+  multibyteness as `read' does, and keymap.c:Flookup_key's menu fallback
+  garbles a multibyte name whose conversion changes a character's byte
+  length (Turkish `I' to `ı'), matching no binding, as GNU's in-place
+  copy does; the oracle tests' interpreter side reads the ASCII program
+  GNU's `--eval' gets from a unibyte string, as GNU reads it. An oracle
+  test pins the names and their printing. Local validation, with rounds
+  229 to 231 on top: the grouped gate's 3,420 library tests, the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass.
+- **Round 229: the startup state preloaded Lisp makes; events and
+  display stamps as GNU's.** A comparison of every symbol's property
+  order and of the startup values of 47 variables against GNU found the
+  rest of the 46 names round 228 traced to Rust pre-sets of Lisp-owned
+  state. Emaxx's startup no longer sets simple.el's `visual-line-mode',
+  its map, hook and `minor-mode-map-alist'/`minor-mode-list' entries
+  (whose pre-set `minor-mode-list' kept subr.el's initial one from
+  taking effect), the shell-command and mark-ring options, isearch's,
+  replace.el's and tab-bar.el's options, loaddefs.el's `warning-'
+  variables and `cl-old-struct-compat-mode', startup.el's
+  `command-line-args-left' (now set after loadup, never by the image
+  builder) and `command-switch-alist', the `permanent-local' of
+  files.el's, mule.el's and vc-hooks.el's variables, fringe.el's
+  `fringe-bitmaps' (doubled when fringe.el pushed onto it), fill.el's
+  `fill-space' in `text-property-default-nonsticky', or the Edebug specs
+  and `doc-string-elt' byte-run.el, subr.el and lisp-mode.el put on the
+  definition forms; `printable-chars' ends at MAX_5_BYTE_CHAR, and
+  syms_of_keyboard's modifier names and syms_of_callint's preserved
+  functions are interned at startup. keyboard.c:Fevent_convert_list now
+  walks its argument as FOR_EACH_TAIL_SAFE does (a dotted, empty or
+  non-list description no longer signals), takes a one-character symbol
+  as its name's first byte, and modifies a symbol through
+  apply_modifiers, whose `modifier-cache' is the base's. Overlay arrow
+  variables get xdisp.c:update_overlay_arrows (-1)'s marks from
+  `force-window-update' and `redraw-frame'; set_window_buffer stamps
+  `buffer-display-count' and `buffer-display-time' (make_frame's windows
+  too), and get_minibuffer gives a minibuffer it reuses buffer.c's
+  reset_buffer. The multibyte-name census matches GNU's 5,884 but for
+  the four X-only names Emaxx's platform taxonomy leaves out (`latin-1',
+  `compound-text', `dont-save', `x-gtk-use-system-tooltips'); the 220
+  remaining property-order differences are X and touch-screen properties
+  (`x-frame-parameter', touch-screen.el's maps) and the `default' face's
+  `face' number, which Emaxx's tty frame makes before faces.el defines
+  the face. An oracle test pins the events, the overlay arrows, the
+  display stamps and the Lisp-made startup state. Local validation, with
+  rounds 230 and 231 on top: the grouped gate's 3,420 library
+  tests, the integration targets and clippy with `--all-targets
+  --all-features -D warnings' pass.
+- **Round 230: regex fastmap ASCII verdicts decided once a character is
+  met.** A translated re_search scanned ASCII bytes against verdicts on
+  all 128 codes, each computed through the case table for every pattern
+  compiled, though a search meets a few of them (icalendar-tests spent
+  337 million of its 2,960 million instructions there). The pattern now
+  keeps a mask of the codes decided and one of the codes admitted, with
+  the translation stamp and the target's multibyteness they hold for,
+  and decides a code when the scan first meets it. icalendar-tests run
+  2,775 million instructions under callgrind against GNU's 2,619
+  million; what remains is re_search's own scanning (208 million), the
+  range bookkeeping it calls (113 million) and compile_pattern (629
+  million against GNU's 550 million inclusive). Local validation, with
+  round 231 on top: the grouped gate's 3,420 library tests, the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass.
+- **Round 231: region conversions in place as decode_coding_object and
+  encode_coding_object.** Round 226's frozen run failed
+  `rmailmm-test-handler': decode-coding-region in a unibyte buffer moved
+  a point after the region by the characters produced where
+  decode_coding_object moves it by the bytes, so
+  rmail-mime-insert-decoded-text's newline split a character. A region
+  of the current buffer, nil or the buffer itself as DESTINATION, is now
+  converted where it stands and point put back as coding.c does (by
+  bytes in a unibyte buffer, characters in a multibyte one; at the
+  start when it was inside; a decoding moving it to the start before
+  the hooks and the deletion, an encoding leaving it); the markers at
+  the region's end, or its start for an insertion-type one, take
+  lisp.h's `need_adjustment' bit and go back to the new text's end and
+  start, the window points and starts among them. decode_coding's
+  insertion runs with `buffer-undo-list' t and records the characters
+  produced, the count the after-change functions get, and
+  produce_charset's runs go through Fput_text_property with their
+  change hooks, for a region, a buffer destination, decode-coding-string
+  into a buffer (whose unibyte destination had lost them) and process
+  output. An oracle test pins point, markers, hooks and undo entries.
+  Local validation: the grouped gate's 3,420 library tests, the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass.
+- **Round 232: file decodes put charset runs as decode_coding; temp file
+  text written as write_region.** `insert-file-contents' decodes
+  through round 231's insertion of a conversion's text: with undo off,
+  the characters produced recorded after, and each `charset' run put
+  through Fput_text_property with its change hooks, a visit's included
+  (GNU's modification count is one higher for each run); a REPLACE that
+  decodes inserts its middle with the runs the conversion buffer gave
+  it, as insert_from_buffer does. make-temp-file-internal writes a
+  nonempty TEXT through write_region on the descriptor it made, the
+  coding chosen and recorded and no lock taken, where Emaxx wrote its
+  own representation's bytes (10 for GNU's 6 for a unibyte TEXT with
+  two raw bytes). An oracle test pins the hooks, ticks and properties of
+  plain, visiting and replacing decodes and the temp file's size and
+  coding. Local validation: the grouped gate's 3421 library tests,
+  the integration targets and clippy with `--all-targets --all-features
+  -D warnings' pass.
+- **Round 233: indirect buffers share their base's text and its
+  markers (#359).** A buffer's text is an `Rc<RefCell<BufferText>>`
+  holding what GNU's struct buffer_text holds (the gap text, the
+  modification, chars and save ticks, the edit serials and log, the
+  intervals, the side table of characters beyond Unicode and the
+  character cache); `make-indirect-buffer` gives the new buffer its
+  base's, and `BufferValue::base` puts its markers on the base's chain,
+  so `BufferRef::markers` walks every marker of the text as BUF_MARKERS
+  does. The mirroring of each edit into a copy (`mirror_*`,
+  `share_text_counters`, `Buffer::mirror_in_place_edit` and
+  `transpose_family_positions`) is gone. A buffer whose text is shared
+  has GNU's pt_marker, begv_marker and zv_marker
+  (`Buffer::position_markers`), recorded when it stops being current
+  and fetched when it becomes current; after an edit the family's other
+  buffers fetch theirs (`Interpreter::fetch_family_positions`), and a
+  change of the point or bounds of a buffer not current (a window's
+  point set in its buffer) goes into its markers. The family's window
+  slots and overlays follow each edit, conversions mark and settle the
+  one chain once, and `buffer-base-buffer` reads the buffer's own base
+  link, kept after it is killed. `set-buffer-multibyte` refuses an
+  indirect buffer and passes a base's new status to its family;
+  `buffer-swap-text` refuses families. An image's indirect buffers are
+  loaded sharing their base's text, their chains rebuilt and their
+  position markers made anew (`buffer_marker_ids` dumps a buffer's own
+  markers, the position markers left out). Batteries of 25 and 12
+  family edits (the six of #359's that differed included: narrowing,
+  erase, transposition, decoding in place and both refusals) and an
+  oracle test (bounds and points moved as markers, insert-before-markers,
+  transpose_markers, decoding in place, the refusals, a clone's stale
+  point marker, undo's marker adjustment naming the other buffer's
+  point, windows, evaporating overlays, the multibyte conversion, a
+  killed indirect buffer's base and the selected window's point) read
+  as GNU's. Local validation: the grouped gate's 3422 library
+  tests, the integration targets and clippy with `--all-targets
+  --all-features -D warnings' pass.
+- **Round 234: decoders read ONE_MORE_BYTE's units a charbuf at a
+  time.** `coding/units.rs` has the `Units` source a decoder reads
+  (`[u8]` for a unibyte text, `CharUnits` for a multibyte one: an ASCII
+  or raw-byte character as its byte, any other as its negated code),
+  decode_coding's flush of what a call leaves (a multibyte source's
+  characters as the eight-bit characters of their bytes), the charbuf
+  constants and `CallRuns`, a call's `charset' run counted as
+  char_offset counts it (a character stored as -1 included).
+  `coding/decoders.rs` has decode_coding_utf_8, _utf_16, _charset,
+  _sjis, _big5, _emacs_mule and _raw_text as one call each, and
+  `decode_units`, decode_coding's loop of calls; `iso2022::decode_call`
+  is decode_coding_iso_2022's call. Each follows its C loop: the CR
+  lookahead (byte_after_cr, the next character's first unit, unread at
+  a charbuf's end), invalid_code from the loop's src_base with the
+  decoder's own rule for what it stores, a negative unit where each
+  decoder takes it, and the charbuf room (16384 ints less 10 for
+  charset, sjis and big5, 15 for iso-2022, 16 for emacs-mule, 2 for
+  utf-16; utf-8 counts only under a dos eol, where its end can change
+  what a CR reads). `decode_multibyte_source_text` decodes a multibyte
+  source as one `decode_units` over its `CharUnits`, where it decoded
+  each byte run between its characters separately, and `CharsetRuns`
+  gives way to `CallRuns`. Batteries of 96
+  multibyte-source decodes, 91 and 41 CR cases (multibyte and unibyte
+  sources over the utf-8, prefer-utf-8, undecided, latin-1 eol
+  variants), 6 emacs-mule sequences and 332 cases across the decoder
+  families (CR followed by invalid units, characters after a CR and
+  inside sequences, unmapped codes, the runs of 20000- and 40000-
+  character texts) read as GNU's but for 7 buffer modification counts
+  (below); two oracle tests pin them. ERT pass counts match GNU's for
+  coding, mule, mule-util, ucs-normalize, textsec, fileio, files,
+  process, ccl, rmailmm, mailcap, mm-decode, editfns and sgml-mode.
+  Still to do: GNU's produce_chars inserts each call's characters into
+  a buffer destination with insert_from_gap, and decode_eol deletes a
+  dos CR at a time, so decode-coding-region of 20000 shift_jis
+  characters moves the modification count by 44 against Emaxx's 33
+  (#416); emacs-mule's 0x80 composition sequences are still taken as
+  invalid codes and ISO 2022's compositions are simplified (#414);
+  ccl coding systems decode as raw text (#415); a BYTE8_TO_CHAR of a
+  character's negated code that comes out negative drops one character
+  where produce_chars skips that many; a charbuf end that unreads a
+  raw-byte unit of a multibyte source unreads the whole unit; and a
+  translation table's carryover across a call's end is not modelled.
+  Local validation: the grouped gate's 3424 library tests, the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass.
+- **Round 235: buffer decodes insert each decoder call's characters as
+  produce_chars does.** `DecodedText` keeps the character count of each
+  decoder call and of decode_coding's flush (`chunks`) and, for a dos or
+  mac eol, decode_eol's record (`EolConversion`: the CRs' indices, the
+  text, its `charset' runs and its side table as they were before it);
+  `take_layout` hands a buffer destination a `DecodeLayout`.
+  decode-coding-region, insert-file-contents, call-process and a
+  process's output insert the chunks one after another with point left
+  where the text begins (insert_from_gap, a tick a chunk and no hooks),
+  put each chunk's `charset' runs with Fput_text_property (a tick and
+  the change hooks a run) and then decode_eol: under dos
+  `Buffer::delete_chars_each` deletes the CRs before newlines in one
+  pass that leaves the text, point, the mark, the markers, the overlays,
+  the intervals (`Intervals::adjust_for_deletions`, each interval
+  shorter by what was deleted from it, an emptied one dropped) and the
+  modification counts (a tick a CR, without hooks or undo) as GNU's
+  del_range_2 one at a time leaves them, and under mac the CRs become
+  newlines in place. decode_coding_gap's fast path for an ASCII or valid
+  UTF-8 text stays one insertion with its CRs removed first. utf-8 now
+  counts its charbuf room under every eol, as GNU's decoder does. A
+  charset coding's first unit that decodes without another unit is
+  remembered for the decode (`CharsetDecode`), and decode_eol is one
+  pass that copies the text between CRs. The modification counts, change
+  hooks and intervals of 11 decode-coding-region cases (utf-8, latin-1,
+  utf-8-dos, undecided, utf-8-mac and shift_jis-dos texts up to 40000
+  characters), 6 file reads (insert-file-contents, call-process and a
+  read into the middle of a buffer), a decoded region's markers, undo
+  record and overlays, and the round 234 batteries read as GNU's; an
+  oracle test pins them. An insert-file-contents of 30000 latin-1-dos
+  lines takes 47.7M instructions to GNU's 52.4M. ERT pass counts match
+  GNU's for coding, mule, fileio, files, process, callproc, autorevert,
+  editfns, buffer, rmail, subr, undo, dired and ucs-normalize. Still to
+  do: #414, #415 and #417 (decode-coding-string's conversions around the
+  decoder). Local validation: the grouped gate's 3,426 library
+  tests, the integration targets and clippy with `--all-targets
+  --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -12450,6 +12982,90 @@ runner, were 1.162, 0.912 and 0.961.
 passed, and frozen (run 41263047151) matched all 7,928 outcomes on the
 first attempt: setup 83.0 s against 68.1 s (1.218), test bodies 259.1 s
 against 269.1 s (0.963), in all 1.006.
+
+**On `ac4e08e`** (round 218): the full Rust gate (run 41265755260)
+passed, and frozen (run 41265757335) matched all 7,928 outcomes on the
+first attempt: setup 83.4 s against 68.7 s (1.214), test bodies 259.4 s
+against 270.6 s (0.959), in all 1.000.
+
+**On `4d7013f`** (round 219): the full Rust gate (run 41272831624)
+passed, and frozen (run 41272833494) matched all 7,928 outcomes on the
+first attempt: setup 82.2 s against 66.9 s (1.229), test bodies 258.4 s
+against 267.4 s (0.967), in all 1.005.
+
+**On `1e4782e`** (round 220): the full Rust gate (run 41275443236)
+passed, and frozen (run 41275445266) matched all 7,928 outcomes on the
+first attempt: setup 69.2 s against 59.4 s (1.164), test bodies 232.9 s
+against 244.9 s (0.951), in all 0.992.
+
+**On `f061bb2`** (round 221): frozen (run 41278055086) matched all
+7,928 outcomes on the first attempt: setup 50.9 s against 43.9 s
+(1.160), test bodies 200.7 s against 214.4 s (0.936), in all 0.965. The
+Rust gate failed one library test (run 41278053360),
+`every_reset_root_is_a_mark_phase_root': round 221 moved
+`last_thing_searched' and `saved_search_regs' to the roots reset after
+load once its grouped gate had run, rerunning only the test that had
+asked for it, and the mark phase read the first through a line break
+the test's text search does not follow. Round 222 reads both on one
+line, and its gate ran the whole library.
+
+**On `ffbc676`** (round 222): the full Rust gate (run 41283567119)
+passed, and frozen (run 41283568958) matched all 7,928 outcomes on the
+first attempt: setup 82.7 s against 67.3 s (1.229), test bodies 257.8 s
+against 273.8 s (0.941), in all 0.988.
+
+**On `5d365f0`** (round 223): the full Rust gate (run 41288376067)
+passed, and frozen (run 41288377810) matched all 7,928 outcomes on the
+first attempt: setup 59.9 s against 52.0 s (1.152), test bodies 216.9 s
+against 231.9 s (0.935), in all 0.993.
+
+**On `1ad9f68`** (round 224): the full Rust gate (run 41291572709)
+passed, and frozen (run 41291574970) matched all 7,928 outcomes on the
+first attempt: setup 77.6 s against 64.2 s (1.208), test bodies 251.2 s
+against 260.8 s (0.963), in all 0.998.
+
+**On `4362a25`** (round 225): the full Rust gate (run 41294602316)
+passed, and frozen (run 41294604357) matched all 7,928 outcomes on the
+first attempt: setup 81.7 s against 68.0 s (1.200), test bodies 256.5 s
+against 270.5 s (0.948), in all 0.987.
+
+**On `72b065e`** (round 226): the full Rust gate (run 41299121760)
+passed; frozen (run 41299123973) matched 7,927 of 7,928 outcomes:
+rmailmm-tests' `rmailmm-test-handler' failed, round 226's
+decode-coding-region moving point in a unibyte buffer by the characters
+it produced where decode_coding_object moves it by the bytes, so
+rmail-mime-insert-decoded-text's newline split a character (fixed with
+round 231). Setup 79.0 s against 64.8 s (1.220), test bodies 254.9 s
+against 263.3 s (0.968), in all 1.000.
+
+**On `6a789be`** (round 227): frozen (run 41302510895) matched 7,926 of
+7,928 outcomes: rmailmm-tests' `rmailmm-test-handler' as on the round
+226 head (fixed with round 231), and eglot-tests'
+`eglot-test-rust-completion-exit-function', which the GNU oracle failed
+on a rust-analyzer `jsonrpc-error' and Emaxx passed. Setup 81.0 s
+against 67.6 s (1.198), test bodies 256.9 s against 273.4 s (0.940), in
+all 0.978. The full Rust gate (run 41302508908) passed.
+
+**On `d121573`** (rounds 228 to 231): frozen (run 41312077653) matched
+all 7,928 outcomes, rmailmm-tests' `rmailmm-test-handler' again among
+them. Setup 85.0 s against 69.8 s (1.218), test bodies 260.2 s against
+272.7 s (0.954), in all 1.002. The full Rust gate (run 41312075247)
+passed.
+
+**On `c1f00fe`** (round 232): frozen (run 41315769902) matched all
+7,928 outcomes. Setup 70.4 s against 62.0 s (1.135), test bodies 233.6
+s against 252.5 s (0.925), in all 0.964. The full Rust gate (run
+41315767036) passed.
+
+**On `e2a1615`** (round 233): frozen (run 41321300687) matched all
+7,928 outcomes. Setup 75.9 s against 61.9 s (1.226), test bodies 249.4
+s against 259.9 s (0.960), in all 1.000. The full Rust gate (run
+41321298165) passed.
+
+**On `77cb716`** (round 234): frozen (run 41327825511) matched all
+7,928 outcomes. Setup 86.2 s against 69.2 s (1.246), test bodies 261.5
+s against 269.9 s (0.969), in all 1.017. The full Rust gate (run
+41327822773) passed.
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

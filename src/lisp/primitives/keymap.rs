@@ -244,7 +244,7 @@ pub(crate) fn symbol_put(
 /// keyboard.c:apply_modifiers: BASE with MODIFIERS, through BASE's
 /// `modifier-cache' (the click modifier never figures in its indices), the
 /// new symbol taking BASE's `event-kind' when it has none.
-fn apply_modifiers(
+pub(crate) fn apply_modifiers(
     interp: &mut Interpreter,
     modifiers: i64,
     base: Value,
@@ -270,7 +270,9 @@ fn apply_modifiers(
     let new_symbol = match cached {
         Some(symbol) => symbol,
         None => {
-            let symbol = Value::symbol(&modified_event_symbol_name(modifiers, base_name));
+            let symbol = crate::lisp::primitives::intern_modified_event_symbol(
+                &modified_event_symbol_name(modifiers, base_name),
+            );
             symbol_put(
                 interp,
                 base,

@@ -124,28 +124,181 @@ impl Interpreter {
         self.load_target_with_env(target, &Env::new())
     }
 
-    /// lread.c save_match_data_load, the load Fautoload_do_load performs:
-    /// the file the autoload names is loaded with the match data saved
+    /// lread.c:save_match_data_load: Fload with the match data saved
     /// around it, so an autoload triggered between a `string-match' and
     /// its `match-end' (dired-aux's `cl-member' inside
     /// `dired--need-confirm-positions') leaves the caller's match data
     /// intact.
-    pub(crate) fn load_autoload_target(
+    fn save_match_data_load(
         &mut self,
-        target: &str,
-        env: &Env,
-    ) -> Result<PathBuf, LispError> {
-        let mut call_env = env.clone();
-        let saved = crate::lisp::primitives::call(self, "match-data", &[], &mut call_env)?;
+        arguments: [Value; 5],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        let saved = crate::lisp::primitives::call(self, "match-data", &[], env)?;
         // The saved data holds markers (a buffer match), and lread.c keeps
         // it on the specpdl (record_unwind_save_match_data) where the
         // collector reaches it; held here through the load, it is a
         // registered root, or a collection inside the load unchains its
         // markers and the restore signals.
-        let result =
-            self.with_lisp_stack_roots(&saved, |interp| interp.load_target_with_env(target, env));
-        crate::lisp::primitives::call(self, "set-match-data", &[saved, Value::T], &mut call_env)?;
+        let result = self.with_lisp_stack_roots(&saved, |interp| {
+            primitives::load_file(interp, &arguments, env).map(|(value, _)| value)
+        });
+        let restored = self.with_lisp_stack_roots(&result, |interp| {
+            crate::lisp::primitives::call(interp, "set-match-data", &[saved, Value::T], env)
+        });
+        restored?;
         result
+    }
+
+    /// eval.c:load_with_autoload_queue: a load an autoload or `require'
+    /// asked for, made with `Vautoload_queue' t so that `defalias' and
+    /// `provide' record what they replace, and undone by un_autoload when
+    /// the load signals: an autoload is a request to call a function, not
+    /// to load a file.  ARGUMENTS are Fload's.
+    pub(crate) fn load_with_autoload_queue(
+        &mut self,
+        arguments: [Value; 5],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        let oldqueue = self.autoload_queue;
+        self.autoload_queue = Value::T;
+        let result = self.with_lisp_stack_roots(&oldqueue, |interp| {
+            interp.save_match_data_load(arguments, env)
+        });
+        // Once loading finishes, don't undo it.
+        if result.is_ok() {
+            self.autoload_queue = Value::T;
+        }
+        // un_autoload leaves OLDQUEUE in the marked queue first.
+        let undone =
+            self.with_lisp_stack_roots(&result, |interp| interp.un_autoload(oldqueue, env));
+        undone?;
+        result
+    }
+
+    /// eval.c:un_autoload: restore `features' and the definitions the
+    /// current `Vautoload_queue' records, newest first, and leave OLDQUEUE
+    /// in its place.  A replaced definition comes back as the one
+    /// `function-history' saved for it.
+    fn un_autoload(&mut self, oldqueue: Value, env: &mut Env) -> Result<(), LispError> {
+        let held = self.autoload_queue;
+        self.autoload_queue = oldqueue;
+        self.with_lisp_stack_roots(&held, |interp| {
+            let mut queue = held;
+            while let Kind::Cons(cell) = queue.kind() {
+                let first = cell.car.get();
+                if let Kind::Cons(entry) = first.kind()
+                    && entry.car.get() == Value::Integer(0)
+                {
+                    interp.set_global_binding("features", entry.cdr.get());
+                } else {
+                    let history = crate::lisp::primitives::call(
+                        interp,
+                        "get",
+                        &[first, Value::symbol("function-history")],
+                        env,
+                    )?;
+                    let rest = crate::lisp::primitives::call(interp, "cdr", &[history], env)?;
+                    let definition = crate::lisp::primitives::call(interp, "car", &[rest], env)?;
+                    crate::lisp::primitives::call(interp, "fset", &[first, definition], env)?;
+                }
+                queue = cell.cdr.get();
+            }
+            Ok(())
+        })
+    }
+
+    /// The `--temacs' MODE this process will dump with, while lisp.h's
+    /// will_dump_p holds: eval.c and fns.c clear gflags.will_dump_ before
+    /// the error an autoload or `require' signals there, so reporting it
+    /// cannot land here again.
+    fn will_dump_mode(&self, env: &Env) -> Option<String> {
+        if self.will_dump_reported {
+            return None;
+        }
+        self.lookup_var("dump-mode", env)
+            .and_then(|mode| crate::lisp::primitives::string_like(&mode).map(|mode| mode.text))
+            .filter(|mode| mode == "pdump" || mode == "pbootstrap")
+    }
+
+    /// lisp.h's will_dump_p.
+    pub(crate) fn will_dump(&self, env: &Env) -> bool {
+        self.will_dump_mode(env).is_some()
+    }
+
+    /// will_dump_p && !will_bootstrap_p: the `--temacs=pdump' process,
+    /// which loadup.el must not make autoload or require (the preloaded
+    /// files are listed explicitly).
+    fn will_dump_without_bootstrap(&self, env: &Env) -> bool {
+        self.will_dump_mode(env).is_some_and(|mode| mode == "pdump")
+    }
+
+    /// eval.c:Fautoload_do_load: load FUNDEF's file when it is an
+    /// autoload (for MACRO-ONLY `macro', only one that defines a macro)
+    /// and return FUNNAME's new definition; nil with FUNNAME nil, or for a
+    /// best-effort MACRO-ONLY load of a function's file, whose absence is
+    /// then no error.
+    pub(crate) fn autoload_do_load(
+        &mut self,
+        fundef: Value,
+        funname: Value,
+        macro_only: Value,
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        if !matches!(
+            fundef.cons_values().map(|(head, _)| head.kind()),
+            Some(Kind::Symbol(head)) if head == "autoload"
+        ) {
+            return Ok(fundef);
+        }
+        let kind = crate::lisp::primitives::call(self, "nth", &[Value::Integer(4), fundef], env)?;
+        let loads_macro = matches!(kind.kind(), Kind::T)
+            || matches!(kind.kind(), Kind::Symbol(symbol) if symbol == "t" || symbol == "macro");
+        if matches!(macro_only.kind(), Kind::Symbol(symbol) if symbol == "macro") && !loads_macro {
+            return Ok(fundef);
+        }
+        if self.will_dump_without_bootstrap(env) {
+            self.will_dump_reported = true;
+            let name = crate::lisp::primitives::call(self, "symbol-name", &[funname], env)?;
+            return Err(LispError::Signal(format!(
+                "Attempt to autoload {} while preparing to dump",
+                primitives::string_text(&name)?
+            )));
+        }
+        let symbol = crate::lisp::primitives::checked_symbol_name(self, &funname, env)?;
+        let ignore_errors = if loads_macro { Value::Nil } else { macro_only };
+        let file = crate::lisp::primitives::call(self, "cdr", &[fundef], env)?;
+        let file = crate::lisp::primitives::call(self, "car", &[file], env)?;
+        self.with_lisp_stack_roots(&[fundef, funname], |interp| {
+            interp.load_with_autoload_queue(
+                [file, ignore_errors, Value::T, Value::Nil, Value::T],
+                env,
+            )
+        })?;
+        if funname.is_nil() || ignore_errors.is_truthy() {
+            return Ok(Value::Nil);
+        }
+        let function = self.with_lisp_stack_roots(&fundef, |interp| {
+            crate::lisp::primitives::call(
+                interp,
+                "indirect-function",
+                std::slice::from_ref(&funname),
+                env,
+            )
+        })?;
+        if crate::lisp::primitives::values_equal(self, &function, &fundef)? {
+            // The file `load-history' names last, as Frequire's message.
+            let loaded = self.lookup_var("load-history", env).unwrap_or(Value::Nil);
+            let loaded = crate::lisp::primitives::call(self, "car", &[loaded], env)?;
+            let loaded = crate::lisp::primitives::call(self, "car", &[loaded], env)?;
+            let file = crate::lisp::primitives::string_like(&loaded)
+                .map(|string| string.text)
+                .unwrap_or_default();
+            return Err(LispError::Signal(format!(
+                "Autoloading file {file} failed to define function {symbol}"
+            )));
+        }
+        Ok(function)
     }
 
     pub(crate) fn load_target_with_env(
@@ -275,10 +428,12 @@ impl Interpreter {
         result
     }
 
+    /// fns.c:Frequire for FEATURE, FILENAME and NOERROR.
     pub(crate) fn require_feature_with_target(
         &mut self,
         symbol: SymbolName,
-        target: Option<&str>,
+        filename: Value,
+        noerror: Value,
         env: &mut Env,
     ) -> Result<Value, LispError> {
         // GNU records a file's dependency even when FEATURE was loaded
@@ -289,25 +444,22 @@ impl Interpreter {
             return Ok(Value::Symbol(symbol));
         }
         let feature = symbol.as_str();
-        let load_target = target.unwrap_or(feature);
         let (open, close) = self.effective_quote_pair();
+        if self.will_dump_without_bootstrap(env) {
+            self.will_dump_reported = true;
+            return Err(LispError::Signal(format!(
+                "(require {feature}) while preparing to dump"
+            )));
+        }
+        // Fload with NOERROR, which only excuses FILE's absence, and a
+        // mandatory suffix when the feature's name is the file's.
+        let (file, must_suffix) = if filename.is_nil() {
+            (Value::string(feature), Value::T)
+        } else {
+            (filename, Value::Nil)
+        };
         let loaded = self.with_require_nesting(feature, (open, close), |interp| {
-            primitives::load_file(
-                interp,
-                &[
-                    Value::string(load_target),
-                    Value::Nil,
-                    Value::T,
-                    Value::Nil,
-                    if target.is_none() {
-                        Value::T
-                    } else {
-                        Value::Nil
-                    },
-                ],
-                env,
-            )
-            .map(|(value, _)| value)
+            interp.load_with_autoload_queue([file, noerror, Value::T, Value::Nil, must_suffix], env)
         })?;
         if loaded.is_nil() {
             return Ok(Value::Nil);
@@ -479,6 +631,10 @@ impl Interpreter {
         self.current_buffer_id = id;
         if !self.indirect_buffers.is_empty() {
             self.share_undo_list_with_base(current_id, id);
+            // record_buffer_markers of the old buffer, fetch_buffer_markers
+            // of the new.
+            current_buffer.borrow_mut().leave_position_markers();
+            self.buffer.borrow_mut().enter_position_markers();
         }
         // A localized GNU forwarding symbol loads the newly current
         // buffer's cell into its C variable during a buffer switch.
@@ -838,7 +994,66 @@ impl Interpreter {
                 window.slots[primitives::WINDOW_BASE_LINE_SLOT] = Value::Nil;
             }
         }
+        self.stamp_buffer_display(buffer_id);
         self.wset_redisplay(window_id);
+    }
+
+    /// buffer.c:reset_buffer: the visited file, its modification time,
+    /// the auto-save state and the display stamps forgotten, `default-
+    /// directory' the current buffer's, as get_minibuffer gives a
+    /// minibuffer it reuses (whose overlays it deletes first).
+    pub(crate) fn reset_buffer(&mut self, buffer_id: u64) {
+        let directory = self
+            .buffer_local_value(self.current_buffer_id, "default-directory")
+            .unwrap_or(Value::Nil);
+        if let Some(mut buffer) = self.get_buffer_by_id_mut(buffer_id) {
+            buffer.file = None;
+            buffer.file_truename = None;
+            buffer.set_visited_file_modtime(None);
+            buffer.set_autosave_modiff(0);
+            buffer.auto_save_failure_time = 0;
+            buffer.set_mark_active_value(Value::Nil);
+        }
+        self.buffer_last_window_start.insert(buffer_id, 1);
+        for (name, value) in [
+            ("default-directory", directory),
+            ("buffer-saved-size", Value::Integer(0)),
+            ("buffer-backed-up", Value::Nil),
+            ("local-minor-modes", Value::Nil),
+            ("buffer-auto-save-file-name", Value::Nil),
+            ("buffer-read-only", Value::Nil),
+            ("point-before-scroll", Value::Nil),
+            ("buffer-file-format", Value::Nil),
+            ("buffer-auto-save-file-format", Value::T),
+            ("buffer-display-count", Value::Integer(0)),
+            ("buffer-display-time", Value::Nil),
+        ] {
+            self.set_buffer_local_value(buffer_id, name, value);
+        }
+    }
+
+    /// window.c:set_window_buffer's time stamps of buffer display: an
+    /// integer `buffer-display-count' counts up, and `buffer-display-time'
+    /// becomes the current time.
+    pub(crate) fn stamp_buffer_display(&mut self, buffer_id: u64) {
+        let count = self
+            .buffer_local_value(buffer_id, "buffer-display-count")
+            .unwrap_or(Value::Nil);
+        let count = match count.kind() {
+            Kind::Integer(count) => Some(primitives::normalize_bigint_value(
+                num_bigint::BigInt::from(count) + 1,
+            )),
+            Kind::BigInteger(count) => Some(primitives::normalize_bigint_value(
+                num_bigint::BigInt::from(count) + 1,
+            )),
+            _ => None,
+        };
+        if let Some(count) = count {
+            self.set_buffer_local_value(buffer_id, "buffer-display-count", count);
+        }
+        if let Ok(now) = primitives::lisp_current_time(self) {
+            self.set_buffer_local_value(buffer_id, "buffer-display-time", now);
+        }
     }
 
     pub(crate) fn selected_frame_value(&self) -> Value {
@@ -1254,6 +1469,10 @@ impl Interpreter {
         self.delete_buffer_overlays(id);
         let selected_window_showed_buffer = self.selected_window_buffer_id() == id;
         self.detach_markers_for_buffer(id);
+        // An indirect buffer stops sharing its base's text (and chain).
+        if let Some(object) = self.buffer_object(id) {
+            object.leave_marker_chain();
+        }
         // A *scratch* made to replace the last buffer inherits its directory.
         let directory = self
             .buffer_local_value(id, "default-directory")
@@ -1306,6 +1525,7 @@ impl Interpreter {
                 let (_, next_buffer) = self.inactive_buffers.swap_remove(position);
                 self.buffer = next_buffer;
                 self.current_buffer_id = next_id;
+                self.buffer.borrow_mut().enter_position_markers();
             } else {
                 let scratch_id = self.alloc_buffer_id();
                 self.buffer = crate::lisp::types::BufferRef::new(
@@ -1961,19 +2181,22 @@ impl Interpreter {
             .map(|(_, state)| state)
     }
 
-    pub fn provide_feature(&mut self, feature: &str) {
-        let mut features = self.provided_features.clone();
-        if !features.iter().any(|name| name == feature) {
-            features.push(feature.to_string());
+    /// fns.c:Fprovide's update of `features': FEATURE is consed onto the
+    /// front of the list unless `memq' finds it there already.
+    fn provide_feature(&mut self, feature: &str, env: &mut Env) -> Result<(), LispError> {
+        let symbol = Value::Symbol(feature.into());
+        let features = self.global_value("features").unwrap_or(Value::Nil);
+        // Fprovide records the list it replaces for un_autoload.
+        if !self.autoload_queue.is_nil() {
+            self.autoload_queue = Value::cons(
+                Value::cons(Value::Integer(0), features),
+                self.autoload_queue,
+            );
         }
-        self.set_global_binding(
-            "features",
-            Value::list(
-                features
-                    .into_iter()
-                    .map(|value| Value::Symbol(value.into())),
-            ),
-        );
+        if crate::lisp::primitives::call(self, "memq", &[symbol, features], env)?.is_nil() {
+            self.set_global_binding("features", Value::cons(symbol, features));
+        }
+        Ok(())
     }
 
     fn record_provide_in_load_history(&mut self, feature: &str) {
@@ -2074,6 +2297,10 @@ impl Interpreter {
         if old_definition.is_nil() {
             return;
         }
+        // data.c:defalias queues the symbol for un_autoload first.
+        if !self.autoload_queue.is_nil() {
+            self.autoload_queue = Value::cons(Value::symbol(name), self.autoload_queue);
+        }
         // data.c's add_to_function_history walks `current-load-list' to
         // its last element and takes it when it is a string; the walk
         // reads the cells in place (a copy of the list cost every
@@ -2152,29 +2379,36 @@ impl Interpreter {
     pub(crate) fn provide_feature_with_after_load(
         &mut self,
         feature: &str,
+        subfeatures: Value,
         env: &mut Env,
     ) -> Result<Value, LispError> {
-        self.provide_feature(feature);
+        self.provide_feature(feature, env)?;
+        if subfeatures.is_truthy() {
+            self.put_symbol_property(feature, "subfeatures", subfeatures);
+        }
         self.record_provide_in_load_history(feature);
 
         // GNU 30.2 fns.c:Fprovide runs the functions in the matching
-        // `after-load-alist' entry after publishing FEATURE.  The alist and
-        // its closures are owned by subr.el's real `eval-after-load'; the
-        // Rust host only performs the C-owned lookup/invocation boundary.
+        // `after-load-alist' entry after publishing FEATURE (Fassq, then
+        // Fmapc of funcall over its cdr).  The alist and its closures are
+        // owned by subr.el's real `eval-after-load'; the Rust host only
+        // performs the C-owned lookup/invocation boundary.
         let after_load_alist = self
             .lookup_var("after-load-alist", env)
             .unwrap_or(Value::Nil);
-        for entry in after_load_alist.to_vec()? {
-            let Some((key, functions)) = entry.cons_values() else {
-                continue;
-            };
-            if !matches!(key.kind(), Kind::Symbol(name) if name == feature) {
-                continue;
-            }
-            for function in functions.to_vec()? {
-                self.call_function_value(function, None, &[], env)?;
-            }
-            break;
+        let entry = crate::lisp::primitives::call(
+            self,
+            "assq",
+            &[Value::Symbol(feature.into()), after_load_alist],
+            env,
+        )?;
+        if let Some((_, functions)) = entry.cons_values() {
+            crate::lisp::primitives::call(
+                self,
+                "mapc",
+                &[Value::symbol("funcall"), functions],
+                env,
+            )?;
         }
         Ok(Value::Symbol(feature.to_string().into()))
     }
@@ -2242,13 +2476,12 @@ impl Interpreter {
         false
     }
 
+    /// The features the C code provides before any Lisp runs.
     pub(super) fn features_value(&self) -> Value {
         Value::list(
-            self.provided_features
+            super::STARTUP_FEATURES
                 .iter()
-                .cloned()
-                .map(|value| Value::Symbol(value.into()))
-                .collect::<Vec<_>>(),
+                .map(|feature| Value::Symbol(feature.name.into())),
         )
     }
 

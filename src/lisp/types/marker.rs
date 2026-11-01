@@ -77,6 +77,19 @@ impl MarkerRef {
             .set((self.flags.get() & !2) | (u8::from(insertion_type) << 1));
     }
 
+    /// lisp.h's `need_adjustment', the bit before the insertion type:
+    /// coding.c's region conversions mark the markers they put back.
+    #[inline]
+    pub(crate) fn need_adjustment(&self) -> bool {
+        self.flags.get() & 1 != 0
+    }
+
+    #[inline]
+    pub(crate) fn set_need_adjustment(&self, need_adjustment: bool) {
+        self.flags
+            .set((self.flags.get() & !1) | u8::from(need_adjustment));
+    }
+
     pub(crate) fn set_positions(&self, charpos: usize, bytepos: usize) {
         self.charpos.set(charpos);
         self.bytepos.set(bytepos);
@@ -89,14 +102,16 @@ impl MarkerRef {
         }
         self.detach();
         self.buffer.set(Some(buffer));
-        self.next.set(buffer.markers.get());
-        buffer.markers.set(Some(*self));
+        let chain = buffer.chain_owner();
+        self.next.set(chain.markers.get());
+        chain.markers.set(Some(*self));
     }
 
     pub(crate) fn detach(&self) {
         let Some(buffer) = self.buffer.replace(None) else {
             return;
         };
+        let buffer = buffer.chain_owner();
         let mut previous: Option<MarkerRef> = None;
         let mut current = buffer.markers.get();
         while let Some(marker) = current {
@@ -143,16 +158,59 @@ impl Iterator for Markers {
 }
 
 impl BufferRef {
-    pub(crate) fn markers(&self) -> Markers {
-        Markers(self.markers.get())
+    /// The buffer whose chain holds this buffer's markers: its base while
+    /// it shares the base's text (BUF_MARKERS of the one buffer_text).
+    #[inline]
+    pub(crate) fn chain_owner(&self) -> BufferRef {
+        self.base.get().unwrap_or(*self)
     }
 
+    /// BUF_MARKERS: every marker of the buffer's text, those of the rest
+    /// of its indirect family among them.
+    pub(crate) fn markers(&self) -> Markers {
+        Markers(self.chain_owner().markers.get())
+    }
+
+    /// Unchain the buffer's markers: all of its text's for a buffer with
+    /// its own text, only its own for an indirect buffer (Fkill_buffer).
     pub(crate) fn detach_markers(&self) {
+        if let Some(base) = self.base.get() {
+            let mut previous: Option<MarkerRef> = None;
+            let mut current = base.markers.get();
+            while let Some(marker) = current {
+                let next = marker.next.get();
+                if marker.buffer.get().is_some_and(|owner| owner.ptr_eq(self)) {
+                    if let Some(previous) = previous {
+                        previous.next.set(next);
+                    } else {
+                        base.markers.set(next);
+                    }
+                    marker.buffer.set(None);
+                    marker.next.set(None);
+                } else {
+                    previous = Some(marker);
+                }
+                current = next;
+            }
+            return;
+        }
         for marker in self.markers() {
             marker.buffer.set(None);
             marker.next.set(None);
         }
         self.markers.set(None);
+    }
+
+    /// Fmake_indirect_buffer's sharing of BASE's text: the buffer, which
+    /// has no markers yet, takes its markers on BASE's chain.
+    pub(crate) fn share_marker_chain(&self, base: BufferRef) {
+        debug_assert!(self.markers.get().is_none());
+        self.base.set(Some(base));
+    }
+
+    /// The buffer no longer shares a base's text (it was killed).
+    pub(crate) fn leave_marker_chain(&self) {
+        self.base.set(None);
     }
 
     /// buffer.c:Fbuffer_swap_text moves the weak chains with buffer_text and
@@ -173,7 +231,9 @@ impl BufferRef {
         let mut seen = std::collections::HashSet::with_capacity(chain.len());
         if chain.len() != self.markers().count()
             || chain.iter().any(|marker| {
-                !marker.buffer().is_some_and(|owner| owner.ptr_eq(self))
+                !marker
+                    .buffer()
+                    .is_some_and(|owner| owner.chain_owner().ptr_eq(self))
                     || !seen.insert(marker.identity())
             })
         {
@@ -190,6 +250,10 @@ impl BufferRef {
     pub(crate) fn sweep_markers(&self, epoch: u32) {
         if !self.mark_bit().is_marked(epoch) {
             self.detach_markers();
+            return;
+        }
+        if self.base.get().is_some() {
+            // The base's sweep walks the one chain of their text.
             return;
         }
         let mut previous: Option<MarkerRef> = None;

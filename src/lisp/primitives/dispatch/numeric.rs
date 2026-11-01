@@ -105,7 +105,7 @@ define_dispatch!(
                         }
                         result /= divisor;
                     }
-                    Ok(normalize_bigint_value(result))
+                    make_integer(interp, result)
                 } else {
                     let mut result = if args.len() == 1 {
                         let divisor = integer_like_i64(interp, &args[0])?;
@@ -156,7 +156,7 @@ define_dispatch!(
                     if name == "mod" && !r.is_zero() && (r.sign() != b.sign()) {
                         r += &b;
                     }
-                    return Ok(normalize_bigint_value(r));
+                    return make_integer(interp, r);
                 }
                 let a = integer_like_i64(interp, &args[0])?;
                 let b = integer_like_i64(interp, &args[1])?;
@@ -194,14 +194,12 @@ define_dispatch!(
                 if let Kind::Float(value) = args[0].kind() {
                     Ok(Value::float(value.abs()))
                 } else if matches!(args[0].kind(), Kind::BigInteger(_)) {
-                    Ok(normalize_bigint_value(
-                        integer_like_bigint(interp, &args[0])?.abs(),
-                    ))
+                    make_integer(interp, integer_like_bigint(interp, &args[0])?.abs())
                 } else {
                     let value = integer_like_i64(interp, &args[0])?;
                     match value.checked_abs() {
                         Some(abs) => Ok(normalize_integer_value(abs)),
-                        None => Ok(normalize_bigint_value(BigInt::from(value).abs())),
+                        None => make_integer(interp, BigInt::from(value).abs()),
                     }
                 }
             }
@@ -391,12 +389,14 @@ define_dispatch!(
                     )])));
                 }
                 let shift = args[1].fixnum().expect("a fixnum count, checked above");
+                // mpz_fdiv_q_2exp for a negative count, emacs_mpz_mul_2exp
+                // (which refuses a result past GMP's limb limit) otherwise.
                 let shifted = if shift >= 0 {
-                    value << shift as usize
+                    emacs_mpz_mul_2exp(&value, shift)?
                 } else {
-                    value >> (-shift) as usize
+                    value >> shift.unsigned_abs()
                 };
-                Ok(normalize_bigint_value(shifted))
+                make_integer(interp, shifted)
             }
             "logcount" => {
                 need_args(name, args, 1)?;
@@ -419,7 +419,7 @@ define_dispatch!(
                 for (index, arg) in args.iter().enumerate() {
                     result &= logical_operand(interp, arg, index == 0)?;
                 }
-                Ok(normalize_bigint_value(result))
+                make_integer(interp, result)
             }
             "logior" => {
                 if let Some(result) = fold_fixnums(args, 0, |a, b| a | b) {
@@ -429,7 +429,7 @@ define_dispatch!(
                 for (index, arg) in args.iter().enumerate() {
                     result |= logical_operand(interp, arg, index == 0)?;
                 }
-                Ok(normalize_bigint_value(result))
+                make_integer(interp, result)
             }
             "logxor" => {
                 if let Some(result) = fold_fixnums(args, 0, |a, b| a ^ b) {
@@ -439,14 +439,14 @@ define_dispatch!(
                 for (index, arg) in args.iter().enumerate() {
                     result ^= logical_operand(interp, arg, index == 0)?;
                 }
-                Ok(normalize_bigint_value(result))
+                make_integer(interp, result)
             }
             "lognot" => {
                 need_args(name, args, 1)?;
                 if let Some(value) = args[0].fixnum() {
                     return Ok(normalize_integer_value(!value));
                 }
-                Ok(normalize_bigint_value(!integer_operand(&args[0])?))
+                make_integer(interp, !integer_operand(&args[0])?)
             }
             "prefix-numeric-value" => {
                 need_args(name, args, 1)?;
@@ -804,7 +804,7 @@ pub(super) fn direct_plus(
         for a in args {
             sum += integer_like_bigint(interp, a)?;
         }
-        Ok(normalize_bigint_value(sum))
+        make_integer(interp, sum)
     }
 }
 
@@ -838,9 +838,7 @@ pub(super) fn direct_minus(
                     return Ok(normalize_integer_value(result));
                 }
             }
-            return Ok(normalize_bigint_value(-integer_like_bigint(
-                interp, &args[0],
-            )?));
+            return make_integer(interp, -integer_like_bigint(interp, &args[0])?);
         }
         if !matches!(args[0].kind(), Kind::BigInteger(_)) {
             let first = integer_like_i64(interp, &args[0])?;
@@ -853,7 +851,7 @@ pub(super) fn direct_minus(
         for a in &args[1..] {
             result -= integer_like_bigint(interp, a)?;
         }
-        Ok(normalize_bigint_value(result))
+        make_integer(interp, result)
     }
 }
 
@@ -878,11 +876,13 @@ pub(super) fn direct_times(
     } else if let Some(product) = checked_integer_fold(interp, args, 1, i64::checked_mul)? {
         Ok(normalize_integer_value(product))
     } else {
+        // data.c:bignum_arith_driver's Amult: emacs_mpz_mul refuses a
+        // product past GMP's limb limit.
         let mut product = BigInt::from(1u8);
         for a in args {
-            product *= integer_like_bigint(interp, a)?;
+            product = emacs_mpz_mul(&product, &integer_like_bigint(interp, a)?)?;
         }
-        Ok(normalize_bigint_value(product))
+        make_integer(interp, product)
     }
 }
 
@@ -1015,9 +1015,7 @@ pub(super) fn direct_add1(
     {
         Ok(normalize_integer_value(value))
     } else {
-        Ok(normalize_bigint_value(
-            integer_like_bigint(interp, &args[0])? + 1,
-        ))
+        make_integer(interp, integer_like_bigint(interp, &args[0])? + 1)
     }
 }
 
@@ -1040,9 +1038,7 @@ pub(super) fn direct_sub1(
     {
         Ok(normalize_integer_value(value))
     } else {
-        Ok(normalize_bigint_value(
-            integer_like_bigint(interp, &args[0])? - 1,
-        ))
+        make_integer(interp, integer_like_bigint(interp, &args[0])? - 1)
     }
 }
 

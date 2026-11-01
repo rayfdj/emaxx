@@ -944,6 +944,27 @@ fn lookup_image_map(map: &Value, x: i64, y: i64) -> Value {
         .unwrap_or(Value::Nil)
 }
 
+/// xdisp.c:update_overlay_arrows (-1), as mark_window_display_accurate
+/// calls it for a window made inaccurate: each symbol in
+/// `overlay-arrow-variable-list' gets t as its last arrow position and
+/// string, so the next redisplay draws its arrow afresh.
+fn mark_overlay_arrows_inaccurate(interp: &mut Interpreter, env: &crate::lisp::types::Env) {
+    let mut list = interp
+        .lookup_var("overlay-arrow-variable-list", env)
+        .unwrap_or(Value::Nil);
+    while let Some((variable, rest)) = list.cons_values() {
+        if variable.as_symbol().is_ok() {
+            for property in [
+                cached_symbol!("last-arrow-position"),
+                cached_symbol!("last-arrow-string"),
+            ] {
+                crate::lisp::primitives::symbol_put(interp, variable, property, Value::T);
+            }
+        }
+        list = rest;
+    }
+}
+
 fn decode_live_frame(
     interp: &Interpreter,
     frame: Option<&Value>,
@@ -6043,12 +6064,16 @@ define_dispatch!(
             "redraw-frame" => {
                 need_arg_range(name, args, 0, 1)?;
                 decode_live_frame(interp, args.first(), true)?;
-                // GNU clears glyph matrices and immediately recomputes them.
-                // Emaxx retains no glyph matrix between batch evaluations.
+                // dispnew.c:redraw_frame clears the glyph matrices, which
+                // Emaxx does not keep between batch evaluations, and marks
+                // every window's display inaccurate.
+                mark_overlay_arrows_inaccurate(interp, env);
                 Ok(Value::Nil)
             }
             "redraw-display" => {
                 need_args(name, args, 0)?;
+                // redraw_frame on each visible frame; every live frame is.
+                mark_overlay_arrows_inaccurate(interp, env);
                 Ok(Value::Nil)
             }
             "display--update-for-mouse-movement" => {
@@ -6276,6 +6301,8 @@ define_dispatch!(
                     return Ok(Value::T);
                 };
                 if let Ok(window_id) = live_window_id_or_selected(interp, Some(object)) {
+                    // window.c: mark_window_display_accurate (OBJECT, false).
+                    mark_overlay_arrows_inaccurate(interp, env);
                     interp.wset_redisplay(window_id);
                     return Ok(Value::T);
                 }
@@ -6296,6 +6323,8 @@ define_dispatch!(
                     })
                     .unwrap_or_default();
                 for window_id in &showing {
+                    // window_loop's REDISPLAY_BUFFER_WINDOWS marks each.
+                    mark_overlay_arrows_inaccurate(interp, env);
                     interp.wset_redisplay(*window_id);
                 }
                 Ok(if showing.is_empty() {

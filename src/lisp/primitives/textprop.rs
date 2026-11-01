@@ -89,10 +89,14 @@ fn with_search_text<R>(
                 .get_buffer_by_id(id)
                 .ok_or_else(|| LispError::Signal(format!("No buffer with id {id}")))?;
             let (min, max) = (buffer.point_min(), buffer.point_max());
+            let intervals = buffer.intervals();
             f(&SearchText {
                 min,
                 max,
-                intervals: buffer.property_intervals().filter(|_| min < max),
+                intervals: intervals
+                    .as_deref()
+                    .map(PropertyIntervals::new)
+                    .filter(|_| min < max),
             })
         }
         SearchObject::Killed(min, max) => f(&SearchText {

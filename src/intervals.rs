@@ -962,6 +962,35 @@ impl Intervals {
         true
     }
 
+    /// adjust_for_deletion of the one character at each of POSITIONS (as
+    /// they stand before any of them goes, ascending), as those deletions
+    /// in turn leave the intervals: each interval shorter by the
+    /// characters deleted from it, one left with none deleted.  False when
+    /// they leave no text.
+    pub(crate) fn adjust_for_deletions(&mut self, positions: &[usize]) -> bool {
+        if positions.is_empty() {
+            return true;
+        }
+        if positions.len() >= self.total_length() {
+            return false;
+        }
+        let before = |position: usize| positions.partition_point(|&deleted| deleted < position);
+        let mut items: Vec<Interval> = Vec::with_capacity(self.count());
+        for (start, _, plist) in self.iter() {
+            let start = start - before(start);
+            if items.last().is_some_and(|last| last.start == start) {
+                items.pop();
+            }
+            items.push(Interval { start, plist });
+        }
+        let end = self.end - positions.len();
+        if items.last().is_some_and(|last| last.start == end) {
+            items.pop();
+        }
+        *self = Self::from_items(items, end);
+        true
+    }
+
     /// intervals.c:copy_intervals: the intervals of [START, START +
     /// LENGTH) as a new tree from 0, each plist a copy; none where the
     /// range lies inside one interval with no properties (by GNU's test,
@@ -2156,22 +2185,25 @@ pub(crate) fn graft_into(
 }
 
 /// intervals.c:reproduce_tree for text that is the whole buffer: a copy
-/// of SOURCE's intervals (from 0) moved to start at ORIGIN, the plists
-/// shared as reproduce_interval shares them.
-pub(crate) fn reproduce(source: &Intervals, origin: usize) -> Intervals {
+/// of SOURCE's intervals (from 0) moved to start at ORIGIN, each plist
+/// copied as reproduce_interval's copy_properties copies it.
+pub(crate) fn reproduce(source: &Intervals, origin: usize) -> Result<Intervals, LispError> {
     // reproduce_interval's make_interval for each.
     note_intervals(source.count());
-    Intervals {
-        items: source
-            .items
-            .iter()
-            .map(|item| Interval {
+    let items = source
+        .items
+        .iter()
+        .map(|item| {
+            Ok(Interval {
                 start: item.start + origin,
-                plist: item.plist,
+                plist: copy_plist(item.plist)?,
             })
-            .collect(),
+        })
+        .collect::<Result<_, LispError>>()?;
+    Ok(Intervals {
+        items,
         end: source.end + origin,
-    }
+    })
 }
 
 #[cfg(test)]
@@ -2516,6 +2548,39 @@ mod tests {
         assert!(intervals.adjust_for_deletion(1, 2));
         assert_eq!(shape(&intervals), vec![(1, 3, "nil".to_string())]);
         assert!(!intervals.adjust_for_deletion(1, 2));
+    }
+
+    #[test]
+    fn deletions_of_single_characters_leave_what_each_deletion_leaves() {
+        let make = || {
+            Intervals::from_items(
+                [1, 2, 4, 5, 9, 10, 12]
+                    .iter()
+                    .enumerate()
+                    .map(|(index, &start)| Interval {
+                        start,
+                        plist: plist(&[("face", index as i64)]),
+                    })
+                    .collect(),
+                14,
+            )
+        };
+        for positions in [
+            vec![1],
+            vec![2, 3],
+            vec![4, 9, 13],
+            vec![1, 2, 3, 5, 6, 7, 8],
+            vec![10, 11, 12, 13],
+        ] {
+            let mut each = make();
+            for (deleted, &position) in positions.iter().enumerate() {
+                assert!(each.adjust_for_deletion(position - deleted, 1));
+            }
+            let mut batch = make();
+            assert!(batch.adjust_for_deletions(&positions));
+            assert_eq!(shape(&batch), shape(&each), "{positions:?}");
+        }
+        assert!(!make().adjust_for_deletions(&(1..14).collect::<Vec<_>>()));
     }
 
     #[test]

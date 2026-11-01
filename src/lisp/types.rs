@@ -1046,7 +1046,11 @@ impl ClosureRef {
 pub struct BufferValue {
     pub id: u64,
     /// Weak chain, as in buffer_text.markers. It does not keep markers alive.
+    /// An indirect buffer's markers are on its base's chain, the one text's.
     pub(crate) markers: Cell<Option<MarkerRef>>,
+    /// buffer.h's base_buffer while the buffer shares its base's text:
+    /// whose chain holds its markers.
+    pub(crate) base: Cell<Option<BufferRef>>,
     /// The editable object, not a name/id proxy for an interpreter-owned copy.
     /// Rust callers must end these borrows before entering Lisp or collecting.
     pub(crate) state: RefCell<crate::buffer::Buffer>,
@@ -1179,6 +1183,7 @@ impl BufferRef {
         Self::allocate(BufferValue {
             id,
             markers: Cell::new(None),
+            base: Cell::new(None),
             state: RefCell::new(buffer),
         })
     }
@@ -2491,12 +2496,13 @@ pub(crate) fn format_float(value: f64) -> String {
             "-1.0e+INF".into()
         };
     }
+    // print.c:float_to_string: a NaN's payload, the significand without
+    // its quiet bit, as the integer before `.0e+NaN'.
     if value.is_nan() {
-        return if value.is_sign_negative() {
-            "-0.0e+NaN".into()
-        } else {
-            "0.0e+NaN".into()
-        };
+        let bits = value.to_bits();
+        let payload = bits & 0x0007_FFFF_FFFF_FFFF;
+        let sign = if bits >> 63 != 0 { "-" } else { "" };
+        return format!("{sign}{payload}.0e+NaN");
     }
 
     // GNU's dtoastr starts at DBL_DIG significant digits (at one for a
