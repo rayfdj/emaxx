@@ -1213,6 +1213,19 @@ define_dispatch!(
                         // with the text, at its characters' offsets even
                         // in a unibyte buffer.
                         let transformed_props = transformed_string.props.clone();
+                        // A decode inserted a call at a time takes its
+                        // characters, written into a unibyte buffer as
+                        // each call's are.
+                        let layout = buffer_decode
+                            .as_ref()
+                            .and_then(|decode| decode.layout.as_ref());
+                        let (decoded_text, decoded_extended) = match layout {
+                            Some(_) => (
+                                transformed_string.text.clone(),
+                                transformed_string.extended_chars.clone(),
+                            ),
+                            None => (String::new(), Vec::new()),
+                        };
                         let form = if decoding
                             && !interp.buffer.borrow().is_multibyte()
                             && transformed_string.multibyte
@@ -1243,14 +1256,19 @@ define_dispatch!(
                                     .delete_region_current_buffer_unreturned(start, end)
                                     .map_err(|error| LispError::Signal(error.to_string()))?;
                                 interp.buffer.borrow_mut().goto_char(start);
+                                let (text, extended) = match layout {
+                                    Some(_) => (&decoded_text, &decoded_extended),
+                                    None => (&form.text, &form.extended_chars),
+                                };
                                 insert_converted_text_at(
                                     interp,
                                     start,
-                                    &form.text,
+                                    text,
                                     transformed_props.as_ref(),
-                                    &form.extended_chars,
+                                    extended,
                                     transformed_length,
                                     decoding,
+                                    layout,
                                     env,
                                 )?;
                                 Ok((
@@ -1586,20 +1604,24 @@ fn insert_converted_text(
     // produce_charset's runs, at the characters' offsets even in a
     // unibyte destination.
     let props = converted.props.clone();
+    let layout = decode.and_then(|decode| decode.layout.as_ref());
     let saved_buffer_id = interp.current_buffer_id();
     interp.switch_to_buffer_id(buffer_id)?;
     let dst_pos = interp.buffer.borrow().point();
-    let converted = if converted.multibyte && !interp.buffer.borrow().is_multibyte() {
-        match unibyte_destination_form(&converted) {
-            Ok(converted) => converted,
-            Err(error) => {
-                let _ = interp.switch_to_buffer_id(saved_buffer_id);
-                return Err(error);
+    // A decode inserted a call at a time writes each call's characters
+    // into a unibyte buffer itself.
+    let converted =
+        if layout.is_none() && converted.multibyte && !interp.buffer.borrow().is_multibyte() {
+            match unibyte_destination_form(&converted) {
+                Ok(converted) => converted,
+                Err(error) => {
+                    let _ = interp.switch_to_buffer_id(saved_buffer_id);
+                    return Err(error);
+                }
             }
-        }
-    } else {
-        converted
-    };
+        } else {
+            converted
+        };
     let inserted = insert_text_before_point(
         interp,
         &converted.text,
@@ -1607,6 +1629,7 @@ fn insert_converted_text(
         &converted.extended_chars,
         produced,
         decode.is_some(),
+        layout,
         env,
     );
     // decode_coding_object finishes in the destination buffer.

@@ -2822,11 +2822,12 @@ fn decode_process_bytes_at_point(
     env: &mut Env,
 ) -> Result<(usize, String), LispError> {
     let CodingDecode {
-        decoded,
+        mut decoded,
         coding: coding_used,
         ..
     } = super::coding::decode_coding_block(interp, env, bytes, coding, Some(multibyte), decoder)?;
     let mut produced = decoded.char_count();
+    let layout = decoded.take_layout();
     let props = charset_spans_to_props(decoded.charsets, &decoded.text, None);
     insert_text_before_point(
         interp,
@@ -2835,6 +2836,7 @@ fn decode_process_bytes_at_point(
         &decoded.extended,
         produced,
         true,
+        layout.as_ref(),
         env,
     )?;
     let post_read = coding_system_property(

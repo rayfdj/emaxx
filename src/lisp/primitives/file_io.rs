@@ -1951,6 +1951,8 @@ pub(crate) struct FileDecode {
     /// The `charset' properties the decoder annotated, as the decoded
     /// text's intervals.
     pub(crate) charset_props: Option<crate::intervals::Intervals>,
+    /// How decode_coding inserts the text (see `DecodedText::layout').
+    pub(crate) layout: Option<super::DecodeLayout>,
 }
 
 /// fileio.c Finsert_file_contents's decoding of a file's BYTES into the
@@ -2065,10 +2067,12 @@ pub(crate) fn decode_file_bytes(
             coding,
             for_unibyte,
             charset_props: None,
+            layout: None,
         });
     }
     let dst_multibyte = multibyte && !(make_unibyte && for_unibyte);
     let mut outcome = decode_coding_gap(interp, env, bytes, &coding, dst_multibyte)?;
+    let layout = outcome.decoded.take_layout();
     let charset_props = super::charset_spans_to_props(
         std::mem::take(&mut outcome.decoded.charsets),
         &outcome.decoded.text,
@@ -2079,6 +2083,7 @@ pub(crate) fn decode_file_bytes(
         coding: outcome.coding,
         for_unibyte,
         charset_props,
+        layout,
     })
 }
 
@@ -2442,6 +2447,7 @@ fn insert_file_bytes(
             coding: coding_used,
             for_unibyte,
             charset_props,
+            layout,
         } = decode_file_bytes(
             interp,
             env,
@@ -2468,6 +2474,7 @@ fn insert_file_bytes(
                 &decoded.extended,
                 inserted_chars,
                 true,
+                layout.as_ref(),
                 env,
             )?;
             interp.buffer.borrow_mut().goto_char(start);

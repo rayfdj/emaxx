@@ -3242,6 +3242,94 @@ impl Buffer {
         self.delete_region_1(from, to, false).map(drop)
     }
 
+    /// decode_eol's deletions of the characters at POSITIONS (each one
+    /// where the text stands when its turn comes, ascending), del_range_2
+    /// one at a time with no undo record: the text, point, the mark and
+    /// the markers, the overlays, the intervals and the side table end as
+    /// those deletions leave them, and the modification counts go up by one
+    /// a character.  Each deleted character is a single byte (a CR).
+    pub(crate) fn delete_chars_each(&mut self, positions: &[usize]) {
+        let Some(&first) = positions.first() else {
+            return;
+        };
+        let n = positions.len();
+        // Where each character is before any of them goes.
+        let original: Vec<usize> = positions
+            .iter()
+            .enumerate()
+            .map(|(index, &position)| position + index)
+            .collect();
+        let last = original[n - 1];
+        let before = |position: usize| original.partition_point(|&deleted| deleted < position);
+        let kept = {
+            let region = self.buffer_substring(first, last + 1).unwrap_or_default();
+            let mut kept = String::with_capacity(region.len());
+            let mut deleted = original.iter().copied().peekable();
+            // The position of the character at byte AT, and the bytes up
+            // to COPIED done.
+            let mut position = first;
+            let mut copied = 0;
+            for (at, &byte) in region.as_bytes().iter().enumerate() {
+                if byte == b'\r' && deleted.peek() == Some(&position) {
+                    deleted.next();
+                    kept.push_str(&region[copied..at]);
+                    copied = at + 1;
+                }
+                position += usize::from((byte as i8) >= -0x40);
+            }
+            debug_assert!(deleted.peek().is_none(), "decode_eol deletes only CRs");
+            kept.push_str(&region[copied..]);
+            kept
+        };
+        self.text.borrow_mut().remove(first - 1..last);
+        self.text.borrow_mut().insert(first - 1, &kept);
+        self.invalidate_char_cache();
+        self.pt -= before(self.pt);
+        match &mut self.mark {
+            BufferMark::Position(mark) => {
+                if let Some(mark) = mark {
+                    *mark -= before(*mark);
+                }
+            }
+            BufferMark::Object { owner, .. } => {
+                for marker in owner.markers() {
+                    let position = marker.last_position();
+                    let moved = before(position);
+                    if moved > 0 {
+                        marker.set_positions(position - moved, marker.bytepos() - moved);
+                    }
+                }
+            }
+        }
+        if !self.overlays.is_empty() {
+            for &position in positions {
+                self.overlays.delete_gap(position, 1);
+            }
+        }
+        {
+            let mut stored = self.text.borrow_mut();
+            if let Some(intervals) = &mut stored.intervals
+                && !intervals.adjust_for_deletions(&original)
+            {
+                stored.intervals = None;
+            }
+        }
+        self.text
+            .borrow_mut()
+            .extended_chars
+            .iter_mut()
+            .for_each(|(position, _)| *position -= before(*position));
+        self.zv -= n;
+        {
+            let mut text = self.text.borrow_mut();
+            for _ in 0..n {
+                modiff_incr(&mut text.modiff, 1);
+            }
+            text.chars_modiff = text.modiff;
+        }
+        self.log_edit(first, last + 1, last + 1 - n, true);
+    }
+
     fn delete_region_1(
         &mut self,
         from: usize,

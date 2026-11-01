@@ -300,6 +300,28 @@ impl Interpreter {
             .map(Option::unwrap_or_default)
     }
 
+    /// `Buffer::delete_chars_each' in the current buffer, its windows'
+    /// points and starts and its indirect family moved as each deletion
+    /// moves them.
+    pub(crate) fn delete_chars_each_current_buffer(&mut self, positions: &[usize]) {
+        if positions.is_empty() {
+            return;
+        }
+        let related = self.related_buffer_ids(self.current_buffer_id());
+        self.buffer.borrow_mut().delete_chars_each(positions);
+        let original: Vec<usize> = positions
+            .iter()
+            .enumerate()
+            .map(|(index, &position)| position + index)
+            .collect();
+        self.adjust_window_marker_slots(self.current_buffer_id(), |position| {
+            position - original.partition_point(|&deleted| deleted < position)
+        });
+        for &position in positions {
+            self.family_after_delete(&related, position, position + 1);
+        }
+    }
+
     /// `delete_region_current_buffer' for a caller that has no use for the
     /// deleted text (del_range_1 without RET_STRING).
     pub fn delete_region_current_buffer_unreturned(

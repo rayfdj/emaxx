@@ -1927,13 +1927,65 @@ const CODING_CARRYOVER_BYTES: usize = 64;
 /// sentinel, and a real U+E080..U+E0FF, which would read back as a raw
 /// byte), the way strings and buffers keep them; and the `charset' runs
 /// the decoder annotated (character offsets), which produce_charset turns
-/// into text properties.
+/// into text properties.  CHUNKS are the characters each decoder call
+/// produced, which produce_chars inserts into a buffer destination one
+/// insert_from_gap at a time, and EOL what decode_eol changed after them.
 #[derive(Default)]
 pub(crate) struct DecodedText {
     pub(crate) text: String,
     pub(crate) charsets: Vec<(usize, usize, String)>,
     pub(crate) extended: Vec<(usize, u32)>,
     chars: usize,
+    pub(crate) chunks: Vec<usize>,
+    pub(crate) eol: Option<Box<EolConversion>>,
+}
+
+/// How decode_coding puts a decoded text into a buffer destination when
+/// it takes more than one insert_from_gap or decode_eol changed it: the
+/// characters of each insertion, the `charset' runs over the text as
+/// inserted, and decode_eol's change after them.
+pub(crate) struct DecodeLayout {
+    pub(crate) chunks: Vec<usize>,
+    pub(crate) charsets: Vec<(usize, usize, String)>,
+    pub(crate) eol: Option<Box<EolConversion>>,
+}
+
+/// decode_eol's change to a decoded text, which a buffer destination
+/// makes once the text is in it: under dos (DOS) the CRs before a newline
+/// deleted, under mac the CRs made newlines, CRS their indices in the
+/// text before the change; the text, its `charset' runs and its side
+/// table of characters as they were before it.
+pub(crate) struct EolConversion {
+    pub(crate) dos: bool,
+    pub(crate) crs: Vec<usize>,
+    pub(crate) text: String,
+    pub(crate) charsets: Vec<(usize, usize, String)>,
+    pub(crate) extended: Vec<(usize, u32)>,
+}
+
+/// decode_eol's pass over TEXT: under DOS each CR before a newline
+/// deleted, else each CR made a newline; the text it leaves and the
+/// character indices in TEXT of the CRs it changed.
+fn eol_converted(text: &str, dos: bool) -> (String, Vec<usize>) {
+    let bytes = text.as_bytes();
+    let mut converted = String::with_capacity(bytes.len());
+    let mut crs = Vec::new();
+    // The character index of byte AT, and the bytes up to COPIED done.
+    let mut index = 0;
+    let mut copied = 0;
+    for (at, &byte) in bytes.iter().enumerate() {
+        if byte == b'\r' && (!dos || bytes.get(at + 1) == Some(&b'\n')) {
+            crs.push(index);
+            converted.push_str(&text[copied..at]);
+            if !dos {
+                converted.push('\n');
+            }
+            copied = at + 1;
+        }
+        index += usize::from((byte as i8) >= -0x40);
+    }
+    converted.push_str(&text[copied..]);
+    (converted, crs)
 }
 
 impl DecodedText {
@@ -1944,6 +1996,24 @@ impl DecodedText {
     /// The number of characters produced so far.
     pub(crate) fn char_count(&self) -> usize {
         self.chars
+    }
+
+    /// What a buffer destination needs beyond the text and its runs to
+    /// take it as decode_coding inserts it, decode_eol's record taken from
+    /// the text: None for one insertion that decode_eol left as it was.
+    pub(crate) fn take_layout(&mut self) -> Option<DecodeLayout> {
+        if self.chunks.len() <= 1 && self.eol.is_none() {
+            return None;
+        }
+        let mut eol = self.eol.take();
+        Some(DecodeLayout {
+            chunks: self.chunks.clone(),
+            charsets: match &mut eol {
+                Some(eol) => std::mem::take(&mut eol.charsets),
+                None => self.charsets.clone(),
+            },
+            eol,
+        })
     }
 
     /// Store the character whose code is C.
@@ -2064,20 +2134,22 @@ impl DecodedText {
     /// after it.
     fn convert_eol(&mut self, eol_type: i64) {
         match eol_type {
-            2 => self.text = self.text.replace('\r', "\n"),
+            2 if self.text.contains('\r') => {
+                let (text, crs) = eol_converted(&self.text, false);
+                self.eol = Some(Box::new(EolConversion {
+                    dos: false,
+                    crs,
+                    text: std::mem::replace(&mut self.text, text),
+                    charsets: self.charsets.clone(),
+                    extended: self.extended.clone(),
+                }));
+            }
             1 if self.text.contains("\r\n") => {
-                // removed[i]: the CRs deleted before character index I.
-                let mut removed = Vec::with_capacity(self.chars + 1);
-                let mut count = 0;
-                let mut chars = self.text.chars().peekable();
-                while let Some(ch) = chars.next() {
-                    removed.push(count);
-                    if ch == '\r' && chars.peek() == Some(&'\n') {
-                        count += 1;
-                    }
-                }
-                removed.push(count);
-                let shift = |index: usize| index - removed[index.min(removed.len() - 1)];
+                let (text, crs) = eol_converted(&self.text, true);
+                let charsets = self.charsets.clone();
+                let extended = self.extended.clone();
+                // The CRs deleted before character index INDEX.
+                let shift = |index: usize| index - crs.partition_point(|&cr| cr < index);
                 for entry in &mut self.extended {
                     entry.0 = shift(entry.0);
                 }
@@ -2085,8 +2157,14 @@ impl DecodedText {
                     run.0 = shift(run.0);
                     run.1 = shift(run.1);
                 }
-                self.text = self.text.replace("\r\n", "\n");
-                self.chars -= count;
+                self.chars -= crs.len();
+                self.eol = Some(Box::new(EolConversion {
+                    dos: true,
+                    crs,
+                    text: std::mem::replace(&mut self.text, text),
+                    charsets,
+                    extended,
+                }));
             }
             _ => {}
         }
@@ -3420,7 +3498,9 @@ fn decode_coding(
             }
         }
         if let Some(eol_type) = eol_type {
+            // The CRs go in the gap, before the one insert_from_gap.
             decoded.convert_eol(eol_type);
+            decoded.eol = None;
         }
         return Ok(CodingDecode {
             decoded,
@@ -3589,6 +3669,7 @@ fn decode_coding_parts(
             },
             coding: "no-conversion".into(),
             post_read: Value::Nil,
+            layout: None,
         });
     };
     let canonical = interp
@@ -3622,10 +3703,11 @@ fn decode_coding_parts(
             },
             coding: coding.into(),
             post_read: Value::Nil,
+            layout: None,
         });
     }
     let CodingDecode {
-        decoded,
+        mut decoded,
         coding: actual_coding,
         for_unibyte,
     } = decode_coding_object(
@@ -3636,6 +3718,7 @@ fn decode_coding_parts(
         dst_multibyte,
     )?;
     // produce_annotation's `charset' properties of the decoded text.
+    let layout = decoded.take_layout();
     let charset_props = charset_spans_to_props(decoded.charsets, &decoded.text, None);
     let post_read = coding_system_property(interp, &actual_coding, ":post-read-conversion")
         .unwrap_or(Value::Nil);
@@ -3660,6 +3743,7 @@ fn decode_coding_parts(
             ),
             coding: actual_coding,
             post_read,
+            layout,
         });
     }
     // A string destination: decode_coding_object decodes into the work
@@ -3680,6 +3764,7 @@ fn decode_coding_parts(
         ),
         coding: actual_coding,
         post_read: Value::Nil,
+        layout: None,
     })
 }
 
@@ -3689,6 +3774,9 @@ pub(crate) struct BufferDecode {
     pub(crate) value: Value,
     coding: String,
     post_read: Value,
+    /// How decode_coding puts the text into the buffer, when it takes
+    /// more than one insertion (see `DecodedText::layout').
+    pub(crate) layout: Option<DecodeLayout>,
 }
 
 /// decode_coding_object into a buffer destination: VALUE decoded with

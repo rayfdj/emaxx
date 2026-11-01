@@ -11529,6 +11529,42 @@ setup_process_coding_systems's check now refuses). A 13-form
   Local validation: the grouped gate's 3424 library tests, the
   integration targets and clippy with `--all-targets --all-features -D
   warnings' pass.
+- **Round 235: buffer decodes insert each decoder call's characters as
+  produce_chars does.** `DecodedText` keeps the character count of each
+  decoder call and of decode_coding's flush (`chunks`) and, for a dos or
+  mac eol, decode_eol's record (`EolConversion`: the CRs' indices, the
+  text, its `charset' runs and its side table as they were before it);
+  `take_layout` hands a buffer destination a `DecodeLayout`.
+  decode-coding-region, insert-file-contents, call-process and a
+  process's output insert the chunks one after another with point left
+  where the text begins (insert_from_gap, a tick a chunk and no hooks),
+  put each chunk's `charset' runs with Fput_text_property (a tick and
+  the change hooks a run) and then decode_eol: under dos
+  `Buffer::delete_chars_each` deletes the CRs before newlines in one
+  pass that leaves the text, point, the mark, the markers, the overlays,
+  the intervals (`Intervals::adjust_for_deletions`, each interval
+  shorter by what was deleted from it, an emptied one dropped) and the
+  modification counts (a tick a CR, without hooks or undo) as GNU's
+  del_range_2 one at a time leaves them, and under mac the CRs become
+  newlines in place. decode_coding_gap's fast path for an ASCII or valid
+  UTF-8 text stays one insertion with its CRs removed first. utf-8 now
+  counts its charbuf room under every eol, as GNU's decoder does. A
+  charset coding's first unit that decodes without another unit is
+  remembered for the decode (`CharsetDecode`), and decode_eol is one
+  pass that copies the text between CRs. The modification counts, change
+  hooks and intervals of 11 decode-coding-region cases (utf-8, latin-1,
+  utf-8-dos, undecided, utf-8-mac and shift_jis-dos texts up to 40000
+  characters), 6 file reads (insert-file-contents, call-process and a
+  read into the middle of a buffer), a decoded region's markers, undo
+  record and overlays, and the round 234 batteries read as GNU's; an
+  oracle test pins them. An insert-file-contents of 30000 latin-1-dos
+  lines takes 47.7M instructions to GNU's 52.4M. ERT pass counts match
+  GNU's for coding, mule, fileio, files, process, callproc, autorevert,
+  editfns, buffer, rmail, subr, undo, dired and ucs-normalize. Still to
+  do: #414, #415 and #417 (decode-coding-string's conversions around the
+  decoder). Local validation: the grouped gate's 3,426 library
+  tests, the integration targets and clippy with `--all-targets
+  --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -13025,6 +13061,11 @@ s against 252.5 s (0.925), in all 0.964. The full Rust gate (run
 7,928 outcomes. Setup 75.9 s against 61.9 s (1.226), test bodies 249.4
 s against 259.9 s (0.960), in all 1.000. The full Rust gate (run
 41321298165) passed.
+
+**On `77cb716`** (round 234): frozen (run 41327825511) matched all
+7,928 outcomes. Setup 86.2 s against 69.2 s (1.246), test bodies 261.5
+s against 269.9 s (0.969), in all 1.017. The full Rust gate (run
+41327822773) passed.
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

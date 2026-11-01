@@ -1248,7 +1248,11 @@ impl Interpreter {
     /// the start with the text it shows.  The native window records hold
     /// integer slots instead; this sweep applies the same
     /// insertion-type-nil marker rules to those integers.
-    fn adjust_window_marker_slots(&mut self, buffer_id: u64, adjust: impl Fn(usize) -> usize) {
+    pub(crate) fn adjust_window_marker_slots(
+        &mut self,
+        buffer_id: u64,
+        adjust: impl Fn(usize) -> usize,
+    ) {
         // The window index walked in place, its ids not copied out: this
         // runs on every insertion and deletion.
         // The windows of the buffer's whole indirect family: their

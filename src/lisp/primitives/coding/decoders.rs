@@ -9,15 +9,18 @@ use super::*;
 /// eol, what it leaves unfinished flushed as binary characters.
 pub(crate) fn decode_utf_8_whole(bytes: &[u8]) -> DecodedText {
     let mut out = DecodedText::new();
-    let (CallEnd::Full(at) | CallEnd::Ended(at)) = utf_8_call(
-        bytes,
-        0,
-        false,
-        false,
-        &mut DecoderSpec::default(),
-        &mut out,
-    );
-    bytes.flush(at, &mut out);
+    let mut spec = DecoderSpec::default();
+    let mut consumed = 0;
+    loop {
+        match utf_8_call(bytes, consumed, false, false, &mut spec, &mut out) {
+            CallEnd::Full(at) if at < bytes.len() => consumed = at,
+            CallEnd::Full(at) | CallEnd::Ended(at) => {
+                consumed = at;
+                break;
+            }
+        }
+    }
+    bytes.flush(consumed, &mut out);
     out
 }
 
@@ -60,9 +63,7 @@ pub(super) fn utf_8_call<S: Units + ?Sized>(
 ) -> CallEnd {
     let mut p = start;
     let mut src_base;
-    // Without a dos eol neither a charbuf's end nor a CR changes what
-    // the text decodes to.
-    let mut room = if eol_dos { CHARBUF_SIZE } else { usize::MAX };
+    let mut room = CHARBUF_SIZE;
     let mut byte_after_cr: i32 = -1;
     'call: {
         if bom && !spec.bom_done {
@@ -102,20 +103,28 @@ pub(super) fn utf_8_call<S: Units + ?Sized>(
                     Ok(_) => rest.len(),
                     Err(error) => error.valid_up_to(),
                 };
-                if eol_dos {
-                    if valid > 0 && rest[valid - 1] == b'\r' {
-                        valid -= 1;
-                    }
-                    let mut chars = 0;
+                if eol_dos && valid > 0 && rest[valid - 1] == b'\r' {
+                    valid -= 1;
+                }
+                // The characters the run is, as many as the charbuf has
+                // room for.
+                let chars = rest[..valid]
+                    .iter()
+                    .filter(|&&byte| byte & 0xC0 != 0x80)
+                    .count();
+                if chars > room {
+                    let mut seen = 0;
                     for (index, &byte) in rest[..valid].iter().enumerate() {
                         if byte & 0xC0 != 0x80 {
-                            if chars == room {
+                            if seen == room {
                                 valid = index;
                                 break;
                             }
-                            chars += 1;
+                            seen += 1;
                         }
                     }
+                    room = 0;
+                } else {
                     room -= chars;
                 }
                 if valid > 0 {
@@ -225,10 +234,11 @@ pub(super) fn charset_call<S: Units + ?Sized>(
     interp: &Interpreter,
     src: &S,
     start: usize,
-    valids: &[Option<Vec<std::rc::Rc<CharsetInfo>>>],
+    charsets: &mut CharsetDecode,
     eol_dos: bool,
     out: &mut DecodedText,
 ) -> CallEnd {
+    let CharsetDecode { valids, single } = charsets;
     let limit = CHARBUF_SIZE - MAX_ANNOTATION_LENGTH * 2;
     let mut used = 0;
     let mut runs = CallRuns::new();
@@ -256,25 +266,41 @@ pub(super) fn charset_call<S: Units + ?Sized>(
             if c < 0 {
                 break 'invalid;
             }
-            let Some(charsets) = valids[c as usize].as_ref() else {
+            let byte = c as usize;
+            let Some(list) = valids[byte].as_ref() else {
                 break 'invalid;
             };
-            let mut code = c as u32;
-            let mut len = 1;
-            let mut decoded = None;
-            for charset in charsets {
-                while len < charset.dimension as usize {
-                    let c = one_more!(src, p, break 'call CallEnd::Ended(src_base));
-                    code = (code << 8) | c as u32;
-                    len += 1;
+            let (charset, ch) = match single[byte] {
+                Single::Decoded(index, ch) => (&list[index], ch),
+                Single::Invalid => break 'invalid,
+                Single::Unknown => {
+                    let mut code = c as u32;
+                    let mut len = 1;
+                    let mut decoded = None;
+                    for (index, charset) in list.iter().enumerate() {
+                        while len < charset.dimension as usize {
+                            let c = one_more!(src, p, break 'call CallEnd::Ended(src_base));
+                            code = (code << 8) | c as u32;
+                            len += 1;
+                        }
+                        if let Some(ch) = charset.decode(interp, code) {
+                            decoded = Some((index, ch));
+                            break;
+                        }
+                    }
+                    // What the unit decodes to without another unit read
+                    // stays so for the decode.
+                    if len == 1 {
+                        single[byte] = match decoded {
+                            Some((index, ch)) => Single::Decoded(index, ch),
+                            None => Single::Invalid,
+                        };
+                    }
+                    let Some((index, ch)) = decoded else {
+                        break 'invalid;
+                    };
+                    (&list[index], ch)
                 }
-                if let Some(ch) = charset.decode(interp, code) {
-                    decoded = Some((charset, ch));
-                    break;
-                }
-            }
-            let Some((charset, ch)) = decoded else {
-                break 'invalid;
             };
             if runs.opens(charset) {
                 used += runs.open_info(charset, out);
@@ -295,6 +321,33 @@ pub(super) fn charset_call<S: Units + ?Sized>(
     };
     runs.finish(out);
     end
+}
+
+/// A charset coding's charsets by first unit (CODING_CHARSET_VALIDS, each
+/// list by dimension), and what each first unit has decoded to on its
+/// own so far in the decode.
+pub(super) struct CharsetDecode {
+    valids: Vec<Option<Vec<std::rc::Rc<CharsetInfo>>>>,
+    single: [Single; 256],
+}
+
+impl CharsetDecode {
+    fn new(interp: &Interpreter, canonical: &str) -> Self {
+        CharsetDecode {
+            valids: charset_valids(interp, canonical),
+            single: [Single::Unknown; 256],
+        }
+    }
+}
+
+/// A first unit's decoding by its one-dimensional charsets: the index of
+/// the charset that decoded it and the character, none of them, or not
+/// yet known (or needing another unit).
+#[derive(Clone, Copy)]
+enum Single {
+    Unknown,
+    Decoded(usize, u32),
+    Invalid,
 }
 
 /// The (roman kana kanji [kanji2]) charsets of a shift-jis coding.
@@ -793,7 +846,7 @@ pub(super) fn raw_text_call<S: Units + ?Sized>(
 enum Decoder {
     Utf8 { bom: bool },
     Utf16 { big_endian: bool, check_bom: bool },
-    Charset(Vec<Option<Vec<std::rc::Rc<CharsetInfo>>>>),
+    Charset(Box<CharsetDecode>),
     Sjis(SjisCharsets),
     Big5(std::rc::Rc<CharsetInfo>, std::rc::Rc<CharsetInfo>),
     EmacsMule(Box<EmacsMuleLayout>),
@@ -825,7 +878,7 @@ impl Decoder {
                 }
             }
             "emacs-mule" => Decoder::EmacsMule(Box::new(emacs_mule_layout(interp))),
-            "charset" => Decoder::Charset(charset_valids(interp, canonical)),
+            "charset" => Decoder::Charset(Box::new(CharsetDecode::new(interp, canonical))),
             "utf-8" | "prefer-utf-8" | "utf-8-auto" => Decoder::Utf8 {
                 bom: coding_system_consumes_bom(interp, canonical),
             },
@@ -857,12 +910,13 @@ pub(super) fn decode_units<S: Units + ?Sized>(
     canonical: &str,
     block: &mut DecodeBlock,
 ) -> DecodedText {
-    let decoder = Decoder::new(interp, canonical);
+    let mut decoder = Decoder::new(interp, canonical);
     let mut out = DecodedText::new();
     let eol_dos = block.eol_dos;
     let mut consumed = 0;
     loop {
-        let end = match &decoder {
+        let before = out.char_count();
+        let end = match &mut decoder {
             Decoder::Utf8 { bom } => utf_8_call(src, consumed, *bom, eol_dos, block.spec, &mut out),
             Decoder::Utf16 {
                 big_endian,
@@ -876,8 +930,8 @@ pub(super) fn decode_units<S: Units + ?Sized>(
                 block.spec,
                 &mut out,
             ),
-            Decoder::Charset(valids) => {
-                charset_call(interp, src, consumed, valids, eol_dos, &mut out)
+            Decoder::Charset(charsets) => {
+                charset_call(interp, src, consumed, charsets, eol_dos, &mut out)
             }
             Decoder::Sjis(charsets) => {
                 sjis_call(interp, src, consumed, charsets, eol_dos, &mut out)
@@ -893,6 +947,10 @@ pub(super) fn decode_units<S: Units + ?Sized>(
             ),
             Decoder::RawText => raw_text_call(src, consumed, eol_dos, &mut out),
         };
+        // produce_chars inserts what the call produced.
+        if out.char_count() > before {
+            out.chunks.push(out.char_count() - before);
+        }
         match end {
             CallEnd::Full(at) if at < src.len() => consumed = at,
             CallEnd::Full(at) | CallEnd::Ended(at) => {
@@ -902,7 +960,11 @@ pub(super) fn decode_units<S: Units + ?Sized>(
         }
     }
     if block.last {
+        let before = out.char_count();
         src.flush(consumed, &mut out);
+        if out.char_count() > before {
+            out.chunks.push(out.char_count() - before);
+        }
         block.consumed = src.len();
     } else {
         block.consumed = consumed;

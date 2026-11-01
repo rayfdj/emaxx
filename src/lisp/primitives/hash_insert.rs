@@ -665,6 +665,7 @@ enum InsertedIntervals<'a> {
 /// at it before the text, and signal_after_change for PRODUCED characters
 /// (coding->produced_char, which counts a character decoded into a
 /// unibyte buffer once however many bytes it took).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn insert_text_before_point(
     interp: &mut Interpreter,
     text: &str,
@@ -672,6 +673,7 @@ pub(crate) fn insert_text_before_point(
     extended_chars: &[(usize, u32)],
     produced: usize,
     decoded: bool,
+    layout: Option<&crate::lisp::primitives::coding::DecodeLayout>,
     env: &mut crate::lisp::types::Env,
 ) -> Result<(), LispError> {
     if text.is_empty() {
@@ -688,6 +690,7 @@ pub(crate) fn insert_text_before_point(
             extended_chars,
             produced,
             decoded,
+            layout,
             env,
         )?;
         interp.buffer.borrow_mut().goto_char(start);
@@ -711,8 +714,12 @@ pub(crate) fn insert_converted_text_at(
     extended_chars: &[(usize, u32)],
     produced: usize,
     decoded: bool,
+    layout: Option<&crate::lisp::primitives::coding::DecodeLayout>,
     env: &mut crate::lisp::types::Env,
 ) -> Result<(), LispError> {
+    if let Some(layout) = layout {
+        return insert_decoded_calls_at(interp, start, text, extended_chars, produced, layout, env);
+    }
     let unibyte_copy = if interp.buffer.borrow().is_multibyte() {
         None
     } else {
@@ -765,6 +772,185 @@ pub(crate) fn insert_converted_text_at(
             .resume_undo_after_decoding(undo_list, start, produced);
     }
     result
+}
+
+/// decode_coding's text in a buffer destination at START, point, a
+/// decoder call at a time: each call's characters inserted after the
+/// last's as produce_chars' insert_from_gap inserts them (point staying at
+/// START), the `charset' runs of the call then put through
+/// produce_charset's Fput_text_property; then decode_eol's change of the
+/// text inserted, under dos each CR before a newline deleted (del_range_2,
+/// uncounted by the change hooks) and under mac each CR made a newline in
+/// place.  TEXT and EXTENDED_CHARS are the text as decode_eol leaves it,
+/// LAYOUT says how it was made; the PRODUCED characters are recorded for
+/// undo after, as decode_coding records them.
+fn insert_decoded_calls_at(
+    interp: &mut Interpreter,
+    start: usize,
+    text: &str,
+    extended_chars: &[(usize, u32)],
+    produced: usize,
+    layout: &crate::lisp::primitives::coding::DecodeLayout,
+    env: &mut crate::lisp::types::Env,
+) -> Result<(), LispError> {
+    // The text as produce_chars made it, before decode_eol.
+    let (inserted, inserted_extended): (&str, &[(usize, u32)]) = match layout.eol.as_deref() {
+        Some(eol) => (&eol.text, &eol.extended),
+        None => (text, extended_chars),
+    };
+    let multibyte = interp.buffer.borrow().is_multibyte();
+    let undo_list = interp.buffer.borrow_mut().suspend_undo_for_decoding();
+    let total = inserted.chars().count();
+    let chunks: Vec<usize> = if layout.chunks.is_empty() {
+        vec![total]
+    } else {
+        layout.chunks.clone()
+    };
+    let result = interp.with_lisp_stack_roots(&[undo_list], |interp| {
+        let mut from_byte = 0;
+        let mut done = 0;
+        let mut at = start;
+        // The buffer bytes of a unibyte destination, for decode_eol's scan.
+        let mut unibyte_text = String::new();
+        for &count in &chunks {
+            let to_byte = byte_after_chars(inserted, from_byte, count);
+            let piece = &inserted[from_byte..to_byte];
+            from_byte = to_byte;
+            let piece_extended: Vec<(usize, u32)> = inserted_extended
+                .iter()
+                .filter(|(index, _)| (done..done + count).contains(index))
+                .map(|&(index, code)| (index - done, code))
+                .collect();
+            let unibyte_copy = if multibyte {
+                None
+            } else {
+                Some(unibyte_destination_text(piece, &piece_extended)?)
+            };
+            let (piece, piece_extended) = match &unibyte_copy {
+                Some(copy) => (copy.as_str(), &[][..]),
+                None => (piece, &piece_extended[..]),
+            };
+            if !multibyte {
+                unibyte_text.push_str(piece);
+            }
+            interp.buffer.borrow_mut().goto_char(at);
+            interp.insert_current_buffer_with(
+                piece,
+                crate::buffer::InsertedProperties::None { inherit: false },
+                false,
+            );
+            interp.set_inserted_extended_chars(at, piece_extended);
+            at = interp.buffer.borrow().point();
+            interp.buffer.borrow_mut().goto_char(start);
+            for (from, to, charset) in &layout.charsets {
+                if *from < done || *to > done + count || from >= to {
+                    continue;
+                }
+                let plist = Value::list([Value::symbol("charset"), Value::symbol(charset)]);
+                interp.with_lisp_stack_roots(&[plist], |interp| {
+                    crate::lisp::primitives::textprop::add_text_properties(
+                        interp,
+                        &Value::Integer((start + from) as i64),
+                        &Value::Integer((start + to) as i64),
+                        plist,
+                        Value::Nil,
+                        env,
+                    )
+                })?;
+            }
+            done += count;
+        }
+        let Some(eol) = layout.eol.as_deref() else {
+            return Ok(());
+        };
+        // decode_eol over the inserted text: the CRs in it, a unibyte
+        // destination's as its bytes have them.
+        let (crs, length) = if multibyte {
+            (eol.crs.clone(), total)
+        } else {
+            let bytes: Vec<char> = unibyte_text.chars().collect();
+            let crs = bytes
+                .iter()
+                .enumerate()
+                .filter(|&(index, &byte)| {
+                    byte == '\r' && (!eol.dos || bytes.get(index + 1) == Some(&'\n'))
+                })
+                .map(|(index, _)| index)
+                .collect();
+            (crs, bytes.len())
+        };
+        if eol.dos {
+            let positions: Vec<usize> = crs
+                .iter()
+                .enumerate()
+                .map(|(deleted, &cr)| start + cr - deleted)
+                .collect();
+            interp.delete_chars_each_current_buffer(&positions);
+        } else if !crs.is_empty() {
+            let end = interp.buffer.borrow().point_max().min(start + length);
+            let replaced = {
+                let buffer = interp.buffer.borrow();
+                buffer
+                    .buffer_substring(start, end)
+                    .map_err(|error| LispError::Signal(error.to_string()))?
+                    .replace('\r', "\n")
+            };
+            let extended = interp.buffer.borrow().substring_extended_chars(start, end);
+            interp
+                .buffer
+                .borrow_mut()
+                .replace_text_in_place(start, end, &replaced, &extended);
+            interp.family_after_in_place_edit();
+        }
+        Ok(())
+    });
+    interp.buffer.borrow_mut().goto_char(start);
+    interp
+        .buffer
+        .borrow_mut()
+        .resume_undo_after_decoding(undo_list, start, produced);
+    result
+}
+
+/// The byte offset of TEXT COUNT characters after its byte FROM (its end
+/// when fewer follow).
+fn byte_after_chars(text: &str, from: usize, count: usize) -> usize {
+    let mut seen = 0;
+    for (offset, &byte) in text.as_bytes()[from..].iter().enumerate() {
+        if (byte as i8) >= -0x40 {
+            if seen == count {
+                return from + offset;
+            }
+            seen += 1;
+        }
+    }
+    text.len()
+}
+
+/// What produce_chars writes into a unibyte destination for TEXT: a
+/// raw-byte character as its byte, any other in its multibyte form.
+fn unibyte_destination_text(text: &str, extended: &[(usize, u32)]) -> Result<String, LispError> {
+    let source = StringLike {
+        text: text.to_string(),
+        props: None,
+        multibyte: true,
+        extended_chars: extended.to_vec(),
+    };
+    let mut out = String::with_capacity(text.len());
+    for code in source.character_codes_iter() {
+        let code = code as u32;
+        if crate::lisp::primitives::RAW_BYTE8_CHARS.contains(&code) {
+            out.push(crate::lisp::primitives::raw_byte_regex_char(
+                (code - crate::lisp::primitives::RAW_BYTE8_BASE) as u8,
+            ));
+        } else {
+            let (encoded, width) = crate::lisp::types::string_data::encode_character(code)?;
+            for &byte in &encoded[..width] {
+                out.push(crate::lisp::primitives::raw_byte_regex_char(byte));
+            }
+        }
+    }
+    Ok(out)
 }
 
 #[allow(clippy::too_many_arguments)]
