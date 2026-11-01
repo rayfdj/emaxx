@@ -33070,6 +33070,20 @@ fn readevalloop_reads_at_the_buffers_point_with_standard_input_bound_to_it() {
 }
 
 #[test]
+fn load_checks_an_elc_as_lread_c_and_notes_a_newer_source() {
+    // lread.c:Fload refuses an .elc without the byte compiler's version
+    // line, and with load-prefer-newer nil loads an .elc older than its
+    // source, its message noting the newer source (or, without one, a
+    // message saying so); batch messages from message_with_string go to
+    // stderr and leave *Messages* as it was.
+    assert_oracle_contract_matches_interpreter(
+        r##"(let* ((dir (make-temp-file "zz-elc" t)) (el (expand-file-name "zzn.el" dir)) (elc (concat el "c")) (bad (expand-file-name "zzb.elc" dir)) (start (with-current-buffer (messages-buffer) (point-max)))) (unwind-protect (progn (with-temp-file el (insert "(setq zz-newer 'source)\n")) (let ((coding-system-for-write 'no-conversion)) (with-temp-file elc (set-buffer-multibyte nil) (insert ";ELC\x1e\0\0\0\n;;; in Emacs version 30.2\n(setq zz-newer 'compiled)\n")) (with-temp-file bad (set-buffer-multibyte nil) (insert ";ELC\x1e\0\0\0\n(setq zz-bad 1)\n"))) (set-file-times elc (encode-time '(0 0 0 1 1 2020 nil nil t))) (load (file-name-sans-extension el) nil nil) (setq zz-newer nil) (load (file-name-sans-extension el) nil t) (list zz-newer (boundp 'zz-bad) (condition-case e (load bad nil t) (error (string-replace dir "D" (cadr e)))) (string-replace dir "D" (with-current-buffer (messages-buffer) (buffer-substring start (point-max)))))) (delete-directory dir t)))"##,
+        r##"(compiled nil "File `D/zzb.elc' was not compiled in Emacs" "")"##,
+        "load of an .elc",
+    );
+}
+
+#[test]
 fn the_initial_obarray_holds_only_the_symbols_gnu_makes_at_startup() {
     // lread.c:define_symbol interns every DEFSYM but Qunbound, and
     // syms_of_eval, syms_of_editfns and syms_of_print unintern their own

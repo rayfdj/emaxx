@@ -750,7 +750,13 @@ fn require_with_extensionless_target_finds_elc_file() {
             .as_nanos()
     ));
     let elc_path = stem.with_extension("elc");
-    fs::write(&elc_path, "(provide 'sample-elc-feature)\n").expect("write elc target");
+    // lread.c:safe_to_load_version: an .elc without the byte compiler's
+    // version line is "not compiled in Emacs".
+    fs::write(
+        &elc_path,
+        ";ELC\x1e\0\0\0\n;;; in Emacs version 30.2\n(provide 'sample-elc-feature)\n",
+    )
+    .expect("write elc target");
     let stem_text = stem.to_string_lossy();
     let form = format!(r#"(require 'sample-elc-feature "{stem_text}")"#);
     assert_eq!(eval_str(&form), Value::Symbol("sample-elc-feature".into()));
@@ -769,7 +775,11 @@ fn require_with_extensionless_target_uses_elc_when_el_is_empty() {
     let el_path = stem.with_extension("el");
     let elc_path = stem.with_extension("elc");
     fs::write(&el_path, "").expect("write empty source stub");
-    fs::write(&elc_path, "(provide 'sample-empty-el-feature)\n").expect("write elc target");
+    fs::write(
+        &elc_path,
+        ";ELC\x1e\0\0\0\n;;; in Emacs version 30.2\n(provide 'sample-empty-el-feature)\n",
+    )
+    .expect("write elc target");
     let stem_text = stem.to_string_lossy();
     let form = format!(r#"(require 'sample-empty-el-feature "{stem_text}")"#);
     assert_eq!(

@@ -7092,7 +7092,7 @@ fn selected_gnu_elc_never_falls_back_to_its_sibling_source() {
         .unwrap();
         std::fs::write(
             &compiled,
-            b";ELC\x1e\0\0\0\n(defalias 'sample-function #[0 \"\\300\\207\" [compiled] 1])\n(provide 'sample)\n",
+            b";ELC\x1e\0\0\0\n;;; in Emacs version 30.2\n(defalias 'sample-function #[0 \"\\300\\207\" [compiled] 1])\n(provide 'sample)\n",
         )
         .unwrap();
 
@@ -7148,7 +7148,7 @@ fn headered_textual_elc_executes_instead_of_its_empty_source_stub() {
     std::fs::write(&source, "").unwrap();
     std::fs::write(
         &compiled,
-        b";ELC\x1e\0\0\0\n;;; Compiled\n(provide 'headered-textual-sample)\n",
+        b";ELC\x1e\0\0\0\n;;; in Emacs version 30.2\n(provide 'headered-textual-sample)\n",
     )
     .unwrap();
 

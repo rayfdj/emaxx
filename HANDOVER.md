@@ -10957,6 +10957,23 @@ setup_process_coding_systems's check now refuses). A 13-form
   validation: the grouped gate's 3,395 library tests, the
   integration targets and clippy with `--all-targets --all-features -D
   warnings' pass.
+- **Round 216: Fload's .elc checks and messages as lread.c makes them.**
+  lread.c:Fload checks an .elc's header for the byte compiler's version
+  line and refuses one without it (`(error "File `%s' was not compiled
+  in Emacs")'); with `load-prefer-newer' nil and a source newer than its
+  .elc it loads the .elc anyway, its "Loading" message saying
+  "(compiled; note, source file is newer)", or, when the load is quiet
+  and `force-load-messages' is nil, messaging "Source file `%s' newer
+  than byte-compiled file; using older file" (skipped for an mtime at
+  the epoch, as GNU skips it). Emaxx loaded the bad .elc and gave no
+  note. Load messages now go through message_with_string, which in batch
+  writes to stderr and leaves `*Messages*' as it was, where Emaxx logged
+  them. Four loader tests whose .elc fixtures lacked the version line,
+  which GNU refuses as well, now write the header the byte compiler
+  writes. An oracle test pins the refusal, the older .elc's value and
+  the untouched `*Messages*'. Local validation: the grouped gate's
+  3,396 library tests, the integration targets and clippy with
+  `--all-targets --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -12356,6 +12373,11 @@ against 277.2 s (0.940), in all 0.987.
 passed, and frozen (run 41247006663) matched all 7,928 outcomes on the
 first attempt: setup 77.6 s against 63.7 s (1.218), test bodies 251.3 s
 against 261.2 s (0.962), in all 0.995.
+
+**On `d832621`** (round 215): the full Rust gate (run 41254349988)
+passed, and frozen (run 41254351837) matched all 7,928 outcomes on the
+first attempt: setup 85.3 s against 69.9 s (1.219), test bodies 264.2 s
+against 274.3 s (0.963), in all 1.012.
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'
