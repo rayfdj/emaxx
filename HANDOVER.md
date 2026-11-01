@@ -11172,6 +11172,38 @@ setup_process_coding_systems's check now refuses). A 13-form
   Local validation: the grouped gate's 3,409 library tests, the
   integration targets and clippy with `--all-targets --all-features -D
   warnings' pass.
+- **Round 223: startup features and values as GNU's C and preloaded
+  Lisp make them.** A table of every bound symbol's default value at
+  `-Q --batch' (X, GTK, touch-screen and build-path values aside)
+  differed from GNU in `features': fns.c's Fprovide conses FEATURE onto
+  the front unless `memq' finds it, and runs its `after-load-alist'
+  entry through Fassq and Fmapc, while Emaxx kept a Rust copy of the
+  list, appended to it and rebuilt `features' from the copy, oldest
+  first and dropping anything Lisp had stored there. The Lisp list is
+  now the only one, started with the features the C code provides
+  (threads, inotify or kqueue, lcms2, multi-tty, make-network-process,
+  native-compile, emacs, newest first); bindings.el's base64, md5,
+  sha1, overlay and text-properties come with loadup, as in temacs,
+  and the store-effect hook that kept the copy is gone. The table also
+  found `dynamic-library-suffixes' without lread.c's empty secondary
+  suffix (now separate from the module suffixes `load-suffixes' and
+  `load' use, the secondary first on macOS), `exec-path' without
+  callproc.c's exec directory after PATH (now through startup.rs's
+  decode_env_path, EMACSPATH's entries when set), `charset-map-path'
+  nil where charset.c sets the charsets directory, `image-types' out of
+  image.c's registration order, and frame.c's window-system defaults
+  for a non-GTK build (the contracted oracle's) wrong:
+  `default-frame-scroll-bars' left, `frame-inhibit-implied-resize'
+  (tab-bar-lines tool-bar-lines). Native pre-sets of
+  `read-file-name-function' and `mouse-wheel-buttons' kept
+  minibuffer.el's and mouse.el's definitions from taking effect; both
+  are gone. Remaining differences in the table are the X build's own
+  variables, build paths, timings and counters, plus
+  `byte-boolean-vars', which Emaxx still leaves nil. An
+  oracle test pins the feature order and the startup values. Local
+  validation: the grouped gate's 3,410 library tests, the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -12615,6 +12647,11 @@ load once its grouped gate had run, rerunning only the test that had
 asked for it, and the mark phase read the first through a line break
 the test's text search does not follow. Round 222 reads both on one
 line, and its gate ran the whole library.
+
+**On `ffbc676`** (round 222): the full Rust gate (run 41283567119)
+passed, and frozen (run 41283568958) matched all 7,928 outcomes on the
+first attempt: setup 82.7 s against 67.3 s (1.229), test bodies 257.8 s
+against 273.8 s (0.941), in all 0.988.
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

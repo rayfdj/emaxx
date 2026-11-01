@@ -1169,7 +1169,7 @@ fn find_load_file(
         let has_suffix = [".el", ".elc", ".eln"]
             .iter()
             .any(|suffix| target.ends_with(suffix))
-            || crate::lisp::eval::dynamic_library_suffix_values()
+            || crate::lisp::eval::module_suffix_values()
                 .iter()
                 .any(|suffix| {
                     string_like(suffix).is_some_and(|suffix| target.ends_with(&suffix.text))

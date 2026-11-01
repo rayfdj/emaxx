@@ -2,9 +2,13 @@ use super::symbol_cells::LOCALIZED;
 use super::*;
 use crate::lisp::types::{Kind, SymbolName, assq_binding, assq_binding_named, current_environment};
 
-pub(crate) fn dynamic_library_suffix_values() -> Vec<Value> {
+/// The module suffixes lread.c puts before ".elc" and ".el" in
+/// `load-suffixes': MODULES_SECONDARY_SUFFIX, defined only where it is not
+/// empty (macOS's ".so"), consed on after MODULES_SUFFIX.  `load' takes a
+/// file with either suffix as a module.
+pub(crate) fn module_suffix_values() -> Vec<Value> {
     #[cfg(target_os = "macos")]
-    let suffixes = [".dylib", ".so"].as_slice();
+    let suffixes = [".so", ".dylib"].as_slice();
     #[cfg(all(unix, not(target_os = "macos")))]
     let suffixes = [".so"].as_slice();
     #[cfg(windows)]
@@ -15,14 +19,30 @@ pub(crate) fn dynamic_library_suffix_values() -> Vec<Value> {
         .collect()
 }
 
-fn module_file_suffix_value() -> Value {
+/// lread.c's `dynamic-library-suffixes': DYNAMIC_LIB_SUFFIX, then
+/// DYNAMIC_LIB_SECONDARY_SUFFIX, which configure leaves empty except on
+/// macOS.
+fn dynamic_library_suffixes_value() -> Value {
+    #[cfg(target_os = "macos")]
+    let suffixes = [".dylib", ".so"];
+    #[cfg(not(target_os = "macos"))]
+    let suffixes = [module_file_suffix_text(), ""];
+    Value::list(suffixes.map(|suffix| Value::String(suffix.into())))
+}
+
+/// MODULES_SUFFIX, which is DYNAMIC_LIB_SUFFIX.
+fn module_file_suffix_text() -> &'static str {
     #[cfg(target_os = "macos")]
     let suffix = ".dylib";
     #[cfg(all(unix, not(target_os = "macos")))]
     let suffix = ".so";
     #[cfg(windows)]
     let suffix = ".dll";
-    Value::String(suffix.into())
+    suffix
+}
+
+fn module_file_suffix_value() -> Value {
+    Value::String(module_file_suffix_text().into())
 }
 
 impl InterpreterState {
@@ -615,13 +635,14 @@ impl Interpreter {
             // interactive callback. They are special even in a lexical let.
             "clear-message-function" | "set-message-function" => Some(Value::Nil),
             "read-circle" => Some(Value::T),
-            "load-suffixes" => Some(Value::list(
-                dynamic_library_suffix_values()
-                    .into_iter()
-                    .chain([Value::String(".elc".into()), Value::String(".el".into())]),
-            )),
+            "load-suffixes" => {
+                Some(Value::list(module_suffix_values().into_iter().chain([
+                    Value::String(".elc".into()),
+                    Value::String(".el".into()),
+                ])))
+            }
             "module-file-suffix" => Some(module_file_suffix_value()),
-            "dynamic-library-suffixes" => Some(Value::list(dynamic_library_suffix_values())),
+            "dynamic-library-suffixes" => Some(dynamic_library_suffixes_value()),
             // lread.c initializes this to just the empty representation.
             // Unchanged jka-compr Elisp owns installing compression suffixes.
             "load-file-rep-suffixes" => Some(Value::list([Value::String(String::new().into())])),
@@ -817,7 +838,7 @@ impl Interpreter {
                     .map(|value| Value::String(value.into()))
                     .unwrap_or(Value::Nil),
             ),
-            "read-buffer-function" | "read-file-name-function" => Some(Value::Nil),
+            "read-buffer-function" => Some(Value::Nil),
             "delete-by-moving-to-trash" => Some(Value::Nil),
             "invocation-name" => Some(Value::String(
                 primitives::current_invocation_name()

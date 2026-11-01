@@ -1817,14 +1817,6 @@ impl Interpreter {
         if self.set_terminal_keyboard_value(name, &value) {
             return;
         }
-        if name == "features" {
-            self.provided_features = value
-                .to_vec()
-                .unwrap_or_default()
-                .into_iter()
-                .filter_map(|feature| feature.symbol_str().map(str::to_string))
-                .collect();
-        }
         if self
             .buffer_locals
             .get(&self.current_buffer_id())

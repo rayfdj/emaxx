@@ -45,6 +45,25 @@ fn decode_env_path(
     c(interpreter, "nreverse", &[result])
 }
 
+/// callproc.c:init_callproc_1 and init_callproc: `exec-path' is PATH's
+/// entries (an empty one is ".", and an unset PATH is one empty entry),
+/// then EMACSPATH's, or the directory holding the exec directory's
+/// programs when EMACSPATH is unset.
+pub(crate) fn initialize_exec_path(interpreter: &mut Interpreter) -> Result<(), LispError> {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let mut exec_path = decode_env_path(interpreter, path.as_encoded_bytes(), false)?;
+    let programs = match std::env::var_os("EMACSPATH") {
+        Some(emacs_path) => decode_env_path(interpreter, emacs_path.as_encoded_bytes(), false)?,
+        None => {
+            let directory = interpreter.symbol_value_cell("exec-directory")?;
+            Value::list([c(interpreter, "directory-file-name", &[directory])?])
+        }
+    };
+    exec_path = c(interpreter, "nconc", &[exec_path, programs])?;
+    interpreter.set_global_binding("exec-path", exec_path);
+    Ok(())
+}
+
 fn add_directory(
     interpreter: &mut Interpreter,
     path: Value,

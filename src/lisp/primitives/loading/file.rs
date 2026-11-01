@@ -195,7 +195,7 @@ fn load_with_context(
     let result = (|| {
         let path = PathBuf::from(string_text(&found.name)?);
         let native = path.extension().is_some_and(|extension| extension == "eln");
-        let module = crate::lisp::eval::dynamic_library_suffix_values()
+        let module = crate::lisp::eval::module_suffix_values()
             .iter()
             .any(|suffix| {
                 string_like(suffix)

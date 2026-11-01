@@ -118,16 +118,6 @@ pub(super) fn initial_syntax_table(codes: Value) -> CharTableRef {
     table
 }
 
-pub(super) fn current_exec_path() -> Value {
-    match std::env::var_os("PATH") {
-        Some(path) => Value::list(
-            std::env::split_paths(&path)
-                .map(|entry| Value::String(entry.display().to_string().into())),
-        ),
-        None => Value::Nil,
-    }
-}
-
 pub(super) fn tab_bar_new_tab_choice_custom_type() -> Value {
     Value::list([
         Value::Symbol("choice".into()),

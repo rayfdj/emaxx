@@ -7096,25 +7096,29 @@ fn dumped_simple_shell_command_state_is_available_at_startup() {
 }
 
 #[test]
-fn gnu_bindings_host_feature_manifest_is_preprovided() {
+fn startup_features_are_the_c_providers_newest_first() {
+    // fns.c starts `features' as (emacs) and each Fprovide conses onto it;
+    // bindings.el's `base64', `md5', `sha1', `overlay' and
+    // `text-properties' come with loadup, not before it.
     assert_eq!(
         eval_str(
-            "(list (featurep 'base64)
-                   (featurep 'md5)
-                   (featurep 'sha1)
-                   (mapcar (lambda (subfeature)
-                             (featurep 'overlay subfeature))
-                           '(display syntax-table field))
-                   (mapcar (lambda (subfeature)
-                             (featurep 'text-properties subfeature))
-                           '(display syntax-table field point-entered)))"
+            "(list (featurep 'md5)
+                   (featurep 'text-properties)
+                   (car (last features))
+                   (length (memq 'threads features))
+                   (progn (provide 'startup-features-probe) (car features))
+                   (progn (provide 'emacs) (length (memq 'emacs features))))"
         ),
         Value::list([
-            Value::T,
-            Value::T,
-            Value::T,
-            Value::list([Value::T, Value::T, Value::T]),
-            Value::list([Value::T, Value::T, Value::T, Value::T]),
+            Value::Nil,
+            Value::Nil,
+            Value::symbol("emacs"),
+            // threads, inotify (kqueue), lcms2, multi-tty,
+            // make-network-process, native-compile and emacs; the preloaded
+            // Lisp's features (subr.el's hashtable-print-readable) come after.
+            Value::Integer(7),
+            Value::symbol("startup-features-probe"),
+            Value::Integer(1),
         ])
     );
 }
@@ -7420,18 +7424,19 @@ fn gnu_emacs_c_locale_variables_exist_before_lisp_startup_policy_runs() {
 
 #[test]
 fn batch_lread_loader_policy_defaults_are_complete() {
+    // lread.c: `load-suffixes' conses MODULES_SUFFIX and then
+    // MODULES_SECONDARY_SUFFIX onto (".elc" ".el"); `dynamic-library-suffixes'
+    // is DYNAMIC_LIB_SUFFIX then DYNAMIC_LIB_SECONDARY_SUFFIX.
     #[cfg(target_os = "macos")]
-    let dynamic_suffixes =
-        Value::list([Value::String(".dylib".into()), Value::String(".so".into())]);
+    let (module_suffixes, dynamic_suffixes) = ([".so", ".dylib"].as_slice(), [".dylib", ".so"]);
     #[cfg(all(unix, not(target_os = "macos")))]
-    let dynamic_suffixes = Value::list([Value::String(".so".into())]);
+    let (module_suffixes, dynamic_suffixes) = ([".so"].as_slice(), [".so", ""]);
     #[cfg(windows)]
-    let dynamic_suffixes = Value::list([Value::String(".dll".into())]);
-
-    let suffix_vector = dynamic_suffixes
-        .to_vec()
-        .expect("dynamic suffix list")
-        .into_iter()
+    let (module_suffixes, dynamic_suffixes) = ([".dll"].as_slice(), [".dll", ""]);
+    let dynamic_suffixes = Value::list(dynamic_suffixes.map(|suffix| Value::String(suffix.into())));
+    let suffix_vector = module_suffixes
+        .iter()
+        .map(|suffix| Value::String((*suffix).into()))
         .chain([Value::String(".elc".into()), Value::String(".el".into())]);
     assert_eq!(
         eval_str_with_upstream_batch(

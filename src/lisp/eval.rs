@@ -22,7 +22,7 @@ use hashlink::LinkedHashMap;
 use regex::Regex;
 
 mod bindings;
-pub(crate) use bindings::dynamic_library_suffix_values;
+pub(crate) use bindings::module_suffix_values;
 mod bootstrap;
 mod buffers;
 pub(crate) mod coding;
@@ -147,18 +147,20 @@ const GNU_TREESIT_SPECIAL_VARIABLES: &[&str] =
 // because GNU only defines it when built with ImageMagick support.
 fn gnu_image_special_variables() -> [(&'static str, Value); 6] {
     [
+        // syms_of_image conses each type on as it registers it: pbm, xbm,
+        // xpm, jpeg, tiff, gif, png, webp, then svg.
         (
             "image-types",
             Value::list([
-                Value::symbol("pbm"),
-                Value::symbol("png"),
-                Value::symbol("jpeg"),
-                Value::symbol("gif"),
                 Value::symbol("svg"),
-                Value::symbol("xbm"),
-                Value::symbol("xpm"),
                 Value::symbol("webp"),
+                Value::symbol("png"),
+                Value::symbol("gif"),
                 Value::symbol("tiff"),
+                Value::symbol("jpeg"),
+                Value::symbol("xpm"),
+                Value::symbol("xbm"),
+                Value::symbol("pbm"),
             ]),
         ),
         ("max-image-size", Value::float(10.0)),
@@ -225,48 +227,30 @@ fn make_network_process_subfeatures() -> Value {
     ])
 }
 
-fn overlay_subfeatures() -> Value {
-    Value::list([
-        Value::Symbol("display".into()),
-        Value::Symbol("syntax-table".into()),
-        Value::Symbol("field".into()),
-    ])
-}
-
-fn text_properties_subfeatures() -> Value {
-    Value::list([
-        Value::Symbol("display".into()),
-        Value::Symbol("syntax-table".into()),
-        Value::Symbol("field".into()),
-        Value::Symbol("point-entered".into()),
-    ])
-}
-
 // One manifest owns startup feature membership and capability metadata.
 // A feature with subfeatures must not require its name to be repeated in a
-// separate property-registration block.
+// separate property-registration block.  These are the features the C code
+// provides before any Lisp runs, as `features' lists them: fns.c starts the
+// list as (emacs) and each later Fprovide conses onto it, so the newest
+// comes first.  bindings.el provides `base64', `md5', `sha1', `overlay'
+// and `text-properties' when loadup loads it.
 const STARTUP_FEATURES: &[StartupFeature] = &[
-    // GNU bindings.el advertises this host-backed primitive family.
-    StartupFeature::new("base64"),
-    StartupFeature::new("emacs"),
+    // thread.c:syms_of_threads.
+    StartupFeature::new("threads"),
     #[cfg(target_os = "macos")]
     StartupFeature::new("kqueue"),
     #[cfg(target_os = "linux")]
     StartupFeature::new("inotify"),
     StartupFeature::new("lcms2"),
-    StartupFeature::new("make-network-process").with_subfeatures(make_network_process_subfeatures),
-    StartupFeature::new("md5"),
     // terminal.c:syms_of_terminal, in every build.
     StartupFeature::new("multi-tty"),
+    StartupFeature::new("make-network-process").with_subfeatures(make_network_process_subfeatures),
     // GNU provides this when its comp.c backend is built, independently of
     // whether libgccjit can be opened at runtime.  This build contains the
     // corresponding Rust backend; `native-comp-available-p' performs the
     // separate dynamic-library availability check.
     StartupFeature::new("native-compile"),
-    StartupFeature::new("overlay").with_subfeatures(overlay_subfeatures),
-    StartupFeature::new("sha1"),
-    StartupFeature::new("text-properties").with_subfeatures(text_properties_subfeatures),
-    StartupFeature::new("threads"),
+    StartupFeature::new("emacs"),
 ];
 
 #[derive(Clone, Copy)]
@@ -5777,8 +5761,6 @@ pub struct InterpreterState {
     /// Immutable lambda code keyed by the source form's car-cell identity.
     /// The weak source witness prevents a recycled allocator address from
     /// aliasing an unrelated form whose older closure is still alive.
-    /// Features currently available in this interpreter.
-    provided_features: Vec<String>,
     /// Forms waiting for a feature to be provided.
     /// File currently being loaded, if any.
     current_load_file: Option<String>,
@@ -6250,7 +6232,7 @@ impl Interpreter {
                 ("delayed-mode-hooks".into(), Value::Nil),
                 ("executing-kbd-macro".into(), Value::Nil),
                 ("executing-kbd-macro-index".into(), Value::Integer(0)),
-                ("exec-path".into(), current_exec_path()),
+                ("exec-path".into(), Value::Nil),
                 ("kbd-macro-termination-hook".into(), Value::Nil),
                 ("last-kbd-macro".into(), Value::Nil),
                 ("file-name-handler-alist".into(), Value::Nil),
@@ -6571,10 +6553,6 @@ impl Interpreter {
             indirect_buffers: Vec::new(),
             network_connect_counter: 0,
             function_binding_generation: 0,
-            provided_features: STARTUP_FEATURES
-                .iter()
-                .map(|feature| feature.name.to_string())
-                .collect(),
             current_load_file: None,
             load_source_provenance_remap: None,
             #[cfg(test)]
@@ -6842,7 +6820,9 @@ impl Interpreter {
             ("current-time-list", Value::T),
             ("cursor-in-echo-area", Value::Nil),
             ("debug-on-message", Value::Nil),
-            ("default-frame-scroll-bars", Value::symbol("right")),
+            // frame.c: a window-system build without a GTK toolkit, as the
+            // contracted oracle is, puts the scroll bars on the left.
+            ("default-frame-scroll-bars", Value::symbol("left")),
             ("default-minibuffer-frame", Value::Nil),
             ("default-text-properties", Value::Nil),
             ("delayed-warnings-list", Value::Nil),
@@ -7012,10 +6992,6 @@ impl Interpreter {
                 ),
             ),
             (
-                "frame-inhibit-implied-resize",
-                Value::list([Value::symbol("tab-bar-lines")]),
-            ),
-            (
                 "selection-inhibit-update-commands",
                 Value::list([
                     Value::symbol("handle-switch-frame"),
@@ -7163,6 +7139,10 @@ impl Interpreter {
         // init_buffer gives it the working directory.
         interp.fundamental_mode_name = Value::string("Fundamental");
         interp.reset_always_local_slots(0, Value::String(primitives::default_directory().into()));
+        // fns.c's DEFVAR_LISP `features', holding what the C code provides
+        // (Fmake_var_non_special unmarks it with the others below).
+        let features = interp.features_value();
+        interp.define_special_variable("features", features);
         for feature in STARTUP_FEATURES {
             if let Some(subfeatures) = feature.subfeatures {
                 interp.put_symbol_property(feature.name, "subfeatures", subfeatures());
@@ -7245,7 +7225,6 @@ impl Interpreter {
         // and minor-mode registry entry.
         let visual_line_mode_map = make_visual_line_mode_map(&mut interp);
         interp.define_special_variable("visual-line-mode-map", visual_line_mode_map);
-        interp.set_global_binding("mouse-wheel-buttons", Value::Nil);
         interp.set_global_binding(
             "minor-mode-map-alist",
             Value::list([Value::cons(
@@ -7332,7 +7311,11 @@ impl Interpreter {
         // where it was made and must not make a newly selected buffer read-only.
         interp.define_always_buffer_local_special("buffer-read-only", Value::Nil);
         interp.define_special_variable("dump-mode", Value::Nil);
-        interp.define_special_variable("charset-map-path", Value::Nil);
+        // charset.c:init_charset: the character map files' directory.
+        let charset_map_path = interp
+            .charset_map_path()
+            .expect("charset.c:init_charset's charset-map-path");
+        interp.define_special_variable("charset-map-path", charset_map_path);
         interp.define_special_variable("inhibit-load-charset-map", Value::Nil);
         interp.define_special_variable("current-iso639-language", Value::Nil);
         interp.mark_special_variable("charset-list");
@@ -7593,15 +7576,11 @@ impl Interpreter {
         // binding contract must exist before their lexical code is loaded.
         interp.define_special_variable("minibuffer-message-timeout", Value::Integer(2));
         // minibuf.c owns `read-expression-history' and
-        // `read-buffer-function'; fileio.c owns `read-file-name-function'.
-        // Each DEFVAR_LISP exists before dumped Lisp runs and declares the
-        // value cell special, so lexical callers can dynamically bind it
-        // around separately defined prompt code.
-        for name in [
-            "read-expression-history",
-            "read-buffer-function",
-            "read-file-name-function",
-        ] {
+        // `read-buffer-function' (minibuffer.el defvars
+        // `read-file-name-function').  Each DEFVAR_LISP exists before dumped
+        // Lisp runs and declares the value cell special, so lexical callers
+        // can dynamically bind it around separately defined prompt code.
+        for name in ["read-expression-history", "read-buffer-function"] {
             interp.define_special_variable(name, Value::Nil);
         }
         interp.define_special_variable(
@@ -7612,6 +7591,8 @@ impl Interpreter {
                     .into(),
             ),
         );
+        crate::startup::initialize_exec_path(&mut interp)
+            .expect("callproc.c:init_callproc's exec-path");
         interp.define_per_buffer_special("mark-ring", Value::Nil);
         interp.put_symbol_property("mark-ring", "permanent-local", Value::T);
         interp.set_global_binding("mark-ring-max", Value::Integer(16));
@@ -7817,9 +7798,15 @@ impl Interpreter {
             ("display-line-numbers-width", Value::Nil),
             ("display-raw-bytes-as-hex", Value::Nil),
             ("focus-follows-mouse", Value::Nil),
+            // frame.c: a window-system build without GTK, as the
+            // contracted oracle is, keeps the frame size when either bar
+            // comes or goes.
             (
                 "frame-inhibit-implied-resize",
-                Value::list([Value::Symbol("tab-bar-lines".into())]),
+                Value::list([
+                    Value::Symbol("tab-bar-lines".into()),
+                    Value::Symbol("tool-bar-lines".into()),
+                ]),
             ),
             ("frame-resize-pixelwise", Value::Nil),
             ("garbage-collection-messages", Value::Nil),

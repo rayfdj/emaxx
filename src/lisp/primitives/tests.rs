@@ -33244,6 +33244,20 @@ fn startup_globals_are_special_only_where_gnu_declares_them() {
 }
 
 #[test]
+fn startup_values_are_the_ones_gnus_c_and_preloaded_lisp_make() {
+    // fns.c's Fprovide conses each feature onto `features', the C ones
+    // first (`emacs' last of all); lread.c's suffix lists, image.c's
+    // registration order, frame.c's defaults for the contracted build,
+    // charset.c's map directory and callproc.c's `exec-path' as GNU makes
+    // them; mouse.el and minibuffer.el define their own variables.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list (last features 3) (cadr (memq 'base64 features)) (progn (provide 'zz-r223-probe) (car features)) dynamic-library-suffixes load-suffixes image-types default-frame-scroll-bars frame-inhibit-implied-resize (assq 4 mouse-wheel-buttons) read-file-name-function (equal charset-map-path (list (expand-file-name "charsets" data-directory))) (null (member "" exec-path)) (special-variable-p 'read-file-name-function))"##,
+        r##"((make-network-process native-compile emacs) format zz-r223-probe (".so" "") (".so" ".elc" ".el") (svg webp png gif tiff jpeg xpm xbm pbm) left (tab-bar-lines tool-bar-lines) (4 . wheel-up) read-file-name-default t t t)"##,
+        "startup values",
+    );
+}
+
+#[test]
 fn readevalloop_reads_at_the_buffers_point_with_standard_input_bound_to_it() {
     // lread.c:readevalloop binds `standard-input' to the buffer it reads,
     // so a form's `read' takes the text after it; eval-buffer reads each

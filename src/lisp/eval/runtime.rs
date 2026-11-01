@@ -1961,19 +1961,15 @@ impl Interpreter {
             .map(|(_, state)| state)
     }
 
-    pub fn provide_feature(&mut self, feature: &str) {
-        let mut features = self.provided_features.clone();
-        if !features.iter().any(|name| name == feature) {
-            features.push(feature.to_string());
+    /// fns.c:Fprovide's update of `features': FEATURE is consed onto the
+    /// front of the list unless `memq' finds it there already.
+    fn provide_feature(&mut self, feature: &str, env: &mut Env) -> Result<(), LispError> {
+        let symbol = Value::Symbol(feature.into());
+        let features = self.global_value("features").unwrap_or(Value::Nil);
+        if crate::lisp::primitives::call(self, "memq", &[symbol, features], env)?.is_nil() {
+            self.set_global_binding("features", Value::cons(symbol, features));
         }
-        self.set_global_binding(
-            "features",
-            Value::list(
-                features
-                    .into_iter()
-                    .map(|value| Value::Symbol(value.into())),
-            ),
-        );
+        Ok(())
     }
 
     fn record_provide_in_load_history(&mut self, feature: &str) {
@@ -2154,27 +2150,30 @@ impl Interpreter {
         feature: &str,
         env: &mut Env,
     ) -> Result<Value, LispError> {
-        self.provide_feature(feature);
+        self.provide_feature(feature, env)?;
         self.record_provide_in_load_history(feature);
 
         // GNU 30.2 fns.c:Fprovide runs the functions in the matching
-        // `after-load-alist' entry after publishing FEATURE.  The alist and
-        // its closures are owned by subr.el's real `eval-after-load'; the
-        // Rust host only performs the C-owned lookup/invocation boundary.
+        // `after-load-alist' entry after publishing FEATURE (Fassq, then
+        // Fmapc of funcall over its cdr).  The alist and its closures are
+        // owned by subr.el's real `eval-after-load'; the Rust host only
+        // performs the C-owned lookup/invocation boundary.
         let after_load_alist = self
             .lookup_var("after-load-alist", env)
             .unwrap_or(Value::Nil);
-        for entry in after_load_alist.to_vec()? {
-            let Some((key, functions)) = entry.cons_values() else {
-                continue;
-            };
-            if !matches!(key.kind(), Kind::Symbol(name) if name == feature) {
-                continue;
-            }
-            for function in functions.to_vec()? {
-                self.call_function_value(function, None, &[], env)?;
-            }
-            break;
+        let entry = crate::lisp::primitives::call(
+            self,
+            "assq",
+            &[Value::Symbol(feature.into()), after_load_alist],
+            env,
+        )?;
+        if let Some((_, functions)) = entry.cons_values() {
+            crate::lisp::primitives::call(
+                self,
+                "mapc",
+                &[Value::symbol("funcall"), functions],
+                env,
+            )?;
         }
         Ok(Value::Symbol(feature.to_string().into()))
     }
@@ -2242,13 +2241,12 @@ impl Interpreter {
         false
     }
 
+    /// The features the C code provides before any Lisp runs.
     pub(super) fn features_value(&self) -> Value {
         Value::list(
-            self.provided_features
+            super::STARTUP_FEATURES
                 .iter()
-                .cloned()
-                .map(|value| Value::Symbol(value.into()))
-                .collect::<Vec<_>>(),
+                .map(|feature| Value::Symbol(feature.name.into())),
         )
     }
 
