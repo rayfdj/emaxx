@@ -620,7 +620,6 @@ pub(crate) fn insert_text_with_hooks(
         extended_chars,
         inherit,
         before_markers,
-        None,
         env,
     )
 }
@@ -643,7 +642,6 @@ pub(crate) fn insert_buffer_text_with_hooks(
         extended_chars,
         false,
         false,
-        None,
         env,
     )
 }
@@ -663,8 +661,8 @@ enum InsertedIntervals<'a> {
 
 /// What encode_coding_object and decode_coding_object do for a buffer
 /// destination: prepare_to_modify_buffer at point, the text inserted
-/// there by insert_from_gap, which leaves point and the markers at it
-/// before the text, and signal_after_change for PRODUCED characters
+/// there (`insert_converted_text_at'), which leaves point and the markers
+/// at it before the text, and signal_after_change for PRODUCED characters
 /// (coding->produced_char, which counts a character decoded into a
 /// unibyte buffer once however many bytes it took).
 pub(crate) fn insert_text_before_point(
@@ -673,18 +671,100 @@ pub(crate) fn insert_text_before_point(
     props: Option<&crate::intervals::Intervals>,
     extended_chars: &[(usize, u32)],
     produced: usize,
+    decoded: bool,
     env: &mut crate::lisp::types::Env,
 ) -> Result<(), LispError> {
-    insert_text_and_signal(
-        interp,
+    if text.is_empty() {
+        return Ok(());
+    }
+    let point = interp.buffer.borrow().point();
+    modify_current_buffer(interp, point, point, false, env, |interp, _, env| {
+        let start = interp.buffer.borrow().point();
+        insert_converted_text_at(
+            interp,
+            start,
+            text,
+            props,
+            extended_chars,
+            produced,
+            decoded,
+            env,
+        )?;
+        interp.buffer.borrow_mut().goto_char(start);
+        Ok((Some(AfterChange::new(start, 0, produced)), ()))
+    })
+}
+
+/// A conversion's text inserted at START, point, as insert_from_gap
+/// inserts it (copy_text's bytes into a unibyte buffer) with no
+/// properties of its own; then each `charset' run of PROPS, from START,
+/// put through produce_charset's Fput_text_property, change hooks and
+/// all.  A decoding does this with `buffer-undo-list' t and records the
+/// PRODUCED characters after, as decode_coding does; an encoding's
+/// insert_from_gap records what it inserts.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn insert_converted_text_at(
+    interp: &mut Interpreter,
+    start: usize,
+    text: &str,
+    props: Option<&crate::intervals::Intervals>,
+    extended_chars: &[(usize, u32)],
+    produced: usize,
+    decoded: bool,
+    env: &mut crate::lisp::types::Env,
+) -> Result<(), LispError> {
+    let unibyte_copy = if interp.buffer.borrow().is_multibyte() {
+        None
+    } else {
+        crate::lisp::primitives::unibyte_buffer_copy(text, extended_chars)
+    };
+    let (text, extended_chars) = match &unibyte_copy {
+        Some(copy) => (copy.as_str(), &[][..]),
+        None => (text, extended_chars),
+    };
+    let undo_list = if decoded {
+        interp.buffer.borrow_mut().suspend_undo_for_decoding()
+    } else {
+        Value::T
+    };
+    interp.insert_current_buffer_with(
         text,
-        InsertedIntervals::Given(props),
-        extended_chars,
+        crate::buffer::InsertedProperties::None { inherit: false },
         false,
-        false,
-        Some(produced),
-        env,
-    )
+    );
+    interp.set_inserted_extended_chars(start, extended_chars);
+    // Each run's plist, and the list the decoding set aside, held while
+    // the change hooks run.
+    let runs: Vec<(usize, usize, Value)> = props
+        .map(|intervals| {
+            intervals
+                .iter()
+                .filter(|(_, _, plist)| !plist.is_nil())
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut held: Vec<Value> = runs.iter().map(|(_, _, plist)| *plist).collect();
+    held.push(undo_list);
+    let result = interp.with_lisp_stack_roots(&held, |interp| {
+        for (from, to, plist) in &runs {
+            crate::lisp::primitives::textprop::add_text_properties(
+                interp,
+                &Value::Integer((start + from) as i64),
+                &Value::Integer((start + to) as i64),
+                *plist,
+                Value::Nil,
+                env,
+            )?;
+        }
+        Ok(())
+    });
+    if decoded {
+        interp
+            .buffer
+            .borrow_mut()
+            .resume_undo_after_decoding(undo_list, start, produced);
+    }
+    result
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -695,9 +775,6 @@ fn insert_text_and_signal(
     extended_chars: &[(usize, u32)],
     inherit: bool,
     before_markers: bool,
-    // Some for an insertion that leaves point before the text and
-    // reports this many characters to the after-change functions.
-    keep_point: Option<usize>,
     env: &mut crate::lisp::types::Env,
 ) -> Result<(), LispError> {
     if text.is_empty() {
@@ -760,12 +837,7 @@ fn insert_text_and_signal(
         };
         interp.insert_current_buffer_with(text, source, before_markers);
         interp.set_inserted_extended_chars(start, extended_chars);
-        let mut inserted = text.chars().count();
-        if let Some(produced) = keep_point {
-            interp.buffer.borrow_mut().goto_char(start);
-            inserted = produced;
-        }
-        Ok((Some(AfterChange::new(start, 0, inserted)), ()))
+        Ok((Some(AfterChange::new(start, 0, text.chars().count())), ()))
     })
 }
 

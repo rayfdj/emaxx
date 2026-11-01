@@ -1130,12 +1130,15 @@ define_dispatch!(
                 }
                 // coding.c:code_convert_region: CHECK_BUFFER of a
                 // destination other than nil and t, then validate_region.
+                // Nil is the current buffer, and the current buffer given
+                // is the source itself, converted where it stands.
                 let destination = match args.get(3).map(|v| v.kind()) {
                     None | Some(Kind::Nil) => Destination::Replace,
                     Some(Kind::T) => Destination::Return,
-                    Some(Kind::Buffer(_)) => {
-                        Destination::Buffer(interp.resolve_buffer_id(&args[3])?)
-                    }
+                    Some(Kind::Buffer(_)) => match interp.resolve_buffer_id(&args[3])? {
+                        id if id == interp.current_buffer_id() => Destination::Replace,
+                        id => Destination::Buffer(id),
+                    },
                     Some(_) => return Err(LispError::WrongTypeArgument("bufferp".into(), args[3])),
                 };
                 let (start, end) = validate_region(interp, &args[0], &args[1])?;
@@ -1207,121 +1210,102 @@ define_dispatch!(
                 };
                 let transformed_string = string_like(&transformed)
                     .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), transformed))?;
+                // coding->produced_char: the characters converted, however
+                // many bytes they take in a unibyte buffer.
                 let transformed_length = transformed_string.text.chars().count();
-                // produce_charset's `charset' properties land in the
-                // destination buffer along with the decoded text.
-                let transformed_props = transformed_string.props.clone();
-                // The text (with its characters beyond Unicode) the
-                // destination stores.
-                let text_for_buffer =
-                    |multibyte: bool| -> Result<(String, Vec<(usize, u32)>), LispError> {
-                        let form = if name == "decode-coding-region"
-                            && !multibyte
+                let decoding = name == "decode-coding-region";
+                match destination {
+                    Destination::Return => Ok(transformed),
+                    Destination::Replace => {
+                        // produce_charset's `charset' properties go on
+                        // with the text, at its characters' offsets even
+                        // in a unibyte buffer.
+                        let transformed_props = transformed_string.props.clone();
+                        let form = if decoding
+                            && !interp.buffer.borrow().is_multibyte()
                             && transformed_string.multibyte
                         {
                             unibyte_destination_form(&transformed_string)?
                         } else {
-                            transformed_string.clone()
+                            transformed_string
                         };
-                        Ok((form.text, form.extended_chars))
-                    };
-                match destination {
-                    Destination::Return => Ok(transformed),
-                    Destination::Replace => {
-                        let (text, extended) =
-                            text_for_buffer(interp.buffer.borrow().is_multibyte())?;
+                        let inserted = form.text.chars().count();
                         let old_length = end - start;
-                        let new_end = start + text.chars().count();
+                        // decode_coding_object and encode_coding_object
+                        // save point and mark the markers to put back
+                        // before the hooks and the deletion, which a
+                        // decoding makes with point at FROM.
                         let saved_pt = interp.buffer.borrow().point();
+                        let marked_windows = interp.mark_markers_for_conversion(start, end);
+                        if decoding {
+                            interp.buffer.borrow_mut().goto_char(start);
+                        }
                         let replaced = modify_current_buffer(
                             interp,
                             start,
                             end,
                             false,
                             env,
-                            |interp, _, _| {
-                                replace_buffer_region_with_text(
-                                    interp, start, end, &text, &extended,
+                            |interp, _, env| {
+                                interp
+                                    .delete_region_current_buffer_unreturned(start, end)
+                                    .map_err(|error| LispError::Signal(error.to_string()))?;
+                                interp.buffer.borrow_mut().goto_char(start);
+                                insert_converted_text_at(
+                                    interp,
+                                    start,
+                                    &form.text,
+                                    transformed_props.as_ref(),
+                                    &form.extended_chars,
+                                    transformed_length,
+                                    decoding,
+                                    env,
                                 )?;
-                                // decode_coding counts produced characters even
-                                // into a unibyte destination, so the spans keep
-                                // their character offsets there.
-                                if let Some(intervals) = &transformed_props {
-                                    for (from, to, plist) in intervals.iter() {
-                                        if !plist.is_nil() {
-                                            let _ = interp
-                                                .buffer
-                                                .borrow_mut()
-                                                .add_text_properties_range(
-                                                    start + from,
-                                                    start + to,
-                                                    plist,
-                                                    crate::intervals::PropertySetType::Replace,
-                                                    true,
-                                                );
-                                        }
-                                    }
-                                }
                                 Ok((
-                                    Some(AfterChange::new(start, old_length, new_end - start)),
-                                    Value::Integer(transformed_length as i64),
+                                    Some(AfterChange::new(start, old_length, transformed_length)),
+                                    (),
                                 ))
                             },
-                        )?;
-                        let Some(decode) = &buffer_decode else {
-                            return Ok(replaced);
-                        };
-                        // The post-read conversion where the text was
-                        // decoded, then point back as decode_coding_object
-                        // leaves it for the region it replaced.
-                        let produced = crate::lisp::primitives::coding::finish_buffer_decode(
-                            interp,
-                            decode,
-                            start,
-                            transformed_length,
-                            env,
-                        )?;
-                        let point = if saved_pt < start {
-                            saved_pt
-                        } else if saved_pt < start + old_length {
-                            start
-                        } else {
-                            saved_pt + produced - old_length
-                        };
-                        interp.buffer.borrow_mut().goto_char(point);
-                        Ok(Value::Integer(produced as i64))
-                    }
-                    Destination::Buffer(buffer_id) => {
-                        let saved_buffer_id = interp.current_buffer_id();
-                        interp.switch_to_buffer_id(buffer_id)?;
-                        let insert_at = interp.buffer.borrow().point();
-                        let (text, extended) =
-                            text_for_buffer(interp.buffer.borrow().is_multibyte())?;
-                        let insertion = insert_text_with_hooks(
-                            interp,
-                            &text,
-                            transformed_props.as_ref(),
-                            &extended,
-                            false,
-                            false,
-                            env,
                         );
-                        interp.buffer.borrow_mut().goto_char(insert_at);
-                        let produced = insertion.and_then(|_| match &buffer_decode {
+                        // The post-read conversion where the text was
+                        // decoded, its additions counted in what was
+                        // produced.
+                        let produced = replaced.and_then(|()| match &buffer_decode {
                             Some(decode) => crate::lisp::primitives::coding::finish_buffer_decode(
                                 interp,
                                 decode,
-                                insert_at,
+                                start,
                                 transformed_length,
                                 env,
                             ),
                             None => Ok(transformed_length),
                         });
-                        let restore = interp.switch_to_buffer_id(saved_buffer_id);
+                        // Where the converted text now ends: coding->produced
+                        // past FROM in a unibyte buffer, produced_char in a
+                        // multibyte one, the conversion's change included.
+                        let new_end = (start
+                            + inserted
+                            + produced.as_ref().copied().unwrap_or(transformed_length))
+                        .saturating_sub(transformed_length);
+                        interp.settle_markers_after_conversion(&marked_windows, start, new_end);
                         let produced = produced?;
-                        restore?;
+                        let point = if saved_pt < start {
+                            saved_pt
+                        } else if saved_pt < end {
+                            start
+                        } else {
+                            (saved_pt + new_end).saturating_sub(end)
+                        };
+                        interp.buffer.borrow_mut().goto_char(point);
                         Ok(Value::Integer(produced as i64))
                     }
+                    Destination::Buffer(buffer_id) => insert_converted_text(
+                        interp,
+                        buffer_id,
+                        &transformed,
+                        buffer_decode.as_ref(),
+                        env,
+                    ),
                 }
             }
 
@@ -1607,6 +1591,9 @@ fn insert_converted_text(
     let converted = string_like(converted)
         .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *converted))?;
     let produced = converted.text.chars().count();
+    // produce_charset's runs, at the characters' offsets even in a
+    // unibyte destination.
+    let props = converted.props.clone();
     let saved_buffer_id = interp.current_buffer_id();
     interp.switch_to_buffer_id(buffer_id)?;
     let dst_pos = interp.buffer.borrow().point();
@@ -1624,9 +1611,10 @@ fn insert_converted_text(
     let inserted = insert_text_before_point(
         interp,
         &converted.text,
-        converted.props.as_ref(),
+        props.as_ref(),
         &converted.extended_chars,
         produced,
+        decode.is_some(),
         env,
     );
     // decode_coding_object finishes in the destination buffer.

@@ -33390,6 +33390,24 @@ fn startup_lisp_state_events_and_display_stamps_are_as_gnu_makes_them() {
 }
 
 #[test]
+fn region_conversions_put_back_point_and_markers_as_coding_c() {
+    // coding.c:decode_coding_object and encode_coding_object convert a
+    // region of the current buffer (nil or the buffer itself as
+    // DESTINATION) where it stands: point after the region moves by the
+    // bytes produced in a unibyte buffer, the characters in a multibyte
+    // one, and the markers at the region's end (its start for an
+    // insertion-type one) go back as `need_adjustment' marked them.
+    // decode_coding inserts with undo off, puts each `charset' run
+    // through Fput_text_property, change hooks and all, and records the
+    // characters produced, which the after-change functions are told of.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list  (with-temp-buffer (set-buffer-multibyte nil) (insert "ab\n\372\304!") (decode-coding-region 4 (point) 'koi8-r-dos) (list (point) (point-max) (bolp)))  (with-temp-buffer (set-buffer-multibyte nil) (insert "ab\n\303\251x") (goto-char 2) (list (decode-coding-region 1 (point-max) 'utf-8 (current-buffer)) (point) (point-max) (string-to-list (buffer-string))))  (with-temp-buffer (insert "ab\néèxzz") (let ((ms (list (copy-marker 4) (copy-marker 4 t) (copy-marker 7) (copy-marker 7 t) (copy-marker 5)))) (goto-char 9) (list (encode-coding-region 4 7 'utf-8) (point) (mapcar #'marker-position ms))))  (with-temp-buffer (set-buffer-multibyte nil) (insert "ab\n\303\251\303\250xzz") (let ((ms (list (copy-marker 4) (copy-marker 4 t) (copy-marker 9) (copy-marker 9 t) (copy-marker 5)))) (goto-char 11) (list (decode-coding-region 4 9 'utf-8) (point) (mapcar #'marker-position ms))))  (let (log) (with-temp-buffer (set-buffer-multibyte nil) (insert "ab\n\372\304!") (add-hook 'after-change-functions (lambda (b e l) (push (list 'a b e l) log)) nil t) (add-hook 'before-change-functions (lambda (b e) (push (list 'b b e) log)) nil t) (decode-coding-region 4 7 'koi8-r) (nreverse log)))  (let ((b (generate-new-buffer "zz231"))) (prog1 (with-current-buffer b (buffer-enable-undo) (set-buffer-multibyte nil) (insert "ab\n\372\304!") (undo-boundary) (setq buffer-undo-list (list nil)) (decode-coding-region 4 7 'koi8-r) (list (car buffer-undo-list) (cons (string-to-list (car (cadr buffer-undo-list))) (cdr (cadr buffer-undo-list))))) (kill-buffer b)))  (let ((o (generate-new-buffer "zz231o")) log) (prog1 (progn (with-current-buffer o (set-buffer-multibyte nil) (add-hook 'after-change-functions (lambda (b e l) (push (list 'a b e l) log)) nil t)) (with-temp-buffer (insert "\372\304!") (decode-coding-region 1 4 'koi8-r o)) (with-current-buffer o (list (point) (point-max) (get-text-property 1 'charset) (nreverse log)))) (kill-buffer o))))"##,
+        r##"((9 9 nil) (5 1 7 (97 98 10 195 169 120)) (5 11 (4 4 9 9 4)) (3 11 (4 4 9 9 4)) ((b 4 7) (b 4 7) (a 4 7 3) (a 4 7 3)) ((4 . 7) ((250 196 33) . 4)) (1 6 koi8-r ((a 1 4 3) (a 1 4 0))))"##,
+        "region conversions in place",
+    );
+}
+
+#[test]
 fn readevalloop_reads_at_the_buffers_point_with_standard_input_bound_to_it() {
     // lread.c:readevalloop binds `standard-input' to the buffer it reads,
     // so a form's `read' takes the text after it; eval-buffer reads each

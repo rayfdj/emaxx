@@ -2,6 +2,14 @@ use super::*;
 use crate::lisp::types::CharTableRef;
 use crate::lisp::types::Kind;
 
+/// The window slots GNU keeps as markers (w->start, w->old_pointm and
+/// w->pointm), insertion type nil.
+const WINDOW_MARKER_SLOTS: [usize; 3] = [
+    crate::lisp::primitives::WINDOW_START_SLOT,
+    crate::lisp::primitives::WINDOW_OLD_POINT_SLOT,
+    crate::lisp::primitives::WINDOW_POINT_SLOT,
+];
+
 // coding.c `enum coding_category', in order.
 pub(crate) const CODING_CATEGORY_ISO_7: usize = 0;
 pub(crate) const CODING_CATEGORY_ISO_7_TIGHT: usize = 1;
@@ -1241,11 +1249,6 @@ impl Interpreter {
     /// integer slots instead; this sweep applies the same
     /// insertion-type-nil marker rules to those integers.
     fn adjust_window_marker_slots(&mut self, buffer_id: u64, adjust: impl Fn(usize) -> usize) {
-        const MARKER_SLOTS: [usize; 3] = [
-            crate::lisp::primitives::WINDOW_START_SLOT,
-            crate::lisp::primitives::WINDOW_OLD_POINT_SLOT,
-            crate::lisp::primitives::WINDOW_POINT_SLOT,
-        ];
         // The window index walked in place, its ids not copied out: this
         // runs on every insertion and deletion.
         let Some(windows) = self.record_ids_by_type_index.get("window") else {
@@ -1266,7 +1269,7 @@ impl Interpreter {
             if !shows_buffer {
                 continue;
             }
-            for slot in MARKER_SLOTS {
+            for slot in WINDOW_MARKER_SLOTS {
                 if let Some(Kind::Integer(position)) = record.slots.get(slot).map(|v| v.kind())
                     && let Ok(position) = usize::try_from(position)
                 {
@@ -1324,6 +1327,85 @@ impl Interpreter {
                 position
             }
         });
+    }
+
+    /// coding.c:decode_coding_object's and encode_coding_object's marks
+    /// before they replace [FROM, TO) of the current buffer where it
+    /// stands: `need_adjustment' on each marker of its text (the whole
+    /// indirect family's, one text in GNU) at TO, or at FROM for an
+    /// insertion-type one.  The window starts and points GNU keeps as
+    /// insertion-type-nil markers are integer slots here: those at TO are
+    /// returned, as (window, slot).
+    pub(crate) fn mark_markers_for_conversion(
+        &mut self,
+        from: usize,
+        to: usize,
+    ) -> Vec<(u64, usize)> {
+        let related = self.related_buffer_ids(self.current_buffer_id());
+        for buffer_id in &related {
+            if let Some(buffer) = self.buffer_object(*buffer_id) {
+                for marker in buffer.markers() {
+                    let at = if marker.insertion_type() { from } else { to };
+                    marker.set_need_adjustment(marker.position() == Some(at));
+                }
+            }
+        }
+        let mut marked = Vec::new();
+        let Some(windows) = self.record_ids_by_type_index.get("window") else {
+            return marked;
+        };
+        for window_id in windows {
+            let Some(record) = self.find_record(window_id) else {
+                continue;
+            };
+            let shows_text = matches!(
+                record.slots.get(crate::lisp::primitives::WINDOW_BUFFER_SLOT).map(|v| v.kind()),
+                Some(Kind::Integer(id)) if related.contains(&(id as u64))
+            );
+            if !shows_text {
+                continue;
+            }
+            for slot in WINDOW_MARKER_SLOTS {
+                if record.slots.get(slot).and_then(|v| v.fixnum()) == Some(to as i64) {
+                    marked.push((*window_id, slot));
+                }
+            }
+        }
+        marked
+    }
+
+    /// The marked markers put back once the conversion has left its text
+    /// in [FROM, END): an insertion-type one at FROM, any other (the
+    /// window slots WINDOWS among them) at END.
+    pub(crate) fn settle_markers_after_conversion(
+        &mut self,
+        windows: &[(u64, usize)],
+        from: usize,
+        end: usize,
+    ) {
+        let related = self.related_buffer_ids(self.current_buffer_id());
+        for buffer_id in &related {
+            if let Some(buffer) = self.buffer_object(*buffer_id) {
+                let state = buffer.borrow();
+                let limit = state.size_total() + 1;
+                for marker in buffer.markers() {
+                    if marker.need_adjustment() {
+                        marker.set_need_adjustment(false);
+                        let position = if marker.insertion_type() { from } else { end };
+                        let position = position.clamp(1, limit);
+                        marker.set_positions(position, state.marker_byte_position(position));
+                    }
+                }
+            }
+        }
+        for (window_id, slot) in windows {
+            if let Some(value) = self
+                .find_record_mut(window_id)
+                .and_then(|record| record.slots.get_mut(*slot))
+            {
+                *value = Value::Integer(end as i64);
+            }
+        }
     }
 
     pub fn adjust_markers_for_delete(&mut self, buffer_id: u64, from: usize, to: usize) {

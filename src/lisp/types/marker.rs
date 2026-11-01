@@ -77,6 +77,19 @@ impl MarkerRef {
             .set((self.flags.get() & !2) | (u8::from(insertion_type) << 1));
     }
 
+    /// lisp.h's `need_adjustment', the bit before the insertion type:
+    /// coding.c's region conversions mark the markers they put back.
+    #[inline]
+    pub(crate) fn need_adjustment(&self) -> bool {
+        self.flags.get() & 1 != 0
+    }
+
+    #[inline]
+    pub(crate) fn set_need_adjustment(&self, need_adjustment: bool) {
+        self.flags
+            .set((self.flags.get() & !1) | u8::from(need_adjustment));
+    }
+
     pub(crate) fn set_positions(&self, charpos: usize, bytepos: usize) {
         self.charpos.set(charpos);
         self.bytepos.set(bytepos);

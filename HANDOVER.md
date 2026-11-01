@@ -11410,6 +11410,29 @@ setup_process_coding_systems's check now refuses). A 13-form
   round 231 on top: the grouped gate's 3,420 library tests, the
   integration targets and clippy with `--all-targets --all-features -D
   warnings' pass.
+- **Round 231: region conversions in place as decode_coding_object and
+  encode_coding_object.** Round 226's frozen run failed
+  `rmailmm-test-handler': decode-coding-region in a unibyte buffer moved
+  a point after the region by the characters produced where
+  decode_coding_object moves it by the bytes, so
+  rmail-mime-insert-decoded-text's newline split a character. A region
+  of the current buffer, nil or the buffer itself as DESTINATION, is now
+  converted where it stands and point put back as coding.c does (by
+  bytes in a unibyte buffer, characters in a multibyte one; at the
+  start when it was inside; a decoding moving it to the start before
+  the hooks and the deletion, an encoding leaving it); the markers at
+  the region's end, or its start for an insertion-type one, take
+  lisp.h's `need_adjustment' bit and go back to the new text's end and
+  start, the window points and starts among them. decode_coding's
+  insertion runs with `buffer-undo-list' t and records the characters
+  produced, the count the after-change functions get, and
+  produce_charset's runs go through Fput_text_property with their
+  change hooks, for a region, a buffer destination, decode-coding-string
+  into a buffer (whose unibyte destination had lost them) and process
+  output. An oracle test pins point, markers, hooks and undo entries.
+  Local validation: the grouped gate's 3,420 library tests, the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's

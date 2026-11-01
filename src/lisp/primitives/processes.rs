@@ -2834,6 +2834,7 @@ fn decode_process_bytes_at_point(
         props.as_ref(),
         &decoded.extended,
         produced,
+        true,
         env,
     )?;
     let post_read = coding_system_property(

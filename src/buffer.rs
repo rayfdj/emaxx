@@ -2865,6 +2865,24 @@ impl Buffer {
         self.record_insert(from, length);
     }
 
+    /// coding.c:decode_coding into a buffer: the first change recorded
+    /// while the buffer is unmodified, then `buffer-undo-list' t while
+    /// the decoder inserts and puts its `charset' runs; the list it had.
+    pub(crate) fn suspend_undo_for_decoding(&mut self) -> Value {
+        if !self.is_modified() {
+            self.record_first_change();
+        }
+        std::mem::replace(&mut self.undo_list, Value::T)
+    }
+
+    /// The end of decode_coding: LIST back, and record_insert of the
+    /// PRODUCED characters at FROM (coding->produced_char, a character
+    /// decoded into a unibyte buffer counted once).
+    pub(crate) fn resume_undo_after_decoding(&mut self, list: Value, from: usize, produced: usize) {
+        self.undo_list = list;
+        self.record_insert(from, produced);
+    }
+
     /// insdel.c:replace_range_2 without MARKERS, as
     /// do_casify_multibyte_region calls it: the character at FROM replaced
     /// by TEXT (EXTENDED its side table) where it stands, unrecorded.

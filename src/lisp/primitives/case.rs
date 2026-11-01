@@ -695,27 +695,6 @@ pub(crate) fn casify_value(
     ))
 }
 
-pub(crate) fn replace_buffer_region_with_text(
-    interp: &mut Interpreter,
-    start: usize,
-    end: usize,
-    text: &str,
-    extended: &[(usize, u32)],
-) -> Result<usize, LispError> {
-    interp.buffer.borrow_mut().goto_char(start);
-    interp
-        .buffer
-        .borrow_mut()
-        .delete_region(start, end)
-        .map_err(|error| LispError::Signal(error.to_string()))?;
-    interp.buffer.borrow_mut().insert(text);
-    interp
-        .buffer
-        .borrow_mut()
-        .set_inserted_extended_chars(start, extended);
-    Ok(start + text.chars().count())
-}
-
 pub(crate) fn casify_buffer_region(
     interp: &mut Interpreter,
     start: usize,
