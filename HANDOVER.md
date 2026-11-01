@@ -11599,6 +11599,34 @@ setup_process_coding_systems's check now refuses). A 13-form
   undecided decodes at 1.3x GNU (#417), #414, #415. Local validation:
   the grouped gate's 3,427 library tests, the integration targets
   and clippy with `--all-targets --all-features -D warnings' pass.
+- **Round 237: file reads validate a UTF-8 text once and detect over its
+  bytes in place.** Round 236's window of four bytes a character of room
+  made `utf_8_call` validate four times what an ASCII text's call
+  consumed; the window is now ROOM bytes, which hold no more characters
+  than the charbuf has room for, a run cut inside a character going on
+  from it. `DetectSource` reads a unibyte source's bytes through
+  `DetectUnits::Bytes` (borrowed, or owned for a string's bytes) where
+  it copied them into 32-bit units (10.5 MB for the 2.6 MB
+  NormalizationTest.txt), a multibyte source keeping
+  `DetectUnits::Codes`. `InsertFileSource::read` reads into a vector
+  sized for what a regular file holds past BEG, each read going straight
+  into it, and the decoders reserve their output from the source's
+  length (`DecodedText::with_capacity`). Five reads of
+  NormalizationTest.txt take 18,528 minor page faults where they took
+  32,354; a read takes 0.016 s where it took 0.025 (GNU 0.008) and
+  ucs-normalize-tests' part0 0.028 s where it took 0.045 (GNU 0.013 to
+  0.017). What is left is the unibyte copy an empty buffer decides its
+  coding in (each byte of 0x80 and above three bytes in the text view,
+  then the buffer's copy of it), which GNU makes by moving the gap.
+  Batteries of 11 file reads (BEG and END, END past the file, BEG past
+  it, an empty file, a literal read, /proc, REPLACE, a 700000-byte UTF-8
+  file whole, in the middle and unibyte) and the round 234 to 236
+  batteries read as GNU's; an oracle test pins the reads. ERT pass
+  counts match GNU's for coding, mule, ucs-normalize, fileio, files,
+  process, textsec, rmailmm, mm-decode, json, autorevert, mule-util,
+  editfns and dired. Local validation: the grouped gate's 3,428
+  library tests, the integration targets and clippy with `--all-targets
+  --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -13105,6 +13133,12 @@ s against 269.9 s (0.969), in all 1.017. The full Rust gate (run
 7,928 outcomes. Setup 56.9 s against 49.5 s (1.149), test bodies 208.2
 s against 223.3 s (0.932), in all 0.980. The full Rust gate (run
 41335583648) passed.
+
+**On `9500891`** (round 236): frozen (run 41340490056) matched all
+7,928 outcomes. Setup 68.1 s against 59.2 s (1.150), test bodies 231.3
+s against 244.3 s (0.947), in all 0.990; ucs-normalize-tests' bodies
+took 154 ms against 149 (365 against 57 on the round 235 head). The full
+Rust gate (run 41340487608) passed.
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

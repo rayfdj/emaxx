@@ -557,8 +557,14 @@ impl InsertFileSource {
                 .map_err(|error| file_operation_error("Setting file position", &error, path))?;
         }
         let limit = (self.seekable || self.end_given).then(|| self.total.max(0) as u64);
-        let mut bytes = Vec::new();
-        let mut chunk = vec![0; READ_BUF_SIZE as usize];
+        // Room for what a regular file holds past BEG, each read going
+        // straight into it.
+        let expected = if self.regular && self.size > self.beg {
+            (self.size - self.beg).min(self.total.max(0))
+        } else {
+            READ_BUF_SIZE
+        };
+        let mut bytes = Vec::with_capacity(expected as usize);
         loop {
             let want = match limit {
                 Some(limit) => (limit - bytes.len() as u64).min(READ_BUF_SIZE as u64) as usize,
@@ -567,11 +573,19 @@ impl InsertFileSource {
             if want == 0 {
                 break;
             }
-            match self.file.read(&mut chunk[..want]) {
-                Ok(0) => break,
-                Ok(read) => bytes.extend_from_slice(&chunk[..read]),
-                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            let len = bytes.len();
+            bytes.resize(len + want, 0);
+            match self.file.read(&mut bytes[len..]) {
+                Ok(0) => {
+                    bytes.truncate(len);
+                    break;
+                }
+                Ok(read) => bytes.truncate(len + read),
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
+                    bytes.truncate(len)
+                }
                 Err(error) => {
+                    bytes.truncate(len);
                     return Ok(InsertFileRead {
                         bytes,
                         error: Some(error),

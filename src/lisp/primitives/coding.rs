@@ -2048,6 +2048,14 @@ impl DecodedText {
         Self::default()
     }
 
+    /// An empty text with room for BYTES bytes of characters.
+    pub(crate) fn with_capacity(bytes: usize) -> Self {
+        Self {
+            text: String::with_capacity(bytes),
+            ..Self::default()
+        }
+    }
+
     /// The number of characters produced so far.
     pub(crate) fn char_count(&self) -> usize {
         self.chars

@@ -8,7 +8,7 @@ use super::*;
 /// decode_coding_utf_8 over a whole unibyte text without a BOM or a dos
 /// eol, what it leaves unfinished flushed as binary characters.
 pub(crate) fn decode_utf_8_whole(bytes: &[u8]) -> DecodedText {
-    let mut out = DecodedText::new();
+    let mut out = DecodedText::with_capacity(bytes.len());
     let mut spec = DecoderSpec::default();
     let mut consumed = 0;
     loop {
@@ -98,29 +98,22 @@ pub(super) fn utf_8_call<S: Units + ?Sized>(
             if byte_after_cr < 0
                 && let Some(bytes) = src.bytes()
             {
-                // No more than ROOM characters' bytes are looked at: the
-                // run is as many characters as the charbuf has room for.
+                // ROOM bytes hold no more characters than the charbuf has
+                // room for, and each byte is looked at once: a run cut
+                // inside a character goes on from it.
                 let rest = &bytes[p..];
-                let window = &rest[..rest.len().min(room.saturating_mul(4))];
+                let window = &rest[..rest.len().min(room)];
                 let mut valid = match std::str::from_utf8(window) {
                     Ok(_) => window.len(),
                     Err(error) => error.valid_up_to(),
                 };
-                let mut chars = 0;
-                for (index, &byte) in window[..valid].iter().enumerate() {
-                    if byte & 0xC0 != 0x80 {
-                        if chars == room {
-                            valid = index;
-                            break;
-                        }
-                        chars += 1;
-                    }
-                }
                 if eol_dos && valid > 0 && rest[valid - 1] == b'\r' {
                     valid -= 1;
-                    chars -= 1;
                 }
-                room -= chars;
+                room -= window[..valid]
+                    .iter()
+                    .filter(|&&byte| byte & 0xC0 != 0x80)
+                    .count();
                 if valid > 0 {
                     // SAFETY: from_utf8 validated these bytes.
                     out.push_str(unsafe { std::str::from_utf8_unchecked(&rest[..valid]) });
@@ -905,7 +898,8 @@ pub(super) fn decode_units<S: Units + ?Sized>(
     block: &mut DecodeBlock,
 ) -> DecodedText {
     let mut decoder = Decoder::new(interp, canonical);
-    let mut out = DecodedText::new();
+    // A unit decodes to a character of at least a byte.
+    let mut out = DecodedText::with_capacity(src.len());
     let eol_dos = block.eol_dos;
     let mut consumed = 0;
     loop {

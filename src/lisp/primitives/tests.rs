@@ -33486,6 +33486,22 @@ fn string_conversions_read_and_write_their_text_as_coding_c_does() {
 }
 
 #[test]
+fn insert_file_contents_reads_its_range_and_decides_its_coding_as_fileio_c() {
+    // Finsert_file_contents reads BEG to END of the file (no further than
+    // its end, nothing from past it), REPLACE keeps the text the file
+    // shares with the buffer, an empty buffer decides an undecided coding
+    // from the whole text read into it unibyte (here utf-8-unix, settled by
+    // detect_coding), and a unibyte buffer takes the bytes as they are.
+    assert_oracle_contract_matches_interpreter(
+        r##"(let ((f (make-temp-file "zz-r237"))) (unwind-protect (progn (with-temp-file f (set-buffer-multibyte nil) (insert "abc\303\251def\nline2\n" (apply #'concat (make-list 9000 "x\303\251y\n")))) (list (with-temp-buffer (list (cadr (insert-file-contents f nil 2 6)) (append (buffer-string) nil))) (with-temp-buffer (list (cadr (insert-file-contents f nil 1 1000000)) (buffer-size) (buffer-substring 1 9))) (with-temp-buffer (list (cadr (insert-file-contents f nil 100000 200000)) (buffer-size))) (with-temp-buffer (insert "abc\303\251XYZ") (list (cadr (insert-file-contents f nil nil nil t)) (buffer-size) (buffer-substring 1 9))) (with-temp-buffer (list (cadr (insert-file-contents f)) last-coding-system-used (buffer-size) (char-after 4) (char-before (point-max)))) (with-temp-buffer (set-buffer-multibyte nil) (list (cadr (insert-file-contents f nil 0 7)) (append (buffer-string) nil))))) (delete-file f)))"##,
+        r##"((3 (99 233 100)) (36013 36013 "bcédef
+l") (0 0) (36011 36014 "abcédef
+") (36014 utf-8-unix 36014 233 10) (7 (97 98 99 195 169 100 101)))"##,
+        "file reads",
+    );
+}
+
+#[test]
 fn indirect_buffers_share_their_base_text_and_its_markers() {
     // buffer.c:Fmake_indirect_buffer gives the indirect buffer its base's
     // buffer_text, whose one chain holds every marker of the family, the
