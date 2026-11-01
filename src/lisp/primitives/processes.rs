@@ -2222,6 +2222,55 @@ pub(crate) fn make_process_arguments(
     Ok(encoded)
 }
 
+/// process.c's frame around a process filter or sentinel
+/// (read_process_output with read_and_dispose_of_process_output, and
+/// exec_sentinel): the current buffer and `deactivate-mark' kept,
+/// `inhibit-quit' and `last-nonmenu-event' bound to t, and the match data
+/// protected.  running_asynch_code is set while BODY runs, so its first
+/// search puts aside the match data it found (save_search_regs), restored
+/// after; run inside another such run, the outer run's saved data is
+/// restored first and the current data kept across this one by an unwind
+/// of `set-match-data', as GNU's recursive case does.
+fn run_asynch_code(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    body: impl FnOnce(&mut Interpreter, &mut Env) -> Result<(), LispError>,
+) -> Result<(), LispError> {
+    let odeactivate = interp
+        .lookup_var("deactivate-mark", env)
+        .unwrap_or(Value::Nil);
+    // record_unwind_current_buffer.
+    let saved_buffer_id = interp.current_buffer_id();
+    let count = interp.specpdl_index();
+    interp.specbind_symbol(&"inhibit-quit".into(), Value::T, env)?;
+    interp.specbind_symbol(&"last-nonmenu-event".into(), Value::T, env)?;
+    let outer_running_asynch_code = interp.running_asynch_code;
+    let mut outer_match_data = None;
+    if outer_running_asynch_code {
+        let current = call(interp, "match-data", &[], env)?;
+        crate::lisp::primitives::restore_search_regs(interp);
+        // record_unwind_save_match_data.
+        outer_match_data = Some(call(interp, "match-data", &[], env)?);
+        call(interp, "set-match-data", &[current, Value::T], env)?;
+    }
+    interp.running_asynch_code = true;
+    let result = body(interp, env);
+    crate::lisp::primitives::restore_search_regs(interp);
+    interp.running_asynch_code = outer_running_asynch_code;
+    // Handling the process output or event does not deactivate the mark.
+    interp.set_c_variable("deactivate-mark", odeactivate);
+    // unbind_to: the match data's unwind, the bindings, the buffer.
+    let restored = match outer_match_data {
+        Some(list) => call(interp, "set-match-data", &[list, Value::T], env).map(|_| ()),
+        None => Ok(()),
+    };
+    let unbound = interp.unbind_to(count, env);
+    if interp.current_buffer_id() != saved_buffer_id && interp.has_buffer_id(saved_buffer_id) {
+        interp.set_current_buffer_id(saved_buffer_id)?;
+    }
+    result.and(restored).and(unbound)
+}
+
 pub(crate) fn deliver_process_output_decoded(
     interp: &mut Interpreter,
     process_id: u64,
@@ -2232,7 +2281,19 @@ pub(crate) fn deliver_process_output_decoded(
         return Ok(());
     }
     interp.note_process_output_delivery(process_id);
+    run_asynch_code(interp, env, |interp, env| {
+        dispose_of_process_output(interp, process_id, output, env)
+    })
+}
 
+/// read_and_dispose_of_process_output's call of the filter (explicit, or
+/// the default one inserting into the process buffer).
+fn dispose_of_process_output(
+    interp: &mut Interpreter,
+    process_id: u64,
+    output: Value,
+    env: &mut Env,
+) -> Result<(), LispError> {
     // The process buffer may have been killed before straggler output is
     // delivered (epg-reset kills it right after completion); GNU discards
     // such output rather than erroring.
@@ -2246,21 +2307,15 @@ pub(crate) fn deliver_process_output_decoded(
         }
         // read_process_output_call invokes an explicit filter in the buffer
         // that was current when output delivery began, not in the process
-        // buffer.  It still protects that current-buffer choice against a
-        // filter which calls set-buffer itself.
-        let saved_buffer_id = interp.current_buffer_id();
-        // GNU hands the filter an ordinary mutable string; filters such as
-        // eshell's propertize it in place.
-        let result = call_function_value(
+        // buffer (run_asynch_code restores it after).  GNU hands the
+        // filter an ordinary mutable string; filters such as eshell's
+        // propertize it in place.
+        call_function_value(
             interp,
             &filter,
             &[interp.record_value(process_id), output],
             env,
-        );
-        if interp.current_buffer_id() != saved_buffer_id {
-            interp.set_current_buffer_id(saved_buffer_id)?;
-        }
-        result?;
+        )?;
         return Ok(());
     }
 
@@ -4322,26 +4377,30 @@ pub(crate) fn make_serial_process(
     Ok(process)
 }
 
+/// exec_sentinel: the process's sentinel (or the default one) called with
+/// EVENT in run_asynch_code's frame.
 fn run_process_sentinel(
     interp: &mut Interpreter,
     process_id: u64,
     event: &str,
     env: &mut Env,
 ) -> Result<(), LispError> {
-    if let Some(sentinel) = interp.process_sentinel(process_id) {
-        call_function_value(
-            interp,
-            &sentinel,
-            &[
-                interp.record_value(process_id),
-                Value::String(event.to_string().into()),
-            ],
-            env,
-        )?;
-    } else {
-        internal_default_process_sentinel(interp, process_id, event, env)?;
-    }
-    Ok(())
+    run_asynch_code(interp, env, |interp, env| {
+        if let Some(sentinel) = interp.process_sentinel(process_id) {
+            call_function_value(
+                interp,
+                &sentinel,
+                &[
+                    interp.record_value(process_id),
+                    Value::String(event.to_string().into()),
+                ],
+                env,
+            )?;
+        } else {
+            internal_default_process_sentinel(interp, process_id, event, env)?;
+        }
+        Ok(())
+    })
 }
 
 fn run_process_log(

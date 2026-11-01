@@ -1126,6 +1126,72 @@ impl BufferSnapshot {
     }
 }
 
+/// regex-emacs.c's RE_NREGS: the registers a match allocates at least
+/// when none are allocated.
+pub(crate) const RE_NREGS: usize = 30;
+
+/// regex-emacs.c's re_match_2_internal at a match, the registers for its
+/// NUM_REGS groups (the whole match one): none allocated, at least
+/// RE_NREGS; too few, grown by half and at least to NUM_REGS.
+fn allocate_match_registers(interp: &mut Interpreter, num_regs: usize) {
+    let n = interp.search_regs_num_regs;
+    interp.search_regs_num_regs = if n == 0 {
+        RE_NREGS.max(num_regs)
+    } else if n < num_regs {
+        (n + (n >> 1)).max(num_regs)
+    } else {
+        n
+    };
+}
+
+/// search.c's set_search_regs: two registers at least for a match that
+/// is not a regexp's.
+pub(super) fn allocate_plain_match_registers(interp: &mut Interpreter) {
+    if interp.search_regs_num_regs == 0 {
+        interp.search_regs_num_regs = 2;
+    }
+}
+
+/// alloc.c:xpalloc's new size for Fset_match_data's registers, an array
+/// of N0 eight-byte items needing INCR_MIN more: half again, at least a
+/// small allocation's 128 bytes, at least INCR_MIN more.
+pub(crate) fn xpalloc_registers(n0: usize, incr_min: usize) -> usize {
+    const ITEM: usize = 8;
+    const DEFAULT_MXFAST: usize = 64 * 8 / 4;
+    let mut n = n0 + (n0 >> 1);
+    if n * ITEM < DEFAULT_MXFAST {
+        n = DEFAULT_MXFAST / ITEM;
+    }
+    if n - n0 < incr_min {
+        n = n0 + incr_min;
+    }
+    n
+}
+
+/// search.c:save_search_regs, run by a search or `set-match-data' in a
+/// process filter or sentinel (running_asynch_code): the match data it
+/// found put aside the first time, its registers then unallocated.
+pub(crate) fn save_search_regs(interp: &mut Interpreter) {
+    if interp.saved_search_regs.num_regs == 0 {
+        interp.saved_search_regs = crate::lisp::eval::SavedSearchRegs {
+            match_data: interp.last_match_data.take(),
+            num_regs: std::mem::take(&mut interp.search_regs_num_regs),
+            last_thing_searched: interp.last_thing_searched.take(),
+        };
+    }
+}
+
+/// search.c:restore_search_regs, upon exit from a filter or sentinel:
+/// the match data save_search_regs put aside, back.
+pub(crate) fn restore_search_regs(interp: &mut Interpreter) {
+    if interp.saved_search_regs.num_regs != 0 {
+        let saved = std::mem::take(&mut interp.saved_search_regs);
+        interp.last_match_data = saved.match_data;
+        interp.search_regs_num_regs = saved.num_regs;
+        interp.last_thing_searched = saved.last_thing_searched;
+    }
+}
+
 /// Whether match data may change (`inhibit-changing-match-data' nil).
 fn modify_match_data_allowed(interp: &Interpreter) -> bool {
     !interp
@@ -1138,8 +1204,9 @@ fn set_search_regs(
     interp: &mut Interpreter,
     registers: &Registers,
     position: impl Fn(usize) -> usize,
-    buffer: Option<u64>,
+    buffer: Option<crate::lisp::types::BufferRef>,
 ) {
+    allocate_match_registers(interp, registers.regs.len());
     let mut match_data = interp.last_match_data.take().unwrap_or_default();
     match_data.clear();
     match_data.extend(
@@ -1149,7 +1216,7 @@ fn set_search_regs(
             .map(|reg| reg.map(|(start, end)| (position(start), position(end)))),
     );
     interp.last_match_data = Some(match_data);
-    interp.last_match_data_buffer_id = buffer;
+    interp.last_thing_searched = buffer;
 }
 
 /// set_search_regs for REGISTERS, offsets in SNAPSHOT's text, the current
@@ -1161,6 +1228,7 @@ fn set_buffer_search_regs(
     snapshot: &BufferSnapshot,
     buffer_id: u64,
 ) {
+    let searched = interp.buffer_object(buffer_id);
     let buffer = interp.buffer;
     let buffer = buffer.borrow();
     let same = interp.current_buffer_id() == buffer_id;
@@ -1174,7 +1242,7 @@ fn set_buffer_search_regs(
                 snapshot.position(offset)
             }
         },
-        Some(buffer_id),
+        searched,
     );
 }
 
@@ -1199,6 +1267,9 @@ pub(super) fn looking_at_1(
     posix: bool,
     modify_data: bool,
 ) -> Result<Value, LispError> {
+    if interp.running_asynch_code {
+        save_search_regs(interp);
+    }
     if !matches!(regexp.kind(), Kind::StringObject(_)) {
         return Err(LispError::WrongTypeArgument("stringp".into(), *regexp));
     }
@@ -1252,6 +1323,9 @@ pub(super) fn string_match_1(
     modify_data: bool,
 ) -> Result<Value, LispError> {
     let modify_match_data = modify_match_data_allowed(interp) && modify_data;
+    if interp.running_asynch_code {
+        save_search_regs(interp);
+    }
     if !matches!(regexp.kind(), Kind::StringObject(_)) {
         return Err(LispError::WrongTypeArgument("stringp".into(), *regexp));
     }
@@ -1325,7 +1399,7 @@ pub(super) fn string_match_1(
     // last_thing_searched is Qt once the match data may change, whether
     // or not this search changes it.
     if modify_match_data {
-        interp.last_match_data_buffer_id = None;
+        interp.last_thing_searched = None;
     }
     if let (Ok(Some(_)), Some(registers)) = (&result, &registers) {
         set_search_regs(interp, registers, to_char, None);
@@ -1425,14 +1499,18 @@ fn search_buffer(
     re: bool,
     posix: bool,
 ) -> Result<i64, LispError> {
+    if interp.running_asynch_code {
+        save_search_regs(interp);
+    }
     let (bytes, _, chars) = string_bytes(string)
         .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *string))?;
     // Searching 0 times means don't move.  Null string is found at
     // starting position.
     if n == 0 || chars == 0 {
         if modify_match_data_allowed(interp) {
+            allocate_plain_match_registers(interp);
             interp.last_match_data = Some(vec![Some((pos, pos))]);
-            interp.last_match_data_buffer_id = Some(interp.current_buffer_id());
+            interp.last_thing_searched = Some(interp.buffer);
         }
         return Ok(pos as i64);
     }
@@ -2161,8 +2239,8 @@ mod c_string_match_tests {
         interp.set_variable("case-fold-search", Value::Nil, &mut Env::new());
         let saved = Some(vec![Some((3, 7)), None]);
         interp.last_match_data = saved.clone();
-        let saved_buffer = Some(interp.current_buffer_id());
-        interp.last_match_data_buffer_id = saved_buffer;
+        let saved_buffer = interp.buffer_object(interp.current_buffer_id());
+        interp.last_thing_searched = saved_buffer;
         // casetab.c:init_casetab_once gives Vascii_canon_table mappings
         // only for ASCII. Every other byte must remain distinct.
         for pattern_byte in 0..=u8::MAX {
@@ -2185,7 +2263,10 @@ mod c_string_match_tests {
             }
         }
         assert_eq!(interp.last_match_data, saved);
-        assert_eq!(interp.last_match_data_buffer_id, saved_buffer);
+        assert_eq!(
+            interp.last_thing_searched.map(|buffer| buffer.id),
+            saved_buffer.map(|buffer| buffer.id)
+        );
     }
 
     #[test]

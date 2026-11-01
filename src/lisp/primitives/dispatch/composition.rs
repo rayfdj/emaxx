@@ -501,7 +501,7 @@ fn autocmp_chars(
     string: &Value,
 ) -> Result<Value, LispError> {
     let saved_match_data = interp.last_match_data.clone();
-    let saved_match_buffer = interp.last_match_data_buffer_id;
+    let saved_match_buffer = interp.last_thing_searched;
     let saved_point = string.is_nil().then(|| interp.buffer.borrow().point());
     let result = autocmp_chars_inner(interp, env, rule_items, charpos, limit, string);
     if let Some(point) = saved_point {
@@ -512,7 +512,7 @@ fn autocmp_chars(
         interp.buffer.borrow_mut().goto_char(clamped);
     }
     interp.last_match_data = saved_match_data;
-    interp.last_match_data_buffer_id = saved_match_buffer;
+    interp.last_thing_searched = saved_match_buffer;
     result
 }
 

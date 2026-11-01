@@ -11080,6 +11080,44 @@ setup_process_coding_systems's check now refuses). A 13-form
   pins the cases. Local validation: the grouped gate's 3,401 library
   tests, the integration targets and clippy with `--all-targets
   --all-features -D warnings' pass.
+- **Round 221: the match data as search.c keeps it: the searched
+  buffer, the registers, filters and sentinels.** A random regexp
+  battery (six hundred regexps of atoms, classes, syntax and category
+  escapes, anchors, groups, shy and explicitly numbered groups,
+  back-references and repetitions, each matched case-folded and not
+  against fourteen strings, replaced with `\&', and counted forward and
+  backward through a buffer) differed from GNU only in `(match-data t)'
+  after a buffer match whose buffer was then killed: search.c's
+  last_thing_searched holds the buffer object, appended to the list
+  with INTEGERS whether live or killed (into a reused list too); Emaxx
+  kept only the buffer's id and lost a killed buffer. It now holds the
+  object, a root of collection, saved per thread. A `replace-match'
+  battery (case conversion, `\&', `\N', `\\' and `\?' under FIXEDCASE
+  and LITERAL, SUBEXP given or not) then differed for `\9' in a buffer:
+  search_regs.num_regs, the registers allocated for the match data, is
+  history in GNU, unallocated until a search, two for a plain search,
+  at least RE_NREGS for the first regexp match, grown by half (at least
+  to the regexp's groups) when a match needs more, grown as xpalloc
+  grows by `set-match-data', and never shrunk; `replace-match' checks
+  SUBEXP against it (its `args-out-of-range' data names it) and takes a
+  `\N' below it as a register, signalling `Invalid use of `\\' in
+  replacement text' above it in a buffer. Emaxx assumed thirty always;
+  it now keeps the count as GNU does, and a batch session's startup
+  leaves it at seven, as GNU's does. Process filters and sentinels now
+  run in process.c's frame (read_process_output with
+  read_and_dispose_of_process_output, exec_sentinel): running_asynch_code
+  set, so their first search or `set-match-data' puts aside the
+  interrupted code's match data (save_search_regs), restored when they
+  return, a run inside another's restoring the outer saved data and
+  keeping the current data across itself as GNU's recursive case does;
+  `inhibit-quit' and `last-nonmenu-event' bound to t; the current buffer
+  and `deactivate-mark' kept. Emaxx let a filter's search clobber the
+  match data of the code waiting in `accept-process-output', bound
+  neither variable, and left a sentinel's buffer current. Oracle tests
+  pin the killed buffer, the register growth and the filter and
+  sentinel frames. Local validation: the grouped gate's 3,404
+  library tests, the integration targets and clippy with `--all-targets
+  --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -12507,6 +12545,11 @@ against 270.6 s (0.959), in all 1.000.
 passed, and frozen (run 41272833494) matched all 7,928 outcomes on the
 first attempt: setup 82.2 s against 66.9 s (1.229), test bodies 258.4 s
 against 267.4 s (0.967), in all 1.005.
+
+**On `1e4782e`** (round 220): the full Rust gate (run 41275443236)
+passed, and frozen (run 41275445266) matched all 7,928 outcomes on the
+first attempt: setup 69.2 s against 59.4 s (1.164), test bodies 232.9 s
+against 244.9 s (0.951), in all 0.992.
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

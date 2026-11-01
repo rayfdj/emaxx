@@ -153,6 +153,14 @@ pub(crate) const ROOTS_RESET_AFTER_LOAD: &[(&str, &str)] = &[
         "signaling_function",
         "eval.c's Vsignaling_function, staticpro'd but nil outside the report of a signal; init_eval_once leaves it nil",
     ),
+    (
+        "last_thing_searched",
+        "thread.h's m_last_thing_searched is the running thread's, which pdumper.c does not write",
+    ),
+    (
+        "saved_search_regs",
+        "thread.h's m_saved_search_regs and m_saved_last_thing_searched are the running thread's, which pdumper.c does not write",
+    ),
 ];
 
 /// The interpreter's remaining fields, none of them a Lisp root, each
@@ -340,7 +348,11 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
         "last_match_data",
         "search.c's search_regs are the running process's",
     ),
-    ("last_match_data_buffer_id", "as last_match_data"),
+    ("search_regs_num_regs", "as last_match_data"),
+    (
+        "running_asynch_code",
+        "a filter's or sentinel's run, which no image holds",
+    ),
     ("search_registers", "a search's scratch registers"),
     (
         "last_known_column",

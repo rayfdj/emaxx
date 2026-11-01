@@ -290,6 +290,7 @@ pub(crate) use search::category_member;
 pub(crate) use search::fast_string_match;
 #[cfg(test)]
 pub(crate) use search::{elisp_regex_compile_count, reset_elisp_regex_compile_count};
+pub(crate) use search::{restore_search_regs, save_search_regs, xpalloc_registers};
 
 #[cfg(test)]
 mod tests;

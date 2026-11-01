@@ -4576,6 +4576,13 @@ impl Interpreter {
             mark(value);
         }
         mark(&self.frame_and_buffer_state);
+        for buffer in self
+            .last_thing_searched
+            .iter()
+            .chain(&self.saved_search_regs.last_thing_searched)
+        {
+            mark(&Value::Buffer(*buffer));
+        }
         for call in &self.pending_funcalls {
             mark(call);
         }
@@ -5406,6 +5413,15 @@ impl std::ops::DerefMut for Interpreter {
     }
 }
 
+/// search.c's saved_search_regs with saved_last_thing_searched: the
+/// match data save_search_regs put aside, none while NUM_REGS is 0.
+#[derive(Clone, Debug, Default)]
+pub struct SavedSearchRegs {
+    pub match_data: Option<Vec<Option<(usize, usize)>>>,
+    pub num_regs: usize,
+    pub last_thing_searched: Option<crate::lisp::types::BufferRef>,
+}
+
 /// The uniquely owned editor payload. Thread switching must also save and
 /// restore the per-thread execution fields; moving this allocation alone does
 /// not implement a scheduler. This type is public only as the Deref target.
@@ -5771,8 +5787,21 @@ pub struct InterpreterState {
     pending_termination: Option<EmacsTermination>,
     /// The latest regexp match data in buffer coordinates.
     pub last_match_data: Option<Vec<Option<(usize, usize)>>>,
-    /// Source buffer for buffer-origin match data; string searches leave this unset.
-    pub last_match_data_buffer_id: Option<u64>,
+    /// search.c's last_thing_searched when it is a buffer: the buffer
+    /// object the match data's positions are in, kept (and printed in
+    /// `match-data') after the buffer is killed; string searches leave
+    /// this unset.
+    pub last_thing_searched: Option<crate::lisp::types::BufferRef>,
+    /// search.c's search_regs.num_regs: the registers allocated for the
+    /// match data, 0 before any search, grown as regex-emacs.c and
+    /// Fset_match_data grow them and never shrunk.
+    pub search_regs_num_regs: usize,
+    /// search.c's saved_search_regs and saved_last_thing_searched: the
+    /// match data a process filter or sentinel found, put aside by its
+    /// first search.
+    pub saved_search_regs: SavedSearchRegs,
+    /// emacs.c's running_asynch_code: a process filter or sentinel runs.
+    pub running_asynch_code: bool,
     /// indent.c's last_known_column, last_known_column_point and
     /// last_known_column_modified: the column `current-column' answers
     /// while point and the buffer's modiff stay as they were (a point of
@@ -6538,7 +6567,10 @@ impl Interpreter {
             last_selected_tests: Vec::new(),
             pending_termination: None,
             last_match_data: None,
-            last_match_data_buffer_id: None,
+            last_thing_searched: None,
+            search_regs_num_regs: 0,
+            saved_search_regs: SavedSearchRegs::default(),
+            running_asynch_code: false,
             last_known_column: (0, 0, 0),
             buffer_before_last_command_or_undo: None,
             search_registers: Default::default(),

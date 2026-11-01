@@ -33129,6 +33129,48 @@ fn current_indentation_skips_invisible_text_as_position_indentation() {
 }
 
 #[test]
+fn match_data_ends_with_the_searched_buffer_even_once_killed() {
+    // search.c keeps last_thing_searched, the buffer object of the last
+    // buffer match, whose death does not change it: `match-data' with
+    // INTEGERS appends it, live or killed (into a reused list too), and
+    // without INTEGERS makes markers that a killed buffer leaves pointing
+    // nowhere.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list (progn (with-temp-buffer (insert "abc") (goto-char 1) (looking-at "b*")) (match-data t)) (progn (with-temp-buffer (insert "abc") (goto-char 1) (looking-at "a\\(b\\)")) (match-data)) (progn (with-temp-buffer (insert "abc") (goto-char 1) (looking-at "a\\(b\\)")) (let ((l (list 1 2 3 4 5 6 7))) (match-data t l))) (progn (with-temp-buffer (insert "abc") (goto-char 1) (looking-at "a\\(b\\)")) (let ((l (list 1 2))) (match-data t l) l)) (progn (with-temp-buffer (insert "abc") (goto-char 1) (looking-at "a")) (match-data nil nil t)) (let ((b (generate-new-buffer " zz"))) (with-current-buffer b (insert "abc") (goto-char 1) (looking-at "a")) (kill-buffer b) (list (match-beginning 0) (match-end 0) (match-data t))) (progn (with-temp-buffer (insert "abc") (goto-char 1) (looking-at "a")) (set-match-data (match-data t)) (match-data t)) (progn (with-temp-buffer (insert "abc") (goto-char 1) (looking-at "a")) (save-match-data (string-match "x" "x")) (match-data t)))"##,
+        r##"((1 1 #<killed buffer>) (#<marker in no buffer> #<marker in no buffer> #<marker in no buffer> #<marker in no buffer>) (1 3 2 3 #<killed buffer> nil nil) (1 3 2 3 #<killed buffer>) (#<marker in no buffer> #<marker in no buffer>) (1 2 (1 2 #<killed buffer>)) (1 2 #<killed buffer>) (0 0))"##,
+        "match-data of a killed buffer",
+    );
+}
+
+#[test]
+fn search_registers_grow_as_regex_emacs_and_set_match_data_allocate_them() {
+    // search.c's search_regs.num_regs is the registers allocated, never
+    // shrunk: a match needing more grows them by half (at least to its
+    // groups), `set-match-data' as xpalloc does, and a search under
+    // `inhibit-changing-match-data' not at all.  `replace-match' checks
+    // SUBEXP against them, and `\\N' below them names a register whether
+    // or not the regexp had the group.
+    assert_oracle_contract_matches_interpreter(
+        r##"(let ((re (apply #'concat (make-list 100 "\\(a\\)"))) (s (make-string 100 ?a))) (list (progn (string-match re s) (condition-case e (replace-match "x" nil nil s 999) (error e))) (progn (set-match-data (number-sequence 1 240)) (condition-case e (replace-match "x" nil nil nil 999) (error e))) (let ((inhibit-changing-match-data t)) (string-match (apply #'concat (make-list 200 "\\(a\\)")) (make-string 200 ?a)) (condition-case e (replace-match "x" nil nil s 999) (error e))) (with-temp-buffer (insert "abc") (goto-char 1) (re-search-forward "\\(a\\)") (list (condition-case e (replace-match "\\9") (error e)) (buffer-string))) (progn (string-match "\\(a\\)" "abc") (replace-match "<\\9>" nil nil "abc"))))"##,
+        r##"((args-out-of-range 999 0 100) (args-out-of-range 999 0 150) (args-out-of-range 999 0 150) (nil "bc") "<>bc")"##,
+        "search register growth",
+    );
+}
+
+#[test]
+fn process_filters_and_sentinels_run_with_the_match_data_protected() {
+    // process.c runs a filter or sentinel with running_asynch_code set, so
+    // its first search puts aside the interrupted code's match data
+    // (save_search_regs), restored when it returns; `inhibit-quit' and
+    // `last-nonmenu-event' are bound to t, and the current buffer is kept.
+    assert_oracle_contract_matches_interpreter(
+        r##"(let* ((log nil) (b0 (current-buffer)) (p (make-process :name "zz" :command '("printf" "hello world") :filter (lambda (_p s) (push (list 'filter (match-data) (string-match "o\\(r\\)" s) (match-data) inhibit-quit last-nonmenu-event) log) (set-buffer (get-buffer-create " zz-filter"))) :sentinel (lambda (_p e) (push (list 'sentinel (string-match "fin" e) (match-data) inhibit-quit) log) (set-buffer (get-buffer-create " zz-sentinel")))))) (string-match "\\(b\\)c" "abc") (while (process-live-p p) (accept-process-output p 0.1)) (accept-process-output nil 0.1) (list (match-data) (eq (current-buffer) b0) (reverse log)))"##,
+        r##"((1 3 1 2) t ((filter (1 3 1 2) 7 (7 9 8 9) t t) (sentinel 0 (0 3) t)))"##,
+        "filter and sentinel frames",
+    );
+}
+
+#[test]
 fn readevalloop_reads_at_the_buffers_point_with_standard_input_bound_to_it() {
     // lread.c:readevalloop binds `standard-input' to the buffer it reads,
     // so a form's `read' takes the text after it; eval-buffer reads each
