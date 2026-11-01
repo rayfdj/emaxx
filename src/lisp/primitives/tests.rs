@@ -33423,6 +33423,37 @@ fn file_decodes_put_charset_runs_and_temp_text_is_written_as_write_region() {
 }
 
 #[test]
+fn multibyte_sources_decode_in_one_pass_as_decode_coding() {
+    // coding.c:decode_coding_object over a multibyte source runs the
+    // decoder over ONE_MORE_BYTE's units: a raw-byte character is its
+    // byte and any other character an invalid code, which comes through
+    // without closing the `charset' run, an ISO 2022 decoder going back
+    // to ASCII in G0; a dos utf-8 decoder loses a character read as the
+    // byte after a CR, and no BOM is found behind one.
+    assert_oracle_contract_matches_interpreter(
+        r##"(let ((x (string #x80a)) (runs (lambda (s) (let (r (i 0)) (while (< i (length s)) (let ((n (next-single-property-change i 'charset s (length s)))) (when (get-text-property i 'charset s) (push (list i n (get-text-property i 'charset s)) r)) (setq i n))) (nreverse r)))) (result nil)) (dolist (case (list (list 'latin-1 (concat "a\351" x "\351b")) (list 'latin-1 (concat "a\r" x "\nb")) (list 'cp1252 (concat (string-to-multibyte "\202") x (string-to-multibyte "\240"))) (list 'shift_jis (concat (string-to-multibyte "\202\240") x "a\n")) (list 'euc-jp (concat (string-to-multibyte "\351") x (string-to-multibyte "\351"))) (list 'big5 (concat (string-to-multibyte "\244\242") x "b")) (list 'iso-2022-jp (concat "\e$B$\"" x "$$\e(B")) (list 'iso-2022-kr (concat "\e$)C\x0e!!" x "\x0e!!\x0f")) (list 'ctext (concat "\e$)A\x0e!!\x0f" x "\x0e!!\x0f")) (list 'iso-2022-7bit (concat "\e(I1" x "1")) (list 'utf-8-dos (concat "a\r" x "\nb")) (list 'utf-8-dos (concat "a\r" x "c")) (list 'utf-8-with-signature (concat x "\357\273\277a")))) (let ((s (decode-coding-string (cadr case) (car case)))) (push (list (car case) (append s nil) (funcall runs s)) result))) (nreverse result))"##,
+        r##"((latin-1 (97 233 2058 233 98) ((0 5 iso-8859-1))) (latin-1 (97 13 2058 10 98) ((0 5 iso-8859-1))) (cp1252 (8218 2058 160) ((0 3 windows-1252))) (shift_jis (12354 2058 97 10) ((0 4 japanese-jisx0208))) (euc-jp (4194281 2058 4194281) ((0 2 japanese-jisx0208))) (big5 (19984 2058 98) ((0 3 big5))) (iso-2022-jp (12354 2058 36 36) ((0 4 japanese-jisx0208))) (iso-2022-kr (12288 2058 12288) ((0 3 korean-ksc5601))) (ctext (12288 2058 12288) ((0 3 chinese-gb2312))) (iso-2022-7bit (65393 2058 49) ((0 3 katakana-jisx0201))) (utf-8-dos (97 10 98) nil) (utf-8-dos (97 13 99) nil) (utf-8-with-signature (2058 65279 97) nil))"##,
+        "multibyte sources decoded in one pass",
+    );
+}
+
+#[test]
+fn decoders_read_the_unit_after_a_cr_and_fill_a_charbuf_at_a_time() {
+    // Under a dos eol each coding.c decoder reads the unit after a CR as
+    // byte_after_cr, the next character's first unit: one that starts an
+    // invalid sequence is lost (invalid_code stores the unit after it, as
+    // ASCII or BYTE8_TO_CHAR by the decoder's rule), as is a multibyte
+    // source's character there.  decode_coding calls the decoder a
+    // charbuf (CHARBUF_SIZE ints less its annotation room) at a time,
+    // closing the `charset' run at each call's end.
+    assert_oracle_contract_matches_interpreter(
+        r##"(let ((x (string #x80a)) (ivs (lambda (s) (mapcar (lambda (i) (list (car i) (cadr i) (plist-get (nth 2 i) 'charset))) (object-intervals s))))) (list (mapcar (lambda (cs) (append (decode-coding-string "a\r\377b\r\200\nc\r\r\240d" cs) nil)) '(utf-8-dos shift_jis-dos big5-dos euc-jp-dos latin-1-dos emacs-mule-dos cp1252-dos utf-8-with-signature-dos)) (append (decode-coding-string "a\0\r\0\200\0b\0\r\0" 'utf-16le-dos) nil) (mapcar (lambda (cs) (append (decode-coding-string (concat "a\r" x x "b\r" (string-to-multibyte "\377") x "c\r" x "\nd") cs) nil)) '(utf-8-dos shift_jis-dos big5-dos iso-2022-jp-dos emacs-mule-dos utf-16le-dos cp1252-dos)) (funcall ivs (decode-coding-string (apply #'concat (make-list 17000 "\202\240")) 'shift_jis)) (funcall ivs (decode-coding-string (concat "\e$B" (apply #'concat (make-list 17000 "$\"")) "\e(B") 'iso-2022-jp)) (funcall ivs (decode-coding-string (apply #'concat (make-list 17000 "\222\244\242")) 'emacs-mule)) (with-temp-buffer (insert (apply #'concat (make-list 33000 "\351"))) (decode-coding-region (point-min) (point-max) 'latin-1) (funcall ivs (current-buffer)))))"##,
+        r##"(((97 13 98 10 99 13 13 100) (97 13 4194146 13 4194058 99 13 13 4194148) (97 13 4194146 13 4194058 99 13 13 4194148) (97 13 98 10 99 13 13 100) (97 13 255 98 13 128 10 99 13 13 160 100) (97 13 98 10 99 13 13 100) (97 13 255 98 13 8364 10 99 13 13 160 100) (97 13 98 10 99 13 13 100)) (97 13 128 98 13 0) ((97 13 2058 98 13 4191990 99 10 100) (97 13 2058 98 13 2058 99 10 100) (97 13 2058 98 13 2058 99 10 100) (97 13 2058 98 13 2058 99 10 100) (97 13 2058 98 13 2058 99 10 100) (3425 2058 2058 3426 4194303 2058 3427 2058 25610) (97 13 2058 98 13 255 2058 99 10 100)) ((0 16374 japanese-jisx0208) (16374 17000 japanese-jisx0208)) ((0 16369 japanese-jisx0208) (16369 17000 japanese-jisx0208)) ((0 16368 japanese-jisx0208) (16368 17000 japanese-jisx0208)) ((0 16374 iso-8859-1) (16374 32748 iso-8859-1) (32748 33000 iso-8859-1)))"##,
+        "decoders' byte after a CR and charbuf calls",
+    );
+}
+
+#[test]
 fn indirect_buffers_share_their_base_text_and_its_markers() {
     // buffer.c:Fmake_indirect_buffer gives the indirect buffer its base's
     // buffer_text, whose one chain holds every marker of the family, the

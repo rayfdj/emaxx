@@ -11484,6 +11484,51 @@ setup_process_coding_systems's check now refuses). A 13-form
   as GNU's. Local validation: the grouped gate's 3422 library
   tests, the integration targets and clippy with `--all-targets
   --all-features -D warnings' pass.
+- **Round 234: decoders read ONE_MORE_BYTE's units a charbuf at a
+  time.** `coding/units.rs` has the `Units` source a decoder reads
+  (`[u8]` for a unibyte text, `CharUnits` for a multibyte one: an ASCII
+  or raw-byte character as its byte, any other as its negated code),
+  decode_coding's flush of what a call leaves (a multibyte source's
+  characters as the eight-bit characters of their bytes), the charbuf
+  constants and `CallRuns`, a call's `charset' run counted as
+  char_offset counts it (a character stored as -1 included).
+  `coding/decoders.rs` has decode_coding_utf_8, _utf_16, _charset,
+  _sjis, _big5, _emacs_mule and _raw_text as one call each, and
+  `decode_units`, decode_coding's loop of calls; `iso2022::decode_call`
+  is decode_coding_iso_2022's call. Each follows its C loop: the CR
+  lookahead (byte_after_cr, the next character's first unit, unread at
+  a charbuf's end), invalid_code from the loop's src_base with the
+  decoder's own rule for what it stores, a negative unit where each
+  decoder takes it, and the charbuf room (16384 ints less 10 for
+  charset, sjis and big5, 15 for iso-2022, 16 for emacs-mule, 2 for
+  utf-16; utf-8 counts only under a dos eol, where its end can change
+  what a CR reads). `decode_multibyte_source_text` decodes a multibyte
+  source as one `decode_units` over its `CharUnits`, where it decoded
+  each byte run between its characters separately, and `CharsetRuns`
+  gives way to `CallRuns`. Batteries of 96
+  multibyte-source decodes, 91 and 41 CR cases (multibyte and unibyte
+  sources over the utf-8, prefer-utf-8, undecided, latin-1 eol
+  variants), 6 emacs-mule sequences and 332 cases across the decoder
+  families (CR followed by invalid units, characters after a CR and
+  inside sequences, unmapped codes, the runs of 20000- and 40000-
+  character texts) read as GNU's but for 7 buffer modification counts
+  (below); two oracle tests pin them. ERT pass counts match GNU's for
+  coding, mule, mule-util, ucs-normalize, textsec, fileio, files,
+  process, ccl, rmailmm, mailcap, mm-decode, editfns and sgml-mode.
+  Still to do: GNU's produce_chars inserts each call's characters into
+  a buffer destination with insert_from_gap, and decode_eol deletes a
+  dos CR at a time, so decode-coding-region of 20000 shift_jis
+  characters moves the modification count by 44 against Emaxx's 33
+  (#416); emacs-mule's 0x80 composition sequences are still taken as
+  invalid codes and ISO 2022's compositions are simplified (#414);
+  ccl coding systems decode as raw text (#415); a BYTE8_TO_CHAR of a
+  character's negated code that comes out negative drops one character
+  where produce_chars skips that many; a charbuf end that unreads a
+  raw-byte unit of a multibyte source unreads the whole unit; and a
+  translation table's carryover across a call's end is not modelled.
+  Local validation: the grouped gate's 3424 library tests, the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -12975,6 +13020,11 @@ passed.
 7,928 outcomes. Setup 70.4 s against 62.0 s (1.135), test bodies 233.6
 s against 252.5 s (0.925), in all 0.964. The full Rust gate (run
 41315767036) passed.
+
+**On `e2a1615`** (round 233): frozen (run 41321300687) matched all
+7,928 outcomes. Setup 75.9 s against 61.9 s (1.226), test bodies 249.4
+s against 259.9 s (0.960), in all 1.000. The full Rust gate (run
+41321298165) passed.
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

@@ -6,6 +6,7 @@
 //! decoded text with; the encoder honors a `charset' text property as
 //! the preferred charset, like CODING_ANNOTATE_CHARSET_MASK does.
 
+use super::units::{CHARBUF_SIZE, CallEnd, CallRuns, MAX_ANNOTATION_LENGTH, Units};
 use super::*;
 use crate::lisp::eval::coding::*;
 use crate::lisp::types::Kind;
@@ -335,18 +336,24 @@ pub(crate) struct Iso2022Carry {
     embedded_utf_8: bool,
 }
 
-/// coding.c decode_coding_iso_2022 over one block: the decoder resumes in
-/// the state BLOCK's spec carries, and a block that is not the last leaves
-/// it there, the composition in progress included, with the sequence it
-/// could not finish unconsumed.
-pub(crate) fn decode(
+/// coding.c decode_coding_iso_2022, one call over SRC's units from START:
+/// the decoder resumes in the state SPEC carries and leaves its state
+/// there, the composition in progress included (one the last block has
+/// not finished when the call ends is invalid).  A multibyte source's
+/// character is invalid_code's, as is any unit a sequence cannot take.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn decode_call<S: Units + ?Sized>(
     interp: &Interpreter,
-    bytes: &[u8],
+    src: &S,
+    start: usize,
     coding: &str,
-    block: &mut DecodeBlock,
-) -> DecodedText {
+    eol_dos: bool,
+    last: bool,
+    spec: &mut DecoderSpec,
+    out: &mut DecodedText,
+) -> CallEnd {
     let Some(attrs) = iso_attributes(interp, coding) else {
-        return decode_coding_raw_text_block(bytes, block);
+        return decoders::raw_text_call(src, start, eol_dos, out);
     };
     let flags = attrs.flags;
     let Iso2022Carry {
@@ -354,8 +361,7 @@ pub(crate) fn decode(
         mut cmp,
         mut extsegment_len,
         mut embedded_utf_8,
-    } = block
-        .spec
+    } = spec
         .iso2022
         .take()
         .map(|carry| *carry)
@@ -367,15 +373,18 @@ pub(crate) fn decode(
         });
     let mut charset_id_0 = state.invoked_charset(0);
     let mut charset_id_1 = state.invoked_charset(1);
-    let mut runs = CharsetRuns::new();
-    let mut out = DecodedText::new();
+    let mut runs = CallRuns::new();
+    // The charbuf: the characters stored and the annotations' ints.
+    let limit = CHARBUF_SIZE - MAX_ANNOTATION_LENGTH * 3;
+    let base = out.char_count();
+    let mut annotations = 0;
+    let mut byte_after_cr: i32 = -1;
     let use_roman = flags & ISO_FLAG_USE_ROMAN != 0;
     let use_oldjis = flags & ISO_FLAG_USE_OLDJIS != 0;
     let roman = interp.charset_canonical_name("latin-jisx0201");
     let jisx0208_1978 = interp.charset_canonical_name("japanese-jisx0208-1978");
     let jisx0208 = interp.charset_canonical_name("japanese-jisx0208");
-    let end = bytes.len();
-    let mut p = 0usize;
+    let mut p = start;
     let mut src_base;
 
     // DECODE_DESIGNATION: returns false when the escape sequence should be
@@ -406,14 +415,25 @@ pub(crate) fn decode(
             !(prev == Designation::Invalid && id == "ascii")
         };
 
-    'main: loop {
+    let end = 'main: loop {
         src_base = p;
+        if out.char_count() - base + annotations >= limit {
+            if byte_after_cr >= 0 {
+                src_base -= 1;
+            }
+            break 'main CallEnd::Full(src_base);
+        }
         let mut invalid = false;
         'step: {
-            let Some(&c1) = bytes.get(p) else {
-                break 'main;
+            let c1 = if byte_after_cr >= 0 {
+                std::mem::replace(&mut byte_after_cr, -1)
+            } else {
+                one_more!(src, p, break 'main CallEnd::Ended(src_base))
             };
-            p += 1;
+            let Ok(c1) = u8::try_from(c1) else {
+                invalid = true;
+                break 'step;
+            };
 
             if extsegment_len > 0 {
                 out.push_byte(c1);
@@ -423,11 +443,12 @@ pub(crate) fn decode(
 
             if embedded_utf_8 {
                 if c1 == ISO_CODE_ESC {
-                    if p + 1 >= end {
-                        break 'main;
+                    // `src + 1 >= src_end' counts the source's bytes.
+                    if p == src.len() || (p + 1 == src.len() && src.source_len_at(p) == 1) {
+                        break 'main CallEnd::Ended(src_base);
                     }
                     out.push_code(u32::from(ISO_CODE_ESC));
-                    if bytes[p] == b'%' && bytes[p + 1] == b'@' {
+                    if src.at(p) == i32::from(b'%') && src.at(p + 1) == i32::from(b'@') {
                         p += 2;
                         out.push_code(u32::from(b'%'));
                         out.push_code(u32::from(b'@'));
@@ -452,10 +473,11 @@ pub(crate) fn decode(
                 let bytes_of_rule = if rule < 81 {
                     vec![c1]
                 } else {
-                    let Some(&b) = bytes.get(p) else {
-                        break 'main;
+                    let b = one_more!(src, p, break 'main CallEnd::Ended(src_base));
+                    let Ok(b) = u8::try_from(b) else {
+                        invalid = true;
+                        break 'step;
                     };
-                    p += 1;
                     let gref = rule - 81;
                     let nref = b.wrapping_sub(32);
                     if gref >= 12 || b < 32 || nref >= 12 {
@@ -531,10 +553,11 @@ pub(crate) fn decode(
                     // 7-bit SS2) and escape sequences.
                     let mut escape = match c1 {
                         ISO_CODE_ESC => {
-                            let Some(&next) = bytes.get(p) else {
-                                break 'main;
+                            let next = one_more!(src, p, break 'main CallEnd::Ended(src_base));
+                            let Ok(next) = u8::try_from(next) else {
+                                invalid = true;
+                                break 'step;
                             };
-                            p += 1;
                             next
                         }
                         ISO_CODE_SS2_7 => {
@@ -556,11 +579,11 @@ pub(crate) fn decode(
                         ISO_CODE_CSI => b'[',
                         _ => {
                             // ISO_control_0.
-                            if block.eol_dos && c1 == b'\r' && p == end {
-                                // ONE_MORE_BYTE (byte_after_cr) ran out.
-                                break 'main;
+                            if eol_dos && c1 == b'\r' {
+                                byte_after_cr =
+                                    one_more!(src, p, break 'main CallEnd::Ended(src_base));
                             }
-                            finish_composition(&mut out, &mut cmp);
+                            finish_composition(out, &mut cmp);
                             out.push_byte(c1);
                             break 'step;
                         }
@@ -570,26 +593,29 @@ pub(crate) fn decode(
                     loop {
                         match escape {
                             b'&' => {
-                                let Some(&rev) = bytes.get(p) else {
-                                    break 'main;
+                                let rev = one_more!(src, p, break 'main CallEnd::Ended(src_base));
+                                let Ok(rev) = u8::try_from(rev) else {
+                                    invalid = true;
+                                    break 'step;
                                 };
-                                p += 1;
                                 if !(b'@'..=b'~').contains(&rev) {
                                     invalid = true;
                                     break 'step;
                                 }
-                                let Some(&esc) = bytes.get(p) else {
-                                    break 'main;
+                                let esc = one_more!(src, p, break 'main CallEnd::Ended(src_base));
+                                let Ok(esc) = u8::try_from(esc) else {
+                                    invalid = true;
+                                    break 'step;
                                 };
-                                p += 1;
                                 if esc != ISO_CODE_ESC {
                                     invalid = true;
                                     break 'step;
                                 }
-                                let Some(&next) = bytes.get(p) else {
-                                    break 'main;
+                                let next = one_more!(src, p, break 'main CallEnd::Ended(src_base));
+                                let Ok(next) = u8::try_from(next) else {
+                                    invalid = true;
+                                    break 'step;
                                 };
-                                p += 1;
                                 escape = next;
                                 continue;
                             }
@@ -598,17 +624,18 @@ pub(crate) fn decode(
                                     invalid = true;
                                     break 'step;
                                 }
-                                let Some(&mut_c) = bytes.get(p) else {
-                                    break 'main;
+                                let mut_c = one_more!(src, p, break 'main CallEnd::Ended(src_base));
+                                let Ok(mut_c) = u8::try_from(mut_c) else {
+                                    invalid = true;
+                                    break 'step;
                                 };
-                                p += 1;
                                 let (reg, chars96, final_char) = match mut_c {
                                     b'@'..=b'B' => (0usize, false, mut_c),
                                     0x28..=0x2F => {
-                                        let Some(&final_char) = bytes.get(p) else {
-                                            break 'main;
-                                        };
-                                        p += 1;
+                                        let final_char =
+                                            one_more!(src, p, break 'main CallEnd::Ended(src_base));
+                                        // DECODE_DESIGNATION: a character is no final byte.
+                                        let final_char = u8::try_from(final_char).unwrap_or(0);
                                         if mut_c <= 0x2B {
                                             ((mut_c - 0x28) as usize, false, final_char)
                                         } else {
@@ -652,10 +679,11 @@ pub(crate) fn decode(
                                     .charset()
                                     .map(str::to_string)
                                     .unwrap_or_else(|| "ascii".into());
-                                let Some(&next) = bytes.get(p) else {
-                                    break 'main;
+                                let next = one_more!(src, p, break 'main CallEnd::Ended(src_base));
+                                let Ok(next) = u8::try_from(next) else {
+                                    invalid = true;
+                                    break 'step;
                                 };
-                                p += 1;
                                 first = next;
                                 if first < 0x20
                                     || (0x80..0xA0).contains(&first)
@@ -676,7 +704,7 @@ pub(crate) fn decode(
                                     invalid = true;
                                     break 'step;
                                 }
-                                runs.close(out.char_count());
+                                annotations += runs.close(out);
                                 // DECODE_COMPOSITION_START.
                                 if escape == b'0'
                                     && ((cmp.state == ComposingState::ComponentChar
@@ -687,7 +715,7 @@ pub(crate) fn decode(
                                     cmp.elements.push(CompositionElement::AltEnd);
                                     cmp.state = ComposingState::Char;
                                 } else {
-                                    finish_composition(&mut out, &mut cmp);
+                                    finish_composition(out, &mut cmp);
                                     cmp.method = escape;
                                     cmp.state = if escape <= b'2' {
                                         ComposingState::Char
@@ -709,7 +737,7 @@ pub(crate) fn decode(
                                 if cmp.nchars == 0
                                     || ((cmp.state == ComposingState::Char) == (cmp.method == b'2'))
                                 {
-                                    finish_composition(&mut out, &mut cmp);
+                                    finish_composition(out, &mut cmp);
                                     invalid = true;
                                     break 'step;
                                 }
@@ -740,17 +768,20 @@ pub(crate) fn decode(
                                     invalid = true;
                                     break 'step;
                                 }
-                                let Some(&next) = bytes.get(p) else {
-                                    break 'main;
+                                let next = one_more!(src, p, break 'main CallEnd::Ended(src_base));
+                                let Ok(next) = u8::try_from(next) else {
+                                    invalid = true;
+                                    break 'step;
                                 };
-                                p += 1;
                                 match next {
                                     b']' => {}
                                     b'0' | b'1' | b'2' => {
-                                        let Some(&close) = bytes.get(p) else {
-                                            break 'main;
+                                        let close =
+                                            one_more!(src, p, break 'main CallEnd::Ended(src_base));
+                                        let Ok(close) = u8::try_from(close) else {
+                                            invalid = true;
+                                            break 'step;
                                         };
-                                        p += 1;
                                         if close != b']' {
                                             invalid = true;
                                             break 'step;
@@ -764,34 +795,42 @@ pub(crate) fn decode(
                                 break 'step;
                             }
                             b'%' => {
-                                let Some(&next) = bytes.get(p) else {
-                                    break 'main;
+                                let next = one_more!(src, p, break 'main CallEnd::Ended(src_base));
+                                let Ok(next) = u8::try_from(next) else {
+                                    invalid = true;
+                                    break 'step;
                                 };
-                                p += 1;
                                 if next == b'/' {
-                                    let Some(&dim) = bytes.get(p) else {
-                                        break 'main;
+                                    let dim =
+                                        one_more!(src, p, break 'main CallEnd::Ended(src_base));
+                                    let Ok(dim) = u8::try_from(dim) else {
+                                        invalid = true;
+                                        break 'step;
                                     };
-                                    p += 1;
                                     if !(b'0'..=b'4').contains(&dim) {
                                         invalid = true;
                                         break 'step;
                                     }
-                                    let Some(&m) = bytes.get(p) else {
-                                        break 'main;
+                                    let m = one_more!(src, p, break 'main CallEnd::Ended(src_base));
+                                    let Ok(m) = u8::try_from(m) else {
+                                        invalid = true;
+                                        break 'step;
                                     };
-                                    p += 1;
                                     if m < 128 {
                                         invalid = true;
                                         break 'step;
                                     }
-                                    let Some(&l) = bytes.get(p) else {
-                                        break 'main;
+                                    let l = one_more!(src, p, break 'main CallEnd::Ended(src_base));
+                                    let Ok(l) = u8::try_from(l) else {
+                                        invalid = true;
+                                        break 'step;
                                     };
-                                    p += 1;
                                     if l < 128 {
                                         invalid = true;
                                         break 'step;
+                                    }
+                                    if out.char_count() - base + annotations + 6 > limit {
+                                        break 'main CallEnd::Full(src_base);
                                     }
                                     out.push_code(u32::from(ISO_CODE_ESC));
                                     out.push_code(u32::from(b'%'));
@@ -802,6 +841,9 @@ pub(crate) fn decode(
                                     extsegment_len =
                                         usize::from(m - 128) * 128 + usize::from(l - 128);
                                 } else if next == b'G' {
+                                    if out.char_count() - base + annotations + 3 > limit {
+                                        break 'main CallEnd::Full(src_base);
+                                    }
                                     out.push_code(u32::from(ISO_CODE_ESC));
                                     out.push_code(u32::from(b'%'));
                                     out.push_code(u32::from(b'G'));
@@ -824,10 +866,10 @@ pub(crate) fn decode(
                                         break 'step;
                                     }
                                 };
-                                let Some(&final_char) = bytes.get(p) else {
-                                    break 'main;
-                                };
-                                p += 1;
+                                let final_char =
+                                    one_more!(src, p, break 'main CallEnd::Ended(src_base));
+                                // DECODE_DESIGNATION: a character is no final byte.
+                                let final_char = u8::try_from(final_char).unwrap_or(0);
                                 let keep =
                                     decode_designation(&mut state, reg, 1, chars96, final_char);
                                 if reg == 0 {
@@ -845,8 +887,8 @@ pub(crate) fn decode(
                 }
             }
 
-            if cmp.state == ComposingState::No {
-                runs.note(&charset, out.char_count());
+            if cmp.state == ComposingState::No && charset != "ascii" && !runs.is(&charset) {
+                annotations += runs.open(&charset, out);
             }
 
             // Now we know CHARSET and the first position code; fetch the
@@ -854,10 +896,11 @@ pub(crate) fn decode(
             let dim = charset_dimension(interp, &charset);
             let mut code = u32::from(first);
             if dim > 1 {
-                let Some(&c2) = bytes.get(p) else {
-                    break 'main;
+                let c2 = one_more!(src, p, break 'main CallEnd::Ended(src_base));
+                let Ok(c2) = u8::try_from(c2) else {
+                    invalid = true;
+                    break 'step;
                 };
-                p += 1;
                 if c2 < 0x20 || (0x80..0xA0).contains(&c2) || (first & 0x80) != (c2 & 0x80) {
                     invalid = true;
                     break 'step;
@@ -865,10 +908,11 @@ pub(crate) fn decode(
                 if dim == 2 {
                     code = (code << 8) | u32::from(c2);
                 } else {
-                    let Some(&c3) = bytes.get(p) else {
-                        break 'main;
+                    let c3 = one_more!(src, p, break 'main CallEnd::Ended(src_base));
+                    let Ok(c3) = u8::try_from(c3) else {
+                        invalid = true;
+                        break 'step;
                     };
-                    p += 1;
                     if c3 < 0x20 || (0x80..0xA0).contains(&c3) || (first & 0x80) != (c3 & 0x80) {
                         invalid = true;
                         break 'step;
@@ -882,10 +926,8 @@ pub(crate) fn decode(
             let decoded = decode_charset_code(interp, &charset, code);
             match decoded {
                 None => {
-                    finish_composition(&mut out, &mut cmp);
-                    for &byte in &bytes[src_base..p] {
-                        out.push_byte(byte);
-                    }
+                    finish_composition(out, &mut cmp);
+                    src.push_source_bytes(src_base, p, out);
                 }
                 Some(ch) if cmp.state == ComposingState::No => out.push_code(ch),
                 Some(ch)
@@ -896,7 +938,7 @@ pub(crate) fn decode(
                     }) >= MAX_COMPOSITION_COMPONENTS =>
                 {
                     // Too long composition.
-                    finish_composition(&mut out, &mut cmp);
+                    finish_composition(out, &mut cmp);
                     out.push_code(ch);
                 }
                 Some(ch) => {
@@ -923,32 +965,36 @@ pub(crate) fn decode(
             // invalid_code: the byte at the start of the sequence comes
             // through as itself, and the designation state resets to the
             // safest one (ASCII in G0, invoked to plane 0).
-            finish_composition(&mut out, &mut cmp);
-            p = src_base + 1;
-            out.push_byte(bytes[src_base]);
+            finish_composition(out, &mut cmp);
+            p = src_base;
+            let c = one_more!(src, p, break 'main CallEnd::Ended(src_base));
+            if c < 0 {
+                out.push_code((-c) as u32);
+            } else {
+                out.push_byte(c as u8);
+            }
             state.invocation[0] = 0;
             state.designation[0] = Designation::Charset("ascii".into());
             charset_id_0 = Some("ascii".into());
         }
+    };
+    // no_more_source (or the charbuf's end): the last block's unfinished
+    // composition is invalid, another's waits for the next call; the
+    // charset run closes only when no composition is in progress.
+    if cmp.state != ComposingState::No {
+        if last {
+            finish_composition(out, &mut cmp);
+        }
+    } else {
+        runs.finish(out);
     }
-    // no_more_source: with the last block an unfinished composition is
-    // invalid and decode_coding flushes the unconsumed tail as bytes;
-    // another block keeps the composition for the next.  The last charset
-    // run closes there, before the tail.
-    if block.last {
-        finish_composition(&mut out, &mut cmp);
-    }
-    out.charsets = runs.finish(out.char_count());
-    block.finish(&mut out, bytes, src_base);
-    if !block.last {
-        block.spec.iso2022 = Some(Box::new(Iso2022Carry {
-            state,
-            cmp,
-            extsegment_len,
-            embedded_utf_8,
-        }));
-    }
-    out
+    spec.iso2022 = Some(Box::new(Iso2022Carry {
+        state,
+        cmp,
+        extsegment_len,
+        embedded_utf_8,
+    }));
+    end
 }
 
 struct Encoder<'a> {
