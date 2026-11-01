@@ -11395,6 +11395,21 @@ setup_process_coding_systems's check now refuses). A 13-form
   rounds 230 and 231 on top: the grouped gate's 3,420 library
   tests, the integration targets and clippy with `--all-targets
   --all-features -D warnings' pass.
+- **Round 230: regex fastmap ASCII verdicts decided once a character is
+  met.** A translated re_search scanned ASCII bytes against verdicts on
+  all 128 codes, each computed through the case table for every pattern
+  compiled, though a search meets a few of them (icalendar-tests spent
+  337 million of its 2,960 million instructions there). The pattern now
+  keeps a mask of the codes decided and one of the codes admitted, with
+  the translation stamp and the target's multibyteness they hold for,
+  and decides a code when the scan first meets it. icalendar-tests run
+  2,775 million instructions under callgrind against GNU's 2,619
+  million; what remains is re_search's own scanning (208 million), the
+  range bookkeeping it calls (113 million) and compile_pattern (629
+  million against GNU's 550 million inclusive). Local validation, with
+  round 231 on top: the grouped gate's 3,420 library tests, the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's

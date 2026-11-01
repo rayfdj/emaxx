@@ -1042,32 +1042,6 @@ fn code_admits<E: MatchEnv + ?Sized>(
     pattern.fastmap[usize::from(lead)]
 }
 
-/// `code_admits' of each ASCII character, as PATTERN keeps it for the
-/// current translation.
-fn ascii_admits<E: MatchEnv + ?Sized>(
-    pattern: &mut Pattern,
-    target_multibyte: bool,
-    env: &mut E,
-) -> u128 {
-    let stamp = env.translate_stamp();
-    if let Some((at, multibyte, bits)) = pattern.ascii_admits
-        && at == stamp
-        && multibyte == target_multibyte
-    {
-        return bits;
-    }
-    // A search cache miss compiles the pattern afresh, so this runs once
-    // a compile: a tight loop over the translation's ASCII entries.
-    let mut bits = 0u128;
-    for c in 0..128u32 {
-        if code_admits(pattern, c, target_multibyte, env) {
-            bits |= 1 << c;
-        }
-    }
-    pattern.ascii_admits = Some((stamp, target_multibyte, bits));
-    bits
-}
-
 /// re_search_2: the start of the first match of PATTERN starting between
 /// STARTPOS and STARTPOS + RANGE (a backward search when RANGE is
 /// negative), not running past STOP.  The registers go to REGS when given,
@@ -1161,9 +1135,19 @@ pub(crate) fn re_search<E: MatchEnv + ?Sized>(
                             }
                         }
                     } else {
-                        // Each character translated and tested, an ASCII
-                        // one by its verdict.
-                        let admits = ascii_admits(pattern, target_multibyte, env);
+                        // Each character translated and tested, as
+                        // re_search_2 tests it; the verdict on an ASCII one
+                        // is kept with the pattern for this translation, so
+                        // each is translated once.
+                        let stamp = env.translate_stamp();
+                        let (mut known, mut admits) = match pattern.ascii_admits {
+                            Some((at, multibyte, known, admits))
+                                if at == stamp && multibyte == target_multibyte =>
+                            {
+                                (known, admits)
+                            }
+                            _ => (0u128, 0u128),
+                        };
                         'scan: while d < limit {
                             let rest = rd.rest(d);
                             let n = rest.len().min(limit - d);
@@ -1171,7 +1155,19 @@ pub(crate) fn re_search<E: MatchEnv + ?Sized>(
                             while i < n {
                                 let byte = rest[i];
                                 if byte < 0x80 {
-                                    if admits & (1 << byte) != 0 {
+                                    let bit = 1u128 << byte;
+                                    if known & bit == 0 {
+                                        known |= bit;
+                                        if code_admits(
+                                            pattern,
+                                            u32::from(byte),
+                                            target_multibyte,
+                                            env,
+                                        ) {
+                                            admits |= bit;
+                                        }
+                                    }
+                                    if admits & bit != 0 {
                                         d += i;
                                         break 'scan;
                                     }
@@ -1193,6 +1189,7 @@ pub(crate) fn re_search<E: MatchEnv + ?Sized>(
                             }
                             d += i;
                         }
+                        pattern.ascii_admits = Some((stamp, target_multibyte, known, admits));
                     }
                     let skipped = d as isize - startpos;
                     range -= skipped;
