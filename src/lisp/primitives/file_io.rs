@@ -889,6 +889,25 @@ fn encode_region_for_write(
             extended_chars: buffer.substring_extended_chars(start, end),
         }
     };
+    let region = (!args[0].is_string()).then(|| {
+        (
+            position_from_value(interp, &args[0]),
+            position_from_value(interp, &args[1]),
+        )
+    });
+    let source = crate::lisp::primitives::coding::pre_write_for_file(
+        interp,
+        source,
+        |interp| match region {
+            Some((Ok(start), Ok(end))) => interp
+                .buffer
+                .borrow()
+                .copy_intervals(start.min(end), start.max(end)),
+            _ => None,
+        },
+        coding_name,
+        env,
+    )?;
     let inhibit_eol_conversion = interp
         .lookup_var("inhibit-eol-conversion", env)
         .is_some_and(|value| value.is_truthy());
@@ -951,6 +970,25 @@ fn write_region_with_coding(
             extended_chars: buffer.substring_extended_chars(start, end),
         }
     };
+    let region = (!selected_args[0].is_string()).then(|| {
+        (
+            position_from_value(interp, &selected_args[0]),
+            position_from_value(interp, &selected_args[1]),
+        )
+    });
+    let source = crate::lisp::primitives::coding::pre_write_for_file(
+        interp,
+        source,
+        |interp| match region {
+            Some((Ok(start), Ok(end))) => interp
+                .buffer
+                .borrow()
+                .copy_intervals(start.min(end), start.max(end)),
+            _ => None,
+        },
+        coding_name,
+        env,
+    )?;
     let inhibit_eol_conversion = interp
         .lookup_var("inhibit-eol-conversion", env)
         .is_some_and(|value| value.is_truthy());

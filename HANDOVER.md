@@ -11258,6 +11258,47 @@ setup_process_coding_systems's check now refuses). A 13-form
   rule, the message, the stub's FILE and its fset hook. Local validation: the grouped gate's 3,414 library tests,
   the integration targets and clippy with `--all-targets --all-features
   -D warnings' pass.
+- **Round 226: coding conversions in coding.c's work buffer, BOMs and
+  the coding used.** A battery of 40 coding systems decoding 22 byte
+  strings and encoding 15 strings differed from GNU in `utf-8-auto''s
+  encoding, which had no BOM (encode_coding_utf_8 writes one unless
+  CODING_UTF_8_BOM is utf_without_bom, which a `:bom' pair is not), and
+  in `last-coding-system-used' after a `utf-7' encode, which showed the
+  utf-16be of the pre-write conversion's own encoding: code_convert_string
+  and code_convert_region set it once encode_coding_object is done.
+  Following that up found write-region writing a `utf-7' file in UTF-8:
+  e_write encodes through encode_coding_object, and Emaxx's file encoder
+  never ran a pre-write conversion; it does now, on the text with its
+  properties. The conversions themselves now run as coding.c runs them:
+  code_conversion_save's one " *code-conversion-work*" buffer, made with
+  its hooks inhibited and never killed (another named after it, killed
+  afterwards, while it is in use), erased, undo off,
+  `inhibit-modification-hooks' local and t, multibyte as the conversion
+  asks; decode_coding_object decodes every non-ASCII string there;
+  encode_coding_object's pre-write conversion gets BEG and Z there with
+  point after the text, the buffer multibyte only for text with more
+  bytes than characters, and the text encoded is that of the buffer
+  current afterwards, killed when it is not the work buffer; a post-read
+  conversion runs with undo off and point at the start of the decoded
+  text, in the work buffer for a string and in the region's own buffer
+  for a region (point then put back as decode_coding_object restores it,
+  the region's length counting what the conversion added). Both go
+  through safe_calln: an error is logged ("Error muted by safe_call")
+  and gives nil, which a post-read conversion's CHECK_FIXNAT then
+  rejects with `wholenump'. Emaxx had made and killed a fresh work buffer
+  per conversion, propagated their errors, dropped the decoded text's
+  `charset' properties after a post-read conversion, run a region's
+  post-read conversion outside the region, and skipped an ASCII region's
+  pre-write conversion through code_convert_string's fast path, which
+  only strings take. Oracle tests pin the work buffer, the muted errors,
+  both conversions' buffers, arguments and point, and the BOM, coding
+  used and file bytes for `utf-7' and `utf-8-auto'. Local validation: the
+  grouped gate's 3,416 library tests, the integration targets and
+  clippy with `--all-targets --all-features -D warnings' pass; the
+  gate's first run of the primitives group failed
+  `suspended_bytecode_observes_live_constant_vector_mutation' (the
+  weak table's last count after `garbage-collect'), which passed alone
+  and in a rerun of the whole group on the same build, 858 of 858.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -12716,6 +12757,11 @@ against 231.9 s (0.935), in all 0.993.
 passed, and frozen (run 41291574970) matched all 7,928 outcomes on the
 first attempt: setup 77.6 s against 64.2 s (1.208), test bodies 251.2 s
 against 260.8 s (0.963), in all 0.998.
+
+**On `4362a25`** (round 225): the full Rust gate (run 41294602316)
+passed, and frozen (run 41294604357) matched all 7,928 outcomes on the
+first attempt: setup 81.7 s against 68.0 s (1.200), test bodies 256.5 s
+against 270.5 s (0.948), in all 0.987.
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

@@ -5472,6 +5472,12 @@ pub struct InterpreterState {
     /// emacs.c's clearing of gflags.will_dump_ before the error an
     /// autoload or `require' in the dumping process signals.
     pub(crate) will_dump_reported: bool,
+    /// coding.c's Vcode_conversion_reused_workbuf: the id of the
+    /// " *code-conversion-work*" buffer code_conversion_save made, which
+    /// is never killed by a conversion.
+    pub(crate) code_conversion_reused_workbuf: Option<u64>,
+    /// coding.c's reused_workbuf_in_use.
+    pub(crate) reused_workbuf_in_use: bool,
     /// macros.c's C `executing_kbd_macro', the macro most recently started:
     /// unlike `executing-kbd-macro' it outlives an error that unwinds the
     /// macro, so cmd_error can say how far the macro got.
@@ -6322,6 +6328,8 @@ impl Interpreter {
             signaling_function: Value::Nil,
             autoload_queue: Value::Nil,
             will_dump_reported: false,
+            code_conversion_reused_workbuf: None,
+            reused_workbuf_in_use: false,
             executing_kbd_macro: false,
             kbd_macro_iterations: 0,
             symbols_with_positions_enabled: Box::new(Cell::new(false)),

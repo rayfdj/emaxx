@@ -33300,6 +33300,39 @@ fn autoload_defaliases_its_stub_and_provide_checks_subfeatures_as_a_list() {
 }
 
 #[test]
+fn conversions_run_in_codings_work_buffer_through_safe_call() {
+    // coding.c:code_conversion_save keeps one " *code-conversion-work*"
+    // buffer (undo off, `inhibit-modification-hooks' local) that a
+    // string decode fills; encode_coding_object runs a pre-write
+    // conversion there and decode_coding_object a post-read one, each
+    // through safe_calln, which logs and mutes an error (CHECK_FIXNAT then
+    // rejects the nil a post-read gave back).  A region's post-read runs
+    // in its own buffer, and a buffer the pre-write switched to is killed.
+    assert_oracle_contract_matches_interpreter(
+        r##"(progn (defun zz-r226-pw-err (_b _e) (error "pw boom")) (defun zz-r226-pr-err (_n) (error "pr boom")) (defvar zz-r226-shown nil) (defvar zz-r226-shown2 nil) (defun zz-r226-pw-show (b e) (setq zz-r226-shown (list (buffer-name) b e (point) (buffer-string) enable-multibyte-characters buffer-undo-list)) (goto-char (point-max)) (insert "!")) (defun zz-r226-pr-show (n) (setq zz-r226-shown2 (list (buffer-name) n (point) (buffer-string) buffer-undo-list)) (goto-char (point-max)) (insert "?") 5) (defun zz-r226-pw-new (_b _e) (set-buffer (generate-new-buffer "zz-r226-new")) (insert "NEW")) (define-coding-system 'zz-r226-a "x" :coding-type 'utf-8 :mnemonic ?z :pre-write-conversion 'zz-r226-pw-err :post-read-conversion 'zz-r226-pr-err) (define-coding-system 'zz-r226-b "x" :coding-type 'utf-8 :mnemonic ?z :pre-write-conversion 'zz-r226-pw-show :post-read-conversion 'zz-r226-pr-show) (define-coding-system 'zz-r226-c "x" :coding-type 'utf-8 :mnemonic ?z :pre-write-conversion 'zz-r226-pw-new) (list (progn (decode-coding-string "\351" 'latin-1) (buffer-live-p (get-buffer " *code-conversion-work*"))) (with-current-buffer " *code-conversion-work*" (list (buffer-string) buffer-undo-list enable-multibyte-characters (local-variable-p 'inhibit-modification-hooks))) (condition-case e (string-to-list (encode-coding-string "é" 'zz-r226-a)) (error e)) (condition-case e (decode-coding-string "\303\251" 'zz-r226-a) (error e)) (string-to-list (encode-coding-string "é" 'zz-r226-b)) zz-r226-shown (with-temp-buffer (insert "ab") (encode-coding-region 1 3 'zz-r226-b) (list (buffer-string) zz-r226-shown)) (decode-coding-string "\303\251x" 'zz-r226-b) zz-r226-shown2 (with-temp-buffer (insert "\303\251y") (list (decode-coding-region 1 (point-max) 'zz-r226-b) (buffer-string) (car zz-r226-shown2) (cdr zz-r226-shown2) (point))) (encode-coding-string "é" 'zz-r226-c) (get-buffer "zz-r226-new") (let ((n 0)) (dolist (b (buffer-list)) (when (string-prefix-p " *code-conversion-work" (buffer-name b)) (setq n (1+ n)))) n)))"##,
+        r##"(t (#("é" 0 1 (charset iso-8859-1)) t t t) (195 169) (wrong-type-argument wholenump nil) (195 169 33) (" *code-conversion-work*" 1 2 2 "é" t t) ("ab!" (" *code-conversion-work*" 1 3 3 "ab" nil t)) "éx?" (" *code-conversion-work*" 2 1 "éx" t) (3 "éy?" " *temp*" (2 1 "éy" t) 4) "NEW" nil 1)"##,
+        "coding work buffer",
+    );
+}
+
+#[test]
+fn encoding_writes_the_bom_and_records_the_coding_after_its_conversion() {
+    // encode_coding_utf_8 writes a BOM unless CODING_UTF_8_BOM is
+    // utf_without_bom (`utf-8-auto' included); code_convert_string and
+    // code_convert_region set `last-coding-system-used' once the encoding,
+    // pre-write conversion and all, is done; write-region's e_write runs
+    // the pre-write conversion (`utf-7' writes UTF-7) after choosing the
+    // coding.
+    assert_oracle_contract_matches_interpreter(
+        r##"(let ((f (make-temp-file "zz-r226")) r) (unwind-protect (dolist (cs '(utf-7 utf-8-auto) (nreverse r)) (push (list (string-to-list (encode-coding-string "é" cs)) (progn (encode-coding-string "x" cs) last-coding-system-used) (string-to-list (encode-coding-string "" cs)) (with-temp-buffer (insert "été") (encode-coding-region (point-min) (point-max) cs) (list (string-to-list (buffer-string)) last-coding-system-used)) (progn (with-temp-buffer (insert "été\n") (let ((coding-system-for-write cs)) (write-region nil nil f nil 'silent))) last-coding-system-used) (with-temp-buffer (set-buffer-multibyte nil) (insert-file-contents-literally f) (string-to-list (buffer-string))) (with-temp-buffer (let ((coding-system-for-read cs)) (insert-file-contents f)) (list (buffer-string) buffer-file-coding-system))) r)) (delete-file f)))"##,
+        r##"(((43 65 79 107) utf-7 nil ((43 65 79 107 45 116 43 65 79 107) utf-7) utf-16be (43 65 79 107 45 116 43 65 79 107 45 10) ("été
+" utf-7-unix)) ((239 187 191 195 169) utf-8-auto (239 187 191) ((4194287 4194235 4194239 4194243 4194217 116 4194243 4194217) utf-8-auto) utf-8-auto-unix (239 187 191 195 169 116 195 169 10) ("été
+" utf-8-with-signature-unix)))"##,
+        "encode BOM and coding used",
+    );
+}
+
+#[test]
 fn readevalloop_reads_at_the_buffers_point_with_standard_input_bound_to_it() {
     // lread.c:readevalloop binds `standard-input' to the buffer it reads,
     // so a form's `read' takes the text after it; eval-buffer reads each

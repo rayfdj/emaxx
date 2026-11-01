@@ -379,35 +379,112 @@ pub(crate) fn coding_system_charset_names(interp: &Interpreter, coding: &str) ->
         .collect()
 }
 
-fn run_coding_conversion(
+/// coding.c's work buffer for one conversion, as code_conversion_save
+/// made it, with the buffer that was current then.
+pub(crate) struct ConversionWorkBuffer {
+    pub(crate) id: u64,
+    reused: bool,
+    saved_current: u64,
+}
+
+/// coding.c:code_conversion_save (true, MULTIBYTE): the reused
+/// " *code-conversion-work*" buffer, made the first time and never
+/// killed, or while it is in use a buffer named after it that
+/// code_conversion_restore kills; made with its hooks inhibited, then
+/// `inhibit-modification-hooks' local and t, erased, undo off and
+/// MULTIBYTE.  The current buffer stays current.
+pub(crate) fn code_conversion_save(
     interp: &mut Interpreter,
-    source: &StringLike,
-    function: &Value,
-    pre_write: bool,
+    multibyte: bool,
     env: &mut Env,
-) -> Result<StringLike, LispError> {
-    if function.is_nil() {
-        return Ok(source.clone());
-    }
-    let saved_buffer_id = interp.current_buffer_id();
-    let base_name = " *code-conversion-work*";
-    let temp_name = if interp.has_buffer(base_name) {
-        let mut suffix = 2;
-        loop {
-            let candidate = format!("{base_name}<{suffix}>");
-            if !interp.has_buffer(&candidate) {
-                break candidate;
+) -> Result<ConversionWorkBuffer, LispError> {
+    const NAME: &str = " *code-conversion-work*";
+    let saved_current = interp.current_buffer_id();
+    let reused = !interp.reused_workbuf_in_use;
+    let workbuf = if reused {
+        match interp
+            .code_conversion_reused_workbuf
+            .and_then(|id| interp.buffer_object(id))
+        {
+            Some(buffer) => Value::Buffer(buffer),
+            None => {
+                let buffer = call(
+                    interp,
+                    "get-buffer-create",
+                    &[Value::string(NAME), Value::T],
+                    env,
+                )?;
+                interp.code_conversion_reused_workbuf = Some(interp.resolve_buffer_id(&buffer)?);
+                buffer
             }
-            suffix += 1;
         }
     } else {
-        base_name.into()
+        let name = call(
+            interp,
+            "generate-new-buffer-name",
+            &[Value::string(NAME)],
+            env,
+        )?;
+        call(interp, "get-buffer-create", &[name, Value::T], env)?
     };
-    let (temp_id, _) = interp.create_buffer(&temp_name);
-    interp.set_buffer_hooks_inhibited(temp_id, true);
-    interp.set_current_buffer_id(temp_id)?;
-    interp.buffer.borrow_mut().set_multibyte(source.multibyte);
-    // insert_from_string of the source, its intervals grafted.
+    let id = interp.resolve_buffer_id(&workbuf)?;
+    interp.set_current_buffer_id(id)?;
+    let prepared = (|| -> Result<(), LispError> {
+        let symbol = call(
+            interp,
+            "make-local-variable",
+            &[Value::symbol("inhibit-modification-hooks")],
+            env,
+        )?;
+        call(interp, "set", &[symbol, Value::T], env)?;
+        call(interp, "erase-buffer", &[], env)?;
+        let mut buffer = interp.buffer.borrow_mut();
+        buffer.set_undo_list(Value::T);
+        buffer.set_multibyte(multibyte);
+        Ok(())
+    })();
+    if reused {
+        interp.reused_workbuf_in_use = true;
+    }
+    let work = ConversionWorkBuffer {
+        id,
+        reused,
+        saved_current,
+    };
+    if let Err(error) = prepared {
+        code_conversion_restore(interp, work, env)?;
+        return Err(error);
+    }
+    interp.set_current_buffer_id(saved_current)?;
+    Ok(work)
+}
+
+/// coding.c:code_conversion_restore: the reused work buffer is free again
+/// (its text stays), another one is killed, and the buffer current at
+/// code_conversion_save is current again.
+pub(crate) fn code_conversion_restore(
+    interp: &mut Interpreter,
+    work: ConversionWorkBuffer,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    let killed = if work.reused {
+        interp.reused_workbuf_in_use = false;
+        Ok(())
+    } else if let Some(buffer) = interp.buffer_object(work.id) {
+        call(interp, "kill-buffer", &[Value::Buffer(buffer)], env).map(|_| ())
+    } else {
+        Ok(())
+    };
+    if interp.has_buffer_id(work.saved_current) {
+        interp.set_current_buffer_id(work.saved_current)?;
+    }
+    killed
+}
+
+/// insert_from_string of SOURCE, its text properties included and none
+/// inherited, at point in the current buffer.
+fn insert_conversion_source(interp: &mut Interpreter, source: &StringLike) {
+    let at = interp.buffer.borrow().point();
     let props = match &source.props {
         Some(intervals) => crate::buffer::InsertedProperties::Intervals {
             source: intervals,
@@ -416,46 +493,163 @@ fn run_coding_conversion(
         None => crate::buffer::InsertedProperties::PLAIN,
     };
     interp.insert_current_buffer_with(&source.text, props, false);
-    interp.set_inserted_extended_chars(1, &source.extended_chars);
-    // GNU invokes a post-read conversion with point at the beginning of the
-    // newly decoded span.  Lisp decoders such as `utf-7-decode' consume LEN
-    // bytes starting at point, so leaving point after the insertion silently
-    // turns the conversion into a no-op.
-    if !pre_write {
-        {
-            let mut buffer = interp.buffer.borrow_mut();
-            let position = buffer.point_min();
-            buffer.goto_char(position);
-        }
+    interp.set_inserted_extended_chars(at, &source.extended_chars);
+}
+
+/// The current buffer's whole text, BEG to Z, with its properties.
+fn whole_buffer_text(interp: &Interpreter) -> StringLike {
+    let buffer = interp.buffer.borrow();
+    let z = buffer.size_total() + 1;
+    StringLike {
+        text: buffer.text_to_z(1),
+        props: buffer.copy_intervals(1, z),
+        multibyte: buffer.is_multibyte(),
+        extended_chars: buffer.substring_extended_chars(1, z),
     }
-    let arguments = if pre_write {
-        vec![
-            Value::Integer(interp.buffer.borrow().point_min() as i64),
-            Value::Integer(interp.buffer.borrow().point_max() as i64),
-        ]
-    } else {
-        // coding.c:decode_coding_object passes produced_char, not bytes.
-        // The conversion buffer already records the decoded character count.
-        vec![Value::Integer(interp.buffer.borrow().buffer_size() as i64)]
+}
+
+/// encode_coding_object's pre-write conversion: SOURCE inserted in a work
+/// buffer (multibyte when it has more bytes than characters), FUNCTION
+/// called there through safe_calln with BEG and Z, and what is to be
+/// encoded the whole text of the buffer current afterwards -- killed when
+/// it is not the work buffer.  `deactivate-mark' is kept.
+pub(crate) fn pre_write_convert(
+    interp: &mut Interpreter,
+    source: &StringLike,
+    function: Value,
+    env: &mut Env,
+) -> Result<StringLike, LispError> {
+    let old_deactivate_mark = interp
+        .lookup_var("deactivate-mark", env)
+        .unwrap_or(Value::Nil);
+    let src_multibyte =
+        source.multibyte && (!source.text.is_ascii() || !source.extended_chars.is_empty());
+    let work = code_conversion_save(interp, src_multibyte, env)?;
+    let converted = (|| -> Result<(StringLike, u64), LispError> {
+        interp.set_current_buffer_id(work.id)?;
+        insert_conversion_source(interp, source);
+        let z = interp.buffer.borrow().size_total() as i64 + 1;
+        interp.safe_funcall(function, &[Value::Integer(1), Value::Integer(z)], env)?;
+        Ok((whole_buffer_text(interp), interp.current_buffer_id()))
+    })();
+    let killed = match &converted {
+        Ok((_, current)) if *current != work.id => interp
+            .buffer_object(*current)
+            .map(|buffer| call(interp, "kill-buffer", &[Value::Buffer(buffer)], env).map(|_| ()))
+            .unwrap_or(Ok(())),
+        _ => Ok(()),
     };
-    let result = interp.call_function_value(*function, None, &arguments, env);
-    let result_buffer_id = interp.current_buffer_id();
-    let converted = {
-        let buffer = interp.buffer.borrow();
-        StringLike {
-            text: buffer.buffer_string(),
-            props: None,
-            multibyte: buffer.is_multibyte(),
-            extended_chars: buffer.substring_extended_chars(buffer.point_min(), buffer.point_max()),
-        }
-    };
-    let _ = interp.set_current_buffer_id(saved_buffer_id);
-    if result_buffer_id != saved_buffer_id && result_buffer_id != temp_id {
-        interp.kill_buffer_id(result_buffer_id);
-    }
-    interp.kill_buffer_id(temp_id);
-    result?;
+    interp.set_variable("deactivate-mark", old_deactivate_mark, env);
+    let restored = code_conversion_restore(interp, work, env);
+    let (converted, _) = converted?;
+    killed?;
+    restored?;
     Ok(converted)
+}
+
+/// e_write's encode_coding_object of SOURCE by CODING for a file: the
+/// coding's pre-write conversion, when it has one, run on the text with
+/// its properties (PROPERTIES gives a buffer region's) before encoding.
+pub(crate) fn pre_write_for_file(
+    interp: &mut Interpreter,
+    source: StringLike,
+    properties: impl FnOnce(&Interpreter) -> Option<crate::intervals::Intervals>,
+    coding: &str,
+    env: &mut Env,
+) -> Result<StringLike, LispError> {
+    let pre_write = interp
+        .coding_system_canonical_name(coding)
+        .and_then(|canonical| coding_system_property(interp, &canonical, ":pre-write-conversion"))
+        .unwrap_or(Value::Nil);
+    if pre_write.is_nil() {
+        return Ok(source);
+    }
+    let mut source = source;
+    if source.props.is_none() {
+        source.props = properties(interp);
+    }
+    pre_write_convert(interp, &source, pre_write, env)
+}
+
+/// decode_coding_object for a string destination: DECODED, with its
+/// `charset' properties, is the text of a work buffer (multibyte unless
+/// the coding is for unibyte text), where a post-read conversion runs
+/// through safe_calln with the characters produced and point at BEG; its
+/// value must be a natural number (CHECK_FIXNAT).  The result is
+/// Fbuffer_string of the buffer current then.
+pub(crate) fn decode_into_work_buffer(
+    interp: &mut Interpreter,
+    decoded: &StringLike,
+    post_read: Value,
+    env: &mut Env,
+) -> Result<StringLike, LispError> {
+    let old_deactivate_mark = interp
+        .lookup_var("deactivate-mark", env)
+        .unwrap_or(Value::Nil);
+    let work = code_conversion_save(interp, decoded.multibyte, env)?;
+    let result = (|| -> Result<StringLike, LispError> {
+        interp.set_current_buffer_id(work.id)?;
+        insert_conversion_source(interp, decoded);
+        if !post_read.is_nil() {
+            let produced = decoded.text.chars().count() as i64;
+            {
+                let mut buffer = interp.buffer.borrow_mut();
+                buffer.goto_char(1);
+            }
+            let value = interp.safe_funcall(post_read, &[Value::Integer(produced)], env)?;
+            if !matches!(value.kind(), Kind::Integer(n) if n >= 0) {
+                return Err(wrong_type_argument("wholenump", value));
+            }
+        }
+        let buffer = interp.buffer.borrow();
+        let (begv, zv) = (buffer.point_min(), buffer.point_max());
+        Ok(StringLike {
+            text: buffer.buffer_string(),
+            props: buffer.copy_intervals(begv, zv),
+            multibyte: buffer.is_multibyte(),
+            extended_chars: buffer.substring_extended_chars(begv, zv),
+        })
+    })();
+    interp.set_variable("deactivate-mark", old_deactivate_mark, env);
+    let restored = code_conversion_restore(interp, work, env);
+    let result = result?;
+    restored?;
+    Ok(result)
+}
+
+/// decode_coding_object's post-read conversion in a buffer destination:
+/// in the current buffer, with undo off for the call and point at DST_POS
+/// where PRODUCED characters were decoded, FUNCTION through safe_calln;
+/// its value must be a natural number.  Returns the characters produced,
+/// grown by what the conversion inserted.
+pub(crate) fn post_read_in_buffer(
+    interp: &mut Interpreter,
+    function: Value,
+    dst_pos: usize,
+    produced: usize,
+    env: &mut Env,
+) -> Result<usize, LispError> {
+    let buffer_id = interp.current_buffer_id();
+    let (prev_z, undo_list) = {
+        let mut buffer = interp.buffer.borrow_mut();
+        let undo_list = buffer.undo_list();
+        buffer.set_undo_list(Value::T);
+        buffer.goto_char(dst_pos);
+        (buffer.size_total(), undo_list)
+    };
+    let value = interp.with_lisp_stack_roots(&undo_list, |interp| {
+        interp.safe_funcall(function, &[Value::Integer(produced as i64)], env)
+    });
+    // coding_restore_undo_list, into the buffer that was current.
+    let grown = interp.get_buffer_by_id_mut(buffer_id).map(|mut buffer| {
+        buffer.set_undo_list(undo_list);
+        buffer.size_total()
+    });
+    let value = value?;
+    if !matches!(value.kind(), Kind::Integer(n) if n >= 0) {
+        return Err(wrong_type_argument("wholenump", value));
+    }
+    Ok((produced as isize + grown.unwrap_or(prev_z) as isize - prev_z as isize).max(0) as usize)
 }
 
 /// encode_coding_charset: an ASCII character as itself when the coding is
@@ -1868,9 +2062,14 @@ pub(crate) fn encode_text_bytes_with_charsets(
         preferred,
     );
     match encoder {
+        // encode_coding_utf_8 writes the BOM unless CODING_UTF_8_BOM is
+        // utf_without_bom: a `:bom' of t, or the (WITH . WITHOUT) pair of
+        // an auto-detecting coding.
         "utf-8" => encode_coding_utf_8(
             &codes,
-            kind == "utf-8-with-signature" || coding_system_requires_bom(interp, &canonical),
+            kind == "utf-8-with-signature"
+                || coding_system_property(interp, &canonical, ":bom")
+                    .is_some_and(|bom| !bom.is_nil()),
             spec,
         ),
         "utf-16" => {
@@ -3406,6 +3605,33 @@ pub(crate) fn encode_coding_value_recording(
     record_used: bool,
     env: &mut Env,
 ) -> Result<Value, LispError> {
+    encode_coding_converted(interp, value, coding, nocopy, record_used, true, env)
+}
+
+/// code_convert_region's encode of the region text VALUE: no fast path,
+/// the pre-write conversion always run.
+pub(crate) fn encode_coding_region_value(
+    interp: &mut Interpreter,
+    value: &Value,
+    coding: Option<&str>,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    encode_coding_converted(interp, value, coding, false, true, false, env)
+}
+
+/// encode_coding_object of VALUE by CODING, with code_convert_string's
+/// ASCII fast path when STRING_CONVERSION; `last-coding-system-used' is
+/// the coding given, set (when RECORD_USED) once the encoding, pre-write
+/// conversion included, is done.
+fn encode_coding_converted(
+    interp: &mut Interpreter,
+    value: &Value,
+    coding: Option<&str>,
+    nocopy: bool,
+    record_used: bool,
+    string_conversion: bool,
+    env: &mut Env,
+) -> Result<Value, LispError> {
     let string =
         string_like(value).ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *value))?;
     let Some(coding) = coding else {
@@ -3421,24 +3647,25 @@ pub(crate) fn encode_coding_value_recording(
     let canonical = interp
         .coding_system_canonical_name(coding)
         .ok_or_else(|| coding_system_error(Value::symbol(coding)))?;
-    // The requested spelling, not the canonical name (the oracle answers
-    // `euc-jp' for (encode-coding-string "a" 'euc-jp)).
-    if record_used {
-        set_last_coding_system_used(interp, coding, env);
-    }
     let inhibit_eol_conversion = interp
         .lookup_var("inhibit-eol-conversion", env)
         .is_some_and(|value| value.is_truthy());
     // code_convert_string only preserves identity for ASCII-compatible,
     // ASCII-only input with no EOL work. It runs before pre-write conversion.
-    let fast_path = coding_system_is_ascii_compatible(interp, &canonical)
+    let fast_path = string_conversion
+        && coding_system_is_ascii_compatible(interp, &canonical)
         && string.text.is_ascii()
         && string.extended_chars.is_empty()
         && (interp.coding_system_eol_type_value(&canonical) == Some(0)
             || matches!(canonical.as_str(), "no-conversion" | "binary")
             || inhibit_eol_conversion
             || !string.text.contains('\n'));
+    // The requested spelling, not the canonical name (the oracle answers
+    // `euc-jp' for (encode-coding-string "a" 'euc-jp)).
     if fast_path {
+        if record_used {
+            set_last_coding_system_used(interp, coding, env);
+        }
         return Ok(if nocopy {
             *value
         } else {
@@ -3447,12 +3674,12 @@ pub(crate) fn encode_coding_value_recording(
     }
     let pre_write =
         coding_system_property(interp, &canonical, ":pre-write-conversion").unwrap_or(Value::Nil);
-    let converted = run_coding_conversion(interp, &string, &pre_write, true, env)?;
-    let preferred = if pre_write.is_nil() {
-        charset_preferences(&string)
+    let converted = if pre_write.is_nil() {
+        string.clone()
     } else {
-        Vec::new()
+        pre_write_convert(interp, &string, pre_write, env)?
     };
+    let preferred = charset_preferences(&converted);
     // encode_coding substitutes the default character for what the
     // coding cannot encode; it never signals.
     let translation = encode_translation_tables(interp, &canonical, env)?;
@@ -3466,6 +3693,9 @@ pub(crate) fn encode_coding_value_recording(
         &preferred,
         None,
     )?;
+    if record_used {
+        set_last_coding_system_used(interp, coding, env);
+    }
     Ok(bytes_to_shared_unibyte_value(&encoded))
 }
 
@@ -3490,12 +3720,12 @@ pub(crate) fn encode_process_block(
         .is_some_and(|value| value.is_truthy());
     let pre_write =
         coding_system_property(interp, &canonical, ":pre-write-conversion").unwrap_or(Value::Nil);
-    let converted = run_coding_conversion(interp, &string, &pre_write, true, env)?;
-    let preferred = if pre_write.is_nil() {
-        charset_preferences(&string)
+    let converted = if pre_write.is_nil() {
+        string.clone()
     } else {
-        Vec::new()
+        pre_write_convert(interp, &string, pre_write, env)?
     };
+    let preferred = charset_preferences(&converted);
     let translation = encode_translation_tables(interp, &canonical, env)?;
     encode_text_bytes_with_charsets(
         interp,
@@ -4001,17 +4231,49 @@ pub(crate) fn decode_coding_text_recording(
     record_used: bool,
     env: &mut Env,
 ) -> Result<Value, LispError> {
+    debug_assert!(
+        dst_multibyte.is_none(),
+        "a buffer destination decodes through decode_coding_text_for_buffer"
+    );
+    decode_coding_parts(
+        interp,
+        value,
+        coding,
+        nocopy,
+        buffer_conversion,
+        dst_multibyte,
+        record_used,
+        env,
+    )
+    .map(|decoded| decoded.value)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn decode_coding_parts(
+    interp: &mut Interpreter,
+    value: &Value,
+    coding: Option<&str>,
+    nocopy: bool,
+    buffer_conversion: bool,
+    dst_multibyte: Option<bool>,
+    record_used: bool,
+    env: &mut Env,
+) -> Result<BufferDecode, LispError> {
     let string =
         string_like(value).ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *value))?;
     let Some(coding) = coding else {
         if record_used {
             set_last_coding_system_used(interp, "no-conversion", env);
         }
-        return if nocopy {
-            Ok(*value)
-        } else {
-            shared_string_copy(value)
-        };
+        return Ok(BufferDecode {
+            value: if nocopy {
+                *value
+            } else {
+                shared_string_copy(value)?
+            },
+            coding: "no-conversion".into(),
+            post_read: Value::Nil,
+        });
     };
     let canonical = interp
         .coding_system_canonical_name(coding)
@@ -4036,10 +4298,14 @@ pub(crate) fn decode_coding_text_recording(
         if record_used {
             set_last_coding_system_used(interp, coding, env);
         }
-        return Ok(if nocopy {
-            *value
-        } else {
-            make_shared_string_value_with_multibyte(string.text, None, true)
+        return Ok(BufferDecode {
+            value: if nocopy {
+                *value
+            } else {
+                make_shared_string_value_with_multibyte(string.text, None, true)
+            },
+            coding: coding.into(),
+            post_read: Value::Nil,
         });
     }
     let CodingDecode {
@@ -4055,35 +4321,100 @@ pub(crate) fn decode_coding_text_recording(
     )?;
     // produce_annotation's `charset' properties of the decoded text.
     let charset_props = charset_spans_to_props(decoded.charsets, &decoded.text, None);
-    // decode_coding_object makes the work buffer multibyte unless the
-    // coding detect_coding settled on is for unibyte text.
     let post_read = coding_system_property(interp, &actual_coding, ":post-read-conversion")
         .unwrap_or(Value::Nil);
-    let conversion_ran = !post_read.is_nil();
     let decoded = StringLike {
         text: decoded.text,
-        props: None,
+        props: charset_props,
         // A buffer destination takes the characters produced (written
         // into a unibyte one in their multibyte form, by the caller); a
         // string is unibyte for a coding for unibyte text.
         multibyte: dst_multibyte.is_some() || !for_unibyte,
         extended_chars: decoded.extended,
     };
-    let converted = run_coding_conversion(interp, &decoded, &post_read, false, env)?;
+    if dst_multibyte.is_some() {
+        // The destination buffer's decode is finished by
+        // finish_buffer_decode, once the text is in it.
+        return Ok(BufferDecode {
+            value: make_shared_string_value_with_extended_chars(
+                decoded.text,
+                decoded.props,
+                decoded.multibyte,
+                decoded.extended_chars,
+            ),
+            coding: actual_coding,
+            post_read,
+        });
+    }
+    // A string destination: decode_coding_object decodes into the work
+    // buffer, multibyte unless the coding detect_coding settled on is for
+    // unibyte text, and the post-read conversion runs there.
+    let converted = decode_into_work_buffer(interp, &decoded, post_read, env)?;
     // code_convert_string records CODING_ID_NAME once decode_coding_object,
     // post-read conversion included, has returned.
     if record_used {
         set_last_coding_system_used(interp, &actual_coding, env);
     }
-    // A post-read conversion rewrites the text, after which the decoder's
-    // annotations cannot be placed.
-    let props = if conversion_ran { None } else { charset_props };
-    Ok(make_shared_string_value_with_extended_chars(
-        converted.text,
-        props,
-        converted.multibyte,
-        converted.extended_chars,
-    ))
+    Ok(BufferDecode {
+        value: make_shared_string_value_with_extended_chars(
+            converted.text,
+            converted.props,
+            converted.multibyte,
+            converted.extended_chars,
+        ),
+        coding: actual_coding,
+        post_read: Value::Nil,
+    })
+}
+
+/// A decode for a buffer destination: the decoded text, the coding
+/// detect_coding settled on and that coding's post-read conversion.
+pub(crate) struct BufferDecode {
+    pub(crate) value: Value,
+    coding: String,
+    post_read: Value,
+}
+
+/// decode_coding_object into a buffer destination: VALUE decoded with
+/// CODING for a buffer of DST_MULTIBYTE, to be inserted by the caller
+/// and finished with finish_buffer_decode.
+pub(crate) fn decode_coding_text_for_buffer(
+    interp: &mut Interpreter,
+    value: &Value,
+    coding: Option<&str>,
+    dst_multibyte: bool,
+    env: &mut Env,
+) -> Result<BufferDecode, LispError> {
+    decode_coding_parts(
+        interp,
+        value,
+        coding,
+        false,
+        true,
+        Some(dst_multibyte),
+        false,
+        env,
+    )
+}
+
+/// The rest of decode_coding_object and code_convert_region for a buffer
+/// destination holding DECODE's text, PRODUCED characters at DST_POS of
+/// the current buffer: the post-read conversion there, then
+/// `last-coding-system-used'.  Returns the characters produced.
+pub(crate) fn finish_buffer_decode(
+    interp: &mut Interpreter,
+    decode: &BufferDecode,
+    dst_pos: usize,
+    produced: usize,
+    env: &mut Env,
+) -> Result<usize, LispError> {
+    let produced = if decode.post_read.is_nil() {
+        produced
+    } else {
+        post_read_in_buffer(interp, decode.post_read, dst_pos, produced, env)?
+    };
+    set_last_coding_system_used(interp, &decode.coding, env);
+    Ok(produced)
 }
 
 /// charset.c CHARSET_MIN_CODE / CHARSET_MAX_CODE.

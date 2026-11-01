@@ -1161,8 +1161,14 @@ define_dispatch!(
                     )
                 };
                 let return_string = matches!(destination, Destination::Return);
+                let mut buffer_decode = None;
                 let transformed = if name == "encode-coding-region" {
-                    encode_coding_value(interp, &region, coding.as_deref(), return_string, env)?
+                    crate::lisp::primitives::coding::encode_coding_region_value(
+                        interp,
+                        &region,
+                        coding.as_deref(),
+                        env,
+                    )?
                 } else {
                     // decode_coding_object decodes into the destination
                     // buffer as it is, multibyte or not; a string result
@@ -1174,15 +1180,30 @@ define_dispatch!(
                             .get_buffer_by_id(id)
                             .map(|buffer| buffer.is_multibyte()),
                     };
-                    decode_coding_text(
-                        interp,
-                        &region,
-                        coding.as_deref(),
-                        return_string,
-                        true,
-                        dst_multibyte,
-                        env,
-                    )?
+                    match dst_multibyte {
+                        Some(dst_multibyte) => {
+                            let decoded =
+                                crate::lisp::primitives::coding::decode_coding_text_for_buffer(
+                                    interp,
+                                    &region,
+                                    coding.as_deref(),
+                                    dst_multibyte,
+                                    env,
+                                )?;
+                            let value = decoded.value;
+                            buffer_decode = Some(decoded);
+                            value
+                        }
+                        None => decode_coding_text(
+                            interp,
+                            &region,
+                            coding.as_deref(),
+                            return_string,
+                            true,
+                            None,
+                            env,
+                        )?,
+                    }
                 };
                 let transformed_string = string_like(&transformed)
                     .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), transformed))?;
@@ -1211,30 +1232,64 @@ define_dispatch!(
                             text_for_buffer(interp.buffer.borrow().is_multibyte())?;
                         let old_length = end - start;
                         let new_end = start + text.chars().count();
-                        modify_current_buffer(interp, start, end, false, env, |interp, _, _| {
-                            replace_buffer_region_with_text(interp, start, end, &text, &extended)?;
-                            // decode_coding counts produced characters even
-                            // into a unibyte destination, so the spans keep
-                            // their character offsets there.
-                            if let Some(intervals) = &transformed_props {
-                                for (from, to, plist) in intervals.iter() {
-                                    if !plist.is_nil() {
-                                        let _ =
-                                            interp.buffer.borrow_mut().add_text_properties_range(
-                                                start + from,
-                                                start + to,
-                                                plist,
-                                                crate::intervals::PropertySetType::Replace,
-                                                true,
-                                            );
+                        let saved_pt = interp.buffer.borrow().point();
+                        let replaced = modify_current_buffer(
+                            interp,
+                            start,
+                            end,
+                            false,
+                            env,
+                            |interp, _, _| {
+                                replace_buffer_region_with_text(
+                                    interp, start, end, &text, &extended,
+                                )?;
+                                // decode_coding counts produced characters even
+                                // into a unibyte destination, so the spans keep
+                                // their character offsets there.
+                                if let Some(intervals) = &transformed_props {
+                                    for (from, to, plist) in intervals.iter() {
+                                        if !plist.is_nil() {
+                                            let _ = interp
+                                                .buffer
+                                                .borrow_mut()
+                                                .add_text_properties_range(
+                                                    start + from,
+                                                    start + to,
+                                                    plist,
+                                                    crate::intervals::PropertySetType::Replace,
+                                                    true,
+                                                );
+                                        }
                                     }
                                 }
-                            }
-                            Ok((
-                                Some(AfterChange::new(start, old_length, new_end - start)),
-                                Value::Integer(transformed_length as i64),
-                            ))
-                        })
+                                Ok((
+                                    Some(AfterChange::new(start, old_length, new_end - start)),
+                                    Value::Integer(transformed_length as i64),
+                                ))
+                            },
+                        )?;
+                        let Some(decode) = &buffer_decode else {
+                            return Ok(replaced);
+                        };
+                        // The post-read conversion where the text was
+                        // decoded, then point back as decode_coding_object
+                        // leaves it for the region it replaced.
+                        let produced = crate::lisp::primitives::coding::finish_buffer_decode(
+                            interp,
+                            decode,
+                            start,
+                            transformed_length,
+                            env,
+                        )?;
+                        let point = if saved_pt < start {
+                            saved_pt
+                        } else if saved_pt < start + old_length {
+                            start
+                        } else {
+                            saved_pt + produced - old_length
+                        };
+                        interp.buffer.borrow_mut().goto_char(point);
+                        Ok(Value::Integer(produced as i64))
                     }
                     Destination::Buffer(buffer_id) => {
                         let saved_buffer_id = interp.current_buffer_id();
@@ -1252,10 +1307,20 @@ define_dispatch!(
                             env,
                         );
                         interp.buffer.borrow_mut().goto_char(insert_at);
+                        let produced = insertion.and_then(|_| match &buffer_decode {
+                            Some(decode) => crate::lisp::primitives::coding::finish_buffer_decode(
+                                interp,
+                                decode,
+                                insert_at,
+                                transformed_length,
+                                env,
+                            ),
+                            None => Ok(transformed_length),
+                        });
                         let restore = interp.switch_to_buffer_id(saved_buffer_id);
-                        insertion?;
+                        let produced = produced?;
                         restore?;
-                        Ok(Value::Integer(transformed_length as i64))
+                        Ok(Value::Integer(produced as i64))
                     }
                 }
             }
@@ -1285,7 +1350,7 @@ define_dispatch!(
                     false,
                     env,
                 )?;
-                insert_converted_text(interp, buffer_id, &encoded, env)
+                insert_converted_text(interp, buffer_id, &encoded, None, env)
             }
 
             "decode-coding-string" => {
@@ -1306,18 +1371,28 @@ define_dispatch!(
                         .get_buffer_by_id(id)
                         .map(|buffer| buffer.is_multibyte())
                 });
-                let decoded = decode_coding_text(
-                    interp,
-                    &args[0],
-                    coding.as_deref(),
-                    nocopy,
-                    destination.is_some(),
-                    dst_multibyte,
-                    env,
-                )?;
-                match destination {
-                    Some(buffer_id) => insert_converted_text(interp, buffer_id, &decoded, env),
-                    None => Ok(decoded),
+                match (destination, dst_multibyte) {
+                    (Some(buffer_id), Some(dst_multibyte)) => {
+                        let decoded =
+                            crate::lisp::primitives::coding::decode_coding_text_for_buffer(
+                                interp,
+                                &args[0],
+                                coding.as_deref(),
+                                dst_multibyte,
+                                env,
+                            )?;
+                        let value = decoded.value;
+                        insert_converted_text(interp, buffer_id, &value, Some(&decoded), env)
+                    }
+                    _ => decode_coding_text(
+                        interp,
+                        &args[0],
+                        coding.as_deref(),
+                        nocopy,
+                        false,
+                        None,
+                        env,
+                    ),
                 }
             }
             "json-parse-string" => {
@@ -1526,6 +1601,7 @@ fn insert_converted_text(
     interp: &mut Interpreter,
     buffer_id: u64,
     converted: &Value,
+    decode: Option<&crate::lisp::primitives::coding::BufferDecode>,
     env: &mut Env,
 ) -> Result<Value, LispError> {
     let converted = string_like(converted)
@@ -1533,6 +1609,7 @@ fn insert_converted_text(
     let produced = converted.text.chars().count();
     let saved_buffer_id = interp.current_buffer_id();
     interp.switch_to_buffer_id(buffer_id)?;
+    let dst_pos = interp.buffer.borrow().point();
     let converted = if converted.multibyte && !interp.buffer.borrow().is_multibyte() {
         match unibyte_destination_form(&converted) {
             Ok(converted) => converted,
@@ -1552,7 +1629,13 @@ fn insert_converted_text(
         produced,
         env,
     );
+    // decode_coding_object finishes in the destination buffer.
+    let produced = inserted.and_then(|_| match decode {
+        Some(decode) => crate::lisp::primitives::coding::finish_buffer_decode(
+            interp, decode, dst_pos, produced, env,
+        ),
+        None => Ok(produced),
+    });
     let _ = interp.switch_to_buffer_id(saved_buffer_id);
-    inserted?;
-    Ok(Value::Integer(produced as i64))
+    Ok(Value::Integer(produced? as i64))
 }

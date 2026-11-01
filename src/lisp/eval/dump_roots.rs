@@ -412,6 +412,11 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
         "will_dump_reported",
         "emacs.c's gflags, the running process's",
     ),
+    (
+        "code_conversion_reused_workbuf",
+        "a buffer id; the next conversion finds the buffer by name, as Fget_buffer_create does",
+    ),
+    ("reused_workbuf_in_use", "the running conversion"),
     ("lambda_capture_overrides", "the running evaluation"),
     ("mutex_states", "mutex objects are refused by the writer"),
     (
