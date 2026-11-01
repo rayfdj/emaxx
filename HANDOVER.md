@@ -11565,6 +11565,40 @@ setup_process_coding_systems's check now refuses). A 13-form
   decoder). Local validation: the grouped gate's 3,426 library
   tests, the integration targets and clippy with `--all-targets
   --all-features -D warnings' pass.
+- **Round 236: string conversions read a charbuf of characters a call
+  and keep UTF-8 as it is.** `utf_8_call`'s fast path validated and
+  counted the whole rest of its source each call before cutting the run
+  at the charbuf's end, which made decoding quadratic
+  (decode-coding-string of 1.8 MB of utf-8 took 0.141 s to GNU's 0.010);
+  it now looks at four bytes a character of room at most. A unibyte
+  string's bytes go to decode_coding_object as they are, not through a
+  text and back. A multibyte text of Unicode characters with none in the
+  private range the text view gives raw bytes (U+E080..U+E0FF) is its
+  own internal spelling: `StringObjectRef::from_text` and
+  `from_text_ref` take its bytes and `decode_bytes` gives them back as
+  text, and `encode_text_bytes_with_charsets` writes such a text as its
+  utf-8 encoding directly (the eol type's newline, the BOM).
+  consume_chars without a translation table or annotations reads the
+  characters straight into the code buffer, and encode_coding_converted
+  no longer copies the string when there is no pre-write conversion. On
+  1.8 MB: decode-coding-string 0.011 s utf-8, 0.014 latin-1, 0.012
+  shift_jis, 0.010 utf-8-dos and 0.017 undecided (GNU 0.010, 0.011,
+  0.010, 0.013, 0.014); encode-coding-string 0.0025 s utf-8, 0.0082
+  latin-1 and 0.0038 utf-8-dos (GNU 0.0092, 0.0091, 0.0092). Batteries
+  of 36 string decodes (charbuf ends with multibyte characters, CRs and
+  invalid octets there, four-octet runs, invalid octets every few bytes,
+  private-use and raw-byte characters, characters beyond Unicode,
+  properties, NOCOPY) and 30 encodes (one text in 17 codings,
+  inhibit-eol-conversion, raw-byte, private-use and non-Unicode
+  characters, a unibyte source, NOCOPY, `charset' properties, selective
+  display, a region, a translation table) read as GNU's, as do the round
+  234 and 235 batteries; an oracle test pins them. ERT pass counts match
+  GNU's for coding, mule, mule-util, fileio, files, process,
+  ucs-normalize, textsec, rmailmm, mm-decode, mailcap, json, puny, fns,
+  ccl, editfns, subr, qp and sgml-mode. Still to do: latin-1 and
+  undecided decodes at 1.3x GNU (#417), #414, #415. Local validation:
+  the grouped gate's 3,427 library tests, the integration targets
+  and clippy with `--all-targets --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -13066,6 +13100,11 @@ s against 259.9 s (0.960), in all 1.000. The full Rust gate (run
 7,928 outcomes. Setup 86.2 s against 69.2 s (1.246), test bodies 261.5
 s against 269.9 s (0.969), in all 1.017. The full Rust gate (run
 41327822773) passed.
+
+**On `64dd5a7`** (round 235): frozen (run 41335586152) matched all
+7,928 outcomes. Setup 56.9 s against 49.5 s (1.149), test bodies 208.2
+s against 223.3 s (0.932), in all 0.980. The full Rust gate (run
+41335583648) passed.
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

@@ -33470,6 +33470,22 @@ fn buffer_decodes_insert_each_call_s_characters_as_insert_from_gap() {
 }
 
 #[test]
+fn string_conversions_read_and_write_their_text_as_coding_c_does() {
+    // decode_coding_utf_8 reads a charbuf of characters a call whatever
+    // the source's length (a dos CR, four-octet characters and an invalid
+    // octet at a charbuf's end), a unibyte string's bytes are what the
+    // decoder reads, encode_coding_utf_8 writes each character's UTF-8
+    // (an eight-bit one as its byte, a newline as the eol type makes it,
+    // the BOM first), and a string's characters of the private-use range
+    // and beyond Unicode keep their codes.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list (mapcar (lambda (pre) (let ((s (decode-coding-string (concat (make-string pre ?a) "\303\251\342\202\254\360\237\230\200b\r\n\377") 'utf-8-dos))) (list (length s) (string-bytes s) (append (substring s (- pre 1)) nil)))) '(16382 16383 16384 16385)) (let ((s (decode-coding-string (apply #'concat (make-list 17000 "\360\237\230\200")) 'utf-8))) (list (length s) (string-bytes s) (aref s 16383) (aref s 16999))) (append (decode-coding-string "a\356\202\200\356\203\277\300\200\366\200\200\200b" 'utf-8) nil) (let ((s (string ?a #xe080 #x3fff80 #x110000 ?b))) (list (append s nil) (string-bytes s) (append (substring s 1 4) nil))) (mapcar (lambda (cs) (append (encode-coding-string (string ?a #xe9 ?\n #x20ac #x1f600 ?\n) cs) nil)) '(utf-8 utf-8-dos utf-8-mac utf-8-with-signature latin-1-dos)) (append (encode-coding-string (string ?a #x3fff80 #xe080 ?\n) 'utf-8-dos) nil) (let ((u (string-to-unibyte "a\303\251\r\nb"))) (list (multibyte-string-p u) (append (decode-coding-string u 'utf-8-dos) nil) (append (decode-coding-string u 'latin-1) nil))))"##,
+        r##"(((16388 16395 (97 233 8364 128512 98 10 4194303)) (16389 16396 (97 233 8364 128512 98 10 4194303)) (16390 16397 (97 233 8364 128512 98 10 4194303)) (16391 16398 (97 233 8364 128512 98 10 4194303))) (17000 68000 128512 128512) (97 57472 57599 4194240 4194176 1572864 98) ((97 57472 4194176 1114112 98) 11 (57472 4194176 1114112)) ((97 195 169 10 226 130 172 240 159 152 128 10) (97 195 169 13 10 226 130 172 240 159 152 128 13 10) (97 195 169 13 226 130 172 240 159 152 128 13) (239 187 191 97 195 169 10 226 130 172 240 159 152 128 10) (97 233 13 10 32 32 13 10)) (97 128 238 130 128 13 10) (nil (97 233 10 98) (97 195 169 10 98)))"##,
+        "string conversions",
+    );
+}
+
+#[test]
 fn indirect_buffers_share_their_base_text_and_its_markers() {
     // buffer.c:Fmake_indirect_buffer gives the indirect buffer its base's
     // buffer_text, whose one chain holds every marker of the family, the

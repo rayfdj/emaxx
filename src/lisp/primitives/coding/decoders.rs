@@ -98,35 +98,29 @@ pub(super) fn utf_8_call<S: Units + ?Sized>(
             if byte_after_cr < 0
                 && let Some(bytes) = src.bytes()
             {
+                // No more than ROOM characters' bytes are looked at: the
+                // run is as many characters as the charbuf has room for.
                 let rest = &bytes[p..];
-                let mut valid = match std::str::from_utf8(rest) {
-                    Ok(_) => rest.len(),
+                let window = &rest[..rest.len().min(room.saturating_mul(4))];
+                let mut valid = match std::str::from_utf8(window) {
+                    Ok(_) => window.len(),
                     Err(error) => error.valid_up_to(),
                 };
+                let mut chars = 0;
+                for (index, &byte) in window[..valid].iter().enumerate() {
+                    if byte & 0xC0 != 0x80 {
+                        if chars == room {
+                            valid = index;
+                            break;
+                        }
+                        chars += 1;
+                    }
+                }
                 if eol_dos && valid > 0 && rest[valid - 1] == b'\r' {
                     valid -= 1;
+                    chars -= 1;
                 }
-                // The characters the run is, as many as the charbuf has
-                // room for.
-                let chars = rest[..valid]
-                    .iter()
-                    .filter(|&&byte| byte & 0xC0 != 0x80)
-                    .count();
-                if chars > room {
-                    let mut seen = 0;
-                    for (index, &byte) in rest[..valid].iter().enumerate() {
-                        if byte & 0xC0 != 0x80 {
-                            if seen == room {
-                                valid = index;
-                                break;
-                            }
-                            seen += 1;
-                        }
-                    }
-                    room = 0;
-                } else {
-                    room -= chars;
-                }
+                room -= chars;
                 if valid > 0 {
                     // SAFETY: from_utf8 validated these bytes.
                     out.push_str(unsafe { std::str::from_utf8_unchecked(&rest[..valid]) });

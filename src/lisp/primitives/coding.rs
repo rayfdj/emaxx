@@ -1430,6 +1430,27 @@ fn consume_chars(
     translation: &[Value],
     preferred: &[Option<String>],
 ) -> (Vec<u32>, Vec<Option<String>>) {
+    let translation = if raw_text_encoder { &[] } else { translation };
+    if source.multibyte && translation.is_empty() && preferred.is_empty() {
+        // No table and no annotation: each character goes in as it is, a
+        // newline as the eol type makes it.
+        let mut codes = Vec::with_capacity(source.text.len());
+        for code in source.character_codes_iter() {
+            let mut c = code as u32;
+            if c == u32::from(b'\r') && selective_display {
+                c = u32::from(b'\n');
+            }
+            if c == u32::from(b'\n') {
+                match eol_type {
+                    Some(1) => codes.push(u32::from(b'\r')),
+                    Some(2) => c = u32::from(b'\r'),
+                    _ => {}
+                }
+            }
+            codes.push(c);
+        }
+        return (codes, Vec::new());
+    }
     // Each character as the source spells it, with the index of the
     // source position it starts at.
     let mut chars: Vec<(u32, usize)> = Vec::with_capacity(source.text.len());
@@ -1471,7 +1492,6 @@ fn consume_chars(
             }
         }
     }
-    let translation = if raw_text_encoder { &[] } else { translation };
     let max_lookup = translation_max_lookup(translation);
     let annotate = !preferred.is_empty();
     let mut codes = Vec::with_capacity(chars.len());
@@ -1714,6 +1734,41 @@ pub(crate) fn encode_text_bytes_with_charsets(
     } else {
         &[]
     };
+    // encode_coding_utf_8 writes a Unicode character as its UTF-8, which
+    // is how a multibyte text of such characters already spells it: with
+    // no translation, nothing for selective display and no eight-bit or
+    // non-Unicode character, the text's bytes are the encoding, each LF
+    // first made what the eol type makes it.
+    if encoder == "utf-8"
+        && source.multibyte
+        && source.extended_chars.is_empty()
+        && translation.is_empty()
+        && !(selective_display && source.text.contains('\r'))
+        && !crate::lisp::types::string_data::has_raw_byte_markers(source.text.as_bytes())
+    {
+        let bom = (kind == "utf-8-with-signature"
+            || coding_system_property(interp, &canonical, ":bom").is_some_and(|bom| !bom.is_nil()))
+            && !spec.bom_done;
+        spec.bom_done = true;
+        let text = source.text.as_bytes();
+        let mut out = Vec::with_capacity(text.len() + 3);
+        if bom {
+            out.extend_from_slice(&[0xEF, 0xBB, 0xBF]);
+        }
+        match eol_type {
+            Some(eol @ (1 | 2)) => {
+                let mut copied = 0;
+                for at in memchr::memchr_iter(b'\n', text) {
+                    out.extend_from_slice(&text[copied..at]);
+                    out.extend_from_slice(if eol == 1 { b"\r\n" } else { b"\r" });
+                    copied = at + 1;
+                }
+                out.extend_from_slice(&text[copied..]);
+            }
+            _ => out.extend_from_slice(text),
+        }
+        return Ok(out);
+    }
     let (codes, preferred) = consume_chars(
         source,
         eol_type,
@@ -3097,9 +3152,9 @@ fn encode_coding_converted(
     let pre_write =
         coding_system_property(interp, &canonical, ":pre-write-conversion").unwrap_or(Value::Nil);
     let converted = if pre_write.is_nil() {
-        string.clone()
+        std::borrow::Cow::Borrowed(&string)
     } else {
-        pre_write_convert(interp, &string, pre_write, env)?
+        std::borrow::Cow::Owned(pre_write_convert(interp, &string, pre_write, env)?)
     };
     let preferred = charset_preferences(&converted);
     // encode_coding substitutes the default character for what the
@@ -3143,9 +3198,9 @@ pub(crate) fn encode_process_block(
     let pre_write =
         coding_system_property(interp, &canonical, ":pre-write-conversion").unwrap_or(Value::Nil);
     let converted = if pre_write.is_nil() {
-        string.clone()
+        std::borrow::Cow::Borrowed(&string)
     } else {
-        pre_write_convert(interp, &string, pre_write, env)?
+        std::borrow::Cow::Owned(pre_write_convert(interp, &string, pre_write, env)?)
     };
     let preferred = charset_preferences(&converted);
     let translation = encode_translation_tables(interp, &canonical, env)?;
@@ -3655,8 +3710,27 @@ fn decode_coding_parts(
     record_used: bool,
     env: &mut Env,
 ) -> Result<BufferDecode, LispError> {
-    let string =
-        string_like(value).ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *value))?;
+    // What the decoder reads: a unibyte string's bytes, a multibyte one's
+    // characters.
+    let unibyte = match value.kind() {
+        Kind::StringObject(state) => {
+            let state = state.borrow();
+            (!state.is_multibyte()).then(|| state.bytes().to_vec())
+        }
+        _ => None,
+    };
+    let string = match unibyte {
+        Some(_) => None,
+        None => Some(
+            string_like(value)
+                .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *value))?,
+        ),
+    };
+    let (ascii, has_cr) = match (&unibyte, &string) {
+        (Some(bytes), _) => (bytes.is_ascii(), bytes.contains(&b'\r')),
+        (None, Some(string)) => (string.text.is_ascii(), string.text.contains('\r')),
+        (None, None) => unreachable!("a string is unibyte or multibyte"),
+    };
     let Some(coding) = coding else {
         if record_used {
             set_last_coding_system_used(interp, "no-conversion", env);
@@ -3685,10 +3759,8 @@ fn decode_coding_parts(
     // buffer destination never takes it.
     let fast_path = !buffer_conversion
         && coding_system_is_ascii_compatible(interp, &canonical)
-        && string.text.is_ascii()
-        && (coding_eol_type(interp, &canonical) == Some(0)
-            || inhibit_eol_conversion
-            || !string.text.contains('\r'));
+        && ascii
+        && (coding_eol_type(interp, &canonical) == Some(0) || inhibit_eol_conversion || !has_cr);
     if fast_path {
         // A copied result is a fresh, unpropertized multibyte ASCII string;
         // NOCOPY gives back the original object, properties and all.
@@ -3699,7 +3771,12 @@ fn decode_coding_parts(
             value: if nocopy {
                 *value
             } else {
-                make_shared_string_value_with_multibyte(string.text, None, true)
+                let text = match (unibyte, string) {
+                    (Some(bytes), _) => String::from_utf8(bytes).expect("ASCII bytes are UTF-8"),
+                    (None, Some(string)) => string.text,
+                    (None, None) => unreachable!("a string is unibyte or multibyte"),
+                };
+                make_shared_string_value_with_multibyte(text, None, true)
             },
             coding: coding.into(),
             post_read: Value::Nil,
@@ -3713,7 +3790,11 @@ fn decode_coding_parts(
     } = decode_coding_object(
         interp,
         env,
-        DecodeSource::Text(&string),
+        match (&unibyte, &string) {
+            (Some(bytes), _) => DecodeSource::Bytes(bytes),
+            (None, Some(string)) => DecodeSource::Text(string),
+            (None, None) => unreachable!("a string is unibyte or multibyte"),
+        },
         coding,
         dst_multibyte,
     )?;
