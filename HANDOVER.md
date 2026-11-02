@@ -11956,6 +11956,54 @@ setup_process_coding_systems's check now refuses). A 13-form
   Local validation: the grouped gate's 3,436 library tests, the
   integration targets and clippy with `--all-targets --all-features -D
   warnings` pass.
+- **Round 246: static compositions as composite.c makes and keeps
+  them.** find-composition-internal is Ffind_composition_internal:
+  find_composition finds the `composition` property's range with
+  get_property_and_range (textget, so a `category` symbol's property
+  counts, over the adjacent intervals whose values are EQ, whatever the
+  narrowing) and, with LIMIT, Fnext_single_property_change or
+  Fprevious_single_property_change; an invalid property gives (START END
+  nil), a valid one without DETAIL-P (START END t) and is left in
+  Form-A, and only DETAIL-P registers it. get_composition_id is ported:
+  the key is the components made a vector (Fvconcat of a string or a
+  list, the vector itself, or the characters read from the text past any
+  narrowing), looked up in composition_hash_table by `equal`
+  (`composition_index`, the `equal` hashes of `composition_states`,
+  rebuilt after a load or a clone), and the property turned into Form-B
+  with the key the table holds; a new composition is checked (an odd
+  number of fixnums for a rule-based one, vectors for a glyph-string)
+  and its width taken with CHARACTER_WIDTH (`char-width-table`,
+  `ctl-arrow` for a control character, TAB one column) over GNU's loops,
+  the rule-based one running to the glyph count rather than the key's
+  length with COMPOSITION_DECODE_REFS' gref quirk. composition_valid_p
+  admits the id one past the last as GNU's does. lisp_string_width
+  registers through the same path. update_compositions is ported with
+  run_composition_function (a modification function must be a symbol,
+  Ffboundp, else wrong-type-argument) and its calls where insdel.c,
+  editfns.c, casefiddle.c, search.c, fileio.c, coding.c, json.c,
+  decompress.c and combine-after-change-execute make them: CHECK_BORDER
+  after an insertion (to point as the after-change hooks left it),
+  replace_range, translate-region's in-place change, replace-match and
+  insert-file-contents; CHECK_HEAD after a deletion and
+  zlib-decompress-region; CHECK_ALL after a casing change,
+  subst-char-in-region, a coding conversion into a buffer and
+  combine-after-change-execute; CHECK_INSIDE after
+  replace-buffer-contents; transpose-regions' pairs before its signal;
+  none for call-process's output, whose decoding runs with the hooks
+  inhibited. A composition made adjacent to one of the same property
+  gets a top-level copy through Fput_text_property, and `auto-composed`
+  goes from the covered range with the three variables bound, skipped
+  where nothing has it and the range is valid. json-insert inserts as
+  insert_from_gap_1: point stays before the text through the
+  after-change hooks and update_compositions (PT, PT), then moves past
+  it. Batteries against GNU (r245/comp.txt, upd.txt, r246/cmp.txt): 70
+  cases of insertion, deletion, replacement, casing, transposition,
+  translation, conversion, json-insert, combined changes, narrowing,
+  categories, registration and widths, all alike. Insertion and deletion
+  loops in propertized buffers run at or under GNU's time
+  (r246/bench.el). Local validation: the grouped gate's 3,437
+  library tests, the integration targets and clippy with `--all-targets
+  --all-features -D warnings` pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -13556,6 +13604,21 @@ median of 118 ms against 99), electric-tests' the most (880 against
 14,534), tramp-tests (21,181 against 19,156), semantic-utest-ia (3,819
 against 2,467), eglot-tests (33,559 against 32,341) and mule-tests
 (3,081 against 1,976).
+
+**On `55cf1db`** (round 245): the full Rust gate (run 41392410370)
+passed. The frozen run (41392413265) failed its first attempt on the
+oracle alone, GNU's eglot-test-rust-completion-exit-function raising a
+jsonrpc-error, and on the rerun matched all 7,928 outcomes, with
+process-tests' lookup-unicode-domains failing in both (the runner's
+name lookup). That runner was slower: setup 98.3 s against 73.7 s
+(1.334), test bodies 280.3 s against 294.3 s (0.952), in all 1.029;
+ucs-normalize-tests' bodies took 133 ms against 97. Per file, the setup
+is 47 ms over GNU's on average (24.6 s over 519 files, a median of 154
+ms against 115), electric-tests' the most (985 against 583), and the
+widest body gaps are comp-tests (19,444 ms against 15,501), tramp-tests
+(22,508 against 19,642), semantic-utest-ia (4,145 against 2,925),
+simple-tests (5,642 against 4,453) and mule-tests (3,196 against
+2,044).
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

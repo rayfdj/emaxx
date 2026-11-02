@@ -2525,6 +2525,8 @@ fn insert_file_bytes(
                 &overlay_calls,
                 env,
             )?;
+            let point = interp.buffer.borrow().point();
+            update_compositions(interp, point, point, CHECK_BORDER, env)?;
         }
         // restore_window_points over the erased accessible portion.
         if erase

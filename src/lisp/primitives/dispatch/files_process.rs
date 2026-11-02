@@ -2929,9 +2929,13 @@ define_dispatch!(
                     };
                     let old_length = end - start;
                     if !complete && args.get(2).is_none_or(Value::is_nil) {
-                        // unwind_decompress balances the before-change call.
+                        // unwind_decompress balances the before-change call,
+                        // with update_compositions where the output went.
                         return Ok((
-                            Some(AfterChange::new(start, old_length, old_length)),
+                            Some(
+                                AfterChange::new(start, old_length, old_length)
+                                    .composing(end, end, CHECK_HEAD),
+                            ),
                             Value::Nil,
                         ));
                     }
@@ -2951,7 +2955,8 @@ define_dispatch!(
                         let point = saved_point.min(interp.buffer.borrow().point_max());
                         interp.buffer.borrow_mut().goto_char(point);
                     }
-                    let change = AfterChange::new(start, old_length, output.len());
+                    let change = AfterChange::new(start, old_length, output.len())
+                        .composing(start, start, CHECK_HEAD);
                     if complete {
                         Ok((Some(change), Value::T))
                     } else {

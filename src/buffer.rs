@@ -1966,6 +1966,15 @@ impl Buffer {
         Ok(self.text.borrow().string((from - 1)..(to - 1)))
     }
 
+    /// The text [FROM, TO), past any narrowing, within BEG..Z.
+    pub(crate) fn text_between(&self, from: usize, to: usize) -> String {
+        let text = self.text.borrow();
+        let end = text.len_chars();
+        let from = from.saturating_sub(1).min(end);
+        let to = to.saturating_sub(1).clamp(from, end);
+        text.string(from..to)
+    }
+
     /// The text from FROM to Z, past any narrowing.
     pub(crate) fn text_to_z(&self, from: usize) -> String {
         self.text

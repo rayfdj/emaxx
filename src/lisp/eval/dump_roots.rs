@@ -176,6 +176,10 @@ pub(crate) const ROOTS_RESET_AFTER_LOAD: &[(&str, &str)] = &[
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
     (
+        "composition_index",
+        "composition_hash_table's lookup, rebuilt from the composition states on the first lookup after a load",
+    ),
+    (
         "ccl_statics",
         "ccl.c's statics (ccl_prog_stack_struct, stack_idx_of_map_multiple), which a pdumper load starts afresh as a GNU process starts its statics",
     ),
@@ -1258,6 +1262,7 @@ mod install {
                         });
                     }
                     self.composition_states = compositions;
+                    self.composition_index = Default::default();
                 }
                 RootSlot::ErtTests => {
                     let mut tests = Vec::new();

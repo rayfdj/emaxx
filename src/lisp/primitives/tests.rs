@@ -33620,6 +33620,23 @@ CCL: Invalid command 17 (ccl_code = c017) at 4.")"##,
 }
 
 #[test]
+fn static_compositions_register_and_update_as_composite_c() {
+    // composite.c: find-composition-internal leaves a Form-A `composition'
+    // property as it is without DETAIL-P; get_composition_id registers a
+    // composition in an `equal' table and puts the table's key into each
+    // property it turns into Form-B; update_compositions after a deletion
+    // that joins a composition's pieces gives the latter a copy of the
+    // property and calls the modification function, which must be a
+    // symbol (Ffboundp); a rule-based width loops to the glyph count with
+    // COMPOSITION_DECODE_REFS' reference points.
+    assert_oracle_contract_matches_interpreter(
+        r##"(let* ((log nil) (s1 (compose-string (copy-sequence "abc") 0 2)) (s2 (compose-string (copy-sequence "xy") 0 2)) (s3 (compose-string (copy-sequence "xy") 0 2))) (defalias 'r246-mod (lambda (f to) (push (list f to (buffer-string)) log))) (list (find-composition 0 nil s1) (get-text-property 0 'composition s1) (progn (find-composition 0 nil s2 t) (find-composition 0 nil s3 t) (eq (nth 2 (get-text-property 0 'composition s2)) (nth 2 (get-text-property 0 'composition s3)))) (with-temp-buffer (insert "abcdef") (compose-region 2 5 nil 'r246-mod) (goto-char 3) (insert "X") (goto-char 1) (insert "Y") (delete-region 4 5) (list (reverse log) (find-composition 3))) (with-temp-buffer (insert "abcdef") (compose-region 2 5 nil (lambda (a b) nil)) (condition-case e (progn (goto-char 5) (insert "x") 'ok) (error (list (car e) (cadr e))))) (let ((s (copy-sequence "abcde"))) (compose-string-internal s 0 5 [?a 200 ?b 200 ?c 200 ?d 200 ?e]) (list (string-width s) (find-composition-internal 0 nil s t))) (find-composition 0 nil (compose-string (copy-sequence "abc") 0 3 [?a 30 ?b 30 ?c]) t)))"##,
+        r##"((0 2 t) ((2)) t (((3 6 #("Yabcdef" 2 3 (composition ((3) . r246-mod)) 3 5 (composition ((3) . r246-mod))))) (3 4 nil)) (wrong-type-argument symbolp) (1 (0 5 [97 200 98 200 99 200 100 200 101] nil nil 1)) (0 3 [97 (tr . bl) 98 (tr . bl) 99] nil nil 2))"##,
+        "static compositions",
+    );
+}
+
+#[test]
 fn file_names_expand_and_concatenate_as_fileio_c() {
     // fileio.c:Fexpand_file_name returns an absolute NAME it need not
     // change as itself, made of DEFAULT-DIRECTORY's multibyteness when one

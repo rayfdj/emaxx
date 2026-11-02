@@ -181,10 +181,12 @@ pub(crate) use case::*;
 pub(crate) use coding::*;
 pub(crate) use color_lcms::*;
 pub(crate) use completion::*;
-pub(crate) use dispatch::StringCompositions;
 pub(crate) use dispatch::display::log_message_text;
 pub(crate) use dispatch::display::prin1_to_string;
 pub(crate) use dispatch::gnutls::{AsyncGnuTlsProgress, progress_async_gnutls};
+pub(crate) use dispatch::{
+    CHECK_ALL, CHECK_BORDER, CHECK_HEAD, StringCompositions, update_compositions,
+};
 pub(crate) use fields::*;
 pub(crate) use file_io::*;
 pub(crate) use filelock::*;

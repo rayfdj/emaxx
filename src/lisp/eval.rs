@@ -2689,6 +2689,15 @@ pub(crate) struct CompositionState {
     pub(crate) width: i64,
 }
 
+/// composite.c composition_hash_table's lookup of `composition_states'
+/// by their keys' `equal' hashes, built from the states it has not yet
+/// seen.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct CompositionIndex {
+    pub(crate) by_hash: HashMap<u32, Vec<usize>>,
+    pub(crate) indexed: usize,
+}
+
 pub(crate) const LFACE_VECTOR_SIZE: usize = 20;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -5053,6 +5062,7 @@ impl Interpreter {
             for composition in &mut clone.composition_states {
                 composition.components = c.copy(&composition.components.clone());
             }
+            clone.composition_index = CompositionIndex::default();
             for test in &mut clone.ert_tests {
                 test.body = c.copy(&test.body.clone());
             }
@@ -5739,6 +5749,7 @@ pub struct InterpreterState {
     pub(crate) fontset_states: Vec<FontsetState>,
     pub(crate) fringe_bitmap_states: Vec<FringeBitmapState>,
     pub(crate) composition_states: Vec<CompositionState>,
+    pub(crate) composition_index: CompositionIndex,
     /// Raw etc/DOC byte offsets installed in built-in subroutine objects by
     /// `Snarf-documentation`, keyed by the canonical native function name.
     pub(crate) builtin_doc_offsets: HashMap<String, i64>,
@@ -6454,6 +6465,7 @@ impl Interpreter {
             }],
             fringe_bitmap_states,
             composition_states: Vec::new(),
+            composition_index: CompositionIndex::default(),
             builtin_doc_offsets: HashMap::new(),
             syntax_code_objects,
             unicode_menu_case_table: Value::Nil,

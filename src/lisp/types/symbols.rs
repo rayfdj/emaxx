@@ -380,6 +380,9 @@ const KEY_NAMES: &[&str] = &[
     "overlay-arrow-variable-list",
     "last-arrow-position",
     "last-arrow-string",
+    "composition",
+    "auto-composed",
+    "inhibit-point-motion-hooks",
 ];
 
 struct Symbols {

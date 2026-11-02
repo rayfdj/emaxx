@@ -8,12 +8,23 @@ use super::*;
 use crate::lisp::types::{Kind, MarkerRef, PropertyName};
 
 /// What a change reports to signal_after_change: where the changed text
-/// starts, how many characters it replaced and how many are there now.
+/// starts, how many characters it replaced and how many are there now;
+/// and the update_compositions its caller makes after the signal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct AfterChange {
     pub(crate) charpos: usize,
     pub(crate) lendel: usize,
     pub(crate) lenins: usize,
+    pub(crate) compositions: Option<CompositionUpdate>,
+}
+
+/// An update_compositions of FROM to TO (point as the after-change hooks
+/// left it for None) with CHECK_MASK.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct CompositionUpdate {
+    pub(crate) from: usize,
+    pub(crate) to: Option<usize>,
+    pub(crate) check_mask: u8,
 }
 
 impl AfterChange {
@@ -22,6 +33,32 @@ impl AfterChange {
             charpos,
             lendel,
             lenins,
+            compositions: None,
+        }
+    }
+
+    /// The change followed by update_compositions (FROM, TO, CHECK_MASK).
+    pub(crate) fn composing(self, from: usize, to: usize, check_mask: u8) -> Self {
+        Self {
+            compositions: Some(CompositionUpdate {
+                from,
+                to: Some(to),
+                check_mask,
+            }),
+            ..self
+        }
+    }
+
+    /// The change followed by update_compositions (FROM, PT, CHECK_MASK),
+    /// PT read after the hooks, as insdel.c's insertions read it.
+    pub(crate) fn composing_to_point(self, from: usize, check_mask: u8) -> Self {
+        Self {
+            compositions: Some(CompositionUpdate {
+                from,
+                to: None,
+                check_mask,
+            }),
+            ..self
         }
     }
 
@@ -68,9 +105,23 @@ pub(crate) fn modify_current_buffer<R>(
         let (change, result) = edit(interp, start, env)?;
         if let Some(change) = change {
             signal_after_change(interp, change, &prepared.overlay_calls, env)?;
+            update_change_compositions(interp, change, env)?;
         }
         Ok(result)
     })
+}
+
+/// The update_compositions CHANGE asks for after its signal.
+pub(crate) fn update_change_compositions(
+    interp: &mut Interpreter,
+    change: AfterChange,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    let Some(update) = change.compositions else {
+        return Ok(());
+    };
+    let to = update.to.unwrap_or_else(|| interp.buffer.borrow().point());
+    update_compositions(interp, update.from, to, update.check_mask, env)
 }
 
 /// insdel.c:prepare_to_modify_buffer_1 before a change of [START, END)

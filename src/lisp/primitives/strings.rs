@@ -239,6 +239,21 @@ pub(crate) fn buffer_region_codes(interp: &Interpreter, from: usize, to: usize) 
     .collect()
 }
 
+/// The character codes of the current buffer's text [FROM, TO) past any
+/// narrowing, as fetch_char_advance reads them.
+pub(crate) fn buffer_text_codes(interp: &Interpreter, from: usize, to: usize) -> Vec<u32> {
+    let buffer = interp.buffer.borrow();
+    StringLike {
+        text: buffer.text_between(from, to),
+        props: None,
+        multibyte: buffer.is_multibyte(),
+        extended_chars: buffer.substring_extended_chars(from, to),
+    }
+    .character_codes_iter()
+    .map(|code| code as u32)
+    .collect()
+}
+
 /// A text view and side table holding CODES, multibyte or (each code a
 /// byte) unibyte.
 pub(crate) fn text_from_codes(codes: &[u32], multibyte: bool) -> (String, Vec<(usize, u32)>) {

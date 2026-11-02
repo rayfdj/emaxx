@@ -291,7 +291,7 @@ pub(crate) fn lisp_string_width(
         from,
         to,
         precision,
-        |interp, at| compositions.at(interp, string, at),
+        |interp, at| compositions.at(interp, env, string, at),
     )
 }
 
