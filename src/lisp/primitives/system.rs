@@ -2526,6 +2526,14 @@ pub(crate) fn dispatch_file_name_handler(
 pub(crate) fn read_directory_names(
     directory: &Path,
 ) -> Result<Vec<std::ffi::OsString>, (&'static str, std::io::Error)> {
+    read_directory_entries(directory)
+        .map(|entries| entries.into_iter().map(|(name, _)| name).collect())
+}
+
+/// `read_directory_names' with each entry's dirent_type (d_type).
+pub(crate) fn read_directory_entries(
+    directory: &Path,
+) -> Result<Vec<(std::ffi::OsString, u8)>, (&'static str, std::io::Error)> {
     use std::os::unix::ffi::{OsStrExt, OsStringExt};
     let path = std::ffi::CString::new(directory.as_os_str().as_bytes()).map_err(|_| {
         (
@@ -2564,8 +2572,13 @@ pub(crate) fn read_directory_names(
         }
         // SAFETY: ENTRY points at the dirent readdir returned, whose
         // d_name is NUL-terminated and stays valid until the next call.
-        let name = unsafe { std::ffi::CStr::from_ptr((*entry).d_name.as_ptr()) };
-        names.push(std::ffi::OsString::from_vec(name.to_bytes().to_vec()));
+        let (name, kind) = unsafe {
+            (
+                std::ffi::CStr::from_ptr((*entry).d_name.as_ptr()),
+                (*entry).d_type,
+            )
+        };
+        names.push((std::ffi::OsString::from_vec(name.to_bytes().to_vec()), kind));
     };
     // SAFETY: STREAM is open and closed exactly once.
     unsafe { libc::closedir(stream) };

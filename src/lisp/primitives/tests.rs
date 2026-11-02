@@ -33947,6 +33947,112 @@ fn current_active_maps_are_found_as_keymap_c_finds_them() {
 }
 
 #[test]
+fn vertical_motion_and_read_check_arguments_as_indent_c_and_lread_c() {
+    // indent.c:Fvertical_motion checks a (COLS . LINES) car with
+    // CHECK_NUMBER and LINES with CHECK_FIXNUM, and the batch vmotion
+    // ignores COLS.  lread.c:hash_table_from_plist takes each parameter's
+    // first value (plist_get), refuses DATA that is no list or has an odd
+    // length, and makes the table with Fmake_hash_table's checks; read0
+    // reads `#N=' and `#N#' only while `read-circle' is non-nil, for any N
+    // up to MOST_POSITIVE_FIXNUM.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list (condition-case e (vertical-motion 'x) (error e))
+                    (condition-case e (vertical-motion '(x . 1)) (error e))
+                    (condition-case e (vertical-motion '(1 . x)) (error e))
+                    (condition-case e (vertical-motion (expt 2 70)) (error e))
+                    (with-temp-buffer (insert "ab\ncd\nef") (goto-char 1) (list (vertical-motion '(1.5 . 1)) (point)))
+                    (condition-case e (read "#s(hash-table data (a))") (error e))
+                    (condition-case e (read "#s(hash-table data 5)") (error e))
+                    (condition-case e (read "#s(hash-table data (a . b))") (error e))
+                    (condition-case e (read "#s(hash-table test zz-no-such-test)") (error e))
+                    (let ((h (read "#s(hash-table data (a 1) data (b 2) test equal test eq)"))) (list (hash-table-test h) (gethash 'a h) (gethash 'b h)))
+                    (let ((read-circle nil)) (list (condition-case e (read "#1=(a #1#)") (error e)) (condition-case e (read "#1#") (error e)) (read "#24r1k")))
+                    (car (read "(#4000000000=a #4000000000#)")))"##,
+        r##"((wrong-type-argument fixnump x) (wrong-type-argument numberp x) (wrong-type-argument fixnump x) (wrong-type-argument fixnump 1180591620717411303424) (1 4) (error "Hash table data length is odd") (error "Hash table data is not a list") (wrong-type-argument listp b) (error "Invalid hash table test" zz-no-such-test) (equal 1 nil) ((invalid-read-syntax "#1=") (invalid-read-syntax "#1#") 44) a)"##,
+        "vertical-motion and reader argument checks",
+    );
+}
+
+#[test]
+fn gap_position_and_size_are_the_gap_insdel_c_keeps() {
+    // editfns.c:Fgap_position and Fgap_size answer GPT and GAP_SIZE: a new
+    // buffer's 20 bytes (Fget_buffer_create), make_gap_larger's
+    // GAP_BYTES_DFL beyond an insertion that needs more, a deletion's
+    // bytes added, the gap moved to each change, narrowing aside.
+    assert_oracle_contract_matches_interpreter(
+        r#"(with-temp-buffer
+                (let (r)
+                  (push (list (gap-position) (gap-size)) r)
+                  (insert "abc")
+                  (push (list (gap-position) (gap-size)) r)
+                  (insert (make-string 100 ?x))
+                  (push (list (gap-position) (gap-size)) r)
+                  (goto-char 2)
+                  (insert "q")
+                  (push (list (gap-position) (gap-size)) r)
+                  (delete-region 10 20)
+                  (push (list (gap-position) (gap-size)) r)
+                  (narrow-to-region 50 60)
+                  (push (list (gap-position) (gap-size)) r)
+                  (widen)
+                  (insert (make-string 3000 ?y))
+                  (push (list (gap-position) (gap-size)) r)
+                  (goto-char (point-max))
+                  (insert "é")
+                  (push (list (gap-position) (gap-size)) r)
+                  (nreverse r)))"#,
+        "((1 20) (4 17) (104 2000) (3 1999) (10 2009) (10 2009) (3050 2000) (3096 1998))",
+        "gap-position and gap-size",
+    );
+}
+
+#[test]
+fn file_name_completion_walks_the_directory_as_dired_c() {
+    // dired.c:file_name_completion: each entry read whose name FILE
+    // begins, "." and ".." and the completion-ignored-extensions (a
+    // directory's ending in a slash) excluded once a name that cannot be
+    // is seen, completion-regexp-list and PREDICATE applied, the best
+    // match narrowed to the common prefix with, ignoring case, the
+    // input's case preferred; t only for FILE matching alone and exactly.
+    // directory_files_internal's COUNT is CHECK_FIXNAT's.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((dir (file-name-as-directory (make-temp-file "zz-fnc-" t))))
+                (unwind-protect
+                    (progn
+                      (dolist (f '("Foo" "foo" "foobar" "FOOBAZ" "x.el" "x.elc" "y.o" "yy"))
+                        (write-region "" nil (expand-file-name f dir)))
+                      (dolist (d '("Dir1" "dir2" "obj.d"))
+                        (make-directory (expand-file-name d dir)))
+                      (list (file-name-completion "fo" dir)
+                            (file-name-completion "foob" dir)
+                            (let ((completion-ignore-case t))
+                              (list (file-name-completion "FOOB" dir)
+                                    (file-name-completion "foob" dir)
+                                    (file-name-completion "d" dir)))
+                            (let ((completion-ignored-extensions '(".elc")))
+                              (file-name-completion "x" dir))
+                            (let ((completion-ignored-extensions '(".el" ".elc")))
+                              (file-name-completion "x" dir))
+                            (let ((completion-ignored-extensions '(".o")))
+                              (file-name-completion "y" dir))
+                            (let ((completion-ignored-extensions '(".d/")))
+                              (file-name-completion "o" dir))
+                            (file-name-completion "Dir1" dir)
+                            (file-name-completion "Dir1/" dir)
+                            (file-name-completion "." dir)
+                            (file-name-completion ".." dir)
+                            (let ((completion-regexp-list '("ba")))
+                              (file-name-completion "f" dir))
+                            (file-name-completion "f" dir (lambda (n) (string-match-p "bar" n)))
+                            (sort (file-name-all-completions "f" dir) #'string<)
+                            (condition-case e (directory-files dir nil nil nil -1) (error e))))
+                  (delete-directory dir t)))"#,
+        r#"("foo" "foobar" ("FOOBA" "fooba" "dir") "x.el" "x.el" "yy" "obj.d/" "Dir1/" nil "." "../" "foobar" "foobar" ("foo" "foobar") (wrong-type-argument wholenump -1))"#,
+        "file-name-completion",
+    );
+}
+
+#[test]
 fn gc_variables_are_watched_by_alloc_c_s_own_subrs() {
     // syms_of_alloc watches `gc-cons-threshold' and `gc-cons-percentage'
     // with subrs made under no symbol, which bump consing_until_gc for the

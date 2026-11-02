@@ -12146,6 +12146,54 @@ setup_process_coding_systems's check now refuses). A 13-form
   and electric-tests pass as many tests as GNU's. Local validation: the
   grouped gate's 3,443 library tests, the integration targets and
   clippy with `--all-targets --all-features -D warnings` pass.
+- **Round 250: indent.c, lread.c, insdel.c's gap and dired.c's
+  completion from batteries.** Batteries against GNU over indent.c (44
+  cases, r249/in.txt), lread.c's syntax and streams (34, r249/rd.txt),
+  editfns.c's restrictions, insertion and extraction (34, r249/ed.txt),
+  dired.c (25, r249/dr.txt), file-name completion (22, r249/fc.txt),
+  casetab.c (30), marker.c (36), buffer.c and overlays (36), fns.c (37)
+  and data.c (28) differ in these, now fixed; casetab.c, marker.c,
+  buffer.c, fns.c and data.c agree throughout. `vertical-motion` checked
+  LINES as a number or marker: Fvertical_motion's CHECK_FIXNUM refuses a
+  bignum or a marker with `fixnump`, and a (COLS . LINES) car is
+  CHECK_NUMBER's. lread.c's hash_table_from_plist took each parameter's
+  last value and built the table internally: it takes the first
+  (plist_get), refuses DATA that is no list ("Hash table data is not a
+  list") or has an odd length, and makes the table with
+  Fmake_hash_table, whose own checks answer a bad test or weakness.
+  `#N=` and `#N#` are read only while `read-circle` is non-nil, as read0
+  reads them, and N may run to MOST_POSITIVE_FIXNUM where it stopped at
+  2^32. `gap-position` answered point and `gap-size` 0: they are GPT and
+  GAP_SIZE now, from a gap that begins as Fget_buffer_create's 20 bytes
+  and grows as make_gap_larger grows it, by GAP_BYTES_DFL beyond each
+  insertion that needs more (the quarter-of-the-text growth Emaxx added
+  is gone; the vector's own reallocation keeps copies few), and that
+  this build of GNU never shrinks. `directory-files` refuses a negative
+  or non-fixnum COUNT with `wholenump`. `file-name-completion` and
+  `file-name-all-completions` are dired.c's file_name_completion, where
+  completion ran through `try-completion` over the names: the
+  directory's entries are walked in readdir order with GNU's bestmatch,
+  matchcount and includeall, "." and ".." and
+  completion-ignored-extensions (a directory's ending in a slash)
+  excluded once a name that cannot be is seen, completion-regexp-list
+  folded by the ASCII canon table, PREDICATE called with
+  `default-directory` bound, readdir's d_type deciding a directory
+  without a stat, and under `completion-ignore-case` an exact match or
+  one keeping the input's case preferred, so `(file-name-completion "A"
+  dir)` is the file's own "a" where Emaxx gave back "A", and a missing
+  directory signals as GNU's does. Not reproduced: GNU crashes when
+  completion-regexp-list holds a non-string (fast_string_match_internal
+  reads it as one); a search with a case table that maps only some
+  letters loops in both. 300,000 one-character insertions and 100,000
+  more in the middle take 0.123 s against GNU's 0.250, 20,000 reads of a
+  compiled-code hash table 0.121 s against 0.181, and 2,000 directory
+  completions 0.107 s against 0.097. minibuffer-tests, files-tests,
+  fileio-tests, dired-tests, lread-tests, indent-tests, editfns-tests,
+  buffer-tests, fns-tests, memory-report-tests, keymap-tests,
+  minibuf-tests, pcase-tests, cl-lib-tests, data-tests, subr-tests and
+  map-tests pass as many tests as GNU's. Local validation: the grouped
+  gate's 3,446 library tests, the integration targets and clippy
+  with `--all-targets --all-features -D warnings` pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -13794,6 +13842,17 @@ the widest body gaps are comp-tests (12,948 ms against 11,243),
 mule-tests (1,963 against 1,225), semantic-utest-ia (2,550 against
 2,080), tramp-tests (15,815 against 15,360) and package-tests (5,808
 against 5,501).
+
+**On `294bc1e`** (round 249): frozen (run 41429567726) matched all 7,928
+outcomes. Setup 82.9 s against 67.1 s (1.237), test bodies 258.7 s
+against 269.7 s (0.959), in all 1.000; ucs-normalize-tests' bodies took
+132 ms against 92. The full Rust gate (run 41429562807) passed. Per
+file, the setup is 31 ms over GNU's on average (15.9 s over 519 files, a
+median of 124 ms against 103, a slower runner than round 248's),
+electric-tests' the most (931 against 540), and the widest body gaps are
+comp-tests (17,351 ms against 14,970), tramp-tests (21,790 against
+19,543), semantic-utest-ia (4,199 against 2,852), mule-tests (3,214
+against 2,032) and electric-tests (1,161 against 605).
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

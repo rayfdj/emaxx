@@ -1319,6 +1319,16 @@ impl Buffer {
         self.text.borrow().len_chars()
     }
 
+    /// GPT: the character position of the gap.
+    pub fn gap_position(&self) -> usize {
+        self.text.borrow().text.gap_char() + 1
+    }
+
+    /// GAP_SIZE: the gap's bytes.
+    pub fn gap_size(&self) -> usize {
+        self.text.borrow().text.gap_size()
+    }
+
     /// A killed buffer's size as Fkill_buffer left it (editfns.c's
     /// buffer-size reads it).
     pub(crate) fn killed_size(&self) -> usize {
