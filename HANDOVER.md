@@ -11824,6 +11824,48 @@ setup_process_coding_systems's check now refuses). A 13-form
   subr-x, buffer and elisp-mode. Local validation: the grouped gate's
   3,433 library tests, the integration targets and clippy with
   `--all-targets --all-features -D warnings' pass.
+- **Round 243: file names are expanded and joined on their bytes as
+  fileio.c does.** `expand-file-name` is the new `fexpand_file_name`,
+  fileio.c:Fexpand_file_name on POSIX over the strings' bytes:
+  CHECK_STRING_NULL_BYTES (`filenamep`), the handler of NAME,
+  DEFAULT-DIRECTORY settled (the buffer's `default-directory`, a
+  relative one expanded against an absolute `invocation-directory` or
+  the root; "/" for no string), the directory's handler, the directory
+  expanded when relative and not EQ to NAME and its handler asked again,
+  the two made of one multibyteness (a pure-ASCII one, scanned to a NUL,
+  takes the other's; when both are non-ASCII the multibyte one becomes
+  unibyte), and `expand_file_name_core`, the byte loop the host-text
+  `expand_file_name_with_home` now shares with `tilde_prefix` and
+  `canonicalize_expanded_file_name`: None for an absolute name it keeps,
+  which is returned itself; the target cut at a NUL. `~` is
+  `get_homedir_bytes` (egetenv HOME, else getpwnam of LOGNAME or USER,
+  else getpwuid, a relative home after the start directory),
+  DECODE_FILE'd for a multibyte name, a multibyte build_string of it
+  making the result multibyte; `~USER` is getpwnam's absolute home,
+  DECODE_FILE'd for a multibyte name. The result's handler gets the
+  settled directory. `file-name-concat` is Ffile_name_concat over the
+  components' bytes (`file_name_bytes`): a slash after a component not
+  ending in one, a unibyte non-ASCII component made multibyte
+  (`push_byte_as_multibyte`) when a multibyte non-ASCII one makes the
+  result multibyte. Not replicated: GNU's copy past a unibyte result's
+  end when a skipped nil or empty component sends it through the
+  conversion with no multibyte component (`(file-name-concat "" "\200")`
+  is "\300" there). Probes (r243/fxm.el, 79 cases run by r243/run2.sh,
+  and r242/fn.el's 3,000 random operations) read as GNU's but for that
+  overflow and invocation-directory; two cases abort GNU, a multibyte
+  name under a unibyte directory with a NUL before a non-ASCII byte and
+  a unibyte non-ASCII name after a UTF-8 HOME (each a malformed
+  multibyte string). An oracle test pins the cases
+  (`file_names_expand_and_concatenate_as_fileio_c`). Emaxx runs 300,000
+  expansions of a relative, absolute, dotted and `~` name and
+  file-name-concat calls in 0.53, 0.28, 0.71, 0.61 and 0.11 s to GNU's
+  0.53, 0.34, 0.74, 0.77 and 0.13. ERT pass counts match GNU's for
+  fileio, files, files-x, subr-x, dired, dired-aux, ls-lisp, minibuffer,
+  abbrev, project, package, filenotify, autorevert, tramp-archive,
+  bytecomp, vc, process, callproc, em-dirs and compile. Local
+  validation: the grouped gate's 3,434 library tests, the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings` pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -13391,6 +13433,17 @@ electric-tests' the most (641 against 427), and the widest body gaps are
 comp-tests (14,474 ms against 12,576), tramp-tests (17,110 against
 15,971), semantic-utest-ia (3,152 against 2,201), mule-tests (2,273
 against 1,565) and electric-tests (810 against 449).
+
+**On `2ede082`** (round 242): frozen (run 41374709902) matched all 7,928
+outcomes. Setup 71.7 s against 63.2 s (1.135), test bodies 234.6 s
+against 251.9 s (0.931), in all 0.963; ucs-normalize-tests' bodies took
+120 ms against 76. The full Rust gate (run 41374707684) passed. Per
+file, the setup is 16 ms over GNU's on average (8.5 s over 519 files, a
+median of 112 ms against 98), electric-tests' the most (696 against
+456), and the widest body gaps are comp-tests (15,205 ms against
+12,848), tramp-tests (18,071 against 16,689), semantic-utest-ia (3,345
+against 2,521), mule-tests (2,364 against 1,587) and electric-tests (851
+against 477).
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

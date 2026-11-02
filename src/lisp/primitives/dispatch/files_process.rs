@@ -734,20 +734,12 @@ define_dispatch!(
                 if args.is_empty() || args.len() > 2 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let path = string_text(&args[0])?;
-                // fileio.c: a DEFAULT-DIRECTORY that is no string is the root.
-                let base = match args.get(1) {
-                    Some(value) if !value.is_nil() => {
-                        Some(string_like(value).map_or_else(|| "/".to_string(), |s| s.text))
-                    }
-                    _ => interp
-                        .lookup_var("default-directory", env)
-                        .and_then(|value| string_like(&value).map(|string| string.text)),
-                };
-                Ok(string_like_value(
-                    expand_file_name_runtime(interp, env, &path, base.as_deref())?,
-                    None,
-                ))
+                crate::lisp::primitives::fexpand_file_name(
+                    interp,
+                    env,
+                    args[0],
+                    args.get(1).copied().unwrap_or(Value::Nil),
+                )
             }
             "substitute-in-file-name" => {
                 need_args(name, args, 1)?;
@@ -851,16 +843,53 @@ define_dispatch!(
                     }
                 }
             }
-            "file-name-concat" => Ok(Value::String(
-                file_name_concat(
-                    &args
-                        .iter()
-                        .filter(|value| !value.is_nil())
-                        .map(string_text)
-                        .collect::<Result<Vec<_>, _>>()?,
-                )
-                .into(),
-            )),
+            "file-name-concat" => {
+                if args.is_empty() {
+                    return Err(LispError::WrongNumberOfArgs(name.into(), 0));
+                }
+                // fileio.c:Ffile_name_concat: the strings that are neither
+                // nil nor empty, each followed by a slash unless it is the
+                // last or ends in one (a slash it starts with stays).  A
+                // result is multibyte when a component is multibyte and
+                // not ASCII, and then a unibyte non-ASCII one is made
+                // multibyte, its raw bytes eight-bit characters.  (GNU
+                // sizes the result by the components' characters before
+                // that conversion, and when no component was multibyte
+                // writes past a unibyte result's end; Emaxx keeps such a
+                // component's bytes.)
+                let mut elements = Vec::new();
+                let mut multibytes = 0;
+                for arg in args {
+                    if arg.is_nil() {
+                        continue;
+                    }
+                    let (bytes, multibyte) = file_name_bytes(arg)?;
+                    if bytes.is_empty() {
+                        continue;
+                    }
+                    if multibyte && !bytes.is_ascii() {
+                        multibytes += 1;
+                    }
+                    elements.push((bytes, multibyte));
+                }
+                let multibyte = multibytes != 0;
+                let mut result = Vec::new();
+                let count = elements.len();
+                for (index, (bytes, element_multibyte)) in elements.into_iter().enumerate() {
+                    if multibyte && !element_multibyte {
+                        for byte in bytes {
+                            super::strings::push_byte_as_multibyte(&mut result, byte);
+                        }
+                    } else {
+                        result.extend_from_slice(&bytes);
+                    }
+                    if index + 1 < count && result.last() != Some(&b'/') {
+                        result.push(b'/');
+                    }
+                }
+                make_specified_string(result, multibyte)
+                    .map_err(|error| string_storage_error(interp, env, error))
+            }
             "find-file-name-handler" => {
                 need_args(name, args, 2)?;
                 let file = string_text(&args[0])?;

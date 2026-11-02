@@ -33586,6 +33586,23 @@ fn comparisons_coerce_lists_take_and_columns_measure_as_gnu() {
 }
 
 #[test]
+fn file_names_expand_and_concatenate_as_fileio_c() {
+    // fileio.c:Fexpand_file_name returns an absolute NAME it need not
+    // change as itself, made of DEFAULT-DIRECTORY's multibyteness when one
+    // of the two is pure ASCII (a non-ASCII multibyte one made its bytes,
+    // unibyte, when both are not), does not expand a DEFAULT-DIRECTORY EQ
+    // to NAME, stops at a NUL in DEFAULT-DIRECTORY and calls a handler of
+    // NAME, the directory or the result.  Ffile_name_concat keeps a
+    // component's leading slashes and makes a unibyte non-ASCII component
+    // multibyte when the result is.
+    assert_oracle_contract_matches_interpreter(
+        r##"(let ((show (lambda (r) (if (stringp r) (list (append r nil) (multibyte-string-p r)) r))) (h (lambda (_op &rest args) (if (equal (car args) "/zz/bad") 42 (format "H%S" args))))) (mapcar (lambda (f) (condition-case e (funcall show (funcall f)) (error e))) (list (lambda () (let ((s "/a/b")) (eq s (expand-file-name s)))) (lambda () (let ((s "/a/b")) (eq s (expand-file-name s "/\303\251/")))) (lambda () (expand-file-name "/abs" (decode-coding-string "/\303\251/" 'utf-8))) (lambda () (expand-file-name "" "")) (lambda () (let ((default-directory "/q/")) (expand-file-name "a" ""))) (lambda () (let ((s "x")) (expand-file-name s s))) (lambda () (expand-file-name "/a/./b//c/../d" "/")) (lambda () (expand-file-name "../.." "//x/")) (lambda () (expand-file-name (string-to-multibyte "a") "/x/\351")) (lambda () (expand-file-name (decode-coding-string "\303\251" 'utf-8) "/x/\351")) (lambda () (expand-file-name (decode-coding-string "\303\251" 'utf-8) "/x/")) (lambda () (expand-file-name "\351" (decode-coding-string "/\303\251/" 'utf-8))) (lambda () (expand-file-name "a" "/x\0y/")) (lambda () (condition-case e (expand-file-name "a\0b") (error (list (car e) (cadr e))))) (lambda () (expand-file-name "a" 5)) (lambda () (expand-file-name "~nosuchuser243/x" "/d/")) (lambda () (let ((file-name-handler-alist (list (cons "\\`/zz" h)))) (list (expand-file-name "/zz/x" "/d/") (expand-file-name "x" "/zz/d/") (expand-file-name "/foo/../zz/x" "/d/") (condition-case e (expand-file-name "/zz/bad") (error e))))) (lambda () (file-name-concat "a" "/b")) (lambda () (file-name-concat "a//" "//b" "c")) (lambda () (file-name-concat "a" nil "b" "")) (lambda () (file-name-concat (decode-coding-string "\303\251" 'utf-8) "\351")) (lambda () (file-name-concat (string-to-multibyte "a") "\351")) (lambda () (file-name-concat "a" 1)) (lambda () (file-name-concat nil 1)))))"##,
+        r##"(t t ((47 97 98 115) t) (nil nil) ((47 113 47 97) nil) ((120 47 120) nil) ((47 97 47 98 47 100) nil) ((47) nil) ((47 120 47 233 47 97) nil) ((47 120 47 233 47 195 169) nil) ((47 120 47 233) t) ((47 195 169 47 233) nil) ((47 120) nil) (wrong-type-argument filenamep) ((47 97) nil) ((47 100 47 126 110 111 115 117 99 104 117 115 101 114 50 52 51 47 120) nil) ("H(\"/zz/x\" \"/d/\")" "H(\"x\" \"/zz/d/\")" "H(\"/zz/x\" \"/d/\")" (error "Invalid handler in `file-name-handler-alist'")) ((97 47 47 98) nil) ((97 47 47 47 47 98 47 99) nil) ((97 47 98) nil) ((233 47 4194281) t) ((97 47 233) nil) (wrong-type-argument stringp 1) (wrong-type-argument stringp 1))"##,
+        "expand-file-name and file-name-concat",
+    );
+}
+
+#[test]
 fn indirect_buffers_share_their_base_text_and_its_markers() {
     // buffer.c:Fmake_indirect_buffer gives the indirect buffer its base's
     // buffer_text, whose one chain holds every marker of the family, the
