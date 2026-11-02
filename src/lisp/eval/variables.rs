@@ -3544,35 +3544,48 @@ impl Interpreter {
         self.frame_environments.truncate(mark);
     }
 
-    // The lexical context visible at an activation frame.  While Edebug is
-    // active this is the evaluator environment captured at the call
-    // boundary, including active `let' frames and their identity stamps.
-    // Otherwise it is the environment last installed by the frame or one
+    /// eval.c:Fbacktrace_eval of FORM at the frame at INDEX in
+    /// `backtrace_frames' (found by `backtrace_frame_index'): the bindings
+    /// made since the frame's record undone (backtrace_eval_unrewind, the
+    /// swap a thread switch makes) while FORM runs, then made again, and
+    /// FORM evaluated in the lexical environment in effect when the frame
+    /// was entered.
+    pub(crate) fn backtrace_eval_at(
+        &mut self,
+        index: usize,
+        form: &Value,
+    ) -> Result<Value, LispError> {
+        let mut context = self.backtrace_frame_context(index);
+        let depth = index + 1;
+        let start = self
+            .active_special_restores
+            .iter()
+            .rposition(|restore| restore.frame_depth < depth)
+            .map_or(0, |below| below + 1);
+        self.swap_special_bindings_for_thread_switch(start, false);
+        let result = self.eval(form, &mut context);
+        self.swap_special_bindings_for_thread_switch(start, true);
+        result
+    }
+
+    // The lexical context in effect when the frame at INDEX was entered.
+    // While Edebug is active this is the evaluator environment captured at
+    // the call boundary, including active `let' frames and their identity
+    // stamps.  Otherwise it is the environment last installed by a frame
     // outside it (see `FrameEnvironment').
-    pub fn backtrace_frame_context_env(&self, index: usize, base: Option<&Value>) -> Env {
-        let frames: Vec<&BacktraceFrame> = self.backtrace_frames.iter().rev().collect();
-        let start = base
-            .and_then(|base| {
-                frames
-                    .iter()
-                    .position(|frame| frame.function_snapshot() == *base)
-            })
-            .unwrap_or(0);
-        if let Some(context) = frames
-            .get(start + index)
+    fn backtrace_frame_context(&self, index: usize) -> Env {
+        if let Some(context) = self
+            .backtrace_frames
+            .get(index)
             .and_then(|frame| frame.lexical_context().cloned())
         {
             return context;
         }
-        let environment = frames
-            .len()
-            .checked_sub(start + index + 1)
-            .and_then(|frame| {
-                self.frame_environments
-                    .iter()
-                    .rev()
-                    .find(|installed| installed.frame <= frame)
-            })
+        let environment = self
+            .frame_environments
+            .iter()
+            .rev()
+            .find(|installed| installed.frame < index)
             .map_or(Value::Nil, |installed| installed.environment);
         crate::lisp::types::Env::from_vec(vec![EnvFrame::from_alist(environment)])
     }

@@ -34484,6 +34484,43 @@ fn backtrace_locals_as_eval_c() {
 }
 
 #[test]
+fn backtrace_eval_as_eval_c() {
+    // eval.c:Fbacktrace_eval: EXP runs where the frame was entered: the
+    // bindings made since its record undone while it runs and made again
+    // after (backtrace_eval_unrewind), in the lexical environment a frame
+    // outside it installed last; the frame must be live.
+    assert_oracle_contract_matches_interpreter(
+        r#"(progn
+  (defvar be260-out nil)
+  (defvar be260-d 'global)
+  (fset 'be260-probe
+        (lambda (exp)
+          (let ((be260-d 'probe))
+            (setq be260-out
+                  (mapcar (lambda (i)
+                            (condition-case e (backtrace-eval exp i 'be260-probe)
+                              (error (list 'err e))))
+                          '(0 1 2 3))))))
+  (fset 'be260-lex
+        (lambda (a) (let ((b (* a 10))) (be260-probe '(list (boundp 'a) be260-d)) b)))
+  (fset 'be260-dyn
+        (let ((lexical-binding nil))
+          (byte-compile '(lambda (a)
+                           (let ((be260-d 'dyn)) (be260-probe '(list a be260-d)))))))
+  (fset 'be260-env
+        (lambda (x) (be260-probe 'x)))
+  (list (progn (be260-lex 1) be260-out)
+        (progn (be260-dyn 7) be260-out)
+        (progn (be260-env 5) be260-out)
+        be260-d
+        (condition-case e (backtrace-eval 1 100000) (error e))
+        (condition-case e (backtrace-eval 1 -1) (error e))))"#,
+        r#"(((nil global) (nil global) (nil global) (nil global)) ((7 dyn) (err (void-variable a)) (err (void-variable a)) (err (void-variable a))) (5 (err (void-variable x)) (err (void-variable x)) (err (void-variable x))) global (error "Activation frame not found!") (wrong-type-argument wholenump -1))"#,
+        "backtrace-eval",
+    );
+}
+
+#[test]
 fn frame_parameters_and_face_colors_as_frame_c_and_xfaces_c() {
     // cmds.c:Fdelete_char hands a non-nil KILLFLAG to
     // `kill-forward-chars' and checks N with CHECK_FIXNUM.  frame.c keeps

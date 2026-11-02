@@ -12583,6 +12583,32 @@ setup_process_coding_systems's check now refuses). A 13-form
   Local validation: the grouped gate's 3,458 library tests, the
   integration targets and clippy with `--all-targets --all-features -D
   warnings' pass.
+- **Round 260: `backtrace-eval' where the frame was entered.**
+  Fbacktrace_eval finds the frame as get_backtrace_frame does (NFRAMES a
+  natural number, BASE a function or (OFFSET . FUNCTION) matched through
+  Findirect_function) and signals "Activation frame not found!" when
+  there is none, where Emaxx searched the frames for BASE itself by its
+  function object and evaluated anyway; it undoes every binding on the
+  specpdl above the frame's record while EXP runs
+  (backtrace_eval_unrewind, the swap a thread switch makes, now
+  `swap_special_bindings_for_thread_switch' from the first record the
+  frame or one inside it made) and makes them again after; and EXP sees
+  the lexical environment in effect when the frame was entered, the one
+  a frame outside it installed last, where Emaxx took the frame's own.
+  So the frame's own arguments and let-bindings, dynamic or lexical, are
+  out of sight, as they are in GNU (the debugger asks for the frame
+  inside the one it means, debug.el's `debugger-eval-expression'); under
+  Edebug the environment captured at the call boundary stands, as
+  before. The battery (r260/p260.el: an interpreted lexical function,
+  dynamic-binding byte code, a closure's argument, a binding made inside
+  the probe, a missing frame) matches GNU; edebug-tests,
+  backtrace-tests, testcover-tests, eval-tests and ert-tests pass as
+  many tests as GNU's. GNU's unrewind also puts back the current buffer
+  a `save-current-buffer' or `save-excursion' above the frame saved,
+  which Emaxx keeps off the binding stack and does not. Local
+  validation: the grouped gate's 3,459 library tests, the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -14341,6 +14367,21 @@ median of 127 ms against 110), comp-tests' the most (2,064 against
 15,697), tramp-tests (21,235 against 19,412), semantic-utest-ia (3,880
 against 2,703), mule-tests (3,005 against 1,978) and electric-tests
 (1,048 against 580).
+
+**On `b697218`** (round 259): frozen (run 41515939960) matched all 7,928
+outcomes. Setup 54.4 s against 46.7 s (1.164), test bodies 230.3 s
+against 219.4 s (1.049), in all 1.068; ucs-normalize-tests' bodies took
+83 ms against 57. The full Rust gate (run 41515933695) passed. Per file,
+the setup is 15 ms over GNU's on average (7.7 s over 519 files, a median
+of 84 ms against 73), comp-tests' the most (1,266 against 1,236), and
+the widest body gaps are comp-tests (12,527 ms against 11,238),
+ert-tests (27,536 against 26,483), tramp-tests (15,183 against 14,210),
+semantic-utest-ia (2,512 against 1,789) and mule-tests (1,839 against
+1,179). The bodies' ratio is above the 0.93 to 0.95 of earlier runs on
+runners this fast, with GNU's bodies the fastest yet; locally, on the
+round 261 build, ert-tests (0.76), subr-tests (0.83), mule-tests (0.97)
+and comp-tests run no slower against GNU than before, so the next run is
+to show whether it holds.
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

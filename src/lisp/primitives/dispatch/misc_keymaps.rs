@@ -1241,13 +1241,19 @@ define_dispatch!(
             }
             "backtrace-eval" => {
                 need_arg_range(name, args, 2, 3)?;
-                let index = backtrace_nframes(args[1])?;
-                let base = args.get(2).filter(|value| !value.is_nil());
-                // The frame's environment is the alist itself: an
-                // assignment made here is a setcdr on the suspended
+                // eval.c:Fbacktrace_eval: get_backtrace_frame's frame, which
+                // must be live.  The frame's environment is the alist itself:
+                // an assignment made here is a setcdr on the suspended
                 // activation's own binding cons.
-                let mut context = interp.backtrace_frame_context_env(index, base);
-                interp.eval(&args[0], &mut context)
+                let nframes = backtrace_nframes(args[1])?;
+                let (offset, base) = backtrace_base(args.get(2).copied().unwrap_or(Value::Nil));
+                let frame = interp.backtrace_frame_index(nframes, base, offset, |object| {
+                    crate::lisp::primitives::keymap::indirect_function(interp, object, env)
+                });
+                match frame {
+                    Some(frame) => interp.backtrace_eval_at(frame, &args[0]),
+                    None => Err(LispError::Signal("Activation frame not found!".into())),
+                }
             }
             "backtrace--locals" => {
                 need_arg_range(name, args, 1, 2)?;
