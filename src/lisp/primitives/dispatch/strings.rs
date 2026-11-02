@@ -534,12 +534,7 @@ define_dispatch!(
             }
             "string-to-syntax" => {
                 need_args(name, args, 1)?;
-                let spec = string_text(&args[0])?;
-                let entry = syntax::parse_syntax_spec(&spec).ok_or_else(|| {
-                    let letter = spec.chars().next().unwrap_or('\0');
-                    LispError::Signal(format!("Invalid syntax description letter: {letter}"))
-                })?;
-                Ok(syntax::syntax_entry_value(interp, entry))
+                syntax::string_to_syntax(interp, &args[0])
             }
             "internal-describe-syntax-value" => {
                 need_args(name, args, 1)?;

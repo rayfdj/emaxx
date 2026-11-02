@@ -99,6 +99,113 @@ pub(super) fn syntax_class_char(class: SyntaxClass) -> char {
     }
 }
 
+/// syntax.c:syntax_spec_code: the class a descriptor letter names, 0377
+/// for no letter; the table's bytes past 0177 are zero, whitespace.
+fn syntax_spec_code(letter: u8) -> u8 {
+    match letter {
+        b' ' | b'-' => 0,
+        b'.' => 1,
+        b'w' | b'W' => 2,
+        b'_' => 3,
+        b'(' => 4,
+        b')' => 5,
+        b'\'' => 6,
+        b'"' => 7,
+        b'$' => 8,
+        b'\\' => 9,
+        b'/' => 10,
+        b'<' => 11,
+        b'>' => 12,
+        b'@' => 13,
+        b'!' => 14,
+        b'|' => 15,
+        0x80.. => 0,
+        _ => 0o377,
+    }
+}
+
+/// character.h:string_char_and_length's arithmetic on the bytes at P,
+/// whatever they are (a unibyte string's raw byte decodes as GNU's
+/// formula makes it, reading the bytes after it); bytes past P's end
+/// read as the NULs a C string ends with.
+fn string_char_and_length(p: &[u8]) -> (i64, usize) {
+    let byte = |index: usize| i64::from(p.get(index).copied().unwrap_or(0));
+    let c = byte(0);
+    if c & 0x80 == 0 {
+        return (c, 1);
+    }
+    let mut d = (c << 6) + byte(1) - ((0xc0 << 6) + 0x80);
+    if c & 0x20 == 0 {
+        return (d + if c < 0xc2 { 0x3fff80 } else { 0 }, 2);
+    }
+    d = (d << 6) + byte(2) - ((0x20 << 12) + 0x80);
+    if c & 0x10 == 0 {
+        return (d, 3);
+    }
+    d = (d << 6) + byte(3) - ((0x10 << 18) + 0x80);
+    if c & 0x08 == 0 {
+        return (d, 4);
+    }
+    d = (d << 6) + byte(4) - ((0x08 << 24) + 0x80);
+    (d, 5)
+}
+
+/// syntax.c:Fstring_to_syntax: STRING's bytes read as the C string
+/// SDATA is, so that a NUL ends them: the first byte's class
+/// (syntax_spec_code), nil for `@', the matching character
+/// string_char_and_length makes of the bytes after it (nil for a space),
+/// then the flags among the rest; a shared syntax code object when there
+/// is no match.
+pub(super) fn string_to_syntax(interp: &Interpreter, string: &Value) -> Result<Value, LispError> {
+    let Kind::StringObject(state) = string.kind() else {
+        return Err(LispError::WrongTypeArgument("stringp".into(), *string));
+    };
+    let bytes = state.borrow().bytes().to_vec();
+    let end = bytes
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(bytes.len());
+    let p = &bytes[..end];
+    let first = p.first().copied().unwrap_or(0);
+    let mut val = i64::from(syntax_spec_code(first));
+    if val == 0o377 {
+        return Err(LispError::Signal(format!(
+            "Invalid syntax description letter: {}",
+            char::from(first)
+        )));
+    }
+    if val == 13 {
+        return Ok(Value::Nil);
+    }
+    let mut rest = p.get(1..).unwrap_or_default();
+    let mut matching = Value::Nil;
+    if !rest.is_empty() {
+        let (character, length) = string_char_and_length(rest);
+        if character != i64::from(b' ') {
+            matching = Value::Integer(character);
+        }
+        rest = rest.get(length..).unwrap_or_default();
+    }
+    for flag in rest {
+        val |= match flag {
+            b'1' => 1 << 16,
+            b'2' => 1 << 17,
+            b'3' => 1 << 18,
+            b'4' => 1 << 19,
+            b'p' => 1 << 20,
+            b'b' => 1 << 21,
+            b'n' => 1 << 22,
+            b'c' => 1 << 23,
+            _ => 0,
+        };
+    }
+    if val < 16 && matching.is_nil() {
+        Ok(interp.syntax_code_object(val as usize))
+    } else {
+        Ok(Value::cons(Value::Integer(val), matching))
+    }
+}
+
 pub(super) fn parse_syntax_spec(spec: &str) -> Option<SyntaxEntry> {
     let mut chars = spec.chars();
     let class = syntax_class_from_char(chars.next()?)?;
@@ -121,53 +228,6 @@ pub(super) fn parse_syntax_spec(spec: &str) -> Option<SyntaxEntry> {
         }
     }
     Some(entry)
-}
-
-fn syntax_entry_code(entry: SyntaxEntry) -> i64 {
-    let mut code = entry.class as i64;
-    if entry.start_first {
-        code |= 1 << 16;
-    }
-    if entry.start_second {
-        code |= 1 << 17;
-    }
-    if entry.end_first {
-        code |= 1 << 18;
-    }
-    if entry.end_second {
-        code |= 1 << 19;
-    }
-    if entry.prefix {
-        code |= 1 << 20;
-    }
-    if entry.style_b {
-        code |= 1 << 21;
-    }
-    if entry.nested {
-        code |= 1 << 22;
-    }
-    if entry.style_c {
-        code |= 1 << 23;
-    }
-    code
-}
-
-pub(super) fn syntax_entry_value(interp: &Interpreter, entry: SyntaxEntry) -> Value {
-    if entry.class == SyntaxClass::Inherit {
-        return Value::Nil;
-    }
-    let raw_code = syntax_entry_code(entry);
-    if raw_code < 16 && entry.matching.is_none() {
-        return interp.syntax_code_object(raw_code as usize);
-    }
-    let code = Value::Integer(raw_code);
-    Value::cons(
-        code,
-        entry
-            .matching
-            .map(|matching| Value::Integer(matching as i64))
-            .unwrap_or(Value::Nil),
-    )
 }
 
 pub(super) fn describe_syntax_value(value: &Value) -> (String, bool) {

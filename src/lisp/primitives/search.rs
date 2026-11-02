@@ -442,14 +442,26 @@ impl<'a, 't> LispMatchEnv<'a, 't> {
     /// The `unicode-category-table' value for C, GNU's general category
     /// number.
     fn general_category(&self, c: u32) -> Option<i64> {
-        let table = self
-            .interp
-            .symbol_value_key(cached_symbol!("unicode-category-table"))?;
-        match table.kind() {
-            Kind::CharTable(table) => table.get(c).integer_value(),
-            _ => None,
-        }
+        general_category(self.interp, c)
     }
+}
+
+/// `unicode-category-table''s value for C: character.h's general category
+/// number, or None where the entry is no fixnum.
+fn general_category(interp: &Interpreter, c: u32) -> Option<i64> {
+    let table = interp.symbol_value_key(cached_symbol!("unicode-category-table"))?;
+    match table.kind() {
+        Kind::CharTable(table) => table.get(c).integer_value(),
+        _ => None,
+    }
+}
+
+/// character.c:graphic_base_p: C's category is a fixnum and none of the
+/// marks, separators or control, surrogate, format and unassigned codes.
+pub(crate) fn graphic_base_p(interp: &Interpreter, c: u32) -> bool {
+    use unicode::*;
+    general_category(interp, c)
+        .is_some_and(|cat| !matches!(cat, MN | MC | ME | ZS | ZL | ZP | CC | CS | CF | CN))
 }
 
 /// The current buffer's category table.
@@ -568,6 +580,7 @@ mod unicode {
     pub(super) const ZL: i64 = 24;
     pub(super) const ZP: i64 = 25;
     pub(super) const CC: i64 = 26;
+    pub(super) const CF: i64 = 27;
     pub(super) const CS: i64 = 28;
     pub(super) const CN: i64 = 30;
 }

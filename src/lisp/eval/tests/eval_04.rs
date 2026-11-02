@@ -5485,7 +5485,8 @@ fn assert_minibuffer_completion_primitives_cover_batch_cases() {
 #[test]
 fn substitute_in_file_name_uses_the_lisp_process_environment() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "env",
             r#"(let ((process-environment '("EMAXX_DYNAMIC_SUBST=dynamic")))
                   (substitute-in-file-name
                    "${EMAXX_DYNAMIC_SUBST}/$EMAXX_DYNAMIC_SUBST"))"#,

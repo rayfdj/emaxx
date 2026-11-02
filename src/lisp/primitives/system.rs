@@ -1655,96 +1655,89 @@ pub(crate) fn lisp_environment_string(
 }
 
 /// fileio.c:search_embedded_absfilename: where an absolute file name
-/// starts after a slash in TEXT (`//', `/~/', or `/~USER/' for a known
-/// USER), the earliest; None when none does.
-fn search_embedded_absfilename(text: &str) -> Option<usize> {
-    let bytes = text.as_bytes();
-    (1..bytes.len()).find(|&p| bytes[p - 1] == b'/' && file_name_absolute_p(&text[p..]))
+/// starts after a slash in the bytes NM (`//', `/~/', or `/~USER/' for a
+/// known USER), the earliest; None when none does.
+fn search_embedded_absfilename(nm: &[u8]) -> Option<usize> {
+    (1..nm.len()).find(|&p| nm[p - 1] == b'/' && file_name_absolute_p_bytes(&nm[p..]))
 }
 
-fn substitute_in_file_name_with(
-    path: &str,
-    mut environment_value: impl FnMut(&str) -> Option<String>,
-) -> String {
-    // Fsubstitute_in_file_name: if /~ or // appears, everything through
-    // the slash before it is discarded and the rest substituted afresh.
-    let mut path = path;
-    while let Some(start) = search_embedded_absfilename(path) {
-        path = &path[start..];
+/// fileio.c:file_name_absolute_p over a name's bytes, read as the C
+/// string they are: `/', `~' alone or before a slash, or `~USER' for a
+/// USER with an absolute home directory (user_homedir).
+fn file_name_absolute_p_bytes(name: &[u8]) -> bool {
+    match name.first() {
+        Some(b'/') => true,
+        Some(b'~') => {
+            let rest = &name[1..];
+            let length = rest
+                .iter()
+                .position(|byte| matches!(byte, 0 | b'/'))
+                .unwrap_or(rest.len());
+            matches!(rest.first(), None | Some(0 | b'/'))
+                || std::str::from_utf8(&rest[..length])
+                    .ok()
+                    .and_then(user_home_directory)
+                    .is_some_and(|home| home.starts_with('/'))
+        }
+        _ => false,
     }
-    let mut result = String::new();
-    let chars: Vec<char> = path.chars().collect();
-    let mut index = 0usize;
-    while index < chars.len() {
-        if chars[index] != '$' {
-            result.push(chars[index]);
-            index += 1;
-            continue;
-        }
-        if index + 1 < chars.len() && chars[index + 1] == '$' {
-            result.push('$');
-            index += 2;
-            continue;
-        }
-        if index + 1 < chars.len() && chars[index + 1] == '{' {
-            let mut end = index + 2;
-            while end < chars.len() && chars[end] != '}' {
-                end += 1;
-            }
-            if end < chars.len() && chars[end] == '}' {
-                let name: String = chars[index + 2..end].iter().collect();
-                if let Some(value) = environment_value(&name) {
-                    result.push_str(&value);
-                } else {
-                    result.push_str("${");
-                    result.push_str(&name);
-                    result.push('}');
-                }
-                index = end + 1;
-                continue;
-            }
-        }
-        let mut end = index + 1;
-        while end < chars.len() && (chars[end].is_ascii_alphanumeric() || chars[end] == '_') {
-            end += 1;
-        }
-        if end == index + 1 {
-            result.push('$');
-            index += 1;
-            continue;
-        }
-        let name: String = chars[index + 1..end].iter().collect();
-        if let Some(value) = environment_value(&name) {
-            result.push_str(&value);
-        } else {
-            result.push('$');
-            result.push_str(&name);
-        }
-        index = end;
+}
+
+/// fileio.c:Fsubstitute_in_file_name past its handler lookup (the
+/// dispatcher's): FILENAME from the slash of an embedded absolute name
+/// on, substituted afresh, handler included; else what Lisp
+/// `substitute-env-in-file-name' makes of it when that is defined, cut
+/// again at an embedded absolute name, and FILENAME itself when nothing
+/// changed.
+pub(crate) fn substitute_in_file_name(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    filename: Value,
+) -> Result<Value, LispError> {
+    let Kind::StringObject(state) = filename.kind() else {
+        return Err(wrong_type_argument("stringp", filename));
+    };
+    let (nm, multibyte) = {
+        let state = state.borrow();
+        (state.bytes().to_vec(), state.is_multibyte())
+    };
+    if let Some(p) = search_embedded_absfilename(&nm) {
+        let name = super::make_specified_string(nm[p..].to_vec(), multibyte)
+            .map_err(|error| LispError::Signal(error.to_string()))?;
+        return super::call(interp, "substitute-in-file-name", &[name], env);
     }
-    // And again in the substituted name.
+    let mut filename = filename;
+    let substitute = crate::lisp::types::SymbolName::from("substitute-env-in-file-name");
+    if interp
+        .raw_function_binding_symbol(&substitute, env)
+        .is_some_and(|binding| !binding.is_nil())
+    {
+        let tmp = interp.call_function_value(
+            Value::symbol("substitute-env-in-file-name"),
+            None,
+            &[filename],
+            env,
+        )?;
+        if tmp.eq_value(filename) {
+            return Ok(filename);
+        }
+        filename = tmp;
+    } else {
+        return Ok(filename);
+    }
+    let Kind::StringObject(state) = filename.kind() else {
+        return Err(wrong_type_argument("stringp", filename));
+    };
+    let xnm = state.borrow().bytes().to_vec();
     let mut start = 0;
-    while let Some(next) = search_embedded_absfilename(&result[start..]) {
-        start += next;
+    while let Some(p) = search_embedded_absfilename(&xnm[start..]) {
+        start += p;
     }
     if start == 0 {
-        result
-    } else {
-        result[start..].to_string()
+        return Ok(filename);
     }
-}
-
-#[cfg(test)]
-pub(crate) fn substitute_in_file_name(path: &str) -> String {
-    substitute_in_file_name_with(path, |name| std::env::var(name).ok())
-}
-
-pub(crate) fn substitute_in_file_name_in_env(
-    interp: &Interpreter,
-    env: &Env,
-    path: &str,
-) -> String {
-    substitute_in_file_name_with(path, |name| lisp_environment_string(interp, env, name))
+    super::make_specified_string(xnm[start..].to_vec(), multibyte)
+        .map_err(|error| LispError::Signal(error.to_string()))
 }
 
 pub(crate) fn expand_home_prefix_with_home(path: &str, home: Option<&str>) -> String {

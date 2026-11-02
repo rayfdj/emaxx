@@ -1525,7 +1525,7 @@ pub(crate) fn native_print_updates_batch_last_char(
             interp
                 .lookup_var("print-integers-as-characters", env)
                 .is_some_and(|value| value.is_truthy())
-                && render_princ_integer_as_character(&Value::Integer(integer)).is_some()
+                && render_princ_integer_as_character(interp, &Value::Integer(integer)).is_some()
         }
         Kind::BigInteger(_) | Kind::Float(_) => false,
         Kind::StringObject(_) => escaped,

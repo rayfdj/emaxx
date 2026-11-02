@@ -12029,6 +12029,75 @@ setup_process_coding_systems's check now refuses). A 13-form
   runs in 1.60 s against GNU's 1.91 s. Local validation: the grouped
   gate's 3,438 library tests, the integration targets and clippy
   with `--all-targets --all-features -D warnings` pass.
+- **Round 248: minibuf.c, print.c, fileio.c, syntax.c, category.c and
+  process.c corners from batteries.** Batteries against GNU over
+  minibuf.c's completion functions and reads (172 cases, r248/comp.txt
+  and comp2.txt), print.c (307), fileio.c's name functions (125),
+  keymap.c (174), timefns.c (164), character.c (41), syntax.c's scanners
+  (32) and descriptors (53), chartab.c, bool vectors and case tables
+  (40), raw-byte strings across the primitives (87) and callproc.c and
+  process.c (74) differ in these, now fixed; editfns.c's fields and
+  insertion (52) and `sort` with GNU 30's keywords (86) agree
+  throughout. `read-from-minibuffer` with an initial input whose
+  position is past its end signalled `end-of-buffer` before reading;
+  read_minibuf only computes that position, and only the interactive
+  read's Fforward_char signals, once the prompt and the input are in the
+  minibuffer, so a batch read now goes on and an interactive one signals
+  there, through the unwinding of clear_message's exits. print.c's
+  integers as characters (`print-integers-as-characters`) were tested
+  against Rust's Unicode data where graphic_base_p reads
+  `unicode-category-table`, so a private-use character printed as a
+  number; the test is graphic_base_p's now (a fixnum up to
+  MAX_UNICODE_CHAR with a named escape or a category other than the
+  marks, the separators and the control, surrogate, format and
+  unassigned codes), a bignum prints as a number, and the
+  `unicode-general-category` crate is gone (three printer tests that ran
+  without characters.el's table now run in the loaded runtime, as every
+  GNU does). `write-char` signalled `integerp` and `characterp` where
+  Fwrite_char signals `fixnump`, and refused codes past MAX_CHAR: a
+  function stream is now called with the code as printchar's unsigned
+  int holds it, and other output stores char_string's form, its modifier
+  bits resolved (the alt bit alone gives NUL) and a code past MAX_CHAR
+  an `error` in hex. `substitute-in-file-name` worked over host text and
+  always returned a copy; it is Fsubstitute_in_file_name over the name's
+  bytes now, starting over from an embedded absolute name through the
+  handlers, calling Lisp `substitute-env-in-file-name` (env.el) when it
+  is defined, and returning the argument itself, multibyteness and all,
+  when that comes back unchanged. `string-to-syntax` and
+  `modify-syntax-entry` read the descriptor's host characters, so a raw
+  byte was an invalid letter or a private-use matching character and a
+  NUL was skipped; they are Fstring_to_syntax over the bytes now, read
+  as the C string SDATA is (a NUL ends the descriptor, a first byte past
+  0177 is whitespace, as syntax_spec_code's zero entries make it, and
+  the matching character is string_char_and_length's arithmetic on the
+  bytes). `make-category-set` read host characters too, so a raw byte's
+  error named its private-use code; it checks the bytes from the last
+  now, as Fmake_category_set does. `make-process` and
+  `make-pipe-process` without `:name` made a process;
+  get_required_string_keyword_param's errors (`Missing :name keyword
+  parameter`, `:name value not a string`) now come after the buffer of a
+  process with a command and first for a pipe, as GNU orders them.
+  `signal-process` upcased an unknown signal's name in its error and
+  took `Sigint` for `SIGINT`; abbr_to_signal drops only a `SIG` or `sig`
+  prefix and the error names the symbol as given. Not reproduced, as GNU
+  artifacts: read_minibuf_noninteractive loops forever at end of input
+  while a stale `errno` reads EINTR (a battery's read hung GNU);
+  print_unwind restores the outer print's saved text without its
+  position (and copies SCHARS bytes where it needs SBYTES), so a
+  `print-unreadable-function` that prints, as `format` with `%S` does,
+  splices its text into the outer output and, with multibyte text,
+  leaves the character and byte counts apart; a syntax descriptor whose
+  matching character's bytes run into the terminating NUL makes
+  Fstring_to_syntax read its flags past the string; `(write-char -1)`
+  stores a byte CHAR_STRING writes from a negative int; and
+  `sxhash-equal` of a char-table hashes its purpose symbol by address.
+  The keymap differences are configuration: the X build preloads
+  touch-screen.el and provides `move-toolbar`. print-tests,
+  minibuf-tests, fileio-tests, files-tests, env-tests, character-tests,
+  minibuffer-tests, cl-print-tests and keymap-tests pass as many tests
+  as GNU's. Local validation: the grouped gate's 3,441 library
+  tests, the integration targets and clippy with `--all-targets
+  --all-features -D warnings` pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -13655,6 +13724,17 @@ median of 121 ms against 100), electric-tests' the most (901 against
 14,633), tramp-tests (21,628 against 19,517), eglot-tests (33,822
 against 32,138), semantic-utest-ia (3,925 against 2,537) and mule-tests
 (3,204 against 2,012).
+
+**On `ccbd047`** (round 247): frozen (run 41405952255) matched all 7,928
+outcomes. Setup 78.6 s against 63.5 s (1.238), test bodies 252.2 s
+against 262.4 s (0.961), in all 0.999; ucs-normalize-tests' bodies took
+128 ms against 91. The full Rust gate (run 41405943659) passed. Per
+file, the setup is 29 ms over GNU's on average (15.1 s over 519 files, a
+median of 116 ms against 97), electric-tests' the most (900 against
+513), and the widest body gaps are comp-tests (16,812 ms against
+14,294), tramp-tests (21,030 against 18,969), semantic-utest-ia (3,899
+against 2,488), eglot-tests (33,296 against 31,963) and mule-tests
+(3,163 against 2,109).
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

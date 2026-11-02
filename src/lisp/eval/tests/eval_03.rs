@@ -51,9 +51,12 @@ fn prin1_to_string_roundtrips_upstream_symbol_cases() {
     }
 }
 
+// print.c graphic_base_p reads `unicode-category-table', which the
+// preloaded characters.el fills: these run in the loaded runtime.
 #[test]
 fn prin1_to_string_matches_upstream_integer_character_cases() {
-    let printed = eval_str(
+    let printed = eval_str_with_upstream_batch_features(
+        &[],
         r#"
             (let ((print-integers-as-characters t))
               (prin1-to-string
@@ -70,7 +73,8 @@ fn prin1_to_string_matches_upstream_integer_character_cases() {
 #[test]
 fn princ_matches_upstream_integer_character_cases() {
     assert_string_value(
-        eval_str(
+        eval_str_with_upstream_batch_features(
+            &[],
             r#"
                 (let ((print-integers-as-characters t))
                   (with-output-to-string
@@ -504,7 +508,8 @@ fn princ_and_terpri_respect_output_streams() {
 #[test]
 fn terpri_ensure_tracks_batch_standard_output_and_rejects_functions() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_features(
+            &[],
             r#"
                 (list
                  (let ((standard-output t)

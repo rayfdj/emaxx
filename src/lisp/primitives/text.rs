@@ -348,32 +348,6 @@ pub(crate) fn display_char_width(
         .sum()
 }
 
-/// editfns.c styled_format's %c: the character, with the side-table
-/// entry a character beyond the Rust text view needs.
-pub(crate) fn format_char_conversion(
-    arg: &Value,
-) -> Result<(String, Vec<(usize, u32)>), LispError> {
-    let n = match arg.kind() {
-        Kind::Integer(n) => n,
-        Kind::BigInteger(n) => n
-            .to_i64()
-            .ok_or_else(|| LispError::WrongTypeArgument("characterp".into(), *arg))?,
-        Kind::Float(_) => {
-            return Err(LispError::TypeError("integer".into(), "float".into()));
-        }
-        _ => {
-            return Err(LispError::WrongTypeArgument("integerp".into(), *arg));
-        }
-    };
-    if !(0..=MAX_CHAR as i64).contains(&n) {
-        return Err(LispError::Signal(format!("Invalid character: {n}")));
-    }
-    let mut text = String::new();
-    let mut extended = Vec::new();
-    push_character_code(&mut text, &mut extended, 0, n as u32);
-    Ok((text, extended))
-}
-
 pub(crate) fn bigint_from_truncated_float(value: f64) -> Result<BigInt, LispError> {
     if !value.is_finite() {
         return Err(LispError::TypeError("integer".into(), "float".into()));

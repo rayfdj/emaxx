@@ -1643,17 +1643,15 @@ pub(crate) fn minibuffer_initial_input(initial: &Value) -> Result<(Value, i64), 
     let Kind::Integer(position) = backup.kind() else {
         return Err(wrong_type_argument("fixnump", backup));
     };
+    // "Convert to distance from end of input."  A position past the end
+    // is no error here: only the minibuffer's Fforward_char signals it,
+    // which the noninteractive read never reaches.
     let length = text.text.chars().count() as i64;
     let pos = if position < 1 {
         -length
     } else {
         position.saturating_sub(1).saturating_sub(length)
     };
-    if pos > 0 {
-        return Err(LispError::SignalValue(Value::list([Value::symbol(
-            "end-of-buffer",
-        )])));
-    }
     Ok((string, pos))
 }
 
@@ -1787,10 +1785,15 @@ pub(crate) fn activate_minibuffer(
                 .set_inserted_extended_chars(initial_start, &initial_string.extended_chars);
         }
     }
+    // Fforward_char (POS) from the end of the initial input: a position
+    // past it leaves point at ZV and signals `end-of-buffer'.
+    let past_end = initial_backup > 0;
     {
         let mut buffer = interp.buffer.borrow_mut();
         let position = buffer.point_max();
-        buffer.goto_char(position.saturating_sub(initial_backup.unsigned_abs() as usize));
+        if !past_end {
+            buffer.goto_char(position.saturating_sub(initial_backup.unsigned_abs() as usize));
+        }
     }
 
     // Select the minibuffer window for the read, GNU's read_minibuf: the
@@ -1814,9 +1817,17 @@ pub(crate) fn activate_minibuffer(
     };
     // GNU minibuf.c:read_minibuf has already selected/activated the
     // minibuffer when clear_message runs, but has not installed its map.
-    if let Err(error) = super::dispatch::clear_message(interp, env, true, true) {
+    let setup = if past_end {
+        Err(LispError::SignalValue(Value::list([Value::symbol(
+            "end-of-buffer",
+        )])))
+    } else {
+        super::dispatch::clear_message(interp, env, true, true)
+    };
+    if let Err(error) = setup {
         // read_minibuf's unwind records also cover a nonlocal exit from
-        // clear-message-function. Run the exit hook before restoring state,
+        // the initial input's Fforward_char or clear-message-function.
+        // Run the exit hook before restoring state,
         // and restore even if that hook itself exits nonlocally.
         let saved_windows = active.saved_windows.clone();
         let exit_result = run_exit_minibuf_hook(interp, buffer_id, env);

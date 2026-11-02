@@ -36,7 +36,6 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use unicode_general_category::get_general_category;
 use unicode_width::UnicodeWidthChar;
 
 mod accessors_random;

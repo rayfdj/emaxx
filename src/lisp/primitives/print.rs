@@ -248,42 +248,51 @@ pub(crate) fn symbol_name_looks_like_number(name: &str) -> bool {
         || crate::lisp::reader::parse_special_float_token(name).is_some()
 }
 
-fn render_integer_as_character(value: &Value, escape: bool) -> Option<String> {
-    let code = match value.kind() {
-        Kind::Integer(value) => value,
-        Kind::BigInteger(value) => value.to_i64()?,
-        _ => return None,
+fn render_integer_as_character(
+    interp: &Interpreter,
+    value: &Value,
+    escape: bool,
+) -> Option<String> {
+    // print.c's case_Lisp_Int: a fixnum up to MAX_UNICODE_CHAR prints as
+    // `?' and the character when named_escape names it or graphic_base_p
+    // admits it; bignums always print as numbers.
+    let Kind::Integer(code) = value.kind() else {
+        return None;
     };
-    let codepoint = u32::try_from(code).ok()?;
+    let codepoint = u32::try_from(code).ok().filter(|code| *code <= 0x10ffff)?;
+    let named = match codepoint {
+        0x08 => Some('b'),
+        0x09 => Some('t'),
+        0x0a => Some('n'),
+        0x0c => Some('f'),
+        0x0d => Some('r'),
+        0x20 => Some('s'),
+        _ => None,
+    };
+    if let Some(name) = named {
+        return Some(format!("?\\{name}"));
+    }
+    if !super::search::graphic_base_p(interp, codepoint) {
+        return None;
+    }
     let ch = char::from_u32(codepoint)?;
-    let body = match ch {
-        '?' => "?".into(),
-        ' ' => "\\s".into(),
-        '\n' => "\\n".into(),
-        '\r' => "\\r".into(),
-        '\t' => "\\t".into(),
-        '\u{0008}' => "\\b".into(),
-        '\u{000C}' => "\\f".into(),
-        '\'' | '"' | '\\' | ';' | '(' | ')' | '{' | '}' | '[' | ']' if escape => {
-            format!("\\{ch}")
-        }
-        _ => {
-            if matches!(code, 7 | 11 | 27 | 127) {
-                return None;
-            }
-            match get_general_category(ch).abbreviation() {
-                "Cc" | "Cf" | "Cn" | "Co" | "Cs" | "Mc" | "Me" | "Mn" | "Zl" | "Zp" | "Zs" => {
-                    return None;
-                }
-                _ => ch.to_string(),
-            }
-        }
-    };
-    Some(format!("?{body}"))
+    if escape
+        && matches!(
+            ch,
+            ';' | '"' | '\'' | '\\' | '(' | ')' | '{' | '}' | '[' | ']'
+        )
+    {
+        Some(format!("?\\{ch}"))
+    } else {
+        Some(format!("?{ch}"))
+    }
 }
 
-pub(crate) fn render_princ_integer_as_character(value: &Value) -> Option<String> {
-    render_integer_as_character(value, false)
+pub(crate) fn render_princ_integer_as_character(
+    interp: &Interpreter,
+    value: &Value,
+) -> Option<String> {
+    render_integer_as_character(interp, value, false)
 }
 
 pub(crate) fn render_prin1_symbol(

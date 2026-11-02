@@ -6465,6 +6465,48 @@ fn string_to_syntax_encodes_classes_flags_and_matching_characters() {
 }
 
 #[test]
+fn syntax_descriptors_and_category_sets_read_the_string_bytes() {
+    // syntax.c:Fstring_to_syntax reads SDATA as a C string: a NUL ends the
+    // descriptor, a first byte past 0177 is whitespace (syntax_spec_code's
+    // zero entries), and the matching character is string_char_and_length
+    // of the bytes; Fmodify_syntax_entry stores what it returns.
+    // category.c:Fmake_category_set checks the bytes from the last.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((table (make-syntax-table)))
+              (modify-syntax-entry ?a "w\0p" table)
+              (modify-syntax-entry ?b "\x85" table)
+              (list (string-to-syntax "w\0p")
+                    (string-to-syntax "\x80")
+                    (string-to-syntax "(\xc3\xa9")
+                    (string-to-syntax (string ?. ?é ?1))
+                    (aref table ?a)
+                    (aref table ?b)
+                    (eq (aref table ?a) (string-to-syntax "w"))
+                    (condition-case e (make-category-set "a\x80\x90") (error e))))"#,
+        "((2) (0) (4 . 233) (65537 . 233) (2) (0) t (wrong-type-argument categoryp 144))",
+        "syntax descriptor and category set bytes",
+    );
+}
+
+#[test]
+fn process_names_and_signal_names_are_checked_as_process_c() {
+    // process.c:get_required_string_keyword_param for :name, and
+    // abbr_to_signal, whose error names the symbol as given.
+    assert_oracle_contract_matches_interpreter(
+        r#"(list (condition-case e (make-process :command '("true")) (error e))
+                 (condition-case e (make-pipe-process :name nil) (error e))
+                 (condition-case e (make-pipe-process :buffer nil) (error e))
+                 (condition-case e (signal-process (emacs-pid) 'bogus) (error e))
+                 (condition-case e (signal-process (emacs-pid) 'Sigint) (error e))
+                 (signal-process (emacs-pid) 'sig0))"#,
+        "((error \"Missing :name keyword parameter\") (error \":name value not a string\") \
+         (error \"Missing :name keyword parameter\") (error \"Undefined signal name bogus\") \
+         (error \"Undefined signal name Sigint\") 0)",
+        "process and signal names",
+    );
+}
+
+#[test]
 fn internal_char_font_accepts_gnu_characters_and_checks_position_first() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
@@ -10634,26 +10676,81 @@ fn primitive_undo_consumes_marker_adjustments_with_their_deletion() {
 }
 
 #[test]
-fn substitute_in_file_name_expands_shell_style_env_vars() {
-    let old = std::env::var("EMAXX_SUBST_TEST").ok();
-    unsafe {
-        std::env::set_var("EMAXX_SUBST_TEST", "value");
-    }
+fn print_c_integer_characters_and_write_char() {
+    // print.c: a fixnum prints as a character when graphic_base_p, read
+    // from `unicode-category-table', admits it (a private-use character
+    // does; format, mark and unassigned codes do not).  Fwrite_char checks
+    // a fixnum, hands a function stream the code as it is, and stores the
+    // char_string form otherwise: modifier bits resolve, a code beyond
+    // MAX_CHAR is an error in hex.
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let form = Reader::new(
+        r#"(list (let ((print-integers-as-characters t))
+                   (prin1-to-string '(#xe000 #x200b 768 233 ?\( ?\s 4194303)))
+                 (condition-case e (write-char "x" #'ignore) (error e))
+                 (let (acc) (write-char 4194304 (lambda (c) (push c acc))) acc)
+                 (with-temp-buffer
+                   (write-char 4194304 (current-buffer))
+                   (string-to-list (buffer-string)))
+                 (condition-case e
+                     (with-temp-buffer (write-char (* 64 4194304) (current-buffer)))
+                   (error e))
+                 (with-temp-buffer
+                   (write-char (+ ?a (ash 1 25)) (current-buffer))
+                   (buffer-string)))"#,
+    )
+    .read()
+    .expect("printer contract should parse")
+    .expect("printer contract should contain a form");
+    let result = interp
+        .eval(&form, &mut crate::lisp::types::Env::new())
+        .expect("printer contract should evaluate");
+    let expected = Reader::new(
+        r#"("(?\ue000 8203 768 ?\u00e9 ?\\( ?\\s 4194303)"
+            (wrong-type-argument fixnump "x") (4194304) (0)
+            (error "Invalid character: 10000000") "A")"#,
+    )
+    .read()
+    .expect("expected printer results should parse")
+    .expect("expected printer results should contain a form");
+    assert_eq!(result, expected);
+}
+
+#[test]
+fn substitute_in_file_name_runs_env_el_and_keeps_an_unchanged_name() {
+    // fileio.c:Fsubstitute_in_file_name: `//' or `/~' restarts on the
+    // tail; variables go through Lisp `substitute-env-in-file-name'
+    // (preloaded env.el), and a name it returns unchanged comes back as
+    // the argument itself, multibyteness and all.
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let form = Reader::new(
+        r#"(let ((process-environment '("EMAXX_SUBST=value" "EMAXX_ABS=/abs")))
+             (let ((s (string-to-multibyte "/a/b")))
+               (list (substitute-in-file-name "$EMAXX_SUBST/${EMAXX_SUBST}/$$")
+                     (substitute-in-file-name "/path///file")
+                     (substitute-in-file-name "path//file")
+                     (substitute-in-file-name "/x/$EMAXX_ABS/y")
+                     (substitute-in-file-name "$UNSET_EMAXX/z")
+                     (eq s (substitute-in-file-name s))
+                     (multibyte-string-p (substitute-in-file-name s)))))"#,
+    )
+    .read()
+    .expect("substitution contract should parse")
+    .expect("substitution contract should contain a form");
     assert_eq!(
-        substitute_in_file_name("$EMAXX_SUBST_TEST/${EMAXX_SUBST_TEST}/$$"),
-        "value/value/$"
+        interp
+            .eval(&form, &mut crate::lisp::types::Env::new())
+            .expect("substitution contract should evaluate"),
+        Value::list([
+            Value::String("value/value/$".into()),
+            Value::String("/file".into()),
+            Value::String("/file".into()),
+            Value::String("/abs/y".into()),
+            Value::String("$UNSET_EMAXX/z".into()),
+            Value::T,
+            Value::T,
+        ])
     );
-    assert_eq!(substitute_in_file_name("/path///file"), "/file");
-    assert_eq!(substitute_in_file_name("path//file"), "/file");
-    if let Some(value) = old {
-        unsafe {
-            std::env::set_var("EMAXX_SUBST_TEST", value);
-        }
-    } else {
-        unsafe {
-            std::env::remove_var("EMAXX_SUBST_TEST");
-        }
-    }
 }
 
 #[cfg(target_os = "linux")]

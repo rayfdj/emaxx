@@ -743,9 +743,7 @@ define_dispatch!(
             }
             "substitute-in-file-name" => {
                 need_args(name, args, 1)?;
-                Ok(Value::String(
-                    substitute_in_file_name_in_env(interp, env, &string_text(&args[0])?).into(),
-                ))
+                crate::lisp::primitives::system::substitute_in_file_name(interp, env, args[0])
             }
             // fileio.c's file name syntax works on the string's internal
             // bytes and keeps its multibyteness (make_specified_string),
@@ -3608,8 +3606,15 @@ fn process_signal_number(value: &Value) -> Result<i32, LispError> {
         return i32::try_from(number)
             .map_err(|_| LispError::Signal("Signal number is out of range".into()));
     }
-    let name = value.as_symbol()?.to_ascii_uppercase();
-    let abbreviation = name.strip_prefix("SIG").unwrap_or(&name);
+    // process.c:abbr_to_signal: a `SIG' or `sig' prefix dropped, the rest
+    // upcased; the error names the symbol as it is.
+    let symbol_name = value.as_symbol()?;
+    let name = symbol_name
+        .strip_prefix("SIG")
+        .or_else(|| symbol_name.strip_prefix("sig"))
+        .unwrap_or(symbol_name)
+        .to_ascii_uppercase();
+    let abbreviation = name.as_str();
     if let Ok(number) = abbreviation.parse::<i32>() {
         return Ok(number);
     }
@@ -3622,7 +3627,9 @@ fn process_signal_number(value: &Value) -> Result<i32, LispError> {
     if let Some(number) = realtime_signal_number(abbreviation) {
         return Ok(number);
     }
-    Err(LispError::Signal(format!("Undefined signal name {name}")))
+    Err(LispError::Signal(format!(
+        "Undefined signal name {symbol_name}"
+    )))
 }
 
 #[cfg(unix)]
