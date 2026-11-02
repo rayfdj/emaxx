@@ -2505,8 +2505,9 @@ struct ProcessState {
     /// (READ_FROM_SUBPROCESS, SUBPROCESS_STDOUT), which a module's
     /// `open-channel' writes into, and the one its sends go to
     /// (SUBPROCESS_STDIN, WRITE_TO_SUBPROCESS), which create_process
-    /// closes once the process is another's standard error.
-    module_pipe: Option<(fs::File, fs::File)>,
+    /// closes once the process is another's standard error.  That
+    /// child is given SUBPROCESS_STDOUT, and the parent's copy closed.
+    module_pipe: Option<(fs::File, Option<fs::File>)>,
     pipe_input: Option<(fs::File, fs::File)>,
     /// Network :host/:service as given at creation (process-contact).
     contact_host: Option<String>,

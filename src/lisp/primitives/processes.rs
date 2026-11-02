@@ -1195,7 +1195,9 @@ pub(crate) fn spawn_persistent_process(
     argv: &[Vec<u8>],
     env: &mut Env,
     connection_type: Option<&Value>,
-    separate_stderr: bool,
+    // create_process's forkerr: the `:stderr' pipe process's
+    // SUBPROCESS_STDOUT, which the child gets as its standard error.
+    stderr: Option<&fs::File>,
 ) -> Result<RunningProcess, LispError> {
     #[cfg(test)]
     crate::test_support::mark_process_test();
@@ -1218,7 +1220,10 @@ pub(crate) fn spawn_persistent_process(
         directory,
         input_pty,
         output_pty,
-        separate_stderr,
+        stderr.map(|file| {
+            use std::os::fd::AsRawFd;
+            file.as_raw_fd()
+        }),
     )? {
         return finish_spawned_runtime(runtime);
     }
@@ -1249,6 +1254,13 @@ pub(crate) fn spawn_persistent_process(
             stdin_write = Some(write);
             Ok(())
         };
+        let given_stderr = |command: &mut Command, file: &fs::File| -> Result<(), LispError> {
+            command.stderr(Stdio::from(
+                file.try_clone()
+                    .map_err(|error| LispError::Signal(error.to_string()))?,
+            ));
+            Ok(())
+        };
         let piped_output = |command: &mut Command, error: bool| -> Result<fs::File, LispError> {
             let (read, write) = pipe()?;
             if error {
@@ -1276,8 +1288,8 @@ pub(crate) fn spawn_persistent_process(
                     .try_clone()
                     .map_err(|error| LispError::Signal(error.to_string()))?,
             ));
-            if separate_stderr {
-                stderr_read = Some(piped_output(&mut command, true)?);
+            if let Some(file) = stderr {
+                given_stderr(&mut command, file)?;
             } else {
                 command.stderr(Stdio::from(slave));
             }
@@ -1292,7 +1304,11 @@ pub(crate) fn spawn_persistent_process(
             pty_slave_name = slave_name;
             command.stdin(Stdio::from(slave));
             stdout_read = Some(piped_output(&mut command, false)?);
-            stderr_read = Some(piped_output(&mut command, true)?);
+            if let Some(file) = stderr {
+                given_stderr(&mut command, file)?;
+            } else {
+                stderr_read = Some(piped_output(&mut command, true)?);
+            }
             pty_input = Some(master);
         } else {
             piped_stdin(&mut command)?;
@@ -1309,15 +1325,19 @@ pub(crate) fn spawn_persistent_process(
                         .try_clone()
                         .map_err(|error| LispError::Signal(error.to_string()))?,
                 ));
-                if separate_stderr {
-                    stderr_read = Some(piped_output(&mut command, true)?);
+                if let Some(file) = stderr {
+                    given_stderr(&mut command, file)?;
                 } else {
                     command.stderr(Stdio::from(slave));
                 }
                 pty_output = Some(master);
             } else {
                 stdout_read = Some(piped_output(&mut command, false)?);
-                stderr_read = Some(piped_output(&mut command, true)?);
+                if let Some(file) = stderr {
+                    given_stderr(&mut command, file)?;
+                } else {
+                    stderr_read = Some(piped_output(&mut command, true)?);
+                }
             }
         }
         // create_process: the channel Emacs reads and the one it writes
@@ -1333,7 +1353,7 @@ pub(crate) fn spawn_persistent_process(
     }
     #[cfg(not(unix))]
     {
-        let _ = (input_pty, output_pty, separate_stderr);
+        let _ = (input_pty, output_pty, stderr);
         command.stdin(Stdio::piped());
         command.stdout(Stdio::piped());
         command.stderr(Stdio::piped());
@@ -1633,7 +1653,7 @@ fn posix_spawn_process(
     directory: Option<Vec<u8>>,
     input_pty: bool,
     output_pty: bool,
-    separate_stderr: bool,
+    stderr: Option<std::os::fd::RawFd>,
 ) -> Result<Option<RunningProcess>, LispError> {
     use std::os::fd::AsRawFd;
     let Some(image) = ExecImage::new(program, argv, environment.to_vec()) else {
@@ -1665,10 +1685,6 @@ fn posix_spawn_process(
         .then(emacs_pipe)
         .transpose()
         .map_err(pipe_error)?;
-    let errors = separate_stderr
-        .then(emacs_pipe)
-        .transpose()
-        .map_err(pipe_error)?;
     // create_process: the channel Emacs reads and the one it writes, each
     // a pipe or the pty, must fit an fd_set; none is spawned otherwise.
     let master = pty_master.as_ref().map(|master| master.as_raw_fd());
@@ -1687,9 +1703,7 @@ fn posix_spawn_process(
         output
             .as_ref()
             .map_or(SpawnFd::Pty, |(_, write)| SpawnFd::Fd(write.as_raw_fd())),
-        errors
-            .as_ref()
-            .map_or(SpawnFd::Stdout, |(_, write)| SpawnFd::Fd(write.as_raw_fd())),
+        stderr.map_or(SpawnFd::Stdout, SpawnFd::Fd),
     ];
     let pid = match emacs_posix_spawn(&image, directory.as_deref(), stdio, pty_name.as_deref()) {
         Ok(pid) => pid,
@@ -1701,7 +1715,7 @@ fn posix_spawn_process(
         pid as u32,
         input.map(|(_, write)| write),
         output.map(|(read, _)| read),
-        errors.map(|(read, _)| read),
+        None,
     );
     // As on the fork path: with the pty on both sides, one slave is held
     // until the child's output is drained; the master is both channels.
@@ -2959,6 +2973,7 @@ pub(crate) fn deliver_process_streams(
     let (stdout_eof, stderr_eof) = interp.take_process_pipe_eof(process_id);
     if stdout_eof {
         delivered |= flush_process_decoder(interp, process_id, env)?.1;
+        interp.finish_pipe_process_at_eof(process_id);
     }
     if stderr_eof {
         delivered |= flush_process_decoder(interp, stderr_process_id, env)?.1;
@@ -3054,10 +3069,12 @@ fn pump_external_process_output_for(
         progressed |= deliver_process_streams(interp, process_id, &stdout, &stderr, env)?;
     }
     // status_notify walks every process, so a JUST-THIS-ONE wait notifies
-    // the others' exits as well.
-    for (process_id, event) in interp.take_pending_subprocess_exit_events_for(None) {
-        run_process_sentinel(interp, process_id, &event, env)?;
-        progressed = true;
+    // the others' exits as well, once no channel has input left.
+    if interp.any_process_exit_awaits_notification() && !interp.process_input_available() {
+        for (process_id, event) in interp.take_pending_subprocess_exit_events_for(None) {
+            run_process_sentinel(interp, process_id, &event, env)?;
+            progressed = true;
+        }
     }
     Ok(progressed)
 }

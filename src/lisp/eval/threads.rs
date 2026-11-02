@@ -493,8 +493,56 @@ impl Interpreter {
         channels: crate::lisp::primitives::PipeProcessChannels,
     ) {
         if let Some(process) = self.find_process_state_mut(record_id) {
-            process.module_pipe = Some(channels.output);
+            let (reader, writer) = channels.output;
+            process.module_pipe = Some((reader, Some(writer)));
             process.pipe_input = Some(channels.input);
+        }
+    }
+
+    /// A duplicate of the pipe process RECORD_ID's SUBPROCESS_STDOUT,
+    /// which create_process gives a child as its standard error; None
+    /// once an earlier child was given it (forkerr -1).
+    pub(crate) fn pipe_process_stderr_writer(
+        &self,
+        record_id: u64,
+    ) -> Result<Option<fs::File>, LispError> {
+        self.find_process_state(record_id)
+            .and_then(|process| process.module_pipe.as_ref())
+            .and_then(|(_, writer)| writer.as_ref())
+            .map(|writer| {
+                writer
+                    .try_clone()
+                    .map_err(|error| LispError::Signal(error.to_string()))
+            })
+            .transpose()
+    }
+
+    /// create_process's close_process_fd of the SUBPROCESS_STDOUT of the
+    /// pipe process RECORD_ID once a child has it as its standard error:
+    /// the pipe's end comes when the child's copies close.
+    pub(crate) fn close_pipe_process_output_writer(&mut self, record_id: u64) {
+        if let Some((_, writer)) = self
+            .find_process_state_mut(record_id)
+            .and_then(|process| process.module_pipe.as_mut())
+        {
+            *writer = None;
+        }
+    }
+
+    /// wait_reading_process_output's read of zero bytes from a pipe
+    /// process: deactivate_process closes its channels, and one still
+    /// running turns (exit 0).
+    pub(crate) fn finish_pipe_process_at_eof(&mut self, record_id: u64) {
+        if let Some(process) = self.find_process_state_mut(record_id)
+            && process.kind == ProcessKind::Pipe
+        {
+            process.module_pipe = None;
+            process.pipe_input = None;
+            if process.status.is_live() {
+                process.status = ProcessStatus::Exit;
+                process.exit_code = Some(0);
+                process.exit_signal = None;
+            }
         }
     }
 
@@ -554,9 +602,23 @@ impl Interpreter {
             if unsafe { libc::fcntl(reader.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK) } == -1 {
                 return Err(io_error());
             }
-            process.module_pipe = Some((fs::File::from(reader), fs::File::from(writer)));
+            process.module_pipe = Some((fs::File::from(reader), Some(fs::File::from(writer))));
         }
-        let writer = &process.module_pipe.as_ref().expect("pipe installed").1;
+        // A pipe process another process has as its standard error no
+        // longer holds SUBPROCESS_STDOUT: dup of -1 fails with EBADF.
+        let Some(writer) = process
+            .module_pipe
+            .as_ref()
+            .expect("pipe installed")
+            .1
+            .as_ref()
+        else {
+            return Err(LispError::SignalValue(Value::list([
+                Value::symbol("file-error"),
+                Value::string("Cannot duplicate file descriptor"),
+                Value::string("Bad file descriptor"),
+            ])));
+        };
         // SAFETY: the descriptor is live; the caller assumes ownership of DUP.
         let fd = unsafe { libc::dup(writer.as_raw_fd()) };
         if fd == -1 { Err(io_error()) } else { Ok(fd) }
@@ -982,6 +1044,19 @@ impl Interpreter {
     /// A real or pipe process that has exited and whose sentinel has not
     /// run yet: the "tick != update_tick" state process.c status_notify
     /// drains and notifies.
+    /// Whether any of this thread's processes has an exit that awaits
+    /// status_notify.
+    pub(crate) fn any_process_exit_awaits_notification(&self) -> bool {
+        self.process_states.iter().any(|process| {
+            matches!(process.kind, ProcessKind::Real | ProcessKind::Pipe)
+                && matches!(process.status, ProcessStatus::Exit | ProcessStatus::Signal)
+                && !process.sentinel_notified
+                && process
+                    .thread_id
+                    .is_none_or(|thread_id| thread_id == self.active_thread_id)
+        })
+    }
+
     pub fn process_exit_awaits_notification(&self, record_id: u64) -> bool {
         self.find_process_state(record_id).is_some_and(|process| {
             matches!(process.kind, ProcessKind::Real | ProcessKind::Pipe)
@@ -998,35 +1073,6 @@ impl Interpreter {
         only_process_id: Option<u64>,
     ) -> Vec<(u64, String)> {
         let active_thread_id = self.active_thread_id;
-        let completed_children = self
-            .process_states
-            .iter()
-            .filter(|process| {
-                matches!(process.kind, ProcessKind::Real | ProcessKind::Pipe)
-                    && matches!(process.status, ProcessStatus::Exit | ProcessStatus::Signal)
-                    && process.stderr_process_id.is_some()
-                    && process
-                        .thread_id
-                        .is_none_or(|thread_id| thread_id == active_thread_id)
-                    && only_process_id.is_none_or(|id| {
-                        process.record_id == id || process.stderr_process_id == Some(id)
-                    })
-            })
-            .filter_map(|process| {
-                process
-                    .stderr_process_id
-                    .map(|stderr_id| (stderr_id, process.exit_code))
-            })
-            .collect::<Vec<_>>();
-        for (stderr_id, exit_code) in completed_children {
-            if let Some(stderr) = self.find_process_state_mut(stderr_id)
-                && stderr.status.is_live()
-            {
-                stderr.status = ProcessStatus::Exit;
-                stderr.exit_code = exit_code;
-            }
-        }
-
         let mut events = Vec::new();
         // `process_states' is append-only creation order.  Reverse iteration
         // mirrors GNU's newest-first `Vprocess_alist' status traversal.
@@ -2472,6 +2518,46 @@ impl Interpreter {
                 watch(serial.port.as_raw_fd(), libc::POLLIN);
             }
         }
+        false
+    }
+
+    /// wait_reading_process_output runs status_notify only once a select
+    /// that does not wait finds no input on the channels it watches.  A
+    /// live child's output pipe at its end is still among them, readable,
+    /// until handle_child_signal takes it out at the child's death, so a
+    /// child that closed its output holds back every notification until it
+    /// is reaped (GNU reads its end again and again meanwhile).
+    #[cfg(unix)]
+    pub(crate) fn process_input_available(&self) -> bool {
+        let watched = |process: &&ProcessState| {
+            process
+                .thread_id
+                .is_none_or(|thread_id| thread_id == self.active_thread_id)
+                && !process.traffic_stopped
+                && process
+                    .filter
+                    .as_ref()
+                    .is_none_or(|filter| *filter != Value::T)
+        };
+        if self.process_states.iter().filter(watched).any(|process| {
+            process.status.is_live()
+                && process
+                    .runtime
+                    .as_ref()
+                    .is_some_and(|runtime| runtime.stdout_at_end && runtime.child.stdout.is_some())
+        }) {
+            return true;
+        }
+        let mut fds = Vec::new();
+        if self.process_wait_set(None, &mut fds) {
+            return true;
+        }
+        // SAFETY: FDS holds live descriptors this interpreter owns.
+        !fds.is_empty() && unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, 0) } > 0
+    }
+
+    #[cfg(not(unix))]
+    pub(crate) fn process_input_available(&self) -> bool {
         false
     }
 

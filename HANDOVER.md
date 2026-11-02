@@ -12435,6 +12435,47 @@ setup_process_coding_systems's check now refuses). A 13-form
   listed among the fields the image does not carry), the integration
   targets and clippy with `--all-targets --all-features -D warnings'
   pass.
+- **Round 256: a child's standard error on its pipe process's own
+  channel, and status_notify only once no channel has input; batteries
+  that agree.** Batteries against GNU over timefns.c (15 cases,
+  r256/tf.txt), keymap.c and doc.c (16, km.txt), format-mode-line and
+  the buffer and window primitives (12, fm.txt), the reader and printer
+  (16, rp.txt), markers, text property and overlay hooks, fields, undo
+  and narrowing (14, mk.txt), fileio.c and dired.c (12, fi.txt), casing
+  and character widths (11, cw.txt) and search.c and the regexp engine
+  (14, re.txt) agree throughout but for values that depend on the clock,
+  the temporary file names and the free disk space. The process recorded
+  under round 160 differed, now fixed (r256/sp.txt). create_process
+  gives the child its `:stderr' pipe process's SUBPROCESS_STDOUT as its
+  standard error and closes the parent's copy, so the pipe process reads
+  the errors on its own channel, and at their end deactivate_process
+  closes its channels and it turns (exit 0): its sentinel is told
+  "finished" and `process-exit-status' answers 0 whatever the child's
+  status, where Emaxx gave the child a pipe of its own and copied the
+  child's exit into the pipe process. A later child given the same pipe
+  process gets the child's own output as its standard error (forkerr
+  -1), and a module's `open-channel' on it fails as dup of -1 does.
+  wait_reading_process_output runs status_notify only once a select that
+  does not wait finds no input on the channels it watches, and a live
+  child's output pipe at its end stays among them, readable, until
+  handle_child_signal takes it out at the child's death: GNU reads that
+  end again and again meanwhile (0.76 s of user time in 1.5 s) and runs
+  no sentinel, so a child that closes its output and lives on holds back
+  every other process's notification until it is reaped. Emaxx now holds
+  them back the same way, without the busy wait, and a child's sentinel
+  and its stderr pipe process's run together, the newer first.
+  process-tests, thread-tests, jsonrpc-tests, network-stream-tests,
+  esh-proc-tests, eshell-tests, compile-tests, comint-tests,
+  server-tests, timer-tests, filenotify-tests, autorevert-tests,
+  vc-git-tests, vc-tests, flymake-tests, term-tests, shell-tests,
+  subr-tests, simple-tests, package-tests, tramp-archive-tests,
+  ls-lisp-tests, dired-tests and url-future-tests pass as many tests as
+  GNU's. The insertion finding of round 174 has no GNU behaviour beyond
+  its signal to follow: GNU 30.2 inserting into propertized text with
+  `text-property-default-nonsticky' bound to 5 dies of a segmentation
+  fault (r256/st.txt). Local validation: the grouped gate's 3,455
+  library tests, the integration targets and clippy with `--all-targets
+  --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -14150,6 +14191,17 @@ median of 120 ms against 98), electric-tests' the most (920 against
 against 2,684), mule-tests (3,120 against 2,009) and electric-tests
 (1,133 against 596).
 
+**On `adbe47f`** (round 255): frozen (run 41487434823) matched all 7,928
+outcomes. Setup 80.8 s against 63.8 s (1.267), test bodies 254.5 s
+against 263.5 s (0.966), in all 1.006; ucs-normalize-tests' bodies took
+130 ms against 90. The full Rust gate (run 41487428474) passed. Per
+file, the setup is 33 ms over GNU's on average (17.0 s over 519 files, a
+median of 119 ms against 97), electric-tests' the most (906 against
+521), and the widest body gaps are comp-tests (17,060 ms against
+14,328), tramp-tests (20,988 against 18,931), semantic-utest-ia (4,013
+against 2,565), mule-tests (3,175 against 1,986) and electric-tests
+(1,128 against 588).
+
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'
   without signalling (round 174).** In GNU,
@@ -14162,7 +14214,9 @@ against 2,684), mule-tests (3,120 against 2,009) and electric-tests
   nothing, and keep the intervals consistent. `insert' and
   `insert-and-inherit' beside propertized text therefore return where
   GNU signals `(wrong-type-argument listp VALUE)' while that variable is
-  bound to a non-list.
+  bound to a non-list. There is no more of GNU's to follow: an insertion
+  into propertized text with the variable bound to 5 makes GNU 30.2 die
+  of a segmentation fault (round 256).
 - **A call of `looking-at' costs about 350 instructions more than GNU's
   around the match (rounds 174 to 176).** `(looking-at "x")' at a
   failing position costs 1,462 instructions against GNU's 1,116: the
@@ -14279,14 +14333,11 @@ against 2,684), mule-tests (3,120 against 2,009) and electric-tests
   a branch, or eight at a time into the reserved bytes, measured no
   faster than the ASCII-run loop it has.
 - **A child's standard error and its stderr pipe process (round
-  160).** GNU's create_process gives the child the stderr pipe
+  160).** No longer: round 256 gives the child the stderr pipe
   process's SUBPROCESS_STDOUT as its standard error and closes the
-  parent's copy, so the pipe process reads the child's errors on its own
-  READ_FROM_SUBPROCESS and turns (exit 0) at their end. Emaxx gives the
-  child a pipe of its own, delivers what it reads there to the stderr
-  process, and sets that process's status from the child's exit; the
-  pipe process keeps both ends of the pipe it reads, two descriptors
-  where GNU's keeps one while the child runs.
+  parent's copy, as create_process does, so the pipe process reads the
+  child's errors on its own READ_FROM_SUBPROCESS and turns (exit 0) at
+  their end, whatever the child's status.
 - **The closure entry from Rust (#304, rounds 159 and 160).** The
   callback of `mapatoms' in `comp--all-classes' (18,539 symbols) costs
   807 instructions a symbol against GNU's 639. The byte-code bodies are
@@ -14356,9 +14407,8 @@ against 2,684), mule-tests (3,120 against 2,009) and electric-tests
   where GNU stops at its 255th ("Creating pipe" "Too many open files"),
   and start all ten `cat's of each connection type where GNU starts one
   or two, so the three tests take 1,067 ms against GNU's 352 here. A
-  child given a pipe process as :stderr then writes into that pipe
-  process's own pipe in GNU, where Emaxx reads a pipe of the child's and
-  hands the bytes to it.
+  child given a pipe process as :stderr writes into that pipe process's
+  own pipe, in Emaxx too since round 256.
 - **The frozen run times the gate profile (round 112).** The frozen
   workflow's harness builds the Emaxx it runs with `--profile gate'
   (thin LTO, 16 codegen units, debug assertions and overflow checks;

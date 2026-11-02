@@ -3383,6 +3383,20 @@ fn make_process_value(
         .stderr_buffer_id
         .map(|_| open_pipe_process_channels())
         .transpose()?;
+    // create_process's forkerr: the standard error pipe process's
+    // SUBPROCESS_STDOUT, or the child's standard output once an earlier
+    // child was given it.
+    let stderr_writer = match (&stderr_channels, parsed.stderr_process_id) {
+        (Some(channels), _) => Some(
+            channels
+                .output
+                .1
+                .try_clone()
+                .map_err(|error| LispError::Signal(error.to_string()))?,
+        ),
+        (None, Some(stderr_process_id)) => interp.pipe_process_stderr_writer(stderr_process_id)?,
+        (None, None) => None,
+    };
     let runtime = executable.as_ref().map(|command| {
         spawn_persistent_process(
             interp,
@@ -3390,9 +3404,10 @@ fn make_process_value(
             &arguments,
             env,
             parsed.connection_type.as_ref(),
-            parsed.stderr_process_id.is_some() || parsed.stderr_buffer_id.is_some(),
+            stderr_writer.as_ref(),
         )
     });
+    drop(stderr_writer);
     let runtime = runtime.transpose()?;
     if let Some(stderr_buffer_id) = parsed.stderr_buffer_id {
         let requested_name = parsed
@@ -3425,11 +3440,15 @@ fn make_process_value(
     if let Some(channels) = pipe_channels {
         interp.install_pipe_process_channels(process_id, channels);
     }
-    // create_process closes its standard error pipe process's input.
+    // create_process closes its standard error pipe process's input, and
+    // once the child is made the parent's copy of the end the child
+    // writes its errors to: the pipe process reads them on its own
+    // channel and ends at their end.
     if executable.is_some()
         && let Some(stderr_process_id) = parsed.stderr_process_id
     {
         interp.close_pipe_process_input(stderr_process_id);
+        interp.close_pipe_process_output_writer(stderr_process_id);
     }
     interp.set_process_query_on_exit_flag(process_id, parsed.query_on_exit_flag)?;
     interp.set_process_inherit_coding_system_flag(process_id, inherit_coding_system)?;

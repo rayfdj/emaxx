@@ -34281,6 +34281,60 @@ fn timer_check_as_keyboard_c() {
 }
 
 #[test]
+fn stderr_pipe_process_and_status_notify_as_process_c() {
+    // create_process gives the child its `:stderr' pipe process's
+    // SUBPROCESS_STDOUT and closes the parent's copy: the pipe process
+    // reads the errors on its own channel and at their end turns (exit
+    // 0), whatever the child's status; a later child given it writes its
+    // errors to its own output.  status_notify runs only once no channel
+    // has input, and a live child's output at its end is readable until
+    // the child is reaped, so no sentinel runs before then.
+    assert_oracle_contract_matches_interpreter(
+        r#"(list
+ (let* (log (ends 0)
+        (errp (make-pipe-process
+               :name "t256-err" :noquery t
+               :filter (lambda (_p s) (push (list 'err s) log))
+               :sentinel (lambda (p e)
+                           (setq ends (1+ ends))
+                           (push (list 'err-sentinel e (process-status p) (process-exit-status p)) log))))
+        (proc (make-process
+               :name "t256-child" :noquery t :connection-type 'pipe
+               :command '("sh" "-c" "echo bad >&2; exit 3")
+               :stderr errp
+               :sentinel (lambda (p e)
+                           (setq ends (1+ ends))
+                           (push (list 'child e (process-exit-status p)) log)))))
+   (while (< ends 2)
+     (accept-process-output nil 0.05))
+   (let* (out done
+          (again (make-process
+                  :name "t256-again" :noquery t :connection-type 'pipe
+                  :command '("sh" "-c" "echo e2 >&2")
+                  :stderr errp
+                  :filter (lambda (_p s) (push s out))
+                  :sentinel (lambda (_p _e) (setq done t)))))
+     (while (not done) (accept-process-output nil 0.05))
+     (list (nreverse log) (process-status errp) (process-exit-status errp) out)))
+ (let* (seen
+        (a (make-process :name "t256-a" :noquery t :connection-type 'pipe
+                         :command '("sh" "-c" "exec 1>&- 2>&-; sleep 0.3")))
+        (b (make-process :name "t256-b" :noquery t :connection-type 'pipe
+                         :command '("true")
+                         :sentinel (lambda (_p _e) (push (process-live-p a) seen)))))
+   (while (or (null seen) (process-live-p a))
+     (accept-process-output nil 0.05))
+   (list seen (process-exit-status a))))"#,
+        r#"((((err "bad
+") (child "exited abnormally with code 3
+" 3) (err-sentinel "finished
+" closed 0)) closed 0 ("e2
+")) ((nil) 0))"#,
+        "stderr pipe process and status_notify",
+    );
+}
+
+#[test]
 fn frame_parameters_and_face_colors_as_frame_c_and_xfaces_c() {
     // cmds.c:Fdelete_char hands a non-nil KILLFLAG to
     // `kill-forward-chars' and checks N with CHECK_FIXNUM.  frame.c keeps
