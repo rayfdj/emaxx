@@ -424,24 +424,50 @@ define_dispatch!(
                 styled_format(interp, env, args, name == "format-message")
             }
             "format-network-address" => {
+                // process.c:Fformat_network_address.
                 need_arg_range(name, args, 1, 2)?;
-                let items = sequence_values(&args[0])?;
-                if items.len() < 4 {
-                    return Err(LispError::Signal("Invalid network address".into()));
+                let address = args[0];
+                let omit_port = args.get(1).is_some_and(Value::is_truthy);
+                match address.kind() {
+                    Kind::Nil => Ok(Value::Nil),
+                    // AF_LOCAL.
+                    _ if string_like(&address).is_some() => Ok(address),
+                    Kind::Vector(_) => {
+                        // AF_INET or AF_INET6.
+                        let items = sequence_values(&address)?;
+                        let (format, count) = match items.len() {
+                            4 => ("%d.%d.%d.%d", 4),
+                            5 if omit_port => ("%d.%d.%d.%d", 4),
+                            5 => ("%d.%d.%d.%d:%d", 5),
+                            8 => ("%x:%x:%x:%x:%x:%x:%x:%x", 8),
+                            9 if omit_port => ("%x:%x:%x:%x:%x:%x:%x:%x", 8),
+                            9 => ("[%x:%x:%x:%x:%x:%x:%x:%x]:%d", 9),
+                            _ => return Ok(Value::Nil),
+                        };
+                        let mut format_args = vec![Value::string(format)];
+                        for (index, item) in items.iter().take(count).enumerate() {
+                            // RANGED_FIXNUMP (0, ..., 65535), and an IPv4
+                            // host part no more than 255.
+                            let Kind::Integer(value) = item.kind() else {
+                                return Ok(Value::Nil);
+                            };
+                            if !(0..=65535).contains(&value)
+                                || count <= 5 && index < 4 && value > 255
+                            {
+                                return Ok(Value::Nil);
+                            }
+                            format_args.push(*item);
+                        }
+                        styled_format(interp, env, &format_args, false)
+                    }
+                    Kind::Cons(_) => styled_format(
+                        interp,
+                        env,
+                        &[Value::string("<Family %d>"), address.car()?],
+                        false,
+                    ),
+                    _ => Ok(Value::Nil),
                 }
-                let octets: Result<Vec<String>, LispError> = items
-                    .iter()
-                    .take(4)
-                    .map(|item| Ok(item.as_integer()?.to_string()))
-                    .collect();
-                let mut address = octets?.join(".");
-                if !args.get(1).is_some_and(Value::is_truthy)
-                    && let Some(port) = items.get(4)
-                {
-                    address.push(':');
-                    address.push_str(&port.as_integer()?.to_string());
-                }
-                Ok(Value::String(address.into()))
             }
             "ngettext" => {
                 need_args(name, args, 3)?;

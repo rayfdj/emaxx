@@ -1125,6 +1125,11 @@ impl Interpreter {
         }
     }
 
+    pub(crate) fn is_pipe_process(&self, record_id: u64) -> bool {
+        self.find_process_state(record_id)
+            .is_some_and(|process| process.kind == ProcessKind::Pipe)
+    }
+
     pub fn is_serial_process(&self, record_id: u64) -> bool {
         self.find_process_state(record_id)
             .is_some_and(|process| process.kind == ProcessKind::Serial)

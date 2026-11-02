@@ -2103,7 +2103,17 @@ define_dispatch!(
                     })?;
                 call_process(interp, env, args, filefd, None)
             }
-            "make-process" | "make-pipe-process" => make_process_value(interp, env, args),
+            "make-process" => make_process_value(interp, env, args),
+            "make-pipe-process" => {
+                // Fmake_pipe_process keeps its arguments as the process's
+                // childp, which `process-contact' with KEY t returns.
+                let process = make_process_value(interp, env, args)?;
+                if let Ok(process_id) = interp.resolve_process_id(&process) {
+                    interp
+                        .set_process_contact_plist(process_id, Value::list(args.iter().copied()))?;
+                }
+                Ok(process)
+            }
             "get-buffer-process" => {
                 need_arg_range(name, args, 1, 1)?;
                 // process.c:Fget_buffer_process: nil names no buffer, and
@@ -2435,6 +2445,8 @@ define_dispatch!(
                             contact_plist_get(&contact, ":speed"),
                         ]))
                     }
+                    // "it is t for a pipe connection".
+                    None | Some(Kind::Nil) if interp.is_pipe_process(process_id) => Ok(Value::T),
                     None | Some(Kind::Nil) => Ok(Value::list([
                         contact_plist_get(&contact, ":host"),
                         contact_plist_get(&contact, ":service"),
@@ -3426,6 +3438,24 @@ fn make_process_value(
         if let Some(channels) = stderr_channels {
             interp.install_pipe_process_channels(stderr_process_id, channels);
         }
+        // Fmake_process makes it with Fmake_pipe_process's :name, :buffer
+        // and :noquery, which are its contact.
+        let stderr_buffer = interp.buffer_value(stderr_buffer_id).unwrap_or(Value::Nil);
+        interp.set_process_contact_plist(
+            stderr_process_id,
+            Value::list([
+                Value::symbol(":name"),
+                Value::string(&format!("{requested_name} stderr")),
+                Value::symbol(":buffer"),
+                stderr_buffer,
+                Value::symbol(":noquery"),
+                if parsed.query_on_exit_flag {
+                    Value::Nil
+                } else {
+                    Value::T
+                },
+            ]),
+        )?;
         interp.set_process_query_on_exit_flag(stderr_process_id, parsed.query_on_exit_flag)?;
         parsed.stderr_process_id = Some(stderr_process_id);
     }

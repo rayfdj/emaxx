@@ -3592,8 +3592,11 @@ fn activate_network_client(
                 }
             }
         }
+        // finish_after_tls_connection: a connection whose TLS setup ends
+        // here is "open" to its sentinel.  A connect that did not wait is
+        // told so when it completes; a plain blocking connect tells no one.
+        run_process_sentinel(interp, process_id, "open\n", env)?;
     }
-    run_process_sentinel(interp, process_id, "open\n", env)?;
     Ok(process)
 }
 
@@ -3834,10 +3837,7 @@ pub(crate) fn make_network_process(
             decoding,
             encoding,
         )?;
-        if !is_server {
-            let process_id = interp.resolve_process_id(&process)?;
-            run_process_sentinel(interp, process_id, "open\n", env)?;
-        }
+        // connect_network_socket runs no sentinel for a datagram socket.
         return Ok(process);
     }
 

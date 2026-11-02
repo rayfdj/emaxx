@@ -12476,6 +12476,37 @@ setup_process_coding_systems's check now refuses). A 13-form
   fault (r256/st.txt). Local validation: the grouped gate's 3,455
   library tests, the integration targets and clippy with `--all-targets
   --all-features -D warnings' pass.
+- **Round 257: network addresses, a pipe process's contact and the
+  connect sentinels as process.c has them; more batteries that agree.**
+  Batteries against GNU over data.c's and eval.c's buffer-local and
+  dynamic bindings (14 cases, r256/bv.txt), eval.c's control flow,
+  errors and backtraces (14, ev.txt), the window configurations, frames
+  and window motion (9, wc.txt) and the text properties and overlays (9,
+  tq.txt) agree but for the objects' addresses. The network and process
+  control primitives (r256/nw.txt, 9 cases) differed in three places,
+  now done as the C does them. `format-network-address' was a reduced
+  form that read any sequence of four or more integers as an IPv4
+  address and signalled otherwise; Fformat_network_address returns a
+  string as it is, formats a vector of 4 or 5 elements as IPv4 and of 8
+  or 9 as IPv6 (hexadecimal groups, the port after a bracketed address),
+  the port left out on request, answers nil for any other size or an
+  element out of range (above 65535, or above 255 in an IPv4 host part),
+  formats a cons as "<Family %d>" of its car, so that `(local .
+  "/tmp/s")' signals as `format' does, and answers nil for anything
+  else. A pipe process keeps its Fmake_pipe_process arguments as its
+  contact, which `process-contact' returns with KEY t, and the `:stderr'
+  buffer's pipe process its :name, :buffer and :noquery; with KEY nil it
+  answers t. connect_network_socket runs no sentinel for a client that
+  waited for its connect or a datagram socket: only a connect that did
+  not wait is told "open" when it completes, and a TLS connection after
+  its setup (finish_after_tls_connection), where Emaxx told every stream
+  and datagram client. network-stream-tests, process-tests, socks-tests,
+  nsm-tests, jsonrpc-tests, rcirc-tests, erc-tests, erc-networks-tests,
+  url-http-tests, url-future-tests, eudc-tests, dns-tests, shr-tests,
+  browse-url-tests, server-tests, puny-tests, gnutls-tests and
+  ntlm-tests pass as many tests as GNU's. Local validation: the grouped
+  gate's 3,456 library tests, the integration targets and clippy
+  with `--all-targets --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -14201,6 +14232,17 @@ median of 119 ms against 97), electric-tests' the most (906 against
 14,328), tramp-tests (20,988 against 18,931), semantic-utest-ia (4,013
 against 2,565), mule-tests (3,175 against 1,986) and electric-tests
 (1,128 against 588).
+
+**On `9564243`** (round 256): frozen (run 41494625432) matched all 7,928
+outcomes. Setup 68.5 s against 57.1 s (1.200), test bodies 233.3 s
+against 249.2 s (0.936), in all 0.999; ucs-normalize-tests' bodies took
+112 ms against 78. The full Rust gate (run 41494619938) passed. Per
+file, the setup is 22 ms over GNU's on average (11.4 s over 519 files, a
+median of 102 ms against 87), comp-tests' the most (1,815 against
+1,603), and the widest body gaps are comp-tests (15,406 ms against
+13,489), tramp-tests (17,817 against 16,418), semantic-utest-ia (3,281
+against 2,295), mule-tests (2,695 against 1,724) and epg-tests (2,376
+against 1,833).
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

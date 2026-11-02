@@ -34335,6 +34335,51 @@ fn stderr_pipe_process_and_status_notify_as_process_c() {
 }
 
 #[test]
+fn network_addresses_pipe_contact_and_connect_sentinels_as_process_c() {
+    // Fformat_network_address: a string as it is, an IPv4 or IPv6 vector
+    // of the sizes it knows within their ranges, else nil, and a cons
+    // through "<Family %d>".  A pipe process's contact is its
+    // Fmake_pipe_process arguments, t for KEY nil.  connect_network_socket
+    // runs no sentinel for a blocking or a datagram client: only a
+    // connect that did not wait, or a TLS setup, is "open" to it.
+    assert_oracle_contract_matches_interpreter(
+        r#"(list
+ (list (format-network-address [127 0 0 1 80])
+       (format-network-address [127 0 0 1 80] t)
+       (format-network-address [0 0 0 0 0 0 0 1 443])
+       (format-network-address [0 0 0 0 0 0 0 1 443] t)
+       (format-network-address [65535 0 0 0 0 0 0 1])
+       (format-network-address "x")
+       (format-network-address [1 2 3 300])
+       (format-network-address [1 2 3])
+       (format-network-address [1 2 3 4 70000])
+       (format-network-address 5)
+       (format-network-address '(1 . 2))
+       (condition-case e (format-network-address '(local . "/tmp/s")) (error e)))
+ (let ((p (make-pipe-process :name "t257-pipe" :noquery t)))
+   (prog1 (list (process-contact p) (process-contact p t) (process-contact p :name)
+                (process-contact p :buffer))
+     (delete-process p)))
+ (let* (log
+        (srv (make-network-process :name "t257-srv" :server t :service t
+                                   :host 'local :noquery t))
+        (cl (make-network-process :name "t257-cl" :host 'local :noquery t
+                                  :service (process-contact srv :service)
+                                  :sentinel (lambda (_p e) (push e log))))
+        (us (make-network-process :name "t257-us" :type 'datagram :server t
+                                  :host 'local :service t :noquery t))
+        (uc (make-network-process :name "t257-uc" :type 'datagram :host 'local
+                                  :service (process-contact us :service) :noquery t
+                                  :sentinel (lambda (_p e) (push e log)))))
+   (accept-process-output nil 0.05)
+   (prog1 (list log (process-status cl) (process-status uc))
+     (mapc #'delete-process (list cl uc srv us)))))"#,
+        r#"(("127.0.0.1:80" "127.0.0.1" "[0:0:0:0:0:0:0:1]:443" "0:0:0:0:0:0:0:1" "ffff:0:0:0:0:0:0:1" "x" nil nil nil nil "<Family 1>" (error "Format specifier doesn't match argument type")) (t (:name "t257-pipe" :noquery t) "t257-pipe" nil) (nil open open))"#,
+        "network addresses, pipe contact and connect sentinels",
+    );
+}
+
+#[test]
 fn frame_parameters_and_face_colors_as_frame_c_and_xfaces_c() {
     // cmds.c:Fdelete_char hands a non-nil KILLFLAG to
     // `kill-forward-chars' and checks N with CHECK_FIXNUM.  frame.c keeps
