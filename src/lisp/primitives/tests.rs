@@ -20509,7 +20509,7 @@ fn intern_uses_gnu_name_copy_and_type_check_boundaries() {
         "Fpurecopy retains canonical string storage"
     );
     assert_eq!(string_text(&copied).expect("pure name string"), "pure-name");
-    let hit = intern_in_obarray_with_name(&mut interp, &table, "pure-name", |_| {
+    let hit = intern_in_obarray_with_name(&mut interp, &table, "pure-name", None, |_| {
         panic!("an oblookup hit must not allocate or purecopy a name")
     })
     .expect("oblookup hit");
@@ -33567,6 +33567,21 @@ fn set_internal_stores_where_the_current_buffer_sees_the_binding() {
         r##"(progn (defvar r241-t 'g0) (defvar r241-auto 'a0) (make-variable-buffer-local 'r241-auto) (let ((big (expt 10 22)) (a (get-buffer-create "t241a")) (b (get-buffer-create "t241b")) (out nil)) (push (mapcar (lambda (x) (list (condition-case e (value< big x) (error e)) (condition-case e (value< x big) (error e)))) (list 'sym nil "s" '(1) [1] 1.5 (make-marker))) out) (push (condition-case e (sort (list 1 big 'q 2)) (error e)) out) (set-buffer a) (setq-default r241-t 'g0) (make-local-variable 'r241-t) (let ((r241-t 13)) (set-buffer b) (setq r241-t 47) (push (list r241-t (default-value 'r241-t) (buffer-local-value 'r241-t a)) out) (set-buffer a) (kill-local-variable 'r241-t)) (push (list (current-buffer) r241-t (default-value 'r241-t) (local-variable-p 'r241-t a)) out) (set-buffer a) (let ((r241-auto 'outer)) (set-buffer b) (let ((r241-auto 'inner)) (set-buffer a) (setq r241-auto 'set-in-a) (push (list r241-auto (default-value 'r241-auto) (local-variable-p 'r241-auto a) (local-variable-p 'r241-auto b)) out) (set-buffer b) (setq r241-auto 'set-in-b) (push (list r241-auto (default-value 'r241-auto) (local-variable-p 'r241-auto a) (local-variable-p 'r241-auto b)) out))) (push (list (default-value 'r241-auto) (buffer-local-value 'r241-auto a) (buffer-local-value 'r241-auto b) (local-variable-p 'r241-auto a) (local-variable-p 'r241-auto b)) out) (kill-buffer a) (kill-buffer b) (nreverse out)))"##,
         r##"((((type-mismatch sym 10000000000000000000000) (type-mismatch sym 10000000000000000000000)) ((type-mismatch nil 10000000000000000000000) (type-mismatch nil 10000000000000000000000)) ((type-mismatch "s" 10000000000000000000000) (type-mismatch "s" 10000000000000000000000)) ((type-mismatch (1) 10000000000000000000000) (type-mismatch (1) 10000000000000000000000)) ((type-mismatch 10000000000000000000000 [1]) (type-mismatch [1] 10000000000000000000000)) (nil t) ((type-mismatch 10000000000000000000000 #<marker in no buffer>) (type-mismatch #<marker in no buffer> 10000000000000000000000))) (type-mismatch q 10000000000000000000000) (47 47 13) (#<killed buffer> 47 47 nil) (set-in-a set-in-a nil nil) (set-in-b set-in-b nil nil) (a0 a0 a0 nil nil))"##,
         "set_internal's binding and value_cmp's bignum",
+    );
+}
+
+#[test]
+fn comparisons_coerce_lists_take_and_columns_measure_as_gnu() {
+    // arithcompare coerces NUM1 before NUM2 and minmax_driver checks every
+    // argument, returning a NaN only when its comparison fails; Bnth and
+    // Belt name the tail they stop at where Fnth names the list, and
+    // Fntake the list; concat_to_list takes no char-table and
+    // concat_to_vector a closure's slots; oblookup compares a string's
+    // bytes; a raw byte is four columns wide.
+    assert_oracle_contract_matches_interpreter(
+        r##"(let ((m (make-marker)) (nan 0.0e+NaN) (mnan (- 0.0e+NaN)) (dotted (cons 1 (cons 2 3))) (ob (obarray-make)) (u (concat "r242" "\200")) (bnth (make-byte-code 514 (unibyte-string 137 2 56 135) [] 4)) (belt (make-byte-code 514 (unibyte-string 1 1 156 135) [] 4))) (list (mapcar (lambda (f) (condition-case e (funcall f) (error e))) (list (lambda () (> m nil)) (lambda () (/= m nil)) (lambda () (< 1 m nil)) (lambda () (min nan -5 nil)) (lambda () (max nan mnan)) (lambda () (min mnan 1 nan)) (lambda () (ntake 3 (cons 1 (cons 2 3)))) (lambda () (ntake (expt 2 70) (list 1 2))) (lambda () (take (- (expt 2 70)) 5)) (lambda () (take 3 (cons 1 2))) (lambda () (funcall bnth dotted 10)) (lambda () (funcall belt dotted 10)) (lambda () (nth 10 dotted)) (lambda () (car (append (make-char-table 'r242) nil))) (lambda () (let ((v (vconcat (make-byte-code '(x) "\207" [x] 1)))) (list (length v) (aref v 0) (append (aref v 1) nil) (aref v 2) (aref v 3)))))) (let* ((a (intern u ob)) (b (intern u ob)) (s (intern-soft u ob)) (g (intern u))) (list (eq a b) (eq a s) (eq g (intern-soft u)) (eq g (intern u)) (intern-soft (string-to-multibyte u) ob))) (with-temp-buffer (insert "a\200b") (insert (string-to-multibyte "\377")) (list (current-column) (progn (move-to-column 3) (point)) (progn (goto-char (point-max)) (indent-to 12) (current-column)) (point)))))"##,
+        r##"(((error "Marker does not point anywhere") (error "Marker does not point anywhere") (error "Marker does not point anywhere") (wrong-type-argument number-or-marker-p nil) -0.0e+NaN 0.0e+NaN (wrong-type-argument listp (1 2 . 3)) (1 2) nil (wrong-type-argument listp 2) (wrong-type-argument listp 3) (wrong-type-argument listp 3) (wrong-type-argument listp (1 2 . 3)) (wrong-type-argument sequencep #^[nil nil r242 nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil]) (4 (x) (135) [x] 1)) (t t t t nil) (10 3 12 7))"##,
+        "comparison coercion, list walks, oblookup and raw-byte columns",
     );
 }
 

@@ -99,6 +99,11 @@ define_dispatch!(
                     ) {
                         return Err(LispError::WrongTypeArgument("sequencep".into(), *value));
                     }
+                    // A closure gives its slots, as AREF reads them.
+                    if let Kind::Closure(lambda) = value.kind() {
+                        items.extend(lambda.slots());
+                        continue;
+                    }
                     items.extend(sequence_values(value)?);
                 }
                 Ok(Value::vector(items))

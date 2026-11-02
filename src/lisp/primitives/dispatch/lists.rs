@@ -1002,7 +1002,9 @@ define_dispatch!(
                             .for_each(&mut store);
                         continue;
                     }
-                    if is_vector_like_value(a) {
+                    // VECTORP and BOOL_VECTOR_P; a char-table is no
+                    // sequence here.
+                    if is_vector_value(a) || is_bool_vector_value(a) {
                         sequence_values(a)?.into_iter().for_each(&mut store);
                         continue;
                     }

@@ -1589,78 +1589,55 @@ define_dispatch!(
 
             "take" | "ntake" => {
                 need_args(name, args, 2)?;
-                let n = args[0].as_integer()?;
-                if n <= 0 {
-                    return Ok(Value::Nil);
-                }
-                let n = n as usize;
+                // fns.c:Ftake and Fntake: a count of zero or less takes
+                // nothing, a bignum above it is MOST_POSITIVE_FIXNUM, and
+                // anything else is `integerp'; then CHECK_LIST.
+                let mut m = match args[0].kind() {
+                    Kind::Integer(n) if n <= 0 => return Ok(Value::Nil),
+                    Kind::Integer(n) => n,
+                    Kind::BigInteger(n) if n.is_negative() => return Ok(Value::Nil),
+                    Kind::BigInteger(_) => (1_i64 << 61) - 1,
+                    _ => {
+                        return Err(LispError::WrongTypeArgument("integerp".into(), args[0]));
+                    }
+                };
                 let list = args[1];
+                if !list.is_cons() && !list.is_nil() {
+                    return Err(LispError::WrongTypeArgument("listp".into(), list));
+                }
                 if name == "take" {
-                    let mut current = list;
+                    // A copy of the first M elements; a tail that is not a
+                    // list before then is `listp' itself.
                     let mut items = Vec::new();
-                    let mut remaining = n;
-                    while remaining > 0 {
-                        match current.kind() {
-                            Kind::Nil => break,
-                            Kind::Cons(cons_cell) => {
-                                let car = &cons_cell.car;
-                                let cdr = &cons_cell.cdr;
-                                items.push(car.get());
-                                current = cdr.get();
-                                remaining -= 1;
-                            }
-                            value => {
-                                return Err(LispError::WrongTypeArgument(
-                                    "listp".into(),
-                                    value.value(),
-                                ));
-                            }
-                        }
+                    let mut tail = list;
+                    while m > 0
+                        && let Some(cell) = tail.cons_ref()
+                    {
+                        items.push(cell.car.get());
+                        tail = cell.cdr.get();
+                        m -= 1;
+                    }
+                    if m > 0 && !tail.is_nil() {
+                        return Err(LispError::WrongTypeArgument("listp".into(), tail));
                     }
                     Ok(Value::list(items))
                 } else {
-                    let head = list;
-                    let mut current = head;
-                    let mut remaining = n;
-                    while remaining > 1 {
-                        match current.kind() {
-                            Kind::Nil => return Ok(Value::Nil),
-                            Kind::Cons(cons_cell) => {
-                                let _ = &cons_cell.car;
-                                let cdr = &cons_cell.cdr;
-                                let next = cdr.get();
-                                match next.kind() {
-                                    Kind::Cons(_) => {
-                                        current = next;
-                                        remaining -= 1;
-                                    }
-                                    Kind::Nil => return Ok(head),
-                                    value => {
-                                        return Err(LispError::WrongTypeArgument(
-                                            "listp".into(),
-                                            value.value(),
-                                        ));
-                                    }
-                                }
-                            }
-                            value => {
-                                return Err(LispError::WrongTypeArgument(
-                                    "listp".into(),
-                                    value.value(),
-                                ));
-                            }
-                        }
+                    // LIST cut after its Mth cons; a tail that is not a list
+                    // before then makes the whole LIST `listp'.
+                    let mut tail = list;
+                    m -= 1;
+                    while m > 0
+                        && let Some(cell) = tail.cons_ref()
+                    {
+                        tail = cell.cdr.get();
+                        m -= 1;
                     }
-                    match current.kind() {
-                        Kind::Nil => Ok(Value::Nil),
-                        Kind::Cons(cons_cell) => {
-                            let _ = &cons_cell.car;
-                            let cdr = &cons_cell.cdr;
-                            cdr.set(Value::Nil);
-                            Ok(head)
-                        }
-                        value => Err(LispError::WrongTypeArgument("listp".into(), value.value())),
+                    if let Some(cell) = tail.cons_ref() {
+                        cell.cdr.set(Value::Nil);
+                    } else if !tail.is_nil() {
+                        return Err(LispError::WrongTypeArgument("listp".into(), list));
                     }
+                    Ok(list)
                 }
             }
 

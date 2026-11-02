@@ -11777,6 +11777,53 @@ setup_process_coding_systems's check now refuses). A 13-form
   files-x and let-alist. Local validation: the grouped gate's 3,432
   library tests, the integration targets and clippy with `--all-targets
   --all-features -D warnings' pass.
+- **Round 242: arguments are coerced, lists walked and names looked up
+  as GNU does.** `numeric_ordering` takes each operand through the new
+  `check_number_coerce_marker` before looking at the next, as
+  arithcompare does, and `extremum_numeric_value` is minmax_driver:
+  every argument coerced, the accumulator replaced when the candidate
+  compares greater (less), and a candidate returned only when its
+  comparison fails and it is a NaN. The VM's full arm of Bnth and Belt
+  runs `nth_tail_in_place` (bytecode.c's own walk below
+  SMALL_LIST_LEN_MAX) and signals `listp` of the tail it stopped at,
+  with the record_in_backtrace frame; the verified loop's `nth_in_place`
+  is its non-signaling case. `take` and `ntake` are Ftake and Fntake (a
+  bignum count MOST_POSITIVE_FIXNUM or nothing, CHECK_LIST, Fntake's
+  `listp` of the whole list). `append` takes vectors and bool-vectors,
+  no char-table (concat_to_list's `sequencep`); `vconcat` takes a
+  closure's slots. `intern_in_obarray_with_name` and
+  `intern_soft_in_obarray` take a KEY, the Lisp string oblookup compares
+  by its SDATA and SCHARS (`RecordBucketsRef::lookup_name`,
+  `SymbolName::lookup_initial`), which Fintern and Fintern_soft pass
+  (the string, its longhand, or a symbol's name) and `standard_oblookup`
+  uses: a unibyte name with a byte above #x7F was looked up by its text,
+  not its bytes, and never found. `scan_for_column` and
+  check_display_width's :relative-width measure a multibyte character by
+  `public_buffer_char_code_at`'s code, so a raw byte is
+  char-width-table's four columns. Batteries (probes in r242/): num.el
+  (6,000 arithmetic calls), lst.el (4,000 list calls), arr.el (4,000
+  array, bool-vector and char-table calls), sym.el (3,000 symbol, plist
+  and obarray operations), col.el (1,500 column and indentation probes),
+  prt.el, rd.el, fmt.el, str.el, fld.el, und.el, rx.el and srchc.el (the
+  printer, reader, format, string functions, fields and stickiness, undo
+  with markers, regexp syntax, and buffer search and replace-match) read
+  as GNU's but for three GNU artifacts: get-pos-property's sort of two
+  or more overlays compares a sortvec entry it never filled (fld1.el,
+  with one overlay a buffer, matches all 300 runs); mapcar and mapconcat
+  over a record read its slots as a bool-vector's bits (seqp.el);
+  posix-search-forward with a `+' pattern aborts GNU in
+  re_match_2_internal in some heap states (srchc.el run by chunks.sh, a
+  case at a time where GNU aborts: 18 of 2,500 cases abort even alone,
+  the other 2,482 match). seq-tests' 3.4 times GNU's body time is one 15
+  ms collection that GNU's consing does not reach in that file; a full
+  collection of that heap takes Emaxx 9.5 ms to GNU's 12 to 17. An
+  oracle test pins the cases
+  (`comparisons_coerce_lists_take_and_columns_measure_as_gnu`). ERT pass
+  counts match GNU's for data, fns, floatfns, indent, lread, editfns,
+  alloc, obarray, subr, simple, seq, cl-lib, cl-seq, bytecomp, shortdoc,
+  subr-x, buffer and elisp-mode. Local validation: the grouped gate's
+  3,433 library tests, the integration targets and clippy with
+  `--all-targets --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -13333,6 +13380,17 @@ electric-tests' the most (896 against 542), and the widest body gaps are
 comp-tests (17,950 ms against 15,673), eglot-tests (34,508 against
 32,579), tramp-tests (21,765 against 20,041), semantic-utest-ia (4,490
 against 3,003) and mule-tests (3,142 against 2,060).
+
+**On `e110717`** (round 241): frozen (run 41369671719) matched all 7,928
+outcomes on a faster runner. Setup 65.4 s against 56.9 s (1.150), test
+bodies 225.1 s against 240.9 s (0.935), in all 0.988;
+ucs-normalize-tests' bodies took 117 ms against 75. The full Rust gate
+(run 41369662723) passed. Per file, the setup is 16 ms over GNU's on
+average (8.5 s over 519 files, a median of 101 ms against 87),
+electric-tests' the most (641 against 427), and the widest body gaps are
+comp-tests (14,474 ms against 12,576), tramp-tests (17,110 against
+15,971), semantic-utest-ia (3,152 against 2,201), mule-tests (2,273
+against 1,565) and electric-tests (810 against 449).
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

@@ -3180,12 +3180,13 @@ fn op_in_place(vm: &mut VmFrames<'_>, offset: usize, top: usize, pc: &mut usize)
 /// to themselves.
 const SMALL_LIST_LEN_MAX: i64 = 127;
 
-/// The fast case of Bnth (and Belt's, operands reversed): the car of
-/// LIST's Nth tail for N a fixnum in [0, SMALL_LIST_LEN_MAX], nil for a
-/// list that ends first; None for any other N or a tail that is neither a
-/// cons nor nil, which the full arm signals.
+/// The fast case of Bnth (and Belt's, operands reversed), for N a fixnum
+/// in [0, SMALL_LIST_LEN_MAX]: the car of LIST's Nth tail, nil for a list
+/// that ends first, or Err of a tail that is neither a cons nor nil, which
+/// bytecode.c signals as (wrong-type-argument listp TAIL) where Fnth would
+/// name the whole list; None for any other N.
 #[inline]
-fn nth_in_place(n: Value, list: Value) -> Option<Value> {
+fn nth_tail_in_place(n: Value, list: Value) -> Option<Result<Value, Value>> {
     let mut n = n
         .fixnum()
         .filter(|n| (0..=SMALL_LIST_LEN_MAX).contains(n))?;
@@ -3196,10 +3197,17 @@ fn nth_in_place(n: Value, list: Value) -> Option<Value> {
         tail = cell.cdr.get();
         n -= 1;
     }
-    match tail.cons_ref() {
-        Some(cell) => Some(cell.car.get()),
-        None => tail.is_nil().then_some(Value::Nil),
-    }
+    Some(match tail.cons_ref() {
+        Some(cell) => Ok(cell.car.get()),
+        None if tail.is_nil() => Ok(Value::Nil),
+        None => Err(tail),
+    })
+}
+
+/// `nth_tail_in_place' where it does not signal; the full arm signals.
+#[inline]
+fn nth_in_place(n: Value, list: Value) -> Option<Value> {
+    nth_tail_in_place(n, list)?.ok()
 }
 
 /// Bpushcatch: a catch of TAG, whose throw resumes at DEST with the stack
@@ -3795,7 +3803,19 @@ fn exec_op_inline(vm: &mut VmFrames<'_>, op: Op, pc: &mut usize) -> Result<(), L
                 _ => "nconc",
             };
             let call_args = [a, b];
-            let value = match prim(interp, name, call_args, env) {
+            // Bnth's and Belt's own walk of a short list signals with the
+            // tail it stopped at.
+            let in_place = match op {
+                Op::Nth => nth_tail_in_place(a, b),
+                Op::Elt if a.is_cons() => nth_tail_in_place(b, a),
+                _ => None,
+            };
+            let result = match in_place {
+                Some(Ok(value)) => Ok(value),
+                Some(Err(tail)) => Err(LispError::WrongTypeArgument("listp".into(), tail)),
+                None => prim(interp, name, call_args, env),
+            };
+            let value = match result {
                 Ok(value) => value,
                 Err(error) => {
                     // bytecode.c's record_in_backtrace covers
