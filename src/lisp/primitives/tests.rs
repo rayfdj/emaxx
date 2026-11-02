@@ -34210,6 +34210,41 @@ fn command_history_and_read_char_as_callint_c_and_lread_c() {
 }
 
 #[test]
+fn command_keys_and_lossage_as_keyboard_c() {
+    // keyboard.c:read_char adds each event it returns to this-command-keys,
+    // one reread from `unread-command-events' only as their first and none
+    // under an end time; read-char and read-event add theirs too.
+    // command_loop_1 enters each command in the lossage as (nil . CMD)
+    // before pre-command-hook and empties the keys once it is done.
+    assert_oracle_contract_matches_interpreter(
+        r#"(list
+ (let ((unread-command-events (list ?\C-x ?\C-f)))
+   (list (append (read-key-sequence nil) nil) (this-command-keys-vector) (this-single-command-raw-keys)))
+ (let ((unread-command-events (list ?a ?b)))
+   (list (read-char) (read-event) (this-command-keys-vector)))
+ (progn
+   (clear-this-command-keys t)
+   (let ((unread-command-events (list '(t . ?a) '(t . ?b))))
+     (list (read-char) (read-char) (this-command-keys-vector))))
+ (progn
+   (clear-this-command-keys t)
+   (let ((unread-command-events (list ?a)))
+     (list (read-event nil nil 1) (this-command-keys-vector))))
+ (progn
+   (clear-this-command-keys)
+   (let (seen)
+     (with-temp-buffer
+       (let ((pre-command-hook
+              (list (lambda () (push (list (this-command-keys-vector) (recent-keys t)) seen)))))
+         (execute-kbd-macro "z")))
+     (list (nreverse seen) (this-command-keys-vector) (recent-keys t)))))"#,
+        "(((24 6) [24] [24 6]) (97 98 [24]) (97 98 [97 98]) (97 []) \
+         ((([122] [(nil . self-insert-command)])) [] [(nil . self-insert-command)]))",
+        "command keys and lossage",
+    );
+}
+
+#[test]
 fn frame_parameters_and_face_colors_as_frame_c_and_xfaces_c() {
     // cmds.c:Fdelete_char hands a non-nil KILLFLAG to
     // `kill-forward-chars' and checks N with CHECK_FIXNUM.  frame.c keeps

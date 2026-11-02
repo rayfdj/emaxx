@@ -212,6 +212,7 @@ pub(crate) fn next_kbd_macro_event(
     }
     interp.set_variable("executing-kbd-macro-index", Value::Integer(index + 1), env);
     interp.keyboard_input.num_input_events += 1;
+    interp.keyboard_input.last_event_reread = false;
     Ok(Some(event))
 }
 
@@ -266,6 +267,7 @@ fn finish_kbd_macro_command_cycle(
         .filter(|value| !value.is_nil())
         .unwrap_or(dispatched_command);
     finish_kbd_macro_command(interp, real_command, final_this_command, env);
+    crate::lisp::primitives::clear_command_keys(interp);
     Ok(())
 }
 
@@ -879,6 +881,7 @@ fn execute_kbd_macro_resolved_command(
     interp.set_variable("this-original-command", original_command, env);
     interp.set_variable("this-command", command, env);
     interp.set_variable("real-this-command", command, env);
+    crate::lisp::primitives::record_command_lossage(interp, command);
     increment_num_input_keys(interp, env);
     safe_run_named_hooks(
         interp,
@@ -1747,7 +1750,11 @@ define_dispatch!(
                         Some(deadline) => {
                             let timeout =
                                 deadline.saturating_duration_since(std::time::Instant::now());
-                            match read_event_within(interp, timeout, env)? {
+                            let event = read_event_within(interp, timeout, env)?;
+                            // A read with an end time adds nothing to
+                            // this-command-keys.
+                            interp.keyboard_input.last_event_reread = false;
+                            match event {
                                 Some(event) => event,
                                 None => return Ok(Value::Nil),
                             }
@@ -1759,7 +1766,9 @@ define_dispatch!(
                             // help pop-up, y-or-n-p's prompt context) reach
                             // the glass while the read waits.
                             crate::lisp::primitives::run_tty_frame_redraw(interp, env);
-                            pop_unread_command_event_value(interp, env)?
+                            let event = pop_unread_command_event_value(interp, env)?;
+                            crate::lisp::primitives::add_read_event_to_command_keys(interp, event);
+                            event
                         }
                     };
                     if read_event {

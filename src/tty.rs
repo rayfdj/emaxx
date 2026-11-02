@@ -1024,7 +1024,10 @@ fn command_loop(
             }
             match queue.try_next_event() {
                 Err(()) => return Ok(0),
-                Ok(Some(event)) => break event,
+                Ok(Some(event)) => {
+                    interpreter.keyboard_input.last_event_reread = false;
+                    break event;
+                }
                 Ok(None) => {}
             }
             // Entering the wait means Emacs is idle: keyboard.c's
@@ -9610,6 +9613,7 @@ fn make_menu_executor(
                         if event == Value::Integer(7) {
                             break Value::T;
                         }
+                        interpreter.keyboard_input.last_event_reread = false;
                         match reader.read_event(interpreter, event, env)? {
                             Resolution::Command(binding) => break binding,
                             Resolution::Prefix => {}

@@ -1108,6 +1108,10 @@ pub(crate) struct KeyboardInputState {
     // keyboard.c's num_input_events: every event read_char returned,
     // from the terminal, `unread-command-events' or a keyboard macro.
     pub(crate) num_input_events: u64,
+    // read_char's `reread': the event just taken came from
+    // `unread-command-events' (not as (t . EVENT)), so it joins
+    // this-command-keys only as their first.  The consumer clears it.
+    pub(crate) last_event_reread: bool,
 }
 
 // One active `ert-with-message-capture` scope.  When the capture variable is

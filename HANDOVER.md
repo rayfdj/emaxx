@@ -12365,6 +12365,42 @@ setup_process_coding_systems's check now refuses). A 13-form
   and repeat-tests' 40.2 against 12.6. Local validation: the grouped
   gate's 3,452 library tests, the integration targets and clippy
   with `--all-targets --all-features -D warnings' pass.
+- **Round 254: keyboard.c's this-command-keys and lossage from
+  batteries, and where electric-tests' time goes.** Batteries against
+  GNU over editfns.c (32 cases, r254/ed.txt), fns.c (31, fn.txt), data.c
+  (20, da.txt), syntax.c (15, sy.txt), textprop.c and the overlays (15,
+  tp.txt), print.c and lread.c's syntax (15, pl.txt), chartab.c,
+  casetab.c and category.c (12, ct.txt), search.c (16, se.txt),
+  callproc.c and process.c (17, pr.txt) and minibuf.c's batch reads from
+  stdin (26, mb.txt) agree throughout but for the address-dependent
+  values (`sxhash-equal' of a symbol, `process-attributes'); a batch
+  `read-char' with nothing unread waits forever in GNU, where Emaxx
+  signals. keyboard.c (r254/kb.txt and ck.txt, 35 cases) differed, now
+  fixed. read_char adds every event it returns to this-command-keys, but
+  one reread from `unread-command-events' (not given as (t . EVENT))
+  only while the keys are empty, and none under an end time:
+  `read-char', `read-event' and `read-char-exclusive' now add theirs,
+  and read-key-sequence leaves out the reread events after the first
+  until a replay re-adds the sequence, so C-x C-f from
+  `unread-command-events' leaves [24] beside the raw [24 6]. Each event
+  source records whether its event was reread, and the consumer clears
+  the mark, so terminal input is never taken for reread. command_loop_1
+  enters each command it runs in the lossage as (nil . COMMAND) before
+  `pre-command-hook', keyboard macro commands included, so `(recent-keys
+  t)' and `view-lossage' show them, and empties this-command-keys once
+  the command is done, after `post-command-hook'. keyboard-tests,
+  callint-tests, simple-tests, kmacro-tests, minibuf-tests,
+  minibuffer-tests, repeat-tests, rmc-tests, isearch-tests, help-tests,
+  edmacro-tests, subr-tests, viper-tests, elisp-mode-tests,
+  edebug-tests, eudc-tests and dired-tests pass as many tests as GNU's.
+  electric-tests, the file whose setup the frozen run shows furthest
+  behind (950 ms against 539), takes as many instructions as GNU's under
+  callgrind, 3,350M against 3,360M for the setup and 6,569M against
+  6,624M for the whole run, while its wall time is 1.8 s against 1.4 s
+  locally: the gap is instructions per cycle, the code-size class
+  recorded above, not extra work. Local validation: the grouped gate's
+  3,453 library tests, the integration targets and clippy with
+  `--all-targets --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -14057,6 +14093,17 @@ median of 126 ms against 102), electric-tests' the most (950 against
 14,750), tramp-tests (21,588 against 19,163), semantic-utest-ia (4,361
 against 2,941), mule-tests (3,208 against 1,976) and electric-tests
 (1,170 against 582).
+
+**On `be0a0ec`** (round 253): frozen (run 41470027568) matched all 7,928
+outcomes. Setup 82.9 s against 66.2 s (1.252), test bodies 257.4 s
+against 267.6 s (0.962), in all 1.006; ucs-normalize-tests' bodies took
+136 ms against 92. The full Rust gate (run 41470022316) passed. Per
+file, the setup is 32 ms over GNU's on average (16.7 s over 519 files, a
+median of 124 ms against 101), electric-tests' the most (943 against
+536), and the widest body gaps are comp-tests (17,227 ms against
+14,485), tramp-tests (21,243 against 19,052), semantic-utest-ia (4,153
+against 2,686), mule-tests (3,187 against 2,024) and package-tests
+(6,716 against 6,153).
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

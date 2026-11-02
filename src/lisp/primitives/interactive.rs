@@ -232,6 +232,27 @@ fn dribble_event_bytes(event: &Value) -> Vec<u8> {
     }
 }
 
+/// keyboard.c:command_loop_1 enters each command it runs in the lossage
+/// as (nil . COMMAND), after the keys that invoked it.
+pub(crate) fn record_command_lossage(interp: &mut Interpreter, command: Value) {
+    interp
+        .keyboard_input
+        .recent_keys
+        .push(Value::cons(Value::Nil, command));
+    let limit = interp.lossage_size.max(0) as usize;
+    if interp.keyboard_input.recent_keys.len() > limit {
+        let excess = interp.keyboard_input.recent_keys.len() - limit;
+        interp.keyboard_input.recent_keys.drain(0..excess);
+    }
+}
+
+/// command_loop_1 empties this-command-keys once a command is done, after
+/// its post-command-hook.
+pub(crate) fn clear_command_keys(interp: &mut Interpreter) {
+    interp.keyboard_input.command_keys.clear();
+    interp.keyboard_input.single_command_start = 0;
+}
+
 pub(crate) fn executing_kbd_macro_p(interp: &Interpreter, env: &Env) -> bool {
     interp
         .lookup_var("executing-kbd-macro", env)
@@ -1311,6 +1332,7 @@ fn execute_command_binding_inner(
     interp.set_variable("this-original-command", original, env);
     interp.set_variable("this-command", binding, env);
     interp.set_variable("real-this-command", binding, env);
+    record_command_lossage(interp, binding);
     // read_char records terminal events as they arrive while a keyboard
     // macro is being defined.  The command's end keys are deliberately
     // provisional: `end-kbd-macro' truncates back to the last command
@@ -1452,6 +1474,7 @@ fn execute_command_binding_inner(
             }
         }
     }
+    clear_command_keys(interp);
     if signalled {
         return result;
     }
@@ -1776,6 +1799,7 @@ fn read_command_event(
                 if event == Value::Integer(7) && !quit_char_is_event {
                     return Err(LispError::SignalValue(Value::list([Value::symbol("quit")])));
                 }
+                interp.keyboard_input.last_event_reread = false;
                 record_external_input_event(interp, &event, env);
                 return Ok(event);
             }
@@ -1796,7 +1820,7 @@ fn read_command_event(
                     // wait_reading_process_output.
                     run_tty_frame_redraw(interp, env);
                 }
-                if let Some(event) = pop_unread_event_cell(interp, env) {
+                if let Some(event) = take_unread_command_event(interp, env) {
                     record_external_input_event(interp, &event, env);
                     return Ok(event);
                 }
@@ -1806,6 +1830,7 @@ fn read_command_event(
     if let Some(read) = read_via_tty_event_reader(interp, cursor_in_echo_area) {
         return match read {
             Some(event) if event != Value::Integer(7) || quit_char_is_event => {
+                interp.keyboard_input.last_event_reread = false;
                 record_external_input_event(interp, &event, env);
                 Ok(event)
             }
@@ -2204,9 +2229,23 @@ pub(crate) fn take_unread_command_event(interp: &mut Interpreter, env: &mut Env)
     let event = pop_unread_event_cell(interp, env)?;
     match event.kind() {
         Kind::Cons(_) if matches!(event.car().map(|v| v.kind()), Ok(Kind::T)) => {
+            interp.keyboard_input.last_event_reread = false;
             event.cdr_if_list()
         }
-        _ => Some(event),
+        _ => {
+            interp.keyboard_input.last_event_reread = true;
+            Some(event)
+        }
+    }
+}
+
+/// keyboard.c:read_char's add_command_key for an event it returned: the
+/// event joins this-command-keys, one reread from `unread-command-events'
+/// only as their first.
+pub(crate) fn add_read_event_to_command_keys(interp: &mut Interpreter, event: Value) {
+    let reread = std::mem::take(&mut interp.keyboard_input.last_event_reread);
+    if !reread || interp.keyboard_input.command_keys.is_empty() {
+        interp.keyboard_input.command_keys.push(event);
     }
 }
 
@@ -2292,6 +2331,7 @@ pub(crate) fn read_tty_event_with_timeout(
                 if event == Value::Integer(7) {
                     return Err(LispError::SignalValue(Value::list([Value::symbol("quit")])));
                 }
+                interp.keyboard_input.last_event_reread = false;
                 record_external_input_event(interp, &event, env);
                 return Ok(Some(event));
             }
