@@ -982,6 +982,17 @@ pub(crate) fn value_ordering(
         if is_number_value(left) && is_number_value(right) {
             return Ok(order_from_option(value_cmp_numeric_ordering(left, right)));
         }
+        // value_cmp answers a bignum against what is not vectorlike (a
+        // symbol, a string or a cons) as -value_cmp (b, a), whose mismatch
+        // names the other value first.
+        if matches!(left.kind(), Kind::BigInteger(_))
+            && matches!(
+                right.kind(),
+                Kind::Nil | Kind::T | Kind::Symbol(_) | Kind::StringObject(_) | Kind::Cons(_)
+            )
+        {
+            return Err(type_mismatch_signal(right, left));
+        }
         return Err(type_mismatch_signal(left, right));
     }
 

@@ -33554,6 +33554,23 @@ fn decoders_annotate_compositions_as_produce_composition() {
 }
 
 #[test]
+fn set_internal_stores_where_the_current_buffer_sees_the_binding() {
+    // data.c:set_internal consults the specpdl only through
+    // let_shadows_buffer_binding_p: a `let' of a variable buffer-local in
+    // another buffer leaves a store here to this buffer's binding or the
+    // default, and a local-if-set variable's store makes no local where a
+    // SPECPDL_LET_DEFAULT was made in this buffer, however deep.  unbind_to
+    // sets a SPECPDL_LET_LOCAL's old value back only while the buffer still
+    // has the local.  value_cmp answers a bignum against a symbol, string
+    // or cons as -value_cmp (b, a), so the mismatch names the other first.
+    assert_oracle_contract_matches_interpreter(
+        r##"(progn (defvar r241-t 'g0) (defvar r241-auto 'a0) (make-variable-buffer-local 'r241-auto) (let ((big (expt 10 22)) (a (get-buffer-create "t241a")) (b (get-buffer-create "t241b")) (out nil)) (push (mapcar (lambda (x) (list (condition-case e (value< big x) (error e)) (condition-case e (value< x big) (error e)))) (list 'sym nil "s" '(1) [1] 1.5 (make-marker))) out) (push (condition-case e (sort (list 1 big 'q 2)) (error e)) out) (set-buffer a) (setq-default r241-t 'g0) (make-local-variable 'r241-t) (let ((r241-t 13)) (set-buffer b) (setq r241-t 47) (push (list r241-t (default-value 'r241-t) (buffer-local-value 'r241-t a)) out) (set-buffer a) (kill-local-variable 'r241-t)) (push (list (current-buffer) r241-t (default-value 'r241-t) (local-variable-p 'r241-t a)) out) (set-buffer a) (let ((r241-auto 'outer)) (set-buffer b) (let ((r241-auto 'inner)) (set-buffer a) (setq r241-auto 'set-in-a) (push (list r241-auto (default-value 'r241-auto) (local-variable-p 'r241-auto a) (local-variable-p 'r241-auto b)) out) (set-buffer b) (setq r241-auto 'set-in-b) (push (list r241-auto (default-value 'r241-auto) (local-variable-p 'r241-auto a) (local-variable-p 'r241-auto b)) out))) (push (list (default-value 'r241-auto) (buffer-local-value 'r241-auto a) (buffer-local-value 'r241-auto b) (local-variable-p 'r241-auto a) (local-variable-p 'r241-auto b)) out) (kill-buffer a) (kill-buffer b) (nreverse out)))"##,
+        r##"((((type-mismatch sym 10000000000000000000000) (type-mismatch sym 10000000000000000000000)) ((type-mismatch nil 10000000000000000000000) (type-mismatch nil 10000000000000000000000)) ((type-mismatch "s" 10000000000000000000000) (type-mismatch "s" 10000000000000000000000)) ((type-mismatch (1) 10000000000000000000000) (type-mismatch (1) 10000000000000000000000)) ((type-mismatch 10000000000000000000000 [1]) (type-mismatch [1] 10000000000000000000000)) (nil t) ((type-mismatch 10000000000000000000000 #<marker in no buffer>) (type-mismatch #<marker in no buffer> 10000000000000000000000))) (type-mismatch q 10000000000000000000000) (47 47 13) (#<killed buffer> 47 47 nil) (set-in-a set-in-a nil nil) (set-in-b set-in-b nil nil) (a0 a0 a0 nil nil))"##,
+        "set_internal's binding and value_cmp's bignum",
+    );
+}
+
+#[test]
 fn indirect_buffers_share_their_base_text_and_its_markers() {
     // buffer.c:Fmake_indirect_buffer gives the indirect buffer its base's
     // buffer_text, whose one chain holds every marker of the family, the

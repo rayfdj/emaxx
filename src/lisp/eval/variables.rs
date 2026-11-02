@@ -1835,60 +1835,38 @@ impl Interpreter {
         self.buffer_value(buffer_id)
     }
 
+    /// eval.c:let_shadows_buffer_binding_p, the one way data.c:set_internal
+    /// consults the specpdl: a SPECPDL_LET_DEFAULT of NAME made while the
+    /// current buffer was current keeps a local-if-set store in the
+    /// default (Some (Global)).  Any other binding, a buffer-local one made
+    /// in another buffer included, leaves the store to the current
+    /// buffer's own binding or the default.
     pub(super) fn active_special_assignment_scope(
         &self,
         name: &str,
     ) -> Option<SpecialBindingScope> {
-        let index = self
-            .active_special_restores
+        let current = self.current_buffer_id();
+        self.active_special_restores
             .iter()
-            .rposition(|restore| !restore.local_binding_killed && restore.name == name)?;
-        let restore = &self.active_special_restores[index];
-        match restore.scope {
-            SpecialBindingScope::Global
-                if self.is_auto_buffer_local(name)
-                    && restore.binding_buffer_id != Some(self.current_buffer_id()) =>
-            {
-                None
-            }
-            // A let-binding made in another buffer must not capture setq
-            // from this buffer: always-buffer-local variables (GNU
-            // default-directory) get this buffer's own local instead.
-            SpecialBindingScope::BufferLocal(id)
-                if self.is_auto_buffer_local(name) && id != self.current_buffer_id() =>
-            {
-                None
-            }
-            _ => Some(restore.scope.clone()),
-        }
+            .any(|restore| {
+                restore.let_default && restore.where_buffer_id == current && restore.name == name
+            })
+            .then_some(SpecialBindingScope::Global)
     }
 
     /// `active_special_assignment_scope' for a symbol in hand: the
-    /// restore records carry symbols, so the match is by identity first,
-    /// and the auto-local flag is read by id.
+    /// restore records carry symbols, so the match is by identity.
     pub(super) fn active_special_assignment_scope_symbol(
         &self,
         symbol: &SymbolName,
     ) -> Option<SpecialBindingScope> {
-        let index = self
-            .active_special_restores
+        let current = self.current_buffer_id();
+        self.active_special_restores
             .iter()
-            .rposition(|restore| !restore.local_binding_killed && restore.name == *symbol)?;
-        let restore = &self.active_special_restores[index];
-        let auto_local = || self.globals.has_flag(symbol, LOCAL_IF_SET);
-        match restore.scope {
-            SpecialBindingScope::Global
-                if auto_local() && restore.binding_buffer_id != Some(self.current_buffer_id()) =>
-            {
-                None
-            }
-            SpecialBindingScope::BufferLocal(id)
-                if auto_local() && id != self.current_buffer_id() =>
-            {
-                None
-            }
-            _ => Some(restore.scope.clone()),
-        }
+            .any(|restore| {
+                restore.let_default && restore.where_buffer_id == current && restore.name == *symbol
+            })
+            .then_some(SpecialBindingScope::Global)
     }
 
     /// Return the active global special binding as seen from the current
@@ -2961,6 +2939,16 @@ impl Interpreter {
                 }
             }
             SpecialBindingScope::BufferLocal(buffer_id) => {
+                // eval.c:unbind_to's SPECPDL_LET_LOCAL sets the old value
+                // back, its watchers hearing `unlet', only while
+                // Flocal_variable_p holds in the binding's buffer: a local
+                // killed meanwhile stays killed.
+                if self
+                    .buffer_local_binding_symbol(buffer_id, &restore.name)
+                    .is_none()
+                {
+                    return Ok(());
+                }
                 self.notify_variable_watchers_symbol(
                     &restore.name,
                     restore.previous.unwrap_or(Value::Nil),

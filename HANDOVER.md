@@ -11744,6 +11744,39 @@ setup_process_coding_systems's check now refuses). A 13-form
   validation: the grouped gate's 3,431 library tests, the
   integration targets and clippy with `--all-targets --all-features -D
   warnings' pass.
+- **Round 241: stores under a let go where set_internal puts them.**
+  `active_special_assignment_scope` and its symbol form are eval.c's
+  let_shadows_buffer_binding_p: a restore record with `let_default`
+  whose `where_buffer_id` is the current buffer, at any depth, keeps the
+  store in the default (`SpecialBindingScope::Global`); otherwise the
+  store goes to the current buffer's binding or the default, so another
+  buffer's let of a buffer-local binding no longer captures a setq made
+  elsewhere, and a local-if-set variable set in a buffer where an outer
+  LET_DEFAULT was made gets no local. `apply_special_restore`'s
+  buffer-local branch restores (and tells watchers of the `unlet') only
+  while the buffer still has the local, as unbind_to's SPECPDL_LET_LOCAL
+  checks Flocal_variable_p. `value_ordering` signals a bignum's mismatch
+  against nil, t, a symbol, a string or a cons with the other value
+  first, as value_cmp's -value_cmp (b, a) does. Batteries (probes in
+  r241/): blv.el and blv2.el (300 random runs of setq, set-default,
+  make-local-variable, kill-local-variable, let, cl-progv, setq-local
+  and buffer switches in two buffers; blv2 also with AUTO set for a
+  local-if-set variable), pbv.el (the let pattern over six per-buffer C
+  variables and two Lisp ones), srt.el (800 value< and sort sets over
+  mixed types), and syn.el, cas.el, tim.el, hsh.el, kmp.el, ovl.el and
+  ovl2.el sweeps of syntax scans, casing, format-time-string over zones,
+  hash tables, keymaps and overlays all read as GNU's but for two GNU
+  artifacts in the overlay sweeps: get-pos-property's sort_overlays
+  reads a sortvec entry it left unset, and overlays of equal priority
+  and span are ordered by address. An oracle test pins the cases
+  (`set_internal_stores_where_the_current_buffer_sees_the_binding`).
+  electric-tests under callgrind runs 3% fewer instructions than GNU at
+  1.3 times the wall time, the code-footprint gap recorded before. ERT
+  pass counts match GNU's for data, eval, buffer, subr, fns, files,
+  simple, cl-lib, custom, subr-x, minibuffer, nadvice, seq, elisp-mode,
+  files-x and let-alist. Local validation: the grouped gate's 3,432
+  library tests, the integration targets and clippy with `--all-targets
+  --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -13289,6 +13322,17 @@ electric-tests' the most (873 against 533), and the widest body gaps
 are comp-tests (17,522 ms against 14,495), tramp-tests (20,992 against
 19,279), eglot-tests (33,971 against 32,398), semantic-utest-ia (4,117
 against 2,643) and mule-tests (3,152 against 2,027).
+
+**On `b41bb5b`** (round 240): frozen (run 41365805281) matched all 7,928
+outcomes on a slower runner. Setup 87.6 s against 73.3 s (1.195), test
+bodies 264.1 s against 276.4 s (0.955), in all 1.008;
+ucs-normalize-tests' bodies took 153 ms against 100. The full Rust gate
+(run 41365796133) passed. Per file, the setup is 28 ms over GNU's on
+average (14.3 s over 519 files, a median of 135 ms against 112),
+electric-tests' the most (896 against 542), and the widest body gaps are
+comp-tests (17,950 ms against 15,673), eglot-tests (34,508 against
+32,579), tramp-tests (21,765 against 20,041), semantic-utest-ia (4,490
+against 3,003) and mule-tests (3,142 against 2,060).
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'
