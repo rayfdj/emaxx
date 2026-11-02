@@ -34438,6 +34438,52 @@ fn dynamic_binding_byte_code_arguments_as_funcall_lambda() {
 }
 
 #[test]
+fn backtrace_locals_as_eval_c() {
+    // eval.c:Fbacktrace__locals: the bindings on the specpdl between a
+    // frame's record and the next one's, oldest first, each with the value
+    // it bound (a later binding's saved value, or the value now), and the
+    // lexical environment a funcall_lambda, Flet, FletX or condition-case
+    // installed there read as its bindings in its place; the frame inside
+    // the one asked for must be live too, its count a natural number.
+    assert_oracle_contract_matches_interpreter(
+        r#"(progn
+  (defvar bl259-out nil)
+  (defvar bl259-dyn 5)
+  (fset 'bl259-inner
+        (lambda ()
+          (setq bl259-out
+                (mapcar (lambda (i)
+                          (condition-case e (backtrace--locals i 'bl259-inner)
+                            (error (list 'err e))))
+                        '(1 2 3)))))
+  (fset 'bl259-lex (lambda (a b) (let ((c (+ a b))) (bl259-inner) c)))
+  (fset 'bl259-lexdyn (lambda (a) (let ((bl259-dyn 9) (d 4)) (bl259-inner) (+ a d))))
+  (fset 'bl259-letstar
+        (lambda (p) (let* ((q (1+ p)) (bl259-dyn q) (r (* q 2))) (bl259-inner) r)))
+  (fset 'bl259-cc
+        (lambda () (condition-case err (signal 'error '(1)) (error (bl259-inner) err))))
+  (fset 'bl259-dynbc
+        (let ((lexical-binding nil))
+          (byte-compile '(lambda (a b)
+                           (let ((c (+ a b)) (bl259-x 1)) (let* ((e 5)) (bl259-inner)) c)))))
+  (fset 'bl259-rebound
+        (let ((lexical-binding nil))
+          (byte-compile '(lambda (a) (let ((a 7)) (bl259-inner)) a))))
+  (list (progn (bl259-lex 1 2) bl259-out)
+        (progn (bl259-lexdyn 1) bl259-out)
+        (progn (bl259-letstar 1) bl259-out)
+        (progn (bl259-cc) bl259-out)
+        (progn (bl259-dynbc 1 2) bl259-out)
+        (progn (bl259-rebound 3) bl259-out)
+        (condition-case e (backtrace--locals 0) (error e))
+        (condition-case e (backtrace--locals 100000) (error e))
+        (condition-case e (backtrace--locals 'x) (error e))))"#,
+        r#"((((a . 1) (b . 2) (c . 3)) ((a . 1) (b . 2)) nil) (((bl259-dyn . 9) (a . 1) (d . 4)) ((a . 1)) nil) (((p . 1) (q . 2) (r . 4) (bl259-dyn . 2)) ((p . 1)) nil) (((err error 1)) nil nil) (((a . 1) (b . 2) (bl259-x . 1) (c . 3) (e . 5)) nil nil) (((a . 3) (a . 7)) nil nil) (wrong-type-argument wholenump -1) (error "Activation frame not found!") (wrong-type-argument wholenump x))"#,
+        "backtrace--locals",
+    );
+}
+
+#[test]
 fn frame_parameters_and_face_colors_as_frame_c_and_xfaces_c() {
     // cmds.c:Fdelete_char hands a non-nil KILLFLAG to
     // `kill-forward-chars' and checks N with CHECK_FIXNUM.  frame.c keeps

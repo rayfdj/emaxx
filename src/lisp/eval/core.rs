@@ -2353,7 +2353,7 @@ impl Interpreter {
         }
         let depth = env.len();
         let count = self.specpdl_index();
-        let locals = self.frame_locals.len();
+        let installed = self.frame_environments.len();
         let result = (|| {
             let mut index = 0;
             let mut optional = false;
@@ -2403,16 +2403,6 @@ impl Interpreter {
                     // Dynamic specbind can run variable watchers. Bind
                     // immediately, retaining GNU's order and the live
                     // parameter cell until its cdr is read below.
-                    let frame = self
-                        .backtrace_frames
-                        .len()
-                        .checked_sub(1)
-                        .expect("active call frame");
-                    self.frame_locals.push(FrameLocal {
-                        frame,
-                        symbol: parameter,
-                        value: argument,
-                    });
                     if lexical {
                         lexical_environment =
                             Self::cons_binding(parameter, argument, lexical_environment);
@@ -2437,6 +2427,7 @@ impl Interpreter {
                 != lexical_environment.word()
             {
                 env.push(EnvFrame::from_alist(lexical_environment));
+                self.install_frame_environment(lexical_environment);
             }
             self.capture_current_backtrace_context(original_name.map(CallName::as_str), env, None);
             let body = match function.kind() {
@@ -2448,9 +2439,9 @@ impl Interpreter {
         // GNU signals before unbinding: handlers can inspect partial
         // dynamic argument bindings and the signaling call's frame.
         let result = self.settle_frame_result(result, env);
-        // The parameters leave with the call; its frame, which the caller
-        // pops, reports none after this.
-        self.frame_locals.truncate(locals);
+        // The environment leaves with the call; its frame, which the
+        // caller pops, reports none after this.
+        self.uninstall_frame_environments(installed);
         env.truncate(depth);
         let unbind = self.unbind_to(count, env);
         if override_capture {

@@ -1250,16 +1250,23 @@ define_dispatch!(
                 interp.eval(&args[0], &mut context)
             }
             "backtrace--locals" => {
-                need_args(name, args, 2)?;
-                let index = backtrace_nframes(args[0])?;
-                let base = args.get(1).filter(|value| !value.is_nil());
-                let locals = interp
-                    .backtrace_frame_locals_snapshot_with_base(index, base)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|(name, value)| Value::cons(Value::Symbol(name), value))
-                    .collect::<Vec<_>>();
-                Ok(Value::list(locals))
+                need_arg_range(name, args, 1, 2)?;
+                // eval.c:Fbacktrace__locals: the frame NFRAMES and BASE
+                // name and the one inside it (get_backtrace_frame's
+                // CHECK_FIXNAT of each count), both live.
+                let nframes = backtrace_nframes(args[0])?;
+                let (offset, base) = backtrace_base(args.get(1).copied().unwrap_or(Value::Nil));
+                let frame = interp.backtrace_frame_index(nframes, base, offset, |object| {
+                    crate::lisp::primitives::keymap::indirect_function(interp, object, env)
+                });
+                let inner = backtrace_nframes(Value::Integer(nframes as i64 - 1))?;
+                let inner = interp.backtrace_frame_index(inner, base, offset, |object| {
+                    crate::lisp::primitives::keymap::indirect_function(interp, object, env)
+                });
+                match (frame, inner) {
+                    (Some(frame), Some(_)) => Ok(interp.backtrace_frame_locals(frame)),
+                    _ => Err(LispError::Signal("Activation frame not found!".into())),
+                }
             }
             "current-thread" => Ok(interp.current_thread_value()),
             "all-threads" => {

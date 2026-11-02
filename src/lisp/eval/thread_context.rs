@@ -22,7 +22,7 @@ pub(super) struct ThreadExecutionContext {
     bc_handlers: crate::lisp::bytecode::vm::BcHandlers,
     bc_unwinds: Vec<crate::lisp::bytecode::vm::UnwindEntry>,
     pub(super) backtrace_frames: Vec<BacktraceFrame>,
-    frame_locals: Vec<FrameLocal>,
+    frame_environments: Vec<FrameEnvironment>,
     batch_error_backtrace: Option<BatchErrorBacktrace>,
     active_handlers: Vec<ActiveHandler>,
     active_catch_tags: Vec<Value>,
@@ -53,7 +53,7 @@ impl ThreadExecutionContext {
             bc_handlers,
             bc_unwinds,
             backtrace_frames,
-            frame_locals,
+            frame_environments,
             batch_error_backtrace,
             active_handlers,
             active_catch_tags,
@@ -86,8 +86,8 @@ impl TraceLispRoots for ThreadExecutionContext {
                 marker.environment(environment);
             }
         }
-        for local in &self.frame_locals {
-            marker.value(&local.value);
+        for installed in &self.frame_environments {
+            marker.value(&installed.environment);
         }
         for buffer in self
             .last_thing_searched

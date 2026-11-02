@@ -356,7 +356,10 @@ pub(crate) fn eval_impl(
             ),
         };
         interp.push_lambda_eval_context(capture_lexical);
+        let installed = interp
+            .install_frame_environment(crate::lisp::types::current_environment_value(&eval_env));
         let result = interp.eval(&args[0], &mut eval_env);
+        interp.uninstall_frame_environments(installed);
         interp.pop_lambda_capture_override();
         result
     } else {
@@ -445,8 +448,6 @@ pub(crate) fn eval_buffer_impl(
         let begv = buffer.point_min();
         buffer.goto_char(begv);
     }
-    let previous_load_list =
-        interp.bind_special_variable("current-load-list", Value::list([source_file]), env)?;
     // Feval_buffer specbinds the Lisp variable `lexical-binding' to the
     // buffer's file-variable cookie (lisp_file_lexical_cookie) for the
     // whole readevalloop, so macros that consult the variable while the
@@ -464,8 +465,16 @@ pub(crate) fn eval_buffer_impl(
         if cookie_lexical { Value::T } else { Value::Nil },
         env,
     )?;
-    // readevalloop reads from `standard-input', bound to the buffer.
+    // readevalloop reads from `standard-input', bound to the buffer, binds
+    // `macroexp--dynvars' to its value, so that the forms' declarations go
+    // with the loop, and then `current-load-list' (loadhist_initialize).
     let previous_input = interp.bind_special_variable("standard-input", readcharfun, env)?;
+    let dynvars = interp
+        .lookup_var("macroexp--dynvars", env)
+        .unwrap_or(Value::Nil);
+    let previous_dynvars = interp.bind_special_variable("macroexp--dynvars", dynvars, env)?;
+    let previous_load_list =
+        interp.bind_special_variable("current-load-list", Value::list([source_file]), env)?;
     // Feval_buffer returns nil whatever the last form evaluated to.
     let mut result = eval_buffer_forms(
         interp,
@@ -481,7 +490,12 @@ pub(crate) fn eval_buffer_impl(
             .unwrap_or(Value::Nil);
         interp.commit_entire_load_history(&source_file, current);
     }
-    for restore in [previous_input, previous_lexical_binding, previous_load_list] {
+    for restore in [
+        previous_load_list,
+        previous_dynvars,
+        previous_input,
+        previous_lexical_binding,
+    ] {
         if let Err(error) = interp.restore_special_binding(restore, env)
             && result.is_ok()
         {
@@ -551,15 +565,19 @@ pub(crate) fn eval_region_impl(
         Value::cons(readcharfun, eval_buffer_list),
         env,
     )?);
-    if let Some(file) = source_file {
-        restores.push(interp.bind_special_variable(
-            "current-load-list",
-            Value::list([Value::String(file.into())]),
-            env,
-        )?);
-    }
-    // readevalloop reads from `standard-input', bound to the buffer.
+    // readevalloop reads from `standard-input', bound to the buffer, binds
+    // `macroexp--dynvars' to its value and `current-load-list' to a list
+    // of the buffer's file name (loadhist_initialize), nil if it has none.
     restores.push(interp.bind_special_variable("standard-input", readcharfun, env)?);
+    let dynvars = interp
+        .lookup_var("macroexp--dynvars", env)
+        .unwrap_or(Value::Nil);
+    restores.push(interp.bind_special_variable("macroexp--dynvars", dynvars, env)?);
+    restores.push(interp.bind_special_variable(
+        "current-load-list",
+        Value::list([source_file.map_or(Value::Nil, |file| Value::String(file.into()))]),
+        env,
+    )?);
 
     // readevalloop reads the buffer-local `lexical-binding' and runs the
     // forms in a fresh interpreter environment — the caller's lexical

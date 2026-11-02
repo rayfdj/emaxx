@@ -12544,6 +12544,45 @@ setup_process_coding_systems's check now refuses). A 13-form
   nadvice-tests pass as many tests as GNU's. Local validation: the
   grouped gate's 3,457 library tests, the integration targets and
   clippy with `--all-targets --all-features -D warnings' pass.
+- **Round 259: `backtrace--locals' as eval.c reads the specpdl;
+  readevalloop's bindings in its order.** `backtrace--locals' asked for
+  two arguments where GNU takes one or two, and listed only the
+  parameters an interpreted call bound (`frame_locals'), so a byte-code
+  frame, a `let' or `let*' frame, a condition-case handler's variable
+  and a closure's captured variables showed nothing, and a frame that is
+  not there answered nil. Fbacktrace__locals lists the bindings on the
+  specpdl between the frame's record and the next one's, oldest first,
+  each with the value it bound as backtrace_eval_unrewind reads it back
+  (the old value the next binding of the variable saved, or the value
+  now), and reads a binding of `internal-interpreter-environment' as the
+  bindings in the environment it installed. Each binding record now
+  carries the depth of the frame that made it
+  (`SpecialBindingRestore::frame_depth'), and the lexical environments
+  interpreted code installs -- funcall_lambda's, Flet's, FletX's (its
+  first lexical binding, the variable stored into after), a lexical
+  condition-case handler's and Feval's -- are kept beside the frames
+  with their frame and their place on the binding stack
+  (`FrameEnvironment', which replaces the per-parameter `FrameLocal' and
+  makes an interpreted call cheaper by a push per parameter);
+  `backtrace-eval' outside Edebug evaluates in the environment last
+  installed at or outside the frame. NFRAMES and NFRAMES - 1 must be
+  natural numbers, and either frame missing signals "Activation frame
+  not found!". The comparison turned up readevalloop's order: GNU binds
+  `standard-input', then `macroexp--dynvars' to its own value, so that
+  the forms' declarations go with the loop, then `current-load-list'
+  (loadhist_initialize), where Emaxx bound the load list before
+  `lexical-binding' and never bound the dynvars; `eval-region' binds the
+  list to a buffer without a file too. A battery of 9 cases
+  (r259/p259.el) and the file-loaded ones (bl.el, bd.el, down into
+  `load''s own frames) match GNU; backtrace-tests, edebug-tests,
+  ert-tests, eval-tests, lread-tests, bytecomp-tests, macroexp-tests and
+  elisp-mode-tests pass as many tests as GNU's. `backtrace-eval' still
+  neither rewinds the dynamic bindings made above the frame nor leaves
+  out the frame's own environment, which GNU's does
+  (backtrace_eval_unrewind of everything above the frame's record).
+  Local validation: the grouped gate's 3,458 library tests, the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -14291,6 +14330,17 @@ median of 129 ms against 107), comp-tests' the most (2,094 against
 15,147), tramp-tests (22,154 against 19,490), semantic-utest-ia (4,382
 against 3,149), mule-tests (3,230 against 2,022) and electric-tests
 (1,184 against 609).
+
+**On `08ce599`** (round 258): frozen (run 41508456993) matched all 7,928
+outcomes. Setup 84.3 s against 71.3 s (1.184), test bodies 260.1 s
+against 278.4 s (0.934), in all 0.979; ucs-normalize-tests' bodies took
+129 ms against 90. The full Rust gate (run 41508452062) passed. Per
+file, the setup is 25 ms over GNU's on average (13.1 s over 519 files, a
+median of 127 ms against 110), comp-tests' the most (2,064 against
+1,808), and the widest body gaps are comp-tests (18,332 ms against
+15,697), tramp-tests (21,235 against 19,412), semantic-utest-ia (3,880
+against 2,703), mule-tests (3,005 against 1,978) and electric-tests
+(1,048 against 580).
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

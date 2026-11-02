@@ -288,12 +288,13 @@ impl Interpreter {
             // pointer bits in the rest of a machine-word stack spill.
             if !Self::same_environment(&lexenv, &crate::lisp::types::current_environment_value(env))
             {
-                lexical_scope_depth = Some(env.len());
+                lexical_scope_depth = Some((env.len(), self.install_frame_environment(lexenv)));
                 env.push(EnvFrame::from_alist(lexenv));
             }
             self.progn_list(&args.cdr()?, env)
         })();
-        if let Some(depth) = lexical_scope_depth {
+        if let Some((depth, installed)) = lexical_scope_depth {
+            self.uninstall_frame_environments(installed);
             env.truncate(depth);
         }
         let unbind = self.unbind_to(count, env);
@@ -318,6 +319,7 @@ impl Interpreter {
         let original_depth = env.len();
         let lexenv = crate::lisp::types::current_environment_value(env);
         let mut lexical_restore_depth = None;
+        let mut installed = None;
         let count = self.specpdl_index();
         let setup = (|| -> Result<(), LispError> {
             // The varlist and each element read in place (FletX's
@@ -371,9 +373,13 @@ impl Interpreter {
                         )
                     {
                         lexical_restore_depth = Some(original_depth);
+                        installed = Some(self.install_frame_environment(newenv));
                         env.push(EnvFrame::from_alist(newenv));
                     } else if let Some(frame) = env.last_mut() {
                         frame.set_environment(newenv);
+                        if let Some(mark) = installed {
+                            self.update_frame_environment(mark, newenv);
+                        }
                     } else {
                         env.push(EnvFrame::from_alist(newenv));
                     }
@@ -414,6 +420,9 @@ impl Interpreter {
             Ok(()) => args.cdr().and_then(|body| self.progn_list(&body, env)),
             Err(error) => Err(error),
         };
+        if let Some(mark) = installed {
+            self.uninstall_frame_environments(mark);
+        }
         if let Some(depth) = lexical_restore_depth {
             env.truncate(depth);
         }

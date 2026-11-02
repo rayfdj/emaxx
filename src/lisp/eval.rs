@@ -1468,6 +1468,11 @@ pub(crate) struct SpecialBindingRestore {
     // participating in lookup and assignment.  On unwind GNU restores the
     // old local value only if code created a new local cell in the meantime.
     local_binding_killed: bool,
+    /// The number of backtrace frames when the binding was made: it was
+    /// made by the frame at this depth, the innermost one then, as the
+    /// specpdl entry lies above that frame's record and below the next
+    /// one's (`backtrace--locals').
+    frame_depth: usize,
 }
 
 /// eval.c's `union specbinding' backtrace member in its four words:
@@ -1699,18 +1704,20 @@ impl Drop for BacktraceFrame {
 /// A signaled condition's `error-conditions' (see `error_condition_names').
 pub(crate) type ConditionNames = smallvec::SmallVec<[SymbolName; 8]>;
 
-/// A parameter an interpreted call bound (funcall_lambda's bindings, which
-/// `backtrace--locals' and the debugger's frame context report), kept on
-/// a stack beside the frames instead of in each frame: FRAME is the index
-/// of the call's frame in `backtrace_frames', and a frame's parameters are
-/// the contiguous run of entries carrying its index. The call removes its
-/// entries when it returns (normally or with its error settled), so its
-/// frame owns nothing and leaves as an ordinary call's does.
+/// A lexical environment interpreted code installed (eval.c's specbind of
+/// `internal-interpreter-environment' by funcall_lambda, Flet, FletX, a
+/// condition-case handler or Feval), which `backtrace--locals' and the
+/// debugger's frame context report, kept on a stack beside the frames and
+/// the binding stack: FRAME is the index in `backtrace_frames' of the frame
+/// that installed it, SPECPDL the binding stack's length then (its place
+/// among the frame's dynamic bindings), and ENVIRONMENT the alist.  The
+/// installer removes its entry when the environment goes, so the frame
+/// owns nothing and leaves as an ordinary call's does.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct FrameLocal {
+pub(crate) struct FrameEnvironment {
     frame: usize,
-    symbol: SymbolName,
-    value: Value,
+    specpdl: usize,
+    environment: Value,
 }
 
 #[derive(Clone, Debug)]
@@ -4587,9 +4594,8 @@ impl Interpreter {
                 }
             }
         }
-        for local in &self.frame_locals {
-            mark(&Value::Symbol(local.symbol));
-            mark(&local.value);
+        for installed in &self.frame_environments {
+            mark(&installed.environment);
         }
         if let Some(backtrace) = &self.batch_error_backtrace {
             for (_, function, arguments, _) in &backtrace.frames {
@@ -5050,9 +5056,8 @@ impl Interpreter {
                     detail.source_form = Some(c.copy(form));
                 }
             }
-            for local in &mut clone.frame_locals {
-                local.symbol = c.copy_symbol(local.symbol);
-                local.value = c.copy(&local.value);
+            for installed in &mut clone.frame_environments {
+                installed.environment = c.copy(&installed.environment);
             }
             if let Some(backtrace) = &mut clone.batch_error_backtrace {
                 for (_, function, args, _) in &mut backtrace.frames {
@@ -5834,8 +5839,9 @@ pub struct InterpreterState {
     active_thread_id: u64,
     last_thread_error: Option<Value>,
     backtrace_frames: Vec<BacktraceFrame>,
-    /// The interpreted calls' parameters, by frame (see `FrameLocal').
-    frame_locals: Vec<FrameLocal>,
+    /// The lexical environments interpreted code installed, by frame (see
+    /// `FrameEnvironment').
+    frame_environments: Vec<FrameEnvironment>,
     batch_error_backtrace: Option<BatchErrorBacktrace>,
     active_handlers: Vec<ActiveHandler>,
     /// Dynamically active `catch' tags.  GNU's `throw' signals `no-catch'
@@ -6539,7 +6545,7 @@ impl Interpreter {
             active_thread_id: main_thread_id,
             last_thread_error: None,
             backtrace_frames: Vec::new(),
-            frame_locals: Vec::new(),
+            frame_environments: Vec::new(),
             batch_error_backtrace: None,
             active_handlers: Vec::new(),
             active_catch_tags: Vec::new(),
