@@ -34380,6 +34380,64 @@ fn network_addresses_pipe_contact_and_connect_sentinels_as_process_c() {
 }
 
 #[test]
+fn dynamic_binding_byte_code_arguments_as_funcall_lambda() {
+    // eval.c:funcall_lambda for a byte-code function whose argument slot
+    // is a list: each formal specbound in turn (watchers hear `let' and
+    // `unlet'), `&optional' ones past the arguments nil, the `&rest' one
+    // the list of the rest and any after it nil; a formal that is no
+    // symbol, a repeated or misplaced keyword, a dotted list or a trailing
+    // `&rest' is `invalid-function' of the function, nil or t a constant
+    // to set.  The bindings go at the call's exit, by a return, a signal
+    // or a throw, and a buffer-local one leaves the default alone.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((dyn (lambda (form) (let ((lexical-binding nil)) (byte-compile form))))
+      log)
+  (defvar t258-w nil)
+  (fset 't258-a (funcall dyn '(lambda (x &optional y &rest z) (list x y z))))
+  (let* ((base (funcall dyn '(lambda (a b c)
+                               (list (and (boundp 'a) a) (and (boundp 'b) b)
+                                     (and (boundp 'c) c)))))
+         (try (lambda (thunk)
+                (condition-case err (funcall thunk)
+                  (error (list 'error (car err)
+                               (if (byte-code-function-p (cadr err)) 'fun (cadr err))
+                               (nth 2 err)))))))
+    (add-variable-watcher 't258-w (lambda (sym new op where)
+                                    (push (list sym new op (and where t)) log)))
+    (fset 't258-wf (funcall dyn '(lambda (t258-w) (list t258-w (symbol-value 't258-w)))))
+    (fset 't258-sig (funcall dyn '(lambda (t258-w) (signal 'error (list t258-w)))))
+    (fset 't258-thr (funcall dyn '(lambda (t258-w) (throw 't258 t258-w))))
+    (fset 't258-fc (funcall dyn '(lambda (fill-column)
+                                   (list fill-column (default-value 'fill-column)))))
+    (fset 't258-rec (funcall dyn '(lambda (n)
+                                    (if (> n 0) (cons n (t258-rec (1- n)))
+                                      (list (boundp 'n) n)))))
+    (list
+     (list (t258-a 1) (t258-a 1 2) (t258-a 1 2 3 4) (funcall try (lambda () (t258-a))))
+     (mapcar (lambda (arglist)
+               (funcall try (lambda ()
+                              (funcall (make-byte-code arglist (aref base 1) (aref base 2)
+                                                       (aref base 3))
+                                       1 2))))
+             '((a b) (a &rest b c) (a &optional b c) (a &rest) (a &optional &optional b)
+               (a &rest b &optional c) (a . b) (a 1) (nil b) (t b) (a) (a b c) ()
+               (&optional a b c d) (&rest a &rest b) (a &rest b &rest)))
+     (list (t258-wf 5) t258-w (prog1 (nreverse log) (setq log nil)))
+     (list (condition-case e (t258-sig 7) (error (list e t258-w)))
+           (prog1 (nreverse log) (setq log nil)))
+     (list (catch 't258 (t258-thr 9)) t258-w (prog1 (nreverse log) (setq log nil)))
+     (with-temp-buffer
+       (setq fill-column 33)
+       (list (t258-fc 44) fill-column (default-value 'fill-column)))
+     (t258-rec 3)
+     (mapcar #'t258-a '(1 2))
+     (let ((n 0)) (mapatoms (lambda (s) (when (eq s 't258-a) (setq n (1+ n))))) n))))"#,
+        r#"(((1 nil nil) (1 2 nil) (1 2 (3 4)) (error wrong-number-of-arguments fun 0)) ((1 2 nil) (1 (2) nil) (1 2 nil) (error invalid-function fun nil) (error invalid-function fun nil) (error invalid-function fun nil) (error invalid-function fun nil) (error invalid-function fun nil) (error setting-constant nil nil) (error setting-constant t nil) (error wrong-number-of-arguments fun 2) (error wrong-number-of-arguments fun 2) (error wrong-number-of-arguments fun 2) (1 2 nil) (error invalid-function fun nil) (error invalid-function fun nil)) ((5 5) nil ((t258-w nil set nil) (t258-w nil set nil) (t258-w nil set nil) (t258-w 5 let nil) (t258-w nil unlet nil))) (((error 7) nil) ((t258-w 7 let nil) (t258-w nil unlet nil))) (9 nil ((t258-w 9 let nil) (t258-w nil unlet nil))) ((44 70) 33 70) (3 2 1 t 0) ((1 nil nil) (2 nil nil)) 1)"#,
+        "dynamic-binding byte-code arguments",
+    );
+}
+
+#[test]
 fn frame_parameters_and_face_colors_as_frame_c_and_xfaces_c() {
     // cmds.c:Fdelete_char hands a non-nil KILLFLAG to
     // `kill-forward-chars' and checks N with CHECK_FIXNUM.  frame.c keeps

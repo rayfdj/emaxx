@@ -270,7 +270,7 @@ impl Interpreter {
     /// symbol while `symbols-with-pos-enabled' is non-nil.  The byte compiler
     /// enables that mode while macroexpanding source forms, so this is part of
     /// ordinary evaluator dispatch rather than merely a predicate detail.
-    fn callable_symbol_name(&self, value: &Value, env: &Env) -> Option<SymbolName> {
+    pub(crate) fn callable_symbol_name(&self, value: &Value, env: &Env) -> Option<SymbolName> {
         if let Some(name) = value.symbol_cell() {
             return Some(name);
         }

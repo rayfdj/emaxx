@@ -12507,6 +12507,43 @@ setup_process_coding_systems's check now refuses). A 13-form
   ntlm-tests pass as many tests as GNU's. Local validation: the grouped
   gate's 3,456 library tests, the integration targets and clippy
   with `--all-targets --all-features -D warnings' pass.
+- **Round 258: a dynamic-binding byte-code function entered as
+  funcall_lambda enters it.** A call from Rust (`mapatoms', `mapcar', a
+  hook) of a byte-code function whose argument slot is a list, which
+  funcall_lambda binds before exec_byte_code runs the code with no
+  arguments, read and checked the closure's fields anew on each call
+  (`closure_program'), copied the list into a vector, cloned each
+  binding's record into a box on the unwind list and verified the code's
+  entry again. The closure table that holds a lexical function's decoded
+  fields (`entry_program') now holds such a function's too, with its
+  formal list (`EntryProgram::arguments', never a frame entry Bcall sets
+  up in place), and `run_dynamic' binds the formals in the entered
+  frame, each record on the binding stack by its id as Bvarbind leaves
+  it, a plain symbol through `specbind_plain' first; an activation's
+  exit undoes the plain bindings in place (`unbind_plain') before the
+  general unwinding. Over `mapatoms' with a one-argument callback,
+  18,496 symbols ten times (r257/cg/mb.el), a call costs 803
+  instructions where it cost 1,632 (GNU 529); a lexical callback is
+  unchanged at 458 (GNU 312), spread over the prologues of
+  `call_function_value', `funcall_closure' and `run_verified'. The
+  binding is eval.c's loop over the list in place
+  (`bind_dynamic_arguments', also on the VM's path for code the verifier
+  does not admit): `&rest' and `&optional' known by EQ to their symbols,
+  any formal after the `&rest' one bound to nil, where the loop stopped
+  after it; a repeated or misplaced keyword, a dotted list, a trailing
+  `&rest' or a formal that is no symbol signal `invalid-function' of the
+  function (Emaxx took the keywords again wherever they came, stopped at
+  a dotted tail and named the formal), nil or t as a formal
+  `setting-constant'. The battery (r258/p258.el, 16 argument lists,
+  watchers, signals, throws, a buffer-local formal and a recursion
+  through Bcall) matches GNU. `backtrace--locals' does not: it takes one
+  argument or two in GNU, and lists every binding on the specpdl between
+  a frame's record and the next one (r258/bt258.el), where Emaxx asks
+  for two and keeps only an interpreted call's parameters.
+  bytecomp-tests, eval-tests, backtrace-tests, data-tests and
+  nadvice-tests pass as many tests as GNU's. Local validation: the
+  grouped gate's 3,457 library tests, the integration targets and
+  clippy with `--all-targets --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -14243,6 +14280,17 @@ median of 102 ms against 87), comp-tests' the most (1,815 against
 13,489), tramp-tests (17,817 against 16,418), semantic-utest-ia (3,281
 against 2,295), mule-tests (2,695 against 1,724) and epg-tests (2,376
 against 1,833).
+
+**On `5d396b3`** (round 257): frozen (run 41501269839) matched all 7,928
+outcomes. Setup 85.8 s against 69.2 s (1.239), test bodies 264.0 s
+against 283.9 s (0.930), in all 0.982; ucs-normalize-tests' bodies took
+137 ms against 94. The full Rust gate (run 41501264975) passed. Per
+file, the setup is 32 ms over GNU's on average (16.6 s over 519 files, a
+median of 129 ms against 107), comp-tests' the most (2,094 against
+1,799), and the widest body gaps are comp-tests (18,124 ms against
+15,147), tramp-tests (22,154 against 19,490), semantic-utest-ia (4,382
+against 3,149), mule-tests (3,230 against 2,022) and electric-tests
+(1,184 against 609).
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

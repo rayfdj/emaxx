@@ -4051,6 +4051,9 @@ pub fn execute_closure(
         if program.takes(args.len()) {
             return run_entered(interp, *program, Value::Closure(closure), args, env);
         }
+        if let Some(arguments) = program.arguments {
+            return run_dynamic(interp, *program, arguments, closure, args, env);
+        }
     }
     let program = closure_program(closure)?;
     run(interp, program, Value::Closure(closure), args, env)
@@ -4077,6 +4080,10 @@ pub(crate) fn funcall_closure(
         Some(program) if unsafe { program.as_ref() }.takes(args.len()) => {
             let program = unsafe { *program.as_ref() };
             run_entered_inline(interp, program, Value::Closure(closure), args, env)
+        }
+        Some(program) if let Some(arguments) = unsafe { program.as_ref() }.arguments => {
+            let program = unsafe { *program.as_ref() };
+            run_dynamic(interp, program, arguments, closure, args, env)
         }
         _ => closure_program(closure)
             .and_then(|program| run(interp, program, Value::Closure(closure), args, env)),
@@ -4150,6 +4157,44 @@ fn run_entered_inline(
     args: &[Value],
     env: &mut Env,
 ) -> Result<Value, LispError> {
+    run_entered_with(interp, program, function, env, |interp, _| {
+        // The caller checked the count against the list and the list's
+        // slots against the frame's depth.
+        interp.bc_stack.push_arguments(args, program.entry_depth);
+        Ok(())
+    })
+}
+
+/// funcall_lambda for a dynamic-binding byte-code function whose fields
+/// and verification the frame entry cache holds: the formal ARGUMENTS
+/// bound (`bind_dynamic_arguments') and the code run with an empty frame,
+/// as `exec_byte_code (fun, 0, 0, NULL)'; the activation's exit is the
+/// unbind_to of the bindings.
+#[inline(never)]
+fn run_dynamic(
+    interp: &mut Interpreter,
+    program: super::verify::EntryProgram,
+    arguments: Value,
+    closure: crate::lisp::types::ClosureRef,
+    args: &[Value],
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let function = Value::Closure(closure);
+    run_entered_with(interp, program, function, env, |interp, env| {
+        bind_dynamic_arguments(interp, function, arguments, args, env)
+    })
+}
+
+/// `run_entered' with the frame's first slots set up by SETUP (the
+/// arguments pushed, or bound dynamically) in the entered frame.
+#[inline(always)]
+fn run_entered_with(
+    interp: &mut Interpreter,
+    program: super::verify::EntryProgram,
+    function: Value,
+    env: &mut Env,
+    setup: impl FnOnce(&mut Interpreter, &mut Env) -> Result<(), LispError>,
+) -> Result<Value, LispError> {
     let entry_depth = program.entry_depth;
     interp.bc_stack.ensure_allocated();
     let marks = EntryMarks::of(interp);
@@ -4161,9 +4206,9 @@ fn run_entered_inline(
         {
             break 'entry Err(error);
         }
-        // The caller checked the count against the list and the list's
-        // slots against the frame's depth.
-        interp.bc_stack.push_arguments(args, entry_depth);
+        if let Err(error) = setup(interp, env) {
+            break 'entry Err(error);
+        }
         let mut program = Running::entered(&program);
         let mut op_error_frames = 0;
         let mut pc = 0;
@@ -4290,6 +4335,9 @@ fn finish_activation(
     // Balance any entries left by an abnormal exit (GNU unbind_to on the
     // frame's specpdl watermark), running unwind-protect handlers and
     // restoring saved buffer state on the way out.
+    // The innermost entries whose undoing runs nothing (a dynamic-binding
+    // function's argument bindings, mostly) are undone in place.
+    while interp.bc_unwinds.len() > marks.unwinds && unbind_plain(interp) {}
     let result = if interp.bc_unwinds.len() > marks.unwinds {
         unwind_activation(interp, env, result, marks.unwinds)
     } else {
@@ -4332,6 +4380,86 @@ fn unwind_activation(
         (_, Err(error)) => Err(error),
         (result, Ok(())) => result,
     }
+}
+
+/// eval.c:funcall_lambda's binding of a dynamic-binding function's formal
+/// ARGUMENTS to ARGS, walked in place: each symbol specbound in turn, its
+/// record on the unwind list for the activation's exit to unbind, one
+/// after `&optional' past the arguments to nil, one after `&rest' to the
+/// list of the rest (and any later one to nil).  A formal that is not a
+/// symbol, a repeated or misplaced `&optional' or `&rest', a dotted list
+/// or a trailing `&rest' signal `invalid-function' with FUNCTION; too few
+/// or too many arguments `wrong-number-of-arguments'.
+fn bind_dynamic_arguments(
+    interp: &mut Interpreter,
+    function: Value,
+    mut arguments: Value,
+    args: &[Value],
+    env: &mut Env,
+) -> Result<(), LispError> {
+    let invalid = || {
+        LispError::SignalValue(Value::list([
+            Value::Symbol("invalid-function".into()),
+            function,
+        ]))
+    };
+    let mut index = 0;
+    let (mut optional, mut rest, mut previous_rest) = (false, false, false);
+    while let Some(cell) = arguments.cons_ref() {
+        interp.maybe_quit(env)?;
+        let next = cell.car.get();
+        let symbol = match next.symbol_cell() {
+            Some(symbol) => symbol,
+            None if next.is_nil() => crate::lisp::types::symbols::builtin_boolean(false),
+            None if next.word() == Value::T.word() => {
+                crate::lisp::types::symbols::builtin_boolean(true)
+            }
+            None => interp
+                .callable_symbol_name(&next, env)
+                .ok_or_else(invalid)?,
+        };
+        // Only a name that starts with `&' can be either keyword.
+        let keyword = symbol.as_str().starts_with('&');
+        if keyword && cached_symbol!("&rest").with(|key| *key == symbol) {
+            if rest || previous_rest {
+                return Err(invalid());
+            }
+            rest = true;
+            previous_rest = true;
+        } else if keyword && cached_symbol!("&optional").with(|key| *key == symbol) {
+            if optional || rest || previous_rest {
+                return Err(invalid());
+            }
+            optional = true;
+        } else {
+            let value = if rest {
+                let value = Value::list_of(&args[index..]);
+                index = args.len();
+                value
+            } else if let Some(&value) = args.get(index) {
+                index += 1;
+                value
+            } else if optional {
+                Value::Nil
+            } else {
+                return Err(legacy_arity_error(&function, args.len()));
+            };
+            let binding_id = match interp.specbind_plain(&symbol, value) {
+                Some(binding_id) => binding_id,
+                None => interp.specbind_symbol_id(&symbol, value, env)?,
+            };
+            interp.bc_unwinds.push(UnwindEntry::BindingId(binding_id));
+            previous_rest = false;
+        }
+        arguments = cell.cdr.get();
+    }
+    if !arguments.is_nil() || previous_rest {
+        return Err(invalid());
+    }
+    if index < args.len() {
+        return Err(legacy_arity_error(&function, args.len()));
+    }
+    Ok(())
 }
 
 /// bytecode.c:exec_byte_code.  The operand stack and the specpdl-style
@@ -4388,54 +4516,7 @@ fn run_frames(
         // formal (honoring &optional/&rest) and runs the body with an
         // empty stack; the exit balance below is GNU's unbind_to.
         ArgSpec::Legacy(arglist) => {
-            let formals = arglist.to_vec().unwrap_or_default();
-            let mut index = 0usize;
-            let mut optional = false;
-            let mut rest = false;
-            for formal in &formals {
-                let name = match formal.kind() {
-                    Kind::Symbol(name) => name,
-                    other => {
-                        let error = LispError::SignalValue(Value::list([
-                            Value::Symbol("invalid-function".into()),
-                            other.value(),
-                        ]));
-                        return Err(error);
-                    }
-                };
-                if name == "&optional" {
-                    optional = true;
-                    continue;
-                }
-                if name == "&rest" {
-                    rest = true;
-                    continue;
-                }
-                let value = if rest {
-                    Value::list_of(&args[index.min(args.len())..])
-                } else if index < args.len() {
-                    args[index]
-                } else if optional {
-                    Value::Nil
-                } else {
-                    return Err(legacy_arity_error(&function, args.len()));
-                };
-                if rest {
-                    index = args.len();
-                } else {
-                    index += 1;
-                }
-                let restore = interp.bind_special_variable(&name, value, env)?;
-                interp
-                    .bc_unwinds
-                    .push(UnwindEntry::Binding(Box::new(restore)));
-                if rest {
-                    break;
-                }
-            }
-            if !rest && index < args.len() {
-                return Err(legacy_arity_error(&function, args.len()));
-            }
+            bind_dynamic_arguments(interp, function, *arglist, args, env)?;
         }
     }
     // The verifier's result for this code lets the fast loop run it

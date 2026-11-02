@@ -26,7 +26,7 @@ use std::ptr::NonNull;
 
 use super::{ArgSpec, ByteCodeObject, CodeBytes, Op, decode_instr};
 use crate::lisp::alloc::CodeState;
-use crate::lisp::types::{ClosureRef, IdentityBuildHasher, Kind, VectorRef};
+use crate::lisp::types::{ClosureRef, IdentityBuildHasher, Kind, Value, VectorRef};
 
 /// No verified path reaches an instruction starting at this offset.
 const UNREACHED: u16 = u16::MAX;
@@ -174,8 +174,8 @@ fn verified_code_slow(
 }
 
 /// What a plain entry of a closure runs (`entry_program'): the fields
-/// `ByteCodeObject::for_call' reads, the verified code for the entry, and
-/// what setup_frame finds from the argument template.
+/// `ByteCodeObject::for_funcall' reads, the verified code for the entry,
+/// and what setup_frame finds from the argument template.
 #[derive(Clone, Copy)]
 pub(crate) struct EntryProgram {
     pub(crate) code: CodeBytes,
@@ -187,8 +187,13 @@ pub(crate) struct EntryProgram {
     pub(crate) entry_depth: usize,
     /// Bit N set when the template takes N arguments with no &rest list
     /// to make (N from MANDATORY to NONREST) and the first slots fit the
-    /// frame; none at or above 64.
+    /// frame; none at or above 64, and none for a dynamic-binding
+    /// function, which no frame entry sets up in place.
     counts: u64,
+    /// A dynamic-binding function's formal argument list, which
+    /// funcall_lambda binds before it runs the code with no arguments
+    /// (`exec_byte_code (fun, 0, 0, NULL)'); None for a template.
+    pub(crate) arguments: Option<Value>,
 }
 
 impl EntryProgram {
@@ -286,8 +291,8 @@ fn closure_slot(identity: usize) -> usize {
 }
 
 /// The program a plain entry of CLOSURE runs, with the verified code for
-/// that entry: what `ByteCodeObject::for_call' reads and `verified_code'
-/// finds, or None when either finds nothing.  A closure's slots never
+/// that entry: what `ByteCodeObject::for_funcall' reads and
+/// `verified_code' finds, or None when either finds nothing.  A closure's slots never
 /// change once it is published (Lisp cannot aset one), so what the last
 /// entry found stands while the closure is the one it read -- the vector
 /// sweep, which alone frees a closure and lets another take its address,
@@ -319,23 +324,25 @@ fn entry_program_slow(closure: ClosureRef, identity: usize) -> Option<NonNull<En
     if closure.public_len() < 4 {
         return None;
     }
-    let program = ByteCodeObject::for_call(closure)?;
-    let ArgSpec::Packed {
-        mandatory,
-        nonrest,
-        rest,
-    } = program.argspec
-    else {
-        unreachable!("for_call reads packed argument lists")
+    let program = ByteCodeObject::for_funcall(closure)?;
+    let (entry_depth, counts, arguments) = match program.argspec {
+        ArgSpec::Packed {
+            mandatory,
+            nonrest,
+            rest,
+        } => {
+            let entry_depth = usize::from(nonrest) + usize::from(rest);
+            // Bits MANDATORY to NONREST, as far as 63.
+            let counts = if entry_depth <= program.stack_depth && mandatory <= nonrest.min(63) {
+                (u64::MAX >> (63 - nonrest.min(63))) & (u64::MAX << mandatory)
+            } else {
+                0
+            };
+            (entry_depth, counts, None)
+        }
+        ArgSpec::Legacy(arguments) => (0, 0, Some(arguments)),
     };
-    let entry_depth = usize::from(nonrest) + usize::from(rest);
     let verified = verified_code(&program, entry_depth)?;
-    // Bits MANDATORY to NONREST, as far as 63.
-    let counts = if entry_depth <= program.stack_depth && mandatory <= nonrest.min(63) {
-        (u64::MAX >> (63 - nonrest.min(63))) & (u64::MAX << mandatory)
-    } else {
-        0
-    };
     let program = EntryProgram {
         code: program.code,
         constants: program.constants,
@@ -343,6 +350,7 @@ fn entry_program_slow(closure: ClosureRef, identity: usize) -> Option<NonNull<En
         stack_depth: program.stack_depth,
         entry_depth,
         counts,
+        arguments,
     };
     let table = closure_table()?;
     let sweeps = crate::lisp::alloc::vectors::vector_sweeps();
