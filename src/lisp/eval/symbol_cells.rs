@@ -76,6 +76,11 @@ impl SymbolCells {
         self.symbols.size_bits()
     }
 
+    /// The initial obarray's share of `hash_table_allocated_bytes'.
+    pub(crate) fn initial_bucket_bytes(&self) -> usize {
+        self.symbols.allocated_bucket_bytes()
+    }
+
     /// The initial obarray's buckets as a dumped image holds them.
     pub(crate) fn restore_initial_order(&self, bits: u32, order: &[SymbolName]) {
         self.symbols.restore_dumped_order(bits, order);

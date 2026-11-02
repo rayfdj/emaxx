@@ -567,6 +567,12 @@ impl SymbolOwner {
         self.0.names.borrow().size_bits()
     }
 
+    /// The initial obarray's buckets as `hash_table_allocated_bytes'
+    /// counts them.
+    pub(crate) fn allocated_bucket_bytes(&self) -> usize {
+        self.0.names.borrow().allocated_bytes()
+    }
+
     /// The initial obarray as pdumper.c's dumped one holds it: 2^BITS
     /// buckets whose chains DOOBARRAY walks in ORDER.  A symbol the
     /// buckets hold that ORDER does not list is filed after them, as
@@ -576,6 +582,7 @@ impl SymbolOwner {
         let present = names.symbols();
         let listed: HashSet<SymbolName> = order.iter().copied().collect();
         names.reset(bits);
+        names.set_dumped_bits(bits);
         names.set_count(0);
         let mut count = 0;
         for &symbol in order.iter().rev() {

@@ -176,6 +176,14 @@ pub(crate) const ROOTS_RESET_AFTER_LOAD: &[(&str, &str)] = &[
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
     (
+        "charset_table_books",
+        "Vcharset_hash_table's allocation books, thawed from the carried charsets and aliases by thaw_host_hash_tables after a load",
+    ),
+    (
+        "coding_table_books",
+        "Vcoding_system_hash_table's allocation books, thawed from the carried coding systems and aliases by thaw_host_hash_tables after a load",
+    ),
+    (
         "state",
         "the shell's owned editor payload (InterpreterState), whose fields this inventory covers",
     ),

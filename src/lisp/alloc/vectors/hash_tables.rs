@@ -5,6 +5,9 @@ use super::*;
 
 const UNUSED_KEY: usize = 7; // lisp.h:INVALID_LISP_VALUE, not Lisp nil.
 const MUTABLE: u8 = 1 << 6;
+/// A dumped table, which a GNU sweep never frees: its arrays stay in
+/// `hash_table_allocated_bytes' though it dies.
+const DUMPED: u8 = 1 << 7;
 static EMPTY_INDEX: i32 = -1;
 
 #[repr(C)]
@@ -260,7 +263,11 @@ impl HashTableRef {
     /// fns.c:copy_hash_table: copy every allocated slot and both chains,
     /// including holes, without hashing keys or calling user code again.
     pub(crate) fn copy(&self) -> Self {
-        let copy = Self::new(self.test(), self.capacity(), self.object().flags.get());
+        let copy = Self::new(
+            self.test(),
+            self.capacity(),
+            self.object().flags.get() & !DUMPED,
+        );
         for slot in 0..self.capacity() {
             unsafe {
                 (*copy.object().key_and_value.get().add(2 * slot))
@@ -459,10 +466,12 @@ impl HashTableRef {
 /// HEADER is an unreachable live hash table that has not been cleaned up.
 pub(crate) unsafe fn cleanup(header: *mut VectorHeader) {
     let table = unsafe { HashTableRef::from_raw(header) };
-    LIVE_ARRAY_BYTES.store(
-        live_array_bytes() - crate::lisp::eval::gnu_hash_table_storage_bytes(table.capacity()),
-        Ordering::Relaxed,
-    );
+    if table.object().flags.get() & DUMPED == 0 {
+        LIVE_ARRAY_BYTES.store(
+            live_array_bytes() - crate::lisp::eval::gnu_hash_table_storage_bytes(table.capacity()),
+            Ordering::Relaxed,
+        );
+    }
     drop(unsafe { table.detach_arrays() });
 }
 
@@ -470,6 +479,91 @@ static LIVE_ARRAY_BYTES: AtomicUsize = AtomicUsize::new(0);
 
 pub(crate) fn live_array_bytes() -> usize {
     LIVE_ARRAY_BYTES.load(Ordering::Relaxed)
+}
+
+/// fns.c:hash_table_thaw's allocations since the last `take_thawed_bytes'.
+static THAWED_BYTES: AtomicUsize = AtomicUsize::new(0);
+
+/// fns.c:hash_table_thaw of a dumped TABLE, filled to its size: the
+/// key_and_value array stays in the dump, never hash_table_alloc_bytes'
+/// (its later hash_table_free_bytes credits it all the same), and only
+/// the hash, next and index arrays are allocated and tallied.
+pub(crate) fn note_thawed(table: HashTableRef) {
+    let flags = &table.object().flags;
+    flags.set(flags.get() | DUMPED);
+    let size = table.capacity();
+    let dumped = size.saturating_mul(16);
+    LIVE_ARRAY_BYTES.store(live_array_bytes().saturating_sub(dumped), Ordering::Relaxed);
+    THAWED_BYTES.fetch_add(
+        crate::lisp::eval::gnu_hash_table_storage_bytes(size).saturating_sub(dumped),
+        Ordering::Relaxed,
+    );
+}
+
+/// The bytes the thawed tables allocated, which a process loading a dump
+/// conses before anything else.
+pub(crate) fn take_thawed_bytes() -> usize {
+    THAWED_BYTES.swap(0, Ordering::Relaxed)
+}
+
+/// The books of a table GNU keeps as a Lisp hash table and Emaxx in host
+/// maps (coding.c's Vcoding_system_hash_table, charset.c's
+/// Vcharset_hash_table): its size and count as fns.c would have them, and
+/// the bytes it holds of `hash_table_allocated_bytes'.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct HostTableBooks {
+    size: usize,
+    count: usize,
+    charged: usize,
+}
+
+impl HostTableBooks {
+    /// hash_table_thaw of the dumped table of COUNT keys, in place of
+    /// whatever was made before the dump was loaded.
+    pub(crate) fn thaw(&mut self, count: usize) {
+        LIVE_ARRAY_BYTES.store(
+            live_array_bytes().saturating_sub(self.charged),
+            Ordering::Relaxed,
+        );
+        let dumped = count.saturating_mul(16);
+        self.charged =
+            crate::lisp::eval::gnu_hash_table_storage_bytes(count).saturating_sub(dumped);
+        self.size = count;
+        self.count = count;
+        LIVE_ARRAY_BYTES.fetch_add(self.charged, Ordering::Relaxed);
+        THAWED_BYTES.fetch_add(self.charged, Ordering::Relaxed);
+    }
+
+    /// A table of no size (DEFAULT_HASH_SIZE) given KEYS keys.
+    pub(crate) fn with_keys(keys: usize) -> Self {
+        let mut books = Self::default();
+        for _ in 0..keys {
+            books.insert();
+        }
+        books
+    }
+
+    /// Fputhash of a key the table lacks: maybe_resize_hash_table when it
+    /// is full, which allocates the new arrays and frees the old.
+    pub(crate) fn insert(&mut self) {
+        if self.count == self.size {
+            let base = self.size.max(6);
+            let new = if self.size == 0 {
+                6
+            } else if base <= 64 {
+                base * 4
+            } else {
+                base * 2
+            };
+            let added = crate::lisp::eval::gnu_hash_table_storage_bytes(new)
+                - crate::lisp::eval::gnu_hash_table_storage_bytes(self.size);
+            raise(&LIVE_ARRAY_BYTES, added);
+            crate::lisp::native_comp::note_lisp_allocation(added);
+            self.charged += added;
+            self.size = new;
+        }
+        self.count += 1;
+    }
 }
 
 struct TestNode {

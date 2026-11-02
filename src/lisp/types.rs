@@ -539,7 +539,7 @@ impl SymbolName {
         text: crate::lisp::alloc::SymbolText,
         lisp_name: Value,
     ) -> Self {
-        crate::lisp::native_comp::note_lisp_allocation(crate::lisp::alloc::SYMBOL_CELL_BYTES);
+        crate::lisp::native_comp::note_lisp_allocation(crate::lisp::eval::SYMBOL_SIZE);
         Self(crate::lisp::alloc::allocate_symbol(
             crate::lisp::alloc::SymbolCell {
                 internal: text,
@@ -1247,11 +1247,10 @@ const _: () = {
 // independently of GC. Runtime serialization is required by that allocator;
 // running tests serially does not itself establish public API soundness.
 pub(crate) fn note_string_allocation(bytes: usize) {
-    // The actual string header cell (GNU's Lisp_String is 32 bytes) plus
-    // alloc.c's `sdata_size': an 8-byte back-pointer, the bytes, a
-    // terminating NUL, at least the 16-byte free form, rounded to the 8-byte
-    // sdata alignment. The data charge is still GNU's formula, not a
-    // measurement of this string's own storage.
+    // GNU's Lisp_String header plus alloc.c's `sdata_size': an 8-byte
+    // back-pointer, the bytes, a terminating NUL, at least the 16-byte free
+    // form, rounded to the 8-byte sdata alignment. Both are GNU's charges,
+    // not a measurement of this string's own storage.
     let sdata = 8_usize
         .saturating_add(bytes)
         .saturating_add(1)
@@ -1259,7 +1258,7 @@ pub(crate) fn note_string_allocation(bytes: usize) {
         .div_ceil(8)
         .saturating_mul(8);
     crate::lisp::native_comp::note_lisp_allocation(
-        crate::lisp::alloc::STRING_CELL_BYTES.saturating_add(sdata),
+        crate::lisp::eval::STRING_HEADER_SIZE.saturating_add(sdata),
     );
 }
 

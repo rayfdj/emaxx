@@ -5091,13 +5091,16 @@ fn dump_emacs_portable_restores_context_and_reports_native_image_limit() {
         .unwrap_or_else(|error| panic!("pdumper_load: {error:?}"));
     assert_eq!(record.dump_size, bytes.len() as u64);
     assert!(restored.dump_loaded_p());
-    // alloc.c: the loaded objects are not consing, and `consing_until_gc'
-    // is zero in a process that starts from a dump, so the first
-    // collection comes after `gc-cons-threshold' bytes of the process's
-    // own consing; the loader's allocations used to count, and every
-    // booted process collected on its first evaluation.
+    // alloc.c: the loaded objects are not consing (thaw_hash_tables'
+    // arrays alone are), and `consing_until_gc' is zero in a process that
+    // starts from a dump, so maybe_garbage_collect's first
+    // bump_consing_until_gc leaves `gc-cons-threshold' bytes less those to
+    // go; the loader's allocations used to count, and every booted process
+    // collected on its first evaluation.
     assert!(
-        !restored.native_compiler.garbage_collection_might_be_due(),
+        !restored
+            .native_compiler
+            .garbage_collection_due(800_000, Some(0.1)),
         "the image's objects counted as consing"
     );
     assert_eq!(
@@ -18086,12 +18089,10 @@ fn garbage_collect_reports_the_live_census() {
         .expect("evaluate garbage-collect growth program");
     assert_eq!(growth.to_string(), growth_expected);
 
-    // alloc.c:Fgarbage_collect reports each kind's object size. Conses,
-    // vectors, vector slots and floats are GNU's C layouts and this
-    // allocator's. Symbol and string headers report the actual 64- and
-    // 48-byte cells the collector charges (GNU's are 48 and 32): an explicit
-    // difference, not a matching answer. Interval and buffer rows still carry
-    // GNU's constants. Any other size change must fail here.
+    // alloc.c:Fgarbage_collect reports each kind's object size, GNU's C
+    // layouts throughout: a symbol is a 48-byte Lisp_Symbol and a string a
+    // 32-byte Lisp_String, as the collector charges them, whatever cells
+    // this allocator holds. Any size change must fail here.
     let sizes_form = Reader::new(
         r#"(mapcar (lambda (entry) (list (car entry) (nth 1 entry)))
                    (garbage-collect))"#,
@@ -18105,7 +18106,7 @@ fn garbage_collect_reports_the_live_census() {
         .to_string();
     assert_eq!(
         sizes,
-        "((conses 16) (symbols 64) (strings 48) (string-bytes 1) \
+        "((conses 16) (symbols 48) (strings 32) (string-bytes 1) \
 (vectors 16) (vector-slots 8) (floats 8) (intervals 56) (buffers 992))"
     );
 
@@ -33582,6 +33583,18 @@ fn comparisons_coerce_lists_take_and_columns_measure_as_gnu() {
         r##"(let ((m (make-marker)) (nan 0.0e+NaN) (mnan (- 0.0e+NaN)) (dotted (cons 1 (cons 2 3))) (ob (obarray-make)) (u (concat "r242" "\200")) (bnth (make-byte-code 514 (unibyte-string 137 2 56 135) [] 4)) (belt (make-byte-code 514 (unibyte-string 1 1 156 135) [] 4))) (list (mapcar (lambda (f) (condition-case e (funcall f) (error e))) (list (lambda () (> m nil)) (lambda () (/= m nil)) (lambda () (< 1 m nil)) (lambda () (min nan -5 nil)) (lambda () (max nan mnan)) (lambda () (min mnan 1 nan)) (lambda () (ntake 3 (cons 1 (cons 2 3)))) (lambda () (ntake (expt 2 70) (list 1 2))) (lambda () (take (- (expt 2 70)) 5)) (lambda () (take 3 (cons 1 2))) (lambda () (funcall bnth dotted 10)) (lambda () (funcall belt dotted 10)) (lambda () (nth 10 dotted)) (lambda () (car (append (make-char-table 'r242) nil))) (lambda () (let ((v (vconcat (make-byte-code '(x) "\207" [x] 1)))) (list (length v) (aref v 0) (append (aref v 1) nil) (aref v 2) (aref v 3)))))) (let* ((a (intern u ob)) (b (intern u ob)) (s (intern-soft u ob)) (g (intern u))) (list (eq a b) (eq a s) (eq g (intern-soft u)) (eq g (intern u)) (intern-soft (string-to-multibyte u) ob))) (with-temp-buffer (insert "a\200b") (insert (string-to-multibyte "\377")) (list (current-column) (progn (move-to-column 3) (point)) (progn (goto-char (point-max)) (indent-to 12) (current-column)) (point)))))"##,
         r##"(((error "Marker does not point anywhere") (error "Marker does not point anywhere") (error "Marker does not point anywhere") (wrong-type-argument number-or-marker-p nil) -0.0e+NaN 0.0e+NaN (wrong-type-argument listp (1 2 . 3)) (1 2) nil (wrong-type-argument listp 2) (wrong-type-argument listp 3) (wrong-type-argument listp 3) (wrong-type-argument listp (1 2 . 3)) (wrong-type-argument sequencep #^[nil nil r242 nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil]) (4 (x) (135) [x] 1)) (t t t t nil) (10 3 12 7))"##,
         "comparison coercion, list walks, oblookup and raw-byte columns",
+    );
+}
+
+#[test]
+fn garbage_collect_reports_gnu_object_sizes() {
+    // alloc.c:Fgarbage_collect names each kind with GNU's C size: the
+    // 48-byte Lisp_Symbol and 32-byte Lisp_String the collector charges.
+    assert_oracle_contract_matches_interpreter(
+        "(mapcar (lambda (entry) (list (car entry) (nth 1 entry))) (garbage-collect))",
+        "((conses 16) (symbols 48) (strings 32) (string-bytes 1) (vectors 16) \
+(vector-slots 8) (floats 8) (intervals 56) (buffers 992))",
+        "garbage-collect sizes",
     );
 }
 

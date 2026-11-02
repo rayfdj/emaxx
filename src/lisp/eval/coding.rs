@@ -138,6 +138,9 @@ impl Interpreter {
                 + 1;
             self.charset_ids.push((name.to_string(), id));
             self.charset_id_index.insert(name.to_string(), id);
+            if !self.charset_alias_index.contains_key(name) {
+                self.charset_table_books.insert();
+            }
             id
         });
         if new_definition {
@@ -270,6 +273,27 @@ impl Interpreter {
         Ok(())
     }
 
+    /// pdumper.c's thaw_hash_tables of the two tables charset.c and
+    /// coding.c keep in Lisp, Vcharset_hash_table and
+    /// Vcoding_system_hash_table: a key for each name and alias the loaded
+    /// image holds.
+    pub(crate) fn thaw_host_hash_tables(&mut self) {
+        let charsets = self.charset_id_index.len()
+            + self
+                .charset_alias_index
+                .keys()
+                .filter(|alias| !self.charset_id_index.contains_key(*alias))
+                .count();
+        self.charset_table_books.thaw(charsets);
+        let codings = self.coding_system_index.len()
+            + self
+                .coding_alias_index
+                .keys()
+                .filter(|alias| !self.coding_system_index.contains_key(*alias))
+                .count();
+        self.coding_table_books.thaw(codings);
+    }
+
     pub fn define_charset_alias(&mut self, alias: &str, target: &str) -> Result<(), LispError> {
         // The charset table reads what this changes.
         self.charset_table.borrow_mut().clear();
@@ -287,8 +311,15 @@ impl Interpreter {
             self.charset_aliases
                 .push((alias.to_string(), canonical.clone()));
         }
-        self.charset_alias_index
-            .insert(alias.to_string(), canonical);
+        let known = self.charset_id_index.contains_key(alias);
+        if self
+            .charset_alias_index
+            .insert(alias.to_string(), canonical)
+            .is_none()
+            && !known
+        {
+            self.charset_table_books.insert();
+        }
         // charset.c Fdefine_charset_alias: the alias joins `charset-list'.
         if !self.charset_names.iter().any(|existing| existing == alias) {
             self.charset_names.insert(0, alias.to_string());
@@ -470,6 +501,9 @@ impl Interpreter {
             Some(&index) => self.coding_systems[index] = definition,
             None => {
                 let index = self.coding_systems.len();
+                if !self.coding_alias_index.contains_key(&definition.name) {
+                    self.coding_table_books.insert();
+                }
                 self.coding_system_index
                     .insert(definition.name.clone(), index);
                 self.coding_systems.push(definition);
@@ -525,8 +559,15 @@ impl Interpreter {
             self.coding_aliases
                 .push((alias.to_string(), canonical.clone()));
         }
-        self.coding_alias_index
-            .insert(alias.to_string(), canonical.clone());
+        let known = self.coding_system_index.contains_key(alias);
+        if self
+            .coding_alias_index
+            .insert(alias.to_string(), canonical.clone())
+            .is_none()
+            && !known
+        {
+            self.coding_table_books.insert();
+        }
         // coding.c:Fdefine_coding_system_alias recurses over the target's eol
         // subsidiaries: when CODING-SYSTEM has a vector eol-type, ALIAS-unix,
         // ALIAS-dos and ALIAS-mac are defined as aliases of the corresponding
@@ -545,8 +586,13 @@ impl Interpreter {
                 // coding.c reaches this via make_subsidiaries, which
                 // interns each subsidiary name in the standard obarray.
                 self.intern_symbol_name(&alias_variant);
-                self.coding_alias_index
-                    .insert(alias_variant.clone(), target_variant.clone());
+                if self
+                    .coding_alias_index
+                    .insert(alias_variant.clone(), target_variant.clone())
+                    .is_none()
+                {
+                    self.coding_table_books.insert();
+                }
                 self.coding_aliases.push((alias_variant, target_variant));
             }
         }

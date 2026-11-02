@@ -3428,16 +3428,14 @@ pub(crate) struct LiveObjectCensus {
     pub(crate) overlay_node_bytes: usize,
 }
 
-// alloc.c:total_bytes_of_live_objects and Fgarbage_collect report the
-// allocation layouts. Conses, floats and vector words match the GNU C
-// layouts on the supported 64-bit targets; `header_size + word_size' is the
-// size of a one-slot vector row. Symbol and string headers are charged as
-// the cells this allocator actually holds (64 and 48 bytes, where GNU's
-// Lisp_Symbol and Lisp_String are 48 and 32): a smaller charge would
-// undercount live bytes and delay collection.
+// alloc.c:total_bytes_of_live_objects, tally_consing and Fgarbage_collect's
+// report use the GNU C layouts of the supported 64-bit targets:
+// `header_size + word_size' is the size of a one-slot vector row, and a
+// symbol or string header is GNU's Lisp_Symbol (48 bytes) or Lisp_String
+// (32), not this allocator's cell, so collections fall where GNU's do.
 pub(crate) const GNU_CONS_SIZE: usize = 16;
-pub(crate) const SYMBOL_SIZE: usize = crate::lisp::alloc::SYMBOL_CELL_BYTES;
-pub(crate) const STRING_HEADER_SIZE: usize = crate::lisp::alloc::STRING_CELL_BYTES;
+pub(crate) const SYMBOL_SIZE: usize = 48;
+pub(crate) const STRING_HEADER_SIZE: usize = 32;
 pub(crate) const GNU_VECTOR_SIZE: usize = 16;
 pub(crate) const GNU_VECTOR_SLOT_SIZE: usize = 8;
 pub(crate) const GNU_FLOAT_SIZE: usize = 8;
@@ -4725,7 +4723,7 @@ impl Interpreter {
             floats: crate::lisp::types::census_live_floats(),
             intervals: strings.property_spans,
             buffers: allocated_buffers,
-            hash_table_bytes: self.gnu_hash_storage_bytes(symbols),
+            hash_table_bytes: self.gnu_hash_storage_bytes(),
             overlay_node_bytes: crate::lisp::alloc::vectors::live_overlay_node_bytes(),
         };
         census.intervals += self.buffer.borrow().text_property_span_count();
@@ -4735,7 +4733,7 @@ impl Interpreter {
         census
     }
 
-    fn gnu_hash_storage_bytes(&self, symbol_count: usize) -> usize {
+    fn gnu_hash_storage_bytes(&self) -> usize {
         let mut bytes = crate::lisp::alloc::vectors::hash_tables::live_array_bytes();
         // The census, which runs after every collection, finds the obarrays
         // by type in the index rather than by a walk of the whole registry.
@@ -4752,19 +4750,15 @@ impl Interpreter {
         let mut obarrays = 0_usize;
         for id in obarray_ids {
             obarrays += 1;
-            let capacity = if id == self.standard_obarray_id {
-                let mut capacity = 1_usize << 15;
-                while symbol_count > capacity {
-                    capacity = capacity.saturating_mul(2);
-                }
-                capacity
-            } else {
-                // A private obarray's buckets, or lread.c's
-                // obarray_default_bits.
-                self.record_ref(id)
-                    .filter(|record| crate::lisp::types::obarray::is_record_slots(&record.slots))
-                    .map_or(1_usize << 3, |record| record.slots.len() - 2)
-            };
+            if id == self.standard_obarray_id {
+                bytes = bytes.saturating_add(self.globals.initial_bucket_bytes());
+                continue;
+            }
+            // A private obarray's buckets, or lread.c's obarray_default_bits.
+            let capacity = self
+                .record_ref(id)
+                .filter(|record| crate::lisp::types::obarray::is_record_slots(&record.slots))
+                .map_or(1_usize << 3, |record| record.slots.len() - 2);
             bytes = bytes.saturating_add(capacity.saturating_mul(8));
         }
         debug_assert_eq!(
@@ -5476,6 +5470,8 @@ pub struct InterpreterState {
     charset_id_index: HashMap<String, i64, crate::lisp::primitives::FnvBuildHasher>,
     /// `charset_aliases' by alias name.
     charset_alias_index: HashMap<String, String, crate::lisp::primitives::FnvBuildHasher>,
+    /// Vcharset_hash_table's books: a key for each charset and alias.
+    pub(crate) charset_table_books: crate::lisp::alloc::vectors::hash_tables::HostTableBooks,
     /// Charset plist overrides keyed by canonical charset name.
     charset_plists: Vec<(String, Value)>,
     /// Current charset priority order.
@@ -5527,6 +5523,9 @@ pub struct InterpreterState {
     coding_system_index: HashMap<String, usize, crate::lisp::primitives::FnvBuildHasher>,
     /// `coding_aliases' by alias name.
     coding_alias_index: HashMap<String, String, crate::lisp::primitives::FnvBuildHasher>,
+    /// Vcoding_system_hash_table's books: a key for each coding system
+    /// and alias.
+    pub(crate) coding_table_books: crate::lisp::alloc::vectors::hash_tables::HostTableBooks,
     /// GNU ccl.c's private registration table.  Lisp symbols refer to these
     /// entries through their `ccl-program-idx' property.
     pub(crate) ccl_programs: Vec<Option<(String, Value)>>,
@@ -6298,6 +6297,10 @@ impl Interpreter {
                 .map(|&(name, id)| (name.to_string(), id))
                 .collect(),
             charset_alias_index: HashMap::default(),
+            charset_table_books:
+                crate::lisp::alloc::vectors::hash_tables::HostTableBooks::with_keys(
+                    C_CHARSETS.len(),
+                ),
             // charset.c creates these five records before dumped Lisp runs,
             // with define_charset_internal's plist.  Their direct mappings are
             // part of the preload contract: merely reserving the names makes
@@ -6344,6 +6347,9 @@ impl Interpreter {
                 .map(|(index, coding)| (coding.name.clone(), index))
                 .collect(),
             coding_alias_index: coding_aliases.iter().cloned().collect(),
+            coding_table_books: crate::lisp::alloc::vectors::hash_tables::HostTableBooks::with_keys(
+                coding_systems.len() + coding_aliases.len(),
+            ),
             coding_systems,
             ccl_programs: vec![None; 32],
             coding_aliases,

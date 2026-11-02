@@ -11866,6 +11866,46 @@ setup_process_coding_systems's check now refuses). A 13-form
   validation: the grouped gate's 3,434 library tests, the
   integration targets and clippy with `--all-targets --all-features -D
   warnings` pass.
+- **Round 244: collections fall where alloc.c's books put them.**
+  `SYMBOL_SIZE` and `STRING_HEADER_SIZE` are GNU's 48 and 32
+  (Lisp_Symbol, Lisp_String) in `Symbol::allocate_with_text`'s and the
+  string charge's tally, in
+  `LiveObjectCensus::total_bytes_of_live_objects` and in
+  Fgarbage_collect's report, which the oracle test
+  `garbage_collect_reports_gnu_object_sizes` pins.
+  `hash_tables::note_thawed`, called for each table the image loader
+  fills, credits the key_and_value array (in the dump in GNU, never
+  hash_table_alloc_bytes'), adds the hash, next and index arrays to
+  `THAWED_BYTES`, which pdumper/mod.rs tallies as consing right after
+  `garbage_collection_baseline_after_image_load`, and marks the table
+  `DUMPED` (flag bit 7, cleared by `copy`), so `cleanup` leaves its
+  arrays counted, as a dumped table is never swept.
+  `StandardBuckets::dumped_bits` records the image obarray's size, and
+  `allocated_bytes` (the census's share for the initial obarray) is what
+  it has grown past that; `Buckets::grow` tallies grow_obarray's net
+  consing. `HostTableBooks` keeps fns.c's size and count for
+  Vcoding_system_hash_table and Vcharset_hash_table, which Emaxx holds
+  as host maps: `thaw_host_hash_tables` thaws them at image load with a
+  key for each name and alias (1,071 and 203 in a -Q session, as GNU's),
+  and `insert`, called where a coding system, charset or alias is added,
+  grows them by maybe_resize_hash_table's policy. After a collection in
+  a -Q session the census held 630 KB of hash storage (368,792 bytes of
+  arrays and the obarray's 262,144) where GNU's holds 297,680; it now
+  holds 292,768, and with gc-cons-percentage 1.0 the next collection
+  comes after 1,074,416 bytes of consing where it came after 1,837,440
+  (GNU 1,083,680). Under the frozen runner (r244/gcsum.sh) the bodies of
+  files-x and seq-tests collect no more (13 to 20 ms collections had
+  fallen inside them), fns-tests collects 75 times to GNU's 76, data,
+  custom and editfns as often as GNU, subr and cl-lib once fewer.
+  Remaining differences: Emaxx's startup conses less before the first
+  form of a -Q batch run (GNU has collected once by then, Emaxx not), so
+  the first collection falls later; a private obarray's buckets are
+  counted both as record slots and as hash storage. Pass counts match
+  GNU's for bytecomp, buffer, simple, cl-seq, eval, mule, alloc,
+  memory-report, generator, subr and files, their body times within
+  GNU's or below. Local validation: the grouped gate's 3,435
+  library tests, the integration targets and clippy with `--all-targets
+  --all-features -D warnings` pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -13444,6 +13484,17 @@ median of 112 ms against 98), electric-tests' the most (696 against
 12,848), tramp-tests (18,071 against 16,689), semantic-utest-ia (3,345
 against 2,521), mule-tests (2,364 against 1,587) and electric-tests (851
 against 477).
+
+**On `a37ec7c`** (round 243): frozen (run 41379398287) matched all 7,928
+outcomes on a slower runner. Setup 83.7 s against 69.8 s (1.199), test
+bodies 261.2 s against 272.9 s (0.957), in all 0.997;
+ucs-normalize-tests' bodies took 144 ms against 95. The full Rust gate
+(run 41379395839) passed. Per file, the setup is 27 ms over GNU's on
+average (13.9 s over 519 files, a median of 127 ms against 107),
+electric-tests' the most (905 against 562), and the widest body gaps are
+comp-tests (17,807 ms against 15,023), tramp-tests (21,706 against
+19,464), semantic-utest-ia (4,205 against 2,929), mule-tests (3,133
+against 2,047) and eglot-tests (34,451 against 33,491).
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'
