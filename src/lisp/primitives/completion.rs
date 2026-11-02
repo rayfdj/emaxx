@@ -13,10 +13,10 @@ pub(crate) struct CompletionCandidate {
 
 pub(crate) fn ensure_interaction_allowed(interp: &Interpreter, env: &Env) -> Result<(), LispError> {
     if !interaction_allowed(interp, env) {
-        return Err(LispError::SignalValue(Value::list([
-            Value::Symbol("inhibited-interaction".into()),
-            Value::String("Interaction inhibited".into()),
-        ])));
+        // minibuf.c:barf_if_interaction_inhibited, xsignal0.
+        return Err(LispError::SignalValue(Value::list([Value::Symbol(
+            "inhibited-interaction".into(),
+        )])));
     }
     Ok(())
 }
@@ -2261,17 +2261,6 @@ fn interactive_form_in_body(body: &[Value]) -> Option<Vec<Value>> {
         break;
     }
     None
-}
-
-pub(crate) fn interactive_spec_form(interp: &Interpreter, func: &Value) -> Option<Value> {
-    callable_interactive_form_items(interp, func)
-        .map(|items| items.get(1).cloned().unwrap_or(Value::Nil))
-}
-
-pub(crate) fn interactive_list_form_items(form: &Value) -> Option<Vec<Value>> {
-    let items = form.to_vec().ok()?;
-    matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(name)) if name == "list")
-        .then(|| items[1..].to_vec())
 }
 
 // Whether COLLECTION is a programmed completion table (a function).

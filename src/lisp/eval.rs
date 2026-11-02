@@ -1105,6 +1105,9 @@ pub(crate) struct KeyboardInputState {
     pub(crate) recent_keys: Vec<Value>,
     pub(crate) dribble_file: Option<PathBuf>,
     pub(crate) internal_last_event_frame: Option<Value>,
+    // keyboard.c's num_input_events: every event read_char returned,
+    // from the terminal, `unread-command-events' or a keyboard macro.
+    pub(crate) num_input_events: u64,
 }
 
 // One active `ert-with-message-capture` scope.  When the capture variable is
@@ -5469,6 +5472,9 @@ pub struct InterpreterState {
     /// it removes this root, while escaped Lisp references retain the object.
     pub(crate) frame_states: Vec<crate::lisp::types::FrameRef>,
     pub(crate) next_frame_id: u64,
+    /// frame.c's tty_frame_count: the number in the F<num> name of the
+    /// last terminal frame named, the initial frame's 1 to start.
+    pub(crate) tty_frame_count: i64,
     pub(crate) selected_frame_id: crate::lisp::types::FrameRef,
     pub(crate) old_selected_frame_id: crate::lisp::types::FrameRef,
     /// dispnew.c's internal frame/buffer menu state vector.
@@ -6297,6 +6303,7 @@ impl Interpreter {
             buffer_last_window_start: HashMap::new(),
             frame_states: vec![initial_frame],
             next_frame_id: 2,
+            tty_frame_count: 1,
             selected_frame_id: initial_frame,
             old_selected_frame_id: initial_frame,
             frame_and_buffer_state: Value::Nil,

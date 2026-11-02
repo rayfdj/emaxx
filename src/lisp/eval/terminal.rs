@@ -610,8 +610,10 @@ impl Interpreter {
         // Each through set_window_buffer, which stamps the buffer's display.
         self.stamp_buffer_display(buffer_id);
         self.stamp_buffer_display(mini_buffer_id);
+        // make_terminal_frame's F<num>, from ++tty_frame_count.
+        self.tty_frame_count += 1;
         let frame = crate::lisp::types::FrameRef::new(
-            Value::string(&format!("F{id}")),
+            Value::string(&format!("F{}", self.tty_frame_count)),
             super::FrameState {
                 id,
                 terminal: Some(object),

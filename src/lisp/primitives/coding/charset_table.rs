@@ -308,6 +308,26 @@ impl CharsetInfo {
         code_point_to_raw_index(bounds, code)?.checked_sub(self.char_index_offset?)
     }
 
+    /// charset.c CODE_POINT_TO_INDEX as map_charset_chars applies it to
+    /// any code: a linear code space's index is the difference from the
+    /// minimum code (taken as the C's int), another's -1 for a code outside
+    /// it.
+    pub(crate) fn code_point_to_index_c(&self, code: u32) -> Option<i64> {
+        let bounds = self.code_space.as_deref()?;
+        let (min_code, _) = self.code_bounds?;
+        // code_linear_p: every dimension below the highest spans 256.
+        let linear = bounds
+            .split_last()
+            .is_none_or(|(_, lower)| lower.iter().all(|(min, max)| max - min + 1 == 256));
+        if linear {
+            return Some(i64::from(code.wrapping_sub(min_code) as i32));
+        }
+        Some(match super::code_point_to_raw_index(bounds, code) {
+            Some(raw) => i64::from(raw) - i64::from(self.char_index_offset?),
+            None => -1,
+        })
+    }
+
     /// INDEX_TO_CODE_POINT with the `char_index_offset' added back; None
     /// past `:max-code'.
     pub(crate) fn index_to_code(&self, index: u32) -> Option<u32> {

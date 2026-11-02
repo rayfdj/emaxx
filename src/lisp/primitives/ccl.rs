@@ -655,7 +655,7 @@ fn ccl_execute(
 }
 
 /// character.c:char_resolve_modifier_mask.
-fn char_resolve_modifier_mask(mut c: i64) -> i64 {
+pub(crate) fn char_resolve_modifier_mask(mut c: i64) -> i64 {
     const CHAR_SHIFT: i64 = 0x200_0000;
     const CHAR_CTL: i64 = 0x400_0000;
     const CHAR_MODIFIER_MASK: i64 = 0xFC0_0000;

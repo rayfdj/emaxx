@@ -247,9 +247,8 @@ fn set_term_frame_name(
         if string_like(&current).is_some_and(|text| frame_name_fnn_p(text.text.as_bytes())) {
             return Ok(());
         }
-        let number = interp.next_frame_id;
-        interp.next_frame_id += 1;
-        Value::string(&format!("F{number}"))
+        interp.tty_frame_count += 1;
+        Value::string(&format!("F{}", interp.tty_frame_count))
     } else {
         let Some(text) = string_like(&name) else {
             return Err(wrong_type_argument("stringp", name));

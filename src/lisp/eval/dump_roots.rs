@@ -176,6 +176,10 @@ pub(crate) const ROOTS_RESET_AFTER_LOAD: &[(&str, &str)] = &[
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
     (
+        "tty_frame_count",
+        "frame.c's static tty_frame_count, which make_initial_frame sets to 1 in the new process",
+    ),
+    (
         "composition_index",
         "composition_hash_table's lookup, rebuilt from the composition states on the first lookup after a load",
     ),

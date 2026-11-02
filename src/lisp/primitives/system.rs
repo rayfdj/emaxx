@@ -2717,55 +2717,6 @@ pub(crate) fn find_charsets_in_text(
         .collect()
 }
 
-pub(crate) fn charset_max_codepoint(name: &str) -> i64 {
-    match name {
-        "ascii" => 0x7f,
-        _ => 0x10ffff,
-    }
-}
-
-pub(crate) fn charset_ranges_for(
-    charset: &str,
-    from: i64,
-    to: i64,
-    interp: &Interpreter,
-) -> Result<Vec<(i64, i64)>, LispError> {
-    let canonical = interp
-        .charset_canonical_name(charset)
-        .ok_or_else(|| LispError::Void(charset.to_string()))?;
-    let (lower, upper) = if from <= to { (from, to) } else { (to, from) };
-    let range = match canonical.as_str() {
-        "ascii" => {
-            let start = lower.max(0);
-            let end = upper.min(0x7f);
-            if start <= end {
-                Some((start, end))
-            } else {
-                None
-            }
-        }
-        "unicode" => {
-            let start = lower.max(0);
-            let end = upper.min(0x10ffff);
-            if start <= end {
-                Some((start, end))
-            } else {
-                None
-            }
-        }
-        // Every other charset resolves through charset.c's
-        // map_charset_chars port: map files, code offsets, unify maps,
-        // and subset/superset relations (coding.rs).
-        _ => {
-            return Ok(crate::lisp::primitives::coding::map_charset_char_ranges(
-                interp, &canonical, lower, upper,
-            )
-            .unwrap_or_default());
-        }
-    };
-    Ok(range.into_iter().collect())
-}
-
 pub(crate) fn normalize_path(path: &Path) -> PathBuf {
     let mut normalized = PathBuf::new();
     for component in path.components() {

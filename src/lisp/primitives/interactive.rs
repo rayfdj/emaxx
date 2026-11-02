@@ -239,6 +239,7 @@ pub(crate) fn executing_kbd_macro_p(interp: &Interpreter, env: &Env) -> bool {
 }
 
 fn record_external_input_event(interp: &mut Interpreter, event: &Value, env: &Env) {
+    interp.keyboard_input.num_input_events += 1;
     if executing_kbd_macro_p(interp, env) {
         return;
     }
@@ -514,21 +515,79 @@ pub(crate) fn eval_callable_metadata_form(
     eval_impl(interp, &[*form, lexical], env)
 }
 
+// The arguments a string interactive spec read, with callint.c's
+// per-argument `varies': 1 to 4 name the call -- (point), (mark),
+// (region-beginning), (region-end) -- the command history records in
+// place of the value, -1 marks an argument found without I/O, and 0 one
+// read from the terminal.
+pub(crate) struct InteractiveStringArgs {
+    pub(crate) values: Vec<Value>,
+    pub(crate) varies: Vec<i8>,
+    // `*' in a read-only buffer under RECORD-FLAG, when every later
+    // character is r, p, P or a newline: the call is recorded and only
+    // then refused.
+    pub(crate) record_then_fail: bool,
+}
+
 pub(crate) fn parse_interactive_string(
+    function: &Value,
     spec: &str,
+    record_flag: bool,
     interp: &mut Interpreter,
     env: &mut Env,
-) -> Result<Vec<Value>, LispError> {
+) -> Result<InteractiveStringArgs, LispError> {
+    // The events the `e' code walks: KEYS, or the current command's keys,
+    // starting at the first with parameters unless
+    // `inhibit-mouse-event-check' admits any event.
+    let keys = interp
+        .lookup_var("this-command-keys-vector", env)
+        .and_then(|keys| vector_or_list_items(&keys).ok())
+        .unwrap_or_default();
+    let inhibit_mouse_event_check = interp
+        .lookup_var("inhibit-mouse-event-check", env)
+        .is_some_and(|value| value.is_truthy());
+    let mut next_event = 0;
+    if !inhibit_mouse_event_check {
+        while next_event < keys.len() && !keys[next_event].is_cons() {
+            next_event += 1;
+        }
+    }
+    let mut record_then_fail = false;
+    // The prefix argument as the call began: reading earlier arguments
+    // through the minibuffer runs commands that reset it.
+    let prefix_arg = interp
+        .lookup_var("current-prefix-arg", env)
+        .unwrap_or(Value::Nil);
     // callint.c's leading flag characters, handled once at the start of
     // the whole spec: `*' barfs on a read-only buffer, `^' runs the
     // shift-selection protocol, `@' selects the event's window (a mouse
-    // affair the keyboard frontend has no window position for), and `-'
-    // is ignored for Lucid compatibility.
+    // affair the keyboard frontend has no window position for), `-' is
+    // ignored for Lucid compatibility, and `+' is reserved.
     let mut rest = spec;
     loop {
         match rest.chars().next() {
+            Some('+') => {
+                return Err(LispError::Signal(
+                    "`+' is not used in `interactive' for ordinary commands".into(),
+                ));
+            }
             Some('*') => {
-                super::call(interp, "barf-if-buffer-read-only", &[], env)?;
+                if interp
+                    .lookup_var("buffer-read-only", env)
+                    .is_some_and(|value| value.is_truthy())
+                {
+                    if record_flag {
+                        if rest[1..]
+                            .chars()
+                            .any(|ch| !matches!(ch, 'r' | 'p' | 'P' | '\n'))
+                        {
+                            super::call(interp, "barf-if-buffer-read-only", &[], env)?;
+                        }
+                        record_then_fail = true;
+                    } else {
+                        super::call(interp, "barf-if-buffer-read-only", &[], env)?;
+                    }
+                }
             }
             Some('^') => {
                 // callint.c:410 `call0 (Qhandle_shift_selection)': the
@@ -580,6 +639,7 @@ pub(crate) fn parse_interactive_string(
             Ok(mark)
         };
     let mut values = Vec::new();
+    let mut varies: Vec<i8> = Vec::new();
     // The up-event a `k' or `K' sequence ending in a down-event left, for
     // a later `U'.
     let mut up_event = Value::Nil;
@@ -587,14 +647,19 @@ pub(crate) fn parse_interactive_string(
     // arguments read so far (callint.c builds callint_message from the
     // visargs); a later prompt's %s shows the earlier answer.
     let mut visible: Vec<Value> = Vec::new();
-    for line in rest.split('\n') {
-        if line.is_empty() {
-            continue;
-        }
+    // One argument a line; a final newline ends the spec, while an empty
+    // line inside it is a newline control letter.
+    let mut lines: Vec<&str> = rest.split('\n').collect();
+    if lines.last().is_some_and(|line| line.is_empty()) {
+        lines.pop();
+    }
+    for line in lines {
         let mut chars = line.chars();
         let Some(code) = chars.next() else {
-            continue;
+            return Err(invalid_interactive_control_letter('\n'));
         };
+        // Codes that read nothing from the terminal mark their argument.
+        let mut vary: i8 = 0;
         let raw_prompt: String = chars.collect();
         // GNU builds every prompt through Fformat_message against the
         // visible arguments read so far; that also converts quote
@@ -658,13 +723,17 @@ pub(crate) fn parse_interactive_string(
                 )
                 .unwrap_or_else(|_| Value::String(raw_prompt.clone().into()));
                 let event = call1(interp, env, "read-char", &[message])?;
+                crate::lisp::primitives::dispatch::display::clear_message_nolog(interp, env)?;
                 if !matches!(event.kind(), Kind::Integer(_)) {
                     return Err(LispError::Signal("Non-character input-event".into()));
                 }
                 seen = call1(interp, env, "char-to-string", std::slice::from_ref(&event))?;
                 values.push(event);
             }
-            'd' => values.push(Value::Integer(interp.buffer.borrow().point() as i64)),
+            'd' => {
+                values.push(Value::Integer(interp.buffer.borrow().point() as i64));
+                vary = 1;
+            }
             'D' | 'f' | 'F' | 'G' => {
                 let message = formatted_prompt(interp, env, &visible)?;
                 // callint.c's read_file_name helper: Fread_file_name
@@ -697,22 +766,20 @@ pub(crate) fn parse_interactive_string(
                 values.push(name);
             }
             'e' => {
-                // The invoking event, which must carry parameters (a
-                // mouse posn); keyboard keys never do.
-                let event = interp
-                    .lookup_var("this-command-keys-vector", env)
-                    .and_then(|keys| vector_or_list_items(&keys).ok())
-                    .and_then(|events| {
-                        events
-                            .into_iter()
-                            .find(|event| matches!(event.kind(), Kind::Cons(_)))
-                    });
-                match event {
-                    Some(event) => values.push(event),
-                    None => {
-                        return Err(LispError::Signal(
-                            "command must be bound to an event with parameters".into(),
-                        ));
+                // The next invoking event with parameters (a mouse posn);
+                // keyboard keys never have them.
+                let Some(event) = keys.get(next_event).copied() else {
+                    return Err(LispError::Signal(format!(
+                        "{} must be bound to an event with parameters",
+                        function.symbol_str().unwrap_or("command")
+                    )));
+                };
+                values.push(event);
+                vary = -1;
+                next_event += 1;
+                if !inhibit_mouse_event_check {
+                    while next_event < keys.len() && !keys[next_event].is_cons() {
+                        next_event += 1;
                     }
                 }
             }
@@ -760,29 +827,26 @@ pub(crate) fn parse_interactive_string(
             'm' => {
                 let mark = check_mark(interp, env, false)?;
                 values.push(Value::Integer(mark as i64));
+                vary = 2;
             }
             'p' => {
-                let prefix = interp
-                    .lookup_var("current-prefix-arg", env)
-                    .unwrap_or(Value::Nil);
-                values.push(prefix_numeric_value(&prefix)?);
+                values.push(prefix_numeric_value(&prefix_arg)?);
+                vary = -1;
             }
             'P' => {
-                values.push(
-                    interp
-                        .lookup_var("current-prefix-arg", env)
-                        .unwrap_or(Value::Nil),
-                );
+                values.push(prefix_arg);
+                vary = -1;
             }
             // "i": an ignored argument — always nil, no I/O (window.el's
             // commands pass their INTERACTIVE params through it).
-            'i' => values.push(Value::Nil),
+            'i' => {
+                values.push(Value::Nil);
+                vary = -1;
+            }
             'n' | 'N' => {
-                let prefix = interp
-                    .lookup_var("current-prefix-arg", env)
-                    .unwrap_or(Value::Nil);
-                if code == 'N' && prefix.is_truthy() {
-                    values.push(prefix_numeric_value(&prefix)?);
+                if code == 'N' && prefix_arg.is_truthy() {
+                    values.push(prefix_numeric_value(&prefix_arg)?);
+                    vary = -1;
                 } else {
                     let message = formatted_prompt(interp, env, &visible)?;
                     let number = call1(interp, env, "read-number", &[message])?;
@@ -801,6 +865,10 @@ pub(crate) fn parse_interactive_string(
                 let point = interp.buffer.borrow().point();
                 values.push(Value::Integer(point.min(mark) as i64));
                 values.push(Value::Integer(point.max(mark) as i64));
+                // Two arguments: the region's beginning, then its end.
+                varies.push(3);
+                visible.push(Value::Nil);
+                vary = 4;
             }
             's' | 'M' => {
                 let message = formatted_prompt(interp, env, &visible)?;
@@ -866,15 +934,13 @@ pub(crate) fn parse_interactive_string(
                 values.push(coding);
             }
             'Z' => {
-                let prefix = interp
-                    .lookup_var("current-prefix-arg", env)
-                    .unwrap_or(Value::Nil);
-                if prefix.is_truthy() {
+                if prefix_arg.is_truthy() {
                     let message = formatted_prompt(interp, env, &visible)?;
                     let coding = call1(interp, env, "read-non-nil-coding-system", &[message])?;
                     values.push(coding);
                 } else {
                     values.push(Value::Nil);
+                    vary = -1;
                 }
             }
             _ => return Err(invalid_interactive_control_letter(code)),
@@ -885,8 +951,13 @@ pub(crate) fn parse_interactive_string(
             seen = values.last().cloned().unwrap_or(Value::Nil);
         }
         visible.push(seen);
+        varies.push(vary);
     }
-    Ok(values)
+    Ok(InteractiveStringArgs {
+        values,
+        varies,
+        record_then_fail,
+    })
 }
 
 // Terminal-driven event input, installed by the tty frontend for the
@@ -1746,11 +1817,6 @@ fn read_command_event(
     ))
 }
 
-pub(crate) fn unread_command_event_char(event: &Value) -> Result<char, LispError> {
-    translated_unread_event_char(event)
-        .ok_or_else(|| LispError::Signal(format!("Invalid unread command event {}", event)))
-}
-
 pub(crate) fn normalize_input_event_value(event: Value) -> Result<Value, LispError> {
     // lread.c:Fread_event returns the event word without resolving its
     // modifier bits. In particular, a macro string's high bit becomes
@@ -1860,28 +1926,6 @@ pub(crate) fn is_mouse_down_event(value: &Value) -> bool {
         .and_then(|items| items.first().cloned())
         .and_then(|item| item.symbol_str().map(str::to_string))
         .is_some_and(|name| name.contains("down-mouse"))
-}
-
-pub(crate) fn record_command_history(
-    interp: &mut Interpreter,
-    function_name: &str,
-    args: Vec<Value>,
-    env: &mut Env,
-) {
-    let mut history = interp
-        .lookup_var("command-history", env)
-        .unwrap_or(Value::Nil)
-        .to_vec()
-        .unwrap_or_default();
-    let mut entry = vec![Value::Symbol(function_name.to_string().into())];
-    entry.extend(args);
-    history.insert(0, Value::list(entry));
-    if let Some(Kind::Integer(length)) = interp.lookup_var("history-length", env).map(|v| v.kind())
-    {
-        let length = length.max(0) as usize;
-        history.truncate(length);
-    }
-    interp.set_variable("command-history", Value::list(history), env);
 }
 
 pub(crate) fn is_declare_form(form: &Value) -> bool {

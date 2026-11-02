@@ -211,6 +211,7 @@ pub(crate) fn next_kbd_macro_event(
         event = Value::Integer(KEY_DESCRIPTION_META_BIT | (code & 0x7f));
     }
     interp.set_variable("executing-kbd-macro-index", Value::Integer(index + 1), env);
+    interp.keyboard_input.num_input_events += 1;
     Ok(Some(event))
 }
 
@@ -642,6 +643,49 @@ fn read_minibuffer_text_from_unread_events_inner(
     _initial: &str,
 ) -> Result<Option<String>, LispError> {
     read_minibuffer_queued_commands(interp, env)
+}
+
+// keyboard.c:read_char with an end time: the first event consumed
+// (unread, macro or terminal) before TIMEOUT passes, or None.
+fn read_event_within(
+    interp: &mut Interpreter,
+    timeout: std::time::Duration,
+    env: &mut Env,
+) -> Result<Option<Value>, LispError> {
+    // read_char consumes unread and live macro events before entering
+    // the timed keyboard wait.
+    if let Some(event) = pop_pending_input_event_value(interp, env)? {
+        return Ok(Some(event));
+    }
+    // A live terminal answers the first event inside the window, or nil
+    // when it elapses (keyboard.c's timed read); the process pump below is
+    // the batch stand-in.
+    if crate::lisp::primitives::has_tty_event_poller() {
+        return crate::lisp::primitives::read_tty_event_with_timeout(interp, env, timeout);
+    }
+    let previous_wait = interp.set_waiting_for_user_input(true);
+    let wait_result = wait_pumping_processes(interp, env, Some(timeout), false, None, None, true);
+    interp.set_waiting_for_user_input(previous_wait);
+    wait_result?;
+    pop_pending_input_event_value(interp, env)
+}
+
+// lread.c:read_filtered_event's conversion of an event to a character
+// code: a fixnum is one, and a symbol whose `event-symbol-element-mask'
+// base has an `ascii-character' is that code with the symbol's modifier
+// bits; anything else is None.
+fn ascii_event_code(interp: &Interpreter, event: Value) -> Option<i64> {
+    if let Kind::Integer(code) = event.kind() {
+        return Some(code);
+    }
+    let name = event.symbol_str()?;
+    let mask = interp
+        .get_symbol_property(name, "event-symbol-element-mask")
+        .filter(|mask| !mask.is_nil())?;
+    let base = mask.car().ok()?;
+    let ascii = interp.get_symbol_property(base.symbol_str()?, "ascii-character")?;
+    let modifiers = mask.cdr().ok()?.car().ok()?;
+    Some(ascii.as_integer().ok()? | modifiers.as_integer().ok()?)
 }
 
 fn next_kbd_command_event(
@@ -1684,62 +1728,61 @@ define_dispatch!(
             }
             "read-event" | "read-char" | "read-char-exclusive" => {
                 ensure_interaction_allowed(interp, env)?;
+                // lread.c: a non-nil PROMPT is shown, unlogged, as the
+                // read begins.
+                if let Some(prompt) = args.first().filter(|prompt| !prompt.is_nil()) {
+                    crate::lisp::primitives::set_pending_keystroke_echo(None);
+                    super::display::message_with_string_nolog(interp, "%s", *prompt, env)?;
+                }
                 let read_event = name == "read-event";
-                let timed_poll = args.len() >= 3 && args[2].is_truthy();
-                if timed_poll {
+                // SECONDS bounds the whole read, retries included.
+                let deadline = if args.len() >= 3 && args[2].is_truthy() {
                     let timeout = wait_duration(std::slice::from_ref(&args[2]))?;
-                    // keyboard.c:read_char consumes unread and live macro
-                    // events before entering the timed keyboard wait.
-                    if let Some(event) = pop_pending_input_event_value(interp, env)? {
-                        return if read_event {
-                            normalize_input_event_value(event)
-                        } else {
-                            Ok(Value::Integer(unread_command_event_char(&event)? as i64))
-                        };
-                    }
-                    // A live terminal answers the first event inside the
-                    // window, or nil when it elapses (keyboard.c's timed
-                    // read); the process pump below is the batch stand-in.
-                    if crate::lisp::primitives::has_tty_event_poller() {
-                        return match crate::lisp::primitives::read_tty_event_with_timeout(
-                            interp, env, timeout,
-                        )? {
-                            Some(event) => {
-                                if read_event {
-                                    normalize_input_event_value(event)
-                                } else {
-                                    Ok(Value::Integer(unread_command_event_char(&event)? as i64))
-                                }
-                            }
-                            None => Ok(Value::Nil),
-                        };
-                    }
-                    let previous_wait = interp.set_waiting_for_user_input(true);
-                    let wait_result =
-                        wait_pumping_processes(interp, env, Some(timeout), false, None, None, true);
-                    interp.set_waiting_for_user_input(previous_wait);
-                    wait_result?;
-                    return match pop_pending_input_event_value(interp, env)? {
-                        Some(event) => {
-                            if read_event {
-                                normalize_input_event_value(event)
-                            } else {
-                                Ok(Value::Integer(unread_command_event_char(&event)? as i64))
+                    Some(std::time::Instant::now() + timeout)
+                } else {
+                    None
+                };
+                loop {
+                    let event = match deadline {
+                        Some(deadline) => {
+                            let timeout =
+                                deadline.saturating_duration_since(std::time::Instant::now());
+                            match read_event_within(interp, timeout, env)? {
+                                Some(event) => event,
+                                None => return Ok(Value::Nil),
                             }
                         }
-                        None => Ok(Value::Nil),
+                        None => {
+                            // GNU's read_char enters redisplay before
+                            // blocking for input: window-configuration
+                            // changes a command made before reading (rmc's
+                            // help pop-up, y-or-n-p's prompt context) reach
+                            // the glass while the read waits.
+                            crate::lisp::primitives::run_tty_frame_redraw(interp, env);
+                            pop_unread_command_event_value(interp, env)?
+                        }
                     };
-                }
-                // GNU's read_char enters redisplay before blocking for
-                // input: window-configuration changes a command made
-                // before reading (rmc's help pop-up, y-or-n-p's prompt
-                // context) reach the glass while the read waits.
-                crate::lisp::primitives::run_tty_frame_redraw(interp, env);
-                let event = pop_unread_command_event_value(interp, env)?;
-                if read_event {
-                    normalize_input_event_value(event)
-                } else {
-                    Ok(Value::Integer(unread_command_event_char(&event)? as i64))
+                    if read_event {
+                        return normalize_input_event_value(event);
+                    }
+                    // read_filtered_event's ASCII requirement: a symbol
+                    // whose base has an `ascii-character' is that
+                    // character with the symbol's modifiers; another
+                    // non-character is pushed back as the only unread
+                    // event and refused by `read-char', skipped by
+                    // `read-char-exclusive'.
+                    match ascii_event_code(interp, event) {
+                        Some(code) => {
+                            return Ok(Value::Integer(
+                                crate::lisp::primitives::ccl::char_resolve_modifier_mask(code),
+                            ));
+                        }
+                        None if name == "read-char" => {
+                            interp.set_variable("unread-command-events", Value::list([event]), env);
+                            return Err(LispError::Signal("Non-character input-event".into()));
+                        }
+                        None => {}
+                    }
                 }
             }
             "read-string" | "read-from-minibuffer" => {

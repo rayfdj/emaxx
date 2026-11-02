@@ -34129,6 +34129,87 @@ fn window_text_pixel_size_walks_screen_lines_as_xdisp_c() {
 }
 
 #[test]
+fn window_parameters_charset_ranges_and_frame_names_as_the_c() {
+    // window.c:Fwindow_parameters returns Fcopy_alist of the window's
+    // parameters.  charset.c:map_charset_chars computes an offset
+    // charset's range from FROM and TO as they are, whichever is larger.
+    // frame.c:set_term_frame_name names a frame given nil F<num> from
+    // tty_frame_count, and refuses a name of that form.
+    assert_oracle_contract_matches_interpreter(
+        r#"(list
+ (let ((w (selected-window)))
+   (set-window-parameter w 't253-p 2)
+   (let ((params (window-parameters w)))
+     (set-window-parameter w 't253-p nil)
+     (list (assq 't253-p params) (assq 't253-p (window-parameters w)))))
+ (let (r)
+   (map-charset-chars (lambda (range _) (push range r)) 'latin-iso8859-1 nil 192 200)
+   (map-charset-chars (lambda (range _) (push range r)) 'ascii nil 100 50)
+   (nreverse r))
+ (progn
+   (set-frame-name "t253")
+   (set-frame-name nil)
+   (list (frame-parameter nil 'name)
+         (condition-case e (set-frame-name "F9") (error e)))))"#,
+        r#"(((t253-p . 2) (t253-p)) ((320 . 255) (100 . 50)) ("F2" (error "Frame names of the form F<num> are usurped by Emacs")))"#,
+        "window parameters, charset ranges and frame names",
+    );
+}
+
+#[test]
+fn command_history_and_read_char_as_callint_c_and_lread_c() {
+    // callint.c records a call in `command-history' before making it:
+    // a string spec's point, mark and region as the calls that find them,
+    // its other arguments quoted; a Lisp form's values quoted, with
+    // fix_command's `interactive-args' and trailing optional nils, when
+    // RECORD-FLAG asks or reading them consumed input.  An empty line in
+    // a string spec is a newline control letter, a leading `+' is
+    // refused, each `e' takes the next event with parameters, and `*'
+    // under RECORD-FLAG records the call before refusing it.
+    // lread.c:read_filtered_event makes a symbol with an
+    // `ascii-character' base that character, pushes back and refuses
+    // any other non-character for `read-char' and skips it for
+    // `read-char-exclusive'; char_resolve_modifier_mask keeps meta.
+    assert_oracle_contract_matches_interpreter(
+        r#"(list
+ (let ((command-history nil))
+   (with-temp-buffer
+     (insert "hello")
+     (set-mark 2)
+     (goto-char 4)
+     (call-interactively (lambda (a b c d) (interactive "r\nd\nm") (list a b c d)) t))
+   (defun t253-cmd (a &optional b c) (interactive (list 'foo "s" nil)) (list a b c))
+   (call-interactively 't253-cmd t)
+   (let ((unread-command-events (list ?x)))
+     (call-interactively (lambda (c) (interactive (list (read-event))) c)))
+   (call-interactively (lambda (a) (interactive (list 1)) a))
+   (mapcar (lambda (entry) (if (symbolp (car entry)) entry (cdr entry)))
+           command-history))
+ (list
+  (condition-case e (call-interactively (lambda (a b) (interactive "p\n\np") (list a b))) (error e))
+  (condition-case e (call-interactively (lambda (a) (interactive "+p") a)) (error e))
+  (condition-case e (call-interactively 't253-undefined) (error e))
+  (call-interactively (lambda (e f) (interactive "e\ne") (list e f)) nil
+                      (vector ?a '(mouse-1 x) ?b '(mouse-2 y))))
+ (let ((command-history nil))
+   (with-temp-buffer
+     (setq buffer-read-only t)
+     (list (condition-case e (call-interactively (lambda (a) (interactive "*p") a) t)
+             (error (car e)))
+           (length command-history))))
+ (let ((unread-command-events (list 'f1 ?a)))
+   (list (condition-case e (read-char) (error e))
+         unread-command-events
+         (let ((unread-command-events (list 'f1 'return ?\C-\M-a (+ ?% (ash 1 26)))))
+           (list (read-char-exclusive) (read-char-exclusive) (read-char-exclusive)))
+         (condition-case e (read-char 5) (error e)))))"#,
+        r#"(((120) (t253-cmd 'foo "s") ((region-beginning) (region-end) (point) (mark))) ((error "Invalid control letter `
+' (#o012, #x000a) in interactive calling string") (error "`+' is not used in `interactive' for ordinary commands") (wrong-type-argument commandp t253-undefined) ((mouse-1 x) (mouse-2 y))) (buffer-read-only 1) ((error "Non-character input-event") (f1) (13 134217729 67108901) (wrong-type-argument stringp 5)))"#,
+        "command history and read-char",
+    );
+}
+
+#[test]
 fn frame_parameters_and_face_colors_as_frame_c_and_xfaces_c() {
     // cmds.c:Fdelete_char hands a non-nil KILLFLAG to
     // `kill-forward-chars' and checks N with CHECK_FIXNUM.  frame.c keeps

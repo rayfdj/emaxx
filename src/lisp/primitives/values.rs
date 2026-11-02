@@ -1571,16 +1571,6 @@ pub(crate) fn invoke_function_value(
     interp.call_function_value(*func, None, args, env)
 }
 
-pub(crate) fn callable_name(original: &Value, resolved: &Value) -> Option<String> {
-    match original.kind() {
-        Kind::Symbol(name) => Some(name.to_string()),
-        _ => match resolved.kind() {
-            Kind::BuiltinFunc(name) => Some(name.to_string()),
-            _ => None,
-        },
-    }
-}
-
 // keymap.c:Fmake_sparse_keymap/Fmake_keymap: the Lisp list owns every
 // binding. There is no private record, reverse index or public projection.
 pub(crate) fn make_runtime_keymap(_interp: &mut Interpreter, prompt: Value) -> Value {

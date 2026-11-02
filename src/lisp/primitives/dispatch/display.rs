@@ -263,10 +263,40 @@ pub(crate) fn message_to_stderr(
             .write_all(b"\n")
             .map_err(|error| LispError::Signal(error.to_string()))?;
     }
+    // The line ends after a message, and after none unless the cursor is
+    // to stay in the echo area.
+    let newline = message.is_some()
+        || !interp
+            .forwarded_c_value("cursor-in-echo-area", &Env::new())
+            .is_some_and(|value| value.is_truthy());
     stderr
         .write_all(&bytes)
-        .and_then(|_| stderr.write_all(b"\n"))
+        .and_then(|_| {
+            if newline {
+                stderr.write_all(b"\n")
+            } else {
+                Ok(())
+            }
+        })
         .map_err(|error| LispError::Signal(error.to_string()))
+}
+
+/// xdisp.c:message3_nolog of nil (message1_nolog (0)): the echo area
+/// cleared, which in batch ends a stderr line.
+pub(crate) fn clear_message_nolog(
+    interp: &mut Interpreter,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    if interp
+        .forwarded_c_value("noninteractive", &Env::new())
+        .is_some_and(|value| value.is_truthy())
+    {
+        return message_to_stderr(interp, None, env);
+    }
+    if interactive_window_metrics().is_none() {
+        return Ok(());
+    }
+    clear_message(interp, env, true, true)
 }
 
 /// xdisp.c:message_with_string with logging enabled. Unlike Fmessage, its
@@ -279,6 +309,30 @@ pub(crate) fn message_with_string(
     argument: Value,
     env: &mut Env,
 ) -> Result<(), LispError> {
+    message_with_string_1(interp, format, argument, true, env)
+}
+
+/// xdisp.c:message_with_string with LOG false: shown through
+/// message3_nolog, so neither logged nor withheld by `inhibit-message'.
+pub(crate) fn message_with_string_nolog(
+    interp: &mut Interpreter,
+    format: &str,
+    argument: Value,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    message_with_string_1(interp, format, argument, false, env)
+}
+
+fn message_with_string_1(
+    interp: &mut Interpreter,
+    format: &str,
+    argument: Value,
+    log: bool,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    if !argument.is_string() {
+        return Err(wrong_type_argument("stringp", argument));
+    }
     let batch = interp
         .forwarded_c_value("noninteractive", &Env::new())
         .is_some_and(|v| v.is_truthy());
@@ -294,6 +348,9 @@ pub(crate) fn message_with_string(
     if batch {
         message_to_stderr(interp, Some(&message), env)?;
         return Ok(());
+    }
+    if !log {
+        return message3_nolog(interp, message, env);
     }
     let log = string_text(&message)?;
     message3(interp, message, &log, env)
@@ -321,28 +378,44 @@ pub(crate) fn message3(
         {
             return Ok(());
         }
-        let mut displayed = message;
-        if let Some(function) = interp
-            .forwarded_c_value("set-message-function", &Env::new())
-            .filter(|value| function_value_p(interp, value, env))
-            && !interp.garbage_collection_is_inhibited()
-        {
-            let restore = interp.bind_special_dynamic("inhibit-quit", Value::T, env)?;
-            // A binding watcher can change the C function cell.
-            let function = interp
-                .forwarded_c_value("set-message-function", &Env::new())
-                .unwrap_or(function);
-            let result = redisplay_safe_call(interp, function, &[message], env);
-            interp.restore_special_dynamic(restore, env)?;
-            let result = result?;
-            if result.is_string() {
-                displayed = result;
-            } else if result.is_truthy() {
-                return Ok(());
-            }
-        }
-        set_echo_area_message_value(displayed)
+        set_message(interp, message, env)
     })
+}
+
+/// xdisp.c:message3_nolog: MESSAGE in the echo area, neither logged nor
+/// withheld by `inhibit-message'.
+pub(crate) fn message3_nolog(
+    interp: &mut Interpreter,
+    message: Value,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    interp.with_lisp_stack_roots(&message, |interp| set_message(interp, message, env))
+}
+
+/// xdisp.c:set_message: `set-message-function' may replace MESSAGE or
+/// take over showing it.
+fn set_message(interp: &mut Interpreter, message: Value, env: &mut Env) -> Result<(), LispError> {
+    let mut displayed = message;
+    if let Some(function) = interp
+        .forwarded_c_value("set-message-function", &Env::new())
+        .filter(|value| function_value_p(interp, value, env))
+        && !interp.garbage_collection_is_inhibited()
+    {
+        let restore = interp.bind_special_dynamic("inhibit-quit", Value::T, env)?;
+        // A binding watcher can change the C function cell.
+        let function = interp
+            .forwarded_c_value("set-message-function", &Env::new())
+            .unwrap_or(function);
+        let result = redisplay_safe_call(interp, function, &[message], env);
+        interp.restore_special_dynamic(restore, env)?;
+        let result = result?;
+        if result.is_string() {
+            displayed = result;
+        } else if result.is_truthy() {
+            return Ok(());
+        }
+    }
+    set_echo_area_message_value(displayed)
 }
 
 // Shared existing message-log sink: xdisp.c message_dolog with NLFLAG, which
@@ -6738,11 +6811,13 @@ define_dispatch!(
                     .cloned()
                     .unwrap_or_else(|| interp.selected_window_value());
                 let window_id = window_id_or_selected(interp, &window)?;
-                Ok(interp
+                // window.c:Fwindow_parameters: Fcopy_alist of the window's.
+                let parameters = interp
                     .find_record(window_id)
                     .and_then(|record| record.slots.get(WINDOW_PARAMETERS_SLOT))
                     .cloned()
-                    .unwrap_or(Value::Nil))
+                    .unwrap_or(Value::Nil);
+                crate::lisp::primitives::values::copy_alist_value(&parameters)
             }
             "window-frame" => {
                 need_arg_range(name, args, 0, 1)?;

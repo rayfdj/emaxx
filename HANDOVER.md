@@ -12311,6 +12311,60 @@ setup_process_coding_systems's check now refuses). A 13-form
   validation: the grouped gate's 3,450 library tests, the
   integration targets and clippy with `--all-targets --all-features -D
   warnings' pass.
+- **Round 253: callint.c's command history, lread.c's `read-char' and
+  the window, charset and frame-name details from batteries.** Batteries
+  against GNU over callint.c (r252/ci.txt, and r253/ch.txt, cq.txt and
+  rc.txt, 64 cases with their stderr), lread.c's character readers (17,
+  r253/rk.txt), the charsets (10, r252/cs.txt) and the frame and window
+  primitives (12, r252/f2.txt) differ in these, now fixed.
+  `window-parameters' returns Fcopy_alist of the window's parameters,
+  where Emaxx handed out the alist itself. A text frame given the name
+  nil is F<num> from tty_frame_count, as make_terminal_frame numbers its
+  frames, where Emaxx reused the frame's own number. `map-charset-chars'
+  is map_charset_chars: FROM and TO are clamped to the charset's code
+  space as unsigned codes and an offset charset's range is computed from
+  them as they are, whichever is larger. Fcall_interactively is ported
+  for the command history: a string spec is recorded, before the call,
+  when an argument came from the terminal (callint.c's `varies' 0) or
+  RECORD-FLAG asks, its point, mark and region arguments as the calls
+  `(point)', `(mark)', `(region-beginning)' and `(region-end)' and the
+  others quoted by quotify_arg; a Lisp form's values are recorded when
+  RECORD-FLAG asks or evaluating them consumed input (keyboard.c's
+  num_input_events, now counted where read_char returns an event),
+  copied, quoted and passed through fix_command, which applies the
+  symbol's `interactive-args' and drops trailing nil optional arguments
+  by `func-arity'; both go through `add-to-history' as GNU's do. Emaxx
+  recorded only symbol commands, only on request, after the call, with
+  `interactive-args' applied to string specs too and nothing quoted.
+  `call-interactively' asks `interactive-form' first, so a void command
+  is `(wrong-type-argument commandp F)', and reads the spec from its
+  answer; the `+' flag is refused, an empty line inside a string spec is
+  the newline control letter, each `e' takes the next event with
+  parameters (any event under `inhibit-mouse-event-check') and names the
+  command in its error, the prefix argument is read once as the call
+  begins, `r' leaves two entries for later prompts' formats, `*' under
+  RECORD-FLAG records the call before refusing it when only r, p, P and
+  newlines follow, a string spec's call has `command-debug-status' bound
+  to nil, and `c' clears the echo area after its read. `read-char',
+  `read-event' and `read-char-exclusive' show a PROMPT through
+  message_with_string without logging (a non-string is `stringp');
+  `read-char' and `read-char-exclusive' turn a symbol whose
+  `event-symbol-element-mask' base has an `ascii-character' into that
+  character with the symbol's modifiers and resolve the result with
+  char_resolve_modifier_mask, which keeps meta; any other non-character
+  is made the only unread event and refused with "Non-character
+  input-event" by `read-char', and skipped by `read-char-exclusive',
+  within one SECONDS deadline. message3_nolog (no log, no
+  `inhibit-message') is split out of message3, and message_to_stderr
+  ends the line after an absent message only when `cursor-in-echo-area'
+  is nil. `inhibited-interaction' is signalled without data, as
+  barf_if_interaction_inhibited does. callint-tests, keyboard-tests,
+  simple-tests, lread-tests, nadvice-tests, subr-tests, repeat-tests,
+  minibuf-tests, minibuffer-tests, rmc-tests and kmacro-tests pass as
+  many tests as GNU's; minibuf-tests' bodies take 16.3 ms against 3.2
+  and repeat-tests' 40.2 against 12.6. Local validation: the grouped
+  gate's 3,452 library tests, the integration targets and clippy
+  with `--all-targets --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -13992,6 +14046,17 @@ runner's), comp-tests' the most (2,190 against 1,768), and the widest
 body gaps are comp-tests (19,448 ms against 16,233), tramp-tests (21,528
 against 19,535), semantic-utest-ia (4,241 against 2,622), mule-tests
 (3,182 against 2,016) and package-tests (6,718 against 6,153).
+
+**On `7d2c7a6`** (round 252): frozen (run 41457968375) matched all 7,928
+outcomes. Setup 84.1 s against 66.0 s (1.273), test bodies 258.9 s
+against 268.5 s (0.964), in all 1.008; ucs-normalize-tests' bodies took
+134 ms against 91. The full Rust gate (run 41457963448) passed. Per
+file, the setup is 35 ms over GNU's on average (18.0 s over 519 files, a
+median of 126 ms against 102), electric-tests' the most (950 against
+539), and the widest body gaps are comp-tests (17,651 ms against
+14,750), tramp-tests (21,588 against 19,163), semantic-utest-ia (4,361
+against 2,941), mule-tests (3,208 against 1,976) and electric-tests
+(1,170 against 582).
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

@@ -1314,23 +1314,27 @@ define_dispatch!(
                 let function = args[0];
                 let charset = args[1].as_symbol()?.to_string();
                 let arg = args.get(2).cloned().unwrap_or(Value::Nil);
-                // Fmap_charset_chars: FROM-CODE and TO-CODE within
-                // CHARSET_MIN_CODE and CHARSET_MAX_CODE, a nil one (as a
-                // native caller passes an omitted one) standing for them.
-                let (min_code, max_code) =
+                // Fmap_charset_chars: FROM-CODE and TO-CODE as the C's
+                // unsigned codes, raised to CHARSET_MIN_CODE and lowered to
+                // CHARSET_MAX_CODE, a nil one (as a native caller passes an
+                // omitted one) standing for them.
+                let Some((min_code, max_code)) =
                     crate::lisp::primitives::coding::charset_code_bounds(interp, &charset)
-                        .map_or((0, charset_max_codepoint(&charset)), |(min, max)| {
-                            (i64::from(min), i64::from(max))
-                        });
+                else {
+                    return Err(LispError::WrongTypeArgument("charsetp".into(), args[1]));
+                };
                 let from = match args.get(3).filter(|from| !from.is_nil()) {
-                    Some(from) => from.as_integer()?.max(min_code),
+                    Some(from) => (from.as_integer()? as u32).max(min_code),
                     None => min_code,
                 };
                 let to = match args.get(4).filter(|to| !to.is_nil()) {
-                    Some(to) => to.as_integer()?.min(max_code),
+                    Some(to) => (to.as_integer()? as u32).min(max_code),
                     None => max_code,
                 };
-                let ranges = charset_ranges_for(&charset, from, to, interp)?;
+                let ranges = crate::lisp::primitives::coding::map_charset_char_ranges(
+                    interp, &charset, from, to,
+                )
+                .unwrap_or_default();
                 for (start, end) in ranges {
                     call_function_value(
                         interp,
