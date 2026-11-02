@@ -2,12 +2,9 @@ use super::{prefix_numeric_value, signal_condition};
 use crate::lisp::eval::Interpreter;
 use crate::lisp::types::{Env, Kind, LispError, Value};
 
-pub(crate) const DEFAULT_SELECTED_WINDOW_HEIGHT: usize = 24;
-
 /// Live geometry of the selected window in an interactive session,
 /// published by the terminal frontend after each redisplay.  Batch
-/// sessions have none and keep GNU's batch answers (window-end = ZV,
-/// window math on the dumb-frame height).
+/// sessions have none and keep GNU's batch answers (window-end = ZV).
 #[derive(Clone, Copy)]
 pub(crate) struct InteractiveWindowMetrics {
     /// Text rows of the selected window (frame minus mode line and echo
@@ -30,15 +27,6 @@ pub(crate) fn interactive_window_metrics() -> Option<InteractiveWindowMetrics> {
     INTERACTIVE_WINDOW_METRICS.with(|cell| cell.get())
 }
 
-/// Text height of the selected window: live terminal geometry when a
-/// frontend publishes it, GNU's batch default otherwise (a 24-line dumb
-/// frame keeps 23 text lines above the mode line — recenter and
-/// move-to-window-line count rows against 23, per the oracle).
-pub(crate) fn selected_window_text_height() -> usize {
-    interactive_window_metrics()
-        .map(|metrics| metrics.text_height)
-        .unwrap_or(DEFAULT_SELECTED_WINDOW_HEIGHT - 1)
-}
 pub(crate) const WINDOW_BUFFER_SLOT: usize = 0;
 pub(crate) const WINDOW_START_SLOT: usize = 1;
 pub(crate) const WINDOW_OLD_POINT_SLOT: usize = 2;

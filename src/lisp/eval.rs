@@ -6607,11 +6607,18 @@ impl Interpreter {
                 )
                 .expect("a C variable takes a watcher");
         }
-        // gnutls.c publishes both variables before preloading gnutls.el.
-        // The shared library is resolved dynamically here, so availability
-        // refreshes the version value while preserving GNU's unavailable
-        // sentinel and the native logging default from startup onward.
-        interp.define_special_variable("libgnutls-version", Value::Integer(-1));
+        // gnutls.c publishes both variables before preloading gnutls.el,
+        // the version as the one the build was configured with.  A build
+        // that found no GnuTLS keeps GNU's -1 until `gnutls-available-p'
+        // loads the shared library and reads that library's version.
+        interp.define_special_variable(
+            "libgnutls-version",
+            Value::Integer(
+                option_env!("EMAXX_GNUTLS_VERSION")
+                    .and_then(|version| version.parse().ok())
+                    .unwrap_or(-1),
+            ),
+        );
         interp.define_special_variable("gnutls-log-level", Value::Integer(0));
         // alloc.c exposes the allocator's emergency state before jit-lock.el
         // and every fontification client.  JIT lock only reads this native

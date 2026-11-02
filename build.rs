@@ -54,7 +54,37 @@ fn main() {
         "cargo:rustc-env=EMAXX_SYSTEM_CONFIGURATION={}",
         system_configuration_triple()
     );
+    // gnutls.c sets `libgnutls-version' from the GNUTLS_VERSION_* macros
+    // of the headers configure found through pkg-config.  Record the same
+    // version when the build finds GnuTLS the same way.
+    println!("cargo:rerun-if-env-changed=PKG_CONFIG");
+    println!("cargo:rerun-if-env-changed=PKG_CONFIG_PATH");
+    if let Some(version) = configured_gnutls_version() {
+        println!("cargo:rustc-env=EMAXX_GNUTLS_VERSION={version}");
+    }
     println!("cargo:rerun-if-changed=build.rs");
+}
+
+fn configured_gnutls_version() -> Option<i64> {
+    let pkg_config = env::var_os("PKG_CONFIG").unwrap_or_else(|| "pkg-config".into());
+    let output = std::process::Command::new(pkg_config)
+        .args(["--modversion", "gnutls"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())?;
+    let version = String::from_utf8(output.stdout).ok()?;
+    let mut parts = version.trim().split('.');
+    let mut part = || -> Option<i64> {
+        parts
+            .next()?
+            .split(|character: char| !character.is_ascii_digit())
+            .next()?
+            .parse()
+            .ok()
+    };
+    let (major, minor) = (part()?, part()?);
+    let patch = part().unwrap_or(0);
+    Some(major * 10000 + minor * 100 + patch)
 }
 
 fn system_configuration_triple() -> String {

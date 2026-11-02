@@ -12609,6 +12609,36 @@ setup_process_coding_systems's check now refuses). A 13-form
   validation: the grouped gate's 3,459 library tests, the
   integration targets and clippy with `--all-targets --all-features -D
   warnings' pass.
+- **Round 261: `gnutls-available-p' as gnutls.c, window motion by the
+  window's body.** `libgnutls-version' is the version of the GnuTLS the
+  build found through pkg-config, as gnutls.c sets it at startup from
+  the headers configure found, where Emaxx held -1 until
+  `gnutls-available-p' loaded the library; a build pkg-config finds no
+  GnuTLS for keeps that. Fgnutls_available_p conses its list in GNU's
+  order, `gnutls', `ClientHello\ Padding' for GnuTLS 3.2.5 on (so
+  gnutls.el now adds %DUMBFW to the priority string, which Emaxx never
+  did), `gnutls3', `digests', `ciphers', `AEAD-ciphers' and `macs', then
+  the name of each extension below ID 100 that gnutls_ext_get_name knows
+  and the list lacks, interned, where Emaxx listed the six capabilities
+  alone. In batch, scroll_command, Frecenter and Fmove_to_window_line
+  counted a fixed 23 lines; they count the selected window's body lines,
+  as GNU does in batch too, so a split window, a buffer without a mode
+  line and one with a header line scroll, recenter and move by their own
+  heights (the Emaxx test that published a 22-row terminal window in
+  batch for `recenter' to count now checks that it counts the window's
+  body). Fdelete_other_windows_internal now runs
+  `window--pixel-to-total' for heights and then widths once WINDOW has
+  replaced ROOT, as window.c does, so the windows' new totals read as
+  GNU's after it. The batteries (r261: the printer and its variables,
+  the reader, text properties and overlays, numbers and time, keymaps,
+  windows, the optional features) match GNU, except that the oracle's X
+  build preloads x-win.el, touch-screen.el's and non-toolkit scroll-bar
+  bindings into the global map, which Emaxx's tty dump has not;
+  gnutls-tests, nsm-tests, simple-tests, scroll-lock-tests,
+  tab-bar-tests, xdisp-tests, edebug-tests, elisp-mode-tests and
+  help-fns-tests pass as many tests as GNU's. Local validation: the
+  grouped gate's 3,461 library tests, the integration targets and
+  clippy with `--all-targets --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -14382,6 +14412,26 @@ runners this fast, with GNU's bodies the fastest yet; locally, on the
 round 261 build, ert-tests (0.76), subr-tests (0.83), mule-tests (0.97)
 and comp-tests run no slower against GNU than before, so the next run is
 to show whether it holds.
+
+**On `1519252`** (round 260): frozen (run 41524586101) matched all 7,928
+outcomes. Setup 81.2 s against 65.8 s (1.235), test bodies 298.7 s
+against 267.0 s (1.119), in all 1.121; ucs-normalize-tests' bodies took
+133 ms against 90. The full Rust gate (run 41524581350) passed. Per
+file, the setup is 30 ms over GNU's on average (15.4 s over 519 files, a
+median of 121 ms against 101), comp-tests' the most (2,024 against
+1,770), and the widest body gaps are ert-tests (47,200 ms against
+37,935), comp-tests (17,304 against 14,574), tramp-tests (21,627 against
+19,357), semantic-utest-ia (3,981 against 2,576) and mule-tests (3,189
+against 1,994). Of ert-tests' gap 8.7 s is one test,
+`ert-test-run-tests-batch-expensive', which prints a failing test's
+backtrace with no margins: the release build runs it in 0.90 s against
+GNU's 1.26 alone and ert-tests in 30.0 s against 39.6, so the gap is the
+gate build's, its checks, as round 172 found for others. Nor did rounds
+259 and 260 make the gate build slower: built as the frozen run builds
+it, round 258's head and round 261's run subr-tests in 4.225G and 4.262G
+instructions and electric-tests in 9.308G and 9.322G, so the bodies'
+ratio moving from round 258's 0.934 through 1.049 to 1.119 is the
+runners'.
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

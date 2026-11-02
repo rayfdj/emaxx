@@ -3351,6 +3351,10 @@ fn delete_other_windows_from_tree(
     }
     replace_window(interp, root_id, window_id, true)?;
     clear_deleted_window(interp, root_id)?;
+    // New total sizes for all of FRAME's windows, assigned only once
+    // WINDOW has replaced ROOT (Bug#51007).
+    frame_size::window_pixel_to_total(interp, frame, false, env)?;
+    frame_size::window_pixel_to_total(interp, frame, true, env)?;
     if let Some((buffer_id, startpos, top)) = start_and_top {
         let new_top = window_geometry(interp, window_id).3
             - window_geometry(interp, frame.borrow().root_window_id()).3;
@@ -3806,19 +3810,12 @@ fn window_non_body_height(interp: &Interpreter, buffer_id: u64, env: &Env) -> i6
         .sum()
 }
 
-/// Screen rows owned by the window selected *now*.  During a minibuffer read,
-/// packages can temporarily select the shrunken ordinary window and call
-/// `recenter'.  The last published glyph metrics then belong to an earlier
-/// redisplay and can still describe the pre-minibuffer height; the live window
-/// tree is GNU's authoritative source for command-time geometry.  Batch mode
-/// has no realized window tree, so it retains the published/dumb-frame model.
+/// Screen rows owned by the window selected *now*, its body height in the
+/// live window tree, batch or not.  During a minibuffer read, packages can
+/// temporarily select the shrunken ordinary window and call `recenter'; the
+/// last published glyph metrics then belong to an earlier redisplay and can
+/// still describe the pre-minibuffer height.
 fn selected_command_text_height(interp: &Interpreter, env: &Env) -> usize {
-    if interp
-        .lookup_var_key(cached_symbol!("noninteractive"), env)
-        .is_some_and(|value| value.is_truthy())
-    {
-        return selected_window_text_height().max(1);
-    }
     let window_id = interp.selected_window_id();
     let buffer_id = interp.selected_window_buffer_id();
     (window_geometry(interp, window_id).1 - window_non_body_height(interp, buffer_id, env)).max(1)

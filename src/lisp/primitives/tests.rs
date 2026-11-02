@@ -14941,6 +14941,61 @@ fn native_gnutls_advertises_loaded_host_capabilities() {
 }
 
 #[test]
+fn gnutls_available_p_conses_capabilities_as_gnutls_c() {
+    // gnutls.c sets `libgnutls-version' at startup from the version the
+    // build was configured with, and Fgnutls_available_p conses `gnutls',
+    // `ClientHello\ Padding' (3.2.5 on), `gnutls3', `digests', `ciphers',
+    // `AEAD-ciphers' and `macs', then each new extension name below 100.
+    let mut interp = Interpreter::new();
+    let mut env = crate::lisp::types::Env::new();
+    let mut eval = |source: &str| {
+        let form = Reader::new(source)
+            .read()
+            .expect("GnuTLS capability probe should parse")
+            .expect("GnuTLS capability probe should contain a form");
+        interp
+            .eval(&form, &mut env)
+            .expect("GnuTLS capability probe should evaluate")
+    };
+    let startup = eval("libgnutls-version");
+    if let Some(version) = option_env!("EMAXX_GNUTLS_VERSION") {
+        assert_eq!(
+            startup,
+            Value::Integer(
+                version
+                    .parse()
+                    .expect("the configured GnuTLS version is an integer")
+            )
+        );
+    } else {
+        assert_eq!(startup, Value::Integer(-1));
+    }
+    assert_eq!(
+        eval(
+            "(let* ((capabilities (gnutls-available-p))
+                    (base (memq 'macs capabilities))
+                    (extensions (cdr (memq 'macs (reverse capabilities)))))
+               (list (equal (delq 'AEAD-ciphers
+                                  (delq 'ClientHello\\ Padding
+                                        (copy-sequence base)))
+                            '(macs ciphers digests gnutls3 gnutls))
+                     (eq (and (memq 'ClientHello\\ Padding base) t)
+                         (>= libgnutls-version 30205))
+                     (or (< libgnutls-version 30501)
+                         (and (memq 'Server\\ Name\\ Indication extensions) t))
+                     (catch 'repeated
+                       (while capabilities
+                         (if (memq (car capabilities) (cdr capabilities))
+                             (throw 'repeated nil))
+                         (setq capabilities (cdr capabilities)))
+                       t)
+                     (null (memq nil (mapcar #'symbolp extensions)))))"
+        ),
+        Value::list([Value::T, Value::T, Value::T, Value::T, Value::T])
+    );
+}
+
+#[test]
 fn native_gnutls_catalogs_and_error_diagnostics_use_the_host_library() {
     let program = r#"
         (progn
@@ -27777,7 +27832,9 @@ fn window_end_and_posn_follow_published_interactive_geometry() {
 }
 
 #[test]
-fn recenter_uses_the_published_window_height_for_negative_lines() {
+fn recenter_counts_the_window_body_for_negative_lines() {
+    // window.c:Frecenter counts the selected window's body lines in batch
+    // as well: (recenter -3) puts point 3 rows above the window's last.
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
     interp.set_variable("noninteractive", Value::T, &mut env);
@@ -27790,13 +27847,11 @@ fn recenter_uses_the_published_window_height_for_negative_lines() {
         )
         .expect("insert seeds the buffer");
     }
-    set_interactive_window_metrics(Some(InteractiveWindowMetrics {
-        text_height: 22,
-        window_end: 199,
-    }));
-    // Point on line 31; (recenter -3) puts it 3 rows above the bottom of
-    // a 22-row window: 19 lines above the start, so the window starts at
-    // line 12 (simple.el's end-of-buffer contract).
+    let body = call(&mut interp, "window-body-height", &[], &mut env)
+        .expect("window-body-height")
+        .as_integer()
+        .expect("a window's body height is an integer");
+    // Point on line 31, 3 rows above the bottom of the body.
     call(
         &mut interp,
         "goto-char",
@@ -27806,11 +27861,11 @@ fn recenter_uses_the_published_window_height_for_negative_lines() {
     .expect("goto-char");
     call(&mut interp, "recenter", &[Value::Integer(-3)], &mut env).expect("recenter");
     let start = call(&mut interp, "window-start", &[], &mut env).expect("window-start");
-    set_interactive_window_metrics(None);
     assert_eq!(
         start,
-        Value::Integer((11 * 9 + 1) as i64),
-        "window starts 19 lines above point"
+        Value::Integer((30 - (body - 3)) * 9 + 1),
+        "window starts {} lines above point",
+        body - 3
     );
 }
 
@@ -34517,6 +34572,53 @@ fn backtrace_eval_as_eval_c() {
         (condition-case e (backtrace-eval 1 -1) (error e))))"#,
         r#"(((nil global) (nil global) (nil global) (nil global)) ((7 dyn) (err (void-variable a)) (err (void-variable a)) (err (void-variable a))) (5 (err (void-variable x)) (err (void-variable x)) (err (void-variable x))) global (error "Activation frame not found!") (wrong-type-argument wholenump -1))"#,
         "backtrace-eval",
+    );
+}
+
+#[test]
+fn window_motion_counts_the_window_body_as_window_c() {
+    // window.c: scroll_command, Frecenter and Fmove_to_window_line count the
+    // selected window's body lines in batch as well, and
+    // Fdelete_other_windows_internal gives every window new total sizes
+    // from its pixel sizes once WINDOW has replaced ROOT, widths last.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((lines (lambda ()
+               (dotimes (i 100) (insert "line\n"))
+               (set-window-buffer nil (current-buffer)))))
+  (list
+   (let ((w (split-window))) (delete-other-windows) (window-new-total))
+   (with-temp-buffer
+     (funcall lines)
+     (let ((w (split-window)))
+       (goto-char 200) (recenter 0)
+       (prog1 (list (window-body-height) (window-start) (move-to-window-line -1)
+                    (point) (move-to-window-line nil) (point))
+         (delete-window w))))
+   (with-temp-buffer
+     (funcall lines)
+     (let ((w (split-window)))
+       (goto-char 1) (set-window-start nil 1)
+       (prog1 (list (scroll-up) (window-start) (point) (scroll-down 2) (window-start) (point))
+         (delete-window w))))
+   (with-temp-buffer
+     (funcall lines)
+     (let ((w (split-window)))
+       (goto-char 300)
+       (prog1 (list (recenter) (window-start) (recenter -1) (window-start) (recenter 3) (window-start))
+         (delete-window w))))
+   (with-temp-buffer
+     (funcall lines)
+     (setq mode-line-format nil)
+     (goto-char 300)
+     (list (window-body-height) (recenter -1) (window-start) (move-to-window-line -1) (point)))
+   (with-temp-buffer
+     (funcall lines)
+     (setq header-line-format "h")
+     (goto-char 300)
+     (list (window-body-height) (recenter -1) (window-start) (move-to-window-line -1) (point)
+           (progn (goto-char 1) (set-window-start nil 1) (scroll-up) (window-start))))))"#,
+        "(80 (11 196 10 246 5 221) (nil 46 46 nil 11 46) (nil 271 nil 246 nil 281) (24 nil 181 23 296) (22 nil 191 21 296 101))",
+        "window body motion",
     );
 }
 
