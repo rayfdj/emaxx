@@ -383,6 +383,10 @@ const KEY_NAMES: &[&str] = &[
     "composition",
     "auto-composed",
     "inhibit-point-motion-hooks",
+    "minor-mode-overriding-map-alist",
+    "minor-mode-map-alist",
+    "emulation-mode-map-alists",
+    "overriding-local-map",
 ];
 
 struct Symbols {

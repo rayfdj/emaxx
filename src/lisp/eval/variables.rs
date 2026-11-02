@@ -1231,6 +1231,7 @@ impl Interpreter {
     /// WATCHER goes in front of its watchers unless one is `equal' to it.
     pub fn add_variable_watcher(&mut self, name: &str, watcher: Value) -> Result<(), LispError> {
         let symbol = self.resolve_variable_symbol(&SymbolName::intern_str(name))?;
+        set_symbol_trapped_write(&symbol)?;
         symbol.cell().set_trapped_write(true);
         self.globals.set_plain_store(&symbol, false);
         let watchers = self.watchers_property(&symbol);
@@ -1255,6 +1256,7 @@ impl Interpreter {
         let watchers =
             crate::lisp::primitives::call(self, "delete", &[*watcher, watchers], &mut Env::new())?;
         if watchers.is_nil() {
+            set_symbol_trapped_write(&symbol)?;
             symbol.cell().set_trapped_write(false);
         }
         self.put_symbol_property_on(&symbol, "watchers", watchers);
@@ -4399,6 +4401,18 @@ fn wrong_choice(
         Value::string(&message),
         wrong,
     ])))
+}
+
+/// data.c:set_symbol_trapped_write's refusal: a constant's writes
+/// (SYMBOL_NOWRITE) cannot be trapped or untrapped.
+fn set_symbol_trapped_write(symbol: &SymbolName) -> Result<(), LispError> {
+    if symbol.cell().is_constant() {
+        return Err(LispError::SignalValue(Value::list([
+            Value::symbol("trapping-constant"),
+            Value::Symbol(*symbol),
+        ])));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

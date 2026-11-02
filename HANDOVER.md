@@ -12098,6 +12098,54 @@ setup_process_coding_systems's check now refuses). A 13-form
   as GNU's. Local validation: the grouped gate's 3,441 library
   tests, the integration targets and clippy with `--all-targets
   --all-features -D warnings` pass.
+- **Round 249: eval.c's Fsignal, data.c's trapped writes and keymap.c's
+  active maps from batteries.** Batteries against GNU over eval.c's
+  signals and data.c's watchers (21 cases, r248/sg.txt), thread.c (23,
+  r249/th.txt), macros.c and the command loop under `execute-kbd-macro`
+  (65, r249/km.txt), keymap.c's `current-active-maps` and `key-binding`
+  (51, r249/am.txt) and its minor mode maps and
+  `describe-buffer-bindings` (28, r249/mm.txt) differ in these, now
+  fixed; thread.c agrees throughout. `signal` consed its arguments
+  whatever they were: Fsignal turns a nil symbol without a list into
+  `error` (the "peculiar error"), signal_or_quit takes DATA itself for a
+  nil symbol and a non-symbol without data as it is, and Fget's
+  CHECK_SYMBOL refuses a car that is no symbol, so `(signal 5 '(x))` is
+  `(wrong-type-argument symbolp 5)`. `add-variable-watcher` and
+  `remove-variable-watcher` of a constant (nil, a keyword,
+  `most-positive-fixnum`) now signal `trapping-constant` as
+  set_symbol_trapped_write does, and Fdefvaralias's set_internal of an
+  unbound alias tells the base's watchers `let` with nil.
+  Fcurrent_active_maps is ported whole: a POSITION was read only as a
+  click's posn, so a fixnum or marker was ignored and point used;
+  click_position now takes it and refuses one outside the accessible
+  text; get_local_map reads the `keymap` and `local-map` char properties
+  there (overlays included, the narrowing lifted, a symbol's function
+  map followed) where only the text property at point was read; a
+  click's window's buffer is made current while the maps are found; a
+  mode or header line string's properties replace the buffer's even when
+  nil, only at an index inside the string; POSN_STRING is Fnth's, so a
+  dotted posn signals; and the overriding maps and the minor mode maps
+  go in unchecked, as current_minor_maps keeps any non-nil
+  Findirect_function of an entry (a `t` variable included, an improper
+  alist walked to its last cons). `minor-mode-key-binding` looks up with
+  Flookup_key in each map, and the Rust spelling of `kbd` and the event
+  parsing it used are removed, with the tests that only exercised them
+  (a character range's event head is now an oracle test).
+  read_key_sequence's active_maps passes any parameterized event's start
+  where only a mouse click's was taken, so a macro event `(control 98)`
+  signals `(args-out-of-range #<buffer> 98)` as GNU's does where Emaxx
+  read it as `C-b`. Not reproduced: `(thread-signal THREAD 'quit nil)`
+  to a sleeping thread ends a batch GNU with "Quit"; a quoted-insert
+  reading past a keyboard macro's end waits on the terminal in GNU. The
+  global map printed whole differs only by the X build's preloaded
+  bindings. `current-active-maps` (0.170 s against 0.193 for 200,000
+  calls), `key-binding` (0.633 against 0.625) and short macros (0.204
+  against 0.370) cost no more than GNU's; keymap-tests, keyboard-tests,
+  help-tests, help-fns-tests, kmacro-tests, subr-x-tests, simple-tests,
+  repeat-tests, edebug-tests, mouse-tests, viper-tests, minibuffer-tests
+  and electric-tests pass as many tests as GNU's. Local validation: the
+  grouped gate's 3,443 library tests, the integration targets and
+  clippy with `--all-targets --all-features -D warnings` pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -13735,6 +13783,17 @@ median of 116 ms against 97), electric-tests' the most (900 against
 14,294), tramp-tests (21,030 against 18,969), semantic-utest-ia (3,899
 against 2,488), eglot-tests (33,296 against 31,963) and mule-tests
 (3,163 against 2,109).
+
+**On `f3b51e5`** (round 248): frozen (run 41420073368) matched all 7,928
+outcomes. Setup 58.6 s against 50.5 s (1.159), test bodies 211.6 s
+against 227.6 s (0.930), in all 0.980; ucs-normalize-tests' bodies took
+81 ms against 55. The full Rust gate (run 41420068887) passed. Per file,
+the setup is 15 ms over GNU's on average (8.0 s over 519 files, a median
+of 91 ms against 80), electric-tests' the most (546 against 378), and
+the widest body gaps are comp-tests (12,948 ms against 11,243),
+mule-tests (1,963 against 1,225), semantic-utest-ia (2,550 against
+2,080), tramp-tests (15,815 against 15,360) and package-tests (5,808
+against 5,501).
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

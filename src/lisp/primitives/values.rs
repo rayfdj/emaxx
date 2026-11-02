@@ -2039,10 +2039,12 @@ pub(crate) fn describe_buffer_bindings(
         description[2] = Value::cons(description[0], description[2]);
     } else {
         let minor = with_keymap_description_buffer(interp, buffer, |interp| {
-            active_minor_mode_bindings(interp, env).map(crate::lisp::alloc::RootedVec::from_vec)
+            current_minor_maps(interp, env).map(crate::lisp::alloc::RootedVec::from_vec)
         })?;
+        // get_local_map (BUF_PT, buffer, Qkeymap).
         let property = with_keymap_description_buffer(interp, buffer, |interp| {
-            Ok(keymap_at_active_position(interp, None)?.unwrap_or(Value::Nil))
+            let point = interp.buffer.borrow().point() as i64;
+            get_local_map(interp, point, "keymap")
         })?;
         if !property.is_nil() {
             insert_keymap_description(
@@ -2055,6 +2057,10 @@ pub(crate) fn describe_buffer_bindings(
             description[2] = Value::cons(description[0], description[2]);
         }
         for (mode, map) in minor.iter() {
+            let mode = match mode.kind() {
+                Kind::Symbol(name) => name.to_string(),
+                _ => "t".to_string(),
+            };
             insert_keymap_description(
                 interp,
                 &mut description,
@@ -2068,7 +2074,8 @@ pub(crate) fn describe_buffer_bindings(
             with_keymap_description_buffer(interp, buffer, |interp| {
                 // BVAR (current_buffer, keymap).
                 let normal = interp.buffer.borrow().keymap();
-                let local = local_map_at_active_position(interp, None)?.unwrap_or(normal);
+                let point = interp.buffer.borrow().point() as i64;
+                let local = get_local_map(interp, point, "local-map")?;
                 let major = interp.lookup_var("major-mode", env).unwrap_or(Value::Nil);
                 Ok((local, values_eq_in_env(interp, &local, &normal, env), major))
             })?;
@@ -2144,33 +2151,6 @@ fn with_keymap_description_buffer<T>(
     let result = body(interp);
     let restored = interp.set_current_buffer_id(saved);
     result.and_then(|value| restored.map(|()| value))
-}
-
-pub(crate) fn reader_control_char(base: i64) -> Option<i64> {
-    match base {
-        0x20 | 0x40 => Some(0),
-        0x3f => Some(0x7f),
-        value if (i64::from(b'a')..=i64::from(b'z')).contains(&value) => Some(value - 0x60),
-        value if (i64::from(b'A')..=i64::from(b'_')).contains(&value) => Some(value - 0x40),
-        _ => None,
-    }
-}
-
-pub(crate) fn reader_key_event_value(event: Value) -> Value {
-    let Kind::Integer(code) = event.kind() else {
-        return event;
-    };
-    let base = code & !KEY_DESCRIPTION_MODIFIER_MASK;
-    let modifiers = code & KEY_DESCRIPTION_MODIFIER_MASK;
-    if modifiers & KEY_DESCRIPTION_CTRL_BIT == 0 {
-        return Value::Integer(code);
-    }
-
-    let other_modifiers = modifiers & !KEY_DESCRIPTION_CTRL_BIT;
-    let Some(control) = reader_control_char(base) else {
-        return Value::Integer(code);
-    };
-    Value::Integer(control | other_modifiers)
 }
 
 /// keymap.c:Fhelp__describe_vector and describe_vector with KEYMAP_P:
@@ -2391,220 +2371,285 @@ fn insert_described_key_of(
     Ok(())
 }
 
-/// Return GNU's current minor-mode stack as `(mode-variable, keymap)` pairs.
-///
-/// This ordering and replacement policy is shared by command lookup,
-/// `current-active-maps`, `current-minor-mode-maps`, and
-/// `minor-mode-key-binding`: emulation maps come first, overriding maps
-/// replace same-mode entries in the ordinary alist, and prefix-command
-/// symbols are resolved through their function cells.
-pub(crate) fn active_minor_mode_bindings(
+/// keymap.c:current_minor_maps: the variables and maps of the active minor
+/// modes, `emulation-mode-map-alists' first (a symbol in it read for its
+/// alist), then `minor-mode-overriding-map-alist', then
+/// `minor-mode-map-alist', whose entry for a variable the overriding alist
+/// also names is skipped.  An entry counts when its car is a symbol whose
+/// value (find_symbol_value) is bound and non-nil; its map is the
+/// Findirect_function of the cdr, whatever that is, and a void one drops
+/// the entry.
+pub(crate) fn current_minor_maps(
     interp: &Interpreter,
     env: &Env,
-) -> Result<Vec<(String, Value)>, LispError> {
-    let overriding = interp
-        .lookup_var("minor-mode-overriding-map-alist", env)
-        .unwrap_or(Value::Nil);
-    let overridden_modes = overriding
-        .to_vec()
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|entry| {
-            let (mode, _) = entry.cons_values()?;
-            match mode.kind() {
-                Kind::Symbol(name) => Some(name.as_str().to_owned()),
-                _ => None,
-            }
-        })
-        .collect::<HashSet<_>>();
-
-    let mut alists = Vec::new();
-    if let Some(emulation_alists) = interp.lookup_var("emulation-mode-map-alists", env) {
-        for element in emulation_alists.to_vec().unwrap_or_default() {
-            alists.push(match element.kind() {
-                Kind::Symbol(variable) => interp.lookup_var(&variable, env).unwrap_or(Value::Nil),
-                other => other.value(),
-            });
+) -> Result<Vec<(Value, Value)>, LispError> {
+    let symbol_value = |symbol: &Value| -> Option<Value> {
+        match symbol.kind() {
+            Kind::Nil => Some(Value::Nil),
+            Kind::T => Some(Value::T),
+            _ => symbol
+                .symbol_cell()
+                .and_then(|symbol| interp.symbol_value_symbol(&symbol)),
         }
-    }
-    alists.push(overriding);
-    alists.push(
+    };
+    let lists = [
         interp
-            .lookup_var("minor-mode-map-alist", env)
+            .symbol_value_key(cached_symbol!("minor-mode-overriding-map-alist"))
             .unwrap_or(Value::Nil),
-    );
-
-    let ordinary_index = alists.len().saturating_sub(1);
-    let mut bindings = Vec::new();
-    for (index, alist) in alists.into_iter().enumerate() {
-        for entry in alist.to_vec().unwrap_or_default() {
-            let Some((mode, map)) = entry.cons_values() else {
+        interp
+            .symbol_value_key(cached_symbol!("minor-mode-map-alist"))
+            .unwrap_or(Value::Nil),
+    ];
+    let mut emulation_alists = interp
+        .symbol_value_key(cached_symbol!("emulation-mode-map-alists"))
+        .unwrap_or(Value::Nil);
+    let mut maps = Vec::new();
+    let mut list_number = 0i32;
+    while list_number < 2 {
+        let mut alist = if let Some((head, rest)) = emulation_alists.cons_values() {
+            emulation_alists = rest;
+            list_number = -1;
+            if head.is_symbol() {
+                symbol_value(&head).unwrap_or(Value::Nil)
+            } else {
+                head
+            }
+        } else {
+            lists[list_number as usize]
+        };
+        while let Some((assoc, rest)) = alist.cons_values() {
+            alist = rest;
+            let Some((var, map)) = assoc.cons_values() else {
                 continue;
             };
-            let Kind::Symbol(mode_name) = mode.kind() else {
-                continue;
-            };
-            if index == ordinary_index && overridden_modes.contains(mode_name.as_str()) {
+            if !var.is_symbol() || !symbol_value(&var).is_some_and(|value| value.is_truthy()) {
                 continue;
             }
-            if !interp
-                .lookup_var(&mode_name, env)
-                .is_some_and(|value| value.is_truthy())
-            {
-                continue;
+            // assq_no_quit (var, lists[0]).
+            if list_number == 1 {
+                let mut tail = lists[0];
+                let mut overridden = false;
+                while let Some((entry, rest)) = tail.cons_values() {
+                    if entry
+                        .cons_values()
+                        .is_some_and(|(car, _)| car.eq_value(var))
+                    {
+                        overridden = true;
+                        break;
+                    }
+                    tail = rest;
+                }
+                if overridden {
+                    continue;
+                }
             }
-            if let Some(map) = keymap_reference_map(interp, &map, env) {
-                bindings.push((mode_name.to_string(), map));
+            let map = super::keymap::indirect_function(interp, map, env);
+            if !map.is_nil() {
+                maps.push((var, map));
             }
         }
+        list_number += 1;
     }
-    Ok(bindings)
+    Ok(maps)
 }
 
+/// The maps of `current_minor_maps' alone.
 pub(crate) fn active_minor_mode_maps(
     interp: &Interpreter,
     env: &Env,
 ) -> Result<Vec<Value>, LispError> {
-    Ok(active_minor_mode_bindings(interp, env)?
+    Ok(current_minor_maps(interp, env)?
         .into_iter()
         .map(|(_, map)| map)
         .collect())
 }
 
-pub(crate) fn keymap_at_active_position(
+/// intervals.c:get_local_map: the keymap that the TYPE property (`keymap'
+/// or `local-map') of the current buffer gives at POSITION, clipped to
+/// the accessible text and read with the narrowing lifted -- the
+/// character after it by Fget_char_property, else by get_pos_property
+/// past the first position -- when get_keymap (prop, 0, 0) makes a list
+/// of it; else nil for `keymap' and the buffer's own map for `local-map'.
+pub(crate) fn get_local_map(
     interp: &Interpreter,
-    posn: Option<&Value>,
-) -> Result<Option<Value>, LispError> {
-    text_property_keymap_at_active_position(interp, posn, "keymap")
+    position: i64,
+    type_: &str,
+) -> Result<Value, LispError> {
+    let (begv, zv) = interp.buffer.borrow().restriction();
+    let position = position.clamp(begv as i64, zv as i64);
+    let prop = crate::lisp::types::PropertyName::symbol(type_);
+    let buffer = Value::Buffer(interp.buffer);
+    interp.buffer.borrow_mut().widen();
+    let found = super::textprop::get_char_property(interp, &Value::Integer(position), prop, buffer)
+        .and_then(|found| {
+            if found.is_nil() && position > 1 {
+                super::textprop::get_pos_property(interp, &Value::Integer(position), prop, buffer)
+            } else {
+                Ok(found)
+            }
+        });
+    interp.buffer.borrow_mut().restore_restriction(begv, zv);
+    let map = super::keymap::get_keymap_noload(interp, found?, &Env::new());
+    if map.is_cons() {
+        Ok(map)
+    } else if type_ == "keymap" {
+        Ok(Value::Nil)
+    } else {
+        Ok(interp.buffer.borrow().keymap())
+    }
 }
 
-/// The map a `local-map' text property puts in place of the buffer's local
-/// map (keymap.c:1707 reads it through get_local_map exactly where the
-/// `keymap' property is read; both ride the same position rules).
-pub(crate) fn local_map_at_active_position(
-    interp: &Interpreter,
-    posn: Option<&Value>,
-) -> Result<Option<Value>, LispError> {
-    text_property_keymap_at_active_position(interp, posn, "local-map")
-}
-
-fn text_property_keymap_at_active_position(
-    interp: &Interpreter,
-    posn: Option<&Value>,
-    category: &str,
-) -> Result<Option<Value>, LispError> {
-    let buffer_keymap = |pos: usize| -> Result<Option<Value>, LispError> {
-        Ok(
-            buffer_property_at_with_category(interp, &interp.buffer.borrow(), pos, category)?
-                .filter(|value| is_keymap_value(interp, value)),
-        )
-    };
-
-    let string_keymap = |value: &Value| -> Result<Option<Value>, LispError> {
-        Ok(
-            string_property_at_with_category(interp, value, 0, category)?
-                .filter(|value| is_keymap_value(interp, value)),
-        )
-    };
-
-    match posn {
-        None => buffer_keymap(interp.buffer.borrow().point()),
-        Some(value) if value.is_nil() => buffer_keymap(interp.buffer.borrow().point()),
-        Some(value) if string_like(value).is_some() => match string_keymap(value)? {
-            Some(map) => Ok(Some(map)),
-            None => buffer_keymap(interp.buffer.borrow().point()),
-        },
-        Some(value) => {
-            let Ok(items) = value.to_vec() else {
-                return Ok(None);
-            };
-            let Some(area) = items.get(1) else {
-                return Ok(None);
-            };
-            if let Some(string) = items.get(4).and_then(|value| value.car_if_list())
-                && let Some(map) = string_keymap(&string)?
-            {
-                return Ok(Some(map));
-            }
-            if !area.is_nil() {
-                return Ok(None);
-            }
-            match items.get(5).map(|v| v.kind()) {
-                Some(Kind::Integer(pos)) if pos > 0 => buffer_keymap(pos as usize),
-                _ => buffer_keymap(interp.buffer.borrow().point()),
-            }
+/// keymap.c:click_position: POSITION's fixnum or marker position, else
+/// point, which must lie in the accessible text.
+fn click_position(interp: &Interpreter, position: &Value) -> Result<i64, LispError> {
+    let pos = match position.kind() {
+        Kind::Integer(_) | Kind::Marker(_) => {
+            super::textprop::fixnum_coerce_marker(interp, position)?
         }
+        _ => interp.buffer.borrow().point() as i64,
+    };
+    let (begv, zv) = interp.buffer.borrow().restriction();
+    if !(begv as i64 <= pos && pos <= zv as i64) {
+        return Err(LispError::SignalValue(Value::list([
+            Value::symbol("args-out-of-range"),
+            Value::Buffer(interp.buffer),
+            *position,
+        ])));
+    }
+    Ok(pos)
+}
+
+/// Fnth (N, POSN) as keyboard.h's POSN_STRING and POSN_BUFFER_POSN read
+/// it: Fnthcdr's walk, which refuses a dotted tail, then Fcar.
+fn posn_nth(posn: &Value, n: usize) -> Result<Value, LispError> {
+    let mut tail = *posn;
+    for _ in 0..n {
+        match tail.kind() {
+            Kind::Cons(cell) => tail = cell.cdr.get(),
+            Kind::Nil => return Ok(Value::Nil),
+            _ => return Err(wrong_type_argument("listp", *posn)),
+        }
+    }
+    match tail.kind() {
+        Kind::Cons(cell) => Ok(cell.car.get()),
+        Kind::Nil => Ok(Value::Nil),
+        _ => Err(wrong_type_argument("listp", tail)),
     }
 }
 
 /// keymap.c:1657 Fcurrent_active_maps: the active keymaps in precedence
-/// order, global map last.  OLP says whether the overriding maps apply.
-/// When it does, `overriding-local-map' -- consulted only while
-/// `overriding-terminal-local-map' is nil ("it seems clearer to use just
-/// one", keymap.c:1695) -- REPLACES the keymap-property, minor-mode and
-/// local maps entirely; `overriding-terminal-local-map' replaces nothing
-/// and rides on TOP of all of them.  A `local-map' text property stands in
-/// for the buffer's local map (get_local_map).  subr.el's
-/// `add-keymap-witness' marker is an inert keymap element here: keymap.c
-/// never consults it.  (Finding 109: dispatch used to suppress local and
-/// minor maps under overriding-terminal-local-map unless the witness was
-/// present -- a rule GNU does not have in either direction.)
+/// order, the global map last.  A click POSITION's window's buffer is
+/// made current while they are found.  With OLP, `overriding-local-map'
+/// -- consulted only while `overriding-terminal-local-map' is nil -- stands
+/// alone before the global map; otherwise the maps are, in order,
+/// `overriding-terminal-local-map' (with OLP), the `keymap' property map,
+/// the minor mode maps and the `local-map' property or buffer map, all at
+/// click_position's position, or for a click the ones its buffer position
+/// or string gives.  Neither overriding map is checked for being one.
 pub(crate) fn current_active_maps(
-    interp: &Interpreter,
+    interp: &mut Interpreter,
     env: &Env,
     olp: bool,
-    posn: Option<&Value>,
+    position: Option<&Value>,
 ) -> Result<Vec<Value>, LispError> {
-    let mut maps = active_command_keymaps_for(interp, env, olp, posn)?;
-    let global_map = interp.current_global_map_value();
-    if is_keymap_value(interp, &global_map) {
-        maps.push(global_map);
+    let position = position.copied().unwrap_or(Value::Nil);
+    let saved = interp.current_buffer_id();
+    let mut switched = false;
+    if let Some((window, _)) = position.cons_values()
+        && let Some(buffer) = super::window::window_buffer_id(interp, &window)
+        && buffer != saved
+    {
+        // record_unwind_current_buffer; set_buffer_internal.
+        interp.set_current_buffer_id(buffer)?;
+        switched = true;
     }
-    Ok(maps)
+    let maps = current_active_maps_1(interp, env, olp, position);
+    if switched && interp.has_buffer_id(saved) {
+        interp.set_current_buffer_id(saved)?;
+    }
+    maps
 }
 
-/// `current_active_maps' without the trailing global map, for the callers
-/// that consult the global map through their own fallback path.
-pub(crate) fn active_command_keymaps_for(
+fn current_active_maps_1(
     interp: &Interpreter,
     env: &Env,
     olp: bool,
-    posn: Option<&Value>,
+    position: Value,
 ) -> Result<Vec<Value>, LispError> {
-    let mut maps = Vec::new();
+    let global_map = interp.current_global_map_value();
     let otlp = interp
-        .lookup_var("overriding-terminal-local-map", env)
-        .filter(Value::is_truthy);
+        .symbol_value_key(cached_symbol!("overriding-terminal-local-map"))
+        .unwrap_or(Value::Nil);
     if olp
-        && otlp.is_none()
+        && otlp.is_nil()
         && let Some(map) = interp
-            .lookup_var("overriding-local-map", env)
+            .symbol_value_key(cached_symbol!("overriding-local-map"))
             .filter(Value::is_truthy)
     {
-        if is_keymap_value(interp, &map) {
-            maps.push(map);
+        return Ok(vec![map, global_map]);
+    }
+    let pt = click_position(interp, &position)?;
+    let mut local_map = get_local_map(interp, pt, "local-map")?;
+    let mut keymap = get_local_map(interp, pt, "keymap")?;
+    if position.is_cons() {
+        let string = posn_nth(&position, 4)?;
+        if string.is_nil() {
+            // POSN_INBUFFER_P: the clicked buffer position's maps.
+            if let Kind::Integer(pos) = posn_nth(&position, 5)?.kind() {
+                let z = interp.buffer.borrow().size_total() as i64 + 1;
+                if (1..=z).contains(&pos) {
+                    local_map = get_local_map(interp, pos, "local-map")?;
+                    keymap = get_local_map(interp, pos, "keymap")?;
+                }
+            }
         }
-        return Ok(maps);
+        // A click on a string: its properties, which a mode or header
+        // line click takes even when they are nil.
+        if let Some((text, pos)) = string.cons_values()
+            && let Kind::StringObject(state) = text.kind()
+            && let chars = state.borrow().len()
+            && let Kind::Integer(pos) = pos.kind()
+            && pos >= 0
+            && (pos as usize) < chars
+        {
+            let area = position
+                .cdr_if_list()
+                .and_then(|rest| rest.car_if_list())
+                .unwrap_or(Value::Nil);
+            let line_area = area.eq_value(Value::symbol("mode-line"))
+                || area.eq_value(Value::symbol("header-line"));
+            let map = super::textprop::get_text_property(
+                interp,
+                &Value::Integer(pos),
+                crate::lisp::types::PropertyName::symbol("local-map"),
+                text,
+            )?;
+            if map.is_truthy() || line_area {
+                local_map = map;
+            }
+            let map = super::textprop::get_text_property(
+                interp,
+                &Value::Integer(pos),
+                crate::lisp::types::PropertyName::symbol("keymap"),
+                text,
+            )?;
+            if map.is_truthy() || line_area {
+                keymap = map;
+            }
+        }
     }
-    if olp
-        && let Some(map) = otlp
-        && is_keymap_value(interp, &map)
-    {
-        maps.push(map);
+    let mut maps = Vec::new();
+    if olp && otlp.is_truthy() {
+        maps.push(otlp);
     }
-    if let Some(map) = keymap_at_active_position(interp, posn)? {
-        maps.push(map);
+    if keymap.is_truthy() {
+        maps.push(keymap);
     }
     maps.extend(active_minor_mode_maps(interp, env)?);
-    if let Some(map) = local_map_at_active_position(interp, posn)? {
-        maps.push(map);
-    } else {
-        // get_local_map's BVAR (current_buffer, keymap).
-        let map = interp.buffer.borrow().keymap();
-        if map.is_truthy() && is_keymap_value(interp, &map) {
-            maps.push(map);
-        }
+    if local_map.is_truthy() {
+        maps.push(local_map);
     }
+    maps.push(global_map);
     Ok(maps)
 }
 

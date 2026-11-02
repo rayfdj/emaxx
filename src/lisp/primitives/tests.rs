@@ -21040,19 +21040,9 @@ fn key_sequence_binding_parts_preserve_control_prefixes() {
         vec!["C-c".to_string(), ",".to_string(), "C-w".to_string()]
     );
     assert_eq!(
-        key_sequence_keymap_parts(&Value::String("\x03,\x17".into()))
-            .expect("raw control-byte key sequence should retain every event"),
-        vec![Value::Integer(3), Value::Integer(44), Value::Integer(23)]
-    );
-    assert_eq!(
         key_sequence_binding_parts(&Value::String("C-c g".into()))
             .expect("raw strings should remain raw key sequences"),
         vec!["C", "-", "c", "SPC", "g"]
-    );
-    assert_eq!(
-        key_sequence_binding_parts(&parse_kbd_sequence("C-c g").expect("parse key spelling"))
-            .expect("textual control-prefixed key should parse"),
-        vec!["C-c".to_string(), "g".to_string()]
     );
     assert_eq!(
         key_sequence_binding_parts(&Value::vector([
@@ -21061,16 +21051,6 @@ fn key_sequence_binding_parts_preserve_control_prefixes() {
         ]))
         .expect("vector control-prefixed key should parse"),
         vec!["C-c".to_string(), "g".to_string()]
-    );
-    assert_eq!(
-        textual_key_sequence_keymap_parts(&Value::String("M-v".into()))
-            .expect("Meta character key should normalize for keymap storage"),
-        vec![Value::Integer(27), Value::Integer(118)]
-    );
-    assert_eq!(
-        textual_key_sequence_keymap_parts(&Value::String("M-<up>".into()))
-            .expect("Meta function key should remain one symbolic event"),
-        vec![Value::symbol("M-up")]
     );
 }
 
@@ -21112,14 +21092,14 @@ fn string_make_multibyte_preserves_identity_or_converts_raw_bytes_without_proper
 
 #[test]
 fn keymap_lookup_uses_the_event_head_of_a_character_range() {
-    let range_event = Value::vector([Value::cons(
-        Value::Integer('w' as i64),
-        Value::Integer('x' as i64),
-    )]);
-    assert_eq!(
-        key_sequence_keymap_parts(&range_event)
-            .expect("a map-keymap character range should remain a valid lookup event"),
-        vec![Value::Integer(119)]
+    // keymap.c:access_keymap_1 looks a cons event up by its EVENT_HEAD.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((map (make-sparse-keymap)))
+              (define-key map "w" 'zz-w)
+              (list (lookup-key map (vector (cons ?w ?x)))
+                    (condition-case e (lookup-key map (vector (list ?w 1))) (error e))))"#,
+        r#"(zz-w (error "Two bases given in one event"))"#,
+        "character range event head",
     );
 }
 
@@ -33877,6 +33857,92 @@ fn variable_watchers_are_the_watchers_property_as_data_c_keeps_them() {
         r#"(let (log) (defvar zz-w 1) (defvaralias 'zz-wa 'zz-w) (defvar zz-r 1) (list (add-variable-watcher 'zz-w (lambda (&rest a) (push (cons 'first (nth 2 a)) log))) (add-variable-watcher 'zz-wa (lambda (&rest a) (push (cons 'second (nth 2 a)) log))) (add-variable-watcher 'zz-w 'ignore) (add-variable-watcher 'zz-w 'ignore) (length (get-variable-watchers 'zz-wa)) (length (get 'zz-w 'watchers)) (get 'zz-wa 'watchers) (progn (setq zz-wa 2) (prog1 (reverse log) (setq log nil))) (remove-variable-watcher 'zz-wa 'ignore) (length (get 'zz-w 'watchers)) (progn (put 'zz-w 'watchers nil) (setq zz-w 3) (prog1 (reverse log) (setq log nil))) (get-variable-watchers 'zz-w) (remove-variable-watcher 'zz-w 'nothing) (progn (add-variable-watcher 'zz-r (lambda (s n o w) (push (list s n o (get-variable-watchers s)) log) (setq zz-r (1+ n)))) (setq zz-r 10) (list zz-r (prog1 log (setq log nil)))) (mapcar (lambda (v) (length (get v 'watchers))) '(mode-line-format truncate-lines line-spacing display-line-numbers))))"#,
         r#"(nil nil nil nil 3 3 nil ((second . set) (first . set)) nil 2 nil nil nil (10 ((zz-r 10 set nil))) (1 1 1 1))"#,
         "variable watchers",
+    );
+}
+
+#[test]
+fn signal_and_watchers_refuse_what_eval_c_and_data_c_refuse() {
+    // eval.c:Fsignal turns a nil symbol without a list into `error';
+    // signal_or_quit takes DATA itself for a nil symbol and a non-symbol
+    // without data as it is, then Fget's CHECK_SYMBOL refuses a car that is
+    // no symbol.  data.c:set_symbol_trapped_write signals
+    // `trapping-constant' for a constant, and Fdefvaralias's set_internal
+    // of an unbound alias tells the base's watchers `let' with nil.
+    assert_oracle_contract_matches_interpreter(
+        r#"(list (condition-case e (signal nil '(a b)) (t (list 't e)))
+                 (condition-case e (signal nil nil) (error e))
+                 (condition-case e (signal nil 5) (error e))
+                 (condition-case e (signal 5 '(x)) (error e))
+                 (condition-case e (signal "str" nil) (error e))
+                 (condition-case e (signal 'arith-error 5) (error e))
+                 (condition-case e (signal nil '(arith-error 1 2)) (arith-error (list 'ae e)))
+                 (condition-case e (signal t '(1)) (t e))
+                 (condition-case e (add-variable-watcher nil #'ignore) (error e))
+                 (condition-case e (add-variable-watcher :kw #'ignore) (error e))
+                 (condition-case e (add-variable-watcher 'most-positive-fixnum #'ignore) (error e))
+                 (condition-case e (remove-variable-watcher nil #'ignore) (error e))
+                 (remove-variable-watcher 'zz-unwatched #'ignore)
+                 (let (log)
+                   (defvar zz-sw 1)
+                   (add-variable-watcher 'zz-sw (lambda (s n o w) (push (list s n o w) log)))
+                   (makunbound 'zz-sw)
+                   (defvaralias 'zz-sw-alias 'zz-sw)
+                   (list (nreverse log) (boundp 'zz-sw))))"#,
+        "((t (a b)) (error) (error . 5) (wrong-type-argument symbolp 5) \
+         (wrong-type-argument symbolp \"str\") (arith-error . 5) (ae (arith-error 1 2)) (t 1) \
+         (trapping-constant nil) (trapping-constant :kw) \
+         (trapping-constant most-positive-fixnum) (trapping-constant nil) nil \
+         (((zz-sw nil makunbound nil) (zz-sw nil let nil)) nil))",
+        "signal and trapping-constant",
+    );
+}
+
+#[test]
+fn current_active_maps_are_found_as_keymap_c_finds_them() {
+    // keymap.c:Fcurrent_active_maps: click_position refuses a position
+    // outside the accessible text; get_local_map reads the `keymap' and
+    // `local-map' char properties there with the narrowing lifted; the
+    // overriding maps and current_minor_maps' Findirect_function values go
+    // in unchecked; a mode or header line string's properties replace the
+    // buffer's even when nil; POSN_STRING is Fnth's.  read_key_sequence's
+    // active_maps passes a parameterized event's start, so a cons event
+    // whose second element is out of range signals as GNU's does.
+    assert_oracle_contract_matches_interpreter(
+        r#"(progn
+                (defvar zz-cam-mode nil)
+                (let* ((tag (lambda (m) (cond ((eq m global-map) 'G) ((eq m (current-local-map)) 'L) ((keymapp m) (or (lookup-key m [zz-tag]) 'K)) (t m))))
+                       (names (lambda (maps) (mapcar tag maps)))
+                       (km (lambda (name) (let ((m (make-sparse-keymap))) (define-key m [zz-tag] name) m))))
+                  (list
+                   (with-temp-buffer
+                     (insert "abc")
+                     (put-text-property 1 3 'keymap (funcall km 'kp))
+                     (let ((o (make-overlay 3 4)))
+                       (overlay-put o 'local-map (funcall km 'ov))
+                       (list (funcall names (current-active-maps nil 1))
+                             (funcall names (current-active-maps nil 3))
+                             (funcall names (current-active-maps nil (copy-marker 4)))
+                             (condition-case e (current-active-maps nil 5) (error (car e)))
+                             (condition-case e (current-active-maps nil 0) (error (car e)))
+                             (progn (narrow-to-region 2 3)
+                                    (list (condition-case e (current-active-maps nil 1) (error (car e)))
+                                          (funcall names (current-active-maps nil 2)))))))
+                   (let ((overriding-local-map 5)) (funcall names (current-active-maps t)))
+                   (let ((overriding-terminal-local-map 6) (overriding-local-map 5))
+                     (funcall names (current-active-maps t)))
+                   (let ((zz-cam-mode t)
+                         (minor-mode-map-alist (list (cons 'zz-cam-mode 7) (cons 'zz-cam-mode 'zz-cam-void))))
+                     (list (funcall names (current-active-maps)) (current-minor-mode-maps)))
+                   (funcall names (current-active-maps nil (list (selected-window) 'mode-line '(0 . 0) 0 (cons (propertize "xy" 'keymap (funcall km 'strk)) 1))))
+                   (funcall names (current-active-maps nil (list (selected-window) 'header-line '(0 . 0) 0 (cons (propertize "xy" 'local-map (funcall km 'hl)) 5))))
+                   (condition-case e (current-active-maps nil '(1 . 2)) (error e))
+                   (let ((m (make-sparse-keymap)))
+                     (define-key m "a" 'zz-cam-a)
+                     (let ((zz-cam-mode t) (minor-mode-map-alist (list (cons 'zz-cam-mode m))))
+                       (list (minor-mode-key-binding "a") (minor-mode-key-binding "b"))))
+                   (let ((e (condition-case e (execute-kbd-macro [(control 99999999)]) (error e)))) (list (car e) (bufferp (nth 1 e)) (nth 2 e))))))"#,
+        r#"(((kp G) (kp ov G) (G) args-out-of-range args-out-of-range (args-out-of-range (kp G))) (5 G) (6 L G) ((7 L G) (7)) (strk G) (L G) (wrong-type-argument listp (1 . 2)) (((zz-cam-mode . zz-cam-a)) nil) (args-out-of-range t 99999999))"#,
+        "current-active-maps",
     );
 }
 
