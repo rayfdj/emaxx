@@ -14,6 +14,7 @@ pub(crate) fn decode_utf_8_whole(bytes: &[u8]) -> DecodedText {
     loop {
         match utf_8_call(bytes, consumed, false, false, &mut spec, &mut out) {
             CallEnd::Full(at) if at < bytes.len() => consumed = at,
+            CallEnd::Again(at) => consumed = at,
             CallEnd::Full(at) | CallEnd::Ended(at) => {
                 consumed = at;
                 break;
@@ -1247,6 +1248,120 @@ pub(super) fn raw_text_call<S: Units + ?Sized>(
     CallEnd::Ended(end)
 }
 
+/// coding->spec.ccl of a decode: the decoder program, set up once for
+/// decode_coding's calls (setup_ccl_program), and CODING_ATTR_CHARSET_LIST.
+pub(super) struct CclDecode {
+    ccl: crate::lisp::primitives::ccl::CclProgram,
+    charset_list: Option<Vec<String>>,
+}
+
+impl CclDecode {
+    fn new(interp: &Interpreter, canonical: &str) -> Self {
+        let mut ccl = crate::lisp::primitives::ccl::CclProgram::default();
+        let program = coding_ccl_program(interp, canonical, 0);
+        if !crate::lisp::primitives::ccl::setup_ccl_program(interp, &mut ccl, &program) {
+            // No program to run (GNU runs what the struct held): the call
+            // ends as an interrupted one, decoding nothing.
+            ccl.status = crate::lisp::primitives::ccl::CCL_STAT_INVALID_CMD;
+            ccl.ic = -1;
+        }
+        CclDecode {
+            ccl,
+            charset_list: coding_charset_list(interp, canonical),
+        }
+    }
+}
+
+/// CODING_ATTR_CHARSET_LIST of a coding: None for nil.
+pub(super) fn coding_charset_list(interp: &Interpreter, canonical: &str) -> Option<Vec<String>> {
+    let names = coding_system_charset_names(interp, canonical);
+    (!names.is_empty()).then_some(names)
+}
+
+/// CODING_CCL_DECODER (INDEX 0) or CODING_CCL_ENCODER (INDEX 1).
+pub(super) fn coding_ccl_program(interp: &Interpreter, canonical: &str, index: usize) -> Value {
+    interp
+        .coding_system(canonical)
+        .and_then(|state| state.type_args.get(index).copied())
+        .unwrap_or(Value::Nil)
+}
+
+/// decode_coding_ccl: the source a CCL_BLOCK of characters at a time
+/// through the decoder program into a charbuf, until the source or the
+/// charbuf runs out; then produce_chars of the charbuf, where a
+/// negative int is an annotation as long as it says.
+pub(super) fn ccl_call<S: Units + ?Sized>(
+    interp: &Interpreter,
+    src: &S,
+    start: usize,
+    decode: &mut CclDecode,
+    last: bool,
+    out: &mut DecodedText,
+) -> Result<CallEnd, LispError> {
+    use crate::lisp::primitives::ccl::{
+        CCL_BLOCK, CCL_STAT_SUSPEND_BY_DST, CCL_STAT_SUSPEND_BY_SRC, CodingHost, ccl_driver,
+    };
+    if decode.ccl.ic < 0 {
+        return Ok(CallEnd::Ended(start));
+    }
+    let multibyte = src.bytes().is_none();
+    let mut charbuf = vec![0i32; charbuf_size(src)];
+    let mut produced = 0;
+    let mut pos = start;
+    let mut source = Vec::with_capacity(CCL_BLOCK);
+    loop {
+        source.clear();
+        let mut p = pos;
+        while source.len() < CCL_BLOCK && p < src.len() {
+            let unit = src.at(p);
+            // A multibyte source's character, string_char_advance's: a
+            // raw byte's two-byte form is its eight-bit character.
+            source.push(if !multibyte {
+                unit
+            } else if unit < 0 {
+                -unit
+            } else if unit >= 0x80 {
+                unit + 0x3F_FF00
+            } else {
+                unit
+            });
+            p += 1;
+        }
+        if p == src.len() && last {
+            decode.ccl.last_block = true;
+        }
+        let _ = ccl_driver(
+            &mut CodingHost { interp },
+            &mut decode.ccl,
+            Some(&source),
+            Some(&mut charbuf[produced..]),
+            decode.charset_list.as_deref(),
+        );
+        produced += decode.ccl.produced;
+        pos += decode.ccl.consumed;
+        if p == src.len() || decode.ccl.status != CCL_STAT_SUSPEND_BY_SRC {
+            break;
+        }
+    }
+    let mut index = 0;
+    while index < produced {
+        let c = charbuf[index];
+        if c < 0 {
+            // An annotation datum: (-C) is its length.
+            index = index.saturating_add(c.unsigned_abs() as usize);
+            continue;
+        }
+        // CHAR_STRING_ADVANCE_NO_UNIFY.
+        out.push_code(crate::lisp::primitives::ccl::written_character(c)?);
+        index += 1;
+    }
+    Ok(match decode.ccl.status {
+        CCL_STAT_SUSPEND_BY_DST => CallEnd::Again(pos),
+        crate::lisp::primitives::ccl::CCL_STAT_SUCCESS => CallEnd::Full(pos),
+        _ => CallEnd::Ended(pos),
+    })
+}
+
 /// A coding system's decoder, set up once for decode_coding's calls.
 enum Decoder {
     Utf8 { bom: bool },
@@ -1256,6 +1371,7 @@ enum Decoder {
     Big5(std::rc::Rc<CharsetInfo>, std::rc::Rc<CharsetInfo>),
     EmacsMule(Box<EmacsMuleLayout>),
     Iso2022,
+    Ccl(Box<CclDecode>),
     RawText,
 }
 
@@ -1283,6 +1399,7 @@ impl Decoder {
                 }
             }
             "emacs-mule" => Decoder::EmacsMule(Box::new(emacs_mule_layout(interp))),
+            "ccl" => Decoder::Ccl(Box::new(CclDecode::new(interp, canonical))),
             "charset" => Decoder::Charset(Box::new(CharsetDecode::new(interp, canonical))),
             "utf-8" | "prefer-utf-8" | "utf-8-auto" => Decoder::Utf8 {
                 bom: coding_system_consumes_bom(interp, canonical),
@@ -1314,7 +1431,7 @@ pub(super) fn decode_units<S: Units + ?Sized>(
     src: &S,
     canonical: &str,
     block: &mut DecodeBlock,
-) -> DecodedText {
+) -> Result<DecodedText, LispError> {
     let mut decoder = Decoder::new(interp, canonical);
     // A unit decodes to a character of at least a byte.
     let mut out = DecodedText::with_capacity(src.len());
@@ -1351,6 +1468,7 @@ pub(super) fn decode_units<S: Units + ?Sized>(
             Decoder::Iso2022 => iso2022::decode_call(
                 interp, src, consumed, canonical, eol_dos, block.last, block.spec, &mut out,
             ),
+            Decoder::Ccl(ccl) => ccl_call(interp, src, consumed, ccl, block.last, &mut out)?,
             Decoder::RawText => raw_text_call(src, consumed, eol_dos, &mut out),
         };
         // produce_chars inserts what the call produced.
@@ -1359,6 +1477,7 @@ pub(super) fn decode_units<S: Units + ?Sized>(
         }
         match end {
             CallEnd::Full(at) if at < src.len() => consumed = at,
+            CallEnd::Again(at) => consumed = at,
             CallEnd::Full(at) | CallEnd::Ended(at) => {
                 consumed = at;
                 break;
@@ -1375,5 +1494,5 @@ pub(super) fn decode_units<S: Units + ?Sized>(
     } else {
         block.consumed = consumed;
     }
-    out
+    Ok(out)
 }

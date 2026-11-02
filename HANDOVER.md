@@ -11906,6 +11906,56 @@ setup_process_coding_systems's check now refuses). A 13-form
   GNU's or below. Local validation: the grouped gate's 3,435
   library tests, the integration targets and clippy with `--all-targets
   --all-features -D warnings` pass.
+- **Round 245: CCL as ccl.c runs it.** ccl.rs is ccl.c: `ccl_driver`
+  runs a compiled program over a source and a destination of ints with
+  every command and extended command (CCL_Call, map-single, map-multiple
+  and iterate-multiple-map with programs called from maps,
+  translate-character, lookup-integer and lookup-character, read- and
+  write-multibyte-character), GNU's int arithmetic (wrapping,
+  INT_DIVIDE_OVERFLOW, a DIVMOD by -1 negating the destination's old
+  value, shifts past the width), CCL_SUSPEND's step back to the
+  suspended command, the error handler's message into the destination
+  where it has room, quit-flag ending a run, and ccl.c's statics shared
+  by every program (`CclStatics`: ccl_prog_stack_struct and
+  stack_idx_of_map_multiple). `ccl_program_table` is Vccl_program_table
+  with GNU's [NAME CCL_PROG RESOLVEDP UPDATEDP] slots, 32 to start and
+  grown by larger_vector's half, a registered program resolved in its
+  slot on first use; register-code-conversion-map grows
+  code-conversion-map-vector the same way. ccl-execute and
+  ccl-execute-on-string set up as setup_ccl_program, report an invalid
+  command at the counter GNU's reports (GET_CCL_CODE moves past a word
+  before its range check), store a written int as char_string does
+  (modifier bits resolved) and run a string in CCL_EXECUTE_BUF_SIZE
+  blocks. A coding system of type `ccl` decodes as decode_coding_ccl (a
+  block of 1024 characters at a time into the charbuf, called again
+  while output is pending, a negative int an annotation of its length)
+  and encodes as encode_coding_ccl; define-coding-system-internal checks
+  its two programs (`cclp`), copies a vector one, and checks `:valids`.
+  Where char_charset returns a charset without a code (the unicode of
+  Vcharset_non_preferred_head, or `emacs` past the list),
+  CCL_ENCODE_CHAR's `ncode` keeps its last value, as the oracle's does.
+  Two file paths as fileio.c's: write-region encodes without
+  CODING_MODE_LAST_BLOCK (its flush, an e_write of no characters,
+  encodes nothing), so an ISO-2022 text ends unreset and a CCL encoder
+  never runs its end-of-input code, and insert-file-contents decodes an
+  empty file with a coding that requires flushing. consume_chars keeps a
+  CCL encoder's translation tables (encode_coding drops them for
+  encode_coding_raw_text alone). Batteries against GNU (r245/cb.txt,
+  maps.txt, cs.txt): 82 register and string cases, 72 call, map and
+  table cases, 62 coding-system and file cases, all alike but one, a
+  negative int written to a multibyte string, whose low byte GNU stores
+  as an invalid multibyte form and Emaxx as its raw-byte character.
+  Remaining differences: from a coding system's program, a translation
+  hash table with a test of `define-hash-table-test` is searched by
+  integer identity, where GNU calls the test's functions (the coding
+  paths hold the interpreter shared); an id out of range and a word past
+  a program's end, which GNU reads from beyond its vectors, are invalid
+  commands. ccl-tests, coding-tests, mule-tests, mule-util-tests,
+  fileio-tests, files-tests, files-x-tests, process-tests,
+  autorevert-tests, textsec-tests and ucs-normalize-tests pass as GNU's.
+  Local validation: the grouped gate's 3,436 library tests, the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings` pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -13495,6 +13545,17 @@ electric-tests' the most (905 against 562), and the widest body gaps are
 comp-tests (17,807 ms against 15,023), tramp-tests (21,706 against
 19,464), semantic-utest-ia (4,205 against 2,929), mule-tests (3,133
 against 2,047) and eglot-tests (34,451 against 33,491).
+
+**On `7055d02`** (round 244): frozen (run 41384595504) matched all 7,928
+outcomes. Setup 78.2 s against 63.9 s (1.224), test bodies 251.8 s
+against 262.9 s (0.957), in all 0.994; ucs-normalize-tests' bodies took
+128 ms against 92. The full Rust gate (run 41384587937) passed. Per
+file, the setup is 28 ms over GNU's on average (14.3 s over 519 files, a
+median of 118 ms against 99), electric-tests' the most (880 against
+503), and the widest body gaps are comp-tests (16,754 ms against
+14,534), tramp-tests (21,181 against 19,156), semantic-utest-ia (3,819
+against 2,467), eglot-tests (33,559 against 32,341) and mule-tests
+(3,081 against 1,976).
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

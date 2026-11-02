@@ -4484,9 +4484,7 @@ impl Interpreter {
         for (_, value) in &self.charset_plists {
             mark(value);
         }
-        for (_, value) in self.ccl_programs.iter().flatten() {
-            mark(value);
-        }
+        mark(&self.ccl_program_table);
         for event in self
             .keyboard_input
             .command_keys
@@ -4945,9 +4943,7 @@ impl Interpreter {
             for (_, plist) in &mut clone.charset_plists {
                 *plist = c.copy(plist);
             }
-            for program in clone.ccl_programs.iter_mut().flatten() {
-                program.1 = c.copy(&program.1.clone());
-            }
+            clone.ccl_program_table = c.copy(&clone.ccl_program_table);
             for slot in clone.records.values_mut() {
                 let Kind::Record(copied) = c.copy(&Value::Record(*slot)).kind() else {
                     unreachable!("a record copies to a record")
@@ -5526,9 +5522,12 @@ pub struct InterpreterState {
     /// Vcoding_system_hash_table's books: a key for each coding system
     /// and alias.
     pub(crate) coding_table_books: crate::lisp::alloc::vectors::hash_tables::HostTableBooks,
-    /// GNU ccl.c's private registration table.  Lisp symbols refer to these
-    /// entries through their `ccl-program-idx' property.
-    pub(crate) ccl_programs: Vec<Option<(String, Value)>>,
+    /// ccl.c's Vccl_program_table: a vector whose slots are nil or a
+    /// registered program's [NAME CCL_PROG RESOLVEDP UPDATEDP]; a symbol
+    /// names its slot by its `ccl-program-idx' property.
+    pub(crate) ccl_program_table: Value,
+    /// ccl.c's statics, the running process's.
+    pub(crate) ccl_statics: crate::lisp::primitives::ccl::CclStatics,
     /// Coding-system aliases keyed by alias name.
     coding_aliases: Vec<(String, String)>,
     /// Current coding-system priority order.
@@ -6351,7 +6350,8 @@ impl Interpreter {
                 coding_systems.len() + coding_aliases.len(),
             ),
             coding_systems,
-            ccl_programs: vec![None; 32],
+            ccl_program_table: crate::lisp::primitives::ccl::initial_program_table(),
+            ccl_statics: Default::default(),
             coding_aliases,
             coding_priority: builtin_coding_priority(),
             coding_category_representatives: {

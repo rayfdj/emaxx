@@ -240,6 +240,9 @@ pub(crate) enum CallEnd {
     /// no_more_source at CONSUMED: the source ended, with the units from
     /// CONSUMED on (if any) unfinished (CODING_RESULT_INSUFFICIENT_SRC).
     Ended(usize),
+    /// CODING_RESULT_INSUFFICIENT_DST at CONSUMED: output is pending, so
+    /// decode_coding calls again even where the source has ended.
+    Again(usize),
 }
 
 /// The `charset' run of one decoder call (last_id, last_offset), its

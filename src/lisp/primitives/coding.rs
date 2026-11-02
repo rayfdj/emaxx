@@ -1457,7 +1457,6 @@ fn consume_chars(
     translation: &[Value],
     preferred: &[Option<String>],
 ) -> (Vec<u32>, Vec<Option<String>>) {
-    let translation = if raw_text_encoder { &[] } else { translation };
     if source.multibyte && translation.is_empty() && preferred.is_empty() {
         // No table and no annotation: each character goes in as it is, a
         // newline as the eol type makes it.
@@ -1720,6 +1719,37 @@ pub(crate) fn encode_text_bytes(
     )
 }
 
+/// e_write's encodes of a write_region: none for no characters, else the
+/// text as a block that is not the last, write_region setting no
+/// CODING_MODE_LAST_BLOCK (its flush, an e_write of no characters,
+/// encodes nothing): an ISO-2022 text ends unreset, a CCL encoder never
+/// reaches its end-of-input code.
+pub(crate) fn encode_text_bytes_for_write(
+    interp: &Interpreter,
+    source: &StringLike,
+    coding: &str,
+    inhibit_eol_conversion: bool,
+    selective_display: bool,
+    translation: &[Value],
+) -> Result<Vec<u8>, LispError> {
+    if source.text.is_empty() {
+        interp
+            .coding_system_canonical_name(coding)
+            .ok_or_else(|| coding_system_error(Value::symbol(coding)))?;
+        return Ok(Vec::new());
+    }
+    encode_text_bytes_with_charsets(
+        interp,
+        source,
+        coding,
+        inhibit_eol_conversion,
+        selective_display,
+        translation,
+        &[],
+        Some(&mut EncoderSpec::default()),
+    )
+}
+
 /// encode_coding: consume_chars, then the encoder of CODING's type.
 /// TRANSLATION is get_translation_table's for CODING
 /// (`encode_translation_tables').  PREFERRED holds the per-character
@@ -1754,8 +1784,14 @@ pub(crate) fn encode_text_bytes_with_charsets(
         .then(|| interp.coding_system_eol_type_value(&canonical))
         .flatten();
     // consume_chars hands the raw-text and CCL encoders a unibyte
-    // source's bytes undecoded.
+    // source's bytes undecoded; encode_coding gives encode_coding_raw_text
+    // no translation table.
     let raw_text_encoder = matches!(encoder, "raw-text" | "undecided" | "ccl");
+    let translation = if matches!(encoder, "raw-text" | "undecided") {
+        &[]
+    } else {
+        translation
+    };
     let preferred = if encoder == "iso-2022" {
         preferred
     } else {
@@ -1836,10 +1872,49 @@ pub(crate) fn encode_text_bytes_with_charsets(
         "shift-jis" => Ok(encode_coding_sjis(interp, &codes, &canonical)),
         "big5" => Ok(encode_coding_big5(interp, &codes, &canonical)),
         "emacs-mule" => Ok(encode_coding_emacs_mule(interp, &codes, &canonical)),
-        // raw-text, undecided and (with no CCL interpreter) ccl all encode
-        // through encode_coding_raw_text.
+        "ccl" => Ok(encode_coding_ccl(interp, &codes, &canonical, last)),
+        // raw-text and undecided encode through encode_coding_raw_text.
         _ => encode_coding_raw_text(&codes, source.multibyte),
     }
+}
+
+/// encode_coding_ccl: CODES (consume_chars' charbuf) through the encoder
+/// program, set up for this encode, a CCL_BLOCK of output at a time; each
+/// int written is a byte.  LAST is CODING_MODE_LAST_BLOCK.
+fn encode_coding_ccl(interp: &Interpreter, codes: &[u32], coding: &str, last: bool) -> Vec<u8> {
+    use super::ccl::{
+        CCL_BLOCK, CCL_STAT_INVALID_CMD, CCL_STAT_QUIT, CclProgram, CodingHost, ccl_driver,
+        setup_ccl_program,
+    };
+    let mut ccl = CclProgram::default();
+    let program = decoders::coding_ccl_program(interp, coding, 1);
+    if !setup_ccl_program(interp, &mut ccl, &program) {
+        return Vec::new();
+    }
+    let charset_list = decoders::coding_charset_list(interp, coding);
+    let charbuf: Vec<i32> = codes.iter().map(|&code| code as i32).collect();
+    ccl.last_block = last;
+    let mut out = Vec::with_capacity(charbuf.len());
+    let mut destination = vec![0i32; CCL_BLOCK];
+    let mut pos = 0;
+    loop {
+        let _ = ccl_driver(
+            &mut CodingHost { interp },
+            &mut ccl,
+            Some(&charbuf[pos..]),
+            Some(&mut destination),
+            charset_list.as_deref(),
+        );
+        out.extend(destination[..ccl.produced].iter().map(|&byte| byte as u8));
+        pos += ccl.consumed;
+        if ccl.status == CCL_STAT_QUIT || ccl.status == CCL_STAT_INVALID_CMD {
+            break;
+        }
+        if pos >= charbuf.len() {
+            break;
+        }
+    }
+    out
 }
 
 /// encode_coding_utf_16: a character beyond MAX_UNICODE_CHAR (eight-bit
@@ -2509,7 +2584,7 @@ fn decode_bytes_with_coding_block(
     canonical: &str,
     block: &mut DecodeBlock,
 ) -> Result<DecodedText, LispError> {
-    Ok(decoders::decode_units(interp, bytes, canonical, block))
+    decoders::decode_units(interp, bytes, canonical, block)
 }
 
 /// CODING_ATTR_CHARSET_LIST: the charsets CODING was defined with, the
@@ -3387,7 +3462,7 @@ fn decode_multibyte_source_text(
     coding: &str,
     raw_to_unibyte: bool,
     eol_dos: bool,
-) -> DecodedText {
+) -> Result<DecodedText, LispError> {
     let codes = source.character_codes_iter().map(|code| code as u32);
     if raw_to_unibyte {
         let mut decoded = DecodedText::new();
@@ -3400,7 +3475,7 @@ fn decode_multibyte_source_text(
                 decoded.push_byte(((-i64::from(code)) & 0xFF) as u8);
             }
         }
-        return decoded;
+        return Ok(decoded);
     }
     let units = units::CharUnits::from_codes(codes);
     let mut spec = DecoderSpec::default();
@@ -3748,7 +3823,7 @@ fn decode_coding(
                     Some("raw-text" | "undecided")
                 ),
             eol_dos,
-        ),
+        )?,
         None => {
             // decode_coding's decoder over the block, CODING_MODE_LAST_BLOCK
             // unless a stream's block is not the last, with the spec state

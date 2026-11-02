@@ -117,6 +117,17 @@ impl Interpreter {
         self.charset_canonical(name).is_some()
     }
 
+    /// CHARSET_FROM_ID: the name of the charset whose id is ID.
+    pub(crate) fn charset_name_of_id(&self, id: i64) -> Option<&str> {
+        let direct = usize::try_from(id)
+            .ok()
+            .and_then(|index| self.charset_ids.get(index))
+            .filter(|(_, found)| *found == id);
+        direct
+            .or_else(|| self.charset_ids.iter().find(|(_, found)| *found == id))
+            .map(|(name, _)| name.as_str())
+    }
+
     pub fn charset_id(&self, name: &str) -> Option<i64> {
         self.charset_id_index
             .get(self.charset_canonical(name)?)

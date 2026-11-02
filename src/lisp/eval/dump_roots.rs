@@ -176,6 +176,10 @@ pub(crate) const ROOTS_RESET_AFTER_LOAD: &[(&str, &str)] = &[
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
     (
+        "ccl_statics",
+        "ccl.c's statics (ccl_prog_stack_struct, stack_idx_of_map_multiple), which a pdumper load starts afresh as a GNU process starts its statics",
+    ),
+    (
         "charset_table_books",
         "Vcharset_hash_table's allocation books, thawed from the carried charsets and aliases by thaw_host_hash_tables after a load",
     ),
@@ -634,14 +638,9 @@ impl Interpreter {
                     .map(|category| Value::Integer(*category as i64)),
             ),
         ));
-        // ccl.c: Vccl_program_table, a vector of [name program ...] or nil.
-        groups.push((
-            RootSlot::CclProgramTable,
-            Value::vector(self.ccl_programs.iter().map(|entry| match entry {
-                Some((name, program)) => pair(Value::symbol(name), *program),
-                None => Value::Nil,
-            })),
-        ));
+        // ccl.c: Vccl_program_table, a vector of [NAME CCL_PROG RESOLVEDP
+        // UPDATEDP] or nil.
+        groups.push((RootSlot::CclProgramTable, self.ccl_program_table));
         // buffer_defaults' BVARs (remembered data in GNU): the standard
         // syntax, category and case tables; casetab.c's ASCII tables.
         groups.push((RootSlot::SyntaxCodeObjects, self.syntax_code_objects));
@@ -1114,16 +1113,8 @@ mod install {
                     self.coding_category_priorities = priorities;
                 }
                 RootSlot::CclProgramTable => {
-                    let mut programs = Vec::new();
-                    for entry in expect_vector(value, "ccl program table")? {
-                        programs.push(if entry.is_nil() {
-                            None
-                        } else {
-                            let (name, program) = expect_pair(&entry, "ccl program entry")?;
-                            Some((expect_symbol(&name, "ccl program name")?, program))
-                        });
-                    }
-                    self.ccl_programs = programs;
+                    expect_vector(value, "ccl program table")?;
+                    self.ccl_program_table = *value;
                 }
                 RootSlot::SyntaxCodeObjects => {
                     if !matches!(value.kind(), Kind::Vector(codes) if codes.len() == 16) {

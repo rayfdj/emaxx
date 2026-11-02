@@ -44,7 +44,7 @@ pub(crate) mod batch_stdout;
 mod buffers;
 mod case;
 pub(crate) mod casetab;
-mod ccl;
+pub(crate) mod ccl;
 pub(crate) mod coding;
 mod color_lcms;
 mod completion;

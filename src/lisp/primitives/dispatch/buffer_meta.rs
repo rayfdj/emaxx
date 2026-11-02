@@ -1975,6 +1975,11 @@ define_dispatch!(
                     Kind::Integer(character) => u32::try_from(character).ok(),
                     _ => None,
                 };
+                let type_args = if kind == "ccl" {
+                    ccl_coding_args(interp, args)?
+                } else {
+                    args.get(13..).unwrap_or(&[]).to_vec()
+                };
                 interp.define_coding_system(
                     coding,
                     mnemonic,
@@ -1983,7 +1988,7 @@ define_dispatch!(
                     eol_type,
                     args[3],
                     default_char,
-                    args.get(13..).unwrap_or(&[]).to_vec(),
+                    type_args,
                 )?;
                 Ok(Value::Nil)
             }
@@ -1997,6 +2002,68 @@ define_dispatch!(
         }
     }
 );
+
+/// Fdefine_coding_system_internal's arguments of a `ccl' coding: the
+/// decoder and the encoder, each a CCL program (CHECK_CCL_PROGRAM, a
+/// vector copied), and the valid bytes, each a byte or a (FROM . TO)
+/// range of them.
+fn ccl_coding_args(interp: &Interpreter, args: &[Value]) -> Result<Vec<Value>, LispError> {
+    // coding_arg_ccl_max.
+    if args.len() < 16 {
+        return Err(LispError::WrongNumberOfArgs(
+            "define-coding-system-internal".into(),
+            args.len(),
+        ));
+    }
+    let program = |value: &Value| -> Result<Value, LispError> {
+        if !crate::lisp::primitives::ccl::ccl_program_p(interp, value) {
+            return Err(LispError::WrongTypeArgument("cclp".into(), *value));
+        }
+        Ok(match value.kind() {
+            Kind::Vector(vector) => Value::vector(vector.slots()),
+            _ => *value,
+        })
+    };
+    let decoder = program(&args[13])?;
+    let encoder = program(&args[14])?;
+    let out_of_range = |value: Value, from: i64| {
+        LispError::SignalValue(Value::list([
+            Value::symbol("args-out-of-range"),
+            value,
+            Value::Integer(from),
+            Value::Integer(255),
+        ]))
+    };
+    // check_integer_range.
+    let in_range = |value: Value, from: i64| -> Result<i64, LispError> {
+        let Some(n) = value.integer_value() else {
+            return Err(LispError::WrongTypeArgument("integerp".into(), value));
+        };
+        if (from..=255).contains(&n) {
+            Ok(n)
+        } else {
+            Err(out_of_range(value, from))
+        }
+    };
+    let mut tail = args[15];
+    while let Kind::Cons(cell) = tail.kind() {
+        let val = cell.car.get();
+        match val.kind() {
+            Kind::Integer(byte) => {
+                if !(0..=255).contains(&byte) {
+                    return Err(out_of_range(val, 0));
+                }
+            }
+            Kind::Cons(range) => {
+                let from = in_range(range.car.get(), 0)?;
+                in_range(range.cdr.get(), from)?;
+            }
+            _ => return Err(LispError::WrongTypeArgument("consp".into(), val)),
+        }
+        tail = cell.cdr.get();
+    }
+    Ok(vec![decoder, encoder, args[15]])
+}
 
 /// The ISO final characters already claimed by a charset of this DIMENSION and
 /// CHARS.  GNU keeps `ISO_CHARSET_TABLE' natively (charset.c:1421); Emaxx has

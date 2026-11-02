@@ -33599,6 +33599,27 @@ fn garbage_collect_reports_gnu_object_sizes() {
 }
 
 #[test]
+fn ccl_programs_run_as_ccl_c_drives_them() {
+    // ccl.c:ccl_driver: a division by -1 into DIVMOD negates the
+    // destination's old value; a division by zero is an invalid command,
+    // reported at the instruction counter past its operands; de-sjis and
+    // en-sjis split the code into the register and r7; a command read
+    // past the code is invalid; CCL_Call returns to its caller; MapMultiple
+    // maps through a map set.  Fccl_execute_on_string writes a modifier
+    // bit resolved (shift and `a' is `A').  A coding system of type `ccl'
+    // runs its decoder (its end-of-input code at the last block, after
+    // the dos eol conversion) and its encoder, whose invalid command's
+    // message is in the text.
+    assert_oracle_contract_matches_interpreter(
+        r##"(let* ((ex (lambda (prog regs) (let ((r (vconcat regs))) (condition-case e (progn (ccl-execute prog r) r) (error (list (cadr e) r)))))) (run (lambda (prog str) (let ((s (make-vector 9 nil))) (condition-case e (list (append (ccl-execute-on-string prog s str) nil) s) (error (list (cadr e) s))))))) (define-ccl-program r245-sub '(0 ((r0 += 100)))) (register-code-conversion-map 'r245-map1 [97 ?A ?B ?C nil t lambda]) (register-code-conversion-map 'r245-map3 [65 (1 . 200) 300]) (define-ccl-program r245-dec '(1 ((loop (read r0) (if (r0 == ?a) (write ?A) (write r0)) (repeat))) (write ?!))) (define-ccl-program r245-bad '(1 ((read r0) (write r0) (r0 /= 0)))) (define-coding-system 'r245-cs "test" :coding-type 'ccl :mnemonic ?C :ccl-decoder 'r245-dec :ccl-encoder 'r245-bad) (list (funcall ex (ccl-compile '(0 ((r1 = (r0 // -1))))) [100 5 0 0 0 0 0 0]) (funcall ex (ccl-compile '(0 ((r1 = (r0 / 0))))) [100 5 0 0 0 0 0 0]) (funcall ex (ccl-compile '(0 ((r1 = (r0 de-sjis r2)) (r3 = (r4 en-sjis r5))))) [136 0 159 0 48 33 0 0]) (funcall ex [0 0 4] [1 2 3 4 5 6 7 8]) (funcall ex (ccl-compile '(0 ((call r245-sub) (call r245-sub) (r2 = r0)))) [1 0 0 0 0 0 0 0]) (mapcar (lambda (c) (aref (funcall ex (ccl-compile '(0 ((map-multiple r1 r0 ((r245-map1 r245-map3)))))) (vector c 0 0 0 0 0 0 0)) 0)) '(97 98 100 101 102)) (funcall run (ccl-compile '(1 ((read r0) (write "abc") (write "xyz\351w") (write r0)))) "Q") (funcall run (ccl-compile '(1 ((loop (read r0) (write (r0 + #x2000000)) (repeat))))) "ab") (decode-coding-string "banana" 'r245-cs) (decode-coding-string "a\r\nb" 'r245-cs-dos) (encode-coding-string "xyz" 'r245-cs)))"##,
+        r##"([100 -5 0 0 0 0 0 0] ("Error in CCL program at 4th code" [100 5 0 0 0 0 0 0]) [136 48 159 136 48 33 0 159] ("Error in CCL program at 4th code" [1 2 3 4 5 6 7 8]) [201 0 201 0 0 0 0 0] (65 66 100 101 102) ((97 98 99 120 121 122 233 119 81) [81 0 0 0 0 0 0 0 9]) ((65 66) [-1 0 0 0 0 0 0 33554530 6]) "bAnAnA!" "A
+b!" "x
+CCL: Invalid command 17 (ccl_code = c017) at 4.")"##,
+        "ccl programs",
+    );
+}
+
+#[test]
 fn file_names_expand_and_concatenate_as_fileio_c() {
     // fileio.c:Fexpand_file_name returns an absolute NAME it need not
     // change as itself, made of DEFAULT-DIRECTORY's multibyteness when one
