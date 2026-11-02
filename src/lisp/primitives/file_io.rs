@@ -2078,11 +2078,7 @@ pub(crate) fn decode_file_bytes(
     let dst_multibyte = multibyte && !(make_unibyte && for_unibyte);
     let mut outcome = decode_coding_gap(interp, env, bytes, &coding, dst_multibyte)?;
     let layout = outcome.decoded.take_layout();
-    let charset_props = super::charset_spans_to_props(
-        std::mem::take(&mut outcome.decoded.charsets),
-        &outcome.decoded.text,
-        None,
-    );
+    let charset_props = super::decoded_annotation_props(&mut outcome.decoded);
     Ok(FileDecode {
         decoded: outcome.decoded,
         coding: outcome.coding,

@@ -253,6 +253,7 @@ pub(crate) struct CallRuns {
     last_info: *const CharsetInfo,
     last_offset: usize,
     dropped: usize,
+    uncounted: usize,
 }
 
 impl CallRuns {
@@ -262,6 +263,7 @@ impl CallRuns {
             last_info: std::ptr::null(),
             last_offset: 0,
             dropped: 0,
+            uncounted: 0,
         }
     }
 
@@ -282,12 +284,17 @@ impl CallRuns {
     /// char_offset at OUT's end.
     #[inline]
     pub(crate) fn char_offset(&self, out: &DecodedText) -> usize {
-        out.char_count() + self.dropped
+        out.char_count() + self.dropped - self.uncounted
     }
 
     /// A character stored as -1.
     pub(crate) fn drop_char(&mut self) {
         self.dropped += 1;
+    }
+
+    /// COUNT characters stored without char_offset counting them.
+    pub(crate) fn uncount(&mut self, count: usize) {
+        self.uncounted += count;
     }
 
     pub(crate) fn is(&self, charset: &str) -> bool {

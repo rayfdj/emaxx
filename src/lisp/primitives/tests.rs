@@ -33535,6 +33535,25 @@ fn decode_coding_fills_a_charbuf_the_size_of_its_source_as_coding_c() {
 }
 
 #[test]
+fn decoders_annotate_compositions_as_produce_composition() {
+    // decode_coding_emacs_mule takes Emacs 21's 0x80 0xF2+METHOD BYTES
+    // CHARS compositions and Emacs 20's relative and rule-based ones, and
+    // decode_coding_iso_2022 ESC 0..4 ... ESC 1 under its composition flag
+    // (or the designation flag, whose CODING_ANNOTATE_CHARSET_MASK has the
+    // composition bit): the composed characters are produced, and
+    // produce_composition puts ((LENGTH . COMPONENTS)) on them as
+    // `composition', in produce_annotation's order among the `charset'
+    // runs.  emacs-mule's composed characters are uncounted by char_offset,
+    // so a run closed after one lies where GNU puts it; a composition the
+    // charbuf or the source cuts short becomes its starting bytes.
+    assert_oracle_contract_matches_interpreter(
+        r##"(let ((show (lambda (d) (list (append d nil) (object-intervals d)))) (buf (lambda (s cs) (with-temp-buffer (set-buffer-multibyte nil) (insert s) (set-buffer-multibyte t) (let ((end (point-max))) (insert "z") (goto-char 1) (decode-coding-region 1 end cs)) (list (append (buffer-string) nil) (object-intervals (current-buffer))))))) (list (mapcar (lambda (c) (funcall show (decode-coding-string (cdr c) (car c)))) (list (cons 'emacs-mule "\200\362\244\243abcd") (cons 'emacs-mule "\351\200\362\244\242ab\351") (cons 'emacs-mule "\201\351\200\240\341\240\342\201\351") (cons 'emacs-mule "\200\377\240\341\245\240\342cd") (cons 'emacs-mule "\200\377\240\341\310c") (cons 'emacs-mule "\200\365\250\242x!!yab") (cons 'emacs-mule "\e\200\241\e") (cons 'emacs-mule "\200\240\202cd") (cons 'emacs-mule-dos "\200\362\244\242\r\nab\r\n") (cons 'iso-2022-7bit "\e0ab\e1c") (cons 'iso-2022-7bit "\e2a!b\e1") (cons 'iso-2022-7bit "\e4x!y\e0ab\e1") (cons 'iso-2022-7bit "\e3xy\e0ab\e1") (cons 'iso-2022-7bit "\e2a}!b\e1") (cons 'iso-2022-jp "x\e$B\x30\x21\e0\x30\x22\e1\x30\x23\e(By") (cons 'iso-2022-7bit "\e0ab") (cons 'iso-latin-1 "\e0ab\e1"))) (funcall buf "\200\362\244\243abcd" 'emacs-mule) (funcall buf "a\351\200\240\341\240\342b" 'emacs-mule) (funcall buf "\e0ab\e1c" 'iso-2022-7bit)))"##,
+        r##"((((97 98 99 100) ((0 3 (composition ((3)))) (3 4 nil))) ((4194281 97 98 4194281) ((0 1 nil) (1 3 (composition ((2)))) (3 4 nil))) ((233 97 98 233) ((0 1 nil) (1 2 (composition ((2)))) (2 3 (charset latin-iso8859-1 composition ((2)))) (3 4 (charset latin-iso8859-1)))) ((97 98 99 100) ((0 2 (composition ((2 . [97 5 98])))) (2 4 nil))) ((97 4194248 99) ((0 1 (composition ((1 . "a")))) (1 3 nil))) ((4194176 4194293 4194216 4194210 120 121 97 98) nil) ((27 4194176 4194290 4194208 4194208 4194209 27) nil) ((4194176 4194290 4194208 4194208 4194208 4194178 99 100) nil) ((10 97 98 10) ((0 1 (composition ((2)))) (1 3 nil) (3 4 nil))) ((97 98 99) ((0 2 (composition ((2)))) (2 3 nil))) ((27 50 97 33 98 27 49) nil) ((27 52 120 33 121 27 48 97 98 27 49) nil) ((27 51 120 121 27 48 97 98 27 49) nil) ((27 50 97 125 33 98 27 49) nil) ((120 20124 21782 23043 121) ((0 1 nil) (1 2 (charset japanese-jisx0208)) (2 3 (composition ((1)))) (3 5 (charset japanese-jisx0208)))) ((27 48 97 98) nil) ((27 48 97 98 27 49) nil)) ((97 98 99 100 122) ((0 3 (composition ((3)))) (3 5 nil))) ((97 36896 4194273 4194208 4194274 98 122) nil) ((97 98 99 122) ((0 2 (composition ((2)))) (2 4 nil))))"##,
+        "decoded compositions",
+    );
+}
+
+#[test]
 fn indirect_buffers_share_their_base_text_and_its_markers() {
     // buffer.c:Fmake_indirect_buffer gives the indirect buffer its base's
     // buffer_text, whose one chain holds every marker of the family, the

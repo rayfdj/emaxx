@@ -1957,6 +1957,9 @@ pub(crate) struct DecoderSpec {
     pub(crate) surrogate: u32,
     /// coding->spec.iso_2022.
     pub(crate) iso2022: Option<Box<iso2022::Iso2022Carry>>,
+    /// coding->spec.emacs_mule.cmp_status of a composition a block left
+    /// unfinished, its carryover with it.
+    pub(crate) emacs_mule: Option<Box<decoders::EmacsMuleComposing>>,
 }
 
 /// A stream decoded a block at a time: read_process_output's
@@ -2012,36 +2015,115 @@ const CODING_CARRYOVER_BYTES: usize = 64;
 /// into text properties.  CHUNKS are the characters each decoder call
 /// produced, which produce_chars inserts into a buffer destination one
 /// insert_from_gap at a time, and EOL what decode_eol changed after them.
+/// COMPOSITIONS are the composition annotations among the runs.
 #[derive(Default)]
 pub(crate) struct DecodedText {
     pub(crate) text: String,
     pub(crate) charsets: Vec<(usize, usize, String)>,
+    pub(crate) compositions: Vec<DecodedComposition>,
     pub(crate) extended: Vec<(usize, u32)>,
     chars: usize,
     pub(crate) chunks: Vec<usize>,
     pub(crate) eol: Option<Box<EolConversion>>,
 }
 
+/// produce_composition's COMPONENTS for compose_text: nil for a relative
+/// composition, else the characters and rules (a rule as its code modulo
+/// #x100) up to the first -1, Fstring of them when all are characters and
+/// Fvector of them otherwise.
+#[derive(Clone, Debug)]
+pub(crate) enum CompositionComponents {
+    Relative,
+    Chars(Vec<u32>),
+    Vector(Vec<u32>),
+}
+
+/// A decoder's composition annotation: produce_composition's compose_text
+/// over the characters START..END with COMPONENTS, which produce_annotation
+/// reaches after the first SEQ `charset' runs.
+#[derive(Clone, Debug)]
+pub(crate) struct DecodedComposition {
+    pub(crate) seq: usize,
+    pub(crate) start: usize,
+    pub(crate) end: usize,
+    pub(crate) components: CompositionComponents,
+}
+
+impl DecodedComposition {
+    /// compose_text's `composition' value, ((LENGTH . COMPONENTS)); None
+    /// for components Fstring refuses.
+    pub(crate) fn property(&self) -> Option<Value> {
+        let codes = |codes: &[u32]| -> Vec<Value> {
+            codes
+                .iter()
+                .map(|&code| Value::Integer(i64::from(code)))
+                .collect()
+        };
+        let components = match &self.components {
+            CompositionComponents::Relative => Value::Nil,
+            CompositionComponents::Chars(chars) => {
+                Value::StringObject(StringObjectRef::from_characters(&codes(chars)).ok()?)
+            }
+            CompositionComponents::Vector(items) => Value::vector(codes(items)),
+        };
+        let length = Value::Integer((self.end - self.start) as i64);
+        Some(Value::cons(Value::cons(length, components), Value::Nil))
+    }
+}
+
+/// A decoded text's annotation, as produce_annotation reaches it.
+#[derive(Clone, Copy)]
+pub(crate) enum Annotation<'a> {
+    Charset(usize, usize, &'a str),
+    Composition(&'a DecodedComposition),
+}
+
+/// The `charset' runs and the compositions in produce_annotation's order.
+pub(crate) fn annotations<'a>(
+    charsets: &'a [(usize, usize, String)],
+    compositions: &'a [DecodedComposition],
+) -> impl Iterator<Item = Annotation<'a>> {
+    let mut charsets = charsets.iter().enumerate().peekable();
+    let mut compositions = compositions.iter().peekable();
+    std::iter::from_fn(move || {
+        let composition_first = match (charsets.peek(), compositions.peek()) {
+            (Some(&(index, _)), Some(composition)) => composition.seq <= index,
+            (None, Some(_)) => true,
+            (_, None) => false,
+        };
+        if composition_first {
+            compositions.next().map(Annotation::Composition)
+        } else {
+            charsets
+                .next()
+                .map(|(_, (from, to, charset))| Annotation::Charset(*from, *to, charset))
+        }
+    })
+}
+
 /// How decode_coding puts a decoded text into a buffer destination when
-/// it takes more than one insert_from_gap or decode_eol changed it: the
-/// characters of each insertion, the `charset' runs over the text as
+/// it takes more than one insert_from_gap, decode_eol changed it or a
+/// composition is among its annotations: the characters of each
+/// insertion, the `charset' runs and the compositions over the text as
 /// inserted, and decode_eol's change after them.
 pub(crate) struct DecodeLayout {
     pub(crate) chunks: Vec<usize>,
     pub(crate) charsets: Vec<(usize, usize, String)>,
+    pub(crate) compositions: Vec<DecodedComposition>,
     pub(crate) eol: Option<Box<EolConversion>>,
 }
 
 /// decode_eol's change to a decoded text, which a buffer destination
 /// makes once the text is in it: under dos (DOS) the CRs before a newline
 /// deleted, under mac the CRs made newlines, CRS their indices in the
-/// text before the change; the text, its `charset' runs and its side
-/// table of characters as they were before it.
+/// text before the change; the text, its `charset' runs, its compositions
+/// and its side table of characters as they were before it.
 pub(crate) struct EolConversion {
     pub(crate) dos: bool,
     pub(crate) crs: Vec<usize>,
     pub(crate) text: String,
     pub(crate) charsets: Vec<(usize, usize, String)>,
+    pub(crate) compositions: Vec<DecodedComposition>,
     pub(crate) extended: Vec<(usize, u32)>,
 }
 
@@ -2103,18 +2185,24 @@ impl DecodedText {
 
     /// What a buffer destination needs beyond the text and its runs to
     /// take it as decode_coding inserts it, decode_eol's record taken from
-    /// the text: None for one insertion that decode_eol left as it was.
+    /// the text: None for one insertion that decode_eol left as it was,
+    /// with no composition among its annotations.
     pub(crate) fn take_layout(&mut self) -> Option<DecodeLayout> {
-        if self.chunks.len() <= 1 && self.eol.is_none() {
+        if self.chunks.len() <= 1 && self.eol.is_none() && self.compositions.is_empty() {
             return None;
         }
         let mut eol = self.eol.take();
+        let (charsets, compositions) = match &mut eol {
+            Some(eol) => (
+                std::mem::take(&mut eol.charsets),
+                std::mem::take(&mut eol.compositions),
+            ),
+            None => (self.charsets.clone(), self.compositions.clone()),
+        };
         Some(DecodeLayout {
             chunks: self.chunks.clone(),
-            charsets: match &mut eol {
-                Some(eol) => std::mem::take(&mut eol.charsets),
-                None => self.charsets.clone(),
-            },
+            charsets,
+            compositions,
             eol,
         })
     }
@@ -2211,8 +2299,8 @@ impl DecodedText {
 
     /// decode_eol's conversion for EOL_TYPE (1 dos, 2 mac): a CR becomes a
     /// newline under mac, and under dos each CR followed by a newline goes,
-    /// the side table and the charset runs moving with the characters
-    /// after it.
+    /// the side table, the charset runs and the compositions moving with
+    /// the characters after it.
     fn convert_eol(&mut self, eol_type: i64) {
         match eol_type {
             2 if self.text.contains('\r') => {
@@ -2222,12 +2310,14 @@ impl DecodedText {
                     crs,
                     text: std::mem::replace(&mut self.text, text),
                     charsets: self.charsets.clone(),
+                    compositions: self.compositions.clone(),
                     extended: self.extended.clone(),
                 }));
             }
             1 if self.text.contains("\r\n") => {
                 let (text, crs) = eol_converted(&self.text, true);
                 let charsets = self.charsets.clone();
+                let compositions = self.compositions.clone();
                 let extended = self.extended.clone();
                 // The CRs deleted before character index INDEX.
                 let shift = |index: usize| index - crs.partition_point(|&cr| cr < index);
@@ -2238,12 +2328,17 @@ impl DecodedText {
                     run.0 = shift(run.0);
                     run.1 = shift(run.1);
                 }
+                for composition in &mut self.compositions {
+                    composition.start = shift(composition.start);
+                    composition.end = shift(composition.end);
+                }
                 self.chars -= crs.len();
                 self.eol = Some(Box::new(EolConversion {
                     dos: true,
                     crs,
                     text: std::mem::replace(&mut self.text, text),
                     charsets,
+                    compositions,
                     extended,
                 }));
             }
@@ -3317,62 +3412,85 @@ fn decode_multibyte_source_text(
     )
 }
 
-/// For each character index of STAGED, how many characters the eol
-/// conversion (CRLF -> LF when CRLF, else CR -> LF) removes before it:
-/// the offsets of annotations made on the staged text move by that much
-/// once decode_eol has deleted the CRs.
-fn eol_removed_prefix(staged: &str, crlf: bool) -> Vec<usize> {
-    let mut removed = Vec::with_capacity(staged.len() + 1);
-    let mut count = 0;
-    let mut previous = '\0';
-    for ch in staged.chars() {
-        removed.push(count);
-        if crlf && previous == '\r' && ch == '\n' {
-            count += 1;
-        }
-        previous = ch;
-    }
-    removed.push(count);
-    removed
-}
-
-/// The `charset' runs on the converted text as produce_charset puts them,
-/// Fput_text_property of each run's charset in turn: the intervals of the
-/// text, none for no run.
-pub(crate) fn charset_spans_to_props(
-    charsets: Vec<(usize, usize, String)>,
-    staged: &str,
-    crlf_conversion: Option<bool>,
+/// The annotations of DECODED as produce_annotation puts them on its
+/// text, Fput_text_property of each `charset' run and each composition in
+/// turn: the intervals of the text, none for no annotation.
+pub(crate) fn decoded_annotation_props(
+    decoded: &mut DecodedText,
 ) -> Option<crate::intervals::Intervals> {
-    if charsets.is_empty() {
+    if decoded.charsets.is_empty() && decoded.compositions.is_empty() {
         return None;
     }
-    let removed = crlf_conversion.map(|crlf| eol_removed_prefix(staged, crlf));
-    let adjust = |offset: usize| match &removed {
-        Some(removed) => {
-            let index = offset.min(removed.len() - 1);
-            offset - removed[index]
-        }
-        None => offset,
-    };
-    let total = staged.chars().count();
-    let len = adjust(total);
+    let len = decoded.text.chars().count();
     let mut props = crate::lisp::types::string_data::StringProperties::default();
-    for (start, end, charset) in charsets {
-        let (start, end) = (adjust(start), adjust(end).min(len));
+    for annotation in annotations(&decoded.charsets, &decoded.compositions) {
+        let (start, end, plist) = match annotation {
+            Annotation::Charset(start, end, charset) => (
+                start,
+                end,
+                Value::list([Value::symbol("charset"), Value::Symbol(charset.into())]),
+            ),
+            Annotation::Composition(composition) => {
+                let Some(value) = composition.property() else {
+                    continue;
+                };
+                (
+                    composition.start,
+                    composition.end,
+                    Value::list([Value::symbol("composition"), value]),
+                )
+            }
+        };
+        let end = end.min(len);
         if end > start {
             let _ = crate::intervals::add_string_text_properties(
                 &mut props,
                 len,
                 start,
                 end,
-                Value::list([Value::symbol("charset"), Value::Symbol(charset.into())]),
+                plist,
                 crate::intervals::PropertySetType::Replace,
                 true,
             );
         }
     }
+    decoded.charsets.clear();
+    decoded.compositions.clear();
     props.take()
+}
+
+/// decode_coding_object's string destination for a decode without a
+/// post-read conversion: DECODED with its annotations, made in the work
+/// buffer a decoder call at a time when it took more than one insertion,
+/// decode_eol changed it or a composition is among its annotations.
+pub(crate) fn decoded_string_value(
+    interp: &mut Interpreter,
+    mut decoded: DecodedText,
+    multibyte: bool,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let Some(layout) = decoded.take_layout() else {
+        let props = decoded_annotation_props(&mut decoded);
+        return Ok(make_shared_string_value_with_extended_chars(
+            decoded.text,
+            props,
+            multibyte,
+            decoded.extended,
+        ));
+    };
+    let staged = StringLike {
+        text: decoded.text,
+        props: None,
+        multibyte,
+        extended_chars: decoded.extended,
+    };
+    let converted = decode_into_work_buffer(interp, &staged, Some(&layout), Value::Nil, env)?;
+    Ok(make_shared_string_value_with_extended_chars(
+        converted.text,
+        converted.props,
+        converted.multibyte,
+        converted.extended_chars,
+    ))
 }
 
 /// A text decode_coding_object reads.
@@ -3850,7 +3968,7 @@ fn decode_coding_parts(
     )?;
     // produce_annotation's `charset' properties of the decoded text.
     let layout = decoded.take_layout();
-    let charset_props = charset_spans_to_props(decoded.charsets, &decoded.text, None);
+    let charset_props = decoded_annotation_props(&mut decoded);
     let post_read = coding_system_property(interp, &actual_coding, ":post-read-conversion")
         .unwrap_or(Value::Nil);
     let decoded = StringLike {

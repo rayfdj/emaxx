@@ -11694,6 +11694,56 @@ setup_process_coding_systems's check now refuses). A 13-form
   arc-mode and tar-mode. Local validation: the grouped gate's 3,430
   library tests, the integration targets and clippy with `--all-targets
   --all-features -D warnings' pass.
+- **Round 240: decoders annotate compositions as produce_composition
+  does.** `decoders::emacs_mule_call` ports decode_coding_emacs_mule's
+  composition sequences: `EmacsMuleComposing` is cmp_status with the
+  composition's charbuf segment (header, components, `-2 RULE' pairs,
+  characters), which `end` (EMACS_MULE_COMPOSITION_END) or
+  `maybe_finish` (emacs_mule_finish_composition, the header rewritten to
+  its bytes, an invalid last rule to its byte, BYTE8_TO_CHAR of a value
+  past #xFF giving the ASCII character char_string leaves of it) hand to
+  `produce`, which produces the characters as produce_chars walks the
+  segment, uncounts them from char_offset (`CallRuns::uncount`) but for
+  the finish's new_chars, and records the annotation.
+  `DecodedText::compositions` holds `DecodedComposition`s (start, end,
+  `CompositionComponents` as produce_composition builds them, and `seq`,
+  the `charset' runs before it), which `annotations` interleaves with
+  the runs in produce_annotation's order for `insert_decoded_calls_at`
+  (a composition forces the call-at-a-time layout),
+  `decoded_annotation_props` (which replaces `charset_spans_to_props`)
+  and decode_eol's shifts. `iso2022::decode_call` records the annotation
+  at ESC 1 (`end_composition`), counts the composition's charbuf ints
+  (`CompositionStatus::length`, finish_composition's leftovers) against
+  its room, and composes under the designation flag too, since
+  CODING_ANNOTATE_CHARSET_MASK (3) has
+  CODING_ANNOTATE_COMPOSITION_MASK's bit. A composition carried into a
+  call whose charbuf has no room after it, where GNU aborts or loops for
+  ever (a process read of a few bytes after a composition header), and
+  emacs-mule's component of code 2 that emacs_mule_char returns as -2,
+  are finished as the last block finishes them. A process filter's
+  string goes through `decoded_string_value`, the work buffer a call at
+  a time when the read takes more than one call (DECODE_FILE's names
+  keep building their properties directly). `initial_environment_list`
+  reverses environ as set_initial_environment's conses do (probe
+  r239/env.el: `process-environment' and a child's `env'). Batteries:
+  3,000 emacs-mule string decodes, 600 decodes into multibyte and
+  unibyte buffers, buffer destinations and files, compositions across
+  the 16K charbuf's end, split process reads that GNU survives (it hangs
+  or aborts on reads too short for the carried composition), and 4,500
+  ISO-2022 string and buffer decodes read as GNU's but for one GNU
+  artifact: a dos decode of a multibyte buffer whose charbuf fills just
+  after a CR read an eight-bit character as byte_after_cr backs src_base
+  up one byte, into the character's two-byte form, and the next call
+  reads from inside it; in place, what it produces then is lost. Emaxx
+  backs up the whole character. The round 234 to 239 batteries read as
+  before (round 239's raw-text-dos NUL artifact aside); an oracle test
+  pins the cases. ERT pass counts match GNU's for coding, mule,
+  mule-util, ucs-normalize, fileio, files, editfns, buffer, textsec,
+  rmailmm, mm-decode, ccl, process, sgml-mode, qp, mailcap, json, fns,
+  subr, arc-mode, tar-mode, callproc, env and undigest. Local
+  validation: the grouped gate's 3,431 library tests, the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -13228,6 +13278,17 @@ electric-tests' the most (670 against 469), and the widest body gaps are
 comp-tests (14,553 ms against 12,742), tramp-tests (16,565 against
 15,367), semantic-utest-ia (3,305 against 2,422) and mule-tests (2,391
 against 1,591).
+
+**On `26f27af`** (round 239): frozen (run 41359458848) matched all
+7,928 outcomes on a slower runner. Setup 81.2 s against 66.9 s (1.215),
+test bodies 256.3 s against 266.0 s (0.964), in all 1.000;
+ucs-normalize-tests' bodies took 146 ms against 96. The full Rust gate
+(run 41359451533) passed. Per file, the setup is 28 ms over GNU's on
+average (14.4 s over 519 files, a median of 124 ms against 103),
+electric-tests' the most (873 against 533), and the widest body gaps
+are comp-tests (17,522 ms against 14,495), tramp-tests (20,992 against
+19,279), eglot-tests (33,971 against 32,398), semantic-utest-ia (4,117
+against 2,643) and mule-tests (3,152 against 2,027).
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'
