@@ -12194,6 +12194,64 @@ setup_process_coding_systems's check now refuses). A 13-form
   map-tests pass as many tests as GNU's. Local validation: the grouped
   gate's 3,446 library tests, the integration targets and clippy
   with `--all-targets --all-features -D warnings` pass.
+- **Round 251: eval.c, alloc.c, minibuf.c, fileio.c and xdisp.c's
+  window_text_pixel_size from batteries.** Batteries against GNU over
+  syntax.c (54 cases, r251/sy.txt), print.c (70, r251/pr.txt), search.c
+  (57, r251/se.txt), textprop.c (43, r251/tp.txt), eval.c (59,
+  r251/ev.txt), fns.c (44, r251/fs.txt), chartab.c, character.c and
+  category.c (38, r251/ch.txt), data.c (30, r251/da.txt), minibuf.c and
+  lread.c (27, r251/mb.txt), fileio.c (42, r251/fi.txt), process.c and
+  callproc.c (53, r251/pc.txt) and the batch window, frame and display
+  primitives (26, r251/wn.txt; 42 more on pixel sizes, r251/wt.txt and
+  wt2.txt) differ in these, now fixed; syntax.c, print.c, search.c,
+  textprop.c, the character and category tables, data.c and the process
+  primitives agree throughout. `(throw nil V)` reached a `(catch nil
+  ...)`: Fthrow looks for a catcher only for a non-nil tag, and signals
+  `no-catch`. `internal-make-var-non-special` returns nil. `make-vector`
+  and `make-list` refuse a length that is no fixnum or negative with
+  `wholenump`, where `make-vector` signalled a bare error and
+  `make-list` of -1 made nil. `minibuffer-selected-window` gave the
+  selected window outside the minibuffer: it is
+  Fminibuffer_selected_window's, the remembered window only while a
+  minibuffer is active, its window selected and the remembered window
+  live. `set-file-modes` takes FLAG (`nofollow`), checks MODE with
+  CHECK_FIXNUM and sets the low twelve bits with fchmodat, its error
+  "Doing chmod", and `access-file` reports faccessat's own errno where
+  it always said "Permission denied". `window-text-pixel-size` and
+  `buffer-text-pixel-size` counted the buffer's widest logical line and
+  its line count: they are window_text_pixel_size on a terminal frame
+  now, walking the screen lines tty.rs lays out for the window from FROM
+  to TO. FROM and TO may be t (blank lines skipped as the C skips them),
+  a line the iterator leaves counts its newline's x or, continued or
+  truncated, `last_visible_x`, the line it stops on counts only when a
+  glyph came before TO, a newline FROM starts the next line at x 0,
+  FROM's x is reached at the window's width and X-LIMIT is the width
+  while measuring, Y-LIMIT ends the walk on the line holding it, a cons
+  FROM moves that many lines and returns START, a truncated line's
+  hidden rest is reseated past as move_it_to does, MODE-LINES adds the
+  lines it names, and display strings, invisible text, tabs, control
+  characters and the batch terminal's glyphless characters
+  (`string-pixel-width` of a CJK character is 6 there, its hex code) are
+  measured as the layout delivers them. One display context serves every
+  line of a call (tty.rs's ScreenLineLayouter), and a nil
+  glyphless-char-display entry no longer builds an error to mean "no
+  method". 2,000 `string-pixel-width` calls take 0.021 s against GNU's
+  0.012, and 500 `buffer-text-pixel-size` calls over 50 lines 0.079 s
+  against 0.031: the rest is each character's display translation,
+  lay_out's allocations and line_to_char. electric-tests, the frozen
+  run's widest setup and a wide body gap (1,013 ms of bodies against 591
+  locally), runs its 201 c-mode electric-pair tests in 4.56G
+  instructions under callgrind against GNU's 4.77G, and its collections
+  are as few and as long as GNU's (3 taking 0.125 s against 5 taking
+  0.158): the wall-clock gap is instruction-cache cost, the
+  code-footprint finding above, not work. Not reproduced: `sxhash-eq`
+  and printed thread and frame addresses, which are GNU's pointers.
+  xdisp-tests, eval-tests, alloc-tests, fileio-tests, fns-tests,
+  minibuf-tests, erc-fill-tests, vtable-tests, shr-tests,
+  minibuffer-tests, files-tests, fill-tests, simple-tests and
+  subr-x-tests pass as many tests as GNU's. Local validation: the
+  grouped gate's 3,448 library tests, the integration targets and
+  clippy with `--all-targets --all-features -D warnings` pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -13853,6 +13911,17 @@ electric-tests' the most (931 against 540), and the widest body gaps are
 comp-tests (17,351 ms against 14,970), tramp-tests (21,790 against
 19,543), semantic-utest-ia (4,199 against 2,852), mule-tests (3,214
 against 2,032) and electric-tests (1,161 against 605).
+
+**On `367a71b`** (round 250): frozen (run 41442267394) matched all 7,928
+outcomes. Setup 91.1 s against 66.5 s (1.371), test bodies 263.4 s
+against 270.4 s (0.974), in all 1.044; ucs-normalize-tests' bodies took
+134 ms against 92. The full Rust gate (run 41436994103) passed. Per
+file, the setup is 47 ms over GNU's on average (24.6 s over 519 files, a
+median of 139 ms against 102, up from round 249's 124 against 103),
+electric-tests' the most (919 against 546), and the widest body gaps are
+comp-tests (18,894 ms against 14,890), tramp-tests (21,796 against
+19,320), semantic-utest-ia (4,285 against 2,819), mule-tests (3,162
+against 2,002) and simple-tests (5,092 against 4,037).
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

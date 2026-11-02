@@ -34053,6 +34053,82 @@ fn file_name_completion_walks_the_directory_as_dired_c() {
 }
 
 #[test]
+fn throw_vectors_file_modes_and_minibuffer_window_as_their_c() {
+    // eval.c:Fthrow looks for a catcher only for a non-nil tag;
+    // Finternal_make_var_non_special returns nil; alloc.c's
+    // Fmake_vector and Fmake_list refuse a length that is no fixnum or
+    // negative with `wholenump'; Fminibuffer_selected_window is nil with
+    // no minibuffer active; fileio.c's Fset_file_modes is CHECK_FIXNUM and
+    // fchmodat, "Doing chmod" its error, and Faccess_file reports
+    // faccessat's own errno.
+    assert_oracle_contract_matches_interpreter(
+        r#"(list
+ (condition-case e (catch nil (throw nil 5)) (no-catch e))
+ (progn (defconst t251-c 1) (internal-make-var-non-special 't251-c))
+ (condition-case e (make-vector -1 0) (error e))
+ (condition-case e (make-vector 'a 0) (error e))
+ (condition-case e (make-list -1 'a) (error e))
+ (condition-case e (make-list 1.5 'a) (error e))
+ (minibuffer-selected-window)
+ (condition-case e (set-file-modes "/nonexistent-t251/q" #o600) (error e))
+ (condition-case e (set-file-modes "/nonexistent-t251/q" 'a) (error e))
+ (condition-case e (access-file "/nonexistent-t251/q" "Cannot open") (error e)))"#,
+        r#"((no-catch nil 5) nil (wrong-type-argument wholenump -1) (wrong-type-argument wholenump a) (wrong-type-argument wholenump -1) (wrong-type-argument wholenump 1.5) nil (file-missing "Doing chmod" "No such file or directory" "/nonexistent-t251/q") (wrong-type-argument fixnump a) (file-missing "Cannot open" "No such file or directory" "/nonexistent-t251/q"))"#,
+        "throw, make-vector, file modes",
+    );
+}
+
+#[test]
+fn window_text_pixel_size_walks_screen_lines_as_xdisp_c() {
+    // xdisp.c:window_text_pixel_size on a terminal: FROM and TO as given
+    // (t skipping blank lines), the widest line the iterator leaves and
+    // the lines it walks, a line it stops on counted only when a glyph
+    // came first, a newline FROM starting the next line at x 0, a cons
+    // FROM's vertical offset (and START in the value), X-LIMIT as the
+    // line width while measuring, Y-LIMIT ending the walk, a truncated
+    // line's hidden rest, and display strings and invisible text as the
+    // iterator delivers them.
+    assert_oracle_contract_matches_interpreter(
+        r#"(list
+ (with-temp-buffer
+   (insert "abc\ndef")
+   (set-window-buffer nil (current-buffer))
+   (list (window-text-pixel-size nil 4 4) (window-text-pixel-size nil 3 6)
+         (window-text-pixel-size nil 4 8) (window-text-pixel-size nil 5 5)
+         (window-text-pixel-size nil nil nil nil nil nil t)
+         (window-text-pixel-size nil nil nil nil 0)))
+ (with-temp-buffer
+   (insert "\n\nabc  \n\n")
+   (set-window-buffer nil (current-buffer))
+   (list (window-text-pixel-size nil t t) (window-text-pixel-size nil t nil)))
+ (with-temp-buffer
+   (insert "abc\ndef\nghi")
+   (set-window-buffer nil (current-buffer))
+   (list (window-text-pixel-size nil '(5 . 1)) (window-text-pixel-size nil '(9 . -1))
+         (window-text-pixel-size nil '(1 . 2) 6) (window-text-pixel-size nil nil nil nil 1)))
+ (with-temp-buffer
+   (insert (make-string 100 ?a))
+   (set-window-buffer nil (current-buffer))
+   (list (window-text-pixel-size nil nil nil 30) (window-text-pixel-size nil nil nil 30 2)
+         (window-text-pixel-size nil nil nil 0)))
+ (with-temp-buffer
+   (insert (make-string 100 ?a) "\nbc")
+   (set-window-buffer nil (current-buffer))
+   (setq truncate-lines t)
+   (list (window-text-pixel-size nil 1 40 50) (window-text-pixel-size nil 1 70 50)
+         (window-text-pixel-size nil 1 101 50) (window-text-pixel-size nil nil nil 50)
+         (window-text-pixel-size nil 60 104 50)))
+ (with-temp-buffer
+   (insert "a\tb" (propertize "cd" 'display "XYZW") "e" (propertize "fg" 'invisible t) "h")
+   (set-window-buffer nil (current-buffer))
+   (list (window-text-pixel-size) (window-text-pixel-size nil 1 5) (window-text-pixel-size nil 5 9)))
+ (with-temp-buffer (insert "abc\nde") (list (buffer-text-pixel-size nil nil 2) (buffer-text-pixel-size nil nil t))))"#,
+        r#"(((-3 . 1) (3 . 2) (3 . 2) (0 . 0) (3 . 1) (0 . 0)) ((5 . 2) (5 . 3)) ((3 1 9) (3 2 5) (0 1 9) (3 . 1)) ((30 . 4) (30 . 2) (0 . 100)) ((39 . 1) (50 . 2) (50 . 2) (50 . 2) (50 . 2)) ((15 . 1) (13 . 1) (1 . 1)) ((2 . 3) (3 . 2)))"#,
+        "window-text-pixel-size",
+    );
+}
+
+#[test]
 fn gc_variables_are_watched_by_alloc_c_s_own_subrs() {
     // syms_of_alloc watches `gc-cons-threshold' and `gc-cons-percentage'
     // with subrs made under no symbol, which bump consing_until_gc for the

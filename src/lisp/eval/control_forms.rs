@@ -126,13 +126,16 @@ impl Interpreter {
         value: Value,
         env: &mut Env,
     ) -> Result<Value, LispError> {
-        if self
-            .active_handlers
-            .iter()
-            .any(|handler| matches!(handler, ActiveHandler::Module))
-            || self.active_catch_tags.iter().rev().any(|candidate| {
-                crate::lisp::primitives::values_eq_in_env(self, candidate, &tag, env)
-            })
+        // Fthrow looks for a catcher only when TAG is not nil: a nil tag
+        // reaches no catch and no catch-all, and signals `no-catch'.
+        if !tag.is_nil()
+            && (self
+                .active_handlers
+                .iter()
+                .any(|handler| matches!(handler, ActiveHandler::Module))
+                || self.active_catch_tags.iter().rev().any(|candidate| {
+                    crate::lisp::primitives::values_eq_in_env(self, candidate, &tag, env)
+                }))
         {
             Err(LispError::Throw(tag, value))
         } else {

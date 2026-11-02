@@ -5779,46 +5779,53 @@ define_dispatch!(
                 Ok(Value::Nil)
             }
             "window-text-pixel-size" => {
-                // (window-text-pixel-size &optional WINDOW FROM TO X-LIMIT
-                //  Y-LIMIT MODE-LINES IGNORE-LINE-AT-END).  Without a graphical frame a cell
-                // is the pixel unit: the widest line's character count and
-                // the line count stand for the pixel size of WINDOW's
-                // buffer text.  MODE-LINES non-nil adds the window's mode,
-                // header, and tab lines — `fit-window-to-buffer' sizes the
-                // whole window from that total.
+                // xdisp.c:Fwindow_text_pixel_size: measured in WINDOW's
+                // buffer, MODE-LINES adding the lines it names.
                 need_arg_range(name, args, 0, 7)?;
-                let window = args.first().cloned().unwrap_or(Value::Nil);
-                let window_id = window_id_or_selected(interp, &window)?;
+                let arg = |index: usize| args.get(index).copied().unwrap_or(Value::Nil);
+                let window_id = live_window_id_or_selected(interp, args.first())?;
                 let buffer_id = window_buffer_id(interp, &interp.record_value(window_id))
                     .unwrap_or(interp.current_buffer_id());
-                let text = if buffer_id == interp.current_buffer_id() {
-                    interp.buffer.borrow().buffer_string()
-                } else {
-                    interp
-                        .get_buffer_by_id(buffer_id)
-                        .map(|buffer| buffer.buffer_string())
-                        .unwrap_or_default()
-                };
-                let mut width = text
-                    .lines()
-                    .map(|line| line.chars().count())
-                    .max()
-                    .unwrap_or(0) as i64;
-                if let Some(limit) = args.get(3).and_then(|limit| limit.integer_value()) {
-                    width = width.min(limit);
-                }
-                let mut height = text.lines().count().max(1) as i64;
-                if args.get(5).is_some_and(Value::is_truthy) {
-                    for format_variable in
-                        ["mode-line-format", "header-line-format", "tab-line-format"]
+                let saved_buffer = interp.current_buffer_id();
+                interp.set_current_buffer_id(buffer_id)?;
+                let size = super::buffer_edit::window_text_pixel_size(
+                    interp,
+                    env,
+                    window_id,
+                    [arg(1), arg(2), arg(3), arg(4), arg(5), arg(6)],
+                );
+                interp.set_current_buffer_id(saved_buffer)?;
+                let size = size?;
+                let mode_lines = arg(5);
+                let mut extra = 0;
+                for (line, format_variable) in [
+                    ("tab-line", "tab-line-format"),
+                    ("header-line", "header-line-format"),
+                    ("mode-line", "mode-line-format"),
+                ] {
+                    if matches!(mode_lines.kind(), Kind::T) || mode_lines.symbol_str() == Some(line)
                     {
-                        height += window_line_height(interp, buffer_id, format_variable, env);
+                        extra += window_line_height(interp, buffer_id, format_variable, env);
                     }
                 }
-                if let Some(limit) = args.get(4).and_then(|limit| limit.integer_value()) {
-                    height = height.min(limit);
+                if extra == 0 {
+                    return Ok(size);
                 }
-                Ok(Value::cons(Value::Integer(width), Value::Integer(height)))
+                // The y is the second element of (X . Y) and of (X Y START).
+                let mut parts = Vec::new();
+                let mut tail = size;
+                while let Some((car, cdr)) = tail.cons_values() {
+                    parts.push(car);
+                    tail = cdr;
+                }
+                if parts.len() == 1 {
+                    parts.push(tail);
+                    let y = parts[1].integer_value().unwrap_or(0) + extra;
+                    return Ok(Value::cons(parts[0], Value::Integer(y)));
+                }
+                let y = parts[1].integer_value().unwrap_or(0) + extra;
+                parts[1] = Value::Integer(y);
+                Ok(Value::list(parts))
             }
             "buffer-text-pixel-size" => {
                 // (buffer-text-pixel-size &optional BUFFER-OR-NAME WINDOW
@@ -5841,10 +5848,26 @@ define_dispatch!(
                     }
                     None => interp.current_buffer_id(),
                 };
+                // window_text_pixel_size over the whole accessible text,
+                // the buffer shown in WINDOW meanwhile.
                 let saved_buffer = interp.current_buffer_id();
                 interp.set_current_buffer_id(buffer_id)?;
-                let size = buffer_text_size(interp);
+                let arg = |index: usize| args.get(index).copied().unwrap_or(Value::Nil);
+                let size = super::buffer_edit::window_text_pixel_size(
+                    interp,
+                    env,
+                    window_id,
+                    [
+                        Value::Nil,
+                        Value::Nil,
+                        arg(2),
+                        arg(3),
+                        Value::Nil,
+                        Value::Nil,
+                    ],
+                );
                 interp.set_current_buffer_id(saved_buffer)?;
+                let size = size?;
                 // unwind_with_echo_area_buffer: WINDOW's points and start
                 // come back through set_marker_restricted_both, inside its
                 // buffer's accessible region (ERC's fill-wrap measures in a
@@ -7092,10 +7115,34 @@ define_dispatch!(
                 interp.set_minibuffer_window_id(window_id);
                 Ok(args[0])
             }
-            "minibuffer-selected-window" => Ok(interp
-                .minibuffer_selected_window_id()
-                .map(|id| interp.record_value(id))
-                .unwrap_or_else(|| interp.selected_window_value())),
+            "minibuffer-selected-window" => {
+                need_args(name, args, 0)?;
+                // minibuf.c:Fminibuffer_selected_window: the window only
+                // while a minibuffer is active, its window selected, and the
+                // remembered window live.
+                if interp.minibuffer_depth() == 0 {
+                    return Ok(Value::Nil);
+                }
+                let selected = interp.selected_window_value();
+                let selected_is_mini = window_record_id_from_value(interp, &selected)
+                    .and_then(|id| interp.find_record(id))
+                    .and_then(|record| record.slots.get(WINDOW_KIND_SLOT).copied())
+                    .is_some_and(|slot| {
+                        matches!(slot.kind(), Kind::Symbol(kind) if kind == MINIBUFFER_WINDOW_KIND)
+                    });
+                let remembered = interp
+                    .minibuffer_selected_window_id()
+                    .map(|id| interp.record_value(id));
+                Ok(match remembered {
+                    Some(window)
+                        if selected_is_mini
+                            && live_window_id_or_selected(interp, Some(&window)).is_ok() =>
+                    {
+                        window
+                    }
+                    _ => Value::Nil,
+                })
+            }
             "active-minibuffer-window" => {
                 // Non-nil while a minibuffer-with-setup-hook hook runs (the
                 // approximation of GNU's activated minibuffer).
@@ -7391,53 +7438,6 @@ fn text_char_description(
 /// Fbuffer_text_pixel_size's measurement of the current buffer's
 /// accessible text on a terminal: the widest line's columns by the line
 /// count.
-fn buffer_text_size(interp: &Interpreter) -> Value {
-    let point_min = interp.buffer.borrow().point_min();
-    let point_max = interp.buffer.borrow().point_max();
-    let mut effective = String::new();
-    let mut pos = point_min;
-    while pos < point_max {
-        let display = interp.buffer.borrow().text_property_at(pos, "display");
-        if let Some(display_value) = display.filter(|value| !value.is_nil()) {
-            let mut end = pos;
-            while end < point_max
-                && interp.buffer.borrow().text_property_at(end, "display") == display
-            {
-                end += 1;
-            }
-            if let Some(replacement) = string_like(&display_value) {
-                effective.push_str(&replacement.text);
-                pos = end;
-                continue;
-            }
-            let in_margin = display_value.to_vec().is_ok_and(|items| {
-                items.first().is_some_and(|head| {
-                    head.to_vec().is_ok_and(|spec| {
-                        matches!(spec.first().map(|v| v.kind()),
-                        Some(Kind::Symbol(kind)) if kind == "margin")
-                    })
-                })
-            });
-            if in_margin {
-                pos = end;
-                continue;
-            }
-        }
-        match interp.buffer.borrow().char_at(pos) {
-            Some(ch) => effective.push(ch),
-            None => break,
-        }
-        pos += 1;
-    }
-    let width = effective
-        .lines()
-        .map(|line| line.chars().count())
-        .max()
-        .unwrap_or(0);
-    let height = effective.lines().count().max(1);
-    Value::cons(Value::Integer(width as i64), Value::Integer(height as i64))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

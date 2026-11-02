@@ -1710,6 +1710,267 @@ pub(crate) fn interactive_screen_line(
     crate::tty::screen_line_layout(interp, window_id, bol, width, truncate, lnum_cols)
 }
 
+/// xdisp.c:window_text_pixel_size for the current buffer shown in
+/// WINDOW on a terminal frame, where a pixel is a cell and every screen
+/// line is one high: the iterator walks the screen lines tty.rs lays out
+/// from FROM to TO.  Each line it leaves counts its height and the x it
+/// reached (its newline's, or the whole width past `last_visible_x' for
+/// a continued or truncated line, move_it_to's max_current_x).  The line
+/// it stops on counts only when a glyph came before TO on it.
+pub(crate) fn window_text_pixel_size(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    window_id: u64,
+    args: [Value; 6],
+) -> Result<Value, LispError> {
+    let [from, to, x_limit, y_limit, _mode_lines, ignore_line_at_end] = args;
+    let (begv, zv) = {
+        let buffer = interp.buffer.borrow();
+        (buffer.point_min(), buffer.point_max())
+    };
+    let char_at = |interp: &Interpreter, pos: usize| interp.buffer.borrow().char_at(pos);
+    let clip = |value: i64, low: usize, high: usize| value.clamp(low as i64, high as i64) as usize;
+    let mut vertical_offset = 0i64;
+    let mut start = match from.kind() {
+        Kind::Nil => begv,
+        Kind::T => {
+            let mut start = begv;
+            while start < zv && matches!(char_at(interp, start), Some(' ' | '\t' | '\n' | '\r')) {
+                start += 1;
+            }
+            while start > begv {
+                start -= 1;
+                if !matches!(char_at(interp, start), Some(' ' | '\t')) {
+                    break;
+                }
+            }
+            start
+        }
+        Kind::Cons(_) => {
+            let (car, cdr) = from.cons_values().expect("a cons");
+            let position = clip(
+                crate::lisp::primitives::fix_position(interp, &car)?,
+                begv,
+                zv,
+            );
+            let Kind::Integer(offset) = cdr.kind() else {
+                return Err(wrong_type_argument("fixnump", cdr));
+            };
+            vertical_offset = offset;
+            position
+        }
+        _ => clip(
+            crate::lisp::primitives::fix_position(interp, &from)?,
+            begv,
+            zv,
+        ),
+    };
+    let end = match to.kind() {
+        Kind::Nil => zv,
+        Kind::T => {
+            let mut end = zv;
+            while end > begv {
+                end -= 1;
+                if !matches!(char_at(interp, end), Some(' ' | '\t' | '\n' | '\r')) {
+                    end += 1;
+                    break;
+                }
+            }
+            while end < zv {
+                let c = char_at(interp, end);
+                end += 1;
+                if !matches!(c, Some(' ' | '\t')) {
+                    break;
+                }
+            }
+            end
+        }
+        _ => clip(
+            crate::lisp::primitives::fix_position(interp, &to)?,
+            start,
+            zv,
+        ),
+    };
+    const INT_MAX: usize = i32::MAX as usize;
+    let max_x = match x_limit.kind() {
+        Kind::Integer(limit @ 0..=0x7fff_ffff) => Some(limit as usize),
+        Kind::Nil => None,
+        _ => Some(INT_MAX),
+    };
+    let max_y = match y_limit.kind() {
+        Kind::Nil => INT_MAX,
+        Kind::Integer(limit @ 0..=0x7fff_ffff) => limit as usize,
+        _ => 0,
+    };
+    let lnum = motion_line_number_columns(interp, env);
+    let text_area = crate::lisp::primitives::window_text_area_columns(interp, window_id);
+    // it.last_visible_x: the text area less the continuation column, which
+    // FROM is reached with; TO is then measured to X-LIMIT itself.
+    let default_width = text_area.saturating_sub(lnum).max(1);
+    let width = match max_x {
+        Some(limit) => limit.saturating_add(1).saturating_sub(lnum).max(1),
+        None => default_width,
+    };
+    let default_last_visible_x = lnum + default_width.saturating_sub(1).max(1);
+    let last_visible_x = lnum + width.saturating_sub(1).max(1);
+    let truncate = crate::tty::window_truncates(interp, window_id, interp.current_buffer_id());
+    if vertical_offset != 0 {
+        // move_it_by_lines (&it, 0), then up or down that many lines.
+        let (landed, _) =
+            super::super::move_it::move_it_by_lines(interp, env, window_id, start, vertical_offset);
+        start = landed.clamp(begv, zv);
+    }
+    // One display context for every line the iterator walks.
+    let interp: &Interpreter = interp;
+    let layouter = crate::tty::ScreenLineLayouter::new(interp, window_id, lnum);
+    let layout_with = |pos: usize, width: usize| {
+        let (bol, eol) = visual_line_bounds(interp, pos);
+        (layouter.layout(bol, width, truncate), eol)
+    };
+    let (mut layout, mut eol) = layout_with(start, width);
+    let mut start_x = if vertical_offset != 0 {
+        lnum
+    } else if width == default_width {
+        lnum + layout.position_cell(start).1
+    } else {
+        lnum + layout_with(start, default_width).0.position_cell(start).1
+    };
+    let mut row = layout.position_cell(start).0;
+    let start_on_newline = char_at(interp, start) == Some('\n');
+    let mut iterator_at = start;
+    // FROM in a truncated line's hidden rest: the iterator stops where the
+    // line was cut and reseats at the next line's start, still that far
+    // right unless FROM is a newline.
+    let mut carried = false;
+    if truncate && start_x >= default_last_visible_x {
+        start_x = default_last_visible_x;
+        if eol < zv {
+            (layout, eol) = layout_with(eol + 1, width);
+            row = 0;
+            iterator_at = layout.row_starts[0];
+            carried = !start_on_newline;
+        }
+    }
+    // The first line's glyphs follow FROM's x, or x 0 when FROM is a
+    // newline (the newline takes no place on display).
+    let mut adjust: isize = if iterator_at == start {
+        let base = if start_on_newline { lnum } else { start_x };
+        base as isize - (lnum + layout.position_cell(start).1) as isize
+    } else {
+        0
+    };
+    let mut x = 0usize;
+    let mut lines = 0usize;
+    // move_it_vertically leaves the iterator on its line's first glyph,
+    // the line's height already counted.
+    let landed_on_glyph = vertical_offset != 0 && start < zv;
+    let final_height;
+    loop {
+        let row_start = layout.row_starts[row.min(layout.row_starts.len() - 1)];
+        // A truncated line is one screen line; the iterator reseats past
+        // its hidden rest.
+        let next_row = if truncate {
+            None
+        } else {
+            layout.row_starts.get(row + 1).copied()
+        };
+        let end_on_row = next_row.map_or(end <= eol, |next| end < next);
+        let x_of = |layout: &crate::tty::ScreenLineLayout, pos: usize, adjust: isize| {
+            ((lnum + layout.position_cell(pos).1) as isize + adjust).max(0) as usize
+        };
+        if carried && lines == 0 {
+            // Every glyph is past the edge: the line is cut at once.
+            x = x.max(last_visible_x);
+            if end_on_row || end < iterator_at {
+                final_height = 1 + usize::from(end < iterator_at);
+                break;
+            }
+            lines += 1;
+            if eol >= zv {
+                final_height = 0;
+                break;
+            }
+            (layout, eol) = layout_with(eol + 1, width);
+            row = 0;
+            iterator_at = layout.row_starts[0];
+            continue;
+        }
+        // MOVE_TO_Y: the line holding Y-LIMIT ends the walk where the
+        // iterator first reaches x 0 on it (all of it under X-LIMIT).
+        if lines == max_y && !(end_on_row && end == iterator_at) {
+            if max_x.is_none() {
+                x = x.max(x_of(&layout, iterator_at, adjust));
+                final_height = 1;
+                break;
+            }
+            if !end_on_row {
+                let reached = if next_row.is_some() || truncate {
+                    last_visible_x.min(x_of(&layout, eol, adjust))
+                } else {
+                    x_of(&layout, eol, adjust)
+                };
+                x = x.max(reached);
+                final_height = 1;
+                break;
+            }
+        }
+        if end_on_row {
+            let at_end = x_of(&layout, end, adjust);
+            let hidden = truncate && at_end >= last_visible_x;
+            x = x.max(if hidden { last_visible_x } else { at_end });
+            // TO in a truncated line's hidden rest: move_it_to reseats past
+            // it and the retry before TO counts the line once more, except
+            // at a ZV that ends no newline.
+            final_height = usize::from(row_start < end || (lines == 0 && landed_on_glyph))
+                + usize::from(hidden && end < zv);
+            break;
+        }
+        let row_x = if next_row.is_some() {
+            last_visible_x
+        } else if truncate {
+            x_of(&layout, eol, adjust).min(last_visible_x)
+        } else {
+            x_of(&layout, eol, adjust)
+        };
+        x = x.max(row_x);
+        lines += 1;
+        adjust = 0;
+        if let Some(next) = next_row {
+            row += 1;
+            iterator_at = next;
+        } else {
+            if eol >= zv {
+                final_height = 0;
+                break;
+            }
+            (layout, eol) = layout_with(eol + 1, width);
+            row = 0;
+            iterator_at = layout.row_starts[0];
+        }
+    }
+    if let Some(limit) = max_x {
+        x = x.min(limit);
+    }
+    // Text spanning more than one line starts its later lines at x 0.
+    let start_x = if lines > 0 { 0 } else { start_x };
+    let y = if ignore_line_at_end.is_nil() {
+        lines + final_height
+    } else {
+        lines
+    }
+    .min(max_y);
+    let x = x as i64 - start_x as i64;
+    Ok(if vertical_offset == 0 {
+        Value::cons(Value::Integer(x), Value::Integer(y as i64))
+    } else {
+        Value::list([
+            Value::Integer(x),
+            Value::Integer(y as i64),
+            Value::Integer(start as i64),
+        ])
+    })
+}
+
 /// Buffer positions where the screen lines of the display line [BOL,
 /// EOL) begin: WINDOW's terminal layout in an interactive session,
 /// vmotion's batch model otherwise.

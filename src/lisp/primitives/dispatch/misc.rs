@@ -1352,7 +1352,8 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 let symbol = args[0].as_symbol()?;
                 interp.unmark_special_variable(symbol);
-                Ok(Value::Symbol(symbol.to_string().into()))
+                // Finternal_make_var_non_special returns nil.
+                Ok(Value::Nil)
             }
             "make-interpreted-closure" => {
                 need_arg_range(name, args, 3, 5)?;

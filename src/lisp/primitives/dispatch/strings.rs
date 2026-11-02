@@ -48,10 +48,11 @@ define_dispatch!(
             }
             "make-vector" => {
                 need_args(name, args, 2)?;
-                let length = args[0].as_integer()?;
-                if length < 0 {
-                    return Err(LispError::Signal("Wrong type argument: natnump".into()));
-                }
+                // alloc.c:Fmake_vector: CHECK_TYPE (FIXNATP (length)...,
+                // Qwholenump, length).
+                let Kind::Integer(length @ 0..) = args[0].kind() else {
+                    return Err(LispError::WrongTypeArgument("wholenump".into(), args[0]));
+                };
                 Ok(Value::vector(std::iter::repeat_n(args[1], length as usize)))
             }
             // alloc.c:Fmake_bool_vector: CHECK_FIXNAT, then the bits filled.

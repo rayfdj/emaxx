@@ -991,16 +991,16 @@ define_dispatch!(
             }
             "access-file" => {
                 need_args(name, args, 2)?;
+                // fileio.c:Faccess_file: faccessat (R_OK, AT_EACCESS), and
+                // on failure report_file_error (STRING, FILENAME) with its
+                // errno.
                 let requested = string_text(&args[0])?;
                 let path = resolve_file_name_in_env(interp, env, &requested);
-                if file_readable_p(&host_file_name(interp, env, &path)?) {
-                    Ok(Value::Nil)
-                } else {
-                    Err(LispError::SignalValue(file_error_with_detail_value(
-                        &string_text(&args[1])?,
-                        "Permission denied",
-                        &requested,
-                    )))
+                let message = string_text(&args[1])?;
+                let host = host_file_name(interp, env, &path)?;
+                match faccessat_errno(&host, libc::R_OK) {
+                    Ok(()) => Ok(Value::Nil),
+                    Err(error) => Err(file_operation_error(&message, &error, &requested)),
                 }
             }
             "file-regular-p" => {
@@ -1940,20 +1940,18 @@ define_dispatch!(
                 Ok(Value::Nil)
             }
             "set-file-modes" => {
-                need_args(name, args, 2)?;
+                need_arg_range(name, args, 2, 3)?;
+                // fileio.c:Fset_file_modes: CHECK_FIXNUM (mode), then
+                // fchmodat with the low 12 bits, not following a symbolic
+                // link when FLAG is non-nil (symlink_nofollow_flag).
+                let Kind::Integer(mode) = args[1].kind() else {
+                    return Err(LispError::WrongTypeArgument("fixnump".into(), args[1]));
+                };
+                let nofollow = args.get(2).is_some_and(Value::is_truthy);
                 let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
                 let host = host_file_name(interp, env, &path)?;
-                let mode = args[1].as_integer()?;
-                #[cfg(unix)]
-                {
-                    let mut permissions = fs::metadata(&host)
-                        .map_err(|error| file_operation_error("Setting file modes", &error, &path))?
-                        .permissions();
-                    permissions.set_mode(mode as u32);
-                    fs::set_permissions(&host, permissions).map_err(|error| {
-                        file_operation_error("Setting file modes", &error, &path)
-                    })?;
-                }
+                fchmodat_errno(&host, (mode & 0o7777) as libc::mode_t, nofollow)
+                    .map_err(|error| file_operation_error("Doing chmod", &error, &path))?;
                 dispatch_file_notification(interp, env, &path, "attribute-changed")?;
                 Ok(Value::Nil)
             }
@@ -4299,4 +4297,41 @@ fn file_name_completion_1(
         ],
         env,
     )
+}
+
+/// faccessat (AT_FDCWD, HOST, MODE, AT_EACCESS), its errno on failure.
+fn faccessat_errno(host: &std::path::Path, mode: libc::c_int) -> std::io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    let name = std::ffi::CString::new(host.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::from_raw_os_error(libc::EINVAL))?;
+    // SAFETY: `name' is a valid NUL-terminated string for the call.
+    let status = unsafe { libc::faccessat(libc::AT_FDCWD, name.as_ptr(), mode, libc::AT_EACCESS) };
+    if status == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+/// emacs_fchmodat (AT_FDCWD, HOST, MODE, NOFOLLOW), its errno on failure.
+fn fchmodat_errno(
+    host: &std::path::Path,
+    mode: libc::mode_t,
+    nofollow: bool,
+) -> std::io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    let name = std::ffi::CString::new(host.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::from_raw_os_error(libc::EINVAL))?;
+    let flags = if nofollow {
+        libc::AT_SYMLINK_NOFOLLOW
+    } else {
+        0
+    };
+    // SAFETY: `name' is a valid NUL-terminated string for the call.
+    let status = unsafe { libc::fchmodat(libc::AT_FDCWD, name.as_ptr(), mode, flags) };
+    if status == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
 }

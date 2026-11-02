@@ -1661,7 +1661,10 @@ define_dispatch!(
 
             "make-list" => {
                 need_args(name, args, 2)?;
-                let n = args[0].as_integer()?;
+                // alloc.c:Fmake_list: CHECK_FIXNAT (length).
+                let Kind::Integer(n @ 0..) = args[0].kind() else {
+                    return Err(LispError::WrongTypeArgument("wholenump".into(), args[0]));
+                };
                 let val = args[1];
                 let items: Vec<Value> = (0..n).map(|_| val).collect();
                 Ok(Value::list(items))

@@ -2393,6 +2393,8 @@ impl<'a> CharacterDisplayContext<'a> {
             .map(|(_, text_terminal)| text_terminal)
             .unwrap_or(value);
         let method = match value.kind() {
+            // lookup_glyphless_char_display: no method (the usual entry).
+            Kind::Nil if !no_font_fallback => return None,
             Kind::Symbol(name) if name == "zero-width" && no_font_fallback => {
                 GlyphlessDisplayMethod::EmptyBox
             }
@@ -3399,14 +3401,63 @@ pub(crate) fn screen_line_layout(
     truncate: bool,
     lnum_cols: usize,
 ) -> ScreenLineLayout {
-    let buffer_id = interpreter.current_buffer_id();
+    ScreenLineLayouter::new(interpreter, window_id, lnum_cols).layout(bol, text_width, truncate)
+}
+
+/// The display context and invisibility spec screen_line_layout reads,
+/// taken once for successive display lines of the current buffer, as one
+/// iterator walking WINDOW's lines reads them once.
+pub(crate) struct ScreenLineLayouter<'a> {
+    interpreter: &'a Interpreter,
+    spec: crate::lisp::primitives::InvisibilitySpec,
+    context: CharacterDisplayContext<'a>,
+    lnum_cols: usize,
+}
+
+impl<'a> ScreenLineLayouter<'a> {
+    pub(crate) fn new(interpreter: &'a Interpreter, window_id: u64, lnum_cols: usize) -> Self {
+        let buffer_id = interpreter.current_buffer_id();
+        let spec = {
+            let buffer = interpreter.buffer.borrow();
+            resolve_buffer_invisibility(interpreter, &buffer, buffer_id)
+        };
+        let context = CharacterDisplayContext::new(interpreter, buffer_id, window_id)
+            .with_line_numbers(lnum_cols);
+        Self {
+            interpreter,
+            spec,
+            context,
+            lnum_cols,
+        }
+    }
+
+    /// screen_line_layout of the display line starting at BOL.
+    pub(crate) fn layout(&self, bol: usize, text_width: usize, truncate: bool) -> ScreenLineLayout {
+        lay_out_screen_line(
+            self.interpreter,
+            &self.spec,
+            &self.context,
+            bol,
+            text_width,
+            truncate,
+            self.lnum_cols,
+        )
+    }
+}
+
+fn lay_out_screen_line(
+    interpreter: &Interpreter,
+    spec: &crate::lisp::primitives::InvisibilitySpec,
+    context: &CharacterDisplayContext<'_>,
+    bol: usize,
+    text_width: usize,
+    truncate: bool,
+    lnum_cols: usize,
+) -> ScreenLineLayout {
     let buffer = interpreter.buffer.borrow();
-    let spec = resolve_buffer_invisibility(interpreter, &buffer, buffer_id);
-    let context = CharacterDisplayContext::new(interpreter, buffer_id, window_id)
-        .with_line_numbers(lnum_cols);
-    let first_line = visual_line_first_line(&buffer, &spec, buffer.line_number_at_pos(bol));
+    let first_line = visual_line_first_line(&buffer, spec, buffer.line_number_at_pos(bol));
     let line_start = buffer.display_line_start_of(first_line);
-    let visual = glyphless_visual_line_at(&buffer, &spec, first_line, Some(&context));
+    let visual = glyphless_visual_line_at(&buffer, spec, first_line, Some(context));
     let laid = layout::lay_out_motion_line(&visual, text_width.max(1), truncate);
     let raw_of = |index: usize| {
         visual
