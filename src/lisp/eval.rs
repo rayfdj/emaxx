@@ -3855,12 +3855,14 @@ pub(crate) fn initial_process_environment() -> &'static [(std::ffi::OsString, st
 /// The startup environment as callproc.c:set_initial_environment lists
 /// it: each NAME=VALUE entry through build_string, whose make_string
 /// makes a multibyte string of valid multibyte text and a unibyte one of
-/// anything else.
+/// anything else, consed on in environ's order, so the list runs from
+/// environ's last entry to its first.
 pub(crate) fn initial_environment_list() -> Value {
     use std::os::unix::ffi::OsStrExt;
     Value::list(
         initial_process_environment()
             .iter()
+            .rev()
             .map(|(name, value)| {
                 let mut entry = name.as_bytes().to_vec();
                 entry.push(b'=');

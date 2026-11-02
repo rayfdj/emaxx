@@ -557,8 +557,14 @@ impl InsertFileSource {
                 .map_err(|error| file_operation_error("Setting file position", &error, path))?;
         }
         let limit = (self.seekable || self.end_given).then(|| self.total.max(0) as u64);
-        let mut bytes = Vec::new();
-        let mut chunk = vec![0; READ_BUF_SIZE as usize];
+        // Room for what a regular file holds past BEG, each read going
+        // straight into it.
+        let expected = if self.regular && self.size > self.beg {
+            (self.size - self.beg).min(self.total.max(0))
+        } else {
+            READ_BUF_SIZE
+        };
+        let mut bytes = Vec::with_capacity(expected as usize);
         loop {
             let want = match limit {
                 Some(limit) => (limit - bytes.len() as u64).min(READ_BUF_SIZE as u64) as usize,
@@ -567,10 +573,12 @@ impl InsertFileSource {
             if want == 0 {
                 break;
             }
-            match self.file.read(&mut chunk[..want]) {
+            // emacs_read_quit of WANT bytes, an EINTR read again, into
+            // the room past the bytes read, which std's File reads into
+            // without filling it first.
+            match (&*self.file).take(want as u64).read_to_end(&mut bytes) {
                 Ok(0) => break,
-                Ok(read) => bytes.extend_from_slice(&chunk[..read]),
-                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                Ok(_) => {}
                 Err(error) => {
                     return Ok(InsertFileRead {
                         bytes,
@@ -1890,10 +1898,7 @@ fn auto_coding_in_empty_buffer(
     };
     interp.buffer.borrow_mut().set_multibyte(false);
     interp.set_variable("buffer-undo-list", Value::T, &mut decide_env);
-    {
-        let (text, counts) = decode_raw_text_counted(bytes);
-        interp.insert_current_buffer_counted(&text, counts);
-    }
+    interp.insert_current_buffer_raw_bytes(bytes);
     let inserted_tick = {
         let mut buffer = interp.buffer.borrow_mut();
         buffer.goto_char(1);
@@ -1979,7 +1984,7 @@ pub(crate) fn decode_file_contents(
     decode_file_bytes(
         interp,
         env,
-        decided_bytes.as_deref().unwrap_or(bytes),
+        decided_bytes.unwrap_or_else(|| bytes.to_vec()),
         coding,
         make_unibyte,
     )
@@ -2051,7 +2056,7 @@ pub(crate) fn decide_file_coding(
 pub(crate) fn decode_file_bytes(
     interp: &mut Interpreter,
     env: &Env,
-    bytes: &[u8],
+    bytes: Vec<u8>,
     coding: String,
     make_unibyte: bool,
 ) -> Result<FileDecode, LispError> {
@@ -2073,11 +2078,7 @@ pub(crate) fn decode_file_bytes(
     let dst_multibyte = multibyte && !(make_unibyte && for_unibyte);
     let mut outcome = decode_coding_gap(interp, env, bytes, &coding, dst_multibyte)?;
     let layout = outcome.decoded.take_layout();
-    let charset_props = super::charset_spans_to_props(
-        std::mem::take(&mut outcome.decoded.charsets),
-        &outcome.decoded.text,
-        None,
-    );
+    let charset_props = super::decoded_annotation_props(&mut outcome.decoded);
     Ok(FileDecode {
         decoded: outcome.decoded,
         coding: outcome.coding,
@@ -2451,7 +2452,7 @@ fn insert_file_bytes(
         } = decode_file_bytes(
             interp,
             env,
-            decided_bytes.as_deref().unwrap_or(&bytes),
+            decided_bytes.unwrap_or(bytes),
             coding,
             visit && !replacing,
         )?;

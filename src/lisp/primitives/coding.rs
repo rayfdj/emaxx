@@ -576,13 +576,16 @@ pub(crate) fn pre_write_for_file(
 
 /// decode_coding_object for a string destination: DECODED, with its
 /// `charset' properties, is the text of a work buffer (multibyte unless
-/// the coding is for unibyte text), where a post-read conversion runs
+/// the coding is for unibyte text), put there a decoder call at a time
+/// as a buffer destination's is when LAYOUT says the decode took more
+/// than one insertion or decode_eol changed it; a post-read conversion runs
 /// through safe_calln with the characters produced and point at BEG; its
 /// value must be a natural number (CHECK_FIXNAT).  The result is
 /// Fbuffer_string of the buffer current then.
 pub(crate) fn decode_into_work_buffer(
     interp: &mut Interpreter,
     decoded: &StringLike,
+    layout: Option<&DecodeLayout>,
     post_read: Value,
     env: &mut Env,
 ) -> Result<StringLike, LispError> {
@@ -592,7 +595,25 @@ pub(crate) fn decode_into_work_buffer(
     let work = code_conversion_save(interp, decoded.multibyte, env)?;
     let result = (|| -> Result<StringLike, LispError> {
         interp.set_current_buffer_id(work.id)?;
-        insert_conversion_source(interp, decoded);
+        match layout {
+            // decode_coding's insert_from_gap a call at a time into the
+            // work buffer, then decode_eol's change there.
+            Some(layout) => {
+                let start = interp.buffer.borrow().point();
+                crate::lisp::primitives::insert_converted_text_at(
+                    interp,
+                    start,
+                    &decoded.text,
+                    None,
+                    &decoded.extended_chars,
+                    decoded.text.chars().count(),
+                    true,
+                    Some(layout),
+                    env,
+                )?;
+            }
+            None => insert_conversion_source(interp, decoded),
+        }
         if !post_read.is_nil() {
             let produced = decoded.text.chars().count() as i64;
             {
@@ -1361,20 +1382,38 @@ fn encode_coding_big5(interp: &Interpreter, codes: &[u32], coding: &str) -> Vec<
     out
 }
 
-/// The length of the ASCII run BYTES starts with, a word at a time.
-fn ascii_prefix_len(bytes: &[u8]) -> usize {
-    let mut i = 0;
-    while let Some(word) = bytes.get(i..i + 8) {
-        let word = u64::from_ne_bytes(word.try_into().expect("eight bytes"));
-        if word & 0x8080_8080_8080_8080 != 0 {
-            break;
+/// The bytes of BYTES above 0x7F.
+pub(crate) fn high_byte_count(bytes: &[u8]) -> usize {
+    bytes
+        .chunks(1 << 20)
+        .map(|chunk| chunk.iter().map(|&byte| u32::from(byte >> 7)).sum::<u32>() as usize)
+        .sum()
+}
+
+/// The text view of BYTES written into DST, its length: an ASCII byte
+/// as itself, any other as the three bytes of its raw-byte character
+/// (EE 82 80 to EE 83 BF), a word of ASCII bytes at a time.
+pub(crate) fn write_raw_byte_text(dst: &mut [u8], bytes: &[u8]) {
+    let mut at = 0;
+    for chunk in bytes.chunks(8) {
+        if let Ok(word) = <[u8; 8]>::try_from(chunk)
+            && u64::from_ne_bytes(word) & 0x8080_8080_8080_8080 == 0
+        {
+            dst[at..at + 8].copy_from_slice(chunk);
+            at += 8;
+            continue;
         }
-        i += 8;
+        for &byte in chunk {
+            if byte < 0x80 {
+                dst[at] = byte;
+                at += 1;
+            } else {
+                dst[at..at + 3].copy_from_slice(&[0xEE, 0x80 | (byte >> 6), 0x80 | (byte & 0x3F)]);
+                at += 3;
+            }
+        }
     }
-    while bytes.get(i).is_some_and(u8::is_ascii) {
-        i += 1;
-    }
-    i
+    debug_assert_eq!(at, dst.len());
 }
 
 /// coding.c decode_coding_raw_text: each byte as itself, a non-ASCII one
@@ -1387,18 +1426,6 @@ pub(crate) fn decode_coding_raw_text(bytes: &[u8]) -> DecodedText {
 
 pub(crate) fn decode_raw_text_bytes(bytes: &[u8]) -> String {
     decode_coding_raw_text(bytes).text
-}
-
-/// decode_raw_text_bytes with the counts a buffer keeps of the text: a
-/// character a byte, a raw-byte one each byte above 0x7F.
-pub(crate) fn decode_raw_text_counted(bytes: &[u8]) -> (String, crate::buffer::TextCounts) {
-    let mut out = DecodedText::new();
-    let raw_markers = out.push_raw_bytes(bytes);
-    let counts = crate::buffer::TextCounts {
-        chars: bytes.len(),
-        raw_markers,
-    };
-    (out.text, counts)
 }
 
 /// coding.c decode_coding_utf_8 over a whole unibyte text.
@@ -1430,6 +1457,27 @@ fn consume_chars(
     translation: &[Value],
     preferred: &[Option<String>],
 ) -> (Vec<u32>, Vec<Option<String>>) {
+    let translation = if raw_text_encoder { &[] } else { translation };
+    if source.multibyte && translation.is_empty() && preferred.is_empty() {
+        // No table and no annotation: each character goes in as it is, a
+        // newline as the eol type makes it.
+        let mut codes = Vec::with_capacity(source.text.len());
+        for code in source.character_codes_iter() {
+            let mut c = code as u32;
+            if c == u32::from(b'\r') && selective_display {
+                c = u32::from(b'\n');
+            }
+            if c == u32::from(b'\n') {
+                match eol_type {
+                    Some(1) => codes.push(u32::from(b'\r')),
+                    Some(2) => c = u32::from(b'\r'),
+                    _ => {}
+                }
+            }
+            codes.push(c);
+        }
+        return (codes, Vec::new());
+    }
     // Each character as the source spells it, with the index of the
     // source position it starts at.
     let mut chars: Vec<(u32, usize)> = Vec::with_capacity(source.text.len());
@@ -1471,7 +1519,6 @@ fn consume_chars(
             }
         }
     }
-    let translation = if raw_text_encoder { &[] } else { translation };
     let max_lookup = translation_max_lookup(translation);
     let annotate = !preferred.is_empty();
     let mut codes = Vec::with_capacity(chars.len());
@@ -1714,6 +1761,41 @@ pub(crate) fn encode_text_bytes_with_charsets(
     } else {
         &[]
     };
+    // encode_coding_utf_8 writes a Unicode character as its UTF-8, which
+    // is how a multibyte text of such characters already spells it: with
+    // no translation, nothing for selective display and no eight-bit or
+    // non-Unicode character, the text's bytes are the encoding, each LF
+    // first made what the eol type makes it.
+    if encoder == "utf-8"
+        && source.multibyte
+        && source.extended_chars.is_empty()
+        && translation.is_empty()
+        && !(selective_display && source.text.contains('\r'))
+        && !crate::lisp::types::string_data::has_raw_byte_markers(source.text.as_bytes())
+    {
+        let bom = (kind == "utf-8-with-signature"
+            || coding_system_property(interp, &canonical, ":bom").is_some_and(|bom| !bom.is_nil()))
+            && !spec.bom_done;
+        spec.bom_done = true;
+        let text = source.text.as_bytes();
+        let mut out = Vec::with_capacity(text.len() + 3);
+        if bom {
+            out.extend_from_slice(&[0xEF, 0xBB, 0xBF]);
+        }
+        match eol_type {
+            Some(eol @ (1 | 2)) => {
+                let mut copied = 0;
+                for at in memchr::memchr_iter(b'\n', text) {
+                    out.extend_from_slice(&text[copied..at]);
+                    out.extend_from_slice(if eol == 1 { b"\r\n" } else { b"\r" });
+                    copied = at + 1;
+                }
+                out.extend_from_slice(&text[copied..]);
+            }
+            _ => out.extend_from_slice(text),
+        }
+        return Ok(out);
+    }
     let (codes, preferred) = consume_chars(
         source,
         eol_type,
@@ -1875,6 +1957,9 @@ pub(crate) struct DecoderSpec {
     pub(crate) surrogate: u32,
     /// coding->spec.iso_2022.
     pub(crate) iso2022: Option<Box<iso2022::Iso2022Carry>>,
+    /// coding->spec.emacs_mule.cmp_status of a composition a block left
+    /// unfinished, its carryover with it.
+    pub(crate) emacs_mule: Option<Box<decoders::EmacsMuleComposing>>,
 }
 
 /// A stream decoded a block at a time: read_process_output's
@@ -1930,36 +2015,115 @@ const CODING_CARRYOVER_BYTES: usize = 64;
 /// into text properties.  CHUNKS are the characters each decoder call
 /// produced, which produce_chars inserts into a buffer destination one
 /// insert_from_gap at a time, and EOL what decode_eol changed after them.
+/// COMPOSITIONS are the composition annotations among the runs.
 #[derive(Default)]
 pub(crate) struct DecodedText {
     pub(crate) text: String,
     pub(crate) charsets: Vec<(usize, usize, String)>,
+    pub(crate) compositions: Vec<DecodedComposition>,
     pub(crate) extended: Vec<(usize, u32)>,
     chars: usize,
     pub(crate) chunks: Vec<usize>,
     pub(crate) eol: Option<Box<EolConversion>>,
 }
 
+/// produce_composition's COMPONENTS for compose_text: nil for a relative
+/// composition, else the characters and rules (a rule as its code modulo
+/// #x100) up to the first -1, Fstring of them when all are characters and
+/// Fvector of them otherwise.
+#[derive(Clone, Debug)]
+pub(crate) enum CompositionComponents {
+    Relative,
+    Chars(Vec<u32>),
+    Vector(Vec<u32>),
+}
+
+/// A decoder's composition annotation: produce_composition's compose_text
+/// over the characters START..END with COMPONENTS, which produce_annotation
+/// reaches after the first SEQ `charset' runs.
+#[derive(Clone, Debug)]
+pub(crate) struct DecodedComposition {
+    pub(crate) seq: usize,
+    pub(crate) start: usize,
+    pub(crate) end: usize,
+    pub(crate) components: CompositionComponents,
+}
+
+impl DecodedComposition {
+    /// compose_text's `composition' value, ((LENGTH . COMPONENTS)); None
+    /// for components Fstring refuses.
+    pub(crate) fn property(&self) -> Option<Value> {
+        let codes = |codes: &[u32]| -> Vec<Value> {
+            codes
+                .iter()
+                .map(|&code| Value::Integer(i64::from(code)))
+                .collect()
+        };
+        let components = match &self.components {
+            CompositionComponents::Relative => Value::Nil,
+            CompositionComponents::Chars(chars) => {
+                Value::StringObject(StringObjectRef::from_characters(&codes(chars)).ok()?)
+            }
+            CompositionComponents::Vector(items) => Value::vector(codes(items)),
+        };
+        let length = Value::Integer((self.end - self.start) as i64);
+        Some(Value::cons(Value::cons(length, components), Value::Nil))
+    }
+}
+
+/// A decoded text's annotation, as produce_annotation reaches it.
+#[derive(Clone, Copy)]
+pub(crate) enum Annotation<'a> {
+    Charset(usize, usize, &'a str),
+    Composition(&'a DecodedComposition),
+}
+
+/// The `charset' runs and the compositions in produce_annotation's order.
+pub(crate) fn annotations<'a>(
+    charsets: &'a [(usize, usize, String)],
+    compositions: &'a [DecodedComposition],
+) -> impl Iterator<Item = Annotation<'a>> {
+    let mut charsets = charsets.iter().enumerate().peekable();
+    let mut compositions = compositions.iter().peekable();
+    std::iter::from_fn(move || {
+        let composition_first = match (charsets.peek(), compositions.peek()) {
+            (Some(&(index, _)), Some(composition)) => composition.seq <= index,
+            (None, Some(_)) => true,
+            (_, None) => false,
+        };
+        if composition_first {
+            compositions.next().map(Annotation::Composition)
+        } else {
+            charsets
+                .next()
+                .map(|(_, (from, to, charset))| Annotation::Charset(*from, *to, charset))
+        }
+    })
+}
+
 /// How decode_coding puts a decoded text into a buffer destination when
-/// it takes more than one insert_from_gap or decode_eol changed it: the
-/// characters of each insertion, the `charset' runs over the text as
+/// it takes more than one insert_from_gap, decode_eol changed it or a
+/// composition is among its annotations: the characters of each
+/// insertion, the `charset' runs and the compositions over the text as
 /// inserted, and decode_eol's change after them.
 pub(crate) struct DecodeLayout {
     pub(crate) chunks: Vec<usize>,
     pub(crate) charsets: Vec<(usize, usize, String)>,
+    pub(crate) compositions: Vec<DecodedComposition>,
     pub(crate) eol: Option<Box<EolConversion>>,
 }
 
 /// decode_eol's change to a decoded text, which a buffer destination
 /// makes once the text is in it: under dos (DOS) the CRs before a newline
 /// deleted, under mac the CRs made newlines, CRS their indices in the
-/// text before the change; the text, its `charset' runs and its side
-/// table of characters as they were before it.
+/// text before the change; the text, its `charset' runs, its compositions
+/// and its side table of characters as they were before it.
 pub(crate) struct EolConversion {
     pub(crate) dos: bool,
     pub(crate) crs: Vec<usize>,
     pub(crate) text: String,
     pub(crate) charsets: Vec<(usize, usize, String)>,
+    pub(crate) compositions: Vec<DecodedComposition>,
     pub(crate) extended: Vec<(usize, u32)>,
 }
 
@@ -1993,6 +2157,27 @@ impl DecodedText {
         Self::default()
     }
 
+    /// An empty text with room for BYTES bytes of characters.
+    pub(crate) fn with_capacity(bytes: usize) -> Self {
+        Self {
+            text: String::with_capacity(bytes),
+            ..Self::default()
+        }
+    }
+
+    /// TEXT, of CHARS characters and none of U+E080..U+E0FF, as it is.
+    pub(crate) fn from_plain_text(text: String, chars: usize) -> Self {
+        debug_assert_eq!(text.chars().count(), chars);
+        debug_assert!(!crate::lisp::types::string_data::has_raw_byte_markers(
+            text.as_bytes()
+        ));
+        Self {
+            text,
+            chars,
+            ..Self::default()
+        }
+    }
+
     /// The number of characters produced so far.
     pub(crate) fn char_count(&self) -> usize {
         self.chars
@@ -2000,18 +2185,24 @@ impl DecodedText {
 
     /// What a buffer destination needs beyond the text and its runs to
     /// take it as decode_coding inserts it, decode_eol's record taken from
-    /// the text: None for one insertion that decode_eol left as it was.
+    /// the text: None for one insertion that decode_eol left as it was,
+    /// with no composition among its annotations.
     pub(crate) fn take_layout(&mut self) -> Option<DecodeLayout> {
-        if self.chunks.len() <= 1 && self.eol.is_none() {
+        if self.chunks.len() <= 1 && self.eol.is_none() && self.compositions.is_empty() {
             return None;
         }
         let mut eol = self.eol.take();
+        let (charsets, compositions) = match &mut eol {
+            Some(eol) => (
+                std::mem::take(&mut eol.charsets),
+                std::mem::take(&mut eol.compositions),
+            ),
+            None => (self.charsets.clone(), self.compositions.clone()),
+        };
         Some(DecodeLayout {
             chunks: self.chunks.clone(),
-            charsets: match &mut eol {
-                Some(eol) => std::mem::take(&mut eol.charsets),
-                None => self.charsets.clone(),
-            },
+            charsets,
+            compositions,
             eol,
         })
     }
@@ -2069,37 +2260,15 @@ impl DecodedText {
     /// a non-ASCII byte's character, U+E080..U+E0FF, as its three bytes;
     /// the count of those bytes.
     pub(crate) fn push_raw_bytes(&mut self, run: &[u8]) -> usize {
-        let high: usize = run
-            .chunks(1 << 20)
-            .map(|chunk| chunk.iter().map(|&byte| u32::from(byte >> 7)).sum::<u32>() as usize)
-            .sum();
-        self.text.reserve(run.len() + 2 * high);
+        let high = high_byte_count(run);
         // SAFETY: only ASCII bytes and the whole sequences EE 82 80 to
         // EE 83 BF go in.
         let out = unsafe { self.text.as_mut_vec() };
-        let mut rest = run;
-        while !rest.is_empty() {
-            let ascii = ascii_prefix_len(rest);
-            out.extend_from_slice(&rest[..ascii]);
-            rest = &rest[ascii..];
-            while let Some((&byte, after)) = rest.split_first()
-                && byte >= 0x80
-            {
-                out.extend_from_slice(&[0xEE, 0x80 | (byte >> 6), 0x80 | (byte & 0x3F)]);
-                rest = after;
-            }
-        }
+        let len = out.len();
+        out.resize(len + run.len() + 2 * high, 0);
+        write_raw_byte_text(&mut out[len..], run);
         self.chars += run.len();
         high
-    }
-
-    /// Store the ASCII run RUN.
-    pub(crate) fn push_ascii(&mut self, run: &[u8]) {
-        debug_assert!(run.is_ascii());
-        // SAFETY: ASCII is UTF-8.
-        self.text
-            .push_str(unsafe { std::str::from_utf8_unchecked(run) });
-        self.chars += run.len();
     }
 
     /// decode_eol's scan of the produced text: the EOL_SEEN bits, with
@@ -2130,8 +2299,8 @@ impl DecodedText {
 
     /// decode_eol's conversion for EOL_TYPE (1 dos, 2 mac): a CR becomes a
     /// newline under mac, and under dos each CR followed by a newline goes,
-    /// the side table and the charset runs moving with the characters
-    /// after it.
+    /// the side table, the charset runs and the compositions moving with
+    /// the characters after it.
     fn convert_eol(&mut self, eol_type: i64) {
         match eol_type {
             2 if self.text.contains('\r') => {
@@ -2141,12 +2310,14 @@ impl DecodedText {
                     crs,
                     text: std::mem::replace(&mut self.text, text),
                     charsets: self.charsets.clone(),
+                    compositions: self.compositions.clone(),
                     extended: self.extended.clone(),
                 }));
             }
             1 if self.text.contains("\r\n") => {
                 let (text, crs) = eol_converted(&self.text, true);
                 let charsets = self.charsets.clone();
+                let compositions = self.compositions.clone();
                 let extended = self.extended.clone();
                 // The CRs deleted before character index INDEX.
                 let shift = |index: usize| index - crs.partition_point(|&cr| cr < index);
@@ -2157,12 +2328,17 @@ impl DecodedText {
                     run.0 = shift(run.0);
                     run.1 = shift(run.1);
                 }
+                for composition in &mut self.compositions {
+                    composition.start = shift(composition.start);
+                    composition.end = shift(composition.end);
+                }
                 self.chars -= crs.len();
                 self.eol = Some(Box::new(EolConversion {
                     dos: true,
                     crs,
                     text: std::mem::replace(&mut self.text, text),
                     charsets,
+                    compositions,
                     extended,
                 }));
             }
@@ -3097,9 +3273,9 @@ fn encode_coding_converted(
     let pre_write =
         coding_system_property(interp, &canonical, ":pre-write-conversion").unwrap_or(Value::Nil);
     let converted = if pre_write.is_nil() {
-        string.clone()
+        std::borrow::Cow::Borrowed(&string)
     } else {
-        pre_write_convert(interp, &string, pre_write, env)?
+        std::borrow::Cow::Owned(pre_write_convert(interp, &string, pre_write, env)?)
     };
     let preferred = charset_preferences(&converted);
     // encode_coding substitutes the default character for what the
@@ -3143,9 +3319,9 @@ pub(crate) fn encode_process_block(
     let pre_write =
         coding_system_property(interp, &canonical, ":pre-write-conversion").unwrap_or(Value::Nil);
     let converted = if pre_write.is_nil() {
-        string.clone()
+        std::borrow::Cow::Borrowed(&string)
     } else {
-        pre_write_convert(interp, &string, pre_write, env)?
+        std::borrow::Cow::Owned(pre_write_convert(interp, &string, pre_write, env)?)
     };
     let preferred = charset_preferences(&converted);
     let translation = encode_translation_tables(interp, &canonical, env)?;
@@ -3236,59 +3412,85 @@ fn decode_multibyte_source_text(
     )
 }
 
-/// For each character index of STAGED, how many characters the eol
-/// conversion (CRLF -> LF when CRLF, else CR -> LF) removes before it:
-/// the offsets of annotations made on the staged text move by that much
-/// once decode_eol has deleted the CRs.
-fn eol_removed_prefix(staged: &str, crlf: bool) -> Vec<usize> {
-    let mut removed = Vec::with_capacity(staged.len() + 1);
-    let mut count = 0;
-    let mut previous = '\0';
-    for ch in staged.chars() {
-        removed.push(count);
-        if crlf && previous == '\r' && ch == '\n' {
-            count += 1;
-        }
-        previous = ch;
-    }
-    removed.push(count);
-    removed
-}
-
-/// The `charset' runs on the converted text as produce_charset puts them,
-/// Fput_text_property of each run's charset in turn: the intervals of the
-/// text, none for no run.
-pub(crate) fn charset_spans_to_props(
-    charsets: Vec<(usize, usize, String)>,
-    staged: &str,
-    crlf_conversion: Option<bool>,
+/// The annotations of DECODED as produce_annotation puts them on its
+/// text, Fput_text_property of each `charset' run and each composition in
+/// turn: the intervals of the text, none for no annotation.
+pub(crate) fn decoded_annotation_props(
+    decoded: &mut DecodedText,
 ) -> Option<crate::intervals::Intervals> {
-    let removed = crlf_conversion.map(|crlf| eol_removed_prefix(staged, crlf));
-    let adjust = |offset: usize| match &removed {
-        Some(removed) => {
-            let index = offset.min(removed.len() - 1);
-            offset - removed[index]
-        }
-        None => offset,
-    };
-    let total = staged.chars().count();
-    let len = adjust(total);
+    if decoded.charsets.is_empty() && decoded.compositions.is_empty() {
+        return None;
+    }
+    let len = decoded.text.chars().count();
     let mut props = crate::lisp::types::string_data::StringProperties::default();
-    for (start, end, charset) in charsets {
-        let (start, end) = (adjust(start), adjust(end).min(len));
+    for annotation in annotations(&decoded.charsets, &decoded.compositions) {
+        let (start, end, plist) = match annotation {
+            Annotation::Charset(start, end, charset) => (
+                start,
+                end,
+                Value::list([Value::symbol("charset"), Value::Symbol(charset.into())]),
+            ),
+            Annotation::Composition(composition) => {
+                let Some(value) = composition.property() else {
+                    continue;
+                };
+                (
+                    composition.start,
+                    composition.end,
+                    Value::list([Value::symbol("composition"), value]),
+                )
+            }
+        };
+        let end = end.min(len);
         if end > start {
             let _ = crate::intervals::add_string_text_properties(
                 &mut props,
                 len,
                 start,
                 end,
-                Value::list([Value::symbol("charset"), Value::Symbol(charset.into())]),
+                plist,
                 crate::intervals::PropertySetType::Replace,
                 true,
             );
         }
     }
+    decoded.charsets.clear();
+    decoded.compositions.clear();
     props.take()
+}
+
+/// decode_coding_object's string destination for a decode without a
+/// post-read conversion: DECODED with its annotations, made in the work
+/// buffer a decoder call at a time when it took more than one insertion,
+/// decode_eol changed it or a composition is among its annotations.
+pub(crate) fn decoded_string_value(
+    interp: &mut Interpreter,
+    mut decoded: DecodedText,
+    multibyte: bool,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let Some(layout) = decoded.take_layout() else {
+        let props = decoded_annotation_props(&mut decoded);
+        return Ok(make_shared_string_value_with_extended_chars(
+            decoded.text,
+            props,
+            multibyte,
+            decoded.extended,
+        ));
+    };
+    let staged = StringLike {
+        text: decoded.text,
+        props: None,
+        multibyte,
+        extended_chars: decoded.extended,
+    };
+    let converted = decode_into_work_buffer(interp, &staged, Some(&layout), Value::Nil, env)?;
+    Ok(make_shared_string_value_with_extended_chars(
+        converted.text,
+        converted.props,
+        converted.multibyte,
+        converted.extended_chars,
+    ))
 }
 
 /// A text decode_coding_object reads.
@@ -3296,6 +3498,9 @@ pub(crate) enum DecodeSource<'a> {
     /// The bytes of a unibyte text: a unibyte string's or buffer's, a
     /// file's or a process's.
     Bytes(&'a [u8]),
+    /// A file's bytes, read into the gap: what decode_coding_gap inserts
+    /// as they are becomes the text without a copy.
+    Gap(Vec<u8>),
     /// A string's or a buffer region's characters.
     Text(&'a StringLike),
 }
@@ -3373,14 +3578,14 @@ pub(crate) fn decode_coding_block(
 pub(crate) fn decode_coding_gap(
     interp: &Interpreter,
     env: &Env,
-    bytes: &[u8],
+    bytes: Vec<u8>,
     coding: &str,
     dst_multibyte: bool,
 ) -> Result<CodingDecode, LispError> {
     decode_coding(
         interp,
         env,
-        DecodeSource::Bytes(bytes),
+        DecodeSource::Gap(bytes),
         coding,
         Some(dst_multibyte),
         true,
@@ -3413,6 +3618,7 @@ fn decode_coding(
             }
             _ => (std::borrow::Cow::Borrowed(bytes), None),
         },
+        DecodeSource::Gap(bytes) => (std::borrow::Cow::Owned(bytes), None),
         DecodeSource::Text(string) if !string.multibyte => (
             std::borrow::Cow::Owned(encode_raw_text_bytes(&string.text)?),
             None,
@@ -3473,18 +3679,35 @@ fn decode_coding(
         && !decode_translation_table_p(interp, &settled, env)
     {
         let mut decoded = if bytes.is_ascii() {
-            let mut decoded = DecodedText::new();
-            decoded.push_ascii(&bytes);
-            decoded
+            let len = bytes.len();
+            // SAFETY: ASCII is UTF-8.
+            let text = unsafe { String::from_utf8_unchecked(bytes.into_owned()) };
+            DecodedText::from_plain_text(text, len)
         } else {
-            decode_coding_utf_8(&bytes)
+            // insert_from_gap of the bytes as they are, less the BOM at
+            // their head when the settled coding has one
+            // (CODING_UTF_8_BOM not utf_without_bom).
+            let bom = bytes.starts_with(&[0xEF, 0xBB, 0xBF])
+                && coding_system_property(interp, &settled, ":bom")
+                    .is_some_and(|value| !value.is_nil());
+            let skip = if bom { 3 } else { 0 };
+            if detection.utf8_standard {
+                let mut bytes = bytes.into_owned();
+                bytes.drain(..skip);
+                // SAFETY: detect_coding_utf_8 found each sequence standard.
+                let text = unsafe { String::from_utf8_unchecked(bytes) };
+                DecodedText::from_plain_text(text, detection.utf8_chars - usize::from(bom))
+            } else {
+                decoders::decode_detected_utf_8(&bytes[skip..])
+            }
         };
         let mut eol_type = coding_eol_type(interp, &settled);
         if eol_type.is_none() {
             let seen = match detection.eol_seen {
                 Some(seen) => seen,
+                // The text holds the bytes' newlines as they are.
                 None if inhibit_eol_conversion => {
-                    if bytes.contains(&b'\n') {
+                    if decoded.text.as_bytes().contains(&b'\n') {
                         detect::EOL_SEEN_LF
                     } else {
                         detect::EOL_SEEN_NONE
@@ -3655,8 +3878,27 @@ fn decode_coding_parts(
     record_used: bool,
     env: &mut Env,
 ) -> Result<BufferDecode, LispError> {
-    let string =
-        string_like(value).ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *value))?;
+    // What the decoder reads: a unibyte string's bytes, a multibyte one's
+    // characters.
+    let unibyte = match value.kind() {
+        Kind::StringObject(state) => {
+            let state = state.borrow();
+            (!state.is_multibyte()).then(|| state.bytes().to_vec())
+        }
+        _ => None,
+    };
+    let string = match unibyte {
+        Some(_) => None,
+        None => Some(
+            string_like(value)
+                .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *value))?,
+        ),
+    };
+    let (ascii, has_cr) = match (&unibyte, &string) {
+        (Some(bytes), _) => (bytes.is_ascii(), bytes.contains(&b'\r')),
+        (None, Some(string)) => (string.text.is_ascii(), string.text.contains('\r')),
+        (None, None) => unreachable!("a string is unibyte or multibyte"),
+    };
     let Some(coding) = coding else {
         if record_used {
             set_last_coding_system_used(interp, "no-conversion", env);
@@ -3685,10 +3927,8 @@ fn decode_coding_parts(
     // buffer destination never takes it.
     let fast_path = !buffer_conversion
         && coding_system_is_ascii_compatible(interp, &canonical)
-        && string.text.is_ascii()
-        && (coding_eol_type(interp, &canonical) == Some(0)
-            || inhibit_eol_conversion
-            || !string.text.contains('\r'));
+        && ascii
+        && (coding_eol_type(interp, &canonical) == Some(0) || inhibit_eol_conversion || !has_cr);
     if fast_path {
         // A copied result is a fresh, unpropertized multibyte ASCII string;
         // NOCOPY gives back the original object, properties and all.
@@ -3699,7 +3939,12 @@ fn decode_coding_parts(
             value: if nocopy {
                 *value
             } else {
-                make_shared_string_value_with_multibyte(string.text, None, true)
+                let text = match (unibyte, string) {
+                    (Some(bytes), _) => String::from_utf8(bytes).expect("ASCII bytes are UTF-8"),
+                    (None, Some(string)) => string.text,
+                    (None, None) => unreachable!("a string is unibyte or multibyte"),
+                };
+                make_shared_string_value_with_multibyte(text, None, true)
             },
             coding: coding.into(),
             post_read: Value::Nil,
@@ -3713,13 +3958,17 @@ fn decode_coding_parts(
     } = decode_coding_object(
         interp,
         env,
-        DecodeSource::Text(&string),
+        match (&unibyte, &string) {
+            (Some(bytes), _) => DecodeSource::Bytes(bytes),
+            (None, Some(string)) => DecodeSource::Text(string),
+            (None, None) => unreachable!("a string is unibyte or multibyte"),
+        },
         coding,
         dst_multibyte,
     )?;
     // produce_annotation's `charset' properties of the decoded text.
     let layout = decoded.take_layout();
-    let charset_props = charset_spans_to_props(decoded.charsets, &decoded.text, None);
+    let charset_props = decoded_annotation_props(&mut decoded);
     let post_read = coding_system_property(interp, &actual_coding, ":post-read-conversion")
         .unwrap_or(Value::Nil);
     let decoded = StringLike {
@@ -3749,7 +3998,7 @@ fn decode_coding_parts(
     // A string destination: decode_coding_object decodes into the work
     // buffer, multibyte unless the coding detect_coding settled on is for
     // unibyte text, and the post-read conversion runs there.
-    let converted = decode_into_work_buffer(interp, &decoded, post_read, env)?;
+    let converted = decode_into_work_buffer(interp, &decoded, layout.as_ref(), post_read, env)?;
     // code_convert_string records CODING_ID_NAME once decode_coding_object,
     // post-read conversion included, has returned.
     if record_used {

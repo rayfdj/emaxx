@@ -6,7 +6,7 @@
 //! decoded text with; the encoder honors a `charset' text property as
 //! the preferred charset, like CODING_ANNOTATE_CHARSET_MASK does.
 
-use super::units::{CHARBUF_SIZE, CallEnd, CallRuns, MAX_ANNOTATION_LENGTH, Units};
+use super::units::{CallEnd, CallRuns, MAX_ANNOTATION_LENGTH, Units, charbuf_size};
 use super::*;
 use crate::lisp::eval::coding::*;
 use crate::lisp::types::Kind;
@@ -296,16 +296,110 @@ impl CompositionStatus {
             elements: Vec::new(),
         }
     }
+
+    /// cmp_status->length: the charbuf ints of the composition in
+    /// progress, its annotation header, characters, [-2 RULE] pairs and
+    /// [-1 -1] included.
+    fn length(&self) -> usize {
+        if self.state == ComposingState::No {
+            return 0;
+        }
+        MAX_ANNOTATION_LENGTH
+            + self
+                .elements
+                .iter()
+                .map(|element| match element {
+                    CompositionElement::Char(_) => 1,
+                    CompositionElement::Rule(_) | CompositionElement::AltEnd => 2,
+                })
+                .sum::<usize>()
+    }
+}
+
+/// DECODE_COMPOSITION_RULE's rule for the bytes of one, as
+/// produce_composition gives it (COMPOSITION_ENCODE_RULE, the new
+/// format's #x100 dropped).
+fn decoded_rule(bytes: &[u8]) -> u32 {
+    let rule = u32::from(bytes[0]) - 32;
+    match bytes.get(1) {
+        None => {
+            let (mut gref, mut nref) = (rule / 9, rule % 9);
+            if gref == 4 {
+                gref = 10;
+            }
+            if nref == 4 {
+                nref = 10;
+            }
+            gref * 12 + nref
+        }
+        Some(&b) => (rule - 81) * 12 + (u32::from(b) - 32),
+    }
+}
+
+/// DECODE_COMPOSITION_END of a valid composition: its characters become
+/// text and produce_composition's annotation is recorded over them, the
+/// components the alternate characters (methods 3 and 4) or the composed
+/// characters and rules (method 2); the charbuf ints the composition took
+/// that are not characters.
+fn end_composition(out: &mut Output, cmp: &mut CompositionStatus) -> usize {
+    let length = cmp.length();
+    let elements = std::mem::take(&mut cmp.elements);
+    let text_start = if cmp.method >= b'3' {
+        elements
+            .iter()
+            .position(|element| matches!(element, CompositionElement::AltEnd))
+            .map_or(elements.len(), |index| index + 1)
+    } else {
+        0
+    };
+    let components = if cmp.method == b'0' {
+        CompositionComponents::Relative
+    } else {
+        let mut items = Vec::new();
+        let mut all_chars = true;
+        for element in &elements {
+            match element {
+                CompositionElement::Char(ch) => items.push(*ch),
+                CompositionElement::Rule(bytes) => {
+                    all_chars = false;
+                    items.push(decoded_rule(bytes));
+                }
+                CompositionElement::AltEnd => break,
+            }
+        }
+        if all_chars {
+            CompositionComponents::Chars(items)
+        } else {
+            CompositionComponents::Vector(items)
+        }
+    };
+    let start = out.char_count();
+    for element in &elements[text_start..] {
+        if let CompositionElement::Char(ch) = element {
+            out.push_code(*ch);
+        }
+    }
+    out.compositions.push(DecodedComposition {
+        seq: out.charsets.len(),
+        start,
+        end: start + cmp.nchars,
+        components,
+    });
+    cmp.state = ComposingState::No;
+    length - cmp.nchars
 }
 
 type Output = DecodedText;
 
 /// finish_composition: the composition in progress is invalid, so its
-/// start sequence and everything stored for it come back as text.
-fn finish_composition(out: &mut Output, cmp: &mut CompositionStatus) {
+/// start sequence and everything stored for it come back as text; the
+/// charbuf ints it took that are not characters.
+fn finish_composition(out: &mut Output, cmp: &mut CompositionStatus) -> usize {
     if cmp.state == ComposingState::No {
-        return;
+        return 0;
     }
+    let length = cmp.length();
+    let before = out.char_count();
     out.push_code(u32::from(ISO_CODE_ESC));
     out.push_code(u32::from(cmp.method));
     for element in std::mem::take(&mut cmp.elements) {
@@ -323,6 +417,7 @@ fn finish_composition(out: &mut Output, cmp: &mut CompositionStatus) {
         }
     }
     cmp.state = ComposingState::No;
+    length - (out.char_count() - before)
 }
 
 /// coding->spec.iso_2022 as decode_coding_iso_2022 leaves it for the next
@@ -375,9 +470,15 @@ pub(crate) fn decode_call<S: Units + ?Sized>(
     let mut charset_id_1 = state.invoked_charset(1);
     let mut runs = CallRuns::new();
     // The charbuf: the characters stored and the annotations' ints.
-    let limit = CHARBUF_SIZE - MAX_ANNOTATION_LENGTH * 3;
+    let limit = charbuf_size(src) - MAX_ANNOTATION_LENGTH * 3;
     let base = out.char_count();
     let mut annotations = 0;
+    if cmp.length() >= limit {
+        // A carried composition the charbuf has no room after: GNU's
+        // emacs_abort, or a call that carries it again for ever.  It ends
+        // as a last block's would.
+        annotations += finish_composition(out, &mut cmp);
+    }
     let mut byte_after_cr: i32 = -1;
     let use_roman = flags & ISO_FLAG_USE_ROMAN != 0;
     let use_oldjis = flags & ISO_FLAG_USE_OLDJIS != 0;
@@ -417,7 +518,7 @@ pub(crate) fn decode_call<S: Units + ?Sized>(
 
     let end = 'main: loop {
         src_base = p;
-        if out.char_count() - base + annotations >= limit {
+        if out.char_count() - base + annotations + cmp.length() >= limit {
             if byte_after_cr >= 0 {
                 src_base -= 1;
             }
@@ -583,7 +684,7 @@ pub(crate) fn decode_call<S: Units + ?Sized>(
                                 byte_after_cr =
                                     one_more!(src, p, break 'main CallEnd::Ended(src_base));
                             }
-                            finish_composition(out, &mut cmp);
+                            annotations += finish_composition(out, &mut cmp);
                             out.push_byte(c1);
                             break 'step;
                         }
@@ -700,7 +801,11 @@ pub(crate) fn decode_call<S: Units + ?Sized>(
                                 break;
                             }
                             b'0' | b'2' | b'3' | b'4' => {
-                                if flags & ISO_FLAG_COMPOSITION == 0 {
+                                // CODING_ANNOTATE_COMPOSITION_MASK, which
+                                // setup_coding_system also sets for the
+                                // designation flag: CODING_ANNOTATE_CHARSET_MASK
+                                // (3) has its bit.
+                                if flags & (ISO_FLAG_COMPOSITION | ISO_FLAG_DESIGNATION) == 0 {
                                     invalid = true;
                                     break 'step;
                                 }
@@ -715,7 +820,7 @@ pub(crate) fn decode_call<S: Units + ?Sized>(
                                     cmp.elements.push(CompositionElement::AltEnd);
                                     cmp.state = ComposingState::Char;
                                 } else {
-                                    finish_composition(out, &mut cmp);
+                                    annotations += finish_composition(out, &mut cmp);
                                     cmp.method = escape;
                                     cmp.state = if escape <= b'2' {
                                         ComposingState::Char
@@ -737,30 +842,11 @@ pub(crate) fn decode_call<S: Units + ?Sized>(
                                 if cmp.nchars == 0
                                     || ((cmp.state == ComposingState::Char) == (cmp.method == b'2'))
                                 {
-                                    finish_composition(out, &mut cmp);
+                                    annotations += finish_composition(out, &mut cmp);
                                     invalid = true;
                                     break 'step;
                                 }
-                                // The composed characters become text; the
-                                // alternate characters and rules stay in the
-                                // (unported) composition annotation.
-                                let elements = std::mem::take(&mut cmp.elements);
-                                let text_start = if cmp.method >= b'3' {
-                                    elements
-                                        .iter()
-                                        .position(|element| {
-                                            matches!(element, CompositionElement::AltEnd)
-                                        })
-                                        .map_or(elements.len(), |index| index + 1)
-                                } else {
-                                    0
-                                };
-                                for element in &elements[text_start..] {
-                                    if let CompositionElement::Char(ch) = element {
-                                        out.push_code(*ch);
-                                    }
-                                }
-                                cmp.state = ComposingState::No;
+                                annotations += end_composition(out, &mut cmp);
                                 break 'step;
                             }
                             b'[' => {
@@ -829,7 +915,9 @@ pub(crate) fn decode_call<S: Units + ?Sized>(
                                         invalid = true;
                                         break 'step;
                                     }
-                                    if out.char_count() - base + annotations + 6 > limit {
+                                    if out.char_count() - base + annotations + cmp.length() + 6
+                                        > limit
+                                    {
                                         break 'main CallEnd::Full(src_base);
                                     }
                                     out.push_code(u32::from(ISO_CODE_ESC));
@@ -841,7 +929,9 @@ pub(crate) fn decode_call<S: Units + ?Sized>(
                                     extsegment_len =
                                         usize::from(m - 128) * 128 + usize::from(l - 128);
                                 } else if next == b'G' {
-                                    if out.char_count() - base + annotations + 3 > limit {
+                                    if out.char_count() - base + annotations + cmp.length() + 3
+                                        > limit
+                                    {
                                         break 'main CallEnd::Full(src_base);
                                     }
                                     out.push_code(u32::from(ISO_CODE_ESC));
@@ -926,7 +1016,7 @@ pub(crate) fn decode_call<S: Units + ?Sized>(
             let decoded = decode_charset_code(interp, &charset, code);
             match decoded {
                 None => {
-                    finish_composition(out, &mut cmp);
+                    annotations += finish_composition(out, &mut cmp);
                     src.push_source_bytes(src_base, p, out);
                 }
                 Some(ch) if cmp.state == ComposingState::No => out.push_code(ch),
@@ -938,7 +1028,7 @@ pub(crate) fn decode_call<S: Units + ?Sized>(
                     }) >= MAX_COMPOSITION_COMPONENTS =>
                 {
                     // Too long composition.
-                    finish_composition(out, &mut cmp);
+                    annotations += finish_composition(out, &mut cmp);
                     out.push_code(ch);
                 }
                 Some(ch) => {
@@ -965,7 +1055,7 @@ pub(crate) fn decode_call<S: Units + ?Sized>(
             // invalid_code: the byte at the start of the sequence comes
             // through as itself, and the designation state resets to the
             // safest one (ASCII in G0, invoked to plane 0).
-            finish_composition(out, &mut cmp);
+            annotations += finish_composition(out, &mut cmp);
             p = src_base;
             let c = one_more!(src, p, break 'main CallEnd::Ended(src_base));
             if c < 0 {

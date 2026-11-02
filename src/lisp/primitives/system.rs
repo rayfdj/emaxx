@@ -1787,7 +1787,7 @@ pub(crate) fn decode_file_name(
     }
     // decode_coding_object: a charset decoder's runs keep their
     // `charset' property.
-    let decoded = super::decode_coding_object(
+    let mut decoded = super::decode_coding_object(
         interp,
         env,
         super::DecodeSource::Bytes(bytes),
@@ -1795,7 +1795,7 @@ pub(crate) fn decode_file_name(
         None,
     )?
     .decoded;
-    let props = super::charset_spans_to_props(decoded.charsets, &decoded.text, None);
+    let props = super::decoded_annotation_props(&mut decoded);
     Ok(make_shared_string_value_with_extended_chars(
         decoded.text,
         props,

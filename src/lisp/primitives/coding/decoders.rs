@@ -2,13 +2,13 @@
 //! when its charbuf is full or its source runs out, and decode_coding's
 //! loop of those calls.
 
-use super::units::{CHARBUF_SIZE, CallEnd, CallRuns, MAX_ANNOTATION_LENGTH, Units};
+use super::units::{CallEnd, CallRuns, MAX_ANNOTATION_LENGTH, Units, charbuf_size};
 use super::*;
 
 /// decode_coding_utf_8 over a whole unibyte text without a BOM or a dos
 /// eol, what it leaves unfinished flushed as binary characters.
 pub(crate) fn decode_utf_8_whole(bytes: &[u8]) -> DecodedText {
-    let mut out = DecodedText::new();
+    let mut out = DecodedText::with_capacity(bytes.len());
     let mut spec = DecoderSpec::default();
     let mut consumed = 0;
     loop {
@@ -21,6 +21,45 @@ pub(crate) fn decode_utf_8_whole(bytes: &[u8]) -> DecodedText {
         }
     }
     bytes.flush(consumed, &mut out);
+    out
+}
+
+/// decode_coding_gap's insert_from_gap of BYTES that detect_coding_utf_8
+/// accepted to their end: each sequence is the character
+/// string_char_and_length reads from it, an overlong sequence or a
+/// surrogate as its code (C0 and C1 leading the internal form of an
+/// eight-bit character) and a four-octet one up to #x1FFFFF.
+pub(crate) fn decode_detected_utf_8(bytes: &[u8]) -> DecodedText {
+    let mut out = DecodedText::with_capacity(bytes.len());
+    let mut p = 0;
+    while p < bytes.len() {
+        let rest = &bytes[p..];
+        let valid = match std::str::from_utf8(rest) {
+            Ok(_) => rest.len(),
+            Err(error) => error.valid_up_to(),
+        };
+        if valid > 0 {
+            // SAFETY: from_utf8 validated these bytes.
+            out.push_str(unsafe { std::str::from_utf8_unchecked(&rest[..valid]) });
+            p += valid;
+            continue;
+        }
+        let tail = |n: usize| u32::from(rest[n] & 0x3F);
+        let c = u32::from(rest[0]);
+        let (code, len) = if c & 0x20 == 0 {
+            let d = ((c & 0x1F) << 6) | tail(1);
+            (if c < 0xC2 { d + 0x3F_FF80 } else { d }, 2)
+        } else if c & 0x10 == 0 {
+            (((c & 0x0F) << 12) | (tail(1) << 6) | tail(2), 3)
+        } else {
+            (
+                ((c & 0x07) << 18) | (tail(1) << 12) | (tail(2) << 6) | tail(3),
+                4,
+            )
+        };
+        out.push_code(code);
+        p += len;
+    }
     out
 }
 
@@ -63,7 +102,7 @@ pub(super) fn utf_8_call<S: Units + ?Sized>(
 ) -> CallEnd {
     let mut p = start;
     let mut src_base;
-    let mut room = CHARBUF_SIZE;
+    let mut room = charbuf_size(src);
     let mut byte_after_cr: i32 = -1;
     'call: {
         if bom && !spec.bom_done {
@@ -98,35 +137,27 @@ pub(super) fn utf_8_call<S: Units + ?Sized>(
             if byte_after_cr < 0
                 && let Some(bytes) = src.bytes()
             {
+                // ROOM bytes hold no more characters than the charbuf has
+                // room for, and each byte is looked at once: a run cut
+                // inside a character goes on from it.
                 let rest = &bytes[p..];
-                let mut valid = match std::str::from_utf8(rest) {
-                    Ok(_) => rest.len(),
+                let window = &rest[..rest.len().min(room)];
+                let mut valid = match std::str::from_utf8(window) {
+                    Ok(_) => window.len(),
                     Err(error) => error.valid_up_to(),
                 };
-                if eol_dos && valid > 0 && rest[valid - 1] == b'\r' {
+                // A CR the run ends with reads the unit after it as
+                // byte_after_cr, so the CRs it ends with wait for the slow
+                // path: of CRs that end the source, the last is read as the
+                // one before's byte_after_cr and its own finds no more
+                // source, so neither stores it nor leaves it to the flush.
+                while eol_dos && valid > 0 && rest[valid - 1] == b'\r' {
                     valid -= 1;
                 }
-                // The characters the run is, as many as the charbuf has
-                // room for.
-                let chars = rest[..valid]
+                room -= window[..valid]
                     .iter()
                     .filter(|&&byte| byte & 0xC0 != 0x80)
                     .count();
-                if chars > room {
-                    let mut seen = 0;
-                    for (index, &byte) in rest[..valid].iter().enumerate() {
-                        if byte & 0xC0 != 0x80 {
-                            if seen == room {
-                                valid = index;
-                                break;
-                            }
-                            seen += 1;
-                        }
-                    }
-                    room = 0;
-                } else {
-                    room -= chars;
-                }
                 if valid > 0 {
                     // SAFETY: from_utf8 validated these bytes.
                     out.push_str(unsafe { std::str::from_utf8_unchecked(&rest[..valid]) });
@@ -239,7 +270,7 @@ pub(super) fn charset_call<S: Units + ?Sized>(
     out: &mut DecodedText,
 ) -> CallEnd {
     let CharsetDecode { valids, single } = charsets;
-    let limit = CHARBUF_SIZE - MAX_ANNOTATION_LENGTH * 2;
+    let limit = charbuf_size(src) - MAX_ANNOTATION_LENGTH * 2;
     let mut used = 0;
     let mut runs = CallRuns::new();
     let mut p = start;
@@ -389,7 +420,7 @@ pub(super) fn sjis_call<S: Units + ?Sized>(
     eol_dos: bool,
     out: &mut DecodedText,
 ) -> CallEnd {
-    let limit = CHARBUF_SIZE - MAX_ANNOTATION_LENGTH * 2;
+    let limit = charbuf_size(src) - MAX_ANNOTATION_LENGTH * 2;
     let mut used = 0;
     let mut runs = CallRuns::new();
     let mut p = start;
@@ -471,7 +502,7 @@ pub(super) fn big5_call<S: Units + ?Sized>(
     eol_dos: bool,
     out: &mut DecodedText,
 ) -> CallEnd {
-    let limit = CHARBUF_SIZE - MAX_ANNOTATION_LENGTH * 2;
+    let limit = charbuf_size(src) - MAX_ANNOTATION_LENGTH * 2;
     let mut used = 0;
     let mut runs = CallRuns::new();
     let mut p = start;
@@ -553,7 +584,7 @@ pub(super) fn utf_16_call<S: Units + ?Sized>(
     spec: &mut DecoderSpec,
     out: &mut DecodedText,
 ) -> CallEnd {
-    let limit = CHARBUF_SIZE - 2;
+    let limit = charbuf_size(src) - 2;
     let mut used = 0;
     let mut p = start;
     let mut src_base;
@@ -646,22 +677,203 @@ pub(super) fn utf_16_call<S: Units + ?Sized>(
     }
 }
 
+/// composite.h's composition methods and coding.h's composition_state.
+const COMPOSITION_RELATIVE: i32 = 0;
+const COMPOSITION_WITH_RULE: i32 = 1;
+const COMPOSITION_WITH_RULE_ALTCHARS: i32 = 3;
+const COMPOSING_NO: u8 = 0;
+const COMPOSING_CHAR: u8 = 1;
+const COMPOSING_RULE: u8 = 2;
+const COMPOSING_COMPONENT_CHAR: u8 = 3;
+const COMPOSING_COMPONENT_RULE: u8 = 4;
+/// composite.h MAX_COMPOSITION_COMPONENTS.
+const MAX_COMPOSITION_COMPONENTS: i32 = 16;
+/// coding.h CODING_ANNOTATE_COMPOSITION_MASK.
+const ANNOTATE_COMPOSITION_MASK: i32 = 1;
+
+/// coding->spec.emacs_mule.cmp_status: the composition being decoded,
+/// SEGMENT its charbuf ints from the annotation header on (cmp_status's
+/// LENGTH is their count), which the decoder rewrites until the
+/// composition ends and the carryover a block leaves the next.
+#[derive(Default)]
+pub(crate) struct EmacsMuleComposing {
+    state: u8,
+    method: i32,
+    old_form: bool,
+    nchars: i32,
+    ncomps: i32,
+    segment: Vec<i32>,
+}
+
+impl EmacsMuleComposing {
+    /// ADD_COMPOSITION_DATA's header, the composition's state set.
+    fn start(&mut self, old_form: bool, method: i32, state: u8, nchars: i32, nbytes: i32) {
+        self.old_form = old_form;
+        self.method = method;
+        self.state = state;
+        self.segment.clear();
+        self.segment.extend([
+            -(MAX_ANNOTATION_LENGTH as i32),
+            ANNOTATE_COMPOSITION_MASK,
+            nchars,
+            nbytes,
+            method,
+        ]);
+    }
+
+    /// EMACS_MULE_COMPOSITION_END: the header's NCHARS (the old form) or
+    /// length (a new form one with components) made final.
+    fn end(&mut self, out: &mut DecodedText, runs: &mut CallRuns) {
+        if self.old_form {
+            self.segment[2] = self.nchars;
+        } else if self.method > COMPOSITION_RELATIVE {
+            self.segment[0] = self.segment[2] - self.segment.len() as i32;
+        }
+        self.state = COMPOSING_NO;
+        self.produce(true, 0, out, runs);
+    }
+
+    /// EMACS_MULE_MAYBE_FINISH_COMPOSITION, emacs_mule_finish_composition:
+    /// an old form one with characters ends there (an invalid last rule
+    /// becoming its byte's character), another's header becomes the bytes
+    /// that started it; the characters this adds to char_offset.
+    fn maybe_finish(&mut self, out: &mut DecodedText, runs: &mut CallRuns) {
+        if self.state == COMPOSING_NO {
+            return;
+        }
+        let segment = &mut self.segment;
+        let len = segment.len();
+        let (annotated, new_chars) = if self.old_form && self.nchars > 0 {
+            segment[2] = self.nchars;
+            if self.method == COMPOSITION_WITH_RULE && self.state == COMPOSING_CHAR {
+                // The last rule was invalid.
+                segment[len - 2] = byte8_char(segment[len - 1] + 0xA0);
+                segment[len - 1] = -1;
+                (true, 1)
+            } else {
+                (true, 0)
+            }
+        } else {
+            segment[0] = byte8_char(0x80);
+            if self.method == COMPOSITION_WITH_RULE {
+                segment[1] = byte8_char(0xFF);
+                segment[2] = -3;
+                segment[3] = 0;
+                (false, 1)
+            } else {
+                let (nchars, nbytes) = (segment[2] + 0xA0, segment[3] + 0xA0);
+                segment[1] = byte8_char(0xF2 + self.method);
+                segment[2] = byte8_char(nbytes);
+                segment[3] = byte8_char(nchars);
+                segment[4] = -1;
+                (false, 4)
+            }
+        };
+        self.state = COMPOSING_NO;
+        self.produce(annotated, new_chars, out, runs);
+    }
+
+    /// The segment once the composition ended: produce_chars' characters
+    /// of it (an annotation skipping its length), char_offset counting
+    /// NEW_CHARS of them, and when ANNOTATED produce_composition's record
+    /// of the header, from the characters the segment starts.
+    fn produce(
+        &mut self,
+        annotated: bool,
+        new_chars: usize,
+        out: &mut DecodedText,
+        runs: &mut CallRuns,
+    ) {
+        let segment = std::mem::take(&mut self.segment);
+        let pos = out.char_count();
+        if annotated {
+            let nchars = segment[2].max(0) as usize;
+            let method = segment[4];
+            let components = if method == COMPOSITION_RELATIVE {
+                CompositionComponents::Relative
+            } else {
+                let len = if method == COMPOSITION_WITH_RULE {
+                    segment[2] * 3 - 2
+                } else {
+                    -segment[0] - MAX_ANNOTATION_LENGTH as i32
+                };
+                // GNU reads on past the annotation when a new form
+                // WITH_RULE header claims more than it holds.
+                let entries = &segment[MAX_ANNOTATION_LENGTH..];
+                let len = (len.max(0) as usize).min(entries.len());
+                let (mut i, mut items, mut all_chars) = (0, Vec::new(), true);
+                while i < len && entries[i] != -1 {
+                    if entries[i] >= 0 {
+                        items.push(entries[i] as u32);
+                    } else {
+                        i += 1;
+                        all_chars = false;
+                        items.push(entries.get(i).map_or(0, |&rule| rule % 0x100) as u32);
+                    }
+                    i += 1;
+                }
+                if all_chars {
+                    CompositionComponents::Chars(items)
+                } else {
+                    CompositionComponents::Vector(items)
+                }
+            };
+            out.compositions.push(DecodedComposition {
+                seq: out.charsets.len(),
+                start: pos,
+                end: pos + nchars,
+                components,
+            });
+        }
+        let mut i = 0;
+        while i < segment.len() {
+            let c = segment[i];
+            if c >= 0 {
+                out.push_code(c as u32);
+                i += 1;
+            } else {
+                i += (-c) as usize;
+            }
+        }
+        runs.uncount(out.char_count() - pos - new_chars);
+        self.segment = segment;
+        self.segment.clear();
+    }
+}
+
+/// BYTE8_TO_CHAR (B) as produce_chars stores it: a value past MAX_CHAR
+/// (B above #xFF) has the CHAR_ALT bit, which char_string drops, so it is
+/// the ASCII character (B & #xFF) in a multibyte destination and the byte
+/// CHAR_TO_BYTE8 makes of it in a unibyte one alike.
+fn byte8_char(b: i32) -> i32 {
+    if b > 0xFF {
+        b & 0xFF
+    } else {
+        b + RAW_BYTE8_BASE as i32
+    }
+}
+
 /// emacs_mule_char: the character whose units start at SRC_BASE (where
 /// the decoder's loop began this character, past a unit it read after a
-/// CR), with its charset and the index after it; Err (true) for one
-/// emacs_mule_char finds invalid, Err (false) for one the source ends
-/// inside (no_more_source).  A multibyte source's character is itself,
-/// of emacs_mule_charset[0] (ascii).
+/// CR), with its charset, the index after it and the units it took; Err
+/// (true) for one emacs_mule_char finds invalid (-1), Err (false) for
+/// one the source ends inside (no_more_source).  A multibyte source's
+/// character is itself, of emacs_mule_charset[0] (ascii).  Inside an old
+/// form composition a unit from #xA0 is a component: in COMPOSING_CHAR the
+/// character of its leading code less #x20 (#xA0 an ASCII one, from the
+/// unit after it less #x80), negated, and in COMPOSING_RULE the unit
+/// itself negated, of no charset.
 fn emacs_mule_char<S: Units + ?Sized>(
     interp: &Interpreter,
     src: &S,
     src_base: usize,
     layout: &EmacsMuleLayout,
-) -> Result<(u32, String, usize), bool> {
+    cmp: &EmacsMuleComposing,
+) -> Result<(i32, Option<String>, usize), bool> {
     let mut p = src_base;
-    let lead = one_more!(src, p, return Err(false));
+    let mut lead = one_more!(src, p, return Err(false));
     if lead < 0 {
-        return Ok(((-lead) as u32, "ascii".to_string(), p));
+        return Ok((-lead, Some("ascii".to_string()), p));
     }
     let charset_of = |c: i32| -> Option<&String> {
         usize::try_from(c)
@@ -669,9 +881,23 @@ fn emacs_mule_char<S: Units + ?Sized>(
             .and_then(|index| layout.charsets.get(index))
             .and_then(Option::as_ref)
     };
-    // Composition sequences (0xA0 and above inside one) are not decoded.
+    let mut mseq_found = false;
     if lead >= 0xA0 {
-        return Err(true);
+        if cmp.state == COMPOSING_NO || !cmp.old_form {
+            return Err(true);
+        }
+        if cmp.state != COMPOSING_CHAR {
+            return Ok((-lead, None, p));
+        }
+        if lead == 0xA0 {
+            lead = one_more!(src, p, return Err(false)) - 0x80;
+            if lead < 0 {
+                return Err(true);
+            }
+        } else {
+            lead -= 0x20;
+        }
+        mseq_found = true;
     }
     let (charset, code) = match layout.lengths[lead as usize] {
         2 => {
@@ -723,28 +949,48 @@ fn emacs_mule_char<S: Units + ?Sized>(
             (charset.to_string(), lead as u32)
         }
     };
-    let ch = decode_charset_code(interp, &charset, code).ok_or(true)?;
-    Ok((ch, charset, p))
+    let ch = decode_charset_code(interp, &charset, code).ok_or(true)? as i32;
+    Ok((if mseq_found { -ch } else { ch }, Some(charset), p))
 }
 
 /// decode_coding_emacs_mule, one call: an ASCII unit is itself, a
 /// multibyte sequence emacs_mule_char's character, a multibyte source's
 /// character itself; any other unit is invalid_code's (as ASCII or as its
 /// eight-bit character).  Every character's charset is compared with the
-/// open run's, so an ASCII one ends it.  The composition sequences 0x80
-/// starts are taken as invalid codes.  Under a dos eol a CR reads the
-/// unit after it, which becomes the next character's first unit.
+/// open run's, so an ASCII one ends it.  Under a dos eol a CR reads the
+/// unit after it, which becomes the next character's first unit.  0x80
+/// starts a composition: Emacs 21's 0x80 0xF2+METHOD BYTES CHARS header
+/// and its components and characters, or Emacs 20's relative (0x80 then
+/// components from 0xA0) and rule-based (0x80 0xFF) ones; its characters
+/// are produced when it ends, uncounted by char_offset and with no charset
+/// run, a header that ends early its original bytes.  A composition the
+/// source or the charbuf leaves unfinished is finished in the last block
+/// and carried to the next call in another (SPEC), unless that call's
+/// charbuf has no room after it.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn emacs_mule_call<S: Units + ?Sized>(
     interp: &Interpreter,
     src: &S,
     start: usize,
     layout: &EmacsMuleLayout,
     eol_dos: bool,
+    last_block: bool,
+    spec: &mut DecoderSpec,
     out: &mut DecodedText,
 ) -> CallEnd {
-    let limit = CHARBUF_SIZE - MAX_ANNOTATION_LENGTH * 3 - 1;
-    let mut used = 0;
+    let limit = charbuf_size(src) - MAX_ANNOTATION_LENGTH * 3 - 1;
+    let mut cmp = spec
+        .emacs_mule
+        .take()
+        .map_or_else(Default::default, |cmp| *cmp);
+    let mut used = cmp.segment.len();
     let mut runs = CallRuns::new();
+    if used >= limit {
+        // A carried composition the charbuf has no room after: GNU's
+        // emacs_abort, or a call that carries it again for ever.  It ends
+        // as a last block's would.
+        cmp.maybe_finish(out, &mut runs);
+    }
     let mut p = start;
     let mut src_base;
     let mut byte_after_cr: i32 = -1;
@@ -756,48 +1002,200 @@ pub(super) fn emacs_mule_call<S: Units + ?Sized>(
             }
             break 'call CallEnd::Full(src_base);
         }
-        let c = if byte_after_cr >= 0 {
+        let mut c = if byte_after_cr >= 0 {
             std::mem::replace(&mut byte_after_cr, -1)
         } else {
             one_more!(src, p, break 'call CallEnd::Ended(src_base))
         };
-        if c < 0 {
-            out.push_code((-c) as u32);
-            used += 1;
-            continue 'call;
-        }
         'invalid: {
-            if c == 0x80 {
-                break 'invalid;
+            if c < 0 || c == 0x80 {
+                cmp.maybe_finish(out, &mut runs);
+                if c < 0 {
+                    out.push_code((-c) as u32);
+                    used += 1;
+                    continue 'call;
+                }
+                // DECODE_EMACS_MULE_COMPOSITION_START.
+                let current = p;
+                c = one_more!(src, p, break 'call CallEnd::Ended(src_base));
+                if c < 0 {
+                    break 'invalid;
+                }
+                if (0xF2..=0xF2 + COMPOSITION_WITH_RULE_ALTCHARS).contains(&c) {
+                    let method = c - 0xF2;
+                    c = one_more!(src, p, break 'call CallEnd::Ended(src_base));
+                    if c < 0 {
+                        break 'invalid;
+                    }
+                    let nbytes = c - 0xA0;
+                    if nbytes < 3 || (method == COMPOSITION_RELATIVE && nbytes != 4) {
+                        break 'invalid;
+                    }
+                    c = one_more!(src, p, break 'call CallEnd::Ended(src_base));
+                    let nchars = c - 0xA0;
+                    if nchars <= 0 || nchars >= MAX_COMPOSITION_COMPONENTS {
+                        break 'invalid;
+                    }
+                    let state = if method == COMPOSITION_RELATIVE {
+                        COMPOSING_CHAR
+                    } else {
+                        COMPOSING_COMPONENT_CHAR
+                    };
+                    cmp.start(false, method, state, nchars, nbytes);
+                    cmp.nchars = nchars;
+                    cmp.ncomps = nbytes - 4;
+                } else if c < 0xA0 {
+                    break 'invalid;
+                } else if c < 0xC0 {
+                    cmp.start(true, COMPOSITION_RELATIVE, COMPOSING_CHAR, 0, 0);
+                    cmp.nchars = 0;
+                    cmp.ncomps = 0;
+                    // Read C again as a component.
+                    p = current;
+                } else if c == 0xFF {
+                    cmp.start(true, COMPOSITION_WITH_RULE, COMPOSING_CHAR, 0, 0);
+                    cmp.nchars = 0;
+                    cmp.ncomps = 0;
+                } else {
+                    break 'invalid;
+                }
+                used += MAX_ANNOTATION_LENGTH;
+                continue 'call;
             }
-            let (ch, charset) = if c < 0x80 {
+            let charset = if c < 0x80 {
                 if eol_dos && c == i32::from(b'\r') {
                     byte_after_cr = one_more!(src, p, break 'call CallEnd::Ended(src_base));
                 }
-                (c as u32, None)
+                if cmp.state != COMPOSING_NO {
+                    if cmp.old_form {
+                        cmp.maybe_finish(out, &mut runs);
+                    } else if cmp.state >= COMPOSING_COMPONENT_CHAR {
+                        cmp.ncomps -= 1;
+                    }
+                }
+                None
             } else {
-                match emacs_mule_char(interp, src, src_base, layout) {
+                match emacs_mule_char(interp, src, src_base, layout, &cmp) {
+                    // A component character of code 1 or 2 is taken for
+                    // the -1 and -2 results.  After -2 decode_coding calls
+                    // again from SRC_BASE, which the last block's finished
+                    // composition decodes past; another block's carried
+                    // one would read it again for ever, so it ends as the
+                    // last block's does.
+                    Ok((-1, _, _)) => break 'invalid,
+                    Ok((-2, _, _)) => {
+                        cmp.maybe_finish(out, &mut runs);
+                        break 'call CallEnd::Full(src_base);
+                    }
                     Ok((ch, charset, after)) => {
+                        c = ch;
                         p = after;
-                        (ch, Some(charset))
+                        if cmp.state >= COMPOSING_COMPONENT_CHAR {
+                            cmp.ncomps -= (p - src_base) as i32;
+                        }
+                        charset
                     }
                     Err(true) => break 'invalid,
                     Err(false) => break 'call CallEnd::Ended(src_base),
                 }
             };
-            match charset.as_deref() {
-                Some(charset) if charset != "ascii" => {
-                    if !runs.is(charset) {
-                        used += runs.open(charset, out);
+            match cmp.state {
+                COMPOSING_NO => {
+                    match charset.as_deref() {
+                        Some(charset) if charset != "ascii" => {
+                            if !runs.is(charset) {
+                                used += runs.open(charset, out);
+                            }
+                        }
+                        _ => used += runs.close(out),
+                    }
+                    out.push_code(c as u32);
+                    used += 1;
+                }
+                COMPOSING_CHAR if cmp.old_form => {
+                    if c >= 0 {
+                        cmp.maybe_finish(out, &mut runs);
+                        out.push_code(c as u32);
+                    } else {
+                        cmp.segment.push(-c);
+                        cmp.nchars += 1;
+                        if cmp.nchars == MAX_COMPOSITION_COMPONENTS {
+                            cmp.end(out, &mut runs);
+                        } else if cmp.method == COMPOSITION_WITH_RULE {
+                            cmp.state = COMPOSING_RULE;
+                        }
+                    }
+                    used += 1;
+                }
+                COMPOSING_CHAR => {
+                    cmp.segment.push(c);
+                    used += 1;
+                    cmp.nchars -= 1;
+                    if cmp.nchars == 0 {
+                        cmp.end(out, &mut runs);
                     }
                 }
-                _ => used += runs.close(out),
+                COMPOSING_RULE => {
+                    if c >= 0 {
+                        cmp.end(out, &mut runs);
+                        out.push_code(c as u32);
+                        used += 1;
+                    } else {
+                        // DECODE_EMACS_MULE_COMPOSITION_RULE_20.
+                        let c = -c - 0xA0;
+                        if !(0..81).contains(&c) {
+                            break 'invalid;
+                        }
+                        let (mut gref, mut nref) = (c / 9, c % 9);
+                        if gref == 4 {
+                            gref = 10;
+                        }
+                        if nref == 4 {
+                            nref = 10;
+                        }
+                        cmp.segment.extend([-2, gref * 12 + nref]);
+                        used += 2;
+                        cmp.state = COMPOSING_CHAR;
+                    }
+                }
+                COMPOSING_COMPONENT_CHAR => {
+                    cmp.segment.push(c);
+                    used += 1;
+                    match cmp.ncomps.cmp(&0) {
+                        std::cmp::Ordering::Equal => cmp.state = COMPOSING_CHAR,
+                        std::cmp::Ordering::Greater => {
+                            if cmp.method == COMPOSITION_WITH_RULE_ALTCHARS {
+                                cmp.state = COMPOSING_COMPONENT_RULE;
+                            }
+                        }
+                        std::cmp::Ordering::Less => cmp.maybe_finish(out, &mut runs),
+                    }
+                }
+                _ => {
+                    // COMPOSING_COMPONENT_RULE: DECODE_EMACS_MULE_COMPOSITION_RULE_21.
+                    let gref = c - 0x20;
+                    if !(0..81).contains(&gref) {
+                        break 'invalid;
+                    }
+                    let c = one_more!(src, p, break 'call CallEnd::Ended(src_base));
+                    let nref = c - 0x20;
+                    if !(0..81).contains(&nref) {
+                        break 'invalid;
+                    }
+                    cmp.segment.extend([-2, gref * 12 + nref]);
+                    used += 2;
+                    cmp.ncomps -= 1;
+                    if cmp.ncomps > 0 {
+                        cmp.state = COMPOSING_COMPONENT_CHAR;
+                    } else {
+                        cmp.maybe_finish(out, &mut runs);
+                    }
+                }
             }
-            out.push_code(ch);
-            used += 1;
             continue 'call;
         }
         // invalid_code.
+        cmp.maybe_finish(out, &mut runs);
         p = src_base;
         let c = one_more!(src, p, break 'call CallEnd::Ended(src_base));
         if (0..0x80).contains(&c) {
@@ -807,6 +1205,13 @@ pub(super) fn emacs_mule_call<S: Units + ?Sized>(
         }
         used += 1;
     };
+    if cmp.state != COMPOSING_NO {
+        if last_block {
+            cmp.maybe_finish(out, &mut runs);
+        } else {
+            spec.emacs_mule = Some(Box::new(cmp));
+        }
+    }
     runs.finish(out);
     end
 }
@@ -911,7 +1316,8 @@ pub(super) fn decode_units<S: Units + ?Sized>(
     block: &mut DecodeBlock,
 ) -> DecodedText {
     let mut decoder = Decoder::new(interp, canonical);
-    let mut out = DecodedText::new();
+    // A unit decodes to a character of at least a byte.
+    let mut out = DecodedText::with_capacity(src.len());
     let eol_dos = block.eol_dos;
     let mut consumed = 0;
     loop {
@@ -939,9 +1345,9 @@ pub(super) fn decode_units<S: Units + ?Sized>(
             Decoder::Big5(roman, big5) => {
                 big5_call(interp, src, consumed, roman, big5, eol_dos, &mut out)
             }
-            Decoder::EmacsMule(layout) => {
-                emacs_mule_call(interp, src, consumed, layout, eol_dos, &mut out)
-            }
+            Decoder::EmacsMule(layout) => emacs_mule_call(
+                interp, src, consumed, layout, eol_dos, block.last, block.spec, &mut out,
+            ),
             Decoder::Iso2022 => iso2022::decode_call(
                 interp, src, consumed, canonical, eol_dos, block.last, block.spec, &mut out,
             ),

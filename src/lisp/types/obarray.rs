@@ -413,6 +413,11 @@ impl RecordBucketsRef<'_> {
         Err(index)
     }
 
+    /// oblookup of the name of a Lisp string NAME; None for no string.
+    pub(crate) fn lookup_name(&self, name: Value) -> Option<Result<SymbolName, usize>> {
+        with_name_key(name, |bytes, chars| self.lookup(bytes, chars))
+    }
+
     /// DOOBARRAY's walk.
     pub(crate) fn symbols(&self) -> Vec<SymbolName> {
         let mut symbols = Vec::new();

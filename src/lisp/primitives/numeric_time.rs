@@ -454,6 +454,25 @@ pub(crate) fn marker_points_nowhere() -> LispError {
     LispError::Signal("Marker does not point anywhere".into())
 }
 
+/// data.c:check_number_coerce_marker: a number as it is, a marker as its
+/// position, anything else `number-or-marker-p'.
+pub(crate) fn check_number_coerce_marker(
+    interp: &Interpreter,
+    value: &Value,
+) -> Result<Value, LispError> {
+    match value.kind() {
+        Kind::Integer(_) | Kind::BigInteger(_) | Kind::Float(_) => Ok(*value),
+        Kind::Marker(id) => interp
+            .marker_position(id)
+            .map(|pos| Value::Integer(pos as i64))
+            .ok_or_else(marker_points_nowhere),
+        _ => Err(LispError::WrongTypeArgument(
+            "number-or-marker-p".into(),
+            *value,
+        )),
+    }
+}
+
 pub(crate) fn integer_like_i64(interp: &Interpreter, value: &Value) -> Result<i64, LispError> {
     match value.kind() {
         Kind::Integer(n) => Ok(n),
@@ -2198,37 +2217,23 @@ pub(crate) fn numeric_ordering(
     left: &Value,
     right: &Value,
 ) -> Result<Option<Ordering>, LispError> {
-    // GNU's arithcompare family (<, <=, =, >=, >) accepts numbers and
-    // markers and reports that public union type for every rejected operand.
-    // The lower-level numeric converters are also used by number-only
-    // arithmetic, so keep the comparison contract here.
-    for value in [left, right] {
-        if !matches!(
-            value.kind(),
-            Kind::Integer(_) | Kind::BigInteger(_) | Kind::Float(_) | Kind::Marker(_)
-        ) {
-            return Err(LispError::WrongTypeArgument(
-                "number-or-marker-p".into(),
-                *value,
-            ));
-        }
-    }
+    // data.c:arithcompare takes NUM1 and then NUM2 through
+    // check_number_coerce_marker, so a marker that points nowhere among
+    // the first is signaled before the second is looked at.
+    let left = &check_number_coerce_marker(interp, left)?;
+    let right = &check_number_coerce_marker(interp, right)?;
     if matches!(left.kind(), Kind::Float(value) if value.is_nan())
         || matches!(right.kind(), Kind::Float(value) if value.is_nan())
     {
         return Ok(None);
     }
 
-    // GNU's arithcompare handles two fixnums directly. Markers coerce to
-    // fixnums at the same boundary, so keep this overwhelmingly common path
-    // allocation-free and reserve exact-rational construction for mixed or
-    // genuinely large representations.
-    if matches!(left.kind(), Kind::Integer(_) | Kind::Marker(_))
-        && matches!(right.kind(), Kind::Integer(_) | Kind::Marker(_))
-    {
-        return Ok(Some(
-            integer_like_i64(interp, left)?.cmp(&integer_like_i64(interp, right)?),
-        ));
+    // GNU's arithcompare handles two fixnums directly (a marker is one
+    // by now), so keep this overwhelmingly common path allocation-free and
+    // reserve exact-rational construction for mixed or genuinely large
+    // representations.
+    if let (Kind::Integer(left), Kind::Integer(right)) = (left.kind(), right.kind()) {
+        return Ok(Some(left.cmp(&right)));
     }
 
     if let (Some(left_exact), Some(right_exact)) = (
@@ -2276,21 +2281,21 @@ pub(crate) fn extremum_numeric_value(
     args: &[Value],
     choose_max: bool,
 ) -> Result<Value, LispError> {
+    // data.c:minmax_driver: each argument goes through
+    // check_number_coerce_marker in turn, replaces the accumulator when
+    // arithcompare finds it greater (or less), and when the comparison
+    // fails is returned if it is a NaN.  A NaN accumulator so compares
+    // false with all that follow, which are still checked.
     let mut best = numeric_result_value(interp, &args[0])?;
-    if matches!(best.kind(), Kind::Float(value) if value.is_nan()) {
-        return Ok(best);
-    }
-
     for arg in &args[1..] {
         let candidate = numeric_result_value(interp, arg)?;
-        if matches!(candidate.kind(), Kind::Float(value) if value.is_nan()) {
-            return Ok(candidate);
-        }
-        let ordering = numeric_ordering(interp, &best, &candidate)?;
-        if (choose_max && matches!(ordering, Some(Ordering::Less)))
-            || (!choose_max && matches!(ordering, Some(Ordering::Greater)))
+        let ordering = numeric_ordering(interp, &candidate, &best)?;
+        if (choose_max && matches!(ordering, Some(Ordering::Greater)))
+            || (!choose_max && matches!(ordering, Some(Ordering::Less)))
         {
             best = candidate;
+        } else if matches!(candidate.kind(), Kind::Float(value) if value.is_nan()) {
+            return Ok(candidate);
         }
     }
 

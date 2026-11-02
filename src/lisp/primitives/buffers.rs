@@ -1216,7 +1216,12 @@ pub(crate) fn scan_for_column(
                 '\r' if selective_display => break,
                 '\t' => col = tab(col),
                 _ if multibyte && ch > '\u{7f}' => {
-                    col += multibyte_char_width(interp, env, ch, display_table);
+                    // MULTIBYTE_BYTES_WIDTH of the character's own code: a
+                    // raw byte's is #x3FFF80 and up, not the char it is
+                    // stored as.
+                    let code = crate::lisp::primitives::public_buffer_char_code_at(interp, scan)
+                        .map_or(ch as u32, |code| code as u32);
+                    col += multibyte_char_width(interp, env, code, display_table);
                 }
                 _ if ctl_arrow && (ch < ' ' || ch == '\u{7f}') => col += 2,
                 _ if !(' '..'\u{7f}').contains(&ch) => col += 4,
@@ -1233,16 +1238,17 @@ pub(crate) fn scan_for_column(
     }
 }
 
-/// MULTIBYTE_BYTES_WIDTH: a display table's glyph count for CH, else
-/// its `char-width-table' width (buffer.h sanitize_char_width).
+/// MULTIBYTE_BYTES_WIDTH: a display table's glyph count for the
+/// character CODE, else its `char-width-table' width (buffer.h
+/// sanitize_char_width).
 fn multibyte_char_width(
     interp: &Interpreter,
     env: &Env,
-    ch: char,
+    code: u32,
     display_table: Option<crate::lisp::types::CharTableRef>,
 ) -> usize {
     if let Some(entry) = display_table
-        .and_then(|table| interp.char_table_get(table, ch as u32))
+        .and_then(|table| interp.char_table_get(table, code))
         .filter(|entry| matches!(entry.kind(), Kind::Vector(_)))
     {
         return vector_items(&entry)
@@ -1252,7 +1258,7 @@ fn multibyte_char_width(
     let width = interp
         .lookup_var("char-width-table", env)
         .and_then(|value| match value.kind() {
-            Kind::CharTable(table) => interp.char_table_get(table, ch as u32),
+            Kind::CharTable(table) => interp.char_table_get(table, code),
             _ => None,
         })
         .and_then(|value| value.integer_value())
@@ -1358,7 +1364,9 @@ fn check_display_width(
         if let Some(ch) = interp.buffer.borrow().char_at(pos) {
             let char_width = if ch > '\u{7f}' {
                 let table = buffer_display_table(interp, env);
-                multibyte_char_width(interp, env, ch, table)
+                let code = crate::lisp::primitives::public_buffer_char_code_at(interp, pos)
+                    .map_or(ch as u32, |code| code as u32);
+                multibyte_char_width(interp, env, code, table)
             } else {
                 1
             };

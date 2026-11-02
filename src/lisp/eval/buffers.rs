@@ -206,20 +206,13 @@ impl Interpreter {
         self.insert_current_buffer_with(s, crate::buffer::InsertedProperties::PLAIN, false);
     }
 
-    /// `insert_current_buffer' of a text whose COUNTS its maker has.
-    pub(crate) fn insert_current_buffer_counted(
-        &mut self,
-        s: &str,
-        counts: crate::buffer::TextCounts,
-    ) {
+    /// insert_from_gap_1 of BYTES at point in the current unibyte buffer,
+    /// their characters written straight into its gap.
+    pub(crate) fn insert_current_buffer_raw_bytes(&mut self, bytes: &[u8]) {
         let pos = self.buffer.borrow().point();
         let related = self.related_buffer_ids(self.current_buffer_id());
         let vars = self.insertion_property_variables();
-        let nchars = self
-            .buffer
-            .borrow_mut()
-            .insert_counted_with(s, counts, &vars)
-            - pos;
+        let nchars = self.buffer.borrow_mut().insert_raw_bytes(bytes, &vars) - pos;
         self.adjust_markers_for_insert(self.current_buffer_id(), pos, nchars, false);
         self.family_after_insert(&related, pos, nchars, false);
     }

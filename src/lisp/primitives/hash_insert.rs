@@ -777,8 +777,9 @@ pub(crate) fn insert_converted_text_at(
 /// decode_coding's text in a buffer destination at START, point, a
 /// decoder call at a time: each call's characters inserted after the
 /// last's as produce_chars' insert_from_gap inserts them (point staying at
-/// START), the `charset' runs of the call then put through
-/// produce_charset's Fput_text_property; then decode_eol's change of the
+/// START), the `charset' runs and the compositions of the call then put
+/// through produce_annotation's Fput_text_property, in the order it
+/// reaches them; then decode_eol's change of the
 /// text inserted, under dos each CR before a newline deleted (del_range_2,
 /// uncounted by the change hooks) and under mac each CR made a newline in
 /// place.  TEXT and EXTENDED_CHARS are the text as decode_eol leaves it,
@@ -842,11 +843,26 @@ fn insert_decoded_calls_at(
             interp.set_inserted_extended_chars(at, piece_extended);
             at = interp.buffer.borrow().point();
             interp.buffer.borrow_mut().goto_char(start);
-            for (from, to, charset) in &layout.charsets {
-                if *from < done || *to > done + count || from >= to {
+            for annotation in
+                crate::lisp::primitives::coding::annotations(&layout.charsets, &layout.compositions)
+            {
+                use crate::lisp::primitives::coding::Annotation;
+                let (from, to) = match annotation {
+                    Annotation::Charset(from, to, _) => (from, to),
+                    Annotation::Composition(composition) => (composition.start, composition.end),
+                };
+                if from < done || to > done + count || from >= to {
                     continue;
                 }
-                let plist = Value::list([Value::symbol("charset"), Value::symbol(charset)]);
+                let plist = match annotation {
+                    Annotation::Charset(_, _, charset) => {
+                        Value::list([Value::symbol("charset"), Value::symbol(charset)])
+                    }
+                    Annotation::Composition(composition) => match composition.property() {
+                        Some(value) => Value::list([Value::symbol("composition"), value]),
+                        None => continue,
+                    },
+                };
                 interp.with_lisp_stack_roots(&[plist], |interp| {
                     crate::lisp::primitives::textprop::add_text_properties(
                         interp,

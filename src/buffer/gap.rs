@@ -70,6 +70,13 @@ impl GapData {
             return;
         }
         let added = (needed - gap + GAP_BYTES_DFL).max(self.len() / 4);
+        if self.bytes.is_empty() && self.bytes.capacity() < added {
+            // A fresh allocation, which reads as zeros without being
+            // filled.
+            self.bytes = vec![0; added];
+            self.gap_end = added;
+            return;
+        }
         let after = self.bytes.len() - self.gap_end;
         self.bytes.resize(self.bytes.len() + added, 0);
         // The text after the gap moves to the end of the larger space.
@@ -413,15 +420,30 @@ impl GapText {
     /// insert_1_both's move of the gap and copy: TEXT, of CHARS
     /// characters, inserted at byte AT, the character AT_CHAR.
     pub(crate) fn insert(&mut self, at: usize, at_char: usize, text: &str, chars: usize) {
-        if text.is_empty() {
+        self.insert_with(at, at_char, text.len(), chars, |gap| {
+            gap.copy_from_slice(text.as_bytes())
+        });
+    }
+
+    /// `insert' of LEN bytes of CHARS characters that WRITE puts in the
+    /// gap, given that much of it.
+    pub(crate) fn insert_with(
+        &mut self,
+        at: usize,
+        at_char: usize,
+        len: usize,
+        chars: usize,
+        write: impl FnOnce(&mut [u8]),
+    ) {
+        if len == 0 {
             return;
         }
         debug_assert!(at <= self.len() && at_char <= self.chars());
         let data = self.data_mut();
         data.move_gap(at, at_char);
-        data.make_gap(text.len());
-        data.bytes[data.gap_start..data.gap_start + text.len()].copy_from_slice(text.as_bytes());
-        data.gap_start += text.len();
+        data.make_gap(len);
+        write(&mut data.bytes[data.gap_start..data.gap_start + len]);
+        data.gap_start += len;
         data.gap_char += chars;
         data.chars += chars;
     }

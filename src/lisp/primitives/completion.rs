@@ -207,7 +207,7 @@ pub(crate) fn intern_in_obarray(
             }),
         ));
     }
-    intern_in_obarray_with_name(interp, obarray, symbol_name, |_| {
+    intern_in_obarray_with_name(interp, obarray, symbol_name, None, |_| {
         Ok(Value::string(symbol_name))
     })
 }
@@ -257,7 +257,7 @@ pub(crate) fn intern_read_symbol(
             }
             return Ok(Value::Symbol(symbol));
         }
-        return intern_in_obarray_with_name(interp, obarray, symbol_name, |_| read_name());
+        return intern_in_obarray_with_name(interp, obarray, symbol_name, None, |_| read_name());
     }
     // Raw bytes from a unibyte source: oblookup compares the name's own
     // bytes, which are not the text's.
@@ -272,15 +272,19 @@ pub(crate) fn intern_read_symbol(
             ),
         ));
     }
-    intern_in_obarray_with_name(interp, obarray, symbol_name, |_| Ok(name))
+    intern_in_obarray_with_name(interp, obarray, symbol_name, Some(name), |_| Ok(name))
 }
 
 /// lread.c:intern_driver is reached only after oblookup misses. In particular,
 /// Fintern must not allocate/purecopy a name string when a symbol already exists.
+/// KEY, a Lisp string, is what oblookup compares (its SDATA and SCHARS),
+/// which for a unibyte name or one with raw bytes are not SYMBOL_NAME's
+/// text; without it the text is the key.
 pub(crate) fn intern_in_obarray_with_name(
     interp: &mut Interpreter,
     obarray: &Value,
     symbol_name: &str,
+    key: Option<Value>,
     make_name: impl FnOnce(&mut Interpreter) -> Result<Value, LispError>,
 ) -> Result<Value, LispError> {
     let obarray = &coerce_legacy_vector_obarray(interp, obarray)?;
@@ -290,7 +294,11 @@ pub(crate) fn intern_in_obarray_with_name(
     if interp.is_standard_obarray_id(id.id) {
         // oblookup's hit is the bucket's symbol; intern_driver makes one
         // for a miss.
-        if let Some(symbol) = interp.standard_obarray_symbol(symbol_name) {
+        let found = match key {
+            Some(key) => crate::lisp::types::SymbolName::lookup_initial(key).and_then(Result::ok),
+            None => interp.standard_obarray_symbol(symbol_name),
+        };
+        if let Some(symbol) = found {
             return Ok(Value::Symbol(symbol));
         }
         let name = make_name(interp)?;
@@ -308,8 +316,14 @@ pub(crate) fn intern_in_obarray_with_name(
         return Err(LispError::WrongTypeArgument("obarrayp".into(), *obarray));
     };
     // oblookup, then intern_driver for a miss.
-    let (bytes, chars) = obarray::text_key(symbol_name);
-    if let Ok(existing) = obarray::RecordBucketsRef(slots).lookup(bytes, chars) {
+    let found = match key {
+        Some(key) => obarray::RecordBucketsRef(slots).lookup_name(key),
+        None => {
+            let (bytes, chars) = obarray::text_key(symbol_name);
+            Some(obarray::RecordBucketsRef(slots).lookup(bytes, chars))
+        }
+    };
+    if let Some(Ok(existing)) = found {
         return Ok(Value::Symbol(existing));
     }
     let name = make_name(interp)?;
@@ -325,24 +339,36 @@ pub(crate) fn intern_in_obarray_with_name(
     Ok(Value::Symbol(symbol))
 }
 
+/// Fintern_soft's oblookup of SYMBOL_NAME, by KEY's bytes and characters
+/// when it is given (as `intern_in_obarray_with_name').
 pub(crate) fn intern_soft_in_obarray(
     interp: &Interpreter,
     obarray: &Value,
     symbol_name: &str,
+    key: Option<Value>,
 ) -> Result<Value, LispError> {
     if matches!(obarray.kind(), Kind::Record(id) if interp.is_standard_obarray_id(id.id)) {
-        return Ok(interp
-            .standard_obarray_symbol(symbol_name)
-            .map_or(Value::Nil, Value::Symbol));
+        let found = match key {
+            Some(key) => crate::lisp::types::SymbolName::lookup_initial(key).and_then(Result::ok),
+            None => interp.standard_obarray_symbol(symbol_name),
+        };
+        return Ok(found.map_or(Value::Nil, Value::Symbol));
     }
     if let Kind::Record(id) = obarray.kind()
         && let Some(slots) = interp.find_record(id).and_then(private_obarray_slots)
     {
         // oblookup.
-        let (bytes, chars) = obarray::text_key(symbol_name);
-        return Ok(obarray::RecordBucketsRef(slots)
-            .lookup(bytes, chars)
-            .map_or(Value::Nil, Value::Symbol));
+        let found = match key {
+            Some(key) => obarray::RecordBucketsRef(slots).lookup_name(key),
+            None => {
+                let (bytes, chars) = obarray::text_key(symbol_name);
+                Some(obarray::RecordBucketsRef(slots).lookup(bytes, chars))
+            }
+        };
+        return Ok(match found {
+            Some(Ok(symbol)) => Value::Symbol(symbol),
+            _ => Value::Nil,
+        });
     }
     // A legacy vector, by its symbols.
     Ok(obarray_symbols(interp, obarray)?

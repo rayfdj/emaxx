@@ -365,6 +365,16 @@ impl StringObjectRef {
                 StringAllocation::Ordinary,
             );
         }
+        if multibyte && extended_chars.is_empty() && !has_raw_byte_markers(text.as_bytes()) {
+            // Characters of Unicode are their UTF-8 in a multibyte string.
+            return Self::from_slice(
+                text.as_bytes(),
+                text.chars().count(),
+                multibyte,
+                props,
+                StringAllocation::Ordinary,
+            );
+        }
         let bytes = encode_text(&text, multibyte, &extended_chars)
             .expect("string constructor must supply valid Lisp characters");
         Self::from_encoded(bytes, text.chars().count(), multibyte, props)
@@ -397,6 +407,15 @@ impl StringObjectRef {
             return Self::from_slice(
                 text.as_bytes(),
                 text.len(),
+                multibyte,
+                props,
+                StringAllocation::Ordinary,
+            );
+        }
+        if multibyte && extended_chars.is_empty() && !has_raw_byte_markers(text.as_bytes()) {
+            return Self::from_slice(
+                text.as_bytes(),
+                text.chars().count(),
                 multibyte,
                 props,
                 StringAllocation::Ordinary,
@@ -1169,6 +1188,12 @@ pub(crate) fn encode_text(
     Ok(bytes)
 }
 
+/// Whether the UTF-8 BYTES hold a character of the private-use range
+/// (U+E080..U+E0FF) the text view gives raw bytes: EE 82 or EE 83.
+pub(crate) fn has_raw_byte_markers(bytes: &[u8]) -> bool {
+    memchr::memchr_iter(0xEE, bytes).any(|at| matches!(bytes.get(at + 1), Some(0x82 | 0x83)))
+}
+
 pub(crate) fn encode_character(code: u32) -> Result<([u8; 5], usize), LispError> {
     let mut bytes = [0; 5];
     let width = match code {
@@ -1302,6 +1327,14 @@ pub(crate) fn decode_bytes(
         // Each byte is its own character, unibyte or multibyte.
         // SAFETY: ASCII is UTF-8.
         let text = unsafe { std::str::from_utf8_unchecked(bytes) };
+        return Ok((text.to_owned(), Vec::new()));
+    }
+    // A multibyte text of Unicode characters is their UTF-8, unless one is
+    // in the range the text view keeps for raw bytes.
+    if multibyte
+        && !has_raw_byte_markers(bytes)
+        && let Ok(text) = std::str::from_utf8(bytes)
+    {
         return Ok((text.to_owned(), Vec::new()));
     }
     let mut text = String::with_capacity(bytes.len());

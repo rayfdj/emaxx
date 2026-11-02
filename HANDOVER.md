@@ -11565,6 +11565,265 @@ setup_process_coding_systems's check now refuses). A 13-form
   decoder). Local validation: the grouped gate's 3,426 library
   tests, the integration targets and clippy with `--all-targets
   --all-features -D warnings' pass.
+- **Round 236: string conversions read a charbuf of characters a call
+  and keep UTF-8 as it is.** `utf_8_call`'s fast path validated and
+  counted the whole rest of its source each call before cutting the run
+  at the charbuf's end, which made decoding quadratic
+  (decode-coding-string of 1.8 MB of utf-8 took 0.141 s to GNU's 0.010);
+  it now looks at four bytes a character of room at most. A unibyte
+  string's bytes go to decode_coding_object as they are, not through a
+  text and back. A multibyte text of Unicode characters with none in the
+  private range the text view gives raw bytes (U+E080..U+E0FF) is its
+  own internal spelling: `StringObjectRef::from_text` and
+  `from_text_ref` take its bytes and `decode_bytes` gives them back as
+  text, and `encode_text_bytes_with_charsets` writes such a text as its
+  utf-8 encoding directly (the eol type's newline, the BOM).
+  consume_chars without a translation table or annotations reads the
+  characters straight into the code buffer, and encode_coding_converted
+  no longer copies the string when there is no pre-write conversion. On
+  1.8 MB: decode-coding-string 0.011 s utf-8, 0.014 latin-1, 0.012
+  shift_jis, 0.010 utf-8-dos and 0.017 undecided (GNU 0.010, 0.011,
+  0.010, 0.013, 0.014); encode-coding-string 0.0025 s utf-8, 0.0082
+  latin-1 and 0.0038 utf-8-dos (GNU 0.0092, 0.0091, 0.0092). Batteries
+  of 36 string decodes (charbuf ends with multibyte characters, CRs and
+  invalid octets there, four-octet runs, invalid octets every few bytes,
+  private-use and raw-byte characters, characters beyond Unicode,
+  properties, NOCOPY) and 30 encodes (one text in 17 codings,
+  inhibit-eol-conversion, raw-byte, private-use and non-Unicode
+  characters, a unibyte source, NOCOPY, `charset' properties, selective
+  display, a region, a translation table) read as GNU's, as do the round
+  234 and 235 batteries; an oracle test pins them. ERT pass counts match
+  GNU's for coding, mule, mule-util, fileio, files, process,
+  ucs-normalize, textsec, rmailmm, mm-decode, mailcap, json, puny, fns,
+  ccl, editfns, subr, qp and sgml-mode. Still to do: latin-1 and
+  undecided decodes at 1.3x GNU (#417), #414, #415. Local validation:
+  the grouped gate's 3,427 library tests, the integration targets
+  and clippy with `--all-targets --all-features -D warnings' pass.
+- **Round 237: file reads validate a UTF-8 text once and detect over its
+  bytes in place.** Round 236's window of four bytes a character of room
+  made `utf_8_call` validate four times what an ASCII text's call
+  consumed; the window is now ROOM bytes, which hold no more characters
+  than the charbuf has room for, a run cut inside a character going on
+  from it. `DetectSource` reads a unibyte source's bytes through
+  `DetectUnits::Bytes` (borrowed, or owned for a string's bytes) where
+  it copied them into 32-bit units (10.5 MB for the 2.6 MB
+  NormalizationTest.txt), a multibyte source keeping
+  `DetectUnits::Codes`. `InsertFileSource::read` reads into a vector
+  sized for what a regular file holds past BEG, each read going straight
+  into it, and the decoders reserve their output from the source's
+  length (`DecodedText::with_capacity`). Five reads of
+  NormalizationTest.txt take 18,528 minor page faults where they took
+  32,354; a read takes 0.016 s where it took 0.025 (GNU 0.008) and
+  ucs-normalize-tests' part0 0.028 s where it took 0.045 (GNU 0.013 to
+  0.017). What is left is the unibyte copy an empty buffer decides its
+  coding in (each byte of 0x80 and above three bytes in the text view,
+  then the buffer's copy of it), which GNU makes by moving the gap.
+  Batteries of 11 file reads (BEG and END, END past the file, BEG past
+  it, an empty file, a literal read, /proc, REPLACE, a 700000-byte UTF-8
+  file whole, in the middle and unibyte) and the round 234 to 236
+  batteries read as GNU's; an oracle test pins the reads. ERT pass
+  counts match GNU's for coding, mule, ucs-normalize, fileio, files,
+  process, textsec, rmailmm, mm-decode, json, autorevert, mule-util,
+  editfns and dired. Local validation: the grouped gate's 3,428
+  library tests, the integration targets and clippy with `--all-targets
+  --all-features -D warnings' pass.
+- **Round 238: file reads take bytes detected as UTF-8 as they are and
+  decide their coding in the gap.** decode_coding_gap's ASCII
+  optimization inserts bytes detect_coding_utf_8 accepted to their end
+  as they are, each sequence the character string_char_and_length reads
+  from it (C0 80 #x3FFF80, E0 81 81 A, ED A0 80 #xD800, F4 90 80 80
+  #x110000), where Emaxx decoded them again with decode_coding_utf_8 and
+  made eight-bit characters of such sequences. `detect_utf_8` records
+  detected_utf8_chars and whether every sequence was standard UTF-8 of a
+  character the text view keeps (no overlong form, surrogate, code above
+  U+10FFFF or U+E080..U+E0FF); `decode_coding` takes the read's vector
+  (`DecodeSource::Gap`) and makes it the text, or reads the other
+  sequences with `decoders::decode_detected_utf_8`, a BOM the settled
+  coding has dropped. `Buffer::insert_raw_bytes` writes the unibyte text
+  an empty buffer decides its coding in straight into the gap
+  (`GapText::insert_with`, `write_raw_byte_text`), where the text view
+  was built as a string and copied; the read no longer zero-fills its
+  vector (it reads through std's File), a gap made in an empty text is a
+  zeroed allocation, and `TextCounts` with the counted insertion goes. A
+  read of NormalizationTest.txt takes 57M instructions where it took 94M
+  (GNU 67M), five of them 9,163 minor page faults where they took 18,462
+  (GNU 6,900), and a read 7.8 ms over 20 (GNU 6.9). Still to do: an
+  overlong sequence's character takes its own length in GNU's buffer (E0
+  80 80 is a NUL of three bytes) and its character's in Emaxx's, so
+  `position-bytes' after one differs. Batteries of 289 file reads (24
+  byte sequences under six codings, into empty and non-empty buffers,
+  and a visit) read as GNU's but for those byte positions, as do the
+  round 237 battery; an oracle test pins the characters. ERT pass counts
+  match GNU's for coding, mule, mule-util, ucs-normalize, fileio, files,
+  files-x, editfns, buffer, lread, textsec, rmailmm, mm-decode,
+  tar-mode, arc-mode, ccl, process, sgml-mode and autorevert. Local
+  validation: the grouped gate's 3,429 library tests, the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass.
+- **Round 239: decoders fill a charbuf the size of their source.**
+  `units::charbuf_size` is decode_coding's ALLOC_CONVERSION_WORK_AREA,
+  the source's bytes (`Units::source_bytes`, a multibyte source's
+  internal ones) and MAX_CHARBUF_EXTRA_SIZE more ints up to
+  MAX_CHARBUF_SIZE, which each decoder's room is taken from where it was
+  16384: a short text's `charset' annotations fill it, so the call ends
+  with its run closed and a byte after a CR unread for the next call or
+  decode_coding's flush (emacs-mule-dos "\206\324\r\272" keeps
+  #x3FFFBA). `decode_into_work_buffer` inserts a string's decode of more
+  than one call, or one decode_eol changed, a call at a time with
+  `insert_converted_text_at`, as a buffer destination's (round 235), so
+  each call after the first gets an interval of its own and decode_eol's
+  deletions move them. utf-8's run of valid bytes leaves every CR it
+  ends with to the slow path, where the last of the CRs ending a dos
+  source is lost as in GNU ("a\r\r" is "a\r"). A battery of 5,700
+  decodes (300 random texts under 19 codings) reads as GNU's but for two
+  emacs-mule texts with composition sequences (#414), and the round 234
+  to 238 batteries as before; an oracle test pins the cases. Encoders
+  still run in one pass where encode_coding's charbuf takes src_chars
+  and 16 more, which no output shows. Batteries of 10,200 encodes (300
+  random texts of characters across scripts, raw bytes, PUA and
+  non-Unicode characters, some with `charset' properties, under each of
+  34 codings) and of 2,400 region decodes and re-encodes in unibyte and
+  multibyte buffers (markers, point, `charset' runs) read as GNU's but
+  for emacs-mule's compositions and one GNU artifact: raw-text-dos over
+  a region that ends in a CR short of the buffer's end leaves a NUL
+  where that CR was, the byte decode_coding's flush reads from where the
+  text was in the gap ("\r\r" decoded from 1 to 3 is "\r\0"); Emaxx
+  keeps the CR. ERT pass counts match GNU's for coding, mule, mule-util,
+  ucs-normalize, fileio, files, editfns, buffer, textsec, rmailmm,
+  mm-decode, ccl, process, sgml-mode, qp, mailcap, json, fns, subr,
+  arc-mode and tar-mode. Local validation: the grouped gate's 3,430
+  library tests, the integration targets and clippy with `--all-targets
+  --all-features -D warnings' pass.
+- **Round 240: decoders annotate compositions as produce_composition
+  does.** `decoders::emacs_mule_call` ports decode_coding_emacs_mule's
+  composition sequences: `EmacsMuleComposing` is cmp_status with the
+  composition's charbuf segment (header, components, `-2 RULE' pairs,
+  characters), which `end` (EMACS_MULE_COMPOSITION_END) or
+  `maybe_finish` (emacs_mule_finish_composition, the header rewritten to
+  its bytes, an invalid last rule to its byte, BYTE8_TO_CHAR of a value
+  past #xFF giving the ASCII character char_string leaves of it) hand to
+  `produce`, which produces the characters as produce_chars walks the
+  segment, uncounts them from char_offset (`CallRuns::uncount`) but for
+  the finish's new_chars, and records the annotation.
+  `DecodedText::compositions` holds `DecodedComposition`s (start, end,
+  `CompositionComponents` as produce_composition builds them, and `seq`,
+  the `charset' runs before it), which `annotations` interleaves with
+  the runs in produce_annotation's order for `insert_decoded_calls_at`
+  (a composition forces the call-at-a-time layout),
+  `decoded_annotation_props` (which replaces `charset_spans_to_props`)
+  and decode_eol's shifts. `iso2022::decode_call` records the annotation
+  at ESC 1 (`end_composition`), counts the composition's charbuf ints
+  (`CompositionStatus::length`, finish_composition's leftovers) against
+  its room, and composes under the designation flag too, since
+  CODING_ANNOTATE_CHARSET_MASK (3) has
+  CODING_ANNOTATE_COMPOSITION_MASK's bit. A composition carried into a
+  call whose charbuf has no room after it, where GNU aborts or loops for
+  ever (a process read of a few bytes after a composition header), and
+  emacs-mule's component of code 2 that emacs_mule_char returns as -2,
+  are finished as the last block finishes them. A process filter's
+  string goes through `decoded_string_value`, the work buffer a call at
+  a time when the read takes more than one call (DECODE_FILE's names
+  keep building their properties directly). `initial_environment_list`
+  reverses environ as set_initial_environment's conses do (probe
+  r239/env.el: `process-environment' and a child's `env'). Batteries:
+  3,000 emacs-mule string decodes, 600 decodes into multibyte and
+  unibyte buffers, buffer destinations and files, compositions across
+  the 16K charbuf's end, split process reads that GNU survives (it hangs
+  or aborts on reads too short for the carried composition), and 4,500
+  ISO-2022 string and buffer decodes read as GNU's but for one GNU
+  artifact: a dos decode of a multibyte buffer whose charbuf fills just
+  after a CR read an eight-bit character as byte_after_cr backs src_base
+  up one byte, into the character's two-byte form, and the next call
+  reads from inside it; in place, what it produces then is lost. Emaxx
+  backs up the whole character. The round 234 to 239 batteries read as
+  before (round 239's raw-text-dos NUL artifact aside); an oracle test
+  pins the cases. ERT pass counts match GNU's for coding, mule,
+  mule-util, ucs-normalize, fileio, files, editfns, buffer, textsec,
+  rmailmm, mm-decode, ccl, process, sgml-mode, qp, mailcap, json, fns,
+  subr, arc-mode, tar-mode, callproc, env and undigest. Local
+  validation: the grouped gate's 3,431 library tests, the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass.
+- **Round 241: stores under a let go where set_internal puts them.**
+  `active_special_assignment_scope` and its symbol form are eval.c's
+  let_shadows_buffer_binding_p: a restore record with `let_default`
+  whose `where_buffer_id` is the current buffer, at any depth, keeps the
+  store in the default (`SpecialBindingScope::Global`); otherwise the
+  store goes to the current buffer's binding or the default, so another
+  buffer's let of a buffer-local binding no longer captures a setq made
+  elsewhere, and a local-if-set variable set in a buffer where an outer
+  LET_DEFAULT was made gets no local. `apply_special_restore`'s
+  buffer-local branch restores (and tells watchers of the `unlet') only
+  while the buffer still has the local, as unbind_to's SPECPDL_LET_LOCAL
+  checks Flocal_variable_p. `value_ordering` signals a bignum's mismatch
+  against nil, t, a symbol, a string or a cons with the other value
+  first, as value_cmp's -value_cmp (b, a) does. Batteries (probes in
+  r241/): blv.el and blv2.el (300 random runs of setq, set-default,
+  make-local-variable, kill-local-variable, let, cl-progv, setq-local
+  and buffer switches in two buffers; blv2 also with AUTO set for a
+  local-if-set variable), pbv.el (the let pattern over six per-buffer C
+  variables and two Lisp ones), srt.el (800 value< and sort sets over
+  mixed types), and syn.el, cas.el, tim.el, hsh.el, kmp.el, ovl.el and
+  ovl2.el sweeps of syntax scans, casing, format-time-string over zones,
+  hash tables, keymaps and overlays all read as GNU's but for two GNU
+  artifacts in the overlay sweeps: get-pos-property's sort_overlays
+  reads a sortvec entry it left unset, and overlays of equal priority
+  and span are ordered by address. An oracle test pins the cases
+  (`set_internal_stores_where_the_current_buffer_sees_the_binding`).
+  electric-tests under callgrind runs 3% fewer instructions than GNU at
+  1.3 times the wall time, the code-footprint gap recorded before. ERT
+  pass counts match GNU's for data, eval, buffer, subr, fns, files,
+  simple, cl-lib, custom, subr-x, minibuffer, nadvice, seq, elisp-mode,
+  files-x and let-alist. Local validation: the grouped gate's 3,432
+  library tests, the integration targets and clippy with `--all-targets
+  --all-features -D warnings' pass.
+- **Round 242: arguments are coerced, lists walked and names looked up
+  as GNU does.** `numeric_ordering` takes each operand through the new
+  `check_number_coerce_marker` before looking at the next, as
+  arithcompare does, and `extremum_numeric_value` is minmax_driver:
+  every argument coerced, the accumulator replaced when the candidate
+  compares greater (less), and a candidate returned only when its
+  comparison fails and it is a NaN. The VM's full arm of Bnth and Belt
+  runs `nth_tail_in_place` (bytecode.c's own walk below
+  SMALL_LIST_LEN_MAX) and signals `listp` of the tail it stopped at,
+  with the record_in_backtrace frame; the verified loop's `nth_in_place`
+  is its non-signaling case. `take` and `ntake` are Ftake and Fntake (a
+  bignum count MOST_POSITIVE_FIXNUM or nothing, CHECK_LIST, Fntake's
+  `listp` of the whole list). `append` takes vectors and bool-vectors,
+  no char-table (concat_to_list's `sequencep`); `vconcat` takes a
+  closure's slots. `intern_in_obarray_with_name` and
+  `intern_soft_in_obarray` take a KEY, the Lisp string oblookup compares
+  by its SDATA and SCHARS (`RecordBucketsRef::lookup_name`,
+  `SymbolName::lookup_initial`), which Fintern and Fintern_soft pass
+  (the string, its longhand, or a symbol's name) and `standard_oblookup`
+  uses: a unibyte name with a byte above #x7F was looked up by its text,
+  not its bytes, and never found. `scan_for_column` and
+  check_display_width's :relative-width measure a multibyte character by
+  `public_buffer_char_code_at`'s code, so a raw byte is
+  char-width-table's four columns. Batteries (probes in r242/): num.el
+  (6,000 arithmetic calls), lst.el (4,000 list calls), arr.el (4,000
+  array, bool-vector and char-table calls), sym.el (3,000 symbol, plist
+  and obarray operations), col.el (1,500 column and indentation probes),
+  prt.el, rd.el, fmt.el, str.el, fld.el, und.el, rx.el and srchc.el (the
+  printer, reader, format, string functions, fields and stickiness, undo
+  with markers, regexp syntax, and buffer search and replace-match) read
+  as GNU's but for three GNU artifacts: get-pos-property's sort of two
+  or more overlays compares a sortvec entry it never filled (fld1.el,
+  with one overlay a buffer, matches all 300 runs); mapcar and mapconcat
+  over a record read its slots as a bool-vector's bits (seqp.el);
+  posix-search-forward with a `+' pattern aborts GNU in
+  re_match_2_internal in some heap states (srchc.el run by chunks.sh, a
+  case at a time where GNU aborts: 18 of 2,500 cases abort even alone,
+  the other 2,482 match). seq-tests' 3.4 times GNU's body time is one 15
+  ms collection that GNU's consing does not reach in that file; a full
+  collection of that heap takes Emaxx 9.5 ms to GNU's 12 to 17. An
+  oracle test pins the cases
+  (`comparisons_coerce_lists_take_and_columns_measure_as_gnu`). ERT pass
+  counts match GNU's for data, fns, floatfns, indent, lread, editfns,
+  alloc, obarray, subr, simple, seq, cl-lib, cl-seq, bytecomp, shortdoc,
+  subr-x, buffer and elisp-mode. Local validation: the grouped gate's
+  3,433 library tests, the integration targets and clippy with
+  `--all-targets --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -13066,6 +13325,72 @@ s against 259.9 s (0.960), in all 1.000. The full Rust gate (run
 7,928 outcomes. Setup 86.2 s against 69.2 s (1.246), test bodies 261.5
 s against 269.9 s (0.969), in all 1.017. The full Rust gate (run
 41327822773) passed.
+
+**On `64dd5a7`** (round 235): frozen (run 41335586152) matched all
+7,928 outcomes. Setup 56.9 s against 49.5 s (1.149), test bodies 208.2
+s against 223.3 s (0.932), in all 0.980. The full Rust gate (run
+41335583648) passed.
+
+**On `9500891`** (round 236): frozen (run 41340490056) matched all
+7,928 outcomes. Setup 68.1 s against 59.2 s (1.150), test bodies 231.3
+s against 244.3 s (0.947), in all 0.990; ucs-normalize-tests' bodies
+took 154 ms against 149 (365 against 57 on the round 235 head). The full
+Rust gate (run 41340487608) passed.
+
+**On `4fcf3a1`** (round 237): frozen (run 41346996624) matched all
+7,928 outcomes. Setup 68.9 s against 58.4 s (1.179), test bodies 233.6
+s against 249.3 s (0.937), in all 0.993; ucs-normalize-tests' bodies
+took 140 ms against 85 (154 against 149 on the round 236 head). The full
+Rust gate (run 41346989436) passed. Per file, the setup is 20 ms over
+GNU's on average (10.4 s over 519 files, a median of 106 ms against
+89), electric-tests' the most (681 against 466), and the widest body
+gaps are semantic-utest-ia (3,340 ms against 2,325), mule-tests (2,599
+against 1,741), electric-tests (900 against 519) and edebug-tests
+(1,365 against 1,014).
+
+**On `33ac8ac`** (round 238): frozen (run 41355327812) matched all
+7,928 outcomes. Setup 65.2 s against 55.4 s (1.176), test bodies 225.3
+s against 241.3 s (0.934), in all 0.994; ucs-normalize-tests' bodies
+took 122 ms against 74 (140 against 85 on the round 237 head). The full
+Rust gate (run 41355318385) passed. Per file, the setup is 19 ms over
+GNU's on average (9.8 s over 519 files, a median of 101 ms against 85),
+electric-tests' the most (670 against 469), and the widest body gaps are
+comp-tests (14,553 ms against 12,742), tramp-tests (16,565 against
+15,367), semantic-utest-ia (3,305 against 2,422) and mule-tests (2,391
+against 1,591).
+
+**On `26f27af`** (round 239): frozen (run 41359458848) matched all
+7,928 outcomes on a slower runner. Setup 81.2 s against 66.9 s (1.215),
+test bodies 256.3 s against 266.0 s (0.964), in all 1.000;
+ucs-normalize-tests' bodies took 146 ms against 96. The full Rust gate
+(run 41359451533) passed. Per file, the setup is 28 ms over GNU's on
+average (14.4 s over 519 files, a median of 124 ms against 103),
+electric-tests' the most (873 against 533), and the widest body gaps
+are comp-tests (17,522 ms against 14,495), tramp-tests (20,992 against
+19,279), eglot-tests (33,971 against 32,398), semantic-utest-ia (4,117
+against 2,643) and mule-tests (3,152 against 2,027).
+
+**On `b41bb5b`** (round 240): frozen (run 41365805281) matched all 7,928
+outcomes on a slower runner. Setup 87.6 s against 73.3 s (1.195), test
+bodies 264.1 s against 276.4 s (0.955), in all 1.008;
+ucs-normalize-tests' bodies took 153 ms against 100. The full Rust gate
+(run 41365796133) passed. Per file, the setup is 28 ms over GNU's on
+average (14.3 s over 519 files, a median of 135 ms against 112),
+electric-tests' the most (896 against 542), and the widest body gaps are
+comp-tests (17,950 ms against 15,673), eglot-tests (34,508 against
+32,579), tramp-tests (21,765 against 20,041), semantic-utest-ia (4,490
+against 3,003) and mule-tests (3,142 against 2,060).
+
+**On `e110717`** (round 241): frozen (run 41369671719) matched all 7,928
+outcomes on a faster runner. Setup 65.4 s against 56.9 s (1.150), test
+bodies 225.1 s against 240.9 s (0.935), in all 0.988;
+ucs-normalize-tests' bodies took 117 ms against 75. The full Rust gate
+(run 41369662723) passed. Per file, the setup is 16 ms over GNU's on
+average (8.5 s over 519 files, a median of 101 ms against 87),
+electric-tests' the most (641 against 427), and the widest body gaps are
+comp-tests (14,474 ms against 12,576), tramp-tests (17,110 against
+15,971), semantic-utest-ia (3,152 against 2,201), mule-tests (2,273
+against 1,565) and electric-tests (810 against 449).
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

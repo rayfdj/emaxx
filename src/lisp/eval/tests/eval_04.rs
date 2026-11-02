@@ -5705,6 +5705,7 @@ fn standard_obarray_intern_soft_stays_indexed_at_scale() {
                 &interp,
                 &obarray,
                 "emaxx-indexed-obarray-4999",
+                None,
             )
             .unwrap(),
             Value::Symbol("emaxx-indexed-obarray-4999".into())
@@ -5714,6 +5715,7 @@ fn standard_obarray_intern_soft_stays_indexed_at_scale() {
                 &interp,
                 &obarray,
                 "emaxx-indexed-obarray-missing",
+                None,
             )
             .unwrap(),
             Value::Nil

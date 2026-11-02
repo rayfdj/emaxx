@@ -185,10 +185,8 @@ fn standard_oblookup(
     {
         return None;
     }
-    crate::lisp::primitives::strings::with_string_text(&args[0], |name| {
-        interp.standard_obarray_symbol(name)
-    })
-    .flatten()
+    // oblookup by the string's own bytes and characters.
+    crate::lisp::types::SymbolName::lookup_initial(args[0]).and_then(Result::ok)
 }
 
 pub(super) fn bare_symbol_identity(
@@ -694,21 +692,25 @@ define_dispatch!(
                 // the original string (or GNU's longhand/purecopy) on a miss.
                 let original_name = string_text(&args[0])?;
                 let symbol_name = apply_symbol_shorthands_in_env(interp, &original_name, env)?;
-                let mut make_name = |interp: &mut Interpreter| {
-                    if symbol_name != original_name {
-                        // Fintern's make_specified_string explicitly marks
-                        // longhand as multibyte, including ASCII longhand.
-                        Ok(make_shared_string_value_with_multibyte(
-                            symbol_name.clone(),
-                            None,
-                            true,
-                        ))
-                    } else {
-                        purecopy_value(interp, &args[0], env)
-                    }
+                // Fintern's make_specified_string explicitly marks longhand
+                // as multibyte, including ASCII longhand; oblookup compares
+                // the longhand, or else STRING, by its bytes.
+                let longhand = (symbol_name != original_name).then(|| {
+                    make_shared_string_value_with_multibyte(symbol_name.clone(), None, true)
+                });
+                let key = longhand.unwrap_or(args[0]);
+                let mut make_name = |interp: &mut Interpreter| match longhand {
+                    Some(longhand) => Ok(longhand),
+                    None => purecopy_value(interp, &args[0], env),
                 };
                 if let Some(obarray) = obarray {
-                    intern_in_obarray_with_name(interp, &obarray, &symbol_name, make_name)
+                    intern_in_obarray_with_name(
+                        interp,
+                        &obarray,
+                        &symbol_name,
+                        Some(key),
+                        make_name,
+                    )
                 } else {
                     if !interp.standard_obarray_contains_symbol(&symbol_name) {
                         let lisp_name = make_name(interp)?;
@@ -750,18 +752,21 @@ define_dispatch!(
                                 interp,
                                 value,
                                 crate::lisp::types::visible_symbol_name(symbol.as_str()),
+                                Some(symbol.lisp_name()),
                             )? == Value::Symbol(symbol)
                         }
                     };
                     return Ok(if present { args[0] } else { Value::Nil });
                 }
-                let symbol_name = string_text(&args[0])?;
-                let symbol_name = apply_symbol_shorthands_in_env(interp, &symbol_name, env)?;
+                let original_name = string_text(&args[0])?;
+                let symbol_name = apply_symbol_shorthands_in_env(interp, &original_name, env)?;
                 if let Some(obarray) = obarray {
                     // lread.c:Fintern_soft only looks in the requested obarray.
                     // A function/value probe can intern a missing name and
-                    // change the result of the next lookup.
-                    intern_soft_in_obarray(interp, &obarray, &symbol_name)
+                    // change the result of the next lookup.  oblookup
+                    // compares STRING by its bytes, a longhand by its text.
+                    let key = (symbol_name == original_name).then_some(args[0]);
+                    intern_soft_in_obarray(interp, &obarray, &symbol_name, key)
                 } else {
                     Ok(if interp.standard_obarray_contains_symbol(&symbol_name) {
                         crate::lisp::types::interned_symbol_value(symbol_name)

@@ -74,11 +74,55 @@ struct DetectInfo {
     /// coding->detected_utf8_bytes: how far detect_coding_utf_8 read the
     /// source when it accepted it.
     utf8_bytes: Option<usize>,
+    /// coding->detected_utf8_chars: the characters it counted then.
+    utf8_chars: usize,
+    /// Each sequence it accepted is standard UTF-8 of a character other
+    /// than those the text view gives raw bytes (U+E080..U+E0FF), so the
+    /// bytes it read are their characters' text as they are.
+    utf8_standard: bool,
+}
+
+/// The units a detector reads: a unibyte source's bytes as they are, or
+/// a multibyte source's (ASCII and eight-bit characters as their bytes,
+/// any other as a negative unit).
+enum DetectUnits<'a> {
+    Bytes(std::borrow::Cow<'a, [u8]>),
+    Codes(Vec<i32>),
+}
+
+impl DetectUnits<'_> {
+    #[inline]
+    fn len(&self) -> usize {
+        match self {
+            DetectUnits::Bytes(bytes) => bytes.len(),
+            DetectUnits::Codes(codes) => codes.len(),
+        }
+    }
+
+    #[inline]
+    fn get(&self, index: usize) -> Option<i32> {
+        match self {
+            DetectUnits::Bytes(bytes) => bytes.get(index).map(|&byte| i32::from(byte)),
+            DetectUnits::Codes(codes) => codes.get(index).copied(),
+        }
+    }
+
+    #[inline]
+    fn at(&self, index: usize) -> i32 {
+        match self {
+            DetectUnits::Bytes(bytes) => i32::from(bytes[index]),
+            DetectUnits::Codes(codes) => codes[index],
+        }
+    }
+
+    fn iter(&self) -> impl Iterator<Item = i32> + '_ {
+        (0..self.len()).map(|index| self.at(index))
+    }
 }
 
 /// The text under detection, as coding.c's byte reader sees it.
-pub(crate) struct DetectSource {
-    units: Vec<i32>,
+pub(crate) struct DetectSource<'a> {
+    units: DetectUnits<'a>,
     src_bytes: usize,
     src_chars: usize,
     /// The units of a UTF-8 signature at the head, which
@@ -92,10 +136,13 @@ pub(crate) struct DetectSource {
     last_block: bool,
 }
 
-impl DetectSource {
-    pub(crate) fn from_bytes(bytes: &[u8]) -> Self {
+impl<'a> DetectSource<'a> {
+    pub(crate) fn from_bytes(bytes: &'a [u8]) -> Self {
+        Self::from_byte_units(std::borrow::Cow::Borrowed(bytes))
+    }
+
+    fn from_byte_units(bytes: std::borrow::Cow<'a, [u8]>) -> Self {
         DetectSource {
-            units: bytes.iter().map(|byte| i32::from(*byte)).collect(),
             src_bytes: bytes.len(),
             src_chars: bytes.len(),
             bom_units: if bytes.len() > 3 && bytes[..3] == [0xEF, 0xBB, 0xBF] {
@@ -104,6 +151,7 @@ impl DetectSource {
                 0
             },
             last_block: true,
+            units: DetectUnits::Bytes(bytes),
         }
     }
 
@@ -112,7 +160,7 @@ impl DetectSource {
     pub(crate) fn from_text(text: &str, multibyte: bool) -> Self {
         if !multibyte {
             let bytes = encode_raw_text_bytes(text).unwrap_or_default();
-            return Self::from_bytes(&bytes);
+            return Self::from_byte_units(std::borrow::Cow::Owned(bytes));
         }
         let mut units = Vec::with_capacity(text.len());
         let mut src_bytes = 0;
@@ -132,7 +180,7 @@ impl DetectSource {
         }
         let bom_units = usize::from(units.first() == Some(&-0xFEFF) && src_bytes > 3);
         DetectSource {
-            units,
+            units: DetectUnits::Codes(units),
             src_bytes,
             src_chars,
             bom_units,
@@ -163,7 +211,7 @@ impl DetectSource {
         }
         let bom_units = usize::from(units.first() == Some(&-0xFEFF) && src_bytes > 3);
         DetectSource {
-            units,
+            units: DetectUnits::Codes(units),
             src_bytes,
             src_chars,
             bom_units,
@@ -181,7 +229,7 @@ impl DetectSource {
     /// The internal bytes, for the eol scans that read raw octets.
     fn internal_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(self.src_bytes);
-        for &unit in &self.units {
+        for unit in self.units.iter() {
             if unit >= 0 {
                 bytes.push(unit as u8);
             } else if let Some(ch) = char::from_u32((-unit) as u32) {
@@ -248,18 +296,24 @@ fn inhibit_flag(attribute: Option<&Value>, variable: bool) -> bool {
 /// The index of the first of UNITS from FROM on that SKIP does not hold
 /// for, or their end: sixteen at a time while all of them do.
 #[inline]
-fn next_unit_outside(units: &[i32], from: usize, skip: impl Fn(i32) -> bool) -> usize {
-    let mut i = from;
-    while let Some(block) = units.get(i..i + 16) {
-        if !block.iter().fold(true, |all, &c| all & skip(c)) {
-            break;
+fn next_unit_outside(units: &DetectUnits<'_>, from: usize, skip: impl Fn(i32) -> bool) -> usize {
+    fn scan<T: Copy>(units: &[T], from: usize, skip: impl Fn(T) -> bool) -> usize {
+        let mut i = from;
+        while let Some(block) = units.get(i..i + 16) {
+            if !block.iter().fold(true, |all, &c| all & skip(c)) {
+                break;
+            }
+            i += 16;
         }
-        i += 16;
+        while i < units.len() && skip(units[i]) {
+            i += 1;
+        }
+        i
     }
-    while i < units.len() && skip(units[i]) {
-        i += 1;
+    match units {
+        DetectUnits::Bytes(bytes) => scan(bytes, from, |byte| skip(i32::from(byte))),
+        DetectUnits::Codes(codes) => scan(codes, from, skip),
     }
-    i
 }
 
 fn detect_utf_8(src: &DetectSource, head_ascii: usize, info: &mut DetectInfo) -> bool {
@@ -267,6 +321,7 @@ fn detect_utf_8(src: &DetectSource, head_ascii: usize, info: &mut DetectInfo) ->
     let mut p = head_ascii;
     let mut nchars = head_ascii;
     let mut bom_found = false;
+    let mut standard = true;
     info.checked |= MASK_UTF_8;
     if p == 0 && src.bom_units > 0 {
         bom_found = true;
@@ -281,13 +336,13 @@ fn detect_utf_8(src: &DetectSource, head_ascii: usize, info: &mut DetectInfo) ->
         nchars += run_end - p;
         p = run_end;
         let base = p;
-        let Some(&c) = units.get(p) else {
+        let Some(c) = units.get(p) else {
             src_base = base;
             break;
         };
         p += 1;
         let extra = |c: i32| c >= 0 && (c & 0xC0) == 0x80;
-        let Some(&c1) = units.get(p) else {
+        let Some(c1) = units.get(p) else {
             src_base = base;
             break;
         };
@@ -297,10 +352,12 @@ fn detect_utf_8(src: &DetectSource, head_ascii: usize, info: &mut DetectInfo) ->
             return false;
         }
         if (c & 0xE0) == 0xC0 {
+            // C0 and C1 lead an overlong sequence.
+            standard &= c >= 0xC2;
             nchars += 1;
             continue;
         }
-        let Some(&c2) = units.get(p) else {
+        let Some(c2) = units.get(p) else {
             src_base = base;
             break;
         };
@@ -310,10 +367,15 @@ fn detect_utf_8(src: &DetectSource, head_ascii: usize, info: &mut DetectInfo) ->
             return false;
         }
         if (c & 0xF0) == 0xE0 {
+            // An overlong sequence, a surrogate, or U+E080..U+E0FF.
+            standard &= !matches!(
+                (c, c1),
+                (0xE0, 0x80..=0x9F) | (0xED, 0xA0..) | (0xEE, 0x82 | 0x83)
+            );
             nchars += 1;
             continue;
         }
-        let Some(&c3) = units.get(p) else {
+        let Some(c3) = units.get(p) else {
             src_base = base;
             break;
         };
@@ -323,10 +385,12 @@ fn detect_utf_8(src: &DetectSource, head_ascii: usize, info: &mut DetectInfo) ->
             return false;
         }
         if (c & 0xF8) == 0xF0 {
+            // An overlong sequence, or a code above U+10FFFF.
+            standard &= !matches!((c, c1), (0xF0, 0x80..=0x8F) | (0xF4, 0x90..) | (0xF5.., _));
             nchars += 1;
             continue;
         }
-        let Some(&c4) = units.get(p) else {
+        let Some(c4) = units.get(p) else {
             src_base = base;
             break;
         };
@@ -336,6 +400,7 @@ fn detect_utf_8(src: &DetectSource, head_ascii: usize, info: &mut DetectInfo) ->
             return false;
         }
         if (c & 0xFC) == 0xF8 && c < MAX_MULTIBYTE_LEADING_CODE {
+            standard = false;
             nchars += 1;
             continue;
         }
@@ -348,6 +413,8 @@ fn detect_utf_8(src: &DetectSource, head_ascii: usize, info: &mut DetectInfo) ->
         return false;
     }
     info.utf8_bytes = Some(src_base);
+    info.utf8_chars = nchars;
+    info.utf8_standard = standard;
     if bom_found {
         info.found |= MASK_UTF_8_AUTO | MASK_UTF_8_SIG | MASK_UTF_8_NOSIG;
     } else {
@@ -361,15 +428,15 @@ fn detect_utf_8(src: &DetectSource, head_ascii: usize, info: &mut DetectInfo) ->
 
 /// TWO_MORE_BYTES: skip multibyte characters for the first byte, and
 /// report a multibyte character in the second as -1.
-fn two_more_bytes(units: &[i32], p: &mut usize) -> Option<(i32, i32)> {
+fn two_more_bytes(units: &DetectUnits<'_>, p: &mut usize) -> Option<(i32, i32)> {
     let c1 = loop {
-        let &c = units.get(*p)?;
+        let c = units.get(*p)?;
         *p += 1;
         if c >= 0 {
             break c;
         }
     };
-    let &c2 = units.get(*p)?;
+    let c2 = units.get(*p)?;
     *p += 1;
     Some((c1, if c2 < 0 { -1 } else { c2 }))
 }
@@ -446,7 +513,7 @@ fn detect_emacs_mule(
     let src_base;
     loop {
         let base = p;
-        let Some(&mut_c) = units.get(p) else {
+        let Some(mut_c) = units.get(p) else {
             src_base = base;
             break;
         };
@@ -461,7 +528,7 @@ fn detect_emacs_mule(
             loop {
                 let src_start = p;
                 loop {
-                    let Some(&next) = units.get(p) else {
+                    let Some(next) = units.get(p) else {
                         // ONE_MORE_BYTE inside the composition scan.
                         info.rejected |= MASK_EMACS_MULE;
                         return false;
@@ -490,7 +557,7 @@ fn detect_emacs_mule(
         } else {
             let mut more_bytes = layout.lengths[c as usize].saturating_sub(1);
             while more_bytes > 0 {
-                let Some(&next) = units.get(p) else {
+                let Some(next) = units.get(p) else {
                     info.rejected |= MASK_EMACS_MULE;
                     return false;
                 };
@@ -529,7 +596,7 @@ fn detect_sjis(
     let src_base;
     loop {
         let base = p;
-        let Some(&c) = units.get(p) else {
+        let Some(c) = units.get(p) else {
             src_base = base;
             break;
         };
@@ -538,7 +605,7 @@ fn detect_sjis(
             continue;
         }
         if (0x81..=0x9F).contains(&c) || (0xE0..=max_first_byte_of_2_byte_code).contains(&c) {
-            let Some(&c2) = units.get(p) else {
+            let Some(c2) = units.get(p) else {
                 src_base = base;
                 break;
             };
@@ -571,7 +638,7 @@ fn detect_big5(src: &DetectSource, head_ascii: usize, info: &mut DetectInfo) -> 
     let src_base;
     loop {
         let base = p;
-        let Some(&c) = units.get(p) else {
+        let Some(c) = units.get(p) else {
             src_base = base;
             break;
         };
@@ -580,7 +647,7 @@ fn detect_big5(src: &DetectSource, head_ascii: usize, info: &mut DetectInfo) -> 
             continue;
         }
         if c >= 0xA1 {
-            let Some(&c2) = units.get(p) else {
+            let Some(c2) = units.get(p) else {
                 src_base = base;
                 break;
             };
@@ -643,7 +710,7 @@ fn detect_ccl(
         0
     };
     let mut found = 0;
-    while let Some(&c) = units.get(p) {
+    while let Some(c) = units.get(p) {
         p += 1;
         if c < 0 || valids[c as usize] == 0 {
             info.rejected |= MASK_CCL;
@@ -677,7 +744,7 @@ fn detect_charset(
         0
     };
     let mut found = 0;
-    while let Some(&c) = units.get(p) {
+    while let Some(c) = units.get(p) {
         p += 1;
         if c < 0 {
             continue;
@@ -705,7 +772,7 @@ fn detect_charset(
                     info.rejected |= MASK_CHARSET;
                     return false;
                 }
-                let c = units[p];
+                let c = units.at(p);
                 p += 1;
                 let (min, max) = bounds.get(dim - 1 - idx).copied().unwrap_or((0, 0));
                 if c < min as i32 || c > max as i32 {
@@ -804,7 +871,7 @@ fn detect_iso_2022(
 
     macro_rules! one_more_byte {
         () => {{
-            let Some(&c) = units.get(p) else {
+            let Some(c) = units.get(p) else {
                 info.rejected |= rejected;
                 info.found |= found & !rejected;
                 return true;
@@ -1122,7 +1189,7 @@ impl<'a> Detector<'a> {
         let mut eol_seen = EOL_SEEN_NONE;
         let mut i = 0usize;
         while i < units.len() {
-            let c = units[i];
+            let c = units.at(i);
             if (0x20..0x80).contains(&c) {
                 // A run of printable ASCII changes nothing but head_ascii.
                 let start = i;
@@ -1172,7 +1239,7 @@ impl<'a> Detector<'a> {
                     }
                 } else if track_eol {
                     if c == i32::from(b'\r') {
-                        if i + 1 < units.len() && units[i + 1] == i32::from(b'\n') {
+                        if i + 1 < units.len() && units.at(i + 1) == i32::from(b'\n') {
                             eol_seen |= EOL_SEEN_CRLF;
                             i += 1;
                             if !eight_bit_found {
@@ -1542,6 +1609,11 @@ pub(crate) struct DetectOutcome {
     /// detect_coding_utf_8 accepted the source up to its end
     /// (detected_utf8_bytes == src_bytes).
     pub(crate) utf8_whole: bool,
+    /// detected_utf8_chars, when it did.
+    pub(crate) utf8_chars: usize,
+    /// Each sequence it accepted was standard UTF-8 of a character the
+    /// text view keeps as itself.
+    pub(crate) utf8_standard: bool,
 }
 
 /// coding.c detect_coding, the decode-time detection: the coding system
@@ -1562,7 +1634,7 @@ fn check_ascii_eol(src: &DetectSource, inhibit: bool) -> u8 {
     let mut seen = EOL_SEEN_NONE;
     let units = &src.units;
     let mut i = 0;
-    while let Some(&c) = units.get(i) {
+    while let Some(c) = units.get(i) {
         if !(0..0x80).contains(&c) {
             break;
         }
@@ -1570,7 +1642,7 @@ fn check_ascii_eol(src: &DetectSource, inhibit: bool) -> u8 {
         if c == i32::from(b'\n') {
             seen |= EOL_SEEN_LF;
         } else if c == i32::from(b'\r') && !inhibit {
-            if units.get(i) == Some(&i32::from(b'\n')) {
+            if units.get(i) == Some(i32::from(b'\n')) {
                 seen |= EOL_SEEN_CRLF;
                 i += 1;
             } else {
@@ -1619,11 +1691,13 @@ pub(crate) fn detect_coding_outcome(
             else {
                 return outcome;
             };
-            let ascii = src.units.iter().all(|unit| (0..0x80).contains(unit));
+            let ascii = src.units.iter().all(|unit| (0..0x80).contains(&unit));
             outcome.found = if ascii {
                 Some(pair.1)
             } else if detect_utf_8(src, 0, &mut info) {
                 outcome.utf8_whole = info.utf8_bytes == Some(src.units.len());
+                outcome.utf8_chars = info.utf8_chars;
+                outcome.utf8_standard = info.utf8_standard;
                 Some(if info.found & MASK_UTF_8_SIG != 0 {
                     pair.0
                 } else {
@@ -1763,5 +1837,7 @@ pub(crate) fn detect_coding_outcome(
         found,
         eol_seen: Some(eol_seen),
         utf8_whole: info.utf8_bytes == Some(src.units.len()),
+        utf8_chars: info.utf8_chars,
+        utf8_standard: info.utf8_standard,
     }
 }

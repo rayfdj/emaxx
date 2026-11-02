@@ -2828,7 +2828,7 @@ fn decode_process_bytes_at_point(
     } = super::coding::decode_coding_block(interp, env, bytes, coding, Some(multibyte), decoder)?;
     let mut produced = decoded.char_count();
     let layout = decoded.take_layout();
-    let props = charset_spans_to_props(decoded.charsets, &decoded.text, None);
+    let props = decoded_annotation_props(&mut decoded);
     insert_text_before_point(
         interp,
         &decoded.text,
@@ -2906,13 +2906,7 @@ fn decode_process_output(
         coding: settled,
         for_unibyte,
     } = decoded?;
-    let props = charset_spans_to_props(decoded.charsets, &decoded.text, None);
-    let text = make_shared_string_value_with_extended_chars(
-        decoded.text,
-        props,
-        !for_unibyte,
-        decoded.extended,
-    );
+    let text = decoded_string_value(interp, decoded, !for_unibyte, env)?;
     let settled_value = Value::symbol(&settled);
     interp.set_variable("last-coding-system-used", settled_value, env);
     if decoding != settled_value {

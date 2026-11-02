@@ -20509,7 +20509,7 @@ fn intern_uses_gnu_name_copy_and_type_check_boundaries() {
         "Fpurecopy retains canonical string storage"
     );
     assert_eq!(string_text(&copied).expect("pure name string"), "pure-name");
-    let hit = intern_in_obarray_with_name(&mut interp, &table, "pure-name", |_| {
+    let hit = intern_in_obarray_with_name(&mut interp, &table, "pure-name", None, |_| {
         panic!("an oblookup hit must not allocate or purecopy a name")
     })
     .expect("oblookup hit");
@@ -33444,7 +33444,7 @@ fn decoders_read_the_unit_after_a_cr_and_fill_a_charbuf_at_a_time() {
     // invalid sequence is lost (invalid_code stores the unit after it, as
     // ASCII or BYTE8_TO_CHAR by the decoder's rule), as is a multibyte
     // source's character there.  decode_coding calls the decoder a
-    // charbuf (CHARBUF_SIZE ints less its annotation room) at a time,
+    // charbuf (its ints less its annotation room) at a time,
     // closing the `charset' run at each call's end.
     assert_oracle_contract_matches_interpreter(
         r##"(let ((x (string #x80a)) (ivs (lambda (s) (mapcar (lambda (i) (list (car i) (cadr i) (plist-get (nth 2 i) 'charset))) (object-intervals s))))) (list (mapcar (lambda (cs) (append (decode-coding-string "a\r\377b\r\200\nc\r\r\240d" cs) nil)) '(utf-8-dos shift_jis-dos big5-dos euc-jp-dos latin-1-dos emacs-mule-dos cp1252-dos utf-8-with-signature-dos)) (append (decode-coding-string "a\0\r\0\200\0b\0\r\0" 'utf-16le-dos) nil) (mapcar (lambda (cs) (append (decode-coding-string (concat "a\r" x x "b\r" (string-to-multibyte "\377") x "c\r" x "\nd") cs) nil)) '(utf-8-dos shift_jis-dos big5-dos iso-2022-jp-dos emacs-mule-dos utf-16le-dos cp1252-dos)) (funcall ivs (decode-coding-string (apply #'concat (make-list 17000 "\202\240")) 'shift_jis)) (funcall ivs (decode-coding-string (concat "\e$B" (apply #'concat (make-list 17000 "$\"")) "\e(B") 'iso-2022-jp)) (funcall ivs (decode-coding-string (apply #'concat (make-list 17000 "\222\244\242")) 'emacs-mule)) (with-temp-buffer (insert (apply #'concat (make-list 33000 "\351"))) (decode-coding-region (point-min) (point-max) 'latin-1) (funcall ivs (current-buffer)))))"##,
@@ -33466,6 +33466,122 @@ fn buffer_decodes_insert_each_call_s_characters_as_insert_from_gap() {
         r##"(let* ((mk (lambda (n s) (apply #'concat (make-list n s)))) (run (lambda (in cs hooks) (with-temp-buffer (insert in) (let ((m (buffer-modified-tick)) (c (buffer-chars-modified-tick)) (zz-log nil)) (when hooks (add-hook 'before-change-functions (lambda (b e) (push (list 'b b e) zz-log)) nil t) (add-hook 'after-change-functions (lambda (b e l) (push (list 'a b e l) zz-log)) nil t)) (decode-coding-region (point-min) (point-max) cs) (list (buffer-size) (- (buffer-modified-tick) m) (- (buffer-chars-modified-tick) c) (length (object-intervals (current-buffer))) (nreverse zz-log)))))) (f (make-temp-file "zz-tick"))) (unwind-protect (list (funcall run (funcall mk 20000 "\303\251") 'utf-8 nil) (funcall run (funcall mk 20000 "\351") 'latin-1 t) (funcall run (funcall mk 10 "a\r\n") 'utf-8-dos t) (funcall run (funcall mk 20000 "a\r\n") 'utf-8-dos nil) (funcall run (funcall mk 10 "a\r") 'utf-8-mac nil) (funcall run (funcall mk 20000 "\202\240\r\n") 'shift_jis-dos nil) (progn (with-temp-file f (set-buffer-multibyte nil) (insert (funcall mk 40000 "\351\r\n"))) (mapcar (lambda (cs) (with-temp-buffer (let ((m (buffer-modified-tick)) (coding-system-for-read cs) (zz-log nil)) (add-hook 'before-change-functions (lambda (b e) (push (list 'b b e) zz-log)) nil t) (add-hook 'after-change-functions (lambda (b e l) (push (list 'a b e l) zz-log)) nil t) (insert-file-contents f) (list (buffer-size) (- (buffer-modified-tick) m) (length (object-intervals (current-buffer))) (length zz-log) (seq-take (nreverse zz-log) 5))))) '(latin-1-dos utf-8-dos))) (with-temp-buffer (insert "xyz") (goto-char 2) (let ((m (buffer-modified-tick)) (coding-system-for-read 'latin-1-dos)) (insert-file-contents f) (list (buffer-size) (- (buffer-modified-tick) m) (length (object-intervals (current-buffer)))))) (with-temp-buffer (let ((m (buffer-modified-tick)) (coding-system-for-read 'latin-1-dos)) (call-process "cat" f t nil) (list (buffer-size) (- (buffer-modified-tick) m) (length (object-intervals (current-buffer)))))) (with-temp-buffer (buffer-enable-undo) (insert "xy") (undo-boundary) (let ((m1 (copy-marker 2)) (m2 (copy-marker 2 t)) (m3 (copy-marker 3))) (goto-char 2) (insert (funcall mk 30 "\351\r\n")) (undo-boundary) (setq buffer-undo-list nil) (decode-coding-region 2 (- (point-max) 1) 'latin-1-dos) (list (buffer-size) (point) (marker-position m1) (marker-position m2) (marker-position m3) (length buffer-undo-list) (cdr (car buffer-undo-list)) (length (car (cadr buffer-undo-list)))))) (with-temp-buffer (insert (funcall mk 20000 "\202\240")) (let ((ov (make-overlay 1 3)) (ov2 (make-overlay 16374 16376))) (decode-coding-region (point-min) (point-max) 'shift_jis) (list (overlay-start ov) (overlay-end ov) (overlay-start ov2) (overlay-end ov2) (point)))) (with-temp-buffer (insert "ab") (let ((dst (generate-new-buffer "zz-dst"))) (with-current-buffer dst (insert "0123") (goto-char 3)) (insert (funcall mk 20 "\351\r\n")) (prog1 (let ((m (with-current-buffer dst (buffer-modified-tick)))) (decode-coding-region 3 (point-max) 'latin-1-dos dst) (with-current-buffer dst (list (buffer-size) (point) (- (buffer-modified-tick) m) (object-intervals (current-buffer))))) (kill-buffer dst))))) (delete-file f)))"##,
         r##"((20000 43 43 0 nil) (20000 43 42 2 ((b 1 20001) (b 1 16375) (a 1 16375 16374) (b 16375 20001) (a 16375 20001 3626) (a 1 20001 20000))) (20 20 20 0 ((b 1 31) (a 1 21 30))) (40000 20075 20075 0 nil) (20 10 10 0 nil) (40000 20077 20077 4 nil) ((80000 40119 8 18 ((b 1 1) (b 1 16375) (a 1 16375 16374) (b 16375 32749) (a 16375 32749 16374))) (80000 40118 0 2 ((b 1 1) (a 1 80001 0)))) (80003 40119 10) (80000 40154 15) (62 62 2 62 63 3 62 90) (1 1 1 1 20001) (44 3 27 ((0 2 nil) (2 42 (charset iso-8859-1)) (42 44 nil))))"##,
         "buffer decodes a call at a time",
+    );
+}
+
+#[test]
+fn string_conversions_read_and_write_their_text_as_coding_c_does() {
+    // decode_coding_utf_8 reads a charbuf of characters a call whatever
+    // the source's length (a dos CR, four-octet characters and an invalid
+    // octet at a charbuf's end), a unibyte string's bytes are what the
+    // decoder reads, encode_coding_utf_8 writes each character's UTF-8
+    // (an eight-bit one as its byte, a newline as the eol type makes it,
+    // the BOM first), and a string's characters of the private-use range
+    // and beyond Unicode keep their codes.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list (mapcar (lambda (pre) (let ((s (decode-coding-string (concat (make-string pre ?a) "\303\251\342\202\254\360\237\230\200b\r\n\377") 'utf-8-dos))) (list (length s) (string-bytes s) (append (substring s (- pre 1)) nil)))) '(16382 16383 16384 16385)) (let ((s (decode-coding-string (apply #'concat (make-list 17000 "\360\237\230\200")) 'utf-8))) (list (length s) (string-bytes s) (aref s 16383) (aref s 16999))) (append (decode-coding-string "a\356\202\200\356\203\277\300\200\366\200\200\200b" 'utf-8) nil) (let ((s (string ?a #xe080 #x3fff80 #x110000 ?b))) (list (append s nil) (string-bytes s) (append (substring s 1 4) nil))) (mapcar (lambda (cs) (append (encode-coding-string (string ?a #xe9 ?\n #x20ac #x1f600 ?\n) cs) nil)) '(utf-8 utf-8-dos utf-8-mac utf-8-with-signature latin-1-dos)) (append (encode-coding-string (string ?a #x3fff80 #xe080 ?\n) 'utf-8-dos) nil) (let ((u (string-to-unibyte "a\303\251\r\nb"))) (list (multibyte-string-p u) (append (decode-coding-string u 'utf-8-dos) nil) (append (decode-coding-string u 'latin-1) nil))))"##,
+        r##"(((16388 16395 (97 233 8364 128512 98 10 4194303)) (16389 16396 (97 233 8364 128512 98 10 4194303)) (16390 16397 (97 233 8364 128512 98 10 4194303)) (16391 16398 (97 233 8364 128512 98 10 4194303))) (17000 68000 128512 128512) (97 57472 57599 4194240 4194176 1572864 98) ((97 57472 4194176 1114112 98) 11 (57472 4194176 1114112)) ((97 195 169 10 226 130 172 240 159 152 128 10) (97 195 169 13 10 226 130 172 240 159 152 128 13 10) (97 195 169 13 226 130 172 240 159 152 128 13) (239 187 191 97 195 169 10 226 130 172 240 159 152 128 10) (97 233 13 10 32 32 13 10)) (97 128 238 130 128 13 10) (nil (97 233 10 98) (97 195 169 10 98)))"##,
+        "string conversions",
+    );
+}
+
+#[test]
+fn insert_file_contents_reads_its_range_and_decides_its_coding_as_fileio_c() {
+    // Finsert_file_contents reads BEG to END of the file (no further than
+    // its end, nothing from past it), REPLACE keeps the text the file
+    // shares with the buffer, an empty buffer decides an undecided coding
+    // from the whole text read into it unibyte (here utf-8-unix, settled by
+    // detect_coding), and a unibyte buffer takes the bytes as they are.
+    assert_oracle_contract_matches_interpreter(
+        r##"(let ((f (make-temp-file "zz-r237"))) (unwind-protect (progn (with-temp-file f (set-buffer-multibyte nil) (insert "abc\303\251def\nline2\n" (apply #'concat (make-list 9000 "x\303\251y\n")))) (list (with-temp-buffer (list (cadr (insert-file-contents f nil 2 6)) (append (buffer-string) nil))) (with-temp-buffer (list (cadr (insert-file-contents f nil 1 1000000)) (buffer-size) (buffer-substring 1 9))) (with-temp-buffer (list (cadr (insert-file-contents f nil 100000 200000)) (buffer-size))) (with-temp-buffer (insert "abc\303\251XYZ") (list (cadr (insert-file-contents f nil nil nil t)) (buffer-size) (buffer-substring 1 9))) (with-temp-buffer (list (cadr (insert-file-contents f)) last-coding-system-used (buffer-size) (char-after 4) (char-before (point-max)))) (with-temp-buffer (set-buffer-multibyte nil) (list (cadr (insert-file-contents f nil 0 7)) (append (buffer-string) nil))))) (delete-file f)))"##,
+        r##"((3 (99 233 100)) (36013 36013 "bcédef
+l") (0 0) (36011 36014 "abcédef
+") (36014 utf-8-unix 36014 233 10) (7 (97 98 99 195 169 100 101)))"##,
+        "file reads",
+    );
+}
+
+#[test]
+fn file_reads_detected_as_utf_8_insert_their_bytes_as_decode_coding_gap() {
+    // decode_coding_gap's ASCII optimization: bytes detect_coding_utf_8
+    // accepted to their end go into the buffer as they are
+    // (insert_from_gap), less a BOM the settled coding has, so each
+    // sequence is the character string_char_and_length reads from it:
+    // C0 and C1 lead an eight-bit character, an overlong or surrogate
+    // sequence is its code, a four-octet one reaches #x1FFFFF.  A BOM
+    // under undecided settles utf-8-with-signature through the decoder.
+    assert_oracle_contract_matches_interpreter(
+        r##"(let ((f (make-temp-file "zz-r238"))) (unwind-protect (mapcar (lambda (c) (with-temp-buffer (set-buffer-multibyte nil) (insert (cdr c)) (let ((coding-system-for-write 'binary)) (write-region nil nil f nil 0))) (with-temp-buffer (let ((coding-system-for-read (car c))) (insert-file-contents f)) (list (append (buffer-string) nil) last-coding-system-used))) (list (cons nil "a\300\200b") (cons nil "a\301\277b\r\n") (cons nil "a\340\201\201b") (cons nil "a\355\240\200b") (cons nil "a\364\220\200\200b") (cons nil "a\367\277\277\277b") (cons nil "a\356\202\200b\303\251") (cons 'utf-8-auto "\357\273\277ab\303\251") (cons 'prefer-utf-8 "x\300\201\r\ny") (cons nil "\357\273\277ab\300\200"))) (delete-file f)))"##,
+        r##"(((97 4194176 98) utf-8) ((97 4194303 98 10) utf-8-dos) ((97 65 98) utf-8) ((97 55296 98) utf-8) ((97 1114112 98) utf-8) ((97 2097151 98) utf-8) ((97 57472 98 233) utf-8) ((97 98 233) utf-8-with-signature) ((120 4194177 10 121) utf-8-dos) ((97 98 4194240 4194176) utf-8-with-signature))"##,
+        "file reads detected as utf-8",
+    );
+}
+
+#[test]
+fn decode_coding_fills_a_charbuf_the_size_of_its_source_as_coding_c() {
+    // decode_coding's ALLOC_CONVERSION_WORK_AREA gives the charbuf as many
+    // ints as the source's bytes and MAX_CHARBUF_EXTRA_SIZE more, so the
+    // `charset' annotations of a short text fill it: the call ends, its
+    // run closes, a byte after a CR is unread and the next call or
+    // decode_coding's flush takes it, and a string's work buffer gets each
+    // call's characters by an insert_from_gap of their own.  Of CRs ending
+    // a utf-8-dos source, the last is read as the one before's
+    // byte_after_cr and lost.
+    assert_oracle_contract_matches_interpreter(
+        r##"(let ((ivs (lambda (s) (mapcar (lambda (i) (list (car i) (cadr i) (plist-get (nth 2 i) 'charset))) (object-intervals s))))) (list (mapcar (lambda (c) (let ((d (decode-coding-string (cdr c) (car c)))) (list (append d nil) (funcall ivs d)))) (list (cons 'emacs-mule-dos "\206\324\r\272") (cons 'emacs-mule-dos "a\r\272") (cons 'utf-8-dos "a\r\r") (cons 'utf-8-dos "\e\361c\r\r\r") (cons 'utf-8-dos "a\r\rb\r\r\n") (cons 'shift_jis "\302\346d\320a\r\nb\rd\223\337\rac\360\203\r") (cons 'euc-jp "\r\e\n\r\226\rb\302aaJaa\216\315\ec\252") (cons 'undecided-dos "\237b\r\250\303B\331") (cons 'undecided-dos "a\204\251\311bdBb\317\n\344d"))) (with-temp-buffer (insert "\302\346d\320a\r\nb\rd\223\337\rac\360\203\r") (decode-coding-region (point-min) (point-max) 'shift_jis-dos) (list (append (buffer-string) nil) (funcall ivs (current-buffer))))))"##,
+        r##"((((932 13 4194234) ((0 1 greek-iso8859-7) (1 2 nil) (2 3 nil))) ((97 13) nil) ((97 13) nil) ((27 4194289 99 13 13) nil) ((97 13 13 98 13 10) nil) ((65410 35382 65424 97 10 98 13 100 37027 13 97 99 4194288 4194179 13) ((0 1 katakana-jisx0201) (1 2 japanese-jisx0208) (2 8 katakana-jisx0201) (8 11 japanese-jisx0208) (11 15 nil))) ((13 27 10 13 4194198 13 98 4194242 97 97 74 97 97 65421 27 99 4194218) ((0 7 nil) (7 13 japanese-jisx0208) (13 15 katakana-jisx0201) (15 16 nil) (16 17 nil))) ((4194207 98 13 4194216 4194243 66 4194265) ((0 1 eight-bit) (1 3 nil) (3 7 nil))) ((97 352 4194249 98 100 66 98 4194255 10 4194276 100) ((0 1 nil) (1 3 latin-iso8859-4) (3 8 nil) (8 11 nil)))) ((65410 35382 65424 97 10 98 13 100 37027 13 97 99 4194288 4194179 13) ((0 1 katakana-jisx0201) (1 2 japanese-jisx0208) (2 8 katakana-jisx0201) (8 14 japanese-jisx0208) (14 15 nil))))"##,
+        "charbuf sized by the source",
+    );
+}
+
+#[test]
+fn decoders_annotate_compositions_as_produce_composition() {
+    // decode_coding_emacs_mule takes Emacs 21's 0x80 0xF2+METHOD BYTES
+    // CHARS compositions and Emacs 20's relative and rule-based ones, and
+    // decode_coding_iso_2022 ESC 0..4 ... ESC 1 under its composition flag
+    // (or the designation flag, whose CODING_ANNOTATE_CHARSET_MASK has the
+    // composition bit): the composed characters are produced, and
+    // produce_composition puts ((LENGTH . COMPONENTS)) on them as
+    // `composition', in produce_annotation's order among the `charset'
+    // runs.  emacs-mule's composed characters are uncounted by char_offset,
+    // so a run closed after one lies where GNU puts it; a composition the
+    // charbuf or the source cuts short becomes its starting bytes.
+    assert_oracle_contract_matches_interpreter(
+        r##"(let ((show (lambda (d) (list (append d nil) (object-intervals d)))) (buf (lambda (s cs) (with-temp-buffer (set-buffer-multibyte nil) (insert s) (set-buffer-multibyte t) (let ((end (point-max))) (insert "z") (goto-char 1) (decode-coding-region 1 end cs)) (list (append (buffer-string) nil) (object-intervals (current-buffer))))))) (list (mapcar (lambda (c) (funcall show (decode-coding-string (cdr c) (car c)))) (list (cons 'emacs-mule "\200\362\244\243abcd") (cons 'emacs-mule "\351\200\362\244\242ab\351") (cons 'emacs-mule "\201\351\200\240\341\240\342\201\351") (cons 'emacs-mule "\200\377\240\341\245\240\342cd") (cons 'emacs-mule "\200\377\240\341\310c") (cons 'emacs-mule "\200\365\250\242x!!yab") (cons 'emacs-mule "\e\200\241\e") (cons 'emacs-mule "\200\240\202cd") (cons 'emacs-mule-dos "\200\362\244\242\r\nab\r\n") (cons 'iso-2022-7bit "\e0ab\e1c") (cons 'iso-2022-7bit "\e2a!b\e1") (cons 'iso-2022-7bit "\e4x!y\e0ab\e1") (cons 'iso-2022-7bit "\e3xy\e0ab\e1") (cons 'iso-2022-7bit "\e2a}!b\e1") (cons 'iso-2022-jp "x\e$B\x30\x21\e0\x30\x22\e1\x30\x23\e(By") (cons 'iso-2022-7bit "\e0ab") (cons 'iso-latin-1 "\e0ab\e1"))) (funcall buf "\200\362\244\243abcd" 'emacs-mule) (funcall buf "a\351\200\240\341\240\342b" 'emacs-mule) (funcall buf "\e0ab\e1c" 'iso-2022-7bit)))"##,
+        r##"((((97 98 99 100) ((0 3 (composition ((3)))) (3 4 nil))) ((4194281 97 98 4194281) ((0 1 nil) (1 3 (composition ((2)))) (3 4 nil))) ((233 97 98 233) ((0 1 nil) (1 2 (composition ((2)))) (2 3 (charset latin-iso8859-1 composition ((2)))) (3 4 (charset latin-iso8859-1)))) ((97 98 99 100) ((0 2 (composition ((2 . [97 5 98])))) (2 4 nil))) ((97 4194248 99) ((0 1 (composition ((1 . "a")))) (1 3 nil))) ((4194176 4194293 4194216 4194210 120 121 97 98) nil) ((27 4194176 4194290 4194208 4194208 4194209 27) nil) ((4194176 4194290 4194208 4194208 4194208 4194178 99 100) nil) ((10 97 98 10) ((0 1 (composition ((2)))) (1 3 nil) (3 4 nil))) ((97 98 99) ((0 2 (composition ((2)))) (2 3 nil))) ((27 50 97 33 98 27 49) nil) ((27 52 120 33 121 27 48 97 98 27 49) nil) ((27 51 120 121 27 48 97 98 27 49) nil) ((27 50 97 125 33 98 27 49) nil) ((120 20124 21782 23043 121) ((0 1 nil) (1 2 (charset japanese-jisx0208)) (2 3 (composition ((1)))) (3 5 (charset japanese-jisx0208)))) ((27 48 97 98) nil) ((27 48 97 98 27 49) nil)) ((97 98 99 100 122) ((0 3 (composition ((3)))) (3 5 nil))) ((97 36896 4194273 4194208 4194274 98 122) nil) ((97 98 99 122) ((0 2 (composition ((2)))) (2 4 nil))))"##,
+        "decoded compositions",
+    );
+}
+
+#[test]
+fn set_internal_stores_where_the_current_buffer_sees_the_binding() {
+    // data.c:set_internal consults the specpdl only through
+    // let_shadows_buffer_binding_p: a `let' of a variable buffer-local in
+    // another buffer leaves a store here to this buffer's binding or the
+    // default, and a local-if-set variable's store makes no local where a
+    // SPECPDL_LET_DEFAULT was made in this buffer, however deep.  unbind_to
+    // sets a SPECPDL_LET_LOCAL's old value back only while the buffer still
+    // has the local.  value_cmp answers a bignum against a symbol, string
+    // or cons as -value_cmp (b, a), so the mismatch names the other first.
+    assert_oracle_contract_matches_interpreter(
+        r##"(progn (defvar r241-t 'g0) (defvar r241-auto 'a0) (make-variable-buffer-local 'r241-auto) (let ((big (expt 10 22)) (a (get-buffer-create "t241a")) (b (get-buffer-create "t241b")) (out nil)) (push (mapcar (lambda (x) (list (condition-case e (value< big x) (error e)) (condition-case e (value< x big) (error e)))) (list 'sym nil "s" '(1) [1] 1.5 (make-marker))) out) (push (condition-case e (sort (list 1 big 'q 2)) (error e)) out) (set-buffer a) (setq-default r241-t 'g0) (make-local-variable 'r241-t) (let ((r241-t 13)) (set-buffer b) (setq r241-t 47) (push (list r241-t (default-value 'r241-t) (buffer-local-value 'r241-t a)) out) (set-buffer a) (kill-local-variable 'r241-t)) (push (list (current-buffer) r241-t (default-value 'r241-t) (local-variable-p 'r241-t a)) out) (set-buffer a) (let ((r241-auto 'outer)) (set-buffer b) (let ((r241-auto 'inner)) (set-buffer a) (setq r241-auto 'set-in-a) (push (list r241-auto (default-value 'r241-auto) (local-variable-p 'r241-auto a) (local-variable-p 'r241-auto b)) out) (set-buffer b) (setq r241-auto 'set-in-b) (push (list r241-auto (default-value 'r241-auto) (local-variable-p 'r241-auto a) (local-variable-p 'r241-auto b)) out))) (push (list (default-value 'r241-auto) (buffer-local-value 'r241-auto a) (buffer-local-value 'r241-auto b) (local-variable-p 'r241-auto a) (local-variable-p 'r241-auto b)) out) (kill-buffer a) (kill-buffer b) (nreverse out)))"##,
+        r##"((((type-mismatch sym 10000000000000000000000) (type-mismatch sym 10000000000000000000000)) ((type-mismatch nil 10000000000000000000000) (type-mismatch nil 10000000000000000000000)) ((type-mismatch "s" 10000000000000000000000) (type-mismatch "s" 10000000000000000000000)) ((type-mismatch (1) 10000000000000000000000) (type-mismatch (1) 10000000000000000000000)) ((type-mismatch 10000000000000000000000 [1]) (type-mismatch [1] 10000000000000000000000)) (nil t) ((type-mismatch 10000000000000000000000 #<marker in no buffer>) (type-mismatch #<marker in no buffer> 10000000000000000000000))) (type-mismatch q 10000000000000000000000) (47 47 13) (#<killed buffer> 47 47 nil) (set-in-a set-in-a nil nil) (set-in-b set-in-b nil nil) (a0 a0 a0 nil nil))"##,
+        "set_internal's binding and value_cmp's bignum",
+    );
+}
+
+#[test]
+fn comparisons_coerce_lists_take_and_columns_measure_as_gnu() {
+    // arithcompare coerces NUM1 before NUM2 and minmax_driver checks every
+    // argument, returning a NaN only when its comparison fails; Bnth and
+    // Belt name the tail they stop at where Fnth names the list, and
+    // Fntake the list; concat_to_list takes no char-table and
+    // concat_to_vector a closure's slots; oblookup compares a string's
+    // bytes; a raw byte is four columns wide.
+    assert_oracle_contract_matches_interpreter(
+        r##"(let ((m (make-marker)) (nan 0.0e+NaN) (mnan (- 0.0e+NaN)) (dotted (cons 1 (cons 2 3))) (ob (obarray-make)) (u (concat "r242" "\200")) (bnth (make-byte-code 514 (unibyte-string 137 2 56 135) [] 4)) (belt (make-byte-code 514 (unibyte-string 1 1 156 135) [] 4))) (list (mapcar (lambda (f) (condition-case e (funcall f) (error e))) (list (lambda () (> m nil)) (lambda () (/= m nil)) (lambda () (< 1 m nil)) (lambda () (min nan -5 nil)) (lambda () (max nan mnan)) (lambda () (min mnan 1 nan)) (lambda () (ntake 3 (cons 1 (cons 2 3)))) (lambda () (ntake (expt 2 70) (list 1 2))) (lambda () (take (- (expt 2 70)) 5)) (lambda () (take 3 (cons 1 2))) (lambda () (funcall bnth dotted 10)) (lambda () (funcall belt dotted 10)) (lambda () (nth 10 dotted)) (lambda () (car (append (make-char-table 'r242) nil))) (lambda () (let ((v (vconcat (make-byte-code '(x) "\207" [x] 1)))) (list (length v) (aref v 0) (append (aref v 1) nil) (aref v 2) (aref v 3)))))) (let* ((a (intern u ob)) (b (intern u ob)) (s (intern-soft u ob)) (g (intern u))) (list (eq a b) (eq a s) (eq g (intern-soft u)) (eq g (intern u)) (intern-soft (string-to-multibyte u) ob))) (with-temp-buffer (insert "a\200b") (insert (string-to-multibyte "\377")) (list (current-column) (progn (move-to-column 3) (point)) (progn (goto-char (point-max)) (indent-to 12) (current-column)) (point)))))"##,
+        r##"(((error "Marker does not point anywhere") (error "Marker does not point anywhere") (error "Marker does not point anywhere") (wrong-type-argument number-or-marker-p nil) -0.0e+NaN 0.0e+NaN (wrong-type-argument listp (1 2 . 3)) (1 2) nil (wrong-type-argument listp 2) (wrong-type-argument listp 3) (wrong-type-argument listp 3) (wrong-type-argument listp (1 2 . 3)) (wrong-type-argument sequencep #^[nil nil r242 nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil]) (4 (x) (135) [x] 1)) (t t t t nil) (10 3 12 7))"##,
+        "comparison coercion, list walks, oblookup and raw-byte columns",
     );
 }
 
