@@ -4475,6 +4475,12 @@ pub(crate) fn wait_pumping_processes(
     // (a child signal for another wait's process) cannot make it spin.
     let mut woke_early = false;
     let mut fruitless_wakes = 0;
+    // wait_reading_process_output runs timer_check at the top of each
+    // iteration of its select loop: the first, and each after select
+    // returns for output, a child or the timer_delay timer_check gave
+    // it.  A pass here that only ends this loop's 10ms poll is no such
+    // return, so a timer a callback added waits as it does in GNU.
+    let mut timer_check_at = Some(std::time::Instant::now());
     loop {
         // A fatal signal ends the wait as GNU's handler, run in the middle
         // of the select, does.
@@ -4505,7 +4511,15 @@ pub(crate) fn wait_pumping_processes(
                 Some(std::time::Instant::now() + std::time::Duration::from_millis(10));
         }
         if run_timers {
-            interp.drive_threads(env, true)?;
+            let check_timers = progressed
+                || woke_early
+                || timer_check_at.is_some_and(|at| std::time::Instant::now() >= at);
+            interp.drive_threads(env, check_timers)?;
+            if check_timers {
+                timer_check_at = interp
+                    .timer_check_delay
+                    .and_then(|delay| std::time::Instant::now().checked_add(delay));
+            }
         }
         if interp.waiting_for_user_input() && !unread_command_events(interp, env)?.is_empty() {
             break;
@@ -4574,8 +4588,8 @@ pub(crate) fn wait_pumping_processes(
         if let Some(due) = interp.next_timer_due() {
             nap = nap.min(due.saturating_duration_since(now));
         }
-        if run_timers && let Some(delay) = crate::lisp::primitives::next_timer_delay(interp, env) {
-            nap = nap.min(delay);
+        if run_timers && let Some(at) = timer_check_at {
+            nap = nap.min(at.saturating_duration_since(now));
         }
         if let Some(grace) = delivery_grace_deadline {
             nap = nap.min(grace.saturating_duration_since(now));

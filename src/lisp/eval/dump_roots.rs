@@ -176,6 +176,10 @@ pub(crate) const ROOTS_RESET_AFTER_LOAD: &[(&str, &str)] = &[
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
     (
+        "timer_check_delay",
+        "the timer_delay keyboard.c:timer_check last returned, a local of wait_reading_process_output that no wait outlives",
+    ),
+    (
         "tty_frame_count",
         "frame.c's static tty_frame_count, which make_initial_frame sets to 1 in the new process",
     ),

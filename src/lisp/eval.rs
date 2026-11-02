@@ -5390,6 +5390,9 @@ pub struct InterpreterState {
     /// through `special-event-map'.
     pub(crate) pending_thread_events: Vec<Value>,
     pub(crate) pending_funcalls: Vec<Value>,
+    /// What keyboard.c:timer_check last returned: how long until the first
+    /// timer of its copied lists still waiting is ripe, None with none.
+    pub(crate) timer_check_delay: Option<std::time::Duration>,
     /// Variable aliases keyed by alias name.
     /// Variables with dynamic binding semantics, in declaration order; the
     /// membership test is the SPECIAL flag in `globals'.
@@ -6076,6 +6079,7 @@ impl Interpreter {
             detached_forwarded_variables: HashMap::default(),
             pending_thread_events: Vec::new(),
             pending_funcalls: Vec::new(),
+            timer_check_delay: None,
             globals: SymbolCells::from_bindings(vec![
                 ("main-thread".into(), Value::Record(main_thread)),
                 ("obarray".into(), Value::Record(standard_obarray)),

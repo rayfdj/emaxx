@@ -64,6 +64,16 @@ fn record_child_exit(process: &mut ProcessState, status: std::process::ExitStatu
     process.exit_signal = None;
 }
 
+/// What a pass of the thread scheduler services besides the threads.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WaitEvents {
+    None,
+    /// A wait_reading_process_output iteration whose select did not end:
+    /// its events, but not timer_check.
+    ExceptTimers,
+    All,
+}
+
 enum ChildStatusEvent {
     Stopped,
     Continued,
@@ -3724,27 +3734,34 @@ impl Interpreter {
     /// prevents waits and recursive command loops from silently servicing
     /// only one side of that boundary.
     pub(crate) fn run_pending_timer_events(&mut self, env: &mut Env) -> Result<bool, LispError> {
+        // keyboard.c considers the idle timers only while Emacs is idle,
+        // timer_idleness_start_time set by the wait for keyboard input.
         let idle = primitives::tty_current_idle_duration()
-            .map(|duration| duration.as_secs_f64())
-            .unwrap_or(0.0);
+            .map_or(f64::NAN, |duration| duration.as_secs_f64());
         self.run_pending_timer_events_with_idle(env, idle)
     }
 
-    fn run_pending_timer_events_with_idle(
+    pub(crate) fn run_pending_timer_events_with_idle(
         &mut self,
         env: &mut Env,
         idle: f64,
     ) -> Result<bool, LispError> {
-        // keyboard.c:timer_check_2 drains deferred noelisp deletion hooks.
+        self.run_pending_funcalls(env)?;
+        let native_ran = self.run_pending_native_timers(env)?;
+        let lisp_ran = primitives::run_due_timers(self, env, idle)?;
+        Ok(native_ran || lisp_ran)
+    }
+
+    /// keyboard.c:timer_check_2 first runs the calls deferred to it, the
+    /// deletion hooks of a frame or terminal deleted with Lisp unsafe.
+    pub(crate) fn run_pending_funcalls(&mut self, env: &mut Env) -> Result<(), LispError> {
         while let Some(call) = self.pending_funcalls.pop() {
             let values = call.to_vec()?;
             if let Some(function) = values.first() {
                 self.safe_funcall(*function, &values[1..], env)?;
             }
         }
-        let native_ran = self.run_pending_native_timers(env)?;
-        let lisp_ran = primitives::run_due_timers(self, env, idle)?;
-        Ok(native_ran || lisp_ran)
+        Ok(())
     }
 
     /// Service the non-process half of wait_reading_process_output.  This is
@@ -3777,7 +3794,7 @@ impl Interpreter {
                     || wake_sleepers
                         && matches!(thread.status, ThreadStatus::Blocked(ThreadBlocker::Sleep)))
         });
-        self.drive_threads_inner(env, wake_sleepers, false, true)?;
+        self.drive_threads_inner(env, wake_sleepers, WaitEvents::None, true)?;
         Ok(terminal_input || user_signal_events || file_events || timer_events || thread_events)
     }
 
@@ -4097,7 +4114,7 @@ impl Interpreter {
                         .find_thread_state_mut(thread_id)
                         .expect("joiner")
                         .status = ThreadStatus::Blocked(ThreadBlocker::Thread(record_id));
-                    interpreter.drive_threads_inner(env, true, false, false)?;
+                    interpreter.drive_threads_inner(env, true, WaitEvents::None, false)?;
                     interpreter.check_thread_signal()?;
                 }
                 Ok(())
@@ -4120,18 +4137,29 @@ impl Interpreter {
         })
     }
 
-    pub fn drive_threads(&mut self, env: &mut Env, wake_sleepers: bool) -> Result<(), LispError> {
-        self.drive_threads_inner(env, wake_sleepers, wake_sleepers, true)
+    /// One pass of a wait_reading_process_output iteration: the threads
+    /// stepped, the events serviced, and timer_check run when CHECK_TIMERS.
+    pub fn drive_threads(&mut self, env: &mut Env, check_timers: bool) -> Result<(), LispError> {
+        let events = if check_timers {
+            WaitEvents::All
+        } else {
+            WaitEvents::ExceptTimers
+        };
+        self.drive_threads_inner(env, true, events, true)
     }
 
     pub(crate) fn yield_current_thread(&mut self, env: &mut Env) -> Result<Value, LispError> {
         // Fthread_yield does not itself read keyboard events or run timers.
         // Woken child event loops resume and service their own due timers.
-        self.drive_threads_inner(env, true, false, true)?;
+        self.drive_threads_inner(env, true, WaitEvents::None, true)?;
         Ok(Value::Nil)
     }
 
-    fn run_thread_wait_events(&mut self, env: &mut Env) -> Result<(), LispError> {
+    fn run_thread_wait_events(
+        &mut self,
+        env: &mut Env,
+        check_timers: bool,
+    ) -> Result<(), LispError> {
         if self.waiting_for_user_input() {
             if primitives::unread_command_events(self, env)?.is_empty() {
                 let _ = primitives::run_pending_user_signal_events(self, env)?;
@@ -4140,7 +4168,9 @@ impl Interpreter {
         } else {
             let _ = self.run_pending_synthetic_file_notifications(env)?;
         }
-        let _ = self.run_pending_timer_events(env)?;
+        if check_timers {
+            let _ = self.run_pending_timer_events(env)?;
+        }
         Ok(())
     }
 
@@ -4182,7 +4212,7 @@ impl Interpreter {
         &mut self,
         env: &mut Env,
         wake_sleepers: bool,
-        service_events: bool,
+        service_events: WaitEvents,
         deliver_signal: bool,
     ) -> Result<(), LispError> {
         self.check_thread_termination()?;
@@ -4190,8 +4220,8 @@ impl Interpreter {
             self.check_thread_signal()?;
         }
         if continuations::can_suspend(self) {
-            if service_events {
-                self.run_thread_wait_events(env)?;
+            if service_events != WaitEvents::None {
+                self.run_thread_wait_events(env, service_events == WaitEvents::All)?;
             }
             self.with_lisp_stack_roots(&*env, continuations::suspend)?;
         } else {
@@ -4211,8 +4241,8 @@ impl Interpreter {
                     advanced = true;
                 }
             }
-            if service_events {
-                self.run_thread_wait_events(env)?;
+            if service_events != WaitEvents::None {
+                self.run_thread_wait_events(env, service_events == WaitEvents::All)?;
             }
             if !advanced {
                 if self
@@ -4259,7 +4289,7 @@ impl Interpreter {
             .expect("sleeping thread");
         thread.status = ThreadStatus::Blocked(ThreadBlocker::Sleep);
         thread.wake_at = Some(std::time::Instant::now() + duration);
-        let result = self.drive_threads_inner(env, true, false, false);
+        let result = self.drive_threads_inner(env, true, WaitEvents::None, false);
         let thread = self
             .find_thread_state_mut(thread_id)
             .expect("resumed thread");
@@ -4280,7 +4310,7 @@ impl Interpreter {
             .status = ThreadStatus::Blocked(ThreadBlocker::Mutex(mutex_id));
         let result = (|| {
             while !self.try_lock_mutex(thread_id, mutex_id) {
-                self.drive_threads_inner(env, true, false, false)?;
+                self.drive_threads_inner(env, true, WaitEvents::None, false)?;
                 self.check_thread_signal()?;
             }
             Ok(Value::Nil)
@@ -4352,7 +4382,7 @@ impl Interpreter {
             .status = ThreadStatus::Blocked(ThreadBlocker::ReacquireMutex(mutex_id));
         let result: Result<(), LispError> = (|| {
             while !self.try_lock_mutex(thread_id, mutex_id) {
-                self.drive_threads_inner(env, true, false, false)?;
+                self.drive_threads_inner(env, true, WaitEvents::None, false)?;
             }
             self.find_mutex_state_mut(mutex_id)
                 .expect("reacquired mutex")
@@ -4381,7 +4411,7 @@ impl Interpreter {
             thread.signal_condition.is_nil()
                 && matches!(thread.status, ThreadStatus::Blocked(ThreadBlocker::ConditionVariable(id)) if id == condvar_id)
         }) {
-            self.drive_threads_inner(env, true, false, false)?;
+            self.drive_threads_inner(env, true, WaitEvents::None, false)?;
         }
         self.reacquire_condition_mutex(mutex_id, depth, env)?;
         Ok(Value::Nil)

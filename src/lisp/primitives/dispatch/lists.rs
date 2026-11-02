@@ -790,7 +790,12 @@ fn recursive_edit(interp: &mut Interpreter, env: &mut Env) -> Result<Value, Lisp
                 // so a real command-loop pump must drain both
                 // representations just like the other event-waiting paths.
                 .and_then(|()| interp.service_file_notifications(env).map(|_| ()))
-                .and_then(|()| interp.run_pending_timer_events(env).map(|_| ()))
+                // Going idle starts the idle clock (timer_start_idle).
+                .and_then(|()| {
+                    interp
+                        .run_pending_timer_events_with_idle(env, 0.0)
+                        .map(|_| ())
+                })
         })
     });
     interp.pop_handler_bindings(handler_start);

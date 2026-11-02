@@ -12401,6 +12401,40 @@ setup_process_coding_systems's check now refuses). A 13-form
   recorded above, not extra work. Local validation: the grouped gate's
   3,453 library tests, the integration targets and clippy with
   `--all-targets --all-features -D warnings' pass.
+- **Round 255: keyboard.c's timer_check, and the wait it bounds.** A
+  battery over the timers (r254/ab.txt lines 9 and 10, and r255/tm.txt,
+  11 cases) found where Emaxx answered differently, each now done as the
+  C does it. timer_check walks copies of `timer-list' and, only while
+  Emacs is idle (keyboard input awaited with no time limit,
+  timer_idleness_start_time set), of `timer-idle-list': each pass of
+  timer_check_2 runs the one ripe timer that is most overdue across both
+  lists, or with none ripe ends the check and returns how long until the
+  soonest is. A batch `sit-for' is not idle, so a 0-second idle timer
+  stays unrun (it used to run), and an ordinary timer that has run keeps
+  its triggered flag t. The chosen timer is marked triggered before
+  `timer-event-handler' runs it with `inhibit-quit' bound to t,
+  `deactivate-mark' is put back after a callback that returns, and the
+  calls deferred to timer_check_2 (a frame or terminal's deletion hooks)
+  run before each further pass. A timer a callback adds is not in the
+  copies, so it waits for the next check, and
+  wait_reading_process_output runs the check at the top of each
+  iteration of its select loop only: the first, and each after the
+  select returns for output or a child or at the delay the last check
+  returned. The wait loop's 10 ms poll is no such return, and the wait
+  is bounded by that delay instead of by the live `timer-list', so a
+  0-second timer a callback adds inside `(sit-for 0.05)' runs after the
+  wait, as in GNU. timer-tests, simple-tests, jit-lock-tests,
+  minibuffer-tests, repeat-tests, thread-tests, process-tests,
+  xdisp-tests, subr-tests, edebug-tests, server-tests, replace-tests,
+  animate-tests, password-cache-tests, jsonrpc-tests and
+  network-stream-tests pass as many tests as GNU's. The terminal's
+  keyboard wait, whose GNU counterpart redisplays and checks again after
+  a timer has run (do_display), still checks on each poll. Local
+  validation: the grouped gate's 3,454 library tests (its
+  lightweight group run again once the new timer_check_delay field was
+  listed among the fields the image does not carry), the integration
+  targets and clippy with `--all-targets --all-features -D warnings'
+  pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -14104,6 +14138,17 @@ median of 124 ms against 101), electric-tests' the most (943 against
 14,485), tramp-tests (21,243 against 19,052), semantic-utest-ia (4,153
 against 2,686), mule-tests (3,187 against 2,024) and package-tests
 (6,716 against 6,153).
+
+**On `7fbcd04`** (round 254): frozen (run 41479281941) matched all 7,928
+outcomes. Setup 80.6 s against 64.0 s (1.260), test bodies 254.1 s
+against 264.9 s (0.959), in all 1.001; ucs-normalize-tests' bodies took
+132 ms against 91. The full Rust gate (run 41479275071) passed. Per
+file, the setup is 32 ms over GNU's on average (16.6 s over 519 files, a
+median of 120 ms against 98), electric-tests' the most (920 against
+534), and the widest body gaps are comp-tests (16,935 ms against
+14,230), tramp-tests (20,925 against 18,770), semantic-utest-ia (4,010
+against 2,684), mule-tests (3,120 against 2,009) and electric-tests
+(1,133 against 596).
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

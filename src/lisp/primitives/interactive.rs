@@ -1589,76 +1589,118 @@ fn decode_timer(interp: &Interpreter, timer: &Value) -> Option<ExactTimeValue> {
     Some(ExactTimeValue::from_timespec(seconds, nanoseconds))
 }
 
-/// timer_check's result: how long until the earliest timer on
-/// `timer-list' is ripe, zero when one already is, which bounds
-/// wait_reading_process_output's wait.  (Idle timers ripen only while
-/// keyboard input is awaited.)
-pub(crate) fn next_timer_delay(
-    interp: &mut Interpreter,
-    env: &mut Env,
-) -> Option<std::time::Duration> {
-    let timers = interp.lookup_var("timer-list", env)?.to_vec().ok()?;
-    let now = exact_time_to_f64(&current_time_value().ok()?);
-    timers
-        .iter()
-        .filter_map(|timer| decode_timer(interp, timer))
-        .map(|time| (exact_time_to_f64(&time) - now).max(0.0))
-        .min_by(f64::total_cmp)
-        .map(std::time::Duration::from_secs_f64)
-}
-
+/// keyboard.c:timer_check.  Copies of `timer-list' and, while Emacs is
+/// idle (IDLE_SECONDS finite), of `timer-idle-list' are walked by
+/// timer_check_2 until no timer in them is ripe: each pass runs the one
+/// ripe timer that is most overdue across both lists, marked triggered
+/// first so the walk passes over it, through `timer-event-handler' with
+/// `inhibit-quit' bound and `deactivate-mark' kept.  A timer added by a
+/// callback is not in the copies, so it waits for the next check.  How
+/// long until the first timer still waiting is ripe is left in
+/// `timer_check_delay', which bounds a wait as timer_delay does.
 pub(crate) fn run_due_timers(
     interp: &mut Interpreter,
     env: &mut Env,
     idle_seconds: f64,
 ) -> Result<bool, LispError> {
-    if interp.lookup_function("timer-event-handler", env).is_err() {
-        return Ok(false);
-    }
-    let wall_now = current_time_value().ok();
-    let idle_now = idle_seconds
-        .is_finite()
-        .then(|| decode_float_time(idle_seconds));
     let mut ran = false;
-    for (list_name, idle) in [("timer-idle-list", true), ("timer-list", false)] {
-        let Some(timers) = interp
-            .lookup_var(list_name, env)
-            .and_then(|value| value.to_vec().ok())
-            // keyboard.c:timer_check keeps its copied lists reachable across
-            // callbacks. A Rust heap Vec is outside the conservative stack:
-            // cancel-timer followed by GC must not free its remaining entries.
-            .map(crate::lisp::alloc::RootedVec::from_vec)
-        else {
-            continue;
-        };
-        for timer in timers {
-            let Some(time) = decode_timer(interp, &timer) else {
-                continue;
-            };
-            let due = if idle {
-                idle_now
-                    .as_ref()
-                    .is_some_and(|now| !exact_time_less(now, &time))
-            } else {
-                wall_now
-                    .as_ref()
-                    .is_some_and(|now| !exact_time_less(now, &time))
-            };
-            if due {
-                ran = true;
-                interp.begin_timer_callback();
-                let outcome = interp.call_function_value(
-                    Value::Symbol("timer-event-handler".into()),
-                    Some("timer-event-handler"),
-                    std::slice::from_ref(&timer),
-                    env,
-                );
-                interp.end_timer_callback();
-                outcome?;
-            }
-        }
+    let delay = timer_check(interp, env, idle_seconds, &mut ran);
+    interp.timer_check_delay = delay.as_ref().ok().copied().flatten();
+    delay.map(|_| ran)
+}
+
+fn timer_check(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    idle_seconds: f64,
+    ran: &mut bool,
+) -> Result<Option<std::time::Duration>, LispError> {
+    if interp.lookup_function("timer-event-handler", env).is_err() {
+        return Ok(None);
     }
-    Ok(ran)
+    // keyboard.c:timer_check keeps its copied lists reachable across
+    // callbacks. A Rust heap Vec is outside the conservative stack:
+    // cancel-timer followed by GC must not free its remaining entries.
+    let copy = |interp: &Interpreter, env: &Env, name: &str| {
+        crate::lisp::alloc::RootedVec::from_vec(
+            interp
+                .lookup_var(name, env)
+                .and_then(|value| value.to_vec().ok())
+                .unwrap_or_default(),
+        )
+    };
+    let timers = copy(interp, env, "timer-list");
+    let idle_timers = if idle_seconds.is_finite() {
+        copy(interp, env, "timer-idle-list")
+    } else {
+        crate::lisp::alloc::RootedVec::new()
+    };
+    let started = std::time::Instant::now();
+    loop {
+        let Ok(now) = current_time_value() else {
+            return Ok(None);
+        };
+        let idleness_now = decode_float_time(idle_seconds + started.elapsed().as_secs_f64());
+        // timer_check_2: the first proper timer left on each list, the
+        // ripe one longest overdue (or, none ripe, the soonest) chosen.
+        let next = |list: &[Value], clock: &ExactTimeValue| {
+            list.iter().find_map(|timer| {
+                let time = decode_timer(interp, timer)?;
+                let ripe = !exact_time_less(clock, &time);
+                let difference = (exact_time_to_f64(clock) - exact_time_to_f64(&time)).abs();
+                Some((*timer, ripe, difference))
+            })
+        };
+        let timer = next(&timers, &now);
+        let idle = next(&idle_timers, &idleness_now);
+        let pick_timer = match (timer, idle) {
+            (None, None) => return Ok(None),
+            (Some(_), None) => true,
+            (None, Some(_)) => false,
+            (Some((_, timer_ripe, timer_difference)), Some((_, idle_ripe, idle_difference))) => {
+                !idle_ripe && timer_ripe
+                    || (idle_ripe == timer_ripe
+                        && if timer_ripe {
+                            idle_difference < timer_difference
+                        } else {
+                            timer_difference < idle_difference
+                        })
+            }
+        };
+        let (timer, ripe, difference) = if pick_timer {
+            timer.expect("chosen ordinary timer")
+        } else {
+            idle.expect("chosen idle timer")
+        };
+        // A timer still waiting ends the check.
+        if !ripe {
+            return Ok(Some(
+                std::time::Duration::try_from_secs_f64(difference)
+                    .unwrap_or(std::time::Duration::MAX),
+            ));
+        }
+        *ran = true;
+        super::call(interp, "aset", &[timer, Value::Integer(0), Value::T], env)?;
+        let old_deactivate_mark = interp
+            .lookup_var("deactivate-mark", env)
+            .unwrap_or(Value::Nil);
+        let inhibit_quit = interp.bind_special_variable("inhibit-quit", Value::T, env)?;
+        interp.begin_timer_callback();
+        let outcome = interp.call_function_value(
+            Value::Symbol("timer-event-handler".into()),
+            Some("timer-event-handler"),
+            std::slice::from_ref(&timer),
+            env,
+        );
+        interp.end_timer_callback();
+        if outcome.is_ok() {
+            interp.set_c_variable("deactivate-mark", old_deactivate_mark);
+        }
+        interp.restore_special_binding(inhibit_quit, env)?;
+        outcome?;
+        // The next timer_check_2 pass runs what the callback deferred.
+        interp.run_pending_funcalls(env)?;
+    }
 }
 
 /// The echo-area text for a command's error, GNU's

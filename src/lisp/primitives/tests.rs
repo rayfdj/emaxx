@@ -34245,6 +34245,42 @@ fn command_keys_and_lossage_as_keyboard_c() {
 }
 
 #[test]
+fn timer_check_as_keyboard_c() {
+    // keyboard.c:timer_check considers `timer-idle-list' only while
+    // Emacs is idle, which a batch `sit-for' is not; it runs each ripe
+    // timer through `timer-event-handler', marked triggered first, with
+    // `inhibit-quit' bound to t and `deactivate-mark' put back after.  A
+    // timer a callback adds is not in its copies of the lists, and the
+    // wait it bounds ends before the next check.
+    assert_oracle_contract_matches_interpreter(
+        r#"(list
+ (let* (fired (tm (run-with-idle-timer 0 nil (lambda () (setq fired 'idle)))))
+   (sit-for 0.05)
+   (cancel-timer tm)
+   (list fired (memq tm timer-idle-list)))
+ (let (log)
+   (let ((tm (run-at-time 0 nil (lambda (a b) (push (list a b) log)) 1 2)))
+     (sit-for 0.05)
+     (list log (memq tm timer-list) (timer--triggered tm))))
+ (let (seen)
+   (setq deactivate-mark 'kept)
+   (run-at-time 0 nil (lambda ()
+                        (push (list inhibit-quit deactivate-mark) seen)
+                        (setq deactivate-mark t)))
+   (sit-for 0.05)
+   (prog1 (list seen deactivate-mark) (setq deactivate-mark nil)))
+ (let (log)
+   (run-at-time 0 nil (lambda ()
+                        (push 'outer log)
+                        (run-at-time 0 nil (lambda () (push 'inner log)))))
+   (sit-for 0.05)
+   (prog1 (nreverse log) (sit-for 0.01))))"#,
+        "((nil nil) (((1 2)) nil t) (((t kept)) kept) (outer))",
+        "timer check",
+    );
+}
+
+#[test]
 fn frame_parameters_and_face_colors_as_frame_c_and_xfaces_c() {
     // cmds.c:Fdelete_char hands a non-nil KILLFLAG to
     // `kill-forward-chars' and checks N with CHECK_FIXNUM.  frame.c keeps
