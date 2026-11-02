@@ -33637,6 +33637,22 @@ fn static_compositions_register_and_update_as_composite_c() {
 }
 
 #[test]
+fn collections_truncate_undo_lists_as_compact_buffer() {
+    // alloc.c:compact_buffer at a collection's start: a buffer changed
+    // since its last compaction has its undo list cut by
+    // truncate_undo_list, past `undo-limit' at a boundary and before one
+    // past `undo-strong-limit', the most recent change always kept;
+    // `undo-outer-limit-function' is offered a first change past
+    // `undo-outer-limit' with the buffer current, and its non-nil value
+    // leaves the list; a buffer's own values of the limits apply.
+    assert_oracle_contract_matches_interpreter(
+        r##"(let ((r nil)) (with-temp-buffer (buffer-enable-undo) (let ((undo-limit 100) (undo-strong-limit 200)) (dotimes (i 50) (insert "abc") (undo-boundary)) (garbage-collect) (push (list (length buffer-undo-list) (seq-take buffer-undo-list 4)) r))) (with-temp-buffer (buffer-enable-undo) (let ((undo-limit 0) (undo-strong-limit 0)) (dotimes (i 5) (insert "abc") (undo-boundary)) (garbage-collect) (push buffer-undo-list r))) (with-temp-buffer (buffer-enable-undo) (let ((undo-limit 100) (undo-strong-limit 200)) (dotimes (i 50) (insert "abc") (delete-region 1 2) (undo-boundary)) (garbage-collect) (push (seq-take buffer-undo-list 5) r))) (with-temp-buffer (buffer-enable-undo) (let* ((log nil) (undo-outer-limit 10) (undo-outer-limit-function (lambda (n) (push (list n (eq (current-buffer) (window-buffer))) log) t))) (dotimes (i 5) (insert "abc")) (garbage-collect) (push (list (length buffer-undo-list) log) r))) (with-temp-buffer (buffer-enable-undo) (let ((undo-limit 40) (undo-strong-limit 1000)) (insert "abcdefghij") (undo-boundary) (delete-region 1 11) (undo-boundary) (insert "x") (undo-boundary) (garbage-collect) (push buffer-undo-list r))) (let ((b (generate-new-buffer "r247"))) (with-current-buffer b (buffer-enable-undo) (setq-local undo-limit 10) (setq-local undo-strong-limit 20) (dotimes (i 10) (insert "x") (undo-boundary))) (garbage-collect) (push (length (buffer-local-value 'buffer-undo-list b)) r) (kill-buffer b)) (nreverse r))"##,
+        r##"((6 (nil (148 . 151) nil (145 . 148))) (nil (13 . 16)) (nil ("b" . 1) (99 . 102)) (2 ((64 nil))) (nil (1 . 2)) 2)"##,
+        "undo truncation",
+    );
+}
+
+#[test]
 fn file_names_expand_and_concatenate_as_fileio_c() {
     // fileio.c:Fexpand_file_name returns an absolute NAME it need not
     // change as itself, made of DEFAULT-DIRECTORY's multibyteness when one

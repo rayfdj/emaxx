@@ -277,6 +277,10 @@ struct BufferText {
     /// Value of modiff at last save.
     save_modiff: ModCount,
 
+    /// BUF_COMPACT: the value of modiff at the buffer's last
+    /// compact_buffer, which a collection skips the buffer at.
+    compact: ModCount,
+
     /// buffer_intervals: the intervals of the whole text [BEG, Z), none
     /// until a property is first given, and none again once a deletion
     /// takes the whole text (adjust_intervals_for_deletion).
@@ -450,6 +454,7 @@ impl BufferText {
             text_edit_serial: 0,
             edits: std::collections::VecDeque::new(),
             save_modiff: 1,
+            compact: 1,
             intervals: None,
             extended_chars: Vec::new(),
         }
@@ -3845,6 +3850,15 @@ impl Buffer {
 
     pub fn modified_tick(&self) -> ModCount {
         self.text.borrow().modiff
+    }
+
+    /// BUF_COMPACT.
+    pub(crate) fn compact_tick(&self) -> ModCount {
+        self.text.borrow().compact
+    }
+
+    pub(crate) fn set_compact_tick(&mut self, tick: ModCount) {
+        self.text.borrow_mut().compact = tick;
     }
 
     pub fn chars_modified_tick(&self) -> ModCount {

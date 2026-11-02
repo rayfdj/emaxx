@@ -350,6 +350,14 @@ fn garbage_collect_now_below_top(
     } else {
         None
     };
+    // alloc.c:garbage_collect: "Don't keep undo information around
+    // forever.  Do this early on, so it is no problem if the user quits."
+    if let Err(error) = interpreter.compact_buffers(environment) {
+        if let Some(restore) = symbols_with_pos_restore {
+            interpreter.restore_special_dynamic(restore, environment)?;
+        }
+        return Err(error);
+    }
     let started = std::time::Instant::now();
     begin_garbage_collection(interpreter, environment);
     let result = finish_garbage_collection(interpreter, environment, started).map(Some);
