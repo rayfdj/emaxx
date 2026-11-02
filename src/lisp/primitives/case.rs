@@ -803,15 +803,19 @@ pub(crate) fn casify_buffer_region(
             interp.family_after_in_place_edit();
         }
         // casify_region: signal_after_change (start, end - start - added,
-        // end - start) over the first to the last character changed.
+        // end - start) over the first to the last character changed, then
+        // update_compositions (start, end, CHECK_ALL).
         Ok(match cased.changed {
             None => (None, new_end),
             Some((first, last)) => (
-                Some(AfterChange::new(
-                    lo + first,
-                    (last as isize - first as isize - cased.added) as usize,
-                    last - first,
-                )),
+                Some(
+                    AfterChange::new(
+                        lo + first,
+                        (last as isize - first as isize - cased.added) as usize,
+                        last - first,
+                    )
+                    .composing(lo + first, lo + last, CHECK_ALL),
+                ),
                 new_end,
             ),
         })

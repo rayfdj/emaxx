@@ -467,6 +467,69 @@ fn plist_at(text: &dyn SearchWalk, pos: usize) -> Value {
     }
 }
 
+/// intervals.c:get_property_and_range: the `textget' of PROP at POS in
+/// OBJECT, when non-nil, with the range the intervals around POS whose
+/// values are EQ to it make, whatever the buffer's narrowing; nothing
+/// without intervals or at the very end of the text.
+pub(crate) fn get_property_and_range(
+    interp: &Interpreter,
+    pos: usize,
+    prop: PropertyName,
+    object: SearchObject,
+) -> Result<Option<(Value, usize, usize)>, LispError> {
+    let walk = |intervals: &intervals::Intervals| -> Result<_, LispError> {
+        if pos < intervals.origin() || pos >= intervals.end() {
+            return Ok(None);
+        }
+        let intervals = PropertyIntervals::new(intervals);
+        let found = intervals.find(pos);
+        let value = textget(interp, found.plist, prop)?;
+        if value.is_nil() {
+            return Ok(None);
+        }
+        let same = |interval: &PropertyInterval| -> Result<bool, LispError> {
+            Ok(textget(interp, interval.plist, prop)?.word() == value.word())
+        };
+        let mut first = found;
+        while let Some(previous) = intervals.previous(&first) {
+            if !same(&previous)? {
+                break;
+            }
+            first = previous;
+        }
+        let mut last = first;
+        while let Some(next) = intervals.next(&last) {
+            if !same(&next)? {
+                break;
+            }
+            last = next;
+        }
+        Ok(Some((value, first.start, last.end)))
+    };
+    match object {
+        SearchObject::Buffer(id) => {
+            let buffer = interp
+                .get_buffer_by_id(id)
+                .ok_or_else(|| LispError::Signal(format!("No buffer with id {id}")))?;
+            match buffer.intervals() {
+                Some(intervals) => walk(&intervals),
+                None => Ok(None),
+            }
+        }
+        SearchObject::Killed(..) => Ok(None),
+        SearchObject::String(value) => {
+            let Kind::StringObject(state) = value.kind() else {
+                unreachable!("a string search names a string");
+            };
+            let state = state.borrow();
+            match state.props.intervals() {
+                Some(intervals) => walk(intervals),
+                None => Ok(None),
+            }
+        }
+    }
+}
+
 /// textprop.c:Ftext_properties_at: (POSITION &optional OBJECT).
 pub(crate) fn text_properties_at(
     interp: &Interpreter,

@@ -620,6 +620,28 @@ pub(crate) fn insert_text_with_hooks(
         extended_chars,
         inherit,
         before_markers,
+        false,
+        env,
+    )
+}
+
+/// json.c Fjson_insert's insert_from_gap_1 of TEXT at point: point stays
+/// before the text while the change is signaled and update_compositions
+/// (PT, PT, CHECK_BORDER) runs, then SET_PT_BOTH moves it past.
+pub(crate) fn insert_text_from_gap(
+    interp: &mut Interpreter,
+    text: &str,
+    extended_chars: &[(usize, u32)],
+    env: &mut crate::lisp::types::Env,
+) -> Result<(), LispError> {
+    insert_text_and_signal(
+        interp,
+        text,
+        InsertedIntervals::Given(None),
+        extended_chars,
+        false,
+        false,
+        true,
         env,
     )
 }
@@ -640,6 +662,7 @@ pub(crate) fn insert_buffer_text_with_hooks(
         text,
         InsertedIntervals::Buffer { buffer_id, from },
         extended_chars,
+        false,
         false,
         false,
         env,
@@ -694,7 +717,14 @@ pub(crate) fn insert_text_before_point(
             env,
         )?;
         interp.buffer.borrow_mut().goto_char(start);
-        Ok((Some(AfterChange::new(start, 0, produced)), ()))
+        Ok((
+            Some(AfterChange::new(start, 0, produced).composing(
+                start,
+                start + produced,
+                CHECK_ALL,
+            )),
+            (),
+        ))
     })
 }
 
@@ -977,6 +1007,7 @@ fn insert_text_and_signal(
     extended_chars: &[(usize, u32)],
     inherit: bool,
     before_markers: bool,
+    from_gap: bool,
     env: &mut crate::lisp::types::Env,
 ) -> Result<(), LispError> {
     if text.is_empty() {
@@ -984,7 +1015,7 @@ fn insert_text_and_signal(
     }
     let point = interp.buffer.borrow().point();
     // insdel.c inserts at point as the before-change hooks left it.
-    modify_current_buffer(interp, point, point, false, env, |interp, _, _| {
+    let inserted = modify_current_buffer(interp, point, point, false, env, |interp, _, _| {
         let start = interp.buffer.borrow().point();
         // insdel.c:copy_text: a unibyte buffer takes each character's byte.
         let unibyte_copy = if interp.buffer.borrow().is_multibyte() {
@@ -1039,8 +1070,26 @@ fn insert_text_and_signal(
         };
         interp.insert_current_buffer_with(text, source, before_markers);
         interp.set_inserted_extended_chars(start, extended_chars);
-        Ok((Some(AfterChange::new(start, 0, text.chars().count())), ()))
-    })
+        let inserted = text.chars().count();
+        let change = AfterChange::new(start, 0, inserted);
+        if from_gap {
+            interp.buffer.borrow_mut().goto_char(start);
+            return Ok((Some(change), inserted));
+        }
+        // insert, insert_from_string, insert_from_buffer: update
+        // (opoint, PT, CHECK_BORDER).
+        Ok((
+            Some(change.composing_to_point(start, CHECK_BORDER)),
+            inserted,
+        ))
+    })?;
+    if from_gap {
+        let point = interp.buffer.borrow().point();
+        update_compositions(interp, point, point, CHECK_BORDER, env)?;
+        let target = (point + inserted).min(interp.buffer.borrow().point_max());
+        interp.buffer.borrow_mut().goto_char(target);
+    }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -277,6 +277,10 @@ struct BufferText {
     /// Value of modiff at last save.
     save_modiff: ModCount,
 
+    /// BUF_COMPACT: the value of modiff at the buffer's last
+    /// compact_buffer, which a collection skips the buffer at.
+    compact: ModCount,
+
     /// buffer_intervals: the intervals of the whole text [BEG, Z), none
     /// until a property is first given, and none again once a deletion
     /// takes the whole text (adjust_intervals_for_deletion).
@@ -450,6 +454,7 @@ impl BufferText {
             text_edit_serial: 0,
             edits: std::collections::VecDeque::new(),
             save_modiff: 1,
+            compact: 1,
             intervals: None,
             extended_chars: Vec::new(),
         }
@@ -1314,6 +1319,16 @@ impl Buffer {
         self.text.borrow().len_chars()
     }
 
+    /// GPT: the character position of the gap.
+    pub fn gap_position(&self) -> usize {
+        self.text.borrow().text.gap_char() + 1
+    }
+
+    /// GAP_SIZE: the gap's bytes.
+    pub fn gap_size(&self) -> usize {
+        self.text.borrow().text.gap_size()
+    }
+
     /// A killed buffer's size as Fkill_buffer left it (editfns.c's
     /// buffer-size reads it).
     pub(crate) fn killed_size(&self) -> usize {
@@ -1964,6 +1979,15 @@ impl Buffer {
             return Err(BufferError::InvalidPosition(from));
         }
         Ok(self.text.borrow().string((from - 1)..(to - 1)))
+    }
+
+    /// The text [FROM, TO), past any narrowing, within BEG..Z.
+    pub(crate) fn text_between(&self, from: usize, to: usize) -> String {
+        let text = self.text.borrow();
+        let end = text.len_chars();
+        let from = from.saturating_sub(1).min(end);
+        let to = to.saturating_sub(1).clamp(from, end);
+        text.string(from..to)
     }
 
     /// The text from FROM to Z, past any narrowing.
@@ -3836,6 +3860,15 @@ impl Buffer {
 
     pub fn modified_tick(&self) -> ModCount {
         self.text.borrow().modiff
+    }
+
+    /// BUF_COMPACT.
+    pub(crate) fn compact_tick(&self) -> ModCount {
+        self.text.borrow().compact
+    }
+
+    pub(crate) fn set_compact_tick(&mut self, tick: ModCount) {
+        self.text.borrow_mut().compact = tick;
     }
 
     pub fn chars_modified_tick(&self) -> ModCount {

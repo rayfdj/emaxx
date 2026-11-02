@@ -59,18 +59,25 @@ impl KeySequenceReader {
     }
 
     fn replay(&mut self, interp: &mut Interpreter, env: &mut Env) -> Result<(), LispError> {
-        let event = self.keys.first().copied().and_then(|first| {
-            if first.is_symbol() && self.keys.len() > 1 {
-                self.keys.get(1).copied()
-            } else {
-                Some(first)
+        // keyboard.c:active_maps: the EVENT_START of a first event with
+        // parameters, or of the second when the first is the fake prefix
+        // (`mode-line' and the like) its POSN_POSN names.
+        let car_safe = |value: Value| value.cons_values().map_or(Value::Nil, |(car, _)| car);
+        let cdr_safe = |value: Value| value.cons_values().map_or(Value::Nil, |(_, cdr)| cdr);
+        let first = self.keys.first().copied().unwrap_or(Value::Nil);
+        let second = self.keys.get(1).copied().unwrap_or(Value::Nil);
+        let mut position = if first.is_cons() {
+            car_safe(cdr_safe(first))
+        } else {
+            Value::Nil
+        };
+        if first.is_symbol() && second.is_cons() {
+            let start = car_safe(cdr_safe(second));
+            if first.eq_value(car_safe(cdr_safe(start))) {
+                position = start;
             }
-        });
-        let position = event.and_then(|event| {
-            mouse_event_head(interp, &event)?;
-            event.cdr_if_list()?.car_if_list()
-        });
-        let maps = current_active_maps(interp, env, true, position.as_ref())?;
+        }
+        let maps = current_active_maps(interp, env, true, Some(&position))?;
         self.roots[6] = Value::cons(Value::symbol("keymap"), Value::list(maps));
         self.read = 0;
         self.first_unbound = READ_KEY_ELTS + 1;

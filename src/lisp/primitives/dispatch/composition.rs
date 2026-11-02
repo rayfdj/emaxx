@@ -1,6 +1,6 @@
 use super::*;
-use crate::lisp::types::Kind;
 use crate::lisp::types::LispErrorKind;
+use crate::lisp::types::{Kind, PropertyName};
 
 fn vector_value(items: impl IntoIterator<Item = Value>) -> Value {
     Value::vector(items)
@@ -110,72 +110,358 @@ fn compose_string(args: &[Value]) -> Result<Value, LispError> {
     Ok(args[0])
 }
 
-#[derive(Clone)]
-struct CompositionRange {
-    start: usize,
-    end: usize,
-    property: Value,
+/// composite.h's CHECK_* masks: which compositions around a change
+/// update_compositions makes valid.
+pub(crate) const CHECK_HEAD: u8 = 1;
+pub(crate) const CHECK_TAIL: u8 = 2;
+pub(crate) const CHECK_INSIDE: u8 = 4;
+pub(crate) const CHECK_BORDER: u8 = CHECK_HEAD | CHECK_TAIL;
+pub(crate) const CHECK_ALL: u8 = CHECK_BORDER | CHECK_INSIDE;
+
+fn composition_symbol() -> Value {
+    cached_symbol!("composition").with(|symbol| Value::Symbol(*symbol))
 }
 
-fn composition_ranges(
+/// intervals.c:get_property_and_range of `composition' at POS of OBJECT
+/// (nil the current buffer): the range and the property.
+fn property_and_range(
     interp: &Interpreter,
-    string: &Value,
-) -> Result<Vec<CompositionRange>, LispError> {
-    let intervals = if string.is_nil() {
-        interp.buffer.borrow().intervals().as_deref().cloned()
+    pos: usize,
+    object: &Value,
+) -> Result<Option<(usize, usize, Value)>, LispError> {
+    use crate::lisp::primitives::textprop::{SearchObject, get_property_and_range};
+    let target = if object.is_nil() {
+        SearchObject::Buffer(interp.current_buffer_id())
     } else {
-        let string = string_like(string).ok_or_else(|| wrong_type_argument("stringp", *string))?;
-        string.props
+        SearchObject::String(*object)
     };
-    let composition = Value::symbol("composition");
-    let spans: Vec<(usize, usize, Option<Value>)> = intervals
-        .iter()
-        .flat_map(|intervals| {
-            intervals.iter().map(|(start, end, plist)| {
-                let mut tail = plist;
-                let mut value = None;
-                while let Some(cell) = tail.cons_ref() {
-                    let Some(rest) = cell.cdr.get().cons_ref() else {
-                        break;
-                    };
-                    if cell.car.get().word() == composition.word() {
-                        value = Some(rest.car.get());
-                        break;
-                    }
-                    tail = rest.cdr.get();
-                }
-                (start, end, value)
-            })
-        })
-        .collect();
-    // textprop.c get_property_and_range: a composition's range runs on
-    // across the adjacent intervals whose values are `eq' to its own.
-    let mut ranges: Vec<CompositionRange> = Vec::new();
-    for (start, end, property) in spans {
-        let Some(property) = property else {
-            continue;
-        };
-        match ranges.last_mut() {
-            Some(last) if last.end == start && last.property.word() == property.word() => {
-                last.end = end;
+    Ok(
+        get_property_and_range(interp, pos, PropertyName::new(composition_symbol()), target)?
+            .map(|(prop, start, end)| (start, end, prop)),
+    )
+}
+
+/// composite.c find_composition: the static composition at POS of OBJECT
+/// (nil the current buffer), else with LIMIT the nearest one from POS
+/// toward it, its range and its unchecked property.
+fn find_composition(
+    interp: &Interpreter,
+    pos: usize,
+    limit: Option<usize>,
+    object: &Value,
+) -> Result<Option<(usize, usize, Value)>, LispError> {
+    if let Some(found) = property_and_range(interp, pos, object)? {
+        return Ok(Some(found));
+    }
+    let Some(limit) = limit.filter(|limit| *limit != pos) else {
+        return Ok(None);
+    };
+    let args = [
+        Value::Integer(pos as i64),
+        composition_symbol(),
+        *object,
+        Value::Integer(limit as i64),
+    ];
+    let pos = if limit > pos {
+        let next = crate::lisp::primitives::textprop::next_single_property_change(interp, &args)?
+            .as_integer()?;
+        if next == limit as i64 {
+            return Ok(None);
+        }
+        next as usize
+    } else {
+        if let Some(found) = property_and_range(interp, pos - 1, object)? {
+            return Ok(Some(found));
+        }
+        let previous =
+            crate::lisp::primitives::textprop::previous_single_property_change(interp, &args)?
+                .as_integer()?;
+        if previous == limit as i64 {
+            return Ok(None);
+        }
+        previous as usize - 1
+    };
+    property_and_range(interp, pos, object)
+}
+
+/// composite.h composition_valid_p: PROP is a `composition' property
+/// of Form-A ((LENGTH . COMPONENTS) . MODIFICATION-FUNC) or Form-B
+/// (ID LENGTH COMPONENTS-VEC . MODIFICATION-FUNC) whose LENGTH is END -
+/// START.  GNU's bound admits the ID one past the last composition.
+fn composition_valid_p(interp: &Interpreter, start: usize, end: usize, prop: Value) -> bool {
+    let Some((head, tail)) = prop.cons_values() else {
+        return false;
+    };
+    let length = match head.kind() {
+        Kind::Integer(id) => {
+            if id < 0 || id as u64 > interp.composition_states.len() as u64 {
+                return false;
             }
-            _ => ranges.push(CompositionRange {
-                start,
-                end,
-                property,
-            }),
+            match tail.cons_values() {
+                Some((length, _)) => length,
+                None => return false,
+            }
+        }
+        Kind::Cons(cell) => {
+            let components = cell.cdr.get();
+            if !(matches!(
+                components.kind(),
+                Kind::Nil | Kind::StringObject(_) | Kind::Integer(_) | Kind::Cons(_)
+            ) || is_vector_value(&components))
+            {
+                return false;
+            }
+            cell.car.get()
+        }
+        _ => return false,
+    };
+    matches!(length.kind(), Kind::Integer(length) if length == (end - start) as i64)
+}
+
+/// COMPOSITION_MODIFICATION_FUNC of PROP.
+fn composition_modification_func(prop: Value) -> Value {
+    let Some((head, tail)) = prop.cons_values() else {
+        return Value::Nil;
+    };
+    if matches!(head.kind(), Kind::Integer(_)) {
+        tail.cons_values()
+            .and_then(|(_, rest)| rest.cons_values())
+            .map_or(Value::Nil, |(_, function)| function)
+    } else {
+        tail
+    }
+}
+
+/// COMPOSITION_COMPONENTS of a registered PROP.
+fn registered_components(prop: Value) -> Value {
+    prop.cons_values()
+        .and_then(|(_, tail)| tail.cons_values())
+        .and_then(|(_, rest)| rest.cons_values())
+        .map_or(Value::Nil, |(components, _)| components)
+}
+
+/// The character codes of NCHARS characters of OBJECT (nil the current
+/// buffer) from CHARPOS, as fetch_char_advance and
+/// fetch_string_char_advance read them.
+fn composition_codes(
+    interp: &Interpreter,
+    object: &Value,
+    charpos: usize,
+    nchars: usize,
+) -> Vec<u32> {
+    if object.is_nil() {
+        return crate::lisp::primitives::buffer_text_codes(interp, charpos, charpos + nchars);
+    }
+    let Kind::StringObject(state) = object.kind() else {
+        return Vec::new();
+    };
+    let state = state.borrow();
+    let Some(mut offset) = state.byte_offset(charpos) else {
+        return Vec::new();
+    };
+    (0..nchars)
+        .map_while(|_| state.character_advance(&mut offset).map(|code| code as u32))
+        .collect()
+}
+
+/// composite.c's width of a key element: XFIXNUM of it into an int, TAB
+/// one column, else CHARACTER_WIDTH.
+fn component_width(interp: &Interpreter, env: &Env, component: &Value) -> i64 {
+    let code = match component.kind() {
+        Kind::Integer(code) => code as i32,
+        _ => 0,
+    };
+    if code == '\t' as i32 {
+        return 1;
+    }
+    // A negative code is a control character to CHARACTER_WIDTH.
+    let code = u32::try_from(code).unwrap_or(0);
+    crate::lisp::primitives::character_width(interp, code, env) as i64
+}
+
+/// get_composition_id's width of a rule-based composition of KEY over
+/// its GLYPH_LEN glyphs; the loop bound is GNU's GLYPH_LEN, not the
+/// key's length.
+fn rule_composition_width(interp: &Interpreter, env: &Env, key: &[Value], glyph_len: usize) -> i64 {
+    let mut leftmost = 0.0_f64;
+    let mut rightmost =
+        key.first()
+            .map_or(0, |component| component_width(interp, env, component)) as f64;
+    let mut index = 1;
+    while index < glyph_len {
+        let rule = match key[index].kind() {
+            Kind::Integer(rule) => rule as i32,
+            _ => 0,
+        };
+        let this_width = component_width(interp, env, &key[index + 1]) as f64;
+        // COMPOSITION_DECODE_REFS.
+        let rule = rule & 0xFF;
+        let mut global_reference = rule / 12;
+        if global_reference > 12 {
+            global_reference = 11;
+        }
+        let new_reference = rule % 12;
+        let this_left = leftmost + f64::from(global_reference % 3) * (rightmost - leftmost) / 2.0
+            - f64::from(new_reference % 3) * this_width / 2.0;
+        if this_left < leftmost {
+            leftmost = this_left;
+        }
+        if this_left + this_width > rightmost {
+            rightmost = this_left + this_width;
+        }
+        index += 2;
+    }
+    let span = rightmost - leftmost;
+    let width = span as i64;
+    if (width as f64) < span {
+        width + 1
+    } else {
+        width
+    }
+}
+
+/// composition_hash_table's hash_lookup of KEY (its `equal' HASH): the
+/// registered composition's id.
+fn lookup_composition(
+    interp: &mut Interpreter,
+    hash: u32,
+    key: &Value,
+) -> Result<Option<usize>, LispError> {
+    use crate::lisp::eval::RuntimeHashTest;
+    while interp.composition_index.indexed < interp.composition_states.len() {
+        let id = interp.composition_index.indexed;
+        let stored = interp.composition_states[id].components;
+        let stored_hash = standard_hash_code(interp, RuntimeHashTest::Equal, &stored);
+        interp
+            .composition_index
+            .by_hash
+            .entry(stored_hash)
+            .or_default()
+            .push(id);
+        interp.composition_index.indexed += 1;
+    }
+    let candidates = interp
+        .composition_index
+        .by_hash
+        .get(&hash)
+        .cloned()
+        .unwrap_or_default();
+    for id in candidates {
+        let stored = interp.composition_states[id].components;
+        if stored.word() == key.word() || values_equal(interp, &stored, key)? {
+            return Ok(Some(id));
         }
     }
-    Ok(ranges)
+    Ok(None)
+}
+
+/// composite.c get_composition_id: the id of the composition PROP makes
+/// of NCHARS characters of OBJECT (nil the current buffer) from CHARPOS,
+/// registering a new valid one; PROP turns from Form-A into Form-B with
+/// the key the table holds.  None for an invalid composition.
+fn get_composition_id(
+    interp: &mut Interpreter,
+    env: &Env,
+    charpos: usize,
+    nchars: usize,
+    prop: Value,
+    object: &Value,
+) -> Result<Option<usize>, LispError> {
+    use crate::lisp::eval::RuntimeHashTest;
+    if nchars == 0 {
+        return Ok(None);
+    }
+    let Some((id, tail)) = prop.cons_values() else {
+        return Ok(None);
+    };
+    if let Kind::Integer(id) = id.kind() {
+        return Ok(usize::try_from(id)
+            .ok()
+            .filter(|id| *id < interp.composition_states.len()));
+    }
+    let Some((length, components)) = id.cons_values() else {
+        return Ok(None);
+    };
+    if !matches!(length.kind(), Kind::Integer(length) if length == nchars as i64) {
+        return Ok(None);
+    }
+    let key = match components.kind() {
+        Kind::Integer(_) => Value::vector([components]),
+        // Fvconcat.
+        Kind::StringObject(_) | Kind::Cons(_) => Value::vector(sequence_values(&components)?),
+        Kind::Nil => Value::vector(
+            composition_codes(interp, object, charpos, nchars)
+                .into_iter()
+                .map(|code| Value::Integer(i64::from(code))),
+        ),
+        _ if is_vector_value(&components) => components,
+        _ => return Ok(None),
+    };
+    let hash = standard_hash_code(interp, RuntimeHashTest::Equal, &key);
+    if let Some(found) = lookup_composition(interp, hash, &key)? {
+        let stored = interp.composition_states[found].components;
+        prop.set_car(Value::Integer(found as i64))?;
+        prop.set_cdr(Value::cons(
+            Value::Integer(nchars as i64),
+            Value::cons(stored, tail),
+        ))?;
+        return Ok(Some(found));
+    }
+    let key_items = vector_items(&key)?;
+    let glyph_string =
+        is_vector_value(&components) && key_items.len() >= 2 && is_vector_value(&key_items[0]);
+    if glyph_string {
+        if !key_items[1..].iter().all(is_vector_value) {
+            return Ok(None);
+        }
+    } else if (is_vector_value(&components) || matches!(components.kind(), Kind::Cons(_)))
+        && (key_items.len() % 2 == 0
+            || !key_items
+                .iter()
+                .all(|item| matches!(item.kind(), Kind::Integer(_))))
+    {
+        return Ok(None);
+    }
+    let id = interp.composition_states.len();
+    prop.set_car(Value::Integer(id as i64))?;
+    prop.set_cdr(Value::cons(
+        Value::Integer(nchars as i64),
+        Value::cons(key, tail),
+    ))?;
+    // COMPOSITION_RELATIVE for nil components, COMPOSITION_WITH_ALTCHARS
+    // for a character or string, else COMPOSITION_WITH_RULE_ALTCHARS.
+    let rule_based = !matches!(
+        components.kind(),
+        Kind::Nil | Kind::Integer(_) | Kind::StringObject(_)
+    );
+    let width = if rule_based {
+        rule_composition_width(interp, env, &key_items, key_items.len().div_ceil(2))
+    } else {
+        key_items
+            .iter()
+            .map(|component| component_width(interp, env, component))
+            .fold(0, i64::max)
+    };
+    interp
+        .composition_states
+        .push(crate::lisp::eval::CompositionState {
+            components: key,
+            relative: !rule_based,
+            width,
+        });
+    Ok(Some(id))
 }
 
 /// A string's static compositions, for character.c lisp_string_width's
 /// find_composition (POS, -1, ...) and get_composition_id.
-pub(crate) struct StringCompositions(Vec<CompositionRange>);
+pub(crate) struct StringCompositions;
 
 impl StringCompositions {
-    pub(crate) fn of(interp: &Interpreter, string: &Value) -> Result<Self, LispError> {
-        composition_ranges(interp, string).map(Self)
+    pub(crate) fn of(_interp: &Interpreter, string: &Value) -> Result<Self, LispError> {
+        if string_like(string).is_none() {
+            return Err(wrong_type_argument("stringp", *string));
+        }
+        Ok(Self)
     }
 
     /// The end and width of the composition STRING's `composition'
@@ -184,49 +470,264 @@ impl StringCompositions {
     pub(crate) fn at(
         &self,
         interp: &mut Interpreter,
+        env: &Env,
         string: &Value,
         position: usize,
     ) -> Result<Option<(usize, usize)>, LispError> {
-        let Some(range) = find_static_composition(&self.0, position, None) else {
+        let Some((_, end, prop)) = find_composition(interp, position, None, string)? else {
             return Ok(None);
         };
-        let from_position = CompositionRange {
-            start: position,
-            end: range.end,
-            property: range.property,
+        let Some(id) = get_composition_id(interp, env, position, end - position, prop, string)?
+        else {
+            return Ok(None);
         };
-        Ok(register_composition(interp, &from_position, string)?
-            .map(|(_, _, _, width)| (range.end, width.max(0) as usize)))
+        Ok(Some((
+            end,
+            interp.composition_states[id].width.max(0) as usize,
+        )))
     }
 }
 
-fn find_static_composition(
-    ranges: &[CompositionRange],
-    position: usize,
-    limit: Option<usize>,
-) -> Option<CompositionRange> {
-    if let Some(range) = ranges
-        .iter()
-        .find(|range| range.start <= position && position < range.end)
+/// composite.c run_composition_function: the modification function of
+/// PROP, a symbol (Ffboundp), called on FROM..TO widened over the
+/// invalid compositions next to it.
+fn run_composition_function(
+    interp: &mut Interpreter,
+    from: usize,
+    to: usize,
+    prop: Value,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    let function = composition_modification_func(prop);
+    let nil = Value::Nil;
+    let (begv, zv) = {
+        let buffer = interp.buffer.borrow();
+        (buffer.point_min(), buffer.point_max())
+    };
+    let mut from = from;
+    let mut to = to;
+    if from > begv
+        && let Some((start, end, prop)) = find_composition(interp, from - 1, None, &nil)?
+        && !composition_valid_p(interp, start, end, prop)
     {
-        return Some(range.clone());
+        from = start;
     }
-    let limit = limit?;
-    if limit > position {
-        ranges
-            .iter()
-            .filter(|range| position <= range.start && range.start < limit)
-            .min_by_key(|range| range.start)
-            .cloned()
-    } else if limit < position {
-        ranges
-            .iter()
-            .filter(|range| limit < range.end && range.end <= position)
-            .max_by_key(|range| range.end)
-            .cloned()
-    } else {
-        None
+    if to < zv
+        && let Some((start, end, prop)) = find_composition(interp, to, None, &nil)?
+        && !composition_valid_p(interp, start, end, prop)
+    {
+        to = end;
     }
+    let symbol = checked_symbol_identity(interp, &function, env)?;
+    if interp
+        .raw_function_binding_symbol(&symbol, env)
+        .is_some_and(|binding| !binding.is_nil())
+    {
+        interp.call_function_value(
+            function,
+            None,
+            &[Value::Integer(from as i64), Value::Integer(to as i64)],
+            env,
+        )?;
+    }
+    Ok(())
+}
+
+/// update_compositions' Fput_text_property of a top-level copy of PROP
+/// over FROM..TO, so that two compositions made adjacent stay apart.
+fn put_composition_copy(
+    interp: &mut Interpreter,
+    from: usize,
+    to: usize,
+    prop: Value,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    let Some((head, tail)) = prop.cons_values() else {
+        return Ok(());
+    };
+    let properties = Value::list([composition_symbol(), Value::cons(head, tail)]);
+    crate::lisp::primitives::textprop::add_text_properties(
+        interp,
+        &Value::Integer(from as i64),
+        &Value::Integer(to as i64),
+        properties,
+        Value::Nil,
+        env,
+    )?;
+    Ok(())
+}
+
+/// update_compositions' Fremove_list_of_text_properties of
+/// `auto-composed' over FROM..TO with `inhibit-read-only',
+/// `inhibit-modification-hooks' and `inhibit-point-motion-hooks' t.  It
+/// is not called where it would remove nothing and the range is valid.
+fn remove_auto_composed(
+    interp: &mut Interpreter,
+    from: usize,
+    to: usize,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    let auto_composed = cached_symbol!("auto-composed").with(|symbol| Value::Symbol(*symbol));
+    {
+        let buffer = interp.buffer.borrow();
+        let in_range = buffer.point_min() <= from && to <= buffer.point_max();
+        let present = buffer.intervals().is_some_and(|intervals| {
+            let intervals = crate::buffer::PropertyIntervals::new(&intervals);
+            let mut interval = Some(intervals.find(from));
+            while let Some(current) = interval {
+                if current.start >= to {
+                    break;
+                }
+                let mut plist = current.plist;
+                while let Some((name, rest)) = plist.cons_values() {
+                    if name.word() == auto_composed.word() {
+                        return true;
+                    }
+                    plist = rest.cons_values().map_or(Value::Nil, |(_, next)| next);
+                }
+                interval = intervals.next(&current);
+            }
+            false
+        });
+        if in_range && !present {
+            return Ok(());
+        }
+    }
+    let bindings = [
+        cached_symbol!("inhibit-read-only"),
+        cached_symbol!("inhibit-modification-hooks"),
+        cached_symbol!("inhibit-point-motion-hooks"),
+    ];
+    let mut restores = Vec::with_capacity(bindings.len());
+    let mut result = Ok(());
+    for key in bindings {
+        match interp.bind_special_dynamic(key.name(), Value::T, env) {
+            Ok(restore) => restores.push(restore),
+            Err(error) => {
+                result = Err(error);
+                break;
+            }
+        }
+    }
+    if result.is_ok() {
+        result = crate::lisp::primitives::textprop::remove_text_properties(
+            interp,
+            &Value::Integer(from as i64),
+            &Value::Integer(to as i64),
+            Value::list([auto_composed]),
+            Value::Nil,
+            true,
+            env,
+        )
+        .map(|_| ());
+    }
+    while let Some(restore) = restores.pop() {
+        let restored = interp.restore_special_dynamic(restore, env);
+        if result.is_ok() {
+            result = restored;
+        }
+    }
+    result
+}
+
+/// composite.c update_compositions: after a change of FROM..TO of the
+/// current buffer (FROM = TO for a deletion), the compositions at its
+/// head and tail (and with CHECK_INSIDE within it) of CHECK_MASK made
+/// valid by their modification functions, a composition the change made
+/// adjacent to another of the same property given a copy of it, and
+/// `auto-composed' removed from the range they cover.
+pub(crate) fn update_compositions(
+    interp: &mut Interpreter,
+    from: usize,
+    to: usize,
+    check_mask: u8,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    if crate::lisp::primitives::modification_hooks_inhibited(interp) {
+        return Ok(());
+    }
+    let bounds = |interp: &Interpreter| {
+        let buffer = interp.buffer.borrow();
+        (buffer.point_min(), buffer.point_max())
+    };
+    let (begv, zv) = bounds(interp);
+    if !(begv <= from && from <= to && to <= zv) {
+        return Ok(());
+    }
+    // Without intervals there is no composition and nothing to remove.
+    if !interp.buffer.borrow().has_interval_tree() {
+        return Ok(());
+    }
+    let nil = Value::Nil;
+    let mut from = from;
+    let (mut min_pos, mut max_pos) = (from, to);
+    if check_mask & CHECK_HEAD != 0 {
+        let before = if from > bounds(interp).0 {
+            find_composition(interp, from - 1, None, &nil)?
+                .filter(|(start, end, prop)| composition_valid_p(interp, *start, *end, *prop))
+        } else {
+            None
+        };
+        if let Some((start, end, prop)) = before {
+            min_pos = start;
+            if end > to {
+                max_pos = end;
+            }
+            if from < end {
+                put_composition_copy(interp, from, end, prop, env)?;
+            }
+            run_composition_function(interp, start, end, prop, env)?;
+            from = end;
+        } else if from < bounds(interp).1
+            && let Some((start, end, prop)) = find_composition(interp, from, None, &nil)?
+        {
+            // find_composition's END is FROM, valid or not.
+            from = end;
+            if composition_valid_p(interp, start, end, prop) {
+                if from > to {
+                    max_pos = from;
+                }
+                run_composition_function(interp, start, from, prop, env)?;
+            }
+        }
+    }
+    if check_mask & CHECK_INSIDE != 0 {
+        while from + 1 < to {
+            let Some((start, end, prop)) = find_composition(interp, from, Some(to), &nil)? else {
+                break;
+            };
+            from = end;
+            if !composition_valid_p(interp, start, from, prop) || from + 1 >= to {
+                break;
+            }
+            run_composition_function(interp, start, from, prop, env)?;
+        }
+    }
+    if check_mask & CHECK_TAIL != 0 {
+        let at_tail = if from < to {
+            find_composition(interp, to - 1, None, &nil)?
+                .filter(|(start, end, prop)| composition_valid_p(interp, *start, *end, *prop))
+        } else {
+            None
+        };
+        if let Some((start, end, prop)) = at_tail {
+            if to < end {
+                put_composition_copy(interp, start, to, prop, env)?;
+                max_pos = end;
+            }
+            run_composition_function(interp, start, end, prop, env)?;
+        } else if to < bounds(interp).1
+            && let Some((start, end, prop)) = find_composition(interp, to, None, &nil)?
+            && composition_valid_p(interp, start, end, prop)
+        {
+            run_composition_function(interp, start, end, prop, env)?;
+            max_pos = end;
+        }
+    }
+    if min_pos < max_pos {
+        remove_auto_composed(interp, min_pos, max_pos, env)?;
+    }
+    Ok(())
 }
 
 fn composition_chars(
@@ -251,153 +752,6 @@ fn composition_chars(
             .collect()
     };
     Ok(text.chars().collect())
-}
-
-fn components_vector(components: &Value, chars: &[char]) -> Result<Value, LispError> {
-    let items = match components.kind() {
-        Kind::Nil => chars
-            .iter()
-            .map(|character| Value::Integer(*character as i64))
-            .collect(),
-        Kind::Integer(_) => vec![*components],
-        Kind::StringObject(_) => string_like(components)
-            .expect("string variant must be string-like")
-            .text
-            .chars()
-            .map(|character| Value::Integer(character as i64))
-            .collect(),
-        value if is_vector_value(&value.value()) => vector_items(&value.value())?,
-        Kind::Cons(_) => components.to_vec()?,
-        _ => return Err(LispError::Signal("Invalid composition".into())),
-    };
-    Ok(vector_value(items))
-}
-
-fn character_width(value: &Value) -> i64 {
-    let Ok(codepoint) = value.as_integer() else {
-        return 0;
-    };
-    if codepoint == '\t' as i64 {
-        return 1;
-    }
-    u32::try_from(codepoint)
-        .ok()
-        .and_then(char::from_u32)
-        .and_then(|character| character.width())
-        .unwrap_or(0) as i64
-}
-
-fn rule_composition_width(items: &[Value]) -> i64 {
-    let mut leftmost = 0.0_f64;
-    let mut rightmost = items.first().map(character_width).unwrap_or(0) as f64;
-    let mut index = 1;
-    while index + 1 < items.len() {
-        let rule = items[index].as_integer().unwrap_or(0) & 0xff;
-        let global_reference = (rule / 12).min(11);
-        let new_reference = rule % 12;
-        let width = character_width(&items[index + 1]) as f64;
-        let left = leftmost + (global_reference % 3) as f64 * (rightmost - leftmost) / 2.0
-            - (new_reference % 3) as f64 * width / 2.0;
-        leftmost = leftmost.min(left);
-        rightmost = rightmost.max(left + width);
-        index += 2;
-    }
-    (rightmost - leftmost).ceil() as i64
-}
-
-fn register_composition(
-    interp: &mut Interpreter,
-    range: &CompositionRange,
-    string: &Value,
-) -> Result<Option<(Value, bool, Value, i64)>, LispError> {
-    let Some((head, tail)) = range.property.cons_values() else {
-        return Ok(None);
-    };
-    if let Kind::Integer(id) = head.kind() {
-        let Ok(index) = usize::try_from(id) else {
-            return Ok(None);
-        };
-        let Some((length, rest)) = tail.cons_values() else {
-            return Ok(None);
-        };
-        if length != Value::Integer((range.end - range.start) as i64) {
-            return Ok(None);
-        }
-        let Some((_, modification)) = rest.cons_values() else {
-            return Ok(None);
-        };
-        let Some(state) = interp.composition_states.get(index) else {
-            return Ok(None);
-        };
-        return Ok(Some((
-            state.components,
-            state.relative,
-            modification,
-            state.width,
-        )));
-    }
-
-    let Some((length, components)) = head.cons_values() else {
-        return Ok(None);
-    };
-    if length != Value::Integer((range.end - range.start) as i64) {
-        return Ok(None);
-    }
-    if !matches!(
-        components.kind(),
-        Kind::Nil | Kind::Integer(_) | Kind::StringObject(_) | Kind::Cons(_)
-    ) && !is_vector_value(&components)
-    {
-        return Ok(None);
-    }
-    let chars = composition_chars(interp, string, range.start, range.end)?;
-    let key = components_vector(&components, &chars)?;
-    let key_items = vector_items(&key)?;
-    let rule_based = matches!(components.kind(), Kind::Cons(_)) || is_vector_value(&components);
-    if rule_based {
-        let glyph_string = key_items.first().is_some_and(is_vector_value);
-        let valid = if glyph_string {
-            key_items.iter().all(is_vector_value)
-        } else {
-            key_items.len() % 2 == 1
-                && key_items
-                    .iter()
-                    .all(|value| matches!(value.kind(), Kind::Integer(_)))
-        };
-        if !valid {
-            return Ok(None);
-        }
-    }
-    let relative = !rule_based;
-    let width = if rule_based {
-        rule_composition_width(&key_items)
-    } else {
-        key_items.iter().map(character_width).max().unwrap_or(0)
-    };
-    let mut found = None;
-    for (index, state) in interp.composition_states.iter().enumerate() {
-        if values_equal(interp, &state.components, &key)? {
-            found = Some(index);
-            break;
-        }
-    }
-    let id = found.unwrap_or_else(|| {
-        let id = interp.composition_states.len();
-        interp
-            .composition_states
-            .push(crate::lisp::eval::CompositionState {
-                components: key,
-                relative,
-                width,
-            });
-        id
-    });
-    range.property.set_car(Value::Integer(id as i64))?;
-    range.property.set_cdr(Value::cons(
-        Value::Integer((range.end - range.start) as i64),
-        Value::cons(key, tail),
-    ))?;
-    Ok(Some((key, relative, tail, width)))
 }
 
 fn char_table_id_from_var(
@@ -823,7 +1177,7 @@ fn glyph_string(
     vector_value(body)
 }
 
-fn find_composition(
+fn find_composition_internal(
     interp: &mut Interpreter,
     env: &mut Env,
     args: &[Value],
@@ -864,64 +1218,41 @@ fn find_composition(
         let clipped = raw.min(zv);
         (clipped >= 0).then(|| clipped.clamp(minimum as i64, maximum as i64) as usize)
     });
-    let ranges = composition_ranges(interp, string)?;
-    if let Some(range) = find_static_composition(&ranges, position, limit) {
-        if !(range.start <= position && position < range.end) {
-            // A static composition was found through the LIMIT search but
-            // does not cover POS; an automatic composition closer to POS
-            // wins (Ffind_composition_internal's second
-            // find_automatic_composition call carries no multibyte or
-            // inhibition guard).
-            let string = *string;
-            if let Some(found) = find_automatic_composition(interp, env, position, limit, &string)?
-            {
-                let better = if found.end <= position {
-                    found.end > range.end
-                } else {
-                    found.start < range.start
-                };
-                if better {
-                    return Ok(Value::list([
-                        Value::Integer(found.start as i64),
-                        Value::Integer(found.end as i64),
-                        found.gstring,
-                    ]));
-                }
-            }
-        }
-        let start = Value::Integer(range.start as i64);
-        let end = Value::Integer(range.end as i64);
-        let Some((components, relative, modification, width)) =
-            register_composition(interp, &range, string)?
-        else {
-            return Ok(Value::list([start, end, Value::Nil]));
+    let string = *string;
+    let Some((start, end, prop)) = find_composition(interp, position, limit, &string)? else {
+        // No static composition: the automatic one, for a multibyte
+        // target with auto-composition not inhibited.  The shaping runs
+        // through the GNU Lisp owners (`auto-compose-chars',
+        // `compose-gstring-for-terminal') over the ported C substrate.
+        let multibyte = if string.is_nil() {
+            interp.buffer.borrow().is_multibyte()
+        } else {
+            string_like(&string).is_some_and(|text| text.multibyte)
         };
-        if !args[3].is_truthy() {
-            return Ok(Value::list([start, end, Value::T]));
+        if multibyte
+            && !inhibit_auto_composition(interp, env)
+            && let Some(found) = find_automatic_composition(interp, env, position, limit, &string)?
+        {
+            return Ok(Value::list([
+                Value::Integer(found.start as i64),
+                Value::Integer(found.end as i64),
+                found.gstring,
+            ]));
         }
-        let copied_components = vector_value(vector_items(&components)?);
-        return Ok(Value::list([
-            start,
-            end,
-            copied_components,
-            if relative { Value::T } else { Value::Nil },
-            modification,
-            Value::Integer(width),
-        ]));
-    }
-    // No static composition: try the automatic one, gated exactly as
-    // Ffind_composition_internal gates it -- a multibyte target and
-    // auto-composition not inhibited.  The shaping itself runs through the
-    // GNU Lisp owners (`auto-compose-chars',
-    // `compose-gstring-for-terminal') over the ported C substrate.
-    let multibyte = if string.is_nil() {
-        interp.buffer.borrow().is_multibyte()
-    } else {
-        string_like(string).is_some_and(|text| text.multibyte)
+        return Ok(Value::Nil);
     };
-    if multibyte && !inhibit_auto_composition(interp, env) {
-        let string = *string;
-        if let Some(found) = find_automatic_composition(interp, env, position, limit, &string)? {
+    if !(start <= position && position < end) {
+        // A static composition found through the LIMIT search that does
+        // not cover POS: an automatic one closer to POS wins (this
+        // find_automatic_composition call carries no multibyte or
+        // inhibition guard).
+        if let Some(found) = find_automatic_composition(interp, env, position, limit, &string)?
+            && (if found.end <= position {
+                found.end > end
+            } else {
+                found.start < start
+            })
+        {
             return Ok(Value::list([
                 Value::Integer(found.start as i64),
                 Value::Integer(found.end as i64),
@@ -929,7 +1260,28 @@ fn find_composition(
             ]));
         }
     }
-    Ok(Value::Nil)
+    let range = [Value::Integer(start as i64), Value::Integer(end as i64)];
+    if !composition_valid_p(interp, start, end, prop) {
+        return Ok(Value::list(range.into_iter().chain([Value::Nil])));
+    }
+    if !args[3].is_truthy() {
+        return Ok(Value::list(range.into_iter().chain([Value::T])));
+    }
+    let id = match prop.cons_values().map(|(head, _)| head.kind()) {
+        Some(Kind::Integer(id)) => usize::try_from(id).ok(),
+        _ => get_composition_id(interp, env, start, end - start, prop, &string)?,
+    };
+    let Some(state) = id.and_then(|id| interp.composition_states.get(id)).cloned() else {
+        return Ok(Value::list(range));
+    };
+    let components =
+        crate::lisp::primitives::copy_sequence_value(interp, &registered_components(prop))?;
+    Ok(Value::list(range.into_iter().chain([
+        components,
+        if state.relative { Value::T } else { Value::Nil },
+        composition_modification_func(prop),
+        Value::Integer(state.width),
+    ])))
 }
 
 fn get_glyph_string(interp: &Interpreter, env: &Env, args: &[Value]) -> Result<Value, LispError> {
@@ -1008,7 +1360,7 @@ define_dispatch!(
             }
             "find-composition-internal" => {
                 need_args(name, args, 4)?;
-                find_composition(interp, env, args)
+                find_composition_internal(interp, env, args)
             }
         }
     }

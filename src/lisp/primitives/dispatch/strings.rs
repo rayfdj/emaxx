@@ -5,7 +5,7 @@ use crate::lisp::types::string_data::character_code;
 
 /// BYTE as a multibyte string's bytes: itself when ASCII, else the
 /// two-byte form of its eight-bit character (BYTE8_STRING).
-fn push_byte_as_multibyte(bytes: &mut Vec<u8>, byte: u8) {
+pub(super) fn push_byte_as_multibyte(bytes: &mut Vec<u8>, byte: u8) {
     if byte < 0x80 {
         bytes.push(byte);
     } else {
@@ -534,12 +534,7 @@ define_dispatch!(
             }
             "string-to-syntax" => {
                 need_args(name, args, 1)?;
-                let spec = string_text(&args[0])?;
-                let entry = syntax::parse_syntax_spec(&spec).ok_or_else(|| {
-                    let letter = spec.chars().next().unwrap_or('\0');
-                    LispError::Signal(format!("Invalid syntax description letter: {letter}"))
-                })?;
-                Ok(syntax::syntax_entry_value(interp, entry))
+                syntax::string_to_syntax(interp, &args[0])
             }
             "internal-describe-syntax-value" => {
                 need_args(name, args, 1)?;

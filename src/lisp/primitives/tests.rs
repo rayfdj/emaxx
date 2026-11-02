@@ -5091,13 +5091,16 @@ fn dump_emacs_portable_restores_context_and_reports_native_image_limit() {
         .unwrap_or_else(|error| panic!("pdumper_load: {error:?}"));
     assert_eq!(record.dump_size, bytes.len() as u64);
     assert!(restored.dump_loaded_p());
-    // alloc.c: the loaded objects are not consing, and `consing_until_gc'
-    // is zero in a process that starts from a dump, so the first
-    // collection comes after `gc-cons-threshold' bytes of the process's
-    // own consing; the loader's allocations used to count, and every
-    // booted process collected on its first evaluation.
+    // alloc.c: the loaded objects are not consing (thaw_hash_tables'
+    // arrays alone are), and `consing_until_gc' is zero in a process that
+    // starts from a dump, so maybe_garbage_collect's first
+    // bump_consing_until_gc leaves `gc-cons-threshold' bytes less those to
+    // go; the loader's allocations used to count, and every booted process
+    // collected on its first evaluation.
     assert!(
-        !restored.native_compiler.garbage_collection_might_be_due(),
+        !restored
+            .native_compiler
+            .garbage_collection_due(800_000, Some(0.1)),
         "the image's objects counted as consing"
     );
     assert_eq!(
@@ -6458,6 +6461,48 @@ fn string_to_syntax_encodes_classes_flags_and_matching_characters() {
         .expect_err("invalid syntax descriptors must signal")
         .to_string(),
         "Invalid syntax description letter: z"
+    );
+}
+
+#[test]
+fn syntax_descriptors_and_category_sets_read_the_string_bytes() {
+    // syntax.c:Fstring_to_syntax reads SDATA as a C string: a NUL ends the
+    // descriptor, a first byte past 0177 is whitespace (syntax_spec_code's
+    // zero entries), and the matching character is string_char_and_length
+    // of the bytes; Fmodify_syntax_entry stores what it returns.
+    // category.c:Fmake_category_set checks the bytes from the last.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((table (make-syntax-table)))
+              (modify-syntax-entry ?a "w\0p" table)
+              (modify-syntax-entry ?b "\x85" table)
+              (list (string-to-syntax "w\0p")
+                    (string-to-syntax "\x80")
+                    (string-to-syntax "(\xc3\xa9")
+                    (string-to-syntax (string ?. ?é ?1))
+                    (aref table ?a)
+                    (aref table ?b)
+                    (eq (aref table ?a) (string-to-syntax "w"))
+                    (condition-case e (make-category-set "a\x80\x90") (error e))))"#,
+        "((2) (0) (4 . 233) (65537 . 233) (2) (0) t (wrong-type-argument categoryp 144))",
+        "syntax descriptor and category set bytes",
+    );
+}
+
+#[test]
+fn process_names_and_signal_names_are_checked_as_process_c() {
+    // process.c:get_required_string_keyword_param for :name, and
+    // abbr_to_signal, whose error names the symbol as given.
+    assert_oracle_contract_matches_interpreter(
+        r#"(list (condition-case e (make-process :command '("true")) (error e))
+                 (condition-case e (make-pipe-process :name nil) (error e))
+                 (condition-case e (make-pipe-process :buffer nil) (error e))
+                 (condition-case e (signal-process (emacs-pid) 'bogus) (error e))
+                 (condition-case e (signal-process (emacs-pid) 'Sigint) (error e))
+                 (signal-process (emacs-pid) 'sig0))"#,
+        "((error \"Missing :name keyword parameter\") (error \":name value not a string\") \
+         (error \"Missing :name keyword parameter\") (error \"Undefined signal name bogus\") \
+         (error \"Undefined signal name Sigint\") 0)",
+        "process and signal names",
     );
 }
 
@@ -10631,26 +10676,81 @@ fn primitive_undo_consumes_marker_adjustments_with_their_deletion() {
 }
 
 #[test]
-fn substitute_in_file_name_expands_shell_style_env_vars() {
-    let old = std::env::var("EMAXX_SUBST_TEST").ok();
-    unsafe {
-        std::env::set_var("EMAXX_SUBST_TEST", "value");
-    }
+fn print_c_integer_characters_and_write_char() {
+    // print.c: a fixnum prints as a character when graphic_base_p, read
+    // from `unicode-category-table', admits it (a private-use character
+    // does; format, mark and unassigned codes do not).  Fwrite_char checks
+    // a fixnum, hands a function stream the code as it is, and stores the
+    // char_string form otherwise: modifier bits resolve, a code beyond
+    // MAX_CHAR is an error in hex.
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let form = Reader::new(
+        r#"(list (let ((print-integers-as-characters t))
+                   (prin1-to-string '(#xe000 #x200b 768 233 ?\( ?\s 4194303)))
+                 (condition-case e (write-char "x" #'ignore) (error e))
+                 (let (acc) (write-char 4194304 (lambda (c) (push c acc))) acc)
+                 (with-temp-buffer
+                   (write-char 4194304 (current-buffer))
+                   (string-to-list (buffer-string)))
+                 (condition-case e
+                     (with-temp-buffer (write-char (* 64 4194304) (current-buffer)))
+                   (error e))
+                 (with-temp-buffer
+                   (write-char (+ ?a (ash 1 25)) (current-buffer))
+                   (buffer-string)))"#,
+    )
+    .read()
+    .expect("printer contract should parse")
+    .expect("printer contract should contain a form");
+    let result = interp
+        .eval(&form, &mut crate::lisp::types::Env::new())
+        .expect("printer contract should evaluate");
+    let expected = Reader::new(
+        r#"("(?\ue000 8203 768 ?\u00e9 ?\\( ?\\s 4194303)"
+            (wrong-type-argument fixnump "x") (4194304) (0)
+            (error "Invalid character: 10000000") "A")"#,
+    )
+    .read()
+    .expect("expected printer results should parse")
+    .expect("expected printer results should contain a form");
+    assert_eq!(result, expected);
+}
+
+#[test]
+fn substitute_in_file_name_runs_env_el_and_keeps_an_unchanged_name() {
+    // fileio.c:Fsubstitute_in_file_name: `//' or `/~' restarts on the
+    // tail; variables go through Lisp `substitute-env-in-file-name'
+    // (preloaded env.el), and a name it returns unchanged comes back as
+    // the argument itself, multibyteness and all.
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let form = Reader::new(
+        r#"(let ((process-environment '("EMAXX_SUBST=value" "EMAXX_ABS=/abs")))
+             (let ((s (string-to-multibyte "/a/b")))
+               (list (substitute-in-file-name "$EMAXX_SUBST/${EMAXX_SUBST}/$$")
+                     (substitute-in-file-name "/path///file")
+                     (substitute-in-file-name "path//file")
+                     (substitute-in-file-name "/x/$EMAXX_ABS/y")
+                     (substitute-in-file-name "$UNSET_EMAXX/z")
+                     (eq s (substitute-in-file-name s))
+                     (multibyte-string-p (substitute-in-file-name s)))))"#,
+    )
+    .read()
+    .expect("substitution contract should parse")
+    .expect("substitution contract should contain a form");
     assert_eq!(
-        substitute_in_file_name("$EMAXX_SUBST_TEST/${EMAXX_SUBST_TEST}/$$"),
-        "value/value/$"
+        interp
+            .eval(&form, &mut crate::lisp::types::Env::new())
+            .expect("substitution contract should evaluate"),
+        Value::list([
+            Value::String("value/value/$".into()),
+            Value::String("/file".into()),
+            Value::String("/file".into()),
+            Value::String("/abs/y".into()),
+            Value::String("$UNSET_EMAXX/z".into()),
+            Value::T,
+            Value::T,
+        ])
     );
-    assert_eq!(substitute_in_file_name("/path///file"), "/file");
-    assert_eq!(substitute_in_file_name("path//file"), "/file");
-    if let Some(value) = old {
-        unsafe {
-            std::env::set_var("EMAXX_SUBST_TEST", value);
-        }
-    } else {
-        unsafe {
-            std::env::remove_var("EMAXX_SUBST_TEST");
-        }
-    }
 }
 
 #[cfg(target_os = "linux")]
@@ -18086,12 +18186,10 @@ fn garbage_collect_reports_the_live_census() {
         .expect("evaluate garbage-collect growth program");
     assert_eq!(growth.to_string(), growth_expected);
 
-    // alloc.c:Fgarbage_collect reports each kind's object size. Conses,
-    // vectors, vector slots and floats are GNU's C layouts and this
-    // allocator's. Symbol and string headers report the actual 64- and
-    // 48-byte cells the collector charges (GNU's are 48 and 32): an explicit
-    // difference, not a matching answer. Interval and buffer rows still carry
-    // GNU's constants. Any other size change must fail here.
+    // alloc.c:Fgarbage_collect reports each kind's object size, GNU's C
+    // layouts throughout: a symbol is a 48-byte Lisp_Symbol and a string a
+    // 32-byte Lisp_String, as the collector charges them, whatever cells
+    // this allocator holds. Any size change must fail here.
     let sizes_form = Reader::new(
         r#"(mapcar (lambda (entry) (list (car entry) (nth 1 entry)))
                    (garbage-collect))"#,
@@ -18105,7 +18203,7 @@ fn garbage_collect_reports_the_live_census() {
         .to_string();
     assert_eq!(
         sizes,
-        "((conses 16) (symbols 64) (strings 48) (string-bytes 1) \
+        "((conses 16) (symbols 48) (strings 32) (string-bytes 1) \
 (vectors 16) (vector-slots 8) (floats 8) (intervals 56) (buffers 992))"
     );
 
@@ -20942,19 +21040,9 @@ fn key_sequence_binding_parts_preserve_control_prefixes() {
         vec!["C-c".to_string(), ",".to_string(), "C-w".to_string()]
     );
     assert_eq!(
-        key_sequence_keymap_parts(&Value::String("\x03,\x17".into()))
-            .expect("raw control-byte key sequence should retain every event"),
-        vec![Value::Integer(3), Value::Integer(44), Value::Integer(23)]
-    );
-    assert_eq!(
         key_sequence_binding_parts(&Value::String("C-c g".into()))
             .expect("raw strings should remain raw key sequences"),
         vec!["C", "-", "c", "SPC", "g"]
-    );
-    assert_eq!(
-        key_sequence_binding_parts(&parse_kbd_sequence("C-c g").expect("parse key spelling"))
-            .expect("textual control-prefixed key should parse"),
-        vec!["C-c".to_string(), "g".to_string()]
     );
     assert_eq!(
         key_sequence_binding_parts(&Value::vector([
@@ -20963,16 +21051,6 @@ fn key_sequence_binding_parts_preserve_control_prefixes() {
         ]))
         .expect("vector control-prefixed key should parse"),
         vec!["C-c".to_string(), "g".to_string()]
-    );
-    assert_eq!(
-        textual_key_sequence_keymap_parts(&Value::String("M-v".into()))
-            .expect("Meta character key should normalize for keymap storage"),
-        vec![Value::Integer(27), Value::Integer(118)]
-    );
-    assert_eq!(
-        textual_key_sequence_keymap_parts(&Value::String("M-<up>".into()))
-            .expect("Meta function key should remain one symbolic event"),
-        vec![Value::symbol("M-up")]
     );
 }
 
@@ -21014,14 +21092,14 @@ fn string_make_multibyte_preserves_identity_or_converts_raw_bytes_without_proper
 
 #[test]
 fn keymap_lookup_uses_the_event_head_of_a_character_range() {
-    let range_event = Value::vector([Value::cons(
-        Value::Integer('w' as i64),
-        Value::Integer('x' as i64),
-    )]);
-    assert_eq!(
-        key_sequence_keymap_parts(&range_event)
-            .expect("a map-keymap character range should remain a valid lookup event"),
-        vec![Value::Integer(119)]
+    // keymap.c:access_keymap_1 looks a cons event up by its EVENT_HEAD.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((map (make-sparse-keymap)))
+              (define-key map "w" 'zz-w)
+              (list (lookup-key map (vector (cons ?w ?x)))
+                    (condition-case e (lookup-key map (vector (list ?w 1))) (error e))))"#,
+        r#"(zz-w (error "Two bases given in one event"))"#,
+        "character range event head",
     );
 }
 
@@ -33586,6 +33664,89 @@ fn comparisons_coerce_lists_take_and_columns_measure_as_gnu() {
 }
 
 #[test]
+fn garbage_collect_reports_gnu_object_sizes() {
+    // alloc.c:Fgarbage_collect names each kind with GNU's C size: the
+    // 48-byte Lisp_Symbol and 32-byte Lisp_String the collector charges.
+    assert_oracle_contract_matches_interpreter(
+        "(mapcar (lambda (entry) (list (car entry) (nth 1 entry))) (garbage-collect))",
+        "((conses 16) (symbols 48) (strings 32) (string-bytes 1) (vectors 16) \
+(vector-slots 8) (floats 8) (intervals 56) (buffers 992))",
+        "garbage-collect sizes",
+    );
+}
+
+#[test]
+fn ccl_programs_run_as_ccl_c_drives_them() {
+    // ccl.c:ccl_driver: a division by -1 into DIVMOD negates the
+    // destination's old value; a division by zero is an invalid command,
+    // reported at the instruction counter past its operands; de-sjis and
+    // en-sjis split the code into the register and r7; a command read
+    // past the code is invalid; CCL_Call returns to its caller; MapMultiple
+    // maps through a map set.  Fccl_execute_on_string writes a modifier
+    // bit resolved (shift and `a' is `A').  A coding system of type `ccl'
+    // runs its decoder (its end-of-input code at the last block, after
+    // the dos eol conversion) and its encoder, whose invalid command's
+    // message is in the text.
+    assert_oracle_contract_matches_interpreter(
+        r##"(let* ((ex (lambda (prog regs) (let ((r (vconcat regs))) (condition-case e (progn (ccl-execute prog r) r) (error (list (cadr e) r)))))) (run (lambda (prog str) (let ((s (make-vector 9 nil))) (condition-case e (list (append (ccl-execute-on-string prog s str) nil) s) (error (list (cadr e) s))))))) (define-ccl-program r245-sub '(0 ((r0 += 100)))) (register-code-conversion-map 'r245-map1 [97 ?A ?B ?C nil t lambda]) (register-code-conversion-map 'r245-map3 [65 (1 . 200) 300]) (define-ccl-program r245-dec '(1 ((loop (read r0) (if (r0 == ?a) (write ?A) (write r0)) (repeat))) (write ?!))) (define-ccl-program r245-bad '(1 ((read r0) (write r0) (r0 /= 0)))) (define-coding-system 'r245-cs "test" :coding-type 'ccl :mnemonic ?C :ccl-decoder 'r245-dec :ccl-encoder 'r245-bad) (list (funcall ex (ccl-compile '(0 ((r1 = (r0 // -1))))) [100 5 0 0 0 0 0 0]) (funcall ex (ccl-compile '(0 ((r1 = (r0 / 0))))) [100 5 0 0 0 0 0 0]) (funcall ex (ccl-compile '(0 ((r1 = (r0 de-sjis r2)) (r3 = (r4 en-sjis r5))))) [136 0 159 0 48 33 0 0]) (funcall ex [0 0 4] [1 2 3 4 5 6 7 8]) (funcall ex (ccl-compile '(0 ((call r245-sub) (call r245-sub) (r2 = r0)))) [1 0 0 0 0 0 0 0]) (mapcar (lambda (c) (aref (funcall ex (ccl-compile '(0 ((map-multiple r1 r0 ((r245-map1 r245-map3)))))) (vector c 0 0 0 0 0 0 0)) 0)) '(97 98 100 101 102)) (funcall run (ccl-compile '(1 ((read r0) (write "abc") (write "xyz\351w") (write r0)))) "Q") (funcall run (ccl-compile '(1 ((loop (read r0) (write (r0 + #x2000000)) (repeat))))) "ab") (decode-coding-string "banana" 'r245-cs) (decode-coding-string "a\r\nb" 'r245-cs-dos) (encode-coding-string "xyz" 'r245-cs)))"##,
+        r##"([100 -5 0 0 0 0 0 0] ("Error in CCL program at 4th code" [100 5 0 0 0 0 0 0]) [136 48 159 136 48 33 0 159] ("Error in CCL program at 4th code" [1 2 3 4 5 6 7 8]) [201 0 201 0 0 0 0 0] (65 66 100 101 102) ((97 98 99 120 121 122 233 119 81) [81 0 0 0 0 0 0 0 9]) ((65 66) [-1 0 0 0 0 0 0 33554530 6]) "bAnAnA!" "A
+b!" "x
+CCL: Invalid command 17 (ccl_code = c017) at 4.")"##,
+        "ccl programs",
+    );
+}
+
+#[test]
+fn static_compositions_register_and_update_as_composite_c() {
+    // composite.c: find-composition-internal leaves a Form-A `composition'
+    // property as it is without DETAIL-P; get_composition_id registers a
+    // composition in an `equal' table and puts the table's key into each
+    // property it turns into Form-B; update_compositions after a deletion
+    // that joins a composition's pieces gives the latter a copy of the
+    // property and calls the modification function, which must be a
+    // symbol (Ffboundp); a rule-based width loops to the glyph count with
+    // COMPOSITION_DECODE_REFS' reference points.
+    assert_oracle_contract_matches_interpreter(
+        r##"(let* ((log nil) (s1 (compose-string (copy-sequence "abc") 0 2)) (s2 (compose-string (copy-sequence "xy") 0 2)) (s3 (compose-string (copy-sequence "xy") 0 2))) (defalias 'r246-mod (lambda (f to) (push (list f to (buffer-string)) log))) (list (find-composition 0 nil s1) (get-text-property 0 'composition s1) (progn (find-composition 0 nil s2 t) (find-composition 0 nil s3 t) (eq (nth 2 (get-text-property 0 'composition s2)) (nth 2 (get-text-property 0 'composition s3)))) (with-temp-buffer (insert "abcdef") (compose-region 2 5 nil 'r246-mod) (goto-char 3) (insert "X") (goto-char 1) (insert "Y") (delete-region 4 5) (list (reverse log) (find-composition 3))) (with-temp-buffer (insert "abcdef") (compose-region 2 5 nil (lambda (a b) nil)) (condition-case e (progn (goto-char 5) (insert "x") 'ok) (error (list (car e) (cadr e))))) (let ((s (copy-sequence "abcde"))) (compose-string-internal s 0 5 [?a 200 ?b 200 ?c 200 ?d 200 ?e]) (list (string-width s) (find-composition-internal 0 nil s t))) (find-composition 0 nil (compose-string (copy-sequence "abc") 0 3 [?a 30 ?b 30 ?c]) t)))"##,
+        r##"((0 2 t) ((2)) t (((3 6 #("Yabcdef" 2 3 (composition ((3) . r246-mod)) 3 5 (composition ((3) . r246-mod))))) (3 4 nil)) (wrong-type-argument symbolp) (1 (0 5 [97 200 98 200 99 200 100 200 101] nil nil 1)) (0 3 [97 (tr . bl) 98 (tr . bl) 99] nil nil 2))"##,
+        "static compositions",
+    );
+}
+
+#[test]
+fn collections_truncate_undo_lists_as_compact_buffer() {
+    // alloc.c:compact_buffer at a collection's start: a buffer changed
+    // since its last compaction has its undo list cut by
+    // truncate_undo_list, past `undo-limit' at a boundary and before one
+    // past `undo-strong-limit', the most recent change always kept;
+    // `undo-outer-limit-function' is offered a first change past
+    // `undo-outer-limit' with the buffer current, and its non-nil value
+    // leaves the list; a buffer's own values of the limits apply.
+    assert_oracle_contract_matches_interpreter(
+        r##"(let ((r nil)) (with-temp-buffer (buffer-enable-undo) (let ((undo-limit 100) (undo-strong-limit 200)) (dotimes (i 50) (insert "abc") (undo-boundary)) (garbage-collect) (push (list (length buffer-undo-list) (seq-take buffer-undo-list 4)) r))) (with-temp-buffer (buffer-enable-undo) (let ((undo-limit 0) (undo-strong-limit 0)) (dotimes (i 5) (insert "abc") (undo-boundary)) (garbage-collect) (push buffer-undo-list r))) (with-temp-buffer (buffer-enable-undo) (let ((undo-limit 100) (undo-strong-limit 200)) (dotimes (i 50) (insert "abc") (delete-region 1 2) (undo-boundary)) (garbage-collect) (push (seq-take buffer-undo-list 5) r))) (with-temp-buffer (buffer-enable-undo) (let* ((log nil) (undo-outer-limit 10) (undo-outer-limit-function (lambda (n) (push (list n (eq (current-buffer) (window-buffer))) log) t))) (dotimes (i 5) (insert "abc")) (garbage-collect) (push (list (length buffer-undo-list) log) r))) (with-temp-buffer (buffer-enable-undo) (let ((undo-limit 40) (undo-strong-limit 1000)) (insert "abcdefghij") (undo-boundary) (delete-region 1 11) (undo-boundary) (insert "x") (undo-boundary) (garbage-collect) (push buffer-undo-list r))) (let ((b (generate-new-buffer "r247"))) (with-current-buffer b (buffer-enable-undo) (setq-local undo-limit 10) (setq-local undo-strong-limit 20) (dotimes (i 10) (insert "x") (undo-boundary))) (garbage-collect) (push (length (buffer-local-value 'buffer-undo-list b)) r) (kill-buffer b)) (nreverse r))"##,
+        r##"((6 (nil (148 . 151) nil (145 . 148))) (nil (13 . 16)) (nil ("b" . 1) (99 . 102)) (2 ((64 nil))) (nil (1 . 2)) 2)"##,
+        "undo truncation",
+    );
+}
+
+#[test]
+fn file_names_expand_and_concatenate_as_fileio_c() {
+    // fileio.c:Fexpand_file_name returns an absolute NAME it need not
+    // change as itself, made of DEFAULT-DIRECTORY's multibyteness when one
+    // of the two is pure ASCII (a non-ASCII multibyte one made its bytes,
+    // unibyte, when both are not), does not expand a DEFAULT-DIRECTORY EQ
+    // to NAME, stops at a NUL in DEFAULT-DIRECTORY and calls a handler of
+    // NAME, the directory or the result.  Ffile_name_concat keeps a
+    // component's leading slashes and makes a unibyte non-ASCII component
+    // multibyte when the result is.
+    assert_oracle_contract_matches_interpreter(
+        r##"(let ((show (lambda (r) (if (stringp r) (list (append r nil) (multibyte-string-p r)) r))) (h (lambda (_op &rest args) (if (equal (car args) "/zz/bad") 42 (format "H%S" args))))) (mapcar (lambda (f) (condition-case e (funcall show (funcall f)) (error e))) (list (lambda () (let ((s "/a/b")) (eq s (expand-file-name s)))) (lambda () (let ((s "/a/b")) (eq s (expand-file-name s "/\303\251/")))) (lambda () (expand-file-name "/abs" (decode-coding-string "/\303\251/" 'utf-8))) (lambda () (expand-file-name "" "")) (lambda () (let ((default-directory "/q/")) (expand-file-name "a" ""))) (lambda () (let ((s "x")) (expand-file-name s s))) (lambda () (expand-file-name "/a/./b//c/../d" "/")) (lambda () (expand-file-name "../.." "//x/")) (lambda () (expand-file-name (string-to-multibyte "a") "/x/\351")) (lambda () (expand-file-name (decode-coding-string "\303\251" 'utf-8) "/x/\351")) (lambda () (expand-file-name (decode-coding-string "\303\251" 'utf-8) "/x/")) (lambda () (expand-file-name "\351" (decode-coding-string "/\303\251/" 'utf-8))) (lambda () (expand-file-name "a" "/x\0y/")) (lambda () (condition-case e (expand-file-name "a\0b") (error (list (car e) (cadr e))))) (lambda () (expand-file-name "a" 5)) (lambda () (expand-file-name "~nosuchuser243/x" "/d/")) (lambda () (let ((file-name-handler-alist (list (cons "\\`/zz" h)))) (list (expand-file-name "/zz/x" "/d/") (expand-file-name "x" "/zz/d/") (expand-file-name "/foo/../zz/x" "/d/") (condition-case e (expand-file-name "/zz/bad") (error e))))) (lambda () (file-name-concat "a" "/b")) (lambda () (file-name-concat "a//" "//b" "c")) (lambda () (file-name-concat "a" nil "b" "")) (lambda () (file-name-concat (decode-coding-string "\303\251" 'utf-8) "\351")) (lambda () (file-name-concat (string-to-multibyte "a") "\351")) (lambda () (file-name-concat "a" 1)) (lambda () (file-name-concat nil 1)))))"##,
+        r##"(t t ((47 97 98 115) t) (nil nil) ((47 113 47 97) nil) ((120 47 120) nil) ((47 97 47 98 47 100) nil) ((47) nil) ((47 120 47 233 47 97) nil) ((47 120 47 233 47 195 169) nil) ((47 120 47 233) t) ((47 195 169 47 233) nil) ((47 120) nil) (wrong-type-argument filenamep) ((47 97) nil) ((47 100 47 126 110 111 115 117 99 104 117 115 101 114 50 52 51 47 120) nil) ("H(\"/zz/x\" \"/d/\")" "H(\"x\" \"/zz/d/\")" "H(\"/zz/x\" \"/d/\")" (error "Invalid handler in `file-name-handler-alist'")) ((97 47 47 98) nil) ((97 47 47 47 47 98 47 99) nil) ((97 47 98) nil) ((233 47 4194281) t) ((97 47 233) nil) (wrong-type-argument stringp 1) (wrong-type-argument stringp 1))"##,
+        "expand-file-name and file-name-concat",
+    );
+}
+
+#[test]
 fn indirect_buffers_share_their_base_text_and_its_markers() {
     // buffer.c:Fmake_indirect_buffer gives the indirect buffer its base's
     // buffer_text, whose one chain holds every marker of the family, the
@@ -33696,6 +33857,198 @@ fn variable_watchers_are_the_watchers_property_as_data_c_keeps_them() {
         r#"(let (log) (defvar zz-w 1) (defvaralias 'zz-wa 'zz-w) (defvar zz-r 1) (list (add-variable-watcher 'zz-w (lambda (&rest a) (push (cons 'first (nth 2 a)) log))) (add-variable-watcher 'zz-wa (lambda (&rest a) (push (cons 'second (nth 2 a)) log))) (add-variable-watcher 'zz-w 'ignore) (add-variable-watcher 'zz-w 'ignore) (length (get-variable-watchers 'zz-wa)) (length (get 'zz-w 'watchers)) (get 'zz-wa 'watchers) (progn (setq zz-wa 2) (prog1 (reverse log) (setq log nil))) (remove-variable-watcher 'zz-wa 'ignore) (length (get 'zz-w 'watchers)) (progn (put 'zz-w 'watchers nil) (setq zz-w 3) (prog1 (reverse log) (setq log nil))) (get-variable-watchers 'zz-w) (remove-variable-watcher 'zz-w 'nothing) (progn (add-variable-watcher 'zz-r (lambda (s n o w) (push (list s n o (get-variable-watchers s)) log) (setq zz-r (1+ n)))) (setq zz-r 10) (list zz-r (prog1 log (setq log nil)))) (mapcar (lambda (v) (length (get v 'watchers))) '(mode-line-format truncate-lines line-spacing display-line-numbers))))"#,
         r#"(nil nil nil nil 3 3 nil ((second . set) (first . set)) nil 2 nil nil nil (10 ((zz-r 10 set nil))) (1 1 1 1))"#,
         "variable watchers",
+    );
+}
+
+#[test]
+fn signal_and_watchers_refuse_what_eval_c_and_data_c_refuse() {
+    // eval.c:Fsignal turns a nil symbol without a list into `error';
+    // signal_or_quit takes DATA itself for a nil symbol and a non-symbol
+    // without data as it is, then Fget's CHECK_SYMBOL refuses a car that is
+    // no symbol.  data.c:set_symbol_trapped_write signals
+    // `trapping-constant' for a constant, and Fdefvaralias's set_internal
+    // of an unbound alias tells the base's watchers `let' with nil.
+    assert_oracle_contract_matches_interpreter(
+        r#"(list (condition-case e (signal nil '(a b)) (t (list 't e)))
+                 (condition-case e (signal nil nil) (error e))
+                 (condition-case e (signal nil 5) (error e))
+                 (condition-case e (signal 5 '(x)) (error e))
+                 (condition-case e (signal "str" nil) (error e))
+                 (condition-case e (signal 'arith-error 5) (error e))
+                 (condition-case e (signal nil '(arith-error 1 2)) (arith-error (list 'ae e)))
+                 (condition-case e (signal t '(1)) (t e))
+                 (condition-case e (add-variable-watcher nil #'ignore) (error e))
+                 (condition-case e (add-variable-watcher :kw #'ignore) (error e))
+                 (condition-case e (add-variable-watcher 'most-positive-fixnum #'ignore) (error e))
+                 (condition-case e (remove-variable-watcher nil #'ignore) (error e))
+                 (remove-variable-watcher 'zz-unwatched #'ignore)
+                 (let (log)
+                   (defvar zz-sw 1)
+                   (add-variable-watcher 'zz-sw (lambda (s n o w) (push (list s n o w) log)))
+                   (makunbound 'zz-sw)
+                   (defvaralias 'zz-sw-alias 'zz-sw)
+                   (list (nreverse log) (boundp 'zz-sw))))"#,
+        "((t (a b)) (error) (error . 5) (wrong-type-argument symbolp 5) \
+         (wrong-type-argument symbolp \"str\") (arith-error . 5) (ae (arith-error 1 2)) (t 1) \
+         (trapping-constant nil) (trapping-constant :kw) \
+         (trapping-constant most-positive-fixnum) (trapping-constant nil) nil \
+         (((zz-sw nil makunbound nil) (zz-sw nil let nil)) nil))",
+        "signal and trapping-constant",
+    );
+}
+
+#[test]
+fn current_active_maps_are_found_as_keymap_c_finds_them() {
+    // keymap.c:Fcurrent_active_maps: click_position refuses a position
+    // outside the accessible text; get_local_map reads the `keymap' and
+    // `local-map' char properties there with the narrowing lifted; the
+    // overriding maps and current_minor_maps' Findirect_function values go
+    // in unchecked; a mode or header line string's properties replace the
+    // buffer's even when nil; POSN_STRING is Fnth's.  read_key_sequence's
+    // active_maps passes a parameterized event's start, so a cons event
+    // whose second element is out of range signals as GNU's does.
+    assert_oracle_contract_matches_interpreter(
+        r#"(progn
+                (defvar zz-cam-mode nil)
+                (let* ((tag (lambda (m) (cond ((eq m global-map) 'G) ((eq m (current-local-map)) 'L) ((keymapp m) (or (lookup-key m [zz-tag]) 'K)) (t m))))
+                       (names (lambda (maps) (mapcar tag maps)))
+                       (km (lambda (name) (let ((m (make-sparse-keymap))) (define-key m [zz-tag] name) m))))
+                  (list
+                   (with-temp-buffer
+                     (insert "abc")
+                     (put-text-property 1 3 'keymap (funcall km 'kp))
+                     (let ((o (make-overlay 3 4)))
+                       (overlay-put o 'local-map (funcall km 'ov))
+                       (list (funcall names (current-active-maps nil 1))
+                             (funcall names (current-active-maps nil 3))
+                             (funcall names (current-active-maps nil (copy-marker 4)))
+                             (condition-case e (current-active-maps nil 5) (error (car e)))
+                             (condition-case e (current-active-maps nil 0) (error (car e)))
+                             (progn (narrow-to-region 2 3)
+                                    (list (condition-case e (current-active-maps nil 1) (error (car e)))
+                                          (funcall names (current-active-maps nil 2)))))))
+                   (let ((overriding-local-map 5)) (funcall names (current-active-maps t)))
+                   (let ((overriding-terminal-local-map 6) (overriding-local-map 5))
+                     (funcall names (current-active-maps t)))
+                   (let ((zz-cam-mode t)
+                         (minor-mode-map-alist (list (cons 'zz-cam-mode 7) (cons 'zz-cam-mode 'zz-cam-void))))
+                     (list (funcall names (current-active-maps)) (current-minor-mode-maps)))
+                   (funcall names (current-active-maps nil (list (selected-window) 'mode-line '(0 . 0) 0 (cons (propertize "xy" 'keymap (funcall km 'strk)) 1))))
+                   (funcall names (current-active-maps nil (list (selected-window) 'header-line '(0 . 0) 0 (cons (propertize "xy" 'local-map (funcall km 'hl)) 5))))
+                   (condition-case e (current-active-maps nil '(1 . 2)) (error e))
+                   (let ((m (make-sparse-keymap)))
+                     (define-key m "a" 'zz-cam-a)
+                     (let ((zz-cam-mode t) (minor-mode-map-alist (list (cons 'zz-cam-mode m))))
+                       (list (minor-mode-key-binding "a") (minor-mode-key-binding "b"))))
+                   (let ((e (condition-case e (execute-kbd-macro [(control 99999999)]) (error e)))) (list (car e) (bufferp (nth 1 e)) (nth 2 e))))))"#,
+        r#"(((kp G) (kp ov G) (G) args-out-of-range args-out-of-range (args-out-of-range (kp G))) (5 G) (6 L G) ((7 L G) (7)) (strk G) (L G) (wrong-type-argument listp (1 . 2)) (((zz-cam-mode . zz-cam-a)) nil) (args-out-of-range t 99999999))"#,
+        "current-active-maps",
+    );
+}
+
+#[test]
+fn vertical_motion_and_read_check_arguments_as_indent_c_and_lread_c() {
+    // indent.c:Fvertical_motion checks a (COLS . LINES) car with
+    // CHECK_NUMBER and LINES with CHECK_FIXNUM, and the batch vmotion
+    // ignores COLS.  lread.c:hash_table_from_plist takes each parameter's
+    // first value (plist_get), refuses DATA that is no list or has an odd
+    // length, and makes the table with Fmake_hash_table's checks; read0
+    // reads `#N=' and `#N#' only while `read-circle' is non-nil, for any N
+    // up to MOST_POSITIVE_FIXNUM.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list (condition-case e (vertical-motion 'x) (error e))
+                    (condition-case e (vertical-motion '(x . 1)) (error e))
+                    (condition-case e (vertical-motion '(1 . x)) (error e))
+                    (condition-case e (vertical-motion (expt 2 70)) (error e))
+                    (with-temp-buffer (insert "ab\ncd\nef") (goto-char 1) (list (vertical-motion '(1.5 . 1)) (point)))
+                    (condition-case e (read "#s(hash-table data (a))") (error e))
+                    (condition-case e (read "#s(hash-table data 5)") (error e))
+                    (condition-case e (read "#s(hash-table data (a . b))") (error e))
+                    (condition-case e (read "#s(hash-table test zz-no-such-test)") (error e))
+                    (let ((h (read "#s(hash-table data (a 1) data (b 2) test equal test eq)"))) (list (hash-table-test h) (gethash 'a h) (gethash 'b h)))
+                    (let ((read-circle nil)) (list (condition-case e (read "#1=(a #1#)") (error e)) (condition-case e (read "#1#") (error e)) (read "#24r1k")))
+                    (car (read "(#4000000000=a #4000000000#)")))"##,
+        r##"((wrong-type-argument fixnump x) (wrong-type-argument numberp x) (wrong-type-argument fixnump x) (wrong-type-argument fixnump 1180591620717411303424) (1 4) (error "Hash table data length is odd") (error "Hash table data is not a list") (wrong-type-argument listp b) (error "Invalid hash table test" zz-no-such-test) (equal 1 nil) ((invalid-read-syntax "#1=") (invalid-read-syntax "#1#") 44) a)"##,
+        "vertical-motion and reader argument checks",
+    );
+}
+
+#[test]
+fn gap_position_and_size_are_the_gap_insdel_c_keeps() {
+    // editfns.c:Fgap_position and Fgap_size answer GPT and GAP_SIZE: a new
+    // buffer's 20 bytes (Fget_buffer_create), make_gap_larger's
+    // GAP_BYTES_DFL beyond an insertion that needs more, a deletion's
+    // bytes added, the gap moved to each change, narrowing aside.
+    assert_oracle_contract_matches_interpreter(
+        r#"(with-temp-buffer
+                (let (r)
+                  (push (list (gap-position) (gap-size)) r)
+                  (insert "abc")
+                  (push (list (gap-position) (gap-size)) r)
+                  (insert (make-string 100 ?x))
+                  (push (list (gap-position) (gap-size)) r)
+                  (goto-char 2)
+                  (insert "q")
+                  (push (list (gap-position) (gap-size)) r)
+                  (delete-region 10 20)
+                  (push (list (gap-position) (gap-size)) r)
+                  (narrow-to-region 50 60)
+                  (push (list (gap-position) (gap-size)) r)
+                  (widen)
+                  (insert (make-string 3000 ?y))
+                  (push (list (gap-position) (gap-size)) r)
+                  (goto-char (point-max))
+                  (insert "é")
+                  (push (list (gap-position) (gap-size)) r)
+                  (nreverse r)))"#,
+        "((1 20) (4 17) (104 2000) (3 1999) (10 2009) (10 2009) (3050 2000) (3096 1998))",
+        "gap-position and gap-size",
+    );
+}
+
+#[test]
+fn file_name_completion_walks_the_directory_as_dired_c() {
+    // dired.c:file_name_completion: each entry read whose name FILE
+    // begins, "." and ".." and the completion-ignored-extensions (a
+    // directory's ending in a slash) excluded once a name that cannot be
+    // is seen, completion-regexp-list and PREDICATE applied, the best
+    // match narrowed to the common prefix with, ignoring case, the
+    // input's case preferred; t only for FILE matching alone and exactly.
+    // directory_files_internal's COUNT is CHECK_FIXNAT's.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((dir (file-name-as-directory (make-temp-file "zz-fnc-" t))))
+                (unwind-protect
+                    (progn
+                      (dolist (f '("Foo" "foo" "foobar" "FOOBAZ" "x.el" "x.elc" "y.o" "yy"))
+                        (write-region "" nil (expand-file-name f dir)))
+                      (dolist (d '("Dir1" "dir2" "obj.d"))
+                        (make-directory (expand-file-name d dir)))
+                      (list (file-name-completion "fo" dir)
+                            (file-name-completion "foob" dir)
+                            (let ((completion-ignore-case t))
+                              (list (file-name-completion "FOOB" dir)
+                                    (file-name-completion "foob" dir)
+                                    (file-name-completion "d" dir)))
+                            (let ((completion-ignored-extensions '(".elc")))
+                              (file-name-completion "x" dir))
+                            (let ((completion-ignored-extensions '(".el" ".elc")))
+                              (file-name-completion "x" dir))
+                            (let ((completion-ignored-extensions '(".o")))
+                              (file-name-completion "y" dir))
+                            (let ((completion-ignored-extensions '(".d/")))
+                              (file-name-completion "o" dir))
+                            (file-name-completion "Dir1" dir)
+                            (file-name-completion "Dir1/" dir)
+                            (file-name-completion "." dir)
+                            (file-name-completion ".." dir)
+                            (let ((completion-regexp-list '("ba")))
+                              (file-name-completion "f" dir))
+                            (file-name-completion "f" dir (lambda (n) (string-match-p "bar" n)))
+                            (sort (file-name-all-completions "f" dir) #'string<)
+                            (condition-case e (directory-files dir nil nil nil -1) (error e))))
+                  (delete-directory dir t)))"#,
+        r#"("foo" "foobar" ("FOOBA" "fooba" "dir") "x.el" "x.el" "yy" "obj.d/" "Dir1/" nil "." "../" "foobar" "foobar" ("foo" "foobar") (wrong-type-argument wholenump -1))"#,
+        "file-name-completion",
     );
 }
 

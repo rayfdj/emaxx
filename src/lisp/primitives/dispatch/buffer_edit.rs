@@ -583,25 +583,31 @@ define_dispatch!(
             }
             "vertical-motion" => {
                 need_arg_range(name, args, 1, 3)?;
-                let (goal_col, n) = match args[0].kind() {
-                    cons @ Kind::Cons(_) => {
-                        let (car, cdr) = cons
-                            .value()
-                            .cons_values()
-                            .ok_or_else(|| LispError::WrongTypeArgument("consp".into(), args[0]))?;
+                // indent.c:Fvertical_motion: LINES may be (COLS . LINES),
+                // COLS checked by CHECK_NUMBER; LINES must be a fixnum.
+                let (goal_col, lines) = match args[0].cons_values() {
+                    Some((cols, lines)) => {
                         // COLS may be a float (line-move-visual divides
                         // pixels by the frame char width); GNU truncates
                         // it to a pixel count.
-                        let goal = match car.kind() {
+                        let goal = match cols.kind() {
                             Kind::Float(float) => float.max(0.0) as usize,
-                            other => other.value().as_integer()?.max(0) as usize,
+                            Kind::Integer(cols) => cols.max(0) as usize,
+                            Kind::BigInteger(_) => {
+                                if integer_like_bigint(interp, &cols)? < BigInt::from(0) {
+                                    0
+                                } else {
+                                    usize::MAX
+                                }
+                            }
+                            _ => return Err(wrong_type_argument("numberp", cols)),
                         };
-                        (Some(goal), cdr.as_integer()?)
+                        (Some(goal), lines)
                     }
-                    other => {
-                        let big = integer_like_bigint(interp, &other.value())?;
-                        (None, big.to_i64().unwrap_or(i64::MAX / 2))
-                    }
+                    None => (None, args[0]),
+                };
+                let Kind::Integer(n) = lines.kind() else {
+                    return Err(wrong_type_argument("fixnump", lines));
                 };
                 // WINDOW lends only its geometry: the motion runs in the
                 // current buffer (Fvertical_motion).
@@ -774,8 +780,9 @@ define_dispatch!(
                 }
                 Ok(Value::Nil)
             }
-            "gap-position" => Ok(Value::Integer(interp.buffer.borrow().point() as i64)),
-            "gap-size" => Ok(Value::Integer(0)),
+            // editfns.c:Fgap_position and Fgap_size: GPT and GAP_SIZE.
+            "gap-position" => Ok(Value::Integer(interp.buffer.borrow().gap_position() as i64)),
+            "gap-size" => Ok(Value::Integer(interp.buffer.borrow().gap_size() as i64)),
             "buffer-line-statistics" => {
                 need_arg_range(name, args, 0, 1)?;
                 buffer_line_statistics_value(interp, args.first())

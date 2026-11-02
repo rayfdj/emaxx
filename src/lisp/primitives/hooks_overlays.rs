@@ -115,7 +115,8 @@ pub(crate) fn flush_combined_after_change(
         (end - begin) as usize,
     );
     let restore = interp.bind_special_dynamic("combine-after-change-calls", Value::Nil, env)?;
-    let result = signal_after_change(interp, change, &OverlayHookCalls::none(), env);
+    let result = signal_after_change(interp, change, &OverlayHookCalls::none(), env)
+        .and_then(|()| update_compositions(interp, begin as usize, end as usize, CHECK_ALL, env));
     let restore_result = interp.restore_special_dynamic(restore, env);
     if interp.has_buffer_id(saved_buffer_id) {
         interp.switch_to_buffer_id(saved_buffer_id)?;
@@ -609,7 +610,10 @@ fn delete_region_with_hooks_then<R>(
         let deleted = interp
             .delete_region_current_buffer(from, to)
             .map_err(|e| LispError::Signal(e.to_string()))?;
-        Ok((Some(AfterChange::new(from, to - from, 0)), (deleted, extra)))
+        Ok((
+            Some(AfterChange::new(from, to - from, 0).composing(from, from, CHECK_HEAD)),
+            (deleted, extra),
+        ))
     })
 }
 

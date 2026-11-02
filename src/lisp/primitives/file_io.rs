@@ -942,7 +942,7 @@ fn encode_region_for_write(
         .lookup_var("inhibit-eol-conversion", env)
         .is_some_and(|value| value.is_truthy());
     let translation = encode_translation_tables(interp, coding_name, env)?;
-    encode_text_bytes(
+    super::coding::encode_text_bytes_for_write(
         interp,
         &source,
         coding_name,
@@ -1027,7 +1027,7 @@ fn write_region_with_coding(
         .lookup_var("inhibit-eol-conversion", env)
         .is_some_and(|value| value.is_truthy());
     let translation = encode_translation_tables(interp, coding_name, env)?;
-    let bytes = encode_text_bytes(
+    let bytes = super::coding::encode_text_bytes_for_write(
         interp,
         &source,
         coding_name,
@@ -1525,7 +1525,7 @@ pub(crate) fn native_print_updates_batch_last_char(
             interp
                 .lookup_var("print-integers-as-characters", env)
                 .is_some_and(|value| value.is_truthy())
-                && render_princ_integer_as_character(&Value::Integer(integer)).is_some()
+                && render_princ_integer_as_character(interp, &Value::Integer(integer)).is_some()
         }
         Kind::BigInteger(_) | Kind::Float(_) => false,
         Kind::StringObject(_) => escaped,
@@ -2066,7 +2066,10 @@ pub(crate) fn decode_file_bytes(
         .unwrap_or_else(|| coding.clone());
     let for_unibyte = coding_system_property(interp, &canonical, ":for-unibyte")
         .is_some_and(|value| value.is_truthy());
-    if bytes.is_empty() {
+    // Finsert_file_contents decodes nothing read only for a coding that
+    // needs no flushing (CODING_REQUIRE_FLUSHING: a CCL decoder still
+    // runs its end-of-input code).
+    if bytes.is_empty() && !super::coding::coding_requires_flushing(interp, &canonical) {
         return Ok(FileDecode {
             decoded: DecodedText::new(),
             coding,
@@ -2522,6 +2525,8 @@ fn insert_file_bytes(
                 &overlay_calls,
                 env,
             )?;
+            let point = interp.buffer.borrow().point();
+            update_compositions(interp, point, point, CHECK_BORDER, env)?;
         }
         // restore_window_points over the erased accessible portion.
         if erase

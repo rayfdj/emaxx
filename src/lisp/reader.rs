@@ -121,6 +121,10 @@ pub(crate) trait ReadContext {
     fn doc_string(&mut self, reference: Value) -> Result<Value, LispError>;
     /// character_name_to_code's `(char-from-name NAME t)'.
     fn char_from_name(&mut self, name: &str) -> Result<Value, LispError>;
+    /// Vread_circle: whether `#N=' and `#N#' are read.
+    fn read_circle(&mut self) -> bool {
+        true
+    }
 }
 
 /// One of lread.c's saved_strings: the bytes `#@' skipped in a file while
@@ -483,7 +487,7 @@ pub struct Reader<'a> {
     /// read0's read_objects_map: each `#N=' label of this top-level read,
     /// mapped to its placeholder until the labelled object is complete and
     /// to the object after; a `#N#' naming no label is invalid syntax.
-    read_objects_map: HashMap<u32, Value, IdentityBuildHasher>,
+    read_objects_map: HashMap<u64, Value, IdentityBuildHasher>,
     /// read0's read_objects_completed: the objects labelled so far, by
     /// word, through which alone a substitution walk can enter a cycle.
     read_objects_completed: HashSet<usize, IdentityBuildHasher>,
@@ -774,7 +778,7 @@ impl<'a> Reader<'a> {
     /// object is put everywhere the placeholder is inside it.
     fn complete_numbered(
         &mut self,
-        id: u32,
+        id: u64,
         placeholder: Value,
         object: Value,
     ) -> Result<Value, LispError> {
@@ -2056,9 +2060,15 @@ impl<'a> Reader<'a> {
                     }
                     return Ok(Some(self.read_integer(n as u32)?));
                 }
-                let Ok(id) = u32::try_from(n) else {
+                // read0 reads a label only up to MOST_POSITIVE_FIXNUM and
+                // while `read-circle' is non-nil.
+                let read_circle = self
+                    .read_context()
+                    .is_none_or(|context| context.read_circle());
+                if n > crate::lisp::primitives::MOST_POSITIVE_FIXNUM || !read_circle {
                     return Err(LispError::ReadError(token));
-                };
+                }
+                let id = n as u64;
                 if c == i64::from(b'=') {
                     // #N=OBJ -- assign number N to OBJ: a placeholder for
                     // the `#N#' inside OBJ until OBJ is read.

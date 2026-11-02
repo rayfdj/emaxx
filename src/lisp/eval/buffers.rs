@@ -13,6 +13,150 @@ impl Interpreter {
         }
     }
 
+    /// alloc.c:compact_buffer of every live buffer, newest first, as a
+    /// collection starts: a base buffer changed since its last compaction
+    /// has its undo list cut by truncate_undo_list, unless the list is t.
+    pub(crate) fn compact_buffers(&mut self, env: &mut Env) -> Result<(), LispError> {
+        let mut ids: Vec<u64> = std::iter::once(self.current_buffer_id)
+            .chain(self.inactive_buffers.iter().map(|(id, _)| *id))
+            .collect();
+        // all_buffers holds the newest buffer first.
+        ids.sort_unstable_by(|a, b| b.cmp(a));
+        for id in ids {
+            if self.buffer_base_id(id).is_some() {
+                continue;
+            }
+            let Some((modiff, compact, disabled)) = self.get_buffer_by_id(id).map(|buffer| {
+                (
+                    buffer.modified_tick(),
+                    buffer.compact_tick(),
+                    buffer.undo_recording_disabled(),
+                )
+            }) else {
+                continue;
+            };
+            if compact == modiff {
+                continue;
+            }
+            if !disabled {
+                self.truncate_undo_list(id, env)?;
+            }
+            if let Some(mut buffer) = self.get_buffer_by_id_mut(id) {
+                let modiff = buffer.modified_tick();
+                buffer.set_compact_tick(modiff);
+            }
+        }
+        Ok(())
+    }
+
+    /// undo.c:truncate_undo_list of buffer ID, made current for its values
+    /// of `undo-limit', `undo-strong-limit' and `undo-outer-limit' and for
+    /// `undo-outer-limit-function', with collection inhibited.
+    fn truncate_undo_list(&mut self, id: u64, env: &mut Env) -> Result<(), LispError> {
+        self.inhibit_garbage_collection();
+        let saved = self.current_buffer_id;
+        let mut result = self
+            .set_current_buffer_id(id)
+            .and_then(|()| self.truncate_current_undo_list(env));
+        // record_unwind_current_buffer: back to the buffer if it lives.
+        if self.has_buffer_id(saved) {
+            let restored = self.set_current_buffer_id(saved);
+            result = result.and(restored);
+        }
+        self.allow_garbage_collection();
+        result
+    }
+
+    fn truncate_current_undo_list(&mut self, env: &mut Env) -> Result<(), LispError> {
+        // sizeof (struct Lisp_Cons) and sizeof (struct Lisp_String).
+        const CONS_SIZE: i64 = 16;
+        const STRING_SIZE: i64 = 32;
+        let element_size = |element: Value| -> i64 {
+            let mut size = CONS_SIZE;
+            if let Some((head, _)) = element.cons_values() {
+                size += CONS_SIZE;
+                if let Kind::StringObject(string) = head.kind() {
+                    size += STRING_SIZE - 1 + string.borrow().len() as i64;
+                }
+            }
+            size
+        };
+        let list = self.buffer.borrow().undo_list();
+        let mut size: i64 = 0;
+        let mut prev = Value::Nil;
+        let mut next = list;
+        // If the first element is an undo boundary, skip past it.
+        if let Some((head, tail)) = next.cons_values()
+            && head.is_nil()
+        {
+            size += CONS_SIZE;
+            prev = next;
+            next = tail;
+        }
+        // Always preserve at least the most recent undo record.
+        while let Some((element, tail)) = next.cons_values()
+            && !element.is_nil()
+        {
+            size += element_size(element);
+            prev = next;
+            next = tail;
+        }
+        // Past `undo-outer-limit' by the first boundary, the function is
+        // offered the list.
+        let outer = self
+            .lookup_var("undo-outer-limit", env)
+            .unwrap_or(Value::Nil);
+        let past_outer = match outer.kind() {
+            Kind::Integer(limit) => limit < size,
+            Kind::BigInteger(limit) => match num_traits::ToPrimitive::to_i64(&*limit) {
+                Some(limit) => limit < size,
+                None => limit.sign() == num_bigint::Sign::Minus,
+            },
+            _ => false,
+        };
+        let function = self
+            .lookup_var("undo-outer-limit-function", env)
+            .unwrap_or(Value::Nil);
+        if past_outer && !function.is_nil() {
+            let handled = self.call_function_value(function, None, &[Value::Integer(size)], env)?;
+            if !handled.is_nil() {
+                return Ok(());
+            }
+        }
+        let mut last_boundary = if next.is_cons() { prev } else { Value::Nil };
+        let limit_of = |interp: &Self, name: &str| {
+            interp
+                .lookup_var(name, env)
+                .and_then(|value| value.integer_value())
+                .unwrap_or(0)
+        };
+        let undo_limit = limit_of(self, "undo-limit");
+        let undo_strong_limit = limit_of(self, "undo-strong-limit");
+        // Keep additional undo data, if it fits in the limits.
+        while let Some((element, tail)) = next.cons_values() {
+            if element.is_nil() {
+                if size > undo_strong_limit {
+                    break;
+                }
+                last_boundary = prev;
+                if size > undo_limit {
+                    break;
+                }
+            }
+            size += element_size(element);
+            prev = next;
+            next = tail;
+        }
+        if next.is_nil() {
+            // The whole list is short enough.
+        } else if !last_boundary.is_nil() {
+            last_boundary.set_cdr(Value::Nil)?;
+        } else {
+            self.buffer.borrow_mut().set_undo_list(Value::Nil);
+        }
+        Ok(())
+    }
+
     /// undo.c:Fundo_boundary.
     pub(crate) fn undo_boundary(&mut self, env: &mut Env) -> Result<Value, LispError> {
         if self.buffer.borrow().undo_recording_disabled() {

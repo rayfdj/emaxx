@@ -399,7 +399,7 @@ impl Printer {
                 match self
                     .options
                     .integers_as_characters
-                    .then(|| render_integer_as_character(&obj, escape))
+                    .then(|| render_integer_as_character(interp, &obj, escape))
                     .flatten()
                 {
                     Some(character) => self.out.push_str(&character),

@@ -1393,17 +1393,9 @@ define_dispatch!(
                     Some(table) => syntax::check_syntax_table(table)?,
                     None => interp.current_syntax_table_id(),
                 };
-                let syntax = string_text(&args[1])?;
-                let entry = syntax::parse_syntax_spec(&syntax).ok_or_else(|| {
-                    let letter = syntax.chars().next().unwrap_or('\0');
-                    LispError::Signal(format!("Invalid syntax description letter: {letter}"))
-                })?;
-                interp.char_table_set_range(
-                    table_id,
-                    start,
-                    end,
-                    syntax::syntax_entry_value(interp, entry),
-                )?;
+                // "newentry = Fstring_to_syntax (newentry);"
+                let entry = syntax::string_to_syntax(interp, &args[1])?;
+                interp.char_table_set_range(table_id, start, end, entry)?;
                 // "We clear the regexp cache, since character classes can
                 // now have different values from those in the compiled
                 // regexps."
@@ -1475,16 +1467,20 @@ define_dispatch!(
 
             "make-category-set" => {
                 need_args(name, args, 1)?;
-                let string = string_like(&args[0])
-                    .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), args[0]))?;
-                if string.multibyte {
+                // category.c: the unibyte string's bytes (SREF), from the
+                // last, each CHECK_CATEGORY.
+                let Kind::StringObject(string) = args[0].kind() else {
+                    return Err(LispError::WrongTypeArgument("stringp".into(), args[0]));
+                };
+                let string = string.borrow();
+                if string.is_multibyte() {
                     return Err(LispError::Signal(
                         "Multibyte string in `make-category-set'".into(),
                     ));
                 }
                 let mut bits = [false; 128];
-                for ch in string.text.chars() {
-                    bits[category_arg(&Value::Integer(ch as i64))? as usize] = true;
+                for byte in string.bytes().iter().rev() {
+                    bits[category_arg(&Value::Integer(i64::from(*byte)))? as usize] = true;
                 }
                 Ok(make_bool_vector_value(bits))
             }

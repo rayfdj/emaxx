@@ -5341,9 +5341,9 @@ extern "C" fn emaxx_native_gc_collect(stack_top: *const NativeWord) {
     // finalizers/hooks can reenter native Lisp in this same activation.
     let (interpreter, environment, runtime) =
         with_active(|active| (active.interpreter, active.environment.get(), active.runtime));
-    let started = {
+    let due = {
         // SAFETY: the synchronous native activation owns these pointers. This
-        // scope ends before the shared completion path can invoke Lisp.
+        // scope ends before compact_buffers can invoke Lisp.
         let interpreter = unsafe { &mut *interpreter };
         if interpreter.garbage_collection_is_inhibited() {
             return;
@@ -5364,9 +5364,23 @@ extern "C" fn emaxx_native_gc_collect(stack_top: *const NativeWord) {
             Ok(Kind::Float(value)) => Some(value.get()),
             _ => None,
         };
-        if !runtime.heap.collection_due(threshold, percentage) {
-            return;
-        }
+        runtime.heap.collection_due(threshold, percentage)
+    };
+    if !due {
+        return;
+    }
+    // alloc.c:garbage_collect's compact_buffer pass, before the marking.
+    // SAFETY: as above; no reference into the activation is held across it.
+    let compacted = unsafe { (*interpreter).compact_buffers(&mut *environment) };
+    if let Err(error) = compacted {
+        with_active(|active| remember_helper_error(active, error));
+        return;
+    }
+    let started = {
+        // SAFETY: as above. This scope ends before the shared completion
+        // path can invoke Lisp.
+        let interpreter = unsafe { &mut *interpreter };
+        let runtime = unsafe { &mut *runtime };
         let started = std::time::Instant::now();
         runtime.collect_native_heap_now(stack_top, interpreter, unsafe { &*environment });
         started

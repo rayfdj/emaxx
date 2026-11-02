@@ -189,6 +189,9 @@ pub(crate) trait Buckets {
     fn grow(&mut self) {
         let bits = self.size_bits() + 1;
         assert!(bits <= MAX_BITS, "Obarray too big");
+        // hash_table_alloc_bytes of the new buckets and
+        // hash_table_free_bytes of the old: the consing of the difference.
+        crate::lisp::native_comp::note_lisp_allocation(self.size().saturating_mul(8));
         let symbols = self.symbols();
         self.reset(bits);
         for symbol in symbols {
@@ -275,6 +278,10 @@ pub(crate) struct StandardBuckets {
     buckets: Vec<Option<SymbolName>>,
     size_bits: u32,
     count: u32,
+    /// The size_bits of the buckets pdumper.c dumped, which lie in the
+    /// dump and were never hash_table_alloc_bytes'; None when they were
+    /// made here.
+    dumped_bits: Option<u32>,
 }
 
 impl StandardBuckets {
@@ -284,7 +291,21 @@ impl StandardBuckets {
             buckets: vec![None; 1 << bits],
             size_bits: bits,
             count: 0,
+            dumped_bits: None,
         }
+    }
+
+    /// The buckets are a dump's, of 2^BITS.
+    pub(crate) fn set_dumped_bits(&mut self, bits: u32) {
+        self.dumped_bits = Some(bits);
+    }
+
+    /// alloc.c's `hash_table_allocated_bytes' share of these buckets:
+    /// grow_obarray charges the new buckets and credits the old, so dumped
+    /// buckets count only by what the obarray has grown past them.
+    pub(crate) fn allocated_bytes(&self) -> usize {
+        let dumped = self.dumped_bits.map_or(0, |bits| 1_usize << bits);
+        self.size().saturating_sub(dumped).saturating_mul(8)
     }
 }
 

@@ -469,10 +469,15 @@ pub(crate) fn pdumper_load(
     // dump, and pdumper's objects are not consing.  The loader's
     // allocations are the baseline, so the first collection comes after
     // `gc-cons-threshold' bytes of the process's own consing, as in GNU,
-    // not on the first evaluation after the load.
+    // not on the first evaluation after the load.  That consing starts
+    // with thaw_hash_tables' arrays.
+    interp.thaw_host_hash_tables();
     interp
         .native_compiler
         .garbage_collection_baseline_after_image_load();
+    crate::lisp::native_comp::note_lisp_allocation(
+        crate::lisp::alloc::vectors::hash_tables::take_thawed_bytes(),
+    );
     Ok(record)
 }
 

@@ -22,7 +22,6 @@ num-bigint = "0.4"
 num-traits = "0.2"
 chrono = "0.4"
 unicode-bidi = "0.3.18"
-unicode-general-category = "1.1"
 # GNU Emacs 30.2 ships Unicode 15.1 property tables.  Keep the name
 # repertoire pinned to that same revision: newer assigned code points are
 # observably `nil'/`Cn' through get-char-code-property in GNU 30.2.

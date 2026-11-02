@@ -4666,13 +4666,32 @@ define_dispatch!(
             }
             "write-char" => {
                 need_arg_range(name, args, 1, 2)?;
-                // print.c Fwrite_char: printchar of the character's code.
-                format_char_conversion(&args[0])?;
-                let code = args[0].as_integer()? as u32;
-                let mut rendered = PrintOutput::default();
-                rendered.push_code(code);
+                // print.c Fwrite_char: CHECK_FIXNUM, then printchar of the
+                // code as an unsigned int.  A function stream is called
+                // with that number as it is; other output stores its
+                // CHAR_STRING form, whose modifier bits char_string
+                // resolves and whose code past MAX_CHAR is an error.
+                let Kind::Integer(code) = args[0].kind() else {
+                    return Err(LispError::WrongTypeArgument("fixnump".into(), args[0]));
+                };
+                let code = code as u32;
                 let stream = printer_stream_value(interp, env, args.get(1));
-                write_printer_output_codes(interp, &rendered, stream.as_ref(), env)?;
+                match stream.map(|stream| stream.kind()) {
+                    None | Some(Kind::T | Kind::Nil | Kind::Buffer(_) | Kind::Marker(_)) => {
+                        let mut rendered = PrintOutput::default();
+                        rendered.push_code(super::super::ccl::written_character(code as i32)?);
+                        write_printer_output_codes(interp, &rendered, stream.as_ref(), env)?;
+                    }
+                    Some(_) => {
+                        let function = stream.expect("function stream");
+                        interp.call_function_value(
+                            function,
+                            None,
+                            &[Value::Integer(i64::from(code))],
+                            env,
+                        )?;
+                    }
+                }
                 record_batch_standard_output_char(interp, stream.as_ref(), env, code);
                 Ok(args[0])
             }

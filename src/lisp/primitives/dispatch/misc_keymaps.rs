@@ -449,43 +449,30 @@ define_dispatch!(
             }
             "current-minor-mode-maps" => {
                 need_args(name, args, 0)?;
-                Ok(Value::list(
-                    active_minor_mode_bindings(interp, env)?
-                        .into_iter()
-                        .map(|(_, map)| map),
-                ))
+                Ok(Value::list(active_minor_mode_maps(interp, env)?))
             }
             "minor-mode-key-binding" => {
                 need_arg_range(name, args, 1, 2)?;
-                // keymap.c:Fminor_mode_key_binding: KEY reaches Flookup_key
-                // only through an active minor mode map.
-                let maps = active_minor_mode_bindings(interp, env)?;
-                if maps.is_empty() {
-                    return Ok(Value::Nil);
-                }
-                let normalized_key = normalize_lucid_key_events(interp, &args[0], env)?;
-                let key_parts = key_sequence_keymap_parts(&normalized_key)?;
+                // keymap.c:Fminor_mode_key_binding: Flookup_key in each
+                // active minor mode map; a prefix map joins the list, and
+                // a command found before any prefix map is the answer.
+                let maps =
+                    crate::lisp::alloc::RootedVec::from_vec(current_minor_maps(interp, env)?);
                 let accept_default = args.get(1).is_some_and(Value::is_truthy);
-                let mut prefix_bindings = Vec::new();
-                for (mode, map) in maps {
-                    let binding = keymap_lookup_sequence_value_with_default(
-                        interp,
-                        &map,
-                        &key_parts,
-                        accept_default,
-                        env,
-                    )?;
+                let mut prefix_bindings = crate::lisp::alloc::RootedVec::new();
+                for &(mode, map) in maps.iter() {
+                    let binding = lookup_key_value(interp, map, args[0], accept_default, env)?;
                     if binding.is_nil() || matches!(binding.kind(), Kind::Integer(_)) {
                         continue;
                     }
-                    let entry = Value::cons(Value::Symbol(mode.into()), binding);
+                    let entry = Value::cons(mode, binding);
                     if keymapp(interp, binding, env) {
                         prefix_bindings.push(entry);
                     } else if prefix_bindings.is_empty() {
                         return Ok(Value::list([entry]));
                     }
                 }
-                Ok(Value::list(prefix_bindings))
+                Ok(Value::list(prefix_bindings.iter().copied()))
             }
             "keymap--get-keyelt" => {
                 need_args(name, args, 2)?;

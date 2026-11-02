@@ -1245,6 +1245,7 @@ impl Loader<'_> {
                 at += 16;
             }
             table.set_mutable(mutable);
+            crate::lisp::alloc::vectors::hash_tables::note_thawed(table);
         }
 
         // Phase 5: the symbol records.

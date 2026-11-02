@@ -342,7 +342,14 @@ fn replace_match(
                 newpoint.clamp(buffer.point_min(), buffer.point_max())
             };
             interp.buffer.borrow_mut().goto_char(point);
-            Ok((Some(AfterChange::new(sub_start, length, inschars)), ()))
+            Ok((
+                Some(AfterChange::new(sub_start, length, inschars).composing(
+                    sub_start,
+                    newpoint,
+                    CHECK_BORDER,
+                )),
+                (),
+            ))
         },
     )?;
     Ok(Value::Nil)
@@ -570,7 +577,14 @@ fn apply_buffer_replacement_hunks(
             let _ = interp.set_marker(saved_point_marker, None, None);
             edit_result?;
             restore_result?;
-            Ok((Some(AfterChange::new(target_start, old_len, new_len)), ()))
+            Ok((
+                Some(AfterChange::new(target_start, old_len, new_len).composing(
+                    target_start,
+                    target_start + new_len,
+                    CHECK_INSIDE,
+                )),
+                (),
+            ))
         },
     )
 }
@@ -956,7 +970,14 @@ define_dispatch!(
                             interp.family_after_in_place_edit();
                         }
                         let length = last_changed - changed;
-                        return Ok((Some(AfterChange::new(changed, length, length)), ()));
+                        return Ok((
+                            Some(AfterChange::new(changed, length, length).composing(
+                                changed,
+                                last_changed,
+                                CHECK_ALL,
+                            )),
+                            (),
+                        ));
                     }
                     let mut buffer = interp.buffer.borrow_mut();
                     // modify_text at the first change, from it to the
@@ -983,7 +1004,14 @@ define_dispatch!(
                     drop(buffer);
                     interp.family_after_in_place_edit();
                     let length = last_changed - changed;
-                    Ok((Some(AfterChange::new(changed, length, length)), ()))
+                    Ok((
+                        Some(AfterChange::new(changed, length, length).composing(
+                            changed,
+                            last_changed,
+                            CHECK_ALL,
+                        )),
+                        (),
+                    ))
                 })?;
                 Ok(Value::Nil)
             }
@@ -1098,6 +1126,15 @@ define_dispatch!(
                         leave_markers,
                     );
                     interp.family_after_in_place_edit();
+                    // The compositions at the rearranged regions' edges,
+                    // before the change is signaled.
+                    let (len1, len2) = (end1 - start1, end2 - start2);
+                    update_compositions(interp, start1, start1 + len2, CHECK_BORDER, env)?;
+                    if end1 == start2 {
+                        update_compositions(interp, start1 + len2, end2, CHECK_TAIL, env)?;
+                    } else {
+                        update_compositions(interp, end2 - len1, end2, CHECK_BORDER, env)?;
+                    }
                     Ok((
                         Some(AfterChange::new(start1, end2 - start1, end2 - start1)),
                         (),
@@ -1272,7 +1309,14 @@ define_dispatch!(
                                     env,
                                 )?;
                                 Ok((
-                                    Some(AfterChange::new(start, old_length, transformed_length)),
+                                    Some(
+                                        AfterChange::new(start, old_length, transformed_length)
+                                            .composing(
+                                                start,
+                                                start + transformed_length,
+                                                CHECK_ALL,
+                                            ),
+                                    ),
                                     (),
                                 ))
                             },
@@ -1450,10 +1494,10 @@ define_dispatch!(
                         } else {
                             Vec::new()
                         };
-                    insert_text_with_hooks(interp, text, None, &extended, false, false, env)?;
+                    insert_text_from_gap(interp, text, &extended, env)?;
                 } else {
                     let text = serialized.unibyte_text();
-                    insert_text_with_hooks(interp, &text, None, &[], false, false, env)?;
+                    insert_text_from_gap(interp, &text, &[], env)?;
                 }
                 Ok(Value::Nil)
             }

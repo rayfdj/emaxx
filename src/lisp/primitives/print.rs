@@ -248,42 +248,51 @@ pub(crate) fn symbol_name_looks_like_number(name: &str) -> bool {
         || crate::lisp::reader::parse_special_float_token(name).is_some()
 }
 
-fn render_integer_as_character(value: &Value, escape: bool) -> Option<String> {
-    let code = match value.kind() {
-        Kind::Integer(value) => value,
-        Kind::BigInteger(value) => value.to_i64()?,
-        _ => return None,
+fn render_integer_as_character(
+    interp: &Interpreter,
+    value: &Value,
+    escape: bool,
+) -> Option<String> {
+    // print.c's case_Lisp_Int: a fixnum up to MAX_UNICODE_CHAR prints as
+    // `?' and the character when named_escape names it or graphic_base_p
+    // admits it; bignums always print as numbers.
+    let Kind::Integer(code) = value.kind() else {
+        return None;
     };
-    let codepoint = u32::try_from(code).ok()?;
+    let codepoint = u32::try_from(code).ok().filter(|code| *code <= 0x10ffff)?;
+    let named = match codepoint {
+        0x08 => Some('b'),
+        0x09 => Some('t'),
+        0x0a => Some('n'),
+        0x0c => Some('f'),
+        0x0d => Some('r'),
+        0x20 => Some('s'),
+        _ => None,
+    };
+    if let Some(name) = named {
+        return Some(format!("?\\{name}"));
+    }
+    if !super::search::graphic_base_p(interp, codepoint) {
+        return None;
+    }
     let ch = char::from_u32(codepoint)?;
-    let body = match ch {
-        '?' => "?".into(),
-        ' ' => "\\s".into(),
-        '\n' => "\\n".into(),
-        '\r' => "\\r".into(),
-        '\t' => "\\t".into(),
-        '\u{0008}' => "\\b".into(),
-        '\u{000C}' => "\\f".into(),
-        '\'' | '"' | '\\' | ';' | '(' | ')' | '{' | '}' | '[' | ']' if escape => {
-            format!("\\{ch}")
-        }
-        _ => {
-            if matches!(code, 7 | 11 | 27 | 127) {
-                return None;
-            }
-            match get_general_category(ch).abbreviation() {
-                "Cc" | "Cf" | "Cn" | "Co" | "Cs" | "Mc" | "Me" | "Mn" | "Zl" | "Zp" | "Zs" => {
-                    return None;
-                }
-                _ => ch.to_string(),
-            }
-        }
-    };
-    Some(format!("?{body}"))
+    if escape
+        && matches!(
+            ch,
+            ';' | '"' | '\'' | '\\' | '(' | ')' | '{' | '}' | '[' | ']'
+        )
+    {
+        Some(format!("?\\{ch}"))
+    } else {
+        Some(format!("?{ch}"))
+    }
 }
 
-pub(crate) fn render_princ_integer_as_character(value: &Value) -> Option<String> {
-    render_integer_as_character(value, false)
+pub(crate) fn render_princ_integer_as_character(
+    interp: &Interpreter,
+    value: &Value,
+) -> Option<String> {
+    render_integer_as_character(interp, value, false)
 }
 
 pub(crate) fn render_prin1_symbol(
@@ -1168,6 +1177,10 @@ impl crate::lisp::reader::ReadContext for CallableReader<'_> {
     fn char_from_name(&mut self, name: &str) -> Result<Value, LispError> {
         self.interp.read_char_from_name(name, self.env)
     }
+
+    fn read_circle(&mut self) -> bool {
+        self.interp.read_circle(self.env)
+    }
 }
 
 impl crate::lisp::reader::ReaderStream for CallableReader<'_> {
@@ -1505,65 +1518,60 @@ pub(crate) fn hash_table_from_read_fields(
 }
 
 /// lread.c:hash_table_from_plist; MATERIALIZE finishes reader forms left in
-/// the data by a read that deferred them.
+/// the data by a read that deferred them.  plist_get finds each parameter's
+/// first value by EQ; `test', `weakness' and `purecopy' go to
+/// Fmake_hash_table, with `:size' the number of DATA pairs, and each pair
+/// is Fputhash'd in order.
 fn hash_table_from_plist(
     interp: &mut Interpreter,
     fields: &[Value],
     env: &mut Env,
     materialize: bool,
 ) -> Result<Value, LispError> {
-    let mut test = "eql".to_string();
-    let mut weakness = Value::Nil;
-    let mut purecopy = Value::Nil;
-    let mut entries = Vec::new();
-    let mut index = 0usize;
-    while index + 1 < fields.len() {
-        let Ok(key) = fields[index].as_symbol() else {
-            index += 2;
-            continue;
-        };
-        let key = key.to_string();
-        let field_value = fields[index + 1];
-        match key.as_str() {
-            "test" => test = field_value.as_symbol()?.to_string(),
-            "weakness" => weakness = field_value,
-            "purecopy" => purecopy = field_value,
-            "data" => {
-                let items = field_value.to_vec()?;
-                let mut cursor = 0usize;
-                while cursor + 1 < items.len() {
-                    let (entry_key, entry_value) = if materialize {
-                        (
-                            interp.materialize_read_object_literals(items[cursor], env)?,
-                            interp.materialize_read_object_literals(items[cursor + 1], env)?,
-                        )
-                    } else {
-                        (items[cursor], items[cursor + 1])
-                    };
-                    entries.push((entry_key, entry_value));
-                    cursor += 2;
-                }
-            }
-            _ => {}
+    let plist_get = |name: &str| {
+        let prop = Value::symbol(name);
+        fields
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .find(|[key, _]| key.eq_value(prop))
+            .map_or(Value::Nil, |[_, value]| *value)
+    };
+    let mut params = Vec::new();
+    for (name, keyword) in [
+        ("test", ":test"),
+        ("weakness", ":weakness"),
+        ("purecopy", ":purecopy"),
+    ] {
+        let value = plist_get(name);
+        if !value.is_nil() {
+            params.push(Value::symbol(keyword));
+            params.push(value);
         }
-        index += 2;
     }
-    // lread.c:hash_table_from_plist ignores serialized size/rehash metadata,
-    // creates the table with exactly one slot per DATA pair, then calls
-    // Fputhash for every pair.  In particular, a user-defined test runs its
-    // hash/comparison functions here, while the object is read; delaying that
-    // work until the first lookup changes both side effects and bucket state.
-    let capacity = entries.len();
-    let table = make_hash_table_value(
-        interp,
-        Value::symbol(&test),
-        capacity,
-        weakness,
-        purecopy,
-        env,
-    )?;
+    let data = plist_get("data");
+    if !(data.is_nil() || data.is_cons()) {
+        return Err(LispError::Signal("Hash table data is not a list".into()));
+    }
+    // list_length, which refuses a dotted or circular list as Flength.
+    call(interp, "length", &[data], env)?;
+    let items = data.to_vec()?;
+    if items.len() % 2 == 1 {
+        return Err(LispError::Signal("Hash table data length is odd".into()));
+    }
+    params.push(Value::symbol(":size"));
+    params.push(Value::Integer((items.len() / 2) as i64));
+    let table = call(interp, "make-hash-table", &params, env)?;
     let object = check_hash_table(&table)?;
-    for (key, value) in entries {
+    for &[key, value] in items.as_chunks::<2>().0 {
+        let (key, value) = if materialize {
+            (
+                interp.materialize_read_object_literals(key, env)?,
+                interp.materialize_read_object_literals(value, env)?,
+            )
+        } else {
+            (key, value)
+        };
         hash_table_put(interp, object, key, value, env)?;
     }
     Ok(table)

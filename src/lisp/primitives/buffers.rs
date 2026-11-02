@@ -505,6 +505,7 @@ pub(crate) fn translate_region_internal(
                         &prepared.overlay_calls,
                         env,
                     )?;
+                    update_compositions(interp, pos, pos + 1, CHECK_BORDER, env)?;
                 }
                 changed += 1;
             } else if let Some((length, replacement)) = sequence {
@@ -575,8 +576,15 @@ pub(crate) fn replace_range_with_hooks(
             &extended,
             crate::buffer::InsertedProperties::PLAIN,
         );
+        // insdel.c:replace_range's update_compositions of the new text.
         Ok((
-            Some(AfterChange::new(from, to - from, replacement.len())),
+            Some(
+                AfterChange::new(from, to - from, replacement.len()).composing(
+                    from,
+                    from + replacement.len(),
+                    CHECK_BORDER,
+                ),
+            ),
             (),
         ))
     })

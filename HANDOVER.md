@@ -11824,6 +11824,376 @@ setup_process_coding_systems's check now refuses). A 13-form
   subr-x, buffer and elisp-mode. Local validation: the grouped gate's
   3,433 library tests, the integration targets and clippy with
   `--all-targets --all-features -D warnings' pass.
+- **Round 243: file names are expanded and joined on their bytes as
+  fileio.c does.** `expand-file-name` is the new `fexpand_file_name`,
+  fileio.c:Fexpand_file_name on POSIX over the strings' bytes:
+  CHECK_STRING_NULL_BYTES (`filenamep`), the handler of NAME,
+  DEFAULT-DIRECTORY settled (the buffer's `default-directory`, a
+  relative one expanded against an absolute `invocation-directory` or
+  the root; "/" for no string), the directory's handler, the directory
+  expanded when relative and not EQ to NAME and its handler asked again,
+  the two made of one multibyteness (a pure-ASCII one, scanned to a NUL,
+  takes the other's; when both are non-ASCII the multibyte one becomes
+  unibyte), and `expand_file_name_core`, the byte loop the host-text
+  `expand_file_name_with_home` now shares with `tilde_prefix` and
+  `canonicalize_expanded_file_name`: None for an absolute name it keeps,
+  which is returned itself; the target cut at a NUL. `~` is
+  `get_homedir_bytes` (egetenv HOME, else getpwnam of LOGNAME or USER,
+  else getpwuid, a relative home after the start directory),
+  DECODE_FILE'd for a multibyte name, a multibyte build_string of it
+  making the result multibyte; `~USER` is getpwnam's absolute home,
+  DECODE_FILE'd for a multibyte name. The result's handler gets the
+  settled directory. `file-name-concat` is Ffile_name_concat over the
+  components' bytes (`file_name_bytes`): a slash after a component not
+  ending in one, a unibyte non-ASCII component made multibyte
+  (`push_byte_as_multibyte`) when a multibyte non-ASCII one makes the
+  result multibyte. Not replicated: GNU's copy past a unibyte result's
+  end when a skipped nil or empty component sends it through the
+  conversion with no multibyte component (`(file-name-concat "" "\200")`
+  is "\300" there). Probes (r243/fxm.el, 79 cases run by r243/run2.sh,
+  and r242/fn.el's 3,000 random operations) read as GNU's but for that
+  overflow and invocation-directory; two cases abort GNU, a multibyte
+  name under a unibyte directory with a NUL before a non-ASCII byte and
+  a unibyte non-ASCII name after a UTF-8 HOME (each a malformed
+  multibyte string). An oracle test pins the cases
+  (`file_names_expand_and_concatenate_as_fileio_c`). Emaxx runs 300,000
+  expansions of a relative, absolute, dotted and `~` name and
+  file-name-concat calls in 0.53, 0.28, 0.71, 0.61 and 0.11 s to GNU's
+  0.53, 0.34, 0.74, 0.77 and 0.13. ERT pass counts match GNU's for
+  fileio, files, files-x, subr-x, dired, dired-aux, ls-lisp, minibuffer,
+  abbrev, project, package, filenotify, autorevert, tramp-archive,
+  bytecomp, vc, process, callproc, em-dirs and compile. Local
+  validation: the grouped gate's 3,434 library tests, the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings` pass.
+- **Round 244: collections fall where alloc.c's books put them.**
+  `SYMBOL_SIZE` and `STRING_HEADER_SIZE` are GNU's 48 and 32
+  (Lisp_Symbol, Lisp_String) in `Symbol::allocate_with_text`'s and the
+  string charge's tally, in
+  `LiveObjectCensus::total_bytes_of_live_objects` and in
+  Fgarbage_collect's report, which the oracle test
+  `garbage_collect_reports_gnu_object_sizes` pins.
+  `hash_tables::note_thawed`, called for each table the image loader
+  fills, credits the key_and_value array (in the dump in GNU, never
+  hash_table_alloc_bytes'), adds the hash, next and index arrays to
+  `THAWED_BYTES`, which pdumper/mod.rs tallies as consing right after
+  `garbage_collection_baseline_after_image_load`, and marks the table
+  `DUMPED` (flag bit 7, cleared by `copy`), so `cleanup` leaves its
+  arrays counted, as a dumped table is never swept.
+  `StandardBuckets::dumped_bits` records the image obarray's size, and
+  `allocated_bytes` (the census's share for the initial obarray) is what
+  it has grown past that; `Buckets::grow` tallies grow_obarray's net
+  consing. `HostTableBooks` keeps fns.c's size and count for
+  Vcoding_system_hash_table and Vcharset_hash_table, which Emaxx holds
+  as host maps: `thaw_host_hash_tables` thaws them at image load with a
+  key for each name and alias (1,071 and 203 in a -Q session, as GNU's),
+  and `insert`, called where a coding system, charset or alias is added,
+  grows them by maybe_resize_hash_table's policy. After a collection in
+  a -Q session the census held 630 KB of hash storage (368,792 bytes of
+  arrays and the obarray's 262,144) where GNU's holds 297,680; it now
+  holds 292,768, and with gc-cons-percentage 1.0 the next collection
+  comes after 1,074,416 bytes of consing where it came after 1,837,440
+  (GNU 1,083,680). Under the frozen runner (r244/gcsum.sh) the bodies of
+  files-x and seq-tests collect no more (13 to 20 ms collections had
+  fallen inside them), fns-tests collects 75 times to GNU's 76, data,
+  custom and editfns as often as GNU, subr and cl-lib once fewer.
+  Remaining differences: Emaxx's startup conses less before the first
+  form of a -Q batch run (GNU has collected once by then, Emaxx not), so
+  the first collection falls later; a private obarray's buckets are
+  counted both as record slots and as hash storage. Pass counts match
+  GNU's for bytecomp, buffer, simple, cl-seq, eval, mule, alloc,
+  memory-report, generator, subr and files, their body times within
+  GNU's or below. Local validation: the grouped gate's 3,435
+  library tests, the integration targets and clippy with `--all-targets
+  --all-features -D warnings` pass.
+- **Round 245: CCL as ccl.c runs it.** ccl.rs is ccl.c: `ccl_driver`
+  runs a compiled program over a source and a destination of ints with
+  every command and extended command (CCL_Call, map-single, map-multiple
+  and iterate-multiple-map with programs called from maps,
+  translate-character, lookup-integer and lookup-character, read- and
+  write-multibyte-character), GNU's int arithmetic (wrapping,
+  INT_DIVIDE_OVERFLOW, a DIVMOD by -1 negating the destination's old
+  value, shifts past the width), CCL_SUSPEND's step back to the
+  suspended command, the error handler's message into the destination
+  where it has room, quit-flag ending a run, and ccl.c's statics shared
+  by every program (`CclStatics`: ccl_prog_stack_struct and
+  stack_idx_of_map_multiple). `ccl_program_table` is Vccl_program_table
+  with GNU's [NAME CCL_PROG RESOLVEDP UPDATEDP] slots, 32 to start and
+  grown by larger_vector's half, a registered program resolved in its
+  slot on first use; register-code-conversion-map grows
+  code-conversion-map-vector the same way. ccl-execute and
+  ccl-execute-on-string set up as setup_ccl_program, report an invalid
+  command at the counter GNU's reports (GET_CCL_CODE moves past a word
+  before its range check), store a written int as char_string does
+  (modifier bits resolved) and run a string in CCL_EXECUTE_BUF_SIZE
+  blocks. A coding system of type `ccl` decodes as decode_coding_ccl (a
+  block of 1024 characters at a time into the charbuf, called again
+  while output is pending, a negative int an annotation of its length)
+  and encodes as encode_coding_ccl; define-coding-system-internal checks
+  its two programs (`cclp`), copies a vector one, and checks `:valids`.
+  Where char_charset returns a charset without a code (the unicode of
+  Vcharset_non_preferred_head, or `emacs` past the list),
+  CCL_ENCODE_CHAR's `ncode` keeps its last value, as the oracle's does.
+  Two file paths as fileio.c's: write-region encodes without
+  CODING_MODE_LAST_BLOCK (its flush, an e_write of no characters,
+  encodes nothing), so an ISO-2022 text ends unreset and a CCL encoder
+  never runs its end-of-input code, and insert-file-contents decodes an
+  empty file with a coding that requires flushing. consume_chars keeps a
+  CCL encoder's translation tables (encode_coding drops them for
+  encode_coding_raw_text alone). Batteries against GNU (r245/cb.txt,
+  maps.txt, cs.txt): 82 register and string cases, 72 call, map and
+  table cases, 62 coding-system and file cases, all alike but one, a
+  negative int written to a multibyte string, whose low byte GNU stores
+  as an invalid multibyte form and Emaxx as its raw-byte character.
+  Remaining differences: from a coding system's program, a translation
+  hash table with a test of `define-hash-table-test` is searched by
+  integer identity, where GNU calls the test's functions (the coding
+  paths hold the interpreter shared); an id out of range and a word past
+  a program's end, which GNU reads from beyond its vectors, are invalid
+  commands. ccl-tests, coding-tests, mule-tests, mule-util-tests,
+  fileio-tests, files-tests, files-x-tests, process-tests,
+  autorevert-tests, textsec-tests and ucs-normalize-tests pass as GNU's.
+  Local validation: the grouped gate's 3,436 library tests, the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings` pass.
+- **Round 246: static compositions as composite.c makes and keeps
+  them.** find-composition-internal is Ffind_composition_internal:
+  find_composition finds the `composition` property's range with
+  get_property_and_range (textget, so a `category` symbol's property
+  counts, over the adjacent intervals whose values are EQ, whatever the
+  narrowing) and, with LIMIT, Fnext_single_property_change or
+  Fprevious_single_property_change; an invalid property gives (START END
+  nil), a valid one without DETAIL-P (START END t) and is left in
+  Form-A, and only DETAIL-P registers it. get_composition_id is ported:
+  the key is the components made a vector (Fvconcat of a string or a
+  list, the vector itself, or the characters read from the text past any
+  narrowing), looked up in composition_hash_table by `equal`
+  (`composition_index`, the `equal` hashes of `composition_states`,
+  rebuilt after a load or a clone), and the property turned into Form-B
+  with the key the table holds; a new composition is checked (an odd
+  number of fixnums for a rule-based one, vectors for a glyph-string)
+  and its width taken with CHARACTER_WIDTH (`char-width-table`,
+  `ctl-arrow` for a control character, TAB one column) over GNU's loops,
+  the rule-based one running to the glyph count rather than the key's
+  length with COMPOSITION_DECODE_REFS' gref quirk. composition_valid_p
+  admits the id one past the last as GNU's does. lisp_string_width
+  registers through the same path. update_compositions is ported with
+  run_composition_function (a modification function must be a symbol,
+  Ffboundp, else wrong-type-argument) and its calls where insdel.c,
+  editfns.c, casefiddle.c, search.c, fileio.c, coding.c, json.c,
+  decompress.c and combine-after-change-execute make them: CHECK_BORDER
+  after an insertion (to point as the after-change hooks left it),
+  replace_range, translate-region's in-place change, replace-match and
+  insert-file-contents; CHECK_HEAD after a deletion and
+  zlib-decompress-region; CHECK_ALL after a casing change,
+  subst-char-in-region, a coding conversion into a buffer and
+  combine-after-change-execute; CHECK_INSIDE after
+  replace-buffer-contents; transpose-regions' pairs before its signal;
+  none for call-process's output, whose decoding runs with the hooks
+  inhibited. A composition made adjacent to one of the same property
+  gets a top-level copy through Fput_text_property, and `auto-composed`
+  goes from the covered range with the three variables bound, skipped
+  where nothing has it and the range is valid. json-insert inserts as
+  insert_from_gap_1: point stays before the text through the
+  after-change hooks and update_compositions (PT, PT), then moves past
+  it. Batteries against GNU (r245/comp.txt, upd.txt, r246/cmp.txt): 70
+  cases of insertion, deletion, replacement, casing, transposition,
+  translation, conversion, json-insert, combined changes, narrowing,
+  categories, registration and widths, all alike. Insertion and deletion
+  loops in propertized buffers run at or under GNU's time
+  (r246/bench.el). Local validation: the grouped gate's 3,437
+  library tests, the integration targets and clippy with `--all-targets
+  --all-features -D warnings` pass.
+- **Round 247: undo lists cut as compact_buffer cuts them.** A
+  collection starts with alloc.c's compact_buffer of every live buffer,
+  the newest first (`compact_buffers`, from the collector's entry and
+  from the native-code trampoline's): a base buffer whose modification
+  count has moved since `BUF_COMPACT` (the buffer text's `compact`, one
+  at creation) and whose undo list is not t has it cut by
+  truncate_undo_list, ported with the buffer made current for its own
+  `undo-limit`, `undo-strong-limit` and `undo-outer-limit` and
+  collection inhibited: the sizes are GNU's 64-bit Lisp_Cons and
+  Lisp_String ones (16, and 32 less one plus the characters), a leading
+  boundary and the most recent change are always kept,
+  `undo-outer-limit-function` is called with the size past
+  `undo-outer-limit` (an integer under it, or a negative bignum) and its
+  non-nil value leaves the list, and the list is cut after the last
+  boundary within `undo-limit`, or before one past `undo-strong-limit`,
+  or emptied. compact_buffer's gap shrinking is not done. Batteries
+  against GNU (r247/undo.txt): 13 cases of limits, deletions,
+  boundaries, the outer limit and buffer-local limits alike but one,
+  where GNU records a point position because its
+  `buffer_before_last_command_or_undo` still holds the address of a
+  killed buffer that the new temporary buffer reuses (alone, GNU gives
+  Emaxx's answer). A loop of 200 collections over 20 changed buffers
+  runs in 1.60 s against GNU's 1.91 s. Local validation: the grouped
+  gate's 3,438 library tests, the integration targets and clippy
+  with `--all-targets --all-features -D warnings` pass.
+- **Round 248: minibuf.c, print.c, fileio.c, syntax.c, category.c and
+  process.c corners from batteries.** Batteries against GNU over
+  minibuf.c's completion functions and reads (172 cases, r248/comp.txt
+  and comp2.txt), print.c (307), fileio.c's name functions (125),
+  keymap.c (174), timefns.c (164), character.c (41), syntax.c's scanners
+  (32) and descriptors (53), chartab.c, bool vectors and case tables
+  (40), raw-byte strings across the primitives (87) and callproc.c and
+  process.c (74) differ in these, now fixed; editfns.c's fields and
+  insertion (52) and `sort` with GNU 30's keywords (86) agree
+  throughout. `read-from-minibuffer` with an initial input whose
+  position is past its end signalled `end-of-buffer` before reading;
+  read_minibuf only computes that position, and only the interactive
+  read's Fforward_char signals, once the prompt and the input are in the
+  minibuffer, so a batch read now goes on and an interactive one signals
+  there, through the unwinding of clear_message's exits. print.c's
+  integers as characters (`print-integers-as-characters`) were tested
+  against Rust's Unicode data where graphic_base_p reads
+  `unicode-category-table`, so a private-use character printed as a
+  number; the test is graphic_base_p's now (a fixnum up to
+  MAX_UNICODE_CHAR with a named escape or a category other than the
+  marks, the separators and the control, surrogate, format and
+  unassigned codes), a bignum prints as a number, and the
+  `unicode-general-category` crate is gone (three printer tests that ran
+  without characters.el's table now run in the loaded runtime, as every
+  GNU does). `write-char` signalled `integerp` and `characterp` where
+  Fwrite_char signals `fixnump`, and refused codes past MAX_CHAR: a
+  function stream is now called with the code as printchar's unsigned
+  int holds it, and other output stores char_string's form, its modifier
+  bits resolved (the alt bit alone gives NUL) and a code past MAX_CHAR
+  an `error` in hex. `substitute-in-file-name` worked over host text and
+  always returned a copy; it is Fsubstitute_in_file_name over the name's
+  bytes now, starting over from an embedded absolute name through the
+  handlers, calling Lisp `substitute-env-in-file-name` (env.el) when it
+  is defined, and returning the argument itself, multibyteness and all,
+  when that comes back unchanged. `string-to-syntax` and
+  `modify-syntax-entry` read the descriptor's host characters, so a raw
+  byte was an invalid letter or a private-use matching character and a
+  NUL was skipped; they are Fstring_to_syntax over the bytes now, read
+  as the C string SDATA is (a NUL ends the descriptor, a first byte past
+  0177 is whitespace, as syntax_spec_code's zero entries make it, and
+  the matching character is string_char_and_length's arithmetic on the
+  bytes). `make-category-set` read host characters too, so a raw byte's
+  error named its private-use code; it checks the bytes from the last
+  now, as Fmake_category_set does. `make-process` and
+  `make-pipe-process` without `:name` made a process;
+  get_required_string_keyword_param's errors (`Missing :name keyword
+  parameter`, `:name value not a string`) now come after the buffer of a
+  process with a command and first for a pipe, as GNU orders them.
+  `signal-process` upcased an unknown signal's name in its error and
+  took `Sigint` for `SIGINT`; abbr_to_signal drops only a `SIG` or `sig`
+  prefix and the error names the symbol as given. Not reproduced, as GNU
+  artifacts: read_minibuf_noninteractive loops forever at end of input
+  while a stale `errno` reads EINTR (a battery's read hung GNU);
+  print_unwind restores the outer print's saved text without its
+  position (and copies SCHARS bytes where it needs SBYTES), so a
+  `print-unreadable-function` that prints, as `format` with `%S` does,
+  splices its text into the outer output and, with multibyte text,
+  leaves the character and byte counts apart; a syntax descriptor whose
+  matching character's bytes run into the terminating NUL makes
+  Fstring_to_syntax read its flags past the string; `(write-char -1)`
+  stores a byte CHAR_STRING writes from a negative int; and
+  `sxhash-equal` of a char-table hashes its purpose symbol by address.
+  The keymap differences are configuration: the X build preloads
+  touch-screen.el and provides `move-toolbar`. print-tests,
+  minibuf-tests, fileio-tests, files-tests, env-tests, character-tests,
+  minibuffer-tests, cl-print-tests and keymap-tests pass as many tests
+  as GNU's. Local validation: the grouped gate's 3,441 library
+  tests, the integration targets and clippy with `--all-targets
+  --all-features -D warnings` pass.
+- **Round 249: eval.c's Fsignal, data.c's trapped writes and keymap.c's
+  active maps from batteries.** Batteries against GNU over eval.c's
+  signals and data.c's watchers (21 cases, r248/sg.txt), thread.c (23,
+  r249/th.txt), macros.c and the command loop under `execute-kbd-macro`
+  (65, r249/km.txt), keymap.c's `current-active-maps` and `key-binding`
+  (51, r249/am.txt) and its minor mode maps and
+  `describe-buffer-bindings` (28, r249/mm.txt) differ in these, now
+  fixed; thread.c agrees throughout. `signal` consed its arguments
+  whatever they were: Fsignal turns a nil symbol without a list into
+  `error` (the "peculiar error"), signal_or_quit takes DATA itself for a
+  nil symbol and a non-symbol without data as it is, and Fget's
+  CHECK_SYMBOL refuses a car that is no symbol, so `(signal 5 '(x))` is
+  `(wrong-type-argument symbolp 5)`. `add-variable-watcher` and
+  `remove-variable-watcher` of a constant (nil, a keyword,
+  `most-positive-fixnum`) now signal `trapping-constant` as
+  set_symbol_trapped_write does, and Fdefvaralias's set_internal of an
+  unbound alias tells the base's watchers `let` with nil.
+  Fcurrent_active_maps is ported whole: a POSITION was read only as a
+  click's posn, so a fixnum or marker was ignored and point used;
+  click_position now takes it and refuses one outside the accessible
+  text; get_local_map reads the `keymap` and `local-map` char properties
+  there (overlays included, the narrowing lifted, a symbol's function
+  map followed) where only the text property at point was read; a
+  click's window's buffer is made current while the maps are found; a
+  mode or header line string's properties replace the buffer's even when
+  nil, only at an index inside the string; POSN_STRING is Fnth's, so a
+  dotted posn signals; and the overriding maps and the minor mode maps
+  go in unchecked, as current_minor_maps keeps any non-nil
+  Findirect_function of an entry (a `t` variable included, an improper
+  alist walked to its last cons). `minor-mode-key-binding` looks up with
+  Flookup_key in each map, and the Rust spelling of `kbd` and the event
+  parsing it used are removed, with the tests that only exercised them
+  (a character range's event head is now an oracle test).
+  read_key_sequence's active_maps passes any parameterized event's start
+  where only a mouse click's was taken, so a macro event `(control 98)`
+  signals `(args-out-of-range #<buffer> 98)` as GNU's does where Emaxx
+  read it as `C-b`. Not reproduced: `(thread-signal THREAD 'quit nil)`
+  to a sleeping thread ends a batch GNU with "Quit"; a quoted-insert
+  reading past a keyboard macro's end waits on the terminal in GNU. The
+  global map printed whole differs only by the X build's preloaded
+  bindings. `current-active-maps` (0.170 s against 0.193 for 200,000
+  calls), `key-binding` (0.633 against 0.625) and short macros (0.204
+  against 0.370) cost no more than GNU's; keymap-tests, keyboard-tests,
+  help-tests, help-fns-tests, kmacro-tests, subr-x-tests, simple-tests,
+  repeat-tests, edebug-tests, mouse-tests, viper-tests, minibuffer-tests
+  and electric-tests pass as many tests as GNU's. Local validation: the
+  grouped gate's 3,443 library tests, the integration targets and
+  clippy with `--all-targets --all-features -D warnings` pass.
+- **Round 250: indent.c, lread.c, insdel.c's gap and dired.c's
+  completion from batteries.** Batteries against GNU over indent.c (44
+  cases, r249/in.txt), lread.c's syntax and streams (34, r249/rd.txt),
+  editfns.c's restrictions, insertion and extraction (34, r249/ed.txt),
+  dired.c (25, r249/dr.txt), file-name completion (22, r249/fc.txt),
+  casetab.c (30), marker.c (36), buffer.c and overlays (36), fns.c (37)
+  and data.c (28) differ in these, now fixed; casetab.c, marker.c,
+  buffer.c, fns.c and data.c agree throughout. `vertical-motion` checked
+  LINES as a number or marker: Fvertical_motion's CHECK_FIXNUM refuses a
+  bignum or a marker with `fixnump`, and a (COLS . LINES) car is
+  CHECK_NUMBER's. lread.c's hash_table_from_plist took each parameter's
+  last value and built the table internally: it takes the first
+  (plist_get), refuses DATA that is no list ("Hash table data is not a
+  list") or has an odd length, and makes the table with
+  Fmake_hash_table, whose own checks answer a bad test or weakness.
+  `#N=` and `#N#` are read only while `read-circle` is non-nil, as read0
+  reads them, and N may run to MOST_POSITIVE_FIXNUM where it stopped at
+  2^32. `gap-position` answered point and `gap-size` 0: they are GPT and
+  GAP_SIZE now, from a gap that begins as Fget_buffer_create's 20 bytes
+  and grows as make_gap_larger grows it, by GAP_BYTES_DFL beyond each
+  insertion that needs more (the quarter-of-the-text growth Emaxx added
+  is gone; the vector's own reallocation keeps copies few), and that
+  this build of GNU never shrinks. `directory-files` refuses a negative
+  or non-fixnum COUNT with `wholenump`. `file-name-completion` and
+  `file-name-all-completions` are dired.c's file_name_completion, where
+  completion ran through `try-completion` over the names: the
+  directory's entries are walked in readdir order with GNU's bestmatch,
+  matchcount and includeall, "." and ".." and
+  completion-ignored-extensions (a directory's ending in a slash)
+  excluded once a name that cannot be is seen, completion-regexp-list
+  folded by the ASCII canon table, PREDICATE called with
+  `default-directory` bound, readdir's d_type deciding a directory
+  without a stat, and under `completion-ignore-case` an exact match or
+  one keeping the input's case preferred, so `(file-name-completion "A"
+  dir)` is the file's own "a" where Emaxx gave back "A", and a missing
+  directory signals as GNU's does. Not reproduced: GNU crashes when
+  completion-regexp-list holds a non-string (fast_string_match_internal
+  reads it as one); a search with a case table that maps only some
+  letters loops in both. 300,000 one-character insertions and 100,000
+  more in the middle take 0.123 s against GNU's 0.250, 20,000 reads of a
+  compiled-code hash table 0.121 s against 0.181, and 2,000 directory
+  completions 0.107 s against 0.097. minibuffer-tests, files-tests,
+  fileio-tests, dired-tests, lread-tests, indent-tests, editfns-tests,
+  buffer-tests, fns-tests, memory-report-tests, keymap-tests,
+  minibuf-tests, pcase-tests, cl-lib-tests, data-tests, subr-tests and
+  map-tests pass as many tests as GNU's. Local validation: the grouped
+  gate's 3,446 library tests, the integration targets and clippy
+  with `--all-targets --all-features -D warnings` pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -13392,6 +13762,98 @@ comp-tests (14,474 ms against 12,576), tramp-tests (17,110 against
 15,971), semantic-utest-ia (3,152 against 2,201), mule-tests (2,273
 against 1,565) and electric-tests (810 against 449).
 
+**On `2ede082`** (round 242): frozen (run 41374709902) matched all 7,928
+outcomes. Setup 71.7 s against 63.2 s (1.135), test bodies 234.6 s
+against 251.9 s (0.931), in all 0.963; ucs-normalize-tests' bodies took
+120 ms against 76. The full Rust gate (run 41374707684) passed. Per
+file, the setup is 16 ms over GNU's on average (8.5 s over 519 files, a
+median of 112 ms against 98), electric-tests' the most (696 against
+456), and the widest body gaps are comp-tests (15,205 ms against
+12,848), tramp-tests (18,071 against 16,689), semantic-utest-ia (3,345
+against 2,521), mule-tests (2,364 against 1,587) and electric-tests (851
+against 477).
+
+**On `a37ec7c`** (round 243): frozen (run 41379398287) matched all 7,928
+outcomes on a slower runner. Setup 83.7 s against 69.8 s (1.199), test
+bodies 261.2 s against 272.9 s (0.957), in all 0.997;
+ucs-normalize-tests' bodies took 144 ms against 95. The full Rust gate
+(run 41379395839) passed. Per file, the setup is 27 ms over GNU's on
+average (13.9 s over 519 files, a median of 127 ms against 107),
+electric-tests' the most (905 against 562), and the widest body gaps are
+comp-tests (17,807 ms against 15,023), tramp-tests (21,706 against
+19,464), semantic-utest-ia (4,205 against 2,929), mule-tests (3,133
+against 2,047) and eglot-tests (34,451 against 33,491).
+
+**On `7055d02`** (round 244): frozen (run 41384595504) matched all 7,928
+outcomes. Setup 78.2 s against 63.9 s (1.224), test bodies 251.8 s
+against 262.9 s (0.957), in all 0.994; ucs-normalize-tests' bodies took
+128 ms against 92. The full Rust gate (run 41384587937) passed. Per
+file, the setup is 28 ms over GNU's on average (14.3 s over 519 files, a
+median of 118 ms against 99), electric-tests' the most (880 against
+503), and the widest body gaps are comp-tests (16,754 ms against
+14,534), tramp-tests (21,181 against 19,156), semantic-utest-ia (3,819
+against 2,467), eglot-tests (33,559 against 32,341) and mule-tests
+(3,081 against 1,976).
+
+**On `55cf1db`** (round 245): the full Rust gate (run 41392410370)
+passed. The frozen run (41392413265) failed its first attempt on the
+oracle alone, GNU's eglot-test-rust-completion-exit-function raising a
+jsonrpc-error, and on the rerun matched all 7,928 outcomes, with
+process-tests' lookup-unicode-domains failing in both (the runner's
+name lookup). That runner was slower: setup 98.3 s against 73.7 s
+(1.334), test bodies 280.3 s against 294.3 s (0.952), in all 1.029;
+ucs-normalize-tests' bodies took 133 ms against 97. Per file, the setup
+is 47 ms over GNU's on average (24.6 s over 519 files, a median of 154
+ms against 115), electric-tests' the most (985 against 583), and the
+widest body gaps are comp-tests (19,444 ms against 15,501), tramp-tests
+(22,508 against 19,642), semantic-utest-ia (4,145 against 2,925),
+simple-tests (5,642 against 4,453) and mule-tests (3,196 against
+2,044).
+
+**On `f712660`** (round 246): frozen (run 41400518460) matched all 7,928
+outcomes. Setup 81.2 s against 65.5 s (1.240), test bodies 256.1 s
+against 264.9 s (0.967), in all 1.004; ucs-normalize-tests' bodies took
+135 ms against 92. The full Rust gate (run 41400514652) passed. Per
+file, the setup is 30 ms over GNU's on average (15.7 s over 519 files, a
+median of 121 ms against 100), electric-tests' the most (901 against
+514), and the widest body gaps are comp-tests (17,008 ms against
+14,633), tramp-tests (21,628 against 19,517), eglot-tests (33,822
+against 32,138), semantic-utest-ia (3,925 against 2,537) and mule-tests
+(3,204 against 2,012).
+
+**On `ccbd047`** (round 247): frozen (run 41405952255) matched all 7,928
+outcomes. Setup 78.6 s against 63.5 s (1.238), test bodies 252.2 s
+against 262.4 s (0.961), in all 0.999; ucs-normalize-tests' bodies took
+128 ms against 91. The full Rust gate (run 41405943659) passed. Per
+file, the setup is 29 ms over GNU's on average (15.1 s over 519 files, a
+median of 116 ms against 97), electric-tests' the most (900 against
+513), and the widest body gaps are comp-tests (16,812 ms against
+14,294), tramp-tests (21,030 against 18,969), semantic-utest-ia (3,899
+against 2,488), eglot-tests (33,296 against 31,963) and mule-tests
+(3,163 against 2,109).
+
+**On `f3b51e5`** (round 248): frozen (run 41420073368) matched all 7,928
+outcomes. Setup 58.6 s against 50.5 s (1.159), test bodies 211.6 s
+against 227.6 s (0.930), in all 0.980; ucs-normalize-tests' bodies took
+81 ms against 55. The full Rust gate (run 41420068887) passed. Per file,
+the setup is 15 ms over GNU's on average (8.0 s over 519 files, a median
+of 91 ms against 80), electric-tests' the most (546 against 378), and
+the widest body gaps are comp-tests (12,948 ms against 11,243),
+mule-tests (1,963 against 1,225), semantic-utest-ia (2,550 against
+2,080), tramp-tests (15,815 against 15,360) and package-tests (5,808
+against 5,501).
+
+**On `294bc1e`** (round 249): frozen (run 41429567726) matched all 7,928
+outcomes. Setup 82.9 s against 67.1 s (1.237), test bodies 258.7 s
+against 269.7 s (0.959), in all 1.000; ucs-normalize-tests' bodies took
+132 ms against 92. The full Rust gate (run 41429562807) passed. Per
+file, the setup is 31 ms over GNU's on average (15.9 s over 519 files, a
+median of 124 ms against 103, a slower runner than round 248's),
+electric-tests' the most (931 against 540), and the widest body gaps are
+comp-tests (17,351 ms against 14,970), tramp-tests (21,790 against
+19,543), semantic-utest-ia (4,199 against 2,852), mule-tests (3,214
+against 2,032) and electric-tests (1,161 against 605).
+
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'
   without signalling (round 174).** In GNU,
@@ -13479,35 +13941,29 @@ against 1,565) and electric-tests (810 against 449).
   instructions in process against GNU's 3.30G, and neither runs
   libgccjit for them: the gap is the instructions per cycle the setup
   finding below measures, not work Emaxx does that GNU does not.
-- **What undo.c does that Emaxx's undo list does not (round 166).**
-  Garbage collection does not run alloc.c's compact_buffer, so no
-  truncate_undo_list cuts a list past `undo-limit' and
-  `undo-strong-limit' or calls `undo-outer-limit-function' for one
-  command's records past `undo-outer-limit': a long session's lists
-  grow without bound (where GNU truncates depends on when it collects,
-  so no test compares it). record_point does not consult
-  `undo-inhibit-record-point', which nothing in the tree sets.
+- **What undo.c does that Emaxx's undo list does not (rounds 166 and
+  247).** record_point does not consult `undo-inhibit-record-point',
+  which nothing in the tree sets. (Round 247 runs compact_buffer's
+  truncate_undo_list at every collection; its gap shrinking is not
+  done.)
 - **undo-tests' million insertions (rounds 165, 175).** Most of
   undo-tests is `undo-test4''s interpreted `dotimes' of 1,048,576
   `insert's at the end of the buffer. At round 165 the release build ran
   it in 10.10G instructions against GNU's 9.28G, an insertion in 4,878
   against Finsert's 3,862 (update_compositions is 1,640 of GNU's, and
-  nothing in Emaxx), of which ropey's insert took 2,030 where GNU's
-  copy_text into the gap takes 92; with round 175's gap buffer it runs
-  in 7.64G. The windows' start and point are integers in their records,
-  which every insertion and deletion adjusts by walking every window
-  (284 instructions an insertion at round 165), where GNU's window
-  markers are on the buffer's chain. (Round 166 made the undo list
-  GNU's, round 167 `related_buffer_ids''s walk.)
+  was nothing in Emaxx until round 246, whose port returns at once in a
+  buffer without intervals), of which ropey's insert took 2,030 where
+  GNU's copy_text into the gap takes 92; with round 175's gap buffer it
+  runs in 7.64G. The windows' start and point are integers in their
+  records, which every insertion and deletion adjusts by walking every
+  window (284 instructions an insertion at round 165), where GNU's
+  window markers are on the buffer's chain. (Round 166 made the undo
+  list GNU's, round 167 `related_buffer_ids''s walk.)
 - **A string's intervals are merged where GNU keeps them (round 164).**
-  Emaxx's string properties merge adjacent spans with equal plists after
-  every change, where textprop.c leaves the intervals a change made:
-  `(let ((s (copy-sequence "ab"))) (put-text-property 0 1 'k 1 s)
-  (put-text-property 1 2 'k 1 s) s)' prints `#("ab" 0 1 (k 1) 1 2 (k 1))'
-  in GNU and `#("ab" 0 2 (k 1))' in Emaxx, and `object-intervals',
-  `format' of two propertized arguments and `concat' differ alike.
-  Keeping intervals as GNU's tree does changes every string property
-  operation and the printer's interval walk.
+  No longer: round 172's intervals keep the intervals a change makes, as
+  textprop.c does, and at round 247 the round 164 example prints `#("ab"
+  0 1 (k 1) 1 2 (k 1))` in both, as do `object-intervals`, `format` and
+  `concat` of two propertized strings.
 - **Building `ucs-names' (round 162).** editfns-tests'
   `replace-buffer-contents-bug31837' calls `char-from-name', whose
   table of 42,943 names takes 1,024M instructions against GNU's 818M:

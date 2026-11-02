@@ -574,12 +574,33 @@ define_dispatch!(
                 if args.is_empty() {
                     return Err(LispError::Signal("signal".into()));
                 }
-                let condition = args[0];
+                let mut condition = args[0];
                 let data = args.get(1).cloned().unwrap_or(Value::Nil);
-                // eval.c:signal_or_quit conses the error symbol onto DATA
-                // itself, a list or not: (signal 'foo 4) is caught as the
-                // dotted pair (foo . 4), and a list's cells are shared.
-                Err(LispError::SignalValue(Value::cons(condition, data)))
+                // eval.c:Fsignal: "If they call us with nonsensical
+                // arguments, produce "peculiar error"."
+                if condition.is_nil() && data.cons_values().is_none() {
+                    condition = Value::symbol("error");
+                }
+                // signal_or_quit's error object: DATA itself for a nil
+                // symbol (the memory-full form), a non-symbol without data
+                // as it is, else the symbol consed onto DATA, a list or not
+                // ((signal 'foo 4) is caught as (foo . 4), a list's cells
+                // shared).  Its car's conditions are read with Fget, whose
+                // CHECK_SYMBOL refuses anything else.
+                let is_symbol =
+                    |value: &Value| matches!(value.kind(), Kind::Symbol(_) | Kind::Nil | Kind::T);
+                let error = if condition.is_nil() {
+                    data
+                } else if !is_symbol(&condition) && data.is_nil() {
+                    condition
+                } else {
+                    Value::cons(condition, data)
+                };
+                let real = error.cons_values().map_or(condition, |(car, _)| car);
+                if !is_symbol(&real) {
+                    return Err(wrong_type_argument("symbolp", real));
+                }
+                Err(LispError::SignalValue(error))
             }
             "throw" => {
                 if args.len() != 2 {
@@ -1180,6 +1201,18 @@ define_dispatch!(
                     .map_err(LispError::into_kind)
                 {
                     Err(LispErrorKind::Void(_)) => {
+                        // set_internal of the alias's Qunbound: the base's
+                        // watchers hear `let' with nil, and it stays void.
+                        if alias_value.is_none() {
+                            let resolved = interp.resolve_variable_symbol(&base)?;
+                            interp.notify_variable_watchers_symbol(
+                                &resolved,
+                                Value::Nil,
+                                "let",
+                                None,
+                                env,
+                            )?;
+                        }
                         if let Some(value) = alias_value {
                             // set_internal (base, value, Qnil, SET_INTERNAL_BIND)
                             interp.check_constant_assignment_symbol(&base, value)?;

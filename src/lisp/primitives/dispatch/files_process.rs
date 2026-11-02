@@ -1,6 +1,5 @@
 use super::*;
 use crate::lisp::types::Kind;
-use crate::lisp::types::LispErrorKind;
 
 #[cfg(unix)]
 static ACCOUNT_DATABASE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -734,26 +733,16 @@ define_dispatch!(
                 if args.is_empty() || args.len() > 2 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let path = string_text(&args[0])?;
-                // fileio.c: a DEFAULT-DIRECTORY that is no string is the root.
-                let base = match args.get(1) {
-                    Some(value) if !value.is_nil() => {
-                        Some(string_like(value).map_or_else(|| "/".to_string(), |s| s.text))
-                    }
-                    _ => interp
-                        .lookup_var("default-directory", env)
-                        .and_then(|value| string_like(&value).map(|string| string.text)),
-                };
-                Ok(string_like_value(
-                    expand_file_name_runtime(interp, env, &path, base.as_deref())?,
-                    None,
-                ))
+                crate::lisp::primitives::fexpand_file_name(
+                    interp,
+                    env,
+                    args[0],
+                    args.get(1).copied().unwrap_or(Value::Nil),
+                )
             }
             "substitute-in-file-name" => {
                 need_args(name, args, 1)?;
-                Ok(Value::String(
-                    substitute_in_file_name_in_env(interp, env, &string_text(&args[0])?).into(),
-                ))
+                crate::lisp::primitives::system::substitute_in_file_name(interp, env, args[0])
             }
             // fileio.c's file name syntax works on the string's internal
             // bytes and keeps its multibyteness (make_specified_string),
@@ -851,16 +840,53 @@ define_dispatch!(
                     }
                 }
             }
-            "file-name-concat" => Ok(Value::String(
-                file_name_concat(
-                    &args
-                        .iter()
-                        .filter(|value| !value.is_nil())
-                        .map(string_text)
-                        .collect::<Result<Vec<_>, _>>()?,
-                )
-                .into(),
-            )),
+            "file-name-concat" => {
+                if args.is_empty() {
+                    return Err(LispError::WrongNumberOfArgs(name.into(), 0));
+                }
+                // fileio.c:Ffile_name_concat: the strings that are neither
+                // nil nor empty, each followed by a slash unless it is the
+                // last or ends in one (a slash it starts with stays).  A
+                // result is multibyte when a component is multibyte and
+                // not ASCII, and then a unibyte non-ASCII one is made
+                // multibyte, its raw bytes eight-bit characters.  (GNU
+                // sizes the result by the components' characters before
+                // that conversion, and when no component was multibyte
+                // writes past a unibyte result's end; Emaxx keeps such a
+                // component's bytes.)
+                let mut elements = Vec::new();
+                let mut multibytes = 0;
+                for arg in args {
+                    if arg.is_nil() {
+                        continue;
+                    }
+                    let (bytes, multibyte) = file_name_bytes(arg)?;
+                    if bytes.is_empty() {
+                        continue;
+                    }
+                    if multibyte && !bytes.is_ascii() {
+                        multibytes += 1;
+                    }
+                    elements.push((bytes, multibyte));
+                }
+                let multibyte = multibytes != 0;
+                let mut result = Vec::new();
+                let count = elements.len();
+                for (index, (bytes, element_multibyte)) in elements.into_iter().enumerate() {
+                    if multibyte && !element_multibyte {
+                        for byte in bytes {
+                            super::strings::push_byte_as_multibyte(&mut result, byte);
+                        }
+                    } else {
+                        result.extend_from_slice(&bytes);
+                    }
+                    if index + 1 < count && result.last() != Some(&b'/') {
+                        result.push(b'/');
+                    }
+                }
+                make_specified_string(result, multibyte)
+                    .map_err(|error| string_storage_error(interp, env, error))
+            }
             "find-file-name-handler" => {
                 need_args(name, args, 2)?;
                 let file = string_text(&args[0])?;
@@ -894,12 +920,12 @@ define_dispatch!(
                 let full = args.get(1).is_some_and(Value::is_truthy);
                 let matcher = args.get(2).filter(|value| !value.is_nil());
                 let nosort = args.get(3).is_some_and(Value::is_truthy);
-                let count = args
-                    .get(4)
-                    .filter(|value| !value.is_nil())
-                    .map(Value::as_integer)
-                    .transpose()?
-                    .map(|value| value.max(0) as usize);
+                // dired.c:directory_files_internal's CHECK_FIXNAT (COUNT).
+                let count = match args.get(4).map(|value| value.kind()) {
+                    None | Some(Kind::Nil) => None,
+                    Some(Kind::Integer(count)) if count >= 0 => Some(count as usize),
+                    Some(_) => return Err(wrong_type_argument("wholenump", args[4])),
+                };
                 directory_files(interp, &directory, full, matcher, nosort, count, env)
             }
             "directory-files-and-attributes" => {
@@ -1933,169 +1959,12 @@ define_dispatch!(
             }
             "file-name-all-completions" => {
                 need_args(name, args, 2)?;
-                let prefix = string_text(&args[0])?;
-                let directory = resolve_file_name_in_env(interp, env, &string_text(&args[1])?);
-                // dired.c file_name_completion reads the directory's stream,
-                // "." and ".." among its entries: a directory that cannot be
-                // opened answers no candidates at all.
-                let entries = read_directory_names(&host_file_name(interp, env, &directory)?)
-                    .map_err(|(step, error)| {
-                        let rendered = error.to_string();
-                        let detail = rendered
-                            .split_once(" (os error")
-                            .map(|(detail, _)| detail)
-                            .unwrap_or(rendered.as_str());
-                        LispError::SignalValue(Value::list([
-                            Value::Symbol(
-                                if error.kind() == ErrorKind::NotFound {
-                                    "file-missing"
-                                } else {
-                                    "file-error"
-                                }
-                                .into(),
-                            ),
-                            Value::String(step.into()),
-                            Value::String(detail.into()),
-                            Value::String(directory.clone().into()),
-                        ]))
-                    })?;
-                // Each name read is DECODE_FILE'd before it is matched.
-                let host_directory = host_file_name(interp, env, &directory)?;
-                let entries = entries
-                    .into_iter()
-                    .map(|entry| {
-                        let host_path = host_directory.join(&entry);
-                        decode_host_file_name_text(interp, env, &entry)
-                            .map(|(name, multibyte)| (name, multibyte, host_path))
-                    })
-                    .collect::<Result<Vec<_>, LispError>>()?;
-                let ignore_case = completion_ignores_case(interp, env);
-                let regexp_list = interp
-                    .lookup_var("completion-regexp-list", env)
-                    .and_then(|value| value.to_vec().ok())
-                    .unwrap_or_default();
-                // dired.c file_name_completion folds with Vascii_canon_table.
-                let case_table = ignore_case.then(|| interp.standard_case_tables().canon);
-                let mut matches = |candidate: &str| -> Result<bool, LispError> {
-                    if !completion_matches_prefix(&prefix, candidate, ignore_case) {
-                        return Ok(false);
-                    }
-                    for pattern in &regexp_list {
-                        if !completion_regex_matches(interp, env, candidate, pattern, case_table)? {
-                            return Ok(false);
-                        }
-                    }
-                    Ok(true)
-                };
-                let mut names: Vec<(String, bool)> = Vec::new();
-                for (file_name, multibyte, host_path) in entries {
-                    if !matches(&file_name)? {
-                        continue;
-                    }
-                    // Directories (following symlinks) get a trailing slash.
-                    let is_directory = fs::metadata(host_path)
-                        .map(|metadata| metadata.is_dir())
-                        .unwrap_or(false);
-                    names.push((
-                        if is_directory {
-                            format!("{file_name}/")
-                        } else {
-                            file_name
-                        },
-                        multibyte,
-                    ));
-                }
-                // The matches are consed up as they are read: last read first.
-                Ok(Value::list(names.into_iter().rev().map(
-                    |(text, multibyte)| {
-                        make_shared_string_value_with_multibyte(text, None, multibyte)
-                    },
-                )))
+                file_name_completion(interp, env, args[0], args[1], true, Value::Nil)
             }
             "file-name-completion" => {
                 need_arg_range(name, args, 2, 3)?;
-                let directory = file_name_as_directory(&resolve_file_name_in_env(
-                    interp,
-                    env,
-                    &string_text(&args[1])?,
-                ));
-                let names = match super::call(
-                    interp,
-                    "file-name-all-completions",
-                    &[args[0], args[1]],
-                    env,
-                )
-                .map_err(LispError::into_kind)
-                {
-                    Ok(names) => names,
-                    Err(LispErrorKind::SignalValue(condition))
-                        if condition
-                            .to_vec()
-                            .ok()
-                            .and_then(|items| items.first().cloned())
-                            .and_then(|head| head.symbol_str().map(str::to_string))
-                            .as_deref()
-                            == Some("file-missing") =>
-                    {
-                        return Ok(Value::Nil);
-                    }
-                    Err(error) => return Err(LispError::from(error)),
-                };
-                // GNU dired.c specbinds DIRECTORY while its optional predicate
-                // examines each relative candidate.  Reuse the ordinary
-                // completion engine so predicates, regexp filters, case folding,
-                // and exact-match results share one implementation.
-                let restore = interp.bind_special_dynamic(
-                    "default-directory",
-                    Value::String(directory.into()),
-                    env,
-                )?;
-                let result = (|| {
-                    let matches = all_completions(
-                        interp,
-                        &[args[0], names, args.get(2).cloned().unwrap_or(Value::Nil)],
-                        env,
-                    )?
-                    .to_vec()?;
-                    // dired.c prefers ordinary entries over `.' / `..' and
-                    // completion-ignored-extensions, but falls back to ignored
-                    // candidates when they are the only matches.
-                    let ignored_extensions = interp
-                        .lookup_var("completion-ignored-extensions", env)
-                        .and_then(|value| value.to_vec().ok())
-                        .unwrap_or_default()
-                        .into_iter()
-                        .filter_map(|value| string_text(&value).ok())
-                        .collect::<Vec<_>>();
-                    let requested_len = string_text(&args[0])?.chars().count();
-                    let preferred = matches
-                        .iter()
-                        .filter(|candidate| {
-                            let Ok(candidate) = string_text(candidate) else {
-                                return true;
-                            };
-                            candidate != "./"
-                                && candidate != "../"
-                                && !(candidate.chars().count() > requested_len
-                                    && ignored_extensions
-                                        .iter()
-                                        .any(|suffix| candidate.ends_with(suffix)))
-                        })
-                        .cloned()
-                        .collect::<Vec<_>>();
-                    let candidates = if preferred.is_empty() {
-                        matches
-                    } else {
-                        preferred
-                    };
-                    try_completion(interp, &[args[0], Value::list(candidates), Value::Nil], env)
-                })();
-                let restore_result = interp.restore_special_dynamic(restore, env);
-                match (result, restore_result) {
-                    (Err(error), _) => Err(error),
-                    (Ok(_), Err(error)) => Err(error),
-                    (Ok(value), Ok(())) => Ok(value),
-                }
+                let predicate = args.get(2).copied().unwrap_or(Value::Nil);
+                file_name_completion(interp, env, args[0], args[1], false, predicate)
             }
             "set-file-times" => {
                 need_arg_range(name, args, 1, 3)?;
@@ -2900,9 +2769,13 @@ define_dispatch!(
                     };
                     let old_length = end - start;
                     if !complete && args.get(2).is_none_or(Value::is_nil) {
-                        // unwind_decompress balances the before-change call.
+                        // unwind_decompress balances the before-change call,
+                        // with update_compositions where the output went.
                         return Ok((
-                            Some(AfterChange::new(start, old_length, old_length)),
+                            Some(
+                                AfterChange::new(start, old_length, old_length)
+                                    .composing(end, end, CHECK_HEAD),
+                            ),
                             Value::Nil,
                         ));
                     }
@@ -2922,7 +2795,8 @@ define_dispatch!(
                         let point = saved_point.min(interp.buffer.borrow().point_max());
                         interp.buffer.borrow_mut().goto_char(point);
                     }
-                    let change = AfterChange::new(start, old_length, output.len());
+                    let change = AfterChange::new(start, old_length, output.len())
+                        .composing(start, start, CHECK_HEAD);
                     if complete {
                         Ok((Some(change), Value::T))
                     } else {
@@ -3574,8 +3448,15 @@ fn process_signal_number(value: &Value) -> Result<i32, LispError> {
         return i32::try_from(number)
             .map_err(|_| LispError::Signal("Signal number is out of range".into()));
     }
-    let name = value.as_symbol()?.to_ascii_uppercase();
-    let abbreviation = name.strip_prefix("SIG").unwrap_or(&name);
+    // process.c:abbr_to_signal: a `SIG' or `sig' prefix dropped, the rest
+    // upcased; the error names the symbol as it is.
+    let symbol_name = value.as_symbol()?;
+    let name = symbol_name
+        .strip_prefix("SIG")
+        .or_else(|| symbol_name.strip_prefix("sig"))
+        .unwrap_or(symbol_name)
+        .to_ascii_uppercase();
+    let abbreviation = name.as_str();
     if let Ok(number) = abbreviation.parse::<i32>() {
         return Ok(number);
     }
@@ -3588,7 +3469,9 @@ fn process_signal_number(value: &Value) -> Result<i32, LispError> {
     if let Some(number) = realtime_signal_number(abbreviation) {
         return Ok(number);
     }
-    Err(LispError::Signal(format!("Undefined signal name {name}")))
+    Err(LispError::Signal(format!(
+        "Undefined signal name {symbol_name}"
+    )))
 }
 
 #[cfg(unix)]
@@ -4049,4 +3932,371 @@ fn renameat_noreplace(from: &std::path::Path, to: &std::path::Path) -> Result<()
         let _ = (from, to);
         Err(libc::ENOSYS)
     }
+}
+
+/// dired.c:Ffile_name_completion and Ffile_name_all_completions past their
+/// handlers: DIRECTORY expanded, then file_name_completion with
+/// `default-directory' bound to it.
+fn file_name_completion(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    file: Value,
+    directory: Value,
+    all: bool,
+    predicate: Value,
+) -> Result<Value, LispError> {
+    let dirname = super::call(interp, "expand-file-name", &[directory], env)?;
+    if !file.is_string() {
+        return Err(wrong_type_argument("stringp", file));
+    }
+    // FILE, the directory, PREDICATE, the best match (or the list of
+    // matches) and the name in hand, held across the Lisp called here.
+    let mut roots = crate::lisp::alloc::RootedVec::from_vec(vec![
+        file,
+        dirname,
+        predicate,
+        Value::Nil,
+        Value::Nil,
+    ]);
+    let restore = interp.bind_special_dynamic("default-directory", dirname, env)?;
+    let result = file_name_completion_1(interp, env, &mut roots, all);
+    let restored = interp.restore_special_dynamic(restore, env);
+    result.and_then(|value| restored.map(|()| value))
+}
+
+/// fns.c:Fcompare_strings of S1 [B1, E1) and S2 [B2, E2), an end of nil
+/// meaning the string's end.
+#[allow(clippy::too_many_arguments)]
+fn compare_strings_value(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    s1: Value,
+    b1: usize,
+    e1: Option<usize>,
+    s2: Value,
+    b2: usize,
+    e2: Option<usize>,
+    ignore_case: bool,
+) -> Result<Value, LispError> {
+    let end = |e: Option<usize>| e.map_or(Value::Nil, |e| Value::Integer(e as i64));
+    super::call(
+        interp,
+        "compare-strings",
+        &[
+            s1,
+            Value::Integer(b1 as i64),
+            end(e1),
+            s2,
+            Value::Integer(b2 as i64),
+            end(e2),
+            if ignore_case { Value::T } else { Value::Nil },
+        ],
+        env,
+    )
+}
+
+fn file_name_completion_1(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    roots: &mut crate::lisp::alloc::RootedVec<Value>,
+    all: bool,
+) -> Result<Value, LispError> {
+    const FILE: usize = 0;
+    const DIRNAME: usize = 1;
+    const PREDICATE: usize = 2;
+    const BEST: usize = 3;
+    const NAME: usize = 4;
+    let schars = |value: &Value| string_like(value).map_or(0, |text| text.text.chars().count());
+    let ignore_case = completion_ignores_case(interp, env);
+    let encoded_file = encode_file_name(interp, env, &string_text(&roots[FILE])?)?;
+    let dirname = string_text(&roots[DIRNAME])?;
+    // A file-name coding that decomposes characters (HFS+) needs the
+    // decoded names compared too, FILE recomposed first.
+    let coding = interp
+        .lookup_var("file-name-coding-system", env)
+        .filter(Value::is_truthy)
+        .or_else(|| interp.lookup_var("default-file-name-coding-system", env))
+        .unwrap_or(Value::Nil);
+    let check_decoded = !coding.is_nil() && {
+        let plist = super::call(interp, "coding-system-plist", &[coding], env)?;
+        super::plist_get(
+            plist,
+            crate::lisp::types::PropertyName::symbol(":decomposed-characters"),
+        )
+        .is_truthy()
+    };
+    if check_decoded && string_like(&roots[FILE]).is_some_and(|text| text.multibyte) {
+        roots[FILE] = decode_file_name(interp, env, &encoded_file)?;
+    }
+    let host_directory = host_file_name(interp, env, &directory_file_name(&dirname))?;
+    let entries = read_directory_entries(&host_directory).map_err(|(step, error)| {
+        let rendered = error.to_string();
+        let detail = rendered
+            .split_once(" (os error")
+            .map(|(detail, _)| detail)
+            .unwrap_or(rendered.as_str());
+        LispError::SignalValue(Value::list([
+            Value::symbol(if error.kind() == ErrorKind::NotFound {
+                "file-missing"
+            } else {
+                "file-error"
+            }),
+            Value::String(step.into()),
+            Value::String(detail.into()),
+            Value::String(dirname.clone().into()),
+        ]))
+    })?;
+    // completion_ignore_case's regexps fold with Vascii_canon_table.
+    let case_table = ignore_case.then(|| interp.standard_case_tables().canon);
+    let file_len = schars(&roots[FILE]);
+    let enc_file_len = encoded_file.len();
+    let mut bestmatchsize = 0usize;
+    let mut matchcount = 0;
+    // Until a file that cannot be excluded is seen, "." and ".." and the
+    // completion-ignored-extensions are kept.
+    let mut includeall = true;
+    'entries: for (entry, kind) in entries {
+        use std::os::unix::ffi::OsStrExt;
+        let bytes = entry.as_bytes();
+        let len = bytes.len();
+        if len < enc_file_len || (!ignore_case && !bytes.starts_with(&encoded_file)) {
+            continue;
+        }
+        roots[NAME] = decode_file_name(interp, env, bytes)?;
+        let name_text = string_text(&roots[NAME])?;
+        let name_bytes = name_text.as_bytes();
+        let name_len = schars(&roots[NAME]);
+        if ignore_case
+            && !compare_strings_value(
+                interp,
+                env,
+                roots[NAME],
+                0,
+                Some(file_len),
+                roots[FILE],
+                0,
+                Some(file_len),
+                true,
+            )?
+            .eq_value(Value::T)
+        {
+            continue;
+        }
+        // dirent_type: a directory as such; a link or an unknown type by
+        // file_name_completion_dirp's stat; anything else not one.
+        let directoryp = match kind {
+            libc::DT_DIR => true,
+            libc::DT_LNK | libc::DT_UNKNOWN => {
+                fs::metadata(host_directory.join(&entry)).is_ok_and(|meta| meta.is_dir())
+            }
+            _ => false,
+        };
+        if !all {
+            let extensions = interp
+                .lookup_var("completion-ignored-extensions", env)
+                .unwrap_or(Value::Nil);
+            let mut canexclude = false;
+            if directoryp && (bytes == b"." || bytes == b"..") {
+                // "." and ".." are never interesting as completions.
+                canexclude = true;
+            } else if len > enc_file_len {
+                let mut tail = extensions;
+                while let Some((elt, rest)) = tail.cons_values() {
+                    tail = rest;
+                    let Some(elt_text) = string_like(&elt).map(|text| text.text) else {
+                        continue;
+                    };
+                    let elt_bytes = elt_text.as_bytes();
+                    let elt_chars = elt_text.chars().count();
+                    // A directory is ignored by an extension ending in a
+                    // slash, compared without it; a file by any other.
+                    let (elt_len, elt_chars, skip) = if directoryp {
+                        let Some(elt_len) = elt_bytes.len().checked_sub(1).filter(|&n| n > 0)
+                        else {
+                            continue;
+                        };
+                        if elt_bytes[elt_len] != b'/' {
+                            continue;
+                        }
+                        let Some(skip) = name_bytes.len().checked_sub(elt_len) else {
+                            continue;
+                        };
+                        (elt_len, elt_chars - 1, skip)
+                    } else {
+                        let Some(skip) = len.checked_sub(elt_bytes.len()) else {
+                            continue;
+                        };
+                        (elt_bytes.len(), elt_chars, skip)
+                    };
+                    if !ignore_case
+                        && name_bytes.get(skip..skip + elt_len) != Some(&elt_bytes[..elt_len])
+                    {
+                        continue;
+                    }
+                    if ignore_case {
+                        let Some(skip) = name_len.checked_sub(elt_chars) else {
+                            continue;
+                        };
+                        if !compare_strings_value(
+                            interp,
+                            env,
+                            roots[NAME],
+                            skip,
+                            None,
+                            elt,
+                            0,
+                            Some(elt_chars),
+                            true,
+                        )?
+                        .eq_value(Value::T)
+                        {
+                            continue;
+                        }
+                    }
+                    canexclude = true;
+                    break;
+                }
+            }
+            if !includeall && canexclude {
+                continue;
+            }
+            if includeall && !canexclude {
+                // One file that cannot be excluded excludes the others.
+                includeall = false;
+                roots[BEST] = Value::Nil;
+                bestmatchsize = 0;
+                matchcount = 0;
+            }
+        }
+        let mut regexps = interp
+            .lookup_var("completion-regexp-list", env)
+            .unwrap_or(Value::Nil);
+        while let Some((regexp, rest)) = regexps.cons_values() {
+            regexps = rest;
+            if !completion_regex_matches(interp, env, &name_text, &regexp, case_table)? {
+                continue 'entries;
+            }
+        }
+        if directoryp {
+            roots[NAME] = super::call(interp, "file-name-as-directory", &[roots[NAME]], env)?;
+        }
+        if !roots[PREDICATE].is_nil()
+            && interp
+                .call_function_value(roots[PREDICATE], None, &[roots[NAME]], env)?
+                .is_nil()
+        {
+            continue;
+        }
+        // Encoded names that match while the decoded ones do not ("a" and
+        // a decomposed "a-ring") are refused.
+        if check_decoded
+            && file_len <= schars(&roots[NAME])
+            && !compare_strings_value(
+                interp,
+                env,
+                roots[NAME],
+                0,
+                Some(file_len),
+                roots[FILE],
+                0,
+                Some(file_len),
+                ignore_case,
+            )?
+            .eq_value(Value::T)
+        {
+            continue;
+        }
+        if matchcount <= 1 {
+            matchcount += 1;
+        }
+        if all {
+            roots[BEST] = Value::cons(roots[NAME], roots[BEST]);
+        } else if roots[BEST].is_nil() {
+            roots[BEST] = roots[NAME];
+            bestmatchsize = schars(&roots[NAME]);
+        } else {
+            let name_chars = schars(&roots[NAME]);
+            let compare = bestmatchsize.min(name_chars);
+            let cmp = compare_strings_value(
+                interp,
+                env,
+                roots[BEST],
+                0,
+                Some(compare),
+                roots[NAME],
+                0,
+                Some(compare),
+                ignore_case,
+            )?;
+            let matchsize = match cmp.kind() {
+                Kind::Integer(cmp) => cmp.unsigned_abs() as usize - 1,
+                _ => compare,
+            };
+            if ignore_case {
+                // An exact match but for case is the best match, so that
+                // its case pattern is the answer's; else a match keeping
+                // the input's case is preferred.
+                let best_chars = schars(&roots[BEST]);
+                let dir = usize::from(directoryp);
+                let exact = matchsize == name_chars;
+                if (exact && matchsize + dir < best_chars)
+                    || (exact == (matchsize + dir == best_chars)
+                        && compare_strings_value(
+                            interp,
+                            env,
+                            roots[NAME],
+                            0,
+                            Some(file_len),
+                            roots[FILE],
+                            0,
+                            None,
+                            false,
+                        )?
+                        .eq_value(Value::T)
+                        && !compare_strings_value(
+                            interp,
+                            env,
+                            roots[BEST],
+                            0,
+                            Some(file_len),
+                            roots[FILE],
+                            0,
+                            None,
+                            false,
+                        )?
+                        .eq_value(Value::T))
+                {
+                    roots[BEST] = roots[NAME];
+                }
+            }
+            bestmatchsize = matchsize;
+            // Reduced to FILE itself with no other completion possible.
+            if matchsize <= file_len
+                && !includeall
+                && (!ignore_case || matchsize == 0)
+                && matchcount > 1
+            {
+                break;
+            }
+        }
+    }
+    if all || roots[BEST].is_nil() {
+        return Ok(roots[BEST]);
+    }
+    // t when FILE is the sole match exactly, case counted.
+    if matchcount == 1
+        && super::call(interp, "equal", &[roots[BEST], roots[FILE]], env)?.is_truthy()
+    {
+        return Ok(Value::T);
+    }
+    super::call(
+        interp,
+        "substring",
+        &[
+            roots[BEST],
+            Value::Integer(0),
+            Value::Integer(bestmatchsize as i64),
+        ],
+        env,
+    )
 }

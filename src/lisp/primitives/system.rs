@@ -1012,15 +1012,85 @@ pub(crate) fn expand_file_name(path: &str, base: Option<&str>) -> String {
     expand_file_name_with_home(path, base, home.as_deref())
 }
 
-/// fileio.c:Fexpand_file_name on POSIX, its handlers and the buffer's
-/// `default-directory' settled: an absolute NAME with no `/.', `/..' or
-/// repeated slash (a leading `//' aside) as it is; else `~' (HOME) or
-/// `~USER' (a known user's home) expanded, a relative name put under BASE
-/// (itself expanded first when not absolute), and the result canonicalized
-/// as the C loop does: `/.' dropped, `/foo/..' dropped (a leading `/..',
-/// the superroot, kept), repeated slashes collapsed but a leading `//'.
+/// fileio.c:Fexpand_file_name on POSIX for host text, its handlers and
+/// the buffer's `default-directory' settled: `expand_file_name_core' of
+/// PATH, BASE (expanded first when not absolute and not PATH itself) and
+/// HOME, the text kept as it is when that returns it unchanged.
 fn expand_file_name_with_home(path: &str, base: Option<&str>, home: Option<&str>) -> String {
     let nm = path.as_bytes();
+    let tilde = tilde_prefix(
+        nm,
+        || {
+            // get_homedir: HOME, else the passwd entry's directory, else "";
+            // a relative one spliced onto the directory Emacs started in
+            // (emacs_wd, the process's working directory here).
+            match home
+                .map(str::to_string)
+                .or_else(current_user_home_directory)
+            {
+                None => Vec::new(),
+                Some(home) if home.starts_with('/') => home.into_bytes(),
+                Some(home) => (default_directory() + &home).into_bytes(),
+            }
+        },
+        |user| {
+            std::str::from_utf8(user)
+                .ok()
+                .and_then(user_home_directory)
+                .map(String::into_bytes)
+        },
+    );
+    let expanded = expand_file_name_core(nm, tilde, || {
+        let base = base.map(str::to_string).unwrap_or_else(default_directory);
+        // A DEFAULT-DIRECTORY that is not absolute is expanded first.
+        if base.starts_with('/') || base == path {
+            base.into_bytes()
+        } else {
+            expand_file_name_with_home(&base, None, home).into_bytes()
+        }
+    });
+    match expanded {
+        None => path.to_string(),
+        Some(bytes) => String::from_utf8(bytes)
+            .unwrap_or_else(|error| String::from_utf8_lossy(error.as_bytes()).into_owned()),
+    }
+}
+
+/// What a leading `~' of NM stands for in Fexpand_file_name: `~' alone
+/// or before a slash is HOME (get_homedir), `~USER' a known USER's home
+/// (user_homedir); the directory's bytes and how many bytes of NM it
+/// replaces.  None for no `~' or an unknown user, which stays as it is.
+fn tilde_prefix(
+    nm: &[u8],
+    home: impl FnOnce() -> Vec<u8>,
+    user_home: impl FnOnce(&[u8]) -> Option<Vec<u8>>,
+) -> Option<(Vec<u8>, usize)> {
+    if nm.first() != Some(&b'~') {
+        return None;
+    }
+    let user_end = nm[1..]
+        .iter()
+        .position(|&byte| byte == b'/')
+        .map_or(nm.len(), |at| at + 1);
+    if user_end == 1 {
+        return Some((home(), 1));
+    }
+    user_home(&nm[1..user_end]).map(|dir| (dir, user_end))
+}
+
+/// The expansion proper of fileio.c:Fexpand_file_name on POSIX, on the
+/// bytes of NM: None when NM is absolute with no `/.', `/..' or repeated
+/// slash (a leading `//' aside), which Fexpand_file_name returns as it
+/// is.  Else NM with TILDE's directory for its `~' prefix, or under
+/// DEFAULT (the expanded DEFAULT-DIRECTORY, asked for only then) when it
+/// is relative, canonicalized as the C loop does: `/.' dropped,
+/// `/foo/..' dropped (a leading `/..', the superroot, kept), repeated
+/// slashes collapsed but a leading `//'.
+fn expand_file_name_core(
+    nm: &[u8],
+    tilde: Option<(Vec<u8>, usize)>,
+    default: impl FnOnce() -> Vec<u8>,
+) -> Option<Vec<u8>> {
     let sep = |at: usize| nm.get(at) == Some(&b'/');
     let end = |at: usize| at >= nm.len();
     if sep(0) {
@@ -1033,71 +1103,45 @@ fn expand_file_name_with_home(path: &str, base: Option<&str>, home: Option<&str>
                     || (sep(p + 1) && (p != 0 || sep(p + 2))))
         });
         if !lose {
-            return path.to_string();
+            return None;
         }
     }
-    let mut rest = path;
-    let mut newdir: Option<String> = None;
-    if let Some(after) = path.strip_prefix('~') {
-        if after.is_empty() || after.starts_with('/') {
-            // get_homedir: HOME, else the passwd entry's directory, else
-            // ""; a relative one spliced onto the directory Emacs started
-            // in (emacs_wd, the process's working directory here).
-            newdir = Some(
-                match home
-                    .map(str::to_string)
-                    .or_else(current_user_home_directory)
-                {
-                    None => String::new(),
-                    Some(home) if home.starts_with('/') => home,
-                    Some(home) => default_directory() + &home,
-                },
-            );
-            rest = after;
-        } else {
-            let user = after.split('/').next().unwrap_or(after);
-            if let Some(user_home) = user_home_directory(user) {
-                newdir = Some(user_home);
-                rest = &after[user.len()..];
-            }
-        }
-    }
-    if newdir.is_none() && !rest.starts_with('/') {
-        let base = base.map(str::to_string).unwrap_or_else(default_directory);
-        // A DEFAULT-DIRECTORY that is not absolute is expanded first.
-        newdir = Some(if base.starts_with('/') || base == path {
-            base
-        } else {
-            expand_file_name_with_home(&base, None, home)
-        });
-    }
-    let mut target = String::with_capacity(rest.len() + newdir.as_ref().map_or(0, String::len) + 2);
+    let (newdir, rest) = match tilde {
+        Some((dir, consumed)) => (Some(dir), &nm[consumed..]),
+        None => (None, nm),
+    };
+    let newdir = newdir.or_else(|| (rest.first() != Some(&b'/')).then(default));
+    let mut target = Vec::with_capacity(rest.len() + newdir.as_ref().map_or(0, Vec::len) + 2);
     if let Some(newdir) = &newdir {
         // Any slash at newdir's end ignored, unless it is just "/" or "//".
-        let bytes = newdir.as_bytes();
-        let mut length = bytes.len();
-        while length > 1 && bytes[length - 1] == b'/' && !(length == 2 && bytes[0] == b'/') {
+        let mut length = newdir.len();
+        while length > 1 && newdir[length - 1] == b'/' && !(length == 2 && newdir[0] == b'/') {
             length -= 1;
         }
         let newdir = &newdir[..length];
-        if rest.is_empty() || rest.starts_with('/') {
-            target.push_str(newdir);
+        if rest.is_empty() || rest[0] == b'/' {
+            target.extend_from_slice(newdir);
         } else if newdir.is_empty() {
-            target.push_str("./");
+            // file_name_as_directory of "".
+            target.extend_from_slice(b"./");
         } else {
-            target.push_str(newdir);
-            if !newdir.ends_with('/') {
-                target.push('/');
+            target.extend_from_slice(newdir);
+            if newdir.last() != Some(&b'/') {
+                target.push(b'/');
             }
         }
     }
-    target.push_str(rest);
-    canonicalize_expanded_file_name(&target)
+    target.extend_from_slice(rest);
+    // The C loop stops at a NUL, which a DEFAULT-DIRECTORY argument may
+    // hold (only NAME and the buffer's directory are checked for one).
+    if let Some(nul) = target.iter().position(|&byte| byte == 0) {
+        target.truncate(nul);
+    }
+    Some(canonicalize_expanded_file_name(&target))
 }
 
 /// The canonicalization loop of Fexpand_file_name on POSIX.
-fn canonicalize_expanded_file_name(target: &str) -> String {
-    let p = target.as_bytes();
+fn canonicalize_expanded_file_name(p: &[u8]) -> Vec<u8> {
     let mut o: Vec<u8> = Vec::with_capacity(p.len());
     let sep = |at: usize| p.get(at) == Some(&b'/');
     let end = |at: usize| at >= p.len();
@@ -1123,7 +1167,7 @@ fn canonicalize_expanded_file_name(target: &str) -> String {
                 }
             }
             // The initial "/" is kept only when this is the whole name.
-            if o.is_empty() && target.starts_with('/') && end(i + 3) {
+            if o.is_empty() && p.first() == Some(&b'/') && end(i + 3) {
                 o.push(b'/');
             }
             i += 3;
@@ -1135,8 +1179,7 @@ fn canonicalize_expanded_file_name(target: &str) -> String {
             i += 1;
         }
     }
-    String::from_utf8(o)
-        .unwrap_or_else(|error| String::from_utf8_lossy(error.as_bytes()).into_owned())
+    o
 }
 
 /// get_homedir's fallback: the passwd entry of the user running Emacs.
@@ -1150,6 +1193,248 @@ fn current_user_home_directory() -> Option<String> {
     {
         None
     }
+}
+
+/// The string bytes of VALUE and whether they are multibyte.
+fn lisp_string_bytes(value: &Value) -> Option<(Vec<u8>, bool)> {
+    match value.kind() {
+        Kind::StringObject(state) => {
+            let state = state.borrow();
+            Some((state.bytes().to_vec(), state.is_multibyte()))
+        }
+        _ => None,
+    }
+}
+
+/// CHECK_STRING_NULL_BYTES: a file name may hold no NUL.
+fn check_string_null_bytes(value: &Value, bytes: &[u8]) -> Result<(), LispError> {
+    if bytes.contains(&0) {
+        Err(LispError::WrongTypeArgument("filenamep".into(), *value))
+    } else {
+        Ok(())
+    }
+}
+
+/// Fexpand_file_name's call3 of a file name HANDLER: its string, else
+/// the handler is invalid.
+fn call_expand_file_name_handler(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    handler: Value,
+    name: Value,
+    default_directory: Value,
+) -> Result<Value, LispError> {
+    let function = match handler.kind() {
+        Kind::Symbol(symbol) => interp.lookup_function(&symbol, env)?,
+        other => other.value(),
+    };
+    let handled = call_function_value(
+        interp,
+        &function,
+        &[expand_file_name_operation(), name, default_directory],
+        env,
+    )?;
+    if handled.is_string() {
+        Ok(handled)
+    } else {
+        Err(LispError::Signal(
+            "Invalid handler in `file-name-handler-alist'".into(),
+        ))
+    }
+}
+
+/// Ffind_file_name_handler of a Lisp string for `expand-file-name'.
+fn expand_file_name_handler(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    name: &Value,
+) -> Result<Option<Value>, LispError> {
+    let text = string_text(name)?;
+    find_file_name_handler(interp, env, &text, expand_file_name_operation())
+}
+
+/// get_homedir: HOME from `process-environment', else the passwd entry of
+/// LOGNAME or USER, else of the uid, else ""; a relative one is put after
+/// the directory Emacs started in.
+fn get_homedir_bytes(interp: &Interpreter, env: &Env) -> Vec<u8> {
+    let egetenv = |variable: &[u8]| {
+        crate::lisp::primitives::getenv_internal(interp, env, variable, &Value::Nil)
+            .ok()
+            .flatten()
+    };
+    let home = egetenv(b"HOME").or_else(|| {
+        let by_name = [b"LOGNAME".as_slice(), b"USER".as_slice()]
+            .into_iter()
+            .find_map(|variable| {
+                let user = egetenv(variable)?;
+                let user = std::ffi::CString::new(user).ok()?;
+                user_account(UserAccountQuery::Name(&user))
+            });
+        by_name
+            .or_else(|| user_account(UserAccountQuery::Uid(unsafe { libc::getuid() })))
+            .and_then(|account| account.home)
+            .map(String::into_bytes)
+    });
+    match home {
+        None => Vec::new(),
+        Some(home) if home.first() == Some(&b'/') => home,
+        Some(home) => {
+            let mut absolute = default_directory_bytes();
+            absolute.extend_from_slice(&home);
+            absolute
+        }
+    }
+}
+
+/// fileio.c:Fexpand_file_name: NAME's handler, else DEFAULT-DIRECTORY
+/// settled (the buffer's `default-directory' for nil, made absolute
+/// against `invocation-directory' or the root; "/" for no string; its
+/// handler; itself expanded when relative unless it is NAME itself), the
+/// two made of one multibyteness as GNU makes them, and
+/// `expand_file_name_core' of NAME's bytes: an absolute NAME it keeps is
+/// returned itself, the result's handler consulted again.  `~' is
+/// get_homedir's, DECODE_FILE'd for a multibyte NAME, which a multibyte
+/// home makes multibyte; `~USER' is user_homedir's, DECODE_FILE'd for a
+/// multibyte NAME.
+pub(crate) fn fexpand_file_name(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    name: Value,
+    default_directory: Value,
+) -> Result<Value, LispError> {
+    let Some((name_bytes, _)) = lisp_string_bytes(&name) else {
+        return Err(LispError::WrongTypeArgument("stringp".into(), name));
+    };
+    check_string_null_bytes(&name, &name_bytes)?;
+    if let Some(handler) = expand_file_name_handler(interp, env, &name)? {
+        return call_expand_file_name_handler(interp, env, handler, name, default_directory);
+    }
+    let root = || Value::string("/");
+    let mut default_directory = default_directory;
+    if default_directory.is_nil() {
+        let dir = interp
+            .lookup_var("default-directory", env)
+            .unwrap_or(Value::Nil);
+        if let Some((dir_bytes, _)) = lisp_string_bytes(&dir) {
+            if dir_bytes.first() == Some(&b'/') {
+                check_string_null_bytes(&dir, &dir_bytes)?;
+                default_directory = dir;
+            } else {
+                let absdir = interp
+                    .lookup_var("invocation-directory", env)
+                    .filter(|value| {
+                        lisp_string_bytes(value)
+                            .is_some_and(|(bytes, _)| bytes.first() == Some(&b'/'))
+                    })
+                    .unwrap_or_else(root);
+                default_directory = fexpand_file_name(interp, env, dir, absdir)?;
+            }
+        }
+    }
+    if !default_directory.is_string() {
+        default_directory = root();
+    }
+    if let Some(handler) = expand_file_name_handler(interp, env, &default_directory)? {
+        return call_expand_file_name_handler(interp, env, handler, name, default_directory);
+    }
+    // The EQ test avoids infinite recursion.
+    if default_directory.word() != name.word()
+        && lisp_string_bytes(&default_directory)
+            .is_some_and(|(bytes, _)| bytes.first() != Some(&b'/'))
+    {
+        default_directory = fexpand_file_name(interp, env, default_directory, Value::Nil)?;
+        if let Some(handler) = expand_file_name_handler(interp, env, &default_directory)? {
+            return call_expand_file_name_handler(interp, env, handler, name, default_directory);
+        }
+    }
+    let (nm, mut multibyte) = lisp_string_bytes(&name).expect("checked string");
+    let (mut defdir, defdir_multibyte) =
+        lisp_string_bytes(&default_directory).expect("a settled string");
+    let mut name = name;
+    // Of a multibyte and a unibyte string, a pure-ASCII one takes the
+    // other's multibyteness, its bytes kept; when both are non-ASCII the
+    // multibyte one becomes its bytes, unibyte.  GNU's scan for a
+    // non-ASCII byte stops at a NUL.
+    let ascii = |bytes: &[u8]| {
+        bytes
+            .iter()
+            .find(|&&byte| byte == 0 || !byte.is_ascii())
+            .is_none_or(|&byte| byte == 0)
+    };
+    if multibyte && !defdir_multibyte {
+        if nm.is_ascii() || !ascii(&defdir) {
+            name = crate::lisp::primitives::bytes_to_unibyte_value(&nm);
+            multibyte = false;
+        } else {
+            default_directory = make_specified_string(defdir.clone(), true)
+                .map_err(|error| LispError::Signal(error.to_string()))?;
+        }
+    } else if !multibyte && defdir_multibyte {
+        if nm.is_ascii() {
+            name = make_specified_string(nm.clone(), true)
+                .map_err(|error| LispError::Signal(error.to_string()))?;
+            multibyte = true;
+        } else {
+            default_directory = crate::lisp::primitives::bytes_to_unibyte_value(&defdir);
+        }
+    }
+    let tilde = if nm.first() == Some(&b'~') {
+        let mut home_multibyte = false;
+        let tilde = tilde_prefix(
+            &nm,
+            || {
+                let home = get_homedir_bytes(interp, env);
+                // build_string: multibyte when the bytes are valid
+                // multibyte text that is not all ASCII.
+                let tem = make_string(home.clone()).ok();
+                let tem_multibyte = tem
+                    .as_ref()
+                    .and_then(lisp_string_bytes)
+                    .is_some_and(|(_, multibyte)| multibyte);
+                if multibyte && !tem_multibyte {
+                    decode_file_name(interp, env, &home)
+                        .ok()
+                        .and_then(|decoded| lisp_string_bytes(&decoded))
+                        .map_or(home, |(bytes, _)| bytes)
+                } else {
+                    home_multibyte = !multibyte && tem_multibyte;
+                    home
+                }
+            },
+            |user| {
+                // user_homedir: getpwnam's directory, unless it is relative.
+                let user = std::ffi::CString::new(user).ok()?;
+                let home = user_account(UserAccountQuery::Name(&user))?
+                    .home
+                    .filter(|home| home.starts_with('/'))?
+                    .into_bytes();
+                Some(if multibyte {
+                    decode_file_name(interp, env, &home)
+                        .ok()
+                        .and_then(|decoded| lisp_string_bytes(&decoded))
+                        .map_or(home, |(bytes, _)| bytes)
+                } else {
+                    home
+                })
+            },
+        );
+        if home_multibyte {
+            multibyte = true;
+        }
+        tilde
+    } else {
+        None
+    };
+    let Some(target) = expand_file_name_core(&nm, tilde, || std::mem::take(&mut defdir)) else {
+        return Ok(name);
+    };
+    let result = make_specified_string(target, multibyte)
+        .map_err(|error| LispError::Signal(error.to_string()))?;
+    // "/foo/../user@host:/bar" expanded is a name a handler takes.
+    if let Some(handler) = expand_file_name_handler(interp, env, &result)? {
+        return call_expand_file_name_handler(interp, env, handler, result, default_directory);
+    }
+    Ok(result)
 }
 
 pub(crate) fn expand_file_name_runtime(
@@ -1370,96 +1655,89 @@ pub(crate) fn lisp_environment_string(
 }
 
 /// fileio.c:search_embedded_absfilename: where an absolute file name
-/// starts after a slash in TEXT (`//', `/~/', or `/~USER/' for a known
-/// USER), the earliest; None when none does.
-fn search_embedded_absfilename(text: &str) -> Option<usize> {
-    let bytes = text.as_bytes();
-    (1..bytes.len()).find(|&p| bytes[p - 1] == b'/' && file_name_absolute_p(&text[p..]))
+/// starts after a slash in the bytes NM (`//', `/~/', or `/~USER/' for a
+/// known USER), the earliest; None when none does.
+fn search_embedded_absfilename(nm: &[u8]) -> Option<usize> {
+    (1..nm.len()).find(|&p| nm[p - 1] == b'/' && file_name_absolute_p_bytes(&nm[p..]))
 }
 
-fn substitute_in_file_name_with(
-    path: &str,
-    mut environment_value: impl FnMut(&str) -> Option<String>,
-) -> String {
-    // Fsubstitute_in_file_name: if /~ or // appears, everything through
-    // the slash before it is discarded and the rest substituted afresh.
-    let mut path = path;
-    while let Some(start) = search_embedded_absfilename(path) {
-        path = &path[start..];
+/// fileio.c:file_name_absolute_p over a name's bytes, read as the C
+/// string they are: `/', `~' alone or before a slash, or `~USER' for a
+/// USER with an absolute home directory (user_homedir).
+fn file_name_absolute_p_bytes(name: &[u8]) -> bool {
+    match name.first() {
+        Some(b'/') => true,
+        Some(b'~') => {
+            let rest = &name[1..];
+            let length = rest
+                .iter()
+                .position(|byte| matches!(byte, 0 | b'/'))
+                .unwrap_or(rest.len());
+            matches!(rest.first(), None | Some(0 | b'/'))
+                || std::str::from_utf8(&rest[..length])
+                    .ok()
+                    .and_then(user_home_directory)
+                    .is_some_and(|home| home.starts_with('/'))
+        }
+        _ => false,
     }
-    let mut result = String::new();
-    let chars: Vec<char> = path.chars().collect();
-    let mut index = 0usize;
-    while index < chars.len() {
-        if chars[index] != '$' {
-            result.push(chars[index]);
-            index += 1;
-            continue;
-        }
-        if index + 1 < chars.len() && chars[index + 1] == '$' {
-            result.push('$');
-            index += 2;
-            continue;
-        }
-        if index + 1 < chars.len() && chars[index + 1] == '{' {
-            let mut end = index + 2;
-            while end < chars.len() && chars[end] != '}' {
-                end += 1;
-            }
-            if end < chars.len() && chars[end] == '}' {
-                let name: String = chars[index + 2..end].iter().collect();
-                if let Some(value) = environment_value(&name) {
-                    result.push_str(&value);
-                } else {
-                    result.push_str("${");
-                    result.push_str(&name);
-                    result.push('}');
-                }
-                index = end + 1;
-                continue;
-            }
-        }
-        let mut end = index + 1;
-        while end < chars.len() && (chars[end].is_ascii_alphanumeric() || chars[end] == '_') {
-            end += 1;
-        }
-        if end == index + 1 {
-            result.push('$');
-            index += 1;
-            continue;
-        }
-        let name: String = chars[index + 1..end].iter().collect();
-        if let Some(value) = environment_value(&name) {
-            result.push_str(&value);
-        } else {
-            result.push('$');
-            result.push_str(&name);
-        }
-        index = end;
+}
+
+/// fileio.c:Fsubstitute_in_file_name past its handler lookup (the
+/// dispatcher's): FILENAME from the slash of an embedded absolute name
+/// on, substituted afresh, handler included; else what Lisp
+/// `substitute-env-in-file-name' makes of it when that is defined, cut
+/// again at an embedded absolute name, and FILENAME itself when nothing
+/// changed.
+pub(crate) fn substitute_in_file_name(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    filename: Value,
+) -> Result<Value, LispError> {
+    let Kind::StringObject(state) = filename.kind() else {
+        return Err(wrong_type_argument("stringp", filename));
+    };
+    let (nm, multibyte) = {
+        let state = state.borrow();
+        (state.bytes().to_vec(), state.is_multibyte())
+    };
+    if let Some(p) = search_embedded_absfilename(&nm) {
+        let name = super::make_specified_string(nm[p..].to_vec(), multibyte)
+            .map_err(|error| LispError::Signal(error.to_string()))?;
+        return super::call(interp, "substitute-in-file-name", &[name], env);
     }
-    // And again in the substituted name.
+    let mut filename = filename;
+    let substitute = crate::lisp::types::SymbolName::from("substitute-env-in-file-name");
+    if interp
+        .raw_function_binding_symbol(&substitute, env)
+        .is_some_and(|binding| !binding.is_nil())
+    {
+        let tmp = interp.call_function_value(
+            Value::symbol("substitute-env-in-file-name"),
+            None,
+            &[filename],
+            env,
+        )?;
+        if tmp.eq_value(filename) {
+            return Ok(filename);
+        }
+        filename = tmp;
+    } else {
+        return Ok(filename);
+    }
+    let Kind::StringObject(state) = filename.kind() else {
+        return Err(wrong_type_argument("stringp", filename));
+    };
+    let xnm = state.borrow().bytes().to_vec();
     let mut start = 0;
-    while let Some(next) = search_embedded_absfilename(&result[start..]) {
-        start += next;
+    while let Some(p) = search_embedded_absfilename(&xnm[start..]) {
+        start += p;
     }
     if start == 0 {
-        result
-    } else {
-        result[start..].to_string()
+        return Ok(filename);
     }
-}
-
-#[cfg(test)]
-pub(crate) fn substitute_in_file_name(path: &str) -> String {
-    substitute_in_file_name_with(path, |name| std::env::var(name).ok())
-}
-
-pub(crate) fn substitute_in_file_name_in_env(
-    interp: &Interpreter,
-    env: &Env,
-    path: &str,
-) -> String {
-    substitute_in_file_name_with(path, |name| lisp_environment_string(interp, env, name))
+    super::make_specified_string(xnm[start..].to_vec(), multibyte)
+        .map_err(|error| LispError::Signal(error.to_string()))
 }
 
 pub(crate) fn expand_home_prefix_with_home(path: &str, home: Option<&str>) -> String {
@@ -2248,6 +2526,14 @@ pub(crate) fn dispatch_file_name_handler(
 pub(crate) fn read_directory_names(
     directory: &Path,
 ) -> Result<Vec<std::ffi::OsString>, (&'static str, std::io::Error)> {
+    read_directory_entries(directory)
+        .map(|entries| entries.into_iter().map(|(name, _)| name).collect())
+}
+
+/// `read_directory_names' with each entry's dirent_type (d_type).
+pub(crate) fn read_directory_entries(
+    directory: &Path,
+) -> Result<Vec<(std::ffi::OsString, u8)>, (&'static str, std::io::Error)> {
     use std::os::unix::ffi::{OsStrExt, OsStringExt};
     let path = std::ffi::CString::new(directory.as_os_str().as_bytes()).map_err(|_| {
         (
@@ -2286,8 +2572,13 @@ pub(crate) fn read_directory_names(
         }
         // SAFETY: ENTRY points at the dirent readdir returned, whose
         // d_name is NUL-terminated and stays valid until the next call.
-        let name = unsafe { std::ffi::CStr::from_ptr((*entry).d_name.as_ptr()) };
-        names.push(std::ffi::OsString::from_vec(name.to_bytes().to_vec()));
+        let (name, kind) = unsafe {
+            (
+                std::ffi::CStr::from_ptr((*entry).d_name.as_ptr()),
+                (*entry).d_type,
+            )
+        };
+        names.push((std::ffi::OsString::from_vec(name.to_bytes().to_vec()), kind));
     };
     // SAFETY: STREAM is open and closed exactly once.
     unsafe { libc::closedir(stream) };

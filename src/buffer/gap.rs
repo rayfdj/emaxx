@@ -14,6 +14,9 @@ use std::rc::Rc;
 /// insertion that needed it.
 const GAP_BYTES_DFL: usize = 2000;
 
+/// buffer.c:Fget_buffer_create's BUF_GAP_SIZE of a new buffer.
+const NEW_BUFFER_GAP: usize = 20;
+
 /// A buffer's text: the bytes before the gap, the gap, the bytes after,
 /// with the character counts of the whole and of the part before the gap
 /// (Z and GPT beside Z_BYTE and GPT_BYTE).
@@ -61,15 +64,14 @@ impl GapData {
     }
 
     /// make_gap_larger: a gap of at least NEEDED bytes, grown by what the
-    /// insertion needs and GAP_BYTES_DFL, or by a quarter of the text
-    /// when that is more, so that a long run of insertions copies the
-    /// text a bounded number of times (GNU leaves that to realloc).
+    /// insertion needs and GAP_BYTES_DFL (the vector's own growth keeps
+    /// the reallocations few, as GNU leaves them to realloc).
     fn make_gap(&mut self, needed: usize) {
         let gap = self.gap_end - self.gap_start;
         if gap >= needed {
             return;
         }
-        let added = (needed - gap + GAP_BYTES_DFL).max(self.len() / 4);
+        let added = needed - gap + GAP_BYTES_DFL;
         if self.bytes.is_empty() && self.bytes.capacity() < added {
             // A fresh allocation, which reads as zeros without being
             // filled.
@@ -118,16 +120,24 @@ pub(crate) fn backward_bytes(text: &[u8], mut at: usize, n: usize) -> usize {
 }
 
 impl GapText {
-    /// TEXT, with no gap.
+    /// A new buffer's text (Fget_buffer_create's 20-byte gap) with TEXT
+    /// inserted, the gap after it as make_gap_larger leaves it.
     pub(crate) fn from_str(text: &str) -> Self {
-        let bytes = text.as_bytes().to_vec();
-        let len = bytes.len();
+        let len = text.len();
+        let gap = if len <= NEW_BUFFER_GAP {
+            NEW_BUFFER_GAP - len
+        } else {
+            GAP_BYTES_DFL
+        };
+        let mut bytes = Vec::with_capacity(len + gap);
+        bytes.extend_from_slice(text.as_bytes());
+        bytes.resize(len + gap, 0);
         let chars = count_chars(text.as_bytes());
         GapText {
             data: Rc::new(GapData {
                 bytes,
                 gap_start: len,
-                gap_end: len,
+                gap_end: len + gap,
                 gap_char: chars,
                 chars,
             }),
@@ -162,6 +172,12 @@ impl GapText {
     #[inline]
     pub(crate) fn gap_char(&self) -> usize {
         self.data.gap_char
+    }
+
+    /// GAP_SIZE.
+    #[inline]
+    pub(crate) fn gap_size(&self) -> usize {
+        self.data.gap_end - self.data.gap_start
     }
 
     /// The text before the gap and the text after it.
@@ -550,13 +566,18 @@ mod tests {
     }
 
     #[test]
-    fn a_long_run_of_insertions_grows_the_gap_geometrically() {
-        let mut gap = GapText::default();
+    fn the_gap_starts_and_grows_as_gnu_s() {
+        // Fget_buffer_create's 20 bytes, then make_gap_larger's
+        // GAP_BYTES_DFL beyond each insertion that needs more.
+        assert_eq!(GapText::from_str("").gap_size(), 20);
+        assert_eq!(GapText::from_str("abc").gap_size(), 17);
+        assert_eq!(GapText::from_str(&"x".repeat(100)).gap_size(), 2000);
+        let mut gap = GapText::from_str("");
         for n in 0..100_000 {
             gap.insert(n, n, "x", 1);
         }
         assert_eq!((gap.len(), gap.chars()), (100_000, 100_000));
-        assert!(gap.data.bytes.len() < 200_000);
+        assert!(gap.gap_size() <= GAP_BYTES_DFL);
     }
 
     #[test]

@@ -2042,16 +2042,39 @@ pub(crate) fn parse_make_process_args(
     let mut argv = Vec::new();
     let mut filter = None;
     let mut sentinel = None;
-    let mut name = None;
     let mut stderr_process_id = None;
     let mut stderr_buffer_id = None;
     let mut query_on_exit_flag = true;
     let mut connection_type = None;
     let mut coding_value = Value::Nil;
-    let mut name_value = Value::Nil;
     let mut command = Value::Nil;
     // Fmake_process reads each keyword with plist_get: its first value.
     let mut seen: Vec<&str> = Vec::new();
+    let first = |keyword: &str| {
+        args.as_chunks::<2>()
+            .0
+            .iter()
+            .find(|pair| matches!(pair[0].kind(), Kind::Symbol(key) if key == keyword))
+            .map(|pair| pair[1])
+    };
+    // process.c:get_required_string_keyword_param for :name, after the
+    // process's buffer is made (Fmake_process) or first (Fmake_pipe_process,
+    // which has no :command).
+    let required_name = |value: Option<Value>| -> Result<(String, Value), LispError> {
+        let value =
+            value.ok_or_else(|| LispError::Signal("Missing :name keyword parameter".into()))?;
+        match string_like(&value) {
+            Some(text) => Ok((text.text, value)),
+            None => Err(LispError::Signal(":name value not a string".into())),
+        }
+    };
+    let has_command = first(":command").is_some();
+    if has_command && let Some(buffer) = first(":buffer") {
+        buffer_id = process_buffer_target(interp, &buffer)?;
+    }
+    let (checked_name, checked_value) = required_name(first(":name"))?;
+    let name = Some(checked_name);
+    let name_value = checked_value;
 
     for pair in args.as_chunks::<2>().0 {
         let key = pair[0].as_symbol()?;
@@ -2061,10 +2084,8 @@ pub(crate) fn parse_make_process_args(
         }
         seen.push(key);
         match key {
-            ":name" => {
-                name = Some(string_text(value)?);
-                name_value = *value;
-            }
+            ":name" => {}
+            ":buffer" if has_command => {}
             ":buffer" => buffer_id = process_buffer_target(interp, value)?,
             ":command" => {
                 let (parsed_program, parsed_argv) = process_command_parts(value)?;

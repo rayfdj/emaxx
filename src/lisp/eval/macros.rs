@@ -74,6 +74,10 @@ impl crate::lisp::reader::ReadContext for LispReadContext<'_> {
     fn char_from_name(&mut self, name: &str) -> Result<Value, LispError> {
         self.interp.read_char_from_name(name, self.env)
     }
+
+    fn read_circle(&mut self) -> bool {
+        self.interp.read_circle(self.env)
+    }
 }
 
 impl Interpreter {
@@ -99,6 +103,12 @@ impl Interpreter {
     /// Vload_file_name as the reader reads `#$'.
     pub(crate) fn read_load_file_name(&self, env: &Env) -> Value {
         self.lookup_var("load-file-name", env).unwrap_or(Value::Nil)
+    }
+
+    /// Vread_circle as the reader tests it.
+    pub(crate) fn read_circle(&self, env: &Env) -> bool {
+        self.lookup_var("read-circle", env)
+            .is_some_and(|value| value.is_truthy())
     }
 
     /// load_force_doc_strings as the reader tests it.
