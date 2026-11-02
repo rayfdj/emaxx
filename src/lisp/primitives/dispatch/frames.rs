@@ -42,114 +42,173 @@ pub(super) fn decode_live_frame(
     decode_frame(interp, value, nil_defaults_to_selected, true)
 }
 
-/// The parameters a frame reports beside its stored ones, as
-/// Fframe_parameters adds them from the frame and its terminal, in that
-/// order (after `COMPUTED_FRAME_PARAMETERS').
-const DEFAULT_FRAME_PARAMETERS: [&str; 12] = [
-    "buried-buffer-list",
-    "buffer-list",
-    "unsplittable",
-    "modeline",
-    "name",
-    "font",
-    "background-color",
-    "foreground-color",
-    "cursor-color",
-    "scroll-bar-background",
-    "scroll-bar-foreground",
-    "minibuffer",
-];
+type FrameRef = crate::lisp::types::FrameRef;
 
-/// The value of the default parameter PARAMETER of frame ID, None for a
-/// name outside `DEFAULT_FRAME_PARAMETERS'.
-fn default_frame_parameter(
-    interp: &Interpreter,
-    id: crate::lisp::types::FrameRef,
-    parameter: &str,
-) -> Option<Value> {
+/// frame.c:store_in_alist: PROP's entry in *ALIST given VAL with
+/// Fsetcdr, or a new entry consed onto its front.
+pub(crate) fn store_in_alist(alist: &mut Value, prop: Value, val: Value) -> Result<(), LispError> {
+    match assq_entry(*alist, prop)? {
+        Some(entry) => entry.set_cdr(val),
+        None => {
+            *alist = Value::cons(Value::cons(prop, val), *alist);
+            Ok(())
+        }
+    }
+}
+
+/// Fassq (PROP, ALIST): the entry whose car is PROP, an entry that is
+/// no cons passed over; an ALIST that is no list signals `listp'.
+fn assq_entry(alist: Value, prop: Value) -> Result<Option<Value>, LispError> {
+    let mut tail = alist;
+    while let Some((entry, rest)) = tail.cons_values() {
+        if entry
+            .cons_values()
+            .is_some_and(|(key, _)| key.eq_value(prop))
+        {
+            return Ok(Some(entry));
+        }
+        tail = rest;
+    }
+    if tail.is_nil() {
+        Ok(None)
+    } else {
+        Err(wrong_type_argument("listp", alist))
+    }
+}
+
+/// Fcdr (Fassq (PROP, ALIST)).
+fn alist_get(alist: Value, prop: Value) -> Value {
+    assq_entry(alist, prop)
+        .ok()
+        .flatten()
+        .and_then(|entry| entry.cons_values())
+        .map_or(Value::Nil, |(_, value)| value)
+}
+
+/// frame.c:get_frame_param: PROP's value in FRAME's param_alist.
+pub(crate) fn get_frame_param(frame: FrameRef, prop: Value) -> Value {
+    let alist = frame.borrow().param_alist;
+    alist_get(alist, prop)
+}
+
+/// frame.c:frame_unspecified_color on a text frame: tty_color_name of
+/// the frame's default background or foreground pixel (which a text
+/// frame never changes) when UNSPEC begins `unspecified-bg' or
+/// `unspecified-fg' (strncmp over UNSPEC's bytes), else None.
+fn frame_unspecified_color(unspec: &Value) -> Option<Value> {
+    let text = string_like(unspec)?;
+    let bytes = text.text.as_bytes();
+    if b"unspecified-bg".starts_with(bytes) {
+        Some(Value::string("unspecified-bg"))
+    } else if b"unspecified-fg".starts_with(bytes) {
+        Some(Value::string("unspecified-fg"))
+    } else {
+        None
+    }
+}
+
+/// frame.c:Fframe_parameters of a live text frame: a copy of its
+/// param_alist, with the colors it reports for unspecified ones, its
+/// font, name and size, the mode line and split flags, its buffer lists
+/// and its bar lines stored in.
+fn frame_parameters_value(interp: &Interpreter, id: FrameRef) -> Result<Value, LispError> {
+    let frame = id.borrow();
+    let mut alist = crate::lisp::primitives::values::copy_alist_value(&frame.param_alist)?;
+    for (prop, unspecified) in [
+        ("foreground-color", "unspecified-fg"),
+        ("background-color", "unspecified-bg"),
+    ] {
+        let prop = Value::symbol(prop);
+        let elt = assq_entry(alist, prop)?.and_then(|entry| entry.cons_values());
+        match elt {
+            Some((_, value)) if value.is_string() => {
+                if let Some(color) = frame_unspecified_color(&value) {
+                    store_in_alist(&mut alist, prop, color)?;
+                }
+            }
+            _ => store_in_alist(&mut alist, prop, Value::string(unspecified))?,
+        }
+    }
+    store_in_alist(&mut alist, Value::symbol("font"), Value::string("tty"))?;
+    store_in_alist(&mut alist, Value::symbol("name"), id.name.get())?;
+    // f->new_height and f->new_width when a new size is queued.
+    let height = if frame.new_size_p && frame.new_height >= 0 {
+        frame.new_height
+    } else {
+        frame.text_height
+    };
+    store_in_alist(&mut alist, Value::symbol("height"), Value::Integer(height))?;
+    let width = if frame.new_size_p && frame.new_width >= 0 {
+        frame.new_width
+    } else {
+        frame.width
+    };
+    store_in_alist(&mut alist, Value::symbol("width"), Value::Integer(width))?;
+    // FRAME_WANTS_MODELINE_P and FRAME_NO_SPLIT_P, which a text frame
+    // keeps at make_frame's true and false.
+    store_in_alist(&mut alist, Value::symbol("modeline"), Value::T)?;
+    store_in_alist(&mut alist, Value::symbol("unsplittable"), Value::Nil)?;
     let buffers =
         |ids: &[u64]| Value::list(ids.iter().filter_map(|buffer| interp.buffer_value(*buffer)));
-    Some(match parameter {
-        "unsplittable" | "scroll-bar-background" | "scroll-bar-foreground" => Value::Nil,
-        // frame.c:Fframe_parameters' f->buffer_list and buried_buffer_list.
-        "buffer-list" => buffers(&id.borrow().buffer_list),
-        "buried-buffer-list" => buffers(&id.borrow().buried_buffer_list),
-        "modeline" | "minibuffer" => Value::T,
-        "name" => id.name.get(),
-        "font" => Value::string("tty"),
-        "background-color" => Value::string("unspecified-bg"),
-        "foreground-color" => Value::string("unspecified-fg"),
-        "cursor-color" => Value::string("white"),
-        _ => return None,
+    store_in_alist(
+        &mut alist,
+        Value::symbol("buffer-list"),
+        buffers(&frame.buffer_list),
+    )?;
+    store_in_alist(
+        &mut alist,
+        Value::symbol("buried-buffer-list"),
+        buffers(&frame.buried_buffer_list),
+    )?;
+    store_in_alist(
+        &mut alist,
+        Value::symbol("menu-bar-lines"),
+        Value::Integer(frame.menu_bar_lines),
+    )?;
+    store_in_alist(
+        &mut alist,
+        Value::symbol("tab-bar-lines"),
+        Value::Integer(frame.tab_bar_lines),
+    )?;
+    Ok(alist)
+}
+
+/// frame.c:Fframe_parameter of a live text frame.
+pub(super) fn frame_parameter_of(
+    interp: &Interpreter,
+    id: FrameRef,
+    parameter: Value,
+) -> Result<Value, LispError> {
+    Ok(match parameter.symbol_str() {
+        Some("name") => id.name.get(),
+        // A text frame has no scroll bars (vertical_scroll_bar_none, no
+        // horizontal ones) and its extra_line_spacing stays 0.
+        Some("vertical-scroll-bars" | "horizontal-scroll-bars") => Value::Nil,
+        Some("line-spacing") => Value::Integer(0),
+        Some("background-color" | "foreground-color") => {
+            let alist = id.borrow().param_alist;
+            match assq_entry(alist, parameter)?.and_then(|entry| entry.cons_values()) {
+                Some((_, value)) => {
+                    // Fframe_parameters puts the actual color names,
+                    // even when the alist says "unspecified".
+                    if value.is_string() {
+                        frame_unspecified_color(&value).unwrap_or(value)
+                    } else {
+                        value
+                    }
+                }
+                None => alist_get(frame_parameters_value(interp, id)?, parameter),
+            }
+        }
+        Some("display-type" | "background-mode") => get_frame_param(id, parameter),
+        _ => alist_get(frame_parameters_value(interp, id)?, parameter),
     })
 }
 
-fn default_frame_parameters(
-    interp: &Interpreter,
-    id: crate::lisp::types::FrameRef,
-) -> Vec<(String, Value)> {
-    let mut parameters = computed_frame_parameters(&id.borrow());
-    parameters.extend(DEFAULT_FRAME_PARAMETERS.iter().map(|name| {
-        let value = default_frame_parameter(interp, id, name).expect("a default parameter");
-        ((*name).into(), value)
-    }));
-    parameters
-}
-
-/// The parameters Fframe_parameters stores over the frame's alist from
-/// the frame itself: a text frame's bar lines, and its size in lines
-/// and columns (a size change_frame_size has queued, as GNU reports
-/// f->new_height and f->new_width).
-const COMPUTED_FRAME_PARAMETERS: [&str; 4] = ["tab-bar-lines", "menu-bar-lines", "width", "height"];
-
-/// The value of the computed parameter PARAMETER of FRAME, None for a
-/// name outside `COMPUTED_FRAME_PARAMETERS'.
-fn computed_frame_parameter(
-    frame: &crate::lisp::eval::FrameState,
-    parameter: &str,
-) -> Option<Value> {
-    Some(Value::Integer(match parameter {
-        "tab-bar-lines" => frame.tab_bar_lines,
-        "menu-bar-lines" => frame.menu_bar_lines,
-        "width" if frame.new_size_p && frame.new_width >= 0 => frame.new_width,
-        "width" => frame.width,
-        "height" if frame.new_size_p && frame.new_height >= 0 => frame.new_height,
-        "height" => frame.text_height,
-        _ => return None,
-    }))
-}
-
-fn computed_frame_parameters(frame: &crate::lisp::eval::FrameState) -> Vec<(String, Value)> {
-    COMPUTED_FRAME_PARAMETERS
-        .iter()
-        .map(|name| {
-            let value = computed_frame_parameter(frame, name).expect("a computed parameter");
-            ((*name).into(), value)
-        })
-        .collect()
-}
-
-/// Fframe_parameter of frame ID: a computed parameter, else the stored
-/// one, else the default, else nil; each read alone, nothing built.
-pub(super) fn frame_parameter_value(
-    interp: &Interpreter,
-    id: crate::lisp::types::FrameRef,
-    parameter: &str,
-) -> Value {
-    if parameter == "name" {
-        return id.name.get();
-    }
-    let frame = id.borrow();
-    computed_frame_parameter(&frame, parameter)
-        .or_else(|| {
-            frame
-                .parameter_overrides
-                .iter()
-                .find(|(name, _)| name == parameter)
-                .map(|(_, value)| *value)
-        })
-        .or_else(|| default_frame_parameter(interp, id, parameter))
-        .unwrap_or(Value::Nil)
+/// `frame_parameter_of' of the parameter named NAME, nil when the frame
+/// cannot report it.
+pub(super) fn frame_parameter_value(interp: &Interpreter, id: FrameRef, name: &str) -> Value {
+    frame_parameter_of(interp, id, Value::symbol(name)).unwrap_or(Value::Nil)
 }
 
 /// Fframe_parameter (FRAME, Qdisplay) as callproc.c asks it for the
@@ -166,108 +225,360 @@ pub(crate) fn frame_display_parameter(
     })
 }
 
-fn store_frame_parameter(
-    interp: &mut Interpreter,
-    id: crate::lisp::types::FrameRef,
-    parameter: String,
-    value: Value,
-) {
-    if matches!(parameter.as_str(), "width" | "height") {
-        // GNU's live TTY frame ignores width/height frame-parameter changes;
-        // the native set-frame-{width,height,size} operations own geometry.
-        return;
-    }
-    if matches!(parameter.as_str(), "buffer-list" | "buried-buffer-list") {
-        // frame.c:store_frame_param: the buffer lists are kept apart from
-        // the alist, each of the live buffers in VALUE, in its order.
-        let mut ids = Vec::new();
-        let mut tail = value;
-        while let Some((buffer, rest)) = tail.cons_values() {
-            if let Kind::Buffer(buffer) = buffer.kind()
-                && interp.has_buffer_id(buffer.id)
-            {
-                ids.push(buffer.id);
-            }
-            tail = rest;
-        }
-        let mut frame = id.borrow_mut();
-        if parameter == "buffer-list" {
-            frame.buffer_list = ids;
-        } else {
-            frame.buried_buffer_list = ids;
-        }
-        return;
-    }
-    if parameter == "tty-color-mode" {
-        // GNU's channel for changing a tty frame's color support
-        // (term.c's set_tty_color_mode): tty_setup_colors publishes the
-        // count, then safe_calln (Qtty_set_up_initial_frame_faces) has
-        // faces.el recompute every face against the new display.
-        let cells = match value.kind() {
-            Kind::Integer(mode) if mode > 1 => mode,
-            Kind::Integer(_) | Kind::Nil => 0,
-            _ => 8,
-        };
-        interp.set_tty_display_colors(cells);
-        if let Ok(forms) =
-            crate::lisp::reader::Reader::new("(tty-set-up-initial-frame-faces)").read_all()
-            && let Some(form) = forms.first()
-        {
-            let _ = interp.eval(form, &mut crate::lisp::types::Env::new());
-        }
-    }
-    let mut frame = id.borrow_mut();
-    if parameter == "name" {
-        id.name.set(value);
-    }
-    if let Some((_, current)) = frame
-        .parameter_overrides
-        .iter_mut()
-        .find(|(name, _)| name == &parameter)
-    {
-        *current = value;
-    } else {
-        frame
-            .parameter_overrides
-            .insert(0, (parameter.clone(), value));
-    }
-    drop(frame);
-    // frame.c:store_frame_param's tail for a frame that is not a window
-    // system's: the bar lines go through set_menu_bar_lines and
-    // set_tab_bar_lines.
-    match parameter.as_str() {
-        "menu-bar-lines" => super::display::set_menu_bar_lines(interp, id, value),
-        "tab-bar-lines" => super::display::set_tab_bar_lines(interp, id, value),
-        _ => {}
-    }
+fn is_window_record(interp: &Interpreter, value: Value) -> bool {
+    matches!(value.kind(), Kind::Record(id) if interp.find_record(id).is_some_and(|record|
+        record.kind == crate::lisp::eval::RecordKind::Window))
 }
 
-fn frame_parameters_value(interp: &Interpreter, id: crate::lisp::types::FrameRef) -> Value {
-    let frame = id.borrow();
-    let computed = computed_frame_parameters(&frame);
-    let mut parameters = frame.parameter_overrides.clone();
-    for (name, value) in &mut parameters {
-        if name == "name" {
-            *value = id.name.get();
-        } else if let Some((_, computed)) = computed.iter().find(|(key, _)| key == name) {
-            *value = *computed;
+/// frame.c:frame_name_fnn_p: whether NAME is `F' and decimal digits.
+fn frame_name_fnn_p(name: &[u8]) -> bool {
+    name.len() > 1 && name[0] == b'F' && name[1..].iter().all(u8::is_ascii_digit)
+}
+
+/// frame.c:set_term_frame_name: nil names the frame F<num> unless it
+/// already is, a string must not be of that form.
+fn set_term_frame_name(
+    interp: &mut Interpreter,
+    id: FrameRef,
+    name: Value,
+) -> Result<(), LispError> {
+    let current = id.name.get();
+    let name = if name.is_nil() {
+        if string_like(&current).is_some_and(|text| frame_name_fnn_p(text.text.as_bytes())) {
+            return Ok(());
+        }
+        let number = interp.next_frame_id;
+        interp.next_frame_id += 1;
+        Value::string(&format!("F{number}"))
+    } else {
+        let Some(text) = string_like(&name) else {
+            return Err(wrong_type_argument("stringp", name));
+        };
+        if string_like(&current).is_some_and(|current| current.text == text.text) {
+            return Ok(());
+        }
+        if frame_name_fnn_p(text.text.as_bytes()) {
+            return Err(LispError::Signal(
+                "Frame names of the form F<num> are usurped by Emacs".into(),
+            ));
+        }
+        name
+    };
+    id.name.set(name);
+    Ok(())
+}
+
+/// frame.c:store_frame_param: PROP's checks, the buffer lists kept
+/// apart, the alist entry set, then what a text frame keeps elsewhere
+/// (the bar lines and the name).
+fn store_frame_parameter(
+    interp: &mut Interpreter,
+    id: FrameRef,
+    prop: Value,
+    mut val: Value,
+) -> Result<(), LispError> {
+    match prop.symbol_str() {
+        Some("minibuffer") => {
+            if is_window_record(interp, val) {
+                let mini = id.borrow().minibuffer_window.map(Value::Record);
+                let Kind::Record(window) = val.kind() else {
+                    unreachable!()
+                };
+                if !super::display::window_is_minibuffer(interp, window.id) {
+                    return Err(LispError::Signal(
+                        "The `minibuffer' parameter does not specify a valid minibuffer window"
+                            .into(),
+                    ));
+                }
+                // A text frame has its own minibuffer window.
+                if mini.is_some_and(|mini| mini.eq_value(val)) {
+                    val = Value::T;
+                } else {
+                    return Err(LispError::Signal(
+                        "Can't change the minibuffer window of a frame with its own minibuffer"
+                            .into(),
+                    ));
+                }
+            } else {
+                let old = get_frame_param(id, prop);
+                if !old.is_nil() {
+                    if is_window_record(interp, old) && val.is_nil() {
+                        val = old;
+                    } else if !old.eq_value(val) {
+                        return Err(LispError::Signal(
+                            "Can't change the `minibuffer' parameter of this frame".into(),
+                        ));
+                    }
+                }
+            }
+        }
+        Some(name @ ("parent-frame" | "delete-before")) => {
+            let old = get_frame_param(id, prop);
+            if !old.eq_value(val) && !val.is_nil() {
+                let live = |value: Value| matches!(value.kind(), Kind::Frame(frame) if interp.frame_is_live(frame));
+                if !live(val) {
+                    return Err(LispError::Signal(format!(
+                        "Invalid `{name}' frame parameter"
+                    )));
+                }
+                let mut frame = val;
+                while let Kind::Frame(next) = frame.kind()
+                    && interp.frame_is_live(next)
+                {
+                    if next == id {
+                        return Err(LispError::Signal(format!(
+                            "Circular specification of `{name}' frame parameter"
+                        )));
+                    }
+                    frame = get_frame_param(next, prop);
+                }
+            }
+        }
+        Some(name @ ("buffer-list" | "buried-buffer-list")) => {
+            // The buffer lists are kept apart from the alist, each of the
+            // live buffers in VAL, in its order.
+            let mut ids = Vec::new();
+            let mut tail = val;
+            while let Some((buffer, rest)) = tail.cons_values() {
+                if let Kind::Buffer(buffer) = buffer.kind()
+                    && interp.has_buffer_id(buffer.id)
+                {
+                    ids.push(buffer.id);
+                }
+                tail = rest;
+            }
+            let mut frame = id.borrow_mut();
+            if name == "buffer-list" {
+                frame.buffer_list = ids;
+            } else {
+                frame.buried_buffer_list = ids;
+            }
+            return Ok(());
+        }
+        Some("scroll-bar-width" | "scroll-bar-height")
+            if !val.is_nil()
+                && !matches!(val.kind(), Kind::Integer(width) if (1..=i64::from(i32::MAX)).contains(&width)) =>
+        {
+            val = get_frame_param(id, prop);
+        }
+        Some("tty-color-mode") => {
+            // GNU's channel for changing a tty frame's color support
+            // (term.c's set_tty_color_mode): tty_setup_colors publishes
+            // the count, then safe_calln (Qtty_set_up_initial_frame_faces)
+            // has faces.el recompute every face against the new display.
+            let cells = match val.kind() {
+                Kind::Integer(mode) if mode > 1 => mode,
+                Kind::Integer(_) | Kind::Nil => 0,
+                _ => 8,
+            };
+            interp.set_tty_display_colors(cells);
+            if let Ok(forms) =
+                crate::lisp::reader::Reader::new("(tty-set-up-initial-frame-faces)").read_all()
+                && let Some(form) = forms.first()
+            {
+                let _ = interp.eval(form, &mut crate::lisp::types::Env::new());
+            }
+        }
+        _ => {}
+    }
+    let mut alist = id.borrow().param_alist;
+    match assq_entry(alist, prop)? {
+        Some(entry) => entry.set_cdr(val)?,
+        None => {
+            alist = Value::cons(Value::cons(prop, val), alist);
+            id.borrow_mut().param_alist = alist;
         }
     }
-    parameters.extend(
-        default_frame_parameters(interp, id)
-            .into_iter()
-            .filter(|(name, _)| {
-                !frame
-                    .parameter_overrides
-                    .iter()
-                    .any(|(overridden, _)| overridden == name)
-            }),
-    );
-    Value::list(
-        parameters
-            .into_iter()
-            .map(|(name, value)| Value::cons(Value::symbol(&name), value)),
-    )
+    // A text frame's bar lines through set_menu_bar_lines and
+    // set_tab_bar_lines, and its name through set_term_frame_name.
+    match prop.symbol_str() {
+        Some("menu-bar-lines") => super::display::set_menu_bar_lines(interp, id, val),
+        Some("tab-bar-lines") => super::display::set_tab_bar_lines(interp, id, val),
+        Some("name") => set_term_frame_name(interp, id, val)?,
+        _ => {}
+    }
+    Ok(())
+}
+
+/// frame.c:Fmodify_frame_parameters on a text frame: ALIST's names and
+/// values taken apart first, then stored last to first so the first
+/// occurrence wins, the colors also reaching the default face
+/// (update_face_from_frame_parameter).
+pub(crate) fn modify_frame_parameters(
+    interp: &mut Interpreter,
+    id: FrameRef,
+    alist: Value,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    // list_length's check, then Fcar and Fcdr of each element.
+    check_list(alist)?;
+    let mut entries = Vec::new();
+    let mut tail = alist;
+    while let Some((elt, rest)) = tail.cons_values() {
+        let (prop, val) = match elt.kind() {
+            Kind::Nil => (Value::Nil, Value::Nil),
+            Kind::Cons(_) => elt.cons_values().expect("a cons"),
+            _ => return Err(wrong_type_argument("listp", elt)),
+        };
+        entries.push((prop, val));
+        tail = rest;
+    }
+    for (prop, val) in entries.into_iter().rev() {
+        store_frame_parameter(interp, id, prop, val)?;
+        if matches!(
+            prop.symbol_str(),
+            Some("foreground-color" | "background-color")
+        ) {
+            update_face_from_frame_parameter(interp, id, prop, val, env)?;
+        }
+    }
+    Ok(())
+}
+
+/// xfaces.c:update_face_from_frame_parameter for the colors: once the
+/// frame has face definitions, its `default' face takes the color (a
+/// string, else unspecified), the background first reconsidering
+/// `frame-set-background-mode', and the basic faces are realized.
+fn update_face_from_frame_parameter(
+    interp: &mut Interpreter,
+    id: FrameRef,
+    param: Value,
+    new_value: Value,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    let table = interp.frame_face_hash_table(id);
+    let Kind::HashTable(table) = table.kind() else {
+        return Ok(());
+    };
+    if table.count() == 0 {
+        return Ok(());
+    }
+    let index = if param.symbol_str() == Some("foreground-color") {
+        9
+    } else {
+        let function =
+            cached_symbol!("frame-set-background-mode").with(|symbol| Value::Symbol(*symbol));
+        interp.call_function_value(function, None, &[Value::Frame(id)], env)?;
+        10
+    };
+    let default = Value::symbol("default");
+    let lface = interp
+        .lisp_face_vector_on(default, Some(id))
+        .ok_or_else(|| crate::lisp::eval::invalid_face_error(default))?;
+    let color = if new_value.is_string() {
+        new_value
+    } else {
+        Value::symbol("unspecified")
+    };
+    crate::lisp::primitives::aset_vector_value(&lface, index, color)?;
+    realize_basic_faces(interp, id)
+}
+
+/// The faces realize_basic_faces realizes beside the default, in its
+/// order.
+const BASIC_FACES: [&str; 18] = [
+    "mode-line-active",
+    "mode-line-inactive",
+    "tool-bar",
+    "fringe",
+    "header-line",
+    "scroll-bar",
+    "border",
+    "cursor",
+    "mouse",
+    "menu",
+    "vertical-border",
+    "window-divider",
+    "window-divider-first-pixel",
+    "window-divider-last-pixel",
+    "internal-border",
+    "child-frame-border",
+    "tab-bar",
+    "tab-line",
+];
+
+/// xfaces.c:realize_basic_faces on a text frame: realize_default_face
+/// completes the frame's `default' definition (made when missing) as a
+/// text frame's must be, then realize_named_face makes the definition
+/// of each basic face the frame lacks.
+pub(crate) fn realize_basic_faces(interp: &mut Interpreter, id: FrameRef) -> Result<(), LispError> {
+    use crate::lisp::primitives::{aset_vector_value, vector_slot_value};
+    let default = Value::symbol("default");
+    let lface = match interp.lisp_face_vector_on(default, Some(id)) {
+        Some(lface) => lface,
+        None => interp.make_lisp_face_on(default, Some(id), false)?,
+    };
+    let unspecified = |index: usize| -> Result<bool, LispError> {
+        Ok(matches!(vector_slot_value(&lface, index)?.kind(),
+            Kind::Symbol(symbol) if symbol == "unspecified"))
+    };
+    let normal = Value::symbol("normal");
+    // !FRAME_WINDOW_P: one family string for the family and foundry,
+    // a normal width and a height of 1.
+    let family = Value::string("default");
+    aset_vector_value(&lface, 1, family)?;
+    aset_vector_value(&lface, 2, family)?;
+    aset_vector_value(&lface, 3, normal)?;
+    aset_vector_value(&lface, 4, Value::Integer(1))?;
+    for (index, value) in [(5, normal), (6, normal), (17, Value::Nil)] {
+        if unspecified(index)? {
+            aset_vector_value(&lface, index, value)?;
+        }
+    }
+    // The extend, underline, overline, strike-through, box and inverse
+    // attributes.
+    for index in [19, 7, 12, 13, 14, 8] {
+        if unspecified(index)? {
+            aset_vector_value(&lface, index, Value::Nil)?;
+        }
+    }
+    // A color the frame's parameters do not give is a text frame's
+    // unspecified one.
+    for (index, param, color) in [
+        (9, "foreground-color", "unspecified-fg"),
+        (10, "background-color", "unspecified-bg"),
+    ] {
+        if unspecified(index)? {
+            let given = get_frame_param(id, Value::symbol(param));
+            let value = if given.is_string() {
+                given
+            } else {
+                Value::string(color)
+            };
+            aset_vector_value(&lface, index, value)?;
+        }
+    }
+    if unspecified(11)? {
+        aset_vector_value(&lface, 11, Value::Nil)?;
+    }
+    for face in BASIC_FACES {
+        let face = Value::symbol(face);
+        if interp.lisp_face_vector_on(face, Some(id)).is_none() {
+            interp.make_lisp_face_on(face, Some(id), false)?;
+        }
+    }
+    Ok(())
+}
+
+/// list_length's checks: a circular list signals `circular-list', one
+/// that does not end in nil `listp' with its tail.
+fn check_list(list: Value) -> Result<(), LispError> {
+    let mut tail = list;
+    let mut seen = crate::lisp::types::CycleGuard::new();
+    while let Some(cell) = tail.cons_ref() {
+        if seen.step(crate::lisp::types::ConsCell::identity(&cell)) {
+            return Err(LispError::SignalValue(Value::list([
+                Value::symbol("circular-list"),
+                list,
+            ])));
+        }
+        tail = cell.cdr.get();
+    }
+    if tail.is_nil() {
+        Ok(())
+    } else {
+        Err(wrong_type_argument("listp", tail))
+    }
 }
 
 fn check_frame_size(value: &Value) -> Result<i64, LispError> {
@@ -389,38 +700,28 @@ define_dispatch!(
             "frame-parameter" => {
                 need_args(name, args, 2)?;
                 let id = decode_frame(interp, args.first(), true, false)?;
-                let parameter = args[1]
-                    .as_symbol()
-                    .map_err(|_| wrong_type_argument("symbolp", args[1]))?;
-                Ok(if interp.frame_is_live(id) {
-                    frame_parameter_value(interp, id, parameter)
+                if !matches!(args[1].kind(), Kind::Symbol(_) | Kind::Nil | Kind::T) {
+                    return Err(wrong_type_argument("symbolp", args[1]));
+                }
+                if interp.frame_is_live(id) {
+                    frame_parameter_of(interp, id, args[1])
                 } else {
-                    Value::Nil
-                })
+                    Ok(Value::Nil)
+                }
             }
             "frame-parameters" => {
                 need_arg_range(name, args, 0, 1)?;
                 let id = decode_frame(interp, args.first(), true, false)?;
-                Ok(if interp.frame_is_live(id) {
+                if interp.frame_is_live(id) {
                     frame_parameters_value(interp, id)
                 } else {
-                    Value::Nil
-                })
+                    Ok(Value::Nil)
+                }
             }
             "modify-frame-parameters" => {
                 need_args(name, args, 2)?;
                 let id = decode_live_frame(interp, args.first(), true)?;
-                let parameters = args[1].to_vec()?;
-                for entry in parameters.into_iter().rev() {
-                    let (parameter, value) = entry
-                        .cons_values()
-                        .ok_or_else(|| wrong_type_argument("consp", entry))?;
-                    let parameter = parameter
-                        .as_symbol()
-                        .map_err(|_| wrong_type_argument("symbolp", parameter))?
-                        .to_string();
-                    store_frame_parameter(interp, id, parameter, value);
-                }
+                modify_frame_parameters(interp, id, args[1], env)?;
                 Ok(Value::Nil)
             }
             "frame-char-width" | "frame-char-height" => {
@@ -776,23 +1077,14 @@ fn make_terminal_frame(
         .map(Value::string)
         .unwrap_or(Value::Nil);
     drop(terminal);
-    // Fmodify_frame_parameters processes the alist in reverse so its first
-    // occurrence wins. Terminal and minibuffer identity come from creation.
-    for entry in entries.into_iter().rev() {
-        let (key, value) = entry
-            .cons_values()
-            .ok_or_else(|| wrong_type_argument("consp", entry))?;
-        let name = key
-            .as_symbol()
-            .map_err(|_| wrong_type_argument("symbolp", key))?;
-        if !matches!(name, "minibuffer" | "tty" | "tty-type") {
-            store_frame_parameter(interp, id, name.to_owned(), value);
-        }
-    }
-    for (key, value) in [("minibuffer", Value::T), ("tty", tty), ("tty-type", kind)] {
-        store_frame_parameter(interp, id, key.into(), value);
-    }
-    let _ = env;
+    // Fmake_terminal_frame's store_in_alist of the terminal's type and
+    // name into PARMS (in place where PARMS has them), `minibuffer'
+    // virtually t on a terminal frame, then Fmodify_frame_parameters.
+    let mut parms = *parameters;
+    store_in_alist(&mut parms, Value::symbol("tty-type"), kind)?;
+    store_in_alist(&mut parms, Value::symbol("tty"), tty)?;
+    store_in_alist(&mut parms, Value::symbol("minibuffer"), Value::T)?;
+    modify_frame_parameters(interp, id, parms, env)?;
     Ok(Value::Frame(id))
 }
 

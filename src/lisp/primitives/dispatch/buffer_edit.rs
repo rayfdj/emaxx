@@ -976,13 +976,24 @@ define_dispatch!(
                 extract_region_with_hooks(interp, from, to, env)
             }
             "delete-char" => {
-                let n = if args.is_empty() {
-                    1
-                } else {
-                    args[0].as_integer()?
+                // cmds.c:Fdelete_char: CHECK_FIXNUM N; a non-nil KILLFLAG
+                // hands N to `kill-forward-chars'.
+                need_arg_range(name, args, 1, 2)?;
+                let Kind::Integer(n) = args[0].kind() else {
+                    return Err(LispError::WrongTypeArgument("fixnump".into(), args[0]));
                 };
-                if n.abs() < 2 {
+                if n.unsigned_abs() < 2 {
                     call_undo_auto_amalgamate(interp, env)?;
+                }
+                if args.get(1).is_some_and(Value::is_truthy) {
+                    let function = cached_symbol!("kill-forward-chars").with(Clone::clone);
+                    interp.call_function_value(
+                        Value::Symbol(function),
+                        None,
+                        &[Value::Integer(n)],
+                        env,
+                    )?;
+                    return Ok(Value::Nil);
                 }
                 let point = interp.buffer.borrow().point();
                 if n >= 0 {

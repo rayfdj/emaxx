@@ -34129,6 +34129,82 @@ fn window_text_pixel_size_walks_screen_lines_as_xdisp_c() {
 }
 
 #[test]
+fn frame_parameters_and_face_colors_as_frame_c_and_xfaces_c() {
+    // cmds.c:Fdelete_char hands a non-nil KILLFLAG to
+    // `kill-forward-chars' and checks N with CHECK_FIXNUM.  frame.c keeps
+    // a frame's parameters in its param_alist, newest first and set in
+    // place; Fmodify_frame_parameters takes ALIST apart with list_length,
+    // Fcar and Fcdr and stores it last to first; Fframe_parameters
+    // stores the computed parameters over a copy, and a text frame
+    // reports the colors a prefix of "unspecified-bg" names.  A changed
+    // color of the default or cursor face is a frame parameter
+    // (Finternal_set_lisp_face_attribute), for frame t one in
+    // `default-frame-alist', and the realized default face has no
+    // fontset.
+    assert_oracle_contract_matches_interpreter(
+        r#"(list
+ (with-temp-buffer (insert "abc") (goto-char 1) (let ((kill-ring nil)) (delete-char 2 t) (list (buffer-string) (car kill-ring))))
+ (condition-case e (delete-char 1.0) (error e))
+ (let ((f (selected-frame)))
+   (modify-frame-parameters f '((t252-a . 1) (t252-b . 2) (t252-a . 3)))
+   (list (frame-parameter f 't252-a)
+         (let ((tail (frame-parameters f)) (n 0))
+           (while (not (eq (car (car tail)) 't252-b)) (setq tail (cdr tail) n (1+ n)))
+           (list (car (nth 0 (frame-parameters f))) (car (cadr tail)) (> n 9)))
+         (condition-case e (modify-frame-parameters f '(5)) (error e))
+         (condition-case e (modify-frame-parameters f 5) (error e))
+         (progn (modify-frame-parameters f '((5 . t252))) (frame-parameter f 'line-spacing))
+         (progn (modify-frame-parameters f '((foreground-color . "") (background-color . "unspec")))
+                (list (frame-parameter f 'foreground-color) (frame-parameter f 'background-color)))))
+ (let ((f (selected-frame)) (default-frame-alist nil))
+   (set-face-attribute 'cursor f :background "red")
+   (set-face-attribute 'default f :foreground "green")
+   (set-face-attribute 'default t :background "blue")
+   (prog1 (list (frame-parameter f 'cursor-color) (frame-parameter f 'foreground-color)
+                (face-attribute 'default :foreground f) default-frame-alist
+                (face-attribute 'default :fontset f))
+     (set-face-attribute 'default f :foreground "unspecified-fg")
+     (set-face-attribute 'cursor f :background "white"))))"#,
+        r#"(("c" "ab") (wrong-type-argument fixnump 1.0) (1 (tab-bar-lines t252-a t) (wrong-type-argument listp 5) (wrong-type-argument listp 5) 0 ("unspecified-bg" "unspecified-bg")) ("red" "green" "green" ((background-color . "blue")) nil))"#,
+        "frame parameters and face colors",
+    );
+}
+
+#[test]
+fn selecting_a_window_records_its_buffer_as_window_c_does() {
+    // window.c:select_window with NORECORD nil ends in record_buffer,
+    // which runs buffer-list-update-hook; Fset_window_configuration
+    // leaves each window its own use time and ends selecting the
+    // configuration's window that way, its buffer brought to the front.
+    assert_oracle_contract_matches_interpreter(
+        r#"(list
+ (let ((n 0))
+   (let ((buffer-list-update-hook (list (lambda () (setq n (1+ n))))))
+     (list (progn (select-window (selected-window)) n)
+           (progn (select-window (selected-window) t) n)
+           (progn (set-window-configuration (current-window-configuration)) n))))
+ (let* ((w2 (split-window)) (c (current-window-configuration)))
+   (select-window w2)
+   (select-window (next-window))
+   (let ((t1 (window-use-time w2)) (t0 (window-use-time)))
+     (set-window-configuration c)
+     (prog1 (list (= (window-use-time w2) t1) (> (window-use-time) t0))
+       (delete-other-windows))))
+ (let ((orig (window-buffer)))
+   (get-buffer-create "t252-b")
+   (switch-to-buffer "t252-b")
+   (switch-to-buffer orig)
+   (let ((c (current-window-configuration)))
+     (switch-to-buffer "t252-b")
+     (set-window-configuration c)
+     (prog1 (list (eq (window-buffer) orig) (eq (car (buffer-list)) orig))
+       (kill-buffer "t252-b")))))"#,
+        r#"((1 1 2) (t t) (t t))"#,
+        "select-window records its buffer",
+    );
+}
+
+#[test]
 fn gc_variables_are_watched_by_alloc_c_s_own_subrs() {
     // syms_of_alloc watches `gc-cons-threshold' and `gc-cons-percentage'
     // with subrs made under no symbol, which bump consing_until_gc for the

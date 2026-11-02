@@ -262,6 +262,8 @@ const KEY_NAMES: &[&str] = &[
     "case-fold-search",
     "undo-auto--undoable-change",
     "undo-auto-amalgamate",
+    "kill-forward-chars",
+    "frame-set-background-mode",
     "field",
     "overriding-terminal-local-map",
     "last-command",

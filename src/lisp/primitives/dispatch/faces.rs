@@ -647,9 +647,68 @@ fn set_face_attribute_on(
     if let Some((index, value)) =
         checked_face_attribute(interp, face, attribute, value, frame.is_none(), env)?
     {
+        let old_value = match interp.lisp_face_vector_on(face, frame) {
+            Some(lface) => vector_slot_value(&lface, index)?,
+            None => Value::symbol("unspecified"),
+        };
         interp.set_lisp_face_attribute_on(face, index, value, frame)?;
+        frame_parameter_of_face_change(interp, face, attribute, value, old_value, frame, env)?;
     }
     Ok(face)
+}
+
+/// Finternal_set_lisp_face_attribute's tail: a changed color of the
+/// default face is the frame's `foreground-color' or `background-color'
+/// parameter, and in a build with a window system the `scroll-bar'
+/// face's colors, the `border', `cursor' and `mouse' faces' backgrounds
+/// the scroll-bar, border, cursor and mouse colors; for frame t the
+/// parameter goes into `default-frame-alist', else through
+/// Fmodify_frame_parameters.
+fn frame_parameter_of_face_change(
+    interp: &mut Interpreter,
+    face: Value,
+    attribute: &str,
+    value: Value,
+    old_value: Value,
+    frame: Option<crate::lisp::types::FrameRef>,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    if matches!(value.kind(), Kind::Symbol(symbol) if symbol == "unspecified" || symbol == ":ignore-defface")
+        || values_equal(interp, &old_value, &value)?
+    {
+        return Ok(());
+    }
+    let param = match (face.symbol_str(), attribute) {
+        (Some("default"), ":foreground") => "foreground-color",
+        (Some("default"), ":background") => "background-color",
+        (Some("scroll-bar"), ":foreground") => "scroll-bar-foreground",
+        (Some("scroll-bar"), ":background") => "scroll-bar-background",
+        (Some("border"), ":background") => "border-color",
+        (Some("cursor"), ":background") => "cursor-color",
+        (Some("mouse"), ":background") => "mouse-color",
+        _ => return Ok(()),
+    };
+    let param = Value::symbol(param);
+    match frame {
+        None => {
+            // store_in_alist (&Vdefault_frame_alist, param, value).
+            let mut alist = interp
+                .lookup_var("default-frame-alist", env)
+                .unwrap_or(Value::Nil);
+            let before = alist;
+            super::frames::store_in_alist(&mut alist, param, value)?;
+            if !alist.eq_value(before) {
+                interp.set_c_variable("default-frame-alist", alist);
+            }
+            Ok(())
+        }
+        Some(frame) => super::frames::modify_frame_parameters(
+            interp,
+            frame,
+            Value::list([Value::cons(param, value)]),
+            env,
+        ),
+    }
 }
 
 fn face_vectors_equal(

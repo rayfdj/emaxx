@@ -1163,13 +1163,19 @@ impl Interpreter {
         self.selected_frame_id.borrow().text_height.max(1)
     }
 
+    /// The selected frame's param_alist entry for the parameter named
+    /// NAME, when it has one.
     pub(crate) fn frame_parameter_override(&self, name: &str) -> Option<Value> {
-        self.selected_frame_id
-            .borrow()
-            .parameter_overrides
-            .iter()
-            .find(|(parameter, _)| parameter == name)
-            .map(|(_, value)| *value)
+        let mut tail = self.selected_frame_id.borrow().param_alist;
+        while let Some((entry, rest)) = tail.cons_values() {
+            if let Some((key, value)) = entry.cons_values()
+                && key.symbol_str() == Some(name)
+            {
+                return Some(value);
+            }
+            tail = rest;
+        }
+        None
     }
 
     pub(crate) fn frame_name_value(&self) -> Value {
@@ -1406,7 +1412,15 @@ impl Interpreter {
                 continue;
             };
             if let Some((_, slots)) = saved_windows.iter().find(|(id, _)| *id == record.id) {
+                // The saved data holds no use time: a window keeps its own.
+                let use_time = record.slots.get(primitives::WINDOW_USE_TIME_SLOT).copied();
                 record.slots.clone_from(slots);
+                if let (Some(use_time), Some(slot)) = (
+                    use_time,
+                    record.slots.get_mut(primitives::WINDOW_USE_TIME_SLOT),
+                ) {
+                    *slot = use_time;
+                }
             } else {
                 record
                     .slots
@@ -1440,6 +1454,25 @@ impl Interpreter {
             false,
             &mut crate::lisp::types::Env::new(),
         );
+        // Fset_window_configuration's select_window (current_window, Qnil):
+        // the configuration's window gets a new use time and its buffer is
+        // recorded, buffer-list-update-hook run with it current.
+        let current_window = self.record_value(snapshot.selected_window_id);
+        if let Some(buffer_id) = primitives::window_buffer_id(self, &current_window)
+            .filter(|buffer_id| self.has_buffer_id(*buffer_id))
+        {
+            self.record_window_selection(snapshot.selected_window_id);
+            self.record_buffer_front(buffer_id);
+            if !self.buffer_hooks_inhibited(buffer_id) {
+                self.set_current_buffer_id(buffer_id)?;
+                primitives::run_named_hooks(
+                    self,
+                    "buffer-list-update-hook",
+                    &mut crate::lisp::types::Env::new(),
+                    None,
+                )?;
+            }
+        }
         if self.frame_is_live(snapshot.selected_frame_id) {
             self.note_selected_frame(snapshot.selected_frame_id);
             let selected_window = self.selected_frame_id.borrow().selected_window_id();

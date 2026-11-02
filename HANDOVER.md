@@ -12252,6 +12252,65 @@ setup_process_coding_systems's check now refuses). A 13-form
   subr-x-tests pass as many tests as GNU's. Local validation: the
   grouped gate's 3,448 library tests, the integration targets and
   clippy with `--all-targets --all-features -D warnings` pass.
+- **Round 252: window.c's record_buffer, cmds.c's KILLFLAG and frame.c's
+  parameters from batteries.** Batteries against GNU over buffer.c (25
+  cases, r252/bu.txt), marker.c, insdel.c, undo.c and cmds.c (37,
+  r252/mk.txt), keymap.c (27, r252/km.txt), casefiddle.c, timefns.c and
+  floatfns.c (20, r252/cf.txt), xfaces.c, doc.c, macros.c, keyboard.c
+  and bytecode.c (43, r252/fc.txt), the frame parameters (18,
+  r252/fp.txt and fq.txt) and the window and buffer lists (r251/bl.txt,
+  wu.txt and wc.txt) differ in these, now fixed; buffer.c, the markers,
+  insertion, undo, casing, time and floats agree throughout, and
+  keymap.c but for the X build's own global bindings (XF86WakeUp, the
+  touch-screen events and the GTK tool-bar menu). `select-window' with
+  NORECORD nil ends in record_buffer, which runs
+  `buffer-list-update-hook', and `set-window-configuration' leaves each
+  window its own use time and selects the configuration's window that
+  way, its buffer brought to the front; Emaxx ran no hook and stamped
+  every window. `delete-char' hands a non-nil KILLFLAG to
+  `kill-forward-chars' and checks N with CHECK_FIXNUM, where it deleted
+  without killing. A frame keeps its parameters in frame.h's
+  param_alist, a Lisp alist newest first that store_frame_param sets in
+  place (make_frame starts it with (minibuffer . t)): `minibuffer',
+  `parent-frame', `delete-before' and the scroll-bar sizes are checked
+  as the C checks them, the buffer lists live apart, and a text frame's
+  bar lines and name (set_term_frame_name, with its F<num> rule) follow;
+  Emaxx kept a list of overrides with defaults appended after it,
+  ignored width and height and took any name. `frame-parameters' is
+  Fframe_parameters, the computed parameters stored over a copy of the
+  alist so `(frame-parameters)' at startup is GNU's in order, and
+  `frame-parameter' Fframe_parameter (`line-spacing' 0 on a text frame,
+  a color named by a prefix of "unspecified-bg" reported as the frame's
+  own). `modify-frame-parameters' takes ALIST apart with list_length,
+  Fcar and Fcdr (a non-symbol parameter stored, a non-list element
+  `listp') and stores it last to first, a color going on to
+  update_face_from_frame_parameter: the default face takes it,
+  `frame-set-background-mode' runs first for the background, and
+  realize_basic_faces completes the default face as a text frame's (its
+  fontset nil, where `(face-attribute 'default :fontset)' was
+  unspecified) and makes the basic faces the frame lacks.
+  `make-terminal-frame' stores its terminal's type and name and
+  `minibuffer' into PARMS with store_in_alist before
+  Fmodify_frame_parameters. Finternal_set_lisp_face_attribute's tail is
+  ported: a changed color of the default face is the frame's
+  `foreground-color' or `background-color', and in the oracle's
+  window-system build the `cursor', `border' and `mouse' backgrounds and
+  the `scroll-bar' colors are `cursor-color', `border-color',
+  `mouse-color' and the scroll-bar parameters; for frame t they go into
+  `default-frame-alist'. Not reproduced: printed frame addresses.
+  buffer-tests, simple-tests, faces-tests, xfaces-tests and cmds-tests
+  pass as many tests as GNU's. The frozen setup rise at round 250's head
+  (Emaxx's per-file setup 14 ms higher at every quartile while GNU's
+  held) does not reproduce locally: round 249's and round 251's
+  gate-profile binaries take 523.9M and 520.9M instructions for
+  abbrev-tests' setup under the frozen command line (GNU 453.8M) and
+  interleaved runs of the two give the same median wall time, 0.13 s;
+  round 251's head (below) is back at 1.228, so it was the runner. The
+  integration targets leave each build's `emacs-30.2.N' dump beside
+  gate107's binary (296 of them, 5.6 GB, were removed). Local
+  validation: the grouped gate's 3,450 library tests, the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -13922,6 +13981,17 @@ electric-tests' the most (919 against 546), and the widest body gaps are
 comp-tests (18,894 ms against 14,890), tramp-tests (21,796 against
 19,320), semantic-utest-ia (4,285 against 2,819), mule-tests (3,162
 against 2,002) and simple-tests (5,092 against 4,037).
+
+**On `3ea598c`** (round 251): frozen (run 41448121772) matched all 7,928
+outcomes. Setup 84.0 s against 68.4 s (1.228), test bodies 263.3 s
+against 272.6 s (0.966), in all 1.008; ucs-normalize-tests' bodies took
+133 ms against 90. The full Rust gate (run 41448117863) passed. Per
+file, the setup is 30 ms over GNU's on average (15.6 s over 519 files, a
+median of 128 ms against 108: round 250's 139 against 102 was that
+runner's), comp-tests' the most (2,190 against 1,768), and the widest
+body gaps are comp-tests (19,448 ms against 16,233), tramp-tests (21,528
+against 19,535), semantic-utest-ia (4,241 against 2,622), mule-tests
+(3,182 against 2,016) and package-tests (6,718 against 6,153).
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

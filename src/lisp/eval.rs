@@ -2755,7 +2755,9 @@ pub(crate) struct FrameState {
     pub(crate) new_width: i64,
     pub(crate) new_height: i64,
     pub(crate) new_size_p: bool,
-    pub(crate) parameter_overrides: Vec<(String, Value)>,
+    /// frame.h's param_alist: the parameters store_frame_param keeps,
+    /// newest first (the buffer lists live apart).
+    pub(crate) param_alist: Value,
     pub(crate) focus_frame_id: Option<crate::lisp::types::FrameRef>,
     pub(crate) left: i64,
     pub(crate) top: i64,
@@ -2799,12 +2801,27 @@ fn empty_lisp_face_vector() -> Value {
     )
 }
 
+/// The `default' face of a text frame as xfaces.c:realize_default_face
+/// completes it: one "default" string for the family and foundry, a
+/// normal width, weight and slant, a height of 1, the unspecified
+/// colors and every flag, the stipple and the fontset nil (the font,
+/// inheritance and distant foreground stay unspecified).
 fn tty_default_lisp_face_vector() -> Value {
     let mut attributes =
         std::iter::repeat_n(Value::symbol("unspecified"), LFACE_VECTOR_SIZE).collect::<Vec<_>>();
     attributes[0] = Value::symbol("face");
+    let family = Value::String("default".into());
+    attributes[1] = family;
+    attributes[2] = family;
+    for index in [3, 5, 6] {
+        attributes[index] = Value::symbol("normal");
+    }
+    attributes[4] = Value::Integer(1);
     attributes[9] = Value::String("unspecified-fg".into());
     attributes[10] = Value::String("unspecified-bg".into());
+    for index in [7, 8, 11, 12, 13, 14, 17, 19] {
+        attributes[index] = Value::Nil;
+    }
     Value::vector(attributes)
 }
 
@@ -3014,9 +3031,7 @@ impl ImageGraphCopier {
                 if let Some(table) = state.face_hash_table {
                     state.face_hash_table = Some(self.copy(&table));
                 }
-                for (_, item) in state.parameter_overrides.iter_mut() {
-                    *item = self.copy(item);
-                }
+                state.param_alist = self.copy(&state.param_alist);
                 value
             }
             Kind::Terminal(terminal) => {
@@ -3750,9 +3765,7 @@ impl LispReachability {
                 if let Some(table) = state.face_hash_table {
                     self.enqueue(&table);
                 }
-                for (_, value) in &state.parameter_overrides {
-                    self.enqueue(value);
-                }
+                self.enqueue(&state.param_alist);
             }
             Kind::HashTable(table) => {
                 // alloc.c traces strong arrays in place and defers weak
@@ -4192,7 +4205,7 @@ impl Interpreter {
                 new_width: -1,
                 new_height: -1,
                 new_size_p: false,
-                parameter_overrides: Vec::new(),
+                param_alist: Value::Nil,
                 focus_frame_id: None,
                 left: 0,
                 top: 0,
@@ -6028,7 +6041,8 @@ impl Interpreter {
                 new_width: 80,
                 new_height: 25,
                 new_size_p: true,
-                parameter_overrides: Vec::new(),
+                // make_frame's store_frame_param (f, Qminibuffer, Qt).
+                param_alist: Value::list([Value::cons(Value::symbol("minibuffer"), Value::T)]),
                 focus_frame_id: None,
                 left: 0,
                 top: 0,

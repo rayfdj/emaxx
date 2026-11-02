@@ -15295,10 +15295,9 @@ mod tests {
             frame.name.set(name);
             frame.borrow_mut().focus_frame_id = Some(focus);
             focus.borrow_mut().focus_frame_id = Some(frame);
-            focus
-                .borrow_mut()
-                .parameter_overrides
-                .push(("escaped-data".into(), payload));
+            let alist = focus.borrow().param_alist;
+            focus.borrow_mut().param_alist =
+                Value::cons(Value::cons(Value::symbol("escaped-data"), payload), alist);
             let state = frame.borrow();
             let root = Value::Record(state.root_window.expect("initial root"));
             let mini = Value::Record(state.minibuffer_window.expect("initial minibuffer"));
@@ -15379,7 +15378,15 @@ mod tests {
             assert_eq!(Value::Frame(focus).word() ^ HIDE, hidden[1]);
             assert_eq!(focus.borrow().focus_frame_id, Some(object));
             assert_eq!(
-                focus.borrow().parameter_overrides[0].1.word() ^ HIDE,
+                focus
+                    .borrow()
+                    .param_alist
+                    .cons_values()
+                    .and_then(|(entry, _)| entry.cons_values())
+                    .expect("stored parameter")
+                    .1
+                    .word()
+                    ^ HIDE,
                 hidden[3]
             );
         }
@@ -15418,10 +15425,11 @@ mod tests {
         let frame = source.selected_frame_id;
         let payload = Value::vector([Value::Frame(frame)]);
         frame.borrow_mut().focus_frame_id = Some(frame);
-        frame
-            .borrow_mut()
-            .parameter_overrides
-            .push(("frame-copy-parameter".into(), payload));
+        let alist = frame.borrow().param_alist;
+        frame.borrow_mut().param_alist = Value::cons(
+            Value::cons(Value::symbol("frame-copy-parameter"), payload),
+            alist,
+        );
         frame.borrow_mut().face_hash_table = Some(payload);
         let cloned = source.deep_clone_image();
         let copied = cloned.selected_frame_id;
@@ -15455,11 +15463,15 @@ mod tests {
         );
         assert_eq!(terminal.borrow().top_frame, Some(copied));
         let copied_payload = state
-            .parameter_overrides
-            .iter()
-            .find(|(name, _)| name == "frame-copy-parameter")
-            .expect("copied parameter")
-            .1;
+            .param_alist
+            .to_vec()
+            .expect("copied alist")
+            .into_iter()
+            .find_map(|entry| {
+                let (key, value) = entry.cons_values()?;
+                (key.symbol_str() == Some("frame-copy-parameter")).then_some(value)
+            })
+            .expect("copied parameter");
         assert_ne!(copied_payload.word(), payload.word());
         assert_eq!(state.face_hash_table, Some(copied_payload));
         let Kind::Vector(slots) = copied_payload.kind() else {

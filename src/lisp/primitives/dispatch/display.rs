@@ -2324,6 +2324,17 @@ fn select_window_value(
     Ok(*window)
 }
 
+/// The end of buffer.c:record_buffer, after select_window recorded the
+/// selected window's buffer (current now): run_buffer_list_update_hook,
+/// unless the buffer inhibits its hooks.
+fn run_record_buffer_hook(interp: &mut Interpreter, env: &mut Env) -> Result<(), LispError> {
+    let buffer_id = interp.current_buffer_id();
+    if interp.buffer_hooks_inhibited(buffer_id) {
+        return Ok(());
+    }
+    run_named_hooks(interp, "buffer-list-update-hook", env, None)
+}
+
 /// window.c's decode_valid_window: a live or internal window, nil being
 /// the selected one.
 fn valid_window_id(interp: &Interpreter, value: &Value) -> Result<u64, LispError> {
@@ -2342,7 +2353,7 @@ fn window_is_deleted(interp: &Interpreter, id: u64) -> bool {
     )
 }
 
-fn window_is_minibuffer(interp: &Interpreter, id: u64) -> bool {
+pub(super) fn window_is_minibuffer(interp: &Interpreter, id: u64) -> bool {
     matches!(
         window_slot_value(interp, id, WINDOW_KIND_SLOT).kind(),
         Kind::Symbol(ref kind) if kind == MINIBUFFER_WINDOW_KIND
@@ -6280,7 +6291,12 @@ define_dispatch!(
                     ));
                 }
                 if frame == interp.selected_frame_id {
-                    select_window_value(interp, &args[1], args.get(2).is_some_and(Value::is_truthy))
+                    let norecord = args.get(2).is_some_and(Value::is_truthy);
+                    let selected = select_window_value(interp, &args[1], norecord)?;
+                    if !norecord {
+                        run_record_buffer_hook(interp, env)?;
+                    }
+                    Ok(selected)
                 } else {
                     frame.borrow_mut().selected_window = interp.record_ref(window);
                     Ok(args[1])
@@ -6288,7 +6304,12 @@ define_dispatch!(
             }
             "select-window" => {
                 need_arg_range(name, args, 1, 2)?;
-                select_window_value(interp, &args[0], args.get(1).is_some_and(Value::is_truthy))
+                let norecord = args.get(1).is_some_and(Value::is_truthy);
+                let selected = select_window_value(interp, &args[0], norecord)?;
+                if !norecord {
+                    run_record_buffer_hook(interp, env)?;
+                }
+                Ok(selected)
             }
             "current-window-configuration" => {
                 need_arg_range(name, args, 0, 1)?;

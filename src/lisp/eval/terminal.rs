@@ -629,7 +629,8 @@ impl Interpreter {
                 new_width: -1,
                 new_height: -1,
                 new_size_p: false,
-                parameter_overrides: Vec::new(),
+                // make_frame's store_frame_param (f, Qminibuffer, Qt).
+                param_alist: Value::list([Value::cons(Value::symbol("minibuffer"), Value::T)]),
                 focus_frame_id: None,
                 left: 0,
                 top: 0,
