@@ -198,6 +198,8 @@ const KEY_NAMES: &[&str] = &[
     "autoload",
     "lambda",
     "macro",
+    "&rest",
+    "&optional",
     "invisible",
     "menu-item",
     ":filter",
@@ -262,6 +264,8 @@ const KEY_NAMES: &[&str] = &[
     "case-fold-search",
     "undo-auto--undoable-change",
     "undo-auto-amalgamate",
+    "kill-forward-chars",
+    "frame-set-background-mode",
     "field",
     "overriding-terminal-local-map",
     "last-command",
@@ -387,6 +391,8 @@ const KEY_NAMES: &[&str] = &[
     "minor-mode-map-alist",
     "emulation-mode-map-alists",
     "overriding-local-map",
+    "interactive",
+    "interactive-form",
 ];
 
 struct Symbols {

@@ -30,32 +30,31 @@
 (defun emaxx--gnu-c-primitive-contracts (source-root)
   "Return known-arity GNU C primitive contracts below SOURCE-ROOT.
 
-The C-source manifest is the authoritative native boundary.  In particular,
-do not infer that boundary from arbitrary Rust string literals: dispatcher
-implementation files also contain condition names, variable names, and Lisp
-helper names."
-  (let ((manifest
-         (expand-file-name
-          "primitives/generated_gnu_c_primitives.rs"
-          source-root))
-        contracts)
-    (with-temp-buffer
-      (insert-file-contents manifest)
-      (goto-char (point-min))
-      (while
-          (re-search-forward
-           (concat
-            "GnuCPrimitiveContract { name: \"\\([^\"]+\\)\", "
-            "arity: Some((\\(-?[0-9]+\\), \\(-?[0-9]+\\))), "
-            "command: \\(true\\|false\\)")
-           nil t)
-        (push
-         (list
-          (match-string-no-properties 1)
-          (string-to-number (match-string-no-properties 2))
-          (string-to-number (match-string-no-properties 3))
-          (equal (match-string-no-properties 4) "true"))
-         contracts)))
+The C-source manifests are the authoritative native boundary: the
+cross-platform one, then the Linux build's, whose X, session-manager and
+glibc primitives the other lacks.  In particular, do not infer that boundary
+from arbitrary Rust string literals: dispatcher implementation files also
+contain condition names, variable names, and Lisp helper names."
+  (let (contracts)
+    (dolist (file '("primitives/generated_gnu_c_primitives.rs"
+                    "primitives/generated_gnu_c_primitives_linux.rs"))
+      (with-temp-buffer
+        (insert-file-contents (expand-file-name file source-root))
+        (goto-char (point-min))
+        (while
+            (re-search-forward
+             (concat
+              "GnuCPrimitiveContract { name: \"\\([^\"]+\\)\", "
+              "arity: Some((\\(-?[0-9]+\\), \\(-?[0-9]+\\))), "
+              "command: \\(true\\|false\\)")
+             nil t)
+          (push
+           (list
+            (match-string-no-properties 1)
+            (string-to-number (match-string-no-properties 2))
+            (string-to-number (match-string-no-properties 3))
+            (equal (match-string-no-properties 4) "true"))
+           contracts))))
     (nreverse contracts)))
 
 (defun emaxx-generate-builtin-arities (source-root output-file)

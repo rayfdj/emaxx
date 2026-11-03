@@ -538,6 +538,23 @@ define_dispatch!(
             }
 
             // ── Misc ──
+            // xsmfns.c:Fhandle_save_session: with no session manager
+            // interaction pending, an event (_ t ...) kills Emacs.
+            "play-sound-internal" => {
+                need_args(name, args, 1)?;
+                super::super::sound::play_sound_internal(interp, args[0], env)
+            }
+            "handle-save-session" => {
+                need_args(name, args, 1)?;
+                let kill = args[0]
+                    .cons_values()
+                    .and_then(|(_, rest)| rest.cons_values())
+                    .is_some_and(|(flag, _)| flag == Value::T);
+                if kill {
+                    super::call(interp, "kill-emacs", &[Value::Nil, Value::Nil], env)?;
+                }
+                Ok(Value::Nil)
+            }
             "kill-emacs" => {
                 need_arg_range(name, args, 0, 2)?;
 
@@ -1352,7 +1369,8 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 let symbol = args[0].as_symbol()?;
                 interp.unmark_special_variable(symbol);
-                Ok(Value::Symbol(symbol.to_string().into()))
+                // Finternal_make_var_non_special returns nil.
+                Ok(Value::Nil)
             }
             "make-interpreted-closure" => {
                 need_arg_range(name, args, 3, 5)?;
@@ -2013,6 +2031,18 @@ fn snarf_documentation(
         .ok_or_else(|| wrong_type_argument("stringp", directory))?
         .text;
     let path = directory + &string_text(filename)?;
+    // doc.c: `build-files' is nil until the first snarf, which conses it
+    // from buildobj.h before opening the file.
+    let build_files_unset = interp
+        .lookup_var("build-files", env)
+        .is_none_or(|value| value.is_nil());
+    if build_files_unset && let Some(names) = crate::lisp::primitives::gnu_build_files() {
+        interp.set_variable(
+            "build-files",
+            Value::list(names.iter().map(|name| Value::String((*name).into()))),
+            env,
+        );
+    }
     let bytes = std::fs::read(&path).map_err(|error| {
         crate::lisp::primitives::file_io::file_operation_error(
             "Opening doc string file",
@@ -2022,20 +2052,20 @@ fn snarf_documentation(
     })?;
     let entries = parse_doc_file_entries(&bytes)?;
     interp.set_variable("internal-doc-file-name", *filename, env);
-    // GNU's help-fns.el validates C source markers against the native object
-    // inventory in `build-files'.  DOC already carries that inventory as S
-    // records, so derive it from this parse instead of maintaining a second
-    // hard-coded list which can drift with the selected GNU tree.
-    interp.set_variable(
-        "build-files",
-        Value::list(
-            entries
-                .iter()
-                .filter(|entry| entry.kind == b'S')
-                .map(|entry| Value::String(entry.name.clone().into())),
-        ),
-        env,
-    );
+    if build_files_unset && crate::lisp::primitives::gnu_build_files().is_none() {
+        // No oracle's buildobj.h is recorded for this platform: DOC's S
+        // records, which name every file make-docfile read, stand in.
+        interp.set_variable(
+            "build-files",
+            Value::list(
+                entries
+                    .iter()
+                    .filter(|entry| entry.kind == b'S')
+                    .map(|entry| Value::String(entry.name.clone().into())),
+            ),
+            env,
+        );
+    }
     let delayed = interp
         .lookup_var("custom-delayed-init-variables", env)
         .and_then(|value| value.to_vec().ok())
@@ -2331,6 +2361,18 @@ fn parse_doc_file(bytes: &[u8]) -> std::collections::HashMap<String, String> {
         map.entry(name).or_insert(doc);
     }
     map
+}
+
+/// fns.c:Fget of the bare symbol SYMBOL's PROPERTY, as C calls it:
+/// `overriding-plist-environment' first, then the symbol's plist.
+pub(in crate::lisp::primitives) fn bare_symbol_get(
+    interp: &Interpreter,
+    symbol: &str,
+    property: &str,
+) -> Value {
+    overriding_plist_property(interp, &crate::lisp::types::Env::new(), symbol, property)
+        .or_else(|| interp.get_symbol_property(symbol, property))
+        .unwrap_or(Value::Nil)
 }
 
 /// The `get' primitive, callable directly (a subr's function pointer).

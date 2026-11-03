@@ -291,7 +291,7 @@ pub(crate) fn adjust_frame_size(
 
 /// window.c:window_pixel_to_total: `window--pixel-to-total' assigns
 /// FRAME's windows total sizes from their pixel sizes.
-fn window_pixel_to_total(
+pub(super) fn window_pixel_to_total(
     interp: &mut Interpreter,
     frame: FrameRef,
     horizontal: bool,

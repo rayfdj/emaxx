@@ -110,8 +110,8 @@ pub(crate) const ROOTS_RESET_AFTER_LOAD: &[(&str, &str)] = &[
         "the specpdl's backtrace entries, not dumped",
     ),
     (
-        "frame_locals",
-        "the interpreted calls' bindings recorded beside the specpdl's backtrace entries, not dumped",
+        "frame_environments",
+        "the lexical environments interpreted code installed, recorded beside the specpdl's backtrace entries, not dumped",
     ),
     (
         "batch_error_backtrace",
@@ -176,6 +176,14 @@ pub(crate) const ROOTS_RESET_AFTER_LOAD: &[(&str, &str)] = &[
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
     (
+        "timer_check_delay",
+        "the timer_delay keyboard.c:timer_check last returned, a local of wait_reading_process_output that no wait outlives",
+    ),
+    (
+        "tty_frame_count",
+        "frame.c's static tty_frame_count, which make_initial_frame sets to 1 in the new process",
+    ),
+    (
         "composition_index",
         "composition_hash_table's lookup, rebuilt from the composition states on the first lookup after a load",
     ),
@@ -186,6 +194,10 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
     (
         "charset_table_books",
         "Vcharset_hash_table's allocation books, thawed from the carried charsets and aliases by thaw_host_hash_tables after a load",
+    ),
+    (
+        "charset_epoch",
+        "charset_table's generation, which only the session's own charset changes advance; the coding systems' derived attributes made before a load are not carried",
     ),
     (
         "coding_table_books",
@@ -546,12 +558,20 @@ impl Interpreter {
                     .find(|(registered, _)| registered == name)
                     .map(|(_, plist)| *plist)
                     .unwrap_or(Value::Nil);
+                let def = self
+                    .charset_defs
+                    .iter()
+                    .rev()
+                    .find(|(registered, _)| registered == name)
+                    .map(|(_, def)| *def)
+                    .unwrap_or(Value::Nil);
                 Value::vector([
                     Value::symbol(name),
                     Value::Integer(*id),
                     plist,
                     bool_value(self.charset_supplementary.contains(name)),
                     bool_value(self.charset_unified.contains(name)),
+                    def,
                 ])
             })),
         ));
@@ -559,10 +579,16 @@ impl Interpreter {
             RootSlot::CharsetOrderedList,
             symbol_list(&self.charset_priority),
         ));
-        groups.push((RootSlot::CharsetList, symbol_list(&self.charset_names)));
+        // charset.c's Vcharset_list is the variable `charset-list', dumped
+        // with the other variables.
+        groups.push((RootSlot::CharsetList, Value::Nil));
         groups.push((
             RootSlot::Iso2022CharsetList,
             symbol_list(&self.iso_2022_charset_list),
+        ));
+        groups.push((
+            RootSlot::EmacsMuleCharsetList,
+            symbol_list(&self.emacs_mule_charset_list),
         ));
         groups.push((
             RootSlot::CharsetAliases,
@@ -598,34 +624,71 @@ impl Interpreter {
             RootSlot::Big5CodingSystem,
             Value::symbol(&self.big5_coding_system),
         ));
-        // coding.c: Vcoding_system_hash_table's attribute vectors,
-        // Vcoding_system_alist's aliases, coding_priorities and the
-        // coding_categories representatives.
-        groups.push((
-            RootSlot::CodingSystems,
-            Value::list(self.coding_systems.iter().map(|coding| {
-                Value::vector([
-                    Value::symbol(&coding.name),
-                    Value::symbol(&coding.base),
-                    Value::symbol(&coding.kind),
-                    coding.eol_type.map_or(Value::Nil, Value::Integer),
-                    coding.plist,
-                    Value::Integer(coding.category as i64),
-                    coding.charset_list,
-                    Value::Integer(i64::from(coding.default_char)),
-                    Value::vector(coding.type_args.iter().cloned()),
-                ])
-            })),
-        ));
-        groups.push((
-            RootSlot::CodingAliases,
-            Value::list(
-                self.coding_aliases
-                    .iter()
-                    .map(|(alias, target)| pair(Value::symbol(alias), Value::symbol(target))),
-            ),
-        ));
-        groups.push((RootSlot::CodingPriority, symbol_list(&self.coding_priority)));
+        // coding.c: Vcoding_system_hash_table, as the specs it holds,
+        // each with its names in the table, and the attribute vectors
+        // they share; what no name reaches any more is left out.
+        {
+            let mut keys: Vec<(&String, usize)> = self
+                .coding_system_hash
+                .iter()
+                .map(|(name, spec)| (name, *spec))
+                .collect();
+            keys.sort();
+            let mut specs: Vec<usize> = keys.iter().map(|(_, spec)| *spec).collect();
+            specs.sort_unstable();
+            specs.dedup();
+            let mut attrs: Vec<usize> = specs
+                .iter()
+                .map(|spec| self.coding_specs[*spec].attrs)
+                .collect();
+            attrs.sort_unstable();
+            attrs.dedup();
+            groups.push((
+                RootSlot::CodingSystems,
+                Value::list(attrs.iter().map(|attrs| {
+                    let coding = &self.coding_attrs[*attrs];
+                    Value::vector([
+                        Value::symbol(&coding.base),
+                        Value::Integer(coding.mnemonic),
+                        Value::symbol(&coding.kind),
+                        coding.ascii_compatible,
+                        coding.decode_table,
+                        coding.encode_table,
+                        coding.post_read,
+                        coding.pre_write,
+                        if coding.for_unibyte {
+                            Value::T
+                        } else {
+                            Value::Nil
+                        },
+                        coding.plist,
+                        Value::Integer(coding.category as i64),
+                        coding.charset_list,
+                        Value::Integer(i64::from(coding.default_char)),
+                        Value::vector(coding.type_args.iter().cloned()),
+                    ])
+                })),
+            ));
+            groups.push((
+                RootSlot::CodingSpecs,
+                Value::list(specs.iter().map(|index| {
+                    let spec = &self.coding_specs[*index];
+                    let attrs = attrs
+                        .binary_search(&spec.attrs)
+                        .expect("a reachable attribute vector");
+                    Value::vector([
+                        Value::Integer(attrs as i64),
+                        spec.aliases,
+                        spec.eol_type,
+                        Value::list(
+                            keys.iter()
+                                .filter(|(_, spec)| spec == index)
+                                .map(|(name, _)| Value::symbol(name)),
+                        ),
+                    ])
+                })),
+            ));
+        }
         groups.push((
             RootSlot::CodingCategoryRepresentatives,
             Value::vector(
@@ -651,6 +714,9 @@ impl Interpreter {
         // keymap.c's staticpro'd Unicode table, including a captured table
         // no longer named by char-code-property-alist.
         groups.push((RootSlot::UnicodeMenuCaseTable, self.unicode_menu_case_table));
+        // font.c's staticpro'd font_style_table, the style names a font
+        // name registered included.
+        groups.push((RootSlot::FontStyleTable, self.font_style_table));
         // textprop.c: the neighbours' insertion hooks the last insertion
         // check found, staticpro'd (syms_of_textprop).
         let [behind, in_front] = self.interval_insert_hooks;
@@ -674,42 +740,9 @@ impl Interpreter {
                 Value::vector(tables.each().into_iter().map(Value::CharTable))
             }),
         ));
-        // fontset.c: Vfontset_table; each fontset's mappings.
-        groups.push((
-            RootSlot::Fontsets,
-            Value::list(self.fontset_states.iter().map(|fontset| {
-                Value::vector([
-                    Value::string(&fontset.name),
-                    Value::list(fontset.mappings.iter().map(|mapping| {
-                        let target = match &mapping.target {
-                            FontsetTargetState::Character(code) => {
-                                Value::list([Value::symbol("character"), Value::Integer(*code)])
-                            }
-                            FontsetTargetState::Range(from, to) => Value::list([
-                                Value::symbol("range"),
-                                Value::Integer(*from),
-                                Value::Integer(*to),
-                            ]),
-                            FontsetTargetState::Script(script) => {
-                                Value::list([Value::symbol("script"), Value::string(script)])
-                            }
-                            FontsetTargetState::Fallback => {
-                                Value::list([Value::symbol("fallback")])
-                            }
-                        };
-                        let patterns =
-                            Value::list(mapping.patterns.iter().map(|pattern| match pattern {
-                                Some(pattern) => pair(
-                                    opt_string(pattern.family.as_deref()),
-                                    opt_string(pattern.registry.as_deref()),
-                                ),
-                                None => Value::Nil,
-                            }));
-                        Value::vector([target, patterns])
-                    })),
-                ])
-            })),
-        ));
+        // fontset.c: the staticpro'd Vfontset_table, its char-tables with
+        // their font_def vectors.
+        groups.push((RootSlot::Fontsets, self.fontset_table));
         groups.push((
             RootSlot::FontSelectionOrder,
             Value::vector(
@@ -999,20 +1032,22 @@ mod install {
                     }
                 }
                 RootSlot::Charsets => {
-                    self.charset_table.borrow_mut().clear();
+                    self.invalidate_charset_table();
                     self.charset_ids.clear();
                     self.charset_plists.clear();
+                    self.charset_defs.clear();
                     self.charset_supplementary.clear();
                     self.charset_unified.clear();
                     for entry in expect_list(value, "charsets")? {
                         let fields = expect_vector(&entry, "charset")?;
-                        if fields.len() != 5 {
-                            return Err("charset: five fields expected".into());
+                        if fields.len() != 6 {
+                            return Err("charset: six fields expected".into());
                         }
                         let name = expect_symbol(&fields[0], "charset name")?;
                         self.charset_ids
                             .push((name.clone(), expect_int(&fields[1], "charset id")?));
                         self.charset_plists.push((name.clone(), fields[2]));
+                        self.charset_defs.push((name.clone(), fields[5]));
                         if fields[3].is_truthy() {
                             self.charset_supplementary.insert(name.clone());
                         }
@@ -1026,15 +1061,26 @@ mod install {
                 RootSlot::CharsetOrderedList => {
                     self.charset_priority = symbol_names(value, "charset ordered list")?;
                 }
-                RootSlot::CharsetList => {
-                    self.charset_names = symbol_names(value, "charset list")?;
-                }
+                RootSlot::CharsetList => {}
                 RootSlot::Iso2022CharsetList => {
                     self.iso_2022_charset_list = symbol_names(value, "iso-2022 charset list")?;
+                }
+                RootSlot::EmacsMuleCharsetList => {
+                    self.emacs_mule_charset_list = symbol_names(value, "emacs-mule charset list")?;
                 }
                 RootSlot::CharsetAliases => {
                     self.charset_aliases = symbol_pairs(value, "charset aliases")?;
                     self.charset_alias_index = self.charset_aliases.iter().cloned().collect();
+                    // A charset's name made an alias answers as its target.
+                    let renamed: Vec<String> = self
+                        .charset_aliases
+                        .iter()
+                        .filter(|(alias, target)| alias != target)
+                        .map(|(alias, _)| alias.clone())
+                        .collect();
+                    for alias in renamed {
+                        self.charset_id_index.remove(&alias);
+                    }
                 }
                 RootSlot::IsoCharsetTable => {
                     self.iso_charsets.clear();
@@ -1063,40 +1109,53 @@ mod install {
                     self.big5_coding_system = expect_symbol(value, "big5 coding system")?;
                 }
                 RootSlot::CodingSystems => {
-                    self.coding_systems.clear();
+                    self.coding_attrs.clear();
                     for entry in expect_list(value, "coding systems")? {
                         let fields = expect_vector(&entry, "coding system")?;
-                        if fields.len() != 9 {
-                            return Err("coding system: nine fields expected".into());
+                        if fields.len() != 14 {
+                            return Err("coding system: fourteen fields expected".into());
                         }
-                        self.coding_systems.push(CodingSystemState {
-                            name: expect_symbol(&fields[0], "coding system name")?,
-                            base: expect_symbol(&fields[1], "coding system base")?,
-                            kind: expect_symbol(&fields[2], "coding system kind")?,
-                            eol_type: opt_of(&fields[3], |v| expect_int(v, "eol type"))?,
-                            plist: fields[4],
-                            category: usize::try_from(expect_int(&fields[5], "category")?)
+                        self.coding_attrs.push(CodingSystemState {
+                            base: expect_symbol(&fields[0], "coding system base")?,
+                            mnemonic: expect_int(&fields[1], "mnemonic")?,
+                            kind: expect_symbol(&fields[2], "coding system type")?,
+                            ascii_compatible: fields[3],
+                            decode_table: fields[4],
+                            encode_table: fields[5],
+                            post_read: fields[6],
+                            pre_write: fields[7],
+                            for_unibyte: fields[8].is_truthy(),
+                            plist: fields[9],
+                            category: usize::try_from(expect_int(&fields[10], "category")?)
                                 .map_err(|_| "category out of range".to_owned())?,
-                            charset_list: fields[6],
-                            default_char: u32::try_from(expect_int(&fields[7], "default char")?)
+                            charset_list: fields[11],
+                            default_char: u32::try_from(expect_int(&fields[12], "default char")?)
                                 .map_err(|_| "default char out of range".to_owned())?,
-                            type_args: expect_vector(&fields[8], "type args")?,
+                            type_args: expect_vector(&fields[13], "type args")?,
+                            derived: Default::default(),
                         });
                     }
-                    // Vcoding_system_hash_table, rebuilt for the table.
-                    self.coding_system_index = self
-                        .coding_systems
-                        .iter()
-                        .enumerate()
-                        .map(|(index, coding)| (coding.name.clone(), index))
-                        .collect();
                 }
-                RootSlot::CodingAliases => {
-                    self.coding_aliases = symbol_pairs(value, "coding aliases")?;
-                    self.coding_alias_index = self.coding_aliases.iter().cloned().collect();
-                }
-                RootSlot::CodingPriority => {
-                    self.coding_priority = symbol_names(value, "coding priority")?;
+                RootSlot::CodingSpecs => {
+                    self.coding_specs.clear();
+                    self.coding_system_hash.clear();
+                    for entry in expect_list(value, "coding specs")? {
+                        let fields = expect_vector(&entry, "coding spec")?;
+                        if fields.len() != 4 {
+                            return Err("coding spec: four fields expected".into());
+                        }
+                        let attrs = usize::try_from(expect_int(&fields[0], "spec attributes")?)
+                            .map_err(|_| "spec attributes out of range".to_owned())?;
+                        let index = self.coding_specs.len();
+                        self.coding_specs.push(CodingSpec {
+                            attrs,
+                            aliases: fields[1],
+                            eol_type: fields[2],
+                        });
+                        for name in symbol_names(&fields[3], "spec names")? {
+                            self.coding_system_hash.insert(name, index);
+                        }
+                    }
                 }
                 RootSlot::CodingCategoryRepresentatives => {
                     let mut representatives = Vec::new();
@@ -1157,64 +1216,15 @@ mod install {
                 RootSlot::IntervalInsertBehindHooks => self.interval_insert_hooks[0] = *value,
                 RootSlot::IntervalInsertInFrontHooks => self.interval_insert_hooks[1] = *value,
                 RootSlot::FundamentalModeName => self.fundamental_mode_name = *value,
-                RootSlot::Fontsets => {
-                    let mut fontsets = Vec::new();
-                    for entry in expect_list(value, "fontsets")? {
-                        let fields = expect_vector(&entry, "fontset")?;
-                        if fields.len() != 2 {
-                            return Err("fontset: two fields expected".into());
-                        }
-                        let mut mappings = Vec::new();
-                        for mapping in expect_list(&fields[1], "fontset mappings")? {
-                            let mapping = expect_vector(&mapping, "fontset mapping")?;
-                            if mapping.len() != 2 {
-                                return Err("fontset mapping: two fields expected".into());
-                            }
-                            let target = expect_list(&mapping[0], "fontset target")?;
-                            let kind = target
-                                .first()
-                                .map(|kind| expect_symbol(kind, "fontset target kind"))
-                                .transpose()?
-                                .unwrap_or_default();
-                            let target = match (kind.as_str(), target.len()) {
-                                ("character", 2) => FontsetTargetState::Character(expect_int(
-                                    &target[1],
-                                    "character",
-                                )?),
-                                ("range", 3) => FontsetTargetState::Range(
-                                    expect_int(&target[1], "range start")?,
-                                    expect_int(&target[2], "range end")?,
-                                ),
-                                ("script", 2) => {
-                                    FontsetTargetState::Script(expect_string(&target[1], "script")?)
-                                }
-                                ("fallback", 1) => FontsetTargetState::Fallback,
-                                _ => {
-                                    return Err(format!("fontset target: unknown form {target:?}"));
-                                }
-                            };
-                            let mut patterns = Vec::new();
-                            for pattern in expect_list(&mapping[1], "fontset patterns")? {
-                                patterns.push(if pattern.is_nil() {
-                                    None
-                                } else {
-                                    let (family, registry) = expect_pair(&pattern, "font pattern")?;
-                                    Some(FontPatternState {
-                                        family: opt_of(&family, |v| expect_string(v, "family"))?,
-                                        registry: opt_of(&registry, |v| {
-                                            expect_string(v, "registry")
-                                        })?,
-                                    })
-                                });
-                            }
-                            mappings.push(FontsetMappingState { target, patterns });
-                        }
-                        fontsets.push(FontsetState {
-                            name: expect_string(&fields[0], "fontset name")?,
-                            mappings,
-                        });
+                RootSlot::FontStyleTable => {
+                    if !value.is_nil() {
+                        expect_vector(value, "font style table")?;
                     }
-                    self.fontset_states = fontsets;
+                    self.font_style_table = *value;
+                }
+                RootSlot::Fontsets => {
+                    expect_vector(value, "fontset table")?;
+                    self.fontset_table = *value;
                 }
                 RootSlot::FontSelectionOrder => {
                     let order = expect_vector(value, "font selection order")?;

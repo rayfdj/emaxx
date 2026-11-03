@@ -1,10 +1,10 @@
 //! charset.c's charset table: each charset's attributes as `struct
-//! charset' keeps them, read once from the charset's plist (which carries
-//! every `define-charset-internal' argument) instead of through the plist
-//! by name at each use, and a map charset's decoder and encoder, which
-//! load_charset_map builds once, made when it first decodes or encodes.
-//! The interpreter keeps the table; defining a charset, an alias or a
-//! plist, or (un)unifying one, empties it.
+//! charset' keeps them, read once from the `define-charset-internal'
+//! arguments the charset was defined with (apart from its plist, which
+//! `set-charset-plist' replaces without touching the charset), and a map
+//! charset's decoder and encoder, which load_charset_map builds once, made
+//! when it first decodes or encodes.  The interpreter keeps the table;
+//! defining a charset or an alias, or (un)unifying one, empties it.
 
 use super::*;
 use crate::lisp::primitives::FnvBuildHasher;
@@ -23,17 +23,43 @@ pub(crate) enum CharsetBuiltin {
     None,
 }
 
-/// Where a map charset's mapping comes from: a vector of code and
-/// character pairs, or a map file under etc/charsets.
+/// The slots of a charset's definition: `define-charset-internal''s
+/// arguments from charset_arg_dimension to charset_arg_unify_map, as
+/// Fdefine_charset_internal checked them (the dimension computed when not
+/// given, the minimum and maximum codes as integers, a subset's parent and
+/// a superset's members by canonical name).
+pub(crate) const DEF_DIMENSION: usize = 0;
+pub(crate) const DEF_CODE_SPACE: usize = 1;
+pub(crate) const DEF_MIN_CODE: usize = 2;
+pub(crate) const DEF_MAX_CODE: usize = 3;
+pub(crate) const DEF_ISO_FINAL: usize = 4;
+pub(crate) const DEF_ISO_REVISION: usize = 5;
+pub(crate) const DEF_EMACS_MULE_ID: usize = 6;
+pub(crate) const DEF_ASCII_COMPATIBLE_P: usize = 7;
+pub(crate) const DEF_SUPPLEMENTARY_P: usize = 8;
+pub(crate) const DEF_INVALID_CODE: usize = 9;
+pub(crate) const DEF_CODE_OFFSET: usize = 10;
+pub(crate) const DEF_MAP: usize = 11;
+pub(crate) const DEF_SUBSET: usize = 12;
+pub(crate) const DEF_SUPERSET: usize = 13;
+pub(crate) const DEF_UNIFY_MAP: usize = 14;
+/// CHARSET_ATTR_DEUNIFIER: t once load_charset has made the deunifier
+/// of a unified charset.
+pub(crate) const DEF_DEUNIFIER: usize = 15;
+pub(crate) const DEF_SLOTS: usize = 16;
+
+/// Where a map charset's mapping comes from: a vector of codes (or code
+/// ranges) and characters, or a map file on `charset-map-path'.
 #[derive(Clone, Debug)]
 enum MapSource {
-    Pairs(Vec<(u32, u32)>),
+    Pairs(Vec<(u32, u32, u32)>),
     File(String),
 }
 
 /// A charset's mapping (load_charset_map): its pairs in the map's order,
-/// the character of each code and the code of each character, the first
-/// pair for either winning.
+/// the character of each code, which the decoder vector takes from the
+/// last pair naming the code, and the code of each character, which the
+/// encoder char-table takes from the first pair naming the character.
 pub(crate) struct CharsetMap {
     pub(crate) entries: Vec<(u32, u32)>,
     decoder: HashMap<u32, u32, FnvBuildHasher>,
@@ -47,7 +73,7 @@ impl CharsetMap {
         let mut encoder =
             HashMap::with_capacity_and_hasher(entries.len(), FnvBuildHasher::default());
         for &(code, character) in &entries {
-            decoder.entry(code).or_insert(character);
+            decoder.insert(code, character);
             encoder.entry(character).or_insert(code);
         }
         CharsetMap {
@@ -94,19 +120,17 @@ pub(crate) struct CharsetInfo {
     pub(crate) subset: Option<(String, i64, i64, i64)>,
     /// CHARSET_METHOD_SUPERSET: (CHILD . OFFSET) pairs.
     pub(crate) superset: Option<Vec<(String, i64)>>,
-    /// `:ascii-compatible-p', when given.
+    /// CHARSET_ASCII_COMPATIBLE_P: `:ascii-compatible-p', or an offset
+    /// charset from 0 reaching past ASCII.
     pub(crate) ascii_compatible_p: Option<bool>,
     /// CHARSET_EMACS_MULE_ID: `:emacs-mule-id', when given.
     pub(crate) emacs_mule_id: Option<u8>,
+    /// CHARSET_ISO_FINAL and CHARSET_ISO_REVISION, when given.
+    pub(crate) iso_final: Option<u8>,
+    pub(crate) iso_revision: Option<u8>,
+    /// CHARSET_INVALID_CODE.
+    pub(crate) invalid_code: Option<u32>,
     map: OnceCell<Option<Rc<CharsetMap>>>,
-}
-
-/// The value of KEY in the property list ITEMS (`plist-get').
-fn plist_get(items: &[Value], key: &str) -> Option<Value> {
-    let (pairs, _) = items.as_chunks::<2>();
-    pairs.iter().find_map(|[property, value]| {
-        matches!(property.kind(), Kind::Symbol(name) if name == key).then_some(*value)
-    })
 }
 
 /// The elements of a vector, or of a list.
@@ -115,13 +139,15 @@ fn vector_items(value: &Value) -> Option<Vec<Value>> {
 }
 
 impl CharsetInfo {
-    /// The attributes of the charset CANONICAL as its plist gives them.
+    /// The attributes of the charset CANONICAL as its definition gives
+    /// them: struct charset's method is the first of a code offset, a map,
+    /// a subset and a superset the definition names.
     fn read(interp: &Interpreter, canonical: &str) -> Self {
-        let items = interp
-            .charset_plist_value(canonical)
-            .and_then(|plist| plist.to_vec().ok())
+        let def = interp
+            .charset_def_value(canonical)
+            .and_then(|def| vector_items(&def))
             .unwrap_or_default();
-        let property = |key: &str| plist_get(&items, key);
+        let slot = |index: usize| def.get(index).copied().filter(|value| !value.is_nil());
         let builtin = match canonical {
             "ascii" => CharsetBuiltin::Ascii,
             "iso-8859-1" => CharsetBuiltin::Iso8859_1,
@@ -131,42 +157,30 @@ impl CharsetInfo {
             _ => CharsetBuiltin::None,
         };
 
-        // charset.c syms_of_charset defines the five C charsets with the
-        // code spaces below; the bootstrap plists carry no :code-space.
-        let code_space = match property(":code-space") {
-            Some(space) => vector_items(&space).and_then(|values| {
-                let bounds: Vec<(u32, u32)> = values
-                    .as_chunks::<2>()
-                    .0
-                    .iter()
-                    .filter_map(|pair| {
-                        Some((
-                            u32::try_from(pair[0].integer_value()?).ok()?,
-                            u32::try_from(pair[1].integer_value()?).ok()?,
-                        ))
-                    })
-                    .collect();
-                (!bounds.is_empty()).then_some(bounds)
-            }),
-            None => match builtin {
-                CharsetBuiltin::Ascii => Some(vec![(0, 127)]),
-                CharsetBuiltin::Iso8859_1 => Some(vec![(0, 255)]),
-                CharsetBuiltin::Unicode => Some(vec![(0, 255), (0, 255), (0, 16)]),
-                CharsetBuiltin::Emacs => Some(vec![(0, 255), (0, 255), (0, 63)]),
-                CharsetBuiltin::EightBit => Some(vec![(128, 255)]),
-                CharsetBuiltin::None => None,
-            },
-        };
-        let dimension = property(":dimension")
+        // charset.code_space: (min, max) of each of the four bytes.
+        let code_space = slot(DEF_CODE_SPACE).and_then(|space| {
+            let values = vector_items(&space)?;
+            let bounds: Vec<(u32, u32)> = values
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .filter_map(|pair| {
+                    Some((
+                        u32::try_from(pair[0].integer_value()?).ok()?,
+                        u32::try_from(pair[1].integer_value()?).ok()?,
+                    ))
+                })
+                .collect();
+            (!bounds.is_empty()).then_some(bounds)
+        });
+        let dimension = slot(DEF_DIMENSION)
             .and_then(|value| value.integer_value())
             .and_then(|value| u32::try_from(value).ok())
             .or_else(|| code_space.as_ref().map(|bounds| bounds.len() as u32))
             .unwrap_or(1);
 
-        // CHARSET_MIN_CODE / CHARSET_MAX_CODE: the `:min-code' and
-        // `:max-code' attributes (an integer, or a (HIGH . LOW) pair of
-        // 16-bit halves as `charset-plist' shows them), defaulting to the
-        // corners of the :code-space.
+        // CHARSET_MIN_CODE / CHARSET_MAX_CODE: the definition's codes,
+        // defaulting to the corners of the code space.
         let code_bounds = code_space.as_ref().map(|bounds| {
             let mut min_code = 0u32;
             let mut max_code = 0u32;
@@ -174,18 +188,11 @@ impl CharsetInfo {
                 min_code |= min << (8 * dimension);
                 max_code |= max << (8 * dimension);
             }
-            let attribute = |name: &str| -> Option<u32> {
-                let value = property(name)?;
-                if let Some((high, low)) = value.cons_values() {
-                    let high = u32::try_from(high.integer_value()?).ok()?;
-                    let low = u32::try_from(low.integer_value()?).ok()?;
-                    return Some((high << 16) | low);
-                }
-                u32::try_from(value.integer_value()?).ok()
-            };
+            let code =
+                |index: usize| -> Option<u32> { u32::try_from(slot(index)?.integer_value()?).ok() };
             (
-                attribute(":min-code").unwrap_or(min_code),
-                attribute(":max-code").unwrap_or(max_code),
+                code(DEF_MIN_CODE).unwrap_or(min_code),
+                code(DEF_MAX_CODE).unwrap_or(max_code),
             )
         });
         let char_index_offset = match (&code_space, code_bounds) {
@@ -193,13 +200,17 @@ impl CharsetInfo {
             _ => None,
         };
 
-        let code_offset = property(":code-offset").and_then(|value| value.integer_value());
-        let direct_map = property(":map");
+        let code_offset = slot(DEF_CODE_OFFSET).and_then(|value| value.integer_value());
+        let direct_map = slot(DEF_MAP).filter(|_| code_offset.is_none());
         let unified = interp.charset_is_unified(canonical);
         // Unified charsets (charset.c's UNIFIED_P, set by `unify-charset')
-        // convert through their :unify-map table; only codes absent from
-        // the table fall back to the code-offset rule.
-        let map_value = direct_map.or_else(|| unified.then(|| property(":unify-map")).flatten());
+        // convert through their unify-map; only codes absent from the
+        // table fall back to the code-offset rule.
+        let map_value = direct_map.or_else(|| {
+            (unified && code_offset.is_some())
+                .then(|| slot(DEF_UNIFY_MAP))
+                .flatten()
+        });
         let map_source = map_value.and_then(|map| {
             if is_vector_value(&map) {
                 let values = vector_items(&map)?;
@@ -209,8 +220,15 @@ impl CharsetInfo {
                         .0
                         .iter()
                         .filter_map(|pair| {
+                            // load_charset_map_from_vector: a code or a
+                            // (FROM . TO) range, then its first character.
+                            let (from, to) = match pair[0].cons_values() {
+                                Some((from, to)) => (from, to),
+                                None => (pair[0], pair[0]),
+                            };
                             Some((
-                                u32::try_from(pair[0].integer_value()?).ok()?,
+                                u32::try_from(from.integer_value()?).ok()?,
+                                u32::try_from(to.integer_value()?).ok()?,
                                 u32::try_from(pair[1].integer_value()?).ok()?,
                             ))
                         })
@@ -221,44 +239,62 @@ impl CharsetInfo {
             }
         });
 
-        // A `:subset (PARENT MIN MAX OFFSET)' charset (latin-jisx0201 and
-        // katakana-jisx0201, both windows onto jisx0201) converts through
-        // PARENT: its code C is PARENT's code C - OFFSET, valid when the
-        // parent code lies in MIN..=MAX.
-        let subset = property(":subset").and_then(|subset| {
-            let items = subset.to_vec().ok()?;
-            if items.len() != 4 {
-                return None;
-            }
-            Some((
-                items[0].symbol_str()?.to_string(),
-                items[1].integer_value()?,
-                items[2].integer_value()?,
-                items[3].integer_value()?,
-            ))
-        });
-        // A `:superset (CHILD ...)' charset (japanese-jisx0213.2004-1 is
-        // the superset of jisx0213-a and jisx0213-1) shares its children's
-        // code space: conversion tries each child in order.  An entry may
-        // also be (CHILD . OFFSET), shifting the codes by OFFSET.
-        let superset = property(":superset").and_then(|superset| {
-            let items = superset.to_vec().ok()?;
-            let children: Vec<(String, i64)> = items
-                .iter()
-                .filter_map(|item| match item.kind() {
-                    Kind::Symbol(name) => Some((name.to_string(), 0)),
-                    other => {
-                        let (car, cdr) = other.value().cons_values()?;
-                        Some((car.symbol_str()?.to_string(), cdr.integer_value()?))
-                    }
-                })
-                .collect();
-            (!children.is_empty()).then_some(children)
-        });
-        let ascii_compatible_p = property(":ascii-compatible-p").map(|value| value.is_truthy());
-        let emacs_mule_id = property(":emacs-mule-id")
+        let other_method = code_offset.is_none() && direct_map.is_none();
+        // CHARSET_METHOD_SUBSET: (PARENT MIN MAX OFFSET).
+        let subset = slot(DEF_SUBSET)
+            .filter(|_| other_method)
+            .and_then(|subset| {
+                let items = subset.to_vec().ok()?;
+                if items.len() != 4 {
+                    return None;
+                }
+                Some((
+                    items[0].symbol_str()?.to_string(),
+                    items[1].integer_value()?,
+                    items[2].integer_value()?,
+                    items[3].integer_value()?,
+                ))
+            });
+        // CHARSET_METHOD_SUPERSET: (MEMBER . OFFSET) in order.
+        let superset = slot(DEF_SUPERSET)
+            .filter(|_| other_method && subset.is_none())
+            .and_then(|superset| {
+                let items = superset.to_vec().ok()?;
+                let children: Vec<(String, i64)> = items
+                    .iter()
+                    .filter_map(|item| match item.kind() {
+                        Kind::Symbol(name) => Some((name.to_string(), 0)),
+                        other => {
+                            let (car, cdr) = other.value().cons_values()?;
+                            Some((car.symbol_str()?.to_string(), cdr.integer_value()?))
+                        }
+                    })
+                    .collect();
+                (!children.is_empty()).then_some(children)
+            });
+        let mut ascii_compatible_p = slot(DEF_ASCII_COMPATIBLE_P).is_some();
+        if code_offset == Some(0)
+            && let (Some(bounds), Some((_, max_code))) = (&code_space, code_bounds)
+            && code_point_to_raw_index(bounds, max_code)
+                .and_then(|index| index.checked_sub(char_index_offset?))
+                .is_some_and(|index| index >= 0x80)
+        {
+            // Fdefine_charset_internal: an offset charset from 0 whose
+            // characters reach past ASCII is ASCII-compatible.
+            ascii_compatible_p = true;
+        }
+        let emacs_mule_id = slot(DEF_EMACS_MULE_ID)
             .and_then(|value| value.integer_value())
             .and_then(|id| u8::try_from(id).ok());
+        let iso_final = slot(DEF_ISO_FINAL)
+            .and_then(|value| value.integer_value())
+            .and_then(|value| u8::try_from(value).ok());
+        let iso_revision = slot(DEF_ISO_REVISION)
+            .and_then(|value| value.integer_value())
+            .and_then(|value| u8::try_from(value).ok());
+        let invalid_code = slot(DEF_INVALID_CODE)
+            .and_then(|value| value.integer_value())
+            .and_then(|value| u32::try_from(value).ok());
 
         CharsetInfo {
             name: canonical.to_string(),
@@ -267,14 +303,17 @@ impl CharsetInfo {
             code_space,
             code_bounds,
             char_index_offset,
-            code_offset,
-            has_direct_map: property(":map").is_some(),
+            code_offset: code_offset.filter(|_| direct_map.is_none()),
+            has_direct_map: direct_map.is_some(),
             unified,
             map_source,
             subset,
             superset,
-            ascii_compatible_p,
+            ascii_compatible_p: Some(ascii_compatible_p),
             emacs_mule_id,
+            iso_final,
+            iso_revision,
+            invalid_code,
             map: OnceCell::new(),
         }
     }
@@ -284,11 +323,35 @@ impl CharsetInfo {
     pub(crate) fn map(&self, interp: &Interpreter) -> Option<Rc<CharsetMap>> {
         self.map
             .get_or_init(|| {
+                let bounds = self.code_space.as_deref()?;
+                let (min_code, max_code) = self.code_bounds?;
                 let entries = match self.map_source.as_ref()? {
-                    MapSource::Pairs(pairs) => pairs.clone(),
-                    MapSource::File(name) => {
-                        load_charset_map_file(interp, name, self.code_space.as_deref()?)?
+                    MapSource::Pairs(ranges) => {
+                        let mut pairs = Vec::new();
+                        for &(from, to, character) in ranges {
+                            // load_charset_map_from_vector's filter.
+                            if from < min_code || to > max_code || from > to || character > MAX_CHAR
+                            {
+                                continue;
+                            }
+                            let (Some(from_index), Some(to_index)) = (
+                                code_point_to_raw_index(bounds, from),
+                                code_point_to_raw_index(bounds, to),
+                            ) else {
+                                continue;
+                            };
+                            for (step, index) in (from_index..=to_index).enumerate() {
+                                if let Some(code) = raw_index_to_code_point(bounds, index) {
+                                    pairs.push((code, character + step as u32));
+                                }
+                            }
+                        }
+                        pairs
                     }
+                    MapSource::File(name) => load_charset_map_file(interp, name, bounds)?
+                        .into_iter()
+                        .filter(|(code, _)| (min_code..=max_code).contains(code))
+                        .collect(),
                 };
                 Some(Rc::new(CharsetMap::new(entries)))
             })
@@ -308,6 +371,33 @@ impl CharsetInfo {
         code_point_to_raw_index(bounds, code)?.checked_sub(self.char_index_offset?)
     }
 
+    /// charset.c CODE_POINT_TO_INDEX as map_charset_chars applies it to
+    /// any code: a linear code space's index is the difference from the
+    /// minimum code (taken as the C's int), another's -1 for a code outside
+    /// it.
+    pub(crate) fn code_point_to_index_c(&self, code: u32) -> Option<i64> {
+        let bounds = self.code_space.as_deref()?;
+        let (min_code, _) = self.code_bounds?;
+        // code_linear_p: one dimension, or each byte below the charset's
+        // highest spanning all 256 values.
+        let spans_all = |byte: usize| {
+            bounds
+                .get(byte)
+                .is_some_and(|(min, max)| max - min + 1 == 256)
+        };
+        let linear = self.dimension == 1
+            || (spans_all(0)
+                && (self.dimension == 2
+                    || (spans_all(1) && (self.dimension == 3 || spans_all(2)))));
+        if linear {
+            return Some(i64::from(code.wrapping_sub(min_code) as i32));
+        }
+        Some(match super::code_point_to_raw_index(bounds, code) {
+            Some(raw) => i64::from(raw) - i64::from(self.char_index_offset?),
+            None => -1,
+        })
+    }
+
     /// INDEX_TO_CODE_POINT with the `char_index_offset' added back; None
     /// past `:max-code'.
     pub(crate) fn index_to_code(&self, index: u32) -> Option<u32> {
@@ -318,8 +408,12 @@ impl CharsetInfo {
     }
 
     /// DECODE_CHAR: the character CODE is in this charset, None for a code
-    /// that is none of its characters.
+    /// that is none of its characters.  An ASCII code of an
+    /// ASCII-compatible charset is that character, mapped or not.
     pub(crate) fn decode(&self, interp: &Interpreter, code: u32) -> Option<u32> {
+        if code < 0x80 && self.ascii_compatible_p == Some(true) {
+            return Some(code);
+        }
         match self.builtin {
             CharsetBuiltin::Ascii => return (code <= 0x7f).then_some(code),
             CharsetBuiltin::Iso8859_1 => return (code <= 0xff).then_some(code),
@@ -363,8 +457,12 @@ impl CharsetInfo {
     }
 
     /// ENCODE_CHAR for an actual Emacs character number: its code in this
-    /// charset, None when it is no character of it.
+    /// charset, None when it is no character of it.  An ASCII character of
+    /// an ASCII-compatible charset is its own code.
     pub(crate) fn encode(&self, interp: &Interpreter, character: u32) -> Option<u32> {
+        if character < 0x80 && self.ascii_compatible_p == Some(true) {
+            return Some(character);
+        }
         match self.builtin {
             CharsetBuiltin::Ascii => return (character <= 0x7f).then_some(character),
             CharsetBuiltin::Iso8859_1 => return (character <= 0xff).then_some(character),
@@ -378,6 +476,10 @@ impl CharsetInfo {
                     .then(|| character - RAW_BYTE8_BASE);
             }
             CharsetBuiltin::None => {}
+        }
+        if self.unified {
+            // encode_char: a unified charset's deunifier is loaded first.
+            load_deunifier(interp, &self.name);
         }
         if character > MAX_5_BYTE_CHAR {
             // A raw byte belongs to no map, superset or offset charset.
@@ -410,6 +512,31 @@ impl CharsetInfo {
     }
 }
 
+/// load_charset (CHARSET, 2) for the unified charset NAME: its deunifier
+/// goes into its attributes, unless `inhibit-load-charset-map' (which
+/// loadup sets while dumping) sends the table to temp_charset_work, so
+/// that the dumped charset has none.
+pub(crate) fn load_deunifier(interp: &Interpreter, name: &str) {
+    let Some(def) = interp.charset_def_value(name) else {
+        return;
+    };
+    let crate::lisp::types::Kind::Vector(slots) = def.kind() else {
+        return;
+    };
+    if slots
+        .get(DEF_DEUNIFIER)
+        .is_none_or(|deunifier| !deunifier.is_nil())
+    {
+        return;
+    }
+    let inhibited = interp
+        .lookup_var("inhibit-load-charset-map", &crate::lisp::types::Env::new())
+        .is_some_and(|value| !value.is_nil());
+    if !inhibited {
+        slots.set(DEF_DEUNIFIER, Value::T);
+    }
+}
+
 /// The charset CHARSET (a name or an alias) as the charset table holds
 /// it, read from its plist the first time.
 pub(crate) fn charset_info(interp: &Interpreter, charset: &str) -> Option<Rc<CharsetInfo>> {
@@ -425,18 +552,49 @@ pub(crate) fn charset_info(interp: &Interpreter, charset: &str) -> Option<Rc<Cha
     Some(info)
 }
 
-/// The pairs of the map file NAME (etc/charsets/NAME.map) over the code
+/// load_charset_map_from_file's openp: the file NAME names on
+/// `charset-map-path', with the suffix .map or .TXT.
+pub(crate) fn charset_map_file(interp: &Interpreter, name: &str) -> Option<PathBuf> {
+    let env = crate::lisp::types::Env::new();
+    let directories: Vec<PathBuf> = interp
+        .lookup_var("charset-map-path", &env)
+        .and_then(|path| path.to_vec().ok())
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|directory| string_like(directory).map(|string| PathBuf::from(string.text)))
+        .collect();
+    let candidates = |base: PathBuf| {
+        [".map", ".TXT"].map(move |suffix| {
+            let mut file = base.clone().into_os_string();
+            file.push(suffix);
+            PathBuf::from(file)
+        })
+    };
+    if Path::new(name).is_absolute() {
+        return candidates(PathBuf::from(name))
+            .into_iter()
+            .find(|path| path.is_file());
+    }
+    directories
+        .into_iter()
+        .flat_map(|directory| candidates(directory.join(name)))
+        .find(|path| path.is_file())
+}
+
+/// The pairs of the map file NAME (on `charset-map-path') over the code
 /// space BOUNDS, parsed once a process.
 fn load_charset_map_file(
     interp: &Interpreter,
     name: &str,
     bounds: &[(u32, u32)],
 ) -> Option<Vec<(u32, u32)>> {
-    let data_directory = interp
-        .lookup_var("data-directory", &crate::lisp::types::Env::new())
-        .and_then(|value| string_like(&value).map(|string| PathBuf::from(string.text)))
-        .or_else(|| compat_data_directory().map(PathBuf::from))?;
-    let path = data_directory.join("charsets").join(format!("{name}.map"));
+    let path = charset_map_file(interp, name).or_else(|| {
+        let data_directory = interp
+            .lookup_var("data-directory", &crate::lisp::types::Env::new())
+            .and_then(|value| string_like(&value).map(|string| PathBuf::from(string.text)))
+            .or_else(|| compat_data_directory().map(PathBuf::from))?;
+        Some(data_directory.join("charsets").join(format!("{name}.map")))
+    })?;
     type CharsetMapCache = HashMap<(PathBuf, Vec<(u32, u32)>), Vec<(u32, u32)>>;
     static CACHE: OnceLock<Mutex<CharsetMapCache>> = OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));

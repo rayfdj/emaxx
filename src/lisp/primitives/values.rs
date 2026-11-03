@@ -1236,6 +1236,20 @@ pub(crate) fn proper_list_length(value: &Value) -> Option<usize> {
     tail.is_nil().then_some(len)
 }
 
+/// eval.c:signal_error: `(error S . ARG)', ARG made a one-element list
+/// unless it already is a proper list.
+pub(crate) fn signal_error(message: &str, arg: Value) -> LispError {
+    let arg = if proper_list_length(&arg).is_some() {
+        arg
+    } else {
+        Value::list([arg])
+    };
+    LispError::SignalValue(Value::cons(
+        Value::symbol("error"),
+        Value::cons(Value::string(message), arg),
+    ))
+}
+
 pub(crate) fn remove_equal(
     interp: &Interpreter,
     elt: &Value,
@@ -1569,16 +1583,6 @@ pub(crate) fn invoke_function_value(
     env: &mut Env,
 ) -> Result<Value, LispError> {
     interp.call_function_value(*func, None, args, env)
-}
-
-pub(crate) fn callable_name(original: &Value, resolved: &Value) -> Option<String> {
-    match original.kind() {
-        Kind::Symbol(name) => Some(name.to_string()),
-        _ => match resolved.kind() {
-            Kind::BuiltinFunc(name) => Some(name.to_string()),
-            _ => None,
-        },
-    }
 }
 
 // keymap.c:Fmake_sparse_keymap/Fmake_keymap: the Lisp list owns every

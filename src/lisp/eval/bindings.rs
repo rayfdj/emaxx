@@ -823,12 +823,6 @@ impl Interpreter {
             #[cfg(not(target_os = "linux"))]
             "system-configuration-features" => Some(Value::String("".into())),
             "system-configuration-options" => Some(Value::String("".into())),
-            "charset-list" => Some(Value::list(
-                self.charset_name_list()
-                    .into_iter()
-                    .map(|value| Value::Symbol(value.into()))
-                    .collect::<Vec<_>>(),
-            )),
             // pdumper.c: "unique to each build of Emacs".  Computed from
             // the running executable, cached for the process lifetime --
             // never a copy of another binary's fingerprint.

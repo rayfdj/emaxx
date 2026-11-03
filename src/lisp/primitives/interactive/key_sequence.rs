@@ -22,6 +22,12 @@ pub(crate) struct KeySequenceReader {
     first_unbound: usize,
     original_uppercase_position: Option<usize>,
     shift_translated: bool,
+    // Positions of events read_char reread from `unread-command-events'
+    // after the first key: add_command_key never saw them, until a replay
+    // re-adds the whole sequence.
+    omitted: Vec<usize>,
+    // Whether the event just read is one of those.
+    fresh_omitted: bool,
 }
 
 impl KeySequenceReader {
@@ -53,6 +59,8 @@ impl KeySequenceReader {
             first_unbound: READ_KEY_ELTS + 1,
             original_uppercase_position: None,
             shift_translated: false,
+            omitted: Vec::new(),
+            fresh_omitted: false,
         };
         reader.replay(interp, env)?;
         Ok(reader)
@@ -81,6 +89,8 @@ impl KeySequenceReader {
         self.roots[6] = Value::cons(Value::symbol("keymap"), Value::list(maps));
         self.read = 0;
         self.first_unbound = READ_KEY_ELTS + 1;
+        self.omitted.clear();
+        self.fresh_omitted = false;
         interp.keyboard_input.command_keys.clear();
         interp.keyboard_input.single_command_start = 0;
         Ok(())
@@ -370,6 +380,10 @@ impl KeySequenceReader {
             }
             _ => event,
         };
+        // read_char added the event to this-command-keys unless it was
+        // reread with keys already there.
+        let reread = std::mem::take(&mut interp.keyboard_input.last_event_reread);
+        let omit = reread && self.read > 0 && !interp.keyboard_input.command_keys.is_empty();
         self.keys.push(event);
         // keyboard.c copies only the event spine before remapping. The
         // unchanged mouse.el translator can mutate its head in place;
@@ -405,6 +419,8 @@ impl KeySequenceReader {
         }
         if self.read == 0 || expanded {
             self.replay(interp, env)?;
+        } else {
+            self.fresh_omitted = omit;
         }
         loop {
             // keyboard.c:read_key_sequence stops retrying an unbound
@@ -474,13 +490,18 @@ impl KeySequenceReader {
             }
             self.roots[6] = binding;
             load_autoloaded_prefix_map(interp, &binding, env)?;
+            if self.fresh_omitted && self.read + 1 == self.keys.len() {
+                self.omitted.push(self.read);
+            }
+            self.fresh_omitted = false;
             self.read += 1;
-            set_command_key_state(
-                interp,
-                self.keys[..self.read].to_vec(),
-                self.raw.to_vec(),
-                env,
-            );
+            let added = self.keys[..self.read]
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| !self.omitted.contains(index))
+                .map(|(_, key)| *key)
+                .collect();
+            set_command_key_state(interp, added, self.raw.to_vec(), env);
             if self.translate(interp, env)? || self.downcase_current(interp, env)? {
                 continue;
             }

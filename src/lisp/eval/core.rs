@@ -270,7 +270,7 @@ impl Interpreter {
     /// symbol while `symbols-with-pos-enabled' is non-nil.  The byte compiler
     /// enables that mode while macroexpanding source forms, so this is part of
     /// ordinary evaluator dispatch rather than merely a predicate detail.
-    fn callable_symbol_name(&self, value: &Value, env: &Env) -> Option<SymbolName> {
+    pub(crate) fn callable_symbol_name(&self, value: &Value, env: &Env) -> Option<SymbolName> {
         if let Some(name) = value.symbol_cell() {
             return Some(name);
         }
@@ -2353,7 +2353,7 @@ impl Interpreter {
         }
         let depth = env.len();
         let count = self.specpdl_index();
-        let locals = self.frame_locals.len();
+        let installed = self.frame_environments.len();
         let result = (|| {
             let mut index = 0;
             let mut optional = false;
@@ -2403,16 +2403,6 @@ impl Interpreter {
                     // Dynamic specbind can run variable watchers. Bind
                     // immediately, retaining GNU's order and the live
                     // parameter cell until its cdr is read below.
-                    let frame = self
-                        .backtrace_frames
-                        .len()
-                        .checked_sub(1)
-                        .expect("active call frame");
-                    self.frame_locals.push(FrameLocal {
-                        frame,
-                        symbol: parameter,
-                        value: argument,
-                    });
                     if lexical {
                         lexical_environment =
                             Self::cons_binding(parameter, argument, lexical_environment);
@@ -2437,6 +2427,7 @@ impl Interpreter {
                 != lexical_environment.word()
             {
                 env.push(EnvFrame::from_alist(lexical_environment));
+                self.install_frame_environment(lexical_environment);
             }
             self.capture_current_backtrace_context(original_name.map(CallName::as_str), env, None);
             let body = match function.kind() {
@@ -2448,9 +2439,9 @@ impl Interpreter {
         // GNU signals before unbinding: handlers can inspect partial
         // dynamic argument bindings and the signaling call's frame.
         let result = self.settle_frame_result(result, env);
-        // The parameters leave with the call; its frame, which the caller
-        // pops, reports none after this.
-        self.frame_locals.truncate(locals);
+        // The environment leaves with the call; its frame, which the
+        // caller pops, reports none after this.
+        self.uninstall_frame_environments(installed);
         env.truncate(depth);
         let unbind = self.unbind_to(count, env);
         if override_capture {
@@ -3261,8 +3252,8 @@ mod eval_value_buffer_tests {
                 .detached_forwarded_variables
                 .insert("text-quoting-style".into(), keys[4]);
             interpreter.pending_thread_events.push(keys[5]);
-            interpreter.coding_systems[0].charset_list = keys[6];
-            interpreter.coding_systems[0].type_args = vec![keys[7]];
+            interpreter.coding_attrs[0].charset_list = keys[6];
+            interpreter.coding_attrs[0].type_args = vec![keys[7]];
             table_id
         }
 
@@ -3331,8 +3322,8 @@ mod eval_value_buffer_tests {
             .detached_forwarded_variables
             .insert("text-quoting-style".into(), c_value);
         interpreter.pending_thread_events.push(c_value);
-        interpreter.coding_systems[0].charset_list = c_value;
-        interpreter.coding_systems[0].type_args = vec![c_value];
+        interpreter.coding_attrs[0].charset_list = c_value;
+        interpreter.coding_attrs[0].type_args = vec![c_value];
         let mut copied = interpreter.deep_clone_image();
         let copied_c = copied.quit_flag_value();
         assert!(!primitives::values_eq_in_env(
@@ -3346,8 +3337,8 @@ mod eval_value_buffer_tests {
                 .expect("still forwarded"),
             copied.detached_forwarded_variables["text-quoting-style"],
             copied.pending_thread_events[0],
-            copied.coding_systems[0].charset_list,
-            copied.coding_systems[0].type_args[0],
+            copied.coding_attrs[0].charset_list,
+            copied.coding_attrs[0].type_args[0],
         ] {
             assert!(
                 primitives::values_eq_in_env(&copied, &copied_c, &child, &env),

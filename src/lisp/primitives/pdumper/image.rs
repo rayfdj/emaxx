@@ -543,8 +543,9 @@ pub(crate) enum RootSlot {
     SjisCodingSystem = 29,
     Big5CodingSystem = 30,
     CodingSystems = 31,
-    CodingAliases = 32,
-    CodingPriority = 33,
+    CodingSpecs = 32,
+    // Former coding priority root code 33 is unsupported: GNU completes
+    // coding systems over `coding-system-alist'.
     CodingCategoryRepresentatives = 34,
     CodingCategoryPriorities = 35,
     CclProgramTable = 36,
@@ -575,6 +576,9 @@ pub(crate) enum RootSlot {
     IntervalInsertInFrontHooks = 59,
     /// buffer.c's staticpro'd QSFundamental.
     FundamentalModeName = 60,
+    /// font.c's staticpro'd font_style_table.
+    FontStyleTable = 61,
+    EmacsMuleCharsetList = 62,
 }
 
 impl RootSlot {
@@ -612,8 +616,7 @@ impl RootSlot {
             29 => Self::SjisCodingSystem,
             30 => Self::Big5CodingSystem,
             31 => Self::CodingSystems,
-            32 => Self::CodingAliases,
-            33 => Self::CodingPriority,
+            32 => Self::CodingSpecs,
             34 => Self::CodingCategoryRepresentatives,
             35 => Self::CodingCategoryPriorities,
             36 => Self::CclProgramTable,
@@ -636,6 +639,8 @@ impl RootSlot {
             58 => Self::IntervalInsertBehindHooks,
             59 => Self::IntervalInsertInFrontHooks,
             60 => Self::FundamentalModeName,
+            61 => Self::FontStyleTable,
+            62 => Self::EmacsMuleCharsetList,
             _ => return None,
         })
     }

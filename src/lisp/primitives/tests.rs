@@ -953,6 +953,109 @@ fn always_local_slots_are_each_buffers_own_like_buffer_c() {
     );
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn x_terminal_variables_start_as_xterm_c_sets_them_and_scroll_bar_el_binds_by_them() {
+    // xterm.c: `x-toolkit-scroll-bars' is nil without
+    // USE_TOOLKIT_SCROLL_BARS (the Linux oracle has no X toolkit) and
+    // `x-use-underline-position-properties' starts true.  Loadup's
+    // scroll-bar.el reads the first to put the non-toolkit scroll-bar
+    // commands in the global map.
+    assert_oracle_contract_matches_interpreter(
+        "(list x-toolkit-scroll-bars x-use-underline-position-properties \
+           x-underline-at-descent-line \
+           (lookup-key global-map [vertical-scroll-bar]) \
+           (lookup-key global-map [horizontal-scroll-bar]))",
+        "(nil t nil (keymap (wheel-right . mwheel-scroll) (wheel-left . mwheel-scroll) \
+         (wheel-up . mwheel-scroll) (wheel-down . mwheel-scroll) (mouse-7 . mwheel-scroll) \
+         (mouse-6 . mwheel-scroll) (mouse-5 . mwheel-scroll) (mouse-4 . mwheel-scroll) \
+         (drag-mouse-3 . scroll-bar-scroll-down) (mouse-3 . scroll-bar-scroll-down) \
+         (down-mouse-2 . scroll-bar-drag) (drag-mouse-1 . scroll-bar-scroll-up) \
+         (mouse-1 . scroll-bar-scroll-up) (C-mouse-2 . mouse-split-window-vertically)) \
+         (keymap (wheel-right . mwheel-scroll) (wheel-left . mwheel-scroll) \
+         (wheel-up . mwheel-scroll) (wheel-down . mwheel-scroll) (mouse-7 . mwheel-scroll) \
+         (mouse-6 . mwheel-scroll) (mouse-5 . mwheel-scroll) (mouse-4 . mwheel-scroll) \
+         (C-mouse-2 . mouse-split-window-horizontally)))",
+        "x terminal variables",
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn build_files_is_the_builds_buildobj_list_for_help_c_file_name() {
+    // doc.c:Fsnarf_documentation conses `build-files' from buildobj.h,
+    // the objects this configuration compiled, not DOC's S records, which
+    // also name msdos, w32, ns, haiku and android files; help-fns.el's
+    // `help-C-file-name' takes the first DOC entry whose file is on it.
+    assert_oracle_contract_matches_interpreter(
+        "(list (length build-files) (car build-files) (car (last build-files)) \
+           (member \"dosfns.o\" build-files) \
+           (progn (require 'help-fns) \
+                  (help-C-file-name (symbol-function 'file-system-info) 'subr)) \
+           (help-C-file-name 'x-toolkit-scroll-bars 'var) \
+           (secure-hash 'md5 (mapconcat #'identity build-files \" \")))",
+        "(95 \"dispnew.o\" \"lastfile.o\" nil \"src/fileio.c\" \"src/xterm.c\" \
+         \"c83a77a053851428da4f8a8dfd78ec6f\")",
+        "build-files",
+    );
+}
+
+#[test]
+fn charset_maps_decode_by_their_last_entry_and_pass_ascii_through_as_charset_h() {
+    // charset.h's DECODE_CHAR and ENCODE_CHAR give an ASCII code of an
+    // ASCII-compatible charset as itself, mapped or not (MIK.map starts at
+    // #x20), so decode_coding_charset's `charset' run covers it;
+    // load_charset_map's decoder vector takes the last entry of a code a
+    // map lists twice (stdenc.map's #x20, #x2D) and the encoder table the
+    // first of a character; map_char_table_for_charset hands its function
+    // one RANGE cons, refilled for each run; eucjp-ms decodes through its
+    // `:decode-translation-table'.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list (decode-char 'mik 5) (encode-char 5 'mik) (decode-char 'adobe-standard-encoding 32) (decode-char 'adobe-standard-encoding 45) (encode-char #xa0 'adobe-standard-encoding) (object-intervals (decode-coding-string (unibyte-string 5 ?a #x80) 'mik)) (let (l) (map-charset-chars (lambda (r _) (push r l)) 'mik) (list (length l) (car l) (eq (car l) (car (last l))))) (let (l) (map-charset-chars (lambda (r _) (push (cons (car r) (cdr r)) l)) 'mik nil #x80 #x90) l) (let (l) (map-charset-chars (lambda (r _) (push r l)) 'latin-iso8859-1) (list l (eq (car l) (cadr l)))) (let ((s (decode-coding-string (unibyte-string #xad #xae #xad #xa1) 'eucjp-ms))) (list (append s nil) (object-intervals s))))"##,
+        r##"(5 5 32 45 32 ((0 3 (charset mik))) (55 (nil . 9632) t) ((1040 . 1056)) (((160 . 255)) nil) ((9325 9312) ((0 2 (charset japanese-jisx0208)))))"##,
+        "charset maps",
+    );
+}
+
+#[test]
+fn decoders_translate_through_decode_translation_tables_as_produce_chars() {
+    // coding.c:produce_chars passes each decoded character through
+    // get_translation_table's tables (the coding's, then
+    // `standard-translation-table-for-decode'): a character entry
+    // replaces it, a vector's characters stand for it and an alist of
+    // sequences replaces the first it matches; raw-text's characters at
+    // source and code_convert_string's ASCII fast path are not
+    // translated.  produce_annotation puts each `charset' run where the
+    // decoder counted it, so a translation that shortened the text makes
+    // Fput_text_property signal past the work buffer's end, and in a
+    // buffer covers what follows the decoded text.
+    assert_oracle_contract_matches_interpreter(
+        r##"(let* ((seq (make-translation-table-from-alist '(([?a ?b] . ?Z) ([?q ?r ?s] . [?1 ?2]))))
+       (one (let ((table (make-translation-table '((?a . ?b))))) (aset table ?c [?x ?y]) (aset table ?d []) table)))
+  (define-translation-table 'zz-r273-seq seq)
+  (define-translation-table 'zz-r273-one one)
+  (define-coding-system 'zz-r273-seq "seq" :coding-type 'charset :mnemonic ?z :charset-list '(iso-8859-1) :decode-translation-table 'zz-r273-seq)
+  (define-coding-system 'zz-r273-one "one" :coding-type 'charset :mnemonic ?z :charset-list '(iso-8859-1) :decode-translation-table 'zz-r273-one)
+  (define-coding-system 'zz-r273-utf "utf" :coding-type 'utf-8 :mnemonic ?z :decode-translation-table '(zz-r273-one zz-r273-seq))
+  (define-coding-system 'zz-r273-raw "raw" :coding-type 'raw-text :mnemonic ?z :decode-translation-table 'zz-r273-one)
+  (mapcar (lambda (f) (condition-case e (let ((r (funcall f))) (cond ((stringp r) (list (append r nil) (object-intervals r))) ((and (consp r) (stringp (cadr r))) (list (car r) (append (cadr r) nil) (object-intervals (cadr r)))) (t r))) (error e)))
+          (list (lambda () (decode-coding-string "abcdabcd" 'zz-r273-one))
+                (lambda () (decode-coding-string (unibyte-string ?c ?d #xe9) 'zz-r273-one))
+                (lambda () (decode-coding-string (unibyte-string #xe9 ?c) 'zz-r273-one))
+                (lambda () (decode-coding-string (unibyte-string ?a ?b #xe9) 'zz-r273-seq))
+                (lambda () (decode-coding-string (unibyte-string #xe9 ?q ?r ?s ?q ?r) 'zz-r273-seq))
+                (lambda () (decode-coding-string (unibyte-string ?a ?b ?c ?q ?r ?s #xe9) 'zz-r273-utf))
+                (lambda () (decode-coding-string (unibyte-string ?a ?c #xe9) 'zz-r273-raw))
+                (lambda () (let ((enable-character-translation nil)) (decode-coding-string (unibyte-string ?c #xe9) 'zz-r273-one)))
+                (lambda () (let ((standard-translation-table-for-decode one)) (decode-coding-string (unibyte-string ?a ?c #xe9) 'latin-1)))
+                (lambda () (with-temp-buffer (insert "123ab" (unibyte-string #xe9)) (list (condition-case e (decode-coding-region 4 7 'zz-r273-seq) (error e)) (buffer-string))))
+                (lambda () (with-temp-buffer (insert "123ab" (unibyte-string #xe9) "XYZ") (list (decode-coding-region 4 7 'zz-r273-seq) (buffer-string))))
+                (lambda () (with-temp-buffer (insert "123" (unibyte-string #xe9) "c") (list (decode-coding-region 4 6 'zz-r273-one) (buffer-string)))))))"##,
+        r##"(((97 98 99 100 97 98 99 100) nil) ((120 121 233) ((0 3 (charset iso-8859-1)))) ((233 120 121) ((0 2 (charset iso-8859-1)) (2 3 nil))) (args-out-of-range 1 4) (args-out-of-range 1 7) ((98 98 120 121 49 50 4194281) nil) ((97 99 4194281) nil) ((99 233) ((0 2 (charset iso-8859-1)))) ((98 120 121 233) ((0 3 (charset iso-8859-1)) (3 4 nil))) ((args-out-of-range 4 7) (49 50 51 90 233) nil) (2 (49 50 51 90 233 88 89 90) ((0 3 nil) (3 6 (charset iso-8859-1)) (6 8 nil))) (3 (49 50 51 233 120 121) ((0 3 nil) (3 5 (charset iso-8859-1)) (5 6 nil))))"##,
+        "decode translation",
+    );
+}
+
 #[test]
 fn looking_at_does_not_create_or_assign_unrelated_lisp_variables() {
     assert_oracle_contract_matches_interpreter(
@@ -6091,6 +6194,36 @@ fn every_claimed_gnu_c_primitive_mirror_has_an_exact_native_surface_contract() {
     );
 }
 
+/// The contracted Linux build's manifest adds the X, session-manager and
+/// glibc primitives the cross-platform one lacks: each has a native route
+/// and GNU's arity and command identity.
+#[cfg(target_os = "linux")]
+#[test]
+fn every_linux_gnu_c_primitive_has_a_native_route_and_gnu_metadata() {
+    use super::generated_gnu_c_primitives_linux::GNU_C_PRIMITIVES;
+
+    let mut issues = Vec::new();
+    for contract in GNU_C_PRIMITIVES {
+        let Some(arity) = contract.arity else {
+            continue;
+        };
+        if !has_dispatch_handler(contract.name) && !is_special_form_name(contract.name) {
+            issues.push(format!(
+                "{} [{}]: no native route",
+                contract.name, contract.origins
+            ));
+        }
+        if generated_builtin_arities::generated_builtin_arity(contract.name) != Some(arity) {
+            issues.push(format!("{} [{}]: arity", contract.name, contract.origins));
+        }
+        if generated_builtin_arities::generated_builtin_command_p(contract.name) != contract.command
+        {
+            issues.push(format!("{} [{}]: command", contract.name, contract.origins));
+        }
+    }
+    assert!(issues.is_empty(), "{}", issues.join("\n"));
+}
+
 #[test]
 fn every_literal_native_dispatch_arm_is_owned_by_gnu_c() {
     let quoted_name =
@@ -7222,14 +7355,17 @@ fn native_font_backend_boundary_and_glyph_validation_match_gnu() {
         interp
             .eval(&headless, &mut env)
             .expect("headless font failures should be catchable"),
+        // font.c: Ffont_face_attributes decodes a live frame and reads
+        // the spec's empty attributes; Fopen_font checks its entity after
+        // the frame (GNU's batch build answers both so).  Ffont_has_char_p
+        // of a spec on a terminal frame crashes GNU's batch build, which
+        // has no font driver; Emaxx signals as a build without a window
+        // system does.
         Value::list([
+            Value::Nil,
             Value::list([
-                Value::symbol("error"),
-                Value::string("Window system frame should be used"),
-            ]),
-            Value::list([
-                Value::symbol("error"),
-                Value::string("Window system frame should be used"),
+                Value::symbol("wrong-type-argument"),
+                Value::symbol("font-entity"),
             ]),
             Value::list([
                 Value::symbol("error"),
@@ -7327,7 +7463,9 @@ fn native_fontset_registry_family_matches_gnu() {
     let expected_printed = "((\"-*-*-*-*-*-*-*-*-*-*-*-*-fontset-default\") error error \"-*-*-*-*-*-*-*-*-*-*-*-*-fontset-emaxx-native\" (\"Greek\" . \"iso10646-1\") nil nil nil nil nil nil (\"Zero\" . \"iso10646-1\") ((\"Zero\" . \"iso10646-1\") (\"One\" . \"iso10646-1\") (\"Two\" . \"iso10646-1\") (\"Fallback\" . \"iso10646-1\")) ((\"Range\" . \"iso10646-1\") (\"Fallback\" . \"iso10646-1\")) ((\"Fallback\" . \"iso10646-1\")) (\"-*-*-*-*-*-*-*-*-*-*-*-*-fontset-emaxx-native\" \"-*-*-*-*-*-*-*-*-*-*-*-*-fontset-default\") error error \"-*-*-*-*-*-*-*-*-*-*-*-*-fontset-emaxx-native\" ((\"Fallback\" . \"iso10646-1\")) (\"-*-*-*-*-*-*-*-*-*-*-*-*-fontset-emaxx-native\" \"-*-*-*-*-*-*-*-*-*-*-*-*-fontset-default\"))";
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected_printed);
 
-    let mut interp = Interpreter::new();
+    // fontset.c reads char-script-table and font-encoding-alist, which
+    // the image's characters.el and fontset.el set.
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
@@ -7945,407 +8083,870 @@ fn headless_input_mode_family_matches_the_upstream_batch_terminal() {
 }
 
 #[test]
-fn parse_font_names_matches_core_upstream_cases() {
-    let cases = [
-        (" ", Some(" "), None, None, None, None, None),
-        ("Monospace", Some("Monospace"), None, None, None, None, None),
-        (
-            "Monospace Serif",
-            Some("Monospace Serif"),
-            None,
-            None,
-            None,
-            None,
-            None,
-        ),
-        ("Foo1", Some("Foo1"), None, None, None, None, None),
-        ("12", None, Some(12.0), None, None, None, None),
-        ("12 ", Some("12 "), None, None, None, None, None),
-        ("Foo:", Some("Foo"), None, None, None, None, None),
-        ("Foo-8", Some("Foo"), Some(8.0), None, None, None, None),
-        ("Foo-18:", Some("Foo"), Some(18.0), None, None, None, None),
-        (
-            "Foo-18:light",
-            Some("Foo"),
-            Some(18.0),
-            Some("light"),
-            None,
-            None,
-            None,
-        ),
-        (
-            "Foo 10:weight=bold",
-            Some("Foo 10"),
-            None,
-            Some("bold"),
-            None,
-            None,
-            None,
-        ),
-        (
-            "Foo-12:weight=bold",
-            Some("Foo"),
-            Some(12.0),
-            Some("bold"),
-            None,
-            None,
-            None,
-        ),
-        (
-            "Foo 8-20:slant=oblique",
-            Some("Foo 8"),
-            Some(20.0),
-            None,
-            Some("oblique"),
-            None,
-            None,
-        ),
-        (
-            "Foo:light:roman",
-            Some("Foo"),
-            None,
-            Some("light"),
-            Some("roman"),
-            None,
-            None,
-        ),
-        (
-            "Foo:italic:roman",
-            Some("Foo"),
-            None,
-            None,
-            Some("roman"),
-            None,
-            None,
-        ),
-        (
-            "Foo 12:light:oblique",
-            Some("Foo 12"),
-            None,
-            Some("light"),
-            Some("oblique"),
-            None,
-            None,
-        ),
-        (
-            "Foo-12:demibold:oblique",
-            Some("Foo"),
-            Some(12.0),
-            Some("demibold"),
-            Some("oblique"),
-            None,
-            None,
-        ),
-        (
-            "Foo:black:proportional",
-            Some("Foo"),
-            None,
-            Some("black"),
-            None,
-            Some(0),
-            None,
-        ),
-        (
-            "Foo-10:black:proportional",
-            Some("Foo"),
-            Some(10.0),
-            Some("black"),
-            None,
-            Some(0),
-            None,
-        ),
-        (
-            "Foo:weight=normal",
-            Some("Foo"),
-            None,
-            Some("normal"),
-            None,
-            None,
-            None,
-        ),
-        (
-            "Foo:weight=bold",
-            Some("Foo"),
-            None,
-            Some("bold"),
-            None,
-            None,
-            None,
-        ),
-        (
-            "Foo:weight=bold:slant=italic",
-            Some("Foo"),
-            None,
-            Some("bold"),
-            Some("italic"),
-            None,
-            None,
-        ),
-        (
-            "Foo:weight=bold:slant=italic:mono",
-            Some("Foo"),
-            None,
-            Some("bold"),
-            Some("italic"),
-            Some(100),
-            None,
-        ),
-        (
-            "Foo-10:demibold:slant=normal",
-            Some("Foo"),
-            Some(10.0),
-            Some("demibold"),
-            Some("normal"),
-            None,
-            None,
-        ),
-        (
-            "Foo 11-16:oblique:weight=bold",
-            Some("Foo 11"),
-            Some(16.0),
-            Some("bold"),
-            Some("oblique"),
-            None,
-            None,
-        ),
-        (
-            "Foo:oblique:randomprop=randomtag:weight=bold",
-            Some("Foo"),
-            None,
-            Some("bold"),
-            Some("oblique"),
-            None,
-            None,
-        ),
-        (
-            "Foo:randomprop=randomtag:bar=baz",
-            Some("Foo"),
-            None,
-            None,
-            None,
-            None,
-            None,
-        ),
-        (
-            "Foo Book Light:bar=baz",
-            Some("Foo Book Light"),
-            None,
-            None,
-            None,
-            None,
-            None,
-        ),
-        (
-            "Foo Book Light 10:bar=baz",
-            Some("Foo Book Light 10"),
-            None,
-            None,
-            None,
-            None,
-            None,
-        ),
-        (
-            "Foo Book Light-10:bar=baz",
-            Some("Foo Book Light"),
-            Some(10.0),
-            None,
-            None,
-            None,
-            None,
-        ),
-        ("Oblique", None, None, None, Some("oblique"), None, None),
-        ("Bold 17", None, Some(17.0), Some("bold"), None, None, None),
-        ("17 Bold", Some("17"), None, Some("bold"), None, None, None),
-        (
-            "Book Oblique 2",
-            None,
-            Some(2.0),
-            Some("book"),
-            Some("oblique"),
-            None,
-            None,
-        ),
-        ("Bar 7", Some("Bar"), Some(7.0), None, None, None, None),
-        (
-            "Bar Ultra-Light",
-            Some("Bar"),
-            None,
-            Some("ultra-light"),
-            None,
-            None,
-            None,
-        ),
-        (
-            "Bar Light 8",
-            Some("Bar"),
-            Some(8.0),
-            Some("light"),
-            None,
-            None,
-            None,
-        ),
-        (
-            "Bar Book Medium 9",
-            Some("Bar"),
-            Some(9.0),
-            Some("medium"),
-            None,
-            None,
-            None,
-        ),
-        (
-            "Bar Semi-Bold Italic 10",
-            Some("Bar"),
-            Some(10.0),
-            Some("semi-bold"),
-            Some("italic"),
-            None,
-            None,
-        ),
-        (
-            "Bar Semi-Condensed Bold Italic 11",
-            Some("Bar"),
-            Some(11.0),
-            Some("bold"),
-            Some("italic"),
-            None,
-            None,
-        ),
-        (
-            "Foo 10 11",
-            Some("Foo 10"),
-            Some(11.0),
-            None,
-            None,
-            None,
-            None,
-        ),
-        (
-            "Foo 1985 Book",
-            Some("Foo 1985"),
-            None,
-            Some("book"),
-            None,
-            None,
-            None,
-        ),
-        (
-            "Foo 1985 A Book",
-            Some("Foo 1985 A"),
-            None,
-            Some("book"),
-            None,
-            None,
-            None,
-        ),
-        (
-            "Foo 1 Book 12",
-            Some("Foo 1"),
-            Some(12.0),
-            Some("book"),
-            None,
-            None,
-            None,
-        ),
-        (
-            "Foo A Book 12 A",
-            Some("Foo A Book 12 A"),
-            None,
-            None,
-            None,
-            None,
-            None,
-        ),
-        (
-            "Foo 1985 Book 12 Oblique",
-            Some("Foo 1985 Book 12"),
-            None,
-            None,
-            Some("oblique"),
-            None,
-            None,
-        ),
-        (
-            "Foo 1985 Book 12 Italic 10",
-            Some("Foo 1985 Book 12"),
-            Some(10.0),
-            None,
-            Some("italic"),
-            None,
-            None,
-        ),
-        (
-            "Foo Book Bar 6 Italic",
-            Some("Foo Book Bar 6"),
-            None,
-            None,
-            Some("italic"),
-            None,
-            None,
-        ),
-        (
-            "Foo Book Bar Bold",
-            Some("Foo Book Bar"),
-            None,
-            Some("bold"),
-            None,
-            None,
-            None,
-        ),
-        (
-            "-GNU -FreeSans-semibold-italic-normal-*-*-*-*-*-*-0-iso10646-1",
-            Some("FreeSans"),
-            None,
-            Some("semi-bold"),
-            None,
-            None,
-            Some("GNU "),
-        ),
-        (
-            "-Take-mikachan-PS-normal-normal-normal-*-*-*-*-*-*-0-iso10646-1",
-            Some("mikachan-PS"),
-            None,
-            Some("normal"),
-            None,
-            None,
-            Some("Take"),
-        ),
-        (
-            "-foundry-name-with-lots-of-dashes-normal-normal-normal-*-*-*-*-*-*-0-iso10646-1",
-            Some("name-with-lots-of-dashes"),
-            None,
-            Some("normal"),
-            None,
-            None,
-            Some("foundry"),
-        ),
-    ];
+fn font_spec_styles_validators_and_fontconfig_extras_match_font_c() {
+    // font.c: style numbers font_style_to_value stores (case-folded,
+    // demibold apart from semi-bold), font_prop_validate's errors (nil as
+    // a key validated as :type), font_put_extra's sorted alist and the
+    // fontconfig properties ftfont_filter_properties keeps.
+    assert_oracle_contract_matches_interpreter(
+        r###"(mapcar (lambda (thunk) (condition-case e (funcall thunk) (error (list 'E e))))
+ (list
+  (lambda () (font-spec :weight 'BOLD :slant 'I))
+  (lambda () (equal (font-spec :weight 'demibold) (font-spec :weight 'semi-bold)))
+  (lambda () (font-get (font-spec :weight 'demibold) :weight))
+  (lambda () (font-spec :weight 51312))
+  (lambda () (font-spec :weight 200))
+  (lambda () (font-spec :weight 'nosuch))
+  (lambda () (font-spec nil 'x))
+  (lambda () (font-spec nil 5))
+  (lambda () (font-spec :zz 1 :aa 2 :mm 3))
+  (lambda () (font-spec :otf '(latn nil nil (mark) z)))
+  (lambda () (font-spec :otf '(latn nil (kern . x))))
+  (lambda () (font-spec :size -1))
+  (lambda () (font-spec :spacing 'x))
+  (lambda () (font-spec :family 'Foo :foundry "Bar" :adstyle 'q :registry 'ISO8859-1))
+  (lambda () (font-spec :name 5))
+  (lambda () (font-spec :weight))
+  (lambda () (font-spec 5 1))
+  (lambda () (font-spec :name "Foo-12:antialias=false:hinting=1:file=/x:qq=3"))
+  (lambda () (font-spec :name "Foo:style=Bold:familylang=en:lang=ja:outline=Off:embolden=yes:scalable"))
+  (lambda () (font-spec :name "Foo:type=x:registry=ISO8859-1:foundry=bar:adstyle=q:pixelsize=13"))
+  (lambda () (font-spec :name "Foo:weight=nosuch"))
+  (lambda () (font-spec :name "Foo-:bold"))
+  (lambda () (font-spec :name "Foo-10.5.3"))))"###,
+        r###"(#<font-spec nil nil nil nil nil bold i nil nil nil nil nil nil> nil demibold #<font-spec nil nil nil nil nil bold nil nil nil nil nil nil nil> (E (error "invalid font property" (:weight . 200))) (E (error "invalid font property" (:weight . nosuch))) #<font-spec nil nil nil nil nil nil nil nil nil nil nil nil ((nil . x))> (E (error "invalid font property" (:type . 5))) #<font-spec nil nil nil nil nil nil nil nil nil nil nil nil ((:aa . 2) (:mm . 3) (:zz . 1))> #<font-spec nil nil nil nil nil nil nil nil nil nil nil nil ((:otf latn nil nil (mark) z))> (E (error "invalid font property" :otf latn nil (kern . x))) (E (error "invalid font property" (:size . -1))) (E (error "invalid font property" (:spacing . x))) #<font-spec nil Bar Foo q iso8859-1 nil nil nil nil nil nil nil nil> (E (wrong-type-argument stringp 5)) (E (error "No value for key `:weight'")) (E (wrong-type-argument symbolp 5)) #<font-spec nil nil Foo nil nil nil nil nil 12.0 nil nil nil ((:antialias) (:file . /x) (:hinting . t) (:name . "Foo-12:antialias=false:hinting=1:file=/x:qq=3"))> #<font-spec nil nil Foo nil nil nil nil nil nil nil nil nil ((:embolden . t) (:familylang . en) (:lang . ja) (:name . "Foo:style=Bold:familylang=en:lang=ja:outline=Off:embolden=yes:scalable") (:outline) (:style . Bold))> #<font-spec nil bar Foo q iso8859-1 nil nil nil 13 nil nil nil ((:name . "Foo:type=x:registry=ISO8859-1:foundry=bar:adstyle=q:pixelsize=13"))> (E (error "invalid font property" (:weight . nosuch))) #<font-spec nil nil Foo nil nil bold nil nil 0.0 nil nil nil ((:name . "Foo-:bold"))> #<font-spec nil nil Foo-10.5.3 nil nil nil nil nil nil nil nil nil ((:name . "Foo-10.5.3"))>)"###,
+        "font_spec_styles_validators_and_fontconfig_extras_match_font_c",
+    );
+}
 
-    for (name, family, size, weight, slant, spacing, foundry) in cases {
-        let actual = parse_font_name(name);
-        assert_eq!(
-            actual.family.as_deref(),
-            family,
-            "family mismatch for {name:?}"
-        );
-        assert_eq!(actual.size, size, "size mismatch for {name:?}");
-        assert_eq!(
-            actual.weight.as_deref(),
-            weight,
-            "weight mismatch for {name:?}"
-        );
-        assert_eq!(
-            actual.slant.as_deref(),
-            slant,
-            "slant mismatch for {name:?}"
-        );
-        assert_eq!(actual.spacing, spacing, "spacing mismatch for {name:?}");
-        assert_eq!(
-            actual.foundry.as_deref(),
-            foundry,
-            "foundry mismatch for {name:?}"
-        );
+#[test]
+fn font_spec_xlfd_names_parse_as_font_parse_xlfd() {
+    // font.c:font_parse_xlfd: full names, font_expand_wildcards'
+    // placements of wildcard names, parse_matrix sizes, the dash-family
+    // retry and font_intern_prop's overflow.
+    assert_oracle_contract_matches_interpreter(
+        r###"(mapcar (lambda (name) (condition-case e (font-spec :name name) (error (list 'E e))))
+ '("-adobe-courier-bold-o-normal--*-140-*-*-m-*-iso8859-1"
+   "-adobe-courier-xyz-o-normal--*-140-*-*-m-*-iso8859-1"
+   "-misc-fixed-*-*-*-*-*-*-*-*-*-*-iso10646-1"
+   "-*-*-medium-r-*-*-12-*-*-*-*-*-*-*"
+   "*-courier-*-r-*-140-*" "-foo" "" "Foo?" "*" "*-" "Foo-*"
+   "-*-a-b-c-d-e-f-g-h-i-j-k-l-m-n-o"
+   "-*-Dejavu-Sans-Mono-bold-r-normal--12-*-*-*-m-*-iso10646-1"
+   "-misc-fixed-medium-r-normal--[12 0 0 12]-*-*-*-c-70-iso8859-1"
+   "-misc-fixed-medium-r-normal--*-[1 2 3 4]-*-*-c-70-iso8859-1"
+   "-*-fixed-*-*-*-*-*-*-*-*-*-*-*-5" "-*-fixed-*-*-*-*-*-*-*-*-*-*-jisx0208*"
+   "-*-fixed-*-*-*-*-*-130-75-75-*-*-*-*" "-*-fixed-*-*-*-*-*-*-75-75-*-~70-*-*"
+   "-*-fixed-*-*-*-*-*-*-*-*-x-*-*-*" "-*-fixed-*-13-*" "-*-fixed-*-c-*" "-*-fixed-*-0-*"
+   "-*-fixed-*-100-*" "-*-iso8859-*" "-*-x-*-y-*" "-*-x-*-y-z-*" "-*-x-*-bold-*"
+   "-*-x-*-bold-r-normal-*" "-*-x-zany-r-*"
+   "-misc-fixed-medium-r-normal--0-0-0-0-c-0-iso8859-1"
+   "-misc-fixed-medium-r-normal--*-*-*-x-c-70-iso8859-1"
+   "-misc-fixed-medium-r-normal--*-*-*-*-c-~70-iso8859-1"
+   "-misc-fixed-MEDIUM-R-Normal--*-*-*-*-c-70-iso8859-1"
+   "-misc-fixed-medium-r-normal--99999999999999999999-*-*-*-c-70-iso8859-1"))"###,
+        r###"(#<font-spec nil adobe courier ## iso8859-1 bold o normal 14.0 nil 100 nil ((:name . "-adobe-courier-bold-o-normal--*-140-*-*-m-*-iso8859-1"))> (E (error "Invalid font name: -adobe-courier-xyz-o-normal--*-140-*-*-m-*-iso8859-1")) #<font-spec nil misc fixed nil iso10646-1 nil nil nil nil nil nil nil ((:name . "-misc-fixed-*-*-*-*-*-*-*-*-*-*-iso10646-1"))> #<font-spec nil nil nil nil nil medium r nil 12 nil nil nil ((:name . "-*-*-medium-r-*-*-12-*-*-*-*-*-*-*"))> #<font-spec nil nil courier nil nil nil r nil 14.0 nil nil nil ((:name . "*-courier-*-r-*-140-*"))> (E (error "Invalid font name: -foo")) (E (error "Invalid font name: ")) (E (error "Invalid font name: Foo?")) #<font-spec nil nil nil nil nil nil nil nil nil nil nil nil ((:name . "*"))> (E (error "Invalid font name: *-")) #<font-spec nil nil nil nil nil nil nil nil nil nil nil nil ((:name . "Foo-*"))> (E (error "Invalid font name: -*-a-b-c-d-e-f-g-h-i-j-k-l-m-n-o")) #<font-spec nil nil Dejavu-Sans-Mono ## iso10646-1 bold r normal 12 nil 100 nil ((:name . "-*-Dejavu-Sans-Mono-bold-r-normal--12-*-*-*-m-*-iso10646-1"))> #<font-spec nil misc fixed ## iso8859-1 medium r normal 12 nil 110 70 ((:name . "-misc-fixed-medium-r-normal--[12 0 0 12]-*-*-*-c-70-iso8859-1"))> #<font-spec nil misc fixed ## iso8859-1 medium r normal 4.0 nil 110 70 ((:name . "-misc-fixed-medium-r-normal--*-[1 2 3 4]-*-*-c-70-iso8859-1"))> #<font-spec nil nil fixed nil *-5 nil nil nil nil nil nil nil ((:name . "-*-fixed-*-*-*-*-*-*-*-*-*-*-*-5"))> #<font-spec nil nil fixed nil jisx0208*-* nil nil nil nil nil nil nil ((:name . "-*-fixed-*-*-*-*-*-*-*-*-*-*-jisx0208*"))> #<font-spec nil nil fixed nil nil nil nil nil 13.0 75 nil nil ((:name . "-*-fixed-*-*-*-*-*-130-75-75-*-*-*-*"))> #<font-spec nil nil fixed nil nil nil nil nil nil 75 nil 70 ((:name . "-*-fixed-*-*-*-*-*-*-75-75-*-~70-*-*"))> (E (error "Invalid font name: -*-fixed-*-*-*-*-*-*-*-*-x-*-*-*")) #<font-spec nil nil fixed nil nil nil nil nil 13 nil nil nil ((:name . "-*-fixed-*-13-*"))> #<font-spec nil nil fixed nil nil nil nil nil nil nil 110 nil ((:name . "-*-fixed-*-c-*"))> #<font-spec nil nil fixed nil nil nil nil nil 0 nil nil nil ((:name . "-*-fixed-*-0-*"))> #<font-spec nil nil fixed nil nil nil nil nil 10.0 nil nil nil ((:name . "-*-fixed-*-100-*"))> #<font-spec nil nil iso8859 nil nil nil nil nil nil nil nil nil ((:name . "-*-iso8859-*"))> #<font-spec nil nil x y nil nil nil nil nil nil nil nil ((:name . "-*-x-*-y-*"))> (E (error "Invalid font name: -*-x-*-y-z-*")) #<font-spec nil nil x bold nil nil nil nil nil nil nil nil ((:name . "-*-x-*-bold-*"))> (E (error "Invalid font name: -*-x-*-bold-r-normal-*")) (E (error "Invalid font name: -*-x-zany-r-*")) #<font-spec nil misc fixed ## iso8859-1 medium r normal 0 0 110 0 ((:name . "-misc-fixed-medium-r-normal--0-0-0-0-c-0-iso8859-1"))> (E (error "Invalid font name: -misc-fixed-medium-r-normal--*-*-*-x-c-70-iso8859-1")) #<font-spec nil misc fixed ## iso8859-1 medium r normal nil nil 110 70 ((:name . "-misc-fixed-medium-r-normal--*-*-*-*-c-~70-iso8859-1"))> #<font-spec nil misc fixed ## iso8859-1 medium r normal nil nil 110 70 ((:name . "-misc-fixed-MEDIUM-R-Normal--*-*-*-*-c-70-iso8859-1"))> (E (overflow-error "99999999999999999999")))"###,
+        "font_spec_xlfd_names_parse_as_font_parse_xlfd",
+    );
+}
+
+#[test]
+fn font_unparse_match_face_attributes_and_fontset_checks_match_gnu() {
+    // font.c's XLFD unparser, Ffont_get/Ffont_put, font_match_p,
+    // Ffont_face_attributes, the frame-checking listers, the style a
+    // fontconfig name registers, sxhash of a font, and fontset.c's
+    // check_fontset_name with Fset_fontset_font's argument checks.
+    assert_oracle_contract_matches_interpreter(
+        r###"(mapcar (lambda (thunk) (condition-case e (funcall thunk) (t (list 'E e))))
+ (list
+  (lambda () (font-xlfd-name (font-spec :registry 'jisx0208)))
+  (lambda () (font-xlfd-name (font-spec :registry "jisx0208*")))
+  (lambda () (font-xlfd-name (font-spec :size 12.5 :dpi 96 :spacing 90 :avgwidth 70)))
+  (lambda () (font-xlfd-name (font-spec :weight 'semi-bold :width 'semi-condensed)))
+  (lambda () (font-xlfd-name (font-spec :size 0)))
+  (lambda () (font-xlfd-name (font-spec :size 12.25)))
+  (lambda () (font-xlfd-name (font-spec :family (make-string 300 ?a))))
+  (lambda () (length (font-xlfd-name (font-spec :family (make-string 300 ?a)) nil t)))
+  (lambda () (font-xlfd-name (font-spec) t))
+  (lambda () (font-xlfd-name (font-spec :foundry "" :family "")))
+  (lambda () (font-get (font-spec :name "Foo") :name))
+  (lambda () (font-get (font-spec) 5))
+  (lambda () (let ((f (font-spec))) (font-put f :name "Bar-12") f))
+  (lambda () (let ((f (font-spec))) (font-put f :type 'x) f))
+  (lambda () (let ((f (font-spec))) (font-put f 5 1) f))
+  (lambda () (let ((f (font-spec))) (font-put f :lang "ja") (font-put f :b 2) (font-put f :a 1) f))
+  (lambda () (font-match-p (font-spec :size 12.0) (font-spec :size 12)))
+  (lambda () (font-match-p (font-spec :weight 'semi-bold) (font-spec :weight 'demibold)))
+  (lambda () (font-match-p (font-spec :weight 'bold) (font-spec :weight 'demibold)))
+  (lambda () (font-match-p (font-spec :lang 'ja) (font-spec)))
+  (lambda () (font-match-p (font-spec :lang 'ja) (font-spec :lang 'ja)))
+  (lambda () (font-match-p (font-spec :otf '(latn)) (font-spec)))
+  (lambda () (font-match-p (font-spec :size 12 :dpi 96) (font-spec :size 12)))
+  (lambda () (let ((face-font-rescale-alist '(("Foo" . 2.0)))) (font-match-p (font-spec :size 6) (font-spec :family "Foo" :size 12))))
+  (lambda () (font-face-attributes (font-spec :family "Foo" :weight 'demibold :slant 'italic :width 'narrow :size 12.7)))
+  (lambda () (font-face-attributes "Foo Bold Italic 12"))
+  (lambda () (font-face-attributes "-x"))
+  (lambda () (font-face-attributes 5))
+  (lambda () (font-face-attributes "Foo" 5))
+  (lambda () (list-fonts (font-spec) nil 'a))
+  (lambda () (list-fonts (font-spec) nil nil 5))
+  (lambda () (find-font (font-spec) 5))
+  (lambda () (font-info 5))
+  (lambda () (font-info "Foo"))
+  (lambda () (open-font (font-spec)))
+  (lambda () (sxhash-equal (font-spec :weight 'bold)))
+  (lambda () (progn (font-spec :name "Foo:roman") (list (font-spec :slant 'roman) (font-xlfd-name (font-spec :name "Foo:roman")))))
+  (lambda () (fontset-font nil ?a))
+  (lambda () (fontset-font "nosuch" ?a))
+  (lambda () (set-fontset-font t ?a "Foo"))
+  (lambda () (set-fontset-font t '(0 . 127) nil))
+  (lambda () (set-fontset-font t 'nosuch "Foo"))
+  (lambda () (set-fontset-font t "x" "Foo"))
+  (lambda () (set-fontset-font t 233 5))
+  (lambda () (set-fontset-font t 233 "-x"))
+  (lambda () (progn (set-fontset-font t 233 '("Bar-Foo" . "jisx0208")) (fontset-font t 233)))
+  (lambda () (set-fontset-font t 233 "Foo" 5))))"###,
+        r###"("-*-*-*-*-*-*-*-*-*-*-*-*-jisx0208*-*" "-*-*-*-*-*-*-*-*-*-*-*-*-jisx0208*-*" "-*-*-*-*-*-*-*-125-96-96-d-70-*-*" "-*-*-semibold-*-semicondensed-*-*-*-*-*-*-*-*-*" "-*-*-*-*-*-*-*-*-*-*-*-*-*-*" "-*-*-*-*-*-*-*-122-*-*-*-*-*-*" nil 327 "-*" "---*-*-*-*-*-*-*-*-*-*-*-*" "Foo" (E (wrong-type-argument symbolp 5)) #<font-spec nil nil nil nil nil nil nil nil nil nil nil nil ((:name . "Bar-12"))> #<font-spec x nil nil nil nil nil nil nil nil nil nil nil nil> #<font-spec nil nil nil nil nil nil nil nil nil nil nil nil ((5 . 1))> #<font-spec nil nil nil nil nil nil nil nil nil nil nil nil ((:a . 1) (:b . 2) (:lang . ja))> nil t nil nil t nil nil t (:family "Foo" :height 120 :weight semi-bold :slant italic :width condensed) (:family "Foo" :height 120 :weight bold :slant italic) (E (error "Invalid font name" "-x")) (E (error "Invalid font object" 5)) (E (wrong-type-argument frame-live-p 5)) (E (wrong-type-argument fixnump a)) (E (wrong-type-argument font-spec 5)) (E (wrong-type-argument frame-live-p 5)) (E (wrong-type-argument stringp 5)) (E (error "Window system frame should be used")) (E (wrong-type-argument font-entity #<font-spec nil nil nil nil nil nil nil nil nil nil nil nil nil>)) 197032487473358528 (#<font-spec nil nil nil nil nil nil roman nil nil nil nil nil nil> "-*-Foo-*-roman-*-*-*-*-*-*-*-*-*-*") (E (error "Can't use fontsets in non-GUI frames")) (E (error "Fontset `nosuch' does not exist")) (E (error "Can't set a font for partial ASCII range")) (E (error "Can't set ASCII font to nil")) (E (error "Invalid script or charset name: nosuch")) (E (error "Invalid second argument for setting a font in a fontset")) (E (font "Invalid font-spec" 5)) (E (error "Invalid font name: -x")) nil (E (wrong-type-argument frame-live-p 5)))"###,
+        "font_unparse_match_face_attributes_and_fontset_checks_match_gnu",
+    );
+}
+
+#[test]
+fn fontset_table_char_tables_match_fontset_c() {
+    // fontset.c's base fontsets as char-tables of font_defs: FONTSET_ADD
+    // replacing, appending and prepending over runs, script ranges from
+    // char-script-table, charset targets through map_charset_chars with
+    // their ASCII part, find_font_encoding's encodings read back as
+    // Ffontset_font's repertory, the fallback slot, the default fontset
+    // under a base one, and Fnew_fontset's XLFD checks and aliases.
+    assert_oracle_contract_matches_interpreter(
+        r###"(mapcar (lambda (thunk) (condition-case e (funcall thunk) (t (list 'E e))))
+ (list
+  (lambda () (fontset-list))
+  (lambda () (fontset-font t ?a t))
+  (lambda () (fontset-font "fontset-default" #x4e00 t))
+  (lambda () (progn (set-fontset-font t 'thai '(nil . "tis620-0")) (list (fontset-font t #xe01 t) (fontset-font t #xe5b t) (fontset-font t #xe7f t))))
+  (lambda () (progn (set-fontset-font t 'thai '("Foo" . "iso10646-1") nil 'append) (fontset-font t #xe01 t)))
+  (lambda () (progn (set-fontset-font t 'thai '("Bar" . "iso10646-1") nil 'prepend) (fontset-font t #xe01 t)))
+  (lambda () (progn (set-fontset-font t 'thai "Baz") (fontset-font t #xe01 t)))
+  (lambda () (progn (set-fontset-font t 'han '("Han" . "gb2312.1980-0")) (list (fontset-font t #x4e00 t) (fontset-font t #x4e02 t) (fontset-font t #x3400 t))))
+  (lambda () (progn (set-fontset-font t 'iso-8859-2 '("C" . "iso8859-2")) (list (fontset-font t #x104 t) (fontset-font t #xe9 t) (fontset-font t ?a t))))
+  (lambda () (progn (set-fontset-font t 'latin '(nil . "iso8859-1")) (list (fontset-font t ?a t) (fontset-font t #xe9 t) (fontset-font t #x104 t) (fontset-font t #x1e00 t))))
+  (lambda () (progn (set-fontset-font t '(#x2000 . #x2100) '("R" . "iso10646-1")) (set-fontset-font t '(#x2050 . #x2200) '("S" . "iso10646-1") nil 'append) (list (fontset-font t #x2000 t) (fontset-font t #x2080 t) (fontset-font t #x2150 t))))
+  (lambda () (progn (set-fontset-font t nil '("F" . "iso10646-1")) (set-fontset-font t nil '("G" . "iso10646-1") nil 'prepend) (list (fontset-font t #x3000 t) (fontset-font t #x2080 t))))
+  (lambda () (progn (set-fontset-font t #x3000 nil) (fontset-font t #x3000 t)))
+  (lambda () (progn (set-fontset-font t #x3001 '("Unk" . "nosuch-registry")) (fontset-font t #x3001 t)))
+  (lambda () (set-fontset-font t ?A "Foo"))
+  (lambda () (set-fontset-font t '(0 . #x7e) "Foo"))
+  (lambda () (set-fontset-font t '(#x41 . #x100) "Foo"))
+  (lambda () (set-fontset-font t '(0 . #x7f) nil))
+  (lambda () (set-fontset-font t 'ascii nil))
+  (lambda () (set-fontset-font t 'nosuch "Foo"))
+  (lambda () (set-fontset-font t "str" "Foo"))
+  (lambda () (set-fontset-font t #x100 [1 2]))
+  (lambda () (set-fontset-font t '(#x100 . 1.5) "Foo"))
+  (lambda () (set-fontset-font t '(1.5 . #x100) "Foo"))
+  (lambda () (set-fontset-font nil #x100 "Foo"))
+  (lambda () (set-fontset-font "nosuch" #x100 "Foo"))
+  (lambda () (set-fontset-font t #x100 "Foo" 5))
+  (lambda () (set-fontset-font 5 #x100 "Foo"))
+  (lambda () (set-fontset-font t #x100 "Foo-12:weight=bold"))
+  (lambda () (fontset-font t #x100 t))
+  (lambda () (set-fontset-font t #x100 (font-spec :family "Spec" :registry "iso10646-1" :weight 'bold)))
+  (lambda () (fontset-font t #x100 t))
+  (lambda () (new-fontset "-foo-bar-medium-r-normal--12-*-*-*-*-*-fontset-test" '((latin "Foo" ("FooB" . "iso10646-1")) (han ("Bar" . "gb2312.1980-0")) (thai . "Th"))))
+  (lambda () fontset-alias-alist)
+  (lambda () (fontset-list))
+  (lambda () (list (fontset-font "fontset-test" ?a t) (fontset-font "fontset-test" #xe9 t) (fontset-font "fontset-test" #x4e00 t) (fontset-font "fontset-test" #xe01 t) (fontset-font "fontset-test" #x3000 t)))
+  (lambda () (fontset-font "-foo-bar-*-*-*-*-*-*-*-*-*-*-fontset-test" ?a t))
+  (lambda () (fontset-font "-FOO-bar-medium-r-normal--12-*-*-*-*-*-fontset-test" ?a))
+  (lambda () (fontset-font "*fontset-te?t" ?a))
+  (lambda () (fontset-font "fontset-te*" ?a))
+  (lambda () (new-fontset "-FOO-bar-medium-r-normal--12-*-*-*-*-*-fontset-test" '((greek ("Gr" . "iso10646-1")))))
+  (lambda () (list (fontset-list) (length fontset-alias-alist) (fontset-font "fontset-test" ?a t) (fontset-font "fontset-test" #x3b1 t)))
+  (lambda () (font-face-attributes "fontset-test"))
+  (lambda () (new-fontset "nosuch" nil))
+  (lambda () (new-fontset "-a-b-c-d-e-f-1-*-*-*-*-*-iso8859-1" nil))
+  (lambda () (new-fontset "-a-b-medium-r-normal--1-*-*-*-*-*-fontset-" nil))
+  (lambda () (new-fontset "-a-b-medium-r-normal--1-*-*-*-*-*-fontset-z" 5))
+  (lambda () (new-fontset "-a-b-medium-r-normal--1-*-*-*-*-*-fontset-y" '((nosuch "x"))))
+  (lambda () (list (fontset-list) (length fontset-alias-alist)))
+  (lambda () (new-fontset 5 nil))
+  (lambda () (fontset-font t 5.0))
+  (lambda () (fontset-font t -1))
+  (lambda () (fontset-font nil ?a))
+  (lambda () (fontset-font 5 ?a))
+  (lambda () (fontset-font "nosuch" ?a))
+  (lambda () (query-fontset "fontset-test"))
+  (lambda () (fontset-info "fontset-test"))
+  (lambda () (let ((fontset-alias-alist nil)) (new-fontset "-q-r-medium-r-normal--1-*-*-*-*-*-fontset-let" nil) fontset-alias-alist))
+  (lambda () (list (length fontset-alias-alist) (fontset-list)))
+  (lambda () (fontset-font "fontset-let" ?a))
+  (lambda () (fontset-font "-q-r-medium-r-normal--1-*-*-*-*-*-fontset-let" ?a))
+  (lambda () (set-fontset-font t t "Foo"))
+  (lambda () (set-fontset-font t :kw "Foo"))
+  (lambda () (progn (set-fontset-font t 'ethiopic '("E" . "iso10646-1")) (list (fontset-font t #x1200 t) (fontset-font t #x2d80 t) (fontset-font t #xab01 t) (fontset-font t #x1380 t))))
+  (lambda () (progn (set-fontset-font t 'lao '(nil . "mulelao-1") nil 'append) (list (fontset-font t #xe81 t) (fontset-font t #xeff t))))
+  (lambda () (progn (set-fontset-font t 'tibetan '("T" . "iso10646-1") nil 'prepend) (list (fontset-font t #xf00 t) (fontset-font t #xf40 t) (fontset-font t #xfff t))))
+  (lambda () (progn (set-fontset-font t 'symbol '("Sym" . "iso10646-1")) (list (fontset-font t #x2190 t) (fontset-font t #x2200 t))))
+  (lambda () (progn (set-fontset-font t 'unicode-bmp '("U" . "iso10646-1") nil 'append) (list (fontset-font t #x4e00 t) (fontset-font t #x10000 t) (fontset-font t ?b t))))
+  (lambda () (progn (set-fontset-font t 'ascii '("Asc" . "iso8859-1") nil 'append) (fontset-font t ?b t)))
+  (lambda () (progn (set-fontset-font t '(0 . #x7f) '("Asc2" . "iso8859-1")) (list (fontset-font t ?b t) (fontset-font t #x80 t))))
+  (lambda () (progn (new-fontset "-x-y-medium-r-normal--1-*-*-*-*-*-fontset-re" nil) (set-fontset-font "fontset-re" #x100 '("Q" . "iso10646-1")) (new-fontset "fontset-re" '((greek "Gk"))) (list (fontset-font "fontset-re" #x100 t) (fontset-list))))))"###,
+        r###"(("-*-*-*-*-*-*-*-*-*-*-*-*-fontset-default") nil nil (((nil . "tis620-0")) ((nil . "tis620-0")) nil) ((nil . "tis620-0") ("Foo" . "iso10646-1")) (("Bar" . "iso10646-1") (nil . "tis620-0") ("Foo" . "iso10646-1")) nil ((("Han" . "gb2312.1980-0")) nil nil) ((("C" . "iso8859-2")) (("C" . "iso8859-2")) (("C" . "iso8859-2"))) (((nil . "iso8859-1")) ((nil . "iso8859-1")) nil nil) ((("R" . "iso10646-1")) (("R" . "iso10646-1") ("S" . "iso10646-1")) (("S" . "iso10646-1"))) ((("G" . "iso10646-1") ("F" . "iso10646-1")) (("R" . "iso10646-1") ("S" . "iso10646-1") ("G" . "iso10646-1") ("F" . "iso10646-1"))) nil (("G" . "iso10646-1") ("F" . "iso10646-1")) (E (error "Can't set a font for partial ASCII range")) (E (error "Can't set a font for partial ASCII range")) (E (error "Can't set a font for partial ASCII range")) (E (error "Can't set ASCII font to nil")) (E (error "Can't set ASCII font to nil")) (E (error "Invalid script or charset name: nosuch")) (E (error "Invalid second argument for setting a font in a fontset")) (E (font "Invalid font-spec" [1 2])) (E (wrong-type-argument characterp 1.5)) (E (wrong-type-argument characterp 1.5)) (E (error "Can't use fontsets in non-GUI frames")) (E (error "Fontset `nosuch' does not exist")) (E (wrong-type-argument frame-live-p 5)) (E (wrong-type-argument stringp 5)) nil (("G" . "iso10646-1") ("F" . "iso10646-1")) nil (("Spec" . "iso10646-1") ("G" . "iso10646-1") ("F" . "iso10646-1")) "-foo-bar-medium-r-normal--12-*-*-*-*-*-fontset-test" (("-foo-bar-medium-r-normal--12-*-*-*-*-*-fontset-test" . "fontset-test") ("-*-*-*-*-*-*-*-*-*-*-*-*-fontset-default" . "fontset-default")) ("-foo-bar-medium-r-normal--12-*-*-*-*-*-fontset-test" "-*-*-*-*-*-*-*-*-*-*-*-*-fontset-default") ((("Foo") ("FooB" . "iso10646-1") (nil . "iso8859-1") ("G" . "iso10646-1") ("F" . "iso10646-1")) (("FooB" . "iso10646-1") (nil . "iso8859-1") ("G" . "iso10646-1") ("F" . "iso10646-1")) (("Bar" . "gb2312.1980-0") ("Han" . "gb2312.1980-0") ("G" . "iso10646-1") ("F" . "iso10646-1")) (("G" . "iso10646-1") ("F" . "iso10646-1")) nil) (("Foo") ("FooB" . "iso10646-1") (nil . "iso8859-1") ("G" . "iso10646-1") ("F" . "iso10646-1")) ("Foo") ("Foo") (E (error "Fontset `fontset-te*' does not exist")) "-foo-bar-medium-r-normal--12-*-*-*-*-*-fontset-test" (("-foo-bar-medium-r-normal--12-*-*-*-*-*-fontset-test" "-*-*-*-*-*-*-*-*-*-*-*-*-fontset-default") 2 ((nil . "iso8859-1") (nil . "iso8859-1") ("G" . "iso10646-1") ("F" . "iso10646-1")) (("Gr" . "iso10646-1") ("G" . "iso10646-1") ("F" . "iso10646-1"))) (:family "fontset-test") (E (error "Fontset name must be in XLFD format")) (E (error "Fontset name must be in XLFD format")) (E (error "Registry field of fontset name must be \"fontset-*\"")) (E (wrong-type-argument listp 5)) (E (error "Invalid script or charset name: nosuch")) (("-a-b-medium-r-normal--1-*-*-*-*-*-fontset-y" "-a-b-medium-r-normal--1-*-*-*-*-*-fontset-z" "-foo-bar-medium-r-normal--12-*-*-*-*-*-fontset-test" "-*-*-*-*-*-*-*-*-*-*-*-*-fontset-default") 4) (E (wrong-type-argument stringp 5)) (E (wrong-type-argument characterp 5.0)) (E (wrong-type-argument characterp -1)) (E (error "Can't use fontsets in non-GUI frames")) (E (wrong-type-argument stringp 5)) (E (error "Fontset `nosuch' does not exist")) (E (error "Window system is not in use or not initialized")) (E (error "Window system is not in use or not initialized")) (("-q-r-medium-r-normal--1-*-*-*-*-*-fontset-let" . "fontset-let")) (4 ("-q-r-medium-r-normal--1-*-*-*-*-*-fontset-let" "-a-b-medium-r-normal--1-*-*-*-*-*-fontset-y" "-a-b-medium-r-normal--1-*-*-*-*-*-fontset-z" "-foo-bar-medium-r-normal--12-*-*-*-*-*-fontset-test" "-*-*-*-*-*-*-*-*-*-*-*-*-fontset-default")) (E (error "Fontset `fontset-let' does not exist")) (nil . "iso8859-1") (E (error "Invalid script or charset name: t")) (E (error "Invalid script or charset name: :kw")) ((("E" . "iso10646-1") ("G" . "iso10646-1") ("F" . "iso10646-1")) (("E" . "iso10646-1") ("G" . "iso10646-1") ("F" . "iso10646-1")) (("E" . "iso10646-1") ("G" . "iso10646-1") ("F" . "iso10646-1")) (("E" . "iso10646-1") ("G" . "iso10646-1") ("F" . "iso10646-1"))) (((nil . "mulelao-1") ("G" . "iso10646-1") ("F" . "iso10646-1")) (("G" . "iso10646-1") ("F" . "iso10646-1"))) ((("T" . "iso10646-1") ("G" . "iso10646-1") ("F" . "iso10646-1")) (("T" . "iso10646-1") ("G" . "iso10646-1") ("F" . "iso10646-1")) (("T" . "iso10646-1") ("G" . "iso10646-1") ("F" . "iso10646-1"))) ((("Sym" . "iso10646-1") ("G" . "iso10646-1") ("F" . "iso10646-1")) (("Sym" . "iso10646-1") ("G" . "iso10646-1") ("F" . "iso10646-1"))) ((("Han" . "gb2312.1980-0") ("U" . "iso10646-1") ("G" . "iso10646-1") ("F" . "iso10646-1")) nil ((nil . "iso8859-1") ("G" . "iso10646-1") ("F" . "iso10646-1"))) ((nil . "iso8859-1") ("G" . "iso10646-1") ("F" . "iso10646-1")) ((("Asc2" . "iso8859-1") ("G" . "iso10646-1") ("F" . "iso10646-1")) (("C" . "iso8859-2") ("U" . "iso10646-1") ("G" . "iso10646-1") ("F" . "iso10646-1"))) ((("Spec" . "iso10646-1") ("U" . "iso10646-1") ("Spec" . "iso10646-1") ("U" . "iso10646-1") ("G" . "iso10646-1") ("F" . "iso10646-1")) ("-x-y-medium-r-normal--1-*-*-*-*-*-fontset-re" "-q-r-medium-r-normal--1-*-*-*-*-*-fontset-let" "-a-b-medium-r-normal--1-*-*-*-*-*-fontset-y" "-a-b-medium-r-normal--1-*-*-*-*-*-fontset-z" "-foo-bar-medium-r-normal--12-*-*-*-*-*-fontset-test" "-*-*-*-*-*-*-*-*-*-*-*-*-fontset-default")))"###,
+        "fontset_table_char_tables_match_fontset_c",
+    );
+}
+
+#[test]
+fn charset_definitions_and_primitives_match_charset_c() {
+    // charset.c: Fdefine_charset_internal's checks and its attributes
+    // apart from the plist (a map charset's vector ranges, a failed map
+    // load leaving the charset registered), `charset-list' as a variable,
+    // the aliases, `set-charset-plist', `unify-charset' with its
+    // deunifier, ISO_CHARSET_TABLE's parameters, the ordered list's
+    // `set-charset-priority' and `sort-charsets', and decode-char's and
+    // char-charset's arguments.
+    assert_oracle_contract_matches_interpreter(
+        r###"(mapcar (lambda (thunk) (condition-case e (funcall thunk) (t (list 'E e))))
+ (list
+  (lambda () (charset-priority-list))
+  (lambda () (charset-priority-list t))
+  (lambda () (progn (set-charset-priority 'latin-iso8859-2 'unicode) (charset-priority-list t)))
+  (lambda () (progn (set-charset-priority 'latin-iso8859-2) (list (charset-priority-list t) (char-charset ?a) (char-charset 260))))
+  (lambda () (set-charset-priority 'nosuch))
+  (lambda () (set-charset-priority 5))
+  (lambda () (set-charset-priority))
+  (lambda () (decode-char 'ascii 65))
+  (lambda () (decode-char 'ascii 200))
+  (lambda () (decode-char 'latin-iso8859-1 65))
+  (lambda () (decode-char 'latin-iso8859-1 233))
+  (lambda () (decode-char 'iso-8859-1 233))
+  (lambda () (decode-char 'unicode #x10ffff))
+  (lambda () (decode-char 'unicode #x110000))
+  (lambda () (decode-char 'japanese-jisx0208 #x2422))
+  (lambda () (decode-char 'japanese-jisx0208 #x2121))
+  (lambda () (decode-char 'japanese-jisx0208 0))
+  (lambda () (decode-char 'eight-bit 128))
+  (lambda () (decode-char 'eight-bit 65))
+  (lambda () (decode-char 'nosuch 65))
+  (lambda () (decode-char 'ascii -1))
+  (lambda () (decode-char 'ascii 1.5))
+  (lambda () (decode-char 'ascii (1+ most-positive-fixnum)))
+  (lambda () (decode-char 'unicode '(1 . 2)))
+  (lambda () (encode-char ?a 'ascii))
+  (lambda () (encode-char 233 'ascii))
+  (lambda () (encode-char 233 'latin-iso8859-1))
+  (lambda () (encode-char 233 'iso-8859-1))
+  (lambda () (encode-char #x3042 'japanese-jisx0208))
+  (lambda () (encode-char #x3042 'unicode))
+  (lambda () (encode-char #x3fff80 'eight-bit))
+  (lambda () (encode-char -1 'ascii))
+  (lambda () (encode-char ?a 'nosuch))
+  (lambda () (split-char ?a))
+  (lambda () (split-char 233))
+  (lambda () (split-char #x3042))
+  (lambda () (split-char #x3fff80))
+  (lambda () (split-char #x10ffff))
+  (lambda () (split-char -1))
+  (lambda () (char-charset ?a))
+  (lambda () (char-charset 233))
+  (lambda () (char-charset #x3042))
+  (lambda () (char-charset #x3042 '(japanese-jisx0208)))
+  (lambda () (char-charset #x3042 '(ascii)))
+  (lambda () (char-charset #x3042 'nosuch))
+  (lambda () (char-charset #x3042 5))
+  (lambda () (char-charset #x3fff80))
+  (lambda () (char-charset #x3fffff))
+  (lambda () (charset-after))
+  (lambda () (with-temp-buffer (insert "a\x3042") (list (charset-after 1) (charset-after 2) (charset-after 3) (charset-after 0))))
+  (lambda () (find-charset-string "abc"))
+  (lambda () (find-charset-string "a\x3042\xe9"))
+  (lambda () (find-charset-string ""))
+  (lambda () (find-charset-string (string-to-unibyte "\200a")))
+  (lambda () (find-charset-string "a\x3042" '(japanese-jisx0208)))
+  (lambda () (find-charset-string 5))
+  (lambda () (with-temp-buffer (insert "a\x3042\xe9") (list (find-charset-region 1 4) (find-charset-region 4 1) (find-charset-region 1 2))))
+  (lambda () (with-temp-buffer (insert "abc") (find-charset-region 0 10)))
+  (lambda () (charset-id-internal 'ascii))
+  (lambda () (charset-id-internal 'unicode))
+  (lambda () (charset-id-internal 'nosuch))
+  (lambda () (charset-id-internal))
+  (lambda () (charset-plist 'ascii))
+  (lambda () (plist-get (charset-plist 'latin-iso8859-1) :short-name))
+  (lambda () (charset-plist 5))
+  (lambda () (progn (set-charset-plist 'ascii '(:a 1)) (charset-plist 'ascii)))
+  (lambda () (charsetp 'ascii))
+  (lambda () (charsetp 'iso-latin-1))
+  (lambda () (charsetp 5))
+  (lambda () (get-unused-iso-final-char 1 94))
+  (lambda () (get-unused-iso-final-char 2 96))
+  (lambda () (get-unused-iso-final-char 3 94))
+  (lambda () (get-unused-iso-final-char 1 95))
+  (lambda () (iso-charset 1 94 ?B))
+  (lambda () (iso-charset 1 96 ?A))
+  (lambda () (iso-charset 2 94 ?B))
+  (lambda () (iso-charset 1 94 ?Z))
+  (lambda () (iso-charset 4 94 ?B))
+  (lambda () (iso-charset 1 94 5000))
+  (lambda () (declare-equiv-charset 1 94 ?Z 'ascii))
+  (lambda () (progn (declare-equiv-charset 1 94 ?Z 'ascii) (iso-charset 1 94 ?Z)))
+  (lambda () (declare-equiv-charset 5 94 ?Z 'ascii))
+  (lambda () (declare-equiv-charset 1 94 ?Z 'nosuch))
+  (lambda () (sort-charsets '(unicode ascii latin-iso8859-1 japanese-jisx0208)))
+  (lambda () (sort-charsets '(nosuch)))
+  (lambda () (sort-charsets 5))
+  (lambda () (let (r) (map-charset-chars (lambda (range arg) (push (list range arg) r)) 'ascii 'x) r))
+  (lambda () (let (r) (map-charset-chars (lambda (range arg) (push range r)) 'latin-iso8859-1 nil 100 120) r))
+  (lambda () (let (r) (map-charset-chars (lambda (range arg) (push range r)) 'latin-iso8859-1 nil 120 100) r))
+  (lambda () (let (r) (map-charset-chars (lambda (range arg) (push range r)) 'japanese-jisx0208 nil #x2121 #x2130) (length r)))
+  (lambda () (map-charset-chars 'ignore 'nosuch))
+  (lambda () (map-charset-chars 'ignore 'ascii nil 'a))
+  (lambda () (define-charset-internal 'zz 1 [0 255 0 0 0 0 0 0] nil nil nil nil nil nil nil nil nil nil nil nil nil nil))
+  (lambda () (apply 'define-charset-internal 'zz2 1 [0 127 0 0 0 0 0 0] (make-list 15 nil)))
+  (lambda () (funcall 'define-charset-internal 'zz3 1 [0 127 0 0 0 0 0 0] nil nil nil nil nil nil nil 0 nil nil nil nil nil nil (list nil)))
+  (lambda () (define-charset-alias 'zzalias 'ascii))
+  (lambda () (progn (define-charset-alias 'zzalias 'ascii) (list (charsetp 'zzalias) (charset-id-internal 'zzalias) (char-charset ?a))))
+  (lambda () (define-charset-alias 'zzalias 'nosuch))
+  (lambda () (charset-dimension 'japanese-jisx0208))
+  (lambda () (charset-description 'ascii))
+  (lambda () (charset-short-name 'unicode))
+  (lambda () (char-width 233))
+  (lambda () (string-width "a\x3042"))
+  (lambda () (encode-char ?a 'emacs))
+  (lambda () (decode-char 'emacs #x3fffff))
+  (lambda () (decode-char 'emacs #x400000))
+  (lambda () (make-char 'latin-iso8859-1 100))
+  (lambda () (make-char 'latin-iso8859-1 233))
+  (lambda () (make-char 'japanese-jisx0208 36 34))
+  (lambda () (make-char 'japanese-jisx0208 36))
+  (lambda () (make-char 'japanese-jisx0208))
+  (lambda () (make-char 'ascii 300))
+  (lambda () (make-char 'nosuch 1))
+  (lambda () (progn (define-charset 'zzc "doc" :code-space [32 127] :code-offset #x110000) (list (charsetp 'zzc) (decode-char 'zzc 65) (encode-char (decode-char 'zzc 65) 'zzc) (char-charset (decode-char 'zzc 65)) (charset-plist 'zzc))))
+  (lambda () (progn (define-charset 'zzd "doc" :code-space [0 255] :map [32 127 #x1000] :ascii-compatible-p nil) (list (decode-char 'zzd 40) (encode-char #x1008 'zzd))))
+  (lambda () (progn (define-charset 'zze "doc" :code-space [0 255] :parents '(ascii latin-iso8859-1)) (list (decode-char 'zze 65) (decode-char 'zze 161))))
+  (lambda () (progn (define-charset 'zzf "doc" :code-space [33 126 33 126] :dimension 2 :code-offset #x200000) (list (decode-char 'zzf #x2121) (split-char (decode-char 'zzf #x2122)) (charset-dimension 'zzf))))
+  (lambda () (progn (define-charset 'zzg "doc" :code-space [0 127] :code-offset 0 :iso-final-char ?Y) (list (iso-charset 1 94 ?Y) (get-unused-iso-final-char 1 94))))
+  (lambda () (progn (define-charset 'zzh "doc" :code-space [0 127] :code-offset 0 :emacs-mule-id 200) (charset-plist 'zzh)))
+  (lambda () (progn (define-charset 'zzh "doc" :code-space [0 127] :code-offset 0 :emacs-mule-id 100) (charset-plist 'zzh)))
+  (lambda () (progn (define-charset 'zzi "doc" :code-space [0 127] :code-offset 0 :supplementary-p t) (car (last (charset-priority-list)))))
+  (lambda () (progn (define-charset 'zzj "doc" :code-space [0 127] :code-offset 0) (list (car (charset-priority-list)) (car charset-list))))
+  (lambda () (define-charset 'zzk "doc" :code-space [0 127]))
+  (lambda () (define-charset 'zzk "doc" :code-space [0 127] :code-offset -1))
+  (lambda () (define-charset 'zzk "doc" :code-space [0 127] :code-offset #x400000))
+  (lambda () (define-charset 'zzk "doc" :code-space [0 127 0] :code-offset 0))
+  (lambda () (define-charset 'zzk "doc" :code-space [127 0] :code-offset 0))
+  (lambda () (define-charset 'zzk "doc" :code-space 5 :code-offset 0))
+  (lambda () (define-charset 'zzk "doc" :code-space [0 127] :dimension 5 :code-offset 0))
+  (lambda () (define-charset 'zzk "doc" :code-space [0 127] :code-offset 0 :min-code 10 :max-code 5))
+  (lambda () (define-charset 'zzk "doc" :code-space [0 127] :code-offset 0 :min-code 200))
+  (lambda () (define-charset 'zzk "doc" :code-space [0 127] :code-offset 0 :iso-final-char 5))
+  (lambda () (define-charset 'zzk "doc" :code-space [0 127] :code-offset 0 :emacs-mule-id 300))
+  (lambda () (define-charset 'zzk "doc" :code-space [0 127] :code-offset 0 :invalid-code 5))
+  (lambda () (define-charset 'zzk "doc" :code-space [0 127] :map "nosuchmap"))
+  (lambda () (define-charset 'zzk "doc" :code-space [0 127] :parents '(nosuch)))
+  (lambda () (define-charset 'zzk "doc" :code-space [0 127] :subset '(ascii 0 10 0)))
+  (lambda () (progn (define-charset 'zzk "doc" :code-space [0 127] :subset '(ascii 10 20 5)) (list (decode-char 'zzk 15) (decode-char 'zzk 30) (encode-char 15 'zzk))))
+  (lambda () (progn (define-charset 'zzl "doc" :code-space [0 255] :superset '(ascii (latin-iso8859-1 . 128))) (list (decode-char 'zzl 65) (decode-char 'zzl 233) (encode-char 233 'zzl))))
+  (lambda () (progn (define-charset 'zzm "doc" :code-space [0 127] :code-offset 0) (define-charset 'zzm "doc2" :code-space [0 63] :code-offset 100) (list (decode-char 'zzm 5) (decode-char 'zzm 70) (charset-description 'zzm))))
+  (lambda () (progn (define-charset-alias 'zzalias2 'latin-iso8859-1) (list (memq 'zzalias2 charset-list) (charset-plist 'zzalias2) (charset-id-internal 'zzalias2))))
+  (lambda () (let ((l (list 'unicode 'ascii 'latin-iso8859-1))) (list (eq (sort-charsets l) l) l)))
+  (lambda () (sort-charsets '(iso-latin-1 ascii)))
+  (lambda () (sort-charsets 5))
+  (lambda () (sort-charsets '(ascii . 5)))
+  (lambda () (progn (define-charset-alias 'zzal3 'unicode) (list (charset-priority-list t) (sort-charsets '(zzal3 ascii)) (encode-char ?a 'zzal3))))
+  (lambda () (set-charset-priority 'ascii 'ascii 'unicode))
+  (lambda () (charset-priority-list t))
+  (lambda () (map-charset-chars 'ignore 5))
+  (lambda () (char-charset ?a 'utf-8))
+  (lambda () (char-charset #x3042 'nosuch-coding))
+  (lambda () (char-charset #x3042 "x"))
+  (lambda () (char-charset #x3042 '(5)))
+  (lambda () (decode-char 'ascii '(0 65)))
+  (lambda () (decode-char 'ascii '(0 . 65)))
+  (lambda () (decode-char 'ascii 65.0))
+  (lambda () (decode-char 'unicode '(1 2 3)))
+  (lambda () (encode-char ?a 5))
+  (lambda () (encode-char 'a 'ascii))
+  (lambda () (unify-charset 'nosuch))
+  (lambda () (unify-charset 'ascii))
+  (lambda () (unify-charset 'ascii nil t))
+  (lambda () (unify-charset 'chinese-gb2312 5))
+  (lambda () (charset-plist 'nosuch))
+  (lambda () (set-charset-plist 'nosuch nil))
+  (lambda () (set-charset-plist 5 nil))
+  (lambda () (define-charset-alias 5 'ascii))
+  (lambda () (define-charset-alias 'zz 5))
+  (lambda () (progn (define-charset 'zzn "doc" :code-space [0 127] :code-offset #x200000 :emacs-mule-id 240) (list (car (last (charset-priority-list))) (decode-char 'zzn 3))))
+  (lambda () (get-unused-iso-final-char 0 94))
+  (lambda () (get-unused-iso-final-char 1 95))
+  (lambda () (get-unused-iso-final-char 'a 94))
+  (lambda () (get-unused-iso-final-char 1 'a))
+  (lambda () (iso-charset 1 94 'B))
+  (lambda () (iso-charset 1.0 94 ?B))
+  (lambda () (declare-equiv-charset 1 94 ?Z 5))
+  (lambda () (declare-equiv-charset 1 94 5000 'ascii))
+  (lambda () (apply 'define-charset-internal (make-list 17 nil)))
+  (lambda () (apply 'define-charset-internal 'q (make-list 16 nil)))
+  (lambda () (apply 'define-charset-internal 'q [0 255] (make-list 15 nil)))
+  (lambda () (apply 'define-charset-internal 'q 1 [0 255 0 0 0 0 0 0] (make-list 14 nil)))
+  (lambda () (apply 'define-charset-internal 5 1 [0 255 0 0 0 0 0 0] (make-list 14 nil)))
+  (lambda () (funcall 'define-charset-internal 'q 1 [0 255 0 0 0 0 0 0] nil nil nil nil nil nil nil nil 0 nil nil nil nil (list 5)))
+  (lambda () (funcall 'define-charset-internal 'q 1 [0 255 0 0 0 0 0 0] nil nil nil nil nil nil nil nil 0 nil nil nil 5 nil))
+  (lambda () (funcall 'define-charset-internal 'q 1 [0 255 0 0 0 0 0 0] '(1 . 2) nil nil nil nil nil nil nil 0 nil nil nil nil nil))
+  (lambda () (funcall 'define-charset-internal 'q 1 [0 255 0 0 0 0 0 0] 1.0 nil nil nil nil nil nil nil 0 nil nil nil nil nil))
+  (lambda () (funcall 'define-charset-internal 'q 1 [0 255 0 0 0 0 0 0] nil nil nil 63 nil nil nil nil 0 nil nil nil nil nil))
+  (lambda () (funcall 'define-charset-internal 'q 1 [0 255 0 0 0 0 0 0] nil nil nil nil 64 nil nil nil 0 nil nil nil nil nil))
+  (lambda () (funcall 'define-charset-internal 'q 1 [0 255 0 0 0 0 0 0] nil nil nil nil nil -1 nil nil 0 nil nil nil nil nil))
+  (lambda () (funcall 'define-charset-internal 'q 1 [0 255 0 0 0 0 0 0] nil nil nil nil nil nil nil nil #x3fff10 nil nil nil nil nil))
+  (lambda () (funcall 'define-charset-internal 'q 1 [0 255 0 0 0 0 0 0] nil nil nil nil nil nil nil nil nil nil '(5) nil nil nil))
+  (lambda () (funcall 'define-charset-internal 'q 1 [0 255 0 0 0 0 0 0] nil nil nil nil nil nil nil nil nil nil '(ascii a 1 2) nil nil nil))
+  (lambda () (funcall 'define-charset-internal 'q 1 [0 255 0 0 0 0 0 0] nil nil nil nil nil nil nil nil nil nil '(ascii 1 2 a) nil nil nil))
+  (lambda () (funcall 'define-charset-internal 'q 1 [0 255 0 0 0 0 0 0] nil nil nil nil nil nil nil nil nil nil nil '((ascii . a)) nil nil))
+  (lambda () (funcall 'define-charset-internal 'q 1 [0 255 0 0 0 0 0 0] nil nil nil nil nil nil nil nil nil nil nil 5 nil nil))
+  (lambda () (funcall 'define-charset-internal 'q 1 [0 255 0 0 0 0 0 0] nil nil nil nil nil nil nil nil nil [1 2 3] nil nil nil nil))
+  (lambda () (funcall 'define-charset-internal 'q 1 [0 255 0 0 0 0 0 0] nil nil nil nil nil nil nil nil nil [1 a] nil nil nil nil))
+  (lambda () (progn (funcall 'define-charset-internal 'qq 1 [0 255 0 0 0 0 0 0] nil nil nil nil nil nil nil nil nil [(40 . 50) #x1000 60 #x2000 300 #x3000] nil nil nil nil) (list (decode-char 'qq 45) (decode-char 'qq 60) (decode-char 'qq 51) (encode-char #x1003 'qq) (encode-char #x3000 'qq) (memq 'qq charset-list) (charset-plist 'qq))))
+  (lambda () (progn (ignore-errors (define-charset 'qmiss "d" :code-space [0 255] :map "nosuchmap")) (list (charsetp 'qmiss) (memq 'qmiss charset-list) (memq 'qmiss (charset-priority-list)))))
+  (lambda () (progn (define-charset 'qoff "d" :code-space [0 255] :code-offset 0) (list (encode-char 200 'qoff) (char-charset 200 '(qoff)))))
+  (lambda () (progn (funcall 'define-charset-internal 'qinv 1 [0 255 0 0 0 0 0 0] nil nil nil nil nil nil nil nil 65 #x100 nil nil nil nil nil) (list (encode-char #x141 'qinv) (encode-char #x142 'qinv) (decode-char 'qinv 65))))
+  (lambda () (progn (set-charset-plist 'latin-iso8859-2 '(:a 1)) (list (encode-char 260 'latin-iso8859-2) (decode-char 'latin-iso8859-2 161) (split-char 260) (charset-dimension 'latin-iso8859-2) (string-to-list (encode-coding-string "\x104" 'iso-latin-2)))))
+  (lambda () (progn (set-charset-plist 'japanese-jisx0208 nil) (list (encode-char #x3042 'japanese-jisx0208) (decode-char 'japanese-jisx0208 #x2422) (string-to-list (encode-coding-string "\x3042" 'euc-jp)))))
+  (lambda () (progn (set-charset-plist 'iso-8859-1 '(:x 1)) (list (encode-char 233 'iso-8859-1) (decode-coding-string "\351" 'latin-1))))
+  (lambda () (progn (define-charset 'zzc "doc" :code-space [32 127] :code-offset #x110000) (set-charset-plist 'zzc nil) (list (decode-char 'zzc 65) (char-charset (decode-char 'zzc 65)))))))"###,
+        r###"((ascii iso-8859-1 unicode latin-iso8859-1 control-1 iso-8859-2 latin-iso8859-2 iso-8859-3 latin-iso8859-3 iso-8859-4 latin-iso8859-4 iso-8859-5 cyrillic-iso8859-5 iso-8859-6 arabic-iso8859-6 iso-8859-7 greek-iso8859-7 iso-8859-8 hebrew-iso8859-8 iso-8859-9 latin-iso8859-9 iso-8859-10 latin-iso8859-10 iso-8859-11 thai-iso8859-11 iso-8859-13 latin-iso8859-13 iso-8859-14 latin-iso8859-14 iso-8859-15 latin-iso8859-15 iso-8859-16 latin-iso8859-16 thai-tis620 tis620-2533 jisx0201 chinese-gb2312 chinese-gbk chinese-cns11643-1 chinese-cns11643-2 chinese-cns11643-3 chinese-cns11643-4 chinese-cns11643-5 chinese-cns11643-6 chinese-cns11643-7 big5 japanese-jisx0208 japanese-jisx0208-1978 japanese-jisx0212 japanese-jisx0213-1 japanese-jisx0213-2 japanese-jisx0213.2004-1 cp932 korean-ksc5601 big5-hkscs cp949 viscii vscii vscii-2 koi8-r alternativnyj cp866 koi8-u koi8-t georgian-ps georgian-academy windows-1250 windows-1251 windows-1252 windows-1253 windows-1254 windows-1255 windows-1256 windows-1257 windows-1258 next cp1125 cp437 cp720 cp737 cp775 cp851 cp852 cp855 cp857 cp858 cp860 cp861 cp862 cp863 cp864 cp865 cp869 cp874 unicode-bmp unicode-smp unicode-sip unicode-ssp mac-roman ebcdic-us ebcdic-uk ibm038 ibm256 ibm273 ibm274 ibm275 ibm277 ibm278 ibm280 ibm281 ibm284 ibm285 ibm290 ibm297 ibm1047 hp-roman8 adobe-standard-encoding symbol ibm850 mik ptcp154 gb18030 chinese-cns11643-15 emacs eight-bit eight-bit-control eight-bit-graphic latin-jisx0201 katakana-jisx0201 chinese-big5-1 chinese-big5-2 japanese-jisx0213-a katakana-sjis cp932-2-byte cp949-2-byte chinese-sisheng ipa vietnamese-viscii-lower vietnamese-viscii-upper arabic-digit arabic-1-column arabic-2-column lao mule-lao indian-is13194 devanagari-cdac sanskrit-cdac bengali-cdac tamil-cdac telugu-cdac assamese-cdac oriya-cdac kannada-cdac malayalam-cdac gujarati-cdac punjabi-cdac devanagari-akruti bengali-akruti punjabi-akruti gujarati-akruti oriya-akruti tamil-akruti telugu-akruti kannada-akruti malayalam-akruti indian-glyph indian-1-column indian-2-column tibetan tibetan-1-column mule-unicode-2500-33ff mule-unicode-e000-ffff mule-unicode-0100-24ff ethiopic gb18030-2-byte gb18030-4-byte-bmp gb18030-4-byte-smp gb18030-4-byte-ext-1 gb18030-4-byte-ext-2) ascii latin-iso8859-2 (latin-iso8859-2 ascii latin-iso8859-2) (E (wrong-type-argument charsetp nosuch)) (E (wrong-type-argument charsetp 5)) (E (wrong-number-of-arguments set-charset-priority 0)) 65 nil 193 nil 233 1114111 nil 12354 12288 nil 4194176 nil (E (wrong-type-argument charsetp nosuch)) (E (error "Not an in-range integer, integral float, or cons of integers")) (E (error "Not an in-range integer, integral float, or cons of integers")) (E (error "Not an in-range integer, integral float, or cons of integers")) 65538 97 nil 105 233 9250 12354 128 (E (wrong-type-argument characterp -1)) (E (wrong-type-argument charsetp nosuch)) (ascii 97) (latin-iso8859-2 105) (unicode 0 48 66) (eight-bit 128) (unicode 16 255 255) (E (wrong-type-argument characterp -1)) ascii latin-iso8859-2 unicode japanese-jisx0208 nil (E (coding-system-error nosuch)) (E (wrong-type-argument symbolp 5)) eight-bit eight-bit nil (ascii unicode nil nil) (ascii) (ascii unicode eight-bit) nil (ascii eight-bit) (ascii unicode) (E (wrong-type-argument stringp 5)) ((ascii unicode eight-bit) (ascii unicode eight-bit) (ascii)) (E (args-out-of-range #<killed buffer> 0 10)) 0 2 (E (wrong-type-argument charsetp nosuch)) (E (wrong-type-argument charsetp nil)) (:name ascii :dimension 1 :code-space [0 127 0 0 0 0 0 0] :iso-final-char 66 :emacs-mule-id 0 :ascii-compatible-p t :code-offset 0 :docstring "ASCII (ISO646 IRV)" :short-name "ASCII" :long-name "ASCII (ISO646 IRV)") "RHP of Latin-1" (E (wrong-type-argument charsetp 5)) (:a 1) t nil nil 54 48 48 (E (error "Invalid CHARS 95, it should be 94 or 96")) ascii latin-iso8859-1 japanese-jisx0208 nil (E (error "Invalid DIMENSION 4, it should be 1, 2, or 3")) (E (error "Invalid FINAL-CHAR `ᎈ', it should be `0'..`~'")) nil ascii (E (error "Invalid DIMENSION 5, it should be 1, 2, or 3")) (E (wrong-type-argument charsetp nosuch)) (unicode ascii latin-iso8859-1 japanese-jisx0208) (E (wrong-type-argument charsetp nosuch)) (E (wrong-type-argument listp 5)) (((0 . 127) x)) ((228 . 248)) ((248 . 228)) 13 (E (wrong-type-argument charsetp nosuch)) nil (E (error "None of :code-offset, :map, :parents are specified")) (E (wrong-number-of-arguments define-charset-internal . 18)) (E (wrong-number-of-arguments define-charset-internal . 18)) nil (t 0 ascii) (E (wrong-type-argument charsetp nosuch)) 2 nil (E (wrong-type-argument charsetp 'unicode)) 1 3 97 nil nil 228 233 12354 12353 12288 (E (args-out-of-range 255 300)) (E (wrong-type-argument charsetp nosuch)) (t 1114145 65 chinese-gb2312 (:name zzc :docstring "doc" :code-space [32 127] :code-offset 1114112 :dimension 1 :short-name "zzc" :long-name "zzc" :base zzc)) (E (error "Invalid format operation %V")) (E (error "None of :code-offset, :map, :parents are specified")) (2097152 (gb18030 132 49 165 49) 2) (zzg 54) (:name zzh :docstring "doc" :code-space [0 127] :code-offset 0 :emacs-mule-id 200 :dimension 1 :short-name "zzh" :long-name "zzh" :base zzh) (E (error "Invalid emacs-mule-id: 100")) zzi (latin-iso8859-2 zzj) (E (error "None of :code-offset, :map, :parents are specified")) (E (wrong-type-argument characterp -1)) (E (wrong-type-argument characterp 4194304)) nil (E (args-out-of-range 0 127 255)) (E (wrong-type-argument sequencep 5)) (E (args-out-of-range 5 1 4)) (E (args-out-of-range 10 127 5)) (E (args-out-of-range 0 127 200)) (E (error "Invalid iso-final-char: 5")) (E (args-out-of-range [ascii nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil zzh nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil latin-iso8859-1 latin-iso8859-2 latin-iso8859-3 latin-iso8859-4 thai-tis620 greek-iso8859-7 arabic-iso8859-6 hebrew-iso8859-8 katakana-jisx0201 latin-jisx0201 nil cyrillic-iso8859-5 latin-iso8859-9 latin-iso8859-15 latin-iso8859-14 japanese-jisx0208-1978 chinese-gb2312 japanese-jisx0208 korean-ksc5601 japanese-jisx0212 chinese-cns11643-1 chinese-cns11643-2 japanese-jisx0213-1 chinese-big5-1 chinese-big5-2 nil nil nil nil nil nil chinese-sisheng ipa vietnamese-viscii-lower vietnamese-viscii-upper arabic-digit arabic-1-column nil lao nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil zzh nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil arabic-2-column indian-is13194 nil nil nil nil nil nil nil nil nil nil nil nil nil nil zzn tibetan-1-column mule-unicode-2500-33ff mule-unicode-e000-ffff mule-unicode-0100-24ff ethiopic chinese-cns11643-3 chinese-cns11643-4 chinese-cns11643-5 chinese-cns11643-6 chinese-cns11643-7 indian-2-column tibetan nil japanese-jisx0213-2 nil] 300)) nil (E (file-missing "Loading charset map" "No such file or directory" "nosuchmap")) (E (error "None of :code-offset, :map, :parents are specified")) nil (10 nil 20) (65 233 233) (105 nil "doc2") ((zzalias2 zzm zzl zzk zzj zzi zzh zzg zzf zzc zzalias zzalias chinese-cns11643-15 gb18030 gb18030-4-byte-ext-2 gb18030-4-byte-ext-1 gb18030-4-byte-smp gb18030-4-byte-bmp gb18030-2-byte cp154 pt154 ptcp154 mik cp850 ibm850 symbol adobe-standard-encoding hp-roman8 cp1047 ibm1047 ibm297 ibm290 ibm285 ibm284 ibm281 ibm280 ibm278 ibm277 ibm275 ibm274 ibm273 ibm256 cp038 ebcdic-int ibm038 ebcdic-uk ebcdic-us mac-roman ethiopic unicode-ssp unicode-sip unicode-smp unicode-bmp mule-unicode-0100-24ff mule-unicode-e000-ffff mule-unicode-2500-33ff tibetan-1-column tibetan indian-2-column indian-1-column indian-glyph malayalam-akruti kannada-akruti telugu-akruti tamil-akruti oriya-akruti gujarati-akruti punjabi-akruti bengali-akruti devanagari-akruti punjabi-cdac gujarati-cdac malayalam-cdac kannada-cdac oriya-cdac assamese-cdac telugu-cdac tamil-cdac bengali-cdac sanskrit-cdac devanagari-cdac indian-is13194 mule-lao lao arabic-2-column arabic-1-column arabic-digit cp874 cp869 cp865 cp864 cp863 cp862 cp861 cp860 cp00858 cp858 cp857 cp855 cp852 cp851 cp775 cp737 cp720 cp437 cp866u ruscii cp1125 next cp1258 windows-1258 cp1257 windows-1257 cp1256 windows-1256 cp1255 windows-1255 cp1254 windows-1254 cp1253 windows-1253 cp1252 windows-1252 cp1251 windows-1251 cp1250 windows-1250 georgian-academy georgian-ps koi8-t koi8-u ibm866 cp866 alternativnyj koi8 koi8-r vscii-2 tcvn-5712 vscii vietnamese-viscii-upper vietnamese-viscii-lower viscii ipa chinese-sisheng cp949 cp949-2-byte big5-hkscs korean-ksc5601 cp932 cp932-2-byte katakana-sjis japanese-jisx0213.2004-1 japanese-jisx0213-a japanese-jisx0213-2 japanese-jisx0213-1 japanese-jisx0212 japanese-jisx0208-1978 japanese-jisx0208 chinese-big5-2 chinese-big5-1 big5 chinese-cns11643-7 chinese-cns11643-6 chinese-cns11643-5 chinese-cns11643-4 chinese-cns11643-3 chinese-cns11643-2 chinese-cns11643-1 windows-936 cp936 chinese-gbk chinese-gb2312 katakana-jisx0201 latin-jisx0201 jisx0201 tis620-2533 thai-tis620 latin-iso8859-16 iso-8859-16 latin-iso8859-15 iso-8859-15 latin-iso8859-14 iso-8859-14 latin-iso8859-13 iso-8859-13 thai-iso8859-11 iso-8859-11 latin-iso8859-10 iso-8859-10 latin-iso8859-9 iso-8859-9 hebrew-iso8859-8 iso-8859-8 greek-iso8859-7 iso-8859-7 arabic-iso8859-6 iso-8859-6 cyrillic-iso8859-5 iso-8859-5 latin-iso8859-4 iso-8859-4 latin-iso8859-3 iso-8859-3 latin-iso8859-2 iso-8859-2 eight-bit-graphic eight-bit-control control-1 latin-iso8859-1 ucs eight-bit emacs unicode iso-8859-1 ascii) (:name latin-iso8859-1 :docstring "Right-Hand Part of ISO/IEC 8859/1 (Latin-1): ISO-IR-100" :short-name "RHP of Latin-1" :long-name "RHP of ISO/IEC 8859/1 (Latin-1): ISO-IR-100" :iso-final-char 65 :emacs-mule-id 129 :code-space [32 127] :code-offset 160 :dimension 1 :base latin-iso8859-1 preferred-coding-system iso-latin-1) 5) (t (unicode ascii latin-iso8859-1)) (E (wrong-type-argument charsetp iso-latin-1)) (E (wrong-type-argument listp 5)) (E (wrong-type-argument listp 5)) (latin-iso8859-2 (zzal3 ascii) 97) nil ascii (E (wrong-type-argument charsetp 5)) unicode (E (coding-system-error nosuch-coding)) (E (wrong-type-argument symbolp "x")) (E (wrong-type-argument charsetp 5)) 65 65 65 65538 (E (wrong-type-argument charsetp 5)) (E (wrong-type-argument characterp a)) (E (wrong-type-argument charsetp nosuch)) (E (error "Can't unify charset: ascii")) nil nil (E (wrong-type-argument charsetp nosuch)) (E (wrong-type-argument charsetp nosuch)) (E (wrong-type-argument charsetp 5)) nil (E (wrong-type-argument charsetp 5)) (zzi 2097155) (E (error "Invalid DIMENSION 0, it should be 1, 2, or 3")) (E (error "Invalid CHARS 95, it should be 94 or 96")) (E (wrong-type-argument fixnump a)) (E (wrong-type-argument fixnump a)) (E (wrong-type-argument characterp B)) (E (wrong-type-argument fixnump 1.0)) (E (wrong-type-argument charsetp 5)) (E (error "Invalid FINAL-CHAR `ᎈ', it should be `0'..`~'")) (E (wrong-type-argument arrayp nil)) (E (wrong-type-argument arrayp nil)) (E (wrong-type-argument arrayp nil)) (E (error "None of :code-offset, :map, :parents are specified")) (E (wrong-type-argument symbolp 5)) nil (E (wrong-type-argument vectorp 5)) (E (args-out-of-range 0 255 (1 . 2))) nil nil (E (error "Invalid emacs-mule-id: 64")) nil (E (error "Unsupported max char: 0")) (E (wrong-type-argument charsetp 5)) (E (wrong-type-argument wholenump a)) (E (wrong-type-argument fixnump a)) (E (wrong-type-argument integerp a)) (E (wrong-type-argument sequencep 5)) (E (error "Invalid format operation %V")) (E (wrong-type-argument wholenump a)) (4101 8192 nil 43 nil (qq q zzn 5 zzal3 zzalias2 zzm zzl zzk zzj zzi zzh zzg zzf zzc zzalias zzalias chinese-cns11643-15 gb18030 gb18030-4-byte-ext-2 gb18030-4-byte-ext-1 gb18030-4-byte-smp gb18030-4-byte-bmp gb18030-2-byte cp154 pt154 ptcp154 mik cp850 ibm850 symbol adobe-standard-encoding hp-roman8 cp1047 ibm1047 ibm297 ibm290 ibm285 ibm284 ibm281 ibm280 ibm278 ibm277 ibm275 ibm274 ibm273 ibm256 cp038 ebcdic-int ibm038 ebcdic-uk ebcdic-us mac-roman ethiopic unicode-ssp unicode-sip unicode-smp unicode-bmp mule-unicode-0100-24ff mule-unicode-e000-ffff mule-unicode-2500-33ff tibetan-1-column tibetan indian-2-column indian-1-column indian-glyph malayalam-akruti kannada-akruti telugu-akruti tamil-akruti oriya-akruti gujarati-akruti punjabi-akruti bengali-akruti devanagari-akruti punjabi-cdac gujarati-cdac malayalam-cdac kannada-cdac oriya-cdac assamese-cdac telugu-cdac tamil-cdac bengali-cdac sanskrit-cdac devanagari-cdac indian-is13194 mule-lao lao arabic-2-column arabic-1-column arabic-digit cp874 cp869 cp865 cp864 cp863 cp862 cp861 cp860 cp00858 cp858 cp857 cp855 cp852 cp851 cp775 cp737 cp720 cp437 cp866u ruscii cp1125 next cp1258 windows-1258 cp1257 windows-1257 cp1256 windows-1256 cp1255 windows-1255 cp1254 windows-1254 cp1253 windows-1253 cp1252 windows-1252 cp1251 windows-1251 cp1250 windows-1250 georgian-academy georgian-ps koi8-t koi8-u ibm866 cp866 alternativnyj koi8 koi8-r vscii-2 tcvn-5712 vscii vietnamese-viscii-upper vietnamese-viscii-lower viscii ipa chinese-sisheng cp949 cp949-2-byte big5-hkscs korean-ksc5601 cp932 cp932-2-byte katakana-sjis japanese-jisx0213.2004-1 japanese-jisx0213-a japanese-jisx0213-2 japanese-jisx0213-1 japanese-jisx0212 japanese-jisx0208-1978 japanese-jisx0208 chinese-big5-2 chinese-big5-1 big5 chinese-cns11643-7 chinese-cns11643-6 chinese-cns11643-5 chinese-cns11643-4 chinese-cns11643-3 chinese-cns11643-2 chinese-cns11643-1 windows-936 cp936 chinese-gbk chinese-gb2312 katakana-jisx0201 latin-jisx0201 jisx0201 tis620-2533 thai-tis620 latin-iso8859-16 iso-8859-16 latin-iso8859-15 iso-8859-15 latin-iso8859-14 iso-8859-14 latin-iso8859-13 iso-8859-13 thai-iso8859-11 iso-8859-11 latin-iso8859-10 iso-8859-10 latin-iso8859-9 iso-8859-9 hebrew-iso8859-8 iso-8859-8 greek-iso8859-7 iso-8859-7 arabic-iso8859-6 iso-8859-6 cyrillic-iso8859-5 iso-8859-5 latin-iso8859-4 iso-8859-4 latin-iso8859-3 iso-8859-3 latin-iso8859-2 iso-8859-2 eight-bit-graphic eight-bit-control control-1 latin-iso8859-1 ucs eight-bit emacs unicode iso-8859-1 ascii) nil) (t nil nil) (200 qoff) (E (wrong-number-of-arguments define-charset-internal . 18)) (33 nil (unicode 0 1 4) nil (161)) (9250 12354 (164 162)) (233 #("é" 0 1 (charset iso-8859-1))) (1114145 chinese-gb2312))"###,
+        "charset_definitions_and_primitives_match_charset_c",
+    );
+}
+
+#[test]
+fn process_ids_and_signal_codes_convert_as_process_c() {
+    // process.c:Finternal_default_signal_process: a string read with
+    // lread.c's string_to_number as the whole of its text, a number
+    // through CONS_TO_INTEGER's pid_t, a fixnum signal code through
+    // check_integer_range and a symbol through abbr_to_signal and gnulib's
+    // str2signum; sysdep.c:system_process_attributes' CHECK_NUMBER and
+    // CONS_TO_INTEGER; fns.c:Fload_average's arity.  The signals go to a
+    // pid no process has, so only their checks are observed.
+    assert_oracle_contract_matches_interpreter(
+        r###"(mapcar (lambda (f) (condition-case e (funcall f) (error (list 'E e))))
+ (list
+  (lambda () (process-attributes 1.5))
+  (lambda () (process-attributes '(0 . 1)))
+  (lambda () (process-attributes (expt 2 40)))
+  (lambda () (process-attributes 'a))
+  (lambda () (with-temp-buffer (process-attributes (point-marker))))
+  (lambda () (process-attributes -5))
+  (lambda () (process-attributes 2147483647.0))
+  (lambda () (signal-process 2147483647.0 0))
+  (lambda () (signal-process 1.5 0))
+  (lambda () (signal-process (expt 2 40) 0))
+  (lambda () (signal-process -2147483649 0))
+  (lambda () (signal-process '(1 . 2) 0))
+  (lambda () (signal-process "2.147483647e9" 0))
+  (lambda () (signal-process "2147483647" 0))
+  (lambda () (signal-process "+2147483647" 0))
+  (lambda () (signal-process "2147483647." 0))
+  (lambda () (signal-process " 2147483647" 0))
+  (lambda () (signal-process "abc" 0))
+  (lambda () (signal-process "99x" 0))
+  (lambda () (signal-process "" 0))
+  (lambda () (signal-process "1.5" 0))
+  (lambda () (signal-process "21474836470" 0))
+  (lambda () (signal-process 'foo 0))
+  (lambda () (signal-process 2147483647 (expt 2 40)))
+  (lambda () (signal-process 2147483647 -1))
+  (lambda () (signal-process 2147483647 (expt 2 70)))
+  (lambda () (signal-process 2147483647 1.0))
+  (lambda () (signal-process 2147483647 "INT"))
+  (lambda () (signal-process 2147483647 'SIG99))
+  (lambda () (signal-process 2147483647 'SIG64))
+  (lambda () (signal-process 2147483647 (intern "+5")))
+  (lambda () (signal-process 2147483647 (intern "05x")))
+  (lambda () (signal-process 2147483647 'sigfoo))
+  (lambda () (signal-process 2147483647 'aaaaaaaaaaaaaaaaaaaaaaaaa))
+  (lambda () (signal-process 2147483647 (intern "0000000000000000000000")))
+  (lambda () (signal-process 2147483647 (intern "000000000000000000")))
+  (lambda () (signal-process 2147483647 'rtmin+1))
+  (lambda () (signal-process 2147483647 'RTMAX-99))
+  (lambda () (signal-process 2147483647 'exit))
+  (lambda () (signal-process 2147483647 'SIGcld))
+  (lambda () (signal-process 2147483647 'iot))
+  (lambda () (internal-default-signal-process 2147483647 0))
+  (lambda () (with-temp-buffer (internal-default-signal-process nil 0)))
+  (lambda () (internal-default-signal-process 'a 0))
+  (lambda () (length (load-average)))
+  (lambda () (mapcar #'integerp (load-average)))
+  (lambda () (mapcar #'floatp (load-average t)))
+  (lambda () (load-average 1 2))
+  ))"###,
+        r###"((E (error "Not an in-range integer, integral float, or cons of integers")) (E (wrong-type-argument numberp (0 . 1))) (E (error "Not an in-range integer, integral float, or cons of integers")) (E (wrong-type-argument numberp a)) (E (wrong-type-argument numberp #<marker in no buffer>)) nil nil -1 (E (error "Not an in-range integer, integral float, or cons of integers")) (E (error "Not an in-range integer, integral float, or cons of integers")) (E (error "Not an in-range integer, integral float, or cons of integers")) (E (wrong-type-argument processp (1 . 2))) -1 -1 -1 -1 nil nil nil nil (E (error "Not an in-range integer, integral float, or cons of integers")) (E (error "Not an in-range integer, integral float, or cons of integers")) (E (wrong-type-argument processp foo)) (E (args-out-of-range 1099511627776 -2147483648 2147483647)) -1 (E (wrong-type-argument symbolp 1180591620717411303424)) (E (wrong-type-argument symbolp 1.0)) (E (wrong-type-argument symbolp "INT")) (E (error "Undefined signal name SIG99")) -1 (E (error "Undefined signal name +5")) (E (error "Undefined signal name 05x")) (E (error "Undefined signal name sigfoo")) (E (error "Undefined signal name aaaaaaaaaaaaaaaaaaaaaaaaa")) (E (error "Undefined signal name 0000000000000000000000")) -1 -1 (E (error "Undefined signal name RTMAX-99")) -1 -1 -1 -1 (E (error "Buffer  *temp* has no process")) (E (wrong-type-argument processp a)) 3 (t t t) (t t t) (E (wrong-number-of-arguments load-average 2)))"###,
+        "process ids and signal codes",
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn file_acls_go_through_libacl_and_libattr_as_fileio_c() {
+    // fileio.c:Ffile_acl and Fset_file_acl through libacl (acl_get_file,
+    // acl_to_text, acl_from_text, acl_set_file and gnulib's
+    // acl_errno_valid), and Fcopy_file's PRESERVE-PERMISSIONS through
+    // gnulib's qcopy_acl, which copies the permission attributes with
+    // libattr's attr_copy_fd.  Each ACL's text is split at its newlines
+    // and tabs.
+    assert_oracle_contract_matches_interpreter(
+        r###"(progn (defalias 'zz-acl-lines (lambda (x) (cond ((stringp x) (cons 'A (split-string x "[\n\t]" t))) ((consp x) (cons (zz-acl-lines (car x)) (zz-acl-lines (cdr x)))) (t x))))
+(let* ((dir (make-temp-file "acl" t)) (f (expand-file-name "f" dir)) (g (expand-file-name "g" dir)))
+  (unwind-protect
+      (progn
+        (write-region "x" nil f) (set-file-modes f #o640)
+        (mapcar (lambda (thunk) (zz-acl-lines (condition-case e (funcall thunk) (error (list 'E (car e) (cadr e))))))
+                (list
+                 (lambda () (file-acl f))
+                 (lambda () (equal (file-acl (file-name-as-directory dir)) (file-acl dir)))
+                 (lambda () (stringp (file-acl dir)))
+                 (lambda () (file-acl (expand-file-name "nonexistent" dir)))
+                 (lambda () (file-acl (expand-file-name "f/x" dir)))
+                 (lambda () (list (set-file-acl f "user::rwx\ngroup::r--\nother::r--\n") (format "%o" (file-modes f)) (file-acl f)))
+                 (lambda () (set-file-acl f "garbage"))
+                 (lambda () (set-file-acl f 5))
+                 (lambda () (set-file-acl f nil))
+                 (lambda () (set-file-acl (expand-file-name "nonexistent" dir) "user::rw-\ngroup::r--\nother::---\n"))
+                 (lambda () (list (set-file-acl f "user::rw-\nuser:root:r--\ngroup::r--\nmask::r--\nother::---\n") (format "%o" (file-modes f)) (file-acl f)))
+                 (lambda () (list (set-file-acl f "u::rw,u:0:rwx,g::r,m::rw,o::-") (file-acl f)))
+                 (lambda () (progn (copy-file f g nil nil nil t) (list (file-acl g) (format "%o" (file-modes g)))))
+                 (lambda () (progn (set-file-modes f #o600) (file-acl f)))
+                 (lambda () (multibyte-string-p (file-acl f)))
+                 (lambda () (file-acl 5))
+                 (lambda () (file-acl "/:/nonexistent-zz"))
+                 )))
+    (delete-directory dir t)))
+)"###,
+        r###"((A "user::rw-" "group::r--" "other::---") t t nil nil (t (A "744") (A "user::rwx" "group::r--" "other::r--")) nil nil nil (E file-missing (A "Setting ACL")) (t (A "640") (A "user::rw-" "user:root:r--" "group::r--" "mask::r--" "other::---")) (t (A "user::rw-" "user:root:rwx" "#effective:rw-" "group::r--" "mask::rw-" "other::---")) ((A "user::rw-" "user:root:rwx" "#effective:rw-" "group::r--" "mask::rw-" "other::---") (A "660")) (A "user::rw-" "user:root:rwx" "#effective:---" "group::r--" "#effective:---" "mask::---" "other::---") nil (E wrong-type-argument stringp) nil)"###,
+        "file ACLs",
+    );
+}
+
+#[test]
+fn load_average_is_getloadavg() {
+    // fns.c:Fload_average: getloadavg(3)'s averages (glibc reads them from
+    // sysinfo(2)), each as a float or 100 times it truncated.
+    let mut interp = Interpreter::new();
+    let mut env = Env::new();
+    let read = || {
+        let mut loads = [0.0f64; 3];
+        // SAFETY: LOADS has room for the three averages asked for.
+        let count = unsafe { libc::getloadavg(loads.as_mut_ptr(), 3) };
+        assert_eq!(count, 3);
+        loads.to_vec()
+    };
+    let before = read();
+    let mut list = call_via_lisp(&mut interp, "load-average", &[Value::T], &mut env)
+        .expect("load-average with floats");
+    let after = read();
+    let mut floats = Vec::new();
+    while let Some((car, cdr)) = list.cons_values() {
+        match car.kind() {
+            Kind::Float(float) => floats.push(float.get()),
+            _ => panic!("load-average gave {car:?}"),
+        }
+        list = cdr;
     }
+    assert!(
+        floats == before || floats == after,
+        "{floats:?} is neither {before:?} nor {after:?}"
+    );
+}
+
+#[test]
+fn coding_system_objects_match_coding_c() {
+    // coding.c: Vcoding_system_hash_table's specs [ATTRS ALIASES
+    // EOL-TYPE] and the attribute vectors a system's subsidiaries and
+    // aliases share -- `coding-system-put' through any of their names,
+    // the aliases list extended in place, a redefinition leaving an
+    // older alias the old system -- Fdefine_coding_system_internal's
+    // checks, Fcoding_system_put's attributes, Fdefine_coding_system_alias,
+    // Fcheck_coding_system's `coding-system-define-form', the names the
+    // terminal and keyboard keep, and Fset_coding_system_priority.
+    assert_oracle_contract_matches_interpreter(
+        r###"(progn (defalias 'zz-san (lambda (x) (cond ((and (stringp x) (or (not (multibyte-string-p x)) (let ((r nil)) (mapc (lambda (c) (if (> c #x3fff7f) (setq r t))) x) r))) (list 'S (string-to-list x))) ((consp x) (cons (zz-san (car x)) (zz-san (cdr x)))) ((vectorp x) (vconcat (mapcar #'zz-san x))) (t x))))
+ (mapcar (lambda (thunk) (zz-san (condition-case e (funcall thunk) (t (list 'E e)))))
+ (list
+  (lambda () (coding-system-priority-list))
+  (lambda () (coding-system-priority-list t))
+  (lambda () (progn (set-coding-system-priority 'utf-8 'iso-latin-1) (coding-system-priority-list t)))
+  (lambda () (set-coding-system-priority 'nosuch))
+  (lambda () (set-coding-system-priority 5))
+  (lambda () (set-coding-system-priority))
+  (lambda () (check-coding-system 5))
+  (lambda () (check-coding-system 'nosuch))
+  (lambda () (check-coding-system nil))
+  (lambda () (check-coding-system 'utf-8-unix))
+  (lambda () (coding-system-p 5))
+  (lambda () (coding-system-p "utf-8"))
+  (lambda () (coding-system-eol-type 'utf-8))
+  (lambda () (coding-system-eol-type 'utf-8-dos))
+  (lambda () (coding-system-eol-type 'nosuch))
+  (lambda () (coding-system-eol-type 5))
+  (lambda () (coding-system-base 'utf-8-dos))
+  (lambda () (coding-system-base 'nosuch))
+  (lambda () (coding-system-aliases 'utf-8))
+  (lambda () (coding-system-aliases 'nosuch))
+  (lambda () (coding-system-plist 'nosuch))
+  (lambda () (coding-system-put 'nosuch :x 1))
+  (lambda () (progn (coding-system-put 'utf-8 :zz 1) (coding-system-get 'utf-8 :zz)))
+  (lambda () (progn (coding-system-put 'utf-8-dos :zz2 1) (coding-system-get 'utf-8 :zz2)))
+  (lambda () (coding-system-put 'utf-8 :mime-charset 'xx))
+  (lambda () (coding-system-get 'utf-8 :mime-charset))
+  (lambda () (define-coding-system-alias 'zzcs 'utf-8))
+  (lambda () (progn (define-coding-system-alias 'zzcs 'utf-8) (list (coding-system-p 'zzcs) (coding-system-base 'zzcs) (coding-system-aliases 'utf-8) (coding-system-eol-type 'zzcs))))
+  (lambda () (define-coding-system-alias 'zzcs2 'nosuch))
+  (lambda () (define-coding-system-alias 5 'utf-8))
+  (lambda () (detect-coding-string "abc"))
+  (lambda () (detect-coding-string "abc" t))
+  (lambda () (detect-coding-string "\303\251"))
+  (lambda () (detect-coding-string "\351"))
+  (lambda () (detect-coding-string (encode-coding-string "\x3042" 'euc-jp)))
+  (lambda () (detect-coding-string (encode-coding-string "\x3042" 'utf-16)))
+  (lambda () (detect-coding-string 5))
+  (lambda () (with-temp-buffer (insert "abc") (detect-coding-region 1 4)))
+  (lambda () (with-temp-buffer (insert "abc") (detect-coding-region 4 1 t)))
+  (lambda () (with-temp-buffer (insert "abc") (detect-coding-region 0 10)))
+  (lambda () (find-coding-systems-region-internal 1 1))
+  (lambda () (with-temp-buffer (insert "abc") (find-coding-systems-region-internal 1 4)))
+  (lambda () (with-temp-buffer (insert "a\x3042") (length (find-coding-systems-region-internal 1 3))))
+  (lambda () (find-coding-systems-region-internal "abc" nil))
+  (lambda () (length (find-coding-systems-region-internal "a\x3042" nil)))
+  (lambda () (unencodable-char-position 1 3 'latin-1 nil "a\x3042"))
+  (lambda () (unencodable-char-position 0 2 'latin-1 nil "a\x3042"))
+  (lambda () (unencodable-char-position 0 2 'latin-1 1 "a\x3042\x3043"))
+  (lambda () (unencodable-char-position 0 nil 'latin-1 nil "a\x3042"))
+  (lambda () (unencodable-char-position 0 2 'nosuch nil "a\x3042"))
+  (lambda () (with-temp-buffer (insert "a\x3042b\x3043") (unencodable-char-position 1 5 'latin-1 2)))
+  (lambda () (check-coding-systems-region "a\x3042" nil '(latin-1 utf-8)))
+  (lambda () (check-coding-systems-region "a\x3042" nil '(nosuch)))
+  (lambda () (check-coding-systems-region "a\x3042" nil 5))
+  (lambda () (with-temp-buffer (insert "a\x3042") (check-coding-systems-region 1 3 '(latin-1 iso-2022-jp))))
+  (lambda () (encode-coding-string "abc" 'nosuch))
+  (lambda () (encode-coding-string 5 'utf-8))
+  (lambda () (encode-coding-string "abc" nil))
+  (lambda () (encode-coding-string "abc" 'utf-8 t))
+  (lambda () (decode-coding-string "abc" 'nosuch))
+  (lambda () (decode-coding-string "abc" nil))
+  (lambda () (decode-coding-string 5 'utf-8))
+  (lambda () (decode-coding-string "a\303\251" 'utf-8 nil (get-buffer-create "dcs")))
+  (lambda () (with-current-buffer "dcs" (buffer-string)))
+  (lambda () (decode-coding-string "a\303\251" 'utf-8 nil 5))
+  (lambda () (with-temp-buffer (insert "abc") (encode-coding-region 1 4 'nosuch)))
+  (lambda () (with-temp-buffer (insert "abc") (list (encode-coding-region 1 4 'utf-16) (buffer-string) last-coding-system-used)))
+  (lambda () (with-temp-buffer (insert "abc") (encode-coding-region 1 4 'utf-8 t)))
+  (lambda () (with-temp-buffer (insert "abc") (decode-coding-region 4 1 'utf-8)))
+  (lambda () (with-temp-buffer (insert "abc") (decode-coding-region 0 9 'utf-8)))
+  (lambda () (decode-sjis-char #x82a0))
+  (lambda () (decode-sjis-char 5))
+  (lambda () (decode-sjis-char #xffff))
+  (lambda () (decode-sjis-char 'a))
+  (lambda () (encode-sjis-char #x3042))
+  (lambda () (encode-sjis-char ?a))
+  (lambda () (encode-sjis-char #x4e00))
+  (lambda () (encode-sjis-char 'a))
+  (lambda () (decode-big5-char #xa440))
+  (lambda () (decode-big5-char 5))
+  (lambda () (decode-big5-char #xffff))
+  (lambda () (encode-big5-char #x4e00))
+  (lambda () (encode-big5-char ?a))
+  (lambda () (find-operation-coding-system 'insert-file-contents "a.txt"))
+  (lambda () (find-operation-coding-system 'insert-file-contents "a.el"))
+  (lambda () (find-operation-coding-system 'nosuch "a.el"))
+  (lambda () (find-operation-coding-system 'call-process "ls"))
+  (lambda () (find-operation-coding-system 'open-network-stream "x" nil "h" 80))
+  (lambda () (find-operation-coding-system 'write-region 1 2 "a.gz"))
+  (lambda () (find-operation-coding-system 'insert-file-contents 5))
+  (lambda () (find-operation-coding-system 5))
+  (lambda () (find-operation-coding-system))
+  (lambda () (terminal-coding-system))
+  (lambda () (terminal-coding-system 5))
+  (lambda () (keyboard-coding-system))
+  (lambda () (keyboard-coding-system 5))
+  (lambda () (set-terminal-coding-system-internal 'nosuch))
+  (lambda () (set-terminal-coding-system-internal 'utf-8))
+  (lambda () (progn (set-terminal-coding-system-internal 'utf-8) (terminal-coding-system)))
+  (lambda () (set-safe-terminal-coding-system-internal 'nosuch))
+  (lambda () (set-keyboard-coding-system-internal 'nosuch))
+  (lambda () (progn (set-keyboard-coding-system-internal 'latin-1) (keyboard-coding-system)))
+  (lambda () (coding-system-change-eol-conversion 'utf-8 'dos))
+  (lambda () (coding-system-change-text-conversion 'utf-8-dos 'latin-1))
+  (lambda () (define-coding-system-internal))
+  (lambda () (apply 'define-coding-system-internal (make-list 13 nil)))
+  (lambda () (apply 'define-coding-system-internal 'zzc (make-list 12 nil)))
+  (lambda () (define-coding-system 'zzc2 "doc" :coding-type 'nosuch :mnemonic ?Z))
+  (lambda () (define-coding-system 'zzc3 "doc" :coding-type 'charset :mnemonic ?Z :charset-list '(nosuch)))
+  (lambda () (define-coding-system 'zzc4 "doc" :coding-type 'charset :mnemonic ?Z :charset-list '(latin-iso8859-2)))
+  (lambda () (progn (define-coding-system 'zzc5 "doc" :coding-type 'charset :mnemonic ?Z :charset-list '(iso-8859-2)) (list (encode-coding-string "a\x104" 'zzc5) (coding-system-get 'zzc5 :charset-list) (coding-system-eol-type 'zzc5) (coding-system-type 'zzc5) (coding-system-category 'zzc5))))
+  (lambda () (define-coding-system 'zzc6 "doc" :coding-type 'utf-8 :mnemonic ?U :bom 5))
+  (lambda () (define-coding-system 'zzc7 "doc" :coding-type 'utf-16 :mnemonic ?U :endian 'big :bom t))
+  (lambda () (progn (define-coding-system 'zzc8 "doc" :coding-type 'utf-16 :mnemonic ?U :endian 'little :bom nil) (list (encode-coding-string "a" 'zzc8) (coding-system-get 'zzc8 :endian))))
+  (lambda () (define-coding-system 'zzc9 "doc" :coding-type 'iso-2022 :mnemonic ?I :designation [ascii nil nil nil]))
+  (lambda () (define-coding-system 'zzc10 "doc" :coding-type 'iso-2022 :mnemonic ?I :designation [nosuch nil nil nil] :flags '(nosuch)))
+  (lambda () (define-coding-system 'zzc11 "doc" :coding-type 'ccl :mnemonic ?C))
+  (lambda () (define-coding-system 'zzc12 "doc" :coding-type 'raw-text :mnemonic ?R :eol-type 'nosuch))
+  (lambda () (define-coding-system 'zzc13 "doc" :coding-type 'undecided :mnemonic ?- :inhibit-null-byte-detection 5))
+  (lambda () (progn (define-coding-system 'zzc14 "doc" :coding-type 'undecided :mnemonic ?-) (list (coding-system-eol-type 'zzc14) (coding-system-aliases 'zzc14))))
+  (lambda () (coding-system-type 'nosuch))
+  (lambda () (coding-system-category 'nosuch))
+  (lambda () (coding-system-charset-list 'utf-8))
+  (lambda () (coding-system-charset-list 'iso-2022-jp))
+  (lambda () (coding-system-charset-list 'nosuch))
+  (lambda () (text-char-description ?a))
+  (lambda () (progn (decode-coding-string "a" 'latin-1) last-coding-system-used))
+  (lambda () (progn (encode-coding-string "a" 'latin-1) last-coding-system-used))
+  (lambda () (progn (decode-coding-string "a\n" 'latin-1-unix) last-coding-system-used))
+  (lambda () (progn (decode-coding-string "a\r\n" 'latin-1) last-coding-system-used))
+  (lambda () (progn (decode-coding-string "a\r\n" 'mule-utf-8) last-coding-system-used))
+  (lambda () (let ((l (coding-system-aliases 'utf-8))) (define-coding-system-alias 'zz1 'utf-8) (list l (eq l (coding-system-aliases 'zz1)) (coding-system-aliases 'zz1-dos))))
+  (lambda () (eq (coding-system-plist 'utf-8) (coding-system-plist 'utf-8-dos)))
+  (lambda () (eq (coding-system-plist 'utf-8) (coding-system-plist 'mule-utf-8)))
+  (lambda () (eq (coding-system-plist 'utf-8) (coding-system-plist 'mule-utf-8-mac)))
+  (lambda () (progn (coding-system-put 'mule-utf-8 :zz3 4) (coding-system-get 'utf-8-unix :zz3)))
+  (lambda () (coding-system-aliases 'utf-8-dos))
+  (lambda () (coding-system-aliases 'mule-utf-8-dos))
+  (lambda () (coding-system-aliases 'mule-utf-8))
+  (lambda () (coding-system-base 'mule-utf-8-dos))
+  (lambda () (coding-system-eol-type 'mule-utf-8))
+  (lambda () (progn (define-coding-system-alias 'zz2 'utf-8-dos) (list (coding-system-eol-type 'zz2) (coding-system-p 'zz2-unix) (coding-system-aliases 'zz2) (coding-system-base 'zz2))))
+  (lambda () (progn (define-coding-system-alias 'zz4 'utf-8) (define-coding-system-alias 'zz4 'latin-1) (list (coding-system-base 'zz4) (coding-system-aliases 'utf-8) (coding-system-aliases 'iso-latin-1) (coding-system-base 'zz4-dos))))
+  (lambda () (progn (define-coding-system-alias 'zz5 'zz5x) 1))
+  (lambda () (define-coding-system-alias "zz6" 'utf-8))
+  (lambda () (define-coding-system-alias nil 'utf-8))
+  (lambda () (progn (define-coding-system-alias 'zz7 nil) (coding-system-base 'zz7)))
+  (lambda () (define-coding-system-alias 'zz8 "utf-8"))
+  (lambda () (progn (coding-system-put 'utf-8 :mnemonic "X") (coding-system-get 'utf-8 :mnemonic)))
+  (lambda () (coding-system-put 'utf-8 :mnemonic 'a))
+  (lambda () (progn (coding-system-put 'utf-8 :default-char nil) (plist-get (coding-system-plist 'utf-8) :default-char)))
+  (lambda () (coding-system-put 'utf-8 :default-char 'a))
+  (lambda () (coding-system-put 'utf-8 :post-read-conversion 5))
+  (lambda () (coding-system-put 'utf-8 :pre-write-conversion "x"))
+  (lambda () (coding-system-put 'utf-8 :decode-translation-table 5))
+  (lambda () (coding-system-put 'utf-8 :encode-translation-table "x"))
+  (lambda () (progn (coding-system-put 'utf-8 5 1) (plist-get (coding-system-plist 'utf-8) 5)))
+  (lambda () (coding-system-put "utf-8" :x 1))
+  (lambda () (coding-system-put nil :x 1))
+  (lambda () (coding-system-put 5 :x 1))
+  (lambda () (let ((p (coding-system-plist 'utf-8))) (coding-system-put 'utf-8 :zz9 1) (eq p (coding-system-plist 'utf-8))))
+  (lambda () (let ((p (coding-system-plist 'utf-8))) (coding-system-put 'utf-8 :mime-charset 'zz) (list (eq p (coding-system-plist 'utf-8)) (plist-get p :mime-charset))))
+  (lambda () (progn (coding-system-put 'iso-latin-1 :ascii-compatible-p nil) (list (coding-system-get 'latin-1 :ascii-compatible-p) (encode-coding-string "ab" 'latin-1))))
+  (lambda () (progn (define-coding-system 'zzm "doc" :coding-type 'raw-text :mnemonic "M") (list (coding-system-get 'zzm :mnemonic) (plist-get (coding-system-plist 'zzm) :mnemonic))))
+  (lambda () (progn (define-coding-system 'zzm2 "doc" :coding-type 'raw-text :mnemonic ?M) (coding-system-plist 'zzm2)))
+  (lambda () (progn (define-coding-system 'zzm3 "doc" :coding-type 'raw-text :mnemonic ?M :eol-type 'dos) (list (coding-system-eol-type 'zzm3) (coding-system-p 'zzm3-unix) (coding-system-aliases 'zzm3))))
+  (lambda () (progn (define-coding-system 'zzm4 "doc" :coding-type 'utf-8 :mnemonic ?M :default-char ?x) (list (coding-system-get 'zzm4 :default-char) (encode-coding-string "\x3042" 'zzm4))))
+  (lambda () (coding-system-put 'nosuch :mnemonic 5))
+  (lambda () (progn (set-keyboard-coding-system-internal 'mule-utf-8) (keyboard-coding-system)))
+  (lambda () (progn (set-keyboard-coding-system-internal nil) (keyboard-coding-system)))
+  (lambda () (set-keyboard-coding-system-internal "utf-8"))
+  (lambda () (progn (set-terminal-coding-system-internal 'latin-1) (terminal-coding-system)))
+  (lambda () (progn (set-terminal-coding-system-internal 'mule-utf-8-dos) (terminal-coding-system)))
+  (lambda () (progn (set-safe-terminal-coding-system-internal 'latin-1) 1))
+  (lambda () (progn (with-temp-buffer (insert "a") (encode-coding-region 1 2 'latin-1)) last-coding-system-used))
+  (lambda () (progn (with-temp-buffer (insert "a") (decode-coding-region 1 2 'latin-1)) last-coding-system-used))
+  (lambda () (with-temp-buffer (insert "a") (decode-coding-region 1 2 'latin-1) buffer-file-coding-system))
+  (lambda () (coding-system-change-eol-conversion 'latin-1 'dos))
+  (lambda () (coding-system-change-eol-conversion 'mule-utf-8 'unix))
+  (lambda () (coding-system-change-eol-conversion 'zz-nosuch 'unix))
+  (lambda () (coding-system-change-text-conversion 'latin-1-dos 'mule-utf-8))
+  (lambda () (check-coding-system 'latin-1))
+  (lambda () (coding-system-type 'latin-1))
+  (lambda () (coding-system-category 'latin-1))
+  (lambda () (coding-system-get 'latin-1 :name))
+  (lambda () (coding-system-mnemonic 'latin-1))
+  (lambda () (coding-system-doc-string 'latin-1))
+  (lambda () (length (coding-system-list)))
+  (lambda () (length (coding-system-list t)))
+  (lambda () (length coding-system-alist))
+  (lambda () (car (coding-system-list)))
+  (lambda () (progn (define-coding-system-alias 'zz10 'utf-8) (list (car coding-system-list) (cadr coding-system-list) (nth 3 coding-system-list) (car coding-system-alist))))
+  (lambda () (progn (define-coding-system 'zzd "doc" :coding-type 'raw-text :mnemonic ?D) (list (car coding-system-list) (nth 3 coding-system-list) (car coding-system-alist) (coding-system-aliases 'zzd) (coding-system-aliases 'zzd-mac))))
+  (lambda () (progn (define-coding-system 'zzd2 "doc" :coding-type 'raw-text :mnemonic ?D) (define-coding-system-alias 'zzd2a 'zzd2) (define-coding-system 'zzd2 "doc2" :coding-type 'raw-text :mnemonic ?E) (list (coding-system-aliases 'zzd2) (coding-system-base 'zzd2a) (coding-system-get 'zzd2a :mnemonic) (coding-system-get 'zzd2 :mnemonic))))
+  (lambda () (coding-system-priority-list t))
+  (lambda () (progn (set-coding-system-priority 'latin-1) (coding-system-priority-list t)))
+  (lambda () (progn (set-coding-system-priority 'mule-utf-8) (list (coding-system-priority-list t) coding-category-utf-8)))
+  (lambda () (progn (prefer-coding-system 'latin-1) (list (coding-system-priority-list t) coding-category-charset)))
+  (lambda () (define-coding-system-internal 'q1 "M" 'raw-text nil nil nil nil nil nil nil nil nil 'unix))
+  (lambda () (progn (define-coding-system-internal 'q1b "M" 'raw-text nil nil nil nil nil nil nil nil '(:x 1) 'unix) (list (coding-system-plist 'q1b) (coding-system-eol-type 'q1b) (coding-system-p 'q1b-unix))))
+  (lambda () (define-coding-system-internal 'q2 ?M 'raw-text 'foo nil nil nil nil nil nil nil nil nil))
+  (lambda () (define-coding-system-internal 'q3 ?M 'raw-text 'iso-2022 nil nil nil nil nil nil nil nil nil))
+  (lambda () (define-coding-system-internal 'q4 ?M 'charset '(ascii . 5) nil nil nil nil nil nil nil nil nil))
+  (lambda () (define-coding-system-internal 'q5 ?M 'charset 5 nil nil nil nil nil nil nil nil nil))
+  (lambda () (define-coding-system-internal 'q6 ?M 'raw-text nil nil 5 nil nil nil nil nil nil nil))
+  (lambda () (define-coding-system-internal 'q7 ?M 'raw-text nil nil nil "x" nil nil nil nil nil nil))
+  (lambda () (define-coding-system-internal 'q8 ?M 'raw-text nil nil nil nil 5 nil nil nil nil nil))
+  (lambda () (define-coding-system-internal 'q9 ?M 'raw-text nil nil nil nil nil 5 nil nil nil nil))
+  (lambda () (define-coding-system-internal 'q10 ?M 'raw-text nil nil nil nil nil nil 'a nil nil nil))
+  (lambda () (define-coding-system-internal 'q11 ?M 'raw-text nil nil nil nil nil nil nil nil 5 nil))
+  (lambda () (define-coding-system-internal 'q12 ?M 'raw-text nil nil nil nil nil nil nil nil nil 5))
+  (lambda () (define-coding-system-internal 'q13 ?M 'utf-8 nil nil nil nil nil nil nil nil nil nil))
+  (lambda () (define-coding-system-internal 'q14 ?M 'utf-16 nil nil nil nil nil nil nil nil nil nil nil))
+  (lambda () (define-coding-system-internal 'q15 ?M 'utf-16 nil nil nil nil nil nil nil nil nil nil nil 'sideways))
+  (lambda () (define-coding-system-internal 'q16 ?M 'utf-16 nil nil nil nil nil nil nil nil nil nil nil "big"))
+  (lambda () (define-coding-system-internal 'q17 ?M 'utf-16 nil nil nil nil nil nil nil nil nil nil '(utf-8 . nosuch) 'big))
+  (lambda () (define-coding-system-internal 'q18 ?M 'utf-8 nil nil nil nil nil nil nil nil nil nil '(nil . utf-8)))
+  (lambda () (define-coding-system-internal 'q19 ?M 'shift-jis '(ascii) nil nil nil nil nil nil nil nil nil))
+  (lambda () (define-coding-system-internal 'q20 ?M 'shift-jis '(ascii katakana-jisx0201 latin-iso8859-1) nil nil nil nil nil nil nil nil nil))
+  (lambda () (define-coding-system-internal 'q21 ?M 'big5 '(ascii big5 big5) nil nil nil nil nil nil nil nil nil))
+  (lambda () (define-coding-system-internal 'q22 ?M 'big5 '(big5 ascii) nil nil nil nil nil nil nil nil nil))
+  (lambda () (define-coding-system-internal 'q23 ?M 'iso-2022 '(ascii) nil nil nil nil nil nil nil nil nil))
+  (lambda () (define-coding-system-internal 'q24 ?M 'iso-2022 '(ascii) nil nil nil nil nil nil nil nil nil '(ascii nil nil nil) '(1 . 1) nil 0))
+  (lambda () (define-coding-system-internal 'q25 ?M 'iso-2022 '(ascii) nil nil nil nil nil nil nil nil nil [ascii nil nil nil] 5 nil 0))
+  (lambda () (define-coding-system-internal 'q26 ?M 'iso-2022 '(ascii) nil nil nil nil nil nil nil nil nil [ascii nil nil nil] '(a . 1) nil 0))
+  (lambda () (define-coding-system-internal 'q27 ?M 'iso-2022 '(ascii) nil nil nil nil nil nil nil nil nil [ascii nil nil nil] '(1 . 1) '((ascii . 5)) 0))
+  (lambda () (define-coding-system-internal 'q28 ?M 'iso-2022 '(ascii) nil nil nil nil nil nil nil nil nil [ascii nil nil nil] '(1 . 1) '(ascii) 0))
+  (lambda () (define-coding-system-internal 'q29 ?M 'iso-2022 '(ascii) nil nil nil nil nil nil nil nil nil [ascii nil nil nil] '(1 . 1) nil -1))
+  (lambda () (define-coding-system-internal 'q30 ?M 'iso-2022 '(ascii) nil nil nil nil nil nil nil nil nil [nosuch nil nil nil] '(1 . 1) nil 0))
+  (lambda () (define-coding-system-internal 'q31 ?M 'iso-2022 '(unicode) nil nil nil nil nil nil nil nil nil [ascii nil nil nil] '(1 . 1) nil 0))
+  (lambda () (define-coding-system-internal 'q32 ?M 'emacs-mule '(unicode) nil nil nil nil nil nil nil nil nil))
+  (lambda () (define-coding-system-internal 'q33 ?M 'emacs-mule 'iso-2022 nil nil nil nil nil nil nil nil nil))
+  (lambda () (define-coding-system-internal 'q34 ?M 'ccl nil nil nil nil nil nil nil nil nil nil nil nil))
+  (lambda () (define-coding-system-internal 'q35 ?M 'ccl nil nil nil nil nil nil nil nil nil nil 5 [1 0] nil))
+  (lambda () (define-coding-system-internal 'q36 ?M 'undecided nil nil nil nil nil nil nil nil nil nil nil))
+  (lambda () (progn (define-coding-system-internal 'q37 ?M 'undecided nil nil nil nil nil nil nil nil nil nil nil nil nil) (list (coding-system-plist 'q37) (coding-system-eol-type 'q37) (coding-system-aliases 'q37-dos) (coding-system-base 'q37-mac))))
+  (lambda () (progn (define-coding-system-internal 'q38 ?M 'charset '(iso-8859-2 ascii) t nil nil nil nil ?x t '(:y 2) 'dos) (list (coding-system-plist 'q38) (coding-system-eol-type 'q38) (coding-system-get 'q38 :charset-list) (encode-coding-string "\x104\x3042" 'q38))))
+  (lambda () (progn (define-coding-system-internal 'q39 ?M 'utf-16 nil t nil nil nil nil nil nil nil 'mac t nil) (list (coding-system-plist 'q39) (encode-coding-string "a" 'q39) (coding-system-category 'q39))))
+  (lambda () (progn (define-coding-system-internal 'q40 ?M 'utf-8 nil nil nil nil nil nil nil nil nil 'unix t) (list (coding-system-plist 'q40) (encode-coding-string "a" 'q40))))
+  (lambda () (progn (define-coding-system-internal 'q41 ?M 'utf-8 nil t nil nil nil nil nil nil nil 'unix '(utf-8 . utf-8)) (list (coding-system-plist 'q41) (coding-system-category 'q41))))
+  (lambda () (progn (coding-system-put 'q38 :post-read-conversion 'ignore) (coding-system-put 'q38 :charset-list '(ascii)) (list (encode-coding-string "\x104" 'q38) (coding-system-get 'q38 :charset-list))))
+  (lambda () (progn (coding-system-put 'utf-8 :default-char ?Z) (encode-coding-string "\x3fff80" 'utf-8)))
+  (lambda () (progn (coding-system-put 'latin-1 :ascii-compatible-p 7) (coding-system-get 'iso-latin-1-dos :ascii-compatible-p)))
+  (lambda () (progn (define-coding-system-alias 'zzself 'zzself-target-nosuch) 1))
+  (lambda () (progn (define-coding-system-alias 'utf-8-dos-alias 'utf-8-dos) (list (coding-system-aliases 'utf-8-dos) (coding-system-p 'utf-8-dos-alias-dos) (coding-system-eol-type 'utf-8-dos-alias))))
+  (lambda () (progn (define-coding-system-alias 'zzrep 'utf-8) (define-coding-system-alias 'zzrep 'utf-8) (coding-system-aliases 'utf-8)))
+  (lambda () (progn (autoload-coding-system 'zzauto '(define-coding-system 'zzauto "auto" :coding-type 'raw-text :mnemonic ?A)) (list (coding-system-p 'zzauto) (check-coding-system 'zzauto) (coding-system-p 'zzauto) (get 'zzauto 'coding-system-define-form))))
+  (lambda () (progn (autoload-coding-system 'zzauto2 '(define-coding-system 'zzauto2 "auto" :coding-type 'raw-text :mnemonic ?A)) (list (coding-system-base 'zzauto2-dos) (coding-system-eol-type 'zzauto2))))
+  (lambda () (progn (autoload-coding-system 'zzauto3 '(error "boom")) (condition-case e (check-coding-system 'zzauto3) (error e))))
+  (lambda () (progn (autoload-coding-system 'zzauto4 '(define-coding-system 'zzauto4 "auto" :coding-type 'raw-text :mnemonic ?A)) (decode-coding-string "a" 'zzauto4)))
+  (lambda () (check-coding-system "utf-8"))
+  (lambda () (check-coding-system 5))
+  (lambda () (coding-system-aliases nil))
+  (lambda () (coding-system-plist nil))
+  (lambda () (coding-system-base nil))
+  (lambda () (coding-system-eol-type nil))
+  (lambda () (coding-system-eol-type "utf-8"))
+  (lambda () (coding-system-aliases 5))
+  (lambda () (coding-system-base "utf-8")))))"###,
+        r###"((utf-8 iso-2022-7bit iso-latin-1 iso-2022-7bit-lock iso-2022-8bit-ss2 emacs-mule raw-text iso-2022-jp in-is13194-devanagari chinese-iso-8bit utf-8-auto utf-8-with-signature utf-16 utf-16be-with-signature utf-16le-with-signature utf-16be utf-16le japanese-shift-jis chinese-big5 undecided) utf-8 utf-8 (E (coding-system-error nosuch)) (E (wrong-type-argument symbolp 5)) nil (E (wrong-type-argument symbolp 5)) (E (coding-system-error nosuch)) nil utf-8-unix nil nil [utf-8-unix utf-8-dos utf-8-mac] 1 nil nil utf-8 (E (coding-system-error nosuch)) (utf-8 mule-utf-8 cp65001) (E (coding-system-error nosuch)) (E (coding-system-error nosuch)) (E (coding-system-error nosuch)) 1 1 xx xx nil (t utf-8 (utf-8 mule-utf-8 cp65001 zzcs zzcs) [utf-8-unix utf-8-dos utf-8-mac]) (E (coding-system-error nosuch)) (E (wrong-type-argument symbolp 5)) (undecided) undecided (utf-8 iso-latin-1 emacs-mule in-is13194-devanagari chinese-iso-8bit utf-8-auto japanese-shift-jis chinese-big5 iso-2022-8bit-ss2) (iso-latin-1 emacs-mule in-is13194-devanagari chinese-iso-8bit iso-2022-8bit-ss2) (iso-latin-1 in-is13194-devanagari chinese-iso-8bit japanese-shift-jis chinese-big5 iso-2022-8bit-ss2) (iso-latin-1 in-is13194-devanagari chinese-iso-8bit utf-16 utf-16be-with-signature chinese-big5 iso-2022-8bit-ss2) (E (wrong-type-argument stringp 5)) (undecided) undecided (E (args-out-of-range #<killed buffer> 0 10)) t t 43 t 43 (E (args-out-of-range "aあ" 1 3)) 1 (1) 1 (E (coding-system-error nosuch)) (E (args-out-of-range #<killed buffer> 1 5)) ((latin-1 1)) (E (coding-system-error nosuch)) nil ((latin-1 2)) (E (coding-system-error nosuch)) (E (wrong-type-argument stringp 5)) (S (97 98 99)) (S (97 98 99)) (E (coding-system-error nosuch)) (S (97 98 99)) (E (wrong-type-argument stringp 5)) 2 "aé" (E (wrong-type-argument bufferp 5)) (E (coding-system-error nosuch)) (8 (S (4194302 4194303 0 97 0 98 0 99)) utf-16) (S (97 98 99)) 3 (E (args-out-of-range #<killed buffer> 0 9)) 12354 5 (E (error (S (73 110 118 97 108 105 100 32 99 111 100 101 58 32 54 53 53 51 53)))) (E (wrong-type-argument wholenump a)) 33440 97 35050 (E (wrong-type-argument characterp a)) 19968 5 (E (error (S (73 110 118 97 108 105 100 32 99 111 100 101 58 32 54 53 53 51 53)))) 42048 97 (undecided) (prefer-utf-8 . prefer-utf-8) (E (error (S (73 110 118 97 108 105 100 32 102 105 114 115 116 32 97 114 103 117 109 101 110 116)))) nil nil (no-conversion . no-conversion) (E (error (S (73 110 118 97 108 105 100 32 97 114 103 117 109 101 110 116 32 49 32 111 102 32 111 112 101 114 97 116 105 111 110 32 96 105 110 115 101 114 116 45 102 105 108 101 45 99 111 110 116 101 110 116 115 39)))) (E (error (S (84 111 111 32 102 101 119 32 97 114 103 117 109 101 110 116 115)))) (E (wrong-number-of-arguments find-operation-coding-system 0)) nil (E (wrong-type-argument terminal-live-p 5)) no-conversion (E (wrong-type-argument terminal-live-p 5)) (E (coding-system-error nosuch)) nil utf-8 (E (coding-system-error nosuch)) (E (coding-system-error nosuch)) latin-1 utf-8-dos iso-latin-1-dos (E (wrong-number-of-arguments define-coding-system-internal 0)) (E (wrong-type-argument characterp nil)) (E (wrong-type-argument characterp nil)) (E (error (S (73 110 118 97 108 105 100 32 99 111 100 105 110 103 32 115 121 115 116 101 109 32 116 121 112 101 58 32 110 111 115 117 99 104)))) (E (wrong-type-argument charsetp nosuch)) nil ((S (97 161)) (iso-8859-2) [zzc5-unix zzc5-dos zzc5-mac] charset coding-category-charset) (E (wrong-type-argument consp 5)) nil ((S (97 0)) little) nil nil (E (wrong-type-argument cclp nil)) (E (error (S (73 110 118 97 108 105 100 32 101 111 108 45 116 121 112 101)))) nil ([zzc14-unix zzc14-dos zzc14-mac] (zzc14)) (E (coding-system-error nosuch)) (E (coding-system-error nosuch)) (unicode) (ascii japanese-jisx0208 japanese-jisx0208-1978 latin-jisx0201) (E (coding-system-error nosuch)) (S (97)) latin-1 latin-1 latin-1-unix iso-latin-1-dos utf-8-dos ((utf-8 mule-utf-8 cp65001 zzcs zzcs zz1) t (utf-8-dos mule-utf-8-dos cp65001-dos zzcs-dos zzcs-dos zz1-dos)) t t t 4 (utf-8-dos mule-utf-8-dos cp65001-dos zzcs-dos zzcs-dos zz1-dos) (utf-8-dos mule-utf-8-dos cp65001-dos zzcs-dos zzcs-dos zz1-dos) (utf-8 mule-utf-8 cp65001 zzcs zzcs zz1) utf-8 [utf-8-unix utf-8-dos utf-8-mac] (1 nil (utf-8-dos mule-utf-8-dos cp65001-dos zzcs-dos zzcs-dos zz1-dos zz2) utf-8) (iso-latin-1 (utf-8 mule-utf-8 cp65001 zzcs zzcs zz1 zz4) (iso-latin-1 iso-8859-1 latin-1 zz4) iso-latin-1) (E (coding-system-error zz5x)) (E (wrong-type-argument symbolp (S (122 122 54)))) nil utf-8 (E (wrong-type-argument symbolp (S (117 116 102 45 56)))) 88 (E (wrong-type-argument characterp a)) 32 (E (wrong-type-argument characterp a)) (E (wrong-type-argument symbolp 5)) (E (wrong-type-argument symbolp (S (120)))) (E (wrong-type-argument symbolp 5)) (E (wrong-type-argument symbolp (S (120)))) 1 (E (wrong-type-argument symbolp (S (117 116 102 45 56)))) 1 (E (wrong-type-argument symbolp 5)) t (t zz) (nil (S (97 98))) ((S (77)) (S (77))) (:ascii-compatible-p t :category coding-category-raw-text :name zzm2 :docstring (S (100 111 99)) :coding-type raw-text :mnemonic 77) (1 nil (zzm3)) (120 (S (227 129 130))) (E (coding-system-error nosuch)) mule-utf-8 no-conversion (E (wrong-type-argument symbolp (S (117 116 102 45 56)))) latin-1 mule-utf-8-dos 1 latin-1 latin-1 nil iso-latin-1-dos utf-8-unix (E (coding-system-error zz-nosuch)) utf-8-dos latin-1 charset coding-category-charset iso-latin-1 49 (S (73 83 79 32 50 48 50 50 32 98 97 115 101 100 32 56 45 98 105 116 32 101 110 99 111 100 105 110 103 32 102 111 114 32 76 97 116 105 110 45 49 32 40 77 73 77 69 58 73 83 79 45 56 56 53 57 45 49 41 46)) 288 137 1137 binary (zz10 zz10-mac zz10-unix ((S (122 122 49 48)))) (zzd zzd-unix ((S (122 122 100))) (zzd) (zzd-mac)) ((zzd2) zzd2 68 69) utf-8 iso-latin-1 (utf-8 mule-utf-8) (iso-latin-1 iso-latin-1) nil ((:ascii-compatible-p t :category coding-category-raw-text :x 1) 0 nil) nil (E (error (S (73 110 118 97 108 105 100 32 99 104 97 114 115 101 116 45 108 105 115 116)))) (E (wrong-type-argument listp 5)) (E (wrong-type-argument sequencep 5)) (E (wrong-type-argument symbolp 5)) (E (wrong-type-argument symbolp (S (120)))) (E (wrong-type-argument symbolp 5)) (E (wrong-type-argument symbolp 5)) (E (wrong-type-argument characterp a)) (E (wrong-type-argument listp 5)) (E (error (S (73 110 118 97 108 105 100 32 101 111 108 45 116 121 112 101)))) (E (wrong-number-of-arguments define-coding-system-internal . 13)) (E (wrong-number-of-arguments define-coding-system-internal . 14)) (E (error (S (73 110 118 97 108 105 100 32 101 110 100 105 97 110 58 32 115 105 100 101 119 97 121 115)))) (E (wrong-type-argument symbolp (S (98 105 103)))) (E (coding-system-error nosuch)) nil (E (error (S (84 104 101 114 101 32 115 104 111 117 108 100 32 98 101 32 116 104 114 101 101 32 111 114 32 102 111 117 114 32 99 104 97 114 115 101 116 115)))) (E (error (S (68 105 109 101 110 115 105 111 110 32 111 102 32 99 104 97 114 115 101 116 32 108 97 116 105 110 45 105 115 111 56 56 53 57 45 49 32 105 115 32 110 111 116 32 116 119 111)))) (E (error (S (84 104 101 114 101 32 115 104 111 117 108 100 32 98 101 32 106 117 115 116 32 116 119 111 32 99 104 97 114 115 101 116 115)))) (E (error (S (68 105 109 101 110 115 105 111 110 32 111 102 32 99 104 97 114 115 101 116 32 98 105 103 53 32 105 115 32 110 111 116 32 111 110 101)))) (E (wrong-number-of-arguments define-coding-system-internal . 13)) (E (wrong-type-argument vectorp (ascii nil nil nil))) (E (wrong-type-argument consp 5)) (E (wrong-type-argument fixnump a)) (E (args-out-of-range 5 0 3)) (E (wrong-type-argument consp ascii)) (E (wrong-type-argument wholenump -1)) (E (wrong-type-argument charsetp nosuch)) (E (error (S (67 97 110 39 116 32 104 97 110 100 108 101 32 99 104 97 114 115 101 116 32 96 117 110 105 99 111 100 101 39)))) (E (error (S (67 97 110 39 116 32 104 97 110 100 108 101 32 99 104 97 114 115 101 116 32 96 117 110 105 99 111 100 101 39)))) (E (error (S (73 110 118 97 108 105 100 32 99 104 97 114 115 101 116 45 108 105 115 116)))) (E (wrong-number-of-arguments define-coding-system-internal . 15)) (E (wrong-type-argument cclp 5)) (E (wrong-number-of-arguments define-coding-system-internal . 14)) ((:ascii-compatible-p nil :category coding-category-undecided) [q37-unix q37-dos q37-mac] (q37-dos) q37) ((:ascii-compatible-p t :category coding-category-charset :y 2) 1 nil (S (161 120))) ((:ascii-compatible-p nil :category coding-category-utf-16-be) (S (254 255 0 97)) coding-category-utf-16-be) ((:ascii-compatible-p nil :category coding-category-utf-8-sig) (S (239 187 191 97))) ((:ascii-compatible-p t :category coding-category-utf-8-auto) coding-category-utf-8-auto) ((S (161)) (ascii)) (S (128)) 7 (E (coding-system-error zzself-target-nosuch)) ((utf-8-dos mule-utf-8-dos cp65001-dos zzcs-dos zzcs-dos zz1-dos zz2 zz4-dos nil-dos zz7-dos zz10-dos utf-8-dos-alias) nil 1) (utf-8 mule-utf-8 cp65001 zzcs zzcs zz1 zz4 nil zz7 zz10 zzrep zzrep) (t zzauto t nil) (zzauto2 [zzauto2-unix zzauto2-dos zzauto2-mac]) (coding-system-error zzauto3) "a" (E (wrong-type-argument symbolp (S (117 116 102 45 56)))) (E (wrong-type-argument symbolp 5)) (no-conversion binary) (:ascii-compatible-p t :category coding-category-raw-text :name no-conversion :mnemonic 61 :coding-type raw-text :ascii-compatible-p t :default-char 0 :for-unibyte t :docstring (S (68 111 32 110 111 32 99 111 110 118 101 114 115 105 111 110 46 10 10 87 104 101 110 32 121 111 117 32 118 105 115 105 116 32 97 32 102 105 108 101 32 119 105 116 104 32 116 104 105 115 32 99 111 100 105 110 103 44 32 116 104 101 32 102 105 108 101 32 105 115 32 114 101 97 100 32 105 110 116 111 32 97 10 117 110 105 98 121 116 101 32 98 117 102 102 101 114 32 97 115 32 105 115 44 32 116 104 117 115 32 101 97 99 104 32 98 121 116 101 32 111 102 32 97 32 102 105 108 101 32 105 115 32 116 114 101 97 116 101 100 32 97 115 32 97 10 99 104 97 114 97 99 116 101 114 46)) :eol-type unix) no-conversion 0 nil (E (wrong-type-argument symbolp 5)) (E (wrong-type-argument symbolp (S (117 116 102 45 56)))))"###,
+        "coding_system_objects_match_coding_c",
+    );
+}
+
+#[test]
+fn font_spec_name_parsing_matches_gnu_font_tests() {
+    // test/src/font-tests.el's font-parse-tests--data and
+    // font-parse-xlfd-test names, parsed by font.c's font_parse_fcname
+    // (fontconfig and GTK forms) and font_parse_xlfd.
+    assert_oracle_contract_matches_interpreter(
+        r#"(mapcar (lambda (name) (let ((spec (font-spec :name name))) (cons name (mapcar (lambda (key) (font-get spec key)) (quote (:family :size :weight :slant :spacing :foundry)))))) (quote (" " "Monospace" "Monospace Serif" "Foo1" "12" "12 " "Foo:" "Foo-8" "Foo-18:" "Foo-18:light" "Foo 10:weight=bold" "Foo-12:weight=bold" "Foo 8-20:slant=oblique" "Foo:light:roman" "Foo:italic:roman" "Foo 12:light:oblique" "Foo-12:demibold:oblique" "Foo:black:proportional" "Foo-10:black:proportional" "Foo:weight=normal" "Foo:weight=bold" "Foo:weight=bold:slant=italic" "Foo:weight=bold:slant=italic:mono" "Foo-10:demibold:slant=normal" "Foo 11-16:oblique:weight=bold" "Foo:oblique:randomprop=randomtag:weight=bold" "Foo:randomprop=randomtag:bar=baz" "Foo Book Light:bar=baz" "Foo Book Light 10:bar=baz" "Foo Book Light-10:bar=baz" "Oblique" "Bold 17" "17 Bold" "Book Oblique 2" "Bar 7" "Bar Ultra-Light" "Bar Light 8" "Bar Book Medium 9" "Bar Semi-Bold Italic 10" "Bar Semi-Condensed Bold Italic 11" "Foo 10 11" "Foo 1985 Book" "Foo 1985 A Book" "Foo 1 Book 12" "Foo A Book 12 A" "Foo 1985 Book 12 Oblique" "Foo 1985 Book 12 Italic 10" "Foo Book Bar 6 Italic" "Foo Book Bar Bold" "-GNU -FreeSans-semibold-italic-normal-*-*-*-*-*-*-0-iso10646-1" "-Take-mikachan-PS-normal-normal-normal-*-*-*-*-*-*-0-iso10646-1" "-foundry-name-with-lots-of-dashes-normal-normal-normal-*-*-*-*-*-*-0-iso10646-1")))"#,
+        r#"((" " \  nil nil nil nil nil) ("Monospace" Monospace nil nil nil nil nil) ("Monospace Serif" Monospace\ Serif nil nil nil nil nil) ("Foo1" Foo1 nil nil nil nil nil) ("12" nil 12.0 nil nil nil nil) ("12 " 12\  nil nil nil nil nil) ("Foo:" Foo nil nil nil nil nil) ("Foo-8" Foo 8.0 nil nil nil nil) ("Foo-18:" Foo 18.0 nil nil nil nil) ("Foo-18:light" Foo 18.0 light nil nil nil) ("Foo 10:weight=bold" Foo\ 10 nil bold nil nil nil) ("Foo-12:weight=bold" Foo 12.0 bold nil nil nil) ("Foo 8-20:slant=oblique" Foo\ 8 20.0 nil oblique nil nil) ("Foo:light:roman" Foo nil light roman nil nil) ("Foo:italic:roman" Foo nil nil roman nil nil) ("Foo 12:light:oblique" Foo\ 12 nil light oblique nil nil) ("Foo-12:demibold:oblique" Foo 12.0 demibold oblique nil nil) ("Foo:black:proportional" Foo nil black nil 0 nil) ("Foo-10:black:proportional" Foo 10.0 black nil 0 nil) ("Foo:weight=normal" Foo nil normal nil nil nil) ("Foo:weight=bold" Foo nil bold nil nil nil) ("Foo:weight=bold:slant=italic" Foo nil bold italic nil nil) ("Foo:weight=bold:slant=italic:mono" Foo nil bold italic 100 nil) ("Foo-10:demibold:slant=normal" Foo 10.0 demibold normal nil nil) ("Foo 11-16:oblique:weight=bold" Foo\ 11 16.0 bold oblique nil nil) ("Foo:oblique:randomprop=randomtag:weight=bold" Foo nil bold oblique nil nil) ("Foo:randomprop=randomtag:bar=baz" Foo nil nil nil nil nil) ("Foo Book Light:bar=baz" Foo\ Book\ Light nil nil nil nil nil) ("Foo Book Light 10:bar=baz" Foo\ Book\ Light\ 10 nil nil nil nil nil) ("Foo Book Light-10:bar=baz" Foo\ Book\ Light 10.0 nil nil nil nil) ("Oblique" nil nil nil oblique nil nil) ("Bold 17" nil 17.0 bold nil nil nil) ("17 Bold" \17 nil bold nil nil nil) ("Book Oblique 2" nil 2.0 book oblique nil nil) ("Bar 7" Bar 7.0 nil nil nil nil) ("Bar Ultra-Light" Bar nil ultra-light nil nil nil) ("Bar Light 8" Bar 8.0 light nil nil nil) ("Bar Book Medium 9" Bar 9.0 medium nil nil nil) ("Bar Semi-Bold Italic 10" Bar 10.0 semi-bold italic nil nil) ("Bar Semi-Condensed Bold Italic 11" Bar 11.0 bold italic nil nil) ("Foo 10 11" Foo\ 10 11.0 nil nil nil nil) ("Foo 1985 Book" Foo\ 1985 nil book nil nil nil) ("Foo 1985 A Book" Foo\ 1985\ A nil book nil nil nil) ("Foo 1 Book 12" Foo\ 1 12.0 book nil nil nil) ("Foo A Book 12 A" Foo\ A\ Book\ 12\ A nil nil nil nil nil) ("Foo 1985 Book 12 Oblique" Foo\ 1985\ Book\ 12 nil nil oblique nil nil) ("Foo 1985 Book 12 Italic 10" Foo\ 1985\ Book\ 12 10.0 nil italic nil nil) ("Foo Book Bar 6 Italic" Foo\ Book\ Bar\ 6 nil nil italic nil nil) ("Foo Book Bar Bold" Foo\ Book\ Bar nil bold nil nil nil) ("-GNU -FreeSans-semibold-italic-normal-*-*-*-*-*-*-0-iso10646-1" FreeSans nil semibold italic nil GNU\ ) ("-Take-mikachan-PS-normal-normal-normal-*-*-*-*-*-*-0-iso10646-1" mikachan-PS nil normal normal nil Take) ("-foundry-name-with-lots-of-dashes-normal-normal-normal-*-*-*-*-*-*-0-iso10646-1" name-with-lots-of-dashes nil normal normal nil foundry))"#,
+        "font_parse_name",
+    );
 }
 
 #[test]
@@ -14941,6 +15542,61 @@ fn native_gnutls_advertises_loaded_host_capabilities() {
 }
 
 #[test]
+fn gnutls_available_p_conses_capabilities_as_gnutls_c() {
+    // gnutls.c sets `libgnutls-version' at startup from the version the
+    // build was configured with, and Fgnutls_available_p conses `gnutls',
+    // `ClientHello\ Padding' (3.2.5 on), `gnutls3', `digests', `ciphers',
+    // `AEAD-ciphers' and `macs', then each new extension name below 100.
+    let mut interp = Interpreter::new();
+    let mut env = crate::lisp::types::Env::new();
+    let mut eval = |source: &str| {
+        let form = Reader::new(source)
+            .read()
+            .expect("GnuTLS capability probe should parse")
+            .expect("GnuTLS capability probe should contain a form");
+        interp
+            .eval(&form, &mut env)
+            .expect("GnuTLS capability probe should evaluate")
+    };
+    let startup = eval("libgnutls-version");
+    if let Some(version) = option_env!("EMAXX_GNUTLS_VERSION") {
+        assert_eq!(
+            startup,
+            Value::Integer(
+                version
+                    .parse()
+                    .expect("the configured GnuTLS version is an integer")
+            )
+        );
+    } else {
+        assert_eq!(startup, Value::Integer(-1));
+    }
+    assert_eq!(
+        eval(
+            "(let* ((capabilities (gnutls-available-p))
+                    (base (memq 'macs capabilities))
+                    (extensions (cdr (memq 'macs (reverse capabilities)))))
+               (list (equal (delq 'AEAD-ciphers
+                                  (delq 'ClientHello\\ Padding
+                                        (copy-sequence base)))
+                            '(macs ciphers digests gnutls3 gnutls))
+                     (eq (and (memq 'ClientHello\\ Padding base) t)
+                         (>= libgnutls-version 30205))
+                     (or (< libgnutls-version 30501)
+                         (and (memq 'Server\\ Name\\ Indication extensions) t))
+                     (catch 'repeated
+                       (while capabilities
+                         (if (memq (car capabilities) (cdr capabilities))
+                             (throw 'repeated nil))
+                         (setq capabilities (cdr capabilities)))
+                       t)
+                     (null (memq nil (mapcar #'symbolp extensions)))))"
+        ),
+        Value::list([Value::T, Value::T, Value::T, Value::T, Value::T])
+    );
+}
+
+#[test]
 fn native_gnutls_catalogs_and_error_diagnostics_use_the_host_library() {
     let program = r#"
         (progn
@@ -17205,6 +17861,210 @@ fn commandp_follows_fcommandp_order_and_property_error() {
 }
 
 #[test]
+fn commandp_reads_autoloads_closures_and_lambda_bodies_as_fcommandp() {
+    // eval.c Fcommandp: an autoload is a command by its fourth element
+    // alone (a `keymap' TYPE is not), read with Fcar/Fcdr so an improper
+    // one signals; a `lambda' list answers by Fassq of `interactive' in
+    // its body, which signals on an improper body it reaches the end of;
+    // a closure is a command when it has an interactive slot, and one
+    // whose docstring slot holds no docstring asks `interactive-form'.
+    let program = r#"
+        (list
+         (progn (autoload 'emaxx-cmd-kmap "x" nil nil 'keymap) (commandp 'emaxx-cmd-kmap))
+         (progn (autoload 'emaxx-cmd-int "x" nil 'foo) (commandp 'emaxx-cmd-int))
+         (condition-case e (commandp '(autoload . 5)) (error e))
+         (condition-case e (commandp '(autoload "f" . 5)) (error e))
+         (condition-case e (commandp '(lambda () . 5)) (error e))
+         (condition-case e (commandp '(lambda (x) (interactive) . 5)) (error e))
+         (condition-case e (commandp '(lambda x . 5)) (error e))
+         (commandp '(lambda () 1 (interactive)))
+         (commandp '(lambda (interactive)))
+         (commandp '(lambda () (interactive . 3)))
+         (commandp (make-byte-code nil "\300\207" [1] 1 nil nil))
+         (commandp (make-byte-code nil "\300\207" [1] 1 nil))
+         (commandp (make-byte-code nil "\300\207" [1] 1 '("f" . 3)))
+         (commandp (make-byte-code nil "\300\207" [1] 1 'emaxx-sym))
+         (commandp (make-interpreted-closure nil '(1) nil nil '(interactive)))
+         (commandp (record 'foo))
+         (progn (defun emaxx-cmd-adv () 1)
+                (advice-add 'emaxx-cmd-adv :around #'ignore)
+                (commandp 'emaxx-cmd-adv)))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "(nil t (wrong-type-argument listp 5) (wrong-type-argument listp 5) \
+         (wrong-type-argument listp 5) t (wrong-type-argument listp 5) t nil t t nil nil nil t \
+         nil t)",
+        "commandp kinds",
+    );
+}
+
+#[test]
+fn visited_file_modtime_and_dedicated_windows_as_fileio_c_and_window_c() {
+    // buffer.h's modtime is a time or a sentinel, unknown (0) or a file
+    // that did not exist (-1), with the size it had: set-visited-file-
+    // modtime takes a flag of 0 or -1 or a time, or else the visited
+    // file's status (none in an indirect buffer; a missing file changes
+    // nothing), verify-visited-file-modtime compares the status as
+    // time_error_value reads a failure, a visit of a missing file
+    // records -1, and the first change's undo entry is (t . -1).
+    // Fset_window_buffer decodes a live window and names the buffer a
+    // strongly dedicated window is dedicated to.  A time before the epoch
+    // (Tramp's `tramp-time-doesnt-exist') is a time like any other.
+    let program = r#"
+        (list
+         (condition-case e (with-temp-buffer (set-visited-file-modtime)) (error e))
+         (with-temp-buffer (setq buffer-file-name "/nonexistent/emaxx-vfm") (list (set-visited-file-modtime) (visited-file-modtime)))
+         (with-temp-buffer (setq buffer-file-name "/etc/passwd") (set-visited-file-modtime) (list (consp (visited-file-modtime)) (verify-visited-file-modtime)))
+         (with-temp-buffer (set-visited-file-modtime -1) (visited-file-modtime))
+         (condition-case e (with-temp-buffer (set-visited-file-modtime 1)) (error e))
+         (with-temp-buffer (set-visited-file-modtime -1) (setq buffer-file-name "/nonexistent/emaxx-vfm") (verify-visited-file-modtime))
+         (with-temp-buffer (set-visited-file-modtime '(1 . 2)) (visited-file-modtime))
+         (let ((b (get-buffer-create "emaxx-vfm-base"))) (with-current-buffer (make-indirect-buffer b "emaxx-vfm-ind") (list (condition-case e (set-visited-file-modtime) (error e)) (set-visited-file-modtime 0) (visited-file-modtime))))
+         (with-current-buffer (get-buffer-create "emaxx-vfm-u") (condition-case nil (insert-file-contents "/nonexistent/emaxx-vfm" t) (error nil)) (insert "a") (list (visited-file-modtime) buffer-undo-list))
+         (progn (delete-other-windows) (let ((w (split-window))) (set-window-buffer w (get-buffer-create "emaxx-ded")) (set-window-dedicated-p w t) (prog1 (condition-case e (set-window-buffer w "*Messages*") (error e)) (delete-window w))))
+         (condition-case e (set-window-buffer 5 "*Messages*") (error e))
+         (with-temp-buffer (set-visited-file-modtime '(-1 65535)) (visited-file-modtime))
+         (with-temp-buffer (set-visited-file-modtime '(-1 65535 999999)) (setq buffer-undo-list nil) (insert "a") (list (visited-file-modtime) buffer-undo-list)))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        r#"((wrong-type-argument stringp nil) (nil 0) (t t) -1 (args-out-of-range 1 -1 0) t (0 0 500000 0) ((error "An indirect buffer does not have a visited file") nil 0) (-1 ((1 . 2) (t . -1))) (error "Window is dedicated to `emaxx-ded'") (wrong-type-argument window-live-p 5) (-1 65535 0 0) ((-1 65535 999999 0) ((1 . 2) (t -1 65535 999999 0))))"#,
+        "visited file modtime",
+    );
+}
+
+#[test]
+fn face_primitives_check_their_arguments_as_xfaces_c() {
+    // xfaces.c: internal-get-lisp-face-attribute decodes FRAME, finds the face
+    // ("Invalid face", a face named by no symbol among them) before it
+    // checks SYMBOL and KEYWORD, and knows neither :bold nor :italic; the
+    // X resource setter converts the string for its attribute and calls
+    // internal-set-lisp-face-attribute; face-font finds the frame's face,
+    // which a text frame realizes with no font; font-at's range error is
+    // args_out_of_range_3.
+    let program = r###"
+(list
+ (condition-case e (internal-get-lisp-face-attribute 'default :bold) (error e))
+ (internal-get-lisp-face-attribute 'default :reverse-video)
+ (condition-case e (internal-get-lisp-face-attribute 'default nil) (error e))
+ (condition-case e (internal-get-lisp-face-attribute 5 :family) (error e))
+ (condition-case e (internal-get-lisp-face-attribute nil :family) (error e))
+ (condition-case e (internal-get-lisp-face-attribute "default" :family t) (error e))
+ (condition-case e (internal-get-lisp-face-attribute 'default :family 5) (error e))
+ (condition-case e (internal-set-lisp-face-attribute-from-resource 'default :height "abc") (error e))
+ (condition-case e (internal-set-lisp-face-attribute-from-resource 'default :height "1.5") (error e))
+ (condition-case e (internal-set-lisp-face-attribute-from-resource 'default :bold "maybe") (error e))
+ (internal-set-lisp-face-attribute-from-resource 'default :underline "red")
+ (condition-case e (internal-set-lisp-face-attribute-from-resource 'default :weight "bold" 5) (error e))
+ (condition-case e (internal-set-lisp-face-attribute-from-resource "default" :weight "bold") (error e))
+ (condition-case e (internal-set-lisp-face-attribute-from-resource 'default :weight 5) (error e))
+ (condition-case e (internal-set-lisp-face-attribute-from-resource 'default nil "x") (error e))
+ (condition-case e (face-font 5) (error e))
+ (condition-case e (face-font nil) (error e))
+ (condition-case e (face-font 'default 5) (error e))
+ (condition-case e (face-font 'nosuch t) (error e))
+ (face-font 'default nil)
+ (let ((face-remapping-alist '((nosuchface bold)))) (face-font 'nosuchface))
+ (condition-case e (internal-lisp-face-empty-p 5) (error e))
+ (condition-case e (internal-lisp-face-equal-p 5 'default) (error e))
+ (condition-case e (internal-merge-in-global-face 5 nil) (error e))
+ (condition-case e (font-at 5 nil "abc") (error e)))"###;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        r###"((error "Invalid face attribute name" :bold) nil (error "Invalid face attribute name") (error "Invalid face" 5) (error "Invalid face") (wrong-type-argument symbolp "default") (wrong-type-argument frame-live-p 5) (error "Invalid face height from X resource" 0) (error "Invalid face height from X resource" 1.5) (error "Invalid face attribute value from X resource" "maybe") default (wrong-type-argument frame-live-p 5) (wrong-type-argument symbolp "default") (wrong-type-argument stringp 5) (error "Invalid face attribute name") (error "Invalid face" 5) (error "Invalid face") (wrong-type-argument frame-live-p 5) (error "Invalid face" nosuch) nil nil (error "Invalid face" 5) (error "Invalid face" 5) (wrong-type-argument frame-live-p nil) (args-out-of-range "abc" 5))"###,
+        "face primitives",
+    );
+}
+
+#[test]
+fn face_attributes_as_vector_merges_as_merge_face_ref() {
+    // xfaces.c:merge_face_ref on the selected frame: a plist, a face name
+    // (remapped, with a remap of a face to itself its own definition), a
+    // list of faces, a color pair or a :filtered reference merged into an
+    // unspecified vector, each bad reference logged by add_to_log.
+    let program = r###"
+(list
+ (face-attributes-as-vector 5)
+ (face-attributes-as-vector '(:foreground "red" :weight bold))
+ (face-attributes-as-vector '(:height 1.5 :height 2))
+ (face-attributes-as-vector '(bold italic))
+ (face-attributes-as-vector '(foreground-color . "red"))
+ (face-attributes-as-vector '(background-color . 5))
+ (face-attributes-as-vector '(:inherit bold :foreground "red"))
+ (face-attributes-as-vector '(:box t :weight nosuch))
+ (face-attributes-as-vector '(:filtered (:window foo bar) bold))
+ (face-attributes-as-vector '(:filtered nil bold))
+ (face-attributes-as-vector '(:filtered 5 bold))
+ (face-attributes-as-vector '(:filtered nil))
+ (face-attributes-as-vector 'mode-line)
+ (let ((face-remapping-alist '((bold italic)))) (face-attributes-as-vector 'bold))
+ (let ((face-remapping-alist '((bold . bold)))) (face-attributes-as-vector 'bold))
+ (with-current-buffer "*Messages*" (let ((s (buffer-string))) (substring s (string-search "Invalid face reference: 5" s)))))"###;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        r###"([unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified] [unspecified unspecified unspecified unspecified unspecified bold unspecified unspecified unspecified "red" unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified] [unspecified unspecified unspecified unspecified 2 unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified] [unspecified unspecified unspecified unspecified unspecified bold italic unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified nil unspecified unspecified unspecified] [unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified "red" unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified] [unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified] [unspecified unspecified unspecified unspecified unspecified bold unspecified unspecified unspecified "red" unspecified unspecified unspecified unspecified unspecified unspecified nil unspecified unspecified unspecified] [unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified 1 unspecified unspecified unspecified unspecified unspecified] [unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified] [unspecified unspecified unspecified unspecified unspecified bold unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified nil unspecified unspecified unspecified] [unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified] [unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified] [unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified t unspecified unspecified unspecified unspecified unspecified unspecified unspecified nil unspecified unspecified unspecified] [unspecified unspecified unspecified unspecified unspecified unspecified italic unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified nil unspecified unspecified unspecified] [unspecified unspecified unspecified unspecified unspecified bold unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified nil unspecified unspecified unspecified] "Invalid face reference: 5
+Invalid face color 5
+Invalid face attribute :weight nosuch
+Invalid face filter 5
+Invalid face ref (:filtered nil)
+")"###,
+        "face-attributes-as-vector",
+    );
+}
+
+#[test]
+fn image_specifications_as_valid_image_p() {
+    // image.c:valid_image_p: parse_image_spec over each image type's keyword
+    // table, xbm's bits or text (xbm_file_p's #defines within max-image-size),
+    // xpm's color symbols; image-size and image-mask-p signal for an invalid
+    // spec and decode_window_system_frame for a valid one, image-metadata
+    // answers nil for an invalid one; Fbitmap_spec_p as xfaces.c's.
+    let program = r###"
+(list
+ (mapcar #'imagep '((image :type png :file "x") (image :type png) (image :type png :file "x" :data "y")
+   (image :type png :file "x" :foo 3) (image :file "x" :type png) (image :type png :file "x" :file "y")
+   (image :type nosuch :file "x") (image :type xbm :data-width 8 :data-height 2 :data "ab")
+   (image :type xbm :data-width 8 :data-height 3 :data "ab") (image :type xbm :width 8 :height 2 :data "ab")
+   (image :type xbm :data "#define foo_width 8\n#define foo_height 2\n")
+   (image :type xbm :data "#define foo_width 8\n#define foo_height 2")
+   (image :type xbm :data "/* c */ #define foo_width 0x8\n#define foo_height 02\n")
+   (image :type xbm :data-width 8 :data-height 2 :stride 16 :data "abc")
+   (image :type xpm :data "x" :color-symbols (("a" . 5))) (image :type png :file "x" :ascent 101)
+   (image :type png :file "x" :margin (1 . 2)) (image :type png :file "x" . 5) (image 5 6 :type png :file "x")
+   (image :type tiff :file "x" :index -1) (image :type svg :data "x" :css 5)))
+ (let ((max-image-size 4)) (imagep '(image :type xbm :data "#define foo_width 8\n#define foo_height 2\n")))
+ (condition-case e (image-size '(image :type png :file "x")) (error e))
+ (condition-case e (image-size 5) (error e))
+ (condition-case e (image-size '(image :type png :file "x") nil 5) (error e))
+ (condition-case e (image-mask-p 5) (error e))
+ (image-metadata 5)
+ (condition-case e (image-metadata '(image :type png :file "x")) (error e))
+ (image-flush '(image :type png :file "x") t)
+ (condition-case e (image-flush '(image :type png :file "x") 5) (error e))
+ (condition-case e (clear-image-cache (selected-frame)) (error e))
+ (clear-image-cache 5)
+ (mapcar #'bitmap-spec-p '((8 1 "a" . 5) (8 1 . "a") (8 2 "a") (16 1 "ab") (8 1 a) (9 2 "abc") (8 1 "é") (0 1 "a"))))"###;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        r###"((t nil nil t t nil nil t nil nil t nil t nil nil nil t nil nil nil nil) nil (error "Window system frame should be used") (error "Invalid image specification") (wrong-type-argument frame-live-p 5) (error "Invalid image specification") nil (error "Window system frame should be used") nil (wrong-type-argument frame-live-p 5) (error "Window system frame should be used") nil (t nil nil t nil nil t nil))"###,
+        "image specifications",
+    );
+}
+
+#[test]
+fn initial_frame_faces_and_parameters_are_a_restored_frames() {
+    // pdumper records no frames: init_display sets up a new initial frame,
+    // whose faces come default first, then the basic faces, then the rest,
+    // and whose parameters are the ones startup stores in it.
+    let program = r###"
+(let (keys) (maphash (lambda (k _v) (push k keys)) (frame--face-hash-table)) (list (seq-take (nreverse keys) 21) (mapcar #'car (frame-parameters))))"###;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        r###"((default mode-line-active mode-line-inactive tool-bar fringe header-line scroll-bar border cursor mouse menu vertical-border window-divider window-divider-first-pixel window-divider-last-pixel internal-border child-frame-border tab-bar tab-line bold italic) (tab-bar-lines menu-bar-lines buried-buffer-list buffer-list unsplittable modeline width height name font background-color foreground-color cursor-color scroll-bar-background scroll-bar-foreground background-mode display-type minibuffer))"###,
+        "initial frame",
+    );
+}
+
+#[test]
 fn tty_color_primitives_follow_xfaces_c() {
     // xfaces.c on a tty frame: color-gray-p and color-supported-p go
     // through tty_defined_color (Lisp `tty-color-desc'), color-distance
@@ -17756,6 +18616,21 @@ fn unify_charset_validates_and_deunifies_like_charset_c() {
         .eval(&form, &mut crate::lisp::types::Env::new())
         .expect("evaluate unify-charset program");
     assert_eq!(result.to_string(), expected);
+}
+
+#[test]
+fn deunifiers_load_when_charsets_are_walked_or_encoded_but_not_while_dumping() {
+    // charset.c:load_charset (CHARSET, 2) makes a unified charset's
+    // deunifier for map_charset_chars and encode_char, not decode_char;
+    // while loadup sets `inhibit-load-charset-map' the table goes to
+    // temp_charset_work instead, so characters.el's walks over gb2312,
+    // big5 and cns11643-1 leave the dumped charsets without one, and
+    // Funify_charset still checks a new map argument.
+    assert_oracle_contract_matches_interpreter(
+        r#"(list (progn (map-charset-chars 'ignore 'japanese-jisx0212) (condition-case e (unify-charset 'japanese-jisx0212 42) (error e))) (progn (decode-char 'chinese-gb2312 #x3021) (condition-case e (unify-charset 'chinese-gb2312 42) (error e))) (progn (encode-char #x4e00 'chinese-gbk) (condition-case e (unify-charset 'chinese-gbk 42) (error e))) (condition-case e (unify-charset 'big5 42) (error e)) (condition-case e (unify-charset 'chinese-cns11643-1 42) (error e)))"#,
+        r#"(nil (error "Bad unify-map" 42) nil (error "Bad unify-map" 42) (error "Bad unify-map" 42))"#,
+        "deunifiers",
+    );
 }
 
 #[test]
@@ -25023,15 +25898,35 @@ fn native_display_connection_management_stops_at_the_headless_backend() {
     .read()
     .expect("headless display connection boundary should parse")
     .expect("headless display connection boundary should contain a form");
-    let unavailable = Value::list([
-        Value::symbol("error"),
-        Value::string("Window system is not in use or not initialized"),
-    ]);
-    assert_eq!(
-        interp
-            .eval(&boundary, &mut env)
-            .expect("headless display connection errors should be catchable"),
-        Value::list(std::iter::repeat_n(unavailable, 6))
+    let actual = interp
+        .eval(&boundary, &mut env)
+        .expect("headless display connection errors should be catchable");
+    // The contracted X build: x_term_init cannot open the display, the
+    // resource string is checked first, and check_x_display_info names
+    // each designator's error.
+    #[cfg(target_os = "linux")]
+    let expected = Reader::new(
+        r#"((error "Display display can't be opened")
+            (wrong-type-argument stringp 42)
+            (error "X windows are not in use or not initialized")
+            (error "Window system frame should be used")
+            (error "Terminal 0 is not an X display")
+            (error "Display missing can't be opened"))"#,
+    )
+    .read()
+    .expect("X display boundary should parse")
+    .expect("X display boundary should exist");
+    #[cfg(not(target_os = "linux"))]
+    let expected = Value::list(std::iter::repeat_n(
+        Value::list([
+            Value::symbol("error"),
+            Value::string("Window system is not in use or not initialized"),
+        ]),
+        6,
+    ));
+    assert!(
+        values_equal(&interp, &actual, &expected).expect("equal"),
+        "display connection boundary differs:\nactual: {actual:?}\nexpected: {expected:?}"
     );
 }
 
@@ -27260,7 +28155,8 @@ fn active_minibuffer_selected_window_tracks_entry_across_nested_reads() {
         "a nested read remembers the outer minibuffer window"
     );
 
-    crate::lisp::primitives::restore_active_minibuffer(&mut interp, inner, &mut env);
+    crate::lisp::primitives::unwind_active_minibuffer(&mut interp, inner, &mut env)
+        .expect("unwind the nested read");
     assert_eq!(
         interp.active_minibuffer_activation_id(),
         Some(outer_activation),
@@ -27272,7 +28168,8 @@ fn active_minibuffer_selected_window_tracks_entry_across_nested_reads() {
         entry,
         "unwinding the nested read restores the outer entry window"
     );
-    crate::lisp::primitives::restore_active_minibuffer(&mut interp, outer, &mut env);
+    crate::lisp::primitives::unwind_active_minibuffer(&mut interp, outer, &mut env)
+        .expect("unwind the outer read");
     assert_eq!(interp.active_minibuffer_activation_id(), None);
     assert_eq!(
         call(&mut interp, "selected-window", &[], &mut env).expect("restored selection"),
@@ -27777,7 +28674,9 @@ fn window_end_and_posn_follow_published_interactive_geometry() {
 }
 
 #[test]
-fn recenter_uses_the_published_window_height_for_negative_lines() {
+fn recenter_counts_the_window_body_for_negative_lines() {
+    // window.c:Frecenter counts the selected window's body lines in batch
+    // as well: (recenter -3) puts point 3 rows above the window's last.
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
     interp.set_variable("noninteractive", Value::T, &mut env);
@@ -27790,13 +28689,11 @@ fn recenter_uses_the_published_window_height_for_negative_lines() {
         )
         .expect("insert seeds the buffer");
     }
-    set_interactive_window_metrics(Some(InteractiveWindowMetrics {
-        text_height: 22,
-        window_end: 199,
-    }));
-    // Point on line 31; (recenter -3) puts it 3 rows above the bottom of
-    // a 22-row window: 19 lines above the start, so the window starts at
-    // line 12 (simple.el's end-of-buffer contract).
+    let body = call(&mut interp, "window-body-height", &[], &mut env)
+        .expect("window-body-height")
+        .as_integer()
+        .expect("a window's body height is an integer");
+    // Point on line 31, 3 rows above the bottom of the body.
     call(
         &mut interp,
         "goto-char",
@@ -27806,11 +28703,11 @@ fn recenter_uses_the_published_window_height_for_negative_lines() {
     .expect("goto-char");
     call(&mut interp, "recenter", &[Value::Integer(-3)], &mut env).expect("recenter");
     let start = call(&mut interp, "window-start", &[], &mut env).expect("window-start");
-    set_interactive_window_metrics(None);
     assert_eq!(
         start,
-        Value::Integer((11 * 9 + 1) as i64),
-        "window starts 19 lines above point"
+        Value::Integer((30 - (body - 3)) * 9 + 1),
+        "window starts {} lines above point",
+        body - 3
     );
 }
 
@@ -34049,6 +34946,722 @@ fn file_name_completion_walks_the_directory_as_dired_c() {
                   (delete-directory dir t)))"#,
         r#"("foo" "foobar" ("FOOBA" "fooba" "dir") "x.el" "x.el" "yy" "obj.d/" "Dir1/" nil "." "../" "foobar" "foobar" ("foo" "foobar") (wrong-type-argument wholenump -1))"#,
         "file-name-completion",
+    );
+}
+
+#[test]
+fn throw_vectors_file_modes_and_minibuffer_window_as_their_c() {
+    // eval.c:Fthrow looks for a catcher only for a non-nil tag;
+    // Finternal_make_var_non_special returns nil; alloc.c's
+    // Fmake_vector and Fmake_list refuse a length that is no fixnum or
+    // negative with `wholenump'; Fminibuffer_selected_window is nil with
+    // no minibuffer active; fileio.c's Fset_file_modes is CHECK_FIXNUM and
+    // fchmodat, "Doing chmod" its error, and Faccess_file reports
+    // faccessat's own errno.
+    assert_oracle_contract_matches_interpreter(
+        r#"(list
+ (condition-case e (catch nil (throw nil 5)) (no-catch e))
+ (progn (defconst t251-c 1) (internal-make-var-non-special 't251-c))
+ (condition-case e (make-vector -1 0) (error e))
+ (condition-case e (make-vector 'a 0) (error e))
+ (condition-case e (make-list -1 'a) (error e))
+ (condition-case e (make-list 1.5 'a) (error e))
+ (minibuffer-selected-window)
+ (condition-case e (set-file-modes "/nonexistent-t251/q" #o600) (error e))
+ (condition-case e (set-file-modes "/nonexistent-t251/q" 'a) (error e))
+ (condition-case e (access-file "/nonexistent-t251/q" "Cannot open") (error e)))"#,
+        r#"((no-catch nil 5) nil (wrong-type-argument wholenump -1) (wrong-type-argument wholenump a) (wrong-type-argument wholenump -1) (wrong-type-argument wholenump 1.5) nil (file-missing "Doing chmod" "No such file or directory" "/nonexistent-t251/q") (wrong-type-argument fixnump a) (file-missing "Cannot open" "No such file or directory" "/nonexistent-t251/q"))"#,
+        "throw, make-vector, file modes",
+    );
+}
+
+#[test]
+fn window_text_pixel_size_walks_screen_lines_as_xdisp_c() {
+    // xdisp.c:window_text_pixel_size on a terminal: FROM and TO as given
+    // (t skipping blank lines), the widest line the iterator leaves and
+    // the lines it walks, a line it stops on counted only when a glyph
+    // came first, a newline FROM starting the next line at x 0, a cons
+    // FROM's vertical offset (and START in the value), X-LIMIT as the
+    // line width while measuring, Y-LIMIT ending the walk, a truncated
+    // line's hidden rest, and display strings and invisible text as the
+    // iterator delivers them.
+    assert_oracle_contract_matches_interpreter(
+        r#"(list
+ (with-temp-buffer
+   (insert "abc\ndef")
+   (set-window-buffer nil (current-buffer))
+   (list (window-text-pixel-size nil 4 4) (window-text-pixel-size nil 3 6)
+         (window-text-pixel-size nil 4 8) (window-text-pixel-size nil 5 5)
+         (window-text-pixel-size nil nil nil nil nil nil t)
+         (window-text-pixel-size nil nil nil nil 0)))
+ (with-temp-buffer
+   (insert "\n\nabc  \n\n")
+   (set-window-buffer nil (current-buffer))
+   (list (window-text-pixel-size nil t t) (window-text-pixel-size nil t nil)))
+ (with-temp-buffer
+   (insert "abc\ndef\nghi")
+   (set-window-buffer nil (current-buffer))
+   (list (window-text-pixel-size nil '(5 . 1)) (window-text-pixel-size nil '(9 . -1))
+         (window-text-pixel-size nil '(1 . 2) 6) (window-text-pixel-size nil nil nil nil 1)))
+ (with-temp-buffer
+   (insert (make-string 100 ?a))
+   (set-window-buffer nil (current-buffer))
+   (list (window-text-pixel-size nil nil nil 30) (window-text-pixel-size nil nil nil 30 2)
+         (window-text-pixel-size nil nil nil 0)))
+ (with-temp-buffer
+   (insert (make-string 100 ?a) "\nbc")
+   (set-window-buffer nil (current-buffer))
+   (setq truncate-lines t)
+   (list (window-text-pixel-size nil 1 40 50) (window-text-pixel-size nil 1 70 50)
+         (window-text-pixel-size nil 1 101 50) (window-text-pixel-size nil nil nil 50)
+         (window-text-pixel-size nil 60 104 50)))
+ (with-temp-buffer
+   (insert "a\tb" (propertize "cd" 'display "XYZW") "e" (propertize "fg" 'invisible t) "h")
+   (set-window-buffer nil (current-buffer))
+   (list (window-text-pixel-size) (window-text-pixel-size nil 1 5) (window-text-pixel-size nil 5 9)))
+ (with-temp-buffer (insert "abc\nde") (list (buffer-text-pixel-size nil nil 2) (buffer-text-pixel-size nil nil t))))"#,
+        r#"(((-3 . 1) (3 . 2) (3 . 2) (0 . 0) (3 . 1) (0 . 0)) ((5 . 2) (5 . 3)) ((3 1 9) (3 2 5) (0 1 9) (3 . 1)) ((30 . 4) (30 . 2) (0 . 100)) ((39 . 1) (50 . 2) (50 . 2) (50 . 2) (50 . 2)) ((15 . 1) (13 . 1) (1 . 1)) ((2 . 3) (3 . 2)))"#,
+        "window-text-pixel-size",
+    );
+}
+
+#[test]
+fn window_parameters_charset_ranges_and_frame_names_as_the_c() {
+    // window.c:Fwindow_parameters returns Fcopy_alist of the window's
+    // parameters.  charset.c:map_charset_chars computes an offset
+    // charset's range from FROM and TO as they are, whichever is larger.
+    // frame.c:set_term_frame_name names a frame given nil F<num> from
+    // tty_frame_count, and refuses a name of that form.
+    assert_oracle_contract_matches_interpreter(
+        r#"(list
+ (let ((w (selected-window)))
+   (set-window-parameter w 't253-p 2)
+   (let ((params (window-parameters w)))
+     (set-window-parameter w 't253-p nil)
+     (list (assq 't253-p params) (assq 't253-p (window-parameters w)))))
+ (let (r)
+   (map-charset-chars (lambda (range _) (push range r)) 'latin-iso8859-1 nil 192 200)
+   (map-charset-chars (lambda (range _) (push range r)) 'ascii nil 100 50)
+   (nreverse r))
+ (progn
+   (set-frame-name "t253")
+   (set-frame-name nil)
+   (list (frame-parameter nil 'name)
+         (condition-case e (set-frame-name "F9") (error e)))))"#,
+        r#"(((t253-p . 2) (t253-p)) ((320 . 255) (100 . 50)) ("F2" (error "Frame names of the form F<num> are usurped by Emacs")))"#,
+        "window parameters, charset ranges and frame names",
+    );
+}
+
+#[test]
+fn command_history_and_read_char_as_callint_c_and_lread_c() {
+    // callint.c records a call in `command-history' before making it:
+    // a string spec's point, mark and region as the calls that find them,
+    // its other arguments quoted; a Lisp form's values quoted, with
+    // fix_command's `interactive-args' and trailing optional nils, when
+    // RECORD-FLAG asks or reading them consumed input.  An empty line in
+    // a string spec is a newline control letter, a leading `+' is
+    // refused, each `e' takes the next event with parameters, and `*'
+    // under RECORD-FLAG records the call before refusing it.
+    // lread.c:read_filtered_event makes a symbol with an
+    // `ascii-character' base that character, pushes back and refuses
+    // any other non-character for `read-char' and skips it for
+    // `read-char-exclusive'; char_resolve_modifier_mask keeps meta.
+    assert_oracle_contract_matches_interpreter(
+        r#"(list
+ (let ((command-history nil))
+   (with-temp-buffer
+     (insert "hello")
+     (set-mark 2)
+     (goto-char 4)
+     (call-interactively (lambda (a b c d) (interactive "r\nd\nm") (list a b c d)) t))
+   (defun t253-cmd (a &optional b c) (interactive (list 'foo "s" nil)) (list a b c))
+   (call-interactively 't253-cmd t)
+   (let ((unread-command-events (list ?x)))
+     (call-interactively (lambda (c) (interactive (list (read-event))) c)))
+   (call-interactively (lambda (a) (interactive (list 1)) a))
+   (mapcar (lambda (entry) (if (symbolp (car entry)) entry (cdr entry)))
+           command-history))
+ (list
+  (condition-case e (call-interactively (lambda (a b) (interactive "p\n\np") (list a b))) (error e))
+  (condition-case e (call-interactively (lambda (a) (interactive "+p") a)) (error e))
+  (condition-case e (call-interactively 't253-undefined) (error e))
+  (call-interactively (lambda (e f) (interactive "e\ne") (list e f)) nil
+                      (vector ?a '(mouse-1 x) ?b '(mouse-2 y))))
+ (let ((command-history nil))
+   (with-temp-buffer
+     (setq buffer-read-only t)
+     (list (condition-case e (call-interactively (lambda (a) (interactive "*p") a) t)
+             (error (car e)))
+           (length command-history))))
+ (let ((unread-command-events (list 'f1 ?a)))
+   (list (condition-case e (read-char) (error e))
+         unread-command-events
+         (let ((unread-command-events (list 'f1 'return ?\C-\M-a (+ ?% (ash 1 26)))))
+           (list (read-char-exclusive) (read-char-exclusive) (read-char-exclusive)))
+         (condition-case e (read-char 5) (error e)))))"#,
+        r#"(((120) (t253-cmd 'foo "s") ((region-beginning) (region-end) (point) (mark))) ((error "Invalid control letter `
+' (#o012, #x000a) in interactive calling string") (error "`+' is not used in `interactive' for ordinary commands") (wrong-type-argument commandp t253-undefined) ((mouse-1 x) (mouse-2 y))) (buffer-read-only 1) ((error "Non-character input-event") (f1) (13 134217729 67108901) (wrong-type-argument stringp 5)))"#,
+        "command history and read-char",
+    );
+}
+
+#[test]
+fn command_keys_and_lossage_as_keyboard_c() {
+    // keyboard.c:read_char adds each event it returns to this-command-keys,
+    // one reread from `unread-command-events' only as their first and none
+    // under an end time; read-char and read-event add theirs too.
+    // command_loop_1 enters each command in the lossage as (nil . CMD)
+    // before pre-command-hook and empties the keys once it is done.
+    assert_oracle_contract_matches_interpreter(
+        r#"(list
+ (let ((unread-command-events (list ?\C-x ?\C-f)))
+   (list (append (read-key-sequence nil) nil) (this-command-keys-vector) (this-single-command-raw-keys)))
+ (let ((unread-command-events (list ?a ?b)))
+   (list (read-char) (read-event) (this-command-keys-vector)))
+ (progn
+   (clear-this-command-keys t)
+   (let ((unread-command-events (list '(t . ?a) '(t . ?b))))
+     (list (read-char) (read-char) (this-command-keys-vector))))
+ (progn
+   (clear-this-command-keys t)
+   (let ((unread-command-events (list ?a)))
+     (list (read-event nil nil 1) (this-command-keys-vector))))
+ (progn
+   (clear-this-command-keys)
+   (let (seen)
+     (with-temp-buffer
+       (let ((pre-command-hook
+              (list (lambda () (push (list (this-command-keys-vector) (recent-keys t)) seen)))))
+         (execute-kbd-macro "z")))
+     (list (nreverse seen) (this-command-keys-vector) (recent-keys t)))))"#,
+        "(((24 6) [24] [24 6]) (97 98 [24]) (97 98 [97 98]) (97 []) \
+         ((([122] [(nil . self-insert-command)])) [] [(nil . self-insert-command)]))",
+        "command keys and lossage",
+    );
+}
+
+#[test]
+fn timer_check_as_keyboard_c() {
+    // keyboard.c:timer_check considers `timer-idle-list' only while
+    // Emacs is idle, which a batch `sit-for' is not; it runs each ripe
+    // timer through `timer-event-handler', marked triggered first, with
+    // `inhibit-quit' bound to t and `deactivate-mark' put back after.  A
+    // timer a callback adds is not in its copies of the lists, and the
+    // wait it bounds ends before the next check.
+    assert_oracle_contract_matches_interpreter(
+        r#"(list
+ (let* (fired (tm (run-with-idle-timer 0 nil (lambda () (setq fired 'idle)))))
+   (sit-for 0.05)
+   (cancel-timer tm)
+   (list fired (memq tm timer-idle-list)))
+ (let (log)
+   (let ((tm (run-at-time 0 nil (lambda (a b) (push (list a b) log)) 1 2)))
+     (sit-for 0.05)
+     (list log (memq tm timer-list) (timer--triggered tm))))
+ (let (seen)
+   (setq deactivate-mark 'kept)
+   (run-at-time 0 nil (lambda ()
+                        (push (list inhibit-quit deactivate-mark) seen)
+                        (setq deactivate-mark t)))
+   (sit-for 0.05)
+   (prog1 (list seen deactivate-mark) (setq deactivate-mark nil)))
+ (let (log)
+   (run-at-time 0 nil (lambda ()
+                        (push 'outer log)
+                        (run-at-time 0 nil (lambda () (push 'inner log)))))
+   (sit-for 0.05)
+   (prog1 (nreverse log) (sit-for 0.01))))"#,
+        "((nil nil) (((1 2)) nil t) (((t kept)) kept) (outer))",
+        "timer check",
+    );
+}
+
+#[test]
+fn stderr_pipe_process_and_status_notify_as_process_c() {
+    // create_process gives the child its `:stderr' pipe process's
+    // SUBPROCESS_STDOUT and closes the parent's copy: the pipe process
+    // reads the errors on its own channel and at their end turns (exit
+    // 0), whatever the child's status; a later child given it writes its
+    // errors to its own output.  status_notify runs only once no channel
+    // has input, and a live child's output at its end is readable until
+    // the child is reaped, so no sentinel runs before then.
+    assert_oracle_contract_matches_interpreter(
+        r#"(list
+ (let* (log (ends 0)
+        (errp (make-pipe-process
+               :name "t256-err" :noquery t
+               :filter (lambda (_p s) (push (list 'err s) log))
+               :sentinel (lambda (p e)
+                           (setq ends (1+ ends))
+                           (push (list 'err-sentinel e (process-status p) (process-exit-status p)) log))))
+        (proc (make-process
+               :name "t256-child" :noquery t :connection-type 'pipe
+               :command '("sh" "-c" "echo bad >&2; exit 3")
+               :stderr errp
+               :sentinel (lambda (p e)
+                           (setq ends (1+ ends))
+                           (push (list 'child e (process-exit-status p)) log)))))
+   (while (< ends 2)
+     (accept-process-output nil 0.05))
+   (let* (out done
+          (again (make-process
+                  :name "t256-again" :noquery t :connection-type 'pipe
+                  :command '("sh" "-c" "echo e2 >&2")
+                  :stderr errp
+                  :filter (lambda (_p s) (push s out))
+                  :sentinel (lambda (_p _e) (setq done t)))))
+     (while (not done) (accept-process-output nil 0.05))
+     (list (nreverse log) (process-status errp) (process-exit-status errp) out)))
+ (let* (seen
+        (a (make-process :name "t256-a" :noquery t :connection-type 'pipe
+                         :command '("sh" "-c" "exec 1>&- 2>&-; sleep 0.3")))
+        (b (make-process :name "t256-b" :noquery t :connection-type 'pipe
+                         :command '("true")
+                         :sentinel (lambda (_p _e) (push (process-live-p a) seen)))))
+   (while (or (null seen) (process-live-p a))
+     (accept-process-output nil 0.05))
+   (list seen (process-exit-status a))))"#,
+        r#"((((err "bad
+") (child "exited abnormally with code 3
+" 3) (err-sentinel "finished
+" closed 0)) closed 0 ("e2
+")) ((nil) 0))"#,
+        "stderr pipe process and status_notify",
+    );
+}
+
+#[test]
+fn network_addresses_pipe_contact_and_connect_sentinels_as_process_c() {
+    // Fformat_network_address: a string as it is, an IPv4 or IPv6 vector
+    // of the sizes it knows within their ranges, else nil, and a cons
+    // through "<Family %d>".  A pipe process's contact is its
+    // Fmake_pipe_process arguments, t for KEY nil.  connect_network_socket
+    // runs no sentinel for a blocking or a datagram client: only a
+    // connect that did not wait, or a TLS setup, is "open" to it.
+    assert_oracle_contract_matches_interpreter(
+        r#"(list
+ (list (format-network-address [127 0 0 1 80])
+       (format-network-address [127 0 0 1 80] t)
+       (format-network-address [0 0 0 0 0 0 0 1 443])
+       (format-network-address [0 0 0 0 0 0 0 1 443] t)
+       (format-network-address [65535 0 0 0 0 0 0 1])
+       (format-network-address "x")
+       (format-network-address [1 2 3 300])
+       (format-network-address [1 2 3])
+       (format-network-address [1 2 3 4 70000])
+       (format-network-address 5)
+       (format-network-address '(1 . 2))
+       (condition-case e (format-network-address '(local . "/tmp/s")) (error e)))
+ (let ((p (make-pipe-process :name "t257-pipe" :noquery t)))
+   (prog1 (list (process-contact p) (process-contact p t) (process-contact p :name)
+                (process-contact p :buffer))
+     (delete-process p)))
+ (let* (log
+        (srv (make-network-process :name "t257-srv" :server t :service t
+                                   :host 'local :noquery t))
+        (cl (make-network-process :name "t257-cl" :host 'local :noquery t
+                                  :service (process-contact srv :service)
+                                  :sentinel (lambda (_p e) (push e log))))
+        (us (make-network-process :name "t257-us" :type 'datagram :server t
+                                  :host 'local :service t :noquery t))
+        (uc (make-network-process :name "t257-uc" :type 'datagram :host 'local
+                                  :service (process-contact us :service) :noquery t
+                                  :sentinel (lambda (_p e) (push e log)))))
+   (accept-process-output nil 0.05)
+   (prog1 (list log (process-status cl) (process-status uc))
+     (mapc #'delete-process (list cl uc srv us)))))"#,
+        r#"(("127.0.0.1:80" "127.0.0.1" "[0:0:0:0:0:0:0:1]:443" "0:0:0:0:0:0:0:1" "ffff:0:0:0:0:0:0:1" "x" nil nil nil nil "<Family 1>" (error "Format specifier doesn't match argument type")) (t (:name "t257-pipe" :noquery t) "t257-pipe" nil) (nil open open))"#,
+        "network addresses, pipe contact and connect sentinels",
+    );
+}
+
+#[test]
+fn dynamic_binding_byte_code_arguments_as_funcall_lambda() {
+    // eval.c:funcall_lambda for a byte-code function whose argument slot
+    // is a list: each formal specbound in turn (watchers hear `let' and
+    // `unlet'), `&optional' ones past the arguments nil, the `&rest' one
+    // the list of the rest and any after it nil; a formal that is no
+    // symbol, a repeated or misplaced keyword, a dotted list or a trailing
+    // `&rest' is `invalid-function' of the function, nil or t a constant
+    // to set.  The bindings go at the call's exit, by a return, a signal
+    // or a throw, and a buffer-local one leaves the default alone.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((dyn (lambda (form) (let ((lexical-binding nil)) (byte-compile form))))
+      log)
+  (defvar t258-w nil)
+  (fset 't258-a (funcall dyn '(lambda (x &optional y &rest z) (list x y z))))
+  (let* ((base (funcall dyn '(lambda (a b c)
+                               (list (and (boundp 'a) a) (and (boundp 'b) b)
+                                     (and (boundp 'c) c)))))
+         (try (lambda (thunk)
+                (condition-case err (funcall thunk)
+                  (error (list 'error (car err)
+                               (if (byte-code-function-p (cadr err)) 'fun (cadr err))
+                               (nth 2 err)))))))
+    (add-variable-watcher 't258-w (lambda (sym new op where)
+                                    (push (list sym new op (and where t)) log)))
+    (fset 't258-wf (funcall dyn '(lambda (t258-w) (list t258-w (symbol-value 't258-w)))))
+    (fset 't258-sig (funcall dyn '(lambda (t258-w) (signal 'error (list t258-w)))))
+    (fset 't258-thr (funcall dyn '(lambda (t258-w) (throw 't258 t258-w))))
+    (fset 't258-fc (funcall dyn '(lambda (fill-column)
+                                   (list fill-column (default-value 'fill-column)))))
+    (fset 't258-rec (funcall dyn '(lambda (n)
+                                    (if (> n 0) (cons n (t258-rec (1- n)))
+                                      (list (boundp 'n) n)))))
+    (list
+     (list (t258-a 1) (t258-a 1 2) (t258-a 1 2 3 4) (funcall try (lambda () (t258-a))))
+     (mapcar (lambda (arglist)
+               (funcall try (lambda ()
+                              (funcall (make-byte-code arglist (aref base 1) (aref base 2)
+                                                       (aref base 3))
+                                       1 2))))
+             '((a b) (a &rest b c) (a &optional b c) (a &rest) (a &optional &optional b)
+               (a &rest b &optional c) (a . b) (a 1) (nil b) (t b) (a) (a b c) ()
+               (&optional a b c d) (&rest a &rest b) (a &rest b &rest)))
+     (list (t258-wf 5) t258-w (prog1 (nreverse log) (setq log nil)))
+     (list (condition-case e (t258-sig 7) (error (list e t258-w)))
+           (prog1 (nreverse log) (setq log nil)))
+     (list (catch 't258 (t258-thr 9)) t258-w (prog1 (nreverse log) (setq log nil)))
+     (with-temp-buffer
+       (setq fill-column 33)
+       (list (t258-fc 44) fill-column (default-value 'fill-column)))
+     (t258-rec 3)
+     (mapcar #'t258-a '(1 2))
+     (let ((n 0)) (mapatoms (lambda (s) (when (eq s 't258-a) (setq n (1+ n))))) n))))"#,
+        r#"(((1 nil nil) (1 2 nil) (1 2 (3 4)) (error wrong-number-of-arguments fun 0)) ((1 2 nil) (1 (2) nil) (1 2 nil) (error invalid-function fun nil) (error invalid-function fun nil) (error invalid-function fun nil) (error invalid-function fun nil) (error invalid-function fun nil) (error setting-constant nil nil) (error setting-constant t nil) (error wrong-number-of-arguments fun 2) (error wrong-number-of-arguments fun 2) (error wrong-number-of-arguments fun 2) (1 2 nil) (error invalid-function fun nil) (error invalid-function fun nil)) ((5 5) nil ((t258-w nil set nil) (t258-w nil set nil) (t258-w nil set nil) (t258-w 5 let nil) (t258-w nil unlet nil))) (((error 7) nil) ((t258-w 7 let nil) (t258-w nil unlet nil))) (9 nil ((t258-w 9 let nil) (t258-w nil unlet nil))) ((44 70) 33 70) (3 2 1 t 0) ((1 nil nil) (2 nil nil)) 1)"#,
+        "dynamic-binding byte-code arguments",
+    );
+}
+
+#[test]
+fn backtrace_locals_as_eval_c() {
+    // eval.c:Fbacktrace__locals: the bindings on the specpdl between a
+    // frame's record and the next one's, oldest first, each with the value
+    // it bound (a later binding's saved value, or the value now), and the
+    // lexical environment a funcall_lambda, Flet, FletX or condition-case
+    // installed there read as its bindings in its place; the frame inside
+    // the one asked for must be live too, its count a natural number.
+    assert_oracle_contract_matches_interpreter(
+        r#"(progn
+  (defvar bl259-out nil)
+  (defvar bl259-dyn 5)
+  (fset 'bl259-inner
+        (lambda ()
+          (setq bl259-out
+                (mapcar (lambda (i)
+                          (condition-case e (backtrace--locals i 'bl259-inner)
+                            (error (list 'err e))))
+                        '(1 2 3)))))
+  (fset 'bl259-lex (lambda (a b) (let ((c (+ a b))) (bl259-inner) c)))
+  (fset 'bl259-lexdyn (lambda (a) (let ((bl259-dyn 9) (d 4)) (bl259-inner) (+ a d))))
+  (fset 'bl259-letstar
+        (lambda (p) (let* ((q (1+ p)) (bl259-dyn q) (r (* q 2))) (bl259-inner) r)))
+  (fset 'bl259-cc
+        (lambda () (condition-case err (signal 'error '(1)) (error (bl259-inner) err))))
+  (fset 'bl259-dynbc
+        (let ((lexical-binding nil))
+          (byte-compile '(lambda (a b)
+                           (let ((c (+ a b)) (bl259-x 1)) (let* ((e 5)) (bl259-inner)) c)))))
+  (fset 'bl259-rebound
+        (let ((lexical-binding nil))
+          (byte-compile '(lambda (a) (let ((a 7)) (bl259-inner)) a))))
+  (list (progn (bl259-lex 1 2) bl259-out)
+        (progn (bl259-lexdyn 1) bl259-out)
+        (progn (bl259-letstar 1) bl259-out)
+        (progn (bl259-cc) bl259-out)
+        (progn (bl259-dynbc 1 2) bl259-out)
+        (progn (bl259-rebound 3) bl259-out)
+        (condition-case e (backtrace--locals 0) (error e))
+        (condition-case e (backtrace--locals 100000) (error e))
+        (condition-case e (backtrace--locals 'x) (error e))))"#,
+        r#"((((a . 1) (b . 2) (c . 3)) ((a . 1) (b . 2)) nil) (((bl259-dyn . 9) (a . 1) (d . 4)) ((a . 1)) nil) (((p . 1) (q . 2) (r . 4) (bl259-dyn . 2)) ((p . 1)) nil) (((err error 1)) nil nil) (((a . 1) (b . 2) (bl259-x . 1) (c . 3) (e . 5)) nil nil) (((a . 3) (a . 7)) nil nil) (wrong-type-argument wholenump -1) (error "Activation frame not found!") (wrong-type-argument wholenump x))"#,
+        "backtrace--locals",
+    );
+}
+
+#[test]
+fn backtrace_eval_as_eval_c() {
+    // eval.c:Fbacktrace_eval: EXP runs where the frame was entered: the
+    // bindings made since its record undone while it runs and made again
+    // after (backtrace_eval_unrewind), in the lexical environment a frame
+    // outside it installed last; the frame must be live.
+    assert_oracle_contract_matches_interpreter(
+        r#"(progn
+  (defvar be260-out nil)
+  (defvar be260-d 'global)
+  (fset 'be260-probe
+        (lambda (exp)
+          (let ((be260-d 'probe))
+            (setq be260-out
+                  (mapcar (lambda (i)
+                            (condition-case e (backtrace-eval exp i 'be260-probe)
+                              (error (list 'err e))))
+                          '(0 1 2 3))))))
+  (fset 'be260-lex
+        (lambda (a) (let ((b (* a 10))) (be260-probe '(list (boundp 'a) be260-d)) b)))
+  (fset 'be260-dyn
+        (let ((lexical-binding nil))
+          (byte-compile '(lambda (a)
+                           (let ((be260-d 'dyn)) (be260-probe '(list a be260-d)))))))
+  (fset 'be260-env
+        (lambda (x) (be260-probe 'x)))
+  (list (progn (be260-lex 1) be260-out)
+        (progn (be260-dyn 7) be260-out)
+        (progn (be260-env 5) be260-out)
+        be260-d
+        (condition-case e (backtrace-eval 1 100000) (error e))
+        (condition-case e (backtrace-eval 1 -1) (error e))))"#,
+        r#"(((nil global) (nil global) (nil global) (nil global)) ((7 dyn) (err (void-variable a)) (err (void-variable a)) (err (void-variable a))) (5 (err (void-variable x)) (err (void-variable x)) (err (void-variable x))) global (error "Activation frame not found!") (wrong-type-argument wholenump -1))"#,
+        "backtrace-eval",
+    );
+}
+
+#[test]
+fn window_motion_counts_the_window_body_as_window_c() {
+    // window.c: scroll_command, Frecenter and Fmove_to_window_line count the
+    // selected window's body lines in batch as well, and
+    // Fdelete_other_windows_internal gives every window new total sizes
+    // from its pixel sizes once WINDOW has replaced ROOT, widths last.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((lines (lambda ()
+               (dotimes (i 100) (insert "line\n"))
+               (set-window-buffer nil (current-buffer)))))
+  (list
+   (let ((w (split-window))) (delete-other-windows) (window-new-total))
+   (with-temp-buffer
+     (funcall lines)
+     (let ((w (split-window)))
+       (goto-char 200) (recenter 0)
+       (prog1 (list (window-body-height) (window-start) (move-to-window-line -1)
+                    (point) (move-to-window-line nil) (point))
+         (delete-window w))))
+   (with-temp-buffer
+     (funcall lines)
+     (let ((w (split-window)))
+       (goto-char 1) (set-window-start nil 1)
+       (prog1 (list (scroll-up) (window-start) (point) (scroll-down 2) (window-start) (point))
+         (delete-window w))))
+   (with-temp-buffer
+     (funcall lines)
+     (let ((w (split-window)))
+       (goto-char 300)
+       (prog1 (list (recenter) (window-start) (recenter -1) (window-start) (recenter 3) (window-start))
+         (delete-window w))))
+   (with-temp-buffer
+     (funcall lines)
+     (setq mode-line-format nil)
+     (goto-char 300)
+     (list (window-body-height) (recenter -1) (window-start) (move-to-window-line -1) (point)))
+   (with-temp-buffer
+     (funcall lines)
+     (setq header-line-format "h")
+     (goto-char 300)
+     (list (window-body-height) (recenter -1) (window-start) (move-to-window-line -1) (point)
+           (progn (goto-char 1) (set-window-start nil 1) (scroll-up) (window-start))))))"#,
+        "(80 (11 196 10 246 5 221) (nil 46 46 nil 11 46) (nil 271 nil 246 nil 281) (24 nil 181 23 296) (22 nil 191 21 296 101))",
+        "window body motion",
+    );
+}
+
+#[test]
+fn window_configurations_hold_markers_as_window_c() {
+    // window.c:save_window_save keeps each window's start, point and old
+    // point as markers in its buffer and holds on to the buffer;
+    // Fset_window_configuration restricts the positions to the accessible
+    // portion, gives a window whose saved and current buffers are both
+    // dead another buffer, deletes a dedicated one and hands the windows
+    // to `window-restore-killed-buffer-windows' when it is a function.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((lines (lambda (buffer)
+               (with-current-buffer buffer (dotimes (i 50) (insert "line\n"))))))
+  (list
+   ;; Edits after a configuration is saved move its window start and point.
+   (with-temp-buffer
+     (funcall lines (current-buffer))
+     (set-window-buffer nil (current-buffer))
+     (set-window-start nil 51)
+     (save-window-excursion (goto-char 1) (insert "XXXXXXXXXX"))
+     (list (window-start) (window-point)))
+   (with-temp-buffer
+     (funcall lines (current-buffer))
+     (let ((w (split-window)))
+       (set-window-buffer w (current-buffer))
+       (set-window-start w 51)
+       (let ((c (current-window-configuration)))
+         (delete-region 40 60)
+         (set-window-configuration c)
+         (prog1 (list (window-start w) (window-point w) (window-old-point w))
+           (delete-other-windows)))))
+   ;; The points' insertion type is `window-point-insertion-type'.
+   (with-temp-buffer
+     (funcall lines (current-buffer))
+     (setq-local window-point-insertion-type t)
+     (let ((w (split-window)))
+       (set-window-buffer w (current-buffer))
+       (set-window-point w 120)
+       (let ((c (current-window-configuration)))
+         (goto-char 120)
+         (insert "AB")
+         (set-window-configuration c)
+         (prog1 (window-point w) (delete-other-windows)))))
+   ;; Positions are restricted to the accessible portion.
+   (let ((b (generate-new-buffer "wc262")))
+     (funcall lines b)
+     (let ((w (split-window)))
+       (set-window-buffer w b)
+       (set-window-start w 51)
+       (set-window-point w 120)
+       (let ((c (current-window-configuration)))
+         (with-current-buffer b (narrow-to-region 60 100))
+         (set-window-configuration c)
+         (prog1 (list (window-start w) (window-point w))
+           (delete-other-windows)
+           (kill-buffer b)))))
+   ;; A window whose buffer was killed gets another one.
+   (let ((b (generate-new-buffer "wc262")))
+     (funcall lines b)
+     (let ((w (split-window)))
+       (set-window-buffer w b)
+       (set-window-start w 51)
+       (let ((c (current-window-configuration)))
+         (kill-buffer b)
+         (set-window-configuration c)
+         (prog1 (list (buffer-name (window-buffer w)) (window-start w)
+                      (window-live-p w) (length (window-list)))
+           (delete-other-windows)))))
+   ;; ... and a dedicated one is deleted.
+   (let ((b (generate-new-buffer "wc262")))
+     (funcall lines b)
+     (let ((w (split-window)))
+       (set-window-buffer w b)
+       (set-window-dedicated-p w t)
+       (let ((c (current-window-configuration)))
+         (kill-buffer b)
+         (set-window-configuration c)
+         (prog1 (list (window-live-p w) (length (window-list)))
+           (delete-other-windows)))))
+   ;; `window-restore-killed-buffer-windows' as a function gets them.
+   (let ((b (generate-new-buffer "wc262")) seen)
+     (funcall lines b)
+     (let ((w (split-window)))
+       (set-window-buffer w b)
+       (set-window-start w 51)
+       (let ((c (current-window-configuration))
+             (window-restore-killed-buffer-windows
+              (lambda (frame windows type)
+                (setq seen (list (framep frame) type
+                                 (mapcar (lambda (e) (list (eq (car e) w) (bufferp (nth 1 e))
+                                                           (nth 2 e) (nth 5 e)))
+                                         windows))))))
+         (kill-buffer b)
+         (set-window-configuration c)
+         (prog1 seen (delete-other-windows)))))))"#,
+        "((61 11) (40 231 231) 122 (60 100) (\"*scratch*\" 1 t 2) (nil 1) (t configuration ((t t 51 t))))",
+        "window configuration markers",
+    );
+}
+
+#[test]
+fn window_points_are_markers_as_window_c() {
+    // window.h's w->start, w->pointm and w->old_pointm are markers in the
+    // window's buffer: edits move them as they move any marker, the points
+    // with the insertion type `window-point-insertion-type' had in the
+    // buffer when set_window_buffer showed it there; select_window swaps
+    // the old selected window's point into its marker and takes the new
+    // one's point from its marker, and Fset_window_configuration's
+    // select_window puts its buffer's point at the restored marker; a
+    // window deleted before the configuration was saved is not in it.
+    assert_oracle_contract_matches_interpreter(
+        r#"(list
+   (let* ((b (get-buffer-create "wpi1")) (w (split-window))) (with-current-buffer b (erase-buffer) (insert "abcdef") (setq-local window-point-insertion-type t)) (set-window-buffer w b) (set-window-point w 3) (set-window-start w 3) (with-current-buffer b (goto-char 3) (insert "XY") (goto-char 1) (insert "Q")) (prog1 (list (window-point w) (window-start w) (window-old-point w)) (delete-window w)))
+   (let* ((b (get-buffer-create "wpi2")) (w (split-window))) (with-current-buffer b (erase-buffer) (insert "abcdef")) (set-window-buffer w b) (set-window-point w 3) (with-current-buffer b (setq-local window-point-insertion-type t) (goto-char 3) (insert "XY")) (prog1 (list (window-point w) (window-start w)) (delete-window w)))
+   (let* ((b (get-buffer-create "wpi3")) (w (split-window))) (with-current-buffer b (erase-buffer) (insert "abcdefghij")) (set-window-buffer w b) (set-window-point w 6) (set-window-start w 4) (with-current-buffer b (delete-region 2 8)) (prog1 (list (window-point w) (window-start w) (window-old-point w)) (delete-window w)))
+   (let ((x (get-buffer-create "x"))) (with-current-buffer "*scratch*" (erase-buffer) (insert "abcdefgh") (goto-char 7)) (set-buffer x) (let ((conf (current-window-configuration))) (with-current-buffer "*scratch*" (goto-char 2)) (set-window-configuration conf) (list (buffer-name) (with-current-buffer "*scratch*" (point)) (window-point) (point))))
+   (let* ((b (get-buffer-create "wpi5")) (w (split-window))) (with-current-buffer b (erase-buffer) (insert "abcdefghij")) (set-window-buffer w b) (set-window-point w 6) (set-window-start w 3) (let ((c (current-window-configuration))) (set-window-buffer w "*scratch*") (with-current-buffer b (goto-char 1) (insert "ZZZ")) (set-window-configuration c) (prog1 (list (window-point w) (window-start w) (buffer-name (window-buffer w)) (with-current-buffer b (point))) (delete-other-windows))))
+   (let* ((b (get-buffer-create "wpi7")) (w (split-window))) (with-current-buffer b (erase-buffer) (insert "abcdefghij")) (set-window-buffer w b) (set-window-start w 5) (set-window-buffer w "*scratch*") (set-window-buffer w b) (prog1 (list (window-start w) (window-point w)) (delete-window w)))
+   (let* ((b (get-buffer-create "wpi9")) (w (split-window))) (with-current-buffer b (erase-buffer) (insert "abcdefghij")) (set-window-buffer w b) (set-window-point w 6) (with-current-buffer b (narrow-to-region 2 4)) (prog1 (list (window-point w) (progn (set-window-point w 9) (window-point w))) (with-current-buffer b (widen)) (delete-window w)))
+   (let* ((b (get-buffer-create "wpi12")) (w (split-window))) (with-current-buffer b (erase-buffer) (insert "abcdefghij")) (set-window-buffer w b) (set-window-point w 6) (let ((c (current-window-configuration))) (with-current-buffer b (goto-char 6) (insert "XX")) (set-window-configuration c) (prog1 (list (window-point w)) (delete-other-windows))))
+   (let* ((b (get-buffer-create "wpi13")) (w (split-window))) (with-current-buffer b (erase-buffer) (insert "abcdefghij") (setq-local window-point-insertion-type t)) (set-window-buffer w b) (set-window-point w 6) (let ((c (current-window-configuration))) (with-current-buffer b (goto-char 6) (insert "XX")) (set-window-configuration c) (prog1 (list (window-point w)) (delete-other-windows))))
+   (let ((w (split-window))) (delete-window w) (let ((c (current-window-configuration))) (kill-buffer (get-buffer-create "wpi16")) (set-window-configuration c) (list (window-live-p w) (window-valid-p w) (window-buffer w) (length (window-list))))))"#,
+        "((6 4 10) (3 1) (2 2 5) (\"x\" 7 7 1) (9 6 \"wpi5\" 4) (5 11) (6 4) (6) (8) (nil nil nil 1))",
+        "window point markers",
+    );
+}
+
+#[test]
+fn frame_parameters_and_face_colors_as_frame_c_and_xfaces_c() {
+    // cmds.c:Fdelete_char hands a non-nil KILLFLAG to
+    // `kill-forward-chars' and checks N with CHECK_FIXNUM.  frame.c keeps
+    // a frame's parameters in its param_alist, newest first and set in
+    // place; Fmodify_frame_parameters takes ALIST apart with list_length,
+    // Fcar and Fcdr and stores it last to first; Fframe_parameters
+    // stores the computed parameters over a copy, and a text frame
+    // reports the colors a prefix of "unspecified-bg" names.  A changed
+    // color of the default or cursor face is a frame parameter
+    // (Finternal_set_lisp_face_attribute), for frame t one in
+    // `default-frame-alist', and the realized default face has no
+    // fontset.
+    assert_oracle_contract_matches_interpreter(
+        r#"(list
+ (with-temp-buffer (insert "abc") (goto-char 1) (let ((kill-ring nil)) (delete-char 2 t) (list (buffer-string) (car kill-ring))))
+ (condition-case e (delete-char 1.0) (error e))
+ (let ((f (selected-frame)))
+   (modify-frame-parameters f '((t252-a . 1) (t252-b . 2) (t252-a . 3)))
+   (list (frame-parameter f 't252-a)
+         (let ((tail (frame-parameters f)) (n 0))
+           (while (not (eq (car (car tail)) 't252-b)) (setq tail (cdr tail) n (1+ n)))
+           (list (car (nth 0 (frame-parameters f))) (car (cadr tail)) (> n 9)))
+         (condition-case e (modify-frame-parameters f '(5)) (error e))
+         (condition-case e (modify-frame-parameters f 5) (error e))
+         (progn (modify-frame-parameters f '((5 . t252))) (frame-parameter f 'line-spacing))
+         (progn (modify-frame-parameters f '((foreground-color . "") (background-color . "unspec")))
+                (list (frame-parameter f 'foreground-color) (frame-parameter f 'background-color)))))
+ (let ((f (selected-frame)) (default-frame-alist nil))
+   (set-face-attribute 'cursor f :background "red")
+   (set-face-attribute 'default f :foreground "green")
+   (set-face-attribute 'default t :background "blue")
+   (prog1 (list (frame-parameter f 'cursor-color) (frame-parameter f 'foreground-color)
+                (face-attribute 'default :foreground f) default-frame-alist
+                (face-attribute 'default :fontset f))
+     (set-face-attribute 'default f :foreground "unspecified-fg")
+     (set-face-attribute 'cursor f :background "white"))))"#,
+        r#"(("c" "ab") (wrong-type-argument fixnump 1.0) (1 (tab-bar-lines t252-a t) (wrong-type-argument listp 5) (wrong-type-argument listp 5) 0 ("unspecified-bg" "unspecified-bg")) ("red" "green" "green" ((background-color . "blue")) nil))"#,
+        "frame parameters and face colors",
+    );
+}
+
+#[test]
+fn selecting_a_window_records_its_buffer_as_window_c_does() {
+    // window.c:select_window with NORECORD nil ends in record_buffer,
+    // which runs buffer-list-update-hook; Fset_window_configuration
+    // leaves each window its own use time and ends selecting the
+    // configuration's window that way, its buffer brought to the front.
+    assert_oracle_contract_matches_interpreter(
+        r#"(list
+ (let ((n 0))
+   (let ((buffer-list-update-hook (list (lambda () (setq n (1+ n))))))
+     (list (progn (select-window (selected-window)) n)
+           (progn (select-window (selected-window) t) n)
+           (progn (set-window-configuration (current-window-configuration)) n))))
+ (let* ((w2 (split-window)) (c (current-window-configuration)))
+   (select-window w2)
+   (select-window (next-window))
+   (let ((t1 (window-use-time w2)) (t0 (window-use-time)))
+     (set-window-configuration c)
+     (prog1 (list (= (window-use-time w2) t1) (> (window-use-time) t0))
+       (delete-other-windows))))
+ (let ((orig (window-buffer)))
+   (get-buffer-create "t252-b")
+   (switch-to-buffer "t252-b")
+   (switch-to-buffer orig)
+   (let ((c (current-window-configuration)))
+     (switch-to-buffer "t252-b")
+     (set-window-configuration c)
+     (prog1 (list (eq (window-buffer) orig) (eq (car (buffer-list)) orig))
+       (kill-buffer "t252-b")))))"#,
+        r#"((1 1 2) (t t) (t t))"#,
+        "select-window records its buffer",
     );
 }
 

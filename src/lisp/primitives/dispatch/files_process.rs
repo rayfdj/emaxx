@@ -579,12 +579,17 @@ define_dispatch!(
                     .lookup_var("buffer-file-name", env)
                     .unwrap_or(Value::Nil))
             }
-            "visited-file-modtime" => Ok(interp
-                .buffer
-                .borrow()
-                .visited_file_modtime()
-                .and_then(|modtime| system_time_list_value(modtime.modified).ok())
-                .unwrap_or(Value::Integer(0))),
+            "visited-file-modtime" => {
+                need_args(name, args, 0)?;
+                // buffer_visited_file_modtime: the flag 0 for an unknown
+                // time and -1 for a file that did not exist.
+                let stamp = interp.buffer.borrow().visited_file_modtime().stamp;
+                match stamp {
+                    crate::buffer::ModtimeStamp::Unknown => Ok(Value::Integer(0)),
+                    crate::buffer::ModtimeStamp::Nonexistent => Ok(Value::Integer(-1)),
+                    crate::buffer::ModtimeStamp::Time(time) => system_time_list_value(time),
+                }
+            }
             "verify-visited-file-modtime" => {
                 need_arg_range(name, args, 0, 1)?;
                 // fileio.c: decode_buffer, so a killed buffer's file and
@@ -597,36 +602,90 @@ define_dispatch!(
                 let Some(path) = buffer.file.as_deref() else {
                     return Ok(Value::T);
                 };
-                let current = file_modtime(interp, env, path)?;
                 let visited = buffer.visited_file_modtime();
-                // GNU's unknown timestamp sentinel means there is nothing to
-                // verify, so the file is considered unchanged.
-                if visited.is_none() {
+                if visited.stamp == crate::buffer::ModtimeStamp::Unknown {
                     return Ok(Value::T);
                 }
+                // The file's time, or time_error_value's for the failure,
+                // and its size.
+                let (stamp, size) = match stat_visited_modtime(interp, env, path)? {
+                    Ok(current) => (current.stamp, current.size),
+                    Err(error) => (time_error_value(&error), -1),
+                };
                 // Tramp reports remote modification times with one-second
                 // resolution; a same-second rewrite looks unchanged.
-                let unchanged = if remote_visit {
-                    modtimes_equal_whole_seconds(&visited, &current)
-                } else {
-                    visited == current
+                let same_time = match (visited.stamp, stamp) {
+                    (
+                        crate::buffer::ModtimeStamp::Time(visited),
+                        crate::buffer::ModtimeStamp::Time(current),
+                    ) if remote_visit => modtimes_equal_whole_seconds(
+                        &Some(crate::buffer::FileModTime { modified: visited }),
+                        &Some(crate::buffer::FileModTime { modified: current }),
+                    ),
+                    (visited, current) => visited == current,
                 };
-                Ok(if unchanged { Value::T } else { Value::Nil })
+                Ok(if same_time && (visited.size < 0 || size == visited.size) {
+                    Value::T
+                } else {
+                    Value::Nil
+                })
             }
             "set-visited-file-modtime" => {
                 if args.len() > 1 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let modtime = match args.first().map(|v| v.kind()) {
-                    None | Some(Kind::Nil) => {
-                        if let Some(path) = interp.buffer.borrow().file.clone() {
-                            file_modtime(interp, env, &path)?
-                        } else {
-                            None
+                // fileio.c:Fset_visited_file_modtime: a FLAG of 0 or -1
+                // or a time, of unknown size; or else the visited file's
+                // status, which an indirect buffer does not have.
+                let time_flag = args.first().copied().unwrap_or(Value::Nil);
+                let modtime = if !time_flag.is_nil() {
+                    let stamp = match time_flag.kind() {
+                        Kind::Integer(flag) => match flag {
+                            0 => crate::buffer::ModtimeStamp::Unknown,
+                            -1 => crate::buffer::ModtimeStamp::Nonexistent,
+                            // check_integer_range (TIME_FLAG, -1, 0).
+                            _ => {
+                                return Err(LispError::SignalValue(Value::list([
+                                    Value::symbol("args-out-of-range"),
+                                    time_flag,
+                                    Value::Integer(-1),
+                                    Value::Integer(0),
+                                ])));
+                            }
+                        },
+                        _ => crate::buffer::ModtimeStamp::Time(
+                            file_modtime_from_value(interp, &time_flag)?.modified,
+                        ),
+                    };
+                    crate::buffer::VisitedModtime { stamp, size: -1 }
+                } else if interp.buffer_base_id(interp.current_buffer_id()).is_some() {
+                    return Err(LispError::Signal(
+                        "An indirect buffer does not have a visited file".into(),
+                    ));
+                } else {
+                    let file = interp
+                        .lookup_var("buffer-file-name", env)
+                        .unwrap_or(Value::Nil);
+                    let filename = super::call(interp, "expand-file-name", &[file], env)?;
+                    let path = string_text(&filename)?;
+                    match stat_visited_modtime(interp, env, &path)? {
+                        Ok(modtime) => modtime,
+                        // file_attribute_errno: a missing file leaves the
+                        // recorded time as it was.
+                        Err(error)
+                            if time_error_value(&error)
+                                == crate::buffer::ModtimeStamp::Nonexistent =>
+                        {
+                            return Ok(Value::Nil);
+                        }
+                        Err(error) => {
+                            return Err(LispError::SignalValue(file_operation_error_value(
+                                "Getting attributes",
+                                &error,
+                                &path,
+                            )));
                         }
                     }
-                    Some(Kind::Integer(0)) => None,
-                    Some(value) => Some(file_modtime_from_value(interp, &value.value())?),
                 };
                 interp.buffer.borrow_mut().set_visited_file_modtime(modtime);
                 Ok(Value::Nil)
@@ -991,16 +1050,16 @@ define_dispatch!(
             }
             "access-file" => {
                 need_args(name, args, 2)?;
+                // fileio.c:Faccess_file: faccessat (R_OK, AT_EACCESS), and
+                // on failure report_file_error (STRING, FILENAME) with its
+                // errno.
                 let requested = string_text(&args[0])?;
                 let path = resolve_file_name_in_env(interp, env, &requested);
-                if file_readable_p(&host_file_name(interp, env, &path)?) {
-                    Ok(Value::Nil)
-                } else {
-                    Err(LispError::SignalValue(file_error_with_detail_value(
-                        &string_text(&args[1])?,
-                        "Permission denied",
-                        &requested,
-                    )))
+                let message = string_text(&args[1])?;
+                let host = host_file_name(interp, env, &path)?;
+                match faccessat_errno(&host, libc::R_OK) {
+                    Ok(()) => Ok(Value::Nil),
+                    Err(error) => Err(file_operation_error(&message, &error, &requested)),
                 }
             }
             "file-regular-p" => {
@@ -1207,19 +1266,103 @@ define_dispatch!(
                 };
                 Ok(if newer { Value::T } else { Value::Nil })
             }
-            // This macOS build has no SELinux support, and Emaxx does not expose
-            // a host ACL API yet.  Keep GNU's platform-degraded return values on
-            // the native side of the boundary.
             "file-acl" => {
                 need_args(name, args, 1)?;
-                let _ = string_text(&args[0])?;
+                // fileio.c:Ffile_acl: expand_and_dir_to_file, ENCODE_FILE,
+                // acl_get_file and acl_to_text.
+                let absname = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
+                let path = host_file_name(interp, env, &absname)?;
+                #[cfg(target_os = "linux")]
+                if let Some(libacl) = crate::lisp::primitives::system::acl::libacl() {
+                    use crate::lisp::primitives::system::acl::{ACL_TYPE_ACCESS, acl_errno_valid};
+                    let Some(path) = c_file_name(&path) else {
+                        return Ok(Value::Nil);
+                    };
+                    // SAFETY: PATH is NUL-terminated; the ACL and its text
+                    // are libacl's, freed once each with acl_free.
+                    unsafe {
+                        let acl = (libacl.get_file)(path.as_ptr(), ACL_TYPE_ACCESS);
+                        if acl.is_null() {
+                            let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+                            if errno == libc::ENOENT
+                                || errno == libc::ENOTDIR
+                                || !acl_errno_valid(errno)
+                            {
+                                return Ok(Value::Nil);
+                            }
+                            return Err(file_operation_error(
+                                "Getting ACLs",
+                                &std::io::Error::from_raw_os_error(errno),
+                                &absname,
+                            ));
+                        }
+                        let text = (libacl.to_text)(acl, std::ptr::null_mut());
+                        if text.is_null() {
+                            let error = std::io::Error::last_os_error();
+                            (libacl.free)(acl);
+                            return Err(file_operation_error("Getting ACLs", &error, &absname));
+                        }
+                        let bytes = std::ffi::CStr::from_ptr(text).to_bytes().to_vec();
+                        (libacl.free)(text.cast());
+                        (libacl.free)(acl);
+                        return crate::lisp::primitives::strings::make_string(bytes)
+                            .map_err(|error| LispError::Signal(error.to_string()));
+                    }
+                }
+                let _ = path;
                 Ok(Value::Nil)
             }
             "set-file-acl" => {
                 need_args(name, args, 2)?;
-                let _ = string_text(&args[0])?;
+                // fileio.c:Fset_file_acl: a string ACL through acl_from_text
+                // and acl_set_file; t when it is set, nil otherwise.
+                let absname = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
+                #[cfg(target_os = "linux")]
+                if let Kind::StringObject(acl_string) = args[1].kind()
+                    && let Some(libacl) = crate::lisp::primitives::system::acl::libacl()
+                {
+                    use crate::lisp::primitives::system::acl::{ACL_TYPE_ACCESS, acl_errno_valid};
+                    // SSDATA: the string's bytes up to a NUL.
+                    let mut text = acl_string.borrow().bytes().to_vec();
+                    if let Some(nul) = text.iter().position(|byte| *byte == 0) {
+                        text.truncate(nul);
+                    }
+                    let text = std::ffi::CString::new(text).expect("no NUL is left");
+                    // SAFETY: TEXT and PATH are NUL-terminated; the ACL is
+                    // libacl's, freed once with acl_free.
+                    unsafe {
+                        let acl = (libacl.from_text)(text.as_ptr());
+                        if acl.is_null() {
+                            let error = std::io::Error::last_os_error();
+                            if acl_errno_valid(error.raw_os_error().unwrap_or(0)) {
+                                return Err(file_operation_error(
+                                    "Converting ACL",
+                                    &error,
+                                    &absname,
+                                ));
+                            }
+                            return Ok(Value::Nil);
+                        }
+                        let path = host_file_name(interp, env, &absname)?;
+                        let failed = match c_file_name(&path) {
+                            Some(path) => {
+                                (libacl.set_file)(path.as_ptr(), ACL_TYPE_ACCESS, acl) != 0
+                            }
+                            None => true,
+                        };
+                        let error = std::io::Error::last_os_error();
+                        (libacl.free)(acl);
+                        if failed && acl_errno_valid(error.raw_os_error().unwrap_or(0)) {
+                            return Err(file_operation_error("Setting ACL", &error, &absname));
+                        }
+                        return Ok(if failed { Value::Nil } else { Value::T });
+                    }
+                }
+                let _ = absname;
                 Ok(Value::Nil)
             }
+            // This build has no SELinux support: GNU's answers without
+            // HAVE_LIBSELINUX enabled.
             "file-selinux-context" => {
                 need_args(name, args, 1)?;
                 let _ = string_text(&args[0])?;
@@ -1404,11 +1547,33 @@ define_dispatch!(
                         }
                     }
                 }
-                // qcopy_acl of a file with no ACL beyond its mode sets the
-                // mode; otherwise a new file gets the default permissions
-                // its creation mask did not give it.
+                // qcopy_acl: the mode, then the file's ACL attributes.
+                #[cfg(target_os = "linux")]
+                if preserve_permissions {
+                    let (Some(src_name), Some(dst_name)) =
+                        (c_file_name(&host_file), c_file_name(&host_newname))
+                    else {
+                        unreachable!("c_file_name stops at a NUL")
+                    };
+                    if crate::lisp::primitives::system::acl::qcopy_acl(
+                        &src_name,
+                        ifd,
+                        &dst_name,
+                        ofd,
+                        preserved_permissions as libc::mode_t,
+                    ) != 0
+                    {
+                        return Err(file_operation_error(
+                            "Copying permissions to",
+                            &std::io::Error::last_os_error(),
+                            &newname,
+                        ));
+                    }
+                }
+                // Otherwise a new file gets the default permissions its
+                // creation mask did not give it.
                 let chmod = if preserve_permissions {
-                    Some(preserved_permissions)
+                    cfg!(not(target_os = "linux")).then_some(preserved_permissions)
                 } else if already_exists || (new_mask & !realmask) == default_permissions {
                     None
                 } else {
@@ -1940,20 +2105,18 @@ define_dispatch!(
                 Ok(Value::Nil)
             }
             "set-file-modes" => {
-                need_args(name, args, 2)?;
+                need_arg_range(name, args, 2, 3)?;
+                // fileio.c:Fset_file_modes: CHECK_FIXNUM (mode), then
+                // fchmodat with the low 12 bits, not following a symbolic
+                // link when FLAG is non-nil (symlink_nofollow_flag).
+                let Kind::Integer(mode) = args[1].kind() else {
+                    return Err(LispError::WrongTypeArgument("fixnump".into(), args[1]));
+                };
+                let nofollow = args.get(2).is_some_and(Value::is_truthy);
                 let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
                 let host = host_file_name(interp, env, &path)?;
-                let mode = args[1].as_integer()?;
-                #[cfg(unix)]
-                {
-                    let mut permissions = fs::metadata(&host)
-                        .map_err(|error| file_operation_error("Setting file modes", &error, &path))?
-                        .permissions();
-                    permissions.set_mode(mode as u32);
-                    fs::set_permissions(&host, permissions).map_err(|error| {
-                        file_operation_error("Setting file modes", &error, &path)
-                    })?;
-                }
+                fchmodat_errno(&host, (mode & 0o7777) as libc::mode_t, nofollow)
+                    .map_err(|error| file_operation_error("Doing chmod", &error, &path))?;
                 dispatch_file_notification(interp, env, &path, "attribute-changed")?;
                 Ok(Value::Nil)
             }
@@ -2105,7 +2268,17 @@ define_dispatch!(
                     })?;
                 call_process(interp, env, args, filefd, None)
             }
-            "make-process" | "make-pipe-process" => make_process_value(interp, env, args),
+            "make-process" => make_process_value(interp, env, args),
+            "make-pipe-process" => {
+                // Fmake_pipe_process keeps its arguments as the process's
+                // childp, which `process-contact' with KEY t returns.
+                let process = make_process_value(interp, env, args)?;
+                if let Ok(process_id) = interp.resolve_process_id(&process) {
+                    interp
+                        .set_process_contact_plist(process_id, Value::list(args.iter().copied()))?;
+                }
+                Ok(process)
+            }
             "get-buffer-process" => {
                 need_arg_range(name, args, 1, 1)?;
                 // process.c:Fget_buffer_process: nil names no buffer, and
@@ -2184,7 +2357,20 @@ define_dispatch!(
             }
             "process-attributes" => {
                 need_args(name, args, 1)?;
-                Ok(process_attributes_value(args[0].as_integer()?))
+                // sysdep.c:system_process_attributes: CHECK_NUMBER, then
+                // CONS_TO_INTEGER into a pid_t.
+                if !matches!(
+                    args[0].kind(),
+                    Kind::Integer(_) | Kind::BigInteger(_) | Kind::Float(_)
+                ) {
+                    return Err(LispError::WrongTypeArgument("numberp".into(), args[0]));
+                }
+                let pid = crate::lisp::primitives::system::cons_to_signed(
+                    &args[0],
+                    i64::from(i32::MIN),
+                    i64::from(i32::MAX),
+                )?;
+                Ok(process_attributes_value(pid))
             }
             "list-system-processes" => {
                 need_args(name, args, 0)?;
@@ -2202,7 +2388,9 @@ define_dispatch!(
                 let process_id = interp.resolve_process_id(&args[0])?;
                 let decoding = args.get(1).cloned().unwrap_or(Value::Nil);
                 let encoding = args.get(2).cloned().unwrap_or(Value::Nil);
+                load_coding_system(interp, &decoding, env)?;
                 checked_coding_given(interp, &decoding)?;
+                load_coding_system(interp, &encoding, env)?;
                 checked_coding_given(interp, &encoding)?;
                 let encoding = crate::lisp::primitives::file_io::inherit_write_coding_eol(
                     interp,
@@ -2437,6 +2625,8 @@ define_dispatch!(
                             contact_plist_get(&contact, ":speed"),
                         ]))
                     }
+                    // "it is t for a pipe connection".
+                    None | Some(Kind::Nil) if interp.is_pipe_process(process_id) => Ok(Value::T),
                     None | Some(Kind::Nil) => Ok(Value::list([
                         contact_plist_get(&contact, ":host"),
                         contact_plist_get(&contact, ":service"),
@@ -2637,7 +2827,7 @@ define_dispatch!(
                     let Some(pid) = signal_process_target_pid(interp, &args[0])? else {
                         return Ok(Value::Nil);
                     };
-                    let signal = process_signal_number(&args[1])?;
+                    let signal = process_signal_code(&args[1])?;
                     // SAFETY: `kill' does not dereference pointers; PID and signal
                     // are validated Lisp integers or known platform constants.
                     Ok(Value::Integer(i64::from(unsafe {
@@ -3362,7 +3552,9 @@ fn make_process_value(
         )?
     };
     // create_process's setup_process_coding_systems sets both up.
+    load_coding_system(interp, &decoding, env)?;
     checked_coding_given(interp, &decoding)?;
+    load_coding_system(interp, &encoding, env)?;
     checked_coding_given(interp, &encoding)?;
     // process.c finds the executable before forking; `process-command'
     // keeps the name the caller gave.
@@ -3385,6 +3577,20 @@ fn make_process_value(
         .stderr_buffer_id
         .map(|_| open_pipe_process_channels())
         .transpose()?;
+    // create_process's forkerr: the standard error pipe process's
+    // SUBPROCESS_STDOUT, or the child's standard output once an earlier
+    // child was given it.
+    let stderr_writer = match (&stderr_channels, parsed.stderr_process_id) {
+        (Some(channels), _) => Some(
+            channels
+                .output
+                .1
+                .try_clone()
+                .map_err(|error| LispError::Signal(error.to_string()))?,
+        ),
+        (None, Some(stderr_process_id)) => interp.pipe_process_stderr_writer(stderr_process_id)?,
+        (None, None) => None,
+    };
     let runtime = executable.as_ref().map(|command| {
         spawn_persistent_process(
             interp,
@@ -3392,9 +3598,10 @@ fn make_process_value(
             &arguments,
             env,
             parsed.connection_type.as_ref(),
-            parsed.stderr_process_id.is_some() || parsed.stderr_buffer_id.is_some(),
+            stderr_writer.as_ref(),
         )
     });
+    drop(stderr_writer);
     let runtime = runtime.transpose()?;
     if let Some(stderr_buffer_id) = parsed.stderr_buffer_id {
         let requested_name = parsed
@@ -3413,6 +3620,24 @@ fn make_process_value(
         if let Some(channels) = stderr_channels {
             interp.install_pipe_process_channels(stderr_process_id, channels);
         }
+        // Fmake_process makes it with Fmake_pipe_process's :name, :buffer
+        // and :noquery, which are its contact.
+        let stderr_buffer = interp.buffer_value(stderr_buffer_id).unwrap_or(Value::Nil);
+        interp.set_process_contact_plist(
+            stderr_process_id,
+            Value::list([
+                Value::symbol(":name"),
+                Value::string(&format!("{requested_name} stderr")),
+                Value::symbol(":buffer"),
+                stderr_buffer,
+                Value::symbol(":noquery"),
+                if parsed.query_on_exit_flag {
+                    Value::Nil
+                } else {
+                    Value::T
+                },
+            ]),
+        )?;
         interp.set_process_query_on_exit_flag(stderr_process_id, parsed.query_on_exit_flag)?;
         parsed.stderr_process_id = Some(stderr_process_id);
     }
@@ -3427,11 +3652,15 @@ fn make_process_value(
     if let Some(channels) = pipe_channels {
         interp.install_pipe_process_channels(process_id, channels);
     }
-    // create_process closes its standard error pipe process's input.
+    // create_process closes its standard error pipe process's input, and
+    // once the child is made the parent's copy of the end the child
+    // writes its errors to: the pipe process reads them on its own
+    // channel and ends at their end.
     if executable.is_some()
         && let Some(stderr_process_id) = parsed.stderr_process_id
     {
         interp.close_pipe_process_input(stderr_process_id);
+        interp.close_pipe_process_output_writer(stderr_process_id);
     }
     interp.set_process_query_on_exit_flag(process_id, parsed.query_on_exit_flag)?;
     interp.set_process_inherit_coding_system_flag(process_id, inherit_coding_system)?;
@@ -3442,37 +3671,60 @@ fn make_process_value(
     Ok(process)
 }
 
+/// process.c:Finternal_default_signal_process's SIGCODE: a fixnum in
+/// int's range, else a symbol abbr_to_signal knows.
 #[cfg(unix)]
-fn process_signal_number(value: &Value) -> Result<i32, LispError> {
-    if let Ok(number) = value.as_integer() {
-        return i32::try_from(number)
-            .map_err(|_| LispError::Signal("Signal number is out of range".into()));
+fn process_signal_code(value: &Value) -> Result<i32, LispError> {
+    if let Kind::Integer(number) = value.kind() {
+        // check_integer_range (sigcode, INT_MIN, INT_MAX).
+        return i32::try_from(number).map_err(|_| {
+            LispError::SignalValue(Value::list([
+                Value::symbol("args-out-of-range"),
+                *value,
+                Value::Integer(i64::from(i32::MIN)),
+                Value::Integer(i64::from(i32::MAX)),
+            ]))
+        });
     }
-    // process.c:abbr_to_signal: a `SIG' or `sig' prefix dropped, the rest
-    // upcased; the error names the symbol as it is.
     let symbol_name = value.as_symbol()?;
-    let name = symbol_name
+    abbr_to_signal(symbol_name)
+        .ok_or_else(|| LispError::Signal(format!("Undefined signal name {symbol_name}")))
+}
+
+/// process.c:abbr_to_signal: NAME less a `SIG' or `sig' prefix, upcased
+/// into a 20-byte buffer (a longer name is no signal), as gnulib's
+/// str2signum reads it: decimal digits up to SIGNUM_BOUND, a name in its
+/// table, or RTMIN+N / RTMAX-N.
+#[cfg(unix)]
+fn abbr_to_signal(name: &str) -> Option<i32> {
+    let name = name
         .strip_prefix("SIG")
-        .or_else(|| symbol_name.strip_prefix("sig"))
-        .unwrap_or(symbol_name)
-        .to_ascii_uppercase();
-    let abbreviation = name.as_str();
-    if let Ok(number) = abbreviation.parse::<i32>() {
-        return Ok(number);
+        .or_else(|| name.strip_prefix("sig"))
+        .unwrap_or(name);
+    if name.len() >= 20 {
+        return None;
+    }
+    let signame = name.to_ascii_uppercase();
+    if signame.starts_with(|ch: char| ch.is_ascii_digit()) {
+        // strtol, all of it, at most SIGNUM_BOUND (NSIG - 1).
+        let digits = signame.bytes().all(|byte| byte.is_ascii_digit());
+        let number = signame.parse::<i64>().ok().filter(|_| digits)?;
+        return (number <= i64::from(SIGNUM_BOUND)).then_some(number as i32);
     }
     if let Some((number, _)) = named_signal_candidates()
         .into_iter()
-        .find(|(_, candidate)| *candidate == abbreviation)
+        .find(|(_, candidate)| *candidate == signame)
     {
-        return Ok(number);
+        return Some(number);
     }
-    if let Some(number) = realtime_signal_number(abbreviation) {
-        return Ok(number);
-    }
-    Err(LispError::Signal(format!(
-        "Undefined signal name {symbol_name}"
-    )))
+    realtime_signal_number(&signame)
 }
+
+/// gnulib sig2str.h's SIGNUM_BOUND: NSIG - 1.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+const SIGNUM_BOUND: i32 = 64;
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+const SIGNUM_BOUND: i32 = 31;
 
 #[cfg(unix)]
 fn named_signal_candidates() -> Vec<(i32, &'static str)> {
@@ -3612,32 +3864,68 @@ fn signal_names_value() -> Value {
     )
 }
 
+/// SSDATA of an encoded file name for a C call: its bytes up to a NUL.
+#[cfg(target_os = "linux")]
+fn c_file_name(path: &std::path::Path) -> Option<std::ffi::CString> {
+    use std::os::unix::ffi::OsStrExt;
+    let bytes = path.as_os_str().as_bytes();
+    let end = bytes
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(bytes.len());
+    std::ffi::CString::new(&bytes[..end]).ok()
+}
+
+/// process.c:Finternal_default_signal_process's PROCESS: a string names
+/// a process, else is read as a number, whose whole text it must be (nil
+/// otherwise); any other non-number is get_process's.  A number is
+/// CONS_TO_INTEGER's pid_t; a process with no pid of its own cannot be
+/// signalled.
 #[cfg(unix)]
 fn signal_process_target_pid(
     interp: &mut Interpreter,
     target: &Value,
 ) -> Result<Option<libc::pid_t>, LispError> {
-    if let Some(name) = string_like(target) {
-        if let Some(process_id) = interp.find_process_id_by_name(&name.text) {
-            let pid = interp
-                .process_os_id(process_id)
-                .ok_or_else(|| LispError::Signal(format!("Cannot signal process {}", name.text)))?;
-            return Ok(Some(pid as libc::pid_t));
-        }
-        return Ok(name.text.parse::<libc::pid_t>().ok());
+    let numberp = |value: &Value| {
+        matches!(
+            value.kind(),
+            Kind::Integer(_) | Kind::BigInteger(_) | Kind::Float(_)
+        )
+    };
+    let mut process = *target;
+    if let Kind::StringObject(string) = target.kind() {
+        let found = string_like(target)
+            .and_then(|name| interp.find_process_id_by_name(&name.text))
+            .map(|id| interp.record_value(id));
+        process = match found {
+            Some(found) => found,
+            None => {
+                let bytes = string.borrow().bytes().to_vec();
+                match crate::lisp::primitives::numeric_time::string_to_number_prefix(&bytes) {
+                    (Some(number), len) if len == bytes.len() => number,
+                    _ => return Ok(None),
+                }
+            }
+        };
+    } else if !numberp(&process) {
+        process = get_process(interp, Some(&process))?;
     }
-    if let Ok(pid) = target.as_integer() {
-        return i32::try_from(pid)
-            .map(Some)
-            .map_err(|_| LispError::Signal("Process id is out of range".into()));
+    if numberp(&process) {
+        let pid = crate::lisp::primitives::system::cons_to_signed(
+            &process,
+            i64::from(libc::pid_t::MIN),
+            i64::from(libc::pid_t::MAX),
+        )?;
+        return Ok(Some(pid as libc::pid_t));
     }
-    let process = get_process(interp, Some(target))?;
     let process_id = interp.resolve_process_id(&process)?;
-    let name = interp.process_name(process_id).unwrap_or_default();
-    interp
-        .process_os_id(process_id)
-        .map(|pid| Some(pid as libc::pid_t))
-        .ok_or_else(|| LispError::Signal(format!("Cannot signal process {name}")))
+    match interp.process_os_id(process_id) {
+        Some(pid) if pid > 0 => Ok(Some(pid as libc::pid_t)),
+        _ => {
+            let name = interp.process_name(process_id).unwrap_or_default();
+            Err(LispError::Signal(format!("Cannot signal process {name}")))
+        }
+    }
 }
 
 /// GNU dired.c formats slot 8 of `file-attributes' with filemodestring
@@ -4299,4 +4587,41 @@ fn file_name_completion_1(
         ],
         env,
     )
+}
+
+/// faccessat (AT_FDCWD, HOST, MODE, AT_EACCESS), its errno on failure.
+fn faccessat_errno(host: &std::path::Path, mode: libc::c_int) -> std::io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    let name = std::ffi::CString::new(host.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::from_raw_os_error(libc::EINVAL))?;
+    // SAFETY: `name' is a valid NUL-terminated string for the call.
+    let status = unsafe { libc::faccessat(libc::AT_FDCWD, name.as_ptr(), mode, libc::AT_EACCESS) };
+    if status == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+/// emacs_fchmodat (AT_FDCWD, HOST, MODE, NOFOLLOW), its errno on failure.
+fn fchmodat_errno(
+    host: &std::path::Path,
+    mode: libc::mode_t,
+    nofollow: bool,
+) -> std::io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    let name = std::ffi::CString::new(host.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::from_raw_os_error(libc::EINVAL))?;
+    let flags = if nofollow {
+        libc::AT_SYMLINK_NOFOLLOW
+    } else {
+        0
+    };
+    // SAFETY: `name' is a valid NUL-terminated string for the call.
+    let status = unsafe { libc::fchmodat(libc::AT_FDCWD, name.as_ptr(), mode, flags) };
+    if status == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
 }

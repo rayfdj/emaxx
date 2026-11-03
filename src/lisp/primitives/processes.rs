@@ -606,6 +606,7 @@ pub(crate) fn call_process_arguments(
     let mut coding = if coding.is_nil() {
         "undecided".to_string()
     } else {
+        load_coding_system(interp, &coding, env)?;
         checked_coding_symbol(interp, &coding)?
     };
     let canonical = interp
@@ -1195,7 +1196,9 @@ pub(crate) fn spawn_persistent_process(
     argv: &[Vec<u8>],
     env: &mut Env,
     connection_type: Option<&Value>,
-    separate_stderr: bool,
+    // create_process's forkerr: the `:stderr' pipe process's
+    // SUBPROCESS_STDOUT, which the child gets as its standard error.
+    stderr: Option<&fs::File>,
 ) -> Result<RunningProcess, LispError> {
     #[cfg(test)]
     crate::test_support::mark_process_test();
@@ -1218,7 +1221,10 @@ pub(crate) fn spawn_persistent_process(
         directory,
         input_pty,
         output_pty,
-        separate_stderr,
+        stderr.map(|file| {
+            use std::os::fd::AsRawFd;
+            file.as_raw_fd()
+        }),
     )? {
         return finish_spawned_runtime(runtime);
     }
@@ -1249,6 +1255,13 @@ pub(crate) fn spawn_persistent_process(
             stdin_write = Some(write);
             Ok(())
         };
+        let given_stderr = |command: &mut Command, file: &fs::File| -> Result<(), LispError> {
+            command.stderr(Stdio::from(
+                file.try_clone()
+                    .map_err(|error| LispError::Signal(error.to_string()))?,
+            ));
+            Ok(())
+        };
         let piped_output = |command: &mut Command, error: bool| -> Result<fs::File, LispError> {
             let (read, write) = pipe()?;
             if error {
@@ -1276,8 +1289,8 @@ pub(crate) fn spawn_persistent_process(
                     .try_clone()
                     .map_err(|error| LispError::Signal(error.to_string()))?,
             ));
-            if separate_stderr {
-                stderr_read = Some(piped_output(&mut command, true)?);
+            if let Some(file) = stderr {
+                given_stderr(&mut command, file)?;
             } else {
                 command.stderr(Stdio::from(slave));
             }
@@ -1292,7 +1305,11 @@ pub(crate) fn spawn_persistent_process(
             pty_slave_name = slave_name;
             command.stdin(Stdio::from(slave));
             stdout_read = Some(piped_output(&mut command, false)?);
-            stderr_read = Some(piped_output(&mut command, true)?);
+            if let Some(file) = stderr {
+                given_stderr(&mut command, file)?;
+            } else {
+                stderr_read = Some(piped_output(&mut command, true)?);
+            }
             pty_input = Some(master);
         } else {
             piped_stdin(&mut command)?;
@@ -1309,15 +1326,19 @@ pub(crate) fn spawn_persistent_process(
                         .try_clone()
                         .map_err(|error| LispError::Signal(error.to_string()))?,
                 ));
-                if separate_stderr {
-                    stderr_read = Some(piped_output(&mut command, true)?);
+                if let Some(file) = stderr {
+                    given_stderr(&mut command, file)?;
                 } else {
                     command.stderr(Stdio::from(slave));
                 }
                 pty_output = Some(master);
             } else {
                 stdout_read = Some(piped_output(&mut command, false)?);
-                stderr_read = Some(piped_output(&mut command, true)?);
+                if let Some(file) = stderr {
+                    given_stderr(&mut command, file)?;
+                } else {
+                    stderr_read = Some(piped_output(&mut command, true)?);
+                }
             }
         }
         // create_process: the channel Emacs reads and the one it writes
@@ -1333,7 +1354,7 @@ pub(crate) fn spawn_persistent_process(
     }
     #[cfg(not(unix))]
     {
-        let _ = (input_pty, output_pty, separate_stderr);
+        let _ = (input_pty, output_pty, stderr);
         command.stdin(Stdio::piped());
         command.stdout(Stdio::piped());
         command.stderr(Stdio::piped());
@@ -1633,7 +1654,7 @@ fn posix_spawn_process(
     directory: Option<Vec<u8>>,
     input_pty: bool,
     output_pty: bool,
-    separate_stderr: bool,
+    stderr: Option<std::os::fd::RawFd>,
 ) -> Result<Option<RunningProcess>, LispError> {
     use std::os::fd::AsRawFd;
     let Some(image) = ExecImage::new(program, argv, environment.to_vec()) else {
@@ -1665,10 +1686,6 @@ fn posix_spawn_process(
         .then(emacs_pipe)
         .transpose()
         .map_err(pipe_error)?;
-    let errors = separate_stderr
-        .then(emacs_pipe)
-        .transpose()
-        .map_err(pipe_error)?;
     // create_process: the channel Emacs reads and the one it writes, each
     // a pipe or the pty, must fit an fd_set; none is spawned otherwise.
     let master = pty_master.as_ref().map(|master| master.as_raw_fd());
@@ -1687,9 +1704,7 @@ fn posix_spawn_process(
         output
             .as_ref()
             .map_or(SpawnFd::Pty, |(_, write)| SpawnFd::Fd(write.as_raw_fd())),
-        errors
-            .as_ref()
-            .map_or(SpawnFd::Stdout, |(_, write)| SpawnFd::Fd(write.as_raw_fd())),
+        stderr.map_or(SpawnFd::Stdout, SpawnFd::Fd),
     ];
     let pid = match emacs_posix_spawn(&image, directory.as_deref(), stdio, pty_name.as_deref()) {
         Ok(pid) => pid,
@@ -1701,7 +1716,7 @@ fn posix_spawn_process(
         pid as u32,
         input.map(|(_, write)| write),
         output.map(|(read, _)| read),
-        errors.map(|(read, _)| read),
+        None,
     );
     // As on the fork path: with the pty on both sides, one slave is held
     // until the child's output is drained; the master is both channels.
@@ -2229,6 +2244,7 @@ pub(crate) fn make_process_arguments(
             let name = if coding.is_nil() {
                 None
             } else {
+                load_coding_system(interp, &coding, env)?;
                 Some(checked_coding_symbol(interp, &coding)?)
             };
             encode_coding_value_recording(interp, argument, name.as_deref(), false, false, env)?
@@ -2754,7 +2770,7 @@ fn insert_process_output(
     let requires_decoding = interp.coding_system_kind_name(&canonical).as_deref()
         != Some("raw-text")
         || !(inhibit_eol_conversion || coding_eol_type(interp, &canonical) == Some(0))
-        || coding_system_property(interp, &canonical, ":post-read-conversion")
+        || coding_attr(interp, &canonical, ":post-read-conversion")
             .is_some_and(|function| !function.is_nil());
     // call_process's read loop over the child's output: BUFSIZE bytes a
     // block (CALLPROC_BUFFER_SIZE_MIN, doubling up to the MAX as the
@@ -2860,7 +2876,7 @@ fn decode_process_bytes_at_point(
         layout.as_ref(),
         env,
     )?;
-    let post_read = coding_system_property(
+    let post_read = coding_attr(
         interp,
         &interp
             .coding_system_canonical_name(&coding_used)
@@ -2909,6 +2925,7 @@ fn decode_process_output(
             .process_buffer_id(process_id)
             .and_then(|id| interp.get_buffer_by_id(id))
             .is_some_and(|buffer| !buffer.is_multibyte());
+    load_coding_system(interp, &decoding, env)?;
     let coding = match checked_coding_given(interp, &decoding)? {
         Some(coding) if unibyte_buffer => raw_text_coding_system(interp, &coding),
         Some(coding) => coding,
@@ -2959,6 +2976,7 @@ pub(crate) fn deliver_process_streams(
     let (stdout_eof, stderr_eof) = interp.take_process_pipe_eof(process_id);
     if stdout_eof {
         delivered |= flush_process_decoder(interp, process_id, env)?.1;
+        interp.finish_pipe_process_at_eof(process_id);
     }
     if stderr_eof {
         delivered |= flush_process_decoder(interp, stderr_process_id, env)?.1;
@@ -3054,10 +3072,12 @@ fn pump_external_process_output_for(
         progressed |= deliver_process_streams(interp, process_id, &stdout, &stderr, env)?;
     }
     // status_notify walks every process, so a JUST-THIS-ONE wait notifies
-    // the others' exits as well.
-    for (process_id, event) in interp.take_pending_subprocess_exit_events_for(None) {
-        run_process_sentinel(interp, process_id, &event, env)?;
-        progressed = true;
+    // the others' exits as well, once no channel has input left.
+    if interp.any_process_exit_awaits_notification() && !interp.process_input_available() {
+        for (process_id, event) in interp.take_pending_subprocess_exit_events_for(None) {
+            run_process_sentinel(interp, process_id, &event, env)?;
+            progressed = true;
+        }
     }
     Ok(progressed)
 }
@@ -3575,8 +3595,11 @@ fn activate_network_client(
                 }
             }
         }
+        // finish_after_tls_connection: a connection whose TLS setup ends
+        // here is "open" to its sentinel.  A connect that did not wait is
+        // told so when it completes; a plain blocking connect tells no one.
+        run_process_sentinel(interp, process_id, "open\n", env)?;
     }
-    run_process_sentinel(interp, process_id, "open\n", env)?;
     Ok(process)
 }
 
@@ -3817,10 +3840,7 @@ pub(crate) fn make_network_process(
             decoding,
             encoding,
         )?;
-        if !is_server {
-            let process_id = interp.resolve_process_id(&process)?;
-            run_process_sentinel(interp, process_id, "open\n", env)?;
-        }
+        // connect_network_socket runs no sentinel for a datagram socket.
         return Ok(process);
     }
 
@@ -4475,6 +4495,12 @@ pub(crate) fn wait_pumping_processes(
     // (a child signal for another wait's process) cannot make it spin.
     let mut woke_early = false;
     let mut fruitless_wakes = 0;
+    // wait_reading_process_output runs timer_check at the top of each
+    // iteration of its select loop: the first, and each after select
+    // returns for output, a child or the timer_delay timer_check gave
+    // it.  A pass here that only ends this loop's 10ms poll is no such
+    // return, so a timer a callback added waits as it does in GNU.
+    let mut timer_check_at = Some(std::time::Instant::now());
     loop {
         // A fatal signal ends the wait as GNU's handler, run in the middle
         // of the select, does.
@@ -4505,7 +4531,15 @@ pub(crate) fn wait_pumping_processes(
                 Some(std::time::Instant::now() + std::time::Duration::from_millis(10));
         }
         if run_timers {
-            interp.drive_threads(env, true)?;
+            let check_timers = progressed
+                || woke_early
+                || timer_check_at.is_some_and(|at| std::time::Instant::now() >= at);
+            interp.drive_threads(env, check_timers)?;
+            if check_timers {
+                timer_check_at = interp
+                    .timer_check_delay
+                    .and_then(|delay| std::time::Instant::now().checked_add(delay));
+            }
         }
         if interp.waiting_for_user_input() && !unread_command_events(interp, env)?.is_empty() {
             break;
@@ -4574,8 +4608,8 @@ pub(crate) fn wait_pumping_processes(
         if let Some(due) = interp.next_timer_due() {
             nap = nap.min(due.saturating_duration_since(now));
         }
-        if run_timers && let Some(delay) = crate::lisp::primitives::next_timer_delay(interp, env) {
-            nap = nap.min(delay);
+        if run_timers && let Some(at) = timer_check_at {
+            nap = nap.min(at.saturating_duration_since(now));
         }
         if let Some(grace) = delivery_grace_deadline {
             nap = nap.min(grace.saturating_duration_since(now));

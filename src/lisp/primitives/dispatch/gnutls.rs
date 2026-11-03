@@ -9,6 +9,7 @@ use zeroize::Zeroizing;
 
 type AlgorithmList = unsafe extern "C" fn() -> *const c_int;
 type AlgorithmName = unsafe extern "C" fn(c_int) -> *const c_char;
+type ExtensionName = unsafe extern "C" fn(c_uint) -> *const c_char;
 type AlgorithmUnsigned = unsafe extern "C" fn(c_int) -> c_uint;
 type AlgorithmSize = unsafe extern "C" fn(c_int) -> usize;
 type ErrorIsFatal = unsafe extern "C" fn(c_int) -> c_int;
@@ -159,6 +160,7 @@ struct GnuTlsApi {
     aead_encrypt: Option<AeadCrypt>,
     aead_decrypt: Option<AeadCrypt>,
     aead_deinit: Option<AeadDeinit>,
+    extension_name: Option<ExtensionName>,
     x509_crt_init: X509CrtInit,
     x509_crt_deinit: X509CrtDeinit,
     x509_crt_import: X509CrtImport,
@@ -374,6 +376,7 @@ fn load_gnutls() -> Result<GnuTlsLibrary, LispError> {
                 aead_encrypt: load_optional_symbol(&library, b"gnutls_aead_cipher_encrypt"),
                 aead_decrypt: load_optional_symbol(&library, b"gnutls_aead_cipher_decrypt"),
                 aead_deinit: load_optional_symbol(&library, b"gnutls_aead_cipher_deinit"),
+                extension_name: load_optional_symbol(&library, b"gnutls_ext_get_name"),
                 x509_crt_init: load_symbol(&library, b"gnutls_x509_crt_init")?,
                 x509_crt_deinit: load_symbol(&library, b"gnutls_x509_crt_deinit")?,
                 x509_crt_import: load_symbol(&library, b"gnutls_x509_crt_import")?,
@@ -1872,25 +1875,46 @@ define_dispatch!(
                 let Ok(library) = gnutls_library() else {
                     return Ok(Value::Nil);
                 };
-                interp.set_global_binding(
-                    "libgnutls-version",
-                    Value::Integer(encoded_library_version(&library.api).unwrap_or(-1)),
-                );
-                let mut capabilities = vec![
-                    Value::symbol("macs"),
-                    Value::symbol("ciphers"),
-                    Value::symbol("digests"),
-                    Value::symbol("gnutls3"),
-                    Value::symbol("gnutls"),
-                ];
+                let version = encoded_library_version(&library.api);
+                if option_env!("EMAXX_GNUTLS_VERSION").is_none() {
+                    interp.set_global_binding(
+                        "libgnutls-version",
+                        Value::Integer(version.unwrap_or(-1)),
+                    );
+                }
+                // gnutls.c conses its capabilities in this order, and then
+                // each extension name GnuTLS knows below ID 100.
+                let mut capabilities = Value::list([Value::symbol("gnutls")]);
+                if version.is_some_and(|version| version >= 30205) {
+                    capabilities = Value::cons(Value::symbol("ClientHello Padding"), capabilities);
+                }
+                for capability in ["gnutls3", "digests", "ciphers"] {
+                    capabilities = Value::cons(Value::symbol(capability), capabilities);
+                }
                 if library.api.aead_init.is_some()
                     && library.api.aead_encrypt.is_some()
                     && library.api.aead_decrypt.is_some()
                     && library.api.aead_deinit.is_some()
                 {
-                    capabilities.insert(1, Value::symbol("AEAD-ciphers"));
+                    capabilities = Value::cons(Value::symbol("AEAD-ciphers"), capabilities);
                 }
-                Ok(Value::list(capabilities))
+                capabilities = Value::cons(Value::symbol("macs"), capabilities);
+                if let Some(extension_name) = library.api.extension_name {
+                    for extension in 0..100 {
+                        // SAFETY: gnutls_ext_get_name takes any ID and returns
+                        // null or a library-owned NUL-terminated name.
+                        let name = unsafe { extension_name(extension) };
+                        if name.is_null() {
+                            continue;
+                        }
+                        // SAFETY: Checked non-null above; the name is static.
+                        let name = unsafe { CStr::from_ptr(name) }.to_string_lossy();
+                        if !crate::lisp::primitives::hooks_overlays::memq(&*name, capabilities) {
+                            capabilities = Value::cons(Value::symbol(&name), capabilities);
+                        }
+                    }
+                }
+                Ok(capabilities)
             }
             "gnutls-asynchronous-parameters" => {
                 need_args(name, args, 2)?;

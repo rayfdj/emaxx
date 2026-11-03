@@ -2,20 +2,31 @@ use super::*;
 use crate::lisp::types::Kind;
 use crate::lisp::types::LispErrorKind;
 
-pub(crate) fn file_modtime(
+/// emacs_fstatat of PATH as a visited file's `modtime' and
+/// `modtime_size', or the error the call failed with.
+pub(crate) fn stat_visited_modtime(
     interp: &Interpreter,
     env: &Env,
     path: &str,
-) -> Result<Option<crate::buffer::FileModTime>, LispError> {
+) -> Result<Result<crate::buffer::VisitedModtime, std::io::Error>, LispError> {
     let local_path = unquote_local_file_name(path).unwrap_or_else(|| path.to_string());
-    match fs::metadata(host_file_name(interp, env, &local_path)?) {
-        Ok(metadata) => Ok(Some(crate::buffer::FileModTime {
-            modified: metadata
-                .modified()
-                .map_err(|error| LispError::Signal(error.to_string()))?,
-        })),
-        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(LispError::Signal(error.to_string())),
+    let host = host_file_name(interp, env, &local_path)?;
+    Ok(fs::metadata(host).and_then(|metadata| {
+        Ok(crate::buffer::VisitedModtime {
+            stamp: crate::buffer::ModtimeStamp::Time(metadata.modified()?),
+            size: metadata.len() as i64,
+        })
+    }))
+}
+
+/// fileio.c:time_error_value: the stamp of a file whose status ERROR
+/// kept from being read, NONEXISTENT_MODTIME_NSECS for ENOENT and
+/// ENOTDIR.
+pub(crate) fn time_error_value(error: &std::io::Error) -> crate::buffer::ModtimeStamp {
+    if error.kind() == ErrorKind::NotFound || error.raw_os_error() == Some(libc::ENOTDIR) {
+        crate::buffer::ModtimeStamp::Nonexistent
+    } else {
+        crate::buffer::ModtimeStamp::Unknown
     }
 }
 
@@ -38,14 +49,33 @@ pub(crate) fn modtimes_equal_whole_seconds(
 }
 
 // GNU `file-attributes' time fields are (HIGH LOW USEC PSEC) lists.
+/// timefns.c:make_lisp_time of TIME's timespec, one before the epoch
+/// too (Tramp's `tramp-time-doesnt-exist' is (-1 65535)).
 pub(crate) fn system_time_list_value(time: SystemTime) -> Result<Value, LispError> {
-    let duration = time
-        .duration_since(UNIX_EPOCH)
-        .map_err(|error| LispError::Signal(error.to_string()))?;
-    Ok(unix_time_list_value(
-        duration.as_secs() as i64,
-        duration.subsec_nanos() as i64,
-    ))
+    let (seconds, nanoseconds) = system_time_seconds_nanos(time);
+    Ok(unix_time_list_value(seconds, nanoseconds))
+}
+
+/// TIME as a timespec's floored seconds and the nanoseconds within them.
+pub(crate) fn system_time_seconds_nanos(time: SystemTime) -> (i64, i64) {
+    match time.duration_since(UNIX_EPOCH) {
+        Ok(duration) => (
+            duration.as_secs() as i64,
+            i64::from(duration.subsec_nanos()),
+        ),
+        Err(before) => {
+            let duration = before.duration();
+            let (mut seconds, mut nanoseconds) = (
+                -(duration.as_secs() as i64),
+                -(i64::from(duration.subsec_nanos())),
+            );
+            if nanoseconds < 0 {
+                seconds -= 1;
+                nanoseconds += 1_000_000_000;
+            }
+            (seconds, nanoseconds)
+        }
+    }
 }
 
 pub(crate) fn unix_time_list_value(seconds: i64, nanoseconds: i64) -> Value {
@@ -87,26 +117,10 @@ pub(crate) fn file_modtime_from_value(
 /// nanoseconds within them, as utimensat takes them.
 #[cfg(unix)]
 fn system_time_to_timespec(time: SystemTime) -> libc::timespec {
-    match time.duration_since(UNIX_EPOCH) {
-        Ok(duration) => libc::timespec {
-            tv_sec: duration.as_secs() as libc::time_t,
-            tv_nsec: duration.subsec_nanos() as libc::c_long,
-        },
-        Err(before) => {
-            let duration = before.duration();
-            let (mut seconds, mut nanoseconds) = (
-                -(duration.as_secs() as i64),
-                -(i64::from(duration.subsec_nanos())),
-            );
-            if nanoseconds < 0 {
-                seconds -= 1;
-                nanoseconds += 1_000_000_000;
-            }
-            libc::timespec {
-                tv_sec: seconds as libc::time_t,
-                tv_nsec: nanoseconds as libc::c_long,
-            }
-        }
+    let (seconds, nanoseconds) = system_time_seconds_nanos(time);
+    libc::timespec {
+        tv_sec: seconds as libc::time_t,
+        tv_nsec: nanoseconds as libc::c_long,
     }
 }
 
@@ -733,6 +747,7 @@ fn choose_write_coding(
             .unwrap_or(Value::Nil);
     }
     if !coding.is_nil() && !force_raw {
+        load_coding_system(interp, &coding, env)?;
         let name = checked_coding_symbol(interp, &coding)?;
         force_raw = matches!(
             interp.coding_system_kind_name(&name).as_deref(),
@@ -750,6 +765,7 @@ fn choose_write_coding(
             env,
         )?;
         if !coding.is_nil() {
+            load_coding_system(interp, &coding, env)?;
             checked_coding_symbol(interp, &coding)?;
         }
     }
@@ -772,6 +788,7 @@ fn choose_write_coding(
             let eol = if coding.is_nil() {
                 None
             } else {
+                load_coding_system(interp, &coding, env)?;
                 let name = checked_coding_symbol(interp, &coding)?;
                 interp.coding_system_eol_type_value(&name)
             };
@@ -1124,7 +1141,7 @@ fn write_region_with_coding(
     if write_result.is_err()
         && opened
         && visiting
-        && let Ok(modtime) = file_modtime(interp, env, path)
+        && let Ok(Ok(modtime)) = stat_visited_modtime(interp, env, path)
     {
         interp.buffer.borrow_mut().set_visited_file_modtime(modtime);
     }
@@ -1157,10 +1174,11 @@ fn write_region_with_coding(
         };
         let visited_name = expand_file_name_runtime(interp, env, &visited_name, None)?;
         interp.buffer.borrow_mut().file = Some(visited_name);
-        interp
-            .buffer
-            .borrow_mut()
-            .set_visited_file_modtime(file_modtime(interp, env, path)?);
+        // The time and size the written file has, unless its status cannot
+        // be read.
+        if let Ok(modtime) = stat_visited_modtime(interp, env, path)? {
+            interp.buffer.borrow_mut().set_visited_file_modtime(modtime);
+        }
         record_visit_saved(interp);
         if into_visited_file {
             funlock_file(interp, env, Value::String(lock_path.into()))?;
@@ -2064,8 +2082,8 @@ pub(crate) fn decode_file_bytes(
     let canonical = interp
         .coding_system_canonical_name(&coding)
         .unwrap_or_else(|| coding.clone());
-    let for_unibyte = coding_system_property(interp, &canonical, ":for-unibyte")
-        .is_some_and(|value| value.is_truthy());
+    let for_unibyte =
+        coding_attr(interp, &canonical, ":for-unibyte").is_some_and(|value| value.is_truthy());
     // Finsert_file_contents decodes nothing read only for a coding that
     // needs no flushing (CODING_REQUIRE_FLUSHING: a CCL decoder still
     // runs its end-of-input code).
@@ -2213,6 +2231,7 @@ pub(crate) fn insert_file_contents(
     if let Some(coding) = interp.lookup_var("coding-system-for-read", env)
         && !coding.is_nil()
     {
+        load_coding_system(interp, &coding, env)?;
         let _ = checked_coding_symbol(interp, &coding)?;
     }
     let operation_args = [
@@ -2222,9 +2241,12 @@ pub(crate) fn insert_file_contents(
         args.get(3).copied().unwrap_or(Value::Nil),
         args.get(4).copied().unwrap_or(Value::Nil),
     ];
+    let mut open_failure = crate::buffer::ModtimeStamp::Unknown;
     let file = match host_file_name(interp, env, &path).and_then(|host| {
-        fs::File::open(host)
-            .map_err(|error| LispError::SignalValue(file_input_error_value(&error, &path)))
+        fs::File::open(host).map_err(|error| {
+            open_failure = time_error_value(&error);
+            LispError::SignalValue(file_input_error_value(&error, &path))
+        })
     }) {
         Ok(file) => file,
         Err(error) if !visit => return Err(error),
@@ -2245,18 +2267,42 @@ pub(crate) fn insert_file_contents(
                 .coding_system_canonical_name(&coding)
                 .unwrap_or_else(|| coding.clone());
             if replace_arg.is_none()
-                && coding_system_property(interp, &canonical, ":for-unibyte")
+                && coding_attr(interp, &canonical, ":for-unibyte")
                     .is_some_and(|value| value.is_truthy())
             {
                 super::call(interp, "set-buffer-multibyte", &[Value::Nil], env)?;
             }
-            interp.buffer.borrow_mut().set_visited_file_modtime(None);
+            // mtime = time_error_value (save_errno), st.st_size = -1.
+            interp
+                .buffer
+                .borrow_mut()
+                .set_visited_file_modtime(crate::buffer::VisitedModtime {
+                    stamp: open_failure,
+                    size: -1,
+                });
             record_visit(interp, env, &path, empty_undo_list_p)?;
             set_last_coding_system_used(interp, &coding, env);
             finish_insert_file_contents(interp, env, 0, &args[1..], empty_undo_list_p)?;
             return Err(error);
         }
     };
+    // emacs_fd_fstat of the opened file, before any of it is read: its
+    // time and size.
+    let opened_modtime = file
+        .metadata()
+        .and_then(|metadata| {
+            Ok(crate::buffer::VisitedModtime {
+                stamp: crate::buffer::ModtimeStamp::Time(metadata.modified()?),
+                size: metadata.len() as i64,
+            })
+        })
+        .map_err(|error| {
+            LispError::SignalValue(file_operation_error_value(
+                "Input file status",
+                &error,
+                &path,
+            ))
+        })?;
     // Replacement preserves point as it preserves markers
     // (get_window_points_and_markers): a marker at point that the change
     // moves and restore_window_points places, and point goes there at the
@@ -2318,7 +2364,7 @@ pub(crate) fn insert_file_contents(
             interp
                 .buffer
                 .borrow_mut()
-                .set_visited_file_modtime(file_modtime(interp, env, &path)?);
+                .set_visited_file_modtime(opened_modtime);
             record_visit(interp, env, &path, empty_undo_list_p)?;
             if !regular {
                 return Err(LispError::SignalValue(Value::list([
@@ -2486,7 +2532,7 @@ fn insert_file_bytes(
         // decode_coding_gap's post-read conversion: called with point at
         // the inserted text and its length, with undo off, the text it
         // adds or removes counting as inserted.
-        let post_read = coding_system_property(
+        let post_read = coding_attr(
             interp,
             &interp
                 .coding_system_canonical_name(&coding_used)

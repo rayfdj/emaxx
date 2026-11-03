@@ -91,6 +91,21 @@ pub(crate) fn gnu_c_forwarded_variables() -> &'static [&'static str] {
 }
 
 #[cfg(target_os = "linux")]
+pub(crate) mod generated_gnu_build_files_linux;
+/// The contracted oracle's buildobj.h, the objects its build compiled, in
+/// order; None off Linux, where no oracle has been probed for it.
+pub(crate) fn gnu_build_files() -> Option<&'static [&'static str]> {
+    #[cfg(target_os = "linux")]
+    {
+        Some(generated_gnu_build_files_linux::GNU_BUILD_FILES)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
+}
+
+#[cfg(target_os = "linux")]
 pub(crate) mod generated_gnu_byte_boolean_vars_linux;
 /// The contracted oracle's `byte-boolean-vars' at `-Q --batch', in its
 /// order; empty off Linux, where no oracle has been probed for it.
@@ -142,9 +157,13 @@ pub(crate) fn gnu_c_localized_forwarded_variables() -> &'static [&'static str] {
 pub(crate) use generated_gnu_c_primitives_linux::{
     GNU_C_PRIMITIVES, generated_gnu_c_primitive_available, generated_gnu_c_primitive_special_form,
 };
+pub(crate) mod charset;
 mod fields;
+pub(crate) mod font;
+pub(crate) mod fontset;
 mod hash_insert;
 mod hooks_overlays;
+pub(crate) mod image;
 mod insdel;
 mod interactive;
 mod invisibility;
@@ -160,6 +179,7 @@ mod purecopy;
 mod regexp;
 mod search;
 mod sequences;
+mod sound;
 mod strftime;
 mod strings;
 mod styled_format;
@@ -183,6 +203,7 @@ pub(crate) use completion::*;
 pub(crate) use dispatch::display::log_message_text;
 pub(crate) use dispatch::display::prin1_to_string;
 pub(crate) use dispatch::gnutls::{AsyncGnuTlsProgress, progress_async_gnutls};
+pub(crate) use dispatch::realize_basic_faces;
 pub(crate) use dispatch::{
     CHECK_ALL, CHECK_BORDER, CHECK_HEAD, StringCompositions, update_compositions,
 };

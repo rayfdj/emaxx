@@ -215,16 +215,14 @@ fn sxhash_host_record(
         return xhash(obj);
     };
     match state.kind {
+        // A font's pseudovector holds its properties alone (struct
+        // font_spec's props), its PVSIZE their number; the record's type
+        // tag is no Lisp slot of it.
         RecordKind::Font => {
             let size = PSEUDOVECTOR_FLAG
                 | (PVEC_FONT << PSEUDOVECTOR_AREA_BITS)
-                | (1 + state.slots.len()) as u64;
-            sxhash_slots(
-                interp,
-                size,
-                std::iter::once(state.type_tag).chain(state.slots.iter().copied()),
-                depth,
-            )
+                | state.slots.len() as u64;
+            sxhash_slots(interp, size, state.slots.iter().copied(), depth)
         }
         RecordKind::TreeSitterNode => match interp.treesit_node_state(&obj) {
             Some(node) => sxhash_combine(

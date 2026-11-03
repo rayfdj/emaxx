@@ -1,4 +1,5 @@
 use super::*;
+use crate::lisp::primitives::image::valid_image_p;
 use crate::lisp::primitives::processes::wait_pumping_processes;
 use crate::lisp::types::Kind;
 use crate::lisp::types::LispErrorKind;
@@ -263,10 +264,40 @@ pub(crate) fn message_to_stderr(
             .write_all(b"\n")
             .map_err(|error| LispError::Signal(error.to_string()))?;
     }
+    // The line ends after a message, and after none unless the cursor is
+    // to stay in the echo area.
+    let newline = message.is_some()
+        || !interp
+            .forwarded_c_value("cursor-in-echo-area", &Env::new())
+            .is_some_and(|value| value.is_truthy());
     stderr
         .write_all(&bytes)
-        .and_then(|_| stderr.write_all(b"\n"))
+        .and_then(|_| {
+            if newline {
+                stderr.write_all(b"\n")
+            } else {
+                Ok(())
+            }
+        })
         .map_err(|error| LispError::Signal(error.to_string()))
+}
+
+/// xdisp.c:message3_nolog of nil (message1_nolog (0)): the echo area
+/// cleared, which in batch ends a stderr line.
+pub(crate) fn clear_message_nolog(
+    interp: &mut Interpreter,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    if interp
+        .forwarded_c_value("noninteractive", &Env::new())
+        .is_some_and(|value| value.is_truthy())
+    {
+        return message_to_stderr(interp, None, env);
+    }
+    if interactive_window_metrics().is_none() {
+        return Ok(());
+    }
+    clear_message(interp, env, true, true)
 }
 
 /// xdisp.c:message_with_string with logging enabled. Unlike Fmessage, its
@@ -279,6 +310,30 @@ pub(crate) fn message_with_string(
     argument: Value,
     env: &mut Env,
 ) -> Result<(), LispError> {
+    message_with_string_1(interp, format, argument, true, env)
+}
+
+/// xdisp.c:message_with_string with LOG false: shown through
+/// message3_nolog, so neither logged nor withheld by `inhibit-message'.
+pub(crate) fn message_with_string_nolog(
+    interp: &mut Interpreter,
+    format: &str,
+    argument: Value,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    message_with_string_1(interp, format, argument, false, env)
+}
+
+fn message_with_string_1(
+    interp: &mut Interpreter,
+    format: &str,
+    argument: Value,
+    log: bool,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    if !argument.is_string() {
+        return Err(wrong_type_argument("stringp", argument));
+    }
     let batch = interp
         .forwarded_c_value("noninteractive", &Env::new())
         .is_some_and(|v| v.is_truthy());
@@ -294,6 +349,9 @@ pub(crate) fn message_with_string(
     if batch {
         message_to_stderr(interp, Some(&message), env)?;
         return Ok(());
+    }
+    if !log {
+        return message3_nolog(interp, message, env);
     }
     let log = string_text(&message)?;
     message3(interp, message, &log, env)
@@ -321,28 +379,44 @@ pub(crate) fn message3(
         {
             return Ok(());
         }
-        let mut displayed = message;
-        if let Some(function) = interp
-            .forwarded_c_value("set-message-function", &Env::new())
-            .filter(|value| function_value_p(interp, value, env))
-            && !interp.garbage_collection_is_inhibited()
-        {
-            let restore = interp.bind_special_dynamic("inhibit-quit", Value::T, env)?;
-            // A binding watcher can change the C function cell.
-            let function = interp
-                .forwarded_c_value("set-message-function", &Env::new())
-                .unwrap_or(function);
-            let result = redisplay_safe_call(interp, function, &[message], env);
-            interp.restore_special_dynamic(restore, env)?;
-            let result = result?;
-            if result.is_string() {
-                displayed = result;
-            } else if result.is_truthy() {
-                return Ok(());
-            }
-        }
-        set_echo_area_message_value(displayed)
+        set_message(interp, message, env)
     })
+}
+
+/// xdisp.c:message3_nolog: MESSAGE in the echo area, neither logged nor
+/// withheld by `inhibit-message'.
+pub(crate) fn message3_nolog(
+    interp: &mut Interpreter,
+    message: Value,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    interp.with_lisp_stack_roots(&message, |interp| set_message(interp, message, env))
+}
+
+/// xdisp.c:set_message: `set-message-function' may replace MESSAGE or
+/// take over showing it.
+fn set_message(interp: &mut Interpreter, message: Value, env: &mut Env) -> Result<(), LispError> {
+    let mut displayed = message;
+    if let Some(function) = interp
+        .forwarded_c_value("set-message-function", &Env::new())
+        .filter(|value| function_value_p(interp, value, env))
+        && !interp.garbage_collection_is_inhibited()
+    {
+        let restore = interp.bind_special_dynamic("inhibit-quit", Value::T, env)?;
+        // A binding watcher can change the C function cell.
+        let function = interp
+            .forwarded_c_value("set-message-function", &Env::new())
+            .unwrap_or(function);
+        let result = redisplay_safe_call(interp, function, &[message], env);
+        interp.restore_special_dynamic(restore, env)?;
+        let result = result?;
+        if result.is_string() {
+            displayed = result;
+        } else if result.is_truthy() {
+            return Ok(());
+        }
+    }
+    set_echo_area_message_value(displayed)
 }
 
 // Shared existing message-log sink: xdisp.c message_dolog with NLFLAG, which
@@ -377,6 +451,25 @@ pub(crate) fn message1(
 /// partial printed line it is that line's end, as add_to_log's is).
 pub(crate) fn log_message_text(interp: &mut Interpreter, text: &str, env: &Env) {
     log_message_dolog(interp, text, true, env);
+}
+
+/// xdisp.c:add_to_log: FORMAT with ARGS made a message by
+/// `format-message' and logged in *Messages* as a line of its own,
+/// never shown.
+pub(crate) fn add_to_log(
+    interp: &mut Interpreter,
+    format: &str,
+    args: &[Value],
+    env: &mut Env,
+) -> Result<(), LispError> {
+    let mut message_args = Vec::with_capacity(args.len() + 1);
+    message_args.push(Value::string(format));
+    message_args.extend_from_slice(args);
+    let message = super::call(interp, "format-message", &message_args, env)?;
+    if let Some(text) = string_like(&message) {
+        log_message_text(interp, &text.text, env);
+    }
+    Ok(())
 }
 
 /// xdisp.c message_log_maybe_newline: end the log line printing left open.
@@ -714,45 +807,6 @@ pub(crate) fn string_face_spans(value: &Value) -> EchoSpans {
             (!face.is_nil()).then_some((start, end, face))
         })
         .collect()
-}
-
-fn valid_image_spec(interp: &Interpreter, spec: &Value, env: &Env) -> bool {
-    let Ok(items) = spec.to_vec() else {
-        return false;
-    };
-    if !matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(head)) if head == "image")
-        || items.len() < 5
-        || (items.len() - 1) % 2 != 0
-    {
-        return false;
-    }
-    let mut properties = std::collections::HashMap::new();
-    for pair in items[1..].as_chunks::<2>().0 {
-        let Ok(key) = pair[0].as_symbol() else {
-            return false;
-        };
-        if !key.starts_with(':') || properties.insert(key, &pair[1]).is_some() {
-            return false;
-        }
-    }
-    let Some(Kind::Symbol(image_type)) = properties.get(":type").copied().map(|v| v.kind()) else {
-        return false;
-    };
-    let type_supported = interp
-        .lookup_var("image-types", env)
-        .and_then(|types| types.to_vec().ok())
-        .is_some_and(|types| {
-            types
-                .iter()
-                .any(|value| matches!(value.kind(), Kind::Symbol(name) if name == image_type))
-        });
-    let file = properties.get(":file").copied();
-    let data = properties.get(":data").copied();
-    type_supported
-        && matches!(
-            (file.map(|v| v.kind()), data.map(|v| v.kind())),
-            (Some(Kind::StringObject(_)), None) | (None, Some(Kind::StringObject(_)))
-        )
 }
 
 fn current_bidi_paragraph_direction_value(interp: &Interpreter, env: &Env) -> Value {
@@ -1510,9 +1564,8 @@ pub(crate) fn window_render_layout(interp: &Interpreter) -> Vec<WindowRenderInfo
             let point = if selected {
                 live_point
             } else {
-                window_slot_value(interp, window_id, WINDOW_POINT_SLOT)
-                    .as_integer()
-                    .map(clamp)
+                window_marker_position(interp, window_id, WINDOW_POINT_SLOT)
+                    .map(|point| clamp(point as i64))
                     .unwrap_or(live_point)
             };
             Some(WindowRenderInfo {
@@ -2268,40 +2321,27 @@ fn select_window_value(
 ) -> Result<Value, LispError> {
     let window_id = live_window_id_or_selected(interp, Some(window))?;
     let previous_window_id = interp.selected_window_id();
-    if window_id != previous_window_id {
+    let target_buffer_id = window_buffer_id(interp, window);
+    // select_window_1: the point of the old selected window's buffer goes
+    // into that window's point marker, and the new window's point marker
+    // gives its buffer's point.  The selected window selected again keeps
+    // its buffer's point (GNU's `save-selected-window' relies on this).
+    let target_point = if window_id != previous_window_id {
         // select_window marks both windows for redisplay, the newly
         // selected one while it is still another window.
         interp.redisplay_other_windows();
         let previous_buffer_id = interp.selected_window_buffer_id();
-        let previous_point = if previous_buffer_id == interp.current_buffer_id() {
-            interp.buffer.borrow().point()
-        } else {
-            interp
-                .get_buffer_by_id(previous_buffer_id)
-                .map(|buffer| buffer.point())
-                .unwrap_or(1)
-        };
-        set_window_slot_value(
+        let previous_point = interp.buffer_point_by_id(previous_buffer_id);
+        set_window_marker(
             interp,
             previous_window_id,
             WINDOW_POINT_SLOT,
-            Value::Integer(previous_point as i64),
-        )?;
-    }
-    // The selected window's live point is the point of its current buffer;
-    // its saved window-point slot is only authoritative while unselected.
-    // In particular, reselecting the already-selected window must not rewind
-    // point to a stale slot (GNU's `save-selected-window' relies on this).
-    let target_buffer_id = window_buffer_id(interp, window);
-    let target_point = if window_id == previous_window_id
-        && target_buffer_id == Some(interp.current_buffer_id())
-    {
-        interp.buffer.borrow().point()
+            previous_buffer_id,
+            previous_point,
+        );
+        window_marker_position(interp, window_id, WINDOW_POINT_SLOT)
     } else {
-        window_slot_value(interp, window_id, WINDOW_POINT_SLOT)
-            .as_integer()
-            .unwrap_or(1)
-            .max(1) as usize
+        None
     };
     if let Some(frame) = interp.window_frame_id(window_id) {
         interp.note_selected_frame(frame);
@@ -2314,14 +2354,26 @@ fn select_window_value(
         && interp.has_buffer_id(buffer_id)
     {
         interp.switch_to_buffer_id_preserving_window_history(buffer_id)?;
-        interp.buffer.borrow_mut().goto_char(target_point);
-        let point = interp.buffer.borrow().point() as i64;
-        set_window_slot_value(interp, window_id, WINDOW_POINT_SLOT, Value::Integer(point))?;
+        // set_point_from_marker, inside the accessible portion.
+        if let Some(target_point) = target_point {
+            interp.buffer.borrow_mut().goto_char(target_point);
+        }
         if !norecord {
             interp.record_buffer_front(buffer_id);
         }
     }
     Ok(*window)
+}
+
+/// The end of buffer.c:record_buffer, after select_window recorded the
+/// selected window's buffer (current now): run_buffer_list_update_hook,
+/// unless the buffer inhibits its hooks.
+fn run_record_buffer_hook(interp: &mut Interpreter, env: &mut Env) -> Result<(), LispError> {
+    let buffer_id = interp.current_buffer_id();
+    if interp.buffer_hooks_inhibited(buffer_id) {
+        return Ok(());
+    }
+    run_named_hooks(interp, "buffer-list-update-hook", env, None)
 }
 
 /// window.c's decode_valid_window: a live or internal window, nil being
@@ -2342,7 +2394,7 @@ fn window_is_deleted(interp: &Interpreter, id: u64) -> bool {
     )
 }
 
-fn window_is_minibuffer(interp: &Interpreter, id: u64) -> bool {
+pub(super) fn window_is_minibuffer(interp: &Interpreter, id: u64) -> bool {
     matches!(
         window_slot_value(interp, id, WINDOW_KIND_SLOT).kind(),
         Kind::Symbol(ref kind) if kind == MINIBUFFER_WINDOW_KIND
@@ -2707,22 +2759,13 @@ fn recombine_windows(interp: &mut Interpreter, window: u64) -> Result<(), LispEr
     clear_deleted_window(interp, window)
 }
 
-/// window.c:unshow_buffer: a window going away leaves its point in its
-/// buffer, unless that buffer is the selected window's (whose point is
-/// the buffer's own).
+/// window.c:unshow_buffer, then the unchain_marker calls of the window's
+/// start, point and old point that delete_window and
+/// delete_all_child_windows make: the buffer remembers the window's
+/// start, and takes its point unless the selected window shows it.
 fn unshow_buffer(interp: &mut Interpreter, window: u64) {
-    let Some(buffer_id) = window_buffer_id(interp, &interp.record_value(window)) else {
-        return;
-    };
-    if buffer_id == interp.selected_window_buffer_id() {
-        return;
-    }
-    let Ok(point) = window_slot_value(interp, window, WINDOW_POINT_SLOT).as_integer() else {
-        return;
-    };
-    if let Some(mut buffer) = interp.get_buffer_by_id_mut(buffer_id) {
-        buffer.goto_char(point.max(1) as usize);
-    }
+    interp.unshow_window_buffer(window);
+    unchain_window_markers(interp, window);
 }
 
 /// window.c:delete_all_child_windows: delete WINDOW, the siblings after
@@ -2866,10 +2909,7 @@ fn split_window_tree(
 
     let reference_buffer = window_buffer_id(interp, &interp.record_value(reference))
         .ok_or_else(|| LispError::Signal("Attempt to split a non-live window".into()))?;
-    let start = window_slot_value(interp, reference, WINDOW_START_SLOT)
-        .as_integer()
-        .unwrap_or(1)
-        .max(1) as usize;
+    let start = window_marker_position(interp, reference, WINDOW_START_SLOT).unwrap_or(1);
     let (old_width, old_height, old_left, old_top) = window_geometry(interp, old_id);
     // Orthogonal coordinates and sizes come from OLD; the iso ones are
     // assigned by window_resize_apply below.
@@ -2881,7 +2921,7 @@ fn split_window_tree(
     let new = interp.create_pseudovector(
         crate::lisp::eval::RecordKind::Window,
         "window",
-        window_record_slots(Some(reference_buffer), start, Value::Nil, geometry),
+        window_record_slots(interp, Some(reference_buffer), start, Value::Nil, geometry),
     );
     let Kind::Record(new_id) = new.kind() else {
         unreachable!("window records use Value::Record");
@@ -3267,6 +3307,10 @@ fn delete_other_windows_from_tree(
     }
     replace_window(interp, root_id, window_id, true)?;
     clear_deleted_window(interp, root_id)?;
+    // New total sizes for all of FRAME's windows, assigned only once
+    // WINDOW has replaced ROOT (Bug#51007).
+    frame_size::window_pixel_to_total(interp, frame, false, env)?;
+    frame_size::window_pixel_to_total(interp, frame, true, env)?;
     if let Some((buffer_id, startpos, top)) = start_and_top {
         let new_top = window_geometry(interp, window_id).3
             - window_geometry(interp, frame.borrow().root_window_id()).3;
@@ -3722,19 +3766,12 @@ fn window_non_body_height(interp: &Interpreter, buffer_id: u64, env: &Env) -> i6
         .sum()
 }
 
-/// Screen rows owned by the window selected *now*.  During a minibuffer read,
-/// packages can temporarily select the shrunken ordinary window and call
-/// `recenter'.  The last published glyph metrics then belong to an earlier
-/// redisplay and can still describe the pre-minibuffer height; the live window
-/// tree is GNU's authoritative source for command-time geometry.  Batch mode
-/// has no realized window tree, so it retains the published/dumb-frame model.
+/// Screen rows owned by the window selected *now*, its body height in the
+/// live window tree, batch or not.  During a minibuffer read, packages can
+/// temporarily select the shrunken ordinary window and call `recenter'; the
+/// last published glyph metrics then belong to an earlier redisplay and can
+/// still describe the pre-minibuffer height.
 fn selected_command_text_height(interp: &Interpreter, env: &Env) -> usize {
-    if interp
-        .lookup_var_key(cached_symbol!("noninteractive"), env)
-        .is_some_and(|value| value.is_truthy())
-    {
-        return selected_window_text_height().max(1);
-    }
     let window_id = interp.selected_window_id();
     let buffer_id = interp.selected_window_buffer_id();
     (window_geometry(interp, window_id).1 - window_non_body_height(interp, buffer_id, env)).max(1)
@@ -3792,9 +3829,8 @@ pub(crate) fn window_hscroll_state(interp: &Interpreter, window_id: u64) -> Wind
             .max(0),
         suspended: window_slot_value(interp, window_id, WINDOW_SUSPEND_AUTO_HSCROLL_SLOT)
             .is_truthy(),
-        old_point: window_slot_value(interp, window_id, WINDOW_OLD_POINT_SLOT)
-            .as_integer()
-            .ok(),
+        old_point: window_marker_position(interp, window_id, WINDOW_OLD_POINT_SLOT)
+            .map(|point| point as i64),
     }
 }
 
@@ -3819,12 +3855,15 @@ pub(crate) fn store_window_hscroll_state(
         WINDOW_SUSPEND_AUTO_HSCROLL_SLOT,
         if suspended { Value::T } else { Value::Nil },
     );
-    let _ = set_window_slot_value(
-        interp,
-        window_id,
-        WINDOW_OLD_POINT_SLOT,
-        Value::Integer(old_point),
-    );
+    if let Some(buffer_id) = window_buffer_id(interp, &interp.record_value(window_id)) {
+        set_window_marker(
+            interp,
+            window_id,
+            WINDOW_OLD_POINT_SLOT,
+            buffer_id,
+            old_point.max(1) as usize,
+        );
+    }
 }
 
 /// Which numbers `display-line-numbers' asks for (xdisp.c's
@@ -4857,9 +4896,14 @@ define_dispatch!(
             }
 
             // ── Display stubs ──
+            // frame.c:Fwindow_system: Fframep of FRAME (nil for the selected
+            // frame), nil for a terminal frame's t.
             "window-system" => {
                 need_arg_range(name, args, 0, 1)?;
-                Ok(Value::Nil)
+                match args.first().map(|frame| frame.kind()) {
+                    None | Some(Kind::Nil | Kind::Frame(_)) => Ok(Value::Nil),
+                    Some(frame) => Err(wrong_type_argument("framep", frame.value())),
+                }
             }
             "tty-type" => {
                 need_arg_range(name, args, 0, 1)?;
@@ -5035,7 +5079,7 @@ define_dispatch!(
             }
             "imagep" => {
                 need_args(name, args, 1)?;
-                Ok(if valid_image_spec(interp, &args[0], env) {
+                Ok(if valid_image_p(interp, &args[0], env) {
                     Value::T
                 } else {
                     Value::Nil
@@ -5049,12 +5093,13 @@ define_dispatch!(
                     }
                     return Ok(Value::Nil);
                 }
+                // FILTER nil or a frame names the frame whose cache to
+                // clear, which must be a window system's.
                 let filter = args.first().cloned().unwrap_or(Value::Nil);
-                if filter.is_nil()
-                    || matches!(filter.kind(), Kind::Frame(id) if interp.frame_is_live(id))
-                {
-                    return Err(LispError::Signal(
-                        "Window system frame should be used".into(),
+                if filter.is_nil() || matches!(filter.kind(), Kind::Frame(_)) {
+                    return Err(super::frames::window_system_frame_error(
+                        interp,
+                        Some(&filter),
                     ));
                 }
                 Ok(Value::Nil)
@@ -5066,27 +5111,53 @@ define_dispatch!(
             }
             "image-flush" => {
                 need_arg_range(name, args, 1, 2)?;
-                if !valid_image_spec(interp, &args[0], env) {
+                if !valid_image_p(interp, &args[0], env) {
                     return Err(LispError::Signal("Invalid image specification".into()));
                 }
+                // FRAME t flushes the window system frames, none here.
                 if matches!(args.get(1).map(|v| v.kind()), Some(Kind::T)) {
                     return Ok(Value::Nil);
                 }
-                Err(LispError::Signal(
-                    "Window system frame should be used".into(),
+                Err(super::frames::window_system_frame_error(
+                    interp,
+                    args.get(1),
                 ))
             }
+            // image.c: decode_live_frame; no transforms off a window system.
             "image-transforms-p" => {
                 need_arg_range(name, args, 0, 1)?;
+                decode_live_frame(interp, args.first(), true)?;
                 Ok(Value::Nil)
             }
-            "image-size" | "image-mask-p" | "image-metadata" => Err(LispError::Signal(
-                "Images are unavailable on a nongraphical display".into(),
-            )),
+            // image.c: a valid spec is looked up on the window system
+            // frame FRAME names; any other is invalid but for
+            // `image-metadata', which has none to give.
+            "image-size" | "image-mask-p" | "image-metadata" => {
+                if name == "image-size" {
+                    need_arg_range(name, args, 1, 3)?;
+                } else {
+                    need_arg_range(name, args, 1, 2)?;
+                }
+                if valid_image_p(interp, &args[0], env) {
+                    let frame = if name == "image-size" {
+                        args.get(2)
+                    } else {
+                        args.get(1)
+                    };
+                    Err(super::frames::window_system_frame_error(interp, frame))
+                } else if name == "image-metadata" {
+                    Ok(Value::Nil)
+                } else {
+                    Err(LispError::Signal("Invalid image specification".into()))
+                }
+            }
 
             "init-image-library" => {
                 need_args(name, args, 1)?;
-                let image_type = args[0].as_symbol()?;
+                // lookup_image_type compares TYPE with each type's symbol.
+                let Ok(image_type) = args[0].as_symbol() else {
+                    return Ok(Value::Nil);
+                };
                 Ok(
                     if matches!(
                         image_type,
@@ -5154,10 +5225,11 @@ define_dispatch!(
                             .unwrap_or(1)
                     }
                 } else {
-                    window_slot_value(interp, window_id, WINDOW_POINT_SLOT)
-                        .as_integer()
-                        .unwrap_or(1)
-                        .max(1) as usize
+                    // Fmarker_position of w->pointm.
+                    match window_marker_position(interp, window_id, WINDOW_POINT_SLOT) {
+                        Some(point) => point,
+                        None => return Ok(Value::Nil),
+                    }
                 };
                 Ok(Value::Integer(point as i64))
             }
@@ -5779,46 +5851,53 @@ define_dispatch!(
                 Ok(Value::Nil)
             }
             "window-text-pixel-size" => {
-                // (window-text-pixel-size &optional WINDOW FROM TO X-LIMIT
-                //  Y-LIMIT MODE-LINES IGNORE-LINE-AT-END).  Without a graphical frame a cell
-                // is the pixel unit: the widest line's character count and
-                // the line count stand for the pixel size of WINDOW's
-                // buffer text.  MODE-LINES non-nil adds the window's mode,
-                // header, and tab lines — `fit-window-to-buffer' sizes the
-                // whole window from that total.
+                // xdisp.c:Fwindow_text_pixel_size: measured in WINDOW's
+                // buffer, MODE-LINES adding the lines it names.
                 need_arg_range(name, args, 0, 7)?;
-                let window = args.first().cloned().unwrap_or(Value::Nil);
-                let window_id = window_id_or_selected(interp, &window)?;
+                let arg = |index: usize| args.get(index).copied().unwrap_or(Value::Nil);
+                let window_id = live_window_id_or_selected(interp, args.first())?;
                 let buffer_id = window_buffer_id(interp, &interp.record_value(window_id))
                     .unwrap_or(interp.current_buffer_id());
-                let text = if buffer_id == interp.current_buffer_id() {
-                    interp.buffer.borrow().buffer_string()
-                } else {
-                    interp
-                        .get_buffer_by_id(buffer_id)
-                        .map(|buffer| buffer.buffer_string())
-                        .unwrap_or_default()
-                };
-                let mut width = text
-                    .lines()
-                    .map(|line| line.chars().count())
-                    .max()
-                    .unwrap_or(0) as i64;
-                if let Some(limit) = args.get(3).and_then(|limit| limit.integer_value()) {
-                    width = width.min(limit);
-                }
-                let mut height = text.lines().count().max(1) as i64;
-                if args.get(5).is_some_and(Value::is_truthy) {
-                    for format_variable in
-                        ["mode-line-format", "header-line-format", "tab-line-format"]
+                let saved_buffer = interp.current_buffer_id();
+                interp.set_current_buffer_id(buffer_id)?;
+                let size = super::buffer_edit::window_text_pixel_size(
+                    interp,
+                    env,
+                    window_id,
+                    [arg(1), arg(2), arg(3), arg(4), arg(5), arg(6)],
+                );
+                interp.set_current_buffer_id(saved_buffer)?;
+                let size = size?;
+                let mode_lines = arg(5);
+                let mut extra = 0;
+                for (line, format_variable) in [
+                    ("tab-line", "tab-line-format"),
+                    ("header-line", "header-line-format"),
+                    ("mode-line", "mode-line-format"),
+                ] {
+                    if matches!(mode_lines.kind(), Kind::T) || mode_lines.symbol_str() == Some(line)
                     {
-                        height += window_line_height(interp, buffer_id, format_variable, env);
+                        extra += window_line_height(interp, buffer_id, format_variable, env);
                     }
                 }
-                if let Some(limit) = args.get(4).and_then(|limit| limit.integer_value()) {
-                    height = height.min(limit);
+                if extra == 0 {
+                    return Ok(size);
                 }
-                Ok(Value::cons(Value::Integer(width), Value::Integer(height)))
+                // The y is the second element of (X . Y) and of (X Y START).
+                let mut parts = Vec::new();
+                let mut tail = size;
+                while let Some((car, cdr)) = tail.cons_values() {
+                    parts.push(car);
+                    tail = cdr;
+                }
+                if parts.len() == 1 {
+                    parts.push(tail);
+                    let y = parts[1].integer_value().unwrap_or(0) + extra;
+                    return Ok(Value::cons(parts[0], Value::Integer(y)));
+                }
+                let y = parts[1].integer_value().unwrap_or(0) + extra;
+                parts[1] = Value::Integer(y);
+                Ok(Value::list(parts))
             }
             "buffer-text-pixel-size" => {
                 // (buffer-text-pixel-size &optional BUFFER-OR-NAME WINDOW
@@ -5841,10 +5920,26 @@ define_dispatch!(
                     }
                     None => interp.current_buffer_id(),
                 };
+                // window_text_pixel_size over the whole accessible text,
+                // the buffer shown in WINDOW meanwhile.
                 let saved_buffer = interp.current_buffer_id();
                 interp.set_current_buffer_id(buffer_id)?;
-                let size = buffer_text_size(interp);
+                let arg = |index: usize| args.get(index).copied().unwrap_or(Value::Nil);
+                let size = super::buffer_edit::window_text_pixel_size(
+                    interp,
+                    env,
+                    window_id,
+                    [
+                        Value::Nil,
+                        Value::Nil,
+                        arg(2),
+                        arg(3),
+                        Value::Nil,
+                        Value::Nil,
+                    ],
+                );
                 interp.set_current_buffer_id(saved_buffer)?;
+                let size = size?;
                 // unwind_with_echo_area_buffer: WINDOW's points and start
                 // come back through set_marker_restricted_both, inside its
                 // buffer's accessible region (ERC's fill-wrap measures in a
@@ -5856,16 +5951,14 @@ define_dispatch!(
                     let start = window_start_marker(interp, window_id, window_buffer);
                     set_window_start_marker(interp, window_id, start.clamp(point_min, point_max));
                     for slot in [WINDOW_POINT_SLOT, WINDOW_OLD_POINT_SLOT] {
-                        if let Some(point) =
-                            window_slot_value(interp, window_id, slot).integer_value()
-                        {
-                            let clamped = (point.max(1) as usize).clamp(point_min, point_max);
-                            set_window_slot_value(
+                        if let Some(point) = window_marker_position(interp, window_id, slot) {
+                            set_window_marker(
                                 interp,
                                 window_id,
                                 slot,
-                                Value::Integer(clamped as i64),
-                            )?;
+                                window_buffer,
+                                point.clamp(point_min, point_max),
+                            );
                         }
                     }
                 }
@@ -6018,7 +6111,10 @@ define_dispatch!(
             }
             "move-point-visually" => {
                 need_args(name, args, 1)?;
-                let direction = args[0].as_integer()?;
+                // xdisp.c:Fmove_point_visually: CHECK_FIXNUM.
+                let Kind::Integer(direction) = args[0].kind() else {
+                    return Err(wrong_type_argument("fixnump", args[0]));
+                };
                 with_selected_window_buffer(interp, |interp| {
                     let right = direction > 0;
                     let right_to_left = matches!(
@@ -6047,6 +6143,18 @@ define_dispatch!(
                 // GNU only raises this redisplay-owned flag while maintaining a
                 // glyph matrix.  The cache-free headless renderer never does.
                 Ok(Value::Nil)
+            }
+            // xsettings.c:Ftool_bar_get_system_style: a known `tool-bar-style',
+            // else the system's (none without a display), else `image'.
+            "tool-bar-get-system-style" => {
+                need_args(name, args, 0)?;
+                let style = interp
+                    .lookup_var("tool-bar-style", env)
+                    .unwrap_or(Value::Nil);
+                let known = ["image", "text", "both", "both-horiz", "text-image-horiz"]
+                    .iter()
+                    .any(|known| style == Value::symbol(known));
+                Ok(if known { style } else { Value::symbol("image") })
             }
             "tab-bar-height" | "tool-bar-height" => {
                 need_arg_range(name, args, 0, 2)?;
@@ -6153,6 +6261,8 @@ define_dispatch!(
             }
             "color-distance" => {
                 need_arg_range(name, args, 2, 4)?;
+                // FRAME is decoded before either color is read.
+                super::frames::decode_live_frame(interp, args.get(2), true)?;
                 // xfaces.c Fcolor_distance: a (R G B) list of fixnums
                 // (parse_rgb_list, stored into unsigned shorts) or a string
                 // through the tty frame's defined_color_hook; anything else
@@ -6178,13 +6288,7 @@ define_dispatch!(
                             None => None,
                         },
                     };
-                    rgb.ok_or_else(|| {
-                        LispError::SignalValue(Value::list([
-                            Value::symbol("error"),
-                            Value::string("Invalid color"),
-                            *value,
-                        ]))
-                    })
+                    rgb.ok_or_else(|| signal_error("Invalid color", *value))
                 };
                 let left = color(&args[0])?;
                 let right = color(&args[1])?;
@@ -6257,7 +6361,12 @@ define_dispatch!(
                     ));
                 }
                 if frame == interp.selected_frame_id {
-                    select_window_value(interp, &args[1], args.get(2).is_some_and(Value::is_truthy))
+                    let norecord = args.get(2).is_some_and(Value::is_truthy);
+                    let selected = select_window_value(interp, &args[1], norecord)?;
+                    if !norecord {
+                        run_record_buffer_hook(interp, env)?;
+                    }
+                    Ok(selected)
                 } else {
                     frame.borrow_mut().selected_window = interp.record_ref(window);
                     Ok(args[1])
@@ -6265,7 +6374,12 @@ define_dispatch!(
             }
             "select-window" => {
                 need_arg_range(name, args, 1, 2)?;
-                select_window_value(interp, &args[0], args.get(1).is_some_and(Value::is_truthy))
+                let norecord = args.get(1).is_some_and(Value::is_truthy);
+                let selected = select_window_value(interp, &args[0], norecord)?;
+                if !norecord {
+                    run_record_buffer_hook(interp, env)?;
+                }
+                Ok(selected)
             }
             "current-window-configuration" => {
                 need_arg_range(name, args, 0, 1)?;
@@ -6276,7 +6390,10 @@ define_dispatch!(
                 need_arg_range(name, args, 1, 3)?;
                 interp.redisplay_other_windows();
                 let selected = interp.selected_frame_id;
-                let restored = interp.apply_window_configuration_value(&args[0])?;
+                let restored = interp.apply_window_configuration_value(
+                    &args[0],
+                    args.get(2).is_some_and(Value::is_truthy),
+                )?;
                 if args.get(1).is_some_and(Value::is_truthy) && interp.frame_is_live(selected) {
                     interp.note_selected_frame(selected);
                     let window = selected.borrow().selected_window_id();
@@ -6493,37 +6610,47 @@ define_dispatch!(
             "window-old-point" => {
                 need_arg_range(name, args, 0, 1)?;
                 let window_id = live_window_id_or_selected(interp, args.first())?;
-                Ok(window_slot_value(interp, window_id, WINDOW_OLD_POINT_SLOT))
+                Ok(
+                    window_marker_position(interp, window_id, WINDOW_OLD_POINT_SLOT)
+                        .map_or(Value::Nil, |point| Value::Integer(point as i64)),
+                )
             }
             "set-window-buffer" => {
                 need_arg_range(name, args, 2, 3)?;
                 let keep_margins = args.get(2).is_some_and(Value::is_truthy);
-                let window = if args[0].is_nil() {
-                    interp.selected_window_value()
-                } else {
-                    args[0]
-                };
-                let Some(window_id) = window_record_id_from_value(interp, &window) else {
-                    return Err(LispError::WrongTypeArgument("windowp".into(), window));
-                };
-                // window.c:Fset_window_buffer: Fget_buffer, CHECK_BUFFER,
-                // then the buffer's liveness.
+                // window.c:Fset_window_buffer: decode_live_window, then
+                // Fget_buffer, CHECK_BUFFER and the buffer's liveness.
+                let window_id = live_window_id_or_selected(interp, args.first())?;
+                let window = interp.record_value(window_id);
                 let buffer = interp
                     .get_buffer(&args[1])?
                     .ok_or_else(|| LispError::WrongTypeArgument("bufferp".into(), Value::Nil))?;
                 let buffer_id = interp
                     .live_buffer_id(buffer)
                     .ok_or_else(|| LispError::Signal("Attempt to display deleted buffer".into()))?;
-                let changes_buffer =
-                    window_buffer_id(interp, &window).is_some_and(|previous| previous != buffer_id);
+                let previous = window_buffer_id(interp, &window);
+                let changes_buffer = previous.is_some_and(|previous| previous != buffer_id);
                 if changes_buffer {
                     if matches!(
                         window_slot_value(interp, window_id, WINDOW_DEDICATED_SLOT).kind(),
                         Kind::T
                     ) {
-                        return Err(LispError::Signal(
-                            "Window is strongly dedicated to its buffer".into(),
-                        ));
+                        // error ("Window is dedicated to `%s'", ...), its
+                        // quotes requoted as doprnt requotes them.
+                        let (open, close) =
+                            match crate::lisp::primitives::values::effective_text_quoting_style(
+                                interp,
+                            ) {
+                                "curve" => ('\u{2018}', '\u{2019}'),
+                                "straight" => ('\'', '\''),
+                                _ => ('`', '\''),
+                            };
+                        let name = previous
+                            .and_then(|id| interp.get_buffer_by_id(id).map(|b| b.name.clone()))
+                            .unwrap_or_default();
+                        return Err(LispError::Signal(format!(
+                            "Window is dedicated to {open}{name}{close}"
+                        )));
                     }
                     set_window_slot_value(interp, window_id, WINDOW_DEDICATED_SLOT, Value::Nil)?;
                     if let Ok(record_window_buffer) =
@@ -6694,11 +6821,13 @@ define_dispatch!(
                     .cloned()
                     .unwrap_or_else(|| interp.selected_window_value());
                 let window_id = window_id_or_selected(interp, &window)?;
-                Ok(interp
+                // window.c:Fwindow_parameters: Fcopy_alist of the window's.
+                let parameters = interp
                     .find_record(window_id)
                     .and_then(|record| record.slots.get(WINDOW_PARAMETERS_SLOT))
                     .cloned()
-                    .unwrap_or(Value::Nil))
+                    .unwrap_or(Value::Nil);
+                crate::lisp::primitives::values::copy_alist_value(&parameters)
             }
             "window-frame" => {
                 need_arg_range(name, args, 0, 1)?;
@@ -7092,10 +7221,34 @@ define_dispatch!(
                 interp.set_minibuffer_window_id(window_id);
                 Ok(args[0])
             }
-            "minibuffer-selected-window" => Ok(interp
-                .minibuffer_selected_window_id()
-                .map(|id| interp.record_value(id))
-                .unwrap_or_else(|| interp.selected_window_value())),
+            "minibuffer-selected-window" => {
+                need_args(name, args, 0)?;
+                // minibuf.c:Fminibuffer_selected_window: the window only
+                // while a minibuffer is active, its window selected, and the
+                // remembered window live.
+                if interp.minibuffer_depth() == 0 {
+                    return Ok(Value::Nil);
+                }
+                let selected = interp.selected_window_value();
+                let selected_is_mini = window_record_id_from_value(interp, &selected)
+                    .and_then(|id| interp.find_record(id))
+                    .and_then(|record| record.slots.get(WINDOW_KIND_SLOT).copied())
+                    .is_some_and(|slot| {
+                        matches!(slot.kind(), Kind::Symbol(kind) if kind == MINIBUFFER_WINDOW_KIND)
+                    });
+                let remembered = interp
+                    .minibuffer_selected_window_id()
+                    .map(|id| interp.record_value(id));
+                Ok(match remembered {
+                    Some(window)
+                        if selected_is_mini
+                            && live_window_id_or_selected(interp, Some(&window)).is_ok() =>
+                    {
+                        window
+                    }
+                    _ => Value::Nil,
+                })
+            }
             "active-minibuffer-window" => {
                 // Non-nil while a minibuffer-with-setup-hook hook runs (the
                 // approximation of GNU's activated minibuffer).
@@ -7126,30 +7279,19 @@ define_dispatch!(
                 // its buffer's point (Fgoto_char there); another window's is
                 // its own marker, clamped to the accessible region.
                 if window_id == interp.selected_window_id() {
-                    let point = if buffer_id == interp.current_buffer_id() {
-                        let mut buffer = interp.buffer.borrow_mut();
-                        buffer.goto_char(pos);
-                        buffer.point()
+                    if buffer_id == interp.current_buffer_id() {
+                        interp.buffer.borrow_mut().goto_char(pos);
                     } else if let Some(mut buffer) = interp.get_buffer_by_id_mut(buffer_id) {
                         buffer.goto_char(pos);
-                        buffer.point()
-                    } else {
-                        pos
-                    };
-                    set_window_slot_value(
-                        interp,
-                        window_id,
-                        WINDOW_POINT_SLOT,
-                        Value::Integer(point as i64),
-                    )?;
+                    }
                 } else {
-                    let (point_min, point_max) = buffer_point_bounds(interp, buffer_id);
-                    set_window_slot_value(
+                    set_window_marker_restricted(
                         interp,
                         window_id,
                         WINDOW_POINT_SLOT,
-                        Value::Integer(pos.clamp(point_min, point_max) as i64),
-                    )?;
+                        buffer_id,
+                        pos,
+                    );
                     interp.wset_redisplay(window_id);
                 }
                 Ok(args[1])
@@ -7391,53 +7533,6 @@ fn text_char_description(
 /// Fbuffer_text_pixel_size's measurement of the current buffer's
 /// accessible text on a terminal: the widest line's columns by the line
 /// count.
-fn buffer_text_size(interp: &Interpreter) -> Value {
-    let point_min = interp.buffer.borrow().point_min();
-    let point_max = interp.buffer.borrow().point_max();
-    let mut effective = String::new();
-    let mut pos = point_min;
-    while pos < point_max {
-        let display = interp.buffer.borrow().text_property_at(pos, "display");
-        if let Some(display_value) = display.filter(|value| !value.is_nil()) {
-            let mut end = pos;
-            while end < point_max
-                && interp.buffer.borrow().text_property_at(end, "display") == display
-            {
-                end += 1;
-            }
-            if let Some(replacement) = string_like(&display_value) {
-                effective.push_str(&replacement.text);
-                pos = end;
-                continue;
-            }
-            let in_margin = display_value.to_vec().is_ok_and(|items| {
-                items.first().is_some_and(|head| {
-                    head.to_vec().is_ok_and(|spec| {
-                        matches!(spec.first().map(|v| v.kind()),
-                        Some(Kind::Symbol(kind)) if kind == "margin")
-                    })
-                })
-            });
-            if in_margin {
-                pos = end;
-                continue;
-            }
-        }
-        match interp.buffer.borrow().char_at(pos) {
-            Some(ch) => effective.push(ch),
-            None => break,
-        }
-        pos += 1;
-    }
-    let width = effective
-        .lines()
-        .map(|line| line.chars().count())
-        .max()
-        .unwrap_or(0);
-    let height = effective.lines().count().max(1);
-    Value::cons(Value::Integer(width as i64), Value::Integer(height as i64))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -7665,7 +7760,8 @@ mod tests {
                 Value::Nil,
             ])
         );
-        crate::lisp::primitives::restore_active_minibuffer(&mut interp, active, &mut env);
+        crate::lisp::primitives::unwind_active_minibuffer(&mut interp, active, &mut env)
+            .expect("unwind the read");
     }
 
     #[test]

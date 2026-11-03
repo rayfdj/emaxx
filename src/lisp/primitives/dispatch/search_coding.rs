@@ -1150,6 +1150,7 @@ define_dispatch!(
                 // GNU records the coding under the symbol the caller gave
                 // (the euc-jp alias stays `euc-jp'); canonicalization is the
                 // codec's business, not last-coding-system-used's.
+                load_coding_system(interp, &args[2], env)?;
                 let coding = checked_coding_name(interp, &args[2])?
                     .map(|_| args[2].as_symbol().expect("validated symbol").to_string());
                 enum Destination {
@@ -1278,7 +1279,7 @@ define_dispatch!(
                         // before the hooks and the deletion, which a
                         // decoding makes with point at FROM.
                         let saved_pt = interp.buffer.borrow().point();
-                        let marked_windows = interp.mark_markers_for_conversion(start, end);
+                        interp.mark_markers_for_conversion(start, end);
                         if decoding {
                             interp.buffer.borrow_mut().goto_char(start);
                         }
@@ -1308,6 +1309,37 @@ define_dispatch!(
                                     layout,
                                     env,
                                 )?;
+                                // produce_annotation's Fput_text_property of
+                                // a range a translation left past the call's
+                                // text: over what follows it in the buffer,
+                                // args-out-of-range past its end.
+                                if let Some((from, to, charset)) = buffer_decode
+                                    .as_ref()
+                                    .and_then(|decode| decode.overrun.clone())
+                                {
+                                    let (from, to) = (start + from, start + to);
+                                    if to > interp.buffer.borrow().point_max() {
+                                        return Err(LispError::SignalValue(Value::list([
+                                            Value::symbol("args-out-of-range"),
+                                            Value::Integer(from as i64),
+                                            Value::Integer(to as i64),
+                                        ])));
+                                    }
+                                    if let Some(charset) = charset {
+                                        let plist = Value::list([
+                                            Value::symbol("charset"),
+                                            Value::symbol(&charset),
+                                        ]);
+                                        crate::lisp::primitives::textprop::add_text_properties(
+                                            interp,
+                                            &Value::Integer(from as i64),
+                                            &Value::Integer(to as i64),
+                                            plist,
+                                            Value::Nil,
+                                            env,
+                                        )?;
+                                    }
+                                }
                                 Ok((
                                     Some(
                                         AfterChange::new(start, old_length, transformed_length)
@@ -1341,7 +1373,7 @@ define_dispatch!(
                             + inserted
                             + produced.as_ref().copied().unwrap_or(transformed_length))
                         .saturating_sub(transformed_length);
-                        interp.settle_markers_after_conversion(&marked_windows, start, new_end);
+                        interp.settle_markers_after_conversion(start, new_end);
                         let produced = produced?;
                         let point = if saved_pt < start {
                             saved_pt
@@ -1373,6 +1405,7 @@ define_dispatch!(
                     return Err(LispError::WrongTypeArgument("stringp".into(), args[0]));
                 }
                 // Verbatim for the same reason as the region ops above.
+                load_coding_system(interp, &args[1], env)?;
                 let coding = checked_coding_name(interp, &args[1])?
                     .map(|_| args[1].as_symbol().expect("validated symbol").to_string());
                 let nocopy = args.get(2).is_some_and(Value::is_truthy);
@@ -1398,6 +1431,7 @@ define_dispatch!(
                 if !args[0].is_string() {
                     return Err(LispError::WrongTypeArgument("stringp".into(), args[0]));
                 }
+                load_coding_system(interp, &args[1], env)?;
                 let coding = checked_coding_name(interp, &args[1])?
                     .map(|_| args[1].as_symbol().expect("validated symbol").to_string());
                 let nocopy = args.get(2).is_some_and(Value::is_truthy);

@@ -1185,6 +1185,10 @@ impl Loader<'_> {
                 ));
             }
         }
+        // The frame's windows, made before the image's buffers replaced
+        // those with their ids, keep their markers in the buffers now
+        // installed.
+        self.interp.rebind_window_markers();
         // Fmake_indirect_buffer's markers for the family's points and
         // bounds.
         let current_id = self.interp.current_buffer_id();
@@ -2253,17 +2257,24 @@ impl Loader<'_> {
             )));
         }
         let position = |word: u64| (word != NO_POSITION).then_some(word as usize);
-        let visited_file_modtime = (flags & BUFFER_FLAG_HAS_MODTIME != 0).then(|| {
+        let stamp = if flags & BUFFER_FLAG_HAS_MODTIME != 0 {
             let secs = word(self, BUFFER_MODTIME_SECS).unwrap_or(0) as i64;
             let nanos = word(self, BUFFER_MODTIME_NANOS).unwrap_or(0) as u32;
             let duration = std::time::Duration::new(secs.unsigned_abs(), nanos);
-            let modified = if secs < 0 {
+            crate::buffer::ModtimeStamp::Time(if secs < 0 {
                 std::time::UNIX_EPOCH - duration
             } else {
                 std::time::UNIX_EPOCH + duration
-            };
-            crate::buffer::FileModTime { modified }
-        });
+            })
+        } else if flags & BUFFER_FLAG_NONEXISTENT_MODTIME != 0 {
+            crate::buffer::ModtimeStamp::Nonexistent
+        } else {
+            crate::buffer::ModtimeStamp::Unknown
+        };
+        let visited_file_modtime = crate::buffer::VisitedModtime {
+            stamp,
+            size: word(self, BUFFER_MODTIME_SIZE).map_or(-1, |size| size as i64),
+        };
         let base = match (self.value_at(offset + 8 * BUFFER_BASE)?).kind() {
             Kind::Buffer(base) => Some(base.id),
             Kind::Nil => None,

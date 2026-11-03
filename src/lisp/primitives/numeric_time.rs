@@ -2442,6 +2442,100 @@ pub(crate) fn decimal_number_prefix(text: &str) -> Option<&str> {
     Some(&text[..chars.get(end).map_or(text.len(), |(offset, _)| *offset)])
 }
 
+/// lread.c:string_to_number in base 10: the number the prefix of STRING
+/// spells, with the prefix's length, or no number where the prefix has
+/// neither integer nor float syntax (the length is then what was
+/// scanned).  `1.' is an integer; a float has digits after the point or an
+/// exponent after leading digits, and is atof's reading of the text after
+/// the sign, `e+INF' and `e+NaN' (the NaN's payload the leading digits)
+/// standing for themselves.
+pub(crate) fn string_to_number_prefix(string: &[u8]) -> (Option<Value>, usize) {
+    let at = |index: usize| string.get(index).copied().unwrap_or(0);
+    let negative = at(0) == b'-';
+    let positive = at(0) == b'+';
+    let signedp = usize::from(negative || positive);
+    let mut cp = signedp;
+    let (mut lead_int, mut trail_int, mut e_exp, mut overflow) = (false, false, false, false);
+    let mut n: u64 = 0;
+    if at(cp).is_ascii_digit() {
+        lead_int = true;
+        n = u64::from(at(cp) - b'0');
+        cp += 1;
+        while at(cp).is_ascii_digit() {
+            let digit = u64::from(at(cp) - b'0');
+            n = match n.checked_mul(10).and_then(|n| n.checked_add(digit)) {
+                Some(n) => n,
+                None => {
+                    overflow = true;
+                    n.wrapping_mul(10).wrapping_add(digit)
+                }
+            };
+            cp += 1;
+        }
+    }
+    let after_digits = cp;
+    if at(cp) == b'.' {
+        cp += 1;
+    }
+    let mut value = 0.0f64;
+    if at(cp).is_ascii_digit() {
+        trail_int = true;
+        while at(cp).is_ascii_digit() {
+            cp += 1;
+        }
+    }
+    if matches!(at(cp), b'e' | b'E') {
+        let ecp = cp;
+        cp += 1;
+        if matches!(at(cp), b'+' | b'-') {
+            cp += 1;
+        }
+        if at(cp).is_ascii_digit() {
+            e_exp = true;
+            while at(cp).is_ascii_digit() {
+                cp += 1;
+            }
+        } else if at(cp - 1) == b'+' && string[cp..].starts_with(b"INF") {
+            e_exp = true;
+            cp += 3;
+            value = f64::INFINITY;
+        } else if at(cp - 1) == b'+' && string[cp..].starts_with(b"NaN") {
+            e_exp = true;
+            cp += 3;
+            value = f64::from_bits(0x7FF8_0000_0000_0000 | (n & 0x0007_FFFF_FFFF_FFFF));
+        } else {
+            cp = ecp;
+        }
+    }
+    let float_syntax = trail_int || (lead_int && e_exp);
+    if float_syntax {
+        if value == 0.0 {
+            // atof: the digits, point and exponent just scanned.
+            let text = std::str::from_utf8(&string[signedp..cp]).unwrap_or("0");
+            value = text
+                .parse::<f64>()
+                .or_else(|_| format!("0{text}").parse::<f64>())
+                .unwrap_or(0.0);
+        }
+        return (
+            Some(Value::float(if negative { -value } else { value })),
+            cp,
+        );
+    }
+    if !lead_int {
+        return (None, cp);
+    }
+    let number = if overflow {
+        let digits = std::str::from_utf8(&string[signedp..after_digits]).unwrap_or("0");
+        let magnitude = digits.parse::<BigInt>().unwrap_or_default();
+        normalize_bigint_value(if negative { -magnitude } else { magnitude })
+    } else {
+        let magnitude = BigInt::from(n);
+        normalize_bigint_value(if negative { -magnitude } else { magnitude })
+    };
+    (Some(number), cp)
+}
+
 pub(crate) fn parse_integer_string_with_base(text: &str, base: u32) -> Value {
     let text = text.trim_start_matches([' ', '\t']);
     let mut chars = text.chars().peekable();

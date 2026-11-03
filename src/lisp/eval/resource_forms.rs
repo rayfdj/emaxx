@@ -296,7 +296,10 @@ impl Interpreter {
         };
         if self.interpreter_environment_is_lexical(env) {
             Self::push_bindings(env, vec![(*variable, value)]);
+            let installed =
+                self.install_frame_environment(crate::lisp::types::current_environment_value(env));
             let result = self.progn_list(body, env);
+            self.uninstall_frame_environments(installed);
             env.pop();
             return result;
         }

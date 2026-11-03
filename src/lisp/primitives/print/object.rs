@@ -997,8 +997,57 @@ impl Printer {
             }
             RecordKind::WindowConfiguration => "#<window-configuration>".into(),
             RecordKind::Sqlite => crate::lisp::sqlite::print_sqlite(interp, id.id),
-            RecordKind::Font
-            | RecordKind::TreeSitterParser
+            // print.c PVEC_FONT: `#<font-spec' or `#<font-entity' and the
+            // FONT_SPEC_MAX slots (an entity's FONT_EXTRA_INDEX, private
+            // to its driver, left out), or `#<font-object NAME>'.
+            RecordKind::Font => {
+                const FONT_EXTRA_INDEX: usize = 12;
+                const FONT_SPEC_MAX: usize = 13;
+                const FONT_NAME_INDEX: usize = 14;
+                let (kind_name, slots) = match interp.find_record(id.id) {
+                    Some(record) => (
+                        record.symbol_type_name().unwrap_or("font-spec").to_string(),
+                        record.slots.clone(),
+                    ),
+                    None => ("font-spec".to_string(), Vec::new()),
+                };
+                let slot = |index: usize| slots.get(index).copied().unwrap_or(Value::Nil);
+                if kind_name == "font-object" {
+                    self.out.push_str("#<font-object ");
+                    self.print_object(interp, env, slot(FONT_NAME_INDEX), escape)?;
+                } else {
+                    let entity = kind_name == "font-entity";
+                    self.out.push_str(if entity {
+                        "#<font-entity"
+                    } else {
+                        "#<font-spec"
+                    });
+                    for index in 0..FONT_SPEC_MAX {
+                        if index != FONT_EXTRA_INDEX || !entity {
+                            self.out.push(' ');
+                            // The style slots' numbers as their names
+                            // (font_style_symbolic).
+                            let value = if (crate::lisp::primitives::font::FONT_WEIGHT_INDEX
+                                ..=crate::lisp::primitives::font::FONT_WIDTH_INDEX)
+                                .contains(&index)
+                            {
+                                crate::lisp::primitives::font::style_symbolic_of(
+                                    interp,
+                                    &slot(index),
+                                    index,
+                                    false,
+                                )?
+                            } else {
+                                slot(index)
+                            };
+                            self.print_object(interp, env, value, escape)?;
+                        }
+                    }
+                }
+                self.out.push('>');
+                return Ok(());
+            }
+            RecordKind::TreeSitterParser
             | RecordKind::TreeSitterNode
             | RecordKind::TreeSitterCompiledQuery => {
                 // Still printed by their record slots.

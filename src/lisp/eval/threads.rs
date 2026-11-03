@@ -64,6 +64,16 @@ fn record_child_exit(process: &mut ProcessState, status: std::process::ExitStatu
     process.exit_signal = None;
 }
 
+/// What a pass of the thread scheduler services besides the threads.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WaitEvents {
+    None,
+    /// A wait_reading_process_output iteration whose select did not end:
+    /// its events, but not timer_check.
+    ExceptTimers,
+    All,
+}
+
 enum ChildStatusEvent {
     Stopped,
     Continued,
@@ -483,8 +493,56 @@ impl Interpreter {
         channels: crate::lisp::primitives::PipeProcessChannels,
     ) {
         if let Some(process) = self.find_process_state_mut(record_id) {
-            process.module_pipe = Some(channels.output);
+            let (reader, writer) = channels.output;
+            process.module_pipe = Some((reader, Some(writer)));
             process.pipe_input = Some(channels.input);
+        }
+    }
+
+    /// A duplicate of the pipe process RECORD_ID's SUBPROCESS_STDOUT,
+    /// which create_process gives a child as its standard error; None
+    /// once an earlier child was given it (forkerr -1).
+    pub(crate) fn pipe_process_stderr_writer(
+        &self,
+        record_id: u64,
+    ) -> Result<Option<fs::File>, LispError> {
+        self.find_process_state(record_id)
+            .and_then(|process| process.module_pipe.as_ref())
+            .and_then(|(_, writer)| writer.as_ref())
+            .map(|writer| {
+                writer
+                    .try_clone()
+                    .map_err(|error| LispError::Signal(error.to_string()))
+            })
+            .transpose()
+    }
+
+    /// create_process's close_process_fd of the SUBPROCESS_STDOUT of the
+    /// pipe process RECORD_ID once a child has it as its standard error:
+    /// the pipe's end comes when the child's copies close.
+    pub(crate) fn close_pipe_process_output_writer(&mut self, record_id: u64) {
+        if let Some((_, writer)) = self
+            .find_process_state_mut(record_id)
+            .and_then(|process| process.module_pipe.as_mut())
+        {
+            *writer = None;
+        }
+    }
+
+    /// wait_reading_process_output's read of zero bytes from a pipe
+    /// process: deactivate_process closes its channels, and one still
+    /// running turns (exit 0).
+    pub(crate) fn finish_pipe_process_at_eof(&mut self, record_id: u64) {
+        if let Some(process) = self.find_process_state_mut(record_id)
+            && process.kind == ProcessKind::Pipe
+        {
+            process.module_pipe = None;
+            process.pipe_input = None;
+            if process.status.is_live() {
+                process.status = ProcessStatus::Exit;
+                process.exit_code = Some(0);
+                process.exit_signal = None;
+            }
         }
     }
 
@@ -544,9 +602,23 @@ impl Interpreter {
             if unsafe { libc::fcntl(reader.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK) } == -1 {
                 return Err(io_error());
             }
-            process.module_pipe = Some((fs::File::from(reader), fs::File::from(writer)));
+            process.module_pipe = Some((fs::File::from(reader), Some(fs::File::from(writer))));
         }
-        let writer = &process.module_pipe.as_ref().expect("pipe installed").1;
+        // A pipe process another process has as its standard error no
+        // longer holds SUBPROCESS_STDOUT: dup of -1 fails with EBADF.
+        let Some(writer) = process
+            .module_pipe
+            .as_ref()
+            .expect("pipe installed")
+            .1
+            .as_ref()
+        else {
+            return Err(LispError::SignalValue(Value::list([
+                Value::symbol("file-error"),
+                Value::string("Cannot duplicate file descriptor"),
+                Value::string("Bad file descriptor"),
+            ])));
+        };
         // SAFETY: the descriptor is live; the caller assumes ownership of DUP.
         let fd = unsafe { libc::dup(writer.as_raw_fd()) };
         if fd == -1 { Err(io_error()) } else { Ok(fd) }
@@ -972,6 +1044,19 @@ impl Interpreter {
     /// A real or pipe process that has exited and whose sentinel has not
     /// run yet: the "tick != update_tick" state process.c status_notify
     /// drains and notifies.
+    /// Whether any of this thread's processes has an exit that awaits
+    /// status_notify.
+    pub(crate) fn any_process_exit_awaits_notification(&self) -> bool {
+        self.process_states.iter().any(|process| {
+            matches!(process.kind, ProcessKind::Real | ProcessKind::Pipe)
+                && matches!(process.status, ProcessStatus::Exit | ProcessStatus::Signal)
+                && !process.sentinel_notified
+                && process
+                    .thread_id
+                    .is_none_or(|thread_id| thread_id == self.active_thread_id)
+        })
+    }
+
     pub fn process_exit_awaits_notification(&self, record_id: u64) -> bool {
         self.find_process_state(record_id).is_some_and(|process| {
             matches!(process.kind, ProcessKind::Real | ProcessKind::Pipe)
@@ -988,35 +1073,6 @@ impl Interpreter {
         only_process_id: Option<u64>,
     ) -> Vec<(u64, String)> {
         let active_thread_id = self.active_thread_id;
-        let completed_children = self
-            .process_states
-            .iter()
-            .filter(|process| {
-                matches!(process.kind, ProcessKind::Real | ProcessKind::Pipe)
-                    && matches!(process.status, ProcessStatus::Exit | ProcessStatus::Signal)
-                    && process.stderr_process_id.is_some()
-                    && process
-                        .thread_id
-                        .is_none_or(|thread_id| thread_id == active_thread_id)
-                    && only_process_id.is_none_or(|id| {
-                        process.record_id == id || process.stderr_process_id == Some(id)
-                    })
-            })
-            .filter_map(|process| {
-                process
-                    .stderr_process_id
-                    .map(|stderr_id| (stderr_id, process.exit_code))
-            })
-            .collect::<Vec<_>>();
-        for (stderr_id, exit_code) in completed_children {
-            if let Some(stderr) = self.find_process_state_mut(stderr_id)
-                && stderr.status.is_live()
-            {
-                stderr.status = ProcessStatus::Exit;
-                stderr.exit_code = exit_code;
-            }
-        }
-
         let mut events = Vec::new();
         // `process_states' is append-only creation order.  Reverse iteration
         // mirrors GNU's newest-first `Vprocess_alist' status traversal.
@@ -1067,6 +1123,11 @@ impl Interpreter {
             crate::lisp::eval::NetworkRuntime::UnixListener(listener) => Some(listener.as_raw_fd()),
             crate::lisp::eval::NetworkRuntime::UnixStream(stream) => Some(stream.as_raw_fd()),
         }
+    }
+
+    pub(crate) fn is_pipe_process(&self, record_id: u64) -> bool {
+        self.find_process_state(record_id)
+            .is_some_and(|process| process.kind == ProcessKind::Pipe)
     }
 
     pub fn is_serial_process(&self, record_id: u64) -> bool {
@@ -2465,6 +2526,46 @@ impl Interpreter {
         false
     }
 
+    /// wait_reading_process_output runs status_notify only once a select
+    /// that does not wait finds no input on the channels it watches.  A
+    /// live child's output pipe at its end is still among them, readable,
+    /// until handle_child_signal takes it out at the child's death, so a
+    /// child that closed its output holds back every notification until it
+    /// is reaped (GNU reads its end again and again meanwhile).
+    #[cfg(unix)]
+    pub(crate) fn process_input_available(&self) -> bool {
+        let watched = |process: &&ProcessState| {
+            process
+                .thread_id
+                .is_none_or(|thread_id| thread_id == self.active_thread_id)
+                && !process.traffic_stopped
+                && process
+                    .filter
+                    .as_ref()
+                    .is_none_or(|filter| *filter != Value::T)
+        };
+        if self.process_states.iter().filter(watched).any(|process| {
+            process.status.is_live()
+                && process
+                    .runtime
+                    .as_ref()
+                    .is_some_and(|runtime| runtime.stdout_at_end && runtime.child.stdout.is_some())
+        }) {
+            return true;
+        }
+        let mut fds = Vec::new();
+        if self.process_wait_set(None, &mut fds) {
+            return true;
+        }
+        // SAFETY: FDS holds live descriptors this interpreter owns.
+        !fds.is_empty() && unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, 0) } > 0
+    }
+
+    #[cfg(not(unix))]
+    pub(crate) fn process_input_available(&self) -> bool {
+        false
+    }
+
     /// The wait between two passes of wait_reading_process_output: its
     /// pselect on the wait set and the child signal pipe for at most
     /// DURATION, so output, a connection, or a child's change of status
@@ -3724,27 +3825,34 @@ impl Interpreter {
     /// prevents waits and recursive command loops from silently servicing
     /// only one side of that boundary.
     pub(crate) fn run_pending_timer_events(&mut self, env: &mut Env) -> Result<bool, LispError> {
+        // keyboard.c considers the idle timers only while Emacs is idle,
+        // timer_idleness_start_time set by the wait for keyboard input.
         let idle = primitives::tty_current_idle_duration()
-            .map(|duration| duration.as_secs_f64())
-            .unwrap_or(0.0);
+            .map_or(f64::NAN, |duration| duration.as_secs_f64());
         self.run_pending_timer_events_with_idle(env, idle)
     }
 
-    fn run_pending_timer_events_with_idle(
+    pub(crate) fn run_pending_timer_events_with_idle(
         &mut self,
         env: &mut Env,
         idle: f64,
     ) -> Result<bool, LispError> {
-        // keyboard.c:timer_check_2 drains deferred noelisp deletion hooks.
+        self.run_pending_funcalls(env)?;
+        let native_ran = self.run_pending_native_timers(env)?;
+        let lisp_ran = primitives::run_due_timers(self, env, idle)?;
+        Ok(native_ran || lisp_ran)
+    }
+
+    /// keyboard.c:timer_check_2 first runs the calls deferred to it, the
+    /// deletion hooks of a frame or terminal deleted with Lisp unsafe.
+    pub(crate) fn run_pending_funcalls(&mut self, env: &mut Env) -> Result<(), LispError> {
         while let Some(call) = self.pending_funcalls.pop() {
             let values = call.to_vec()?;
             if let Some(function) = values.first() {
                 self.safe_funcall(*function, &values[1..], env)?;
             }
         }
-        let native_ran = self.run_pending_native_timers(env)?;
-        let lisp_ran = primitives::run_due_timers(self, env, idle)?;
-        Ok(native_ran || lisp_ran)
+        Ok(())
     }
 
     /// Service the non-process half of wait_reading_process_output.  This is
@@ -3777,7 +3885,7 @@ impl Interpreter {
                     || wake_sleepers
                         && matches!(thread.status, ThreadStatus::Blocked(ThreadBlocker::Sleep)))
         });
-        self.drive_threads_inner(env, wake_sleepers, false, true)?;
+        self.drive_threads_inner(env, wake_sleepers, WaitEvents::None, true)?;
         Ok(terminal_input || user_signal_events || file_events || timer_events || thread_events)
     }
 
@@ -4097,7 +4205,7 @@ impl Interpreter {
                         .find_thread_state_mut(thread_id)
                         .expect("joiner")
                         .status = ThreadStatus::Blocked(ThreadBlocker::Thread(record_id));
-                    interpreter.drive_threads_inner(env, true, false, false)?;
+                    interpreter.drive_threads_inner(env, true, WaitEvents::None, false)?;
                     interpreter.check_thread_signal()?;
                 }
                 Ok(())
@@ -4120,18 +4228,29 @@ impl Interpreter {
         })
     }
 
-    pub fn drive_threads(&mut self, env: &mut Env, wake_sleepers: bool) -> Result<(), LispError> {
-        self.drive_threads_inner(env, wake_sleepers, wake_sleepers, true)
+    /// One pass of a wait_reading_process_output iteration: the threads
+    /// stepped, the events serviced, and timer_check run when CHECK_TIMERS.
+    pub fn drive_threads(&mut self, env: &mut Env, check_timers: bool) -> Result<(), LispError> {
+        let events = if check_timers {
+            WaitEvents::All
+        } else {
+            WaitEvents::ExceptTimers
+        };
+        self.drive_threads_inner(env, true, events, true)
     }
 
     pub(crate) fn yield_current_thread(&mut self, env: &mut Env) -> Result<Value, LispError> {
         // Fthread_yield does not itself read keyboard events or run timers.
         // Woken child event loops resume and service their own due timers.
-        self.drive_threads_inner(env, true, false, true)?;
+        self.drive_threads_inner(env, true, WaitEvents::None, true)?;
         Ok(Value::Nil)
     }
 
-    fn run_thread_wait_events(&mut self, env: &mut Env) -> Result<(), LispError> {
+    fn run_thread_wait_events(
+        &mut self,
+        env: &mut Env,
+        check_timers: bool,
+    ) -> Result<(), LispError> {
         if self.waiting_for_user_input() {
             if primitives::unread_command_events(self, env)?.is_empty() {
                 let _ = primitives::run_pending_user_signal_events(self, env)?;
@@ -4140,7 +4259,9 @@ impl Interpreter {
         } else {
             let _ = self.run_pending_synthetic_file_notifications(env)?;
         }
-        let _ = self.run_pending_timer_events(env)?;
+        if check_timers {
+            let _ = self.run_pending_timer_events(env)?;
+        }
         Ok(())
     }
 
@@ -4182,7 +4303,7 @@ impl Interpreter {
         &mut self,
         env: &mut Env,
         wake_sleepers: bool,
-        service_events: bool,
+        service_events: WaitEvents,
         deliver_signal: bool,
     ) -> Result<(), LispError> {
         self.check_thread_termination()?;
@@ -4190,8 +4311,8 @@ impl Interpreter {
             self.check_thread_signal()?;
         }
         if continuations::can_suspend(self) {
-            if service_events {
-                self.run_thread_wait_events(env)?;
+            if service_events != WaitEvents::None {
+                self.run_thread_wait_events(env, service_events == WaitEvents::All)?;
             }
             self.with_lisp_stack_roots(&*env, continuations::suspend)?;
         } else {
@@ -4211,8 +4332,8 @@ impl Interpreter {
                     advanced = true;
                 }
             }
-            if service_events {
-                self.run_thread_wait_events(env)?;
+            if service_events != WaitEvents::None {
+                self.run_thread_wait_events(env, service_events == WaitEvents::All)?;
             }
             if !advanced {
                 if self
@@ -4259,7 +4380,7 @@ impl Interpreter {
             .expect("sleeping thread");
         thread.status = ThreadStatus::Blocked(ThreadBlocker::Sleep);
         thread.wake_at = Some(std::time::Instant::now() + duration);
-        let result = self.drive_threads_inner(env, true, false, false);
+        let result = self.drive_threads_inner(env, true, WaitEvents::None, false);
         let thread = self
             .find_thread_state_mut(thread_id)
             .expect("resumed thread");
@@ -4280,7 +4401,7 @@ impl Interpreter {
             .status = ThreadStatus::Blocked(ThreadBlocker::Mutex(mutex_id));
         let result = (|| {
             while !self.try_lock_mutex(thread_id, mutex_id) {
-                self.drive_threads_inner(env, true, false, false)?;
+                self.drive_threads_inner(env, true, WaitEvents::None, false)?;
                 self.check_thread_signal()?;
             }
             Ok(Value::Nil)
@@ -4352,7 +4473,7 @@ impl Interpreter {
             .status = ThreadStatus::Blocked(ThreadBlocker::ReacquireMutex(mutex_id));
         let result: Result<(), LispError> = (|| {
             while !self.try_lock_mutex(thread_id, mutex_id) {
-                self.drive_threads_inner(env, true, false, false)?;
+                self.drive_threads_inner(env, true, WaitEvents::None, false)?;
             }
             self.find_mutex_state_mut(mutex_id)
                 .expect("reacquired mutex")
@@ -4381,7 +4502,7 @@ impl Interpreter {
             thread.signal_condition.is_nil()
                 && matches!(thread.status, ThreadStatus::Blocked(ThreadBlocker::ConditionVariable(id)) if id == condvar_id)
         }) {
-            self.drive_threads_inner(env, true, false, false)?;
+            self.drive_threads_inner(env, true, WaitEvents::None, false)?;
         }
         self.reacquire_condition_mutex(mutex_id, depth, env)?;
         Ok(Value::Nil)

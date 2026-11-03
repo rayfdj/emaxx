@@ -12194,6 +12194,1104 @@ setup_process_coding_systems's check now refuses). A 13-form
   map-tests pass as many tests as GNU's. Local validation: the grouped
   gate's 3,446 library tests, the integration targets and clippy
   with `--all-targets --all-features -D warnings` pass.
+- **Round 251: eval.c, alloc.c, minibuf.c, fileio.c and xdisp.c's
+  window_text_pixel_size from batteries.** Batteries against GNU over
+  syntax.c (54 cases, r251/sy.txt), print.c (70, r251/pr.txt), search.c
+  (57, r251/se.txt), textprop.c (43, r251/tp.txt), eval.c (59,
+  r251/ev.txt), fns.c (44, r251/fs.txt), chartab.c, character.c and
+  category.c (38, r251/ch.txt), data.c (30, r251/da.txt), minibuf.c and
+  lread.c (27, r251/mb.txt), fileio.c (42, r251/fi.txt), process.c and
+  callproc.c (53, r251/pc.txt) and the batch window, frame and display
+  primitives (26, r251/wn.txt; 42 more on pixel sizes, r251/wt.txt and
+  wt2.txt) differ in these, now fixed; syntax.c, print.c, search.c,
+  textprop.c, the character and category tables, data.c and the process
+  primitives agree throughout. `(throw nil V)` reached a `(catch nil
+  ...)`: Fthrow looks for a catcher only for a non-nil tag, and signals
+  `no-catch`. `internal-make-var-non-special` returns nil. `make-vector`
+  and `make-list` refuse a length that is no fixnum or negative with
+  `wholenump`, where `make-vector` signalled a bare error and
+  `make-list` of -1 made nil. `minibuffer-selected-window` gave the
+  selected window outside the minibuffer: it is
+  Fminibuffer_selected_window's, the remembered window only while a
+  minibuffer is active, its window selected and the remembered window
+  live. `set-file-modes` takes FLAG (`nofollow`), checks MODE with
+  CHECK_FIXNUM and sets the low twelve bits with fchmodat, its error
+  "Doing chmod", and `access-file` reports faccessat's own errno where
+  it always said "Permission denied". `window-text-pixel-size` and
+  `buffer-text-pixel-size` counted the buffer's widest logical line and
+  its line count: they are window_text_pixel_size on a terminal frame
+  now, walking the screen lines tty.rs lays out for the window from FROM
+  to TO. FROM and TO may be t (blank lines skipped as the C skips them),
+  a line the iterator leaves counts its newline's x or, continued or
+  truncated, `last_visible_x`, the line it stops on counts only when a
+  glyph came before TO, a newline FROM starts the next line at x 0,
+  FROM's x is reached at the window's width and X-LIMIT is the width
+  while measuring, Y-LIMIT ends the walk on the line holding it, a cons
+  FROM moves that many lines and returns START, a truncated line's
+  hidden rest is reseated past as move_it_to does, MODE-LINES adds the
+  lines it names, and display strings, invisible text, tabs, control
+  characters and the batch terminal's glyphless characters
+  (`string-pixel-width` of a CJK character is 6 there, its hex code) are
+  measured as the layout delivers them. One display context serves every
+  line of a call (tty.rs's ScreenLineLayouter), and a nil
+  glyphless-char-display entry no longer builds an error to mean "no
+  method". 2,000 `string-pixel-width` calls take 0.021 s against GNU's
+  0.012, and 500 `buffer-text-pixel-size` calls over 50 lines 0.079 s
+  against 0.031: the rest is each character's display translation,
+  lay_out's allocations and line_to_char. electric-tests, the frozen
+  run's widest setup and a wide body gap (1,013 ms of bodies against 591
+  locally), runs its 201 c-mode electric-pair tests in 4.56G
+  instructions under callgrind against GNU's 4.77G, and its collections
+  are as few and as long as GNU's (3 taking 0.125 s against 5 taking
+  0.158): the wall-clock gap is instruction-cache cost, the
+  code-footprint finding above, not work. Not reproduced: `sxhash-eq`
+  and printed thread and frame addresses, which are GNU's pointers.
+  xdisp-tests, eval-tests, alloc-tests, fileio-tests, fns-tests,
+  minibuf-tests, erc-fill-tests, vtable-tests, shr-tests,
+  minibuffer-tests, files-tests, fill-tests, simple-tests and
+  subr-x-tests pass as many tests as GNU's. Local validation: the
+  grouped gate's 3,448 library tests, the integration targets and
+  clippy with `--all-targets --all-features -D warnings` pass.
+- **Round 252: window.c's record_buffer, cmds.c's KILLFLAG and frame.c's
+  parameters from batteries.** Batteries against GNU over buffer.c (25
+  cases, r252/bu.txt), marker.c, insdel.c, undo.c and cmds.c (37,
+  r252/mk.txt), keymap.c (27, r252/km.txt), casefiddle.c, timefns.c and
+  floatfns.c (20, r252/cf.txt), xfaces.c, doc.c, macros.c, keyboard.c
+  and bytecode.c (43, r252/fc.txt), the frame parameters (18,
+  r252/fp.txt and fq.txt) and the window and buffer lists (r251/bl.txt,
+  wu.txt and wc.txt) differ in these, now fixed; buffer.c, the markers,
+  insertion, undo, casing, time and floats agree throughout, and
+  keymap.c but for the X build's own global bindings (XF86WakeUp, the
+  touch-screen events and the GTK tool-bar menu). `select-window' with
+  NORECORD nil ends in record_buffer, which runs
+  `buffer-list-update-hook', and `set-window-configuration' leaves each
+  window its own use time and selects the configuration's window that
+  way, its buffer brought to the front; Emaxx ran no hook and stamped
+  every window. `delete-char' hands a non-nil KILLFLAG to
+  `kill-forward-chars' and checks N with CHECK_FIXNUM, where it deleted
+  without killing. A frame keeps its parameters in frame.h's
+  param_alist, a Lisp alist newest first that store_frame_param sets in
+  place (make_frame starts it with (minibuffer . t)): `minibuffer',
+  `parent-frame', `delete-before' and the scroll-bar sizes are checked
+  as the C checks them, the buffer lists live apart, and a text frame's
+  bar lines and name (set_term_frame_name, with its F<num> rule) follow;
+  Emaxx kept a list of overrides with defaults appended after it,
+  ignored width and height and took any name. `frame-parameters' is
+  Fframe_parameters, the computed parameters stored over a copy of the
+  alist so `(frame-parameters)' at startup is GNU's in order, and
+  `frame-parameter' Fframe_parameter (`line-spacing' 0 on a text frame,
+  a color named by a prefix of "unspecified-bg" reported as the frame's
+  own). `modify-frame-parameters' takes ALIST apart with list_length,
+  Fcar and Fcdr (a non-symbol parameter stored, a non-list element
+  `listp') and stores it last to first, a color going on to
+  update_face_from_frame_parameter: the default face takes it,
+  `frame-set-background-mode' runs first for the background, and
+  realize_basic_faces completes the default face as a text frame's (its
+  fontset nil, where `(face-attribute 'default :fontset)' was
+  unspecified) and makes the basic faces the frame lacks.
+  `make-terminal-frame' stores its terminal's type and name and
+  `minibuffer' into PARMS with store_in_alist before
+  Fmodify_frame_parameters. Finternal_set_lisp_face_attribute's tail is
+  ported: a changed color of the default face is the frame's
+  `foreground-color' or `background-color', and in the oracle's
+  window-system build the `cursor', `border' and `mouse' backgrounds and
+  the `scroll-bar' colors are `cursor-color', `border-color',
+  `mouse-color' and the scroll-bar parameters; for frame t they go into
+  `default-frame-alist'. Not reproduced: printed frame addresses.
+  buffer-tests, simple-tests, faces-tests, xfaces-tests and cmds-tests
+  pass as many tests as GNU's. The frozen setup rise at round 250's head
+  (Emaxx's per-file setup 14 ms higher at every quartile while GNU's
+  held) does not reproduce locally: round 249's and round 251's
+  gate-profile binaries take 523.9M and 520.9M instructions for
+  abbrev-tests' setup under the frozen command line (GNU 453.8M) and
+  interleaved runs of the two give the same median wall time, 0.13 s;
+  round 251's head (below) is back at 1.228, so it was the runner. The
+  integration targets leave each build's `emacs-30.2.N' dump beside
+  gate107's binary (296 of them, 5.6 GB, were removed). Local
+  validation: the grouped gate's 3,450 library tests, the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass.
+- **Round 253: callint.c's command history, lread.c's `read-char' and
+  the window, charset and frame-name details from batteries.** Batteries
+  against GNU over callint.c (r252/ci.txt, and r253/ch.txt, cq.txt and
+  rc.txt, 64 cases with their stderr), lread.c's character readers (17,
+  r253/rk.txt), the charsets (10, r252/cs.txt) and the frame and window
+  primitives (12, r252/f2.txt) differ in these, now fixed.
+  `window-parameters' returns Fcopy_alist of the window's parameters,
+  where Emaxx handed out the alist itself. A text frame given the name
+  nil is F<num> from tty_frame_count, as make_terminal_frame numbers its
+  frames, where Emaxx reused the frame's own number. `map-charset-chars'
+  is map_charset_chars: FROM and TO are clamped to the charset's code
+  space as unsigned codes and an offset charset's range is computed from
+  them as they are, whichever is larger. Fcall_interactively is ported
+  for the command history: a string spec is recorded, before the call,
+  when an argument came from the terminal (callint.c's `varies' 0) or
+  RECORD-FLAG asks, its point, mark and region arguments as the calls
+  `(point)', `(mark)', `(region-beginning)' and `(region-end)' and the
+  others quoted by quotify_arg; a Lisp form's values are recorded when
+  RECORD-FLAG asks or evaluating them consumed input (keyboard.c's
+  num_input_events, now counted where read_char returns an event),
+  copied, quoted and passed through fix_command, which applies the
+  symbol's `interactive-args' and drops trailing nil optional arguments
+  by `func-arity'; both go through `add-to-history' as GNU's do. Emaxx
+  recorded only symbol commands, only on request, after the call, with
+  `interactive-args' applied to string specs too and nothing quoted.
+  `call-interactively' asks `interactive-form' first, so a void command
+  is `(wrong-type-argument commandp F)', and reads the spec from its
+  answer; the `+' flag is refused, an empty line inside a string spec is
+  the newline control letter, each `e' takes the next event with
+  parameters (any event under `inhibit-mouse-event-check') and names the
+  command in its error, the prefix argument is read once as the call
+  begins, `r' leaves two entries for later prompts' formats, `*' under
+  RECORD-FLAG records the call before refusing it when only r, p, P and
+  newlines follow, a string spec's call has `command-debug-status' bound
+  to nil, and `c' clears the echo area after its read. `read-char',
+  `read-event' and `read-char-exclusive' show a PROMPT through
+  message_with_string without logging (a non-string is `stringp');
+  `read-char' and `read-char-exclusive' turn a symbol whose
+  `event-symbol-element-mask' base has an `ascii-character' into that
+  character with the symbol's modifiers and resolve the result with
+  char_resolve_modifier_mask, which keeps meta; any other non-character
+  is made the only unread event and refused with "Non-character
+  input-event" by `read-char', and skipped by `read-char-exclusive',
+  within one SECONDS deadline. message3_nolog (no log, no
+  `inhibit-message') is split out of message3, and message_to_stderr
+  ends the line after an absent message only when `cursor-in-echo-area'
+  is nil. `inhibited-interaction' is signalled without data, as
+  barf_if_interaction_inhibited does. callint-tests, keyboard-tests,
+  simple-tests, lread-tests, nadvice-tests, subr-tests, repeat-tests,
+  minibuf-tests, minibuffer-tests, rmc-tests and kmacro-tests pass as
+  many tests as GNU's; minibuf-tests' bodies take 16.3 ms against 3.2
+  and repeat-tests' 40.2 against 12.6. Local validation: the grouped
+  gate's 3,452 library tests, the integration targets and clippy
+  with `--all-targets --all-features -D warnings' pass.
+- **Round 254: keyboard.c's this-command-keys and lossage from
+  batteries, and where electric-tests' time goes.** Batteries against
+  GNU over editfns.c (32 cases, r254/ed.txt), fns.c (31, fn.txt), data.c
+  (20, da.txt), syntax.c (15, sy.txt), textprop.c and the overlays (15,
+  tp.txt), print.c and lread.c's syntax (15, pl.txt), chartab.c,
+  casetab.c and category.c (12, ct.txt), search.c (16, se.txt),
+  callproc.c and process.c (17, pr.txt) and minibuf.c's batch reads from
+  stdin (26, mb.txt) agree throughout but for the address-dependent
+  values (`sxhash-equal' of a symbol, `process-attributes'); a batch
+  `read-char' with nothing unread waits forever in GNU, where Emaxx
+  signals. keyboard.c (r254/kb.txt and ck.txt, 35 cases) differed, now
+  fixed. read_char adds every event it returns to this-command-keys, but
+  one reread from `unread-command-events' (not given as (t . EVENT))
+  only while the keys are empty, and none under an end time:
+  `read-char', `read-event' and `read-char-exclusive' now add theirs,
+  and read-key-sequence leaves out the reread events after the first
+  until a replay re-adds the sequence, so C-x C-f from
+  `unread-command-events' leaves [24] beside the raw [24 6]. Each event
+  source records whether its event was reread, and the consumer clears
+  the mark, so terminal input is never taken for reread. command_loop_1
+  enters each command it runs in the lossage as (nil . COMMAND) before
+  `pre-command-hook', keyboard macro commands included, so `(recent-keys
+  t)' and `view-lossage' show them, and empties this-command-keys once
+  the command is done, after `post-command-hook'. keyboard-tests,
+  callint-tests, simple-tests, kmacro-tests, minibuf-tests,
+  minibuffer-tests, repeat-tests, rmc-tests, isearch-tests, help-tests,
+  edmacro-tests, subr-tests, viper-tests, elisp-mode-tests,
+  edebug-tests, eudc-tests and dired-tests pass as many tests as GNU's.
+  electric-tests, the file whose setup the frozen run shows furthest
+  behind (950 ms against 539), takes as many instructions as GNU's under
+  callgrind, 3,350M against 3,360M for the setup and 6,569M against
+  6,624M for the whole run, while its wall time is 1.8 s against 1.4 s
+  locally: the gap is instructions per cycle, the code-size class
+  recorded above, not extra work. Local validation: the grouped gate's
+  3,453 library tests, the integration targets and clippy with
+  `--all-targets --all-features -D warnings' pass.
+- **Round 255: keyboard.c's timer_check, and the wait it bounds.** A
+  battery over the timers (r254/ab.txt lines 9 and 10, and r255/tm.txt,
+  11 cases) found where Emaxx answered differently, each now done as the
+  C does it. timer_check walks copies of `timer-list' and, only while
+  Emacs is idle (keyboard input awaited with no time limit,
+  timer_idleness_start_time set), of `timer-idle-list': each pass of
+  timer_check_2 runs the one ripe timer that is most overdue across both
+  lists, or with none ripe ends the check and returns how long until the
+  soonest is. A batch `sit-for' is not idle, so a 0-second idle timer
+  stays unrun (it used to run), and an ordinary timer that has run keeps
+  its triggered flag t. The chosen timer is marked triggered before
+  `timer-event-handler' runs it with `inhibit-quit' bound to t,
+  `deactivate-mark' is put back after a callback that returns, and the
+  calls deferred to timer_check_2 (a frame or terminal's deletion hooks)
+  run before each further pass. A timer a callback adds is not in the
+  copies, so it waits for the next check, and
+  wait_reading_process_output runs the check at the top of each
+  iteration of its select loop only: the first, and each after the
+  select returns for output or a child or at the delay the last check
+  returned. The wait loop's 10 ms poll is no such return, and the wait
+  is bounded by that delay instead of by the live `timer-list', so a
+  0-second timer a callback adds inside `(sit-for 0.05)' runs after the
+  wait, as in GNU. timer-tests, simple-tests, jit-lock-tests,
+  minibuffer-tests, repeat-tests, thread-tests, process-tests,
+  xdisp-tests, subr-tests, edebug-tests, server-tests, replace-tests,
+  animate-tests, password-cache-tests, jsonrpc-tests and
+  network-stream-tests pass as many tests as GNU's. The terminal's
+  keyboard wait, whose GNU counterpart redisplays and checks again after
+  a timer has run (do_display), still checks on each poll. Local
+  validation: the grouped gate's 3,454 library tests (its
+  lightweight group run again once the new timer_check_delay field was
+  listed among the fields the image does not carry), the integration
+  targets and clippy with `--all-targets --all-features -D warnings'
+  pass.
+- **Round 256: a child's standard error on its pipe process's own
+  channel, and status_notify only once no channel has input; batteries
+  that agree.** Batteries against GNU over timefns.c (15 cases,
+  r256/tf.txt), keymap.c and doc.c (16, km.txt), format-mode-line and
+  the buffer and window primitives (12, fm.txt), the reader and printer
+  (16, rp.txt), markers, text property and overlay hooks, fields, undo
+  and narrowing (14, mk.txt), fileio.c and dired.c (12, fi.txt), casing
+  and character widths (11, cw.txt) and search.c and the regexp engine
+  (14, re.txt) agree throughout but for values that depend on the clock,
+  the temporary file names and the free disk space. The process recorded
+  under round 160 differed, now fixed (r256/sp.txt). create_process
+  gives the child its `:stderr' pipe process's SUBPROCESS_STDOUT as its
+  standard error and closes the parent's copy, so the pipe process reads
+  the errors on its own channel, and at their end deactivate_process
+  closes its channels and it turns (exit 0): its sentinel is told
+  "finished" and `process-exit-status' answers 0 whatever the child's
+  status, where Emaxx gave the child a pipe of its own and copied the
+  child's exit into the pipe process. A later child given the same pipe
+  process gets the child's own output as its standard error (forkerr
+  -1), and a module's `open-channel' on it fails as dup of -1 does.
+  wait_reading_process_output runs status_notify only once a select that
+  does not wait finds no input on the channels it watches, and a live
+  child's output pipe at its end stays among them, readable, until
+  handle_child_signal takes it out at the child's death: GNU reads that
+  end again and again meanwhile (0.76 s of user time in 1.5 s) and runs
+  no sentinel, so a child that closes its output and lives on holds back
+  every other process's notification until it is reaped. Emaxx now holds
+  them back the same way, without the busy wait, and a child's sentinel
+  and its stderr pipe process's run together, the newer first.
+  process-tests, thread-tests, jsonrpc-tests, network-stream-tests,
+  esh-proc-tests, eshell-tests, compile-tests, comint-tests,
+  server-tests, timer-tests, filenotify-tests, autorevert-tests,
+  vc-git-tests, vc-tests, flymake-tests, term-tests, shell-tests,
+  subr-tests, simple-tests, package-tests, tramp-archive-tests,
+  ls-lisp-tests, dired-tests and url-future-tests pass as many tests as
+  GNU's. The insertion finding of round 174 has no GNU behaviour beyond
+  its signal to follow: GNU 30.2 inserting into propertized text with
+  `text-property-default-nonsticky' bound to 5 dies of a segmentation
+  fault (r256/st.txt). Local validation: the grouped gate's 3,455
+  library tests, the integration targets and clippy with `--all-targets
+  --all-features -D warnings' pass.
+- **Round 257: network addresses, a pipe process's contact and the
+  connect sentinels as process.c has them; more batteries that agree.**
+  Batteries against GNU over data.c's and eval.c's buffer-local and
+  dynamic bindings (14 cases, r256/bv.txt), eval.c's control flow,
+  errors and backtraces (14, ev.txt), the window configurations, frames
+  and window motion (9, wc.txt) and the text properties and overlays (9,
+  tq.txt) agree but for the objects' addresses. The network and process
+  control primitives (r256/nw.txt, 9 cases) differed in three places,
+  now done as the C does them. `format-network-address' was a reduced
+  form that read any sequence of four or more integers as an IPv4
+  address and signalled otherwise; Fformat_network_address returns a
+  string as it is, formats a vector of 4 or 5 elements as IPv4 and of 8
+  or 9 as IPv6 (hexadecimal groups, the port after a bracketed address),
+  the port left out on request, answers nil for any other size or an
+  element out of range (above 65535, or above 255 in an IPv4 host part),
+  formats a cons as "<Family %d>" of its car, so that `(local .
+  "/tmp/s")' signals as `format' does, and answers nil for anything
+  else. A pipe process keeps its Fmake_pipe_process arguments as its
+  contact, which `process-contact' returns with KEY t, and the `:stderr'
+  buffer's pipe process its :name, :buffer and :noquery; with KEY nil it
+  answers t. connect_network_socket runs no sentinel for a client that
+  waited for its connect or a datagram socket: only a connect that did
+  not wait is told "open" when it completes, and a TLS connection after
+  its setup (finish_after_tls_connection), where Emaxx told every stream
+  and datagram client. network-stream-tests, process-tests, socks-tests,
+  nsm-tests, jsonrpc-tests, rcirc-tests, erc-tests, erc-networks-tests,
+  url-http-tests, url-future-tests, eudc-tests, dns-tests, shr-tests,
+  browse-url-tests, server-tests, puny-tests, gnutls-tests and
+  ntlm-tests pass as many tests as GNU's. Local validation: the grouped
+  gate's 3,456 library tests, the integration targets and clippy
+  with `--all-targets --all-features -D warnings' pass.
+- **Round 258: a dynamic-binding byte-code function entered as
+  funcall_lambda enters it.** A call from Rust (`mapatoms', `mapcar', a
+  hook) of a byte-code function whose argument slot is a list, which
+  funcall_lambda binds before exec_byte_code runs the code with no
+  arguments, read and checked the closure's fields anew on each call
+  (`closure_program'), copied the list into a vector, cloned each
+  binding's record into a box on the unwind list and verified the code's
+  entry again. The closure table that holds a lexical function's decoded
+  fields (`entry_program') now holds such a function's too, with its
+  formal list (`EntryProgram::arguments', never a frame entry Bcall sets
+  up in place), and `run_dynamic' binds the formals in the entered
+  frame, each record on the binding stack by its id as Bvarbind leaves
+  it, a plain symbol through `specbind_plain' first; an activation's
+  exit undoes the plain bindings in place (`unbind_plain') before the
+  general unwinding. Over `mapatoms' with a one-argument callback,
+  18,496 symbols ten times (r257/cg/mb.el), a call costs 803
+  instructions where it cost 1,632 (GNU 529); a lexical callback is
+  unchanged at 458 (GNU 312), spread over the prologues of
+  `call_function_value', `funcall_closure' and `run_verified'. The
+  binding is eval.c's loop over the list in place
+  (`bind_dynamic_arguments', also on the VM's path for code the verifier
+  does not admit): `&rest' and `&optional' known by EQ to their symbols,
+  any formal after the `&rest' one bound to nil, where the loop stopped
+  after it; a repeated or misplaced keyword, a dotted list, a trailing
+  `&rest' or a formal that is no symbol signal `invalid-function' of the
+  function (Emaxx took the keywords again wherever they came, stopped at
+  a dotted tail and named the formal), nil or t as a formal
+  `setting-constant'. The battery (r258/p258.el, 16 argument lists,
+  watchers, signals, throws, a buffer-local formal and a recursion
+  through Bcall) matches GNU. `backtrace--locals' does not: it takes one
+  argument or two in GNU, and lists every binding on the specpdl between
+  a frame's record and the next one (r258/bt258.el), where Emaxx asks
+  for two and keeps only an interpreted call's parameters.
+  bytecomp-tests, eval-tests, backtrace-tests, data-tests and
+  nadvice-tests pass as many tests as GNU's. Local validation: the
+  grouped gate's 3,457 library tests, the integration targets and
+  clippy with `--all-targets --all-features -D warnings' pass.
+- **Round 259: `backtrace--locals' as eval.c reads the specpdl;
+  readevalloop's bindings in its order.** `backtrace--locals' asked for
+  two arguments where GNU takes one or two, and listed only the
+  parameters an interpreted call bound (`frame_locals'), so a byte-code
+  frame, a `let' or `let*' frame, a condition-case handler's variable
+  and a closure's captured variables showed nothing, and a frame that is
+  not there answered nil. Fbacktrace__locals lists the bindings on the
+  specpdl between the frame's record and the next one's, oldest first,
+  each with the value it bound as backtrace_eval_unrewind reads it back
+  (the old value the next binding of the variable saved, or the value
+  now), and reads a binding of `internal-interpreter-environment' as the
+  bindings in the environment it installed. Each binding record now
+  carries the depth of the frame that made it
+  (`SpecialBindingRestore::frame_depth'), and the lexical environments
+  interpreted code installs -- funcall_lambda's, Flet's, FletX's (its
+  first lexical binding, the variable stored into after), a lexical
+  condition-case handler's and Feval's -- are kept beside the frames
+  with their frame and their place on the binding stack
+  (`FrameEnvironment', which replaces the per-parameter `FrameLocal' and
+  makes an interpreted call cheaper by a push per parameter);
+  `backtrace-eval' outside Edebug evaluates in the environment last
+  installed at or outside the frame. NFRAMES and NFRAMES - 1 must be
+  natural numbers, and either frame missing signals "Activation frame
+  not found!". The comparison turned up readevalloop's order: GNU binds
+  `standard-input', then `macroexp--dynvars' to its own value, so that
+  the forms' declarations go with the loop, then `current-load-list'
+  (loadhist_initialize), where Emaxx bound the load list before
+  `lexical-binding' and never bound the dynvars; `eval-region' binds the
+  list to a buffer without a file too. A battery of 9 cases
+  (r259/p259.el) and the file-loaded ones (bl.el, bd.el, down into
+  `load''s own frames) match GNU; backtrace-tests, edebug-tests,
+  ert-tests, eval-tests, lread-tests, bytecomp-tests, macroexp-tests and
+  elisp-mode-tests pass as many tests as GNU's. `backtrace-eval' still
+  neither rewinds the dynamic bindings made above the frame nor leaves
+  out the frame's own environment, which GNU's does
+  (backtrace_eval_unrewind of everything above the frame's record).
+  Local validation: the grouped gate's 3,458 library tests, the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass.
+- **Round 260: `backtrace-eval' where the frame was entered.**
+  Fbacktrace_eval finds the frame as get_backtrace_frame does (NFRAMES a
+  natural number, BASE a function or (OFFSET . FUNCTION) matched through
+  Findirect_function) and signals "Activation frame not found!" when
+  there is none, where Emaxx searched the frames for BASE itself by its
+  function object and evaluated anyway; it undoes every binding on the
+  specpdl above the frame's record while EXP runs
+  (backtrace_eval_unrewind, the swap a thread switch makes, now
+  `swap_special_bindings_for_thread_switch' from the first record the
+  frame or one inside it made) and makes them again after; and EXP sees
+  the lexical environment in effect when the frame was entered, the one
+  a frame outside it installed last, where Emaxx took the frame's own.
+  So the frame's own arguments and let-bindings, dynamic or lexical, are
+  out of sight, as they are in GNU (the debugger asks for the frame
+  inside the one it means, debug.el's `debugger-eval-expression'); under
+  Edebug the environment captured at the call boundary stands, as
+  before. The battery (r260/p260.el: an interpreted lexical function,
+  dynamic-binding byte code, a closure's argument, a binding made inside
+  the probe, a missing frame) matches GNU; edebug-tests,
+  backtrace-tests, testcover-tests, eval-tests and ert-tests pass as
+  many tests as GNU's. GNU's unrewind also puts back the current buffer
+  a `save-current-buffer' or `save-excursion' above the frame saved,
+  which Emaxx keeps off the binding stack and does not. Local
+  validation: the grouped gate's 3,459 library tests, the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass.
+- **Round 261: `gnutls-available-p' as gnutls.c, window motion by the
+  window's body.** `libgnutls-version' is the version of the GnuTLS the
+  build found through pkg-config, as gnutls.c sets it at startup from
+  the headers configure found, where Emaxx held -1 until
+  `gnutls-available-p' loaded the library; a build pkg-config finds no
+  GnuTLS for keeps that. Fgnutls_available_p conses its list in GNU's
+  order, `gnutls', `ClientHello\ Padding' for GnuTLS 3.2.5 on (so
+  gnutls.el now adds %DUMBFW to the priority string, which Emaxx never
+  did), `gnutls3', `digests', `ciphers', `AEAD-ciphers' and `macs', then
+  the name of each extension below ID 100 that gnutls_ext_get_name knows
+  and the list lacks, interned, where Emaxx listed the six capabilities
+  alone. In batch, scroll_command, Frecenter and Fmove_to_window_line
+  counted a fixed 23 lines; they count the selected window's body lines,
+  as GNU does in batch too, so a split window, a buffer without a mode
+  line and one with a header line scroll, recenter and move by their own
+  heights (the Emaxx test that published a 22-row terminal window in
+  batch for `recenter' to count now checks that it counts the window's
+  body). Fdelete_other_windows_internal now runs
+  `window--pixel-to-total' for heights and then widths once WINDOW has
+  replaced ROOT, as window.c does, so the windows' new totals read as
+  GNU's after it. The batteries (r261: the printer and its variables,
+  the reader, text properties and overlays, numbers and time, keymaps,
+  windows, the optional features) match GNU, except that the oracle's X
+  build preloads x-win.el, touch-screen.el's and non-toolkit scroll-bar
+  bindings into the global map, which Emaxx's tty dump has not;
+  gnutls-tests, nsm-tests, simple-tests, scroll-lock-tests,
+  tab-bar-tests, xdisp-tests, edebug-tests, elisp-mode-tests and
+  help-fns-tests pass as many tests as GNU's. Local validation: the
+  grouped gate's 3,461 library tests, the integration targets and
+  clippy with `--all-targets --all-features -D warnings' pass.
+- **Round 262: windows' starts and points are markers, window
+  configurations hold markers, and `set-window-configuration' restores
+  each window as window.c does.** window.h's w->start, w->pointm and
+  w->old_pointm are markers on the chain of the buffer the window shows,
+  so insdel.c's marker adjustment moves them with its text; Emaxx kept
+  integers in the window records and moved them with a walk of every
+  window on every insertion and deletion (`adjust_window_marker_slots',
+  some 150 instructions an edit in electric-tests, and coding.c's
+  conversions marked the windows apart), which treated every point as of
+  insertion type nil. Each leaf window now holds its three markers from
+  its creation; set_window_buffer sets them and gives the point markers
+  the insertion type `window-point-insertion-type' has in the buffer, so
+  a window's point after an insertion there goes as GNU's does;
+  select_window swaps the old selected window's buffer point into its
+  marker and takes the new window's point from its own (the selected
+  window selected again keeps its buffer's point, where Emaxx had
+  written the selected window's point slot at every `set-buffer' away
+  from its buffer); unshow_buffer and the unchain_marker calls of
+  delete_window and delete_all_child_windows run when a window goes
+  away; Fset_window_point, Fwindow_point, Fwindow_old_point, the scroll
+  commands' old point, the mode line's start and the echo area's restore
+  read and set the markers. The windows made at startup before the image
+  installs its buffers move their markers to the installed buffers.
+  save_window_save copies the window's markers (the selected window's
+  point built at its buffer's point) and holds on to the buffer object;
+  Emaxx copied the positions as integers, so edits made after the
+  configuration was saved, `save-window-excursion''s body among them,
+  left the positions it restored behind. A configuration's saved slots
+  are scanned by the collector for as long as the configuration lives,
+  whoever holds it (ERT's per-test configuration and the minibuffer's
+  are held in Rust; window.c keeps a configuration as a Lisp object).
+  Fset_window_configuration's per-window restore is ported, over the
+  windows that were in the frame's tree when the configuration was saved
+  (the snapshot holds every window record of the frame, the deleted ones
+  too, which stay deleted): a window that gets another buffer records
+  its old one with `record-window-buffer'; the selected window's point
+  is swapped out first; delete_all_child_windows unshows every window
+  now on the frame and unchains its markers; a live saved buffer is
+  installed with the window's markers set to the saved ones restricted
+  to the accessible portion, and a buffer current but not saved as
+  current goes to the window's point; a window whose saved buffer is
+  dead keeps its current buffer when that is live, its unchained markers
+  at the start of the accessible portion and the buffer's point, and
+  otherwise gets other_buffer_safely's at its beginning, a dedicated one
+  of those being deleted when `window-deletable-p' lets it (any one
+  under `window-restore-killed-buffer-windows' `delete'); the windows so
+  kept go to that variable when it is a function, with `configuration';
+  the point of the buffer current when the configuration was saved is
+  not restored; select_window then puts the configuration's selected
+  window's buffer at that window's restored point, which Emaxx did not,
+  so a configuration saved while another buffer was current left the
+  selected window's buffer at the point it had been moved to since; and
+  DONT-SET-MINIWINDOW (read_minibuf's restore passes it) keeps the
+  minibuffer window's buffer. Emaxx left a window whose buffer had been
+  killed showing the dead buffer, so that `window-live-p' failed on it.
+  frame.c links a frame's root window to its own minibuffer window as
+  its `next', which delete_all_child_windows visits first: Emaxx's
+  restore left that window out, so the minibuffer window, never
+  squirreled, got another buffer under DONT-SET-MINIWINDOW (*Messages*
+  after every read) where GNU keeps the expired minibuffer.
+  read_minibuf's own order is ported around it: set_window_buffer shows
+  the minibuffer in the minibuffer window before the erase and the
+  prompt, so the window's markers stay at the buffer's beginning (Emaxx
+  showed it after the prompt, and the erase of the expired minibuffer
+  recorded the two point markers in its undo list), and Fselect_window
+  selects the window, recording the minibuffer in the buffer list; a
+  minibuffer window showing an active minibuffer pushes it with
+  `push-window-buffer-onto-prev'; and the unwind records run in their
+  order, read_minibuf_unwind (whose Fset_frame_selected_window selects
+  the calling window, recording its buffer, unless the minibuffer window
+  has an outer read's buffer), the configuration restore (registered
+  only when `read-minibuffer-restore-windows' is non-nil at entry),
+  minibuffer_unwind (the minibuffer window shows its first previous
+  buffer at its start and point, or the null minibuffer) and
+  restore_buffer. The batteries (r262, r263: saved positions across
+  insertions, deletions and narrowing, the insertion type set and
+  changed, a killed buffer's window, a dedicated one, the function, a
+  split window's point, select-window's swap, set-window-point under a
+  narrowing, kill-buffer, a dos decoding, a restore after delete-window
+  and after set-window-buffer, a window deleted before the save, the
+  minibuffer window, its undo list and the buffer list across reads,
+  nested reads) match GNU; simple-tests, minibuffer-tests,
+  minibuf-tests, subr-tests, subr-x-tests, ert-tests, ert-x-tests,
+  calc-tests, electric-tests, buffer-tests, process-tests,
+  elisp-mode-tests, help-fns-tests, help-tests, edebug-tests,
+  replace-tests, files-tests, man-tests, mailcap-tests, time-tests,
+  repeat-tests, saveplace-tests, cus-edit-tests, lisp-tests,
+  dissociate-tests, proced-tests, dabbrev-tests, bookmark-tests,
+  tab-bar-tests, python-tests, term-tests and comint-tests pass as many
+  tests as GNU's. Local validation: the grouped gate's 3,464
+  library tests (run with round 263's), the integration targets and
+  clippy with `--all-targets --all-features -D warnings' pass.
+- **Round 263: `commandp' as eval.c.** Fcommandp indirects FUNCTION (a
+  void function cell is nil) and answers by the kind of what it finds: a
+  subr with an interactive spec, a closure long enough to have an
+  element at CLOSURE_INTERACTIVE and a module function with an
+  interactive form are commands; strings and vectors are keyboard macros
+  unless FOR-CALL-INTERACTIVELY; an autoload is a command by its fourth
+  element alone, read with Fcar and Fcdr so that an improper one
+  signals; any other list is one when it is a `lambda' with an
+  `interactive' entry anywhere in its body, found by Fassq, which
+  signals at an improper end it reaches; a subr, closure, module
+  function or autoload that is no command then walks FUNCTION's symbol
+  chain, where an `interactive-form' property is an error; and a closure
+  whose docstring slot holds no docstring (VALID_DOCSTRING_P: a string,
+  a fixnum or a string and fixnum pair), an OClosure, asks
+  `interactive-form'. Emaxx counted an autoload of type `keymap' as a
+  command, copied a lambda's body into a list and so answered nil for an
+  improper one (`(lambda (x) (interactive) . 5)' is a command in GNU,
+  `(lambda () . 5)' signals), looked the function, the property and
+  `oclosure-interactive-form' up by name, built every closure's
+  interactive form to see whether it had one, and asked `oclosure-type'
+  by a Lisp call before asking `oclosure-interactive-form' of the
+  closures it recognized. In a walk of the obarray a call now costs 215
+  instructions more than `identity''s, GNU's 132. The battery
+  (r264/cmdp.txt, 63 forms: subrs, autoloads of each type, improper
+  autoloads and lambdas, `interactive' anywhere in a body, closures and
+  byte code by their slot count and docstring kind, OClosures, advised
+  functions, aliases carrying the property, `t' given a function,
+  symbols with position, records, char-tables and bool-vectors) matches
+  GNU. Local validation: the grouped gate's 3,464 library tests
+  (run together with round 262's), the integration targets and clippy
+  with `--all-targets --all-features -D warnings' pass.
+- **Round 264: a visited file's modification time as buffer.h keeps it,
+  and `set-window-buffer''s checks as window.c's.** A buffer's modtime
+  is a time or one of two sentinels, UNKNOWN_MODTIME_NSECS and
+  NONEXISTENT_MODTIME_NSECS, with the file's size beside it
+  (modtime_size, -1 when unknown); Emaxx kept an optional time, which
+  could not say that the visited file had not existed, and no size.
+  `visited-file-modtime' answers 0 or -1 for the sentinels;
+  `set-visited-file-modtime' takes a flag of 0 or -1 (anything else is
+  `args-out-of-range' as check_integer_range has it) or a time, of
+  unknown size, and otherwise stats the visited file, which an indirect
+  buffer does not have ("An indirect buffer does not have a visited
+  file"), expanding the name first (so a buffer visiting nothing signals
+  `(wrong-type-argument stringp nil)') and leaving the time alone when
+  the file is missing (file_attribute_errno);
+  `verify-visited-file-modtime' compares the file's status, a failure
+  read as time_error_value reads it (ENOENT and ENOTDIR as a file that
+  does not exist), and the size when the recorded one is known, so a
+  buffer that recorded a missing file verifies while the file is still
+  missing. A visit of a file that cannot be opened records
+  time_error_value's stamp, -1 for a missing file, and the first
+  change's undo entry is then (t . -1); a visit that reads the file
+  takes the time and size from the opened file's status, read before any
+  of the file is, and a write that visits records the written file's
+  time and size, as before. reset_buffer records an unknown time and
+  size, and the image keeps the stamp and the size. Fset_window_buffer
+  decodes a live window, `window-live-p' its error, and a strongly
+  dedicated window refuses another buffer with "Window is dedicated to
+  `NAME'", NAME the buffer it shows, its quotes requoted by
+  `text-quoting-style' as doprnt requotes an error's. The batteries
+  (r264/pr: 20 forms of the modtime functions, 41 of windows and
+  `display-buffer', 95 of error paths, and the printer's and reader's
+  corner cases, 132 and 136 forms) match GNU, and files-tests,
+  fileio-tests, files-x-tests, autorevert-tests, simple-tests,
+  undo-tests, buffer-tests, dired-tests, filenotify-tests, ert-x-tests,
+  arc-mode-tests, elisp-mode-tests, minibuffer-tests, abbrev-tests and
+  time-stamp-tests pass as many tests as GNU's. Local validation: the
+  grouped gate's 3,465 library tests, the integration targets and
+  clippy with `--all-targets --all-features -D warnings' pass.
+- **Round 265: the Linux build's GNU C primitives that had no body, X
+  display checks as the X build makes them, and sound.c.** Thirty-three
+  primitives of the contracted Linux build were bound as subrs whose
+  call signalled Emaxx's own "Unknown function" (a scan calling each
+  subr with one argument too many, which reaches the arity check only
+  once a body exists): xselect.c's selection calls, xfns.c's frame and
+  display queries, xsettings.c's `font-get-system-font',
+  `font-get-system-normal-font' and `tool-bar-get-system-style',
+  xsmfns.c's `handle-save-session', alloc.c's `malloc-info' and
+  `malloc-trim', and sound.c's `play-sound-internal'. Each now does what
+  GNU's X build does with no X display open: frame_for_x_selection finds
+  no X frame (after decoding a terminal designator), so
+  `x-selection-exists-p' and `x-selection-owner-p' answer nil after
+  CHECK_SYMBOL, `x-disown-selection-internal' answers nil,
+  `x-get-selection-internal' checks both symbols and MULTIPLE before "X
+  selection unavailable for this frame", and `x-get-local-selection'
+  checks its four-element VALUE, its name and its timestamp
+  (cons_to_unsigned, now ported whole, which also corrects the uid and
+  gid primitives' (HIGH MIDDLE . LOW) form) before the frame;
+  frame_geometry answers nil for `x-frame-geometry' and `x-frame-edges',
+  `x-mouse-absolute-pixel-position' and
+  `x-set-mouse-absolute-pixel-position' return before any argument
+  check, and the XInput 2 query answers nil as the contracted build
+  lacks it. Where GNU's X build reads a terminal frame's absent X output
+  and crashes (`x-double-buffered-p', `x-frame-restack' of two live
+  frames, `x-own-selection-internal' given a non-frame), Emaxx answers
+  nil, "Cannot restack frames" and the selection error. `malloc-info'
+  and `malloc-trim' call glibc's, the host allocator being glibc's
+  malloc, and `handle-save-session' kills Emacs for a (_ t ...) event as
+  Fhandle_save_session does. check_x_display_info is ported for the X
+  display queries (`x-display-pixel-width' and its fourteen siblings,
+  `x-close-connection', `x-synchronize', `x-translate-coordinates',
+  `x-send-client-message', `x-create-frame''s `terminal' or `display'
+  parameter): nil is "X windows are not in use or not initialized", a
+  live terminal "Terminal N is not an X display", a string a display
+  x_term_init cannot open ("Display NAME can't be opened", after
+  x_display_info_for_name resets `x-resource-name' to `invocation-name'
+  and validate_x_resource_name replaces its invalid characters or falls
+  back to "emacs"), and anything else decode_window_system_frame's
+  `frame-live-p' or "Window system frame should be used";
+  `x-open-connection' checks its resource string and validates the
+  resource name before the same display error, `xw-color-defined-p',
+  `xw-color-values' and `x-focus-frame' decode their frame as
+  decode_window_system_frame does (nil for the selected frame),
+  `x-list-fonts' calls check_window_system before CHECK_STRING and
+  `x-family-fonts' decodes its frame before its family; Emaxx's earlier
+  "Window system is not in use or not initialized" for all of these
+  remains on the other contracted hosts. `play-sound-internal' is
+  sound.c's: parse_sound's specification, openp in `data-directory', the
+  RIFF-WAVE and Sun audio headers ("Unknown sound format"),
+  `play-sound-functions', then ALSA through libasound, loaded on first
+  use as GNU's build links it, or else the Voxware device, with each
+  driver's format choice, configuration, playback and error texts.
+  compat/generate_builtin_arities.el now reads the Linux manifest too,
+  so these primitives carry GNU's arities and interactive forms
+  (`malloc-info' and `malloc-trim' are commands, `handle-save-session'
+  reads an event), and a test holds every primitive of the Linux
+  manifest to a native route and GNU's metadata. `indent-to' checks both
+  arguments as fixnums and `fmakunbound' refuses nil and t as data.c
+  does. A visited file's time before the epoch, which Tramp records for
+  a file that does not exist as `tramp-time-doesnt-exist', (-1 65535),
+  is made a Lisp time as make_lisp_time makes it, as is the first
+  change's undo entry for it: round 264's `visited-file-modtime' passed
+  on the Rust conversion's "second time provided was later than self",
+  which failed tramp-tests'
+  `tramp-test10-write-region-file-precious-flag' on the round 264 head.
+  The batteries (r265: every `x-' C primitive with each argument as nil,
+  5, a string, the terminal, the frame and a window, 670 calls;
+  `play-sound-internal' over valid and invalid specifications, files,
+  data and devices; and 124 forms of narrowing, fields, editfns, special
+  forms, arithmetic, formatting, lists and strings) match GNU but
+  `malloc-trim''s second call, whose answer depends on the heap. The
+  same sweep over the 153 frame, terminal, font, fontset, image and face
+  primitives finds argument checks out of GNU's order and error data GNU
+  does not give in about forty of them (`color-distance', `face-font',
+  `font-get', `image-size' among them), the next round's work. Local
+  validation: the grouped gate's 3,466 library tests and the
+  integration targets pass, and after the time fix and clippy's two
+  changes (the ALSA device boxed in its driver, `then_some') the
+  modtime, file-attribute and time tests and clippy with `--all-targets
+  --all-features -D warnings' pass.
+- **Round 266: face, image, color and initial-frame primitives as
+  xfaces.c, image.c and a restored process make them.**
+  resolve_face_name now returns an object that is no symbol as it is, so
+  `face-font', `internal-lisp-face-empty-p',
+  `internal-lisp-face-equal-p', `internal-get-lisp-face-attribute' and
+  their kin signal lface_from_face_name's "Invalid face" with it instead
+  of `symbolp', and "Invalid face", "Invalid face attribute name" and
+  the other face errors carry signal_error's data (nil names no object).
+  `internal-get-lisp-face-attribute' decodes FRAME, finds the face and
+  only then checks SYMBOL and KEYWORD, knowing neither :bold nor
+  :italic; `internal-set-lisp-face-attribute-from-resource' checks its
+  symbols and string, converts the string for its attribute
+  (`string-to-number' for :height, whose error carries the number,
+  face_boolean_x_resource_value, interned styles, the read of :box and
+  :inherit) and calls `internal-set-lisp-face-attribute', which decodes
+  FRAME; `face-font' with a FRAME other than t finds the frame's
+  realized face (a remapped one through `face-remapping-alist') and
+  answers nil, as a text frame has no font; `face-attribute-relative-p'
+  and `merge-face-attribute' compare with :height without CHECK_SYMBOL,
+  `internal-lisp-face-p' decodes FRAME first, and
+  `internal-lisp-face-equal-p' looks each face up after resolving it.
+  `face-attributes-as-vector' is merge_face_ref ported whole: named
+  merge points against circular inheritance and remapping,
+  get_lface_attributes' remapping, `:filtered' references and
+  evaluate_face_filter, the color pairs, the attribute plist with each
+  attribute's checks, lists merged from the back, merge_face_vectors
+  with inheritance, font_clear_prop on a :font spec and `reset'
+  attributes taken from the default face, every bad reference logged by
+  add_to_log (now format-message into *Messages*). Fbitmap_spec_p walks
+  its list as xfaces.c does. image.c's valid_image_p is ported for the X
+  build's types (svg, png, gif, tiff, jpeg, xpm, webp, xbm, pbm):
+  parse_image_spec over each keyword table, xbm_image_p's bits (a vector
+  of strings or bool-vectors, a string or a bool-vector, for
+  `:data-width', `:data-height' and `:stride') or text (xbm_scan's
+  #defines, check_image_size against `max-image-size'), and xpm's color
+  symbols; `imagep', `image-flush', `image-size', `image-mask-p' and
+  `image-metadata' use it ("Invalid image specification",
+  decode_window_system_frame's errors for a valid spec, nil metadata for
+  an invalid one) and `clear-image-cache' decodes its frame.
+  `color-distance' decodes its frame before the colors and signals
+  "Invalid color" with signal_error's data, `window-system' checks
+  FRAMEP, `image-transforms-p' decodes its frame, `init-image-library'
+  answers nil for a type that is no symbol, `font-family-list' and
+  `frame-font-cache' decode their frame, `font-at''s range error is
+  args_out_of_range_3, and font objects print as `#<font-spec',
+  `#<font-entity' and `#<font-object' as print.c prints them. pdumper
+  records no frames: at init_display the restored process's initial
+  frame is make_initial_frame's, whose parameters are (minibuffer . t)
+  and whose init_frame_faces, run before `--batch' is read, realizes the
+  default face (with the unspecified colors that keep the colors out of
+  the parameters) and the eighteen basic faces, after which
+  `tty-set-up-initial-frame-faces' adds the rest; F1's face table now
+  lists them in GNU's order and `frame-parameters' lists the colors
+  where Fframe_parameters adds them. The display sweep (153 frame,
+  terminal, font, fontset, image and face primitives, each argument as
+  nil, 5, a string, the terminal, the frame and a window) matches GNU
+  but for the font primitives, font.c's font-spec model (styles stored
+  as numbers, `:name' parsed as an XLFD or fontconfig name, CHECK_FONT's
+  `font' and `font-spec' predicates), the next round's work, and
+  `menu-bar-menu-at-x-y', which GNU's X build crashes on; batteries of
+  face, `face-attributes-as-vector' (with its log), image specification,
+  bitmap and initial-frame forms match GNU. Local validation: the
+  grouped gate's 3470 library tests, the integration targets and
+  clippy with `--all-targets --all-features -D warnings' pass.
+- **Round 267: font.c's font-spec model.** A font-spec keeps its weight,
+  slant and width as font_style_to_value's numbers, (NUMERIC << 8) |
+  (ENTRY << 4) | (NAME - 1), against font_style_table (the dumped root
+  FontStyleTable: the values of `font-weight-table', `font-slant-table'
+  and `font-width-table' until a fontconfig name's `:roman' registers a
+  style, as GNU's does), matched by EQ and then case-folded, so
+  `demibold' and `semi-bold' are equal styles of unequal specs, `BOLD'
+  is stored as `bold' and `font-get', the printer and the XLFD unparser
+  show font_style_symbolic's names. font_prop_validate is ported with
+  font_property_table (strings interned, registries downcased, numeric
+  styles checked against their entry, the spacing letters, :otf's lists,
+  a nil key validated as :type), font_put_extra keeps the extra alist in
+  `string-lessp' order and deletes by delq, and Ffont_spec, Ffont_get
+  and Ffont_put are GNU's (`font-put' of :name stores it unparsed, of
+  :type sets the type). `:name' is parsed by font_parse_name:
+  font_parse_xlfd with font_intern_prop's fixnums and overflow-error,
+  parse_matrix and font_expand_wildcards' placement of wildcard names,
+  retried with a dashed family, or font_parse_fcname's fontconfig and
+  GTK forms with the cairo X build's ftfont_filter_properties on the
+  extra properties; the ad-hoc parser it replaces is gone.
+  font_dynamic_unparse_xlfd and font_unparse_xlfd back `font-xlfd-name'
+  (the 256-byte limit, folded wildcards), font_match_p with font_score's
+  style, size and resolution differences and face-font-rescale-alist
+  backs `font-match-p', and copy_font_spec, font_clear_prop and
+  font_parse_family_registry are 30.2's. CHECK_FONT, CHECK_FONT_SPEC,
+  CHECK_FONT_ENTITY and CHECK_FONT_OBJECT signal with `font',
+  `font-spec', `font-entity' and `font-object'; `list-fonts' and
+  `find-font' decode the frame before their spec and list nothing (no
+  frame has a font driver), `font-face-attributes' takes a font or a
+  name (font_spec_from_name), `font-info' wants a font or a string
+  before decode_window_system_frame, `open-font' decodes its frame
+  before CHECK_FONT_ENTITY, and the face merge and `set-face-attribute'
+  accept a style as FONT_*_NAME_NUMERIC does. sxhash hashes a font's
+  property slots alone, as fns.c's sxhash_vector does. fontset.c's
+  check_fontset_name (frame first, t for the default fontset, nil an
+  error on a terminal frame, a literal or pattern name through
+  fs_query_fontset) is used by `fontset-font' and `set-fontset-font',
+  whose font spec is built first (Ffont_spec of a name,
+  font_parse_family_registry of a cons, `font' "Invalid font-spec"
+  otherwise) and whose characters, ADD and ASCII checks are
+  Fset_fontset_font's; the fontsets' own char-table model is round
+  268's. GNU's batch build crashes where a font's integer size meets
+  FRAME_RES on a terminal frame (`font-face-attributes' of such a spec
+  or XLFD) and where font_match_p encodes a :script's characters with a
+  font that is no font-object; Emaxx answers there as a build without a
+  window system would (default_pixels_per_inch_y) and as a font that
+  encodes nothing. The display sweep now matches GNU but for
+  `menu-bar-menu-at-x-y', and font-tests.el's names and batteries of
+  styles, validators, XLFD and fontconfig names, the unparser, matching,
+  face attributes and fontset arguments match GNU. Two library tests'
+  expectations set outside GNU's answers before this round now follow
+  GNU: `font-face-attributes' of an empty spec is nil and `open-font' of
+  nil signals (wrong-type-argument font-entity nil). Local validation:
+  the grouped gate's 3,473 library tests, the integration targets
+  and clippy with `--all-targets --all-features -D warnings' pass.
+- **Round 268: fontset.c's base fontsets.** Vfontset_table is the dumped
+  root Fontsets, a vector of fontsets by id whose slot 0 is the default
+  fontset `-*-*-*-*-*-*-*-*-*-*-*-*-fontset-default', and a fontset is a
+  char-table of purpose `fontset' (FONTSET_ID, FONTSET_NAME,
+  FONTSET_ASCII, FONTSET_BASE and FONTSET_FALLBACK in its extra slots)
+  whose element for a character is a vector of font_defs [FONT-SPEC
+  ENCODING REPERTORY]; the Rust fontset records, their mapping targets
+  and the font pattern lists they kept are gone. `set-fontset-font' is
+  Fset_fontset_font: find_font_encoding over `font-encoding-alist' gives
+  a font_def's encoding and repertory charsets (ascii when no entry
+  matches), a script's ranges come from char-table `char-script-table'
+  as map_char_table hands them to accumulate_script_ranges, a charset's
+  from map_charset_chars through the set_fontset_font callback, which
+  places the script ranges below each charset range and keeps an
+  ASCII-preserving call off ASCII, and FONTSET_ADD replaces, appends
+  (`append') or prepends (any other ADD) over each run of equal
+  elements, the fallback slot for a nil CHARACTERS; `latin', an
+  ASCII-compatible charset and a range from 0 change the fontset's ASCII
+  font unless an existing one is appended to, a symbol that is neither
+  script nor charset (t and keywords too) is "Invalid script or charset
+  name". `fontset-font' walks the fontset's element and fallback, then
+  the default fontset's, reading each font_def's encoding as its
+  repertory as GNU does, so a font whose encoding charset lacks the
+  character is skipped and a nil font_def ends the walk. `new-fontset'
+  is Fnew_fontset: the name downcased and looked up as a pattern,
+  font_parse_xlfd's "Fontset name must be in XLFD format", the
+  `fontset-*' registry check, the (NAME . SHORT-NAME) alias pushed on
+  `fontset-alias-alist' (its let-bound value when it is let-bound), the
+  ASCII font name font_dynamic_unparse_xlfd makes of the name with
+  registry iso8859-1, an existing fontset's characters cleared but not
+  its fallback, and FONTLIST's specs appended. `fontset-list' lists the
+  base fontsets newest first, and `font-face-attributes' of a name looks
+  its fontset up first as Ffont_face_attributes does. fs_query_fontset,
+  fontset_pattern_regexp and check_fontset_name move to the new
+  fontset.rs, CHAR_CHARSET_P is the charset's ascii_compatible_p or
+  encode_char, and coding.rs's charset_ascii_compatible_p is shared with
+  make-char. A battery of 71 fontset operations in one process (scripts,
+  charsets with their ASCII parts, ranges, prepends and appends,
+  fallbacks, encodings outside the BMP, new-fontset's checks, aliases
+  and re-creation) matches GNU, as do round 267's batteries and the
+  display sweep but for the items GNU's batch build crashes on. Local
+  validation: the grouped gate's 3,474 library tests, the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass.
+- **Round 269: charset.c's definitions apart from their plists.** Each
+  charset keeps the `define-charset-internal' arguments it was defined
+  with (its dimension, code space, minimum and maximum codes, ISO final
+  byte and revision, emacs-mule id, flags, invalid code, code offset,
+  map, subset, superset and unify-map, dumped with the charset and
+  copied with the interpreter) as charset_table's attributes, so struct
+  charset no longer follows the plist: `set-charset-plist' changes what
+  `charset-plist' returns and nothing else, and the ISO-2022,
+  emacs-mule, ISO and fontset code reads a charset's dimension, ISO
+  final byte and revision and ASCII compatibility from the definition.
+  Fdefine_charset_internal is ported with its checks in order: the
+  arity's (wrong-number-of-arguments define-charset-internal . N),
+  CHECK_SYMBOL, the code space through Faref and check_integer_range,
+  the dimension, cons_to_unsigned's :min-code and :max-code with
+  args_out_of_range_3, the invalid code (and "Attribute :invalid-code
+  must be specified"), the ISO final byte, revision and emacs-mule id
+  ranges, a code offset's CHECK_CHARACTER and "Unsupported max char: 0",
+  a subset's parent and fixnums, a superset's members and offsets, "None
+  of :code-offset, :map, :parents are specified", the unify-map's
+  CHECK_VECTOR and the plist's CHECK_LIST; a map charset is registered
+  before its map loads, so a missing map file (file-missing "Loading
+  charset map" ...) on `charset-map-path' with suffix .map or .TXT, an
+  odd-length map vector (add_to_log's "Invalid format operation %V") or
+  a map character that is no natural number leaves it a charset outside
+  `charset-list' and the ordered list. A map vector's codes may be (FROM
+  . TO) ranges, filtered by the charset's codes as
+  load_charset_map_from_vector filters them. `charset-list' is a
+  variable (Vcharset_list) that a definition and an alias cons onto, its
+  let-bound value while it is bound, where it was rebuilt at each read;
+  Vemacs_mule_charset_list is kept in definition order and reordered by
+  `set-charset-priority', as Viso_2022_charset_list is.
+  `define-charset-alias' checks its charset with CHECK_CHARSET_GET_ATTR,
+  returns nil, conses the alias onto `charset-list' even when it is
+  there already (or is no symbol), and makes a charset's own name an
+  alias of another; `set-charset-plist', `unify-charset',
+  `map-charset-chars', `set-charset-priority', `decode-char'
+  (cons_to_unsigned's codes and error), `encode-char'
+  (CHARSET_INVALID_CODE answers nil), `sort-charsets' (list_length's
+  error, sorted in place by the ordered list), `iso-charset',
+  `declare-equiv-charset' and `get-unused-iso-final-char'
+  (check_iso_charset_parameter, the last reading ISO_CHARSET_TABLE
+  alone) and `char-charset''s coding-system restriction (CHECK_SYMBOL)
+  check as charset.c does. `unify-charset' clears CHARSET_UNIFIED_P
+  before its checks, so a failing call leaves the charset de-unified,
+  and returns at once for a unified charset whose deunifier an encode
+  through it has made, kept as CHARSET_ATTR_DEUNIFIER in the charset's
+  dumped attributes. map_charset_chars's CODE_POINT_TO_INDEX takes
+  code_linear_p from the charset's dimension, so an offset charset's
+  out-of-range FROM still counts from its minimum code
+  (latin-iso8859-1's 192..200 is (320 . 255), as round 253 recorded). A
+  battery of 205 charset operations in one process (definitions and
+  their errors, map ranges, aliases, priorities, plists, ISO tables,
+  unification) matches GNU, as do round 267's and 268's batteries. The
+  first gate run failed two tests, that map-charset-chars range and the
+  image field check on the deunifier set the attributes now hold; both
+  pass after the fix. Local validation: the grouped gate's 3,475
+  library tests, the integration targets and clippy with `--all-targets
+  --all-features -D warnings' pass.
+- **Round 270: coding.c's coding systems as specs sharing attribute
+  vectors.** Vcoding_system_hash_table maps each coding system name to a
+  spec [ATTRS ALIASES EOL-TYPE] (Rust records by index, dumped as the
+  specs the table reaches with their names and the attribute vectors
+  they share), where the Rust coding system records, the alias table
+  followed through up to 16 hops and the coding priority list behind
+  `read-coding-system' are gone. Fdefine_coding_system_internal makes
+  one attribute vector for a system and its three eol subsidiaries (each
+  with its own spec), and Fdefine_coding_system_alias puts its target's
+  spec itself under the alias, appending the alias to the spec's names
+  in place and aliasing ALIAS-unix, -dos and -mac to the subsidiaries
+  when the eol type is their vector. So `coding-system-put' through
+  `utf-8-dos' or `mule-utf-8' changes `utf-8''s plist,
+  `coding-system-aliases' returns the spec's own list (eq across names,
+  extended by later aliases), a redefinition leaves aliases made before
+  it on the old system, an alias of an alias's target never ends up the
+  base of a subsidiary of another system, and `coding-system-eol-type'
+  copies the subsidiaries vector. The conversions read CODING_ATTR_*
+  rather than the plist: the mnemonic (the mode line's %z through the
+  spec, as decode_mode_spec_coding reads it), ASCII compatibility, the
+  translation tables, the post-read and pre-write conversions, the
+  default character, :for-unibyte, the charset list (by canonical name,
+  Viso_2022_charset_list and Vemacs_mule_charset_list for those
+  symbols), the utf-8 and utf-16 BOM and the utf-16 byte order (nil made
+  `big'); `coding-system-put' of any other property changes only the
+  plist, as in GNU. CODING_ATTR_CHARSET_VALIDS and setup_coding_system's
+  ISO-2022 attributes are kept with the attribute vector, made when
+  first needed and again after a charset change or `coding-system-put',
+  where every conversion rebuilt them: 200,000 latin-1 decodes of
+  "abc\351" take 1.03 s (GNU 0.88 s, 2.80 s before), euc-jp encodes of
+  "abc\x3042" 0.40 s (GNU 0.25 s, 0.63 s before).
+  `define-coding-system-internal' is ported with its checks in order:
+  the arity's (wrong-number-of-arguments define-coding-system-internal .
+  N) for the base and each type's argument count, CHECK_SYMBOL on the
+  name, a string mnemonic's first character or CHECK_CHARACTER, the
+  charset list (`iso-2022' and `emacs-mule' only for their own type,
+  "Invalid charset-list"; a list copied with CHECK_CHARSET_GET_CHARSET
+  and "Can't handle charset `%s'" for a charset without an ISO final
+  byte or emacs-mule id), the translation tables, conversions, default
+  character and plist, then the type's checks (ccl programs and valid
+  ranges; utf-8 and utf-16 :bom pairs through CHECK_CODING_SYSTEM and
+  "Invalid endian: %s"; ISO-2022 designations, register usage, requests
+  and flags; shift-jis and big5 charset counts and dimensions), "Invalid
+  coding system type: %s" and "Invalid eol-type", with the plist gaining
+  :category and :ascii-compatible-p in front and a shift-jis or big5
+  system becoming Vsjis_coding_system or Vbig5_coding_system.
+  `coding-system-put' is Fcoding_system_put:
+  CHECK_CODING_SYSTEM_GET_SPEC, :mnemonic, :default-char (nil a space),
+  the translation tables and conversions checked into the attributes,
+  :ascii-compatible-p stored as given, then plist_put in place for any
+  property, a non-symbol one too. `define-coding-system-alias' returns
+  nil and signals (coding-system-error X) or (wrong-type-argument
+  coding-system-p nil) for its target; `check-coding-system' returns its
+  argument; `coding-system-p', `check-coding-system', the attribute
+  primitives and the conversion entry points (the string and region
+  coders, process and file coding, `set-terminal-coding-system-internal'
+  and its kin) evaluate a pending `coding-system-define-form' through
+  safe_eval as Fcheck_coding_system does. The keyboard and terminal keep
+  the coding system by the name given (`latin-1' stays `latin-1');
+  `set-coding-system-priority' sets each category's variable to the name
+  given and its system only when it had one; `read-coding-system' and
+  `read-non-nil-coding-system' complete over `coding-system-alist' as
+  coding.c does. The C-defined `no-conversion' has eol type `unix' and
+  no charset list, and `undecided' no-conversion's default character 0,
+  as syms_of_coding's shared argument array leaves them. A battery of
+  259 coding system operations in one process (definitions and their
+  errors, aliases, plists, eol types, conversions through aliases,
+  priorities, keyboard and terminal names, autoloaded systems) matches
+  GNU, as do rounds 267 to 269's batteries; `encode-sjis-char' and
+  `encode-big5-char' of an unencodable character still signal where GNU
+  reads a null charset and crashes. Local validation: the grouped gate's
+  3,476 library tests, the integration targets and clippy with
+  `--all-targets --all-features -D warnings' pass.
+- **Round 271: process ids, signal codes and load averages as process.c,
+  sysdep.c and fns.c take them.** `load-average' is Fload_average: the
+  averages getloadavg(3) reports (glibc's from sysinfo(2), in steps of
+  1/2048, where the sysinfo crate read /proc/loadavg's two decimals),
+  each a float or `double_to_integer' of 100 times it, as many as it
+  has, and "load-average not implemented for this operating system" when
+  it has none. `process-attributes' checks its argument as
+  system_process_attributes does, CHECK_NUMBER and then CONS_TO_INTEGER
+  into a pid_t, so a non-number signals `numberp', an integral float
+  names its pid and a fraction or out-of-range number signals "Not an
+  in-range integer, integral float, or cons of integers" (data.c's
+  cons_to_signed, ported beside cons_to_unsigned). `signal-process''s
+  default, Finternal_default_signal_process, reads a string that names
+  no process with lread.c's string_to_number (ported for base 10 with
+  the length it spans), so "1e3" and "+5" are pids and " 5" or "99x"
+  give nil; any other non-number goes through get_process; a number
+  through CONS_TO_INTEGER; a fixnum signal code through
+  check_integer_range (`args-out-of-range' past int) and a symbol
+  through abbr_to_signal and gnulib's str2signum (digits only from a
+  leading digit and up to SIGNUM_BOUND, so `SIG99' and `+5' are
+  undefined; names of 20 bytes or more none), where the code had read
+  any integer and parsed a leading sign. A contract of 48 such calls
+  matches GNU, and batteries over chartab.c, casetab.c, fns.c,
+  editfns.c, textprop.c and overlays, data.c and floatfns.c, keymap.c
+  and doc.c, callint.c, macros.c and keyboard.c, buffer.c and marker.c,
+  window.c and frame.c, lread.c's reader, search.c and the regex engine,
+  composite.c and character.c, and sysdep.c match it apart from object
+  addresses, host values and the X build's features (the oracle is built
+  --with-x, so its menu bar's tool bar entry is the move-toolbar
+  submenu). The frozen run's widest per-test gap,
+  `ert-test-run-tests-batch-expensive' (44.6 s against GNU's 37.1 s at
+  round 269), is the gate build under memory pressure rather than a
+  slower path: the runner is loaded as source, so the backtrace the test
+  prints holds its macro-expanded forms, and here the whole file under
+  the gate build takes 53.71 s against GNU's 53.85 s (the test alone
+  8.98 s in the release build against 11.15 s), at a peak of 7.0 GB
+  against 5.8 GB. Local validation: the grouped gate's 3,478
+  library tests, the integration targets and clippy with `--all-targets
+  --all-features -D warnings' pass.
+- **Round 272: file ACLs through libacl and libattr, as GNU's build
+  links them.** The oracle is built with USE_ACL and HAVE_ACL_SET_FILE
+  (`-lacl') and gnulib's qcopy_acl with USE_XATTR (`-lattr'), where
+  Emaxx answered `file-acl' and `set-file-acl' with nil and `copy-file'
+  copied only the mode. The libraries are loaded when first needed
+  (libacl.so.1 and libattr.so.1; a host without them answers as a build
+  without ACLs does): `file-acl' is Ffile_acl, acl_get_file of the
+  access ACL and acl_to_text (the mode's three entries for a file
+  without an extended ACL, names and `#effective:' comments as libacl
+  writes them), nil for ENOENT, ENOTDIR or an errno gnulib's
+  acl_errno_valid passes over (EBUSY, EINVAL, ENOSYS, EOPNOTSUPP),
+  "Getting ACLs" otherwise; `set-file-acl' is Fset_file_acl,
+  acl_from_text of a string's bytes up to a NUL and acl_set_file, t when
+  set, nil for a non-string or an unconvertible text, "Converting ACL"
+  and "Setting ACL" errors past acl_errno_valid; and `copy-file' with
+  PRESERVE-PERMISSIONS is qcopy_acl, fchmod and then attr_copy_fd of the
+  attributes /etc/xattr.conf marks `permissions' (qcopy-acl.c's
+  is_attr_permissions), so a copy keeps its source's extended ACL and
+  mask. `move-point-visually' checks its argument with CHECK_FIXNUM. The
+  native-file test that took `file-acl' for nil now expects the mode's
+  three entries, and the libacl and libattr symbols are transmuted to
+  named function types. A contract of 17 ACL operations (the mode's ACL,
+  a directory's, missing files, a set ACL and its mode, invalid and
+  non-string texts, a named-user entry with its mask, short-form text, a
+  preserved copy, a mask narrowed by `set-file-modes') matches GNU.
+  Local validation: the grouped gate's 3,479 library tests, the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass.
+- **Round 273: startup variables, `build-files', charset maps and decode
+  translation as GNU's.** A sweep of every default-bound variable's
+  startup value against the oracle (X-only and build-path values aside)
+  found `x-toolkit-scroll-bars' t and
+  `x-use-underline-position-properties' nil, nsterm.m's values, where
+  the Linux oracle has xterm.c's nil (no X toolkit) and t; loadup's
+  scroll-bar.el reads the first to choose the scroll-bar bindings, so
+  the global map held `scroll-bar-toolkit-scroll' where GNU binds
+  `scroll-bar-scroll-up', `scroll-bar-drag' and
+  `scroll-bar-scroll-down'. `build-files' was every S record of DOC, the
+  msdos, w32, ns, haiku and android files among them, where doc.c conses
+  buildobj.h, the objects the build compiled, before it opens DOC, so
+  `help-C-file-name' put `file-system-info' in dosfns.c; the oracle's
+  list is generated (generated_gnu_build_files_linux.rs) and taken while
+  `build-files' is nil. A sweep of every coding system's encoding and
+  decoding found three charset differences. DECODE_CHAR and ENCODE_CHAR
+  give an ASCII code of an ASCII-compatible charset as itself, mapped or
+  not (MIK.map starts at #x20, so `mik' decoded control bytes outside
+  its `charset' run and `(decode-char 'mik 5)' was nil).
+  load_charset_map's decoder vector takes the last entry of a code a map
+  lists twice (stdenc.map's #x20 is U+00A0 and then U+0020) and the
+  encoder table the first entry of a character. And the decoders now
+  translate through `:decode-translation-table' and
+  `standard-translation-table-for-decode', which Emaxx applied only when
+  encoding (eucjp-ms's NEC row decoded to its private characters):
+  produce_chars is ported a decoder call at a time,
+  LOOKUP_TRANSLATION_TABLE's character entries along a list of tables,
+  get_translation's vectors and sequence alists (an annotation datum
+  ending a sequence, the charbuf's end carrying one over to the next
+  call), with none for raw-text's characters at source;
+  produce_annotation's runs stay where the decoder counted them, so a
+  translation that shortens a call's text signals args-out-of-range past
+  the work buffer's end and, in a region, puts the run on the text after
+  it, as GNU does. `map-charset-chars' hands its function
+  map_char_table_for_charset's one RANGE cons, refilled for each run,
+  and a narrowed walk tests each character's ENCODE_CHAR. Walks and
+  ENCODE_CHAR load a unified charset's deunifier, as map_charset_chars
+  and encode_char do, except while loadup sets
+  `inhibit-load-charset-map', when load_charset fills temp_charset_work
+  instead, so after characters.el's walks the image's gb2312, big5,
+  cns11643-1 and jisx0208 still have none and `unify-charset' checks a
+  new map argument for them as GNU's does. Sweeps of nine char tables
+  (syntax, case, category, width, script, printable, glyphless,
+  composition, auto-fill), 20 char-code properties and ten per-character
+  functions over every character match GNU, as does the coding sweep
+  now. Contracts for the X variables and scroll-bar maps, `build-files',
+  the charset maps, the deunifier loads and 12 translation cases match
+  GNU. Local validation: the grouped gate's 3,484 library tests,
+  the integration targets and clippy with `--all-targets --all-features
+  -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -13854,6 +14952,289 @@ comp-tests (17,351 ms against 14,970), tramp-tests (21,790 against
 19,543), semantic-utest-ia (4,199 against 2,852), mule-tests (3,214
 against 2,032) and electric-tests (1,161 against 605).
 
+**On `367a71b`** (round 250): frozen (run 41442267394) matched all 7,928
+outcomes. Setup 91.1 s against 66.5 s (1.371), test bodies 263.4 s
+against 270.4 s (0.974), in all 1.044; ucs-normalize-tests' bodies took
+134 ms against 92. The full Rust gate (run 41436994103) passed. Per
+file, the setup is 47 ms over GNU's on average (24.6 s over 519 files, a
+median of 139 ms against 102, up from round 249's 124 against 103),
+electric-tests' the most (919 against 546), and the widest body gaps are
+comp-tests (18,894 ms against 14,890), tramp-tests (21,796 against
+19,320), semantic-utest-ia (4,285 against 2,819), mule-tests (3,162
+against 2,002) and simple-tests (5,092 against 4,037).
+
+**On `3ea598c`** (round 251): frozen (run 41448121772) matched all 7,928
+outcomes. Setup 84.0 s against 68.4 s (1.228), test bodies 263.3 s
+against 272.6 s (0.966), in all 1.008; ucs-normalize-tests' bodies took
+133 ms against 90. The full Rust gate (run 41448117863) passed. Per
+file, the setup is 30 ms over GNU's on average (15.6 s over 519 files, a
+median of 128 ms against 108: round 250's 139 against 102 was that
+runner's), comp-tests' the most (2,190 against 1,768), and the widest
+body gaps are comp-tests (19,448 ms against 16,233), tramp-tests (21,528
+against 19,535), semantic-utest-ia (4,241 against 2,622), mule-tests
+(3,182 against 2,016) and package-tests (6,718 against 6,153).
+
+**On `7d2c7a6`** (round 252): frozen (run 41457968375) matched all 7,928
+outcomes. Setup 84.1 s against 66.0 s (1.273), test bodies 258.9 s
+against 268.5 s (0.964), in all 1.008; ucs-normalize-tests' bodies took
+134 ms against 91. The full Rust gate (run 41457963448) passed. Per
+file, the setup is 35 ms over GNU's on average (18.0 s over 519 files, a
+median of 126 ms against 102), electric-tests' the most (950 against
+539), and the widest body gaps are comp-tests (17,651 ms against
+14,750), tramp-tests (21,588 against 19,163), semantic-utest-ia (4,361
+against 2,941), mule-tests (3,208 against 1,976) and electric-tests
+(1,170 against 582).
+
+**On `be0a0ec`** (round 253): frozen (run 41470027568) matched all 7,928
+outcomes. Setup 82.9 s against 66.2 s (1.252), test bodies 257.4 s
+against 267.6 s (0.962), in all 1.006; ucs-normalize-tests' bodies took
+136 ms against 92. The full Rust gate (run 41470022316) passed. Per
+file, the setup is 32 ms over GNU's on average (16.7 s over 519 files, a
+median of 124 ms against 101), electric-tests' the most (943 against
+536), and the widest body gaps are comp-tests (17,227 ms against
+14,485), tramp-tests (21,243 against 19,052), semantic-utest-ia (4,153
+against 2,686), mule-tests (3,187 against 2,024) and package-tests
+(6,716 against 6,153).
+
+**On `7fbcd04`** (round 254): frozen (run 41479281941) matched all 7,928
+outcomes. Setup 80.6 s against 64.0 s (1.260), test bodies 254.1 s
+against 264.9 s (0.959), in all 1.001; ucs-normalize-tests' bodies took
+132 ms against 91. The full Rust gate (run 41479275071) passed. Per
+file, the setup is 32 ms over GNU's on average (16.6 s over 519 files, a
+median of 120 ms against 98), electric-tests' the most (920 against
+534), and the widest body gaps are comp-tests (16,935 ms against
+14,230), tramp-tests (20,925 against 18,770), semantic-utest-ia (4,010
+against 2,684), mule-tests (3,120 against 2,009) and electric-tests
+(1,133 against 596).
+
+**On `adbe47f`** (round 255): frozen (run 41487434823) matched all 7,928
+outcomes. Setup 80.8 s against 63.8 s (1.267), test bodies 254.5 s
+against 263.5 s (0.966), in all 1.006; ucs-normalize-tests' bodies took
+130 ms against 90. The full Rust gate (run 41487428474) passed. Per
+file, the setup is 33 ms over GNU's on average (17.0 s over 519 files, a
+median of 119 ms against 97), electric-tests' the most (906 against
+521), and the widest body gaps are comp-tests (17,060 ms against
+14,328), tramp-tests (20,988 against 18,931), semantic-utest-ia (4,013
+against 2,565), mule-tests (3,175 against 1,986) and electric-tests
+(1,128 against 588).
+
+**On `9564243`** (round 256): frozen (run 41494625432) matched all 7,928
+outcomes. Setup 68.5 s against 57.1 s (1.200), test bodies 233.3 s
+against 249.2 s (0.936), in all 0.999; ucs-normalize-tests' bodies took
+112 ms against 78. The full Rust gate (run 41494619938) passed. Per
+file, the setup is 22 ms over GNU's on average (11.4 s over 519 files, a
+median of 102 ms against 87), comp-tests' the most (1,815 against
+1,603), and the widest body gaps are comp-tests (15,406 ms against
+13,489), tramp-tests (17,817 against 16,418), semantic-utest-ia (3,281
+against 2,295), mule-tests (2,695 against 1,724) and epg-tests (2,376
+against 1,833).
+
+**On `5d396b3`** (round 257): frozen (run 41501269839) matched all 7,928
+outcomes. Setup 85.8 s against 69.2 s (1.239), test bodies 264.0 s
+against 283.9 s (0.930), in all 0.982; ucs-normalize-tests' bodies took
+137 ms against 94. The full Rust gate (run 41501264975) passed. Per
+file, the setup is 32 ms over GNU's on average (16.6 s over 519 files, a
+median of 129 ms against 107), comp-tests' the most (2,094 against
+1,799), and the widest body gaps are comp-tests (18,124 ms against
+15,147), tramp-tests (22,154 against 19,490), semantic-utest-ia (4,382
+against 3,149), mule-tests (3,230 against 2,022) and electric-tests
+(1,184 against 609).
+
+**On `08ce599`** (round 258): frozen (run 41508456993) matched all 7,928
+outcomes. Setup 84.3 s against 71.3 s (1.184), test bodies 260.1 s
+against 278.4 s (0.934), in all 0.979; ucs-normalize-tests' bodies took
+129 ms against 90. The full Rust gate (run 41508452062) passed. Per
+file, the setup is 25 ms over GNU's on average (13.1 s over 519 files, a
+median of 127 ms against 110), comp-tests' the most (2,064 against
+1,808), and the widest body gaps are comp-tests (18,332 ms against
+15,697), tramp-tests (21,235 against 19,412), semantic-utest-ia (3,880
+against 2,703), mule-tests (3,005 against 1,978) and electric-tests
+(1,048 against 580).
+
+**On `b697218`** (round 259): frozen (run 41515939960) matched all 7,928
+outcomes. Setup 54.4 s against 46.7 s (1.164), test bodies 230.3 s
+against 219.4 s (1.049), in all 1.068; ucs-normalize-tests' bodies took
+83 ms against 57. The full Rust gate (run 41515933695) passed. Per file,
+the setup is 15 ms over GNU's on average (7.7 s over 519 files, a median
+of 84 ms against 73), comp-tests' the most (1,266 against 1,236), and
+the widest body gaps are comp-tests (12,527 ms against 11,238),
+ert-tests (27,536 against 26,483), tramp-tests (15,183 against 14,210),
+semantic-utest-ia (2,512 against 1,789) and mule-tests (1,839 against
+1,179). The bodies' ratio is above the 0.93 to 0.95 of earlier runs on
+runners this fast, with GNU's bodies the fastest yet; locally, on the
+round 261 build, ert-tests (0.76), subr-tests (0.83), mule-tests (0.97)
+and comp-tests run no slower against GNU than before, so the next run is
+to show whether it holds.
+
+**On `1519252`** (round 260): frozen (run 41524586101) matched all 7,928
+outcomes. Setup 81.2 s against 65.8 s (1.235), test bodies 298.7 s
+against 267.0 s (1.119), in all 1.121; ucs-normalize-tests' bodies took
+133 ms against 90. The full Rust gate (run 41524581350) passed. Per
+file, the setup is 30 ms over GNU's on average (15.4 s over 519 files, a
+median of 121 ms against 101), comp-tests' the most (2,024 against
+1,770), and the widest body gaps are ert-tests (47,200 ms against
+37,935), comp-tests (17,304 against 14,574), tramp-tests (21,627 against
+19,357), semantic-utest-ia (3,981 against 2,576) and mule-tests (3,189
+against 1,994). Of ert-tests' gap 8.7 s is one test,
+`ert-test-run-tests-batch-expensive', which prints a failing test's
+backtrace with no margins: the release build runs it in 0.90 s against
+GNU's 1.26 alone and ert-tests in 30.0 s against 39.6, so the gap is the
+gate build's, its checks, as round 172 found for others. Nor did rounds
+259 and 260 make the gate build slower: built as the frozen run builds
+it, round 258's head and round 261's run subr-tests in 4.225G and 4.262G
+instructions and electric-tests in 9.308G and 9.322G, so the bodies'
+ratio moving from round 258's 0.934 through 1.049 to 1.119 is the
+runners'.
+
+**On `52923f3`** (round 261): frozen (run 41535428336) matched all 7,928
+outcomes. Setup 83.6 s against 67.2 s (1.243), test bodies 306.2 s
+against 273.6 s (1.120), in all 1.129. The full Rust gate (run
+41535416278) passed. Per file, the setup is 31 ms over GNU's on average
+(16.3 s over 519 files, a median of 133 ms against 108), comp-tests' the
+most (2,203 against 1,881) after electric-tests' (933 against 541), and
+the widest body gaps are ert-tests (47,300 ms against 38,216),
+comp-tests (22,205 against 15,016), tramp-tests (21,085 against 19,063),
+semantic-utest-ia (3,936 against 2,543) and mule-tests (3,248 against
+1,983), the gate build's as round 260 found.
+
+**On `8d8e50b`** (rounds 262 and 263): frozen (run 41553678226) matched all
+7,928 outcomes on a faster runner than round 261's. Setup 54.7 s against
+46.6 s (1.174), test bodies 229.4 s against 217.9 s (1.053), in all 1.069.
+The full Rust gate (run 41553675040) passed. Per file, the setup is 16 ms
+over GNU's on average (8.1 s over 519 files, a median of 83 ms against
+73), electric-tests' the most (525 against 351) before comp-tests' (1,272
+against 1,140), and the widest body gaps are comp-tests (12,489 ms against
+10,310), ert-tests (27,532 against 26,324), mule-tests (1,933 against
+1,195), tramp-tests (15,182 against 14,492) and semantic-utest-ia (2,436
+against 1,748), the gate build's as before.
+
+**On `486ec2c`** (round 264): the full Rust gate (run 41559530811)
+passed. Frozen (run 41559543126) matched 7,926 of the 7,928 outcomes.
+eglot-tests' `eglot-test-rust-completion-exit-function` failed in the GNU
+oracle on its jsonrpc timeout (the known oracle flake), and
+tramp-tests' `tramp-test10-write-region-file-precious-flag` failed in
+Emaxx with "second time provided was later than self": Tramp records a
+file that does not exist as `tramp-time-doesnt-exist`, (-1 65535), a
+second before the epoch, and round 264's `visited-file-modtime` handed
+the conversion's error on where the old one had answered 0. Round 265
+converts such a time as make_lisp_time does, so the frozen run is not
+rerun. Setup 85.2 s against 71.9 s (1.185), test bodies 301.4 s against
+282.3 s (1.067), in all 1.083, on a slower runner than round 263's. Per
+file, the setup is 26 ms over GNU's on average (13.3 s over 519 files, a
+median of 128 ms against 112), electric-tests' the most (893 against
+576) before comp-tests' (2,034 against 1,814), and the widest body gaps
+are ert-tests (46,154 ms against 40,697), comp-tests (18,335 against
+15,839), tramp-tests (21,350 against 19,868), mule-tests (3,031 against
+1,960) and semantic-utest-ia (4,115 against 3,196), the gate build's as
+before.
+
+**On `8b6c2c6`** (round 265): the full Rust gate (run 41565665270)
+passed, and frozen (run 41565668671) matched all 7,928 outcomes at the
+first attempt, tramp-tests' `tramp-test10-write-region-file-precious-flag`
+among them again. Setup 87.8 s against 70.6 s (1.244), test bodies 308.0 s
+against 277.6 s (1.109), in all 1.126. Per file, the setup is 33 ms over
+GNU's on average (17.2 s over 519 files, a median of 137 ms against 112),
+comp-tests' the most (2,327 against 1,913) before electric-tests' (937
+against 548), and the widest body gaps are ert-tests (46,193 ms against
+38,459; GNU's own 2.2 s under round 264's run), tramp-tests (22,408 against
+19,977), comp-tests (19,175 against 17,203), semantic-utest-ia (4,337
+against 2,862) and mule-tests (3,228 against 2,049), the gate build's as
+before; Emaxx's bodies rose most in tramp-tests, vc-tests and comp-tests,
+whose GNU bodies rose with them.
+
+**On `805e927`** (round 266): the full Rust gate (run 41572247618)
+passed, and frozen (run 41572250674) matched all 7,928 outcomes at the
+first attempt, on a faster runner than round 265's. Setup 53.3 s against
+45.4 s (1.174), test bodies 228.6 s against 220.7 s (1.036), in all
+1.052. Per file, the setup is 15 ms over GNU's on average (7.9 s over
+519 files, a median of 83 ms against 72), electric-tests' the most (534
+against 341) before x-dnd-tests' (620 against 488) and comp-tests'
+(1,290 against 1,165), and the widest body gaps are comp-tests (11,985
+ms against 10,483), tramp-tests (15,459 against 14,385), ert-tests
+(27,796 against 27,133, the gap of 7.7 s under round 265's runner down
+to 0.7 s), mule-tests (1,738 against 1,155) and semantic-utest-ia (2,404
+against 1,876).
+
+**On `bc60515`** (round 267): the full Rust gate (run 41576593874)
+passed, and frozen (run 41576597096) matched all 7,928 outcomes at the
+first attempt. Setup 55.8 s against 47.7 s (1.170), test bodies 233.8 s
+against 222.2 s (1.052), in all 1.068. Per file, the setup is 16 ms over
+GNU's on average (8.1 s over 519 files, a median of 87 ms against 77),
+comp-tests' the most over (1,335 against 1,145) before electric-tests'
+(509 against 339) and mhtml-mode-tests' (240 against 144), and the
+widest body gaps are comp-tests (12,563 ms against 10,910),
+semantic-utest-ia (2,581 against 1,705), tramp-tests (15,597 against
+14,758), mule-tests (1,867 against 1,076) and ert-tests (27,948 against
+27,494).
+
+**On `2b42aba`** (round 268): the full Rust gate (run 41580424289)
+passed, and frozen (run 41580427976) matched all 7,928 outcomes at the
+first attempt. Setup 71.3 s against 60.0 s (1.187), test bodies 267.7 s
+against 251.7 s (1.064), in all 1.082. Per file, the setup is 22 ms over
+GNU's on average (11.2 s over 519 files, a median of 108 ms against 93),
+electric-tests' the most over (727 against 467) before comp-tests'
+(1,690 against 1,487) and gnus-icalendar-tests' (579 against 452), and
+the widest body gaps are comp-tests (16,168 ms against 13,552),
+ert-tests (36,101 against 33,602), tramp-tests (17,444 against 16,172),
+mule-tests (2,449 against 1,570) and semantic-utest-ia (3,430 against
+2,620).
+
+**On `ff7729e`** (round 269): the full Rust gate (run 41584822128)
+passed, and frozen (run 41584825143) matched all 7,928 outcomes at the
+second attempt, the first's GNU oracle having failed
+`eglot-test-rust-completion-exit-function' with a `jsonrpc-error' that
+Emaxx passed. Setup 73.1 s against 54.8 s (1.334), test bodies 269.7 s
+against 246.8 s (1.093), in all 1.139. Per file, the setup is 35 ms over
+GNU's on average (18.3 s over 519 files, a median of 114 ms against 85),
+electric-tests' the most over (704 against 412) before comp-tests'
+(1,620 against 1,416) and x-dnd-tests' (765 against 602), and the widest
+body gaps are tramp-tests (18,958 ms against 15,981), icalendar-tests
+(3,374 against 415), comp-tests (15,953 against 13,078), ert-tests
+(35,947 against 33,249) and simple-tests (4,393 against 3,487).
+icalendar-tests' gap does not reproduce with the round 270 tree: its
+gate build runs the file's tests under the runner here in 775 ms against
+GNU's 580 (`icalendar-export-alarms', 833 ms against 23 in the run, in
+64 against 52).
+
+**On `9be6898`** (round 270): the full Rust gate (run 41592719776)
+passed, and frozen (run 41592722745) matched all 7,928 outcomes at the
+first attempt. Setup 74.3 s against 61.7 s (1.204), test bodies 277.0 s
+against 259.7 s (1.066), in all 1.082. Per file, the setup is 24 ms over
+GNU's on average (12.6 s over 519 files, a median of 111 ms against 94),
+electric-tests' the most over (776 against 518) before comp-tests'
+(1,883 against 1,682) and textsec-tests' (375 against 252), and the
+widest body gaps are ert-tests (38,949 ms against 36,450), comp-tests
+(16,147 against 13,960), tramp-tests (18,587 against 17,166),
+semantic-utest-ia (3,758 against 2,771) and mule-tests (2,788 against
+1,802). icalendar-tests' body, 3,374 ms against 415 at round 269, is
+back to 560 against 409.
+
+**On `a5dd910`** (round 271): the full Rust gate (run 41597365157)
+passed, and frozen (run 41597368742) matched all 7,928 outcomes at the
+first attempt. Setup 88.3 s against 71.2 s (1.239), test bodies 308.9 s
+against 277.0 s (1.115), in all 1.134, on a slower runner than round
+270's (GNU's own setup median 109 ms against 94). Per file, the setup is
+33 ms over GNU's on average (17.0 s over 519 files, a median of 132 ms
+against 109), electric-tests' the most over (1,005 against 587) before
+comp-tests' (2,189 against 1,884) and x-dnd-tests' (967 against 789),
+and the widest body gaps are ert-tests (46,890 ms against 38,285),
+comp-tests (19,297 against 16,464), tramp-tests (22,176 against 20,182),
+semantic-utest-ia (4,409 against 2,800) and mule-tests (3,287 against
+2,040).
+
+**On `f01d05d`** (round 272): the full Rust gate (run 41602941387)
+passed, and frozen (run 41602945683) matched all 7,928 outcomes at the
+first attempt. Setup 84.2 s against 67.5 s (1.249), test bodies 300.6 s
+against 270.5 s (1.111), in all 1.120 (GNU's own setup median 104 ms
+against 109 on round 271's runner). Per file, the setup is 32 ms over
+GNU's on average (16.8 s over 519 files, a median of 125 ms against
+104), electric-tests' the most over (934 against 533) before
+comp-tests' (2,055 against 1,770) and x-dnd-tests' (867 against 720),
+and the widest body gaps are ert-tests (45,436 ms against 37,759),
+comp-tests (17,927 against 14,873), tramp-tests (21,957 against 19,554),
+semantic-utest-ia (4,134 against 2,744) and mule-tests (3,264 against
+2,024).
+
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'
   without signalling (round 174).** In GNU,
@@ -13866,7 +15247,9 @@ against 2,032) and electric-tests (1,161 against 605).
   nothing, and keep the intervals consistent. `insert' and
   `insert-and-inherit' beside propertized text therefore return where
   GNU signals `(wrong-type-argument listp VALUE)' while that variable is
-  bound to a non-list.
+  bound to a non-list. There is no more of GNU's to follow: an insertion
+  into propertized text with the variable bound to 5 makes GNU 30.2 die
+  of a segmentation fault (round 256).
 - **A call of `looking-at' costs about 350 instructions more than GNU's
   around the match (rounds 174 to 176).** `(looking-at "x")' at a
   failing position costs 1,462 instructions against GNU's 1,116: the
@@ -13912,13 +15295,6 @@ against 2,032) and electric-tests (1,161 against 605).
   each against the release build's 625, and the interpreter's own
   environment walks (`assq_binding', `environment_declares_special')
   come out of line at another 1.9G.
-- **Every edit walks the windows (round 168).**
-  `adjust_window_marker_slots' looks the window records up by type
-  name and then each by id on every insertion and deletion, to move
-  the start and point of the windows showing the buffer; GNU keeps
-  those as markers on the buffer's chain, which an edit of a buffer no
-  window shows does not visit. In electric-tests the walk is some 150
-  instructions an edit over 155,000 edits.
 - **A call from Rust into byte code costs about 240 instructions more
   than GNU's (round 167).** `mapatoms' over 18,663 symbols with a
   byte-compiled callback takes 596 instructions a symbol in the release
@@ -13954,11 +15330,11 @@ against 2,032) and electric-tests (1,161 against 605).
   was nothing in Emaxx until round 246, whose port returns at once in a
   buffer without intervals), of which ropey's insert took 2,030 where
   GNU's copy_text into the gap takes 92; with round 175's gap buffer it
-  runs in 7.64G. The windows' start and point are integers in their
-  records, which every insertion and deletion adjusts by walking every
-  window (284 instructions an insertion at round 165), where GNU's
-  window markers are on the buffer's chain. (Round 166 made the undo
-  list GNU's, round 167 `related_buffer_ids''s walk.)
+  runs in 7.64G. The windows' start and point were integers in their
+  records, which every insertion and deletion adjusted by walking every
+  window (284 instructions an insertion at round 165); since round 262
+  they are markers on the buffer's chain, as GNU's are. (Round 166 made
+  the undo list GNU's, round 167 `related_buffer_ids''s walk.)
 - **A string's intervals are merged where GNU keeps them (round 164).**
   No longer: round 172's intervals keep the intervals a change makes, as
   textprop.c does, and at round 247 the round 164 example prints `#("ab"
@@ -13983,14 +15359,11 @@ against 2,032) and electric-tests (1,161 against 605).
   a branch, or eight at a time into the reserved bytes, measured no
   faster than the ASCII-run loop it has.
 - **A child's standard error and its stderr pipe process (round
-  160).** GNU's create_process gives the child the stderr pipe
+  160).** No longer: round 256 gives the child the stderr pipe
   process's SUBPROCESS_STDOUT as its standard error and closes the
-  parent's copy, so the pipe process reads the child's errors on its own
-  READ_FROM_SUBPROCESS and turns (exit 0) at their end. Emaxx gives the
-  child a pipe of its own, delivers what it reads there to the stderr
-  process, and sets that process's status from the child's exit; the
-  pipe process keeps both ends of the pipe it reads, two descriptors
-  where GNU's keeps one while the child runs.
+  parent's copy, as create_process does, so the pipe process reads the
+  child's errors on its own READ_FROM_SUBPROCESS and turns (exit 0) at
+  their end, whatever the child's status.
 - **The closure entry from Rust (#304, rounds 159 and 160).** The
   callback of `mapatoms' in `comp--all-classes' (18,539 symbols) costs
   807 instructions a symbol against GNU's 639. The byte-code bodies are
@@ -14060,9 +15433,8 @@ against 2,032) and electric-tests (1,161 against 605).
   where GNU stops at its 255th ("Creating pipe" "Too many open files"),
   and start all ten `cat's of each connection type where GNU starts one
   or two, so the three tests take 1,067 ms against GNU's 352 here. A
-  child given a pipe process as :stderr then writes into that pipe
-  process's own pipe in GNU, where Emaxx reads a pipe of the child's and
-  hands the bytes to it.
+  child given a pipe process as :stderr writes into that pipe process's
+  own pipe, in Emaxx too since round 256.
 - **The frozen run times the gate profile (round 112).** The frozen
   workflow's harness builds the Emaxx it runs with `--profile gate'
   (thin LTO, 16 codegen units, debug assertions and overflow checks;

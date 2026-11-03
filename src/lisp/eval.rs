@@ -1105,6 +1105,13 @@ pub(crate) struct KeyboardInputState {
     pub(crate) recent_keys: Vec<Value>,
     pub(crate) dribble_file: Option<PathBuf>,
     pub(crate) internal_last_event_frame: Option<Value>,
+    // keyboard.c's num_input_events: every event read_char returned,
+    // from the terminal, `unread-command-events' or a keyboard macro.
+    pub(crate) num_input_events: u64,
+    // read_char's `reread': the event just taken came from
+    // `unread-command-events' (not as (t . EVENT)), so it joins
+    // this-command-keys only as their first.  The consumer clears it.
+    pub(crate) last_event_reread: bool,
 }
 
 // One active `ert-with-message-capture` scope.  When the capture variable is
@@ -1411,17 +1418,36 @@ pub(crate) struct TreeSitterNodeState {
     pub(crate) generation: u64,
 }
 
+/// coding.c's attribute vector of a coding system (CODING_ATTR_*): one
+/// for each Fdefine_coding_system_internal, shared by the spec of the
+/// system, its eol subsidiaries' specs and through them every alias.
 #[derive(Clone, Debug)]
 pub struct CodingSystemState {
-    pub name: String,
+    /// CODING_ATTR_BASE_NAME: the name Fdefine_coding_system_internal
+    /// made this attribute vector for.
     pub base: String,
+    /// CODING_ATTR_MNEMONIC: the mode line's character.
+    pub mnemonic: i64,
+    /// CODING_ATTR_TYPE: the :coding-type symbol.
     pub kind: String,
-    pub eol_type: Option<i64>,
+    /// CODING_ATTR_ASCII_COMPAT, as the definition settled it or
+    /// `coding-system-put' last set it.
+    pub ascii_compatible: Value,
+    /// CODING_ATTR_DECODE_TBL and CODING_ATTR_ENCODE_TBL.
+    pub decode_table: Value,
+    pub encode_table: Value,
+    /// CODING_ATTR_POST_READ and CODING_ATTR_PRE_WRITE.
+    pub post_read: Value,
+    pub pre_write: Value,
+    /// CODING_ATTR_FOR_UNIBYTE.
+    pub for_unibyte: bool,
+    /// CODING_ATTR_PLIST.
     pub plist: Value,
     /// coding.c's `enum coding_category' index (CODING_ATTR_CATEGORY).
     pub category: usize,
-    /// The :charset-list argument as given (the symbol `iso-2022' stands
-    /// for every ISO-2022 charset).
+    /// CODING_ATTR_CHARSET_LIST: the charsets' canonical names in the
+    /// :charset-list's order, or the symbol `iso-2022' or `emacs-mule'
+    /// standing for that charset list.
     pub charset_list: Value,
     /// CODING_ATTR_DEFAULT_CHAR: the substitute for an unencodable
     /// character, space unless :default-char says otherwise.
@@ -1430,6 +1456,25 @@ pub struct CodingSystemState {
     /// `define-coding-system-internal' (for iso-2022: initial designations,
     /// register usage, requests and the flag bits).
     pub type_args: Vec<Value>,
+    /// CODING_ATTR_CHARSET_VALIDS and the ISO-2022 attributes.
+    pub(crate) derived: crate::lisp::primitives::coding::CodingDerived,
+}
+
+/// coding.c's spec vector [ATTRS ALIASES EOL-TYPE]: one for each name
+/// Fdefine_coding_system_internal defines, an alias's hash entry being
+/// its target's spec itself.
+#[derive(Clone, Debug)]
+pub(crate) struct CodingSpec {
+    /// The attribute vector, by index, shared by a system and its eol
+    /// subsidiaries.
+    pub(crate) attrs: usize,
+    /// The names of the spec, the one it was defined as first: the list
+    /// `coding-system-aliases' returns, Fdefine_coding_system_alias
+    /// extending it in place.
+    pub(crate) aliases: Value,
+    /// The symbol `unix', `dos' or `mac', or the vector of the three
+    /// subsidiaries an undecided eol type detects between.
+    pub(crate) eol_type: Value,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1461,6 +1506,11 @@ pub(crate) struct SpecialBindingRestore {
     // participating in lookup and assignment.  On unwind GNU restores the
     // old local value only if code created a new local cell in the meantime.
     local_binding_killed: bool,
+    /// The number of backtrace frames when the binding was made: it was
+    /// made by the frame at this depth, the innermost one then, as the
+    /// specpdl entry lies above that frame's record and below the next
+    /// one's (`backtrace--locals').
+    frame_depth: usize,
 }
 
 /// eval.c's `union specbinding' backtrace member in its four words:
@@ -1692,18 +1742,20 @@ impl Drop for BacktraceFrame {
 /// A signaled condition's `error-conditions' (see `error_condition_names').
 pub(crate) type ConditionNames = smallvec::SmallVec<[SymbolName; 8]>;
 
-/// A parameter an interpreted call bound (funcall_lambda's bindings, which
-/// `backtrace--locals' and the debugger's frame context report), kept on
-/// a stack beside the frames instead of in each frame: FRAME is the index
-/// of the call's frame in `backtrace_frames', and a frame's parameters are
-/// the contiguous run of entries carrying its index. The call removes its
-/// entries when it returns (normally or with its error settled), so its
-/// frame owns nothing and leaves as an ordinary call's does.
+/// A lexical environment interpreted code installed (eval.c's specbind of
+/// `internal-interpreter-environment' by funcall_lambda, Flet, FletX, a
+/// condition-case handler or Feval), which `backtrace--locals' and the
+/// debugger's frame context report, kept on a stack beside the frames and
+/// the binding stack: FRAME is the index in `backtrace_frames' of the frame
+/// that installed it, SPECPDL the binding stack's length then (its place
+/// among the frame's dynamic bindings), and ENVIRONMENT the alist.  The
+/// installer removes its entry when the environment goes, so the frame
+/// owns nothing and leaves as an ordinary call's does.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct FrameLocal {
+pub(crate) struct FrameEnvironment {
     frame: usize,
-    symbol: SymbolName,
-    value: Value,
+    specpdl: usize,
+    environment: Value,
 }
 
 #[derive(Clone, Debug)]
@@ -2498,8 +2550,9 @@ struct ProcessState {
     /// (READ_FROM_SUBPROCESS, SUBPROCESS_STDOUT), which a module's
     /// `open-channel' writes into, and the one its sends go to
     /// (SUBPROCESS_STDIN, WRITE_TO_SUBPROCESS), which create_process
-    /// closes once the process is another's standard error.
-    module_pipe: Option<(fs::File, fs::File)>,
+    /// closes once the process is another's standard error.  That
+    /// child is given SUBPROCESS_STDOUT, and the parent's copy closed.
+    module_pipe: Option<(fs::File, Option<fs::File>)>,
     pipe_input: Option<(fs::File, fs::File)>,
     /// Network :host/:service as given at creation (process-contact).
     contact_host: Option<String>,
@@ -2552,8 +2605,12 @@ pub(crate) struct WindowConfigurationSnapshot {
     selected_frame_id: crate::lisp::types::FrameRef,
     current_buffer_id: u64,
     selected_window_id: u64,
-    selected_window_slots: Vec<Value>,
-    window_records: Vec<(u64, Vec<Value>)>,
+    /// The windows' saved slots, scanned by the collector while the
+    /// snapshot lives (the configuration's own markers and the objects
+    /// only it holds), whoever holds it: window.c keeps a configuration
+    /// as a Lisp object.
+    selected_window_slots: crate::lisp::alloc::RootedVec<Value>,
+    window_records: Vec<(u64, crate::lisp::alloc::RootedVec<Value>)>,
     root_window_id: u64,
     frame_width: i64,
     frame_height: i64,
@@ -2700,32 +2757,6 @@ pub(crate) struct CompositionIndex {
 
 pub(crate) const LFACE_VECTOR_SIZE: usize = 20;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct FontPatternState {
-    pub(crate) family: Option<String>,
-    pub(crate) registry: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum FontsetTargetState {
-    Character(i64),
-    Range(i64, i64),
-    Script(String),
-    Fallback,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct FontsetMappingState {
-    pub(crate) target: FontsetTargetState,
-    pub(crate) patterns: Vec<Option<FontPatternState>>,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct FontsetState {
-    pub(crate) name: String,
-    pub(crate) mappings: Vec<FontsetMappingState>,
-}
-
 #[derive(Clone, Debug)]
 pub(crate) struct FrameState {
     pub(crate) terminal: Option<crate::lisp::types::TerminalRef>,
@@ -2755,7 +2786,9 @@ pub(crate) struct FrameState {
     pub(crate) new_width: i64,
     pub(crate) new_height: i64,
     pub(crate) new_size_p: bool,
-    pub(crate) parameter_overrides: Vec<(String, Value)>,
+    /// frame.h's param_alist: the parameters store_frame_param keeps,
+    /// newest first (the buffer lists live apart).
+    pub(crate) param_alist: Value,
     pub(crate) focus_frame_id: Option<crate::lisp::types::FrameRef>,
     pub(crate) left: i64,
     pub(crate) top: i64,
@@ -2799,12 +2832,27 @@ fn empty_lisp_face_vector() -> Value {
     )
 }
 
+/// The `default' face of a text frame as xfaces.c:realize_default_face
+/// completes it: one "default" string for the family and foundry, a
+/// normal width, weight and slant, a height of 1, the unspecified
+/// colors and every flag, the stipple and the fontset nil (the font,
+/// inheritance and distant foreground stay unspecified).
 fn tty_default_lisp_face_vector() -> Value {
     let mut attributes =
         std::iter::repeat_n(Value::symbol("unspecified"), LFACE_VECTOR_SIZE).collect::<Vec<_>>();
     attributes[0] = Value::symbol("face");
+    let family = Value::String("default".into());
+    attributes[1] = family;
+    attributes[2] = family;
+    for index in [3, 5, 6] {
+        attributes[index] = Value::symbol("normal");
+    }
+    attributes[4] = Value::Integer(1);
     attributes[9] = Value::String("unspecified-fg".into());
     attributes[10] = Value::String("unspecified-bg".into());
+    for index in [7, 8, 11, 12, 13, 14, 17, 19] {
+        attributes[index] = Value::Nil;
+    }
     Value::vector(attributes)
 }
 
@@ -3014,9 +3062,7 @@ impl ImageGraphCopier {
                 if let Some(table) = state.face_hash_table {
                     state.face_hash_table = Some(self.copy(&table));
                 }
-                for (_, item) in state.parameter_overrides.iter_mut() {
-                    *item = self.copy(item);
-                }
+                state.param_alist = self.copy(&state.param_alist);
                 value
             }
             Kind::Terminal(terminal) => {
@@ -3750,9 +3796,7 @@ impl LispReachability {
                 if let Some(table) = state.face_hash_table {
                     self.enqueue(&table);
                 }
-                for (_, value) in &state.parameter_overrides {
-                    self.enqueue(value);
-                }
+                self.enqueue(&state.param_alist);
             }
             Kind::HashTable(table) => {
                 // alloc.c traces strong arrays in place and defers weak
@@ -4192,7 +4236,7 @@ impl Interpreter {
                 new_width: -1,
                 new_height: -1,
                 new_size_p: false,
-                parameter_overrides: Vec::new(),
+                param_alist: Value::Nil,
                 focus_frame_id: None,
                 left: 0,
                 top: 0,
@@ -4474,6 +4518,8 @@ impl Interpreter {
         mark(&self.unicode_menu_case_table);
         mark(&self.where_is_cache);
         mark(&self.where_is_cache_keymaps);
+        mark(&self.font_style_table);
+        mark(&self.fontset_table);
         mark(&Value::CharTable(self.standard_syntax_table_id));
         for table in self.standard_category_table_id.into_iter().chain(
             self.standard_case_tables
@@ -4491,6 +4537,9 @@ impl Interpreter {
             mark(&Value::CharTable(*table));
         }
         for (_, value) in &self.charset_plists {
+            mark(value);
+        }
+        for (_, value) in &self.charset_defs {
             mark(value);
         }
         mark(&self.ccl_program_table);
@@ -4511,12 +4560,14 @@ impl Interpreter {
         }
         mark(&Value::Frame(self.selected_frame_id));
         mark(&Value::Frame(self.old_selected_frame_id));
-        for coding in &self.coding_systems {
-            mark(&coding.plist);
-            mark(&coding.charset_list);
-            for argument in &coding.type_args {
-                mark(argument);
+        for coding in &self.coding_attrs {
+            for value in coding.values() {
+                mark(value);
             }
+        }
+        for spec in &self.coding_specs {
+            mark(&spec.aliases);
+            mark(&spec.eol_type);
         }
         mark(&self.alternative_font_family_alist);
         mark(&self.alternative_font_registry_alist);
@@ -4566,9 +4617,8 @@ impl Interpreter {
                 }
             }
         }
-        for local in &self.frame_locals {
-            mark(&Value::Symbol(local.symbol));
-            mark(&local.value);
+        for installed in &self.frame_environments {
+            mark(&installed.environment);
         }
         if let Some(backtrace) = &self.batch_error_backtrace {
             for (_, function, arguments, _) in &backtrace.frames {
@@ -4933,6 +4983,8 @@ impl Interpreter {
             // A reverse-map cache is rebuilt on demand.
             clone.where_is_cache = Value::Nil;
             clone.where_is_cache_keymaps = Value::T;
+            clone.font_style_table = c.copy(&clone.font_style_table);
+            clone.fontset_table = c.copy(&clone.fontset_table);
             clone.standard_syntax_table_id = copy_table(c, clone.standard_syntax_table_id);
             clone.standard_category_table_id = clone
                 .standard_category_table_id
@@ -4951,6 +5003,9 @@ impl Interpreter {
             }
             for (_, plist) in &mut clone.charset_plists {
                 *plist = c.copy(plist);
+            }
+            for (_, def) in &mut clone.charset_defs {
+                *def = c.copy(def);
             }
             clone.ccl_program_table = c.copy(&clone.ccl_program_table);
             for slot in clone.records.values_mut() {
@@ -4971,12 +5026,25 @@ impl Interpreter {
             if let Some(frame) = &clone.keyboard_input.internal_last_event_frame {
                 clone.keyboard_input.internal_last_event_frame = Some(c.copy(frame));
             }
-            for coding in &mut clone.coding_systems {
-                coding.plist = c.copy(&coding.plist.clone());
-                coding.charset_list = c.copy(&coding.charset_list);
-                for argument in &mut coding.type_args {
-                    *argument = c.copy(argument);
+            for coding in &mut clone.coding_attrs {
+                for value in [
+                    &mut coding.ascii_compatible,
+                    &mut coding.decode_table,
+                    &mut coding.encode_table,
+                    &mut coding.post_read,
+                    &mut coding.pre_write,
+                    &mut coding.plist,
+                    &mut coding.charset_list,
+                ]
+                .into_iter()
+                .chain(coding.type_args.iter_mut())
+                {
+                    *value = c.copy(value);
                 }
+            }
+            for spec in &mut clone.coding_specs {
+                spec.aliases = c.copy(&spec.aliases);
+                spec.eol_type = c.copy(&spec.eol_type);
             }
             clone.alternative_font_family_alist =
                 c.copy(&clone.alternative_font_family_alist.clone());
@@ -5029,9 +5097,8 @@ impl Interpreter {
                     detail.source_form = Some(c.copy(form));
                 }
             }
-            for local in &mut clone.frame_locals {
-                local.symbol = c.copy_symbol(local.symbol);
-                local.value = c.copy(&local.value);
+            for installed in &mut clone.frame_environments {
+                installed.environment = c.copy(&installed.environment);
             }
             if let Some(backtrace) = &mut clone.batch_error_backtrace {
                 for (_, function, args, _) in &mut backtrace.frames {
@@ -5370,6 +5437,9 @@ pub struct InterpreterState {
     /// through `special-event-map'.
     pub(crate) pending_thread_events: Vec<Value>,
     pub(crate) pending_funcalls: Vec<Value>,
+    /// What keyboard.c:timer_check last returned: how long until the first
+    /// timer of its copied lists still waiting is ripe, None with none.
+    pub(crate) timer_check_delay: Option<std::time::Duration>,
     /// Variable aliases keyed by alias name.
     /// Variables with dynamic binding semantics, in declaration order; the
     /// membership test is the SPECIAL flag in `globals'.
@@ -5456,6 +5526,9 @@ pub struct InterpreterState {
     /// it removes this root, while escaped Lisp references retain the object.
     pub(crate) frame_states: Vec<crate::lisp::types::FrameRef>,
     pub(crate) next_frame_id: u64,
+    /// frame.c's tty_frame_count: the number in the F<num> name of the
+    /// last terminal frame named, the initial frame's 1 to start.
+    pub(crate) tty_frame_count: i64,
     pub(crate) selected_frame_id: crate::lisp::types::FrameRef,
     pub(crate) old_selected_frame_id: crate::lisp::types::FrameRef,
     /// dispnew.c's internal frame/buffer menu state vector.
@@ -5480,11 +5553,16 @@ pub struct InterpreterState {
     pub(crate) charset_table_books: crate::lisp::alloc::vectors::hash_tables::HostTableBooks,
     /// Charset plist overrides keyed by canonical charset name.
     charset_plists: Vec<(String, Value)>,
+    /// charset.c's charset attributes apart from the plist: each canonical
+    /// charset's `define-charset-internal' arguments from its dimension to
+    /// its unify-map (charset_table's definition), which `set-charset-plist'
+    /// leaves alone.
+    pub(crate) charset_defs: Vec<(String, Value)>,
+    /// charset.c Vemacs_mule_charset_list: the charsets with an emacs-mule
+    /// id, in definition order until `set-charset-priority' reorders them.
+    pub(crate) emacs_mule_charset_list: Vec<String>,
     /// Current charset priority order.
     charset_priority: Vec<String>,
-    /// `charset-list' order: every charset and alias name, newest first
-    /// (charset.c prepends on each new definition and each alias).
-    charset_names: Vec<String>,
     /// Charsets defined with :supplementary-p; they sort after every
     /// non-supplementary charset in the ordered (priority) list.
     charset_supplementary: HashSet<String>,
@@ -5505,6 +5583,10 @@ pub struct InterpreterState {
     /// charset.c's charset table: each charset's attributes read once from
     /// its plist, by the name asked for.  Emptied whenever a charset, an
     /// alias, a plist or a unification changes.
+    /// The generation of `charset_table', advanced whenever the table is
+    /// emptied or the charset priority changes: what a coding system
+    /// derives from its charsets is checked against it.
+    pub(crate) charset_epoch: std::cell::Cell<u64>,
     pub(crate) charset_table: RefCell<
         HashMap<
             String,
@@ -5522,13 +5604,13 @@ pub struct InterpreterState {
     /// ordered list that `set-charset-priority' did not move to the front;
     /// char_charset answers `unicode' for a Unicode character on reaching it.
     charset_non_preferred_head: Option<String>,
-    /// Coding systems keyed by canonical name.
-    coding_systems: Vec<CodingSystemState>,
-    /// coding.c's Vcoding_system_hash_table: each name's index in
-    /// `coding_systems'.
-    coding_system_index: HashMap<String, usize, crate::lisp::primitives::FnvBuildHasher>,
-    /// `coding_aliases' by alias name.
-    coding_alias_index: HashMap<String, String, crate::lisp::primitives::FnvBuildHasher>,
+    /// coding.c's attribute vectors, one for each definition.
+    pub(crate) coding_attrs: Vec<CodingSystemState>,
+    /// coding.c's spec vectors, by index.
+    pub(crate) coding_specs: Vec<CodingSpec>,
+    /// coding.c's Vcoding_system_hash_table: each coding system name's
+    /// spec, by index in `coding_specs'.
+    pub(crate) coding_system_hash: HashMap<String, usize, crate::lisp::primitives::FnvBuildHasher>,
     /// Vcoding_system_hash_table's books: a key for each coding system
     /// and alias.
     pub(crate) coding_table_books: crate::lisp::alloc::vectors::hash_tables::HostTableBooks,
@@ -5538,10 +5620,6 @@ pub struct InterpreterState {
     pub(crate) ccl_program_table: Value,
     /// ccl.c's statics, the running process's.
     pub(crate) ccl_statics: crate::lisp::primitives::ccl::CclStatics,
-    /// Coding-system aliases keyed by alias name.
-    coding_aliases: Vec<(String, String)>,
-    /// Current coding-system priority order.
-    coding_priority: Vec<String>,
     /// coding.c's `coding_categories[].id': the coding system standing for
     /// each category in detection, by `enum coding_category' index.
     pub(crate) coding_category_representatives: Vec<Option<String>>,
@@ -5746,7 +5824,13 @@ pub struct InterpreterState {
     pub(crate) alternative_font_family_alist: Value,
     pub(crate) alternative_font_registry_alist: Value,
     pub(crate) tty_suppress_bold_inverse_default_colors: bool,
-    pub(crate) fontset_states: Vec<FontsetState>,
+    /// fontset.c's staticpro'd Vfontset_table: the fontsets by id, each a
+    /// char-table of purpose `fontset' (FONTSET_ID, FONTSET_NAME,
+    /// FONTSET_ASCII, FONTSET_BASE, FONTSET_FRAME, FONTSET_NOFONT_FACE,
+    /// FONTSET_DEFAULT and FONTSET_FALLBACK in its extra slots), the
+    /// default fontset at id 0; nil until the purpose's extra slots are
+    /// known at construction.
+    pub(crate) fontset_table: Value,
     pub(crate) fringe_bitmap_states: Vec<FringeBitmapState>,
     pub(crate) composition_states: Vec<CompositionState>,
     pub(crate) composition_index: CompositionIndex,
@@ -5763,6 +5847,12 @@ pub struct InterpreterState {
     /// being filled).
     pub(crate) where_is_cache: Value,
     pub(crate) where_is_cache_keymaps: Value,
+    /// font.c's staticpro'd font_style_table: a vector of the weight,
+    /// slant and width tables, at first the values of `font-weight-table',
+    /// `font-slant-table' and `font-width-table' themselves (nil until a
+    /// font property is first read), and a longer copy of one after
+    /// font_style_to_value registers a style name it lacked.
+    pub(crate) font_style_table: Value,
     standard_syntax_table_id: CharTableRef,
     // lread.c:Vload_path is a rooted Lisp_Objfwd slot, not a host-side
     // directory vector from which reads reconstruct new Lisp objects.
@@ -5807,8 +5897,9 @@ pub struct InterpreterState {
     active_thread_id: u64,
     last_thread_error: Option<Value>,
     backtrace_frames: Vec<BacktraceFrame>,
-    /// The interpreted calls' parameters, by frame (see `FrameLocal').
-    frame_locals: Vec<FrameLocal>,
+    /// The lexical environments interpreted code installed, by frame (see
+    /// `FrameEnvironment').
+    frame_environments: Vec<FrameEnvironment>,
     batch_error_backtrace: Option<BatchErrorBacktrace>,
     active_handlers: Vec<ActiveHandler>,
     /// Dynamically active `catch' tags.  GNU's `throw' signals `no-catch'
@@ -6028,7 +6119,8 @@ impl Interpreter {
                 new_width: 80,
                 new_height: 25,
                 new_size_p: true,
-                parameter_overrides: Vec::new(),
+                // make_frame's store_frame_param (f, Qminibuffer, Qt).
+                param_alist: Value::list([Value::cons(Value::symbol("minibuffer"), Value::T)]),
                 focus_frame_id: None,
                 left: 0,
                 top: 0,
@@ -6045,13 +6137,13 @@ impl Interpreter {
             },
         );
         initial_terminal.borrow_mut().top_frame = Some(initial_frame);
-        let coding_systems = builtin_coding_systems();
-        let coding_aliases = builtin_coding_aliases();
+        let (coding_attrs, coding_specs, coding_system_hash) = builtin_coding_systems();
         let state = InterpreterState {
             image_template_token: None,
             detached_forwarded_variables: HashMap::default(),
             pending_thread_events: Vec::new(),
             pending_funcalls: Vec::new(),
+            timer_check_delay: None,
             globals: SymbolCells::from_bindings(vec![
                 ("main-thread".into(), Value::Record(main_thread)),
                 ("obarray".into(), Value::Record(standard_obarray)),
@@ -6283,6 +6375,7 @@ impl Interpreter {
             buffer_last_window_start: HashMap::new(),
             frame_states: vec![initial_frame],
             next_frame_id: 2,
+            tty_frame_count: 1,
             selected_frame_id: initial_frame,
             old_selected_frame_id: initial_frame,
             frame_and_buffer_state: Value::Nil,
@@ -6323,6 +6416,74 @@ impl Interpreter {
                 c_charset_plist("emacs", 3, &[0, 255, 0, 255, 0, 63], None, None, true, 0),
                 c_charset_plist("eight-bit", 1, &[128, 255], None, None, false, 0x3f_ff80),
             ],
+            // syms_of_charset's define_charset_internal arguments.
+            charset_defs: vec![
+                c_charset_def(
+                    "ascii",
+                    1,
+                    &[0, 127],
+                    0,
+                    127,
+                    Some(66),
+                    -1,
+                    Some(0),
+                    true,
+                    false,
+                    0,
+                ),
+                c_charset_def(
+                    "iso-8859-1",
+                    1,
+                    &[0, 255],
+                    0,
+                    255,
+                    None,
+                    -1,
+                    None,
+                    true,
+                    false,
+                    0,
+                ),
+                c_charset_def(
+                    "unicode",
+                    3,
+                    &[0, 255, 0, 255, 0, 16],
+                    0,
+                    0x10_ffff,
+                    None,
+                    0,
+                    None,
+                    true,
+                    false,
+                    0,
+                ),
+                c_charset_def(
+                    "emacs",
+                    3,
+                    &[0, 255, 0, 255, 0, 63],
+                    0,
+                    0x3f_ff7f,
+                    None,
+                    0,
+                    None,
+                    true,
+                    true,
+                    0,
+                ),
+                c_charset_def(
+                    "eight-bit",
+                    1,
+                    &[128, 255],
+                    128,
+                    255,
+                    None,
+                    0,
+                    None,
+                    false,
+                    true,
+                    0x3f_ff80,
+                ),
+            ],
             // charset.c's C-level definitions, in definition order: the
             // ordered list keeps non-supplementary charsets first (`emacs'
             // and `eight-bit' are supplementary), and `charset-list' holds
@@ -6334,37 +6495,26 @@ impl Interpreter {
                 "emacs".into(),
                 "eight-bit".into(),
             ],
-            charset_names: vec![
-                "eight-bit".into(),
-                "emacs".into(),
-                "unicode".into(),
-                "iso-8859-1".into(),
-                "ascii".into(),
-            ],
             charset_supplementary: ["emacs".to_string(), "eight-bit".to_string()]
                 .into_iter()
                 .collect(),
             charset_unified: HashSet::new(),
+            charset_epoch: std::cell::Cell::new(0),
             charset_table: RefCell::new(HashMap::default()),
             sjis_coding_system: "sjis".into(),
             big5_coding_system: "big5".into(),
             iso_charsets: vec![(1, 94, 'B' as u32, "ascii".into())],
             iso_2022_charset_list: vec!["ascii".into()],
+            emacs_mule_charset_list: vec!["ascii".into()],
             charset_non_preferred_head: None,
-            coding_system_index: coding_systems
-                .iter()
-                .enumerate()
-                .map(|(index, coding)| (coding.name.clone(), index))
-                .collect(),
-            coding_alias_index: coding_aliases.iter().cloned().collect(),
             coding_table_books: crate::lisp::alloc::vectors::hash_tables::HostTableBooks::with_keys(
-                coding_systems.len() + coding_aliases.len(),
+                coding_system_hash.len(),
             ),
-            coding_systems,
+            coding_attrs,
+            coding_specs,
+            coding_system_hash,
             ccl_program_table: crate::lisp::primitives::ccl::initial_program_table(),
             ccl_statics: Default::default(),
-            coding_aliases,
-            coding_priority: builtin_coding_priority(),
             coding_category_representatives: {
                 let mut representatives = vec![None; coding::CODING_CATEGORY_COUNT];
                 representatives[coding::CODING_CATEGORY_RAW_TEXT] = Some("no-conversion".into());
@@ -6459,10 +6609,7 @@ impl Interpreter {
             alternative_font_family_alist: Value::Nil,
             alternative_font_registry_alist: Value::Nil,
             tty_suppress_bold_inverse_default_colors: false,
-            fontset_states: vec![FontsetState {
-                name: "-*-*-*-*-*-*-*-*-*-*-*-*-fontset-default".into(),
-                mappings: Vec::new(),
-            }],
+            fontset_table: Value::Nil,
             fringe_bitmap_states,
             composition_states: Vec::new(),
             composition_index: CompositionIndex::default(),
@@ -6471,6 +6618,7 @@ impl Interpreter {
             unicode_menu_case_table: Value::Nil,
             where_is_cache: Value::Nil,
             where_is_cache_keymaps: Value::T,
+            font_style_table: Value::Nil,
             standard_syntax_table_id,
             load_path: Value::Nil,
             loads_in_progress: Value::Nil,
@@ -6509,7 +6657,7 @@ impl Interpreter {
             active_thread_id: main_thread_id,
             last_thread_error: None,
             backtrace_frames: Vec::new(),
-            frame_locals: Vec::new(),
+            frame_environments: Vec::new(),
             batch_error_backtrace: None,
             active_handlers: Vec::new(),
             active_catch_tags: Vec::new(),
@@ -6538,6 +6686,9 @@ impl Interpreter {
         ] {
             interp.put_symbol_property(purpose, "char-table-extra-slots", Value::Integer(extras));
         }
+        // fontset.c:syms_of_fontset: Vfontset_table with the default
+        // fontset at id 0.
+        interp.fontset_table = crate::lisp::primitives::fontset::make_fontset_table(&mut interp);
 
         interp.register_state_as_root();
         for (name, plist) in builtin_symbol_properties() {
@@ -6571,11 +6722,18 @@ impl Interpreter {
                 )
                 .expect("a C variable takes a watcher");
         }
-        // gnutls.c publishes both variables before preloading gnutls.el.
-        // The shared library is resolved dynamically here, so availability
-        // refreshes the version value while preserving GNU's unavailable
-        // sentinel and the native logging default from startup onward.
-        interp.define_special_variable("libgnutls-version", Value::Integer(-1));
+        // gnutls.c publishes both variables before preloading gnutls.el,
+        // the version as the one the build was configured with.  A build
+        // that found no GnuTLS keeps GNU's -1 until `gnutls-available-p'
+        // loads the shared library and reads that library's version.
+        interp.define_special_variable(
+            "libgnutls-version",
+            Value::Integer(
+                option_env!("EMAXX_GNUTLS_VERSION")
+                    .and_then(|version| version.parse().ok())
+                    .unwrap_or(-1),
+            ),
+        );
         interp.define_special_variable("gnutls-log-level", Value::Integer(0));
         // alloc.c exposes the allocator's emergency state before jit-lock.el
         // and every fontification client.  JIT lock only reads this native
@@ -6835,7 +6993,19 @@ impl Interpreter {
             ("x-resource-name", Value::Nil),
             ("x-show-tooltip-timeout", Value::Integer(5)),
             ("x-stretch-cursor", Value::Nil),
-            ("x-toolkit-scroll-bars", Value::T),
+            // xterm.c: the toolkit's name under USE_TOOLKIT_SCROLL_BARS,
+            // else nil, which the Linux oracle (built without an X
+            // toolkit) has and scroll-bar.el reads to choose the
+            // scroll-bar bindings it puts in the global map; nsterm.m
+            // sets t.
+            (
+                "x-toolkit-scroll-bars",
+                if cfg!(target_os = "macos") {
+                    Value::T
+                } else {
+                    Value::Nil
+                },
+            ),
             ("xft-ignore-color-fonts", Value::T),
         ] {
             interp.define_special_variable(name, value);
@@ -7165,7 +7335,15 @@ impl Interpreter {
         interp.define_special_variable("charset-map-path", charset_map_path);
         interp.define_special_variable("inhibit-load-charset-map", Value::Nil);
         interp.define_special_variable("current-iso639-language", Value::Nil);
-        interp.mark_special_variable("charset-list");
+        // charset.c's Vcharset_list, the C charsets newest first.
+        interp.define_special_variable(
+            "charset-list",
+            Value::list(
+                ["eight-bit", "emacs", "unicode", "iso-8859-1", "ascii"]
+                    .into_iter()
+                    .map(Value::symbol),
+            ),
+        );
         for (name, value) in [
             ("delete-auto-save-files", Value::T),
             ("kill-buffer-delete-auto-save-files", Value::Nil),
@@ -7633,9 +7811,15 @@ impl Interpreter {
             ("word-wrap-by-category", Value::Nil),
             ("words-include-escapes", Value::Nil),
             ("x-underline-at-descent-line", Value::Nil),
-            // DEFVAR_BOOL with no explicit assignment: C-false, and the oracle
-            // agrees (nil); the tty branch's t was a transcription slip.
-            ("x-use-underline-position-properties", Value::Nil),
+            // xterm.c sets this DEFVAR_BOOL true and nsterm.m false.
+            (
+                "x-use-underline-position-properties",
+                if cfg!(target_os = "macos") {
+                    Value::Nil
+                } else {
+                    Value::T
+                },
+            ),
             ("yes-or-no-prompt", Value::String("(yes or no) ".into())),
             // syntax.c: forward-comment's backward scan anchors its
             // recovery parse through `syntax-ppss' by default, and the
@@ -7700,6 +7884,7 @@ impl Interpreter {
             RecordKind::Window,
             "window",
             primitives::window_record_slots(
+                &interp,
                 Some(interp.current_buffer_id),
                 buffer_start,
                 Value::Nil,
@@ -7731,6 +7916,7 @@ impl Interpreter {
             RecordKind::Window,
             "window",
             primitives::window_record_slots(
+                &interp,
                 Some(minibuffer_buffer_id),
                 1,
                 Value::Symbol(primitives::MINIBUFFER_WINDOW_KIND.into()),
@@ -7988,6 +8174,48 @@ const C_CHARSETS: [(&str, i64); 5] = [
 ];
 
 /// charset.c:define_charset_internal's plist for a charset defined in C.
+/// define_charset_internal's arguments from DIMENSION on, as
+/// Fdefine_charset_internal keeps them (charset_table_rs::DEF_* order).
+#[allow(clippy::too_many_arguments)]
+fn c_charset_def(
+    name: &str,
+    dimension: i64,
+    code_space: &[i64],
+    min_code: i64,
+    max_code: i64,
+    iso_final: Option<i64>,
+    iso_revision: i64,
+    emacs_mule_id: Option<i64>,
+    ascii_compatible: bool,
+    supplementary: bool,
+    code_offset: i64,
+) -> (String, Value) {
+    let mut space = [0i64; 8];
+    space[..code_space.len()].copy_from_slice(code_space);
+    let flag = |on: bool| if on { Value::T } else { Value::Nil };
+    // Fdefine_charset_internal's invalid code for a nil :invalid-code.
+    let invalid_code = if min_code > 0 { 0 } else { max_code + 1 };
+    let def = Value::vector([
+        Value::Integer(dimension),
+        Value::vector(space.map(Value::Integer)),
+        Value::Integer(min_code),
+        Value::Integer(max_code),
+        iso_final.map_or(Value::Nil, Value::Integer),
+        Value::Integer(iso_revision),
+        emacs_mule_id.map_or(Value::Nil, Value::Integer),
+        flag(ascii_compatible),
+        flag(supplementary),
+        Value::Integer(invalid_code),
+        Value::Integer(code_offset),
+        Value::Nil,
+        Value::Nil,
+        Value::Nil,
+        Value::Nil,
+        Value::Nil,
+    ]);
+    (name.to_string(), def)
+}
+
 fn c_charset_plist(
     name: &str,
     dimension: i64,

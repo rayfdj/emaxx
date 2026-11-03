@@ -631,10 +631,11 @@ fn rename_visited_file_moves_disk_file_and_updates_buffer_path() {
 
     interp.buffer.borrow_mut().file = Some(old_path.clone());
     interp.buffer.borrow_mut().file_truename = Some(old_path.clone());
-    interp
-        .buffer
-        .borrow_mut()
-        .set_visited_file_modtime(file_modtime(&interp, &env, &old_path).expect("source modtime"));
+    interp.buffer.borrow_mut().set_visited_file_modtime(
+        stat_visited_modtime(&interp, &env, &old_path)
+            .expect("source modtime")
+            .expect("source modtime"),
+    );
 
     crate::test_support::call_lisp_function(
         &mut interp,
@@ -656,7 +657,14 @@ fn rename_visited_file_moves_disk_file_and_updates_buffer_path() {
         interp.buffer.borrow().file_truename.as_deref(),
         Some(canonical_new_path.as_str())
     );
-    assert!(interp.buffer.borrow().visited_file_modtime().is_some());
+    assert!(
+        interp
+            .buffer
+            .borrow()
+            .visited_file_modtime()
+            .time()
+            .is_some()
+    );
 
     std::fs::remove_file(new_path).expect("cleanup renamed file");
 }
@@ -675,10 +683,11 @@ fn revert_buffer_reloads_non_utf8_file_as_raw_text() {
     interp.buffer.borrow_mut().file = Some(path.clone());
     interp.buffer.borrow_mut().file_truename = Some(path.clone());
     interp.buffer.borrow_mut().set_multibyte(false);
-    interp
-        .buffer
-        .borrow_mut()
-        .set_visited_file_modtime(file_modtime(&interp, &env, &path).expect("source modtime"));
+    interp.buffer.borrow_mut().set_visited_file_modtime(
+        stat_visited_modtime(&interp, &env, &path)
+            .expect("source modtime")
+            .expect("source modtime"),
+    );
 
     // A bare revert-buffer call with no NOCONFIRM asks "(yes or no)" and,
     // in batch, signals end-of-file at EOF -- probed identical on both
@@ -754,7 +763,9 @@ fn write_region_checks_supersession_when_lockfile_creation_is_disabled() {
     interp.buffer.borrow_mut().file_truename =
         Some(canonical_file_name(&interp, &env, &path).expect("canonical file name"));
     interp.buffer.borrow_mut().set_visited_file_modtime(
-        file_modtime(&interp, &env, &path).expect("initial visited modtime"),
+        stat_visited_modtime(&interp, &env, &path)
+            .expect("initial visited modtime")
+            .expect("initial visited modtime"),
     );
 
     std::fs::write(&path, "external bytes\n").expect("replace visited file externally");
@@ -815,10 +826,11 @@ fn buffer_stale_default_detects_clean_file_modtime_changes() {
         .replace_state(crate::buffer::Buffer::from_text("*stale*", "fresh"));
     interp.buffer.borrow_mut().file = Some(path.clone());
     interp.buffer.borrow_mut().file_truename = Some(path.clone());
-    interp
-        .buffer
-        .borrow_mut()
-        .set_visited_file_modtime(file_modtime(&interp, &env, &path).expect("source modtime"));
+    interp.buffer.borrow_mut().set_visited_file_modtime(
+        stat_visited_modtime(&interp, &env, &path)
+            .expect("source modtime")
+            .expect("source modtime"),
+    );
 
     std::fs::write(&path, "changed").expect("update file contents");
     interp.buffer.borrow_mut().set_unmodified();

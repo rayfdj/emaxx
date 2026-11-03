@@ -524,6 +524,34 @@ fn native_file_primitives_use_deterministic_metadata_not_wall_clock_races() {
         source = source.display().to_string(),
         root = root.display().to_string(),
     ));
+    // fileio.c's file-acl is acl_to_text of the access ACL, which for a
+    // file with no extended entries is its mode bits' three entries
+    // (Linux, libacl); a build without ACL support answers nil.
+    #[cfg(target_os = "linux")]
+    let acl = {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(&newer)
+            .expect("stat newer file")
+            .permissions()
+            .mode();
+        let entry = |bits: u32| {
+            [(4, 'r'), (2, 'w'), (1, 'x')]
+                .iter()
+                .map(|&(bit, c)| if bits & bit != 0 { c } else { '-' })
+                .collect::<String>()
+        };
+        Value::String(
+            format!(
+                "user::{}\ngroup::{}\nother::{}\n",
+                entry(mode >> 6),
+                entry(mode >> 3),
+                entry(mode)
+            )
+            .into(),
+        )
+    };
+    #[cfg(not(target_os = "linux"))]
+    let acl = Value::Nil;
     let canonical_source = fs::canonicalize(&source).expect("canonicalize native source");
     let source_path_hash =
         crate::lisp::md5::md5_hex(canonical_source.display().to_string().as_bytes());
@@ -545,7 +573,7 @@ fn native_file_primitives_use_deterministic_metadata_not_wall_clock_races() {
             Value::Nil,
             Value::T,
             Value::Nil,
-            Value::Nil,
+            acl,
             Value::Nil,
             Value::list([Value::Nil, Value::Nil, Value::Nil, Value::Nil]),
             Value::Nil,

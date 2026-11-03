@@ -1024,7 +1024,10 @@ fn command_loop(
             }
             match queue.try_next_event() {
                 Err(()) => return Ok(0),
-                Ok(Some(event)) => break event,
+                Ok(Some(event)) => {
+                    interpreter.keyboard_input.last_event_reread = false;
+                    break event;
+                }
                 Ok(None) => {}
             }
             // Entering the wait means Emacs is idle: keyboard.c's
@@ -2393,6 +2396,8 @@ impl<'a> CharacterDisplayContext<'a> {
             .map(|(_, text_terminal)| text_terminal)
             .unwrap_or(value);
         let method = match value.kind() {
+            // lookup_glyphless_char_display: no method (the usual entry).
+            Kind::Nil if !no_font_fallback => return None,
             Kind::Symbol(name) if name == "zero-width" && no_font_fallback => {
                 GlyphlessDisplayMethod::EmptyBox
             }
@@ -3399,14 +3404,63 @@ pub(crate) fn screen_line_layout(
     truncate: bool,
     lnum_cols: usize,
 ) -> ScreenLineLayout {
-    let buffer_id = interpreter.current_buffer_id();
+    ScreenLineLayouter::new(interpreter, window_id, lnum_cols).layout(bol, text_width, truncate)
+}
+
+/// The display context and invisibility spec screen_line_layout reads,
+/// taken once for successive display lines of the current buffer, as one
+/// iterator walking WINDOW's lines reads them once.
+pub(crate) struct ScreenLineLayouter<'a> {
+    interpreter: &'a Interpreter,
+    spec: crate::lisp::primitives::InvisibilitySpec,
+    context: CharacterDisplayContext<'a>,
+    lnum_cols: usize,
+}
+
+impl<'a> ScreenLineLayouter<'a> {
+    pub(crate) fn new(interpreter: &'a Interpreter, window_id: u64, lnum_cols: usize) -> Self {
+        let buffer_id = interpreter.current_buffer_id();
+        let spec = {
+            let buffer = interpreter.buffer.borrow();
+            resolve_buffer_invisibility(interpreter, &buffer, buffer_id)
+        };
+        let context = CharacterDisplayContext::new(interpreter, buffer_id, window_id)
+            .with_line_numbers(lnum_cols);
+        Self {
+            interpreter,
+            spec,
+            context,
+            lnum_cols,
+        }
+    }
+
+    /// screen_line_layout of the display line starting at BOL.
+    pub(crate) fn layout(&self, bol: usize, text_width: usize, truncate: bool) -> ScreenLineLayout {
+        lay_out_screen_line(
+            self.interpreter,
+            &self.spec,
+            &self.context,
+            bol,
+            text_width,
+            truncate,
+            self.lnum_cols,
+        )
+    }
+}
+
+fn lay_out_screen_line(
+    interpreter: &Interpreter,
+    spec: &crate::lisp::primitives::InvisibilitySpec,
+    context: &CharacterDisplayContext<'_>,
+    bol: usize,
+    text_width: usize,
+    truncate: bool,
+    lnum_cols: usize,
+) -> ScreenLineLayout {
     let buffer = interpreter.buffer.borrow();
-    let spec = resolve_buffer_invisibility(interpreter, &buffer, buffer_id);
-    let context = CharacterDisplayContext::new(interpreter, buffer_id, window_id)
-        .with_line_numbers(lnum_cols);
-    let first_line = visual_line_first_line(&buffer, &spec, buffer.line_number_at_pos(bol));
+    let first_line = visual_line_first_line(&buffer, spec, buffer.line_number_at_pos(bol));
     let line_start = buffer.display_line_start_of(first_line);
-    let visual = glyphless_visual_line_at(&buffer, &spec, first_line, Some(&context));
+    let visual = glyphless_visual_line_at(&buffer, spec, first_line, Some(context));
     let laid = layout::lay_out_motion_line(&visual, text_width.max(1), truncate);
     let raw_of = |index: usize| {
         visual
@@ -6897,7 +6951,8 @@ mod tests {
         .expect("display test minibuffer activates");
         crate::lisp::primitives::set_echo_area_message(None);
         let (row, mini, cursor) = compose_echo_row(&mut interpreter, &mut env, "", 8, &mut cache);
-        crate::lisp::primitives::restore_active_minibuffer(&mut interpreter, active, &mut env);
+        crate::lisp::primitives::unwind_active_minibuffer(&mut interpreter, active, &mut env)
+            .expect("unwind the read");
         assert!(mini);
         assert_eq!(row.text.iter().collect::<String>(), "AB: AB  ");
         assert_eq!(cursor, Some(6));
@@ -8148,7 +8203,8 @@ mod tests {
         assert!(!minibuffer_echo_owns_hardware_cursor(&interpreter, true));
         assert!(!minibuffer_echo_owns_hardware_cursor(&interpreter, false));
 
-        crate::lisp::primitives::restore_active_minibuffer(&mut interpreter, active, &mut env);
+        crate::lisp::primitives::unwind_active_minibuffer(&mut interpreter, active, &mut env)
+            .expect("unwind the read");
     }
 
     #[test]
@@ -8175,7 +8231,8 @@ mod tests {
         );
 
         crate::lisp::primitives::set_echo_area_message(None);
-        crate::lisp::primitives::restore_active_minibuffer(&mut interpreter, active, &mut env);
+        crate::lisp::primitives::unwind_active_minibuffer(&mut interpreter, active, &mut env)
+            .expect("unwind the read");
         assert!(!from_minibuffer);
         assert_eq!(cursor, Some(7));
         assert_eq!(row.text.iter().take(7).collect::<String>(), "\"inner\"");
@@ -8211,7 +8268,8 @@ mod tests {
             80,
             &mut std::collections::HashMap::new(),
         );
-        crate::lisp::primitives::restore_active_minibuffer(&mut interpreter, active, &mut env);
+        crate::lisp::primitives::unwind_active_minibuffer(&mut interpreter, active, &mut env)
+            .expect("unwind the read");
         assert!(from_minibuffer);
         assert_eq!(
             row.attrs[0], row.attrs[7],
@@ -9559,6 +9617,7 @@ fn make_menu_executor(
                         if event == Value::Integer(7) {
                             break Value::T;
                         }
+                        interpreter.keyboard_input.last_event_reread = false;
                         match reader.read_event(interpreter, event, env)? {
                             Resolution::Command(binding) => break binding,
                             Resolution::Prefix => {}

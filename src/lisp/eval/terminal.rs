@@ -587,7 +587,7 @@ impl Interpreter {
                 .create_pseudovector(
                     super::RecordKind::Window,
                     "window",
-                    p::window_record_slots(Some(buffer), point, kind, geometry),
+                    p::window_record_slots(self, Some(buffer), point, kind, geometry),
                 )
                 .kind()
             else {
@@ -610,8 +610,10 @@ impl Interpreter {
         // Each through set_window_buffer, which stamps the buffer's display.
         self.stamp_buffer_display(buffer_id);
         self.stamp_buffer_display(mini_buffer_id);
+        // make_terminal_frame's F<num>, from ++tty_frame_count.
+        self.tty_frame_count += 1;
         let frame = crate::lisp::types::FrameRef::new(
-            Value::string(&format!("F{id}")),
+            Value::string(&format!("F{}", self.tty_frame_count)),
             super::FrameState {
                 id,
                 terminal: Some(object),
@@ -629,7 +631,8 @@ impl Interpreter {
                 new_width: -1,
                 new_height: -1,
                 new_size_p: false,
-                parameter_overrides: Vec::new(),
+                // make_frame's store_frame_param (f, Qminibuffer, Qt).
+                param_alist: Value::list([Value::cons(Value::symbol("minibuffer"), Value::T)]),
                 focus_frame_id: None,
                 left: 0,
                 top: 0,

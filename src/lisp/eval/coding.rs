@@ -2,14 +2,6 @@ use super::*;
 use crate::lisp::types::CharTableRef;
 use crate::lisp::types::Kind;
 
-/// The window slots GNU keeps as markers (w->start, w->old_pointm and
-/// w->pointm), insertion type nil.
-const WINDOW_MARKER_SLOTS: [usize; 3] = [
-    crate::lisp::primitives::WINDOW_START_SLOT,
-    crate::lisp::primitives::WINDOW_OLD_POINT_SLOT,
-    crate::lisp::primitives::WINDOW_POINT_SLOT,
-];
-
 // coding.c `enum coding_category', in order.
 pub(crate) const CODING_CATEGORY_ISO_7: usize = 0;
 pub(crate) const CODING_CATEGORY_ISO_7_TIGHT: usize = 1;
@@ -79,7 +71,32 @@ pub(crate) const ISO_FLAG_USE_OLDJIS: u32 = 0x10000;
 pub(crate) const ISO_FLAG_LEVEL_4: u32 = 0x20000;
 pub(crate) const ISO_FLAG_FULL_SUPPORT: u32 = 0x100000;
 
+impl CodingSystemState {
+    /// The Lisp objects the attribute vector holds, for the collector.
+    pub(crate) fn values(&self) -> impl Iterator<Item = &Value> {
+        [
+            &self.ascii_compatible,
+            &self.decode_table,
+            &self.encode_table,
+            &self.post_read,
+            &self.pre_write,
+            &self.plist,
+            &self.charset_list,
+        ]
+        .into_iter()
+        .chain(self.type_args.iter())
+    }
+}
+
 impl Interpreter {
+    /// Empty `charset_table', the next read of each charset reading its
+    /// definition again, and advance its generation.
+    pub(crate) fn invalidate_charset_table(&self) {
+        self.charset_table.borrow_mut().clear();
+        self.charset_epoch
+            .set(self.charset_epoch.get().wrapping_add(1));
+    }
+
     /// The charset an ISO-2022 designation names: DIMENSION (1 or 2), the
     /// 94/96 flavor and the final byte, through the table
     /// `define-charset-internal' and `declare-equiv-charset' fill.
@@ -134,10 +151,24 @@ impl Interpreter {
             .copied()
     }
 
-    pub fn define_charset(&mut self, name: &str, plist: Value, supplementary: bool) -> i64 {
+    /// The tail of Fdefine_charset_internal: NAME, its DEF (the arguments
+    /// from dimension to unify-map, normalized) and PLIST registered.  A new
+    /// name gets the next id, the head of `charset-list' and its place in
+    /// the ordered list (a supplementary charset last, any other before
+    /// the first supplementary one); an ISO final byte fills
+    /// ISO_CHARSET_TABLE (a new charset joining Viso_2022_charset_list), an
+    /// emacs-mule id joins Vemacs_mule_charset_list.  NAME already known
+    /// (an alias too) is redefined under its id.
+    /// Fdefine_charset_internal's hash_put and charset_table entry: NAME's
+    /// id (a new one for a new name) with DEF and PLIST stored.
+    pub(crate) fn register_charset(&mut self, name: &str, def: Value, plist: Value) -> (i64, bool) {
+        use crate::lisp::primitives::coding::charset_table as table;
         // The charset table reads what this changes.
-        self.charset_table.borrow_mut().clear();
-        let existing = self.charset_id_index.get(name).copied();
+        self.invalidate_charset_table();
+        let canonical = self
+            .charset_canonical_name(name)
+            .unwrap_or_else(|| name.to_string());
+        let existing = self.charset_id_index.get(&canonical).copied();
         let new_definition = existing.is_none();
         let id = existing.unwrap_or_else(|| {
             let id = self
@@ -147,78 +178,127 @@ impl Interpreter {
                 .max()
                 .unwrap_or(-1)
                 + 1;
-            self.charset_ids.push((name.to_string(), id));
-            self.charset_id_index.insert(name.to_string(), id);
-            if !self.charset_alias_index.contains_key(name) {
+            self.charset_ids.push((canonical.clone(), id));
+            self.charset_id_index.insert(canonical.clone(), id);
+            if !self.charset_alias_index.contains_key(&canonical) {
                 self.charset_table_books.insert();
             }
             id
         });
+        if let Some((_, existing)) = self
+            .charset_defs
+            .iter_mut()
+            .rev()
+            .find(|(registered, _)| registered == &canonical)
+        {
+            *existing = def;
+        } else {
+            self.charset_defs.push((canonical.clone(), def));
+        }
+        if let Some((_, existing)) = self
+            .charset_plists
+            .iter_mut()
+            .rev()
+            .find(|(registered, _)| registered == &canonical)
+        {
+            *existing = plist;
+        } else {
+            self.charset_plists.push((canonical.clone(), plist));
+        }
+        let supplementary = crate::lisp::primitives::vector_or_list_items(&def)
+            .ok()
+            .and_then(|items| items.get(table::DEF_SUPPLEMENTARY_P).copied())
+            .is_some_and(|value| value.is_truthy());
+        if supplementary {
+            self.charset_supplementary.insert(canonical);
+        } else {
+            self.charset_supplementary.remove(&canonical);
+        }
+        (id, new_definition)
+    }
+
+    /// The rest of Fdefine_charset_internal once the charset (and a map
+    /// charset's map) is in: ISO_CHARSET_TABLE and Viso_2022_charset_list,
+    /// Vemacs_mule_charset_list, and for a new name `charset-list' and the
+    /// ordered list.
+    pub(crate) fn finish_charset_definition(
+        &mut self,
+        name: &str,
+        _id: i64,
+        new_definition: bool,
+        def: Value,
+    ) {
+        use crate::lisp::primitives::coding::charset_table as table;
+        self.invalidate_charset_table();
+        let canonical = self
+            .charset_canonical_name(name)
+            .unwrap_or_else(|| name.to_string());
+        let field = |slot: usize| {
+            crate::lisp::primitives::vector_or_list_items(&def)
+                .ok()
+                .and_then(|items| items.get(slot).copied())
+                .unwrap_or(Value::Nil)
+        };
+        let supplementary = field(table::DEF_SUPPLEMENTARY_P).is_truthy();
+        let dimension = field(table::DEF_DIMENSION).integer_value().unwrap_or(1);
+        let iso_chars_96 =
+            crate::lisp::primitives::vector_or_list_items(&field(table::DEF_CODE_SPACE))
+                .ok()
+                .and_then(|space| {
+                    Some(space.get(1)?.integer_value()? - space.first()?.integer_value()?)
+                })
+                .is_some_and(|span| span + 1 == 96);
+        let iso_final = field(table::DEF_ISO_FINAL)
+            .integer_value()
+            .and_then(|value| u32::try_from(value).ok());
+        let emacs_mule = !field(table::DEF_EMACS_MULE_ID).is_nil();
+        if let Some(final_char) = iso_final {
+            self.declare_iso_charset(
+                dimension,
+                if iso_chars_96 { 96 } else { 94 },
+                final_char,
+                &canonical,
+            );
+            if new_definition {
+                self.iso_2022_charset_list.push(canonical.clone());
+            }
+        }
+        if emacs_mule && new_definition {
+            self.emacs_mule_charset_list.push(canonical.clone());
+        }
         if new_definition {
-            // charset.c Fdefine_charset_internal: `charset-list' gains the
-            // name at its head; the ordered list appends a supplementary
-            // charset at the end and inserts a normal one before the first
-            // supplementary entry.
-            self.charset_names.insert(0, name.to_string());
+            self.push_charset_list(Value::symbol(name));
             if supplementary {
-                self.charset_supplementary.insert(name.to_string());
-                self.charset_priority.push(name.to_string());
+                self.charset_priority.push(canonical);
             } else {
                 let position = self
                     .charset_priority
                     .iter()
                     .position(|existing| self.charset_supplementary.contains(existing))
                     .unwrap_or(self.charset_priority.len());
-                self.charset_priority.insert(position, name.to_string());
+                self.charset_priority.insert(position, canonical);
             }
         }
-        if let Some((_, existing)) = self
-            .charset_plists
-            .iter_mut()
+    }
+
+    /// The `define-charset-internal' arguments CHARSET (a name or an alias)
+    /// was defined with, from its dimension to its unify-map.
+    pub(crate) fn charset_def_value(&self, charset: &str) -> Option<Value> {
+        let canonical = self.charset_canonical(charset)?;
+        self.charset_defs
+            .iter()
             .rev()
-            .find(|(registered, _)| registered == name)
-        {
-            *existing = plist;
-        } else {
-            self.charset_plists.push((name.to_string(), plist));
+            .find(|(registered, _)| registered == canonical)
+            .map(|(_, def)| *def)
+    }
+
+    /// set_charset_attr of SLOT of CHARSET's definition (`unify-charset'
+    /// storing its unify-map).
+    pub(crate) fn set_charset_def_slot(&mut self, charset: &str, slot: usize, value: Value) {
+        self.invalidate_charset_table();
+        if let Some(def) = self.charset_def_value(charset) {
+            let _ = crate::lisp::primitives::coding::aset_vector_value(&def, slot, value);
         }
-        // charset.c Fdefine_charset_internal: a charset with an ISO final
-        // byte enters the ISO_CHARSET_TABLE slot for its dimension and
-        // 94/96 flavor (iso_chars_96 is a 96-wide first byte range), and a
-        // new one joins Viso_2022_charset_list at the end.
-        let items = plist.to_vec().unwrap_or_default();
-        let property = |key: &str| {
-            items.windows(2).find_map(|pair| {
-                matches!(pair[0].kind(), Kind::Symbol(name) if name == key).then(|| pair[1])
-            })
-        };
-        if let Some(final_char) = property(":iso-final-char")
-            .and_then(|value| value.integer_value())
-            .and_then(|value| u32::try_from(value).ok())
-        {
-            let dimension = property(":dimension")
-                .and_then(|value| value.integer_value())
-                .unwrap_or(1);
-            let chars_96 = property(":code-space")
-                .and_then(|space| crate::lisp::primitives::vector_or_list_items(&space).ok())
-                .and_then(|values| {
-                    Some((
-                        values.first()?.integer_value()?,
-                        values.get(1)?.integer_value()?,
-                    ))
-                })
-                .is_some_and(|(min, max)| max - min + 1 == 96);
-            self.declare_iso_charset(dimension, if chars_96 { 96 } else { 94 }, final_char, name);
-            if new_definition
-                && !self
-                    .iso_2022_charset_list
-                    .iter()
-                    .any(|existing| existing == name)
-            {
-                self.iso_2022_charset_list.push(name.to_string());
-            }
-        }
-        id
     }
 
     /// charset.c Viso_2022_charset_list: the ISO-2022 designatable
@@ -246,7 +326,7 @@ impl Interpreter {
 
     pub fn set_charset_unified(&mut self, name: &str, unified: bool) {
         // The charset table reads what this changes.
-        self.charset_table.borrow_mut().clear();
+        self.invalidate_charset_table();
         if let Some(canonical) = self.charset_canonical_name(name) {
             if unified {
                 self.charset_unified.insert(canonical);
@@ -267,10 +347,10 @@ impl Interpreter {
 
     pub fn set_charset_plist_value(&mut self, name: &str, value: Value) -> Result<(), LispError> {
         // The charset table reads what this changes.
-        self.charset_table.borrow_mut().clear();
+        self.invalidate_charset_table();
         let canonical = self
             .charset_canonical_name(name)
-            .ok_or_else(|| LispError::Void(name.to_string()))?;
+            .ok_or_else(|| LispError::WrongTypeArgument("charsetp".into(), Value::symbol(name)))?;
         if let Some((_, existing)) = self
             .charset_plists
             .iter_mut()
@@ -296,21 +376,19 @@ impl Interpreter {
                 .filter(|alias| !self.charset_id_index.contains_key(*alias))
                 .count();
         self.charset_table_books.thaw(charsets);
-        let codings = self.coding_system_index.len()
-            + self
-                .coding_alias_index
-                .keys()
-                .filter(|alias| !self.coding_system_index.contains_key(*alias))
-                .count();
+        let codings = self.coding_system_hash.len();
         self.coding_table_books.thaw(codings);
     }
 
+    /// Fdefine_charset_alias after CHECK_CHARSET_GET_ATTR: ALIAS's hash
+    /// entry is TARGET's attributes (a charset of that name now answers as
+    /// TARGET), and `charset-list' gains ALIAS at its head again.
     pub fn define_charset_alias(&mut self, alias: &str, target: &str) -> Result<(), LispError> {
         // The charset table reads what this changes.
-        self.charset_table.borrow_mut().clear();
-        let canonical = self
-            .charset_canonical_name(target)
-            .ok_or_else(|| LispError::Void(target.to_string()))?;
+        self.invalidate_charset_table();
+        let canonical = self.charset_canonical_name(target).ok_or_else(|| {
+            LispError::WrongTypeArgument("charsetp".into(), Value::symbol(target))
+        })?;
         if let Some((_, existing)) = self
             .charset_aliases
             .iter_mut()
@@ -323,23 +401,29 @@ impl Interpreter {
                 .push((alias.to_string(), canonical.clone()));
         }
         let known = self.charset_id_index.contains_key(alias);
-        if self
+        let fresh = self
             .charset_alias_index
-            .insert(alias.to_string(), canonical)
-            .is_none()
-            && !known
-        {
+            .insert(alias.to_string(), canonical.clone())
+            .is_none();
+        if fresh && !known {
             self.charset_table_books.insert();
         }
-        // charset.c Fdefine_charset_alias: the alias joins `charset-list'.
-        if !self.charset_names.iter().any(|existing| existing == alias) {
-            self.charset_names.insert(0, alias.to_string());
+        if known && alias != canonical {
+            // Fputhash replaces the charset's own attributes under its
+            // name; its charset_table entry stays for its id.
+            self.charset_id_index.remove(alias);
         }
+        self.push_charset_list(Value::symbol(alias));
         Ok(())
     }
 
-    pub fn charset_name_list(&self) -> Vec<String> {
-        self.charset_names.clone()
+    /// Vcharset_list = Fcons (NAME, Vcharset_list): the variable's current
+    /// value (a let-bound one while it is bound) gains NAME at its head.
+    pub(crate) fn push_charset_list(&mut self, name: Value) {
+        let current = self
+            .symbol_value_symbol(&SymbolName::intern_str("charset-list"))
+            .unwrap_or(Value::Nil);
+        self.set_global_binding("charset-list", Value::cons(name, current));
     }
 
     pub fn charset_priority_list(&self) -> Vec<String> {
@@ -352,6 +436,8 @@ impl Interpreter {
     }
 
     pub fn set_charset_priority(&mut self, names: &[String]) {
+        self.charset_epoch
+            .set(self.charset_epoch.get().wrapping_add(1));
         // charset.c Fset_charset_priority: the given charsets move to the
         // front in the given order; every other charset keeps its old
         // relative order behind them.
@@ -378,12 +464,19 @@ impl Interpreter {
         new_head.extend(tail);
         self.charset_priority = new_head;
         // charset.c Fset_charset_priority rebuilds Viso_2022_charset_list
-        // in the new ordered-list order.
+        // and Vemacs_mule_charset_list in the new ordered-list order.
         let iso_2022 = std::mem::take(&mut self.iso_2022_charset_list);
         self.iso_2022_charset_list = self
             .charset_priority
             .iter()
             .filter(|charset| iso_2022.contains(charset))
+            .cloned()
+            .collect();
+        let emacs_mule = std::mem::take(&mut self.emacs_mule_charset_list);
+        self.emacs_mule_charset_list = self
+            .charset_priority
+            .iter()
+            .filter(|charset| emacs_mule.contains(charset))
             .cloned()
             .collect();
     }
@@ -441,19 +534,6 @@ impl Interpreter {
         }
     }
 
-    /// The final chars claimed through `declare-equiv-charset' for this
-    /// DIMENSION and CHARS bucket.  charset.c:1440 writes those straight into
-    /// ISO_CHARSET_TABLE, which is the same table
-    /// `get-unused-iso-final-char' reads (charset.c:1421), so a scan that
-    /// only walks charset plists misses them.
-    pub fn iso_charset_finals(&self, dimension: i64, chars_96: bool) -> Vec<i64> {
-        self.iso_charsets
-            .iter()
-            .filter(|(d, c, _, _)| *d == dimension && (*c == 96) == chars_96)
-            .map(|(_, _, final_char, _)| i64::from(*final_char))
-            .collect()
-    }
-
     pub fn iso_charset(&self, dimension: i64, chars: i64, final_char: u32) -> Option<String> {
         self.iso_charsets
             .iter()
@@ -462,32 +542,39 @@ impl Interpreter {
             .map(|(_, _, _, charset)| charset.clone())
     }
 
-    pub fn coding_system_canonical_name(&self, name: &str) -> Option<String> {
-        self.coding_system_canonical(name).map(str::to_owned)
+    /// CODING_SYSTEM_SPEC: the spec Vcoding_system_hash_table holds for
+    /// NAME, by index.
+    pub(crate) fn coding_spec_index(&self, name: &str) -> Option<usize> {
+        self.coding_system_hash.get(name).copied()
     }
 
-    /// The coding system NAME stands for, through at most 16 aliases.
-    fn coding_system_canonical<'a>(&'a self, name: &'a str) -> Option<&'a str> {
-        let mut current = name;
-        for _ in 0..16 {
-            if self.coding_system_index.contains_key(current) {
-                return Some(current);
-            }
-            current = self.coding_alias_index.get(current)?;
-        }
-        None
+    pub(crate) fn coding_spec(&self, name: &str) -> Option<&CodingSpec> {
+        self.coding_specs.get(self.coding_spec_index(name)?)
+    }
+
+    /// The name NAME stands for: the first of its spec's names, the one
+    /// the spec was defined as, while that name still has the spec (an
+    /// alias made before its target's redefinition keeps the old spec,
+    /// and stands for itself).
+    pub fn coding_system_canonical_name(&self, name: &str) -> Option<String> {
+        let index = self.coding_spec_index(name)?;
+        let first = self.coding_specs[index]
+            .aliases
+            .cons_values()
+            .and_then(|(first, _)| first.symbol_str().map(str::to_string));
+        Some(match first {
+            Some(first) if self.coding_spec_index(&first) == Some(index) => first,
+            _ => name.to_string(),
+        })
     }
 
     pub fn has_coding_system(&self, name: &str) -> bool {
-        self.coding_system_canonical(name).is_some()
+        self.coding_system_hash.contains_key(name)
     }
 
-    /// coding.c CODING_SYSTEM_SPEC: the definition NAME stands for, from
-    /// the table's name index (Vcoding_system_hash_table).
+    /// CODING_ID_ATTRS: the attribute vector of NAME's spec.
     pub fn coding_system(&self, name: &str) -> Option<&CodingSystemState> {
-        let canonical = self.coding_system_canonical(name)?;
-        self.coding_systems
-            .get(*self.coding_system_index.get(canonical)?)
+        self.coding_attrs.get(self.coding_spec(name)?.attrs)
     }
 
     pub fn coding_system_base_name(&self, name: &str) -> Option<String> {
@@ -498,134 +585,129 @@ impl Interpreter {
         self.coding_system(name).map(|coding| coding.kind.clone())
     }
 
+    /// The eol type of NAME's spec as Fcoding_system_eol_type numbers it,
+    /// None when it is the vector of subsidiaries.
     pub fn coding_system_eol_type_value(&self, name: &str) -> Option<i64> {
-        self.coding_system(name).and_then(|coding| coding.eol_type)
-    }
-
-    pub fn coding_system_plist_value(&self, name: &str) -> Option<Value> {
-        self.coding_system(name).map(|coding| coding.plist)
-    }
-
-    /// Add DEFINITION to the table, or replace the one of its name.
-    fn store_coding_system(&mut self, definition: CodingSystemState) {
-        match self.coding_system_index.get(&definition.name) {
-            Some(&index) => self.coding_systems[index] = definition,
-            None => {
-                let index = self.coding_systems.len();
-                if !self.coding_alias_index.contains_key(&definition.name) {
-                    self.coding_table_books.insert();
-                }
-                self.coding_system_index
-                    .insert(definition.name.clone(), index);
-                self.coding_systems.push(definition);
-            }
+        match self.coding_spec(name)?.eol_type.symbol_str()? {
+            "unix" => Some(0),
+            "dos" => Some(1),
+            "mac" => Some(2),
+            _ => None,
         }
     }
 
-    pub fn set_coding_system_plist_property(
-        &mut self,
-        name: &str,
-        key: &str,
-        value: Value,
-    ) -> Result<(), LispError> {
-        let canonical = self
-            .coding_system_canonical_name(name)
-            .ok_or_else(|| LispError::Void(name.to_string()))?;
-        let Some(&index) = self.coding_system_index.get(&canonical) else {
-            return Err(LispError::Void(name.to_string()));
-        };
-        let coding = &mut self.coding_systems[index];
-        let mut items = coding.plist.to_vec()?;
-        let key_value = Value::Symbol(key.to_string().into());
-        if let Some(index) = items.iter().position(|item| item == &key_value) {
-            if index + 1 < items.len() {
-                items[index + 1] = value;
-            } else {
-                items.push(value);
-            }
-        } else {
-            items.push(key_value);
-            items.push(value);
-        }
-        coding.plist = Value::list(items);
-        Ok(())
-    }
-
-    pub fn define_coding_system_alias(
-        &mut self,
-        alias: &str,
-        target: &str,
-    ) -> Result<(), LispError> {
-        let canonical = self
-            .coding_system_canonical_name(target)
-            .ok_or_else(|| LispError::Void(target.to_string()))?;
-        if let Some((_, existing)) = self
-            .coding_aliases
-            .iter_mut()
-            .rev()
-            .find(|(existing_alias, _)| existing_alias == alias)
-        {
-            *existing = canonical.clone();
-        } else {
-            self.coding_aliases
-                .push((alias.to_string(), canonical.clone()));
-        }
-        let known = self.coding_system_index.contains_key(alias);
+    /// Fputhash (NAME, SPEC, Vcoding_system_hash_table).
+    fn puthash_coding_system(&mut self, name: &str, spec: usize) {
         if self
-            .coding_alias_index
-            .insert(alias.to_string(), canonical.clone())
+            .coding_system_hash
+            .insert(name.to_string(), spec)
             .is_none()
-            && !known
         {
             self.coding_table_books.insert();
         }
-        // coding.c:Fdefine_coding_system_alias recurses over the target's eol
-        // subsidiaries: when CODING-SYSTEM has a vector eol-type, ALIAS-unix,
-        // ALIAS-dos and ALIAS-mac are defined as aliases of the corresponding
-        // subsidiary.  Without this, `euc-jp' resolves but `euc-jp-unix' does
-        // not, though GNU has both.
-        let subsidiaries = ["unix", "dos", "mac"].map(|suffix| {
-            self.coding_system_canonical_name(&format!("{canonical}-{suffix}"))
-                .is_some()
-        }) == [true; 3];
-        for suffix in ["unix", "dos", "mac"] {
-            let alias_variant = format!("{alias}-{suffix}");
-            let target_variant = format!("{canonical}-{suffix}");
-            if self.coding_system_canonical_name(&alias_variant).is_none()
-                && self.coding_system_canonical_name(&target_variant).is_some()
-            {
-                // coding.c reaches this via make_subsidiaries, which
-                // interns each subsidiary name in the standard obarray.
-                self.intern_symbol_name(&alias_variant);
-                if self
-                    .coding_alias_index
-                    .insert(alias_variant.clone(), target_variant.clone())
-                    .is_none()
-                {
-                    self.coding_table_books.insert();
-                }
-                self.coding_aliases.push((alias_variant, target_variant));
-            }
-        }
-        // Each recursion records its subsidiary alias before ALIAS itself.
-        if subsidiaries {
-            for suffix in ["unix", "dos", "mac"] {
-                self.record_coding_system_name(&format!("{alias}-{suffix}"));
-            }
-        }
-        self.record_coding_system_name(alias);
-        Ok(())
     }
 
-    pub fn coding_system_alias_list(&self, name: &str) -> Option<Vec<String>> {
-        let canonical = self.coding_system_canonical_name(name)?;
-        let mut aliases = vec![canonical.clone()];
-        for (alias, target) in &self.coding_aliases {
-            if target == &canonical && !aliases.iter().any(|existing| existing == alias) {
-                aliases.push(alias.clone());
+    fn push_coding_spec(&mut self, spec: CodingSpec) -> usize {
+        self.coding_specs.push(spec);
+        self.coding_specs.len() - 1
+    }
+
+    /// coding.c make_subsidiaries: NAME-unix, NAME-dos and NAME-mac,
+    /// interned.
+    fn make_subsidiaries(&mut self, name: &str) -> [String; 3] {
+        ["unix", "dos", "mac"].map(|suffix| {
+            let subsidiary = format!("{name}-{suffix}");
+            self.intern_symbol_name(&subsidiary);
+            subsidiary
+        })
+    }
+
+    /// The end of Fdefine_coding_system_internal: ATTRS, its arguments
+    /// checked, become NAME's spec with EOL_TYPE (`unix', `dos', `mac'
+    /// or nil), and for nil each subsidiary's with its own; the category
+    /// gets NAME as its system when it has none or had NAME itself.
+    pub(crate) fn define_coding_system(
+        &mut self,
+        name: &str,
+        attrs: CodingSystemState,
+        eol_type: Value,
+    ) {
+        let category = attrs.category;
+        if attrs.kind == "shift-jis" {
+            self.sjis_coding_system = name.to_string();
+        } else if attrs.kind == "big5" {
+            self.big5_coding_system = name.to_string();
+        }
+        self.coding_attrs.push(attrs);
+        let attrs = self.coding_attrs.len() - 1;
+        let eol_type = if eol_type.is_nil() {
+            let subsidiaries = self.make_subsidiaries(name);
+            for (subsidiary, this_eol_type) in subsidiaries.iter().zip(["unix", "dos", "mac"]) {
+                let spec = self.push_coding_spec(CodingSpec {
+                    attrs,
+                    aliases: Value::list([Value::symbol(subsidiary)]),
+                    eol_type: Value::symbol(this_eol_type),
+                });
+                self.puthash_coding_system(subsidiary, spec);
+                self.record_coding_system_name(subsidiary);
+            }
+            Value::vector(
+                subsidiaries
+                    .iter()
+                    .map(|subsidiary| Value::symbol(subsidiary)),
+            )
+        } else {
+            eol_type
+        };
+        let spec = self.push_coding_spec(CodingSpec {
+            attrs,
+            aliases: Value::list([Value::symbol(name)]),
+            eol_type,
+        });
+        self.puthash_coding_system(name, spec);
+        self.record_coding_system_name(name);
+        if self.coding_category_representatives[category]
+            .as_deref()
+            .is_none_or(|representative| representative == name)
+        {
+            self.coding_category_representatives[category] = Some(name.to_string());
+        }
+    }
+
+    /// Fdefine_coding_system_alias once ALIAS is a symbol and SPEC the
+    /// spec of the coding system: ALIAS joins the end of the spec's
+    /// names in place, each of ALIAS's subsidiaries becomes an alias of
+    /// the matching subsidiary when the eol type is a vector of them, and
+    /// ALIAS's hash entry is the spec itself.
+    pub(crate) fn define_coding_system_alias(
+        &mut self,
+        alias: &str,
+        spec: usize,
+    ) -> Result<(), LispError> {
+        let mut aliases = self.coding_specs[spec].aliases;
+        while let Some((_, rest)) = aliases.cons_values() {
+            if rest.is_nil() {
+                break;
+            }
+            aliases = rest;
+        }
+        aliases.set_cdr(Value::list([Value::symbol(alias)]))?;
+        let eol_type = self.coding_specs[spec].eol_type;
+        if let Kind::Vector(targets) = eol_type.kind() {
+            let subsidiaries = self.make_subsidiaries(alias);
+            for (subsidiary, target) in subsidiaries.iter().zip(targets.slots()) {
+                let target_spec = target
+                    .symbol_str()
+                    .and_then(|target| self.coding_spec_index(target))
+                    .ok_or_else(|| {
+                        LispError::WrongTypeArgument("coding-system-p".into(), target)
+                    })?;
+                self.define_coding_system_alias(subsidiary, target_spec)?;
             }
         }
-        Some(aliases)
+        self.puthash_coding_system(alias, spec);
+        self.record_coding_system_name(alias);
+        Ok(())
     }
 
     /// coding.c Fcoding_system_priority_list: the representative of each
@@ -693,15 +775,12 @@ impl Interpreter {
                         .filter(|charset| !charset.is_nil());
                     let g1_dimension = g1
                         .and_then(|charset| charset.symbol_str().map(str::to_string))
-                        .and_then(|charset| self.charset_plist_value(&charset))
-                        .and_then(|plist| plist.to_vec().ok())
-                        .and_then(|items| {
-                            items.windows(2).find_map(|pair| {
-                                matches!(pair[0].kind(), Kind::Symbol(key) if key == ":dimension")
-                                    .then(|| pair[1].integer_value())
-                                    .flatten()
-                            })
-                        });
+                        .and_then(|charset| {
+                            crate::lisp::primitives::coding::charset_table::charset_info(
+                                self, &charset,
+                            )
+                        })
+                        .map(|info| i64::from(info.dimension));
                     match g1_dimension {
                         _ if flags & ISO_FLAG_LOCKING_SHIFT != 0 || full_support => {
                             CODING_CATEGORY_ISO_8_ELSE
@@ -722,11 +801,13 @@ impl Interpreter {
         }
     }
 
-    /// coding.c Fset_coding_system_priority: the given systems' categories
-    /// move to the front in the given order (later duplicates of a category
-    /// are ignored), each becoming its category's representative; the
-    /// remaining categories keep their previous relative order.  The Lisp
-    /// `coding-category-list' and the `coding-category-*' variables follow.
+    /// coding.c Fset_coding_system_priority over NAMES, coding systems
+    /// as given: each name's category moves to the front in the given
+    /// order (later names of a category are ignored), the category's
+    /// system becoming the name when it has one already, and its
+    /// `coding-category-*' variable the name; the remaining categories
+    /// keep their previous relative order, and `coding-category-list'
+    /// follows.
     pub fn set_coding_system_categories_priority(
         &mut self,
         names: &[String],
@@ -735,19 +816,20 @@ impl Interpreter {
         let mut changed = [false; CODING_CATEGORY_COUNT];
         let mut priorities = Vec::with_capacity(CODING_CATEGORY_COUNT);
         for name in names {
-            let canonical = self
-                .coding_system_canonical_name(name)
-                .ok_or_else(|| LispError::Void(name.clone()))?;
             let category = self
-                .coding_system(&canonical)
+                .coding_system(name)
                 .map(|coding| coding.category)
-                .unwrap_or(CODING_CATEGORY_UNDECIDED);
+                .ok_or_else(|| {
+                    LispError::WrongTypeArgument("coding-system-p".into(), Value::symbol(name))
+                })?;
             if changed[category] {
                 continue;
             }
             changed[category] = true;
             priorities.push(category);
-            self.coding_category_representatives[category] = Some(canonical.clone());
+            if self.coding_category_representatives[category].is_some() {
+                self.coding_category_representatives[category] = Some(name.clone());
+            }
             self.set_variable(
                 CODING_CATEGORY_NAMES[category],
                 Value::Symbol(name.clone().into()),
@@ -766,243 +848,6 @@ impl Interpreter {
                 .map(|category| Value::Symbol(CODING_CATEGORY_NAMES[*category].into())),
         );
         self.set_variable("coding-category-list", list, env);
-        Ok(())
-    }
-
-    pub fn coding_system_list(&self, base_only: bool) -> Vec<String> {
-        let mut names = Vec::new();
-        let mut push_coding = |coding: &CodingSystemState| {
-            if (!base_only || coding.name == coding.base)
-                && !names.iter().any(|existing| existing == &coding.name)
-            {
-                names.push(coding.name.clone());
-            }
-        };
-
-        for priority in &self.coding_priority {
-            for coding in &self.coding_systems {
-                if &coding.name == priority || (!base_only && &coding.base == priority) {
-                    push_coding(coding);
-                }
-            }
-        }
-        for coding in &self.coding_systems {
-            push_coding(coding);
-        }
-        names
-    }
-
-    pub fn set_coding_system_priority(&mut self, names: &[String]) -> Result<(), LispError> {
-        self.set_coding_system_categories_priority(names, &mut crate::lisp::types::Env::new())?;
-        let mut reordered = Vec::new();
-        for name in names {
-            let canonical = self
-                .coding_system_canonical_name(name)
-                .ok_or_else(|| LispError::Void(name.clone()))?;
-            if !reordered.iter().any(|existing| existing == &canonical) {
-                reordered.push(canonical);
-            }
-        }
-        for default in builtin_coding_priority() {
-            if !reordered.iter().any(|existing| existing == &default) {
-                reordered.push(default);
-            }
-        }
-        self.coding_priority = reordered;
-        Ok(())
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn define_coding_system(
-        &mut self,
-        name: &str,
-        mnemonic: i64,
-        kind: &str,
-        plist: Value,
-        eol_type: Option<i64>,
-        charset_list: Value,
-        default_char: Option<u32>,
-        type_args: Vec<Value>,
-    ) -> Result<(), LispError> {
-        if eol_type.is_none() {
-            // An undecided eol-type creates the three eol subsidiaries via
-            // coding.c's make_subsidiaries, which interns NAME-unix,
-            // NAME-dos and NAME-mac in the standard obarray.
-            for suffix in ["-unix", "-dos", "-mac"] {
-                self.intern_symbol_name(&format!("{name}{suffix}"));
-            }
-        }
-        let kind_canonical = self
-            .coding_system_canonical_name(kind)
-            .unwrap_or_else(|| kind.to_string());
-        let mut items = plist.to_vec().unwrap_or_default();
-        let mnemonic_key = Value::Symbol(":mnemonic".into());
-        if let Some(index) = items.iter().position(|item| item == &mnemonic_key) {
-            if index + 1 < items.len() {
-                items[index + 1] = Value::Integer(mnemonic);
-            } else {
-                items.push(Value::Integer(mnemonic));
-            }
-        } else {
-            items.push(mnemonic_key);
-            items.push(Value::Integer(mnemonic));
-        }
-        // The coding type, which selects the codec as setup_coding_system
-        // selects the encoder and decoder.
-        let resolved_kind = self
-            .coding_system_kind_name(&kind_canonical)
-            .unwrap_or_else(|| kind_canonical.clone());
-        // The three type checks below compare the RAW :coding-type
-        // argument, not its canonicalization: `big5' is also a coding
-        // system name, and once chinese.el defines chinese-big5 and
-        // re-points the alias, canonicalizing would stop matching on a
-        // reload.  GNU compares the type symbol itself.
-        if kind == "big5" {
-            // coding.c's big5 twin of the shift-jis block below.
-            self.big5_coding_system = name.to_string();
-        }
-        if kind == "shift-jis" || kind == "big5" {
-            // coding.c:11357: Vsjis_coding_system tracks the most recent
-            // shift-jis definition (japanese-shift-jis-2004 in a full
-            // load), and the sjis-char primitives read their charsets
-            // from it; Vbig5_coding_system is handled above.  Either
-            // type's ascii compatibility comes from the FIRST charset
-            // in :charset-list (ascii, hence t).
-            if kind == "shift-jis" {
-                self.sjis_coding_system = name.to_string();
-            }
-            let first_charset_ascii_compatible = items
-                .windows(2)
-                .find_map(|pair| {
-                    matches!(pair[0].kind(), Kind::Symbol(key) if key == ":charset-list")
-                        .then(|| pair[1])
-                })
-                .and_then(|list| list.to_vec().ok())
-                .and_then(|charsets| charsets.first().cloned())
-                .is_some_and(
-                    |charset| matches!(charset.kind(), Kind::Symbol(name) if name == "ascii"),
-                );
-            if first_charset_ascii_compatible {
-                if let Some(index) = items.iter().position(
-                    |item| matches!(item.kind(), Kind::Symbol(key) if key == ":ascii-compatible-p"),
-                ) {
-                    if index + 1 < items.len() {
-                        items[index + 1] = Value::T;
-                    }
-                } else {
-                    items.push(Value::Symbol(":ascii-compatible-p".into()));
-                    items.push(Value::T);
-                }
-            }
-        }
-        let category = self.coding_category_index(&kind_canonical, &charset_list, &type_args);
-        // coding.c Fdefine_coding_system_internal: an iso-2022 system's
-        // ascii compatibility is the :ascii-compatible-p argument, set to t
-        // when its INITIAL G0 designation is an ascii-compatible charset
-        // (coding.c:11285) -- and then reset to nil unless the category is
-        // iso-8-1 or iso-8-2 (coding.c:11341).  So euc-jp's [ascii ...]
-        // yields t though japanese.el passes nil, while iso-2022-jp's
-        // (ascii ...) G0 request and the 7-bit systems stay nil; the
-        // decoder's ASCII fast path and the lcsu naming rules read the
-        // result.
-        if kind_canonical == "iso-2022" {
-            let g0_ascii_compatible = items
-                .windows(2)
-                .find_map(|pair| {
-                    matches!(pair[0].kind(), Kind::Symbol(key) if key == ":designation")
-                        .then(|| pair[1])
-                })
-                .and_then(|designation| {
-                    crate::lisp::primitives::vector_or_list_items(&designation).ok()
-                })
-                .and_then(|values| values.first().cloned())
-                .is_some_and(|initial| match initial.kind() {
-                    Kind::Symbol(charset) => {
-                        charset == "ascii"
-                            || self
-                                .charset_plist_value(&charset)
-                                .and_then(|plist| plist.to_vec().ok())
-                                .is_some_and(|items| {
-                                    items.windows(2).any(|pair| {
-                                        matches!(pair[0].kind(), Kind::Symbol(key)
-                                            if key == ":ascii-compatible-p")
-                                            && pair[1].is_truthy()
-                                    })
-                                })
-                    }
-                    _ => false,
-                });
-            let key_index = items.iter().position(
-                |item| matches!(item.kind(), Kind::Symbol(key) if key == ":ascii-compatible-p"),
-            );
-            let supplied = key_index
-                .and_then(|index| items.get(index + 1))
-                .is_some_and(Value::is_truthy);
-            let eight_bit_category =
-                matches!(category, CODING_CATEGORY_ISO_8_1 | CODING_CATEGORY_ISO_8_2);
-            let ascii_compatible = eight_bit_category && (supplied || g0_ascii_compatible);
-            let value = if ascii_compatible {
-                Value::T
-            } else {
-                Value::Nil
-            };
-            match key_index {
-                Some(index) if index + 1 < items.len() => items[index + 1] = value,
-                _ => {
-                    items.push(Value::Symbol(":ascii-compatible-p".into()));
-                    items.push(value);
-                }
-            }
-        }
-        let definition = CodingSystemState {
-            name: name.to_string(),
-            base: name.to_string(),
-            kind: resolved_kind,
-            eol_type,
-            plist: Value::list(items),
-            category,
-            charset_list,
-            default_char: default_char.unwrap_or(b' ' as u32),
-            type_args: type_args.clone(),
-        };
-        // coding.c Fdefine_coding_system_internal: the category's
-        // representative becomes this system when the category has none
-        // yet, or when this is a redefinition of the representative itself.
-        if self.coding_category_representatives[category]
-            .as_deref()
-            .is_none_or(|representative| representative == name)
-        {
-            self.coding_category_representatives[category] = Some(name.to_string());
-        }
-        self.store_coding_system(definition.clone());
-        // GNU's C primitive creates the complete EOL subsidiary family when
-        // :eol-type is omitted.  High-level mule.el relies on the base query
-        // returning this vector; it does not define the three variants itself.
-        if eol_type.is_none() && name != "no-conversion" {
-            for (suffix, variant_eol) in [("unix", 0), ("dos", 1), ("mac", 2)] {
-                let variant = CodingSystemState {
-                    name: format!("{name}-{suffix}"),
-                    base: name.to_string(),
-                    kind: definition.kind.clone(),
-                    eol_type: Some(variant_eol),
-                    plist: definition.plist,
-                    category: definition.category,
-                    charset_list: definition.charset_list,
-                    default_char: definition.default_char,
-                    type_args: definition.type_args.clone(),
-                };
-                self.store_coding_system(variant);
-            }
-        }
-        if !self.coding_priority.iter().any(|existing| existing == name) {
-            self.coding_priority.push(name.to_string());
-        }
-        if eol_type.is_none() && name != "no-conversion" {
-            for suffix in ["unix", "dos", "mac"] {
-                self.record_coding_system_name(&format!("{name}-{suffix}"));
-            }
-        }
-        self.record_coding_system_name(name);
         Ok(())
     }
 
@@ -1297,52 +1142,6 @@ impl Interpreter {
         }
     }
 
-    /// GNU keeps each window's start and point as real markers
-    /// (w->start, w->pointm and w->old_pointm), so insdel.c's marker
-    /// adjustment drags them with every insertion and deletion — a
-    /// process filter inserting before a non-selected window's point
-    /// moves that point, and text inserted above a window's start moves
-    /// the start with the text it shows.  The native window records hold
-    /// integer slots instead; this sweep applies the same
-    /// insertion-type-nil marker rules to those integers.
-    pub(crate) fn adjust_window_marker_slots(
-        &mut self,
-        buffer_id: u64,
-        adjust: impl Fn(usize) -> usize,
-    ) {
-        // The window index walked in place, its ids not copied out: this
-        // runs on every insertion and deletion.
-        // The windows of the buffer's whole indirect family: their
-        // markers are the one text's.
-        let related = self.related_buffer_ids(buffer_id);
-        let Some(windows) = self.record_ids_by_type_index.get("window") else {
-            return;
-        };
-        for window_id in windows {
-            let Some(record) = self.record_ref(*window_id) else {
-                continue;
-            };
-            // SAFETY: as `find_record_mut': the exclusive borrow of `self'
-            // keeps any other path to the record's state out, and the state
-            // is the record's own allocation, not the index read here.
-            let record = unsafe { &mut *record.as_ptr() };
-            let shows_buffer = matches!(
-                record.slots.get(crate::lisp::primitives::WINDOW_BUFFER_SLOT).map(|v| v.kind()),
-                Some(Kind::Integer(id)) if related.contains(&(id as u64))
-            );
-            if !shows_buffer {
-                continue;
-            }
-            for slot in WINDOW_MARKER_SLOTS {
-                if let Some(Kind::Integer(position)) = record.slots.get(slot).map(|v| v.kind())
-                    && let Ok(position) = usize::try_from(position)
-                {
-                    record.slots[slot] = Value::Integer(adjust(position) as i64);
-                }
-            }
-        }
-    }
-
     pub fn adjust_markers_for_insert(
         &mut self,
         buffer_id: u64,
@@ -1353,14 +1152,8 @@ impl Interpreter {
         if nchars == 0 {
             return;
         }
-        self.adjust_window_marker_slots(buffer_id, |position| {
-            if position > pos || (position == pos && before_markers) {
-                position + nchars
-            } else {
-                position
-            }
-        });
-        // Buffer::insert adjusts every ordinary marker. Only insertion before
+        // Buffer::insert adjusts every ordinary marker, the windows'
+        // starts and points among them. Only insertion before
         // all markers additionally moves the nil-insertion markers at POS.
         if before_markers && let Some(buffer) = self.buffer_object(buffer_id) {
             let state = buffer.borrow();
@@ -1373,76 +1166,21 @@ impl Interpreter {
         }
     }
 
-    /// insdel.c adjust_markers_for_replace for the window points of
-    /// BUFFER_ID: inside [FROM, TO) to FROM, at or after TO shifted.
-    pub fn adjust_markers_for_replace(
-        &mut self,
-        buffer_id: u64,
-        from: usize,
-        to: usize,
-        inschars: usize,
-    ) {
-        self.adjust_window_marker_slots(buffer_id, |position| {
-            if position >= to {
-                position + inschars - (to - from)
-            } else if position > from {
-                from
-            } else {
-                position
-            }
-        });
-    }
-
     /// coding.c:decode_coding_object's and encode_coding_object's marks
     /// before they replace [FROM, TO) of the current buffer where it
     /// stands: `need_adjustment' on each marker of its text (the whole
-    /// indirect family's, one text in GNU) at TO, or at FROM for an
-    /// insertion-type one.  The window starts and points GNU keeps as
-    /// insertion-type-nil markers are integer slots here: those at TO are
-    /// returned, as (window, slot).
-    pub(crate) fn mark_markers_for_conversion(
-        &mut self,
-        from: usize,
-        to: usize,
-    ) -> Vec<(u64, usize)> {
-        let related = self.related_buffer_ids(self.current_buffer_id());
+    /// indirect family's, one text in GNU, the windows' starts and points
+    /// among them) at TO, or at FROM for an insertion-type one.
+    pub(crate) fn mark_markers_for_conversion(&mut self, from: usize, to: usize) {
         for marker in self.buffer.markers() {
             let at = if marker.insertion_type() { from } else { to };
             marker.set_need_adjustment(marker.position() == Some(at));
         }
-        let mut marked = Vec::new();
-        let Some(windows) = self.record_ids_by_type_index.get("window") else {
-            return marked;
-        };
-        for window_id in windows {
-            let Some(record) = self.find_record(window_id) else {
-                continue;
-            };
-            let shows_text = matches!(
-                record.slots.get(crate::lisp::primitives::WINDOW_BUFFER_SLOT).map(|v| v.kind()),
-                Some(Kind::Integer(id)) if related.contains(&(id as u64))
-            );
-            if !shows_text {
-                continue;
-            }
-            for slot in WINDOW_MARKER_SLOTS {
-                if record.slots.get(slot).and_then(|v| v.fixnum()) == Some(to as i64) {
-                    marked.push((*window_id, slot));
-                }
-            }
-        }
-        marked
     }
 
     /// The marked markers put back once the conversion has left its text
-    /// in [FROM, END): an insertion-type one at FROM, any other (the
-    /// window slots WINDOWS among them) at END.
-    pub(crate) fn settle_markers_after_conversion(
-        &mut self,
-        windows: &[(u64, usize)],
-        from: usize,
-        end: usize,
-    ) {
+    /// in [FROM, END): an insertion-type one at FROM, any other at END.
+    pub(crate) fn settle_markers_after_conversion(&mut self, from: usize, end: usize) {
         {
             let state = self.buffer.borrow();
             let limit = state.size_total() + 1;
@@ -1455,32 +1193,7 @@ impl Interpreter {
                 }
             }
         }
-        for (window_id, slot) in windows {
-            if let Some(value) = self
-                .find_record_mut(window_id)
-                .and_then(|record| record.slots.get_mut(*slot))
-            {
-                *value = Value::Integer(end as i64);
-            }
-        }
         self.family_after_in_place_edit();
-    }
-
-    pub fn adjust_markers_for_delete(&mut self, buffer_id: u64, from: usize, to: usize) {
-        if from >= to {
-            return;
-        }
-        let nchars = to - from;
-        self.adjust_window_marker_slots(buffer_id, |position| {
-            if position > to {
-                position - nchars
-            } else if position > from {
-                from
-            } else {
-                position
-            }
-        });
-        // Buffer::delete_region adjusted the weak marker chain with the text.
     }
 
     #[cfg(test)]

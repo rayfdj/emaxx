@@ -34,89 +34,146 @@ pub(crate) fn autoload_is_macro(interp: &Interpreter, symbol: Option<&str>, valu
     })
 }
 
-pub(crate) fn autoload_command_p(value: &Value) -> bool {
-    autoload_parts(value).is_some_and(|(_, interactive, kind)| {
-        interactive.is_truthy() || matches!(kind.kind(), Kind::Symbol(symbol) if symbol == "keymap")
-    })
+// The arguments an interactive spec produced, with the command-history
+// entry a string spec's call records once the reading bindings are gone.
+pub(crate) struct InteractiveArgs {
+    pub(crate) values: Vec<Value>,
+    pub(crate) history: Option<Value>,
+    pub(crate) record_then_fail: bool,
 }
 
-pub(crate) fn resolve_callable_aliases(
-    interp: &Interpreter,
-    func: &Value,
-    env: &Env,
-) -> Result<Value, LispError> {
-    let mut current = *func;
-    let mut seen = HashSet::new();
-    while let Kind::Symbol(name) = current.kind() {
-        if !seen.insert(name.as_str().to_owned()) {
-            return Err(LispError::SignalValue(Value::list([
-                Value::Symbol("cyclic-function-indirection".into()),
-                Value::Symbol(name),
-            ])));
-        }
-        current = interp.lookup_function(&name, env)?;
+// callint.c's quotify_arg: what the history entry evaluates back to the
+// same argument.
+fn quotify_arg(value: Value) -> Value {
+    if value.is_cons() || (value.is_symbol() && !value.is_nil() && value != Value::T) {
+        Value::list([Value::Symbol("quote".into()), value])
+    } else {
+        value
     }
-    Ok(current)
+}
+
+// callint.c's fix_command: a symbol command's `interactive-args'
+// replacements, then its trailing nil optional arguments dropped.
+fn fix_command(
+    interp: &mut Interpreter,
+    function: &Value,
+    values: Value,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    let Some(name) = function.symbol_str() else {
+        return Ok(());
+    };
+    if !values.is_cons() {
+        return Ok(());
+    }
+    let reps = interp
+        .get_symbol_property(name, "interactive-args")
+        .unwrap_or(Value::Nil);
+    if reps.is_cons() {
+        let mut vals = values;
+        let mut i = 0;
+        while !vals.is_nil() {
+            let rep = call(interp, "assq", &[Value::Integer(i), reps], env)?;
+            if !rep.is_nil() {
+                vals.set_car(rep.cdr()?)?;
+            }
+            vals = vals.cdr()?;
+            i += 1;
+        }
+    }
+    let arity = call(interp, "func-arity", std::slice::from_ref(function), env)?;
+    if let (Kind::Integer(min), Kind::Integer(_)) = (arity.car()?.kind(), arity.cdr()?.kind()) {
+        let mut last = Value::Nil;
+        let mut last_index = 0;
+        let mut tail = values;
+        let mut i = 0;
+        while let Some((head, rest)) = tail.cons_values() {
+            if !head.is_nil() {
+                last = tail;
+                last_index = i;
+            }
+            tail = rest;
+            i += 1;
+        }
+        if last_index > 0 && last_index >= min - 1 {
+            last.set_cdr(Value::Nil)?;
+        }
+    }
+    Ok(())
+}
+
+// callint.c's `add-to-history' call: subr.el keeps `command-history'
+// to `history-length', its duplicates kept.
+fn add_command_history(
+    interp: &mut Interpreter,
+    entry: Value,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    interp.call_function_value(
+        Value::Symbol("add-to-history".into()),
+        Some("add-to-history"),
+        &[
+            Value::Symbol("command-history".into()),
+            entry,
+            Value::Nil,
+            Value::T,
+        ],
+        env,
+    )
 }
 
 pub(crate) fn collect_interactive_args(
     interp: &mut Interpreter,
+    function: &Value,
     func: &Value,
+    spec: Value,
+    record_flag: bool,
     env: &mut Env,
-) -> Result<Vec<Value>, LispError> {
-    let func = resolve_callable_aliases(interp, func, env)?;
-    // GNU's C interactive_form consults `oclosure-interactive-form' for
-    // OClosures: nadvice's advice objects have no (interactive ...) in their
-    // body and instead COMPOSE the advised function's spec.
-    // Compiled OClosures (like nadvice's advice objects) are closure
-    // records, not interpreted lambdas, so ask the real `oclosure-type'
-    // owner when the native lambda-shape probe misses.
-    let is_oclosure = crate::lisp::primitives::dispatch::oclosure_type_of(&func).is_some()
-        || (matches!(func.kind(), Kind::Record(_) | Kind::Closure(_))
-            && interp.has_lisp_function("oclosure-type")
-            && interp
-                .call_function_value(
-                    Value::Symbol("oclosure-type".into()),
-                    Some("oclosure-type"),
-                    std::slice::from_ref(&func),
-                    env,
-                )
-                .map(|value| value.is_truthy())
-                .unwrap_or(false));
-    let oclosure_spec = if is_oclosure
-        && interp.has_lisp_function("oclosure-interactive-form")
-        && interactive_spec_form(interp, &func).is_none()
-    {
-        interp
-            .call_function_value(
-                Value::Symbol("oclosure-interactive-form".into()),
-                Some("oclosure-interactive-form"),
-                std::slice::from_ref(&func),
-                env,
-            )?
-            .to_vec()
-            .ok()
-            .and_then(|items| items.get(1).cloned())
-    } else {
-        None
-    };
-    let Some(spec) = oclosure_spec.or_else(|| interactive_spec_form(interp, &func)) else {
-        return Ok(Vec::new());
-    };
-    match spec.kind() {
-        Kind::StringObject(state) => parse_interactive_string(&state.borrow().text(), interp, env),
-        _ => {
-            if let Some(items) = interactive_list_form_items(&spec) {
-                let mut values = Vec::with_capacity(items.len());
-                for item in items {
-                    values.push(eval_callable_metadata_form(interp, &func, &item, env)?);
-                }
-                Ok(values)
-            } else {
-                eval_callable_metadata_form(interp, &func, &spec, env)?.to_vec()
+) -> Result<InteractiveArgs, LispError> {
+    if let Kind::StringObject(state) = spec.kind() {
+        let text = state.borrow().text();
+        let parsed = parse_interactive_string(function, &text, record_flag, interp, env)?;
+        // Recorded when an argument came from the terminal, or on request:
+        // point, mark and the region as the calls that find them again.
+        let history = (record_flag || parsed.varies.contains(&0)).then(|| {
+            let mut entry = Vec::with_capacity(parsed.values.len() + 1);
+            entry.push(*function);
+            for (value, vary) in parsed.values.iter().zip(&parsed.varies) {
+                entry.push(match vary {
+                    1 => Value::list([Value::Symbol("point".into())]),
+                    2 => Value::list([Value::Symbol("mark".into())]),
+                    3 => Value::list([Value::Symbol("region-beginning".into())]),
+                    4 => Value::list([Value::Symbol("region-end".into())]),
+                    _ => quotify_arg(*value),
+                });
             }
-        }
+            Value::list(entry)
+        });
+        return Ok(InteractiveArgs {
+            values: parsed.values,
+            history,
+            record_then_fail: parsed.record_then_fail,
+        });
     }
+    // A Lisp form's values are recorded when computing them read input,
+    // or on request -- before the call, which may still refuse them.
+    let events = interp.keyboard_input.num_input_events;
+    let specs = eval_callable_metadata_form(interp, func, &spec, env)?;
+    if events != interp.keyboard_input.num_input_events || record_flag {
+        let values = call(interp, "copy-sequence", &[specs], env)?;
+        let mut tail = values;
+        while let Some((head, rest)) = tail.cons_values() {
+            tail.set_car(quotify_arg(head))?;
+            tail = rest;
+        }
+        fix_command(interp, function, values, env)?;
+        add_command_history(interp, Value::cons(*function, values), env)?;
+    }
+    Ok(InteractiveArgs {
+        values: specs.to_vec()?,
+        history: None,
+        record_then_fail: false,
+    })
 }
 
 pub(crate) fn call_interactively_impl(
@@ -127,14 +184,9 @@ pub(crate) fn call_interactively_impl(
     if args.is_empty() {
         return Err(LispError::WrongNumberOfArgs("call-interactively".into(), 0));
     }
-    let mut func = resolve_callable(interp, &args[0], env)?;
-    if autoload_parts(&func).is_some() {
-        // callint.c's `interactive-form' call loads it
-        // (Fautoload_do_load with FUNCTION as the name).
-        func = interp.autoload_do_load(func, args[0], Value::Nil, env)?;
-    }
     // callint.c requires an interactive form, including forms supplied by
-    // the Lisp generic for closures and advice.
+    // the Lisp generic for closures and advice; `interactive-form' loads
+    // an autoloaded command.
     let form = call(
         interp,
         "interactive-form",
@@ -144,11 +196,11 @@ pub(crate) fn call_interactively_impl(
     if !matches!(form.kind(), Kind::Cons(_)) {
         return Err(wrong_type_argument("commandp", args[0]));
     }
-    let string_spec = form
-        .cdr()
-        .ok()
-        .and_then(|tail| tail.car().ok())
-        .is_some_and(|spec| spec.is_string());
+    let mut func = resolve_callable(interp, &args[0], env)?;
+    if autoload_parts(&func).is_some() {
+        func = interp.autoload_do_load(func, args[0], Value::Nil, env)?;
+    }
+    let spec = form.cdr()?.car()?;
     // callint.c saves the command identities that reading the arguments
     // through the minibuffer clobbers, restoring them once the arguments
     // are read, and binds `current-minibuffer-command' so that minibuffer
@@ -170,8 +222,8 @@ pub(crate) fn call_interactively_impl(
         interp,
         args,
         func,
+        spec,
         &saved_command_state,
-        string_spec,
         &mut minibuffer_command,
         env,
     );
@@ -185,11 +237,13 @@ fn call_interactively_bound(
     interp: &mut Interpreter,
     args: &[Value],
     func: Value,
+    spec: Value,
     saved_command_state: &[(&str, Value)],
-    string_spec: bool,
     minibuffer_command: &mut Option<crate::lisp::eval::SpecialBindingRestore>,
     env: &mut Env,
 ) -> Result<Value, LispError> {
+    let string_spec = spec.is_string();
+    let record_flag = args.get(1).is_some_and(Value::is_truthy);
     // callint.c: a non-nil KEYS is the key sequence the spec codes (`e',
     // `k'...) read instead of the current command's keys -- how
     // `command-execute' hands a special event to its `special-event-map'
@@ -211,7 +265,8 @@ fn call_interactively_bound(
         }
         _ => None,
     };
-    let interactive_args = collect_interactive_args(interp, &func, env);
+    let interactive_args =
+        collect_interactive_args(interp, &args[0], &func, spec, record_flag, env);
     if let Some(restore) = recursive_binding {
         interp.restore_special_binding(restore, env)?;
     }
@@ -221,10 +276,27 @@ fn call_interactively_bound(
     if string_spec && let Some(restore) = minibuffer_command.take() {
         interp.restore_special_binding(restore, env)?;
     }
-    let interactive_args = interactive_args?;
+    let InteractiveArgs {
+        values: interactive_args,
+        history,
+        record_then_fail,
+    } = interactive_args?;
+    if let Some(entry) = history {
+        add_command_history(interp, entry, env)?;
+    }
+    if record_then_fail {
+        call(interp, "barf-if-buffer-read-only", &[], env)?;
+    }
     for (name, value) in saved_command_state {
         interp.set_variable(name, *value, env);
     }
+    // A string spec's command runs with `command-debug-status' bound to
+    // nil.
+    let debug_status = if string_spec {
+        Some(interp.bind_special_variable("command-debug-status", Value::Nil, env)?)
+    } else {
+        None
+    };
     interp.push_interactive_call();
     // The interactive dispatch frame is what `called-interactively-p's
     // backtrace walk stops at (GNU stops at funcall-interactively); the
@@ -247,14 +319,10 @@ fn call_interactively_bound(
     let result = interp.call_function_value(call_target, None, &interactive_args, env);
     interp.pop_backtrace_frame();
     interp.pop_interactive_call();
-    let result = result?;
-    if args.get(1).is_some_and(Value::is_truthy)
-        && let Some(function_name) = callable_name(&args[0], &func)
-    {
-        let history_args = history_args_for_call(interp, &args[0], &interactive_args);
-        record_command_history(interp, &function_name, history_args, env);
+    if let Some(restore) = debug_status {
+        interp.restore_special_binding(restore, env)?;
     }
-    Ok(result)
+    result
 }
 
 pub(crate) fn eval_impl(
@@ -282,7 +350,10 @@ pub(crate) fn eval_impl(
             ),
         };
         interp.push_lambda_eval_context(capture_lexical);
+        let installed = interp
+            .install_frame_environment(crate::lisp::types::current_environment_value(&eval_env));
         let result = interp.eval(&args[0], &mut eval_env);
+        interp.uninstall_frame_environments(installed);
         interp.pop_lambda_capture_override();
         result
     } else {
@@ -371,8 +442,6 @@ pub(crate) fn eval_buffer_impl(
         let begv = buffer.point_min();
         buffer.goto_char(begv);
     }
-    let previous_load_list =
-        interp.bind_special_variable("current-load-list", Value::list([source_file]), env)?;
     // Feval_buffer specbinds the Lisp variable `lexical-binding' to the
     // buffer's file-variable cookie (lisp_file_lexical_cookie) for the
     // whole readevalloop, so macros that consult the variable while the
@@ -390,8 +459,16 @@ pub(crate) fn eval_buffer_impl(
         if cookie_lexical { Value::T } else { Value::Nil },
         env,
     )?;
-    // readevalloop reads from `standard-input', bound to the buffer.
+    // readevalloop reads from `standard-input', bound to the buffer, binds
+    // `macroexp--dynvars' to its value, so that the forms' declarations go
+    // with the loop, and then `current-load-list' (loadhist_initialize).
     let previous_input = interp.bind_special_variable("standard-input", readcharfun, env)?;
+    let dynvars = interp
+        .lookup_var("macroexp--dynvars", env)
+        .unwrap_or(Value::Nil);
+    let previous_dynvars = interp.bind_special_variable("macroexp--dynvars", dynvars, env)?;
+    let previous_load_list =
+        interp.bind_special_variable("current-load-list", Value::list([source_file]), env)?;
     // Feval_buffer returns nil whatever the last form evaluated to.
     let mut result = eval_buffer_forms(
         interp,
@@ -407,7 +484,12 @@ pub(crate) fn eval_buffer_impl(
             .unwrap_or(Value::Nil);
         interp.commit_entire_load_history(&source_file, current);
     }
-    for restore in [previous_input, previous_lexical_binding, previous_load_list] {
+    for restore in [
+        previous_load_list,
+        previous_dynvars,
+        previous_input,
+        previous_lexical_binding,
+    ] {
         if let Err(error) = interp.restore_special_binding(restore, env)
             && result.is_ok()
         {
@@ -477,15 +559,19 @@ pub(crate) fn eval_region_impl(
         Value::cons(readcharfun, eval_buffer_list),
         env,
     )?);
-    if let Some(file) = source_file {
-        restores.push(interp.bind_special_variable(
-            "current-load-list",
-            Value::list([Value::String(file.into())]),
-            env,
-        )?);
-    }
-    // readevalloop reads from `standard-input', bound to the buffer.
+    // readevalloop reads from `standard-input', bound to the buffer, binds
+    // `macroexp--dynvars' to its value and `current-load-list' to a list
+    // of the buffer's file name (loadhist_initialize), nil if it has none.
     restores.push(interp.bind_special_variable("standard-input", readcharfun, env)?);
+    let dynvars = interp
+        .lookup_var("macroexp--dynvars", env)
+        .unwrap_or(Value::Nil);
+    restores.push(interp.bind_special_variable("macroexp--dynvars", dynvars, env)?);
+    restores.push(interp.bind_special_variable(
+        "current-load-list",
+        Value::list([source_file.map_or(Value::Nil, |file| Value::String(file.into()))]),
+        env,
+    )?);
 
     // readevalloop reads the buffer-local `lexical-binding' and runs the
     // forms in a fresh interpreter environment — the caller's lexical
@@ -1478,6 +1564,19 @@ pub(crate) fn locate_file_search(
     ))
 }
 
+/// lread.c:openp with no suffixes or predicate (sound.c's sound files):
+/// the file opened, or the errno of the search.
+pub(crate) fn openp_file(
+    interp: &mut Interpreter,
+    file: &Value,
+    path: &Value,
+    env: &mut Env,
+) -> Result<Result<crate::file_system::File, i32>, LispError> {
+    let (found, errno) =
+        search::openp_search(interp, file, path, &Value::Nil, &Value::Nil, false, env)?;
+    Ok(found.and_then(|found| found.file).ok_or(errno))
+}
+
 /// openp's access check for a fixnum predicate: `faccessat' with the mask
 /// and AT_EACCESS, then an accessible directory counts as EISDIR rather
 /// than a match.  The error is the errno openp records.
@@ -1519,36 +1618,4 @@ pub(crate) fn locate_file_access_probe(mask: i64, candidate: &Path) -> Result<()
         return Err(directory_error);
     }
     Ok(())
-}
-
-pub(crate) fn history_args_for_call(
-    interp: &Interpreter,
-    command: &Value,
-    actual_args: &[Value],
-) -> Vec<Value> {
-    let mut recorded = actual_args.to_vec();
-    let Kind::Symbol(command) = command.kind() else {
-        return recorded;
-    };
-    let Some(replacements) = interp.get_symbol_property(&command, "interactive-args") else {
-        return recorded;
-    };
-    let Ok(replacements) = replacements.to_vec() else {
-        return recorded;
-    };
-    for replacement in replacements {
-        let Some((index, value)) = replacement.cons_values() else {
-            continue;
-        };
-        let Kind::Integer(index) = index.kind() else {
-            continue;
-        };
-        let Ok(index) = usize::try_from(index) else {
-            continue;
-        };
-        if index < recorded.len() {
-            recorded[index] = value;
-        }
-    }
-    recorded
 }

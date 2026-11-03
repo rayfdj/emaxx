@@ -409,7 +409,6 @@ impl Interpreter {
         self.buffer
             .borrow_mut()
             .replace_range(from, to, text, extended, true, props, &vars);
-        self.adjust_markers_for_replace(current_id, from, to, inschars);
         if related.len() > 1 {
             // replace_range's adjust_overlays_for_insert at TO, then for
             // the deletion, in each other buffer of the family.
@@ -446,14 +445,6 @@ impl Interpreter {
         }
         let related = self.related_buffer_ids(self.current_buffer_id());
         self.buffer.borrow_mut().delete_chars_each(positions);
-        let original: Vec<usize> = positions
-            .iter()
-            .enumerate()
-            .map(|(index, &position)| position + index)
-            .collect();
-        self.adjust_window_marker_slots(self.current_buffer_id(), |position| {
-            position - original.partition_point(|&deleted| deleted < position)
-        });
         for &position in positions {
             self.family_after_delete(&related, position, position + 1);
         }
@@ -497,7 +488,6 @@ impl Interpreter {
         self.buffer
             .borrow_mut()
             .record_marker_adjustments(marker_adjustments);
-        self.adjust_markers_for_delete(self.current_buffer_id(), from, to);
         if from < to {
             self.family_after_delete(&related, from, to);
         }

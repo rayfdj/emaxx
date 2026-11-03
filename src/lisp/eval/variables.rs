@@ -2605,6 +2605,7 @@ impl Interpreter {
             self.globals.insert(symbol, value);
         }
         let where_buffer_id = self.current_buffer_id();
+        let frame_depth = self.backtrace_frames.len();
         self.active_special_restores.push(SpecialBindingRestore {
             binding_id,
             name: *symbol,
@@ -2615,6 +2616,7 @@ impl Interpreter {
             let_default: false,
             where_buffer_id,
             local_binding_killed: false,
+            frame_depth,
         });
         Some(binding_id)
     }
@@ -2653,6 +2655,7 @@ impl Interpreter {
                 let_default: false,
                 where_buffer_id: buffer_id,
                 local_binding_killed: false,
+                frame_depth: self.backtrace_frames.len(),
             };
             self.active_special_restores.push(restore);
             return Ok(binding_id);
@@ -2676,6 +2679,7 @@ impl Interpreter {
                 let_default: false,
                 where_buffer_id: buffer_id,
                 local_binding_killed: false,
+                frame_depth: self.backtrace_frames.len(),
             }
         } else {
             // specbind saves find_symbol_value even for LET_DEFAULT.
@@ -2731,6 +2735,7 @@ impl Interpreter {
                 let_default,
                 where_buffer_id: buffer_id,
                 local_binding_killed: false,
+                frame_depth: self.backtrace_frames.len(),
             }
         };
         self.active_special_restores.push(restore);
@@ -3434,72 +3439,155 @@ impl Interpreter {
         self.batch_error_backtrace = None;
     }
 
-    pub fn backtrace_frame_locals_snapshot_with_base(
-        &self,
-        index: usize,
-        base: Option<&Value>,
-    ) -> Option<Vec<(SymbolName, Value)>> {
-        let frames: Vec<&BacktraceFrame> = self.backtrace_frames.iter().rev().collect();
-        let start = base
-            .and_then(|base| {
-                frames
-                    .iter()
-                    .position(|frame| frame.function_snapshot() == *base)
-            })
-            .unwrap_or(0);
-        let frame = frames.len().checked_sub(start + index + 1)?;
-        Some(
-            self.frame_locals_of(frame)
+    /// eval.c:Fbacktrace__locals of the frame at INDEX in `backtrace_frames'
+    /// (found by `backtrace_frame_index'): the bindings on the specpdl
+    /// between its record and the next frame's, oldest first, each paired
+    /// with the value it bound -- what backtrace_eval_unrewind reads back:
+    /// the old value the next binding of the variable saved, or the value
+    /// now if none has -- and a lexical environment the frame installed
+    /// (the binding of `internal-interpreter-environment') read as its
+    /// bindings, a bare symbol in it passed over.
+    pub(crate) fn backtrace_frame_locals(&self, index: usize) -> Value {
+        let depth = index + 1;
+        let restores = &self.active_special_restores;
+        let installed = self.frame_environments_of(index);
+        // The entries newest first, each consed in front, as the C walks
+        // from the next frame's record down to this one's.
+        let mut result = Value::Nil;
+        let mut record = restores.len();
+        let mut environment = installed.len();
+        loop {
+            // An environment installed when the stack held SPECPDL records
+            // lies above record SPECPDL - 1.
+            if environment > 0 && installed[environment - 1].specpdl >= record {
+                environment -= 1;
+                let mut tail = installed[environment].environment;
+                while let Some(cell) = tail.cons_ref() {
+                    if let Some(binding) = cell.car.get().cons_ref() {
+                        result =
+                            Value::cons(Value::cons(binding.car.get(), binding.cdr.get()), result);
+                    }
+                    tail = cell.cdr.get();
+                }
+                continue;
+            }
+            let Some(below) = record.checked_sub(1) else {
+                break;
+            };
+            record = below;
+            let restore = &restores[record];
+            if restore.frame_depth != depth {
+                continue;
+            }
+            let value = restores[record + 1..]
                 .iter()
-                .map(|local| (local.symbol, local.value))
-                .collect(),
-        )
+                .find(|later| later.name == restore.name && later.scope == restore.scope)
+                .map_or_else(
+                    || match restore.scope {
+                        SpecialBindingScope::Global => {
+                            self.global_binding_value_symbol(&restore.name)
+                        }
+                        SpecialBindingScope::BufferLocal(buffer_id) => {
+                            self.buffer_local_value(buffer_id, restore.name.as_str())
+                        }
+                    },
+                    |later| later.previous,
+                )
+                .unwrap_or(Value::Unbound);
+            result = Value::cons(Value::cons(Value::Symbol(restore.name), value), result);
+        }
+        result
     }
 
-    /// The parameters FRAME's interpreted call bound (see `FrameLocal'):
-    /// the stack is ordered by frame, each frame's run in binding order.
-    fn frame_locals_of(&self, frame: usize) -> &[FrameLocal] {
+    /// The environments the frame at FRAME installed (see
+    /// `FrameEnvironment'): the stack is ordered by frame, each frame's
+    /// run in the order they were installed.
+    fn frame_environments_of(&self, frame: usize) -> &[FrameEnvironment] {
         let begin = self
-            .frame_locals
-            .partition_point(|local| local.frame < frame);
+            .frame_environments
+            .partition_point(|installed| installed.frame < frame);
         let end = self
-            .frame_locals
-            .partition_point(|local| local.frame <= frame);
-        &self.frame_locals[begin..end]
+            .frame_environments
+            .partition_point(|installed| installed.frame <= frame);
+        &self.frame_environments[begin..end]
     }
 
-    // The lexical context visible at an activation frame.  While Edebug is
-    // active this is the evaluator environment captured at the call
-    // boundary, including active `let' frames and their identity stamps.
-    // Fall back to the older argument-only view for ordinary backtraces.
-    pub fn backtrace_frame_context_env(&self, index: usize, base: Option<&Value>) -> Env {
-        let frames: Vec<&BacktraceFrame> = self.backtrace_frames.iter().rev().collect();
-        let start = base
-            .and_then(|base| {
-                frames
-                    .iter()
-                    .position(|frame| frame.function_snapshot() == *base)
-            })
-            .unwrap_or(0);
-        if let Some(context) = frames
-            .get(start + index)
+    /// eval.c's specbind of `internal-interpreter-environment' to
+    /// ENVIRONMENT by the innermost frame (see `FrameEnvironment'); the
+    /// answer is the mark `uninstall_frame_environments' takes.
+    #[inline]
+    pub(crate) fn install_frame_environment(&mut self, environment: Value) -> usize {
+        let mark = self.frame_environments.len();
+        let frame = self.backtrace_frames.len().wrapping_sub(1);
+        let specpdl = self.active_special_restores.len();
+        self.frame_environments.push(FrameEnvironment {
+            frame,
+            specpdl,
+            environment,
+        });
+        mark
+    }
+
+    /// FletX's store into `internal-interpreter-environment' after its
+    /// first lexical binding: the environment the entry at MARK installed
+    /// is now ENVIRONMENT.
+    pub(crate) fn update_frame_environment(&mut self, mark: usize, environment: Value) {
+        if let Some(installed) = self.frame_environments.get_mut(mark) {
+            installed.environment = environment;
+        }
+    }
+
+    /// The installed environments from MARK on go, as their unbind_to
+    /// restores the variable.
+    #[inline]
+    pub(crate) fn uninstall_frame_environments(&mut self, mark: usize) {
+        self.frame_environments.truncate(mark);
+    }
+
+    /// eval.c:Fbacktrace_eval of FORM at the frame at INDEX in
+    /// `backtrace_frames' (found by `backtrace_frame_index'): the bindings
+    /// made since the frame's record undone (backtrace_eval_unrewind, the
+    /// swap a thread switch makes) while FORM runs, then made again, and
+    /// FORM evaluated in the lexical environment in effect when the frame
+    /// was entered.
+    pub(crate) fn backtrace_eval_at(
+        &mut self,
+        index: usize,
+        form: &Value,
+    ) -> Result<Value, LispError> {
+        let mut context = self.backtrace_frame_context(index);
+        let depth = index + 1;
+        let start = self
+            .active_special_restores
+            .iter()
+            .rposition(|restore| restore.frame_depth < depth)
+            .map_or(0, |below| below + 1);
+        self.swap_special_bindings_for_thread_switch(start, false);
+        let result = self.eval(form, &mut context);
+        self.swap_special_bindings_for_thread_switch(start, true);
+        result
+    }
+
+    // The lexical context in effect when the frame at INDEX was entered.
+    // While Edebug is active this is the evaluator environment captured at
+    // the call boundary, including active `let' frames and their identity
+    // stamps.  Otherwise it is the environment last installed by a frame
+    // outside it (see `FrameEnvironment').
+    fn backtrace_frame_context(&self, index: usize) -> Env {
+        if let Some(context) = self
+            .backtrace_frames
+            .get(index)
             .and_then(|frame| frame.lexical_context().cloned())
         {
             return context;
         }
-        let mut merged: Vec<(SymbolName, Value)> = Vec::new();
-        let innermost = frames.len().checked_sub(start + index + 1);
-        for frame in (0..innermost.map_or(0, |frame| frame + 1)).rev() {
-            for local in self.frame_locals_of(frame) {
-                if !merged.iter().any(|(existing, _)| *existing == local.symbol) {
-                    merged.push((local.symbol, local.value));
-                }
-            }
-        }
-        // Innermost bindings first: Flet conses in order, so the outer
-        // entries are consed first and the inner ones end up in front.
-        merged.reverse();
-        crate::lisp::types::Env::from_vec(vec![EnvFrame::bindings(merged, &Value::Nil)])
+        let environment = self
+            .frame_environments
+            .iter()
+            .rev()
+            .find(|installed| installed.frame < index)
+            .map_or(Value::Nil, |installed| installed.environment);
+        crate::lisp::types::Env::from_vec(vec![EnvFrame::from_alist(environment)])
     }
 
     pub fn set_window_margins(&mut self, window_id: u64, left: Option<i64>, right: Option<i64>) {

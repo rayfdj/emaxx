@@ -1057,17 +1057,34 @@ define_dispatch!(
                 if args.len() > 1 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let average = sysinfo::System::load_average();
-                let values = [average.one, average.five, average.fifteen];
-                if args.first().is_some_and(Value::is_truthy) {
-                    Ok(Value::list(values.map(Value::float)))
-                } else {
-                    // GNU multiplies the host values by 100 and truncates the
-                    // resulting positive doubles to integers.
-                    Ok(Value::list(
-                        values.map(|value| Value::Integer((value * 100.0) as i64)),
-                    ))
+                // fns.c:Fload_average: the averages getloadavg(3) reports
+                // (glibc's from sysinfo(2), in steps of 1/2048), each a
+                // float or 100 times it truncated, as many as it has.
+                let mut load_ave = [0.0f64; 3];
+                #[cfg(unix)]
+                // SAFETY: LOAD_AVE has room for the three it is asked for.
+                let loads = unsafe { libc::getloadavg(load_ave.as_mut_ptr(), 3) };
+                #[cfg(not(unix))]
+                let loads = -1;
+                if loads < 0 {
+                    return Err(LispError::Signal(
+                        "load-average not implemented for this operating system".into(),
+                    ));
                 }
+                let use_floats = args.first().is_some_and(Value::is_truthy);
+                let mut ret = Value::Nil;
+                for &load in load_ave[..loads as usize].iter().rev() {
+                    let load = if use_floats {
+                        Value::float(load)
+                    } else {
+                        crate::lisp::primitives::numeric_time::double_to_integer(
+                            interp,
+                            100.0 * load,
+                        )?
+                    };
+                    ret = Value::cons(load, ret);
+                }
+                Ok(ret)
             }
             "locale-info" => {
                 need_args(name, args, 1)?;
@@ -1661,7 +1678,10 @@ define_dispatch!(
 
             "make-list" => {
                 need_args(name, args, 2)?;
-                let n = args[0].as_integer()?;
+                // alloc.c:Fmake_list: CHECK_FIXNAT (length).
+                let Kind::Integer(n @ 0..) = args[0].kind() else {
+                    return Err(LispError::WrongTypeArgument("wholenump".into(), args[0]));
+                };
                 let val = args[1];
                 let items: Vec<Value> = (0..n).map(|_| val).collect();
                 Ok(Value::list(items))

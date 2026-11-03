@@ -232,6 +232,27 @@ fn dribble_event_bytes(event: &Value) -> Vec<u8> {
     }
 }
 
+/// keyboard.c:command_loop_1 enters each command it runs in the lossage
+/// as (nil . COMMAND), after the keys that invoked it.
+pub(crate) fn record_command_lossage(interp: &mut Interpreter, command: Value) {
+    interp
+        .keyboard_input
+        .recent_keys
+        .push(Value::cons(Value::Nil, command));
+    let limit = interp.lossage_size.max(0) as usize;
+    if interp.keyboard_input.recent_keys.len() > limit {
+        let excess = interp.keyboard_input.recent_keys.len() - limit;
+        interp.keyboard_input.recent_keys.drain(0..excess);
+    }
+}
+
+/// command_loop_1 empties this-command-keys once a command is done, after
+/// its post-command-hook.
+pub(crate) fn clear_command_keys(interp: &mut Interpreter) {
+    interp.keyboard_input.command_keys.clear();
+    interp.keyboard_input.single_command_start = 0;
+}
+
 pub(crate) fn executing_kbd_macro_p(interp: &Interpreter, env: &Env) -> bool {
     interp
         .lookup_var("executing-kbd-macro", env)
@@ -239,6 +260,7 @@ pub(crate) fn executing_kbd_macro_p(interp: &Interpreter, env: &Env) -> bool {
 }
 
 fn record_external_input_event(interp: &mut Interpreter, event: &Value, env: &Env) {
+    interp.keyboard_input.num_input_events += 1;
     if executing_kbd_macro_p(interp, env) {
         return;
     }
@@ -514,21 +536,79 @@ pub(crate) fn eval_callable_metadata_form(
     eval_impl(interp, &[*form, lexical], env)
 }
 
+// The arguments a string interactive spec read, with callint.c's
+// per-argument `varies': 1 to 4 name the call -- (point), (mark),
+// (region-beginning), (region-end) -- the command history records in
+// place of the value, -1 marks an argument found without I/O, and 0 one
+// read from the terminal.
+pub(crate) struct InteractiveStringArgs {
+    pub(crate) values: Vec<Value>,
+    pub(crate) varies: Vec<i8>,
+    // `*' in a read-only buffer under RECORD-FLAG, when every later
+    // character is r, p, P or a newline: the call is recorded and only
+    // then refused.
+    pub(crate) record_then_fail: bool,
+}
+
 pub(crate) fn parse_interactive_string(
+    function: &Value,
     spec: &str,
+    record_flag: bool,
     interp: &mut Interpreter,
     env: &mut Env,
-) -> Result<Vec<Value>, LispError> {
+) -> Result<InteractiveStringArgs, LispError> {
+    // The events the `e' code walks: KEYS, or the current command's keys,
+    // starting at the first with parameters unless
+    // `inhibit-mouse-event-check' admits any event.
+    let keys = interp
+        .lookup_var("this-command-keys-vector", env)
+        .and_then(|keys| vector_or_list_items(&keys).ok())
+        .unwrap_or_default();
+    let inhibit_mouse_event_check = interp
+        .lookup_var("inhibit-mouse-event-check", env)
+        .is_some_and(|value| value.is_truthy());
+    let mut next_event = 0;
+    if !inhibit_mouse_event_check {
+        while next_event < keys.len() && !keys[next_event].is_cons() {
+            next_event += 1;
+        }
+    }
+    let mut record_then_fail = false;
+    // The prefix argument as the call began: reading earlier arguments
+    // through the minibuffer runs commands that reset it.
+    let prefix_arg = interp
+        .lookup_var("current-prefix-arg", env)
+        .unwrap_or(Value::Nil);
     // callint.c's leading flag characters, handled once at the start of
     // the whole spec: `*' barfs on a read-only buffer, `^' runs the
     // shift-selection protocol, `@' selects the event's window (a mouse
-    // affair the keyboard frontend has no window position for), and `-'
-    // is ignored for Lucid compatibility.
+    // affair the keyboard frontend has no window position for), `-' is
+    // ignored for Lucid compatibility, and `+' is reserved.
     let mut rest = spec;
     loop {
         match rest.chars().next() {
+            Some('+') => {
+                return Err(LispError::Signal(
+                    "`+' is not used in `interactive' for ordinary commands".into(),
+                ));
+            }
             Some('*') => {
-                super::call(interp, "barf-if-buffer-read-only", &[], env)?;
+                if interp
+                    .lookup_var("buffer-read-only", env)
+                    .is_some_and(|value| value.is_truthy())
+                {
+                    if record_flag {
+                        if rest[1..]
+                            .chars()
+                            .any(|ch| !matches!(ch, 'r' | 'p' | 'P' | '\n'))
+                        {
+                            super::call(interp, "barf-if-buffer-read-only", &[], env)?;
+                        }
+                        record_then_fail = true;
+                    } else {
+                        super::call(interp, "barf-if-buffer-read-only", &[], env)?;
+                    }
+                }
             }
             Some('^') => {
                 // callint.c:410 `call0 (Qhandle_shift_selection)': the
@@ -580,6 +660,7 @@ pub(crate) fn parse_interactive_string(
             Ok(mark)
         };
     let mut values = Vec::new();
+    let mut varies: Vec<i8> = Vec::new();
     // The up-event a `k' or `K' sequence ending in a down-event left, for
     // a later `U'.
     let mut up_event = Value::Nil;
@@ -587,14 +668,19 @@ pub(crate) fn parse_interactive_string(
     // arguments read so far (callint.c builds callint_message from the
     // visargs); a later prompt's %s shows the earlier answer.
     let mut visible: Vec<Value> = Vec::new();
-    for line in rest.split('\n') {
-        if line.is_empty() {
-            continue;
-        }
+    // One argument a line; a final newline ends the spec, while an empty
+    // line inside it is a newline control letter.
+    let mut lines: Vec<&str> = rest.split('\n').collect();
+    if lines.last().is_some_and(|line| line.is_empty()) {
+        lines.pop();
+    }
+    for line in lines {
         let mut chars = line.chars();
         let Some(code) = chars.next() else {
-            continue;
+            return Err(invalid_interactive_control_letter('\n'));
         };
+        // Codes that read nothing from the terminal mark their argument.
+        let mut vary: i8 = 0;
         let raw_prompt: String = chars.collect();
         // GNU builds every prompt through Fformat_message against the
         // visible arguments read so far; that also converts quote
@@ -658,13 +744,17 @@ pub(crate) fn parse_interactive_string(
                 )
                 .unwrap_or_else(|_| Value::String(raw_prompt.clone().into()));
                 let event = call1(interp, env, "read-char", &[message])?;
+                crate::lisp::primitives::dispatch::display::clear_message_nolog(interp, env)?;
                 if !matches!(event.kind(), Kind::Integer(_)) {
                     return Err(LispError::Signal("Non-character input-event".into()));
                 }
                 seen = call1(interp, env, "char-to-string", std::slice::from_ref(&event))?;
                 values.push(event);
             }
-            'd' => values.push(Value::Integer(interp.buffer.borrow().point() as i64)),
+            'd' => {
+                values.push(Value::Integer(interp.buffer.borrow().point() as i64));
+                vary = 1;
+            }
             'D' | 'f' | 'F' | 'G' => {
                 let message = formatted_prompt(interp, env, &visible)?;
                 // callint.c's read_file_name helper: Fread_file_name
@@ -697,22 +787,20 @@ pub(crate) fn parse_interactive_string(
                 values.push(name);
             }
             'e' => {
-                // The invoking event, which must carry parameters (a
-                // mouse posn); keyboard keys never do.
-                let event = interp
-                    .lookup_var("this-command-keys-vector", env)
-                    .and_then(|keys| vector_or_list_items(&keys).ok())
-                    .and_then(|events| {
-                        events
-                            .into_iter()
-                            .find(|event| matches!(event.kind(), Kind::Cons(_)))
-                    });
-                match event {
-                    Some(event) => values.push(event),
-                    None => {
-                        return Err(LispError::Signal(
-                            "command must be bound to an event with parameters".into(),
-                        ));
+                // The next invoking event with parameters (a mouse posn);
+                // keyboard keys never have them.
+                let Some(event) = keys.get(next_event).copied() else {
+                    return Err(LispError::Signal(format!(
+                        "{} must be bound to an event with parameters",
+                        function.symbol_str().unwrap_or("command")
+                    )));
+                };
+                values.push(event);
+                vary = -1;
+                next_event += 1;
+                if !inhibit_mouse_event_check {
+                    while next_event < keys.len() && !keys[next_event].is_cons() {
+                        next_event += 1;
                     }
                 }
             }
@@ -760,29 +848,26 @@ pub(crate) fn parse_interactive_string(
             'm' => {
                 let mark = check_mark(interp, env, false)?;
                 values.push(Value::Integer(mark as i64));
+                vary = 2;
             }
             'p' => {
-                let prefix = interp
-                    .lookup_var("current-prefix-arg", env)
-                    .unwrap_or(Value::Nil);
-                values.push(prefix_numeric_value(&prefix)?);
+                values.push(prefix_numeric_value(&prefix_arg)?);
+                vary = -1;
             }
             'P' => {
-                values.push(
-                    interp
-                        .lookup_var("current-prefix-arg", env)
-                        .unwrap_or(Value::Nil),
-                );
+                values.push(prefix_arg);
+                vary = -1;
             }
             // "i": an ignored argument — always nil, no I/O (window.el's
             // commands pass their INTERACTIVE params through it).
-            'i' => values.push(Value::Nil),
+            'i' => {
+                values.push(Value::Nil);
+                vary = -1;
+            }
             'n' | 'N' => {
-                let prefix = interp
-                    .lookup_var("current-prefix-arg", env)
-                    .unwrap_or(Value::Nil);
-                if code == 'N' && prefix.is_truthy() {
-                    values.push(prefix_numeric_value(&prefix)?);
+                if code == 'N' && prefix_arg.is_truthy() {
+                    values.push(prefix_numeric_value(&prefix_arg)?);
+                    vary = -1;
                 } else {
                     let message = formatted_prompt(interp, env, &visible)?;
                     let number = call1(interp, env, "read-number", &[message])?;
@@ -801,6 +886,10 @@ pub(crate) fn parse_interactive_string(
                 let point = interp.buffer.borrow().point();
                 values.push(Value::Integer(point.min(mark) as i64));
                 values.push(Value::Integer(point.max(mark) as i64));
+                // Two arguments: the region's beginning, then its end.
+                varies.push(3);
+                visible.push(Value::Nil);
+                vary = 4;
             }
             's' | 'M' => {
                 let message = formatted_prompt(interp, env, &visible)?;
@@ -866,15 +955,13 @@ pub(crate) fn parse_interactive_string(
                 values.push(coding);
             }
             'Z' => {
-                let prefix = interp
-                    .lookup_var("current-prefix-arg", env)
-                    .unwrap_or(Value::Nil);
-                if prefix.is_truthy() {
+                if prefix_arg.is_truthy() {
                     let message = formatted_prompt(interp, env, &visible)?;
                     let coding = call1(interp, env, "read-non-nil-coding-system", &[message])?;
                     values.push(coding);
                 } else {
                     values.push(Value::Nil);
+                    vary = -1;
                 }
             }
             _ => return Err(invalid_interactive_control_letter(code)),
@@ -885,8 +972,13 @@ pub(crate) fn parse_interactive_string(
             seen = values.last().cloned().unwrap_or(Value::Nil);
         }
         visible.push(seen);
+        varies.push(vary);
     }
-    Ok(values)
+    Ok(InteractiveStringArgs {
+        values,
+        varies,
+        record_then_fail,
+    })
 }
 
 // Terminal-driven event input, installed by the tty frontend for the
@@ -1240,6 +1332,7 @@ fn execute_command_binding_inner(
     interp.set_variable("this-original-command", original, env);
     interp.set_variable("this-command", binding, env);
     interp.set_variable("real-this-command", binding, env);
+    record_command_lossage(interp, binding);
     // read_char records terminal events as they arrive while a keyboard
     // macro is being defined.  The command's end keys are deliberately
     // provisional: `end-kbd-macro' truncates back to the last command
@@ -1381,6 +1474,7 @@ fn execute_command_binding_inner(
             }
         }
     }
+    clear_command_keys(interp);
     if signalled {
         return result;
     }
@@ -1495,76 +1589,118 @@ fn decode_timer(interp: &Interpreter, timer: &Value) -> Option<ExactTimeValue> {
     Some(ExactTimeValue::from_timespec(seconds, nanoseconds))
 }
 
-/// timer_check's result: how long until the earliest timer on
-/// `timer-list' is ripe, zero when one already is, which bounds
-/// wait_reading_process_output's wait.  (Idle timers ripen only while
-/// keyboard input is awaited.)
-pub(crate) fn next_timer_delay(
-    interp: &mut Interpreter,
-    env: &mut Env,
-) -> Option<std::time::Duration> {
-    let timers = interp.lookup_var("timer-list", env)?.to_vec().ok()?;
-    let now = exact_time_to_f64(&current_time_value().ok()?);
-    timers
-        .iter()
-        .filter_map(|timer| decode_timer(interp, timer))
-        .map(|time| (exact_time_to_f64(&time) - now).max(0.0))
-        .min_by(f64::total_cmp)
-        .map(std::time::Duration::from_secs_f64)
-}
-
+/// keyboard.c:timer_check.  Copies of `timer-list' and, while Emacs is
+/// idle (IDLE_SECONDS finite), of `timer-idle-list' are walked by
+/// timer_check_2 until no timer in them is ripe: each pass runs the one
+/// ripe timer that is most overdue across both lists, marked triggered
+/// first so the walk passes over it, through `timer-event-handler' with
+/// `inhibit-quit' bound and `deactivate-mark' kept.  A timer added by a
+/// callback is not in the copies, so it waits for the next check.  How
+/// long until the first timer still waiting is ripe is left in
+/// `timer_check_delay', which bounds a wait as timer_delay does.
 pub(crate) fn run_due_timers(
     interp: &mut Interpreter,
     env: &mut Env,
     idle_seconds: f64,
 ) -> Result<bool, LispError> {
-    if interp.lookup_function("timer-event-handler", env).is_err() {
-        return Ok(false);
-    }
-    let wall_now = current_time_value().ok();
-    let idle_now = idle_seconds
-        .is_finite()
-        .then(|| decode_float_time(idle_seconds));
     let mut ran = false;
-    for (list_name, idle) in [("timer-idle-list", true), ("timer-list", false)] {
-        let Some(timers) = interp
-            .lookup_var(list_name, env)
-            .and_then(|value| value.to_vec().ok())
-            // keyboard.c:timer_check keeps its copied lists reachable across
-            // callbacks. A Rust heap Vec is outside the conservative stack:
-            // cancel-timer followed by GC must not free its remaining entries.
-            .map(crate::lisp::alloc::RootedVec::from_vec)
-        else {
-            continue;
-        };
-        for timer in timers {
-            let Some(time) = decode_timer(interp, &timer) else {
-                continue;
-            };
-            let due = if idle {
-                idle_now
-                    .as_ref()
-                    .is_some_and(|now| !exact_time_less(now, &time))
-            } else {
-                wall_now
-                    .as_ref()
-                    .is_some_and(|now| !exact_time_less(now, &time))
-            };
-            if due {
-                ran = true;
-                interp.begin_timer_callback();
-                let outcome = interp.call_function_value(
-                    Value::Symbol("timer-event-handler".into()),
-                    Some("timer-event-handler"),
-                    std::slice::from_ref(&timer),
-                    env,
-                );
-                interp.end_timer_callback();
-                outcome?;
-            }
-        }
+    let delay = timer_check(interp, env, idle_seconds, &mut ran);
+    interp.timer_check_delay = delay.as_ref().ok().copied().flatten();
+    delay.map(|_| ran)
+}
+
+fn timer_check(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    idle_seconds: f64,
+    ran: &mut bool,
+) -> Result<Option<std::time::Duration>, LispError> {
+    if interp.lookup_function("timer-event-handler", env).is_err() {
+        return Ok(None);
     }
-    Ok(ran)
+    // keyboard.c:timer_check keeps its copied lists reachable across
+    // callbacks. A Rust heap Vec is outside the conservative stack:
+    // cancel-timer followed by GC must not free its remaining entries.
+    let copy = |interp: &Interpreter, env: &Env, name: &str| {
+        crate::lisp::alloc::RootedVec::from_vec(
+            interp
+                .lookup_var(name, env)
+                .and_then(|value| value.to_vec().ok())
+                .unwrap_or_default(),
+        )
+    };
+    let timers = copy(interp, env, "timer-list");
+    let idle_timers = if idle_seconds.is_finite() {
+        copy(interp, env, "timer-idle-list")
+    } else {
+        crate::lisp::alloc::RootedVec::new()
+    };
+    let started = std::time::Instant::now();
+    loop {
+        let Ok(now) = current_time_value() else {
+            return Ok(None);
+        };
+        let idleness_now = decode_float_time(idle_seconds + started.elapsed().as_secs_f64());
+        // timer_check_2: the first proper timer left on each list, the
+        // ripe one longest overdue (or, none ripe, the soonest) chosen.
+        let next = |list: &[Value], clock: &ExactTimeValue| {
+            list.iter().find_map(|timer| {
+                let time = decode_timer(interp, timer)?;
+                let ripe = !exact_time_less(clock, &time);
+                let difference = (exact_time_to_f64(clock) - exact_time_to_f64(&time)).abs();
+                Some((*timer, ripe, difference))
+            })
+        };
+        let timer = next(&timers, &now);
+        let idle = next(&idle_timers, &idleness_now);
+        let pick_timer = match (timer, idle) {
+            (None, None) => return Ok(None),
+            (Some(_), None) => true,
+            (None, Some(_)) => false,
+            (Some((_, timer_ripe, timer_difference)), Some((_, idle_ripe, idle_difference))) => {
+                !idle_ripe && timer_ripe
+                    || (idle_ripe == timer_ripe
+                        && if timer_ripe {
+                            idle_difference < timer_difference
+                        } else {
+                            timer_difference < idle_difference
+                        })
+            }
+        };
+        let (timer, ripe, difference) = if pick_timer {
+            timer.expect("chosen ordinary timer")
+        } else {
+            idle.expect("chosen idle timer")
+        };
+        // A timer still waiting ends the check.
+        if !ripe {
+            return Ok(Some(
+                std::time::Duration::try_from_secs_f64(difference)
+                    .unwrap_or(std::time::Duration::MAX),
+            ));
+        }
+        *ran = true;
+        super::call(interp, "aset", &[timer, Value::Integer(0), Value::T], env)?;
+        let old_deactivate_mark = interp
+            .lookup_var("deactivate-mark", env)
+            .unwrap_or(Value::Nil);
+        let inhibit_quit = interp.bind_special_variable("inhibit-quit", Value::T, env)?;
+        interp.begin_timer_callback();
+        let outcome = interp.call_function_value(
+            Value::Symbol("timer-event-handler".into()),
+            Some("timer-event-handler"),
+            std::slice::from_ref(&timer),
+            env,
+        );
+        interp.end_timer_callback();
+        if outcome.is_ok() {
+            interp.set_c_variable("deactivate-mark", old_deactivate_mark);
+        }
+        interp.restore_special_binding(inhibit_quit, env)?;
+        outcome?;
+        // The next timer_check_2 pass runs what the callback deferred.
+        interp.run_pending_funcalls(env)?;
+    }
 }
 
 /// The echo-area text for a command's error, GNU's
@@ -1705,6 +1841,7 @@ fn read_command_event(
                 if event == Value::Integer(7) && !quit_char_is_event {
                     return Err(LispError::SignalValue(Value::list([Value::symbol("quit")])));
                 }
+                interp.keyboard_input.last_event_reread = false;
                 record_external_input_event(interp, &event, env);
                 return Ok(event);
             }
@@ -1725,7 +1862,7 @@ fn read_command_event(
                     // wait_reading_process_output.
                     run_tty_frame_redraw(interp, env);
                 }
-                if let Some(event) = pop_unread_event_cell(interp, env) {
+                if let Some(event) = take_unread_command_event(interp, env) {
                     record_external_input_event(interp, &event, env);
                     return Ok(event);
                 }
@@ -1735,6 +1872,7 @@ fn read_command_event(
     if let Some(read) = read_via_tty_event_reader(interp, cursor_in_echo_area) {
         return match read {
             Some(event) if event != Value::Integer(7) || quit_char_is_event => {
+                interp.keyboard_input.last_event_reread = false;
                 record_external_input_event(interp, &event, env);
                 Ok(event)
             }
@@ -1744,11 +1882,6 @@ fn read_command_event(
     Err(LispError::Signal(
         "No unread-command-events available for interactive input".into(),
     ))
-}
-
-pub(crate) fn unread_command_event_char(event: &Value) -> Result<char, LispError> {
-    translated_unread_event_char(event)
-        .ok_or_else(|| LispError::Signal(format!("Invalid unread command event {}", event)))
 }
 
 pub(crate) fn normalize_input_event_value(event: Value) -> Result<Value, LispError> {
@@ -1860,28 +1993,6 @@ pub(crate) fn is_mouse_down_event(value: &Value) -> bool {
         .and_then(|items| items.first().cloned())
         .and_then(|item| item.symbol_str().map(str::to_string))
         .is_some_and(|name| name.contains("down-mouse"))
-}
-
-pub(crate) fn record_command_history(
-    interp: &mut Interpreter,
-    function_name: &str,
-    args: Vec<Value>,
-    env: &mut Env,
-) {
-    let mut history = interp
-        .lookup_var("command-history", env)
-        .unwrap_or(Value::Nil)
-        .to_vec()
-        .unwrap_or_default();
-    let mut entry = vec![Value::Symbol(function_name.to_string().into())];
-    entry.extend(args);
-    history.insert(0, Value::list(entry));
-    if let Some(Kind::Integer(length)) = interp.lookup_var("history-length", env).map(|v| v.kind())
-    {
-        let length = length.max(0) as usize;
-        history.truncate(length);
-    }
-    interp.set_variable("command-history", Value::list(history), env);
 }
 
 pub(crate) fn is_declare_form(form: &Value) -> bool {
@@ -2160,9 +2271,23 @@ pub(crate) fn take_unread_command_event(interp: &mut Interpreter, env: &mut Env)
     let event = pop_unread_event_cell(interp, env)?;
     match event.kind() {
         Kind::Cons(_) if matches!(event.car().map(|v| v.kind()), Ok(Kind::T)) => {
+            interp.keyboard_input.last_event_reread = false;
             event.cdr_if_list()
         }
-        _ => Some(event),
+        _ => {
+            interp.keyboard_input.last_event_reread = true;
+            Some(event)
+        }
+    }
+}
+
+/// keyboard.c:read_char's add_command_key for an event it returned: the
+/// event joins this-command-keys, one reread from `unread-command-events'
+/// only as their first.
+pub(crate) fn add_read_event_to_command_keys(interp: &mut Interpreter, event: Value) {
+    let reread = std::mem::take(&mut interp.keyboard_input.last_event_reread);
+    if !reread || interp.keyboard_input.command_keys.is_empty() {
+        interp.keyboard_input.command_keys.push(event);
     }
 }
 
@@ -2248,6 +2373,7 @@ pub(crate) fn read_tty_event_with_timeout(
                 if event == Value::Integer(7) {
                     return Err(LispError::SignalValue(Value::list([Value::symbol("quit")])));
                 }
+                interp.keyboard_input.last_event_reread = false;
                 record_external_input_event(interp, &event, env);
                 return Ok(Some(event));
             }

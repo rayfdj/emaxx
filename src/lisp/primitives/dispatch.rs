@@ -2,6 +2,7 @@ use super::*;
 
 mod buffer_edit;
 mod buffer_meta;
+mod coding_systems;
 mod collections;
 pub(super) use collections::map_char_table_with;
 mod comp;
@@ -18,6 +19,7 @@ mod files_process;
 mod fonts;
 mod frames;
 pub(crate) use frames::frame_display_parameter;
+pub(crate) use frames::realize_basic_faces;
 pub(crate) mod gnutls;
 mod gui_actions;
 pub(super) mod lists;
@@ -52,7 +54,7 @@ pub(crate) use lists::{
     event_array, next_kbd_macro_event, prepare_kbd_macro_minibuffer_entry,
     read_minibuffer_text_from_kbd_macro_inner, recursive_edit_exit_value,
 };
-pub(crate) use misc_keymaps::{oclosure_type_of, restore_unicode_menu_case_table};
+pub(crate) use misc_keymaps::restore_unicode_menu_case_table;
 mod overlays;
 mod predicates;
 mod search_coding;
@@ -265,7 +267,7 @@ define_dispatch_modules! {
     Terminals => terminals => terminals::call(interp, name, args, env),
     Treesit => treesit => treesit::call(interp, name, args, env),
     Gnutls => gnutls => gnutls::call(interp, name, args),
-    GuiActions => gui_actions => gui_actions::call(interp, name, args),
+    GuiActions => gui_actions => gui_actions::call(interp, name, args, env),
     Comp => comp => comp::call(interp, name, args, env),
     Predicates => predicates => predicates::call(interp, name, args, env),
     Lists => lists => lists::call(interp, name, args, env),
@@ -508,4 +510,13 @@ pub(crate) fn mark_thread_local_roots(mark: &mut dyn FnMut(&Value)) {
     crate::lisp::types::mark_interned_symbol_roots(mark);
     display::mark_echo_area_roots(mark);
     misc_keymaps::mark_semantic_cache_roots(mark);
+}
+
+/// decode_live_frame for the primitives outside dispatch: nil the
+/// selected frame, else a live frame.
+pub(crate) fn decode_live_frame(
+    interp: &Interpreter,
+    value: Option<&Value>,
+) -> Result<crate::lisp::types::FrameRef, LispError> {
+    frames::decode_live_frame(interp, value, true)
 }

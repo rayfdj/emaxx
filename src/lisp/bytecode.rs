@@ -602,6 +602,16 @@ pub enum ArgSpec {
     Legacy(Value),
 }
 
+/// exec_byte_code's reading of an ARGS_TEMPLATE fixnum in range.
+#[inline(always)]
+fn packed_template(template: i64) -> ArgSpec {
+    ArgSpec::Packed {
+        mandatory: (template & 0x7F) as u8,
+        nonrest: ((template >> 8) & 0x7F) as u8,
+        rest: template & 0x80 != 0,
+    }
+}
+
 impl ArgSpec {
     fn from_value(value: &Value) -> Result<ArgSpec, ByteCodeError> {
         match value.kind() {
@@ -861,6 +871,37 @@ impl ByteCodeObject {
     /// rejects), which the caller then calls through funcall.
     #[inline(always)]
     pub(crate) fn for_call(closure: crate::lisp::types::ClosureRef) -> Option<Self> {
+        Self::for_entry(closure, |arguments| {
+            arguments
+                .fixnum()
+                .filter(|template| (0..=0x7FFF).contains(template))
+                .map(packed_template)
+        })
+    }
+
+    /// `for_call' as funcall_lambda reads the closure: a dynamic-binding
+    /// function's formal argument list (nil or a cons), which funcall_lambda
+    /// binds itself before exec_byte_code runs the code with no arguments,
+    /// as well as a template.
+    #[inline]
+    pub(crate) fn for_funcall(closure: crate::lisp::types::ClosureRef) -> Option<Self> {
+        Self::for_entry(closure, |arguments| match arguments.fixnum() {
+            Some(template) => (0..=0x7FFF)
+                .contains(&template)
+                .then(|| packed_template(template)),
+            None => {
+                (arguments.is_nil() || arguments.is_cons()).then_some(ArgSpec::Legacy(arguments))
+            }
+        })
+    }
+
+    /// The fields `for_call' and `for_funcall' read, with the argument
+    /// contract ARGSPEC makes of the first.
+    #[inline(always)]
+    fn for_entry(
+        closure: crate::lisp::types::ClosureRef,
+        argspec: impl FnOnce(Value) -> Option<ArgSpec>,
+    ) -> Option<Self> {
         if closure.public_len() < 4 {
             return None;
         }
@@ -873,9 +914,7 @@ impl ByteCodeObject {
                 closure.get_unchecked(3),
             )
         };
-        let template = arguments
-            .fixnum()
-            .filter(|template| (0..=0x7FFF).contains(template))?;
+        let argspec = argspec(arguments)?;
         let Kind::StringObject(string) = code.kind() else {
             return None;
         };
@@ -891,11 +930,7 @@ impl ByteCodeObject {
             return None;
         }
         Some(ByteCodeObject {
-            argspec: ArgSpec::Packed {
-                mandatory: (template & 0x7F) as u8,
-                nonrest: ((template >> 8) & 0x7F) as u8,
-                rest: template & 0x80 != 0,
-            },
+            argspec,
             code: CodeBytes { original: code },
             constants,
             stack_depth: depth as usize,
