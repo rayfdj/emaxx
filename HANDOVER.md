@@ -13638,6 +13638,31 @@ setup_process_coding_systems's check now refuses). A 13-form
   match GNU. Local validation: the grouped gate's 3,494 library
   tests, the integration targets and clippy with `--all-targets
   --all-features -D warnings' pass.
+- **Round 282: forward-word's boundary test and scan setup.**
+  category.c's word_boundary_p tests each pair of
+  `word-separating-categories' (or, across scripts,
+  `word-combining-categories') against the two characters' category
+  sets, and modify-category-entry's hash_get_category_set makes equal
+  sets one object, so the letters of one script share a set. When the
+  two sets are that one object no category is in one and not the other,
+  and of GNU's tests only a (nil . nil) pair can hold: word_boundary_p
+  now answers so from the list alone, 184 instructions a call becoming
+  120 (GNU's, with its char_category_set calls, 144). scan_words' setup
+  read point's, BEGV's and ZV's byte positions and the buffer's extended
+  characters through the buffer even when every character of the text is
+  one byte, where each position is its own byte. On 20,000 lines of six
+  words, scan_words (Emaxx's entry, with the Scanner it makes) went from
+  268.9M instructions to 222.4M for 120,000 calls, 1,854 a call against
+  GNU's 1,268. What remains is the setup a call makes and GNU's does
+  not: Scanner::new's own work (158), the gl_state's reads of
+  `parse-sexp-lookup-properties' and `syntax-propertize--done' as
+  buffer-local variables (68 of read_state's 133), the three variables
+  word_boundary_p reads (92) and `find-word-boundary-function-table'
+  (70), where GNU reads C variables. A contract of `forward-word' and
+  `backward-word' over Latin, Japanese and Greek text under six category
+  lists, (nil . nil) pairs among them, matches GNU. Local validation:
+  the grouped gate's 3,495 library tests, the integration targets
+  and clippy with `--all-targets --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -15711,6 +15736,22 @@ widest body gaps are ert-tests (45,950 ms against 41,010), tramp-tests
 (3,140 against 2,020) and semantic-utest-ia (4,080 against 3,090), the
 same files as at round 279, where ert-tests' gap was shown to be the
 gate build's checks.
+
+**On `19834af`** (round 281): the full Rust gate (run 41696662887)
+passed; the frozen run (run 41696669054) passed at its first attempt,
+7,928 of 7,928 outcomes matching. Setup 83.3 s against 67.4 s (1.237),
+test bodies 301.1 s against 270.0 s (1.115), in all 1.120, with a
+per-file setup median of 125 ms against 103. The widest body gaps are
+again ert-tests (45,560 ms against 37,910), tramp-tests (22,580 against
+19,320), comp-tests (17,480 against 15,240), semantic-utest-ia (3,940
+against 2,620) and mule-tests (3,260 against 2,040). In the release
+build here semantic-utest-ia runs in 3.05 s against GNU's 3.48 s,
+mule-tests' two ucs-names tests take 1.25 and 1.17 s against 1.11 and
+1.09 (one `ucs-names' 0.119 s against 0.100), and edebug-tests runs
+4.36G instructions against 3.69G with loading (853M against 840M),
+reading (254M against 238M) and regexp search (488M against 471M) level
+and garbage collection cheaper (259M against 454M): its excess is spread
+through the instrumentation's Lisp.
 
 **Findings recorded, not fixed:**
 - **Allocations outside the Lisp object makers still abort when the

@@ -534,6 +534,23 @@ pub(super) fn word_boundary_p_with(
     if set2.is_nil() {
         return default_result;
     }
+    if set1.word() == set2.word() {
+        // One set for both characters, as modify-category-entry's
+        // hash_get_category_set makes equal sets one object: a category
+        // is in both or in neither, so of GNU's tests below only a pair
+        // of two nils can hold.
+        let mut tail = tail;
+        while let Some(cell) = tail.cons_ref() {
+            if let Some(elt) = cell.car.get().cons_ref()
+                && elt.car.get().is_nil()
+                && elt.cdr.get().is_nil()
+            {
+                return !default_result;
+            }
+            tail = cell.cdr.get();
+        }
+        return default_result;
+    }
     // CATEGORY_MEMBER of each set, read as the bool-vector it is.
     let (set1, set2) = (set1.bool_vector_ref(), set2.bool_vector_ref());
     let member = |set: Option<crate::lisp::types::BoolVectorRef>, category: u8| {

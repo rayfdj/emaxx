@@ -1365,6 +1365,37 @@ fn c_error_messages_are_requoted_as_doprnt() {
 }
 
 #[test]
+fn word_boundaries_follow_category_c_word_boundary_p() {
+    // category.c:word_boundary_p under the categories `forward-word' and
+    // `backward-word' consult: characters of one script are separated by
+    // a `word-separating-categories' pair, of two scripts joined by a
+    // `word-combining-categories' pair, and a (nil . nil) pair holds even
+    // between characters sharing one category set.
+    assert_oracle_contract_matches_interpreter(
+        r##"(with-temp-buffer
+  (insert "alpha beta \u65e5\u672c\u8a9e\u304b\u306a \u30ab\u30ca\u6f22\u5b57 \u03b5\u03bb\u03bb\u03b7\u03bd\u03b9\u03ba\u03ac")
+  (mapcar (lambda (cats)
+            (let ((word-separating-categories (car cats))
+                  (word-combining-categories (cdr cats))
+                  (out nil))
+              (goto-char 1)
+              (while (forward-word 1) (push (point) out))
+              (goto-char (point-max))
+              (push 'back out)
+              (while (backward-word 1) (push (point) out))
+              (nreverse out)))
+          '((nil . nil)
+            (((nil . nil)) . nil)
+            (((?H . ?K) (?K . ?H)) . ((nil . ?^) (?^ . nil) (?C . ?H) (?C . ?K)))
+            (((?l . nil) (nil . nil)) . ((nil . nil)))
+            (((?l . ?l)) . ((?C . nil)))
+            ((foo (nil . nil)) . (bar)))))"##,
+        r##"((6 11 15 17 20 22 31 back 23 20 18 15 12 7 1) (2 3 4 5 6 8 9 10 11 13 14 15 16 17 19 20 21 22 24 25 26 27 28 29 30 31 back 30 29 28 27 26 25 24 23 21 20 19 18 16 15 14 13 12 10 9 8 7 5 4 3 2 1) (6 11 17 20 22 31 back 23 20 18 12 7 1) (2 3 4 5 6 8 9 10 11 13 14 16 17 19 21 22 24 25 26 27 28 29 30 31 back 30 29 28 27 26 25 24 23 21 19 18 16 14 13 12 10 9 8 7 5 4 3 2 1) (6 11 17 20 22 31 back 23 20 18 12 7 1) (2 3 4 5 6 8 9 10 11 13 14 15 16 17 19 20 21 22 24 25 26 27 28 29 30 31 back 30 29 28 27 26 25 24 23 21 20 19 18 16 15 14 13 12 10 9 8 7 5 4 3 2 1))"##,
+        "word boundaries as category.c",
+    );
+}
+
+#[test]
 fn file_readable_p_tests_access_without_opening_a_fifo() {
     // fileio.c:Ffile_readable_p is faccessat (R_OK): a FIFO with no
     // writer is readable without the open that would wait for one.
