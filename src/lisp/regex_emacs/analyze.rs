@@ -503,15 +503,20 @@ fn mutually_exclusive_charset(buf: &[u8], multibyte: bool, p1: usize, p2: usize)
     if multibyte && charset_range_table_exists_p(buf, p2) {
         return false;
     }
-    // P2 has no range table, so its length byte is its bitmap size.
+    // GNU takes `p2[1]' as P2's bitmap size, which in a unibyte pattern
+    // still carries the range-table flag of a charset with a class, and so
+    // reads on past P2's bitmap into its range table, the operations after
+    // it and the allocated bytes past the compiled pattern.  Those last are
+    // whatever the buffer held; they read here as zero bytes.
     let p2_size = usize::from(buf[p2 + 1]);
     let p1_size = charset_bitmap_size(buf, p1);
+    let byte = |at: usize| buf.get(at).copied().unwrap_or(0);
     match buf[p1] {
         op::CHARSET => {
             // No overlap between the set inside the loop and the one after.
             let mut idx = 0;
             while idx < p2_size && idx < p1_size {
-                if buf[p2 + 2 + idx] & buf[p1 + 2 + idx] != 0 {
+                if byte(p2 + 2 + idx) & byte(p1 + 2 + idx) != 0 {
                     break;
                 }
                 idx += 1;
@@ -523,8 +528,8 @@ fn mutually_exclusive_charset(buf: &[u8], multibyte: bool, p1: usize, p2: usize)
             // charset after it does.
             let mut idx = 0;
             while idx < p2_size {
-                if !(buf[p2 + 2 + idx] == 0
-                    || (idx < p1_size && buf[p2 + 2 + idx] & !buf[p1 + 2 + idx] == 0))
+                if !(byte(p2 + 2 + idx) == 0
+                    || (idx < p1_size && byte(p2 + 2 + idx) & !byte(p1 + 2 + idx) == 0))
                 {
                     break;
                 }

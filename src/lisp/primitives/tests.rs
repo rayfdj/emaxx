@@ -1057,6 +1057,20 @@ fn decoders_translate_through_decode_translation_tables_as_produce_chars() {
 }
 
 #[test]
+fn loops_before_a_class_charset_compare_bitmaps_as_mutually_exclusive_charset() {
+    // regex-emacs.c:mutually_exclusive_charset reads `p2[1]' as the size of
+    // the charset after a loop; in a unibyte pattern a charset with a class
+    // keeps its range-table flag there, so the comparison runs on past that
+    // charset's bitmap, through the operations after it and beyond the end
+    // of the compiled pattern.
+    assert_oracle_contract_matches_interpreter(
+        r##"(let ((case-fold-search nil)) (list (list (string-match "[ab]+\\(^[[:digit:]x]?\\)*?[[:space:]]?" "\nabbééé_") (match-data t)) (list (string-match "[ab]+[[:space:]]" "abab ab") (match-data t)) (list (string-match "[^c]*[[:alpha:]]" "abcd") (match-data t)) (let ((case-fold-search t)) (list (string-match "[^ab]+[[:digit:]x]" "cc1x") (match-data t))) (list (string-match "[a-z]*?[[:space:]]?b" "zz b") (match-data t))))"##,
+        r##"((1 (1 4)) (0 (0 5)) (0 (0 3)) (0 (0 4)) (0 (0 4)))"##,
+        "loop charsets",
+    );
+}
+
+#[test]
 fn looking_at_does_not_create_or_assign_unrelated_lisp_variables() {
     assert_oracle_contract_matches_interpreter(
         r#"(with-temp-buffer

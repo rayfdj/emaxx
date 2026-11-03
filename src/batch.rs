@@ -871,9 +871,12 @@ fn initialize_interpreter_attempt(
         if noninteractive { Value::T } else { Value::Nil },
         &mut crate::lisp::types::Env::new(),
     );
+    // emacs.c: `noninteractive && initialized ? 1.0 : 0.1', so the dumping
+    // process (`--temacs') keeps 0.1 while loadup runs, as cus-start's
+    // `standard-value' records it.
     interpreter.set_variable(
         "gc-cons-percentage",
-        Value::float(if noninteractive { 1.0 } else { 0.1 }),
+        Value::float(if noninteractive && !temacs { 1.0 } else { 0.1 }),
         &mut crate::lisp::types::Env::new(),
     );
     // sysdep.c:init_system_name, from init_editfns in every process: this
@@ -897,9 +900,10 @@ fn initialize_interpreter_attempt(
         );
     }
     // emacs.c handles --batch before syms_of_undo: in an uninitialized
-    // builder, syms_of_undo reinstalls 24000000 before loadup runs, and the
-    // raw initializer stays for it; a fresh batch session clears it here.
-    if noninteractive {
+    // builder (`--temacs'), syms_of_undo reinstalls 24000000 before loadup
+    // runs, and the raw initializer stays for it; a fresh batch session
+    // clears it here.
+    if noninteractive && !temacs {
         interpreter.set_variable(
             "undo-outer-limit",
             Value::Nil,
@@ -1823,6 +1827,36 @@ mod tests {
                 .symbol_value_cell("command-line-processed")
                 .expect("startup remains pending"),
             Value::Nil
+        );
+        drop(batch);
+        // The dumping process (`--temacs=pdump', batch): emacs.c's
+        // `noninteractive && initialized ? 1.0 : 0.1' and syms_of_undo's
+        // 24000000 after the batch switch hold while loadup runs, as
+        // cus-start's `standard-value' records them.
+        let temacs = initialize_batch_interpreter_as_started(&BatchRunOptions {
+            no_site_lisp: true,
+            defer_delayed_custom_init: true,
+            dump_mode: Some("pdump".into()),
+            ..Default::default()
+        })
+        .expect("prepare the dumping process");
+        assert_eq!(
+            temacs
+                .symbol_value_cell("undo-outer-limit")
+                .expect("temacs undo value"),
+            Value::Integer(24_000_000)
+        );
+        assert_eq!(
+            temacs
+                .symbol_value_cell("gc-cons-percentage")
+                .expect("temacs GC value"),
+            Value::float(0.1)
+        );
+        assert_eq!(
+            temacs
+                .symbol_value_cell("noninteractive")
+                .expect("temacs batch mode"),
+            Value::T
         );
     }
 

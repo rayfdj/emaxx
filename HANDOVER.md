@@ -13292,6 +13292,45 @@ setup_process_coding_systems's check now refuses). A 13-form
   GNU. Local validation: the grouped gate's 3,484 library tests,
   the integration targets and clippy with `--all-targets --all-features
   -D warnings' pass.
+- **Round 274: the dumping process's GC and undo settings, and the regex
+  optimizer's charset comparison, as GNU's.** A sweep of every face and
+  every customizable variable's `standard-value' against the oracle
+  found `gc-cons-percentage' recorded as (1.0) and `undo-outer-limit' as
+  (nil): emacs.c sets gc-cons-percentage to 1.0 only when
+  `noninteractive && initialized', and clears undo-outer-limit only in
+  an initialized batch session, so in the dumping process (`--temacs')
+  they are 0.1 and 24000000 while loadup runs and cus-start records
+  those as the standard values; the batch startup now tells the dumping
+  process from a session. A regex fuzz (20,000 patterns and strings,
+  case folded and not) found a panic: mutually_exclusive_charset takes
+  `p2[1]' as the bitmap size of the charset after a loop, which in a
+  unibyte pattern keeps the range-table flag of a charset with a class,
+  so GNU's comparison reads on past that charset's bitmap, through the
+  operations after it and past the end of the compiled pattern into the
+  buffer's spare bytes; Emaxx's reads are now bounded, the bytes past
+  the pattern reading as zeros, and the optimizer reaches GNU's verdicts
+  on every fuzzed pattern. Fuzzes of the reader (20,000 strings of
+  reader tokens), the printer (12,000 objects under every print-*
+  variable), string functions (15,000 calls of splitting, trimming,
+  searching, casing, conversion, padding and format), arithmetic (18,000
+  operations over fixnums, bignums and floats), sexp scanning (9,000
+  scans in four modes), buffer editing with markers, text properties and
+  undo (2,000 edit sequences), time conversion and formatting, keymaps,
+  sxhash of symbol-free objects, JSON parsing and serialization, base64
+  and secure hashes, `sort' (an inconsistent predicate included),
+  char-table ranges under map-char-table and replace-match match GNU
+  throughout. Two findings are GNU's own: transpose-regions over
+  intervals crashed the oracle in copy_intervals (the editing fuzz
+  leaves it out), and Fget_pos_property never fills the sortvec of its
+  first candidate overlay, so whether a later overlay displaces it
+  depends on stale stack bytes (a user-space address in a fresh process,
+  which keeps the first; the sortvec a preceding get-char-property left,
+  which ranks them as compare_overlays does); Emaxx keeps
+  compare_overlays' order, and 37 of 1,049 fuzzed calls answer
+  differently. Contracts for the regex comparison and the dumping
+  process's values match GNU. Local validation: the grouped gate's
+  3,485 library tests, the integration targets and clippy with
+  `--all-targets --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -15234,6 +15273,19 @@ and the widest body gaps are ert-tests (45,436 ms against 37,759),
 comp-tests (17,927 against 14,873), tramp-tests (21,957 against 19,554),
 semantic-utest-ia (4,134 against 2,744) and mule-tests (3,264 against
 2,024).
+
+**On `f1e2e33`** (round 273): the full Rust gate (run 41616141230)
+passed, and frozen (run 41616145874) matched all 7,928 outcomes at the
+first attempt. Setup 50.0 s against 42.2 s (1.183), test bodies 226.2 s
+against 215.8 s (1.048), in all 1.054, on a much faster runner than
+round 272's (GNU's own setup median 66 ms against 104). Per file, the
+setup is 15 ms over GNU's on average (7.7 s over 519 files, a median of
+76 ms against 66), ntlm-tests' the most over (605 against 188) before
+comp-tests' (1,313 against 1,093) and electric-tests' (458 against
+305), and the widest body gaps are comp-tests (12,056 ms against
+10,365), ert-tests (27,141 against 25,621), semantic-utest-ia (2,433
+against 1,504), mule-tests (1,759 against 1,052) and package-tests
+(6,387 against 5,704).
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'
