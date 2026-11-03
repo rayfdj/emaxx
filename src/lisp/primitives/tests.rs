@@ -1396,6 +1396,77 @@ fn word_boundaries_follow_category_c_word_boundary_p() {
 }
 
 #[test]
+fn prin1_and_error_message_strings_print_into_the_hidden_prin1_buffer() {
+    // print.c's Vprin1_to_string_buffer: prin1-to-string and %S insert
+    // at its point with modification hooks inhibited, error-message-string
+    // a piece at a time with them live, and each takes and erases the
+    // whole buffer, text left by an earlier escape included; the printer
+    // reads its variables there, print-unreadable-function runs in the
+    // caller's buffer, and the buffer is on no buffer list.
+    assert_oracle_contract_matches_interpreter(
+        r##"(let* ((hidden nil) (log nil)
+       (pieces
+        (let ((after-change-functions
+               (list (lambda (b e l)
+                       (setq hidden (current-buffer))
+                       (push (list b e l (buffer-string)) log)))))
+          (list (error-message-string '(wrong-type-argument 1 "x"))
+                (prin1-to-string 'p) (format "%S" 'q) (nreverse log)))))
+  (list
+   pieces
+   (list (buffer-name hidden) (memq hidden (buffer-list)) (get-buffer " prin1")
+         (with-current-buffer hidden
+           (list (buffer-size) default-directory buffer-undo-list (buffer-modified-p)
+                 (local-variable-p 'buffer-access-fontify-functions))))
+   (let ((print-unreadable-function (lambda (_o _e) (buffer-name))))
+     (with-temp-buffer (rename-buffer "caller") (prin1-to-string (list 1 (make-marker)))))
+   (list (condition-case e (let ((err (list 'error))) (setcdr err err) (error-message-string err))
+           (error (car e)))
+         (prin1-to-string 'foo)
+         (condition-case e (let ((d (list 'void-variable 'x))) (setcdr (cdr d) (cdr d))
+                             (error-message-string d))
+           (error (car e)))
+         (format "%S" 'after))
+   (with-temp-buffer
+     (setq-local print-escape-newlines t print-length 2 print-quoted nil)
+     (list (prin1-to-string "a\nb") (prin1-to-string '(1 2 3 4)) (prin1-to-string ''x)
+           (error-message-string '(wrong-type-argument "e\nf" (1 2 3 4)))))
+   (progn (with-current-buffer hidden (insert "abcdef") (narrow-to-region 2 4) (goto-char 3))
+          (list (prin1-to-string 'Y) (with-current-buffer hidden (list (point-min) (point-max) (buffer-size)))))
+   (progn (with-current-buffer hidden (insert "z")) (list (format "%s" "str") (format "%s" 'sym) (format "%d" 5) (format "%s" 1.5)))
+   (list (multibyte-string-p (prin1-to-string 'abc)) (multibyte-string-p (prin1-to-string "" t))
+         (multibyte-string-p (prin1-to-string "\u00e9" t)))
+   (progn (with-current-buffer hidden (setq buffer-read-only t))
+          (prog1 (condition-case e (prin1-to-string 'ro) (error (car e)))
+            (with-current-buffer hidden (setq buffer-read-only nil))))
+   (progn (with-current-buffer hidden (setq-local print-length 1))
+          (prog1 (list (prin1-to-string '(1 2 3)) (error-message-string '(error "x" (1 2 3))))
+            (with-current-buffer hidden (kill-local-variable 'print-length))))
+   (let ((deactivate-mark 'keep)) (prin1-to-string 'dm) deactivate-mark)))"##,
+        r##"(("Wrong type argument: 1, \"x\"" "p" "q" ((1 20 0 "Wrong type argument") (20 22 0 "Wrong type argument: ") (22 23 0 "Wrong type argument: 1") (23 25 0 "Wrong type argument: 1, ") (25 28 0 "Wrong type argument: 1, \"x\"") (1 1 27 ""))) (" prin1" nil nil (0 nil t t t)) "(1 caller)" (circular-list "peculiar error: errorfoo" circular-list "Symbol's value as variable is void: xafter") ("\"a
+b\"" "(1 2 3 4)" "'x" "Wrong type argument: \"e
+f\", (1 2 3 4)") ("bYc" (1 1 0)) ("str" "sym" "5" "z1.5") (nil nil t) buffer-read-only ("(1 ...)" "x: (1 ...)") keep)"##,
+        "prin1 buffer as print.c",
+    );
+    // Killed, it stays killed (the C variable keeps the dead buffer): both
+    // printers fail in print_prepare's Fset_buffer, and only the (error
+    // STRING) shortcut still answers.  GNU prints this text for it.
+    let program = r##"(let (hidden) (let ((after-change-functions (list (lambda (&rest _) (setq hidden (current-buffer)))))) (error-message-string '(wrong-type-argument 1))) (kill-buffer hidden) (concat (condition-case e (prin1-to-string 'dead) (error (cadr e))) "|" (condition-case e (error-message-string '(error "x" 1)) (error (cadr e))) "|" (error-message-string '(error "only")) "|" (if (buffer-live-p hidden) "live" "dead")))"##;
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let (form, _) =
+        super::print::read_encoded_form_in_env(&mut interp, program.as_bytes(), false, &mut env)
+            .expect("killed prin1 buffer program should read");
+    let result = interp
+        .eval(&form, &mut env)
+        .expect("killed prin1 buffer program should evaluate");
+    assert_eq!(
+        string_like(&result).map(|text| text.text).as_deref(),
+        Some("Selecting deleted buffer|Selecting deleted buffer|only|dead")
+    );
+}
+
+#[test]
 fn file_readable_p_tests_access_without_opening_a_fifo() {
     // fileio.c:Ffile_readable_p is faccessat (R_OK): a FIFO with no
     // writer is readable without the open that would wait for one.
@@ -24704,7 +24775,9 @@ fn native_frame_terminal_and_buffer_owners_contribute_to_vector_census() {
     );
     interp.kill_buffer_id(id);
     let killed = interp.live_object_census();
-    assert_eq!(killed.buffers, after.buffers);
+    // alloc.c:sweep_buffers counts the live buffers of Vbuffer_alist; the
+    // killed one stays a vector of its size.
+    assert_eq!(killed.buffers, after.buffers - 1);
     assert_eq!(killed.vectors, after.vectors);
     assert_eq!(killed.vector_slots, after.vector_slots);
     assert!(matches!(buffer.kind(), Kind::Buffer(_)));

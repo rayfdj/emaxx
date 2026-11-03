@@ -1135,6 +1135,16 @@ impl SharedStringState {
             self.size_byte = -1;
         }
     }
+
+    /// lisp.h:STRING_SET_UNIBYTE of a non-empty string whose bytes are
+    /// its characters (SBYTES == SCHARS).  The macro replaces an empty
+    /// string's variable with empty_unibyte_string instead, which is the
+    /// caller's to do.
+    pub(crate) fn set_unibyte(&mut self) {
+        debug_assert!(self.size != 0 && self.storage_bytes() == self.size);
+        self.forget_char_byte_cache();
+        self.size_byte = -1;
+    }
 }
 
 pub(crate) fn character_code(value: Value) -> Result<u32, LispError> {

@@ -39,6 +39,26 @@ impl PrintOutput {
         self.bytes
     }
 
+    /// Whether a multibyte character joined the output; otherwise each of
+    /// its codes is an octet print.c's strout counted as a character.
+    pub(crate) fn is_multibyte(&self) -> bool {
+        self.multibyte
+    }
+
+    /// The octets of an output no multibyte character joined, a raw byte
+    /// as its byte.
+    pub(crate) fn octets(&self) -> Vec<u8> {
+        self.codes()
+            .map(|code| {
+                if code >= 0x3fff80 {
+                    (code - 0x3fff00) as u8
+                } else {
+                    code as u8
+                }
+            })
+            .collect()
+    }
+
     pub(crate) fn push_code(&mut self, code: u32) {
         if code < 0x80 {
             self.bytes.push(code as u8);
@@ -154,15 +174,7 @@ impl PrintOutput {
         let bytes = if multibyte || self.bytes.is_ascii() {
             self.bytes
         } else {
-            self.codes()
-                .map(|code| {
-                    if code >= 0x3fff80 {
-                        (code - 0x3fff00) as u8
-                    } else {
-                        code as u8
-                    }
-                })
-                .collect()
+            self.octets()
         };
         crate::lisp::types::StringObjectRef::from_storage(bytes, characters, multibyte)
             .map(Value::StringObject)

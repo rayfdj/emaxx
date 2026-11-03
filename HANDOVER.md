@@ -13663,6 +13663,62 @@ setup_process_coding_systems's check now refuses). A 13-form
   lists, (nil . nil) pairs among them, matches GNU. Local validation:
   the grouped gate's 3,495 library tests, the integration targets
   and clippy with `--all-targets --all-features -D warnings' pass.
+- **Round 283: the printer's hidden " prin1" buffer.** print.c's
+  Fprin1_to_string and Ferror_message_string print into
+  Vprin1_to_string_buffer, the buffer buffer.c:init_buffer_once makes as
+  " prin1" (a space name, so no undo, its hooks inhibited, its directory
+  nil) just before it empties Vbuffer_alist, so no buffer list or name
+  finds it; editfns.c makes buffer-access-fontify-functions local (nil)
+  in it. prin1-to-string binds `inhibit-modification-hooks' and
+  OVERRIDES, prints through print_prepare and print_finish into that
+  buffer, so the printer reads its variables there (a `print-length' or
+  `print-escape-newlines' local to the caller's buffer is not seen) and
+  inserts at its point, read-only check included, then takes
+  Fbuffer_string of the whole buffer (unibyte when its bytes are its
+  characters; an empty result is empty_unibyte_string itself,
+  STRING_SET_UNIBYTE being a macro), erases it and keeps
+  `deactivate-mark'. error-message-string writes each piece (the message
+  or "peculiar error", each separator, each datum) through a
+  print_prepare of its own with modification hooks live, so
+  `after-change-functions' sees every piece, and what a circular tail or
+  a printing error leaves inserted stays for the next prin1-to-string to
+  take ("peculiar error: errorfoo"). styled_format sends every %S
+  argument and every %s argument that is not a string or symbol, numbers
+  included, through Fprin1_to_string; Emaxx's digits-only shortcut for
+  numbers is gone. print_prepare binds print--unreadable-callback-buffer
+  to the buffer current when a print starts, and
+  `print-unreadable-function' runs there. Emaxx had rendered both
+  functions in the caller's buffer and inserted nothing. print_finish
+  inserts octets strout counted as characters (a C string's non-ASCII
+  bytes, as a native subr's name) a character each, so a buffer holding
+  only them gives the unibyte string of those octets; a buffer here
+  holds characters, so prin1-to-string returns the octets when the
+  buffer was empty before the print. The buffer is a dumped root
+  (RootSlot 63); a session without an image makes it at its first print;
+  killed, it stays killed and both printers signal "Selecting deleted
+  buffer". A buffer live on no list showed that Emaxx took a live buffer
+  to be one in the buffer list: has_buffer_id (80 callers, among them
+  save-current-buffer's restore and kill-buffer) now counts that one
+  buffer live while it is held, as BUFFER_LIVE_P does, and the image
+  loader keeps a dumped killed buffer's id from the buffers made after
+  the load, an id being a buffer's `eq' identity (in a pdumper round
+  trip the hidden buffer, made at the first print, had taken a killed
+  buffer's id). GC's `buffers' count is alloc.c:sweep_buffers'
+  FOR_EACH_LIVE_BUFFER, the buffers of Vbuffer_alist (Emaxx counted
+  every allocated buffer object, 5 against GNU's 4 under `-Q --batch
+  -l'). In the release build, against GNU (microseconds a call): format
+  "%S" of a symbol 1.48 against 1.78, format "%s" of an integer 1.28
+  against 1.72 (0.39 with the shortcut), prin1-to-string of a small list
+  2.04 against 2.45, error-message-string 14.2 against 16.3. A contract
+  of the protocol (the hooks each function runs, leftover text,
+  buffer-local print variables, the callback's buffer, narrowing,
+  read-only, unibyte results, `deactivate-mark') and a check of the
+  killed buffer match GNU, as do the outcomes of print-, editfns-,
+  cl-print-, buffer-, ert- and subr-tests. Not matched: the buffer's
+  modification ticks, which in GNU count loadup's prints (9,946 at
+  startup). Local validation: the grouped gate's 3,496 library
+  tests, the integration targets and clippy with `--all-targets
+  --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -15752,6 +15808,16 @@ mule-tests' two ucs-names tests take 1.25 and 1.17 s against 1.11 and
 reading (254M against 238M) and regexp search (488M against 471M) level
 and garbage collection cheaper (259M against 454M): its excess is spread
 through the instrumentation's Lisp.
+
+**On `7b48531`** (round 282): the full Rust gate (run 41703514411)
+passed; the frozen run (run 41703520533) passed at its first attempt,
+7,928 of 7,928 outcomes matching. Setup 59.0 s against 50.6 s (1.165),
+test bodies 239.1 s against 226.7 s (1.054), in all 1.081, with a
+per-file setup median of 92 ms against 80, on a faster runner than round
+281's. The widest body gaps are comp-tests (12,840 ms against 10,910),
+tramp-tests (16,990 against 15,500), semantic-utest-ia (2,930 against
+2,070), ert-tests (27,730 against 26,880), package-tests (6,130 against
+5,470) and mule-tests (1,830 against 1,190).
 
 **Findings recorded, not fixed:**
 - **Allocations outside the Lisp object makers still abort when the

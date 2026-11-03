@@ -4159,9 +4159,88 @@ fn window_list_ids(
     ids
 }
 
+/// print.c's Vprin1_to_string_buffer, as buffer.c:init_buffer_once makes
+/// it: `Fget_buffer_create (" prin1", Qt)' -- a space name, so no undo,
+/// and its hooks inhibited -- before any buffer is current (so its
+/// directory is nil) and just before `Vbuffer_alist = Qnil', so no buffer
+/// list or name lookup ever finds it.  editfns.c:syms_of_editfns makes
+/// buffer-access-fontify-functions local (nil) in it.  The image carries
+/// it; a session without one makes it at its first print.  Killed, it
+/// stays killed, as the C variable keeps the dead buffer: printing into
+/// it is Fset_buffer's error.
+pub(crate) fn prin1_to_string_buffer(
+    interp: &mut Interpreter,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let id = match interp.prin1_to_string_buffer {
+        Some(id) => id,
+        None => {
+            let (id, _) = interp.create_buffer(" prin1");
+            interp.set_buffer_hooks_inhibited(id, true);
+            interp.buffer_list.retain(|(listed, _)| *listed != id);
+            interp.prin1_to_string_buffer = Some(id);
+            let previous = interp.current_buffer_id();
+            interp.set_current_buffer_id(id)?;
+            let made = (|| -> Result<(), LispError> {
+                interp.set_variable("default-directory", Value::Nil, env);
+                let fontify = Value::symbol("buffer-access-fontify-functions");
+                super::call(interp, "make-local-variable", &[fontify], env)?;
+                interp.set_variable("buffer-access-fontify-functions", Value::Nil, env);
+                Ok(())
+            })();
+            interp.set_current_buffer_id(previous)?;
+            made?;
+            id
+        }
+    };
+    interp
+        .buffer_value(id)
+        .ok_or_else(|| LispError::Signal("Selecting deleted buffer".into()))
+}
+
+/// The hidden buffer's text as Fprin1_to_string and Ferror_message_string
+/// take it once printing has inserted it: `Fbuffer_string' there (made
+/// unibyte when its bytes are its characters, for Fprin1_to_string), then
+/// `Ferase_buffer', then the previous buffer current again.
+fn take_prin1_buffer_text(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    hidden: &Value,
+    unibyte_when_ascii: bool,
+) -> Result<Value, LispError> {
+    let previous = interp.current_buffer_id();
+    interp.set_current_buffer_id(interp.resolve_buffer_id(hidden)?)?;
+    let taken = (|| -> Result<Value, LispError> {
+        let mut text = super::call(interp, "buffer-string", &[], env)?;
+        if unibyte_when_ascii && let Kind::StringObject(string) = text.kind() {
+            let (characters, ascii) = {
+                let contents = string.borrow();
+                (contents.len(), contents.storage_bytes() == contents.len())
+            };
+            // STRING_SET_UNIBYTE (object), a macro: an empty result
+            // becomes empty_unibyte_string itself.
+            if characters == 0 {
+                text = Value::StringObject(crate::lisp::types::StringObjectRef::from_unibyte(
+                    Vec::new(),
+                ));
+            } else if ascii && string.borrow().is_multibyte() {
+                string.borrow_mut().set_unibyte();
+            }
+        }
+        super::call(interp, "erase-buffer", &[], env)?;
+        Ok(text)
+    })();
+    if interp.has_buffer_id(previous) {
+        interp.set_current_buffer_id(previous)?;
+    }
+    taken
+}
+
 /// print.c Fprin1_to_string: OBJECT as `prin1' prints it, or as `princ'
-/// does with NOESCAPE (no quoting), with OVERRIDES bound either way, as
-/// Fprin1_to_string binds them before printing.
+/// does with NOESCAPE (no quoting), into the hidden prin1 buffer with
+/// modification hooks inhibited and OVERRIDES bound (so the printer reads
+/// the variables there, after print_prepare selects it), and that
+/// buffer's text taken and erased.  `deactivate-mark' is kept as it was.
 pub(crate) fn prin1_to_string(
     interp: &mut Interpreter,
     env: &mut Env,
@@ -4169,16 +4248,30 @@ pub(crate) fn prin1_to_string(
     noescape: bool,
     overrides: Option<&Value>,
 ) -> Result<Value, LispError> {
-    let rendered = with_print_overrides(interp, env, overrides, |interp, env| {
-        if noescape {
-            with_printer_buffer_escape(interp, env, Some(true), |interp, env| {
-                render_printer_output(interp, object, env, false, false)
-            })
-        } else {
-            render_prin1_output(interp, object, env)
+    let hidden = prin1_to_string_buffer(interp, env)?;
+    let restore = cached_symbol!("inhibit-modification-hooks")
+        .with(|symbol| interp.bind_special_symbol(symbol, Value::T, env))?;
+    let result = with_print_overrides(interp, env, overrides, |interp, env| {
+        let save_deactivate_mark = interp
+            .symbol_value_key(cached_symbol!("deactivate-mark"))
+            .unwrap_or(Value::Nil);
+        let empty =
+            matches!(hidden.kind(), Kind::Buffer(buffer) if buffer.borrow().size_total() == 0);
+        let octets = crate::lisp::primitives::file_io::print_object_to_buffer(
+            interp, object, hidden, env, !noescape,
+        )?;
+        let mut text = take_prin1_buffer_text(interp, env, &hidden, true)?;
+        // print_finish inserted the octets a character each, so the
+        // buffer's character and byte counts agree and Fbuffer_string's
+        // string is made unibyte: alone in the buffer, they are the result.
+        if empty && let Some(octets) = octets {
+            text = Value::StringObject(crate::lisp::types::StringObjectRef::from_unibyte(octets));
         }
-    })?;
-    rendered.into_value(interp, env)
+        interp.set_c_variable("deactivate-mark", save_deactivate_mark);
+        Ok(text)
+    });
+    let restored = interp.restore_special_dynamic(restore, env);
+    restored.and(result)
 }
 
 define_dispatch!(
@@ -4423,41 +4516,54 @@ define_dispatch!(
                     errmsg = first;
                     tail = rest;
                 }
-                let mut text = String::new();
+                // Each piece goes into the hidden prin1 buffer through a
+                // print_prepare/print_finish of its own, modification hooks
+                // live; text already inserted stays there when a datum's
+                // printing or the tail's cycle escapes, for the next
+                // prin1-to-string to take.
+                let hidden = prin1_to_string_buffer(interp, env)?;
                 let mut sep = Some(": ");
-                match string_like(&errmsg) {
-                    None => text.push_str("peculiar error"),
-                    Some(message) if message.text.is_empty() => sep = None,
-                    Some(_) => text.push_str(&crate::lisp::primitives::print::render_princ_object(
-                        interp, &errmsg, env,
-                    )?),
+                match errmsg.kind() {
+                    Kind::StringObject(message) if message.borrow().len() == 0 => sep = None,
+                    Kind::StringObject(_) => {
+                        super::call(interp, "princ", &[errmsg, hidden], env)?;
+                    }
+                    _ => crate::lisp::primitives::file_io::write_printer_output(
+                        interp,
+                        "peculiar error",
+                        Some(&hidden),
+                        env,
+                    )?,
                 }
                 // princ for file-error, end-of-file and user-error data,
                 // prin1 for every other condition's: Magit's multi-part git
                 // errors keep their quotes and escapes.
-                let use_princ = file_error
+                let printer = if file_error
                     || errname.eq_value(Value::symbol("end-of-file"))
-                    || errname.eq_value(Value::symbol("user-error"));
+                    || errname.eq_value(Value::symbol("user-error"))
+                {
+                    "princ"
+                } else {
+                    "prin1"
+                };
                 let mut cycle = crate::lisp::primitives::values::ForEachTail::new(tail);
                 while let Some((datum, next)) = tail.cons_values() {
                     if let Some(sep) = sep {
-                        text.push_str(sep);
+                        crate::lisp::primitives::file_io::write_printer_output(
+                            interp,
+                            sep,
+                            Some(&hidden),
+                            env,
+                        )?;
                     }
                     sep = Some(", ");
-                    text.push_str(&if use_princ {
-                        crate::lisp::primitives::print::render_princ_object(interp, &datum, env)?
-                    } else {
-                        crate::lisp::primitives::print::render_prin1_ephemeral(interp, &datum, env)?
-                    });
+                    super::call(interp, printer, &[datum, hidden], env)?;
                     tail = next;
                     if cycle.step(tail) {
                         return Err(crate::lisp::types::circular_list(tail));
                     }
                 }
-                // The general C path returns Fbuffer_string from the
-                // multibyte prin1 buffer. It is already mutable at creation;
-                // bytecode argument passing only copies the Lisp_Object.
-                Ok(make_shared_string_value_with_multibyte(text, None, true))
+                take_prin1_buffer_text(interp, env, &hidden, false)
             }
             "command-error-default-function" => {
                 need_args(name, args, 3)?;

@@ -62,11 +62,19 @@ impl Interpreter {
         self.buffer_list.iter().any(|(_, n)| n == name)
     }
 
-    /// Check if a buffer ID exists in the live buffer list.
+    /// buffer.c:BUFFER_LIVE_P of the buffer ID names: a buffer of
+    /// Vbuffer_alist, or print.c's hidden prin1 buffer, the one live
+    /// buffer on no list, while it is held.
     pub fn has_buffer_id(&self, id: u64) -> bool {
         self.buffer_list
             .iter()
             .any(|(buffer_id, _)| *buffer_id == id)
+            || (self.prin1_to_string_buffer == Some(id)
+                && (id == self.current_buffer_id
+                    || self
+                        .inactive_buffers
+                        .iter()
+                        .any(|(buffer_id, _)| *buffer_id == id)))
     }
 
     /// Find a buffer by name, returning (id, name).

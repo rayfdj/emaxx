@@ -4196,6 +4196,13 @@ impl Interpreter {
         !self.doomed_finalizers.is_empty()
     }
 
+    /// Keep a killed buffer's id, which the image carries with the
+    /// object, from any buffer made after the load: a buffer's id is its
+    /// `eq' identity.
+    pub(crate) fn reserve_buffer_id(&mut self, id: u64) {
+        self.next_buffer_id = self.next_buffer_id.max(id + 1);
+    }
+
     /// Install a buffer with the id the image gave it, replacing a buffer
     /// with that id.
     #[cfg_attr(not(test), allow(dead_code))]
@@ -4787,7 +4794,6 @@ impl Interpreter {
         let symbols = crate::lisp::alloc::live_symbols();
         let mut vector_count = vectors.count;
         let mut vector_slots = vectors.slots;
-        let allocated_buffers = crate::lisp::alloc::vectors::live_buffer_census();
         // The records are vectors of the sweep's count (alloc.c counts a
         // record among the vectors).
         let (record_count, record_slots) = crate::lisp::alloc::live_record_census();
@@ -4803,7 +4809,10 @@ impl Interpreter {
             vector_slots,
             floats: crate::lisp::types::census_live_floats(),
             intervals: strings.property_spans,
-            buffers: allocated_buffers,
+            // alloc.c:sweep_buffers counts FOR_EACH_LIVE_BUFFER, the
+            // buffers of Vbuffer_alist: not a killed buffer still
+            // referenced, nor the hidden prin1 buffer.
+            buffers: self.buffer_list.len(),
             hash_table_bytes: self.gnu_hash_storage_bytes(),
             overlay_node_bytes: crate::lisp::alloc::vectors::live_overlay_node_bytes(),
         };
@@ -5447,6 +5456,14 @@ pub struct InterpreterState {
     pub(crate) code_conversion_reused_workbuf: Option<u64>,
     /// coding.c's reused_workbuf_in_use.
     pub(crate) reused_workbuf_in_use: bool,
+    /// print.c's Vprin1_to_string_buffer: the id of the " prin1" buffer
+    /// buffer.c's init_buffer_once makes with its hooks inhibited and keeps
+    /// out of the buffer list; made when first printed into.
+    pub(crate) prin1_to_string_buffer: Option<u64>,
+    /// print.c's Vprint__unreadable_callback_buffer: the buffer current
+    /// when the innermost print_prepare ran, where
+    /// `print-unreadable-function' is called.
+    pub(crate) print_unreadable_callback_buffer: Option<u64>,
     /// macros.c's C `executing_kbd_macro', the macro most recently started:
     /// unlike `executing-kbd-macro' it outlives an error that unwinds the
     /// macro, so cmd_error can say how far the macro got.
@@ -6299,6 +6316,8 @@ impl Interpreter {
             will_dump_reported: false,
             code_conversion_reused_workbuf: None,
             reused_workbuf_in_use: false,
+            prin1_to_string_buffer: None,
+            print_unreadable_callback_buffer: None,
             executing_kbd_macro: false,
             kbd_macro_iterations: 0,
             symbols_with_positions_enabled: Box::new(Cell::new(false)),

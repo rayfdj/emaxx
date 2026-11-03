@@ -180,6 +180,10 @@ pub(crate) const ROOTS_RESET_AFTER_LOAD: &[(&str, &str)] = &[
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
     (
+        "print_unreadable_callback_buffer",
+        "print.c's print--unreadable-callback-buffer, specbound by print_prepare for the running print only",
+    ),
+    (
         "timer_check_delay",
         "the timer_delay keyboard.c:timer_check last returned, a local of wait_reading_process_output that no wait outlives",
     ),
@@ -513,6 +517,15 @@ impl Interpreter {
         // buffer.c: Vbuffer_alist, an alist of (name . buffer).  The
         // current buffer is not a root: init_buffer selects *scratch*
         // after a load (emacs.c:main).
+        // print.c's staticpro'd Vprin1_to_string_buffer, a live buffer
+        // that is on no buffer list (nil until a session's first print
+        // makes it, or when it was killed).
+        groups.push((
+            RootSlot::Prin1ToStringBuffer,
+            self.prin1_to_string_buffer
+                .and_then(|id| self.buffer_value(id))
+                .unwrap_or(Value::Nil),
+        ));
         groups.push((
             RootSlot::BufferAlist,
             Value::list(self.buffer_list.iter().filter_map(|(id, name)| {
@@ -1013,8 +1026,11 @@ mod install {
                         ));
                     }
                     let current = self.current_buffer_id;
+                    let hidden = self.prin1_to_string_buffer;
                     self.inactive_buffers.retain(|(id, _)| {
-                        *id == current || list.iter().any(|(listed, _)| listed == id)
+                        *id == current
+                            || Some(*id) == hidden
+                            || list.iter().any(|(listed, _)| listed == id)
                     });
                     self.buffer_list = list;
                 }
@@ -1339,6 +1355,22 @@ mod install {
                 }
                 RootSlot::LastThreadError => {
                     self.last_thread_error = opt_of(value, |v| Ok(*v))?;
+                }
+                RootSlot::Prin1ToStringBuffer => {
+                    // The buffer alist's reinstall keeps only listed
+                    // buffers; this one is live off the list.
+                    self.prin1_to_string_buffer = match value.kind() {
+                        Kind::Buffer(buffer) => {
+                            if buffer.id != self.current_buffer_id
+                                && !self.inactive_buffers.iter().any(|(id, _)| *id == buffer.id)
+                            {
+                                self.inactive_buffers.push((buffer.id, buffer));
+                            }
+                            Some(buffer.id)
+                        }
+                        Kind::Nil => None,
+                        other => return Err(format!("prin1 buffer: not a buffer: {other:?}")),
+                    };
                 }
                 RootSlot::RememberedScalars => {
                     for entry in expect_list(value, "remembered scalars")? {

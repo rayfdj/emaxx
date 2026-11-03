@@ -651,16 +651,6 @@ pub(crate) fn render_printer_output(
     object::print(interp, env, *value, options)
 }
 
-/// `princ': print.c's `print_object' with `escapeflag' cleared.  This is the
-/// same traversal `prin1' uses, so the flag reaches nested elements.
-pub(crate) fn render_princ_object(
-    interp: &mut Interpreter,
-    value: &Value,
-    env: &mut crate::lisp::types::Env,
-) -> Result<String, LispError> {
-    render_printer_object(interp, value, env, false, false)
-}
-
 pub(crate) fn render_prin1_ephemeral(
     interp: &mut Interpreter,
     value: &Value,

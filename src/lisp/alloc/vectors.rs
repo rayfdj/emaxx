@@ -353,10 +353,6 @@ pub(crate) fn vector_sweeps() -> usize {
 }
 static LIVE_CLOSURE_SLOTS: AtomicUsize = AtomicUsize::new(0);
 static LIVE_BIGNUMS: AtomicUsize = AtomicUsize::new(0);
-static LIVE_BUFFERS: AtomicUsize = AtomicUsize::new(0);
-/// The live buffers in the image's small-vector blocks at the last sweep
-/// that read them, counted again by a sweep that leaves them unread.
-static IMAGE_BLOCK_BUFFERS: AtomicUsize = AtomicUsize::new(0);
 static LIVE_OVERLAYS: AtomicUsize = AtomicUsize::new(0);
 /// The records' share of `total_vectors' and `total_vector_slots'
 /// (alloc.c counts a record as a vector of its slots).
@@ -1428,9 +1424,7 @@ unsafe fn census_on_allocate(header: *mut VectorHeader) {
             | VectorTag::HashTable
             | VectorTag::Subr
             | VectorTag::NativeCompUnit => {
-                if (*header).tag() == VectorTag::Buffer {
-                    raise(&LIVE_BUFFERS, 1);
-                } else if (*header).tag() == VectorTag::Overlay {
+                if (*header).tag() == VectorTag::Overlay {
                     raise(&LIVE_OVERLAYS, 1);
                 }
                 raise(&LIVE_VECTORS, 1);
@@ -1541,24 +1535,12 @@ struct SweepStats {
     closures: usize,
     closure_slots: usize,
     bignums: usize,
-    buffers: usize,
     overlays: usize,
     records: usize,
     record_slots: usize,
 }
 
 impl SweepStats {
-    /// An image object stays out of gcstat's object totals, as a dumped one
-    /// does. alloc.c:sweep_buffers counts every live buffer, dumped or not,
-    /// so a buffer still counts in the buffers row.
-    ///
-    /// # Safety
-    /// HEADER is an allocated, marked vector.
-    unsafe fn count_image(&mut self, header: *mut VectorHeader) {
-        // SAFETY: the caller's contract.
-        self.buffers += usize::from(unsafe { (*header).tag() } == VectorTag::Buffer);
-    }
-
     /// # Safety
     /// HEADER is an allocated, marked vector.
     unsafe fn count(&mut self, header: *mut VectorHeader) {
@@ -1590,7 +1572,6 @@ impl SweepStats {
                 | VectorTag::HashTable
                 | VectorTag::Subr
                 | VectorTag::NativeCompUnit => {
-                    self.buffers += usize::from((*header).tag() == VectorTag::Buffer);
                     self.overlays += usize::from((*header).tag() == VectorTag::Overlay);
                     self.vectors += 1;
                     self.vector_slots += (*header).nbytes() / WORD_SIZE;
@@ -1696,7 +1677,7 @@ pub(crate) fn sweep_vectors(epoch: u32) {
     // When no vector in the image's blocks died, they are left unread
     // (checked builds read them and assert so).
     let image_unchanged = super::IMAGE_VECTORS.unchanged();
-    let (mut image_live, mut image_buffers) = (0, 0);
+    let mut image_live = 0;
     for (block, image_block) in sweep_blocks_of(BlockKind::VectorBlock) {
         if image_block && image_unchanged {
             if cfg!(debug_assertions) {
@@ -1723,9 +1704,9 @@ pub(crate) fn sweep_vectors(epoch: u32) {
             unsafe {
                 if (*vector).is_marked(epoch) {
                     if image_block {
-                        // `SweepStats::count_image': only a buffer counts.
+                        // An image object stays out of gcstat's object
+                        // totals, as a dumped one does.
                         image_live += 1;
-                        image_buffers += usize::from((*vector).tag() == VectorTag::Buffer);
                     } else {
                         stats.count(vector);
                     }
@@ -1779,21 +1760,15 @@ pub(crate) fn sweep_vectors(epoch: u32) {
             release_vector_block(block);
         }
     }
-    if image_unchanged {
-        image_buffers = IMAGE_BLOCK_BUFFERS.load(Ordering::Relaxed);
-    } else {
+    if !image_unchanged {
         super::IMAGE_VECTORS.set_live(image_live);
-        IMAGE_BLOCK_BUFFERS.store(image_buffers, Ordering::Relaxed);
     }
-    stats.buffers += image_buffers;
     for (start, image_block) in sweep_blocks_of(BlockKind::LargeVector) {
         let vector = start as *mut VectorHeader;
         // SAFETY: a registered large vector.
         unsafe {
             if (*vector).is_marked(epoch) {
-                if image_block {
-                    stats.count_image(vector);
-                } else {
+                if !image_block {
                     stats.count(vector);
                 }
             } else {
@@ -1814,7 +1789,6 @@ pub(crate) fn sweep_vectors(epoch: u32) {
     LIVE_CLOSURES.store(stats.closures, Ordering::Relaxed);
     LIVE_CLOSURE_SLOTS.store(stats.closure_slots, Ordering::Relaxed);
     LIVE_BIGNUMS.store(stats.bignums, Ordering::Relaxed);
-    LIVE_BUFFERS.store(stats.buffers, Ordering::Relaxed);
     LIVE_OVERLAYS.store(stats.overlays, Ordering::Relaxed);
     LIVE_RECORDS.store(stats.records, Ordering::Relaxed);
     LIVE_RECORD_SLOTS.store(stats.record_slots, Ordering::Relaxed);
@@ -1832,11 +1806,6 @@ pub(crate) fn live_vector_census() -> (usize, usize) {
             + LIVE_CLOSURE_SLOTS.load(Ordering::Relaxed)
             + bignums * 3,
     )
-}
-
-/// Allocated buffer objects, including killed buffers retained by Lisp roots.
-pub(crate) fn live_buffer_census() -> usize {
-    LIVE_BUFFERS.load(Ordering::Relaxed)
 }
 
 /// The records' census: count and slots, as alloc.c counts a record

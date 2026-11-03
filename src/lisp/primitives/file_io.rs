@@ -1505,10 +1505,50 @@ pub(crate) fn print_object_to_stream(
     })
 }
 
+/// `print_object_to_stream' into the buffer STREAM, giving also the
+/// octets of an output print.c's strout counted a character each (a C
+/// string's non-ASCII bytes, as a subr's name), when the buffer is
+/// multibyte: print_finish inserts those as that many characters, which a
+/// buffer here does not hold, so a caller that takes the text back needs
+/// them.
+pub(crate) fn print_object_to_buffer(
+    interp: &mut Interpreter,
+    value: &Value,
+    stream: Value,
+    env: &mut Env,
+    escape: bool,
+) -> Result<Option<Vec<u8>>, LispError> {
+    with_printer_destination(interp, Some(&stream), env, |interp, env| {
+        let multibyte = interp.buffer.borrow().is_multibyte();
+        with_printer_buffer_escape(interp, env, Some(multibyte), |interp, env| {
+            let rendered = render_printer_output(interp, value, env, escape, false)?;
+            let octets = (multibyte && !rendered.is_multibyte() && !rendered.bytes().is_ascii())
+                .then(|| rendered.octets());
+            write_prepared_printer_output(interp, &rendered, Some(&stream), env)?;
+            Ok(octets)
+        })
+    })
+}
+
+/// print.c:print_prepare binds print--unreadable-callback-buffer to the
+/// buffer current before it selects the output's, for BODY.
+pub(crate) fn with_printer_destination<T>(
+    interp: &mut Interpreter,
+    stream: Option<&Value>,
+    env: &mut Env,
+    body: impl FnOnce(&mut Interpreter, &mut Env) -> Result<T, LispError>,
+) -> Result<T, LispError> {
+    let caller = interp.current_buffer_id();
+    let callback = interp.print_unreadable_callback_buffer.replace(caller);
+    let result = select_printer_destination(interp, stream, env, body);
+    interp.print_unreadable_callback_buffer = callback;
+    result
+}
+
 /// print.c:print_prepare selects the output buffer before rendering, and
 /// print_finish moves a marker and restores point after successful insertion.
 /// The original current buffer is restored on either normal or error return.
-fn with_printer_destination<T>(
+fn select_printer_destination<T>(
     interp: &mut Interpreter,
     stream: Option<&Value>,
     env: &mut Env,
