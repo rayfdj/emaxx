@@ -7252,14 +7252,17 @@ fn native_font_backend_boundary_and_glyph_validation_match_gnu() {
         interp
             .eval(&headless, &mut env)
             .expect("headless font failures should be catchable"),
+        // font.c: Ffont_face_attributes decodes a live frame and reads
+        // the spec's empty attributes; Fopen_font checks its entity after
+        // the frame (GNU's batch build answers both so).  Ffont_has_char_p
+        // of a spec on a terminal frame crashes GNU's batch build, which
+        // has no font driver; Emaxx signals as a build without a window
+        // system does.
         Value::list([
+            Value::Nil,
             Value::list([
-                Value::symbol("error"),
-                Value::string("Window system frame should be used"),
-            ]),
-            Value::list([
-                Value::symbol("error"),
-                Value::string("Window system frame should be used"),
+                Value::symbol("wrong-type-argument"),
+                Value::symbol("font-entity"),
             ]),
             Value::list([
                 Value::symbol("error"),
@@ -7975,407 +7978,144 @@ fn headless_input_mode_family_matches_the_upstream_batch_terminal() {
 }
 
 #[test]
-fn parse_font_names_matches_core_upstream_cases() {
-    let cases = [
-        (" ", Some(" "), None, None, None, None, None),
-        ("Monospace", Some("Monospace"), None, None, None, None, None),
-        (
-            "Monospace Serif",
-            Some("Monospace Serif"),
-            None,
-            None,
-            None,
-            None,
-            None,
-        ),
-        ("Foo1", Some("Foo1"), None, None, None, None, None),
-        ("12", None, Some(12.0), None, None, None, None),
-        ("12 ", Some("12 "), None, None, None, None, None),
-        ("Foo:", Some("Foo"), None, None, None, None, None),
-        ("Foo-8", Some("Foo"), Some(8.0), None, None, None, None),
-        ("Foo-18:", Some("Foo"), Some(18.0), None, None, None, None),
-        (
-            "Foo-18:light",
-            Some("Foo"),
-            Some(18.0),
-            Some("light"),
-            None,
-            None,
-            None,
-        ),
-        (
-            "Foo 10:weight=bold",
-            Some("Foo 10"),
-            None,
-            Some("bold"),
-            None,
-            None,
-            None,
-        ),
-        (
-            "Foo-12:weight=bold",
-            Some("Foo"),
-            Some(12.0),
-            Some("bold"),
-            None,
-            None,
-            None,
-        ),
-        (
-            "Foo 8-20:slant=oblique",
-            Some("Foo 8"),
-            Some(20.0),
-            None,
-            Some("oblique"),
-            None,
-            None,
-        ),
-        (
-            "Foo:light:roman",
-            Some("Foo"),
-            None,
-            Some("light"),
-            Some("roman"),
-            None,
-            None,
-        ),
-        (
-            "Foo:italic:roman",
-            Some("Foo"),
-            None,
-            None,
-            Some("roman"),
-            None,
-            None,
-        ),
-        (
-            "Foo 12:light:oblique",
-            Some("Foo 12"),
-            None,
-            Some("light"),
-            Some("oblique"),
-            None,
-            None,
-        ),
-        (
-            "Foo-12:demibold:oblique",
-            Some("Foo"),
-            Some(12.0),
-            Some("demibold"),
-            Some("oblique"),
-            None,
-            None,
-        ),
-        (
-            "Foo:black:proportional",
-            Some("Foo"),
-            None,
-            Some("black"),
-            None,
-            Some(0),
-            None,
-        ),
-        (
-            "Foo-10:black:proportional",
-            Some("Foo"),
-            Some(10.0),
-            Some("black"),
-            None,
-            Some(0),
-            None,
-        ),
-        (
-            "Foo:weight=normal",
-            Some("Foo"),
-            None,
-            Some("normal"),
-            None,
-            None,
-            None,
-        ),
-        (
-            "Foo:weight=bold",
-            Some("Foo"),
-            None,
-            Some("bold"),
-            None,
-            None,
-            None,
-        ),
-        (
-            "Foo:weight=bold:slant=italic",
-            Some("Foo"),
-            None,
-            Some("bold"),
-            Some("italic"),
-            None,
-            None,
-        ),
-        (
-            "Foo:weight=bold:slant=italic:mono",
-            Some("Foo"),
-            None,
-            Some("bold"),
-            Some("italic"),
-            Some(100),
-            None,
-        ),
-        (
-            "Foo-10:demibold:slant=normal",
-            Some("Foo"),
-            Some(10.0),
-            Some("demibold"),
-            Some("normal"),
-            None,
-            None,
-        ),
-        (
-            "Foo 11-16:oblique:weight=bold",
-            Some("Foo 11"),
-            Some(16.0),
-            Some("bold"),
-            Some("oblique"),
-            None,
-            None,
-        ),
-        (
-            "Foo:oblique:randomprop=randomtag:weight=bold",
-            Some("Foo"),
-            None,
-            Some("bold"),
-            Some("oblique"),
-            None,
-            None,
-        ),
-        (
-            "Foo:randomprop=randomtag:bar=baz",
-            Some("Foo"),
-            None,
-            None,
-            None,
-            None,
-            None,
-        ),
-        (
-            "Foo Book Light:bar=baz",
-            Some("Foo Book Light"),
-            None,
-            None,
-            None,
-            None,
-            None,
-        ),
-        (
-            "Foo Book Light 10:bar=baz",
-            Some("Foo Book Light 10"),
-            None,
-            None,
-            None,
-            None,
-            None,
-        ),
-        (
-            "Foo Book Light-10:bar=baz",
-            Some("Foo Book Light"),
-            Some(10.0),
-            None,
-            None,
-            None,
-            None,
-        ),
-        ("Oblique", None, None, None, Some("oblique"), None, None),
-        ("Bold 17", None, Some(17.0), Some("bold"), None, None, None),
-        ("17 Bold", Some("17"), None, Some("bold"), None, None, None),
-        (
-            "Book Oblique 2",
-            None,
-            Some(2.0),
-            Some("book"),
-            Some("oblique"),
-            None,
-            None,
-        ),
-        ("Bar 7", Some("Bar"), Some(7.0), None, None, None, None),
-        (
-            "Bar Ultra-Light",
-            Some("Bar"),
-            None,
-            Some("ultra-light"),
-            None,
-            None,
-            None,
-        ),
-        (
-            "Bar Light 8",
-            Some("Bar"),
-            Some(8.0),
-            Some("light"),
-            None,
-            None,
-            None,
-        ),
-        (
-            "Bar Book Medium 9",
-            Some("Bar"),
-            Some(9.0),
-            Some("medium"),
-            None,
-            None,
-            None,
-        ),
-        (
-            "Bar Semi-Bold Italic 10",
-            Some("Bar"),
-            Some(10.0),
-            Some("semi-bold"),
-            Some("italic"),
-            None,
-            None,
-        ),
-        (
-            "Bar Semi-Condensed Bold Italic 11",
-            Some("Bar"),
-            Some(11.0),
-            Some("bold"),
-            Some("italic"),
-            None,
-            None,
-        ),
-        (
-            "Foo 10 11",
-            Some("Foo 10"),
-            Some(11.0),
-            None,
-            None,
-            None,
-            None,
-        ),
-        (
-            "Foo 1985 Book",
-            Some("Foo 1985"),
-            None,
-            Some("book"),
-            None,
-            None,
-            None,
-        ),
-        (
-            "Foo 1985 A Book",
-            Some("Foo 1985 A"),
-            None,
-            Some("book"),
-            None,
-            None,
-            None,
-        ),
-        (
-            "Foo 1 Book 12",
-            Some("Foo 1"),
-            Some(12.0),
-            Some("book"),
-            None,
-            None,
-            None,
-        ),
-        (
-            "Foo A Book 12 A",
-            Some("Foo A Book 12 A"),
-            None,
-            None,
-            None,
-            None,
-            None,
-        ),
-        (
-            "Foo 1985 Book 12 Oblique",
-            Some("Foo 1985 Book 12"),
-            None,
-            None,
-            Some("oblique"),
-            None,
-            None,
-        ),
-        (
-            "Foo 1985 Book 12 Italic 10",
-            Some("Foo 1985 Book 12"),
-            Some(10.0),
-            None,
-            Some("italic"),
-            None,
-            None,
-        ),
-        (
-            "Foo Book Bar 6 Italic",
-            Some("Foo Book Bar 6"),
-            None,
-            None,
-            Some("italic"),
-            None,
-            None,
-        ),
-        (
-            "Foo Book Bar Bold",
-            Some("Foo Book Bar"),
-            None,
-            Some("bold"),
-            None,
-            None,
-            None,
-        ),
-        (
-            "-GNU -FreeSans-semibold-italic-normal-*-*-*-*-*-*-0-iso10646-1",
-            Some("FreeSans"),
-            None,
-            Some("semi-bold"),
-            None,
-            None,
-            Some("GNU "),
-        ),
-        (
-            "-Take-mikachan-PS-normal-normal-normal-*-*-*-*-*-*-0-iso10646-1",
-            Some("mikachan-PS"),
-            None,
-            Some("normal"),
-            None,
-            None,
-            Some("Take"),
-        ),
-        (
-            "-foundry-name-with-lots-of-dashes-normal-normal-normal-*-*-*-*-*-*-0-iso10646-1",
-            Some("name-with-lots-of-dashes"),
-            None,
-            Some("normal"),
-            None,
-            None,
-            Some("foundry"),
-        ),
-    ];
+fn font_spec_styles_validators_and_fontconfig_extras_match_font_c() {
+    // font.c: style numbers font_style_to_value stores (case-folded,
+    // demibold apart from semi-bold), font_prop_validate's errors (nil as
+    // a key validated as :type), font_put_extra's sorted alist and the
+    // fontconfig properties ftfont_filter_properties keeps.
+    assert_oracle_contract_matches_interpreter(
+        r###"(mapcar (lambda (thunk) (condition-case e (funcall thunk) (error (list 'E e))))
+ (list
+  (lambda () (font-spec :weight 'BOLD :slant 'I))
+  (lambda () (equal (font-spec :weight 'demibold) (font-spec :weight 'semi-bold)))
+  (lambda () (font-get (font-spec :weight 'demibold) :weight))
+  (lambda () (font-spec :weight 51312))
+  (lambda () (font-spec :weight 200))
+  (lambda () (font-spec :weight 'nosuch))
+  (lambda () (font-spec nil 'x))
+  (lambda () (font-spec nil 5))
+  (lambda () (font-spec :zz 1 :aa 2 :mm 3))
+  (lambda () (font-spec :otf '(latn nil nil (mark) z)))
+  (lambda () (font-spec :otf '(latn nil (kern . x))))
+  (lambda () (font-spec :size -1))
+  (lambda () (font-spec :spacing 'x))
+  (lambda () (font-spec :family 'Foo :foundry "Bar" :adstyle 'q :registry 'ISO8859-1))
+  (lambda () (font-spec :name 5))
+  (lambda () (font-spec :weight))
+  (lambda () (font-spec 5 1))
+  (lambda () (font-spec :name "Foo-12:antialias=false:hinting=1:file=/x:qq=3"))
+  (lambda () (font-spec :name "Foo:style=Bold:familylang=en:lang=ja:outline=Off:embolden=yes:scalable"))
+  (lambda () (font-spec :name "Foo:type=x:registry=ISO8859-1:foundry=bar:adstyle=q:pixelsize=13"))
+  (lambda () (font-spec :name "Foo:weight=nosuch"))
+  (lambda () (font-spec :name "Foo-:bold"))
+  (lambda () (font-spec :name "Foo-10.5.3"))))"###,
+        r###"(#<font-spec nil nil nil nil nil bold i nil nil nil nil nil nil> nil demibold #<font-spec nil nil nil nil nil bold nil nil nil nil nil nil nil> (E (error "invalid font property" (:weight . 200))) (E (error "invalid font property" (:weight . nosuch))) #<font-spec nil nil nil nil nil nil nil nil nil nil nil nil ((nil . x))> (E (error "invalid font property" (:type . 5))) #<font-spec nil nil nil nil nil nil nil nil nil nil nil nil ((:aa . 2) (:mm . 3) (:zz . 1))> #<font-spec nil nil nil nil nil nil nil nil nil nil nil nil ((:otf latn nil nil (mark) z))> (E (error "invalid font property" :otf latn nil (kern . x))) (E (error "invalid font property" (:size . -1))) (E (error "invalid font property" (:spacing . x))) #<font-spec nil Bar Foo q iso8859-1 nil nil nil nil nil nil nil nil> (E (wrong-type-argument stringp 5)) (E (error "No value for key `:weight'")) (E (wrong-type-argument symbolp 5)) #<font-spec nil nil Foo nil nil nil nil nil 12.0 nil nil nil ((:antialias) (:file . /x) (:hinting . t) (:name . "Foo-12:antialias=false:hinting=1:file=/x:qq=3"))> #<font-spec nil nil Foo nil nil nil nil nil nil nil nil nil ((:embolden . t) (:familylang . en) (:lang . ja) (:name . "Foo:style=Bold:familylang=en:lang=ja:outline=Off:embolden=yes:scalable") (:outline) (:style . Bold))> #<font-spec nil bar Foo q iso8859-1 nil nil nil 13 nil nil nil ((:name . "Foo:type=x:registry=ISO8859-1:foundry=bar:adstyle=q:pixelsize=13"))> (E (error "invalid font property" (:weight . nosuch))) #<font-spec nil nil Foo nil nil bold nil nil 0.0 nil nil nil ((:name . "Foo-:bold"))> #<font-spec nil nil Foo-10.5.3 nil nil nil nil nil nil nil nil nil ((:name . "Foo-10.5.3"))>)"###,
+        "font_spec_styles_validators_and_fontconfig_extras_match_font_c",
+    );
+}
 
-    for (name, family, size, weight, slant, spacing, foundry) in cases {
-        let actual = parse_font_name(name);
-        assert_eq!(
-            actual.family.as_deref(),
-            family,
-            "family mismatch for {name:?}"
-        );
-        assert_eq!(actual.size, size, "size mismatch for {name:?}");
-        assert_eq!(
-            actual.weight.as_deref(),
-            weight,
-            "weight mismatch for {name:?}"
-        );
-        assert_eq!(
-            actual.slant.as_deref(),
-            slant,
-            "slant mismatch for {name:?}"
-        );
-        assert_eq!(actual.spacing, spacing, "spacing mismatch for {name:?}");
-        assert_eq!(
-            actual.foundry.as_deref(),
-            foundry,
-            "foundry mismatch for {name:?}"
-        );
-    }
+#[test]
+fn font_spec_xlfd_names_parse_as_font_parse_xlfd() {
+    // font.c:font_parse_xlfd: full names, font_expand_wildcards'
+    // placements of wildcard names, parse_matrix sizes, the dash-family
+    // retry and font_intern_prop's overflow.
+    assert_oracle_contract_matches_interpreter(
+        r###"(mapcar (lambda (name) (condition-case e (font-spec :name name) (error (list 'E e))))
+ '("-adobe-courier-bold-o-normal--*-140-*-*-m-*-iso8859-1"
+   "-adobe-courier-xyz-o-normal--*-140-*-*-m-*-iso8859-1"
+   "-misc-fixed-*-*-*-*-*-*-*-*-*-*-iso10646-1"
+   "-*-*-medium-r-*-*-12-*-*-*-*-*-*-*"
+   "*-courier-*-r-*-140-*" "-foo" "" "Foo?" "*" "*-" "Foo-*"
+   "-*-a-b-c-d-e-f-g-h-i-j-k-l-m-n-o"
+   "-*-Dejavu-Sans-Mono-bold-r-normal--12-*-*-*-m-*-iso10646-1"
+   "-misc-fixed-medium-r-normal--[12 0 0 12]-*-*-*-c-70-iso8859-1"
+   "-misc-fixed-medium-r-normal--*-[1 2 3 4]-*-*-c-70-iso8859-1"
+   "-*-fixed-*-*-*-*-*-*-*-*-*-*-*-5" "-*-fixed-*-*-*-*-*-*-*-*-*-*-jisx0208*"
+   "-*-fixed-*-*-*-*-*-130-75-75-*-*-*-*" "-*-fixed-*-*-*-*-*-*-75-75-*-~70-*-*"
+   "-*-fixed-*-*-*-*-*-*-*-*-x-*-*-*" "-*-fixed-*-13-*" "-*-fixed-*-c-*" "-*-fixed-*-0-*"
+   "-*-fixed-*-100-*" "-*-iso8859-*" "-*-x-*-y-*" "-*-x-*-y-z-*" "-*-x-*-bold-*"
+   "-*-x-*-bold-r-normal-*" "-*-x-zany-r-*"
+   "-misc-fixed-medium-r-normal--0-0-0-0-c-0-iso8859-1"
+   "-misc-fixed-medium-r-normal--*-*-*-x-c-70-iso8859-1"
+   "-misc-fixed-medium-r-normal--*-*-*-*-c-~70-iso8859-1"
+   "-misc-fixed-MEDIUM-R-Normal--*-*-*-*-c-70-iso8859-1"
+   "-misc-fixed-medium-r-normal--99999999999999999999-*-*-*-c-70-iso8859-1"))"###,
+        r###"(#<font-spec nil adobe courier ## iso8859-1 bold o normal 14.0 nil 100 nil ((:name . "-adobe-courier-bold-o-normal--*-140-*-*-m-*-iso8859-1"))> (E (error "Invalid font name: -adobe-courier-xyz-o-normal--*-140-*-*-m-*-iso8859-1")) #<font-spec nil misc fixed nil iso10646-1 nil nil nil nil nil nil nil ((:name . "-misc-fixed-*-*-*-*-*-*-*-*-*-*-iso10646-1"))> #<font-spec nil nil nil nil nil medium r nil 12 nil nil nil ((:name . "-*-*-medium-r-*-*-12-*-*-*-*-*-*-*"))> #<font-spec nil nil courier nil nil nil r nil 14.0 nil nil nil ((:name . "*-courier-*-r-*-140-*"))> (E (error "Invalid font name: -foo")) (E (error "Invalid font name: ")) (E (error "Invalid font name: Foo?")) #<font-spec nil nil nil nil nil nil nil nil nil nil nil nil ((:name . "*"))> (E (error "Invalid font name: *-")) #<font-spec nil nil nil nil nil nil nil nil nil nil nil nil ((:name . "Foo-*"))> (E (error "Invalid font name: -*-a-b-c-d-e-f-g-h-i-j-k-l-m-n-o")) #<font-spec nil nil Dejavu-Sans-Mono ## iso10646-1 bold r normal 12 nil 100 nil ((:name . "-*-Dejavu-Sans-Mono-bold-r-normal--12-*-*-*-m-*-iso10646-1"))> #<font-spec nil misc fixed ## iso8859-1 medium r normal 12 nil 110 70 ((:name . "-misc-fixed-medium-r-normal--[12 0 0 12]-*-*-*-c-70-iso8859-1"))> #<font-spec nil misc fixed ## iso8859-1 medium r normal 4.0 nil 110 70 ((:name . "-misc-fixed-medium-r-normal--*-[1 2 3 4]-*-*-c-70-iso8859-1"))> #<font-spec nil nil fixed nil *-5 nil nil nil nil nil nil nil ((:name . "-*-fixed-*-*-*-*-*-*-*-*-*-*-*-5"))> #<font-spec nil nil fixed nil jisx0208*-* nil nil nil nil nil nil nil ((:name . "-*-fixed-*-*-*-*-*-*-*-*-*-*-jisx0208*"))> #<font-spec nil nil fixed nil nil nil nil nil 13.0 75 nil nil ((:name . "-*-fixed-*-*-*-*-*-130-75-75-*-*-*-*"))> #<font-spec nil nil fixed nil nil nil nil nil nil 75 nil 70 ((:name . "-*-fixed-*-*-*-*-*-*-75-75-*-~70-*-*"))> (E (error "Invalid font name: -*-fixed-*-*-*-*-*-*-*-*-x-*-*-*")) #<font-spec nil nil fixed nil nil nil nil nil 13 nil nil nil ((:name . "-*-fixed-*-13-*"))> #<font-spec nil nil fixed nil nil nil nil nil nil nil 110 nil ((:name . "-*-fixed-*-c-*"))> #<font-spec nil nil fixed nil nil nil nil nil 0 nil nil nil ((:name . "-*-fixed-*-0-*"))> #<font-spec nil nil fixed nil nil nil nil nil 10.0 nil nil nil ((:name . "-*-fixed-*-100-*"))> #<font-spec nil nil iso8859 nil nil nil nil nil nil nil nil nil ((:name . "-*-iso8859-*"))> #<font-spec nil nil x y nil nil nil nil nil nil nil nil ((:name . "-*-x-*-y-*"))> (E (error "Invalid font name: -*-x-*-y-z-*")) #<font-spec nil nil x bold nil nil nil nil nil nil nil nil ((:name . "-*-x-*-bold-*"))> (E (error "Invalid font name: -*-x-*-bold-r-normal-*")) (E (error "Invalid font name: -*-x-zany-r-*")) #<font-spec nil misc fixed ## iso8859-1 medium r normal 0 0 110 0 ((:name . "-misc-fixed-medium-r-normal--0-0-0-0-c-0-iso8859-1"))> (E (error "Invalid font name: -misc-fixed-medium-r-normal--*-*-*-x-c-70-iso8859-1")) #<font-spec nil misc fixed ## iso8859-1 medium r normal nil nil 110 70 ((:name . "-misc-fixed-medium-r-normal--*-*-*-*-c-~70-iso8859-1"))> #<font-spec nil misc fixed ## iso8859-1 medium r normal nil nil 110 70 ((:name . "-misc-fixed-MEDIUM-R-Normal--*-*-*-*-c-70-iso8859-1"))> (E (overflow-error "99999999999999999999")))"###,
+        "font_spec_xlfd_names_parse_as_font_parse_xlfd",
+    );
+}
+
+#[test]
+fn font_unparse_match_face_attributes_and_fontset_checks_match_gnu() {
+    // font.c's XLFD unparser, Ffont_get/Ffont_put, font_match_p,
+    // Ffont_face_attributes, the frame-checking listers, the style a
+    // fontconfig name registers, sxhash of a font, and fontset.c's
+    // check_fontset_name with Fset_fontset_font's argument checks.
+    assert_oracle_contract_matches_interpreter(
+        r###"(mapcar (lambda (thunk) (condition-case e (funcall thunk) (t (list 'E e))))
+ (list
+  (lambda () (font-xlfd-name (font-spec :registry 'jisx0208)))
+  (lambda () (font-xlfd-name (font-spec :registry "jisx0208*")))
+  (lambda () (font-xlfd-name (font-spec :size 12.5 :dpi 96 :spacing 90 :avgwidth 70)))
+  (lambda () (font-xlfd-name (font-spec :weight 'semi-bold :width 'semi-condensed)))
+  (lambda () (font-xlfd-name (font-spec :size 0)))
+  (lambda () (font-xlfd-name (font-spec :size 12.25)))
+  (lambda () (font-xlfd-name (font-spec :family (make-string 300 ?a))))
+  (lambda () (length (font-xlfd-name (font-spec :family (make-string 300 ?a)) nil t)))
+  (lambda () (font-xlfd-name (font-spec) t))
+  (lambda () (font-xlfd-name (font-spec :foundry "" :family "")))
+  (lambda () (font-get (font-spec :name "Foo") :name))
+  (lambda () (font-get (font-spec) 5))
+  (lambda () (let ((f (font-spec))) (font-put f :name "Bar-12") f))
+  (lambda () (let ((f (font-spec))) (font-put f :type 'x) f))
+  (lambda () (let ((f (font-spec))) (font-put f 5 1) f))
+  (lambda () (let ((f (font-spec))) (font-put f :lang "ja") (font-put f :b 2) (font-put f :a 1) f))
+  (lambda () (font-match-p (font-spec :size 12.0) (font-spec :size 12)))
+  (lambda () (font-match-p (font-spec :weight 'semi-bold) (font-spec :weight 'demibold)))
+  (lambda () (font-match-p (font-spec :weight 'bold) (font-spec :weight 'demibold)))
+  (lambda () (font-match-p (font-spec :lang 'ja) (font-spec)))
+  (lambda () (font-match-p (font-spec :lang 'ja) (font-spec :lang 'ja)))
+  (lambda () (font-match-p (font-spec :otf '(latn)) (font-spec)))
+  (lambda () (font-match-p (font-spec :size 12 :dpi 96) (font-spec :size 12)))
+  (lambda () (let ((face-font-rescale-alist '(("Foo" . 2.0)))) (font-match-p (font-spec :size 6) (font-spec :family "Foo" :size 12))))
+  (lambda () (font-face-attributes (font-spec :family "Foo" :weight 'demibold :slant 'italic :width 'narrow :size 12.7)))
+  (lambda () (font-face-attributes "Foo Bold Italic 12"))
+  (lambda () (font-face-attributes "-x"))
+  (lambda () (font-face-attributes 5))
+  (lambda () (font-face-attributes "Foo" 5))
+  (lambda () (list-fonts (font-spec) nil 'a))
+  (lambda () (list-fonts (font-spec) nil nil 5))
+  (lambda () (find-font (font-spec) 5))
+  (lambda () (font-info 5))
+  (lambda () (font-info "Foo"))
+  (lambda () (open-font (font-spec)))
+  (lambda () (sxhash-equal (font-spec :weight 'bold)))
+  (lambda () (progn (font-spec :name "Foo:roman") (list (font-spec :slant 'roman) (font-xlfd-name (font-spec :name "Foo:roman")))))
+  (lambda () (fontset-font nil ?a))
+  (lambda () (fontset-font "nosuch" ?a))
+  (lambda () (set-fontset-font t ?a "Foo"))
+  (lambda () (set-fontset-font t '(0 . 127) nil))
+  (lambda () (set-fontset-font t 'nosuch "Foo"))
+  (lambda () (set-fontset-font t "x" "Foo"))
+  (lambda () (set-fontset-font t 233 5))
+  (lambda () (set-fontset-font t 233 "-x"))
+  (lambda () (set-fontset-font t 233 '("Bar-Foo" . "jisx0208")))
+  (lambda () (set-fontset-font t 233 "Foo" 5))))"###,
+        r###"("-*-*-*-*-*-*-*-*-*-*-*-*-jisx0208*-*" "-*-*-*-*-*-*-*-*-*-*-*-*-jisx0208*-*" "-*-*-*-*-*-*-*-125-96-96-d-70-*-*" "-*-*-semibold-*-semicondensed-*-*-*-*-*-*-*-*-*" "-*-*-*-*-*-*-*-*-*-*-*-*-*-*" "-*-*-*-*-*-*-*-122-*-*-*-*-*-*" nil 327 "-*" "---*-*-*-*-*-*-*-*-*-*-*-*" "Foo" (E (wrong-type-argument symbolp 5)) #<font-spec nil nil nil nil nil nil nil nil nil nil nil nil ((:name . "Bar-12"))> #<font-spec x nil nil nil nil nil nil nil nil nil nil nil nil> #<font-spec nil nil nil nil nil nil nil nil nil nil nil nil ((5 . 1))> #<font-spec nil nil nil nil nil nil nil nil nil nil nil nil ((:a . 1) (:b . 2) (:lang . ja))> nil t nil nil t nil nil t (:family "Foo" :height 120 :weight semi-bold :slant italic :width condensed) (:family "Foo" :height 120 :weight bold :slant italic) (E (error "Invalid font name" "-x")) (E (error "Invalid font object" 5)) (E (wrong-type-argument frame-live-p 5)) (E (wrong-type-argument fixnump a)) (E (wrong-type-argument font-spec 5)) (E (wrong-type-argument frame-live-p 5)) (E (wrong-type-argument stringp 5)) (E (error "Window system frame should be used")) (E (wrong-type-argument font-entity #<font-spec nil nil nil nil nil nil nil nil nil nil nil nil nil>)) 197032487473358528 (#<font-spec nil nil nil nil nil nil roman nil nil nil nil nil nil> "-*-Foo-*-roman-*-*-*-*-*-*-*-*-*-*") (E (error "Can't use fontsets in non-GUI frames")) (E (error "Fontset `nosuch' does not exist")) (E (error "Can't set a font for partial ASCII range")) (E (error "Can't set ASCII font to nil")) (E (error "Invalid script or charset name: nosuch")) (E (error "Invalid second argument for setting a font in a fontset")) (E (font "Invalid font-spec" 5)) (E (error "Invalid font name: -x")) nil (E (wrong-type-argument frame-live-p 5)))"###,
+        "font_unparse_match_face_attributes_and_fontset_checks_match_gnu",
+    );
+}
+
+#[test]
+fn font_spec_name_parsing_matches_gnu_font_tests() {
+    // test/src/font-tests.el's font-parse-tests--data and
+    // font-parse-xlfd-test names, parsed by font.c's font_parse_fcname
+    // (fontconfig and GTK forms) and font_parse_xlfd.
+    assert_oracle_contract_matches_interpreter(
+        r#"(mapcar (lambda (name) (let ((spec (font-spec :name name))) (cons name (mapcar (lambda (key) (font-get spec key)) (quote (:family :size :weight :slant :spacing :foundry)))))) (quote (" " "Monospace" "Monospace Serif" "Foo1" "12" "12 " "Foo:" "Foo-8" "Foo-18:" "Foo-18:light" "Foo 10:weight=bold" "Foo-12:weight=bold" "Foo 8-20:slant=oblique" "Foo:light:roman" "Foo:italic:roman" "Foo 12:light:oblique" "Foo-12:demibold:oblique" "Foo:black:proportional" "Foo-10:black:proportional" "Foo:weight=normal" "Foo:weight=bold" "Foo:weight=bold:slant=italic" "Foo:weight=bold:slant=italic:mono" "Foo-10:demibold:slant=normal" "Foo 11-16:oblique:weight=bold" "Foo:oblique:randomprop=randomtag:weight=bold" "Foo:randomprop=randomtag:bar=baz" "Foo Book Light:bar=baz" "Foo Book Light 10:bar=baz" "Foo Book Light-10:bar=baz" "Oblique" "Bold 17" "17 Bold" "Book Oblique 2" "Bar 7" "Bar Ultra-Light" "Bar Light 8" "Bar Book Medium 9" "Bar Semi-Bold Italic 10" "Bar Semi-Condensed Bold Italic 11" "Foo 10 11" "Foo 1985 Book" "Foo 1985 A Book" "Foo 1 Book 12" "Foo A Book 12 A" "Foo 1985 Book 12 Oblique" "Foo 1985 Book 12 Italic 10" "Foo Book Bar 6 Italic" "Foo Book Bar Bold" "-GNU -FreeSans-semibold-italic-normal-*-*-*-*-*-*-0-iso10646-1" "-Take-mikachan-PS-normal-normal-normal-*-*-*-*-*-*-0-iso10646-1" "-foundry-name-with-lots-of-dashes-normal-normal-normal-*-*-*-*-*-*-0-iso10646-1")))"#,
+        r#"((" " \  nil nil nil nil nil) ("Monospace" Monospace nil nil nil nil nil) ("Monospace Serif" Monospace\ Serif nil nil nil nil nil) ("Foo1" Foo1 nil nil nil nil nil) ("12" nil 12.0 nil nil nil nil) ("12 " 12\  nil nil nil nil nil) ("Foo:" Foo nil nil nil nil nil) ("Foo-8" Foo 8.0 nil nil nil nil) ("Foo-18:" Foo 18.0 nil nil nil nil) ("Foo-18:light" Foo 18.0 light nil nil nil) ("Foo 10:weight=bold" Foo\ 10 nil bold nil nil nil) ("Foo-12:weight=bold" Foo 12.0 bold nil nil nil) ("Foo 8-20:slant=oblique" Foo\ 8 20.0 nil oblique nil nil) ("Foo:light:roman" Foo nil light roman nil nil) ("Foo:italic:roman" Foo nil nil roman nil nil) ("Foo 12:light:oblique" Foo\ 12 nil light oblique nil nil) ("Foo-12:demibold:oblique" Foo 12.0 demibold oblique nil nil) ("Foo:black:proportional" Foo nil black nil 0 nil) ("Foo-10:black:proportional" Foo 10.0 black nil 0 nil) ("Foo:weight=normal" Foo nil normal nil nil nil) ("Foo:weight=bold" Foo nil bold nil nil nil) ("Foo:weight=bold:slant=italic" Foo nil bold italic nil nil) ("Foo:weight=bold:slant=italic:mono" Foo nil bold italic 100 nil) ("Foo-10:demibold:slant=normal" Foo 10.0 demibold normal nil nil) ("Foo 11-16:oblique:weight=bold" Foo\ 11 16.0 bold oblique nil nil) ("Foo:oblique:randomprop=randomtag:weight=bold" Foo nil bold oblique nil nil) ("Foo:randomprop=randomtag:bar=baz" Foo nil nil nil nil nil) ("Foo Book Light:bar=baz" Foo\ Book\ Light nil nil nil nil nil) ("Foo Book Light 10:bar=baz" Foo\ Book\ Light\ 10 nil nil nil nil nil) ("Foo Book Light-10:bar=baz" Foo\ Book\ Light 10.0 nil nil nil nil) ("Oblique" nil nil nil oblique nil nil) ("Bold 17" nil 17.0 bold nil nil nil) ("17 Bold" \17 nil bold nil nil nil) ("Book Oblique 2" nil 2.0 book oblique nil nil) ("Bar 7" Bar 7.0 nil nil nil nil) ("Bar Ultra-Light" Bar nil ultra-light nil nil nil) ("Bar Light 8" Bar 8.0 light nil nil nil) ("Bar Book Medium 9" Bar 9.0 medium nil nil nil) ("Bar Semi-Bold Italic 10" Bar 10.0 semi-bold italic nil nil) ("Bar Semi-Condensed Bold Italic 11" Bar 11.0 bold italic nil nil) ("Foo 10 11" Foo\ 10 11.0 nil nil nil nil) ("Foo 1985 Book" Foo\ 1985 nil book nil nil nil) ("Foo 1985 A Book" Foo\ 1985\ A nil book nil nil nil) ("Foo 1 Book 12" Foo\ 1 12.0 book nil nil nil) ("Foo A Book 12 A" Foo\ A\ Book\ 12\ A nil nil nil nil nil) ("Foo 1985 Book 12 Oblique" Foo\ 1985\ Book\ 12 nil nil oblique nil nil) ("Foo 1985 Book 12 Italic 10" Foo\ 1985\ Book\ 12 10.0 nil italic nil nil) ("Foo Book Bar 6 Italic" Foo\ Book\ Bar\ 6 nil nil italic nil nil) ("Foo Book Bar Bold" Foo\ Book\ Bar nil bold nil nil nil) ("-GNU -FreeSans-semibold-italic-normal-*-*-*-*-*-*-0-iso10646-1" FreeSans nil semibold italic nil GNU\ ) ("-Take-mikachan-PS-normal-normal-normal-*-*-*-*-*-*-0-iso10646-1" mikachan-PS nil normal normal nil Take) ("-foundry-name-with-lots-of-dashes-normal-normal-normal-*-*-*-*-*-*-0-iso10646-1" name-with-lots-of-dashes nil normal normal nil foundry))"#,
+        "font_parse_name",
+    );
 }
 
 #[test]

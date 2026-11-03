@@ -143,6 +143,7 @@ pub(crate) use generated_gnu_c_primitives_linux::{
     GNU_C_PRIMITIVES, generated_gnu_c_primitive_available, generated_gnu_c_primitive_special_form,
 };
 mod fields;
+pub(crate) mod font;
 mod hash_insert;
 mod hooks_overlays;
 pub(crate) mod image;

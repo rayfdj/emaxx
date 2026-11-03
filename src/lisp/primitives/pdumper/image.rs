@@ -575,6 +575,8 @@ pub(crate) enum RootSlot {
     IntervalInsertInFrontHooks = 59,
     /// buffer.c's staticpro'd QSFundamental.
     FundamentalModeName = 60,
+    /// font.c's staticpro'd font_style_table.
+    FontStyleTable = 61,
 }
 
 impl RootSlot {
@@ -636,6 +638,7 @@ impl RootSlot {
             58 => Self::IntervalInsertBehindHooks,
             59 => Self::IntervalInsertInFrontHooks,
             60 => Self::FundamentalModeName,
+            61 => Self::FontStyleTable,
             _ => return None,
         })
     }

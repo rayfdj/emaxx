@@ -1025,7 +1025,22 @@ impl Printer {
                     for index in 0..FONT_SPEC_MAX {
                         if index != FONT_EXTRA_INDEX || !entity {
                             self.out.push(' ');
-                            self.print_object(interp, env, slot(index), escape)?;
+                            // The style slots' numbers as their names
+                            // (font_style_symbolic).
+                            let value = if (crate::lisp::primitives::font::FONT_WEIGHT_INDEX
+                                ..=crate::lisp::primitives::font::FONT_WIDTH_INDEX)
+                                .contains(&index)
+                            {
+                                crate::lisp::primitives::font::style_symbolic_of(
+                                    interp,
+                                    &slot(index),
+                                    index,
+                                    false,
+                                )?
+                            } else {
+                                slot(index)
+                            };
+                            self.print_object(interp, env, value, escape)?;
                         }
                     }
                 }

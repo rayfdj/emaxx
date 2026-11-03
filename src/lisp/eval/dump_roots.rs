@@ -659,6 +659,9 @@ impl Interpreter {
         // keymap.c's staticpro'd Unicode table, including a captured table
         // no longer named by char-code-property-alist.
         groups.push((RootSlot::UnicodeMenuCaseTable, self.unicode_menu_case_table));
+        // font.c's staticpro'd font_style_table, the style names a font
+        // name registered included.
+        groups.push((RootSlot::FontStyleTable, self.font_style_table));
         // textprop.c: the neighbours' insertion hooks the last insertion
         // check found, staticpro'd (syms_of_textprop).
         let [behind, in_front] = self.interval_insert_hooks;
@@ -1165,6 +1168,12 @@ mod install {
                 RootSlot::IntervalInsertBehindHooks => self.interval_insert_hooks[0] = *value,
                 RootSlot::IntervalInsertInFrontHooks => self.interval_insert_hooks[1] = *value,
                 RootSlot::FundamentalModeName => self.fundamental_mode_name = *value,
+                RootSlot::FontStyleTable => {
+                    if !value.is_nil() {
+                        expect_vector(value, "font style table")?;
+                    }
+                    self.font_style_table = *value;
+                }
                 RootSlot::Fontsets => {
                     let mut fontsets = Vec::new();
                     for entry in expect_list(value, "fontsets")? {

@@ -1,5 +1,6 @@
 use super::*;
 use crate::lisp::eval::LFACE_VECTOR_SIZE;
+use crate::lisp::primitives::font;
 use crate::lisp::types::Kind;
 
 /// xfaces.c:resolve_face_name (FACE, true): a string names the symbol it
@@ -244,19 +245,19 @@ fn merge_face_vectors(
         }
         if index == LFACE_HEIGHT_INDEX && !matches!(from[index].kind(), Kind::Integer(_)) {
             to[index] = merge_face_heights(interp, from[index], to[index], to[index], env)?;
-            super::fonts::font_clear_prop(interp, to, super::fonts::FONT_SIZE_INDEX)?;
+            font::font_clear_prop(interp, to, font::FONT_SIZE_INDEX, env)?;
         } else if index != LFACE_FONT_INDEX && !to[index].eq_value(from[index]) {
             to[index] = from[index];
             if (LFACE_FAMILY_INDEX..=LFACE_SLANT_INDEX).contains(&index) {
                 let prop = match index {
-                    LFACE_FAMILY_INDEX => super::fonts::FONT_FAMILY_INDEX,
-                    LFACE_FOUNDRY_INDEX => super::fonts::FONT_FOUNDRY_INDEX,
-                    LFACE_SWIDTH_INDEX => super::fonts::FONT_WIDTH_INDEX,
-                    LFACE_HEIGHT_INDEX => super::fonts::FONT_SIZE_INDEX,
-                    LFACE_WEIGHT_INDEX => super::fonts::FONT_WEIGHT_INDEX,
-                    _ => super::fonts::FONT_SLANT_INDEX,
+                    LFACE_FAMILY_INDEX => font::FONT_FAMILY_INDEX,
+                    LFACE_FOUNDRY_INDEX => font::FONT_FOUNDRY_INDEX,
+                    LFACE_SWIDTH_INDEX => font::FONT_WIDTH_INDEX,
+                    LFACE_HEIGHT_INDEX => font::FONT_SIZE_INDEX,
+                    LFACE_WEIGHT_INDEX => font::FONT_WEIGHT_INDEX,
+                    _ => font::FONT_SLANT_INDEX,
                 };
-                super::fonts::font_clear_prop(interp, to, prop)?;
+                font::font_clear_prop(interp, to, prop, env)?;
             }
         }
     }
@@ -455,12 +456,12 @@ fn merge_face_ref(
             if unspecifiedp(&value) {
             } else if is(":family") || is(":foundry") {
                 let (index, prop) = if is(":family") {
-                    (LFACE_FAMILY_INDEX, super::fonts::FONT_FAMILY_INDEX)
+                    (LFACE_FAMILY_INDEX, font::FONT_FAMILY_INDEX)
                 } else {
-                    (LFACE_FOUNDRY_INDEX, super::fonts::FONT_FOUNDRY_INDEX)
+                    (LFACE_FOUNDRY_INDEX, font::FONT_FOUNDRY_INDEX)
                 };
                 if set(to, index, value.is_string()) {
-                    super::fonts::font_clear_prop(interp, to, prop)?;
+                    font::font_clear_prop(interp, to, prop, env)?;
                 }
             } else if is(":height") {
                 let height =
@@ -469,25 +470,21 @@ fn merge_face_ref(
                     err = true;
                 } else {
                     to[LFACE_HEIGHT_INDEX] = height;
-                    super::fonts::font_clear_prop(interp, to, super::fonts::FONT_SIZE_INDEX)?;
+                    font::font_clear_prop(interp, to, font::FONT_SIZE_INDEX, env)?;
                 }
             } else if is(":weight") || is(":slant") || is(":width") {
                 let (index, prop) = if is(":weight") {
-                    (LFACE_WEIGHT_INDEX, super::fonts::FONT_WEIGHT_INDEX)
+                    (LFACE_WEIGHT_INDEX, font::FONT_WEIGHT_INDEX)
                 } else if is(":slant") {
-                    (LFACE_SLANT_INDEX, super::fonts::FONT_SLANT_INDEX)
+                    (LFACE_SLANT_INDEX, font::FONT_SLANT_INDEX)
                 } else {
-                    (LFACE_SWIDTH_INDEX, super::fonts::FONT_WIDTH_INDEX)
+                    (LFACE_SWIDTH_INDEX, font::FONT_WIDTH_INDEX)
                 };
                 // SYMBOLP and FONT_*_NAME_NUMERIC (VALUE) >= 0.
-                let name = match value.kind() {
-                    Kind::Nil => Some("nil"),
-                    Kind::T => Some("t"),
-                    _ => value.symbol_str(),
-                };
-                let valid = name.is_some_and(|name| super::fonts::valid_style_name(prop, name));
+                let valid = matches!(value.kind(), Kind::Nil | Kind::T | Kind::Symbol(_))
+                    && font::style_name_numeric(interp, prop, &value)? >= 0;
                 if set(to, index, valid) {
-                    super::fonts::font_clear_prop(interp, to, prop)?;
+                    font::font_clear_prop(interp, to, prop, env)?;
                 }
             } else if is(":underline") {
                 set(
@@ -673,15 +670,11 @@ fn checked_face_attribute(
             if !special {
                 check_symbol(value)?;
                 let (style, message) = match attribute {
-                    ":weight" => (super::fonts::FONT_WEIGHT_INDEX, "Invalid face weight"),
-                    ":slant" => (super::fonts::FONT_SLANT_INDEX, "Invalid face slant"),
-                    _ => (super::fonts::FONT_WIDTH_INDEX, "Invalid face width"),
+                    ":weight" => (font::FONT_WEIGHT_INDEX, "Invalid face weight"),
+                    ":slant" => (font::FONT_SLANT_INDEX, "Invalid face slant"),
+                    _ => (font::FONT_WIDTH_INDEX, "Invalid face width"),
                 };
-                let name = value.symbol_str().unwrap_or(match value.kind() {
-                    Kind::T => "t",
-                    _ => "nil",
-                });
-                if !super::fonts::valid_style_name(style, name) {
+                if font::style_name_numeric(interp, style, &value)? < 0 {
                     return Err(signal_error(message, value));
                 }
             }

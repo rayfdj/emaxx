@@ -12945,6 +12945,61 @@ setup_process_coding_systems's check now refuses). A 13-form
   bitmap and initial-frame forms match GNU. Local validation: the
   grouped gate's 3470 library tests, the integration targets and
   clippy with `--all-targets --all-features -D warnings' pass.
+- **Round 267: font.c's font-spec model.** A font-spec keeps its weight,
+  slant and width as font_style_to_value's numbers, (NUMERIC << 8) |
+  (ENTRY << 4) | (NAME - 1), against font_style_table (the dumped root
+  FontStyleTable: the values of `font-weight-table', `font-slant-table'
+  and `font-width-table' until a fontconfig name's `:roman' registers a
+  style, as GNU's does), matched by EQ and then case-folded, so
+  `demibold' and `semi-bold' are equal styles of unequal specs, `BOLD'
+  is stored as `bold' and `font-get', the printer and the XLFD unparser
+  show font_style_symbolic's names. font_prop_validate is ported with
+  font_property_table (strings interned, registries downcased, numeric
+  styles checked against their entry, the spacing letters, :otf's lists,
+  a nil key validated as :type), font_put_extra keeps the extra alist in
+  `string-lessp' order and deletes by delq, and Ffont_spec, Ffont_get
+  and Ffont_put are GNU's (`font-put' of :name stores it unparsed, of
+  :type sets the type). `:name' is parsed by font_parse_name:
+  font_parse_xlfd with font_intern_prop's fixnums and overflow-error,
+  parse_matrix and font_expand_wildcards' placement of wildcard names,
+  retried with a dashed family, or font_parse_fcname's fontconfig and
+  GTK forms with the cairo X build's ftfont_filter_properties on the
+  extra properties; the ad-hoc parser it replaces is gone.
+  font_dynamic_unparse_xlfd and font_unparse_xlfd back `font-xlfd-name'
+  (the 256-byte limit, folded wildcards), font_match_p with font_score's
+  style, size and resolution differences and face-font-rescale-alist
+  backs `font-match-p', and copy_font_spec, font_clear_prop and
+  font_parse_family_registry are 30.2's. CHECK_FONT, CHECK_FONT_SPEC,
+  CHECK_FONT_ENTITY and CHECK_FONT_OBJECT signal with `font',
+  `font-spec', `font-entity' and `font-object'; `list-fonts' and
+  `find-font' decode the frame before their spec and list nothing (no
+  frame has a font driver), `font-face-attributes' takes a font or a
+  name (font_spec_from_name), `font-info' wants a font or a string
+  before decode_window_system_frame, `open-font' decodes its frame
+  before CHECK_FONT_ENTITY, and the face merge and `set-face-attribute'
+  accept a style as FONT_*_NAME_NUMERIC does. sxhash hashes a font's
+  property slots alone, as fns.c's sxhash_vector does. fontset.c's
+  check_fontset_name (frame first, t for the default fontset, nil an
+  error on a terminal frame, a literal or pattern name through
+  fs_query_fontset) is used by `fontset-font' and `set-fontset-font',
+  whose font spec is built first (Ffont_spec of a name,
+  font_parse_family_registry of a cons, `font' "Invalid font-spec"
+  otherwise) and whose characters, ADD and ASCII checks are
+  Fset_fontset_font's; the fontsets' own char-table model is round
+  268's. GNU's batch build crashes where a font's integer size meets
+  FRAME_RES on a terminal frame (`font-face-attributes' of such a spec
+  or XLFD) and where font_match_p encodes a :script's characters with a
+  font that is no font-object; Emaxx answers there as a build without a
+  window system would (default_pixels_per_inch_y) and as a font that
+  encodes nothing. The display sweep now matches GNU but for
+  `menu-bar-menu-at-x-y', and font-tests.el's names and batteries of
+  styles, validators, XLFD and fontconfig names, the unparser, matching,
+  face attributes and fontset arguments match GNU. Two library tests'
+  expectations set outside GNU's answers before this round now follow
+  GNU: `font-face-attributes' of an empty spec is nil and `open-font' of
+  nil signals (wrong-type-argument font-entity nil). Local validation:
+  the grouped gate's 3,473 library tests, the integration targets
+  and clippy with `--all-targets --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -14794,6 +14849,19 @@ against 548), and the widest body gaps are ert-tests (46,193 ms against
 against 2,862) and mule-tests (3,228 against 2,049), the gate build's as
 before; Emaxx's bodies rose most in tramp-tests, vc-tests and comp-tests,
 whose GNU bodies rose with them.
+
+**On `805e927`** (round 266): the full Rust gate (run 41572247618)
+passed, and frozen (run 41572250674) matched all 7,928 outcomes at the
+first attempt, on a faster runner than round 265's. Setup 53.3 s against
+45.4 s (1.174), test bodies 228.6 s against 220.7 s (1.036), in all
+1.052. Per file, the setup is 15 ms over GNU's on average (7.9 s over
+519 files, a median of 83 ms against 72), electric-tests' the most (534
+against 341) before x-dnd-tests' (620 against 488) and comp-tests'
+(1,290 against 1,165), and the widest body gaps are comp-tests (11,985
+ms against 10,483), tramp-tests (15,459 against 14,385), ert-tests
+(27,796 against 27,133, the gap of 7.7 s under round 265's runner down
+to 0.7 s), mule-tests (1,738 against 1,155) and semantic-utest-ia (2,404
+against 1,876).
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

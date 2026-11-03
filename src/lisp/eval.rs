@@ -4506,6 +4506,7 @@ impl Interpreter {
         mark(&self.unicode_menu_case_table);
         mark(&self.where_is_cache);
         mark(&self.where_is_cache_keymaps);
+        mark(&self.font_style_table);
         mark(&Value::CharTable(self.standard_syntax_table_id));
         for table in self.standard_category_table_id.into_iter().chain(
             self.standard_case_tables
@@ -4964,6 +4965,7 @@ impl Interpreter {
             // A reverse-map cache is rebuilt on demand.
             clone.where_is_cache = Value::Nil;
             clone.where_is_cache_keymaps = Value::T;
+            clone.font_style_table = c.copy(&clone.font_style_table);
             clone.standard_syntax_table_id = copy_table(c, clone.standard_syntax_table_id);
             clone.standard_category_table_id = clone
                 .standard_category_table_id
@@ -5799,6 +5801,12 @@ pub struct InterpreterState {
     /// being filled).
     pub(crate) where_is_cache: Value,
     pub(crate) where_is_cache_keymaps: Value,
+    /// font.c's staticpro'd font_style_table: a vector of the weight,
+    /// slant and width tables, at first the values of `font-weight-table',
+    /// `font-slant-table' and `font-width-table' themselves (nil until a
+    /// font property is first read), and a longer copy of one after
+    /// font_style_to_value registers a style name it lacked.
+    pub(crate) font_style_table: Value,
     standard_syntax_table_id: CharTableRef,
     // lread.c:Vload_path is a rooted Lisp_Objfwd slot, not a host-side
     // directory vector from which reads reconstruct new Lisp objects.
@@ -6511,6 +6519,7 @@ impl Interpreter {
             unicode_menu_case_table: Value::Nil,
             where_is_cache: Value::Nil,
             where_is_cache_keymaps: Value::T,
+            font_style_table: Value::Nil,
             standard_syntax_table_id,
             load_path: Value::Nil,
             loads_in_progress: Value::Nil,

@@ -1,101 +1,14 @@
 use super::*;
 use crate::lisp::eval::{FontPatternState, FontsetMappingState, FontsetState, FontsetTargetState};
 use crate::lisp::primitives::buffers::position_from_value;
-use crate::lisp::primitives::color_lcms::parse_font_name;
+use crate::lisp::primitives::font;
 use crate::lisp::primitives::window::{window_buffer_id, window_record_id_from_value};
 use crate::lisp::types::Kind;
-
-const FONT_TYPE_INDEX: usize = 0;
-pub(super) const FONT_FOUNDRY_INDEX: usize = 1;
-pub(super) const FONT_FAMILY_INDEX: usize = 2;
-const FONT_ADSTYLE_INDEX: usize = 3;
-const FONT_REGISTRY_INDEX: usize = 4;
-pub(super) const FONT_WEIGHT_INDEX: usize = 5;
-pub(super) const FONT_SLANT_INDEX: usize = 6;
-pub(super) const FONT_WIDTH_INDEX: usize = 7;
-pub(super) const FONT_SIZE_INDEX: usize = 8;
-const FONT_DPI_INDEX: usize = 9;
-const FONT_SPACING_INDEX: usize = 10;
-const FONT_AVGWIDTH_INDEX: usize = 11;
-const FONT_EXTRA_INDEX: usize = 12;
-const FONT_SPEC_SIZE: usize = FONT_EXTRA_INDEX + 1;
-
-fn font_property_index(key: &str) -> Option<usize> {
-    Some(match key {
-        ":type" => FONT_TYPE_INDEX,
-        ":foundry" => FONT_FOUNDRY_INDEX,
-        ":family" => FONT_FAMILY_INDEX,
-        ":adstyle" => FONT_ADSTYLE_INDEX,
-        ":registry" => FONT_REGISTRY_INDEX,
-        ":weight" => FONT_WEIGHT_INDEX,
-        ":slant" => FONT_SLANT_INDEX,
-        ":width" => FONT_WIDTH_INDEX,
-        ":size" => FONT_SIZE_INDEX,
-        ":dpi" => FONT_DPI_INDEX,
-        ":spacing" => FONT_SPACING_INDEX,
-        ":avgwidth" => FONT_AVGWIDTH_INDEX,
-        _ => return None,
-    })
-}
-
-fn font_record<'a>(
-    interp: &'a Interpreter,
-    value: &Value,
-) -> Result<&'a crate::lisp::eval::RecordState, LispError> {
-    let Kind::Record(id) = value.kind() else {
-        return Err(wrong_type_argument("fontp", *value));
-    };
-    interp
-        .find_record(id)
-        .filter(|record| record.kind == crate::lisp::eval::RecordKind::Font)
-        .ok_or_else(|| wrong_type_argument("fontp", *value))
-}
-
-fn font_spec_id(interp: &Interpreter, value: &Value) -> Result<u64, LispError> {
-    let Kind::Record(id) = value.kind() else {
-        return Err(wrong_type_argument("font-spec-p", *value));
-    };
-    interp
-        .find_record(id)
-        .filter(|record| {
-            record.kind == crate::lisp::eval::RecordKind::Font
-                && record.has_symbol_type("font-spec")
-        })
-        .map(|_| id.id)
-        .ok_or_else(|| wrong_type_argument("font-spec-p", *value))
-}
-
-fn require_font_type(
-    interp: &Interpreter,
-    value: &Value,
-    record_type: &str,
-    predicate: &str,
-) -> Result<(), LispError> {
-    if font_record(interp, value).is_ok_and(|font| font.has_symbol_type(record_type)) {
-        Ok(())
-    } else {
-        Err(wrong_type_argument(predicate, *value))
-    }
-}
-
-fn require_font(interp: &Interpreter, value: &Value) -> Result<(), LispError> {
-    font_record(interp, value)
-        .map(|_| ())
-        .map_err(|_| wrong_type_argument("font", *value))
-}
 
 fn require_character(value: &Value) -> Result<(), LispError> {
     match value.kind() {
         Kind::Integer(character) if (0..=0x3f_ffff).contains(&character) => Ok(()),
         _ => Err(wrong_type_argument("characterp", *value)),
-    }
-}
-
-fn require_live_frame(interp: &Interpreter, frame: Option<&Value>) -> Result<(), LispError> {
-    match frame.map(|v| v.kind()) {
-        None | Some(Kind::Nil) => Ok(()),
-        Some(Kind::Frame(id)) if interp.frame_is_live(id) => Ok(()),
-        Some(frame) => Err(wrong_type_argument("frame-live-p", frame.value())),
     }
 }
 
@@ -136,7 +49,7 @@ fn composition_gstring_parts(interp: &Interpreter, gstring: &Value) -> Option<(V
     let font = header[0];
     if !font.is_nil()
         && !matches!(font.kind(), Kind::Symbol(name) if interp.has_coding_system(&name))
-        && !font_record(interp, &font).is_ok_and(|record| record.has_symbol_type("font-object"))
+        && font::font_kind(interp, &font) != Some(font::FontKind::Object)
     {
         return None;
     }
@@ -156,580 +69,12 @@ fn composition_gstring_parts(interp: &Interpreter, gstring: &Value) -> Option<(V
     Some((font, body[1]))
 }
 
-fn invalid_font_property() -> LispError {
-    LispError::Signal("invalid font property".into())
-}
-
 fn args_out_of_range(object: Value, position: Value) -> LispError {
     LispError::SignalValue(Value::list([
         Value::symbol("args-out-of-range"),
         object,
         position,
     ]))
-}
-
-fn symbol_property(value: &Value, lowercase: bool) -> Result<Value, LispError> {
-    let name = match value.kind() {
-        Kind::StringObject(_) => string_text(value)?,
-        Kind::Nil => return Ok(Value::Nil),
-        Kind::T => "t".into(),
-        Kind::Symbol(name) => name.to_string(),
-        _ => return Err(invalid_font_property()),
-    };
-    let name = if lowercase { name.to_lowercase() } else { name };
-    Ok(Value::symbol(&name))
-}
-
-pub(super) fn valid_style_name(index: usize, name: &str) -> bool {
-    let name = name.to_ascii_lowercase();
-    match index {
-        FONT_WEIGHT_INDEX => matches!(
-            name.as_str(),
-            "thin"
-                | "ultra-light"
-                | "ultralight"
-                | "extra-light"
-                | "extralight"
-                | "light"
-                | "semi-light"
-                | "semilight"
-                | "demilight"
-                | "regular"
-                | "normal"
-                | "unspecified"
-                | "book"
-                | "medium"
-                | "semi-bold"
-                | "semibold"
-                | "demibold"
-                | "demi-bold"
-                | "demi"
-                | "bold"
-                | "extra-bold"
-                | "extrabold"
-                | "ultra-bold"
-                | "ultrabold"
-                | "black"
-                | "heavy"
-                | "ultra-heavy"
-                | "ultraheavy"
-        ),
-        FONT_SLANT_INDEX => matches!(
-            name.as_str(),
-            "reverse-oblique"
-                | "ro"
-                | "reverse-italic"
-                | "ri"
-                | "normal"
-                | "r"
-                | "unspecified"
-                | "italic"
-                | "i"
-                | "ot"
-                | "oblique"
-                | "o"
-        ),
-        FONT_WIDTH_INDEX => matches!(
-            name.as_str(),
-            "ultra-condensed"
-                | "ultracondensed"
-                | "extra-condensed"
-                | "extracondensed"
-                | "condensed"
-                | "compressed"
-                | "narrow"
-                | "semi-condensed"
-                | "semicondensed"
-                | "demicondensed"
-                | "normal"
-                | "medium"
-                | "regular"
-                | "unspecified"
-                | "semi-expanded"
-                | "semiexpanded"
-                | "demiexpanded"
-                | "expanded"
-                | "extra-expanded"
-                | "extraexpanded"
-                | "ultra-expanded"
-                | "ultraexpanded"
-                | "wide"
-        ),
-        _ => false,
-    }
-}
-
-fn style_property(index: usize, value: &Value) -> Result<Value, LispError> {
-    let name = value.as_symbol().map_err(|_| invalid_font_property())?;
-    if valid_style_name(index, name) {
-        Ok(Value::symbol(name))
-    } else {
-        Err(invalid_font_property())
-    }
-}
-
-fn nonnegative_property(value: &Value) -> Result<Value, LispError> {
-    match value.kind() {
-        Kind::Integer(number) if number >= 0 => Ok(*value),
-        Kind::Float(number) if number.get() >= 0.0 => Ok(*value),
-        _ => Err(invalid_font_property()),
-    }
-}
-
-fn spacing_property(value: &Value) -> Result<Value, LispError> {
-    match value.kind() {
-        Kind::Nil => Ok(Value::Nil),
-        Kind::Integer(number) if (0..=110).contains(&number) => Ok(*value),
-        Kind::Symbol(symbol) if symbol.len() == 1 => match symbol.as_bytes()[0] {
-            b'p' | b'P' => Ok(Value::Integer(0)),
-            b'd' | b'D' => Ok(Value::Integer(90)),
-            b'm' | b'M' => Ok(Value::Integer(100)),
-            b'c' | b'C' => Ok(Value::Integer(110)),
-            _ => Err(invalid_font_property()),
-        },
-        _ => Err(invalid_font_property()),
-    }
-}
-
-fn otf_property(value: &Value) -> Result<Value, LispError> {
-    let values = value.to_vec().map_err(|_| invalid_font_property())?;
-    if values.is_empty() || values.len() > 4 || values[0].as_symbol().is_err() {
-        return Err(invalid_font_property());
-    }
-    if let Some(language) = values.get(1)
-        && language.as_symbol().is_err()
-    {
-        return Err(invalid_font_property());
-    }
-    for features in values.iter().skip(2) {
-        let features = features.to_vec().map_err(|_| invalid_font_property())?;
-        if features.iter().any(|feature| feature.as_symbol().is_err()) {
-            return Err(invalid_font_property());
-        }
-    }
-    Ok(*value)
-}
-
-fn validated_font_property(index: usize, value: &Value) -> Result<Value, LispError> {
-    match index {
-        FONT_TYPE_INDEX | FONT_FOUNDRY_INDEX | FONT_FAMILY_INDEX | FONT_ADSTYLE_INDEX => {
-            symbol_property(value, false)
-        }
-        FONT_REGISTRY_INDEX => symbol_property(value, true),
-        FONT_WEIGHT_INDEX | FONT_SLANT_INDEX | FONT_WIDTH_INDEX => style_property(index, value),
-        FONT_SIZE_INDEX | FONT_DPI_INDEX | FONT_AVGWIDTH_INDEX => nonnegative_property(value),
-        FONT_SPACING_INDEX => spacing_property(value),
-        _ => unreachable!("all fixed font properties have validators"),
-    }
-}
-
-fn extra_entries(value: &Value) -> Vec<(Value, Value)> {
-    value
-        .to_vec()
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|entry| entry.cons_values())
-        .collect()
-}
-
-fn extra_value(extra: &Value, key: &str) -> Option<Value> {
-    extra_entries(extra)
-        .into_iter()
-        .find_map(|(entry_key, value)| {
-            matches!(entry_key.kind(), Kind::Symbol(symbol) if symbol == key).then_some(value)
-        })
-}
-
-fn put_extra(extra: &mut Value, key: Value, value: Value) {
-    let key_name = key.symbol_str().map(str::to_string);
-    let mut entries = extra_entries(extra);
-    if let Some((_, existing)) = entries.iter_mut().find(|(entry_key, _)| {
-        key_name
-            .as_ref()
-            .is_some_and(|key| matches!(entry_key.kind(), Kind::Symbol(symbol) if symbol.as_str() == key.as_str()))
-    }) {
-        *existing = value;
-    } else {
-        entries.insert(0, (key, value));
-    }
-    *extra = Value::list(
-        entries
-            .into_iter()
-            .map(|(entry_key, entry_value)| Value::cons(entry_key, entry_value)),
-    );
-}
-
-fn set_name_properties(slots: &mut [Value], name: &str) -> Result<(), LispError> {
-    if name.is_empty() {
-        return Err(LispError::Signal("Invalid font name: ".into()));
-    }
-    let info = parse_font_name(name);
-    if let Some(foundry) = info.foundry {
-        slots[FONT_FOUNDRY_INDEX] = Value::symbol(&foundry);
-    }
-    if let Some(family) = info.family {
-        slots[FONT_FAMILY_INDEX] = Value::symbol(&family);
-    }
-    if let Some(weight) = info.weight {
-        slots[FONT_WEIGHT_INDEX] = Value::symbol(&weight);
-    }
-    if let Some(slant) = info.slant {
-        slots[FONT_SLANT_INDEX] = Value::symbol(&slant);
-    }
-    if let Some(size) = info.size {
-        slots[FONT_SIZE_INDEX] = Value::float(size);
-    }
-    if let Some(spacing) = info.spacing {
-        slots[FONT_SPACING_INDEX] = Value::Integer(spacing);
-    }
-    Ok(())
-}
-
-fn make_font_spec(args: &[Value]) -> Result<Vec<Value>, LispError> {
-    let mut slots = vec![Value::Nil; FONT_SPEC_SIZE];
-    let mut index = 0;
-    while index < args.len() {
-        let key = args[index]
-            .as_symbol()
-            .map_err(|_| wrong_type_argument("symbolp", args[index]))?;
-        let Some(value) = args.get(index + 1) else {
-            return Err(LispError::Signal(format!("No value for key `{key}'")));
-        };
-        if key == ":name" {
-            let name = string_text(value)?;
-            set_name_properties(&mut slots, &name)?;
-            put_extra(&mut slots[FONT_EXTRA_INDEX], args[index], *value);
-        } else if let Some(property_index) = font_property_index(key) {
-            slots[property_index] = validated_font_property(property_index, value)?;
-        } else {
-            let value = match key {
-                ":lang" | ":script" => symbol_property(value, false)?,
-                ":otf" => otf_property(value)?,
-                _ => *value,
-            };
-            put_extra(&mut slots[FONT_EXTRA_INDEX], args[index], value);
-        }
-        index += 2;
-    }
-    Ok(slots)
-}
-
-/// font.c:copy_font_spec: a font-spec of FONT's properties but its type,
-/// its extra alist copied without a `:font-entity' entry.
-pub(super) fn copy_font_spec(interp: &mut Interpreter, font: &Value) -> Result<Value, LispError> {
-    let slots = font_record(interp, font)
-        .map_err(|_| wrong_type_argument("font", *font))?
-        .slots
-        .clone();
-    let slot = |index: usize| slots.get(index).copied().unwrap_or(Value::Nil);
-    let mut copy = vec![Value::Nil; FONT_SPEC_SIZE];
-    for (index, value) in copy
-        .iter_mut()
-        .enumerate()
-        .take(FONT_EXTRA_INDEX)
-        .skip(FONT_FOUNDRY_INDEX)
-    {
-        *value = slot(index);
-    }
-    // Fcopy_alist, then the walk that unlinks each `:font-entity' cell
-    // from the cell before it, which leaves one after an unlinked cell.
-    let mut entries = Vec::new();
-    let mut tail = slot(FONT_EXTRA_INDEX);
-    while let Some((entry, rest)) = tail.cons_values() {
-        entries.push(
-            entry
-                .cons_values()
-                .map_or(entry, |(key, value)| Value::cons(key, value)),
-        );
-        tail = rest;
-    }
-    let is_entity = |entry: &Value| {
-        entry.cons_values().is_some_and(
-            |(key, _)| matches!(key.kind(), Kind::Symbol(symbol) if symbol == ":font-entity"),
-        )
-    };
-    let mut kept: Vec<Value> = Vec::with_capacity(entries.len());
-    let mut prev_dropped = false;
-    for entry in entries {
-        if is_entity(&entry) && !prev_dropped {
-            prev_dropped = true;
-            continue;
-        }
-        prev_dropped = false;
-        kept.push(entry);
-    }
-    copy[FONT_EXTRA_INDEX] = Value::list(kept);
-    Ok(interp.create_pseudovector(crate::lisp::eval::RecordKind::Font, "font-spec", copy))
-}
-
-/// font.c:font_clear_prop: the font in the lface ATTRS made a copy with
-/// PROP and the properties that go with it cleared, its `:name' gone.
-pub(super) fn font_clear_prop(
-    interp: &mut Interpreter,
-    attrs: &mut [Value],
-    prop: usize,
-) -> Result<(), LispError> {
-    const LFACE_FONT_INDEX: usize = 15;
-    let mut font = attrs[LFACE_FONT_INDEX];
-    if font_record(interp, &font).is_err() {
-        return Ok(());
-    }
-    if !font_property(interp, &font, ":name")?.is_nil() {
-        font = copy_font_spec(interp, &font)?;
-        // font_put_extra (FONT, :name, Qunbound): the entry unlinked.
-        let record = font_record_mut(interp, &font);
-        let mut kept = Vec::new();
-        let mut tail = record.slots[FONT_EXTRA_INDEX];
-        while let Some((entry, rest)) = tail.cons_values() {
-            if !entry.cons_values().is_some_and(
-                |(key, _)| matches!(key.kind(), Kind::Symbol(symbol) if symbol == ":name"),
-            ) {
-                kept.push(entry);
-            }
-            tail = rest;
-        }
-        record.slots[FONT_EXTRA_INDEX] = Value::list(kept);
-    }
-    let slot = font_record(interp, &font)?
-        .slots
-        .get(prop)
-        .copied()
-        .unwrap_or(Value::Nil);
-    if slot.is_nil()
-        && !matches!(
-            prop,
-            FONT_FAMILY_INDEX | FONT_FOUNDRY_INDEX | FONT_WIDTH_INDEX | FONT_SIZE_INDEX
-        )
-    {
-        return Ok(());
-    }
-    if font.eq_value(attrs[LFACE_FONT_INDEX]) {
-        font = copy_font_spec(interp, &font)?;
-    }
-    let cleared: &[usize] = match prop {
-        FONT_FAMILY_INDEX => &[
-            FONT_FAMILY_INDEX,
-            FONT_FOUNDRY_INDEX,
-            FONT_WIDTH_INDEX,
-            FONT_ADSTYLE_INDEX,
-            FONT_REGISTRY_INDEX,
-            FONT_SIZE_INDEX,
-            FONT_DPI_INDEX,
-            FONT_SPACING_INDEX,
-            FONT_AVGWIDTH_INDEX,
-        ],
-        FONT_FOUNDRY_INDEX => &[
-            FONT_FOUNDRY_INDEX,
-            FONT_ADSTYLE_INDEX,
-            FONT_REGISTRY_INDEX,
-            FONT_SIZE_INDEX,
-            FONT_DPI_INDEX,
-            FONT_SPACING_INDEX,
-            FONT_AVGWIDTH_INDEX,
-        ],
-        FONT_SIZE_INDEX => &[
-            FONT_SIZE_INDEX,
-            FONT_DPI_INDEX,
-            FONT_SPACING_INDEX,
-            FONT_AVGWIDTH_INDEX,
-        ],
-        FONT_WIDTH_INDEX => &[FONT_WIDTH_INDEX, FONT_AVGWIDTH_INDEX],
-        _ => std::slice::from_ref(&prop),
-    };
-    let record = font_record_mut(interp, &font);
-    for &index in cleared {
-        record.slots[index] = Value::Nil;
-    }
-    attrs[LFACE_FONT_INDEX] = font;
-    Ok(())
-}
-
-/// The record of FONT, known to be a live font with every slot.
-fn font_record_mut<'a>(
-    interp: &'a mut Interpreter,
-    font: &Value,
-) -> &'a mut crate::lisp::eval::RecordState {
-    let Kind::Record(id) = font.kind() else {
-        unreachable!("a font is a record");
-    };
-    let record = interp.find_record_mut(id).expect("a live font record");
-    if record.slots.len() < FONT_SPEC_SIZE {
-        record.slots.resize(FONT_SPEC_SIZE, Value::Nil);
-    }
-    record
-}
-
-fn font_property(interp: &Interpreter, font: &Value, key: &str) -> Result<Value, LispError> {
-    let record = font_record(interp, font)?;
-    if let Some(index) = font_property_index(key) {
-        return Ok(record.slots.get(index).cloned().unwrap_or(Value::Nil));
-    }
-    Ok(record
-        .slots
-        .get(FONT_EXTRA_INDEX)
-        .and_then(|extra| extra_value(extra, key))
-        .unwrap_or(Value::Nil))
-}
-
-fn put_font_property(
-    interp: &mut Interpreter,
-    font: &Value,
-    key: &str,
-    key_value: Value,
-    value: &Value,
-) -> Result<Value, LispError> {
-    let id = if font_property_index(key).is_some()
-        || matches!(key, ":name" | ":script" | ":lang" | ":otf")
-    {
-        font_spec_id(interp, font)?
-    } else {
-        let Kind::Record(id) = font.kind() else {
-            return Err(wrong_type_argument("fontp", *font));
-        };
-        font_record(interp, font)?;
-        id.id
-    };
-
-    if key == ":name" {
-        let name = string_text(value)?;
-        let mut replacement = interp
-            .find_record(id)
-            .map(|record| record.slots.clone())
-            .ok_or_else(|| wrong_type_argument("font-spec-p", *font))?;
-        set_name_properties(&mut replacement, &name)?;
-        put_extra(&mut replacement[FONT_EXTRA_INDEX], key_value, *value);
-        interp
-            .find_record_mut(id)
-            .expect("validated font-spec record must stay live")
-            .slots = replacement;
-        return Ok(*value);
-    }
-
-    if let Some(index) = font_property_index(key) {
-        let normalized = validated_font_property(index, value)?;
-        let record = interp
-            .find_record_mut(id)
-            .expect("validated font-spec record must stay live");
-        if record.slots.len() < FONT_SPEC_SIZE {
-            record.slots.resize(FONT_SPEC_SIZE, Value::Nil);
-        }
-        record.slots[index] = normalized;
-        return Ok(*value);
-    }
-
-    let normalized = match key {
-        ":lang" | ":script" => symbol_property(value, false)?,
-        ":otf" => otf_property(value)?,
-        _ => *value,
-    };
-    let record = interp
-        .find_record_mut(id)
-        .expect("validated font record must stay live");
-    if record.slots.len() < FONT_SPEC_SIZE {
-        record.slots.resize(FONT_SPEC_SIZE, Value::Nil);
-    }
-    put_extra(&mut record.slots[FONT_EXTRA_INDEX], key_value, normalized);
-    Ok(*value)
-}
-
-fn xlfd_field(value: Option<&Value>) -> String {
-    match value.map(|v| v.kind()) {
-        Some(Kind::Symbol(symbol)) if !symbol.is_empty() => symbol.to_string(),
-        Some(Kind::T) => "t".into(),
-        _ => "*".into(),
-    }
-}
-
-fn number_field(value: Option<&Value>) -> String {
-    match value.map(|v| v.kind()) {
-        Some(Kind::Integer(number)) => number.to_string(),
-        Some(Kind::Float(number)) if number.fract() == 0.0 => {
-            format!("{number:.0}")
-        }
-        Some(Kind::Float(number)) => number.to_string(),
-        _ => "*".into(),
-    }
-}
-
-fn font_xlfd_name(
-    interp: &Interpreter,
-    font: &Value,
-    fold_wildcards: bool,
-    allow_long: bool,
-) -> Result<Value, LispError> {
-    let record = font_record(interp, font)?;
-    let slot = |index| record.slots.get(index);
-    let (pixel_size, point_size) = match slot(FONT_SIZE_INDEX).map(|v| v.kind()) {
-        Some(Kind::Integer(size)) => (size.to_string(), "*".into()),
-        Some(Kind::Float(size)) => {
-            let tenths = size.get() * 10.0;
-            let point = if tenths.fract() == 0.0 {
-                format!("{tenths:.0}")
-            } else {
-                tenths.to_string()
-            };
-            ("*".into(), point)
-        }
-        _ => ("*".into(), "*".into()),
-    };
-    let dpi = match slot(FONT_DPI_INDEX).map(|v| v.kind()) {
-        Some(Kind::Integer(_)) => number_field(slot(FONT_DPI_INDEX)),
-        _ => "*".into(),
-    };
-    let spacing = match slot(FONT_SPACING_INDEX).map(|v| v.kind()) {
-        Some(Kind::Integer(0)) => "p",
-        Some(Kind::Integer(90)) => "d",
-        Some(Kind::Integer(100)) => "m",
-        Some(Kind::Integer(110)) => "c",
-        _ => "*",
-    };
-    let average_width = match slot(FONT_AVGWIDTH_INDEX).map(|v| v.kind()) {
-        Some(Kind::Integer(_)) => number_field(slot(FONT_AVGWIDTH_INDEX)),
-        _ => "*".into(),
-    };
-    let registry = xlfd_field(slot(FONT_REGISTRY_INDEX));
-    let (registry, encoding) = registry
-        .rsplit_once('-')
-        .map(|(registry, encoding)| (registry.to_string(), encoding.to_string()))
-        .unwrap_or((registry, "*".into()));
-    let mut name = format!(
-        "-{}-{}-{}-{}-{}-{}-{pixel_size}-{point_size}-{dpi}-{dpi}-{spacing}-{average_width}-{registry}-{encoding}",
-        xlfd_field(slot(FONT_FOUNDRY_INDEX)),
-        xlfd_field(slot(FONT_FAMILY_INDEX)),
-        xlfd_field(slot(FONT_WEIGHT_INDEX)),
-        xlfd_field(slot(FONT_SLANT_INDEX)),
-        xlfd_field(slot(FONT_WIDTH_INDEX)),
-        xlfd_field(slot(FONT_ADSTYLE_INDEX)),
-    );
-    if fold_wildcards {
-        while let Some(index) = name.find("-*-*") {
-            name.replace_range(index..index + 4, "-*");
-        }
-    }
-    if !allow_long && name.len() > 255 {
-        Ok(Value::Nil)
-    } else {
-        Ok(Value::string(&name))
-    }
-}
-
-fn font_match_p(interp: &Interpreter, spec: &Value, font: &Value) -> Result<bool, LispError> {
-    let spec_id = font_spec_id(interp, spec)?;
-    let font = font_record(interp, font)?;
-    let spec = interp
-        .find_record(spec_id)
-        .expect("validated font-spec record must stay live");
-    for index in FONT_FOUNDRY_INDEX..=FONT_AVGWIDTH_INDEX {
-        let expected = spec.slots.get(index).cloned().unwrap_or(Value::Nil);
-        if expected.is_nil() {
-            continue;
-        }
-        let actual = font.slots.get(index).cloned().unwrap_or(Value::Nil);
-        if !actual.is_nil() && !values_equal(interp, &expected, &actual)? {
-            return Ok(false);
-        }
-    }
-    Ok(true)
 }
 
 fn fontset_index(interp: &Interpreter, name: &str) -> Option<usize> {
@@ -739,99 +84,242 @@ fn fontset_index(interp: &Interpreter, name: &str) -> Option<usize> {
         .position(|fontset| fontset.name.eq_ignore_ascii_case(name))
 }
 
-fn resolve_fontset(interp: &Interpreter, value: &Value) -> Result<usize, LispError> {
-    match value.kind() {
-        Kind::Nil | Kind::T => Ok(0),
-        Kind::StringObject(_) => {
-            let name = string_text(value)?;
-            fontset_index(interp, &name)
-                .ok_or_else(|| LispError::Signal(format!("Fontset {name} does not exist")))
+/// fontset.c's fs_query_fontset: the base fontset NAME names, its
+/// fontset-alias-alist alias resolved; with NAME_PATTERN 0 a name with
+/// wildcards is a pattern (fontset_pattern_regexp), with 1 NAME is one.
+fn fs_query_fontset(
+    interp: &mut Interpreter,
+    name: &Value,
+    mut name_pattern: i32,
+    env: &mut Env,
+) -> Result<Option<usize>, LispError> {
+    let mut name = super::call(interp, "downcase", std::slice::from_ref(name), env)?;
+    if name_pattern != 1 {
+        let aliases = interp
+            .lookup_var("fontset-alias-alist", env)
+            .unwrap_or(Value::Nil);
+        let mut tem = super::call(interp, "rassoc", &[name, aliases], env)?;
+        if tem.is_nil() {
+            tem = super::call(interp, "assoc", &[name, aliases], env)?;
         }
-        _ => Err(wrong_type_argument("stringp", *value)),
+        if let Some((alias, _)) = tem.cons_values()
+            && alias.is_string()
+        {
+            name = alias;
+        } else if name_pattern == 0
+            && let Some(regexp) = fontset_pattern_regexp(&name)?
+        {
+            name = regexp;
+            name_pattern = 1;
+        }
     }
+    let text = string_text(&name)?;
+    for index in 0..interp.fontset_states.len() {
+        let this_name = interp.fontset_states[index].name.clone();
+        let found = if name_pattern == 1 {
+            let canon = interp.standard_case_tables().canon;
+            crate::lisp::primitives::fast_string_match(
+                interp,
+                env,
+                &name,
+                &Value::string(&this_name),
+                Some(canon),
+                false,
+            )?
+            .is_some()
+        } else {
+            text.eq_ignore_ascii_case(&this_name)
+        };
+        if found {
+            return Ok(Some(index));
+        }
+    }
+    Ok(None)
 }
 
-fn font_pattern_component(value: &Value) -> Result<Option<String>, LispError> {
-    match value.kind() {
-        Kind::Nil => Ok(None),
-        Kind::Symbol(symbol) => Ok(Some(symbol.to_string())),
-        Kind::StringObject(_) => Ok(Some(string_text(value)?)),
-        _ => Err(invalid_font_property()),
+/// fontset.c's fontset_pattern_regexp: the regexp of the fontset name
+/// PATTERN with `*' and `?' wildcards, or None when it has neither.
+fn fontset_pattern_regexp(pattern: &Value) -> Result<Option<Value>, LispError> {
+    let bytes = font::string_sdata(pattern)?;
+    let bytes = &bytes[..bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len())];
+    if !bytes.contains(&b'*') && !bytes.contains(&b'?') {
+        // PATTERN does not contain any wild cards.
+        return Ok(None);
     }
+    let ndashes = bytes.iter().filter(|&&b| b == b'-').count();
+    let mut regex = vec![b'^'];
+    for &c in bytes {
+        match c {
+            // If PATTERN is not full XLFD we convert "*" to ".*".
+            // Otherwise we convert "*" to "[^-]*" which is much faster in
+            // regular expression matching.
+            b'*' if ndashes < 14 => regex.extend_from_slice(b".*"),
+            b'*' => regex.extend_from_slice(b"[^-]*"),
+            b'?' => regex.push(b'.'),
+            b'[' | b'.' | b'\\' | b'+' | b'^' | b'$' => {
+                regex.push(b'\\');
+                regex.push(c);
+            }
+            _ => regex.push(c),
+        }
+    }
+    regex.push(b'$');
+    crate::lisp::primitives::strings::make_string(regex)
+        .map(Some)
+        .map_err(|error| LispError::Signal(error.to_string()))
 }
 
-fn font_pattern_from_slots(slots: &[Value]) -> FontPatternState {
-    let component = |index: usize| match slots.get(index).map(|v| v.kind()) {
-        Some(Kind::Symbol(symbol)) => Some(symbol.to_string()),
-        _ => None,
+/// fontset.c's check_fontset_name: the fontset NAME names after FRAME is
+/// decoded as a live frame: t the default one, nil the frame's own (none
+/// on a terminal frame), a string the base fontset of that name, or else
+/// as a pattern.
+fn check_fontset_name(
+    interp: &mut Interpreter,
+    name: &Value,
+    frame: Option<&Value>,
+    env: &mut Env,
+) -> Result<usize, LispError> {
+    super::frames::decode_live_frame(interp, frame, true)?;
+    match name.kind() {
+        Kind::T => return Ok(0),
+        Kind::Nil => {
+            return Err(LispError::Signal(
+                "Can't use fontsets in non-GUI frames".into(),
+            ));
+        }
+        _ => {}
+    }
+    if !name.is_string() {
+        return Err(wrong_type_argument("stringp", *name));
+    }
+    // First try NAME as literal.
+    if let Some(id) = fs_query_fontset(interp, name, 2, env)? {
+        return Ok(id);
+    }
+    // For backward compatibility, try again NAME as pattern.
+    if let Some(id) = fs_query_fontset(interp, name, 0, env)? {
+        return Ok(id);
+    }
+    Err(LispError::Signal(format!(
+        "Fontset `{}' does not exist",
+        string_text(name)?
+    )))
+}
+
+/// The family and registry names of the font-spec SPEC, as fontset.c's
+/// font_def keeps them for Ffontset_font.
+fn font_pattern_of_spec(interp: &Interpreter, spec: &Value) -> FontPatternState {
+    let component = |index: usize| {
+        let value = font::aref(interp, spec, index);
+        match value.kind() {
+            Kind::Symbol(symbol) => Some(symbol.to_string()),
+            Kind::T => Some("t".into()),
+            _ => None,
+        }
     };
     FontPatternState {
-        family: component(FONT_FAMILY_INDEX),
-        registry: component(FONT_REGISTRY_INDEX),
+        family: component(font::FONT_FAMILY_INDEX),
+        registry: component(font::FONT_REGISTRY_INDEX),
     }
 }
 
+/// Fset_fontset_font's FONT-SPEC: a (FAMILY . REGISTRY) cons through
+/// font_parse_family_registry, a font name through Ffont_spec's :name, a
+/// font-spec as it is, or nil.
 fn font_pattern(
-    interp: &Interpreter,
+    interp: &mut Interpreter,
     value: &Value,
+    env: &mut Env,
 ) -> Result<Option<FontPatternState>, LispError> {
-    match value.kind() {
-        Kind::Nil => Ok(None),
-        Kind::Record(_) => {
-            font_spec_id(interp, value)?;
-            let record = font_record(interp, value)?;
-            Ok(Some(font_pattern_from_slots(&record.slots)))
-        }
-        Kind::StringObject(_) => {
-            let slots = make_font_spec(&[Value::symbol(":name"), *value])?;
-            Ok(Some(font_pattern_from_slots(&slots)))
-        }
-        Kind::Cons(_) => {
-            let (family, registry) = value
-                .cons_values()
-                .expect("a cons font pattern must have two cells");
-            Ok(Some(FontPatternState {
-                family: font_pattern_component(&family)?,
-                registry: font_pattern_component(&registry)?
-                    .map(|registry| registry.to_lowercase()),
-            }))
-        }
-        _ => Err(LispError::SignalValue(Value::list([
+    let spec = if let Some((family, registry)) = value.cons_values() {
+        let spec = font::font_make_spec(interp);
+        font::font_parse_family_registry(interp, &family, &registry, &spec, env)?;
+        spec
+    } else if value.is_string() {
+        font::font_spec(interp, &[Value::symbol(":name"), *value], env)?
+    } else if font::font_kind(interp, value) == Some(font::FontKind::Spec) {
+        *value
+    } else if !value.is_nil() {
+        return Err(LispError::SignalValue(Value::list([
             Value::symbol("font"),
             Value::string("Invalid font-spec"),
             *value,
-        ]))),
-    }
+        ])));
+    } else {
+        return Ok(None);
+    };
+    Ok(Some(font_pattern_of_spec(interp, &spec)))
 }
 
-fn parse_fontset_target(value: &Value) -> Result<FontsetTargetState, LispError> {
-    match value.kind() {
-        Kind::Nil => Ok(FontsetTargetState::Fallback),
-        Kind::Integer(character) if (0..=0x3f_ffff).contains(&character) => {
-            Ok(FontsetTargetState::Character(character))
+/// Fset_fontset_font's CHARACTERS: a character, a (FROM . TO) range, a
+/// script of char-script-table or a charset, or nil for the fallback;
+/// and whether it changes the ASCII font.
+fn parse_fontset_target(
+    interp: &mut Interpreter,
+    value: &Value,
+    env: &mut Env,
+) -> Result<(FontsetTargetState, bool), LispError> {
+    let is_character =
+        |value: &Value| matches!(value.kind(), Kind::Integer(c) if (0..=0x3f_ffff).contains(&c));
+    if let Kind::Integer(character) = value.kind()
+        && is_character(value)
+    {
+        if character < 0x80 {
+            return Err(LispError::Signal(
+                "Can't set a font for partial ASCII range".into(),
+            ));
         }
-        Kind::Symbol(script) => Ok(FontsetTargetState::Script(script.to_string())),
-        Kind::Cons(_) => {
-            let (from, to) = value
-                .cons_values()
-                .expect("a range cons must have endpoints");
-            let (Kind::Integer(from), Kind::Integer(to)) = (from.kind(), to.kind()) else {
-                return Err(wrong_type_argument("characterp", *value));
-            };
-            if from < 0 || to < from || to > 0x3f_ffff {
-                return Err(args_out_of_range(*value, Value::Integer(to)));
+        return Ok((FontsetTargetState::Character(character), false));
+    }
+    if let Some((from, to)) = value.cons_values() {
+        if !is_character(&from) {
+            return Err(wrong_type_argument("characterp", from));
+        }
+        if !is_character(&to) {
+            return Err(wrong_type_argument("characterp", to));
+        }
+        let (Kind::Integer(from), Kind::Integer(to)) = (from.kind(), to.kind()) else {
+            unreachable!("characters are fixnums");
+        };
+        let mut ascii_changed = false;
+        if from < 0x80 {
+            if from != 0 || to < 0x7f {
+                return Err(LispError::Signal(
+                    "Can't set a font for partial ASCII range".into(),
+                ));
             }
-            Ok(FontsetTargetState::Range(from, to))
+            ascii_changed = true;
         }
-        _ => Err(wrong_type_argument("characterp", *value)),
+        return Ok((FontsetTargetState::Range(from, to), ascii_changed));
     }
-}
-
-fn target_changes_partial_ascii(target: &FontsetTargetState) -> bool {
-    match target {
-        FontsetTargetState::Character(character) => *character < 0x80,
-        FontsetTargetState::Range(from, to) => *from < 0x80 && !(*from == 0 && *to >= 0x7f),
-        FontsetTargetState::Script(_) | FontsetTargetState::Fallback => false,
+    match value.kind() {
+        Kind::Symbol(script) => {
+            let table = interp
+                .lookup_var("char-script-table", env)
+                .unwrap_or(Value::Nil);
+            let script_list = super::call(
+                interp,
+                "char-table-extra-slot",
+                &[table, Value::Integer(0)],
+                env,
+            )?;
+            let is_script = !super::call(interp, "memq", &[*value, script_list], env)?.is_nil();
+            let is_charset = !super::call(interp, "charsetp", &[*value], env)?.is_nil();
+            if !is_script && !is_charset {
+                return Err(LispError::Signal(format!(
+                    "Invalid script or charset name: {script}"
+                )));
+            }
+            let ascii_changed = is_script && script.as_str() == "latin";
+            Ok((
+                FontsetTargetState::Script(script.to_string()),
+                ascii_changed,
+            ))
+        }
+        Kind::Nil => Ok((FontsetTargetState::Fallback, false)),
+        _ => Err(LispError::Signal(
+            "Invalid second argument for setting a font in a fontset".into(),
+        )),
     }
 }
 
@@ -973,6 +461,7 @@ fn add_fontlist(
     interp: &mut Interpreter,
     fontset_index: usize,
     fontlist: &Value,
+    env: &mut Env,
 ) -> Result<(), LispError> {
     for entry in fontlist.to_vec()? {
         let (script, definitions) = entry
@@ -984,7 +473,7 @@ fn add_fontlist(
             .to_string();
         let definitions = definitions.to_vec().unwrap_or_else(|_| vec![definitions]);
         for definition in definitions {
-            let pattern = font_pattern(interp, &definition)?;
+            let pattern = font_pattern(interp, &definition, env)?;
             set_fontset_mapping(
                 interp,
                 fontset_index,
@@ -997,19 +486,40 @@ fn add_fontlist(
     Ok(())
 }
 
+/// Flist_fonts on a terminal frame, which has no font driver: the frame,
+/// FONT-SPEC, NUM and PREFER checked, then no entity.
+fn list_fonts(
+    interp: &mut Interpreter,
+    font_spec: &Value,
+    frame: Option<&Value>,
+    num: Option<&Value>,
+    prefer: Option<&Value>,
+) -> Result<Value, LispError> {
+    super::frames::decode_live_frame(interp, frame, true)?;
+    font::check_font_spec(interp, font_spec)?;
+    if let Some(num) = num.filter(|value| !value.is_nil()) {
+        let Kind::Integer(n) = num.kind() else {
+            return Err(wrong_type_argument("fixnump", *num));
+        };
+        if n <= 0 {
+            return Ok(Value::Nil);
+        }
+    }
+    if let Some(prefer) = prefer.filter(|value| !value.is_nil()) {
+        font::check_font_spec(interp, prefer)?;
+    }
+    Ok(Value::Nil)
+}
+
 define_dispatch!(
     pub(super) fn call(
         interp: &mut Interpreter,
         name: &str,
         args: &[Value],
-        _env: &mut Env,
+        env: &mut Env,
     ) -> Result<Value, LispError> {
         match name {
-            "font-spec" => Ok(interp.create_pseudovector(
-                crate::lisp::eval::RecordKind::Font,
-                "font-spec",
-                make_font_spec(args)?,
-            )),
+            "font-spec" => font::font_spec(interp, args, env),
             "fontp" => {
                 need_arg_range(name, args, 1, 2)?;
                 let font_type = match args[0].kind() {
@@ -1038,22 +548,17 @@ define_dispatch!(
             }
             "font-get" => {
                 need_args(name, args, 2)?;
-                let key = args[1]
-                    .as_symbol()
-                    .map_err(|_| wrong_type_argument("symbolp", args[1]))?;
-                font_property(interp, &args[0], key)
+                font::font_get(interp, &args[0], &args[1], env)
             }
             "font-put" => {
                 need_args(name, args, 3)?;
-                let key = args[1]
-                    .as_symbol()
-                    .map_err(|_| wrong_type_argument("symbolp", args[1]))?
-                    .to_string();
-                put_font_property(interp, &args[0], &key, args[1], &args[2])
+                font::font_put(interp, &args[0], args[1], args[2], env)
             }
             "font-match-p" => {
                 need_args(name, args, 2)?;
-                Ok(if font_match_p(interp, &args[0], &args[1])? {
+                font::check_font_spec(interp, &args[0])?;
+                font::check_font(interp, &args[1])?;
+                Ok(if font::font_match_p(interp, &args[0], &args[1], env)? {
                     Value::T
                 } else {
                     Value::Nil
@@ -1061,33 +566,28 @@ define_dispatch!(
             }
             "font-xlfd-name" => {
                 need_arg_range(name, args, 1, 3)?;
-                font_xlfd_name(
+                font::font_xlfd_name(
                     interp,
                     &args[0],
                     args.get(1).is_some_and(Value::is_truthy),
                     args.get(2).is_some_and(Value::is_truthy),
                 )
             }
+            // Flist_fonts: no frame has a font driver to list entities.
             "list-fonts" => {
                 need_arg_range(name, args, 1, 4)?;
-                font_spec_id(interp, &args[0])?;
-                if let Some(limit) = args.get(2).filter(|value| !value.is_nil()) {
-                    let Kind::Integer(limit) = limit.kind() else {
-                        return Err(wrong_type_argument("fixnump", *limit));
-                    };
-                    if limit <= 0 {
-                        return Ok(Value::Nil);
-                    }
-                }
-                if let Some(prefer) = args.get(3).filter(|value| !value.is_nil()) {
-                    font_spec_id(interp, prefer)?;
-                }
-                Ok(Value::Nil)
+                list_fonts(interp, &args[0], args.get(1), args.get(2), args.get(3))
             }
+            // Ffind_font: Flist_fonts with NUM 1.
             "find-font" => {
                 need_arg_range(name, args, 1, 2)?;
-                font_spec_id(interp, &args[0])?;
-                Ok(Value::Nil)
+                list_fonts(
+                    interp,
+                    &args[0],
+                    args.get(1),
+                    Some(&Value::Integer(1)),
+                    None,
+                )
             }
             "font-at" => {
                 need_arg_range(name, args, 1, 3)?;
@@ -1133,40 +633,43 @@ define_dispatch!(
             }
             "font-face-attributes" => {
                 need_arg_range(name, args, 1, 2)?;
-                require_live_frame(interp, args.get(1))?;
-                Err(window_system_frame_required())
+                super::frames::decode_live_frame(interp, args.get(1), true)?;
+                font::font_face_attributes(interp, &args[0], env)
             }
+            // Fopen_font: the frame decoded before the entity is checked;
+            // no frame can open one.
             "open-font" => {
                 need_arg_range(name, args, 1, 3)?;
-                require_live_frame(interp, args.get(2))?;
+                super::frames::decode_live_frame(interp, args.get(2), true)?;
+                font::check_font_entity(interp, &args[0])?;
                 Err(window_system_frame_required())
             }
             "close-font" => {
                 need_arg_range(name, args, 1, 2)?;
-                require_font_type(interp, &args[0], "font-object", "font-object")?;
-                require_live_frame(interp, args.get(1))?;
+                font::check_font_object(interp, &args[0])?;
+                super::frames::decode_live_frame(interp, args.get(1), true)?;
                 Err(window_system_frame_required())
             }
             "query-font" => {
                 need_args(name, args, 1)?;
-                require_font_type(interp, &args[0], "font-object", "font-object")?;
+                font::check_font_object(interp, &args[0])?;
                 Err(window_system_frame_required())
             }
             "font-has-char-p" => {
                 need_arg_range(name, args, 2, 3)?;
-                require_font(interp, &args[0])?;
+                font::check_font(interp, &args[0])?;
                 require_character(&args[1])?;
                 require_frame(args.get(2))?;
                 Err(window_system_frame_required())
             }
             "font-get-glyphs" => {
                 need_arg_range(name, args, 3, 4)?;
-                require_font_type(interp, &args[0], "font-object", "font-object")?;
+                font::check_font_object(interp, &args[0])?;
                 Err(window_system_frame_required())
             }
             "font-variation-glyphs" => {
                 need_args(name, args, 2)?;
-                require_font_type(interp, &args[0], "font-object", "font-object")?;
+                font::check_font_object(interp, &args[0])?;
                 require_character(&args[1])?;
                 Err(window_system_frame_required())
             }
@@ -1177,13 +680,19 @@ define_dispatch!(
                 if !id.is_nil() {
                     return Ok(args[0]);
                 }
-                require_font_type(interp, &font, "font-object", "font-object")?;
+                font::check_font_object(interp, &font)?;
                 Err(window_system_frame_required())
             }
+            // Ffont_info: NAME a font or a string, then
+            // decode_window_system_frame.
             "font-info" => {
                 need_arg_range(name, args, 1, 2)?;
-                Err(LispError::Signal(
-                    "Window system frame should be used".into(),
+                if font::font_kind(interp, &args[0]).is_none() && !args[0].is_string() {
+                    return Err(wrong_type_argument("stringp", args[0]));
+                }
+                Err(super::frames::window_system_frame_error(
+                    interp,
+                    args.get(1),
                 ))
             }
             // xsettings.c: the fonts the XSETTINGS manager or GSettings
@@ -1242,42 +751,32 @@ define_dispatch!(
                         interp.fontset_states.len() - 1
                     }
                 };
-                add_fontlist(interp, fontset_index, &args[1])?;
+                add_fontlist(interp, fontset_index, &args[1], env)?;
                 Ok(Value::string(&fontset_name))
             }
+            // Fset_fontset_font: the fontset and frame first, then the
+            // font spec, then the characters.
             "set-fontset-font" => {
                 need_arg_range(name, args, 3, 5)?;
-                let fontset_index = resolve_fontset(interp, &args[0])?;
-                let target = parse_fontset_target(&args[1])?;
-                if target_changes_partial_ascii(&target) {
-                    return Err(LispError::Signal(
-                        "Can't set a font for partial ASCII range".into(),
-                    ));
+                let fontset_index = check_fontset_name(interp, &args[0], args.get(3), env)?;
+                let pattern = font_pattern(interp, &args[2], env)?;
+                let (target, ascii_changed) = parse_fontset_target(interp, &args[1], env)?;
+                if ascii_changed && pattern.is_none() {
+                    return Err(LispError::Signal("Can't set ASCII font to nil".into()));
                 }
-                let pattern = font_pattern(interp, &args[2])?;
-                let add = match args
-                    .get(4)
-                    .filter(|value| !value.is_nil())
-                    .map(|v| v.kind())
-                {
-                    Some(Kind::Symbol(add)) if matches!(add.as_str(), "prepend" | "append") => {
-                        Some(if add == "prepend" {
-                            "prepend"
-                        } else {
-                            "append"
-                        })
-                    }
-                    Some(value) => {
-                        return Err(LispError::Signal(format!("Invalid ADD argument: {value}")));
-                    }
-                    None => None,
+                // FONTSET_ADD: nil replaces, `append' appends and any other
+                // value prepends.
+                let add = match args.get(4).map(|v| v.kind()) {
+                    None | Some(Kind::Nil) => None,
+                    Some(Kind::Symbol(add)) if add.as_str() == "append" => Some("append"),
+                    Some(_) => Some("prepend"),
                 };
                 set_fontset_mapping(interp, fontset_index, target, pattern, add);
                 Ok(Value::Nil)
             }
             "fontset-font" => {
                 need_arg_range(name, args, 2, 3)?;
-                let fontset_index = resolve_fontset(interp, &args[0])?;
+                let fontset_index = check_fontset_name(interp, &args[0], None, env)?;
                 let Kind::Integer(character) = args[1].kind() else {
                     return Err(wrong_type_argument("characterp", args[1]));
                 };
