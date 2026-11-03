@@ -13044,6 +13044,64 @@ setup_process_coding_systems's check now refuses). A 13-form
   validation: the grouped gate's 3,474 library tests, the
   integration targets and clippy with `--all-targets --all-features -D
   warnings' pass.
+- **Round 269: charset.c's definitions apart from their plists.** Each
+  charset keeps the `define-charset-internal' arguments it was defined
+  with (its dimension, code space, minimum and maximum codes, ISO final
+  byte and revision, emacs-mule id, flags, invalid code, code offset,
+  map, subset, superset and unify-map, dumped with the charset and
+  copied with the interpreter) as charset_table's attributes, so struct
+  charset no longer follows the plist: `set-charset-plist' changes what
+  `charset-plist' returns and nothing else, and the ISO-2022,
+  emacs-mule, ISO and fontset code reads a charset's dimension, ISO
+  final byte and revision and ASCII compatibility from the definition.
+  Fdefine_charset_internal is ported with its checks in order: the
+  arity's (wrong-number-of-arguments define-charset-internal . N),
+  CHECK_SYMBOL, the code space through Faref and check_integer_range,
+  the dimension, cons_to_unsigned's :min-code and :max-code with
+  args_out_of_range_3, the invalid code (and "Attribute :invalid-code
+  must be specified"), the ISO final byte, revision and emacs-mule id
+  ranges, a code offset's CHECK_CHARACTER and "Unsupported max char: 0",
+  a subset's parent and fixnums, a superset's members and offsets, "None
+  of :code-offset, :map, :parents are specified", the unify-map's
+  CHECK_VECTOR and the plist's CHECK_LIST; a map charset is registered
+  before its map loads, so a missing map file (file-missing "Loading
+  charset map" ...) on `charset-map-path' with suffix .map or .TXT, an
+  odd-length map vector (add_to_log's "Invalid format operation %V") or
+  a map character that is no natural number leaves it a charset outside
+  `charset-list' and the ordered list. A map vector's codes may be (FROM
+  . TO) ranges, filtered by the charset's codes as
+  load_charset_map_from_vector filters them. `charset-list' is a
+  variable (Vcharset_list) that a definition and an alias cons onto, its
+  let-bound value while it is bound, where it was rebuilt at each read;
+  Vemacs_mule_charset_list is kept in definition order and reordered by
+  `set-charset-priority', as Viso_2022_charset_list is.
+  `define-charset-alias' checks its charset with CHECK_CHARSET_GET_ATTR,
+  returns nil, conses the alias onto `charset-list' even when it is
+  there already (or is no symbol), and makes a charset's own name an
+  alias of another; `set-charset-plist', `unify-charset',
+  `map-charset-chars', `set-charset-priority', `decode-char'
+  (cons_to_unsigned's codes and error), `encode-char'
+  (CHARSET_INVALID_CODE answers nil), `sort-charsets' (list_length's
+  error, sorted in place by the ordered list), `iso-charset',
+  `declare-equiv-charset' and `get-unused-iso-final-char'
+  (check_iso_charset_parameter, the last reading ISO_CHARSET_TABLE
+  alone) and `char-charset''s coding-system restriction (CHECK_SYMBOL)
+  check as charset.c does. `unify-charset' clears CHARSET_UNIFIED_P
+  before its checks, so a failing call leaves the charset de-unified,
+  and returns at once for a unified charset whose deunifier an encode
+  through it has made, kept as CHARSET_ATTR_DEUNIFIER in the charset's
+  dumped attributes. map_charset_chars's CODE_POINT_TO_INDEX takes
+  code_linear_p from the charset's dimension, so an offset charset's
+  out-of-range FROM still counts from its minimum code
+  (latin-iso8859-1's 192..200 is (320 . 255), as round 253 recorded). A
+  battery of 205 charset operations in one process (definitions and
+  their errors, map ranges, aliases, priorities, plists, ISO tables,
+  unification) matches GNU, as do round 267's and 268's batteries. The
+  first gate run failed two tests, that map-charset-chars range and the
+  image field check on the deunifier set the attributes now hold; both
+  pass after the fix. Local validation: the grouped gate's 3,475
+  library tests, the integration targets and clippy with `--all-targets
+  --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -14918,6 +14976,18 @@ widest body gaps are comp-tests (12,563 ms against 10,910),
 semantic-utest-ia (2,581 against 1,705), tramp-tests (15,597 against
 14,758), mule-tests (1,867 against 1,076) and ert-tests (27,948 against
 27,494).
+
+**On `2b42aba`** (round 268): the full Rust gate (run 41580424289)
+passed, and frozen (run 41580427976) matched all 7,928 outcomes at the
+first attempt. Setup 71.3 s against 60.0 s (1.187), test bodies 267.7 s
+against 251.7 s (1.064), in all 1.082. Per file, the setup is 22 ms over
+GNU's on average (11.2 s over 519 files, a median of 108 ms against 93),
+electric-tests' the most over (727 against 467) before comp-tests'
+(1,690 against 1,487) and gnus-icalendar-tests' (579 against 452), and
+the widest body gaps are comp-tests (16,168 ms against 13,552),
+ert-tests (36,101 against 33,602), tramp-tests (17,444 against 16,172),
+mule-tests (2,449 against 1,570) and semantic-utest-ia (3,430 against
+2,620).
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

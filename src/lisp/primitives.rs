@@ -142,6 +142,7 @@ pub(crate) fn gnu_c_localized_forwarded_variables() -> &'static [&'static str] {
 pub(crate) use generated_gnu_c_primitives_linux::{
     GNU_C_PRIMITIVES, generated_gnu_c_primitive_available, generated_gnu_c_primitive_special_form,
 };
+pub(crate) mod charset;
 mod fields;
 pub(crate) mod font;
 pub(crate) mod fontset;

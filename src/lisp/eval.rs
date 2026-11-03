@@ -4501,6 +4501,9 @@ impl Interpreter {
         for (_, value) in &self.charset_plists {
             mark(value);
         }
+        for (_, value) in &self.charset_defs {
+            mark(value);
+        }
         mark(&self.ccl_program_table);
         for event in self
             .keyboard_input
@@ -4960,6 +4963,9 @@ impl Interpreter {
             }
             for (_, plist) in &mut clone.charset_plists {
                 *plist = c.copy(plist);
+            }
+            for (_, def) in &mut clone.charset_defs {
+                *def = c.copy(def);
             }
             clone.ccl_program_table = c.copy(&clone.ccl_program_table);
             for slot in clone.records.values_mut() {
@@ -5494,11 +5500,16 @@ pub struct InterpreterState {
     pub(crate) charset_table_books: crate::lisp::alloc::vectors::hash_tables::HostTableBooks,
     /// Charset plist overrides keyed by canonical charset name.
     charset_plists: Vec<(String, Value)>,
+    /// charset.c's charset attributes apart from the plist: each canonical
+    /// charset's `define-charset-internal' arguments from its dimension to
+    /// its unify-map (charset_table's definition), which `set-charset-plist'
+    /// leaves alone.
+    pub(crate) charset_defs: Vec<(String, Value)>,
+    /// charset.c Vemacs_mule_charset_list: the charsets with an emacs-mule
+    /// id, in definition order until `set-charset-priority' reorders them.
+    pub(crate) emacs_mule_charset_list: Vec<String>,
     /// Current charset priority order.
     charset_priority: Vec<String>,
-    /// `charset-list' order: every charset and alias name, newest first
-    /// (charset.c prepends on each new definition and each alias).
-    charset_names: Vec<String>,
     /// Charsets defined with :supplementary-p; they sort after every
     /// non-supplementary charset in the ordered (priority) list.
     charset_supplementary: HashSet<String>,
@@ -6353,6 +6364,74 @@ impl Interpreter {
                 c_charset_plist("emacs", 3, &[0, 255, 0, 255, 0, 63], None, None, true, 0),
                 c_charset_plist("eight-bit", 1, &[128, 255], None, None, false, 0x3f_ff80),
             ],
+            // syms_of_charset's define_charset_internal arguments.
+            charset_defs: vec![
+                c_charset_def(
+                    "ascii",
+                    1,
+                    &[0, 127],
+                    0,
+                    127,
+                    Some(66),
+                    -1,
+                    Some(0),
+                    true,
+                    false,
+                    0,
+                ),
+                c_charset_def(
+                    "iso-8859-1",
+                    1,
+                    &[0, 255],
+                    0,
+                    255,
+                    None,
+                    -1,
+                    None,
+                    true,
+                    false,
+                    0,
+                ),
+                c_charset_def(
+                    "unicode",
+                    3,
+                    &[0, 255, 0, 255, 0, 16],
+                    0,
+                    0x10_ffff,
+                    None,
+                    0,
+                    None,
+                    true,
+                    false,
+                    0,
+                ),
+                c_charset_def(
+                    "emacs",
+                    3,
+                    &[0, 255, 0, 255, 0, 63],
+                    0,
+                    0x3f_ff7f,
+                    None,
+                    0,
+                    None,
+                    true,
+                    true,
+                    0,
+                ),
+                c_charset_def(
+                    "eight-bit",
+                    1,
+                    &[128, 255],
+                    128,
+                    255,
+                    None,
+                    0,
+                    None,
+                    false,
+                    true,
+                    0x3f_ff80,
+                ),
+            ],
             // charset.c's C-level definitions, in definition order: the
             // ordered list keeps non-supplementary charsets first (`emacs'
             // and `eight-bit' are supplementary), and `charset-list' holds
@@ -6364,13 +6443,6 @@ impl Interpreter {
                 "emacs".into(),
                 "eight-bit".into(),
             ],
-            charset_names: vec![
-                "eight-bit".into(),
-                "emacs".into(),
-                "unicode".into(),
-                "iso-8859-1".into(),
-                "ascii".into(),
-            ],
             charset_supplementary: ["emacs".to_string(), "eight-bit".to_string()]
                 .into_iter()
                 .collect(),
@@ -6380,6 +6452,7 @@ impl Interpreter {
             big5_coding_system: "big5".into(),
             iso_charsets: vec![(1, 94, 'B' as u32, "ascii".into())],
             iso_2022_charset_list: vec!["ascii".into()],
+            emacs_mule_charset_list: vec!["ascii".into()],
             charset_non_preferred_head: None,
             coding_system_index: coding_systems
                 .iter()
@@ -7203,7 +7276,15 @@ impl Interpreter {
         interp.define_special_variable("charset-map-path", charset_map_path);
         interp.define_special_variable("inhibit-load-charset-map", Value::Nil);
         interp.define_special_variable("current-iso639-language", Value::Nil);
-        interp.mark_special_variable("charset-list");
+        // charset.c's Vcharset_list, the C charsets newest first.
+        interp.define_special_variable(
+            "charset-list",
+            Value::list(
+                ["eight-bit", "emacs", "unicode", "iso-8859-1", "ascii"]
+                    .into_iter()
+                    .map(Value::symbol),
+            ),
+        );
         for (name, value) in [
             ("delete-auto-save-files", Value::T),
             ("kill-buffer-delete-auto-save-files", Value::Nil),
@@ -8028,6 +8109,48 @@ const C_CHARSETS: [(&str, i64); 5] = [
 ];
 
 /// charset.c:define_charset_internal's plist for a charset defined in C.
+/// define_charset_internal's arguments from DIMENSION on, as
+/// Fdefine_charset_internal keeps them (charset_table_rs::DEF_* order).
+#[allow(clippy::too_many_arguments)]
+fn c_charset_def(
+    name: &str,
+    dimension: i64,
+    code_space: &[i64],
+    min_code: i64,
+    max_code: i64,
+    iso_final: Option<i64>,
+    iso_revision: i64,
+    emacs_mule_id: Option<i64>,
+    ascii_compatible: bool,
+    supplementary: bool,
+    code_offset: i64,
+) -> (String, Value) {
+    let mut space = [0i64; 8];
+    space[..code_space.len()].copy_from_slice(code_space);
+    let flag = |on: bool| if on { Value::T } else { Value::Nil };
+    // Fdefine_charset_internal's invalid code for a nil :invalid-code.
+    let invalid_code = if min_code > 0 { 0 } else { max_code + 1 };
+    let def = Value::vector([
+        Value::Integer(dimension),
+        Value::vector(space.map(Value::Integer)),
+        Value::Integer(min_code),
+        Value::Integer(max_code),
+        iso_final.map_or(Value::Nil, Value::Integer),
+        Value::Integer(iso_revision),
+        emacs_mule_id.map_or(Value::Nil, Value::Integer),
+        flag(ascii_compatible),
+        flag(supplementary),
+        Value::Integer(invalid_code),
+        Value::Integer(code_offset),
+        Value::Nil,
+        Value::Nil,
+        Value::Nil,
+        Value::Nil,
+        Value::Nil,
+    ]);
+    (name.to_string(), def)
+}
+
 fn c_charset_plist(
     name: &str,
     dimension: i64,

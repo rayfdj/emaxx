@@ -577,6 +577,7 @@ pub(crate) enum RootSlot {
     FundamentalModeName = 60,
     /// font.c's staticpro'd font_style_table.
     FontStyleTable = 61,
+    EmacsMuleCharsetList = 62,
 }
 
 impl RootSlot {
@@ -639,6 +640,7 @@ impl RootSlot {
             59 => Self::IntervalInsertInFrontHooks,
             60 => Self::FundamentalModeName,
             61 => Self::FontStyleTable,
+            62 => Self::EmacsMuleCharsetList,
             _ => return None,
         })
     }

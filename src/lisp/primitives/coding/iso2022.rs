@@ -73,12 +73,11 @@ pub(crate) fn charset_dimension(interp: &Interpreter, charset: &str) -> u32 {
     charset_info(interp, charset).map_or(1, |info| info.dimension)
 }
 
-/// The charset's ISO final byte, from its plist or (for the C-defined
-/// `ascii') from the ISO charset table.
+/// The charset's ISO final byte (CHARSET_ISO_FINAL), else the ISO charset
+/// table's.
 pub(super) fn charset_iso_final(interp: &Interpreter, charset: &str) -> Option<u8> {
-    charset_plist_property(interp, charset, ":iso-final-char")
-        .and_then(|value| value.integer_value())
-        .and_then(|value| u8::try_from(value).ok())
+    charset_info(interp, charset)
+        .and_then(|info| info.iso_final)
         .or_else(|| {
             interp
                 .iso_charset_entry_for(charset)
@@ -87,9 +86,7 @@ pub(super) fn charset_iso_final(interp: &Interpreter, charset: &str) -> Option<u
 }
 
 fn charset_iso_revision(interp: &Interpreter, charset: &str) -> Option<u8> {
-    charset_plist_property(interp, charset, ":iso-revision-number")
-        .and_then(|value| value.integer_value())
-        .and_then(|value| u8::try_from(value).ok())
+    charset_info(interp, charset).and_then(|info| info.iso_revision)
 }
 
 pub(crate) fn iso_attributes(interp: &Interpreter, coding: &str) -> Option<IsoAttributes> {

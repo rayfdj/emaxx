@@ -2,23 +2,6 @@ use super::*;
 use crate::lisp::types::Kind;
 use crate::lisp::types::LispErrorKind;
 
-/// editfns.c:Fconstrain_to_field's gate: distinct positions with a
-/// `field' property at or just before either.  Past a failed gate the
-/// constraint returns NEW_POS untouched, so line motion tests it first:
-/// four lookups, where scanning the buffer's whole span list for a `field'
-/// made each `beginning-of-line' as long as that list.
-fn plist_property_is_truthy(plist: &Value, property: &str) -> bool {
-    let Ok(items) = plist.to_vec() else {
-        return false;
-    };
-    items
-        .as_chunks::<2>()
-        .0
-        .iter()
-        .find(|pair| pair[0].symbol_str() == Some(property))
-        .is_some_and(|pair| pair[1].is_truthy())
-}
-
 fn coding_charset_list_is_ascii_compatible(interp: &Interpreter, value: &Value) -> bool {
     value.to_vec().is_ok_and(|charsets| {
         charsets.into_iter().any(|charset| {
@@ -26,9 +9,7 @@ fn coding_charset_list_is_ascii_compatible(interp: &Interpreter, value: &Value) 
                 return false;
             };
             matches!(name, "ascii" | "unicode" | "iso-8859-1")
-                || interp
-                    .charset_plist_value(name)
-                    .is_some_and(|plist| plist_property_is_truthy(&plist, ":ascii-compatible-p"))
+                || crate::lisp::primitives::coding::charset_ascii_compatible_p(interp, name)
         })
     })
 }
@@ -1112,25 +1093,11 @@ define_dispatch!(
             }
             "decode-char" => {
                 need_args(name, args, 2)?;
-                // CHECK_CHARSET_GET_CHARSET: an unknown charset signals.
-                let charset = check_charset(interp, &args[0])?;
-                let code = u32::try_from(args[1].as_integer()?)
-                    .map_err(|_| LispError::Signal("Invalid charset code-point".into()))?;
-                Ok(decode_charset_code(interp, charset, code)
-                    .map(|character| Value::Integer(character.into()))
-                    .unwrap_or(Value::Nil))
+                crate::lisp::primitives::charset::decode_char(interp, &args[0], &args[1])
             }
             "encode-char" => {
                 need_args(name, args, 2)?;
-                // charset.c:Fencode_char: CHECK_CHARSET_GET_ID, then
-                // CHECK_CHARACTER.
-                let charset = check_charset(interp, &args[1])?;
-                let character = check_character(&args[0])?;
-                // ENCODE_CHAR takes GNU's character number as given (a raw
-                // byte at #x3fff80..#x3fffff belongs to `eight-bit' only).
-                Ok(encode_charset_char(interp, charset, character)
-                    .map(|code| Value::Integer(code.into()))
-                    .unwrap_or(Value::Nil))
+                crate::lisp::primitives::charset::encode_char(interp, &args[0], &args[1])
             }
             "char-charset" => {
                 need_arg_range(name, args, 1, 2)?;
@@ -1179,11 +1146,15 @@ define_dispatch!(
                 // charset lists for full-support iso-2022 and emacs-mule
                 // codings; Emaxx models only the :charset-list attribute,
                 // so those two families report fewer supported charsets.
-                let known = restriction
-                    .as_symbol()
-                    .ok()
-                    .filter(|coding| interp.coding_system_base_name(coding).is_some())
-                    .map(str::to_string);
+                // CHECK_CODING_SYSTEM_GET_ID: Fcheck_coding_system's
+                // CHECK_SYMBOL first.
+                let symbol = match restriction.kind() {
+                    Kind::T => "t".to_string(),
+                    Kind::Symbol(name) => name.to_string(),
+                    _ => return Err(LispError::WrongTypeArgument("symbolp".into(), *restriction)),
+                };
+                let known =
+                    Some(symbol).filter(|coding| interp.coding_system_base_name(coding).is_some());
                 let Some(coding) = known else {
                     return Err(LispError::SignalValue(Value::list([
                         Value::Symbol("coding-system-error".into()),
@@ -1312,7 +1283,9 @@ define_dispatch!(
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
                 let function = args[0];
-                let charset = args[1].as_symbol()?.to_string();
+                // CHECK_CHARSET_GET_CHARSET.
+                let charset =
+                    crate::lisp::primitives::charset::check_charset_get_id(interp, &args[1])?;
                 let arg = args.get(2).cloned().unwrap_or(Value::Nil);
                 // Fmap_charset_chars: FROM-CODE and TO-CODE as the C's
                 // unsigned codes, raised to CHARSET_MIN_CODE and lowered to
@@ -1323,12 +1296,19 @@ define_dispatch!(
                 else {
                     return Err(LispError::WrongTypeArgument("charsetp".into(), args[1]));
                 };
+                // XFIXNUM of a code that is no fixnum reads its tagged word,
+                // an address: taken as the largest code, a FROM-CODE maps
+                // nothing and a TO-CODE stands for the maximum.
+                let code = |value: &Value| match value.kind() {
+                    Kind::Integer(n) => n as u32,
+                    _ => u32::MAX,
+                };
                 let from = match args.get(3).filter(|from| !from.is_nil()) {
-                    Some(from) => (from.as_integer()? as u32).max(min_code),
+                    Some(from) => code(from).max(min_code),
                     None => min_code,
                 };
                 let to = match args.get(4).filter(|to| !to.is_nil()) {
-                    Some(to) => (to.as_integer()? as u32).min(max_code),
+                    Some(to) => code(to).min(max_code),
                     None => max_code,
                 };
                 let ranges = crate::lisp::primitives::coding::map_charset_char_ranges(
@@ -1346,151 +1326,39 @@ define_dispatch!(
                 Ok(Value::Nil)
             }
             "define-charset-internal" => {
-                // mule.el normalizes the public plist API into NAME plus its 16
-                // C-layer attribute slots; the final slot is the canonical plist.
-                need_args(name, args, 17)?;
-                let charset = args[0].as_symbol()?.to_string();
-                let supplementary = args[9].is_truthy();
-                interp.define_charset(&charset, args[16], supplementary);
-                Ok(Value::Nil)
+                crate::lisp::primitives::charset::define_charset_internal(interp, args, env)
             }
             "define-charset-alias" => {
                 need_args(name, args, 2)?;
-                let alias = args[0].as_symbol()?;
-                let target = args[1].as_symbol()?;
-                interp.define_charset_alias(alias, target)?;
-                Ok(Value::Symbol(alias.to_string().into()))
+                crate::lisp::primitives::charset::define_charset_alias(interp, &args[0], &args[1])
             }
             "set-charset-plist" => {
                 need_args(name, args, 2)?;
-                let charset = args[0].as_symbol()?;
-                interp.set_charset_plist_value(charset, args[1])?;
-                Ok(args[1])
+                crate::lisp::primitives::charset::set_charset_plist(interp, &args[0], args[1])
             }
             "unify-charset" => {
-                // charset.c:1330 Funify_charset.
+                // charset.c Funify_charset.
                 need_arg_range(name, args, 1, 3)?;
-                let charset = args[0].as_symbol()?;
-                if !interp.has_charset(charset) {
-                    return Err(LispError::Void(charset.to_string()));
-                }
-                let deunify = args.get(2).is_some_and(Value::is_truthy);
-                if deunify {
-                    // charset.c:1344: de-unifying a non-unified charset is
-                    // a no-op, decided before any other validation.
-                    interp.set_charset_unified(charset, false);
-                    return Ok(Value::Nil);
-                }
-                // No early return on the unify side: charset.c:1344 skips
-                // only when the DEUNIFIER table is already loaded, and that
-                // load is lazy (an encode through the charset triggers it).
-                // A fresh session therefore falls through and re-checks the
-                // arguments -- (unify-charset 'japanese-jisx0208 42) errors
-                // "Bad unify-map" -- which is what emaxx reproduces.  The
-                // post-encode nil answer is a disclosed divergence (the
-                // ledger's finding on euc-jp/unification).
-                // charset.c:1350: only offset-method charsets whose
-                // code-offset lies above the Unicode space can be unified.
-                let code_offset = interp
-                    .charset_plist_value(charset)
-                    .and_then(|plist| plist.to_vec().ok())
-                    .and_then(|items| {
-                        items.windows(2).find_map(|pair| {
-                            matches!(pair[0].kind(), Kind::Symbol(key) if key == ":code-offset")
-                                .then(|| pair[1].integer_value())
-                                .flatten()
-                        })
-                    });
-                if code_offset.is_none_or(|offset| offset < 0x11_0000) {
-                    return Err(LispError::Signal(format!("Can't unify charset: {charset}")));
-                }
-                if let Some(map) = args.get(1)
-                    && !map.is_nil()
-                {
-                    if !map.is_string() && !is_vector_value(map) {
-                        // charset.c:1360 signal_error ("Bad unify-map", ...).
-                        return Err(LispError::SignalValue(Value::list([
-                            Value::Symbol("error".into()),
-                            Value::string("Bad unify-map"),
-                            *map,
-                        ])));
-                    }
-                    // charset.c:1362: an explicit map replaces the
-                    // charset's :unify-map attribute.
-                    if let Some(plist) = interp.charset_plist_value(charset)
-                        && let Ok(mut items) = plist.to_vec()
-                    {
-                        let key = items.iter().position(
-                            |item| matches!(item.kind(), Kind::Symbol(k) if k == ":unify-map"),
-                        );
-                        match key {
-                            Some(index) if index + 1 < items.len() => {
-                                items[index + 1] = *map;
-                            }
-                            _ => {
-                                items.push(Value::Symbol(":unify-map".into()));
-                                items.push(*map);
-                            }
-                        }
-                        interp.set_charset_plist_value(charset, Value::list(items))?;
-                    }
-                }
-                interp.set_charset_unified(charset, true);
-                Ok(Value::Nil)
+                crate::lisp::primitives::charset::unify_charset(
+                    interp,
+                    &args[0],
+                    args.get(1),
+                    args.get(2).is_some_and(Value::is_truthy),
+                )
             }
             "get-unused-iso-final-char" => {
-                // charset.c:1406.  This returned the constant ?0 with both
-                // arguments unread (audit finding 104), so it answered "0"
-                // even for a kind of charset whose 0 slot is taken, and never
-                // signalled for a bad DIMENSION or CHARS.
                 need_args(name, args, 2)?;
-                // charset.c:1387-1388 is CHECK_FIXNUM, which names `fixnump'
-                // -- `as_integer' would name `integerp' and diverge on every
-                // non-integer input.
-                let dimension = args[0].as_fixnum()?;
-                let chars = args[1].as_fixnum()?;
-                // charset.c:1384 validates DIMENSION before CHARS, and its
-                // range is 1..=3 even though the docstring says "1 or 2".
-                if !(1..=3).contains(&dimension) {
-                    return Err(LispError::Signal(format!(
-                        "Invalid DIMENSION {dimension}, it should be 1, 2, or 3"
-                    )));
-                }
-                if chars != 94 && chars != 96 {
-                    return Err(LispError::Signal(format!(
-                        "Invalid CHARS {chars}, it should be 94 or 96"
-                    )));
-                }
-                // charset.c:1420 scans `0'..`?' -- the private-use range --
-                // and returns the first final char with no charset of this
-                // DIMENSION and CHARS registered against it, or nil.
-                let taken = iso_final_chars_in_use(interp, env, dimension, chars)?;
-                Ok(('0'..='?')
-                    .map(|final_char| final_char as i64)
-                    .find(|final_char| !taken.contains(final_char))
-                    .map(Value::Integer)
-                    .unwrap_or(Value::Nil))
+                crate::lisp::primitives::charset::get_unused_iso_final_char(
+                    interp, &args[0], &args[1],
+                )
             }
             "declare-equiv-charset" => {
                 need_args(name, args, 4)?;
-                let dimension = args[0].as_integer()?;
-                let chars = args[1].as_integer()?;
-                let final_char = args[2].as_integer()?;
-                let charset = args[3].as_symbol()?;
-                interp.declare_iso_charset(dimension, chars, final_char as u32, charset);
-                Ok(Value::Nil)
+                crate::lisp::primitives::charset::declare_equiv_charset(interp, args)
             }
             "iso-charset" => {
                 need_args(name, args, 3)?;
-                // charset.c:Fiso_charset: CHECK_FIXNUM of DIMENSION and
-                // CHARS, CHECK_CHARACTER of FINAL-CHAR.
-                let dimension = args[0].as_fixnum()?;
-                let chars = args[1].as_fixnum()?;
-                let final_char = check_character(&args[2])?;
-                Ok(interp
-                    .iso_charset(dimension, chars, final_char)
-                    .map(|value| Value::Symbol(value.into()))
-                    .unwrap_or(Value::Nil))
+                crate::lisp::primitives::charset::iso_charset(interp, args)
             }
             "split-char" => {
                 // charset.c Fsplit_char: CHAR_CHARSET's charset and the
@@ -1515,26 +1383,11 @@ define_dispatch!(
             }
             "clear-charset-maps" => Ok(Value::Nil),
             "set-charset-priority" => {
-                let names = args
-                    .iter()
-                    .map(Value::as_symbol)
-                    .collect::<Result<Vec<_>, _>>()?
-                    .into_iter()
-                    .map(|name| name.to_string())
-                    .collect::<Vec<_>>();
-                interp.set_charset_priority(&names);
-                Ok(Value::Nil)
+                crate::lisp::primitives::charset::set_charset_priority(interp, args)
             }
             "sort-charsets" => {
                 need_args(name, args, 1)?;
-                let mut items = args[0].to_vec()?;
-                items.sort_by_key(|value| {
-                    value
-                        .as_symbol()
-                        .map(|name| interp.charset_priority_rank(name))
-                        .unwrap_or(usize::MAX)
-                });
-                Ok(Value::list(items))
+                crate::lisp::primitives::charset::sort_charsets(interp, &args[0], env)
             }
             "coding-system-p" => {
                 need_args(name, args, 1)?;
@@ -2067,84 +1920,6 @@ fn ccl_coding_args(interp: &Interpreter, args: &[Value]) -> Result<Vec<Value>, L
         tail = cell.cdr.get();
     }
     Ok(vec![decoder, encoder, args[15]])
-}
-
-/// The ISO final characters already claimed by a charset of this DIMENSION and
-/// CHARS.  GNU keeps `ISO_CHARSET_TABLE' natively (charset.c:1421); Emaxx has
-/// no such index, so it reads the same facts back out of the charset registry
-/// that `charset-plist' exposes, asking Lisp for the dimension and chars just
-/// as `charset-dimension'/`charset-chars' would -- the idiom already used for
-/// `oclosure-type'.
-fn iso_final_chars_in_use(
-    interp: &mut Interpreter,
-    env: &mut crate::lisp::types::Env,
-    dimension: i64,
-    chars: i64,
-) -> Result<Vec<i64>, LispError> {
-    // charset.c:1440: `declare-equiv-charset' writes directly into the same
-    // ISO_CHARSET_TABLE this primitive reads, so those claims count even
-    // though they never touch a charset's plist.  Emaxx already keeps that
-    // table -- an earlier version of this scan derived a parallel one from
-    // plists alone and disagreed with it after any runtime declaration.
-    let mut taken = interp.iso_charset_finals(dimension, chars == 96);
-    let Some(list) = interp.lookup_var("charset-list", env) else {
-        // An unbound `charset-list' would make every slot look free, which is
-        // the old constant-?0 cheat wearing a different face.
-        return Err(LispError::Signal(
-            "charset-list is unbound; cannot determine used ISO final chars".into(),
-        ));
-    };
-    for charset in list.to_vec().unwrap_or_default() {
-        let Ok(name) = charset.as_symbol() else {
-            continue;
-        };
-        let Some(plist) = interp.charset_plist_value(name) else {
-            continue;
-        };
-        let items = plist.to_vec().unwrap_or_default();
-        let mut final_char = None;
-        let mut index = 0;
-        while index + 1 < items.len() {
-            if items[index]
-                .as_symbol()
-                .is_ok_and(|key| key == ":iso-final-char")
-            {
-                final_char = items[index + 1].integer_value();
-                break;
-            }
-            index += 2;
-        }
-        let Some(final_char) = final_char else {
-            continue;
-        };
-        if !('0' as i64..='?' as i64).contains(&final_char) {
-            continue;
-        }
-        let mut shape_of = |primitive: &str| -> Option<i64> {
-            interp
-                .call_function_value(
-                    Value::Symbol(primitive.into()),
-                    Some(primitive),
-                    std::slice::from_ref(&charset),
-                    env,
-                )
-                .ok()
-                .and_then(|value| value.integer_value())
-        };
-        // charset.c:1395 reduces CHARS to a BOOLEAN -- `chars_flag' is
-        // `chars == 96' -- and ISO_CHARSET_TABLE is indexed by that flag, not
-        // by the number.  So every charset whose `charset-chars' is not 96
-        // shares the 94 bucket, including oddities like `arabic-digit', whose
-        // chars is 9.  Comparing the numbers for equality instead loses those
-        // and reports a slot free when GNU knows it is taken: (1 94) answered
-        // ?2 rather than ?6, because arabic-digit's claim on ?2 was skipped.
-        if shape_of("charset-dimension") == Some(dimension)
-            && shape_of("charset-chars").map(|value| value == 96) == Some(chars == 96)
-        {
-            taken.push(final_char);
-        }
-    }
-    Ok(taken)
 }
 
 /// buffer.c:Fother_buffer: the most recently selected buffer other than

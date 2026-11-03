@@ -1,7 +1,7 @@
 use super::*;
 use crate::lisp::types::Kind;
 
-mod charset_table;
+pub(crate) mod charset_table;
 #[macro_use]
 mod units;
 mod decoders;
@@ -24,13 +24,6 @@ pub(crate) fn coding_system_error(coding: Value) -> LispError {
     // coding.c:Fcheck_coding_system signals with the actual offending
     // object, preserving even an uninterned symbol's identity.
     LispError::SignalValue(Value::list([Value::symbol("coding-system-error"), coding]))
-}
-
-fn charset_plist_property(interp: &Interpreter, charset: &str, property: &str) -> Option<Value> {
-    let items = interp.charset_plist_value(charset)?.to_vec().ok()?;
-    items.windows(2).find_map(|pair| {
-        matches!(pair[0].kind(), Kind::Symbol(name) if name == property).then(|| pair[1])
-    })
 }
 
 /// charset.c:read_hex over a map file's BYTES from *POS: LOOKAHEAD (or
@@ -2766,9 +2759,7 @@ fn emacs_mule_layout(interp: &Interpreter) -> EmacsMuleLayout {
             let Ok(charset) = entry.as_symbol() else {
                 continue;
             };
-            let Some(dimension) = charset_plist_property(interp, charset, ":dimension")
-                .and_then(|value| value.integer_value())
-                .and_then(|value| usize::try_from(value).ok())
+            let Some(dimension) = charset_info(interp, charset).map(|info| info.dimension as usize)
             else {
                 continue;
             };

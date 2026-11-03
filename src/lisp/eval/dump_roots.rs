@@ -554,12 +554,20 @@ impl Interpreter {
                     .find(|(registered, _)| registered == name)
                     .map(|(_, plist)| *plist)
                     .unwrap_or(Value::Nil);
+                let def = self
+                    .charset_defs
+                    .iter()
+                    .rev()
+                    .find(|(registered, _)| registered == name)
+                    .map(|(_, def)| *def)
+                    .unwrap_or(Value::Nil);
                 Value::vector([
                     Value::symbol(name),
                     Value::Integer(*id),
                     plist,
                     bool_value(self.charset_supplementary.contains(name)),
                     bool_value(self.charset_unified.contains(name)),
+                    def,
                 ])
             })),
         ));
@@ -567,10 +575,16 @@ impl Interpreter {
             RootSlot::CharsetOrderedList,
             symbol_list(&self.charset_priority),
         ));
-        groups.push((RootSlot::CharsetList, symbol_list(&self.charset_names)));
+        // charset.c's Vcharset_list is the variable `charset-list', dumped
+        // with the other variables.
+        groups.push((RootSlot::CharsetList, Value::Nil));
         groups.push((
             RootSlot::Iso2022CharsetList,
             symbol_list(&self.iso_2022_charset_list),
+        ));
+        groups.push((
+            RootSlot::EmacsMuleCharsetList,
+            symbol_list(&self.emacs_mule_charset_list),
         ));
         groups.push((
             RootSlot::CharsetAliases,
@@ -980,17 +994,19 @@ mod install {
                     self.charset_table.borrow_mut().clear();
                     self.charset_ids.clear();
                     self.charset_plists.clear();
+                    self.charset_defs.clear();
                     self.charset_supplementary.clear();
                     self.charset_unified.clear();
                     for entry in expect_list(value, "charsets")? {
                         let fields = expect_vector(&entry, "charset")?;
-                        if fields.len() != 5 {
-                            return Err("charset: five fields expected".into());
+                        if fields.len() != 6 {
+                            return Err("charset: six fields expected".into());
                         }
                         let name = expect_symbol(&fields[0], "charset name")?;
                         self.charset_ids
                             .push((name.clone(), expect_int(&fields[1], "charset id")?));
                         self.charset_plists.push((name.clone(), fields[2]));
+                        self.charset_defs.push((name.clone(), fields[5]));
                         if fields[3].is_truthy() {
                             self.charset_supplementary.insert(name.clone());
                         }
@@ -1004,15 +1020,26 @@ mod install {
                 RootSlot::CharsetOrderedList => {
                     self.charset_priority = symbol_names(value, "charset ordered list")?;
                 }
-                RootSlot::CharsetList => {
-                    self.charset_names = symbol_names(value, "charset list")?;
-                }
+                RootSlot::CharsetList => {}
                 RootSlot::Iso2022CharsetList => {
                     self.iso_2022_charset_list = symbol_names(value, "iso-2022 charset list")?;
+                }
+                RootSlot::EmacsMuleCharsetList => {
+                    self.emacs_mule_charset_list = symbol_names(value, "emacs-mule charset list")?;
                 }
                 RootSlot::CharsetAliases => {
                     self.charset_aliases = symbol_pairs(value, "charset aliases")?;
                     self.charset_alias_index = self.charset_aliases.iter().cloned().collect();
+                    // A charset's name made an alias answers as its target.
+                    let renamed: Vec<String> = self
+                        .charset_aliases
+                        .iter()
+                        .filter(|(alias, target)| alias != target)
+                        .map(|(alias, _)| alias.clone())
+                        .collect();
+                    for alias in renamed {
+                        self.charset_id_index.remove(&alias);
+                    }
                 }
                 RootSlot::IsoCharsetTable => {
                     self.iso_charsets.clear();

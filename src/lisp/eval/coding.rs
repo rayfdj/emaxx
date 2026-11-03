@@ -126,10 +126,24 @@ impl Interpreter {
             .copied()
     }
 
-    pub fn define_charset(&mut self, name: &str, plist: Value, supplementary: bool) -> i64 {
+    /// The tail of Fdefine_charset_internal: NAME, its DEF (the arguments
+    /// from dimension to unify-map, normalized) and PLIST registered.  A new
+    /// name gets the next id, the head of `charset-list' and its place in
+    /// the ordered list (a supplementary charset last, any other before
+    /// the first supplementary one); an ISO final byte fills
+    /// ISO_CHARSET_TABLE (a new charset joining Viso_2022_charset_list), an
+    /// emacs-mule id joins Vemacs_mule_charset_list.  NAME already known
+    /// (an alias too) is redefined under its id.
+    /// Fdefine_charset_internal's hash_put and charset_table entry: NAME's
+    /// id (a new one for a new name) with DEF and PLIST stored.
+    pub(crate) fn register_charset(&mut self, name: &str, def: Value, plist: Value) -> (i64, bool) {
+        use crate::lisp::primitives::coding::charset_table as table;
         // The charset table reads what this changes.
         self.charset_table.borrow_mut().clear();
-        let existing = self.charset_id_index.get(name).copied();
+        let canonical = self
+            .charset_canonical_name(name)
+            .unwrap_or_else(|| name.to_string());
+        let existing = self.charset_id_index.get(&canonical).copied();
         let new_definition = existing.is_none();
         let id = existing.unwrap_or_else(|| {
             let id = self
@@ -139,78 +153,127 @@ impl Interpreter {
                 .max()
                 .unwrap_or(-1)
                 + 1;
-            self.charset_ids.push((name.to_string(), id));
-            self.charset_id_index.insert(name.to_string(), id);
-            if !self.charset_alias_index.contains_key(name) {
+            self.charset_ids.push((canonical.clone(), id));
+            self.charset_id_index.insert(canonical.clone(), id);
+            if !self.charset_alias_index.contains_key(&canonical) {
                 self.charset_table_books.insert();
             }
             id
         });
+        if let Some((_, existing)) = self
+            .charset_defs
+            .iter_mut()
+            .rev()
+            .find(|(registered, _)| registered == &canonical)
+        {
+            *existing = def;
+        } else {
+            self.charset_defs.push((canonical.clone(), def));
+        }
+        if let Some((_, existing)) = self
+            .charset_plists
+            .iter_mut()
+            .rev()
+            .find(|(registered, _)| registered == &canonical)
+        {
+            *existing = plist;
+        } else {
+            self.charset_plists.push((canonical.clone(), plist));
+        }
+        let supplementary = crate::lisp::primitives::vector_or_list_items(&def)
+            .ok()
+            .and_then(|items| items.get(table::DEF_SUPPLEMENTARY_P).copied())
+            .is_some_and(|value| value.is_truthy());
+        if supplementary {
+            self.charset_supplementary.insert(canonical);
+        } else {
+            self.charset_supplementary.remove(&canonical);
+        }
+        (id, new_definition)
+    }
+
+    /// The rest of Fdefine_charset_internal once the charset (and a map
+    /// charset's map) is in: ISO_CHARSET_TABLE and Viso_2022_charset_list,
+    /// Vemacs_mule_charset_list, and for a new name `charset-list' and the
+    /// ordered list.
+    pub(crate) fn finish_charset_definition(
+        &mut self,
+        name: &str,
+        _id: i64,
+        new_definition: bool,
+        def: Value,
+    ) {
+        use crate::lisp::primitives::coding::charset_table as table;
+        self.charset_table.borrow_mut().clear();
+        let canonical = self
+            .charset_canonical_name(name)
+            .unwrap_or_else(|| name.to_string());
+        let field = |slot: usize| {
+            crate::lisp::primitives::vector_or_list_items(&def)
+                .ok()
+                .and_then(|items| items.get(slot).copied())
+                .unwrap_or(Value::Nil)
+        };
+        let supplementary = field(table::DEF_SUPPLEMENTARY_P).is_truthy();
+        let dimension = field(table::DEF_DIMENSION).integer_value().unwrap_or(1);
+        let iso_chars_96 =
+            crate::lisp::primitives::vector_or_list_items(&field(table::DEF_CODE_SPACE))
+                .ok()
+                .and_then(|space| {
+                    Some(space.get(1)?.integer_value()? - space.first()?.integer_value()?)
+                })
+                .is_some_and(|span| span + 1 == 96);
+        let iso_final = field(table::DEF_ISO_FINAL)
+            .integer_value()
+            .and_then(|value| u32::try_from(value).ok());
+        let emacs_mule = !field(table::DEF_EMACS_MULE_ID).is_nil();
+        if let Some(final_char) = iso_final {
+            self.declare_iso_charset(
+                dimension,
+                if iso_chars_96 { 96 } else { 94 },
+                final_char,
+                &canonical,
+            );
+            if new_definition {
+                self.iso_2022_charset_list.push(canonical.clone());
+            }
+        }
+        if emacs_mule && new_definition {
+            self.emacs_mule_charset_list.push(canonical.clone());
+        }
         if new_definition {
-            // charset.c Fdefine_charset_internal: `charset-list' gains the
-            // name at its head; the ordered list appends a supplementary
-            // charset at the end and inserts a normal one before the first
-            // supplementary entry.
-            self.charset_names.insert(0, name.to_string());
+            self.push_charset_list(Value::symbol(name));
             if supplementary {
-                self.charset_supplementary.insert(name.to_string());
-                self.charset_priority.push(name.to_string());
+                self.charset_priority.push(canonical);
             } else {
                 let position = self
                     .charset_priority
                     .iter()
                     .position(|existing| self.charset_supplementary.contains(existing))
                     .unwrap_or(self.charset_priority.len());
-                self.charset_priority.insert(position, name.to_string());
+                self.charset_priority.insert(position, canonical);
             }
         }
-        if let Some((_, existing)) = self
-            .charset_plists
-            .iter_mut()
+    }
+
+    /// The `define-charset-internal' arguments CHARSET (a name or an alias)
+    /// was defined with, from its dimension to its unify-map.
+    pub(crate) fn charset_def_value(&self, charset: &str) -> Option<Value> {
+        let canonical = self.charset_canonical(charset)?;
+        self.charset_defs
+            .iter()
             .rev()
-            .find(|(registered, _)| registered == name)
-        {
-            *existing = plist;
-        } else {
-            self.charset_plists.push((name.to_string(), plist));
+            .find(|(registered, _)| registered == canonical)
+            .map(|(_, def)| *def)
+    }
+
+    /// set_charset_attr of SLOT of CHARSET's definition (`unify-charset'
+    /// storing its unify-map).
+    pub(crate) fn set_charset_def_slot(&mut self, charset: &str, slot: usize, value: Value) {
+        self.charset_table.borrow_mut().clear();
+        if let Some(def) = self.charset_def_value(charset) {
+            let _ = crate::lisp::primitives::coding::aset_vector_value(&def, slot, value);
         }
-        // charset.c Fdefine_charset_internal: a charset with an ISO final
-        // byte enters the ISO_CHARSET_TABLE slot for its dimension and
-        // 94/96 flavor (iso_chars_96 is a 96-wide first byte range), and a
-        // new one joins Viso_2022_charset_list at the end.
-        let items = plist.to_vec().unwrap_or_default();
-        let property = |key: &str| {
-            items.windows(2).find_map(|pair| {
-                matches!(pair[0].kind(), Kind::Symbol(name) if name == key).then(|| pair[1])
-            })
-        };
-        if let Some(final_char) = property(":iso-final-char")
-            .and_then(|value| value.integer_value())
-            .and_then(|value| u32::try_from(value).ok())
-        {
-            let dimension = property(":dimension")
-                .and_then(|value| value.integer_value())
-                .unwrap_or(1);
-            let chars_96 = property(":code-space")
-                .and_then(|space| crate::lisp::primitives::vector_or_list_items(&space).ok())
-                .and_then(|values| {
-                    Some((
-                        values.first()?.integer_value()?,
-                        values.get(1)?.integer_value()?,
-                    ))
-                })
-                .is_some_and(|(min, max)| max - min + 1 == 96);
-            self.declare_iso_charset(dimension, if chars_96 { 96 } else { 94 }, final_char, name);
-            if new_definition
-                && !self
-                    .iso_2022_charset_list
-                    .iter()
-                    .any(|existing| existing == name)
-            {
-                self.iso_2022_charset_list.push(name.to_string());
-            }
-        }
-        id
     }
 
     /// charset.c Viso_2022_charset_list: the ISO-2022 designatable
@@ -262,7 +325,7 @@ impl Interpreter {
         self.charset_table.borrow_mut().clear();
         let canonical = self
             .charset_canonical_name(name)
-            .ok_or_else(|| LispError::Void(name.to_string()))?;
+            .ok_or_else(|| LispError::WrongTypeArgument("charsetp".into(), Value::symbol(name)))?;
         if let Some((_, existing)) = self
             .charset_plists
             .iter_mut()
@@ -297,12 +360,15 @@ impl Interpreter {
         self.coding_table_books.thaw(codings);
     }
 
+    /// Fdefine_charset_alias after CHECK_CHARSET_GET_ATTR: ALIAS's hash
+    /// entry is TARGET's attributes (a charset of that name now answers as
+    /// TARGET), and `charset-list' gains ALIAS at its head again.
     pub fn define_charset_alias(&mut self, alias: &str, target: &str) -> Result<(), LispError> {
         // The charset table reads what this changes.
         self.charset_table.borrow_mut().clear();
-        let canonical = self
-            .charset_canonical_name(target)
-            .ok_or_else(|| LispError::Void(target.to_string()))?;
+        let canonical = self.charset_canonical_name(target).ok_or_else(|| {
+            LispError::WrongTypeArgument("charsetp".into(), Value::symbol(target))
+        })?;
         if let Some((_, existing)) = self
             .charset_aliases
             .iter_mut()
@@ -315,23 +381,29 @@ impl Interpreter {
                 .push((alias.to_string(), canonical.clone()));
         }
         let known = self.charset_id_index.contains_key(alias);
-        if self
+        let fresh = self
             .charset_alias_index
-            .insert(alias.to_string(), canonical)
-            .is_none()
-            && !known
-        {
+            .insert(alias.to_string(), canonical.clone())
+            .is_none();
+        if fresh && !known {
             self.charset_table_books.insert();
         }
-        // charset.c Fdefine_charset_alias: the alias joins `charset-list'.
-        if !self.charset_names.iter().any(|existing| existing == alias) {
-            self.charset_names.insert(0, alias.to_string());
+        if known && alias != canonical {
+            // Fputhash replaces the charset's own attributes under its
+            // name; its charset_table entry stays for its id.
+            self.charset_id_index.remove(alias);
         }
+        self.push_charset_list(Value::symbol(alias));
         Ok(())
     }
 
-    pub fn charset_name_list(&self) -> Vec<String> {
-        self.charset_names.clone()
+    /// Vcharset_list = Fcons (NAME, Vcharset_list): the variable's current
+    /// value (a let-bound one while it is bound) gains NAME at its head.
+    pub(crate) fn push_charset_list(&mut self, name: Value) {
+        let current = self
+            .symbol_value_symbol(&SymbolName::intern_str("charset-list"))
+            .unwrap_or(Value::Nil);
+        self.set_global_binding("charset-list", Value::cons(name, current));
     }
 
     pub fn charset_priority_list(&self) -> Vec<String> {
@@ -370,12 +442,19 @@ impl Interpreter {
         new_head.extend(tail);
         self.charset_priority = new_head;
         // charset.c Fset_charset_priority rebuilds Viso_2022_charset_list
-        // in the new ordered-list order.
+        // and Vemacs_mule_charset_list in the new ordered-list order.
         let iso_2022 = std::mem::take(&mut self.iso_2022_charset_list);
         self.iso_2022_charset_list = self
             .charset_priority
             .iter()
             .filter(|charset| iso_2022.contains(charset))
+            .cloned()
+            .collect();
+        let emacs_mule = std::mem::take(&mut self.emacs_mule_charset_list);
+        self.emacs_mule_charset_list = self
+            .charset_priority
+            .iter()
+            .filter(|charset| emacs_mule.contains(charset))
             .cloned()
             .collect();
     }
@@ -431,19 +510,6 @@ impl Interpreter {
             self.iso_charsets
                 .push((dimension, chars, final_char, canonical));
         }
-    }
-
-    /// The final chars claimed through `declare-equiv-charset' for this
-    /// DIMENSION and CHARS bucket.  charset.c:1440 writes those straight into
-    /// ISO_CHARSET_TABLE, which is the same table
-    /// `get-unused-iso-final-char' reads (charset.c:1421), so a scan that
-    /// only walks charset plists misses them.
-    pub fn iso_charset_finals(&self, dimension: i64, chars_96: bool) -> Vec<i64> {
-        self.iso_charsets
-            .iter()
-            .filter(|(d, c, _, _)| *d == dimension && (*c == 96) == chars_96)
-            .map(|(_, _, final_char, _)| i64::from(*final_char))
-            .collect()
     }
 
     pub fn iso_charset(&self, dimension: i64, chars: i64, final_char: u32) -> Option<String> {
@@ -685,15 +751,12 @@ impl Interpreter {
                         .filter(|charset| !charset.is_nil());
                     let g1_dimension = g1
                         .and_then(|charset| charset.symbol_str().map(str::to_string))
-                        .and_then(|charset| self.charset_plist_value(&charset))
-                        .and_then(|plist| plist.to_vec().ok())
-                        .and_then(|items| {
-                            items.windows(2).find_map(|pair| {
-                                matches!(pair[0].kind(), Kind::Symbol(key) if key == ":dimension")
-                                    .then(|| pair[1].integer_value())
-                                    .flatten()
-                            })
-                        });
+                        .and_then(|charset| {
+                            crate::lisp::primitives::coding::charset_table::charset_info(
+                                self, &charset,
+                            )
+                        })
+                        .map(|info| i64::from(info.dimension));
                     match g1_dimension {
                         _ if flags & ISO_FLAG_LOCKING_SHIFT != 0 || full_support => {
                             CODING_CATEGORY_ISO_8_ELSE
@@ -911,16 +974,9 @@ impl Interpreter {
                 .is_some_and(|initial| match initial.kind() {
                     Kind::Symbol(charset) => {
                         charset == "ascii"
-                            || self
-                                .charset_plist_value(&charset)
-                                .and_then(|plist| plist.to_vec().ok())
-                                .is_some_and(|items| {
-                                    items.windows(2).any(|pair| {
-                                        matches!(pair[0].kind(), Kind::Symbol(key)
-                                            if key == ":ascii-compatible-p")
-                                            && pair[1].is_truthy()
-                                    })
-                                })
+                            || crate::lisp::primitives::coding::charset_ascii_compatible_p(
+                                self, &charset,
+                            )
                     }
                     _ => false,
                 });
