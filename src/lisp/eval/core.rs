@@ -3252,8 +3252,8 @@ mod eval_value_buffer_tests {
                 .detached_forwarded_variables
                 .insert("text-quoting-style".into(), keys[4]);
             interpreter.pending_thread_events.push(keys[5]);
-            interpreter.coding_systems[0].charset_list = keys[6];
-            interpreter.coding_systems[0].type_args = vec![keys[7]];
+            interpreter.coding_attrs[0].charset_list = keys[6];
+            interpreter.coding_attrs[0].type_args = vec![keys[7]];
             table_id
         }
 
@@ -3322,8 +3322,8 @@ mod eval_value_buffer_tests {
             .detached_forwarded_variables
             .insert("text-quoting-style".into(), c_value);
         interpreter.pending_thread_events.push(c_value);
-        interpreter.coding_systems[0].charset_list = c_value;
-        interpreter.coding_systems[0].type_args = vec![c_value];
+        interpreter.coding_attrs[0].charset_list = c_value;
+        interpreter.coding_attrs[0].type_args = vec![c_value];
         let mut copied = interpreter.deep_clone_image();
         let copied_c = copied.quit_flag_value();
         assert!(!primitives::values_eq_in_env(
@@ -3337,8 +3337,8 @@ mod eval_value_buffer_tests {
                 .expect("still forwarded"),
             copied.detached_forwarded_variables["text-quoting-style"],
             copied.pending_thread_events[0],
-            copied.coding_systems[0].charset_list,
-            copied.coding_systems[0].type_args[0],
+            copied.coding_attrs[0].charset_list,
+            copied.coding_attrs[0].type_args[0],
         ] {
             assert!(
                 primitives::values_eq_in_env(&copied, &copied_c, &child, &env),

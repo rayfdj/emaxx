@@ -606,6 +606,7 @@ pub(crate) fn call_process_arguments(
     let mut coding = if coding.is_nil() {
         "undecided".to_string()
     } else {
+        load_coding_system(interp, &coding, env)?;
         checked_coding_symbol(interp, &coding)?
     };
     let canonical = interp
@@ -2243,6 +2244,7 @@ pub(crate) fn make_process_arguments(
             let name = if coding.is_nil() {
                 None
             } else {
+                load_coding_system(interp, &coding, env)?;
                 Some(checked_coding_symbol(interp, &coding)?)
             };
             encode_coding_value_recording(interp, argument, name.as_deref(), false, false, env)?
@@ -2768,7 +2770,7 @@ fn insert_process_output(
     let requires_decoding = interp.coding_system_kind_name(&canonical).as_deref()
         != Some("raw-text")
         || !(inhibit_eol_conversion || coding_eol_type(interp, &canonical) == Some(0))
-        || coding_system_property(interp, &canonical, ":post-read-conversion")
+        || coding_attr(interp, &canonical, ":post-read-conversion")
             .is_some_and(|function| !function.is_nil());
     // call_process's read loop over the child's output: BUFSIZE bytes a
     // block (CALLPROC_BUFFER_SIZE_MIN, doubling up to the MAX as the
@@ -2874,7 +2876,7 @@ fn decode_process_bytes_at_point(
         layout.as_ref(),
         env,
     )?;
-    let post_read = coding_system_property(
+    let post_read = coding_attr(
         interp,
         &interp
             .coding_system_canonical_name(&coding_used)
@@ -2923,6 +2925,7 @@ fn decode_process_output(
             .process_buffer_id(process_id)
             .and_then(|id| interp.get_buffer_by_id(id))
             .is_some_and(|buffer| !buffer.is_multibyte());
+    load_coding_system(interp, &decoding, env)?;
     let coding = match checked_coding_given(interp, &decoding)? {
         Some(coding) if unibyte_buffer => raw_text_coding_system(interp, &coding),
         Some(coding) => coding,

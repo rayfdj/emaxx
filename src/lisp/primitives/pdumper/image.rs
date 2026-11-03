@@ -543,8 +543,9 @@ pub(crate) enum RootSlot {
     SjisCodingSystem = 29,
     Big5CodingSystem = 30,
     CodingSystems = 31,
-    CodingAliases = 32,
-    CodingPriority = 33,
+    CodingSpecs = 32,
+    // Former coding priority root code 33 is unsupported: GNU completes
+    // coding systems over `coding-system-alist'.
     CodingCategoryRepresentatives = 34,
     CodingCategoryPriorities = 35,
     CclProgramTable = 36,
@@ -615,8 +616,7 @@ impl RootSlot {
             29 => Self::SjisCodingSystem,
             30 => Self::Big5CodingSystem,
             31 => Self::CodingSystems,
-            32 => Self::CodingAliases,
-            33 => Self::CodingPriority,
+            32 => Self::CodingSpecs,
             34 => Self::CodingCategoryRepresentatives,
             35 => Self::CodingCategoryPriorities,
             36 => Self::CclProgramTable,

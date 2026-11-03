@@ -304,40 +304,51 @@ fn encode_charset_character_number(
     charset_info(interp, charset)?.encode(interp, character)
 }
 
-/// coding-system-get: `plist-get' on the coding system's plist.
-pub(crate) fn coding_system_property(
-    interp: &Interpreter,
-    coding: &str,
-    property: &str,
-) -> Option<Value> {
-    let mut tail = interp.coding_system(coding)?.plist;
-    while let Some((key, rest)) = tail.cons_values() {
-        let (value, next) = rest.cons_values()?;
-        if matches!(key.kind(), Kind::Symbol(name) if name == property) {
-            return Some(value);
+/// The attribute of CODING that PROPERTY names, as setup_coding_system
+/// and the conversions read it from CODING_ATTR_* -- not from the plist,
+/// where `coding-system-put' of most properties changes nothing else:
+/// `:bom' is a utf-8 or utf-16 system's CODING_ATTR_UTF_BOM and
+/// `:endian' a utf-16 one's CODING_ATTR_UTF_16_ENDIAN, None for others.
+pub(crate) fn coding_attr(interp: &Interpreter, coding: &str, property: &str) -> Option<Value> {
+    let attrs = interp.coding_system(coding)?;
+    Some(match property {
+        ":post-read-conversion" => attrs.post_read,
+        ":pre-write-conversion" => attrs.pre_write,
+        ":decode-translation-table" => attrs.decode_table,
+        ":encode-translation-table" => attrs.encode_table,
+        ":ascii-compatible-p" => attrs.ascii_compatible,
+        ":for-unibyte" => {
+            if attrs.for_unibyte {
+                Value::T
+            } else {
+                Value::Nil
+            }
         }
-        tail = next;
-    }
-    None
+        ":bom" if matches!(attrs.kind.as_str(), "utf-8" | "utf-16") => {
+            attrs.type_args.first().copied().unwrap_or(Value::Nil)
+        }
+        ":endian" if attrs.kind == "utf-16" => {
+            attrs.type_args.get(1).copied().unwrap_or(Value::Nil)
+        }
+        _ => return None,
+    })
 }
 
 /// CODING_ATTR_DEFAULT_CHAR: Fdefine_coding_system_internal stores a
 /// space when `:default-char' is nil.
 fn coding_system_default_char(interp: &Interpreter, coding: &str) -> u32 {
-    coding_system_property(interp, coding, ":default-char")
-        .and_then(|value| value.integer_value())
-        .and_then(|value| u32::try_from(value).ok())
-        .unwrap_or(u32::from(b' '))
+    interp
+        .coding_system(coding)
+        .map_or(u32::from(b' '), |attrs| attrs.default_char)
 }
 
 fn coding_system_requires_bom(interp: &Interpreter, coding: &str) -> bool {
-    coding_system_property(interp, coding, ":bom")
+    coding_attr(interp, coding, ":bom")
         .is_some_and(|value| !value.is_nil() && value.cons_values().is_none())
 }
 
 pub(crate) fn coding_system_auto_detects_bom(interp: &Interpreter, coding: &str) -> bool {
-    coding_system_property(interp, coding, ":bom")
-        .is_some_and(|value| value.cons_values().is_some())
+    coding_attr(interp, coding, ":bom").is_some_and(|value| value.cons_values().is_some())
 }
 
 fn coding_system_consumes_bom(interp: &Interpreter, coding: &str) -> bool {
@@ -345,26 +356,17 @@ fn coding_system_consumes_bom(interp: &Interpreter, coding: &str) -> bool {
 }
 
 pub(crate) fn coding_system_is_ascii_compatible(interp: &Interpreter, coding: &str) -> bool {
-    coding_system_property(interp, coding, ":ascii-compatible-p")
-        .is_some_and(|value| value.is_truthy())
+    coding_attr(interp, coding, ":ascii-compatible-p").is_some_and(|value| value.is_truthy())
 }
 
-fn coding_system_utf16_options(
-    interp: &Interpreter,
-    coding: &str,
-    kind: &str,
-) -> (bool, bool, bool) {
-    let big_endian = match coding_system_property(interp, coding, ":endian").map(|v| v.kind()) {
-        Some(Kind::Symbol(endian)) => endian != "little",
-        _ => !matches!(kind, "utf-16le"),
-    };
-    let bom = coding_system_property(interp, coding, ":bom");
-    let detect_bom = bom
-        .as_ref()
-        .is_some_and(|value| value.cons_values().is_some());
-    let with_bom = bom.as_ref().is_some_and(|value| !value.is_nil())
-        || (bom.is_none() && interp.coding_system_base_name(coding).as_deref() == Some("utf-16"));
-    (big_endian, with_bom, detect_bom)
+/// A utf-16 system's (big-endian, with a BOM, detecting the BOM).
+fn coding_system_utf16_options(interp: &Interpreter, coding: &str) -> (bool, bool, bool) {
+    let big_endian = !matches!(
+        coding_attr(interp, coding, ":endian").map(|v| v.kind()),
+        Some(Kind::Symbol(endian)) if endian == "little"
+    );
+    let bom = coding_attr(interp, coding, ":bom").unwrap_or(Value::Nil);
+    (big_endian, !bom.is_nil(), bom.cons_values().is_some())
 }
 
 /// The (roman kana kanji ...) charsets of coding.c's Vsjis_coding_system,
@@ -379,16 +381,24 @@ pub(crate) fn sjis_primitive_charsets(interp: &Interpreter) -> Option<(String, S
     ))
 }
 
+/// CODING_ATTR_CHARSET_LIST: the charsets of CODING by canonical name,
+/// Viso_2022_charset_list or Vemacs_mule_charset_list for a system
+/// defined over those lists.
 pub(crate) fn coding_system_charset_names(interp: &Interpreter, coding: &str) -> Vec<String> {
-    let Some(charsets) = coding_system_property(interp, coding, ":charset-list") else {
+    let Some(attrs) = interp.coding_system(coding) else {
         return Vec::new();
     };
-    charsets
-        .to_vec()
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|value| value.symbol_str().map(str::to_string))
-        .collect()
+    match attrs.charset_list.kind() {
+        Kind::Symbol(name) if name == "iso-2022" => interp.iso_2022_charset_list(),
+        Kind::Symbol(name) if name == "emacs-mule" => emacs_mule_charset_list(interp),
+        _ => attrs
+            .charset_list
+            .to_vec()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|value| value.symbol_str().map(str::to_string))
+            .collect(),
+    }
 }
 
 /// coding.c's work buffer for one conversion, as code_conversion_save
@@ -571,7 +581,7 @@ pub(crate) fn pre_write_for_file(
 ) -> Result<StringLike, LispError> {
     let pre_write = interp
         .coding_system_canonical_name(coding)
-        .and_then(|canonical| coding_system_property(interp, &canonical, ":pre-write-conversion"))
+        .and_then(|canonical| coding_attr(interp, &canonical, ":pre-write-conversion"))
         .unwrap_or(Value::Nil);
     if pre_write.is_nil() {
         return Ok(source);
@@ -744,6 +754,31 @@ pub(crate) fn checked_coding_name(
         .coding_system_canonical_name(&symbol)
         .ok_or_else(|| coding_system_error(*value))
         .map(Some)
+}
+
+/// CHECK_CODING_SYSTEM's Fcheck_coding_system for a symbol the table
+/// lacks: its pending `coding-system-define-form' cleared and evaluated
+/// through safe_eval, so the check after it finds the system the form
+/// defines.
+pub(crate) fn load_coding_system(
+    interp: &mut Interpreter,
+    value: &Value,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    let Some(name) = value.symbol_str().map(str::to_string) else {
+        return Ok(());
+    };
+    if value.is_nil() || interp.has_coding_system(&name) {
+        return Ok(());
+    }
+    let form = interp
+        .get_symbol_property(&name, "coding-system-define-form")
+        .unwrap_or(Value::Nil);
+    if !form.is_nil() {
+        interp.put_symbol_property(&name, "coding-system-define-form", Value::Nil);
+        interp.safe_funcall(Value::symbol("eval"), &[form], env)?;
+    }
+    Ok(())
 }
 
 /// A coding system VALUE as given (an alias keeps its name), once
@@ -1819,7 +1854,7 @@ pub(crate) fn encode_text_bytes_with_charsets(
         && !crate::lisp::types::string_data::has_raw_byte_markers(source.text.as_bytes())
     {
         let bom = (kind == "utf-8-with-signature"
-            || coding_system_property(interp, &canonical, ":bom").is_some_and(|bom| !bom.is_nil()))
+            || coding_attr(interp, &canonical, ":bom").is_some_and(|bom| !bom.is_nil()))
             && !spec.bom_done;
         spec.bom_done = true;
         let text = source.text.as_bytes();
@@ -1856,12 +1891,11 @@ pub(crate) fn encode_text_bytes_with_charsets(
         "utf-8" => encode_coding_utf_8(
             &codes,
             kind == "utf-8-with-signature"
-                || coding_system_property(interp, &canonical, ":bom")
-                    .is_some_and(|bom| !bom.is_nil()),
+                || coding_attr(interp, &canonical, ":bom").is_some_and(|bom| !bom.is_nil()),
             spec,
         ),
         "utf-16" => {
-            let (big_endian, with_bom, _) = coding_system_utf16_options(interp, &canonical, &kind);
+            let (big_endian, with_bom, _) = coding_system_utf16_options(interp, &canonical);
             let default_char = coding_system_default_char(interp, &canonical);
             // CODING_UTF_16_BOM becomes utf_without_bom once written.
             let bom = with_bom && !spec.bom_done;
@@ -2487,10 +2521,69 @@ pub(crate) fn char_charset(interp: &Interpreter, ch: u32) -> (String, u32) {
 /// Fdefine_coding_system_internal's `charset_valids' vector for a
 /// charset-type coding: per first byte, the charsets it may start,
 /// smaller dimensions first.
-pub(crate) fn charset_valids(
-    interp: &Interpreter,
-    coding: &str,
-) -> Vec<Option<Vec<std::rc::Rc<CharsetInfo>>>> {
+/// CODING_ATTR_CHARSET_VALIDS: a charset coding's charsets by first
+/// unit, each list by dimension.
+pub(crate) type CharsetValids = std::rc::Rc<Vec<Option<Vec<std::rc::Rc<CharsetInfo>>>>>;
+
+/// What setup_coding_system and Fdefine_coding_system_internal derive
+/// from a coding system's attributes and charsets, kept with the
+/// attribute vector as GNU keeps CODING_ATTR_CHARSET_VALIDS and the
+/// ISO-2022 attributes there: made when first needed, and again after a
+/// charset change (the interpreter's charset generation) or
+/// `coding-system-put'.
+#[derive(Clone, Default)]
+pub(crate) struct CodingDerived(std::cell::RefCell<CodingDerivedSlots>);
+
+#[derive(Clone, Default)]
+struct CodingDerivedSlots {
+    epoch: u64,
+    valids: Option<CharsetValids>,
+    iso: Option<std::rc::Rc<iso2022::IsoAttributes>>,
+}
+
+impl std::fmt::Debug for CodingDerived {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("CodingDerived")
+    }
+}
+
+impl CodingDerived {
+    /// Forget what was derived (`coding-system-put' changed an attribute).
+    pub(crate) fn clear(&self) {
+        *self.0.borrow_mut() = CodingDerivedSlots::default();
+    }
+
+    fn slots(&self, epoch: u64) -> std::cell::RefMut<'_, CodingDerivedSlots> {
+        let mut slots = self.0.borrow_mut();
+        if slots.epoch != epoch {
+            *slots = CodingDerivedSlots {
+                epoch,
+                ..Default::default()
+            };
+        }
+        slots
+    }
+
+    pub(crate) fn iso(
+        &self,
+        epoch: u64,
+        make: impl FnOnce() -> Option<iso2022::IsoAttributes>,
+    ) -> Option<std::rc::Rc<iso2022::IsoAttributes>> {
+        if let Some(iso) = self.slots(epoch).iso.clone() {
+            return Some(iso);
+        }
+        let iso = std::rc::Rc::new(make()?);
+        self.slots(epoch).iso = Some(iso.clone());
+        Some(iso)
+    }
+}
+
+pub(crate) fn charset_valids(interp: &Interpreter, coding: &str) -> CharsetValids {
+    let attrs = interp.coding_system(coding);
+    let epoch = interp.charset_epoch.get();
+    if let Some(valids) = attrs.and_then(|attrs| attrs.derived.slots(epoch).valids.clone()) {
+        return valids;
+    }
     let mut valids: Vec<Option<Vec<std::rc::Rc<CharsetInfo>>>> = vec![None; 256];
     for charset in coding_system_charset_names(interp, coding) {
         let Some(info) = charset_info(interp, &charset) else {
@@ -2513,6 +2606,10 @@ pub(crate) fn charset_valids(
             entry.insert(position, info.clone());
         }
     }
+    let valids = std::rc::Rc::new(valids);
+    if let Some(attrs) = attrs {
+        attrs.derived.slots(epoch).valids = Some(valids.clone());
+    }
     valids
 }
 
@@ -2531,8 +2628,7 @@ fn decode_translation_table_p(interp: &Interpreter, coding: &str, env: &Env) -> 
     let standard = interp
         .lookup_var("standard-translation-table-for-decode", env)
         .unwrap_or(Value::Nil);
-    let table =
-        coding_system_property(interp, coding, ":decode-translation-table").unwrap_or(Value::Nil);
+    let table = coding_attr(interp, coding, ":decode-translation-table").unwrap_or(Value::Nil);
     if table.is_nil() {
         return !standard.is_nil();
     }
@@ -2671,6 +2767,7 @@ pub(crate) fn unencodable_char_position_value(
     let coding = if args[2].is_nil() {
         "undecided".to_string()
     } else {
+        load_coding_system(interp, &args[2], env)?;
         checked_coding_symbol(interp, &args[2])?
     };
     let canonical = interp
@@ -2920,8 +3017,7 @@ pub(crate) fn encode_translation_tables(
     let standard = interp
         .lookup_var("standard-translation-table-for-encode", env)
         .unwrap_or(Value::Nil);
-    let table =
-        coding_system_property(interp, coding, ":encode-translation-table").unwrap_or(Value::Nil);
+    let table = coding_attr(interp, coding, ":encode-translation-table").unwrap_or(Value::Nil);
     if table.is_nil() {
         return Ok(if standard.is_nil() {
             Vec::new()
@@ -3242,9 +3338,19 @@ pub(crate) fn find_operation_coding_system_value(
 }
 
 /// coding.c:Fcoding_system_p.
+/// coding.c Fcoding_system_p: nil, a name in the table, or a symbol
+/// with a `coding-system-define-form' still to evaluate.
 pub(crate) fn coding_system_p(interp: &Interpreter, value: &Value) -> bool {
-    value.is_nil()
-        || matches!(value.kind(), Kind::Symbol(symbol) if interp.has_coding_system(&symbol))
+    let name = match value.kind() {
+        Kind::Nil => return true,
+        Kind::T => "t".to_string(),
+        Kind::Symbol(symbol) => symbol.to_string(),
+        _ => return false,
+    };
+    interp.has_coding_system(&name)
+        || interp
+            .get_symbol_property(&name, "coding-system-define-form")
+            .is_some_and(|form| !form.is_nil())
 }
 
 /// The `charset' text property per character of STRING: the annotation
@@ -3352,8 +3458,7 @@ fn encode_coding_converted(
             bytes_to_shared_unibyte_value(string.text.as_bytes())
         });
     }
-    let pre_write =
-        coding_system_property(interp, &canonical, ":pre-write-conversion").unwrap_or(Value::Nil);
+    let pre_write = coding_attr(interp, &canonical, ":pre-write-conversion").unwrap_or(Value::Nil);
     let converted = if pre_write.is_nil() {
         std::borrow::Cow::Borrowed(&string)
     } else {
@@ -3398,8 +3503,7 @@ pub(crate) fn encode_process_block(
     let inhibit_eol_conversion = interp
         .lookup_var("inhibit-eol-conversion", env)
         .is_some_and(|value| value.is_truthy());
-    let pre_write =
-        coding_system_property(interp, &canonical, ":pre-write-conversion").unwrap_or(Value::Nil);
+    let pre_write = coding_attr(interp, &canonical, ":pre-write-conversion").unwrap_or(Value::Nil);
     let converted = if pre_write.is_nil() {
         std::borrow::Cow::Borrowed(&string)
     } else {
@@ -3440,7 +3544,7 @@ pub(crate) fn coding_requires_encoding(interp: &Interpreter, coding: &Value, env
     let Some(canonical) = interp.coding_system_canonical_name(name) else {
         return false;
     };
-    if coding_system_property(interp, &canonical, ":pre-write-conversion")
+    if coding_attr(interp, &canonical, ":pre-write-conversion")
         .is_some_and(|function| !function.is_nil())
     {
         return true;
@@ -3734,8 +3838,8 @@ fn decode_coding(
                 .unwrap_or_else(|| name.clone());
         }
     }
-    let for_unibyte = coding_system_property(interp, &settled, ":for-unibyte")
-        .is_some_and(|value| value.is_truthy());
+    let for_unibyte =
+        coding_attr(interp, &settled, ":for-unibyte").is_some_and(|value| value.is_truthy());
     let inhibit_eol_conversion = interp
         .lookup_var("inhibit-eol-conversion", env)
         .is_some_and(|value| value.is_truthy());
@@ -3756,8 +3860,7 @@ fn decode_coding(
             .lookup_var("disable-ascii-optimization", env)
             .is_none_or(|value| value.is_nil())
         && coding_system_is_ascii_compatible(interp, &settled)
-        && coding_system_property(interp, &settled, ":post-read-conversion")
-            .is_none_or(|value| value.is_nil())
+        && coding_attr(interp, &settled, ":post-read-conversion").is_none_or(|value| value.is_nil())
         && !decode_translation_table_p(interp, &settled, env)
     {
         let mut decoded = if bytes.is_ascii() {
@@ -3770,8 +3873,7 @@ fn decode_coding(
             // their head when the settled coding has one
             // (CODING_UTF_8_BOM not utf_without_bom).
             let bom = bytes.starts_with(&[0xEF, 0xBB, 0xBF])
-                && coding_system_property(interp, &settled, ":bom")
-                    .is_some_and(|value| !value.is_nil());
+                && coding_attr(interp, &settled, ":bom").is_some_and(|value| !value.is_nil());
             let skip = if bom { 3 } else { 0 };
             if detection.utf8_standard {
                 let mut bytes = bytes.into_owned();
@@ -4051,8 +4153,8 @@ fn decode_coding_parts(
     // produce_annotation's `charset' properties of the decoded text.
     let layout = decoded.take_layout();
     let charset_props = decoded_annotation_props(&mut decoded);
-    let post_read = coding_system_property(interp, &actual_coding, ":post-read-conversion")
-        .unwrap_or(Value::Nil);
+    let post_read =
+        coding_attr(interp, &actual_coding, ":post-read-conversion").unwrap_or(Value::Nil);
     let decoded = StringLike {
         text: decoded.text,
         props: charset_props,

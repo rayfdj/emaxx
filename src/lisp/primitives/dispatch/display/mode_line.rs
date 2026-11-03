@@ -1327,10 +1327,10 @@ impl ModeLine<'_> {
                 let mut buf = String::new();
                 for source in ["keyboard-coding-system", "terminal-coding-system"] {
                     let coding = primitive(interp, env, source, &[]).unwrap_or(Value::Nil);
-                    decode_mode_spec_coding(interp, env, &coding, &mut buf, false);
+                    decode_mode_spec_coding(interp, &coding, &mut buf, false);
                 }
                 let coding = bvar(interp, "buffer-file-coding-system");
-                decode_mode_spec_coding(interp, env, &coding, &mut buf, c == 'Z');
+                decode_mode_spec_coding(interp, &coding, &mut buf, c == 'Z');
                 return Ok(text(&buf));
             }
             _ => Value::Nil,
@@ -1595,59 +1595,44 @@ fn count_lines_backward(
 /// not yet decided), with EOL_FLAG its end-of-line mnemonic.
 fn decode_mode_spec_coding(
     interp: &mut Interpreter,
-    env: &mut Env,
     coding: &Value,
     buf: &mut String,
     eol_flag: bool,
 ) {
     let multibyte = interp.buffer.borrow().is_multibyte();
-    let defined = !coding.is_nil()
-        && primitive(interp, env, "coding-system-p", std::slice::from_ref(coding))
-            .is_ok_and(|value| value.is_truthy());
-    let mut eoltype = Value::Nil;
-    if !defined {
-        buf.push(if multibyte { '-' } else { ' ' });
-        if eol_flag {
-            eoltype = bvar(interp, "eol-mnemonic-undecided");
-        }
-    } else {
-        if multibyte {
-            let plist = primitive(
-                interp,
-                env,
-                "coding-system-plist",
-                std::slice::from_ref(coding),
+    let spec = coding
+        .symbol_str()
+        .and_then(|name| interp.coding_spec(name))
+        .map(|spec| {
+            (
+                interp.coding_attrs[spec.attrs].mnemonic,
+                spec.eol_type.symbol_str().map(str::to_string),
             )
-            .unwrap_or(Value::Nil);
-            let mnemonic = plist_get(plist, Value::symbol(":mnemonic"));
-            buf.push(
-                mnemonic
-                    .integer_value()
-                    .and_then(|code| char::from_u32(code as u32))
-                    .unwrap_or('-'),
-            );
-        } else {
-            buf.push(' ');
+        });
+    let eoltype = match spec {
+        // Not yet decided.
+        None => {
+            buf.push(if multibyte { '-' } else { ' ' });
+            bvar(interp, "eol-mnemonic-undecided")
         }
-        if eol_flag {
-            let eol = primitive(
+        Some((mnemonic, eol_value)) => {
+            buf.push(if multibyte {
+                char::from_u32(mnemonic as u32).unwrap_or('-')
+            } else {
+                ' '
+            });
+            bvar(
                 interp,
-                env,
-                "coding-system-eol-type",
-                std::slice::from_ref(coding),
-            )
-            .unwrap_or(Value::Nil);
-            eoltype = bvar(
-                interp,
-                match eol.kind() {
-                    Kind::Integer(0) => "eol-mnemonic-unix",
-                    Kind::Integer(1) => "eol-mnemonic-dos",
-                    Kind::Integer(2) => "eol-mnemonic-mac",
+                match eol_value.as_deref() {
+                    Some("unix") => "eol-mnemonic-unix",
+                    Some("dos") => "eol-mnemonic-dos",
+                    Some("mac") => "eol-mnemonic-mac",
+                    // A vector of subsidiaries: not yet decided.
                     _ => "eol-mnemonic-undecided",
                 },
-            );
+            )
         }
-    }
+    };
     if eol_flag {
         if let Some(text) = string_like(&eoltype) {
             buf.push_str(&text.text);

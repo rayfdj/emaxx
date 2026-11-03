@@ -801,7 +801,7 @@ fn detect_charset(
 struct IsoCategories<'a> {
     interp: &'a Interpreter,
     representatives: [Option<String>; 6],
-    attrs: [std::cell::OnceCell<Option<IsoAttributes>>; 6],
+    attrs: [std::cell::OnceCell<Option<std::rc::Rc<IsoAttributes>>>; 6],
 }
 
 impl<'a> IsoCategories<'a> {
@@ -822,7 +822,7 @@ impl<'a> IsoCategories<'a> {
                     .as_deref()
                     .and_then(|coding| iso_attributes(self.interp, coding))
             })
-            .as_ref()
+            .as_deref()
     }
 
     fn safe(&self, category: usize, charset: &str) -> bool {
@@ -1674,13 +1674,13 @@ pub(crate) fn detect_coding_outcome(
             // An auto-BOM utf-8: the BOM decides between the pair, after
             // check_ascii (whose eol bits the gap's fast path uses).
             let mut info = DetectInfo::default();
-            let inhibit =
-                truthy_var(interp, "inhibit-eol-conversion", env) || state.eol_type.is_some();
+            let inhibit = truthy_var(interp, "inhibit-eol-conversion", env)
+                || interp.coding_system_eol_type_value(&canonical).is_some();
             let mut outcome = DetectOutcome {
                 eol_seen: Some(check_ascii_eol(src, inhibit)),
                 ..DetectOutcome::default()
             };
-            let Some(pair) = coding_system_property(interp, &canonical, ":bom")
+            let Some(pair) = coding_attr(interp, &canonical, ":bom")
                 .and_then(|bom| bom.cons_values())
                 .and_then(|(sig, nosig)| {
                     Some((
@@ -1714,7 +1714,7 @@ pub(crate) fn detect_coding_outcome(
                 eol_seen: Some(EOL_SEEN_NONE),
                 ..DetectOutcome::default()
             };
-            let Some(pair) = coding_system_property(interp, &canonical, ":bom")
+            let Some(pair) = coding_attr(interp, &canonical, ":bom")
                 .and_then(|bom| bom.cons_values())
                 .and_then(|(le, be)| {
                     Some((le.symbol_str()?.to_string(), be.symbol_str()?.to_string()))
@@ -1792,7 +1792,7 @@ pub(crate) fn detect_coding_outcome(
             let this = this?;
             if category == CODING_CATEGORY_UTF_8_AUTO {
                 if let Some((sig, nosig)) =
-                    coding_system_property(interp, &this, ":bom").and_then(|bom| bom.cons_values())
+                    coding_attr(interp, &this, ":bom").and_then(|bom| bom.cons_values())
                 {
                     let pick = if info.found & MASK_UTF_8_SIG != 0 {
                         sig
@@ -1804,7 +1804,7 @@ pub(crate) fn detect_coding_outcome(
                 Some(this)
             } else if category == CODING_CATEGORY_UTF_16_AUTO {
                 if let Some((le, be)) =
-                    coding_system_property(interp, &this, ":bom").and_then(|bom| bom.cons_values())
+                    coding_attr(interp, &this, ":bom").and_then(|bom| bom.cons_values())
                 {
                     let pick = if info.found & MASK_UTF_16_LE != 0 {
                         Some(le)

@@ -2269,7 +2269,9 @@ define_dispatch!(
                 let process_id = interp.resolve_process_id(&args[0])?;
                 let decoding = args.get(1).cloned().unwrap_or(Value::Nil);
                 let encoding = args.get(2).cloned().unwrap_or(Value::Nil);
+                load_coding_system(interp, &decoding, env)?;
                 checked_coding_given(interp, &decoding)?;
+                load_coding_system(interp, &encoding, env)?;
                 checked_coding_given(interp, &encoding)?;
                 let encoding = crate::lisp::primitives::file_io::inherit_write_coding_eol(
                     interp,
@@ -3431,7 +3433,9 @@ fn make_process_value(
         )?
     };
     // create_process's setup_process_coding_systems sets both up.
+    load_coding_system(interp, &decoding, env)?;
     checked_coding_given(interp, &decoding)?;
+    load_coding_system(interp, &encoding, env)?;
     checked_coding_given(interp, &encoding)?;
     // process.c finds the executable before forking; `process-command'
     // keeps the name the caller gave.

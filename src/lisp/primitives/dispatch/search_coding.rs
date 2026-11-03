@@ -1150,6 +1150,7 @@ define_dispatch!(
                 // GNU records the coding under the symbol the caller gave
                 // (the euc-jp alias stays `euc-jp'); canonicalization is the
                 // codec's business, not last-coding-system-used's.
+                load_coding_system(interp, &args[2], env)?;
                 let coding = checked_coding_name(interp, &args[2])?
                     .map(|_| args[2].as_symbol().expect("validated symbol").to_string());
                 enum Destination {
@@ -1373,6 +1374,7 @@ define_dispatch!(
                     return Err(LispError::WrongTypeArgument("stringp".into(), args[0]));
                 }
                 // Verbatim for the same reason as the region ops above.
+                load_coding_system(interp, &args[1], env)?;
                 let coding = checked_coding_name(interp, &args[1])?
                     .map(|_| args[1].as_symbol().expect("validated symbol").to_string());
                 let nocopy = args.get(2).is_some_and(Value::is_truthy);
@@ -1398,6 +1400,7 @@ define_dispatch!(
                 if !args[0].is_string() {
                     return Err(LispError::WrongTypeArgument("stringp".into(), args[0]));
                 }
+                load_coding_system(interp, &args[1], env)?;
                 let coding = checked_coding_name(interp, &args[1])?
                     .map(|_| args[1].as_symbol().expect("validated symbol").to_string());
                 let nocopy = args.get(2).is_some_and(Value::is_truthy);

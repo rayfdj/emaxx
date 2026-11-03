@@ -747,6 +747,7 @@ fn choose_write_coding(
             .unwrap_or(Value::Nil);
     }
     if !coding.is_nil() && !force_raw {
+        load_coding_system(interp, &coding, env)?;
         let name = checked_coding_symbol(interp, &coding)?;
         force_raw = matches!(
             interp.coding_system_kind_name(&name).as_deref(),
@@ -764,6 +765,7 @@ fn choose_write_coding(
             env,
         )?;
         if !coding.is_nil() {
+            load_coding_system(interp, &coding, env)?;
             checked_coding_symbol(interp, &coding)?;
         }
     }
@@ -786,6 +788,7 @@ fn choose_write_coding(
             let eol = if coding.is_nil() {
                 None
             } else {
+                load_coding_system(interp, &coding, env)?;
                 let name = checked_coding_symbol(interp, &coding)?;
                 interp.coding_system_eol_type_value(&name)
             };
@@ -2079,8 +2082,8 @@ pub(crate) fn decode_file_bytes(
     let canonical = interp
         .coding_system_canonical_name(&coding)
         .unwrap_or_else(|| coding.clone());
-    let for_unibyte = coding_system_property(interp, &canonical, ":for-unibyte")
-        .is_some_and(|value| value.is_truthy());
+    let for_unibyte =
+        coding_attr(interp, &canonical, ":for-unibyte").is_some_and(|value| value.is_truthy());
     // Finsert_file_contents decodes nothing read only for a coding that
     // needs no flushing (CODING_REQUIRE_FLUSHING: a CCL decoder still
     // runs its end-of-input code).
@@ -2228,6 +2231,7 @@ pub(crate) fn insert_file_contents(
     if let Some(coding) = interp.lookup_var("coding-system-for-read", env)
         && !coding.is_nil()
     {
+        load_coding_system(interp, &coding, env)?;
         let _ = checked_coding_symbol(interp, &coding)?;
     }
     let operation_args = [
@@ -2263,7 +2267,7 @@ pub(crate) fn insert_file_contents(
                 .coding_system_canonical_name(&coding)
                 .unwrap_or_else(|| coding.clone());
             if replace_arg.is_none()
-                && coding_system_property(interp, &canonical, ":for-unibyte")
+                && coding_attr(interp, &canonical, ":for-unibyte")
                     .is_some_and(|value| value.is_truthy())
             {
                 super::call(interp, "set-buffer-multibyte", &[Value::Nil], env)?;
@@ -2528,7 +2532,7 @@ fn insert_file_bytes(
         // decode_coding_gap's post-read conversion: called with point at
         // the inserted text and its length, with undo off, the text it
         // adds or removes counting as inserted.
-        let post_read = coding_system_property(
+        let post_read = coding_attr(
             interp,
             &interp
                 .coding_system_canonical_name(&coding_used)

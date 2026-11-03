@@ -359,7 +359,7 @@ pub(super) fn charset_call<S: Units + ?Sized>(
 /// list by dimension), and what each first unit has decoded to on its
 /// own so far in the decode.
 pub(super) struct CharsetDecode {
-    valids: Vec<Option<Vec<std::rc::Rc<CharsetInfo>>>>,
+    valids: super::CharsetValids,
     single: [Single; 256],
 }
 
@@ -1410,7 +1410,7 @@ impl Decoder {
                 // could not settle (utf_detect_bom): it decodes without a BOM in
                 // its own byte order.
                 let (big_endian, with_bom, detect_bom) =
-                    coding_system_utf16_options(interp, canonical, &kind);
+                    coding_system_utf16_options(interp, canonical);
                 Decoder::Utf16 {
                     big_endian,
                     check_bom: with_bom && !detect_bom,

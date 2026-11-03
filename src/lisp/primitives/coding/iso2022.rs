@@ -89,7 +89,18 @@ fn charset_iso_revision(interp: &Interpreter, charset: &str) -> Option<u8> {
     charset_info(interp, charset).and_then(|info| info.iso_revision)
 }
 
-pub(crate) fn iso_attributes(interp: &Interpreter, coding: &str) -> Option<IsoAttributes> {
+pub(crate) fn iso_attributes(
+    interp: &Interpreter,
+    coding: &str,
+) -> Option<std::rc::Rc<IsoAttributes>> {
+    let state = interp.coding_system(coding)?;
+    state.derived.iso(interp.charset_epoch.get(), || {
+        make_iso_attributes(interp, coding)
+    })
+}
+
+/// setup_coding_system's ISO-2022 attributes of CODING.
+fn make_iso_attributes(interp: &Interpreter, coding: &str) -> Option<IsoAttributes> {
     let state = interp.coding_system(coding)?;
     let args = &state.type_args;
     let mut initial: [Option<String>; 4] = Default::default();

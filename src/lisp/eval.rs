@@ -1418,17 +1418,36 @@ pub(crate) struct TreeSitterNodeState {
     pub(crate) generation: u64,
 }
 
+/// coding.c's attribute vector of a coding system (CODING_ATTR_*): one
+/// for each Fdefine_coding_system_internal, shared by the spec of the
+/// system, its eol subsidiaries' specs and through them every alias.
 #[derive(Clone, Debug)]
 pub struct CodingSystemState {
-    pub name: String,
+    /// CODING_ATTR_BASE_NAME: the name Fdefine_coding_system_internal
+    /// made this attribute vector for.
     pub base: String,
+    /// CODING_ATTR_MNEMONIC: the mode line's character.
+    pub mnemonic: i64,
+    /// CODING_ATTR_TYPE: the :coding-type symbol.
     pub kind: String,
-    pub eol_type: Option<i64>,
+    /// CODING_ATTR_ASCII_COMPAT, as the definition settled it or
+    /// `coding-system-put' last set it.
+    pub ascii_compatible: Value,
+    /// CODING_ATTR_DECODE_TBL and CODING_ATTR_ENCODE_TBL.
+    pub decode_table: Value,
+    pub encode_table: Value,
+    /// CODING_ATTR_POST_READ and CODING_ATTR_PRE_WRITE.
+    pub post_read: Value,
+    pub pre_write: Value,
+    /// CODING_ATTR_FOR_UNIBYTE.
+    pub for_unibyte: bool,
+    /// CODING_ATTR_PLIST.
     pub plist: Value,
     /// coding.c's `enum coding_category' index (CODING_ATTR_CATEGORY).
     pub category: usize,
-    /// The :charset-list argument as given (the symbol `iso-2022' stands
-    /// for every ISO-2022 charset).
+    /// CODING_ATTR_CHARSET_LIST: the charsets' canonical names in the
+    /// :charset-list's order, or the symbol `iso-2022' or `emacs-mule'
+    /// standing for that charset list.
     pub charset_list: Value,
     /// CODING_ATTR_DEFAULT_CHAR: the substitute for an unencodable
     /// character, space unless :default-char says otherwise.
@@ -1437,6 +1456,25 @@ pub struct CodingSystemState {
     /// `define-coding-system-internal' (for iso-2022: initial designations,
     /// register usage, requests and the flag bits).
     pub type_args: Vec<Value>,
+    /// CODING_ATTR_CHARSET_VALIDS and the ISO-2022 attributes.
+    pub(crate) derived: crate::lisp::primitives::coding::CodingDerived,
+}
+
+/// coding.c's spec vector [ATTRS ALIASES EOL-TYPE]: one for each name
+/// Fdefine_coding_system_internal defines, an alias's hash entry being
+/// its target's spec itself.
+#[derive(Clone, Debug)]
+pub(crate) struct CodingSpec {
+    /// The attribute vector, by index, shared by a system and its eol
+    /// subsidiaries.
+    pub(crate) attrs: usize,
+    /// The names of the spec, the one it was defined as first: the list
+    /// `coding-system-aliases' returns, Fdefine_coding_system_alias
+    /// extending it in place.
+    pub(crate) aliases: Value,
+    /// The symbol `unix', `dos' or `mac', or the vector of the three
+    /// subsidiaries an undecided eol type detects between.
+    pub(crate) eol_type: Value,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -4522,12 +4560,14 @@ impl Interpreter {
         }
         mark(&Value::Frame(self.selected_frame_id));
         mark(&Value::Frame(self.old_selected_frame_id));
-        for coding in &self.coding_systems {
-            mark(&coding.plist);
-            mark(&coding.charset_list);
-            for argument in &coding.type_args {
-                mark(argument);
+        for coding in &self.coding_attrs {
+            for value in coding.values() {
+                mark(value);
             }
+        }
+        for spec in &self.coding_specs {
+            mark(&spec.aliases);
+            mark(&spec.eol_type);
         }
         mark(&self.alternative_font_family_alist);
         mark(&self.alternative_font_registry_alist);
@@ -4986,12 +5026,25 @@ impl Interpreter {
             if let Some(frame) = &clone.keyboard_input.internal_last_event_frame {
                 clone.keyboard_input.internal_last_event_frame = Some(c.copy(frame));
             }
-            for coding in &mut clone.coding_systems {
-                coding.plist = c.copy(&coding.plist.clone());
-                coding.charset_list = c.copy(&coding.charset_list);
-                for argument in &mut coding.type_args {
-                    *argument = c.copy(argument);
+            for coding in &mut clone.coding_attrs {
+                for value in [
+                    &mut coding.ascii_compatible,
+                    &mut coding.decode_table,
+                    &mut coding.encode_table,
+                    &mut coding.post_read,
+                    &mut coding.pre_write,
+                    &mut coding.plist,
+                    &mut coding.charset_list,
+                ]
+                .into_iter()
+                .chain(coding.type_args.iter_mut())
+                {
+                    *value = c.copy(value);
                 }
+            }
+            for spec in &mut clone.coding_specs {
+                spec.aliases = c.copy(&spec.aliases);
+                spec.eol_type = c.copy(&spec.eol_type);
             }
             clone.alternative_font_family_alist =
                 c.copy(&clone.alternative_font_family_alist.clone());
@@ -5530,6 +5583,10 @@ pub struct InterpreterState {
     /// charset.c's charset table: each charset's attributes read once from
     /// its plist, by the name asked for.  Emptied whenever a charset, an
     /// alias, a plist or a unification changes.
+    /// The generation of `charset_table', advanced whenever the table is
+    /// emptied or the charset priority changes: what a coding system
+    /// derives from its charsets is checked against it.
+    pub(crate) charset_epoch: std::cell::Cell<u64>,
     pub(crate) charset_table: RefCell<
         HashMap<
             String,
@@ -5547,13 +5604,13 @@ pub struct InterpreterState {
     /// ordered list that `set-charset-priority' did not move to the front;
     /// char_charset answers `unicode' for a Unicode character on reaching it.
     charset_non_preferred_head: Option<String>,
-    /// Coding systems keyed by canonical name.
-    coding_systems: Vec<CodingSystemState>,
-    /// coding.c's Vcoding_system_hash_table: each name's index in
-    /// `coding_systems'.
-    coding_system_index: HashMap<String, usize, crate::lisp::primitives::FnvBuildHasher>,
-    /// `coding_aliases' by alias name.
-    coding_alias_index: HashMap<String, String, crate::lisp::primitives::FnvBuildHasher>,
+    /// coding.c's attribute vectors, one for each definition.
+    pub(crate) coding_attrs: Vec<CodingSystemState>,
+    /// coding.c's spec vectors, by index.
+    pub(crate) coding_specs: Vec<CodingSpec>,
+    /// coding.c's Vcoding_system_hash_table: each coding system name's
+    /// spec, by index in `coding_specs'.
+    pub(crate) coding_system_hash: HashMap<String, usize, crate::lisp::primitives::FnvBuildHasher>,
     /// Vcoding_system_hash_table's books: a key for each coding system
     /// and alias.
     pub(crate) coding_table_books: crate::lisp::alloc::vectors::hash_tables::HostTableBooks,
@@ -5563,10 +5620,6 @@ pub struct InterpreterState {
     pub(crate) ccl_program_table: Value,
     /// ccl.c's statics, the running process's.
     pub(crate) ccl_statics: crate::lisp::primitives::ccl::CclStatics,
-    /// Coding-system aliases keyed by alias name.
-    coding_aliases: Vec<(String, String)>,
-    /// Current coding-system priority order.
-    coding_priority: Vec<String>,
     /// coding.c's `coding_categories[].id': the coding system standing for
     /// each category in detection, by `enum coding_category' index.
     pub(crate) coding_category_representatives: Vec<Option<String>>,
@@ -6084,8 +6137,7 @@ impl Interpreter {
             },
         );
         initial_terminal.borrow_mut().top_frame = Some(initial_frame);
-        let coding_systems = builtin_coding_systems();
-        let coding_aliases = builtin_coding_aliases();
+        let (coding_attrs, coding_specs, coding_system_hash) = builtin_coding_systems();
         let state = InterpreterState {
             image_template_token: None,
             detached_forwarded_variables: HashMap::default(),
@@ -6447,6 +6499,7 @@ impl Interpreter {
                 .into_iter()
                 .collect(),
             charset_unified: HashSet::new(),
+            charset_epoch: std::cell::Cell::new(0),
             charset_table: RefCell::new(HashMap::default()),
             sjis_coding_system: "sjis".into(),
             big5_coding_system: "big5".into(),
@@ -6454,20 +6507,14 @@ impl Interpreter {
             iso_2022_charset_list: vec!["ascii".into()],
             emacs_mule_charset_list: vec!["ascii".into()],
             charset_non_preferred_head: None,
-            coding_system_index: coding_systems
-                .iter()
-                .enumerate()
-                .map(|(index, coding)| (coding.name.clone(), index))
-                .collect(),
-            coding_alias_index: coding_aliases.iter().cloned().collect(),
             coding_table_books: crate::lisp::alloc::vectors::hash_tables::HostTableBooks::with_keys(
-                coding_systems.len() + coding_aliases.len(),
+                coding_system_hash.len(),
             ),
-            coding_systems,
+            coding_attrs,
+            coding_specs,
+            coding_system_hash,
             ccl_program_table: crate::lisp::primitives::ccl::initial_program_table(),
             ccl_statics: Default::default(),
-            coding_aliases,
-            coding_priority: builtin_coding_priority(),
             coding_category_representatives: {
                 let mut representatives = vec![None; coding::CODING_CATEGORY_COUNT];
                 representatives[coding::CODING_CATEGORY_RAW_TEXT] = Some("no-conversion".into());

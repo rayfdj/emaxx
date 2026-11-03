@@ -2,6 +2,7 @@ use super::*;
 
 mod buffer_edit;
 mod buffer_meta;
+mod coding_systems;
 mod collections;
 pub(super) use collections::map_char_table_with;
 mod comp;

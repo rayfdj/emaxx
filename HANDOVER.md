@@ -13102,6 +13102,79 @@ setup_process_coding_systems's check now refuses). A 13-form
   pass after the fix. Local validation: the grouped gate's 3,475
   library tests, the integration targets and clippy with `--all-targets
   --all-features -D warnings' pass.
+- **Round 270: coding.c's coding systems as specs sharing attribute
+  vectors.** Vcoding_system_hash_table maps each coding system name to a
+  spec [ATTRS ALIASES EOL-TYPE] (Rust records by index, dumped as the
+  specs the table reaches with their names and the attribute vectors
+  they share), where the Rust coding system records, the alias table
+  followed through up to 16 hops and the coding priority list behind
+  `read-coding-system' are gone. Fdefine_coding_system_internal makes
+  one attribute vector for a system and its three eol subsidiaries (each
+  with its own spec), and Fdefine_coding_system_alias puts its target's
+  spec itself under the alias, appending the alias to the spec's names
+  in place and aliasing ALIAS-unix, -dos and -mac to the subsidiaries
+  when the eol type is their vector. So `coding-system-put' through
+  `utf-8-dos' or `mule-utf-8' changes `utf-8''s plist,
+  `coding-system-aliases' returns the spec's own list (eq across names,
+  extended by later aliases), a redefinition leaves aliases made before
+  it on the old system, an alias of an alias's target never ends up the
+  base of a subsidiary of another system, and `coding-system-eol-type'
+  copies the subsidiaries vector. The conversions read CODING_ATTR_*
+  rather than the plist: the mnemonic (the mode line's %z through the
+  spec, as decode_mode_spec_coding reads it), ASCII compatibility, the
+  translation tables, the post-read and pre-write conversions, the
+  default character, :for-unibyte, the charset list (by canonical name,
+  Viso_2022_charset_list and Vemacs_mule_charset_list for those
+  symbols), the utf-8 and utf-16 BOM and the utf-16 byte order (nil made
+  `big'); `coding-system-put' of any other property changes only the
+  plist, as in GNU. CODING_ATTR_CHARSET_VALIDS and setup_coding_system's
+  ISO-2022 attributes are kept with the attribute vector, made when
+  first needed and again after a charset change or `coding-system-put',
+  where every conversion rebuilt them: 200,000 latin-1 decodes of
+  "abc\351" take 1.03 s (GNU 0.88 s, 2.80 s before), euc-jp encodes of
+  "abc\x3042" 0.40 s (GNU 0.25 s, 0.63 s before).
+  `define-coding-system-internal' is ported with its checks in order:
+  the arity's (wrong-number-of-arguments define-coding-system-internal .
+  N) for the base and each type's argument count, CHECK_SYMBOL on the
+  name, a string mnemonic's first character or CHECK_CHARACTER, the
+  charset list (`iso-2022' and `emacs-mule' only for their own type,
+  "Invalid charset-list"; a list copied with CHECK_CHARSET_GET_CHARSET
+  and "Can't handle charset `%s'" for a charset without an ISO final
+  byte or emacs-mule id), the translation tables, conversions, default
+  character and plist, then the type's checks (ccl programs and valid
+  ranges; utf-8 and utf-16 :bom pairs through CHECK_CODING_SYSTEM and
+  "Invalid endian: %s"; ISO-2022 designations, register usage, requests
+  and flags; shift-jis and big5 charset counts and dimensions), "Invalid
+  coding system type: %s" and "Invalid eol-type", with the plist gaining
+  :category and :ascii-compatible-p in front and a shift-jis or big5
+  system becoming Vsjis_coding_system or Vbig5_coding_system.
+  `coding-system-put' is Fcoding_system_put:
+  CHECK_CODING_SYSTEM_GET_SPEC, :mnemonic, :default-char (nil a space),
+  the translation tables and conversions checked into the attributes,
+  :ascii-compatible-p stored as given, then plist_put in place for any
+  property, a non-symbol one too. `define-coding-system-alias' returns
+  nil and signals (coding-system-error X) or (wrong-type-argument
+  coding-system-p nil) for its target; `check-coding-system' returns its
+  argument; `coding-system-p', `check-coding-system', the attribute
+  primitives and the conversion entry points (the string and region
+  coders, process and file coding, `set-terminal-coding-system-internal'
+  and its kin) evaluate a pending `coding-system-define-form' through
+  safe_eval as Fcheck_coding_system does. The keyboard and terminal keep
+  the coding system by the name given (`latin-1' stays `latin-1');
+  `set-coding-system-priority' sets each category's variable to the name
+  given and its system only when it had one; `read-coding-system' and
+  `read-non-nil-coding-system' complete over `coding-system-alist' as
+  coding.c does. The C-defined `no-conversion' has eol type `unix' and
+  no charset list, and `undecided' no-conversion's default character 0,
+  as syms_of_coding's shared argument array leaves them. A battery of
+  259 coding system operations in one process (definitions and their
+  errors, aliases, plists, eol types, conversions through aliases,
+  priorities, keyboard and terminal names, autoloaded systems) matches
+  GNU, as do rounds 267 to 269's batteries; `encode-sjis-char' and
+  `encode-big5-char' of an unencodable character still signal where GNU
+  reads a null charset and crashes. Local validation: the grouped gate's
+  3,476 library tests, the integration targets and clippy with
+  `--all-targets --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -14988,6 +15061,23 @@ the widest body gaps are comp-tests (16,168 ms against 13,552),
 ert-tests (36,101 against 33,602), tramp-tests (17,444 against 16,172),
 mule-tests (2,449 against 1,570) and semantic-utest-ia (3,430 against
 2,620).
+
+**On `ff7729e`** (round 269): the full Rust gate (run 41584822128)
+passed, and frozen (run 41584825143) matched all 7,928 outcomes at the
+second attempt, the first's GNU oracle having failed
+`eglot-test-rust-completion-exit-function' with a `jsonrpc-error' that
+Emaxx passed. Setup 73.1 s against 54.8 s (1.334), test bodies 269.7 s
+against 246.8 s (1.093), in all 1.139. Per file, the setup is 35 ms over
+GNU's on average (18.3 s over 519 files, a median of 114 ms against 85),
+electric-tests' the most over (704 against 412) before comp-tests'
+(1,620 against 1,416) and x-dnd-tests' (765 against 602), and the widest
+body gaps are tramp-tests (18,958 ms against 15,981), icalendar-tests
+(3,374 against 415), comp-tests (15,953 against 13,078), ert-tests
+(35,947 against 33,249) and simple-tests (4,393 against 3,487).
+icalendar-tests' gap does not reproduce with the round 270 tree: its
+gate build runs the file's tests under the runner here in 775 ms against
+GNU's 580 (`icalendar-export-alarms', 833 ms against 23 in the run, in
+64 against 52).
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

@@ -196,6 +196,10 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
         "Vcharset_hash_table's allocation books, thawed from the carried charsets and aliases by thaw_host_hash_tables after a load",
     ),
     (
+        "charset_epoch",
+        "charset_table's generation, which only the session's own charset changes advance; the coding systems' derived attributes made before a load are not carried",
+    ),
+    (
         "coding_table_books",
         "Vcoding_system_hash_table's allocation books, thawed from the carried coding systems and aliases by thaw_host_hash_tables after a load",
     ),
@@ -620,34 +624,71 @@ impl Interpreter {
             RootSlot::Big5CodingSystem,
             Value::symbol(&self.big5_coding_system),
         ));
-        // coding.c: Vcoding_system_hash_table's attribute vectors,
-        // Vcoding_system_alist's aliases, coding_priorities and the
-        // coding_categories representatives.
-        groups.push((
-            RootSlot::CodingSystems,
-            Value::list(self.coding_systems.iter().map(|coding| {
-                Value::vector([
-                    Value::symbol(&coding.name),
-                    Value::symbol(&coding.base),
-                    Value::symbol(&coding.kind),
-                    coding.eol_type.map_or(Value::Nil, Value::Integer),
-                    coding.plist,
-                    Value::Integer(coding.category as i64),
-                    coding.charset_list,
-                    Value::Integer(i64::from(coding.default_char)),
-                    Value::vector(coding.type_args.iter().cloned()),
-                ])
-            })),
-        ));
-        groups.push((
-            RootSlot::CodingAliases,
-            Value::list(
-                self.coding_aliases
-                    .iter()
-                    .map(|(alias, target)| pair(Value::symbol(alias), Value::symbol(target))),
-            ),
-        ));
-        groups.push((RootSlot::CodingPriority, symbol_list(&self.coding_priority)));
+        // coding.c: Vcoding_system_hash_table, as the specs it holds,
+        // each with its names in the table, and the attribute vectors
+        // they share; what no name reaches any more is left out.
+        {
+            let mut keys: Vec<(&String, usize)> = self
+                .coding_system_hash
+                .iter()
+                .map(|(name, spec)| (name, *spec))
+                .collect();
+            keys.sort();
+            let mut specs: Vec<usize> = keys.iter().map(|(_, spec)| *spec).collect();
+            specs.sort_unstable();
+            specs.dedup();
+            let mut attrs: Vec<usize> = specs
+                .iter()
+                .map(|spec| self.coding_specs[*spec].attrs)
+                .collect();
+            attrs.sort_unstable();
+            attrs.dedup();
+            groups.push((
+                RootSlot::CodingSystems,
+                Value::list(attrs.iter().map(|attrs| {
+                    let coding = &self.coding_attrs[*attrs];
+                    Value::vector([
+                        Value::symbol(&coding.base),
+                        Value::Integer(coding.mnemonic),
+                        Value::symbol(&coding.kind),
+                        coding.ascii_compatible,
+                        coding.decode_table,
+                        coding.encode_table,
+                        coding.post_read,
+                        coding.pre_write,
+                        if coding.for_unibyte {
+                            Value::T
+                        } else {
+                            Value::Nil
+                        },
+                        coding.plist,
+                        Value::Integer(coding.category as i64),
+                        coding.charset_list,
+                        Value::Integer(i64::from(coding.default_char)),
+                        Value::vector(coding.type_args.iter().cloned()),
+                    ])
+                })),
+            ));
+            groups.push((
+                RootSlot::CodingSpecs,
+                Value::list(specs.iter().map(|index| {
+                    let spec = &self.coding_specs[*index];
+                    let attrs = attrs
+                        .binary_search(&spec.attrs)
+                        .expect("a reachable attribute vector");
+                    Value::vector([
+                        Value::Integer(attrs as i64),
+                        spec.aliases,
+                        spec.eol_type,
+                        Value::list(
+                            keys.iter()
+                                .filter(|(_, spec)| spec == index)
+                                .map(|(name, _)| Value::symbol(name)),
+                        ),
+                    ])
+                })),
+            ));
+        }
         groups.push((
             RootSlot::CodingCategoryRepresentatives,
             Value::vector(
@@ -991,7 +1032,7 @@ mod install {
                     }
                 }
                 RootSlot::Charsets => {
-                    self.charset_table.borrow_mut().clear();
+                    self.invalidate_charset_table();
                     self.charset_ids.clear();
                     self.charset_plists.clear();
                     self.charset_defs.clear();
@@ -1068,40 +1109,53 @@ mod install {
                     self.big5_coding_system = expect_symbol(value, "big5 coding system")?;
                 }
                 RootSlot::CodingSystems => {
-                    self.coding_systems.clear();
+                    self.coding_attrs.clear();
                     for entry in expect_list(value, "coding systems")? {
                         let fields = expect_vector(&entry, "coding system")?;
-                        if fields.len() != 9 {
-                            return Err("coding system: nine fields expected".into());
+                        if fields.len() != 14 {
+                            return Err("coding system: fourteen fields expected".into());
                         }
-                        self.coding_systems.push(CodingSystemState {
-                            name: expect_symbol(&fields[0], "coding system name")?,
-                            base: expect_symbol(&fields[1], "coding system base")?,
-                            kind: expect_symbol(&fields[2], "coding system kind")?,
-                            eol_type: opt_of(&fields[3], |v| expect_int(v, "eol type"))?,
-                            plist: fields[4],
-                            category: usize::try_from(expect_int(&fields[5], "category")?)
+                        self.coding_attrs.push(CodingSystemState {
+                            base: expect_symbol(&fields[0], "coding system base")?,
+                            mnemonic: expect_int(&fields[1], "mnemonic")?,
+                            kind: expect_symbol(&fields[2], "coding system type")?,
+                            ascii_compatible: fields[3],
+                            decode_table: fields[4],
+                            encode_table: fields[5],
+                            post_read: fields[6],
+                            pre_write: fields[7],
+                            for_unibyte: fields[8].is_truthy(),
+                            plist: fields[9],
+                            category: usize::try_from(expect_int(&fields[10], "category")?)
                                 .map_err(|_| "category out of range".to_owned())?,
-                            charset_list: fields[6],
-                            default_char: u32::try_from(expect_int(&fields[7], "default char")?)
+                            charset_list: fields[11],
+                            default_char: u32::try_from(expect_int(&fields[12], "default char")?)
                                 .map_err(|_| "default char out of range".to_owned())?,
-                            type_args: expect_vector(&fields[8], "type args")?,
+                            type_args: expect_vector(&fields[13], "type args")?,
+                            derived: Default::default(),
                         });
                     }
-                    // Vcoding_system_hash_table, rebuilt for the table.
-                    self.coding_system_index = self
-                        .coding_systems
-                        .iter()
-                        .enumerate()
-                        .map(|(index, coding)| (coding.name.clone(), index))
-                        .collect();
                 }
-                RootSlot::CodingAliases => {
-                    self.coding_aliases = symbol_pairs(value, "coding aliases")?;
-                    self.coding_alias_index = self.coding_aliases.iter().cloned().collect();
-                }
-                RootSlot::CodingPriority => {
-                    self.coding_priority = symbol_names(value, "coding priority")?;
+                RootSlot::CodingSpecs => {
+                    self.coding_specs.clear();
+                    self.coding_system_hash.clear();
+                    for entry in expect_list(value, "coding specs")? {
+                        let fields = expect_vector(&entry, "coding spec")?;
+                        if fields.len() != 4 {
+                            return Err("coding spec: four fields expected".into());
+                        }
+                        let attrs = usize::try_from(expect_int(&fields[0], "spec attributes")?)
+                            .map_err(|_| "spec attributes out of range".to_owned())?;
+                        let index = self.coding_specs.len();
+                        self.coding_specs.push(CodingSpec {
+                            attrs,
+                            aliases: fields[1],
+                            eol_type: fields[2],
+                        });
+                        for name in symbol_names(&fields[3], "spec names")? {
+                            self.coding_system_hash.insert(name, index);
+                        }
+                    }
                 }
                 RootSlot::CodingCategoryRepresentatives => {
                     let mut representatives = Vec::new();

@@ -1,5 +1,6 @@
-use super::CodingSystemState;
+use super::{CodingSpec, CodingSystemState};
 use crate::lisp::types::{CharTableRef, Kind, Value};
+use std::collections::HashMap;
 
 fn symbol(name: &str) -> Value {
     Value::Symbol(name.into())
@@ -118,97 +119,87 @@ pub(super) fn initial_syntax_table(codes: Value) -> CharTableRef {
     table
 }
 
-pub(super) fn builtin_coding_systems() -> Vec<CodingSystemState> {
-    // coding.c calls Fdefine_coding_system_internal exactly twice, for
-    // `no-conversion' and `undecided'.  Every other coding system GNU has
-    // comes from international/mule-conf.el and language/*.el, which the
-    // reconstructed image loads; hardcoding them here made Emaxx report 277
-    // systems to GNU's 271, inventing eight that GNU treats as aliases and
-    // missing two it really has.
-    let mut systems = vec![
+/// coding.c's syms_of_coding: Fdefine_coding_system_internal's
+/// attribute vectors, specs and Vcoding_system_hash_table for the two
+/// systems it defines, `no-conversion' with eol type `unix' and then
+/// `undecided' with its three subsidiaries.  Every other coding system
+/// comes from international/mule-conf.el and language/*.el.  The two
+/// share one argument array, so `undecided' keeps no-conversion's
+/// :default-char attribute 0.
+pub(super) fn builtin_coding_systems() -> (
+    Vec<CodingSystemState>,
+    Vec<CodingSpec>,
+    HashMap<String, usize, crate::lisp::primitives::FnvBuildHasher>,
+) {
+    let attrs = vec![
         CodingSystemState {
-            name: "undecided".into(),
+            base: "no-conversion".into(),
+            mnemonic: i64::from(b'='),
+            kind: "raw-text".into(),
+            ascii_compatible: Value::T,
+            decode_table: Value::Nil,
+            encode_table: Value::Nil,
+            post_read: Value::Nil,
+            pre_write: Value::Nil,
+            for_unibyte: true,
+            plist: c_defined_coding_plist("no-conversion"),
+            category: super::coding::CODING_CATEGORY_RAW_TEXT,
+            charset_list: Value::Nil,
+            default_char: 0,
+            type_args: Vec::new(),
+            derived: Default::default(),
+        },
+        CodingSystemState {
             base: "undecided".into(),
+            mnemonic: i64::from(b'-'),
             kind: "undecided".into(),
-            eol_type: None,
+            ascii_compatible: Value::T,
+            decode_table: Value::Nil,
+            encode_table: Value::Nil,
+            post_read: Value::Nil,
+            pre_write: Value::Nil,
+            for_unibyte: false,
             plist: c_defined_coding_plist("undecided"),
             category: super::coding::CODING_CATEGORY_UNDECIDED,
-            charset_list: Value::list([Value::Symbol("ascii".into())]),
-            default_char: b' ' as u32,
+            charset_list: Value::list([symbol("ascii")]),
+            default_char: 0,
             // coding.c:12292: the inhibit attributes are 0, so the
             // `inhibit-null-byte-detection' and
             // `inhibit-iso-escape-detection' variables decide.
             type_args: vec![Value::Integer(0), Value::Integer(0), Value::Nil],
-        },
-        CodingSystemState {
-            name: "no-conversion".into(),
-            base: "no-conversion".into(),
-            kind: "raw-text".into(),
-            eol_type: None,
-            plist: c_defined_coding_plist("no-conversion"),
-            category: super::coding::CODING_CATEGORY_RAW_TEXT,
-            charset_list: Value::list([Value::Symbol("ascii".into())]),
-            default_char: 0,
-            type_args: Vec::new(),
+            derived: Default::default(),
         },
     ];
-
-    // GNU's ordinary text coding systems expose a complete EOL family.
-    // Keep that invariant in one place instead of growing a hand-maintained
-    // subset whenever a caller first asks for BASE-unix/dos/mac.
-    let bases = systems
+    let spec = |attrs, name: &str, eol_type| CodingSpec {
+        attrs,
+        aliases: Value::list([symbol(name)]),
+        eol_type,
+    };
+    let specs = vec![
+        spec(0, "no-conversion", symbol("unix")),
+        spec(1, "undecided-unix", symbol("unix")),
+        spec(1, "undecided-dos", symbol("dos")),
+        spec(1, "undecided-mac", symbol("mac")),
+        spec(
+            1,
+            "undecided",
+            Value::vector([
+                symbol("undecided-unix"),
+                symbol("undecided-dos"),
+                symbol("undecided-mac"),
+            ]),
+        ),
+    ];
+    let hash = specs
         .iter()
-        .filter(|coding| {
-            coding.eol_type.is_none()
-                && coding.name == coding.base
-                && coding.name != "no-conversion"
+        .enumerate()
+        .map(|(index, spec)| {
+            let name = spec
+                .aliases
+                .cons_values()
+                .and_then(|(name, _)| name.symbol_str().map(str::to_string));
+            (name.expect("a spec's name"), index)
         })
-        .cloned()
-        .collect::<Vec<_>>();
-    for base in bases {
-        for (suffix, eol_type) in [("unix", 0), ("dos", 1), ("mac", 2)] {
-            let name = format!("{}-{suffix}", base.name);
-            if systems.iter().any(|coding| coding.name == name) {
-                continue;
-            }
-            systems.push(CodingSystemState {
-                name,
-                base: base.base.clone(),
-                kind: base.kind.clone(),
-                eol_type: Some(eol_type),
-                plist: base.plist,
-                category: base.category,
-                charset_list: base.charset_list,
-                default_char: base.default_char,
-                type_args: base.type_args.clone(),
-            });
-        }
-    }
-    systems
-}
-
-pub(super) fn builtin_coding_aliases() -> Vec<(String, String)> {
-    // coding.c registers no aliases: every one GNU has comes from
-    // `define-coding-system-alias' in international/mule-conf.el and the
-    // language files.  The hardcoded table invented `utf8' (not a coding
-    // system in GNU at all) and modelled `utf-8-emacs' as an alias of utf-8
-    // when GNU defines it as its own system.
-    Vec::new()
-}
-
-pub(super) fn builtin_coding_priority() -> Vec<String> {
-    vec![
-        "prefer-utf-8".into(),
-        "utf-8".into(),
-        "utf-8-auto".into(),
-        "raw-text".into(),
-        "iso-latin-1".into(),
-        "us-ascii".into(),
-        "undecided".into(),
-        "no-conversion".into(),
-        "sjis".into(),
-        "big5".into(),
-        "euc-jp".into(),
-        "iso-2022-7bit".into(),
-    ]
+        .collect();
+    (attrs, specs, hash)
 }
