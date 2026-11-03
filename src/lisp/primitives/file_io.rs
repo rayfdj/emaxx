@@ -9,8 +9,7 @@ pub(crate) fn stat_visited_modtime(
     env: &Env,
     path: &str,
 ) -> Result<Result<crate::buffer::VisitedModtime, std::io::Error>, LispError> {
-    let local_path = unquote_local_file_name(path).unwrap_or_else(|| path.to_string());
-    let host = host_file_name(interp, env, &local_path)?;
+    let host = host_file_name(interp, env, path)?;
     Ok(fs::metadata(host).and_then(|metadata| {
         Ok(crate::buffer::VisitedModtime {
             stamp: crate::buffer::ModtimeStamp::Time(metadata.modified()?),
@@ -28,24 +27,6 @@ pub(crate) fn time_error_value(error: &std::io::Error) -> crate::buffer::Modtime
     } else {
         crate::buffer::ModtimeStamp::Unknown
     }
-}
-
-/// Compare modification times at whole-second resolution, like `stat'
-/// output read over a Tramp connection.
-pub(crate) fn modtimes_equal_whole_seconds(
-    left: &Option<crate::buffer::FileModTime>,
-    right: &Option<crate::buffer::FileModTime>,
-) -> bool {
-    fn whole_seconds(modtime: &Option<crate::buffer::FileModTime>) -> Option<u64> {
-        modtime.as_ref().map(|modtime| {
-            modtime
-                .modified
-                .duration_since(UNIX_EPOCH)
-                .map(|duration| duration.as_secs())
-                .unwrap_or(0)
-        })
-    }
-    whole_seconds(left) == whole_seconds(right)
 }
 
 // GNU `file-attributes' time fields are (HIGH LOW USEC PSEC) lists.
@@ -307,6 +288,33 @@ pub(crate) fn file_operation_error_value_without_file(
         Value::String(message.into()),
         errstring,
     ])
+}
+
+/// fileio.c:report_file_errno with the Lisp file name FILE as given:
+/// get_file_errno_data's `(CONDITION MESSAGE ERRSTRING FILE)', EEXIST's
+/// `file-already-exists' without MESSAGE.
+pub(crate) fn report_file_errno(message: &str, file: Value, error: &std::io::Error) -> LispError {
+    let condition = file_error_condition(error);
+    let mut data = vec![Value::symbol(condition)];
+    if condition != "file-already-exists" {
+        data.push(Value::string(message));
+    }
+    data.push(Value::String(errno_text(error).into()));
+    data.push(file);
+    LispError::SignalValue(Value::list(data))
+}
+
+/// fileio.c:file_metadata_errno: nil for ENOENT, ENOTDIR (and no error),
+/// otherwise report_file_errno (ACTION, FILE, ERR).
+pub(crate) fn file_metadata_errno(
+    action: &str,
+    file: Value,
+    error: &std::io::Error,
+) -> Result<Value, LispError> {
+    match error.raw_os_error() {
+        Some(0 | libc::ENOENT | libc::ENOTDIR) => Ok(Value::Nil),
+        _ => Err(report_file_errno(action, file, error)),
+    }
 }
 
 pub(crate) fn file_operation_error(message: &str, error: &std::io::Error, path: &str) -> LispError {
@@ -940,8 +948,8 @@ pub(crate) fn write_region_value_with_logical_path(
         normalized[0] = Value::Integer(start as i64);
         normalized[1] = Value::Integer(end as i64);
     }
-    let requested_path = string_text(&args[2])?;
-    let path = resolve_file_name_in_env(interp, env, &requested_path);
+    // FILENAME, as the preamble expanded it.
+    let path = string_text(&args[2])?;
     let existed_before_write = fs::symlink_metadata(host_file_name(interp, env, &path)?).is_ok();
     if normalized[6].is_truthy() && normalized[6].symbol_str() != Some("excl") {
         barf_or_query_if_file_exists(interp, env, logical_path, false, "overwrite", true, true)?;
@@ -2315,7 +2323,8 @@ pub(crate) fn insert_file_contents(
         let buffer = interp.buffer.borrow();
         buffer.undo_list().is_nil() && buffer.size_total() == 0
     };
-    let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
+    // FILENAME, as the preamble expanded it.
+    let path = string_text(&args[0])?;
     let arg = |index: usize| args.get(index).copied().filter(|value| !value.is_nil());
     let visit = arg(1).is_some();
     let replace_arg = arg(4);

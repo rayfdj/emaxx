@@ -1737,35 +1737,6 @@ pub(crate) fn expand_file_name_runtime(
     Ok(expand_file_name_in_env(interp, env, path, base))
 }
 
-pub(crate) fn resolve_file_name_in_env(interp: &Interpreter, env: &Env, path: &str) -> String {
-    // `/:` quotes a local name so Lisp file-name handlers are bypassed.  Keep
-    // the marker in lexical file-name operations, but remove it at the one
-    // boundary where a name becomes a host path.
-    if let Some(unquoted) = unquote_local_file_name(path) {
-        return expand_file_name_in_env(interp, env, &unquoted, None);
-    }
-    if let Some(remote) = parse_remote_file_name(path) {
-        return resolved_remote_localname_in_env(interp, env, &remote);
-    }
-    // Fexpand_file_name's lexical reading of an absolute name's `.' and
-    // `..' (a symlink's `..' is the name's parent, not the link target's)
-    // and doubled slashes; other absolute names expand to themselves.
-    if Path::new(path).is_absolute() {
-        if path.contains("/.") || path.contains("//") {
-            return expand_file_name_in_env(interp, env, path, None);
-        }
-        return path.to_string();
-    }
-    let base = interp
-        .lookup_var("default-directory", env)
-        .and_then(|value| string_like(&value).map(|string| string.text));
-    let base = base
-        .as_deref()
-        .and_then(|base| unquote_local_file_name(base).or_else(|| Some(base.to_string())));
-    let expanded = expand_file_name_in_env(interp, env, path, base.as_deref());
-    unquote_local_file_name(&expanded).unwrap_or(expanded)
-}
-
 /// The canonical name files.el records in `buffer-file-truename', for
 /// the tests' expectations.
 ///
@@ -1835,9 +1806,10 @@ pub(crate) fn canonical_file_name(
     render(&candidate)
 }
 
-pub(crate) fn unquote_local_file_name(path: &str) -> Option<String> {
-    path.strip_prefix("/:")
-        .map(|rest| if rest.is_empty() { "/" } else { rest }.to_string())
+/// process.c:remove_slash_colon: NAME without the "/:" that quotes it,
+/// for the names callproc.c and process.c hand to the system.
+pub(crate) fn remove_slash_colon(name: &str) -> String {
+    name.strip_prefix("/:").unwrap_or(name).to_string()
 }
 
 pub(crate) fn expand_file_name_in_env(
@@ -1856,21 +1828,6 @@ pub(crate) fn expand_file_name_in_env(
         None
     };
     expand_file_name_with_home(path, base, home.as_deref())
-}
-
-pub(crate) fn resolved_remote_localname_in_env(
-    interp: &Interpreter,
-    env: &Env,
-    remote: &RemoteFileNameParts,
-) -> String {
-    if remote.method == "mock" {
-        let home = lisp_environment_string(interp, env, "HOME");
-        let localname =
-            unquote_local_file_name(&remote.localname).unwrap_or_else(|| remote.localname.clone());
-        expand_home_prefix_with_home(&localname, home.as_deref())
-    } else {
-        remote.localname.clone()
-    }
 }
 
 pub(crate) fn lisp_environment_string(
@@ -1971,32 +1928,6 @@ pub(crate) fn substitute_in_file_name(
     }
     super::make_specified_string(xnm[start..].to_vec(), multibyte)
         .map_err(|error| LispError::Signal(error.to_string()))
-}
-
-pub(crate) fn expand_home_prefix_with_home(path: &str, home: Option<&str>) -> String {
-    if path == "~" {
-        return home.unwrap_or(path).to_string();
-    }
-    if let Some(suffix) = path.strip_prefix("~/")
-        && let Some(home) = home
-    {
-        return PathBuf::from(home).join(suffix).display().to_string();
-    }
-    if let Some(rest) = path.strip_prefix('~') {
-        let (user, suffix) = rest
-            .split_once('/')
-            .map(|(user, suffix)| (user, Some(suffix)))
-            .unwrap_or((rest, None));
-        // fileio.c:Fexpand_file_name's `~user/': that user's passwd home
-        // directory; a name without one is kept as it is.
-        if let Some(home) = user_home_directory(user) {
-            return suffix.map_or_else(
-                || home.clone(),
-                |suffix| PathBuf::from(&home).join(suffix).display().to_string(),
-            );
-        }
-    }
-    path.to_string()
 }
 
 /// fileio.c:user_homedir: the absolute home directory of the passwd
@@ -3135,14 +3066,25 @@ pub(crate) fn read_directory_entries(
     result.map(|()| names)
 }
 
+/// dired.c:directory_files_internal over DIRECTORY, a name its caller
+/// expanded: DIRECTORY's `directory-file-name' opened (an error names
+/// that), each name read DECODE_FILE'd and matched, up to COUNT matches
+/// kept in the order read, and a FULL name DIRECTORY's text and the
+/// name's (concatenated bytes, so without the name's text properties),
+/// multibyte when either is.  With ATTRS, the ID-FORMAT of
+/// `directory-files-and-attributes': each entry is (NAME . ATTRIBUTES),
+/// file_attributes of the name in the directory read, and a name whose
+/// attributes are nil (gone since it was read) is left out.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn directory_files(
     interp: &mut Interpreter,
-    directory: &str,
+    directory: Value,
     full: bool,
     matcher: Option<&Value>,
     nosort: bool,
     count: Option<usize>,
-    env: &Env,
+    attrs: Option<Value>,
+    env: &mut Env,
 ) -> Result<Value, LispError> {
     use std::os::unix::ffi::OsStrExt;
     if let Some(matcher) = matcher
@@ -3150,15 +3092,18 @@ pub(crate) fn directory_files(
     {
         return Err(LispError::WrongTypeArgument("stringp".into(), *matcher));
     }
-    let directory = resolve_file_name_in_env(interp, env, directory);
-    let names = read_directory_names(&host_file_name(interp, env, &directory)?)
-        .map_err(|(step, error)| file_operation_error(step, &error, &directory))?;
-    // dired.c directory_files_internal: each name read is DECODE_FILE'd
-    // and matched, up to COUNT matches are kept in the order read, and a
-    // FULL name is the directory's text and the name's (concatenated
-    // bytes, so without the name's text properties), multibyte when
-    // either is.
-    let prefix = file_name_as_directory(&directory);
+    let dirfilename = super::call(interp, "directory-file-name", &[directory], env)?;
+    let host_directory = host_file_name(interp, env, &string_text(&dirfilename)?)?;
+    let directory_text = string_text(&directory)?;
+    let names = read_directory_names(&host_directory).map_err(|(step, error)| {
+        let file = if step == "Opening directory" {
+            dirfilename
+        } else {
+            directory
+        };
+        super::file_io::report_file_errno(step, file, &error)
+    })?;
+    let prefix = file_name_as_directory(&directory_text);
     let directory_multibyte = prefix
         .chars()
         .any(|ch| !is_raw_byte_regex_char(ch) && (ch as u32) > 0x7f);
@@ -3186,23 +3131,44 @@ pub(crate) fn directory_files(
         {
             continue;
         }
-        let name = if full {
+        let attributes = match attrs {
+            Some(id_format) => {
+                let attributes = super::dispatch::file_attributes(
+                    interp,
+                    env,
+                    &host_directory.join(&host_name),
+                    name,
+                    id_format,
+                )?;
+                if attributes.is_nil() {
+                    continue;
+                }
+                Some(attributes)
+            }
+            None => None,
+        };
+        let finalname = if full {
             let multibyte =
                 directory_multibyte || string_like(&name).is_some_and(|string| string.multibyte);
             make_shared_string_value_with_multibyte(format!("{prefix}{text}"), None, multibyte)
         } else {
             name
         };
-        entries.push((text, name));
+        let entry = match attributes {
+            Some(attributes) => Value::cons(finalname, attributes),
+            None => finalname,
+        };
+        entries.push((text, entry));
     }
     // The list is consed up in reading order, so NOSORT gives it last
-    // read first; otherwise it is sorted with string-lessp.
+    // read first; otherwise it is sorted with string-lessp, or with
+    // file-attributes-lessp (string-lessp of the names) for ATTRS.
     if nosort {
         entries.reverse();
     } else {
         entries.sort_by(|left, right| left.0.cmp(&right.0));
     }
-    Ok(Value::list(entries.into_iter().map(|(_, name)| name)))
+    Ok(Value::list(entries.into_iter().map(|(_, entry)| entry)))
 }
 
 pub(crate) fn default_charset_plist(name: &str, interp: &Interpreter) -> Option<Value> {

@@ -1206,6 +1206,115 @@ fn file_primitives_expand_their_names_before_the_handler_lookup_as_fileio_c() {
 }
 
 #[test]
+fn file_attributes_and_quoted_names_are_dired_c_and_fileio_c() {
+    // dired.c:file_attributes: element 9 is t, an ID-FORMAT other than nil
+    // and `integer' names the owner and group, a name whose directory is
+    // not one has no attributes, and directory-files-and-attributes reads
+    // each entry's attributes in the directory it lists, an error naming
+    // the directory's `directory-file-name'.
+    assert_oracle_contract_matches_interpreter(
+        r##"(let* ((dir (file-truename (make-temp-file "zz-fa" t)))
+       (f (expand-file-name "f" dir))
+       (out nil))
+  (unwind-protect
+      (progn
+        (write-region "abc" nil f nil 'silent)
+        (set-file-modes f #o640)
+        (make-directory (expand-file-name "d" dir))
+        (make-symbolic-link "f" (expand-file-name "s" dir))
+        (make-symbolic-link "nowhere" (expand-file-name "dangling" dir))
+        (dolist (form `((nth 9 (file-attributes ,f))
+                        (stringp (nth 2 (file-attributes ,f t)))
+                        (stringp (nth 3 (file-attributes ,f 'foo)))
+                        (integerp (nth 2 (file-attributes ,f 'integer)))
+                        (integerp (nth 3 (file-attributes ,f)))
+                        (car (file-attributes ,(expand-file-name "s" dir)))
+                        (car (file-attributes ,(expand-file-name "dangling" dir)))
+                        (car (file-attributes ,(expand-file-name "d" dir)))
+                        (nth 1 (file-attributes ,f))
+                        (nth 7 (file-attributes ,f))
+                        (nth 8 (file-attributes ,f))
+                        (file-attributes ,(concat f "/x"))
+                        (file-attributes ,(expand-file-name "nope" dir))
+                        (file-attributes ,(expand-file-name "nope/x" dir))
+                        (mapcar (lambda (e) (list (car e) (cadr e) (nth 10 e))) (directory-files-and-attributes ,dir nil "^[^.]"))
+                        (mapcar (lambda (e) (list (car e) (stringp (nth 3 e)))) (directory-files-and-attributes ,dir nil "^f" nil 'string))
+                        (mapcar #'car (directory-files-and-attributes ,dir t "^[fs]"))
+                        (length (directory-files-and-attributes ,dir nil "^[^.]" nil nil 2))
+                        (directory-files-and-attributes ,(expand-file-name "nope" dir))
+                        (directory-files-and-attributes ,(expand-file-name "nope/" dir))
+                        (directory-files ,(expand-file-name "nope/" dir))
+                        (directory-files ,f)
+                        (directory-files-and-attributes ,dir nil nil nil nil -1)
+                        (directory-files-and-attributes ,dir nil 5)
+                        (let ((default-directory ,(file-name-as-directory dir))) (mapcar #'car (directory-files-and-attributes "." nil "^f")))
+                        (let ((default-directory ,(file-name-as-directory dir))) (mapcar #'car (directory-files-and-attributes "." t "^f")))
+                        (let ((default-directory ,(file-name-as-directory dir))) (car (file-attributes "f")))
+                        (equal (file-attributes ,f) (cdr (assoc "f" (directory-files-and-attributes ,dir))))))
+          (push (condition-case e (eval form t) (error (list 'error e))) out)))
+    (delete-directory dir t))
+  (car (read-from-string (replace-regexp-in-string (regexp-quote dir) "TMP" (prin1-to-string (nreverse out))))))"##,
+        r##"(t t t t t "f" "nowhere" t 1 3 "-rw-r-----" nil nil nil (("d" t t) ("dangling" "nowhere" t) ("f" nil t) ("s" "f" t)) (("f" t)) ("TMP/f" "TMP/s") 2 (error (file-missing "Opening directory" "No such file or directory" "TMP/nope")) (error (file-missing "Opening directory" "No such file or directory" "TMP/nope")) (error (file-missing "Opening directory" "No such file or directory" "TMP/nope")) (error (file-error "Opening directory" "Not a directory" "TMP/f")) (error (wrong-type-argument wholenump -1)) (error (wrong-type-argument stringp 5)) ("f") ("TMP/f") nil t)"##,
+        "file-attributes as dired.c",
+    );
+    // fileio.c hands a `/:' quoted name to the system as it is, so without
+    // file-name-non-special no file primitive finds it; only callproc.c
+    // and process.c remove the quote (remove_slash_colon), from the
+    // program, INFILE, the output and stderr files and the child's
+    // directory.  Remote names are the handlers' too.
+    assert_oracle_contract_matches_interpreter(
+        r##"(let* ((dir (file-truename (make-temp-file "zz-sq" t)))
+       (q (concat "/:" dir))
+       (out nil))
+  (unwind-protect
+      (progn
+        (write-region "abc" nil (expand-file-name "f" dir) nil 'silent)
+        (make-directory (expand-file-name "d" dir))
+        (dolist (handlers '(default nil))
+          (let ((file-name-handler-alist (if (eq handlers 'default) file-name-handler-alist nil)))
+            (dolist (form
+                     `((file-exists-p ,(concat q "/f"))
+                       (file-readable-p ,(concat q "/f"))
+                       (file-directory-p ,(concat q "/d"))
+                       (file-regular-p ,(concat q "/f"))
+                       (integerp (file-modes ,(concat q "/f")))
+                       (file-newer-than-file-p ,(concat q "/f") ,(concat q "/d"))
+                       (car (file-attributes ,(concat q "/f")))
+                       (length (directory-files ,(concat q "/")))
+                       (sort (file-name-all-completions "" ,(concat q "/")) #'string<)
+                       (with-temp-buffer (insert-file-contents ,(concat q "/f")) (buffer-string))
+                       (progn (write-region "x" nil ,(concat q "/w") nil 'silent) (file-exists-p ,(concat dir "/w")))
+                       (progn (copy-file ,(concat dir "/f") ,(concat q "/c")) (file-exists-p ,(concat dir "/c")))
+                       (progn (rename-file ,(concat q "/c") ,(concat q "/r")) (file-exists-p ,(concat dir "/r")))
+                       (progn (add-name-to-file ,(concat q "/f") ,(concat q "/h")) (file-exists-p ,(concat dir "/h")))
+                       (progn (make-symbolic-link "f" ,(concat q "/s")) (file-symlink-p ,(concat dir "/s")))
+                       (progn (set-file-modes ,(concat q "/f") #o600) (file-modes ,(concat dir "/f")))
+                       (progn (set-file-times ,(concat q "/f") 0) (file-attribute-modification-time (file-attributes ,(concat dir "/f"))))
+                       (progn (make-directory-internal ,(concat q "/m")) (file-directory-p ,(concat dir "/m")))
+                       (progn (delete-file-internal ,(concat q "/f")) (file-exists-p ,(concat dir "/f")))
+                       (let ((default-directory ,(concat q "/"))) (file-exists-p "d"))
+                       (let ((default-directory ,(concat q "/"))) (call-process "true"))
+                       (call-process "/:/bin/true")
+                       (with-temp-buffer (call-process "cat" ,(concat q "/d/../f") t) (buffer-string))
+                       (with-temp-buffer (let ((default-directory ,(concat q "/"))) (call-process "cat" "f" t)) (buffer-string))
+                       (with-temp-buffer (call-process "true" nil '(:file ,(concat q "/o"))) (file-exists-p ,(concat dir "/o")))
+                       (with-temp-buffer (let ((default-directory ,(concat q "/"))) (process-file "true")))
+                       (file-exists-p "/mock::/etc/passwd")
+                       (file-exists-p "/ssh:x@y:/etc/passwd")))
+              (push (condition-case e (eval form t) (error (list 'error (car e)))) out))
+            (dolist (n '("w" "c" "r" "h" "s" "m" "o"))
+              (ignore-errors (delete-file (expand-file-name n dir)))
+              (ignore-errors (delete-directory (expand-file-name n dir))))
+            (unless (file-exists-p (expand-file-name "f" dir))
+              (write-region "abc" nil (expand-file-name "f" dir) nil 'silent)))))
+    (delete-directory dir t))
+  (car (read-from-string (replace-regexp-in-string (regexp-quote dir) "TMP" (prin1-to-string (nreverse out))))))"##,
+        r##"(t t t t t nil nil 4 ("../" "./" "d/" "f") "abc" t t t t "f" 384 (0 0 0 0) (error file-missing) t t 0 0 "abc" "abc" t 0 (error user-error) (error file-error) nil nil nil nil nil nil nil (error file-missing) (error file-missing) (error file-missing) (error file-missing) (error file-missing) (error file-missing) (error file-missing) (error file-missing) (error file-missing) (error file-missing) (error file-missing) t nil 0 0 "abc" "abc" t 0 nil nil)"##,
+        "quoted names without handlers",
+    );
+}
+
+#[test]
 fn file_readable_p_tests_access_without_opening_a_fifo() {
     // fileio.c:Ffile_readable_p is faccessat (R_OK): a FIFO with no
     // writer is readable without the open that would wait for one.

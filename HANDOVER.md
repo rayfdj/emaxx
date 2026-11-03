@@ -13558,6 +13558,57 @@ setup_process_coding_systems's check now refuses). A 13-form
   as in GNU. Local validation: the grouped gate's 3,493 library
   tests, the integration targets and clippy with `--all-targets
   --all-features -D warnings' pass.
+- **Round 280: no `/:' unquoting or Tramp emulation below Lisp, and
+  file-attributes as dired.c.** GNU's C file primitives hand a `/:'
+  quoted name to the system as it is: only file-name-non-special, a Lisp
+  handler, removes the quote, and only callproc.c and process.c call
+  remove_slash_colon, on the program, INFILE, the output and stderr
+  files and the child's working directory (lread.c's openp and
+  make-symbolic-link's interactive TARGET keep theirs). Emaxx's native
+  bodies resolved every name through resolve_file_name_in_env, which
+  dropped a `/:' from the name and from `default-directory' and read a
+  "/mock::" name as the local file: with `file-name-handler-alist' nil,
+  `file-modes', `directory-files', `insert-file-contents',
+  `write-region', `copy-file', `rename-file', `add-name-to-file',
+  `make-symbolic-link', `set-file-modes', `set-file-times', `file-acl'
+  and `file-system-info' all found "/:/tmp/f", where GNU signals
+  file-missing or answers nil. The native bodies now take the names
+  their round 279 preamble expanded, and resolve_file_name_in_env, the
+  "/mock::" reading, the remote-buffer test of `kqueue-add-watch' and
+  the whole-second modtime comparison `verify-visited-file-modtime' made
+  for a remotely visited buffer are gone: those are Tramp's, through its
+  handler. `call-process' expands INFILE against get_current_directory's
+  name (through the `expand-file-name' handler) and a stderr file with a
+  nil default, an output file against the buffer's directory, removing a
+  `/:' from each, and the child's directory is expand_and_dir_to_file of
+  `unhandled-file-name-directory' without its `/:', so a quoted
+  `default-directory' without handlers runs the child where GNU does
+  (Emaxx signalled file-missing). `make-process' asks
+  `file-directory-p', which may have a handler, of an absolute program
+  and expands what openp found through `expand-file-name'.
+  `file-attributes' and `directory-files-and-attributes' share dired.c's
+  file_attributes: element 9 is t (Emaxx's was nil); an ID-FORMAT other
+  than nil and `integer' gives the owner and group names,
+  DECODE_SYSTEM'd, a number when the id has none (Emaxx named them only
+  for `string', and a uid without a name as a string of digits); a name
+  whose directory is not a directory has no attributes, and any other
+  failure is a `file-error' "Getting attributes" naming the file (Emaxx
+  signalled the Rust error text); a link that stops being one before
+  readlink has none; inode and device numbers past
+  `most-positive-fixnum' are bignums. `directory-files-and-attributes'
+  is directory_files_internal with attributes, each entry's read in the
+  directory it lists rather than through a `file-attributes' call with
+  its own handler lookup, an entry that has none left out without
+  counting towards COUNT, and the opening error, as for
+  `directory-files', names the directory's `directory-file-name'. A
+  contract of file-attributes and directory-files-and-attributes cases
+  and one of 28 operations on a `/:' quoted directory with and without
+  handlers, including `call-process' and `process-file', match GNU, and
+  tramp-tests, files-tests, filenotify-tests, dired-tests, fileio-tests,
+  callproc-tests, files-x-tests, tramp-archive-tests and process-tests
+  give GNU's results. Local validation: the grouped gate's 3,493
+  library tests, the integration targets and clippy with `--all-targets
+  --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -15603,6 +15654,22 @@ per-file median of 120 ms against 94, against round 277's run's 100 and
 ert-tests (44,310 ms against 35,730), comp-tests (17,440 against
 14,100), tramp-tests (19,350 against 17,070), mule-tests (3,430 against
 1,920) and semantic-utest-ia (4,050 against 2,620).
+
+**On `67744d2`** (round 279): the full Rust gate (run 41676078700)
+passed; the frozen run (run 41676085072) passed at its first attempt,
+7,928 of 7,928 outcomes matching,
+files-tests-file-name-non-special-make-directory among them again. Setup
+82.4 s against 66.2 s (1.245), test bodies 302.2 s against 269.9 s
+(1.120), in all 1.124, on a runner slower again for both (GNU's setup
+66.2 s against 60.7 and 55.1 in the last two runs); setup has a per-file
+median of 124 ms against 103. The widest body gaps are ert-tests (46,540
+ms against 38,120), tramp-tests (22,390 against 19,020), comp-tests
+(17,660 against 14,940), semantic-utest-ia (4,110 against 2,590) and
+mule-tests (3,330 against 2,060). ert-tests' gap is its
+ert-test-run-tests-batch-expensive, which prints a backtrace after the
+file's earlier tests: in the release build the whole file runs in 9.9 s
+against GNU's 12.3 s here and that test in 9.1 s against 11.5, so the
+frozen run's excess there is the gate build's checks.
 
 **Findings recorded, not fixed:**
 - **Allocations outside the Lisp object makers still abort when the

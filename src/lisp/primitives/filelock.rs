@@ -671,13 +671,7 @@ fn unlock_file(interp: &mut Interpreter, env: &mut Env, file: Value) -> Result<(
 
 /// fileio.c:report_file_errno with the file name FILE as given.
 fn report_file_errno(message: &str, file: Value, error: i32) -> LispError {
-    let error = std::io::Error::from_raw_os_error(error);
-    LispError::SignalValue(Value::list([
-        Value::symbol(file_error_condition(&error)),
-        Value::string(message),
-        Value::String(errno_text(&error).into()),
-        file,
-    ]))
+    super::file_io::report_file_errno(message, file, &std::io::Error::from_raw_os_error(error))
 }
 
 /// Flock_file's own body, past CHECK_STRING and the file name handler.

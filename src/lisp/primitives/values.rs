@@ -1376,49 +1376,6 @@ pub(crate) fn copy_alist_value(value: &Value) -> Result<Value, LispError> {
     Ok(Value::list(copied))
 }
 
-pub(crate) struct RemoteFileNameParts {
-    pub(crate) prefix: String,
-    pub(crate) method: String,
-    pub(crate) localname: String,
-}
-
-pub(crate) fn parse_remote_file_name(path: &str) -> Option<RemoteFileNameParts> {
-    if !path.starts_with('/') {
-        return None;
-    }
-    let rest = &path[1..];
-    let method_end = rest.find(':')?;
-    if method_end == 0 {
-        return None;
-    }
-    let method = rest[..method_end].to_string();
-    // tramp-file-name-regexp: the method segment is `[^/|:]+' -- a local
-    // file whose NAME contains a colon ("/tmp/dir/:foo:bar") must never
-    // parse as remote.
-    if method.contains('/') || method.contains('|') {
-        return None;
-    }
-    let after_method = &rest[method_end + 1..];
-    let host_end = after_method.find(':')?;
-    let authority = &after_method[..host_end];
-    // The user/host segment is `[^/|:]*' by the same regexp.
-    if authority.contains('/') || authority.contains('|') {
-        return None;
-    }
-    let localname = after_method[host_end + 1..].to_string();
-    match authority.rsplit_once('@') {
-        Some((_, host)) if !host.is_empty() => {}
-        _ if authority.is_empty() && method == "mock" => {}
-        _ if authority.is_empty() => return None,
-        _ => {}
-    }
-    Some(RemoteFileNameParts {
-        prefix: path[..1 + method_end + 1 + host_end + 1].to_string(),
-        method,
-        localname,
-    })
-}
-
 /// fns.c:Fnconc's walk of one argument: CHECK_CONS, then the last cons
 /// FOR_EACH_TAIL reaches.
 /// fns.c:bool_vector_cmp: the lexicographic order of the bits, the equal

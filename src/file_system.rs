@@ -111,6 +111,7 @@ mod posix {
             system_time(self.mtime(), self.mtime_nsec())
         }
 
+        #[cfg(test)]
         pub(crate) fn accessed(&self) -> io::Result<SystemTime> {
             system_time(self.atime(), self.atime_nsec())
         }
