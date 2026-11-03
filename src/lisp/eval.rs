@@ -5429,6 +5429,9 @@ pub struct InterpreterState {
     quit_flag: Value,
     inhibit_quit: Value,
     throw_on_input: Value,
+    /// undo.c's DEFVAR_BOOL `undo_inhibit_record_point', which the buffers
+    /// hold as well (`set_undo_inhibit_record_point').
+    undo_inhibit_record_point: bool,
     overriding_plist_environment: Value,
     max_lisp_eval_depth: i64,
     /// Ffuncall's depth bound for a call that does nothing else on its way
@@ -6307,6 +6310,7 @@ impl Interpreter {
             quit_flag: Value::Nil,
             inhibit_quit: Value::Nil,
             throw_on_input: Value::Nil,
+            undo_inhibit_record_point: false,
             overriding_plist_environment: Value::Nil,
             max_lisp_eval_depth: 1600,
             call_depth_gate: if core::profiling() { i64::MIN } else { 1600 },

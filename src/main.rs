@@ -549,6 +549,8 @@ fn try_main() -> Result<u8, String> {
         ..Default::default()
     };
     emaxx::lisp::install_fatal_signal_handlers(noninteractive);
+    #[cfg(unix)]
+    emaxx::lisp::init_process_nofile_limit();
     if noninteractive {
         return batch::run_batch_process_with_large_stack(options, |outcome| match outcome {
             BatchRunOutcome::Exit(code) => std::process::exit(code),

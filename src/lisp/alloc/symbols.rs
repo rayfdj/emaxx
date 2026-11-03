@@ -159,7 +159,7 @@ pub(crate) const STORE_CONVERTING_VARIABLES: [&str; 1] = ["display-hourglass"];
 /// The forwarded variables `Interpreter::set_global_binding_resolved' does
 /// more for than store the cell: the evaluator's own C cells and the
 /// buffers' text conversion style.
-pub(crate) const STORE_EFFECT_VARIABLES: [&str; 9] = [
+pub(crate) const STORE_EFFECT_VARIABLES: [&str; 10] = [
     "quit-flag",
     "inhibit-quit",
     "throw-on-input",
@@ -169,6 +169,7 @@ pub(crate) const STORE_EFFECT_VARIABLES: [&str; 9] = [
     "debug-on-next-call",
     "symbols-with-pos-enabled",
     "text-conversion-style",
+    "undo-inhibit-record-point",
 ];
 
 #[derive(Clone, Copy)]

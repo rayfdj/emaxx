@@ -536,6 +536,13 @@ pub fn install_fatal_signal_handlers(noninteractive: bool) {
     primitives::install_fatal_signal_handlers(noninteractive);
 }
 
+/// process.c:init_process_emacs's soft RLIMIT_NOFILE at FD_SETSIZE for
+/// the process itself, which children made through a pty get back.
+#[cfg(unix)]
+pub fn init_process_nofile_limit() {
+    primitives::init_process_nofile_limit();
+}
+
 /// `fflush (stdout)' for the batch process: the stdio-style buffer behind
 /// `standard-output' (primitives::batch_stdout) reaches the descriptor.
 pub fn flush_batch_stdout() {

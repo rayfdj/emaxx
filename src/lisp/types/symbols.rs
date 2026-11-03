@@ -236,6 +236,7 @@ const KEY_NAMES: &[&str] = &[
     "internal-make-interpreted-closure-function",
     "macroexp--dynvars",
     "inhibit-modification-hooks",
+    "undo-inhibit-record-point",
     "buffer-file-name",
     "buffer-file-truename",
     "combine-after-change-calls",

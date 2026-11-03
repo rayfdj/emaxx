@@ -491,3 +491,37 @@ fn script_with_equals_rewrites_the_argument_before_it_like_emacs_c() {
         Some("Unknown option `--script=CORPUS/script.el'")
     );
 }
+
+#[test]
+fn open_file_limit_is_init_process_emacs_s() {
+    // process.c:init_process_emacs lowers the soft RLIMIT_NOFILE to
+    // FD_SETSIZE for Emacs itself; a child made through posix_spawn
+    // (call-process, a pipe process) keeps that limit, and one made
+    // through a pty's vfork gets the limit Emacs started with back
+    // (callproc.c:child_setup's restore_nofile_limit).
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r#"(let ((own (with-temp-buffer
+             (insert-file-contents "/proc/self/limits")
+             (re-search-forward "^Max open files +\\([0-9]+\\|unlimited\\)")
+             (match-string 1)))
+      (child (lambda (type)
+               (let* ((buf (generate-new-buffer "out"))
+                      (p (make-process :name "l" :buffer buf :sentinel #'ignore
+                                       :command '("sh" "-c" "ulimit -Sn")
+                                       :connection-type type)))
+                 (while (process-live-p p) (accept-process-output p 0.05))
+                 (accept-process-output nil 0.05)
+                 (with-current-buffer buf (string-trim (buffer-string)))))))
+  (princ (format "%s %s %s %s\n" own
+                 (with-temp-buffer (call-process "sh" nil t nil "-c" "ulimit -Sn")
+                                   (string-trim (buffer-string)))
+                 (funcall child 'pipe) (funcall child 'pty))))"#,
+        ],
+    );
+}

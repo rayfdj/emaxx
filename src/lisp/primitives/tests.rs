@@ -1467,6 +1467,54 @@ f\", (1 2 3 4)") ("bYc" (1 1 0)) ("str" "sym" "5" "z1.5") (nil nil t) buffer-rea
 }
 
 #[test]
+fn undo_inhibit_record_point_turns_record_point_off() {
+    // undo.c:record_point returns at once under undo_inhibit_record_point,
+    // so an insertion or deletion records neither point before the last
+    // command or boundary nor the unmodified buffer's (t . TIME), however
+    // the variable is bound, set or made local, and in every buffer.
+    assert_oracle_contract_matches_interpreter(
+        r##"(let* ((entries (lambda () (mapcar (lambda (e) (if (eq (car-safe e) t) 'first e)) buffer-undo-list)))
+       (probe (lambda (inhibit how)
+         (with-temp-buffer
+           (buffer-enable-undo)
+           (insert "abcdef")
+           (set-buffer-modified-p nil)
+           (setq buffer-undo-list nil)
+           (goto-char 2)
+           (undo-boundary)
+           (goto-char 4)
+           (cond
+            ((eq how 'let) (let ((undo-inhibit-record-point inhibit)) (insert "x") (delete-char 1)))
+            ((eq how 'setq) (setq undo-inhibit-record-point inhibit) (insert "x") (delete-char 1)
+             (setq undo-inhibit-record-point nil))
+            (t (setq-local undo-inhibit-record-point inhibit) (insert "x") (delete-char 1)
+               (kill-local-variable 'undo-inhibit-record-point)))
+           (funcall entries))))
+       (old (generate-new-buffer "old")) new)
+  (prog1
+      (list
+       (mapcar (lambda (how) (mapcar (lambda (inhibit) (funcall probe inhibit how)) '(nil t 5)))
+               '(let setq local))
+       (let ((undo-inhibit-record-point 7)) undo-inhibit-record-point)
+       (progn
+         (setq undo-inhibit-record-point t
+               new (generate-new-buffer "new"))
+         (prog1
+             (mapcar (lambda (b)
+                       (with-current-buffer b
+                         (buffer-enable-undo)
+                         (insert "ab")
+                         (funcall entries)))
+                     (list old new))
+           (setq undo-inhibit-record-point nil)))
+       undo-inhibit-record-point)
+    (kill-buffer old) (kill-buffer new)))"##,
+        r##"((((("d" . 5) (4 . 5) 2 first) (("d" . 5) (4 . 5)) (("d" . 5) (4 . 5))) ((("d" . 5) (4 . 5) 2 first) (("d" . 5) (4 . 5)) (("d" . 5) (4 . 5))) ((("d" . 5) (4 . 5) 2 first) (("d" . 5) (4 . 5)) (("d" . 5) (4 . 5)))) t (((1 . 3)) ((1 . 3))) nil)"##,
+        "undo-inhibit-record-point as undo.c",
+    );
+}
+
+#[test]
 fn file_readable_p_tests_access_without_opening_a_fifo() {
     // fileio.c:Ffile_readable_p is faccessat (R_OK): a FIFO with no
     // writer is readable without the open that would wait for one.

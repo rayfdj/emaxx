@@ -13719,6 +13719,51 @@ setup_process_coding_systems's check now refuses). A 13-form
   startup). Local validation: the grouped gate's 3,496 library
   tests, the integration targets and clippy with `--all-targets
   --all-features -D warnings' pass.
+- **Round 284: `undo-inhibit-record-point' and the open-files limit.**
+  undo.c:record_point returns at once while undo_inhibit_record_point is
+  set, so an insertion or a deletion then records neither where point
+  stood before the last command or `undo-boundary' nor an unmodified
+  buffer's (t . TIME) (record_property_change's first change does not
+  consult it). Emaxx read no such variable. It is now one of the
+  evaluator's forwarded cells, as `inhibit-quit' is: each store, `let'
+  and its unbinding, a buffer-local value and each switch of the current
+  buffer reach the interpreter's copy of the C variable and the copy
+  each buffer holds for its record_point (every buffer takes a store;
+  the current buffer is given the value again at each switch, so a
+  buffer made since the last store holds it once current).
+  process.c:init_process_emacs lowers a soft RLIMIT_NOFILE above
+  FD_SETSIZE to FD_SETSIZE, so Emacs itself gets EMFILE where an fd_set
+  could not hold the descriptor; a child made through posix_spawn
+  (`call-process', a pipe process, `shell-command') keeps the lowered
+  limit, and one made through a pty's vfork gets the limit Emacs started
+  with back (callproc.c:child_setup's restore_nofile_limit). Emaxx kept
+  the limit it was given: with a hard limit of 20,000, GNU's own soft
+  limit and its three kinds of children read 1024, 1024, 1024 and 20000,
+  Emaxx's 20000 in all four; now as GNU (Emaxx made a pty child with
+  posix_spawn too, which sets no limit, so a pty child owed one is made
+  on the fork path, GNU's vfork path). A contract of the variable
+  (bound, set and made local; a buffer made before and one made after a
+  store) and a command-line comparison of the four limits match GNU. A
+  release timing sweep of the 68 longest test files (ERT's run of each,
+  the frozen runner's selector, best of one): 67 with the same outcomes
+  in both, 173.4 s against GNU's 186.6 s, the median ratio 0.999, 34
+  faster; the widest are electric-tests 1.26, epg-tests 1.26, mule-tests
+  1.17 (its tests' own times equal, 1.10 s for the two ucs-names tests
+  in both, the rest being the files' setup) and edebug-tests 1.14.
+  electric-tests runs 6.39G instructions against GNU's 6.44G, with
+  instruction-cache misses 135.7M against 33.5M and mispredicted
+  branches 100.2M against 72.7M in cachegrind's simulation. Tried and
+  not kept: a link order of the hot functions, lld's
+  `--symbol-ordering-file' from electric-tests' own profile (3,706
+  sections, 3.7 MB, first in `.text'), which left the simulated misses
+  at 138.4M and the time at 1.563 s against 1.557 s (best of seven): the
+  misses are spread over the hot code (`run_verified' 5.7%, then a long
+  tail), whose size and not its order is the excess, as rounds 181 and
+  194 found. Fuzz sweeps of printing, `format', editing, regular
+  expressions and syntax scans (800 and 681 cases a sweep) found no
+  difference from GNU. Local validation: the grouped gate's 3,497
+  library tests, the integration targets and clippy with `--all-targets
+  --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -15819,6 +15864,16 @@ tramp-tests (16,990 against 15,500), semantic-utest-ia (2,930 against
 2,070), ert-tests (27,730 against 26,880), package-tests (6,130 against
 5,470) and mule-tests (1,830 against 1,190).
 
+**On `f61f0f4`** (round 283): the full Rust gate (run 41724476976)
+passed; the frozen run (run 41724481937) passed at its first attempt,
+7,928 of 7,928 outcomes matching. Setup 71.8 s against 60.0 s (1.198),
+test bodies 270.8 s against 249.2 s (1.087), in all 1.097, with a
+per-file setup median of 109 ms against 93, on a slower runner than
+round 282's. The widest body gaps are ert-tests (36,450 ms against
+33,060), tramp-tests (19,510 against 16,720), comp-tests (15,420 against
+13,780), mule-tests (2,410 against 1,540), semantic-utest-ia (3,400
+against 2,640) and package-tests (6,580 against 5,850).
+
 **Findings recorded, not fixed:**
 - **Allocations outside the Lisp object makers still abort when the
   system refuses them (round 277).** GNU's lisp_align_malloc and xmalloc
@@ -15910,11 +15965,10 @@ tramp-tests (16,990 against 15,500), semantic-utest-ia (2,930 against
   instructions in process against GNU's 3.30G, and neither runs
   libgccjit for them: the gap is the instructions per cycle the setup
   finding below measures, not work Emaxx does that GNU does not.
-- **What undo.c does that Emaxx's undo list does not (rounds 166 and
-  247).** record_point does not consult `undo-inhibit-record-point',
-  which nothing in the tree sets. (Round 247 runs compact_buffer's
-  truncate_undo_list at every collection; its gap shrinking is not
-  done.)
+- **What undo.c does that Emaxx's undo list does not (rounds 166, 247
+  and 284).** compact_buffer's gap shrinking. (Round 247 runs its
+  truncate_undo_list at every collection; round 284 made record_point
+  consult `undo-inhibit-record-point'.)
 - **undo-tests' million insertions (rounds 165, 175).** Most of
   undo-tests is `undo-test4''s interpreted `dotimes' of 1,048,576
   `insert's at the end of the buffer. At round 165 the release build ran
@@ -16015,19 +16069,16 @@ tramp-tests (16,990 against 15,500), semantic-utest-ia (2,930 against
   overflow checks and the other debug assertions, spread thin. They
   are the gate's safety nets and stay; a frozen run of the release
   build would time what a user runs, which is the project's call.
-- **Pipe processes hold no descriptors (round 119).** Fmake_pipe_process
-  opens two pipes, four descriptors, at once, and every process channel
-  at or above FD_SETSIZE (1024) is EMFILE ("Creating pipe", "Opening
-  pty", the serial port, sockets, accept), with the soft RLIMIT_NOFILE
-  lowered to FD_SETSIZE at startup (init_process_emacs) and restored in
-  children (restore_nofile_limit). Emaxx's pipe process opens a pipe
-  only when a module asks for its channel, and nothing checks
-  FD_SETSIZE: process-tests' fd-setsize tests make 1,025 pipe processes
-  where GNU stops at its 255th ("Creating pipe" "Too many open files"),
-  and start all ten `cat's of each connection type where GNU starts one
-  or two, so the three tests take 1,067 ms against GNU's 352 here. A
-  child given a pipe process as :stderr writes into that pipe process's
-  own pipe, in Emaxx too since round 256.
+- **Process descriptors (rounds 119, 160 and 284).** As in GNU, a pipe
+  process holds its two pipes from the start and every process channel
+  at or above FD_SETSIZE (1024) is EMFILE (both make 255 pipe processes
+  before "Creating pipe" fails with "Too many open files"), the soft
+  RLIMIT_NOFILE is FD_SETSIZE for the process itself and its posix_spawn
+  children, and a pty child gets the limit the process started with. One
+  descriptor differs: atimer.c's init_atimer holds a timerfd (descriptor
+  3 in a batch session) beside the timer_create SIGALRM timer, where
+  Emaxx holds neither, so Emaxx's later descriptors are numbered one
+  lower and one more fits under the limit.
 - **The frozen run times the gate profile (round 112).** The frozen
   workflow's harness builds the Emaxx it runs with `--profile gate'
   (thin LTO, 16 codegen units, debug assertions and overflow checks;

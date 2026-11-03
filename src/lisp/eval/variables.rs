@@ -8,7 +8,7 @@ use crate::lisp::types::LispErrorKind;
 use crate::lisp::types::SymbolName;
 
 /// The variables forwarded to evaluator cells (`update_forwarded_eval_cell').
-const FORWARDED_EVAL_CELLS: [crate::lisp::types::symbols::SymbolKey; 8] = [
+const FORWARDED_EVAL_CELLS: [crate::lisp::types::symbols::SymbolKey; 9] = [
     cached_symbol!("quit-flag"),
     cached_symbol!("inhibit-quit"),
     cached_symbol!("throw-on-input"),
@@ -17,6 +17,7 @@ const FORWARDED_EVAL_CELLS: [crate::lisp::types::symbols::SymbolKey; 8] = [
     cached_symbol!("max-lisp-eval-depth"),
     cached_symbol!("debug-on-next-call"),
     cached_symbol!("symbols-with-pos-enabled"),
+    cached_symbol!("undo-inhibit-record-point"),
 ];
 
 /// Whether SYMBOL is one of the variables whose evaluator cells hold the
@@ -35,6 +36,7 @@ pub(super) fn is_forwarded_eval_cell(symbol: &SymbolName) -> bool {
             | "max-lisp-eval-depth"
             | "debug-on-next-call"
             | "symbols-with-pos-enabled"
+            | "undo-inhibit-record-point"
     ) && FORWARDED_EVAL_CELLS
         .iter()
         .any(|key| key.name() == symbol.as_str() && key.with(|cell| cell == symbol))
@@ -1615,6 +1617,7 @@ impl Interpreter {
             "symbols-with-pos-enabled" => {
                 self.symbols_with_positions_enabled.set(value.is_truthy());
             }
+            "undo-inhibit-record-point" => self.set_undo_inhibit_record_point(value.is_truthy()),
             _ => {}
         }
     }
@@ -1635,6 +1638,11 @@ impl Interpreter {
                 Value::Nil
             }),
             "symbols-with-pos-enabled" => Some(if self.symbols_with_positions_enabled() {
+                Value::T
+            } else {
+                Value::Nil
+            }),
+            "undo-inhibit-record-point" => Some(if self.undo_inhibit_record_point {
                 Value::T
             } else {
                 Value::Nil
@@ -1673,6 +1681,19 @@ impl Interpreter {
             || self.has_forwarded_eval_local(self.current_buffer_id())
         {
             self.refresh_forwarded_eval_cells();
+        }
+    }
+
+    /// undo.c's `undo_inhibit_record_point', which record_point reads in
+    /// whichever buffer it records: every buffer holds the C variable's
+    /// value, the current one again at each switch (a buffer made since
+    /// the last store learns it there).
+    fn set_undo_inhibit_record_point(&mut self, inhibit: bool) {
+        self.undo_inhibit_record_point = inhibit;
+        for buffer in std::iter::once(self.buffer)
+            .chain(self.inactive_buffers.iter().map(|(_, buffer)| *buffer))
+        {
+            buffer.borrow_mut().set_undo_inhibit_record_point(inhibit);
         }
     }
 

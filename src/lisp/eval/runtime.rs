@@ -629,6 +629,11 @@ impl Interpreter {
             current_buffer.borrow_mut().leave_position_markers();
             self.buffer.borrow_mut().enter_position_markers();
         }
+        // The C variable record_point reads, which a buffer made since its
+        // last store has yet to hold.
+        self.buffer
+            .borrow_mut()
+            .set_undo_inhibit_record_point(self.undo_inhibit_record_point);
         // A localized GNU forwarding symbol loads the newly current
         // buffer's cell into its C variable during a buffer switch.
         self.refresh_forwarded_eval_cells_after_switch(current_id);

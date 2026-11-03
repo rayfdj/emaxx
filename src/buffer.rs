@@ -198,6 +198,11 @@ pub struct Buffer {
     /// records into the first change after a boundary.
     point_before_last_command_or_undo: Option<usize>,
 
+    /// undo.c's `undo_inhibit_record_point' (`undo-inhibit-record-point'),
+    /// a C variable each buffer holds as the interpreter last stored it,
+    /// which turns record_point off.
+    undo_inhibit_record_point: bool,
+
     /// Overlays attached to this buffer.
     pub overlays: crate::overlay::OverlayTree,
 
@@ -242,6 +247,7 @@ impl Clone for Buffer {
             undo_list: self.undo_list,
             keymap: self.keymap,
             point_before_last_command_or_undo: self.point_before_last_command_or_undo,
+            undo_inhibit_record_point: self.undo_inhibit_record_point,
             overlays: crate::overlay::OverlayTree::default(),
             inhibit_hooks: self.inhibit_hooks,
             text_conversion_style: self.text_conversion_style,
@@ -1139,6 +1145,7 @@ impl Buffer {
             undo_list: Value::Nil,
             keymap: Value::Nil,
             point_before_last_command_or_undo: None,
+            undo_inhibit_record_point: false,
             overlays: crate::overlay::OverlayTree::default(),
             inhibit_hooks: false,
             text_conversion_style: Value::Nil,
@@ -1175,6 +1182,7 @@ impl Buffer {
             undo_list: Value::Nil,
             keymap: Value::Nil,
             point_before_last_command_or_undo: None,
+            undo_inhibit_record_point: false,
             overlays: crate::overlay::OverlayTree::default(),
             inhibit_hooks: false,
             text_conversion_style: Value::Nil,
@@ -3690,12 +3698,22 @@ impl Buffer {
         self.point_before_last_command_or_undo = point;
     }
 
+    /// The value of `undo-inhibit-record-point' as the interpreter stores
+    /// it.
+    pub(crate) fn set_undo_inhibit_record_point(&mut self, inhibit: bool) {
+        self.undo_inhibit_record_point = inhibit;
+    }
+
     /// undo.c:record_point: a change after a boundary (or into an empty
     /// list) records where point stood before the last command or
     /// `undo-boundary', when that was in this buffer and is not BEG; the
     /// first change since the buffer was saved records its (t . TIME)
-    /// first, the boundary test made before it.
+    /// first, the boundary test made before it.  Under
+    /// `undo-inhibit-record-point' it records neither.
     fn record_point(&mut self, beg: usize) {
+        if self.undo_inhibit_record_point {
+            return;
+        }
         let at_boundary = self
             .undo_list
             .cons_values()
@@ -3903,6 +3921,7 @@ impl Buffer {
             undo_list: parts.undo_list,
             keymap: parts.keymap,
             point_before_last_command_or_undo: None,
+            undo_inhibit_record_point: false,
             overlays: crate::overlay::OverlayTree::default(),
             inhibit_hooks: parts.inhibit_hooks,
             text_conversion_style: parts.text_conversion_style,

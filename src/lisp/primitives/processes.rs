@@ -206,11 +206,20 @@ fn exec_like_gnu(
         return;
     };
 
-    // SAFETY: the child only calls execve, write, strerror and _exit on data
-    // owned by `image', which the closure owns whole; GNU's own vfork child
-    // makes the same strerror call.
+    // callproc.c:child_setup's restore_nofile_limit: the vfork path a pty
+    // takes gives the child the limit Emacs started with; a posix_spawn
+    // child keeps the lowered one.
+    let nofile_limit = if pty { nofile_limit_to_restore() } else { None };
+    // SAFETY: the child only calls setrlimit, execve, write, strerror and
+    // _exit on data owned by `image' and the closure; GNU's own vfork child
+    // makes the same calls.
     unsafe {
-        command.pre_exec(move || image.exec_in_child(pty));
+        command.pre_exec(move || {
+            if let Some(limit) = &nofile_limit {
+                libc::setrlimit(libc::RLIMIT_NOFILE, limit);
+            }
+            image.exec_in_child(pty)
+        });
     }
 }
 
@@ -1435,6 +1444,45 @@ pub(crate) const FD_SETSIZE: std::os::fd::RawFd = 10000;
 #[cfg(all(unix, not(target_os = "macos")))]
 pub(crate) const FD_SETSIZE: std::os::fd::RawFd = libc::FD_SETSIZE as std::os::fd::RawFd;
 
+/// process.c's `nofile_limit': RLIMIT_NOFILE as the process found it,
+/// kept when init_process_emacs lowered its soft limit to FD_SETSIZE (GNU
+/// leaves a soft limit of 0 there otherwise, which restores nothing).
+#[cfg(unix)]
+static NOFILE_LIMIT: OnceLock<Option<libc::rlimit>> = OnceLock::new();
+
+/// process.c:init_process_emacs's "Don't allocate more than FD_SETSIZE
+/// file descriptors for Emacs itself": a soft RLIMIT_NOFILE above
+/// FD_SETSIZE comes down to it, so a descriptor no fd_set can hold is
+/// EMFILE wherever Emacs opens one.  The limit found is restore_nofile_limit's.
+#[cfg(unix)]
+pub(crate) fn init_process_nofile_limit() {
+    NOFILE_LIMIT.get_or_init(|| {
+        let mut limit = std::mem::MaybeUninit::<libc::rlimit>::uninit();
+        // SAFETY: getrlimit fills LIMIT on success, the only case read.
+        if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, limit.as_mut_ptr()) } != 0 {
+            return None;
+        }
+        // SAFETY: the successful call above initialized LIMIT.
+        let found = unsafe { limit.assume_init() };
+        if found.rlim_cur <= FD_SETSIZE as libc::rlim_t {
+            return None;
+        }
+        let lowered = libc::rlimit {
+            rlim_cur: FD_SETSIZE as libc::rlim_t,
+            ..found
+        };
+        // SAFETY: LOWERED is a valid rlimit, no larger than the one found.
+        (unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &lowered) } == 0).then_some(found)
+    });
+}
+
+/// The limit process.c:restore_nofile_limit gives back to a child:
+/// RLIMIT_NOFILE as Emacs started, when init_process_emacs lowered it.
+#[cfg(unix)]
+fn nofile_limit_to_restore() -> Option<libc::rlimit> {
+    NOFILE_LIMIT.get().copied().flatten()
+}
+
 /// report_file_errno (WHAT, Qnil, EMFILE): the error of a channel
 /// FD_SETSIZE refuses.
 #[cfg(unix)]
@@ -1660,8 +1708,9 @@ fn emacs_posix_spawn(
 /// pipes (or the pty) its connection type asks for, and the child's
 /// standard error on its own pipe when it goes to a process or buffer of
 /// its own, else where its output goes.  None leaves the spawn to the fork
-/// path: an argument with a NUL, a pty without a name, or an exec on the
-/// pty that fails, whose report the vfork path's child makes.
+/// path: an argument with a NUL, a pty without a name, a pty child owed
+/// the open-files limit Emacs started with, or an exec on the pty that
+/// fails, whose report the vfork path's child makes.
 #[cfg(target_os = "linux")]
 fn posix_spawn_process(
     program: &std::ffi::OsStr,
@@ -1685,6 +1734,12 @@ fn posix_spawn_process(
             &error,
         ))
     };
+    // A pty child takes callproc.c's vfork path, whose child_setup gives
+    // it back the open-files limit Emacs started with: no spawn attribute
+    // sets a limit, so such a child is made on the fork path.
+    if (input_pty || output_pty) && nofile_limit_to_restore().is_some() {
+        return Ok(None);
+    }
     let (pty_master, pty_slave, pty_name) = if input_pty || output_pty {
         let (master, slave, name) = open_emacs_pty()?;
         let Some(name) = name.and_then(|name| std::ffi::CString::new(name).ok()) else {

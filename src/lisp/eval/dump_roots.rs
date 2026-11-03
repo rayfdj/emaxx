@@ -240,6 +240,10 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
         "the forwarded C slot of debug-on-next-call, refilled likewise",
     ),
     (
+        "undo_inhibit_record_point",
+        "the forwarded C slot of undo-inhibit-record-point, refilled likewise with the buffers' copies",
+    ),
+    (
         "executing_kbd_macro",
         "macros.c's C executing_kbd_macro, nil when no macro runs; Fdump_emacs_portable runs from loadup.el with none",
     ),
