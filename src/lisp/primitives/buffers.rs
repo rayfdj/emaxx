@@ -1249,7 +1249,7 @@ pub(crate) fn scan_for_column(
 /// MULTIBYTE_BYTES_WIDTH: a display table's glyph count for the
 /// character CODE, else its `char-width-table' width (buffer.h
 /// sanitize_char_width).
-fn multibyte_char_width(
+pub(crate) fn multibyte_char_width(
     interp: &Interpreter,
     env: &Env,
     code: u32,

@@ -488,6 +488,349 @@ impl StringCompositions {
     }
 }
 
+/// composite.c composition_gstring_p: GSTRING is a vector of a header
+/// (a font object, a coding system or nil, then natural numbers), an id
+/// that is nil or a natural number, and glyph vectors up to the first nil.
+fn composition_gstring_p(interp: &mut Interpreter, env: &mut Env, gstring: &Value) -> bool {
+    if !is_vector_value(gstring) {
+        return false;
+    }
+    let Ok(items) = vector_items(gstring) else {
+        return false;
+    };
+    if items.len() < 2 || !is_vector_value(&items[0]) {
+        return false;
+    }
+    let Ok(header) = vector_items(&items[0]) else {
+        return false;
+    };
+    if header.len() < 2 {
+        return false;
+    }
+    let font = header[0];
+    if !font.is_nil()
+        && !crate::lisp::primitives::coding_system_p(interp, &font)
+        && !super::call(interp, "fontp", &[font, Value::symbol("font-object")], env)
+            .is_ok_and(|value| !value.is_nil())
+    {
+        return false;
+    }
+    let natnum = |value: &Value| matches!(value.kind(), Kind::Integer(n) if n >= 0);
+    if !header[1..].iter().all(natnum) {
+        return false;
+    }
+    if !items[1].is_nil() && !natnum(&items[1]) {
+        return false;
+    }
+    for glyph in &items[2..] {
+        if glyph.is_nil() {
+            break;
+        }
+        if !is_vector_value(glyph) || !vector_items(glyph).is_ok_and(|glyph| glyph.len() == 10) {
+            return false;
+        }
+    }
+    true
+}
+
+/// What a composition iterator is stepping over: a static composition's
+/// characters and width, or an automatic composition's glyph-string with
+/// its glyph count and the glyph cluster [FROM, TO) to deliver next.
+enum CompositionStep {
+    Static {
+        nchars: usize,
+        width: i64,
+    },
+    Automatic {
+        gstring: Value,
+        nglyphs: usize,
+        from: usize,
+        to: usize,
+    },
+}
+
+/// dispextern.h struct composition_it as indent.c's compute_motion drives
+/// it forward over the current buffer in a window: where composition may
+/// happen next (STOP_POS), what may happen there (CH: -2 nothing, -1 a
+/// static composition, else the character whose
+/// `composition-function-table' rule RULE_IDX looks LOOKBACK characters
+/// back), and the composition being stepped over.
+pub(crate) struct CompositionIterator {
+    pub(crate) stop_pos: usize,
+    ch: i64,
+    rule_idx: usize,
+    lookback: usize,
+    current: Option<CompositionStep>,
+    /// The characters and columns composition_update_it last delivered.
+    pub(crate) nchars: usize,
+    pub(crate) width: i64,
+}
+
+impl CompositionIterator {
+    pub(crate) fn new() -> Self {
+        Self {
+            stop_pos: 0,
+            ch: -2,
+            rule_idx: 0,
+            lookback: 0,
+            current: None,
+            nchars: 0,
+            width: 0,
+        }
+    }
+
+    /// cmp_it.id >= 0: a composition is being stepped over.
+    pub(crate) fn composing(&self) -> bool {
+        self.current.is_some()
+    }
+
+    /// composition_compute_stop_pos forward from CHARPOS toward ENDPOS
+    /// (looking at no more than the 500 characters
+    /// forward_to_next_line_start does): the start of the next valid
+    /// static composition, else the first character there whose
+    /// `composition-function-table' rule's look-back stays at or after
+    /// CHARPOS, else a safe point MAX_AUTO_COMPOSITION_LOOKBACK before the
+    /// limit or after a newline.
+    pub(crate) fn compute_stop_pos(
+        &mut self,
+        interp: &Interpreter,
+        env: &Env,
+        mut charpos: usize,
+        mut endpos: usize,
+    ) {
+        const MAX_NEWLINE_DISTANCE: usize = 500;
+        const MAX_AUTO_COMPOSITION_LOOKBACK: usize = 3;
+        if charpos < endpos && endpos > charpos + MAX_NEWLINE_DISTANCE {
+            endpos = charpos + MAX_NEWLINE_DISTANCE;
+        }
+        self.current = None;
+        self.ch = -2;
+        self.stop_pos = endpos;
+        if charpos >= endpos {
+            // compute_motion only scans forward; at or past ENDPOS there
+            // is nothing to look for.
+            return;
+        }
+        if let Ok(Some((start, end, prop))) =
+            find_composition(interp, charpos, Some(endpos), &Value::Nil)
+            && start >= charpos
+            && composition_valid_p(interp, start, end, prop)
+        {
+            self.stop_pos = start;
+            endpos = start;
+            self.ch = -1;
+        }
+        if !interp.buffer.borrow().is_multibyte() || inhibit_auto_composition(interp, env) {
+            return;
+        }
+        let start = charpos;
+        while charpos < endpos {
+            let c = interp.buffer.borrow().char_at(charpos);
+            charpos += 1;
+            let Some(c) = c else {
+                break;
+            };
+            if c == '\n' {
+                self.ch = -2;
+                break;
+            }
+            for (ridx, rule) in composition_rules_for_char(interp, env, c)
+                .into_iter()
+                .enumerate()
+            {
+                let Ok(items) = vector_items(&rule) else {
+                    continue;
+                };
+                if items.len() != 3 {
+                    continue;
+                }
+                let Kind::Integer(back) = items[1].kind() else {
+                    continue;
+                };
+                if back >= 0 && (charpos - 1) as i64 - back >= start as i64 {
+                    self.rule_idx = ridx;
+                    self.lookback = back as usize;
+                    self.stop_pos = charpos - 1 - back as usize;
+                    self.ch = c as i64;
+                    return;
+                }
+            }
+        }
+        if charpos == endpos {
+            // Some character after ENDPOS may compose with characters
+            // before it: stop at the safe point.
+            charpos = endpos
+                .saturating_sub(MAX_AUTO_COMPOSITION_LOOKBACK)
+                .max(start);
+        }
+        self.stop_pos = charpos;
+    }
+
+    /// composition_reseat_it at CHARPOS for window display: whether a
+    /// composition begins there -- the static one its `composition'
+    /// property makes, or what `auto-composition-function' composes by the
+    /// rules for the character found -- else the next stop position past it.
+    pub(crate) fn reseat(
+        &mut self,
+        interp: &mut Interpreter,
+        env: &mut Env,
+        charpos: usize,
+        endpos: usize,
+    ) -> bool {
+        if self.ch == -2 {
+            self.compute_stop_pos(interp, env, charpos, endpos);
+            if self.ch == -2 || self.stop_pos != charpos {
+                return false;
+            }
+        }
+        if self.ch < 0 {
+            // A static composition.
+            if let Ok(Some((start, end, prop))) =
+                find_composition(interp, charpos, None, &Value::Nil)
+            {
+                let nchars = end - start;
+                if let Ok(Some(id)) =
+                    get_composition_id(interp, env, charpos, nchars, prop, &Value::Nil)
+                {
+                    self.current = Some(CompositionStep::Static {
+                        nchars,
+                        width: interp.composition_states[id].width,
+                    });
+                    return true;
+                }
+            }
+        } else if charpos < endpos
+            && let Some(c) = char::from_u32(self.ch as u32)
+        {
+            let mut lgstring = Value::Nil;
+            for rule in composition_rules_for_char(interp, env, c)
+                .into_iter()
+                .skip(self.rule_idx)
+            {
+                let Ok(items) = vector_items(&rule) else {
+                    continue;
+                };
+                let Some(back) = items.get(1).and_then(|back| match back.kind() {
+                    Kind::Integer(back) if items.len() == 3 => Some(back),
+                    _ => None,
+                }) else {
+                    continue;
+                };
+                if back != self.lookback as i64 {
+                    break;
+                }
+                let gstring = autocmp_chars(interp, env, &items, charpos, endpos, &Value::Nil)
+                    .unwrap_or(Value::Nil);
+                if composition_gstring_p(interp, env, &gstring) {
+                    lgstring = gstring;
+                    break;
+                }
+                // Perhaps the font lacks the characters: try another rule.
+            }
+            if !lgstring.is_nil() {
+                let glyphs = vector_items(&lgstring).unwrap_or_default();
+                let nglyphs = glyphs[2..]
+                    .iter()
+                    .take_while(|glyph| !glyph.is_nil())
+                    .count();
+                self.current = Some(CompositionStep::Automatic {
+                    gstring: lgstring,
+                    nglyphs,
+                    from: 0,
+                    to: nglyphs,
+                });
+                return true;
+            }
+        }
+        // no_composition.
+        if charpos == endpos {
+            return false;
+        }
+        let next = if charpos < endpos {
+            charpos + 1
+        } else {
+            charpos - 1
+        };
+        self.compute_stop_pos(interp, env, next, endpos);
+        false
+    }
+
+    /// composition_update_it: the characters and columns of the next part
+    /// to step over -- a static composition whole, an automatic one a
+    /// glyph cluster (the glyphs from FROM sharing its first character) at
+    /// a time, its width that of the characters it covers.
+    pub(crate) fn update(&mut self, interp: &Interpreter, env: &Env) {
+        match &mut self.current {
+            Some(CompositionStep::Static { nchars, width }) => {
+                self.nchars = *nchars;
+                self.width = *width;
+            }
+            Some(CompositionStep::Automatic {
+                gstring,
+                nglyphs,
+                from,
+                to,
+            }) => {
+                let items = vector_items(gstring).unwrap_or_default();
+                let header = items
+                    .first()
+                    .and_then(|header| vector_items(header).ok())
+                    .unwrap_or_default();
+                if *nglyphs == 0 {
+                    self.nchars = header.len().saturating_sub(1);
+                    self.width = 0;
+                    *from = 0;
+                    *to = 0;
+                    return;
+                }
+                let lglyph = |index: usize, slot: usize| {
+                    items
+                        .get(index + 2)
+                        .and_then(|glyph| vector_items(glyph).ok())
+                        .and_then(|glyph| glyph.get(slot).and_then(|v| v.integer_value()))
+                        .unwrap_or(0) as usize
+                };
+                let cluster = lglyph(*from, 0);
+                *to = *from + 1;
+                while *to < *nglyphs && lglyph(*to, 0) == cluster {
+                    *to += 1;
+                }
+                self.nchars = (lglyph(*from, 1) + 1).saturating_sub(cluster);
+                self.width = (0..self.nchars)
+                    .filter_map(|i| header.get(cluster + i + 1).and_then(|c| c.integer_value()))
+                    .map(|c| crate::lisp::primitives::character_width(interp, c as u32, env) as i64)
+                    .sum();
+            }
+            None => {}
+        }
+    }
+
+    /// After stepping over what update delivered: past the end of the
+    /// composition (cmp_it.to == cmp_it.nglyphs) the next stop position is
+    /// looked for from CHARPOS; else the next glyph cluster follows.
+    pub(crate) fn advance(
+        &mut self,
+        interp: &Interpreter,
+        env: &Env,
+        charpos: usize,
+        endpos: usize,
+    ) {
+        let finished = match &mut self.current {
+            Some(CompositionStep::Automatic {
+                nglyphs, from, to, ..
+            }) if *to != *nglyphs => {
+                *from = *to;
+                false
+            }
+            _ => true,
+        };
+        if finished {
+            self.current = None;
+            self.compute_stop_pos(interp, env, charpos, endpos);
+        }
+    }
+}
+
 /// composite.c run_composition_function: the modification function of
 /// PROP, a symbol (Ffboundp), called on FROM..TO widened over the
 /// invalid compositions next to it.

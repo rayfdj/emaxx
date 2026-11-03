@@ -1538,6 +1538,18 @@ impl Buffer {
         None
     }
 
+    /// search.c find_before_next_newline (FROM, TO, 1): the position of
+    /// the first newline from FROM on before TO, else TO.
+    pub(crate) fn find_before_next_newline(&self, from: usize, to: usize) -> usize {
+        if from >= to {
+            return to;
+        }
+        match self.newline_at_or_after(from.saturating_sub(1)) {
+            Some(index) if index + 1 < to => index + 1,
+            _ => to,
+        }
+    }
+
     /// Whether every character of the text is one byte, so that a char
     /// index within a chunk is its byte index (the counts are kept).
     pub(crate) fn text_is_ascii(&self) -> bool {

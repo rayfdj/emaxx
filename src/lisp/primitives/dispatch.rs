@@ -9,8 +9,8 @@ mod comp;
 pub(crate) use comp::{comp_el_to_eln_rel_filename, native_elisp_load};
 mod composition;
 pub(crate) use composition::{
-    CHECK_ALL, CHECK_BORDER, CHECK_HEAD, CHECK_INSIDE, CHECK_TAIL, StringCompositions,
-    update_compositions,
+    CHECK_ALL, CHECK_BORDER, CHECK_HEAD, CHECK_INSIDE, CHECK_TAIL, CompositionIterator,
+    StringCompositions, update_compositions,
 };
 pub(crate) mod display;
 mod emacs_module;

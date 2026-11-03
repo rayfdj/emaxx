@@ -1071,6 +1071,27 @@ fn loops_before_a_class_charset_compare_bitmaps_as_mutually_exclusive_charset() 
 }
 
 #[test]
+fn batch_vertical_motion_and_compute_motion_lay_text_out_as_indent_c() {
+    // indent.c vmotion and compute_motion: noninteractively vertical-motion
+    // continues lines at the buffer's tab-width, not 8; hidden lines of
+    // selective display are skipped going up; a static composition takes
+    // its width; an overlay's before-string counts its columns; and an
+    // automatic composition steps a glyph cluster at a time, so after
+    // invisible text inside one its last cluster takes the next character.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list
+  (with-temp-buffer (insert (make-string 15 ?\t) " text\n") (setq tab-width 2) (goto-char 12) (list (vertical-motion 0) (point) (progn (goto-char 1) (vertical-motion 1)) (point)))
+  (with-temp-buffer (insert (make-string 15 ?\t) " text\n") (goto-char 12) (list (vertical-motion 0) (point) (vertical-motion -1) (point)))
+  (with-temp-buffer (insert "abcdef") (compose-region 2 4 ?X) (mapcar (lambda (to) (compute-motion 1 '(0 . 0) to nil nil nil nil)) '(2 3 4 7)))
+  (with-temp-buffer (insert "abcdef") (setq tab-width 3) (overlay-put (make-overlay 3 4) 'before-string "\t") (compute-motion 1 '(0 . 0) 5 nil nil nil nil))
+  (with-temp-buffer (insert "ab\u0301 xyz") (put-text-property 3 4 'invisible t) (mapcar (lambda (to) (car (cdr (compute-motion 1 '(0 . 0) to nil nil nil nil)))) '(2 3 4 5 6)))
+  (with-temp-buffer (insert "a\tb\n  x\n    y\nz") (setq selective-display 2) (goto-char (point-max)) (list (vertical-motion -1) (point) (vertical-motion -1) (point))))"##,
+        r##"((0 1 1 22) (0 11 -1 1) ((2 1 0 1 nil) (2 1 0 1 nil) (4 2 0 2 nil) (7 5 0 4 nil)) (5 7 0 7 nil) (1 2 2 2 3) (-1 1 0 1))"##,
+        "batch vmotion and compute_motion",
+    );
+}
+
+#[test]
 fn looking_at_does_not_create_or_assign_unrelated_lisp_variables() {
     assert_oracle_contract_matches_interpreter(
         r#"(with-temp-buffer

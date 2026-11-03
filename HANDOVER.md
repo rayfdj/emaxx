@@ -13331,6 +13331,52 @@ setup_process_coding_systems's check now refuses). A 13-form
   process's values match GNU. Local validation: the grouped gate's
   3,485 library tests, the integration targets and clippy with
   `--all-targets --all-features -D warnings' pass.
+- **Round 275: noninteractive `vertical-motion' and `compute-motion' as
+  indent.c's vmotion and compute_motion.** A fuzz of the indentation
+  commands (3,600 edit sequences of current-column, move-to-column,
+  indent-to, indent-rigidly, tabify and untabify, forward-line,
+  line-number-at-pos and vertical-motion under varied tab-width,
+  indent-tabs-mode and invisibility) found vertical-motion answering
+  differently: noninteractively it laid screen lines out with tabs eight
+  columns wide whatever `tab-width' said. Fvertical_motion's batch path
+  is now vmotion, upward a line at a time past the lines selective
+  display or an invisible newline hides and then compute_motion down
+  from the start of point's line, with the current buffer shown in the
+  window meanwhile (the line-based scrolling and move-to-window-line
+  that call it follow); and `compute-motion' is compute_motion itself:
+  tab stops at the buffer's tab-width with HSCROLL and TAB-OFFSET,
+  control characters by ctl-arrow, the window's display table (its glyph
+  vectors, and the invis vector selective display's ellipsis takes),
+  multibyte widths from char-width-table, selective display's hidden
+  lines and ^M, the window's overlay before- and after-strings by their
+  widths, invisible text skipped as skip_invisible skips it, truncation
+  and continuation at the margin with a wide character moved whole, and
+  compositions: a static one takes its width and an automatic one is
+  stepped a glyph cluster at a time by its characters' widths, through
+  the stops composition_compute_stop_pos finds and the reseats
+  composition_reseat_it makes, so after invisible text inside a
+  composition its last cluster takes the next character as GNU's does.
+  One GNU quirk is not reproduced: there the byte position then advances
+  by the composed characters' bytes rather than the buffer's, so later
+  characters are read from the wrong bytes until the next
+  resynchronization; Emaxx goes on reading characters. With the port
+  1,600 random buffers under 12 vertical motions and 6 compute-motion
+  calls each match GNU but for one buffer that meets that quirk, and the
+  indentation fuzz matches throughout. Fuzzes of text-property queries
+  (3,600 sequences of the next and previous property-change family,
+  text-property-any and -not-all, add-face-text-property,
+  alter-text-property and text-property-search), coding systems (2,000
+  encodings, decodings and detections over 37 coding systems), words,
+  comments and syntax-table scanning (1,600 buffers under five comment
+  and fence styles), file names (2,400 calls of expand-file-name,
+  substitute-in-file-name, the file-name- family and
+  abbreviate-file-name) and narrowing (2,400 sequences of narrowing,
+  widening, edits, searches, line motion and markers within
+  restrictions) match GNU throughout. A contract for the batch motions
+  matches GNU. Local validation: the grouped gate's 3486 library
+  tests, the integration targets (cli after one rerun: its GNU oracle's
+  `sleep' child outlived the five-second check while a release build
+  ran) and clippy with `--all-targets --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -15286,6 +15332,23 @@ comp-tests' (1,313 against 1,093) and electric-tests' (458 against
 10,365), ert-tests (27,141 against 25,621), semantic-utest-ia (2,433
 against 1,504), mule-tests (1,759 against 1,052) and package-tests
 (6,387 against 5,704).
+
+**On `e46e5c3`** (round 274): the full Rust gate (run 41625480401)
+passed. Frozen (run 41625484563) failed at both attempts on the GNU
+oracle's eglot rust-analyzer timeout alone
+(`eglot-test-rust-completion-exit-function` failed for the oracle and
+passed for Emaxx), every other outcome matching, 7,927 of 7,928. On the
+first attempt's slower runner (GNU's own setup median 95 ms against
+round 273's 66), setup 75.2 s against 62.5 s (1.203), test bodies 278.7
+s against 264.8 s (1.053), in all 1.074; the second attempt's were
+1.356, 1.065 and 1.120 (GNU's median 81 ms). Per file, the first
+attempt's setup is 24.5 ms over GNU's on average (12.7 s over 519
+files, a median of 112 ms against 95), electric-tests' the most over
+(797 against 524) before comp-tests' (1,911 against 1,672) and
+gnus-icalendar-tests' (589 against 472), and the widest body gaps are
+ert-tests (39,267 ms against 36,990), comp-tests (16,384 against
+14,172), tramp-tests (19,000 against 17,258), mule-tests (2,826 against
+1,840) and semantic-utest-ia (3,767 against 2,821).
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'
