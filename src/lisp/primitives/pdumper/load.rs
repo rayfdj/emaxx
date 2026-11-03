@@ -1185,6 +1185,10 @@ impl Loader<'_> {
                 ));
             }
         }
+        // The frame's windows, made before the image's buffers replaced
+        // those with their ids, keep their markers in the buffers now
+        // installed.
+        self.interp.rebind_window_markers();
         // Fmake_indirect_buffer's markers for the family's points and
         // bounds.
         let current_id = self.interp.current_buffer_id();

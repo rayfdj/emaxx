@@ -587,7 +587,7 @@ impl Interpreter {
                 .create_pseudovector(
                     super::RecordKind::Window,
                     "window",
-                    p::window_record_slots(Some(buffer), point, kind, geometry),
+                    p::window_record_slots(self, Some(buffer), point, kind, geometry),
                 )
                 .kind()
             else {

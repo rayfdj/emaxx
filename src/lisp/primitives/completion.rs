@@ -1509,12 +1509,6 @@ pub(crate) fn run_active_minibuffer<T>(
     minibuffer: ActiveMinibuffer,
     body: impl FnOnce(&mut Interpreter, &mut Env) -> Result<T, LispError>,
 ) -> Result<T, LispError> {
-    // read_minibuf registers its window-configuration restore BEFORE
-    // selecting the minibuffer window or running the setup hook: a
-    // pop-up the hook itself makes (tmm-add-prompt's completion window)
-    // vanishes when the read finishes, on every exit path, quits
-    // included, and the pre-read window selection returns.
-    let saved_windows = minibuffer.saved_windows.clone();
     // The recursive command loop leaves `this-command' and its companions
     // as its last command set them; call-interactively, not read_minibuf,
     // restores the outer command's once its arguments are read.
@@ -1545,15 +1539,9 @@ pub(crate) fn run_active_minibuffer<T>(
         with_recursive_edit_bindings(interp, env, body)
     })();
     // The unwinding of every exit: `minibuffer-exit-hook' first, then
-    // read_minibuf_unwind.
+    // the rest of read_minibuf's unwind records.
     let exit = run_exit_minibuf_hook(interp, minibuffer.buffer_id, env);
-    restore_active_minibuffer(interp, minibuffer, env);
-    if interp
-        .lookup_var("read-minibuffer-restore-windows", env)
-        .is_none_or(|restore| restore.is_truthy())
-    {
-        let _ = interp.restore_window_configuration(saved_windows);
-    }
+    unwind_active_minibuffer(interp, minibuffer, env)?;
     let value = result?;
     exit.map(|()| value)
 }
@@ -1561,12 +1549,13 @@ pub(crate) fn run_active_minibuffer<T>(
 pub(crate) struct ActiveMinibuffer {
     pub(crate) buffer_id: u64,
     /// The window tree as it stood BEFORE the minibuffer window was
-    /// selected — read_minibuf saves its configuration first, so the
-    /// restore never re-selects the minibuffer.
-    saved_windows: crate::lisp::eval::WindowConfigurationSnapshot,
+    /// selected, when `read-minibuffer-restore-windows' had read_minibuf
+    /// register its restore: a pop-up the setup hook makes
+    /// (tmm-add-prompt's completion window) vanishes when the read
+    /// finishes, on every exit path, quits included.
+    saved_windows: Option<crate::lisp::eval::WindowConfigurationSnapshot>,
     saved_buffer_id: u64,
     saved_selected_window_id: u64,
-    saved_selected_window_buffer_id: u64,
     previous_minibuffer_selected_window_id: Option<u64>,
     previous_runtime: crate::lisp::eval::MinibufferRuntimeState,
 }
@@ -1673,12 +1662,32 @@ pub(crate) fn activate_minibuffer(
         multibyte: false,
         extended_chars: Vec::new(),
     });
-    let saved_windows = interp.snapshot_window_configuration();
+    // read_minibuf: a minibuffer window showing an active minibuffer (a
+    // recursive read) pushes it onto its previous buffers, for
+    // minibuffer_unwind to show again when this read ends.
+    let minibuffer_window = interp.minibuffer_window_value();
+    if let Some(shown) = super::window_buffer_id(interp, &minibuffer_window)
+        .and_then(|id| interp.buffer_identity_value(id))
+        && this_minibuffer_depth(interp, &shown) != 0
+        && interp
+            .lookup_function("push-window-buffer-onto-prev", env)
+            .is_ok()
+    {
+        call_function_value(
+            interp,
+            &Value::symbol("push-window-buffer-onto-prev"),
+            &[minibuffer_window],
+            env,
+        )?;
+    }
+    let saved_windows = interp
+        .lookup_var("read-minibuffer-restore-windows", env)
+        .is_none_or(|restore| restore.is_truthy())
+        .then(|| interp.snapshot_window_configuration());
     let depth = interp.minibuffer_depth().saturating_add(1);
     let buffer_id = get_minibuffer(interp, depth);
     let saved_buffer_id = interp.current_buffer_id();
     let saved_selected_window_id = interp.selected_window_id();
-    let saved_selected_window_buffer_id = interp.selected_window_buffer_id();
     let previous_minibuffer_selected_window_id =
         interp.replace_minibuffer_selected_window_id(Some(saved_selected_window_id));
     let default_directory = interp.lookup_var("default-directory", env);
@@ -1692,25 +1701,19 @@ pub(crate) fn activate_minibuffer(
     // "Defeat (setq-default truncate-lines t), since truncated lines do
     // not work correctly in minibuffers."
     interp.set_buffer_local_value(buffer_id, "truncate-lines", Value::Nil);
-    // GNU reads in the minibuffer window: the minibuffer buffer becomes
-    // current without displaying itself in the selected text window,
-    // whose glass keeps showing its own buffer during the read.  The
-    // window's point slot is saved by hand — the raw selection swap
-    // below skips select-window's bookkeeping.
-    let entry_point = interp.buffer.borrow().point();
-    if let Some(window) = interp.find_record_mut(saved_selected_window_id) {
-        if window.slots.len() <= super::WINDOW_POINT_SLOT {
-            window
-                .slots
-                .resize(super::WINDOW_POINT_SLOT + 1, Value::Nil);
-        }
-        window.slots[super::WINDOW_POINT_SLOT] = Value::Integer(entry_point as i64);
-    }
     interp.set_current_buffer_id(buffer_id)?;
     // "Empty out the minibuffers of all frames, except those frames where
     // there is an active minibuffer": the level-0 one goes inactive.
     if let Some((empty, _)) = interp.find_buffer(" *Minibuf-0*") {
         set_minibuffer_mode(interp, empty, 0, env)?;
+    }
+    // "Display this minibuffer in the proper window" (set_window_buffer,
+    // its markers at the buffer's point before the erase) and
+    // Fselect_window it: the read happens there, never in the entry
+    // window.
+    if let Kind::Record(minibuffer_window_id) = minibuffer_window.kind() {
+        interp.show_buffer_in_window(minibuffer_window_id.id, buffer_id, false);
+        super::call(interp, "select-window", &[minibuffer_window], env)?;
     }
     // read_minibuf erases the buffer and inserts the prompt with
     // `inhibit-read-only' and `inhibit-modification-hooks' bound: the
@@ -1796,13 +1799,6 @@ pub(crate) fn activate_minibuffer(
         }
     }
 
-    // Select the minibuffer window for the read, GNU's read_minibuf: the
-    // minibuffer buffer shows there, never in the entry window.
-    if let Kind::Record(minibuffer_window_id) = interp.minibuffer_window_value().kind() {
-        interp.set_selected_window_id(minibuffer_window_id.id);
-        interp.set_selected_window_buffer_id(buffer_id);
-    }
-
     let previous_runtime =
         interp.begin_minibuffer_runtime(buffer_id, interp.selected_window_id(), prompt_string.text);
 
@@ -1811,7 +1807,6 @@ pub(crate) fn activate_minibuffer(
         saved_windows,
         saved_buffer_id,
         saved_selected_window_id,
-        saved_selected_window_buffer_id,
         previous_minibuffer_selected_window_id,
         previous_runtime,
     };
@@ -1829,15 +1824,8 @@ pub(crate) fn activate_minibuffer(
         // the initial input's Fforward_char or clear-message-function.
         // Run the exit hook before restoring state,
         // and restore even if that hook itself exits nonlocally.
-        let saved_windows = active.saved_windows.clone();
         let exit_result = run_exit_minibuf_hook(interp, buffer_id, env);
-        restore_active_minibuffer(interp, active, env);
-        if interp
-            .lookup_var("read-minibuffer-restore-windows", env)
-            .is_none_or(|restore| restore.is_truthy())
-        {
-            interp.restore_window_configuration(saved_windows)?;
-        }
+        unwind_active_minibuffer(interp, active, env)?;
         exit_result?;
         return Err(error);
     }
@@ -1872,6 +1860,51 @@ pub(crate) fn check_recursive_minibuffer(interp: &Interpreter, env: &Env) -> Res
     } else {
         Err(LispError::Throw(Value::symbol("exit"), message))
     }
+}
+
+/// minibuf.c:minibuffer_unwind: the minibuffer window shows the next less
+/// nested minibuffer, the first of its previous buffers when that is live
+/// (popped, with its start and point), or else the null minibuffer.
+fn minibuffer_unwind(interp: &mut Interpreter, env: &mut Env) -> Result<(), LispError> {
+    let window = interp.minibuffer_window_value();
+    let Kind::Record(window_id) = window.kind() else {
+        return Ok(());
+    };
+    let window_id = window_id.id;
+    // WINDOW_LIVE_P: a live window shows a buffer.
+    if super::window_buffer_id(interp, &window).is_none() {
+        return Ok(());
+    }
+    let previous = interp
+        .find_record(window_id)
+        .and_then(|record| record.slots.get(super::WINDOW_PREV_BUFFERS_SLOT).copied())
+        .unwrap_or(Value::Nil);
+    if let Some(cell) = previous.cons_ref() {
+        let entry = cell.car.get();
+        if let Kind::Buffer(buffer) = entry.car()?.kind()
+            && interp
+                .buffer_object(buffer.id)
+                .is_some_and(|live| live.ptr_eq(&buffer))
+        {
+            if let Some(record) = interp.find_record_mut(window_id) {
+                record.slots[super::WINDOW_PREV_BUFFERS_SLOT] = cell.cdr.get();
+            }
+            interp.show_buffer_in_window(window_id, buffer.id, false);
+            let rest = entry.cdr()?;
+            super::call(interp, "set-window-start", &[window, rest.car()?], env)?;
+            super::call(
+                interp,
+                "set-window-point",
+                &[window, rest.cdr()?.car()?],
+                env,
+            )?;
+            return Ok(());
+        }
+    }
+    if let Some((null, _)) = interp.find_buffer(" *Minibuf-0*") {
+        interp.show_buffer_in_window(window_id, null, false);
+    }
+    Ok(())
 }
 
 /// minibuf.c:this_minibuffer_depth: BUFFER's depth among the active
@@ -2049,13 +2082,31 @@ fn erase_expired_minibuffer(interp: &mut Interpreter, env: &mut Env) -> Result<(
     })
 }
 
-pub(crate) fn restore_active_minibuffer(
+/// read_minibuf's unwind records after `minibuffer-exit-hook', in their
+/// order: read_minibuf_unwind, the window-configuration restore with
+/// DONT-SET-MINIWINDOW (the minibuffer window keeps its buffer),
+/// minibuffer_unwind, and restore_buffer.
+pub(crate) fn unwind_active_minibuffer(
     interp: &mut Interpreter,
-    state: ActiveMinibuffer,
+    mut state: ActiveMinibuffer,
     env: &mut Env,
-) {
-    // read_minibuf_unwind, in the expired minibuffer: the outer level's
-    // depth and prompt return, the buffer is erased, and it goes back to
+) -> Result<(), LispError> {
+    let saved_windows = state.saved_windows.take();
+    let saved_buffer_id = state.saved_buffer_id;
+    read_minibuf_unwind(interp, state, env);
+    if let Some(saved_windows) = saved_windows {
+        let _ = interp.restore_window_configuration_with(saved_windows, true);
+    }
+    minibuffer_unwind(interp, env)?;
+    if interp.has_buffer_id(saved_buffer_id) {
+        let _ = interp.set_current_buffer_id(saved_buffer_id);
+    }
+    Ok(())
+}
+
+fn read_minibuf_unwind(interp: &mut Interpreter, state: ActiveMinibuffer, env: &mut Env) {
+    // In the expired minibuffer: the outer level's depth and prompt
+    // return, the buffer is erased, and it goes back to
     // `minibuffer-inactive-mode' so no binding made for the read outlives it.
     let expired = interp.has_buffer_id(state.buffer_id)
         && interp.set_current_buffer_id(state.buffer_id).is_ok();
@@ -2075,13 +2126,20 @@ pub(crate) fn restore_active_minibuffer(
         }
     }
     interp.replace_minibuffer_selected_window_id(state.previous_minibuffer_selected_window_id);
-
-    interp.set_selected_window_id(state.saved_selected_window_id);
-    if interp.has_buffer_id(state.saved_selected_window_buffer_id) {
-        interp.set_selected_window_buffer_id(state.saved_selected_window_buffer_id);
-    }
-    if interp.has_buffer_id(state.saved_buffer_id) {
-        let _ = interp.set_current_buffer_id(state.saved_buffer_id);
+    // "Switch the current windows away from the expired minibuffer
+    // window": unless the minibuffer window has an outer read's buffer to
+    // go back to, the calling window is Fselect_window'ed.
+    let minibuffer_window = interp.minibuffer_window_value();
+    let outer_reads = match minibuffer_window.kind() {
+        Kind::Record(window) => interp
+            .find_record(window.id)
+            .and_then(|record| record.slots.get(super::WINDOW_PREV_BUFFERS_SLOT))
+            .is_some_and(|previous| !previous.is_nil()),
+        _ => false,
+    };
+    let calling_window = interp.record_value(state.saved_selected_window_id);
+    if !outer_reads && super::window_buffer_id(interp, &calling_window).is_some() {
+        let _ = super::call(interp, "select-window", &[calling_window], env);
     }
 }
 

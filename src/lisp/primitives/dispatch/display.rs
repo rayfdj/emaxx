@@ -1583,9 +1583,8 @@ pub(crate) fn window_render_layout(interp: &Interpreter) -> Vec<WindowRenderInfo
             let point = if selected {
                 live_point
             } else {
-                window_slot_value(interp, window_id, WINDOW_POINT_SLOT)
-                    .as_integer()
-                    .map(clamp)
+                window_marker_position(interp, window_id, WINDOW_POINT_SLOT)
+                    .map(|point| clamp(point as i64))
                     .unwrap_or(live_point)
             };
             Some(WindowRenderInfo {
@@ -2341,40 +2340,27 @@ fn select_window_value(
 ) -> Result<Value, LispError> {
     let window_id = live_window_id_or_selected(interp, Some(window))?;
     let previous_window_id = interp.selected_window_id();
-    if window_id != previous_window_id {
+    let target_buffer_id = window_buffer_id(interp, window);
+    // select_window_1: the point of the old selected window's buffer goes
+    // into that window's point marker, and the new window's point marker
+    // gives its buffer's point.  The selected window selected again keeps
+    // its buffer's point (GNU's `save-selected-window' relies on this).
+    let target_point = if window_id != previous_window_id {
         // select_window marks both windows for redisplay, the newly
         // selected one while it is still another window.
         interp.redisplay_other_windows();
         let previous_buffer_id = interp.selected_window_buffer_id();
-        let previous_point = if previous_buffer_id == interp.current_buffer_id() {
-            interp.buffer.borrow().point()
-        } else {
-            interp
-                .get_buffer_by_id(previous_buffer_id)
-                .map(|buffer| buffer.point())
-                .unwrap_or(1)
-        };
-        set_window_slot_value(
+        let previous_point = interp.buffer_point_by_id(previous_buffer_id);
+        set_window_marker(
             interp,
             previous_window_id,
             WINDOW_POINT_SLOT,
-            Value::Integer(previous_point as i64),
-        )?;
-    }
-    // The selected window's live point is the point of its current buffer;
-    // its saved window-point slot is only authoritative while unselected.
-    // In particular, reselecting the already-selected window must not rewind
-    // point to a stale slot (GNU's `save-selected-window' relies on this).
-    let target_buffer_id = window_buffer_id(interp, window);
-    let target_point = if window_id == previous_window_id
-        && target_buffer_id == Some(interp.current_buffer_id())
-    {
-        interp.buffer.borrow().point()
+            previous_buffer_id,
+            previous_point,
+        );
+        window_marker_position(interp, window_id, WINDOW_POINT_SLOT)
     } else {
-        window_slot_value(interp, window_id, WINDOW_POINT_SLOT)
-            .as_integer()
-            .unwrap_or(1)
-            .max(1) as usize
+        None
     };
     if let Some(frame) = interp.window_frame_id(window_id) {
         interp.note_selected_frame(frame);
@@ -2387,9 +2373,10 @@ fn select_window_value(
         && interp.has_buffer_id(buffer_id)
     {
         interp.switch_to_buffer_id_preserving_window_history(buffer_id)?;
-        interp.buffer.borrow_mut().goto_char(target_point);
-        let point = interp.buffer.borrow().point() as i64;
-        set_window_slot_value(interp, window_id, WINDOW_POINT_SLOT, Value::Integer(point))?;
+        // set_point_from_marker, inside the accessible portion.
+        if let Some(target_point) = target_point {
+            interp.buffer.borrow_mut().goto_char(target_point);
+        }
         if !norecord {
             interp.record_buffer_front(buffer_id);
         }
@@ -2791,22 +2778,13 @@ fn recombine_windows(interp: &mut Interpreter, window: u64) -> Result<(), LispEr
     clear_deleted_window(interp, window)
 }
 
-/// window.c:unshow_buffer: a window going away leaves its point in its
-/// buffer, unless that buffer is the selected window's (whose point is
-/// the buffer's own).
+/// window.c:unshow_buffer, then the unchain_marker calls of the window's
+/// start, point and old point that delete_window and
+/// delete_all_child_windows make: the buffer remembers the window's
+/// start, and takes its point unless the selected window shows it.
 fn unshow_buffer(interp: &mut Interpreter, window: u64) {
-    let Some(buffer_id) = window_buffer_id(interp, &interp.record_value(window)) else {
-        return;
-    };
-    if buffer_id == interp.selected_window_buffer_id() {
-        return;
-    }
-    let Ok(point) = window_slot_value(interp, window, WINDOW_POINT_SLOT).as_integer() else {
-        return;
-    };
-    if let Some(mut buffer) = interp.get_buffer_by_id_mut(buffer_id) {
-        buffer.goto_char(point.max(1) as usize);
-    }
+    interp.unshow_window_buffer(window);
+    unchain_window_markers(interp, window);
 }
 
 /// window.c:delete_all_child_windows: delete WINDOW, the siblings after
@@ -2950,10 +2928,7 @@ fn split_window_tree(
 
     let reference_buffer = window_buffer_id(interp, &interp.record_value(reference))
         .ok_or_else(|| LispError::Signal("Attempt to split a non-live window".into()))?;
-    let start = window_slot_value(interp, reference, WINDOW_START_SLOT)
-        .as_integer()
-        .unwrap_or(1)
-        .max(1) as usize;
+    let start = window_marker_position(interp, reference, WINDOW_START_SLOT).unwrap_or(1);
     let (old_width, old_height, old_left, old_top) = window_geometry(interp, old_id);
     // Orthogonal coordinates and sizes come from OLD; the iso ones are
     // assigned by window_resize_apply below.
@@ -2965,7 +2940,7 @@ fn split_window_tree(
     let new = interp.create_pseudovector(
         crate::lisp::eval::RecordKind::Window,
         "window",
-        window_record_slots(Some(reference_buffer), start, Value::Nil, geometry),
+        window_record_slots(interp, Some(reference_buffer), start, Value::Nil, geometry),
     );
     let Kind::Record(new_id) = new.kind() else {
         unreachable!("window records use Value::Record");
@@ -3873,9 +3848,8 @@ pub(crate) fn window_hscroll_state(interp: &Interpreter, window_id: u64) -> Wind
             .max(0),
         suspended: window_slot_value(interp, window_id, WINDOW_SUSPEND_AUTO_HSCROLL_SLOT)
             .is_truthy(),
-        old_point: window_slot_value(interp, window_id, WINDOW_OLD_POINT_SLOT)
-            .as_integer()
-            .ok(),
+        old_point: window_marker_position(interp, window_id, WINDOW_OLD_POINT_SLOT)
+            .map(|point| point as i64),
     }
 }
 
@@ -3900,12 +3874,15 @@ pub(crate) fn store_window_hscroll_state(
         WINDOW_SUSPEND_AUTO_HSCROLL_SLOT,
         if suspended { Value::T } else { Value::Nil },
     );
-    let _ = set_window_slot_value(
-        interp,
-        window_id,
-        WINDOW_OLD_POINT_SLOT,
-        Value::Integer(old_point),
-    );
+    if let Some(buffer_id) = window_buffer_id(interp, &interp.record_value(window_id)) {
+        set_window_marker(
+            interp,
+            window_id,
+            WINDOW_OLD_POINT_SLOT,
+            buffer_id,
+            old_point.max(1) as usize,
+        );
+    }
 }
 
 /// Which numbers `display-line-numbers' asks for (xdisp.c's
@@ -5235,10 +5212,11 @@ define_dispatch!(
                             .unwrap_or(1)
                     }
                 } else {
-                    window_slot_value(interp, window_id, WINDOW_POINT_SLOT)
-                        .as_integer()
-                        .unwrap_or(1)
-                        .max(1) as usize
+                    // Fmarker_position of w->pointm.
+                    match window_marker_position(interp, window_id, WINDOW_POINT_SLOT) {
+                        Some(point) => point,
+                        None => return Ok(Value::Nil),
+                    }
                 };
                 Ok(Value::Integer(point as i64))
             }
@@ -5960,16 +5938,14 @@ define_dispatch!(
                     let start = window_start_marker(interp, window_id, window_buffer);
                     set_window_start_marker(interp, window_id, start.clamp(point_min, point_max));
                     for slot in [WINDOW_POINT_SLOT, WINDOW_OLD_POINT_SLOT] {
-                        if let Some(point) =
-                            window_slot_value(interp, window_id, slot).integer_value()
-                        {
-                            let clamped = (point.max(1) as usize).clamp(point_min, point_max);
-                            set_window_slot_value(
+                        if let Some(point) = window_marker_position(interp, window_id, slot) {
+                            set_window_marker(
                                 interp,
                                 window_id,
                                 slot,
-                                Value::Integer(clamped as i64),
-                            )?;
+                                window_buffer,
+                                point.clamp(point_min, point_max),
+                            );
                         }
                     }
                 }
@@ -6390,7 +6366,10 @@ define_dispatch!(
                 need_arg_range(name, args, 1, 3)?;
                 interp.redisplay_other_windows();
                 let selected = interp.selected_frame_id;
-                let restored = interp.apply_window_configuration_value(&args[0])?;
+                let restored = interp.apply_window_configuration_value(
+                    &args[0],
+                    args.get(2).is_some_and(Value::is_truthy),
+                )?;
                 if args.get(1).is_some_and(Value::is_truthy) && interp.frame_is_live(selected) {
                     interp.note_selected_frame(selected);
                     let window = selected.borrow().selected_window_id();
@@ -6607,7 +6586,10 @@ define_dispatch!(
             "window-old-point" => {
                 need_arg_range(name, args, 0, 1)?;
                 let window_id = live_window_id_or_selected(interp, args.first())?;
-                Ok(window_slot_value(interp, window_id, WINDOW_OLD_POINT_SLOT))
+                Ok(
+                    window_marker_position(interp, window_id, WINDOW_OLD_POINT_SLOT)
+                        .map_or(Value::Nil, |point| Value::Integer(point as i64)),
+                )
             }
             "set-window-buffer" => {
                 need_arg_range(name, args, 2, 3)?;
@@ -7266,30 +7248,19 @@ define_dispatch!(
                 // its buffer's point (Fgoto_char there); another window's is
                 // its own marker, clamped to the accessible region.
                 if window_id == interp.selected_window_id() {
-                    let point = if buffer_id == interp.current_buffer_id() {
-                        let mut buffer = interp.buffer.borrow_mut();
-                        buffer.goto_char(pos);
-                        buffer.point()
+                    if buffer_id == interp.current_buffer_id() {
+                        interp.buffer.borrow_mut().goto_char(pos);
                     } else if let Some(mut buffer) = interp.get_buffer_by_id_mut(buffer_id) {
                         buffer.goto_char(pos);
-                        buffer.point()
-                    } else {
-                        pos
-                    };
-                    set_window_slot_value(
-                        interp,
-                        window_id,
-                        WINDOW_POINT_SLOT,
-                        Value::Integer(point as i64),
-                    )?;
+                    }
                 } else {
-                    let (point_min, point_max) = buffer_point_bounds(interp, buffer_id);
-                    set_window_slot_value(
+                    set_window_marker_restricted(
                         interp,
                         window_id,
                         WINDOW_POINT_SLOT,
-                        Value::Integer(pos.clamp(point_min, point_max) as i64),
-                    )?;
+                        buffer_id,
+                        pos,
+                    );
                     interp.wset_redisplay(window_id);
                 }
                 Ok(args[1])
@@ -7758,7 +7729,8 @@ mod tests {
                 Value::Nil,
             ])
         );
-        crate::lisp::primitives::restore_active_minibuffer(&mut interp, active, &mut env);
+        crate::lisp::primitives::unwind_active_minibuffer(&mut interp, active, &mut env)
+            .expect("unwind the read");
     }
 
     #[test]

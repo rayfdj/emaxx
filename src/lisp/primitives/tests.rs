@@ -27315,7 +27315,8 @@ fn active_minibuffer_selected_window_tracks_entry_across_nested_reads() {
         "a nested read remembers the outer minibuffer window"
     );
 
-    crate::lisp::primitives::restore_active_minibuffer(&mut interp, inner, &mut env);
+    crate::lisp::primitives::unwind_active_minibuffer(&mut interp, inner, &mut env)
+        .expect("unwind the nested read");
     assert_eq!(
         interp.active_minibuffer_activation_id(),
         Some(outer_activation),
@@ -27327,7 +27328,8 @@ fn active_minibuffer_selected_window_tracks_entry_across_nested_reads() {
         entry,
         "unwinding the nested read restores the outer entry window"
     );
-    crate::lisp::primitives::restore_active_minibuffer(&mut interp, outer, &mut env);
+    crate::lisp::primitives::unwind_active_minibuffer(&mut interp, outer, &mut env)
+        .expect("unwind the outer read");
     assert_eq!(interp.active_minibuffer_activation_id(), None);
     assert_eq!(
         call(&mut interp, "selected-window", &[], &mut env).expect("restored selection"),
@@ -34619,6 +34621,131 @@ fn window_motion_counts_the_window_body_as_window_c() {
            (progn (goto-char 1) (set-window-start nil 1) (scroll-up) (window-start))))))"#,
         "(80 (11 196 10 246 5 221) (nil 46 46 nil 11 46) (nil 271 nil 246 nil 281) (24 nil 181 23 296) (22 nil 191 21 296 101))",
         "window body motion",
+    );
+}
+
+#[test]
+fn window_configurations_hold_markers_as_window_c() {
+    // window.c:save_window_save keeps each window's start, point and old
+    // point as markers in its buffer and holds on to the buffer;
+    // Fset_window_configuration restricts the positions to the accessible
+    // portion, gives a window whose saved and current buffers are both
+    // dead another buffer, deletes a dedicated one and hands the windows
+    // to `window-restore-killed-buffer-windows' when it is a function.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((lines (lambda (buffer)
+               (with-current-buffer buffer (dotimes (i 50) (insert "line\n"))))))
+  (list
+   ;; Edits after a configuration is saved move its window start and point.
+   (with-temp-buffer
+     (funcall lines (current-buffer))
+     (set-window-buffer nil (current-buffer))
+     (set-window-start nil 51)
+     (save-window-excursion (goto-char 1) (insert "XXXXXXXXXX"))
+     (list (window-start) (window-point)))
+   (with-temp-buffer
+     (funcall lines (current-buffer))
+     (let ((w (split-window)))
+       (set-window-buffer w (current-buffer))
+       (set-window-start w 51)
+       (let ((c (current-window-configuration)))
+         (delete-region 40 60)
+         (set-window-configuration c)
+         (prog1 (list (window-start w) (window-point w) (window-old-point w))
+           (delete-other-windows)))))
+   ;; The points' insertion type is `window-point-insertion-type'.
+   (with-temp-buffer
+     (funcall lines (current-buffer))
+     (setq-local window-point-insertion-type t)
+     (let ((w (split-window)))
+       (set-window-buffer w (current-buffer))
+       (set-window-point w 120)
+       (let ((c (current-window-configuration)))
+         (goto-char 120)
+         (insert "AB")
+         (set-window-configuration c)
+         (prog1 (window-point w) (delete-other-windows)))))
+   ;; Positions are restricted to the accessible portion.
+   (let ((b (generate-new-buffer "wc262")))
+     (funcall lines b)
+     (let ((w (split-window)))
+       (set-window-buffer w b)
+       (set-window-start w 51)
+       (set-window-point w 120)
+       (let ((c (current-window-configuration)))
+         (with-current-buffer b (narrow-to-region 60 100))
+         (set-window-configuration c)
+         (prog1 (list (window-start w) (window-point w))
+           (delete-other-windows)
+           (kill-buffer b)))))
+   ;; A window whose buffer was killed gets another one.
+   (let ((b (generate-new-buffer "wc262")))
+     (funcall lines b)
+     (let ((w (split-window)))
+       (set-window-buffer w b)
+       (set-window-start w 51)
+       (let ((c (current-window-configuration)))
+         (kill-buffer b)
+         (set-window-configuration c)
+         (prog1 (list (buffer-name (window-buffer w)) (window-start w)
+                      (window-live-p w) (length (window-list)))
+           (delete-other-windows)))))
+   ;; ... and a dedicated one is deleted.
+   (let ((b (generate-new-buffer "wc262")))
+     (funcall lines b)
+     (let ((w (split-window)))
+       (set-window-buffer w b)
+       (set-window-dedicated-p w t)
+       (let ((c (current-window-configuration)))
+         (kill-buffer b)
+         (set-window-configuration c)
+         (prog1 (list (window-live-p w) (length (window-list)))
+           (delete-other-windows)))))
+   ;; `window-restore-killed-buffer-windows' as a function gets them.
+   (let ((b (generate-new-buffer "wc262")) seen)
+     (funcall lines b)
+     (let ((w (split-window)))
+       (set-window-buffer w b)
+       (set-window-start w 51)
+       (let ((c (current-window-configuration))
+             (window-restore-killed-buffer-windows
+              (lambda (frame windows type)
+                (setq seen (list (framep frame) type
+                                 (mapcar (lambda (e) (list (eq (car e) w) (bufferp (nth 1 e))
+                                                           (nth 2 e) (nth 5 e)))
+                                         windows))))))
+         (kill-buffer b)
+         (set-window-configuration c)
+         (prog1 seen (delete-other-windows)))))))"#,
+        "((61 11) (40 231 231) 122 (60 100) (\"*scratch*\" 1 t 2) (nil 1) (t configuration ((t t 51 t))))",
+        "window configuration markers",
+    );
+}
+
+#[test]
+fn window_points_are_markers_as_window_c() {
+    // window.h's w->start, w->pointm and w->old_pointm are markers in the
+    // window's buffer: edits move them as they move any marker, the points
+    // with the insertion type `window-point-insertion-type' had in the
+    // buffer when set_window_buffer showed it there; select_window swaps
+    // the old selected window's point into its marker and takes the new
+    // one's point from its marker, and Fset_window_configuration's
+    // select_window puts its buffer's point at the restored marker; a
+    // window deleted before the configuration was saved is not in it.
+    assert_oracle_contract_matches_interpreter(
+        r#"(list
+   (let* ((b (get-buffer-create "wpi1")) (w (split-window))) (with-current-buffer b (erase-buffer) (insert "abcdef") (setq-local window-point-insertion-type t)) (set-window-buffer w b) (set-window-point w 3) (set-window-start w 3) (with-current-buffer b (goto-char 3) (insert "XY") (goto-char 1) (insert "Q")) (prog1 (list (window-point w) (window-start w) (window-old-point w)) (delete-window w)))
+   (let* ((b (get-buffer-create "wpi2")) (w (split-window))) (with-current-buffer b (erase-buffer) (insert "abcdef")) (set-window-buffer w b) (set-window-point w 3) (with-current-buffer b (setq-local window-point-insertion-type t) (goto-char 3) (insert "XY")) (prog1 (list (window-point w) (window-start w)) (delete-window w)))
+   (let* ((b (get-buffer-create "wpi3")) (w (split-window))) (with-current-buffer b (erase-buffer) (insert "abcdefghij")) (set-window-buffer w b) (set-window-point w 6) (set-window-start w 4) (with-current-buffer b (delete-region 2 8)) (prog1 (list (window-point w) (window-start w) (window-old-point w)) (delete-window w)))
+   (let ((x (get-buffer-create "x"))) (with-current-buffer "*scratch*" (erase-buffer) (insert "abcdefgh") (goto-char 7)) (set-buffer x) (let ((conf (current-window-configuration))) (with-current-buffer "*scratch*" (goto-char 2)) (set-window-configuration conf) (list (buffer-name) (with-current-buffer "*scratch*" (point)) (window-point) (point))))
+   (let* ((b (get-buffer-create "wpi5")) (w (split-window))) (with-current-buffer b (erase-buffer) (insert "abcdefghij")) (set-window-buffer w b) (set-window-point w 6) (set-window-start w 3) (let ((c (current-window-configuration))) (set-window-buffer w "*scratch*") (with-current-buffer b (goto-char 1) (insert "ZZZ")) (set-window-configuration c) (prog1 (list (window-point w) (window-start w) (buffer-name (window-buffer w)) (with-current-buffer b (point))) (delete-other-windows))))
+   (let* ((b (get-buffer-create "wpi7")) (w (split-window))) (with-current-buffer b (erase-buffer) (insert "abcdefghij")) (set-window-buffer w b) (set-window-start w 5) (set-window-buffer w "*scratch*") (set-window-buffer w b) (prog1 (list (window-start w) (window-point w)) (delete-window w)))
+   (let* ((b (get-buffer-create "wpi9")) (w (split-window))) (with-current-buffer b (erase-buffer) (insert "abcdefghij")) (set-window-buffer w b) (set-window-point w 6) (with-current-buffer b (narrow-to-region 2 4)) (prog1 (list (window-point w) (progn (set-window-point w 9) (window-point w))) (with-current-buffer b (widen)) (delete-window w)))
+   (let* ((b (get-buffer-create "wpi12")) (w (split-window))) (with-current-buffer b (erase-buffer) (insert "abcdefghij")) (set-window-buffer w b) (set-window-point w 6) (let ((c (current-window-configuration))) (with-current-buffer b (goto-char 6) (insert "XX")) (set-window-configuration c) (prog1 (list (window-point w)) (delete-other-windows))))
+   (let* ((b (get-buffer-create "wpi13")) (w (split-window))) (with-current-buffer b (erase-buffer) (insert "abcdefghij") (setq-local window-point-insertion-type t)) (set-window-buffer w b) (set-window-point w 6) (let ((c (current-window-configuration))) (with-current-buffer b (goto-char 6) (insert "XX")) (set-window-configuration c) (prog1 (list (window-point w)) (delete-other-windows))))
+   (let ((w (split-window))) (delete-window w) (let ((c (current-window-configuration))) (kill-buffer (get-buffer-create "wpi16")) (set-window-configuration c) (list (window-live-p w) (window-valid-p w) (window-buffer w) (length (window-list))))))"#,
+        "((6 4 10) (3 1) (2 2 5) (\"x\" 7 7 1) (9 6 \"wpi5\" 4) (5 11) (6 4) (6) (8) (nil nil nil 1))",
+        "window point markers",
     );
 }
 

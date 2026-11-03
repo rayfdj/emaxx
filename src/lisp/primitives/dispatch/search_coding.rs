@@ -1278,7 +1278,7 @@ define_dispatch!(
                         // before the hooks and the deletion, which a
                         // decoding makes with point at FROM.
                         let saved_pt = interp.buffer.borrow().point();
-                        let marked_windows = interp.mark_markers_for_conversion(start, end);
+                        interp.mark_markers_for_conversion(start, end);
                         if decoding {
                             interp.buffer.borrow_mut().goto_char(start);
                         }
@@ -1341,7 +1341,7 @@ define_dispatch!(
                             + inserted
                             + produced.as_ref().copied().unwrap_or(transformed_length))
                         .saturating_sub(transformed_length);
-                        interp.settle_markers_after_conversion(&marked_windows, start, new_end);
+                        interp.settle_markers_after_conversion(start, new_end);
                         let produced = produced?;
                         let point = if saved_pt < start {
                             saved_pt

@@ -2567,8 +2567,12 @@ pub(crate) struct WindowConfigurationSnapshot {
     selected_frame_id: crate::lisp::types::FrameRef,
     current_buffer_id: u64,
     selected_window_id: u64,
-    selected_window_slots: Vec<Value>,
-    window_records: Vec<(u64, Vec<Value>)>,
+    /// The windows' saved slots, scanned by the collector while the
+    /// snapshot lives (the configuration's own markers and the objects
+    /// only it holds), whoever holds it: window.c keeps a configuration
+    /// as a Lisp object.
+    selected_window_slots: crate::lisp::alloc::RootedVec<Value>,
+    window_records: Vec<(u64, crate::lisp::alloc::RootedVec<Value>)>,
     root_window_id: u64,
     frame_width: i64,
     frame_height: i64,
@@ -7743,6 +7747,7 @@ impl Interpreter {
             RecordKind::Window,
             "window",
             primitives::window_record_slots(
+                &interp,
                 Some(interp.current_buffer_id),
                 buffer_start,
                 Value::Nil,
@@ -7774,6 +7779,7 @@ impl Interpreter {
             RecordKind::Window,
             "window",
             primitives::window_record_slots(
+                &interp,
                 Some(minibuffer_buffer_id),
                 1,
                 Value::Symbol(primitives::MINIBUFFER_WINDOW_KIND.into()),

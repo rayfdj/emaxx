@@ -6951,7 +6951,8 @@ mod tests {
         .expect("display test minibuffer activates");
         crate::lisp::primitives::set_echo_area_message(None);
         let (row, mini, cursor) = compose_echo_row(&mut interpreter, &mut env, "", 8, &mut cache);
-        crate::lisp::primitives::restore_active_minibuffer(&mut interpreter, active, &mut env);
+        crate::lisp::primitives::unwind_active_minibuffer(&mut interpreter, active, &mut env)
+            .expect("unwind the read");
         assert!(mini);
         assert_eq!(row.text.iter().collect::<String>(), "AB: AB  ");
         assert_eq!(cursor, Some(6));
@@ -8202,7 +8203,8 @@ mod tests {
         assert!(!minibuffer_echo_owns_hardware_cursor(&interpreter, true));
         assert!(!minibuffer_echo_owns_hardware_cursor(&interpreter, false));
 
-        crate::lisp::primitives::restore_active_minibuffer(&mut interpreter, active, &mut env);
+        crate::lisp::primitives::unwind_active_minibuffer(&mut interpreter, active, &mut env)
+            .expect("unwind the read");
     }
 
     #[test]
@@ -8229,7 +8231,8 @@ mod tests {
         );
 
         crate::lisp::primitives::set_echo_area_message(None);
-        crate::lisp::primitives::restore_active_minibuffer(&mut interpreter, active, &mut env);
+        crate::lisp::primitives::unwind_active_minibuffer(&mut interpreter, active, &mut env)
+            .expect("unwind the read");
         assert!(!from_minibuffer);
         assert_eq!(cursor, Some(7));
         assert_eq!(row.text.iter().take(7).collect::<String>(), "\"inner\"");
@@ -8265,7 +8268,8 @@ mod tests {
             80,
             &mut std::collections::HashMap::new(),
         );
-        crate::lisp::primitives::restore_active_minibuffer(&mut interpreter, active, &mut env);
+        crate::lisp::primitives::unwind_active_minibuffer(&mut interpreter, active, &mut env)
+            .expect("unwind the read");
         assert!(from_minibuffer);
         assert_eq!(
             row.attrs[0], row.attrs[7],

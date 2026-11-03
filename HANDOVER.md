@@ -12639,6 +12639,98 @@ setup_process_coding_systems's check now refuses). A 13-form
   help-fns-tests pass as many tests as GNU's. Local validation: the
   grouped gate's 3,461 library tests, the integration targets and
   clippy with `--all-targets --all-features -D warnings' pass.
+- **Round 262: windows' starts and points are markers, window
+  configurations hold markers, and `set-window-configuration' restores
+  each window as window.c does.** window.h's w->start, w->pointm and
+  w->old_pointm are markers on the chain of the buffer the window shows,
+  so insdel.c's marker adjustment moves them with its text; Emaxx kept
+  integers in the window records and moved them with a walk of every
+  window on every insertion and deletion (`adjust_window_marker_slots',
+  some 150 instructions an edit in electric-tests, and coding.c's
+  conversions marked the windows apart), which treated every point as of
+  insertion type nil. Each leaf window now holds its three markers from
+  its creation; set_window_buffer sets them and gives the point markers
+  the insertion type `window-point-insertion-type' has in the buffer, so
+  a window's point after an insertion there goes as GNU's does;
+  select_window swaps the old selected window's buffer point into its
+  marker and takes the new window's point from its own (the selected
+  window selected again keeps its buffer's point, where Emaxx had
+  written the selected window's point slot at every `set-buffer' away
+  from its buffer); unshow_buffer and the unchain_marker calls of
+  delete_window and delete_all_child_windows run when a window goes
+  away; Fset_window_point, Fwindow_point, Fwindow_old_point, the scroll
+  commands' old point, the mode line's start and the echo area's restore
+  read and set the markers. The windows made at startup before the image
+  installs its buffers move their markers to the installed buffers.
+  save_window_save copies the window's markers (the selected window's
+  point built at its buffer's point) and holds on to the buffer object;
+  Emaxx copied the positions as integers, so edits made after the
+  configuration was saved, `save-window-excursion''s body among them,
+  left the positions it restored behind. A configuration's saved slots
+  are scanned by the collector for as long as the configuration lives,
+  whoever holds it (ERT's per-test configuration and the minibuffer's
+  are held in Rust; window.c keeps a configuration as a Lisp object).
+  Fset_window_configuration's per-window restore is ported, over the
+  windows that were in the frame's tree when the configuration was saved
+  (the snapshot holds every window record of the frame, the deleted ones
+  too, which stay deleted): a window that gets another buffer records
+  its old one with `record-window-buffer'; the selected window's point
+  is swapped out first; delete_all_child_windows unshows every window
+  now on the frame and unchains its markers; a live saved buffer is
+  installed with the window's markers set to the saved ones restricted
+  to the accessible portion, and a buffer current but not saved as
+  current goes to the window's point; a window whose saved buffer is
+  dead keeps its current buffer when that is live, its unchained markers
+  at the start of the accessible portion and the buffer's point, and
+  otherwise gets other_buffer_safely's at its beginning, a dedicated one
+  of those being deleted when `window-deletable-p' lets it (any one
+  under `window-restore-killed-buffer-windows' `delete'); the windows so
+  kept go to that variable when it is a function, with `configuration';
+  the point of the buffer current when the configuration was saved is
+  not restored; select_window then puts the configuration's selected
+  window's buffer at that window's restored point, which Emaxx did not,
+  so a configuration saved while another buffer was current left the
+  selected window's buffer at the point it had been moved to since; and
+  DONT-SET-MINIWINDOW (read_minibuf's restore passes it) keeps the
+  minibuffer window's buffer. Emaxx left a window whose buffer had been
+  killed showing the dead buffer, so that `window-live-p' failed on it.
+  frame.c links a frame's root window to its own minibuffer window as
+  its `next', which delete_all_child_windows visits first: Emaxx's
+  restore left that window out, so the minibuffer window, never
+  squirreled, got another buffer under DONT-SET-MINIWINDOW (*Messages*
+  after every read) where GNU keeps the expired minibuffer.
+  read_minibuf's own order is ported around it: set_window_buffer shows
+  the minibuffer in the minibuffer window before the erase and the
+  prompt, so the window's markers stay at the buffer's beginning (Emaxx
+  showed it after the prompt, and the erase of the expired minibuffer
+  recorded the two point markers in its undo list), and Fselect_window
+  selects the window, recording the minibuffer in the buffer list; a
+  minibuffer window showing an active minibuffer pushes it with
+  `push-window-buffer-onto-prev'; and the unwind records run in their
+  order, read_minibuf_unwind (whose Fset_frame_selected_window selects
+  the calling window, recording its buffer, unless the minibuffer window
+  has an outer read's buffer), the configuration restore (registered
+  only when `read-minibuffer-restore-windows' is non-nil at entry),
+  minibuffer_unwind (the minibuffer window shows its first previous
+  buffer at its start and point, or the null minibuffer) and
+  restore_buffer. The batteries (r262, r263: saved positions across
+  insertions, deletions and narrowing, the insertion type set and
+  changed, a killed buffer's window, a dedicated one, the function, a
+  split window's point, select-window's swap, set-window-point under a
+  narrowing, kill-buffer, a dos decoding, a restore after delete-window
+  and after set-window-buffer, a window deleted before the save, the
+  minibuffer window, its undo list and the buffer list across reads,
+  nested reads) match GNU; simple-tests, minibuffer-tests,
+  minibuf-tests, subr-tests, subr-x-tests, ert-tests, ert-x-tests,
+  calc-tests, electric-tests, buffer-tests, process-tests,
+  elisp-mode-tests, help-fns-tests, help-tests, edebug-tests,
+  replace-tests, files-tests, man-tests, mailcap-tests, time-tests,
+  repeat-tests, saveplace-tests, cus-edit-tests, lisp-tests,
+  dissociate-tests, proced-tests, dabbrev-tests, bookmark-tests,
+  tab-bar-tests, python-tests, term-tests and comint-tests pass as many
+  tests as GNU's. Local validation: the grouped gate's 3,464
+  library tests (run with round 263's), the integration targets and
+  clippy with `--all-targets --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -14433,6 +14525,17 @@ instructions and electric-tests in 9.308G and 9.322G, so the bodies'
 ratio moving from round 258's 0.934 through 1.049 to 1.119 is the
 runners'.
 
+**On `52923f3`** (round 261): frozen (run 41535428336) matched all 7,928
+outcomes. Setup 83.6 s against 67.2 s (1.243), test bodies 306.2 s
+against 273.6 s (1.120), in all 1.129. The full Rust gate (run
+41535416278) passed. Per file, the setup is 31 ms over GNU's on average
+(16.3 s over 519 files, a median of 133 ms against 108), comp-tests' the
+most (2,203 against 1,881) after electric-tests' (933 against 541), and
+the widest body gaps are ert-tests (47,300 ms against 38,216),
+comp-tests (22,205 against 15,016), tramp-tests (21,085 against 19,063),
+semantic-utest-ia (3,936 against 2,543) and mule-tests (3,248 against
+1,983), the gate build's as round 260 found.
+
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'
   without signalling (round 174).** In GNU,
@@ -14493,13 +14596,6 @@ runners'.
   each against the release build's 625, and the interpreter's own
   environment walks (`assq_binding', `environment_declares_special')
   come out of line at another 1.9G.
-- **Every edit walks the windows (round 168).**
-  `adjust_window_marker_slots' looks the window records up by type
-  name and then each by id on every insertion and deletion, to move
-  the start and point of the windows showing the buffer; GNU keeps
-  those as markers on the buffer's chain, which an edit of a buffer no
-  window shows does not visit. In electric-tests the walk is some 150
-  instructions an edit over 155,000 edits.
 - **A call from Rust into byte code costs about 240 instructions more
   than GNU's (round 167).** `mapatoms' over 18,663 symbols with a
   byte-compiled callback takes 596 instructions a symbol in the release
@@ -14535,11 +14631,11 @@ runners'.
   was nothing in Emaxx until round 246, whose port returns at once in a
   buffer without intervals), of which ropey's insert took 2,030 where
   GNU's copy_text into the gap takes 92; with round 175's gap buffer it
-  runs in 7.64G. The windows' start and point are integers in their
-  records, which every insertion and deletion adjusts by walking every
-  window (284 instructions an insertion at round 165), where GNU's
-  window markers are on the buffer's chain. (Round 166 made the undo
-  list GNU's, round 167 `related_buffer_ids''s walk.)
+  runs in 7.64G. The windows' start and point were integers in their
+  records, which every insertion and deletion adjusted by walking every
+  window (284 instructions an insertion at round 165); since round 262
+  they are markers on the buffer's chain, as GNU's are. (Round 166 made
+  the undo list GNU's, round 167 `related_buffer_ids''s walk.)
 - **A string's intervals are merged where GNU keeps them (round 164).**
   No longer: round 172's intervals keep the intervals a change makes, as
   textprop.c does, and at round 247 the round 164 example prints `#("ab"

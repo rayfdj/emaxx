@@ -1367,10 +1367,7 @@ impl ModeLine<'_> {
         let mut startpos = if window_id == interp.selected_window_id() {
             current_window_start(interp)
         } else {
-            window_slot_value(interp, window_id, WINDOW_START_SLOT)
-                .as_integer()
-                .unwrap_or(1)
-                .max(1) as usize
+            window_marker_position(interp, window_id, WINDOW_START_SLOT).unwrap_or(1)
         };
         let height = window_geometry(interp, window_id).1.max(1);
         if !own_buffer || !(begv <= startpos && startpos <= zv) {
@@ -1474,9 +1471,7 @@ impl ModeLine<'_> {
         let toppos = if window_id == interp.selected_window_id() {
             current_window_start(interp) as i64
         } else {
-            window_slot_value(interp, window_id, WINDOW_START_SLOT)
-                .as_integer()
-                .unwrap_or(1)
+            window_marker_position(interp, window_id, WINDOW_START_SLOT).unwrap_or(1) as i64
         };
         let window_end_pos = window_end_pos(interp, window_id, z);
         let botpos = z - window_end_pos;

@@ -614,17 +614,6 @@ impl Interpreter {
         // buffer.c:set_buffer_internal_2 invalidates the indentation cache.
         self.invalidate_current_column();
         let current_id = self.current_buffer_id;
-        let current_point = self.buffer.borrow().point();
-        if self.selected_window_buffer_id() == current_id
-            && let Some(window) = self.find_record_mut(self.selected_window_id)
-        {
-            if window.slots.len() <= primitives::WINDOW_POINT_SLOT {
-                window
-                    .slots
-                    .resize(primitives::WINDOW_POINT_SLOT + 1, Value::Nil);
-            }
-            window.slots[primitives::WINDOW_POINT_SLOT] = Value::Integer(current_point as i64);
-        }
         let (_, next_buffer) = self.inactive_buffers.swap_remove(pos);
         let current_buffer = std::mem::replace(&mut self.buffer, next_buffer);
         self.inactive_buffers.push((current_id, current_buffer));
@@ -850,17 +839,12 @@ impl Interpreter {
             || self.buffer.borrow().point_min(),
             |(point_min, _)| point_min,
         );
-        let z = if buffer_id == self.current_buffer_id {
-            self.buffer.borrow().size_total() + 1
-        } else {
-            self.get_buffer_by_id(buffer_id)
-                .map_or(point_min, |buffer| buffer.size_total() + 1)
-        };
-        self.find_record(self.selected_window_id)
-            .and_then(|record| record.slots.get(1))
-            .and_then(|value| value.integer_value())
-            .map(|value| value.clamp(1, z as i64) as usize)
-            .unwrap_or(point_min)
+        primitives::window_marker_position(
+            self,
+            self.selected_window_id,
+            primitives::WINDOW_START_SLOT,
+        )
+        .unwrap_or(point_min)
     }
 
     /// xdisp.c redisplay_other_windows: the next redisplay considers
@@ -886,19 +870,14 @@ impl Interpreter {
     }
 
     pub fn set_selected_window_start(&mut self, start: usize) {
-        let (point_min, point_max) = self
-            .buffer_bounds_by_id(self.selected_window_buffer_id())
-            .unwrap_or((
-                self.buffer.borrow().point_min(),
-                self.buffer.borrow().point_max(),
-            ));
-        let start = start.clamp(point_min, point_max) as i64;
-        if let Some(window) = self.find_record_mut(self.selected_window_id) {
-            if window.slots.len() < 2 {
-                window.slots.resize(2, Value::Nil);
-            }
-            window.slots[1] = Value::Integer(start);
-        }
+        let buffer_id = self.selected_window_buffer_id();
+        primitives::set_window_marker_restricted(
+            self,
+            self.selected_window_id,
+            primitives::WINDOW_START_SLOT,
+            buffer_id,
+            start,
+        );
     }
 
     /// Show BUFFER_ID in the selected window (set-window-buffer without
@@ -931,19 +910,14 @@ impl Interpreter {
             return;
         }
         let slot = |interp: &Self, index: usize| {
-            interp
-                .find_record(window_id)
-                .and_then(|window| window.slots.get(index))
-                .and_then(|value| value.integer_value())
+            primitives::window_marker_position(interp, window_id, index)
         };
         if let Some(start) = slot(self, primitives::WINDOW_START_SLOT) {
-            self.buffer_last_window_start
-                .insert(buffer_id, start.max(1) as usize);
+            self.buffer_last_window_start.insert(buffer_id, start);
         }
         if buffer_id != self.selected_window_buffer_id()
             && let Some(point) = slot(self, primitives::WINDOW_POINT_SLOT)
         {
-            let point = point.max(1) as usize;
             if buffer_id == self.current_buffer_id {
                 let mut buffer = self.buffer.borrow_mut();
                 let point = point.clamp(buffer.point_min(), buffer.point_max());
@@ -986,14 +960,22 @@ impl Interpreter {
                 window.slots[primitives::WINDOW_HSCROLL_SLOT] = Value::Integer(0);
                 window.slots[primitives::WINDOW_MIN_HSCROLL_SLOT] = Value::Integer(0);
                 window.slots[primitives::WINDOW_SUSPEND_AUTO_HSCROLL_SLOT] = Value::Nil;
-                window.slots[primitives::WINDOW_POINT_SLOT] = Value::Integer(point as i64);
-                window.slots[primitives::WINDOW_OLD_POINT_SLOT] = Value::Integer(point as i64);
-                window.slots[primitives::WINDOW_START_SLOT] = Value::Integer(start as i64);
                 window.slots[primitives::WINDOW_START_AT_LINE_BEG_SLOT] = Value::Nil;
                 window.slots[primitives::WINDOW_FORCE_START_SLOT] = Value::Nil;
                 window.slots[primitives::WINDOW_BASE_LINE_SLOT] = Value::Nil;
             }
         }
+        if !keep {
+            for (slot, position) in [
+                (primitives::WINDOW_POINT_SLOT, point),
+                (primitives::WINDOW_OLD_POINT_SLOT, point),
+                (primitives::WINDOW_START_SLOT, start),
+            ] {
+                primitives::set_window_marker(self, window_id, slot, buffer_id, position);
+            }
+        }
+        // The point markers take the buffer's `window-point-insertion-type'.
+        primitives::set_window_point_insertion_type(self, window_id, buffer_id);
         self.stamp_buffer_display(buffer_id);
         self.wset_redisplay(window_id);
     }
@@ -1227,15 +1209,59 @@ impl Interpreter {
             selected_window_id: frame.selected_window_id(),
             selected_window_slots: self
                 .find_record(frame.selected_window_id())
-                .map(|record| record.slots.clone())
+                .map(|record| crate::lisp::alloc::RootedVec::from_vec(record.slots.clone()))
                 .unwrap_or_default(),
             window_records: self
                 .frame_window_records(frame_id)
-                .map(|record| (record.id, record.slots.clone()))
+                .map(|record| {
+                    let mut slots = crate::lisp::alloc::RootedVec::from_vec(record.slots.clone());
+                    self.save_window_markers(&mut slots, record.id == self.selected_window_id());
+                    (record.id, slots)
+                })
                 .collect(),
             root_window_id: frame.root_window_id(),
             frame_width: frame.width,
             frame_height: frame.height,
+        }
+    }
+
+    /// window.c:save_window_save keeps a window's start, point and old
+    /// point as markers in its buffer, so that the edits made after the
+    /// configuration was saved move them: the selected window's point taken
+    /// from its buffer (its own is stale), the points of insertion type
+    /// `window-point-insertion-type' in that buffer.
+    fn save_window_markers(&self, slots: &mut [Value], selected: bool) {
+        let buffer = slots
+            .get(primitives::WINDOW_BUFFER_SLOT)
+            .and_then(|value| value.integer_value())
+            .map(|id| id.max(0) as u64)
+            .filter(|id| self.has_buffer_id(*id))
+            .and_then(|id| self.buffer_object(id));
+        let insertion_type =
+            buffer.is_some_and(|buffer| primitives::window_point_insertion_type(self, buffer.id));
+        for slot in primitives::WINDOW_MARKER_SLOTS {
+            let Some(Kind::Marker(marker)) = slots.get(slot).map(|value| value.kind()) else {
+                continue;
+            };
+            // Fcopy_marker; build_marker at its buffer's point for the
+            // selected window's.
+            let copy = crate::lisp::types::MarkerRef::new();
+            if let Some(owner) = marker.buffer() {
+                if slot == primitives::WINDOW_POINT_SLOT && selected {
+                    let state = owner.borrow();
+                    let point = state.point();
+                    copy.attach(owner, point, state.marker_byte_position(point));
+                } else {
+                    copy.attach(owner, marker.last_position(), marker.bytepos());
+                }
+            }
+            copy.set_insertion_type(insertion_type && slot != primitives::WINDOW_START_SLOT);
+            slots[slot] = Value::Marker(copy);
+        }
+        // The buffer itself, which the configuration holds on to after
+        // it is killed.
+        if let Some(buffer) = buffer {
+            slots[primitives::WINDOW_BUFFER_SLOT] = Value::Buffer(buffer);
         }
     }
 
@@ -1270,6 +1296,7 @@ impl Interpreter {
     pub(crate) fn apply_window_configuration_value(
         &mut self,
         value: &Value,
+        dont_set_miniwindow: bool,
     ) -> Result<bool, LispError> {
         let Some(snapshot) = self.window_configuration_snapshot_from_value(value) else {
             return Ok(false);
@@ -1277,7 +1304,7 @@ impl Interpreter {
         if !self.frame_is_live(snapshot.frame_id) {
             return Ok(false);
         }
-        self.restore_window_configuration(snapshot)?;
+        self.restore_window_configuration_with(snapshot, dont_set_miniwindow)?;
         Ok(true)
     }
 
@@ -1293,7 +1320,9 @@ impl Interpreter {
             .filter(|record| record.kind == RecordKind::WindowConfiguration)?;
         let slots = &record.slots;
         let vector_slots = |value: &Value| match value.kind() {
-            Kind::Vector(vector) => Some(vector.slots().collect::<Vec<_>>()),
+            Kind::Vector(vector) => {
+                Some(vector.slots().collect::<crate::lisp::alloc::RootedVec<_>>())
+            }
             _ => None,
         };
         let selected_window_id = slots
@@ -1401,25 +1430,143 @@ impl Interpreter {
         &mut self,
         snapshot: WindowConfigurationSnapshot,
     ) -> Result<(), LispError> {
+        self.restore_window_configuration_with(snapshot, false)
+    }
+
+    /// window.c:Fset_window_configuration.  DONT_SET_MINIWINDOW keeps the
+    /// minibuffer window's buffer as it is.
+    pub(crate) fn restore_window_configuration_with(
+        &mut self,
+        snapshot: WindowConfigurationSnapshot,
+        dont_set_miniwindow: bool,
+    ) -> Result<(), LispError> {
         if !self.frame_is_live(snapshot.frame_id) {
             return Ok(());
         }
-        // A frame has few windows: the saved ones are found by a search.
         let saved_windows = snapshot.window_records;
+        // A saved window's buffer: the object save_window_markers kept, or
+        // an id.
+        let saved_buffer =
+            |slots: &[Value]| match slots.get(primitives::WINDOW_BUFFER_SLOT).map(|v| v.kind()) {
+                Some(Kind::Buffer(buffer)) => Some(buffer.id),
+                Some(Kind::Integer(id)) => Some(id.max(0) as u64),
+                _ => None,
+            };
+        let new_current_buffer =
+            Some(snapshot.current_buffer_id).filter(|id| self.has_buffer_id(*id));
+        let current_window = snapshot.selected_window_id;
+        // The point of the buffer current when the configuration was saved
+        // that the restore preserves: when the window to be selected shows
+        // it and another window is selected, the point that window keeps.
+        let old_point = new_current_buffer.map(|buffer| {
+            let selected = self.selected_window_id();
+            let from_current_window = self.window_record_buffer_id(current_window) == Some(buffer)
+                && selected != current_window
+                && (buffer != self.current_buffer_id()
+                    || self.window_record_buffer_id(selected) == Some(buffer));
+            let window_point = from_current_window
+                .then(|| {
+                    primitives::window_marker_position(
+                        self,
+                        current_window,
+                        primitives::WINDOW_POINT_SLOT,
+                    )
+                })
+                .flatten();
+            window_point.unwrap_or_else(|| self.buffer_point_by_id(buffer))
+        });
+        // The windows save_window_save saved: those in the frame's tree
+        // when the configuration was made (the snapshot holds every window
+        // record of the frame, the deleted ones too).
+        let saved_in_tree = |slots: &[Value]| {
+            !matches!(
+                slots.get(primitives::WINDOW_KIND_SLOT).map(|value| value.kind()),
+                Some(Kind::Symbol(ref kind)) if kind == primitives::DELETED_WINDOW_KIND
+            )
+        };
+        // A window that gets another buffer records its old one.
+        for (window, slots) in saved_windows
+            .iter()
+            .filter(|(_, slots)| saved_in_tree(slots))
+        {
+            if let (Some(current), Some(saved)) =
+                (self.window_record_buffer_id(*window), saved_buffer(slots))
+                && current != saved
+                && self.has_buffer_id(saved)
+                && !self.buffer_is_minibuffer(saved)
+            {
+                let window = self.record_value(*window);
+                primitives::call_named_function(
+                    self,
+                    "record-window-buffer",
+                    &[window],
+                    &mut crate::lisp::types::Env::new(),
+                )?;
+            }
+        }
+        // "Swap out" point from the selected window's buffer into the
+        // window itself, before the windows' contents are restored.
+        let selected = self.selected_window_id();
+        if let Some(buffer) = self.window_record_buffer_id(selected)
+            && self.has_buffer_id(buffer)
+        {
+            let point = self.buffer_point_by_id(buffer);
+            primitives::set_window_marker(
+                self,
+                selected,
+                primitives::WINDOW_POINT_SLOT,
+                buffer,
+                point,
+            );
+        }
+        // delete_all_child_windows: every window now on the frame is
+        // "deleted", its buffer unshown and its markers unchained, the
+        // buffer squirreled away in case the saved one is dead.
+        // The root's `next' is the frame's own minibuffer window (frame.c
+        // make_frame links them), which the walk reaches first.
+        let mut squirreled = Vec::new();
+        let (root, mini) = {
+            let frame = snapshot.frame_id.borrow();
+            (frame.root_window_id(), frame.minibuffer_window_id())
+        };
+        if self
+            .find_record(mini)
+            .and_then(|record| record.slots.get(primitives::WINDOW_FRAME_SLOT))
+            == Some(&Value::Frame(snapshot.frame_id))
+        {
+            self.unshow_window_tree(Some(mini), &mut squirreled);
+        }
+        self.unshow_window_tree(Some(root).filter(|id| *id != 0), &mut squirreled);
+        // A frame has few windows: the saved ones are found by a search.
         let windows: Vec<_> = self.frame_window_records(snapshot.frame_id).collect();
         for window in windows {
             let Some(record) = self.find_record_mut(window) else {
                 continue;
             };
             if let Some((_, slots)) = saved_windows.iter().find(|(id, _)| *id == record.id) {
-                // The saved data holds no use time: a window keeps its own.
+                // The saved data holds no use time, and its markers are
+                // copies: a window keeps its own.
                 let use_time = record.slots.get(primitives::WINDOW_USE_TIME_SLOT).copied();
-                record.slots.clone_from(slots);
+                let own = primitives::WINDOW_MARKER_SLOTS
+                    .map(|slot| record.slots.get(slot).copied().unwrap_or(Value::Nil));
+                record.slots.clear();
+                record.slots.extend_from_slice(slots);
                 if let (Some(use_time), Some(slot)) = (
                     use_time,
                     record.slots.get_mut(primitives::WINDOW_USE_TIME_SLOT),
                 ) {
                     *slot = use_time;
+                }
+                for (slot, own) in primitives::WINDOW_MARKER_SLOTS.into_iter().zip(own) {
+                    if let Some(value) = record.slots.get_mut(slot) {
+                        *value = match own.kind() {
+                            Kind::Marker(_) => own,
+                            _ if matches!(value.kind(), Kind::Marker(_)) => {
+                                Value::Marker(crate::lisp::types::MarkerRef::new())
+                            }
+                            _ => Value::Nil,
+                        };
+                    }
                 }
             } else {
                 record
@@ -1438,9 +1585,183 @@ impl Interpreter {
                 }
             }
         }
+        let restore_killed = self
+            .global_binding_value("window-restore-killed-buffer-windows")
+            .unwrap_or(Value::Nil);
+        let restore_killed_function =
+            primitives::function_value_p(self, &restore_killed, &crate::lisp::types::Env::new());
+        // The lists for `window-restore-killed-buffer-windows', held across
+        // the calls into Lisp below.
+        let mut kept_windows = crate::lisp::alloc::RootedVec::new();
+        let mut dead_windows = Vec::new();
+        for (window, slots) in saved_windows
+            .iter()
+            .filter(|(_, slots)| saved_in_tree(slots))
+        {
+            let mini = matches!(
+                slots.get(primitives::WINDOW_KIND_SLOT).map(|value| value.kind()),
+                Some(Kind::Symbol(ref kind)) if kind == primitives::MINIBUFFER_WINDOW_KIND
+            );
+            let saved = saved_buffer(slots);
+            let saved_start = slots.get(primitives::WINDOW_START_SLOT).copied();
+            let saved_point = slots.get(primitives::WINDOW_POINT_SLOT).copied();
+            let kept = |interp: &Self, live: bool| {
+                Value::list([
+                    interp.record_value(*window),
+                    match slots.get(primitives::WINDOW_BUFFER_SLOT).map(|v| v.kind()) {
+                        Some(Kind::Buffer(_)) => slots[primitives::WINDOW_BUFFER_SLOT],
+                        _ => saved
+                            .and_then(|id| interp.buffer_identity_value(id))
+                            .unwrap_or(Value::Nil),
+                    },
+                    marker_last_position(saved_start),
+                    marker_last_position(saved_point),
+                    slots
+                        .get(primitives::WINDOW_DEDICATED_SLOT)
+                        .copied()
+                        .unwrap_or(Value::Nil),
+                    if live { Value::T } else { Value::Nil },
+                ])
+            };
+            if (!dont_set_miniwindow || !mini)
+                && let Some(buffer) = saved.filter(|id| self.has_buffer_id(*id))
+            {
+                // The saved buffer is installed, the window's markers
+                // set_marker_restricted to the saved ones (a saved marker
+                // that points nowhere unchains the window's).
+                self.set_window_slot(
+                    *window,
+                    primitives::WINDOW_BUFFER_SLOT,
+                    Value::Integer(buffer as i64),
+                );
+                for slot in primitives::WINDOW_MARKER_SLOTS {
+                    match primitives::slot_marker_position(slots.get(slot)) {
+                        Some(position) => primitives::set_window_marker_restricted(
+                            self, *window, slot, buffer, position,
+                        ),
+                        None => {
+                            if let Some(marker) = primitives::window_marker(self, *window, slot) {
+                                marker.detach();
+                            }
+                        }
+                    }
+                }
+                // The point of the buffer current when the configuration
+                // was saved is not restored.
+                if Some(buffer) != new_current_buffer
+                    && buffer == self.current_buffer_id()
+                    && let Some(point) = primitives::window_marker_position(
+                        self,
+                        *window,
+                        primitives::WINDOW_POINT_SLOT,
+                    )
+                {
+                    let mut state = self.buffer.borrow_mut();
+                    let point = point.clamp(state.point_min(), state.point_max());
+                    state.goto_char(point);
+                }
+            } else if let Some(buffer_id) = squirreled
+                .iter()
+                .find(|(id, _)| id == window)
+                .map(|(_, buffer)| *buffer)
+                .filter(|id| self.has_buffer_id(*id))
+            {
+                // The window keeps its old buffer; its markers, which
+                // point nowhere, go to the start of the accessible portion
+                // and to the buffer's point.
+                let point = self.buffer_point_by_id(buffer_id);
+                self.set_window_slot(
+                    *window,
+                    primitives::WINDOW_BUFFER_SLOT,
+                    Value::Integer(buffer_id as i64),
+                );
+                for (slot, position) in [
+                    (primitives::WINDOW_START_SLOT, 0),
+                    (primitives::WINDOW_POINT_SLOT, point),
+                    (primitives::WINDOW_OLD_POINT_SLOT, point),
+                ] {
+                    if primitives::window_marker(self, *window, slot)
+                        .is_none_or(|marker| marker.buffer().is_none())
+                    {
+                        primitives::set_window_marker_restricted(
+                            self, *window, slot, buffer_id, position,
+                        );
+                    }
+                }
+                self.set_window_slot(*window, primitives::WINDOW_START_AT_LINE_BEG_SLOT, Value::T);
+                if restore_killed_function && !mini {
+                    let entry = kept(self, true);
+                    kept_windows.push(entry);
+                }
+            } else if primitives::window_marker(self, *window, primitives::WINDOW_START_SLOT)
+                .is_some()
+            {
+                // A leaf window with no live buffer gets one, its markers
+                // at the start of the accessible portion.
+                let buffer = self.other_buffer_safely(self.current_buffer_id())?;
+                self.set_window_slot(
+                    *window,
+                    primitives::WINDOW_BUFFER_SLOT,
+                    Value::Integer(buffer as i64),
+                );
+                for slot in primitives::WINDOW_MARKER_SLOTS {
+                    primitives::set_window_marker_restricted(self, *window, slot, buffer, 0);
+                }
+                self.set_window_slot(*window, primitives::WINDOW_START_AT_LINE_BEG_SLOT, Value::T);
+                if !mini {
+                    let dedicated = slots
+                        .get(primitives::WINDOW_DEDICATED_SLOT)
+                        .copied()
+                        .unwrap_or(Value::Nil);
+                    if restore_killed_function {
+                        let entry = kept(self, false);
+                        kept_windows.push(entry);
+                    } else if restore_killed.symbol_str() == Some("delete")
+                        || (!dedicated.is_nil()
+                            && (restore_killed.is_nil()
+                                || restore_killed.symbol_str() == Some("dedicated")))
+                    {
+                        dead_windows.push(*window);
+                    }
+                    self.set_window_slot(*window, primitives::WINDOW_DEDICATED_SLOT, Value::Nil);
+                }
+            }
+        }
         snapshot.frame_id.borrow_mut().root_window = self.record_ref(snapshot.root_window_id);
+        // Arrange not to restore point in the buffer that was current when
+        // the configuration was saved.
+        if let Some(point) = old_point
+            && let Some(buffer) = new_current_buffer
+            && self.window_record_buffer_id(current_window) == Some(buffer)
+        {
+            primitives::set_window_marker_restricted(
+                self,
+                current_window,
+                primitives::WINDOW_POINT_SLOT,
+                buffer,
+                point,
+            );
+        }
+        // select_window (current_window, Qt, true): its buffer current,
+        // at the point of its point marker (no point swapped out of the
+        // window selected before, whose point went into it above).
         self.note_selected_frame(snapshot.frame_id);
         self.set_selected_window_id(snapshot.selected_window_id);
+        if let Some(buffer) = self
+            .window_record_buffer_id(current_window)
+            .filter(|id| self.has_buffer_id(*id))
+        {
+            self.set_current_buffer_id(buffer)?;
+            if let Some(point) = primitives::window_marker_position(
+                self,
+                current_window,
+                primitives::WINDOW_POINT_SLOT,
+            ) {
+                let mut state = self.buffer.borrow_mut();
+                let point = point.clamp(state.point_min(), state.point_max());
+                state.goto_char(point);
+            }
+        }
         // GNU records frame dimensions for configuration equality, but
         // `set-window-configuration' does not rewind a frame resize:
         // adjust_frame_size (f, -1, -1, 4, ...) fits the restored tree to
@@ -1454,6 +1775,20 @@ impl Interpreter {
             false,
             &mut crate::lisp::types::Env::new(),
         );
+        // The windows whose buffers were killed, deleted when they can be.
+        let root = snapshot.frame_id.borrow().root_window_id();
+        for window in dead_windows {
+            if window == root || !self.window_is_live_record(window) {
+                continue;
+            }
+            let window = self.record_value(window);
+            let mut env = crate::lisp::types::Env::new();
+            if primitives::call_named_function(self, "window-deletable-p", &[window], &mut env)?
+                .is_truthy()
+            {
+                primitives::call_named_function(self, "delete-window", &[window], &mut env)?;
+            }
+        }
         // Fset_window_configuration's select_window (current_window, Qnil):
         // the configuration's window gets a new use time and its buffer is
         // recorded, buffer-list-update-hook run with it current.
@@ -1478,10 +1813,151 @@ impl Interpreter {
             let selected_window = self.selected_frame_id.borrow().selected_window_id();
             self.set_selected_window_id(selected_window);
         }
-        if self.has_buffer_id(snapshot.current_buffer_id) {
-            self.set_current_buffer_id(snapshot.current_buffer_id)?;
+        if let Some(buffer) = new_current_buffer {
+            self.set_current_buffer_id(buffer)?;
+            // A new current buffer the selected window does not show goes
+            // to its old point (Bug#12208).
+            if self.selected_window_buffer_id() != buffer
+                && let Some(point) = old_point
+            {
+                let mut state = self.buffer.borrow_mut();
+                let point = point.clamp(state.point_min(), state.point_max());
+                state.goto_char(point);
+            }
+        }
+        if restore_killed_function {
+            let frame = Value::Frame(snapshot.frame_id);
+            let kept = Value::list(kept_windows);
+            self.safe_funcall(
+                restore_killed,
+                &[frame, kept, Value::symbol("configuration")],
+                &mut crate::lisp::types::Env::new(),
+            )?;
         }
         Ok(())
+    }
+
+    /// The start and point markers of each window, moved at their
+    /// positions to the buffer object that now has the window's buffer id:
+    /// the windows made before an image's buffers were installed, which
+    /// make_frame would have set in those buffers.
+    pub(crate) fn rebind_window_markers(&mut self) {
+        for window in self.record_ids_by_type("window") {
+            let Some(buffer_id) = self.window_record_buffer_id(window) else {
+                continue;
+            };
+            let Some(buffer) = self.buffer_object(buffer_id) else {
+                continue;
+            };
+            for slot in primitives::WINDOW_MARKER_SLOTS {
+                if let Some(marker) = primitives::window_marker(self, window, slot)
+                    && marker.buffer().is_some_and(|owner| !owner.ptr_eq(&buffer))
+                {
+                    let _ = self.set_marker(marker, Some(marker.last_position()), Some(buffer_id));
+                }
+            }
+        }
+    }
+
+    /// window.c:delete_all_child_windows over the tree from WINDOW, the
+    /// siblings after it first and children before their parents: each
+    /// leaf's buffer unshown and its markers unchained, its buffer kept in
+    /// SQUIRRELED (GNU's combination_limit) for Fset_window_configuration.
+    fn unshow_window_tree(&mut self, window: Option<u64>, squirreled: &mut Vec<(u64, u64)>) {
+        let Some(window) = window else {
+            return;
+        };
+        let link = |interp: &Self, slot: usize| match interp
+            .find_record(window)
+            .and_then(|record| record.slots.get(slot))
+            .map(|value| value.kind())
+        {
+            Some(Kind::Record(record)) => Some(record.id),
+            _ => None,
+        };
+        let next = link(self, primitives::WINDOW_NEXT_SIBLING_SLOT);
+        self.unshow_window_tree(next, squirreled);
+        if let Some(child) = link(self, primitives::WINDOW_FIRST_CHILD_SLOT) {
+            self.unshow_window_tree(Some(child), squirreled);
+        } else if let Some(buffer) = self.window_record_buffer_id(window) {
+            self.unshow_window_buffer(window);
+            primitives::unchain_window_markers(self, window);
+            squirreled.push((window, buffer));
+        }
+    }
+
+    /// BUF_PT of buffer ID.
+    pub(crate) fn buffer_point_by_id(&self, id: u64) -> usize {
+        if id == self.current_buffer_id {
+            self.buffer.borrow().point()
+        } else {
+            self.get_buffer_by_id(id).map_or(1, |buffer| buffer.point())
+        }
+    }
+
+    fn set_window_slot(&mut self, window: u64, slot: usize, value: Value) {
+        if let Some(record) = self.find_record_mut(window) {
+            if record.slots.len() <= slot {
+                record.slots.resize(slot + 1, Value::Nil);
+            }
+            record.slots[slot] = value;
+        }
+    }
+
+    /// Fminibufferp with LIVE nil, by the minibuffers' names.
+    fn buffer_is_minibuffer(&self, id: u64) -> bool {
+        self.get_buffer_by_id(id)
+            .is_some_and(|buffer| buffer.name.starts_with(" *Minibuf"))
+    }
+
+    /// WINDOW_LIVE_P: a window that shows a buffer.
+    fn window_is_live_record(&self, id: u64) -> bool {
+        self.find_record(id).is_some_and(|record| {
+            record.kind == RecordKind::Window
+                && record
+                    .slots
+                    .get(primitives::WINDOW_BUFFER_SLOT)
+                    .is_some_and(|value| value.integer_value().is_some())
+                && !matches!(
+                    record.slots.get(primitives::WINDOW_KIND_SLOT).map(|value| value.kind()),
+                    Some(Kind::Symbol(ref kind)) if kind == primitives::DELETED_WINDOW_KIND
+                )
+        })
+    }
+
+    /// buffer.c:other_buffer_safely: the first live buffer that is not
+    /// BUFFER and not hidden, else `get-scratch-buffer-create''s, else a
+    /// *scratch* made in its major mode.
+    fn other_buffer_safely(&mut self, buffer: u64) -> Result<u64, LispError> {
+        if let Some((id, _)) = self
+            .buffer_list
+            .iter()
+            .find(|(id, name)| *id != buffer && !name.starts_with(' '))
+        {
+            return Ok(*id);
+        }
+        let mut env = crate::lisp::types::Env::new();
+        if let Ok(create) = self.lookup_function("get-scratch-buffer-create", &env) {
+            let scratch = self.safe_funcall(create, &[], &mut env)?;
+            if let Kind::Buffer(scratch) = scratch.kind()
+                && let Some(id) = self.live_buffer_id(scratch)
+            {
+                return Ok(id);
+            }
+        }
+        let scratch = primitives::call(
+            self,
+            "get-buffer-create",
+            &[Value::string("*scratch*")],
+            &mut env,
+        )?;
+        primitives::call(self, "set-buffer-major-mode", &[scratch], &mut env)?;
+        match scratch.kind() {
+            Kind::Buffer(scratch) => self
+                .live_buffer_id(scratch)
+                .ok_or_else(|| LispError::Signal("Selecting deleted buffer".into())),
+            _ => Err(LispError::Signal("Selecting deleted buffer".into())),
+        }
     }
 
     /// Remove a non-current buffer from the live buffer list.
@@ -2559,7 +3035,7 @@ fn saved_windows(
             .window_records
             .iter()
             .find(|(window, _)| *window == id)
-            .map(|(_, slots)| slots.as_slice())
+            .map(|(_, slots)| &slots[..])
     };
     let window_id = |value: Option<&Value>| match value.map(|value| value.kind()) {
         Some(Kind::Record(record)) => Some(record.id),
@@ -2749,6 +3225,16 @@ pub(crate) fn nsberror(spec: &Value) -> LispError {
     match primitives::string_text(spec) {
         Ok(name) => LispError::Signal(format!("No buffer named {name}")),
         Err(_) => LispError::Signal("Invalid buffer argument".into()),
+    }
+}
+
+/// Fmarker_last_position of a saved window marker; an integer, from a
+/// configuration saved without markers, reads as itself.
+fn marker_last_position(value: Option<Value>) -> Value {
+    match value.map(|value| value.kind()) {
+        Some(Kind::Marker(marker)) => Value::Integer(marker.last_position() as i64),
+        Some(Kind::Integer(position)) => Value::Integer(position),
+        _ => Value::Nil,
     }
 }
 
