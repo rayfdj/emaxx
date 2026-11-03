@@ -13502,6 +13502,62 @@ setup_process_coding_systems's check now refuses). A 13-form
   rerun alone, its GNU oracle's process timing having disagreed under
   load), the integration targets and clippy with `--all-targets
   --all-features -D warnings' pass.
+- **Round 279: the file primitives expand their names before the handler
+  lookup, as fileio.c does.** Each C file primitive now runs its own
+  preamble at the file-name-handler choke point, through the
+  `expand-file-name' handler and in GNU's order, before it searches for
+  a handler of its own operation, and the handler and the native body
+  both receive the expanded names. `access-file', `directory-files',
+  `directory-files-and-attributes', `file-accessible-directory-p',
+  `file-attributes', `file-executable-p', `file-exists-p',
+  `file-name-case-insensitive-p', `file-readable-p', `file-symlink-p',
+  `file-system-info', `file-writable-p', `get-file-buffer' and
+  `insert-file-contents' expand with a nil default; `file-acl',
+  `file-directory-p', `file-modes', `file-regular-p',
+  `file-selinux-context' and both names of `file-newer-than-file-p' take
+  expand_and_dir_to_file's name, whose final slash Fdirectory_file_name
+  removes; the `set-file-' family expands against the buffer's directory
+  after its own checks; the completion pair expands DIRECTORY and
+  searches it before FILE; `copy-file' and `add-name-to-file' run
+  expand_cp_target on the expanded FILE, and `rename-file' on its
+  `directory-file-name', with `file-name-nondirectory' through its
+  handler, where Emaxx had used "/tmp/" as their default; and
+  `write-region' validates the region, expands FILENAME, asks about
+  MUSTBENEW, expands VISIT and defaults LOCKNAME to it before searching
+  FILENAME and then VISIT as given, recording that VISIT_FILE after a
+  handled visit. Emaxx used to hand the handler the names as given, a
+  relative one found through `default-directory'. A handler receives
+  every argument the primitive declares, `file-attributes'' its
+  ID-FORMAT only when non-nil; `get-file-buffer' keeps only a buffer
+  from its handler, and a `file-system-info' handler's value other than
+  a list is an error. `lock-file', `unlock-file' and `file-locked-p'
+  search FILE as given (their bodies expand it and ask
+  `make-lock-file-name'), `set-visited-file-modtime' the expanded
+  visited name and `verify-visited-file-modtime' that name as it is,
+  neither of them `default-directory' any more; `delete-file-internal',
+  `delete-directory-internal' (through `directory-file-name') and
+  `make-directory-internal' expand through the handler, and
+  `unhandled-file-name-directory' ends in `file-name-as-directory',
+  which may have one. The `expand-file-name' handler is now called as
+  Ffuncall calls it, so an autoloaded handler is loaded by that call,
+  which for these primitives is now the handler's first; a test whose
+  autoloaded handler answered nil for `expand-file-name', which GNU
+  rejects as an invalid handler after loading it, now has that handler
+  pass the operation on. `directory-file-name',
+  `file-name-as-directory', `file-name-nondirectory' and
+  `substitute-in-file-name' signal for a handler's value that is not a
+  string, and `file-name-directory' takes it as nil. A contract of 89
+  operations' handler traces under an absolute handled name and under a
+  handled `default-directory' matches GNU, as does one of the checks
+  before and between the expansions, write-region's MUSTBENEW and VISIT,
+  and the name transformers' handler values. The frozen run's one
+  failure on the round 278 head,
+  files-tests-file-name-non-special-make-directory, passes again:
+  `file-directory-p' of "dir" under a `/:' quoted `default-directory'
+  searches the expanded "/:.../dir" and reaches file-name-non-special,
+  as in GNU. Local validation: the grouped gate's 3,493 library
+  tests, the integration targets and clippy with `--all-targets
+  --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -15525,6 +15581,28 @@ run alone: round 276's run gave them 82 and 2, and the whole file
 locally takes 1.40 s against 1.45, those two 118 and 3 ms against 122
 and 2. icalendar-import-rrule took 106 ms against 76 and
 icalendar-import-non-recurring 39 against 24.
+
+**On `fe5a486`** (round 278): the full Rust gate (run 41667735365)
+passed; the frozen run (run 41667740471) failed at its first attempt,
+7,927 of 7,928 outcomes matching:
+files-tests-file-name-non-special-make-directory failed in Emaxx,
+`(file-directory-p "dir")` returning nil with `default-directory' a `/:'
+quoted directory. Round 278 had file-directory-p read
+expand_and_dir_to_file's name ENCODE_FILE'd, as fileio.c does, in place
+of resolve_file_name_in_env's name, which drops a `/:' quote from
+`default-directory' (GNU's C never does); the handler lookup still read
+the unexpanded "dir", so file-name-non-special, which GNU finds on the
+expanded "/:/.../dir", was never called and the quoted name reached the
+system. Round 279's preamble expands the name before the lookup, as
+Ffile_directory_p does, and the test passes again, alone and in the
+whole file (115 of 116 expected, one skipped, as GNU). The rerun was not
+spent on a real failure. Setup 79.3 s against 60.7 s (1.306), test
+bodies 291.7 s against 258.6 s (1.128), in all 1.146; setup has a
+per-file median of 120 ms against 94, against round 277's run's 100 and
+86, with GNU's own setup 10% slower too. The widest body gaps are
+ert-tests (44,310 ms against 35,730), comp-tests (17,440 against
+14,100), tramp-tests (19,350 against 17,070), mule-tests (3,430 against
+1,920) and semantic-utest-ia (4,050 against 2,620).
 
 **Findings recorded, not fixed:**
 - **Allocations outside the Lisp object makers still abort when the

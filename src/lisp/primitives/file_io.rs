@@ -903,6 +903,28 @@ pub(crate) fn write_region_value(
     write_region_value_with_logical_path(interp, args, &logical_path, None, env)
 }
 
+/// editfns.c validate_region of write-region's START and END: the two
+/// positions in order, within the accessible portion.
+pub(crate) fn validate_write_region(
+    interp: &Interpreter,
+    start: Value,
+    end: Value,
+) -> Result<(usize, usize), LispError> {
+    let from = position_from_value(interp, &start)?;
+    let to = position_from_value(interp, &end)?;
+    let (from, to) = (from.min(to), from.max(to));
+    let buffer = interp.buffer.borrow();
+    if from < buffer.point_min() || to > buffer.point_max() {
+        return Err(LispError::SignalValue(Value::list([
+            Value::symbol("args-out-of-range"),
+            Value::Buffer(interp.buffer),
+            start,
+            end,
+        ])));
+    }
+    Ok((from, to))
+}
+
 pub(crate) fn write_region_value_with_logical_path(
     interp: &mut Interpreter,
     args: &[Value],
@@ -914,20 +936,9 @@ pub(crate) fn write_region_value_with_logical_path(
     let mut normalized = [Value::Nil; 7];
     normalized[..args.len()].copy_from_slice(args);
     if !args[0].is_nil() && !matches!(args[0].kind(), Kind::StringObject(_)) {
-        let start = position_from_value(interp, &args[0])?;
-        let end = position_from_value(interp, &args[1])?;
-        if start.min(end) < interp.buffer.borrow().point_min()
-            || start.max(end) > interp.buffer.borrow().point_max()
-        {
-            return Err(LispError::SignalValue(Value::list([
-                Value::symbol("args-out-of-range"),
-                Value::Buffer(interp.buffer),
-                args[0],
-                args[1],
-            ])));
-        }
-        normalized[0] = Value::Integer(start.min(end) as i64);
-        normalized[1] = Value::Integer(start.max(end) as i64);
+        let (start, end) = validate_write_region(interp, args[0], args[1])?;
+        normalized[0] = Value::Integer(start as i64);
+        normalized[1] = Value::Integer(end as i64);
     }
     let requested_path = string_text(&args[2])?;
     let path = resolve_file_name_in_env(interp, env, &requested_path);

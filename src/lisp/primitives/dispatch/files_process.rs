@@ -631,12 +631,10 @@ define_dispatch!(
                 })
             }
             "set-visited-file-modtime" => {
-                if args.len() > 1 {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-                }
                 // fileio.c:Fset_visited_file_modtime: a FLAG of 0 or -1
                 // or a time, of unknown size; or else the visited file's
-                // status, which an indirect buffer does not have.
+                // status, which an indirect buffer does not have.  Its
+                // preamble passes the expanded visited name after FLAG.
                 let time_flag = args.first().copied().unwrap_or(Value::Nil);
                 let modtime = if !time_flag.is_nil() {
                     let stamp = match time_flag.kind() {
@@ -663,11 +661,7 @@ define_dispatch!(
                         "An indirect buffer does not have a visited file".into(),
                     ));
                 } else {
-                    let file = interp
-                        .lookup_var("buffer-file-name", env)
-                        .unwrap_or(Value::Nil);
-                    let filename = super::call(interp, "expand-file-name", &[file], env)?;
-                    let path = string_text(&filename)?;
+                    let path = string_text(&args[1])?;
                     match stat_visited_modtime(interp, env, &path)? {
                         Ok(modtime) => modtime,
                         // file_attribute_errno: a missing file leaves the
@@ -951,11 +945,11 @@ define_dispatch!(
                 let file = string_text(&args[0])?;
                 Ok(find_file_name_handler(interp, env, &file, args[1])?.unwrap_or(Value::Nil))
             }
+            // fileio.c:Funhandled_file_name_directory without a handler:
+            // Ffile_name_as_directory, which may have one.
             "unhandled-file-name-directory" => {
                 need_args(name, args, 1)?;
-                Ok(Value::String(
-                    file_name_as_directory(&string_text(&args[0])?).into(),
-                ))
+                super::call(interp, "file-name-as-directory", &[args[0]], env)
             }
             "get-load-suffixes" => {
                 need_args(name, args, 0)?;
@@ -1028,23 +1022,17 @@ define_dispatch!(
                 Ok(Value::list(entries))
             }
             // fileio.c:Ffile_directory_p: file_directory_p of the name
-            // expand_and_dir_to_file makes, ENCODE_FILE'd.
+            // expand_and_dir_to_file made, ENCODE_FILE'd.
             "file-directory-p" => {
                 need_args(name, args, 1)?;
-                let absname = expand_and_dir_to_file(interp, env, args[0])?;
-                let host = encoded_file_name(interp, env, &absname)?;
+                let host = encoded_file_name(interp, env, &args[0])?;
                 Ok(lisp_truth(file_directory_p(interp, env, &host)?))
             }
-            // fileio.c:Ffile_accessible_directory_p: CHECK_STRING, the
-            // expanded name ENCODE_FILE'd, file_accessible_directory_p.
+            // fileio.c:Ffile_accessible_directory_p: the expanded name
+            // ENCODE_FILE'd, file_accessible_directory_p.
             "file-accessible-directory-p" => {
                 need_args(name, args, 1)?;
-                if !matches!(args[0].kind(), Kind::StringObject(_)) {
-                    return Err(wrong_type_argument("stringp", args[0]));
-                }
-                let absname =
-                    crate::lisp::primitives::fexpand_file_name(interp, env, args[0], Value::Nil)?;
-                let host = encoded_file_name(interp, env, &absname)?;
+                let host = encoded_file_name(interp, env, &args[0])?;
                 Ok(lisp_truth(
                     accessible_directory(host.as_os_str().as_encoded_bytes()).is_ok(),
                 ))
@@ -1058,40 +1046,30 @@ define_dispatch!(
                     "file-readable-p" => libc::R_OK,
                     _ => libc::X_OK,
                 };
-                let absname =
-                    crate::lisp::primitives::fexpand_file_name(interp, env, args[0], Value::Nil)?;
-                let host = encoded_file_name(interp, env, &absname)?;
+                let host = encoded_file_name(interp, env, &args[0])?;
                 Ok(lisp_truth(file_access_p(&host, amode).is_ok()))
             }
             "access-file" => {
-                need_args(name, args, 2)?;
-                // fileio.c:Faccess_file: CHECK_STRING, the expanded name,
-                // CHECK_STRING of STRING, then faccessat (R_OK,
-                // AT_EACCESS) of the ENCODE_FILE'd name, and on failure
-                // report_file_error (STRING, FILENAME) with its errno.
-                if !matches!(args[0].kind(), Kind::StringObject(_)) {
-                    return Err(wrong_type_argument("stringp", args[0]));
-                }
-                let requested = string_text(&args[0])?;
-                let absname =
-                    crate::lisp::primitives::fexpand_file_name(interp, env, args[0], Value::Nil)?;
-                if !matches!(args[1].kind(), Kind::StringObject(_)) {
-                    return Err(wrong_type_argument("stringp", args[1]));
-                }
+                // fileio.c:Faccess_file past its handler lookup: faccessat
+                // (R_OK, AT_EACCESS) of the ENCODE_FILE'd expanded name,
+                // and on failure report_file_error (STRING, FILENAME) with
+                // its errno -- FILENAME as given, which the preamble
+                // passes after the two arguments.
+                need_args(name, args, 3)?;
                 let message = string_text(&args[1])?;
-                let host = encoded_file_name(interp, env, &absname)?;
+                let requested = string_text(&args[2])?;
+                let host = encoded_file_name(interp, env, &args[0])?;
                 match faccessat_errno(&host, libc::R_OK) {
                     Ok(()) => Ok(Value::Nil),
                     Err(error) => Err(file_operation_error(&message, &error, &requested)),
                 }
             }
             // fileio.c:Ffile_regular_p: an fstatat of the name
-            // expand_and_dir_to_file makes, which GNU passes as its
-            // SSDATA, not ENCODE_FILE'd.
+            // expand_and_dir_to_file made, which GNU passes as its SSDATA,
+            // not ENCODE_FILE'd.
             "file-regular-p" => {
                 need_args(name, args, 1)?;
-                let absname = expand_and_dir_to_file(interp, env, args[0])?;
-                let (bytes, _) = file_name_bytes(&absname)?;
+                let (bytes, _) = file_name_bytes(&args[0])?;
                 let regular = std::ffi::CString::new(bytes).is_ok_and(|name| {
                     use std::os::unix::ffi::OsStrExt;
                     fs::metadata(std::ffi::OsStr::from_bytes(name.as_bytes()))
@@ -1103,9 +1081,7 @@ define_dispatch!(
             // for one that does not exist W_OK | X_OK on its directory.
             "file-writable-p" => {
                 need_args(name, args, 1)?;
-                let absname =
-                    crate::lisp::primitives::fexpand_file_name(interp, env, args[0], Value::Nil)?;
-                let host = encoded_file_name(interp, env, &absname)?;
+                let host = encoded_file_name(interp, env, &args[0])?;
                 Ok(lisp_truth(file_writable_p(&host)))
             }
             "file-attributes" => {
@@ -1776,7 +1752,9 @@ define_dispatch!(
             }
             "delete-file-internal" => {
                 need_args(name, args, 1)?;
-                let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
+                let filename =
+                    crate::lisp::primitives::fexpand_file_name(interp, env, args[0], Value::Nil)?;
+                let path = string_text(&filename)?;
                 // Fdelete_file_internal: `unlink' failing with anything but
                 // ENOENT is report_file_error ("Removing old name", filename)
                 // -- the errno's own condition (`permission-denied' for
@@ -1797,9 +1775,13 @@ define_dispatch!(
             }
             "delete-directory-internal" => {
                 need_args(name, args, 1)?;
-                let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
-                // Fdelete_directory_internal: report_file_error ("Removing
+                // Fdelete_directory_internal: the expanded name through
+                // Fdirectory_file_name, and report_file_error ("Removing
                 // directory", directory) on `rmdir' failure.
+                let directory =
+                    crate::lisp::primitives::fexpand_file_name(interp, env, args[0], Value::Nil)?;
+                let directory = super::call(interp, "directory-file-name", &[directory], env)?;
+                let path = string_text(&directory)?;
                 fs::remove_dir(host_file_name(interp, env, &path)?)
                     .map_err(|error| file_operation_error("Removing directory", &error, &path))?;
                 interp.queue_directory_deletion_notification(&path);
@@ -1809,7 +1791,9 @@ define_dispatch!(
 
             "make-directory-internal" => {
                 need_args(name, args, 1)?;
-                let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
+                let directory =
+                    crate::lisp::primitives::fexpand_file_name(interp, env, args[0], Value::Nil)?;
+                let path = string_text(&directory)?;
                 // Fmake_directory_internal: emacs_mkdir (dir, 0777 &
                 // ~auto_saving_dir_umask), report_file_error ("Creating
                 // directory", directory).
@@ -2191,12 +2175,7 @@ define_dispatch!(
             // DECODE_FILE'd, nil when readlinkat fails.
             "file-symlink-p" => {
                 need_args(name, args, 1)?;
-                if !matches!(args[0].kind(), Kind::StringObject(_)) {
-                    return Err(wrong_type_argument("stringp", args[0]));
-                }
-                let absname =
-                    crate::lisp::primitives::fexpand_file_name(interp, env, args[0], Value::Nil)?;
-                let host = encoded_file_name(interp, env, &absname)?;
+                let host = encoded_file_name(interp, env, &args[0])?;
                 match fs::read_link(&host) {
                     Ok(target) => decode_host_file_name(interp, env, &target),
                     Err(_) => Ok(Value::Nil),
@@ -4596,25 +4575,6 @@ fn file_name_completion_1(
 
 fn lisp_truth(value: bool) -> Value {
     if value { Value::T } else { Value::Nil }
-}
-
-/// fileio.c:expand_and_dir_to_file: FILENAME expanded, and a final slash
-/// that is not the whole name removed by Fdirectory_file_name.
-fn expand_and_dir_to_file(
-    interp: &mut Interpreter,
-    env: &mut crate::lisp::types::Env,
-    filename: Value,
-) -> Result<Value, LispError> {
-    let absname = crate::lisp::primitives::fexpand_file_name(interp, env, filename, Value::Nil)?;
-    let (bytes, _) = file_name_bytes(&absname)?;
-    let chars = match absname.kind() {
-        Kind::StringObject(state) => state.borrow().len(),
-        _ => bytes.len(),
-    };
-    if chars > 1 && bytes.last() == Some(&b'/') {
-        return super::call(interp, "directory-file-name", &[absname], env);
-    }
-    Ok(absname)
 }
 
 /// ENCODE_FILE of the Lisp file name NAME, as a host path.

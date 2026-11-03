@@ -5298,9 +5298,13 @@ fn autoloaded_file_name_handlers_keep_their_symbol_identity() {
     );
     let dir = std::env::temp_dir().join(format!("emaxx-file-handler-autoload-{unique}"));
     std::fs::create_dir_all(&dir).unwrap();
+    // file-exists-p expands its name through the `expand-file-name'
+    // handler first, which is the call that loads the handler; that
+    // operation it passes on, as a handler must (GNU signals "Invalid
+    // handler" for a non-string expansion).
     std::fs::write(
         dir.join("emaxx-sample-handler.el"),
-        "(defalias 'emaxx-sample-handler\n  (function (lambda (operation &rest _args)\n    (eq operation 'file-exists-p))))\n(provide 'emaxx-sample-handler-feature)\n",
+        "(defalias 'emaxx-sample-handler\n  (function (lambda (operation &rest args)\n    (if (eq operation 'file-exists-p)\n        t\n      (let ((inhibit-file-name-handlers '(emaxx-sample-handler))\n            (inhibit-file-name-operation operation))\n        (apply operation args))))))\n(provide 'emaxx-sample-handler-feature)\n",
     )
     .unwrap();
 
