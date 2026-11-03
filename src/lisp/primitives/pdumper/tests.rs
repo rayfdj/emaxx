@@ -1920,9 +1920,7 @@ fn image_round_trips_buffers_markers_finalizers_and_nilled_frames() {
     assert!(intervals.plist(1).is_nil());
     drop(intervals);
     assert_eq!(
-        buffer
-            .visited_file_modtime()
-            .map(|modtime| modtime.modified),
+        buffer.visited_file_modtime().time(),
         Some(std::time::UNIX_EPOCH + std::time::Duration::from_secs(100))
     );
     assert!(buffer.overlays.iter().all(|overlay| overlay.is_dead()));

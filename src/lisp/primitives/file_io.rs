@@ -2,20 +2,31 @@ use super::*;
 use crate::lisp::types::Kind;
 use crate::lisp::types::LispErrorKind;
 
-pub(crate) fn file_modtime(
+/// emacs_fstatat of PATH as a visited file's `modtime' and
+/// `modtime_size', or the error the call failed with.
+pub(crate) fn stat_visited_modtime(
     interp: &Interpreter,
     env: &Env,
     path: &str,
-) -> Result<Option<crate::buffer::FileModTime>, LispError> {
+) -> Result<Result<crate::buffer::VisitedModtime, std::io::Error>, LispError> {
     let local_path = unquote_local_file_name(path).unwrap_or_else(|| path.to_string());
-    match fs::metadata(host_file_name(interp, env, &local_path)?) {
-        Ok(metadata) => Ok(Some(crate::buffer::FileModTime {
-            modified: metadata
-                .modified()
-                .map_err(|error| LispError::Signal(error.to_string()))?,
-        })),
-        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(LispError::Signal(error.to_string())),
+    let host = host_file_name(interp, env, &local_path)?;
+    Ok(fs::metadata(host).and_then(|metadata| {
+        Ok(crate::buffer::VisitedModtime {
+            stamp: crate::buffer::ModtimeStamp::Time(metadata.modified()?),
+            size: metadata.len() as i64,
+        })
+    }))
+}
+
+/// fileio.c:time_error_value: the stamp of a file whose status ERROR
+/// kept from being read, NONEXISTENT_MODTIME_NSECS for ENOENT and
+/// ENOTDIR.
+pub(crate) fn time_error_value(error: &std::io::Error) -> crate::buffer::ModtimeStamp {
+    if error.kind() == ErrorKind::NotFound || error.raw_os_error() == Some(libc::ENOTDIR) {
+        crate::buffer::ModtimeStamp::Nonexistent
+    } else {
+        crate::buffer::ModtimeStamp::Unknown
     }
 }
 
@@ -1124,7 +1135,7 @@ fn write_region_with_coding(
     if write_result.is_err()
         && opened
         && visiting
-        && let Ok(modtime) = file_modtime(interp, env, path)
+        && let Ok(Ok(modtime)) = stat_visited_modtime(interp, env, path)
     {
         interp.buffer.borrow_mut().set_visited_file_modtime(modtime);
     }
@@ -1157,10 +1168,11 @@ fn write_region_with_coding(
         };
         let visited_name = expand_file_name_runtime(interp, env, &visited_name, None)?;
         interp.buffer.borrow_mut().file = Some(visited_name);
-        interp
-            .buffer
-            .borrow_mut()
-            .set_visited_file_modtime(file_modtime(interp, env, path)?);
+        // The time and size the written file has, unless its status cannot
+        // be read.
+        if let Ok(modtime) = stat_visited_modtime(interp, env, path)? {
+            interp.buffer.borrow_mut().set_visited_file_modtime(modtime);
+        }
         record_visit_saved(interp);
         if into_visited_file {
             funlock_file(interp, env, Value::String(lock_path.into()))?;
@@ -2222,9 +2234,12 @@ pub(crate) fn insert_file_contents(
         args.get(3).copied().unwrap_or(Value::Nil),
         args.get(4).copied().unwrap_or(Value::Nil),
     ];
+    let mut open_failure = crate::buffer::ModtimeStamp::Unknown;
     let file = match host_file_name(interp, env, &path).and_then(|host| {
-        fs::File::open(host)
-            .map_err(|error| LispError::SignalValue(file_input_error_value(&error, &path)))
+        fs::File::open(host).map_err(|error| {
+            open_failure = time_error_value(&error);
+            LispError::SignalValue(file_input_error_value(&error, &path))
+        })
     }) {
         Ok(file) => file,
         Err(error) if !visit => return Err(error),
@@ -2250,13 +2265,37 @@ pub(crate) fn insert_file_contents(
             {
                 super::call(interp, "set-buffer-multibyte", &[Value::Nil], env)?;
             }
-            interp.buffer.borrow_mut().set_visited_file_modtime(None);
+            // mtime = time_error_value (save_errno), st.st_size = -1.
+            interp
+                .buffer
+                .borrow_mut()
+                .set_visited_file_modtime(crate::buffer::VisitedModtime {
+                    stamp: open_failure,
+                    size: -1,
+                });
             record_visit(interp, env, &path, empty_undo_list_p)?;
             set_last_coding_system_used(interp, &coding, env);
             finish_insert_file_contents(interp, env, 0, &args[1..], empty_undo_list_p)?;
             return Err(error);
         }
     };
+    // emacs_fd_fstat of the opened file, before any of it is read: its
+    // time and size.
+    let opened_modtime = file
+        .metadata()
+        .and_then(|metadata| {
+            Ok(crate::buffer::VisitedModtime {
+                stamp: crate::buffer::ModtimeStamp::Time(metadata.modified()?),
+                size: metadata.len() as i64,
+            })
+        })
+        .map_err(|error| {
+            LispError::SignalValue(file_operation_error_value(
+                "Input file status",
+                &error,
+                &path,
+            ))
+        })?;
     // Replacement preserves point as it preserves markers
     // (get_window_points_and_markers): a marker at point that the change
     // moves and restore_window_points places, and point goes there at the
@@ -2318,7 +2357,7 @@ pub(crate) fn insert_file_contents(
             interp
                 .buffer
                 .borrow_mut()
-                .set_visited_file_modtime(file_modtime(interp, env, &path)?);
+                .set_visited_file_modtime(opened_modtime);
             record_visit(interp, env, &path, empty_undo_list_p)?;
             if !regular {
                 return Err(LispError::SignalValue(Value::list([

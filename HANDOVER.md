@@ -12762,6 +12762,44 @@ setup_process_coding_systems's check now refuses). A 13-form
   GNU. Local validation: the grouped gate's 3,464 library tests
   (run together with round 262's), the integration targets and clippy
   with `--all-targets --all-features -D warnings' pass.
+- **Round 264: a visited file's modification time as buffer.h keeps it,
+  and `set-window-buffer''s checks as window.c's.** A buffer's modtime
+  is a time or one of two sentinels, UNKNOWN_MODTIME_NSECS and
+  NONEXISTENT_MODTIME_NSECS, with the file's size beside it
+  (modtime_size, -1 when unknown); Emaxx kept an optional time, which
+  could not say that the visited file had not existed, and no size.
+  `visited-file-modtime' answers 0 or -1 for the sentinels;
+  `set-visited-file-modtime' takes a flag of 0 or -1 (anything else is
+  `args-out-of-range' as check_integer_range has it) or a time, of
+  unknown size, and otherwise stats the visited file, which an indirect
+  buffer does not have ("An indirect buffer does not have a visited
+  file"), expanding the name first (so a buffer visiting nothing signals
+  `(wrong-type-argument stringp nil)') and leaving the time alone when
+  the file is missing (file_attribute_errno);
+  `verify-visited-file-modtime' compares the file's status, a failure
+  read as time_error_value reads it (ENOENT and ENOTDIR as a file that
+  does not exist), and the size when the recorded one is known, so a
+  buffer that recorded a missing file verifies while the file is still
+  missing. A visit of a file that cannot be opened records
+  time_error_value's stamp, -1 for a missing file, and the first
+  change's undo entry is then (t . -1); a visit that reads the file
+  takes the time and size from the opened file's status, read before any
+  of the file is, and a write that visits records the written file's
+  time and size, as before. reset_buffer records an unknown time and
+  size, and the image keeps the stamp and the size. Fset_window_buffer
+  decodes a live window, `window-live-p' its error, and a strongly
+  dedicated window refuses another buffer with "Window is dedicated to
+  `NAME'", NAME the buffer it shows, its quotes requoted by
+  `text-quoting-style' as doprnt requotes an error's. The batteries
+  (r264/pr: 20 forms of the modtime functions, 41 of windows and
+  `display-buffer', 95 of error paths, and the printer's and reader's
+  corner cases, 132 and 136 forms) match GNU, and files-tests,
+  fileio-tests, files-x-tests, autorevert-tests, simple-tests,
+  undo-tests, buffer-tests, dired-tests, filenotify-tests, ert-x-tests,
+  arc-mode-tests, elisp-mode-tests, minibuffer-tests, abbrev-tests and
+  time-stamp-tests pass as many tests as GNU's. Local validation: the
+  grouped gate's 3,465 library tests, the integration targets and
+  clippy with `--all-targets --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -14566,6 +14604,17 @@ the widest body gaps are ert-tests (47,300 ms against 38,216),
 comp-tests (22,205 against 15,016), tramp-tests (21,085 against 19,063),
 semantic-utest-ia (3,936 against 2,543) and mule-tests (3,248 against
 1,983), the gate build's as round 260 found.
+
+**On `8d8e50b`** (rounds 262 and 263): frozen (run 41553678226) matched all
+7,928 outcomes on a faster runner than round 261's. Setup 54.7 s against
+46.6 s (1.174), test bodies 229.4 s against 217.9 s (1.053), in all 1.069.
+The full Rust gate (run 41553675040) passed. Per file, the setup is 16 ms
+over GNU's on average (8.1 s over 519 files, a median of 83 ms against
+73), electric-tests' the most (525 against 351) before comp-tests' (1,272
+against 1,140), and the widest body gaps are comp-tests (12,489 ms against
+10,310), ert-tests (27,532 against 26,324), mule-tests (1,933 against
+1,195), tramp-tests (15,182 against 14,492) and semantic-utest-ia (2,436
+against 1,748), the gate build's as before.
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

@@ -2083,16 +2083,20 @@ impl DumpContext {
                 BUFFER_FLAG_LOCAL_TEXT_CONVERSION_STYLE,
             ),
             (
-                parts.visited_file_modtime.is_some(),
+                parts.visited_file_modtime.time().is_some(),
                 BUFFER_FLAG_HAS_MODTIME,
+            ),
+            (
+                parts.visited_file_modtime.stamp == crate::buffer::ModtimeStamp::Nonexistent,
+                BUFFER_FLAG_NONEXISTENT_MODTIME,
             ),
         ] {
             if set {
                 flags |= bit;
             }
         }
-        let (modtime_secs, modtime_nanos) = match parts.visited_file_modtime {
-            Some(modtime) => match modtime.modified.duration_since(std::time::UNIX_EPOCH) {
+        let (modtime_secs, modtime_nanos) = match parts.visited_file_modtime.time() {
+            Some(modified) => match modified.duration_since(std::time::UNIX_EPOCH) {
                 Ok(duration) => (duration.as_secs() as i64, duration.subsec_nanos()),
                 Err(before) => {
                     let duration = before.duration();
@@ -2120,6 +2124,7 @@ impl DumpContext {
         words[BUFFER_AUTOSAVE_MODIFF as usize] = parts.autosave_modiff as u64;
         words[BUFFER_MODTIME_SECS as usize] = modtime_secs as u64;
         words[BUFFER_MODTIME_NANOS as usize] = u64::from(modtime_nanos);
+        words[BUFFER_MODTIME_SIZE as usize] = parts.visited_file_modtime.size as u64;
         words[BUFFER_INTERVALS as usize] = if parts.intervals.is_none() {
             0
         } else {
@@ -2914,8 +2919,10 @@ pub(crate) const BUFFER_AUTOSAVE_MODIFF: u32 = 28;
 pub(crate) const BUFFER_CATEGORY_TABLE: u32 = 29;
 /// BVAR (b, keymap), any Lisp object.
 pub(crate) const BUFFER_KEYMAP: u32 = 30;
+/// modtime_size: the visited file's size, -1 when unknown.
+pub(crate) const BUFFER_MODTIME_SIZE: u32 = 31;
 /// The variable part: the local bindings and the markers.
-pub(crate) const BUFFER_VARIABLE_PART: u32 = 31;
+pub(crate) const BUFFER_VARIABLE_PART: u32 = 32;
 // The flag bits of BUFFER_FLAGS.
 pub(crate) const BUFFER_FLAG_MULTIBYTE: u64 = 1;
 pub(crate) const BUFFER_FLAG_INHIBIT_HOOKS: u64 = 32;
@@ -2923,6 +2930,8 @@ pub(crate) const BUFFER_FLAG_HAS_MODTIME: u64 = 64;
 /// A killed buffer (BUFFER_LIVE_P false): no text, name nil.
 pub(crate) const BUFFER_FLAG_DEAD: u64 = 128;
 pub(crate) const BUFFER_FLAG_LOCAL_TEXT_CONVERSION_STYLE: u64 = 256;
+/// modtime is NONEXISTENT_MODTIME_NSECS.
+pub(crate) const BUFFER_FLAG_NONEXISTENT_MODTIME: u64 = 512;
 /// An absent position.
 pub(crate) const NO_POSITION: u64 = u64::MAX;
 // The flag bits of an overlay record.

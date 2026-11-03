@@ -991,7 +991,7 @@ impl Interpreter {
         if let Some(mut buffer) = self.get_buffer_by_id_mut(buffer_id) {
             buffer.file = None;
             buffer.file_truename = None;
-            buffer.set_visited_file_modtime(None);
+            buffer.set_visited_file_modtime(crate::buffer::VisitedModtime::UNKNOWN);
             buffer.set_autosave_modiff(0);
             buffer.auto_save_failure_time = 0;
             buffer.set_mark_active_value(Value::Nil);

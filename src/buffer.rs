@@ -36,6 +36,40 @@ pub struct FileModTime {
     pub modified: SystemTime,
 }
 
+/// buffer.h's `modtime' and `modtime_size': the visited file's
+/// modification time when the buffer last read or wrote it, and the
+/// file's size then (-1 when unknown).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VisitedModtime {
+    pub stamp: ModtimeStamp,
+    pub size: i64,
+}
+
+/// A `modtime' timespec: a time, or one of the tv_nsec sentinels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModtimeStamp {
+    /// UNKNOWN_MODTIME_NSECS: the visited file's time is unknown.
+    Unknown,
+    /// NONEXISTENT_MODTIME_NSECS: the visited file did not exist.
+    Nonexistent,
+    Time(SystemTime),
+}
+
+impl VisitedModtime {
+    /// What reset_buffer records.
+    pub const UNKNOWN: Self = Self {
+        stamp: ModtimeStamp::Unknown,
+        size: -1,
+    };
+
+    pub fn time(&self) -> Option<SystemTime> {
+        match self.stamp {
+            ModtimeStamp::Time(time) => Some(time),
+            _ => None,
+        }
+    }
+}
+
 /// The pt_marker, begv_marker and zv_marker of a buffer whose text is
 /// shared (the base of an indirect buffer, or an indirect buffer): the
 /// last two of insertion type nil and t, as Fmake_indirect_buffer makes
@@ -145,8 +179,9 @@ pub struct Buffer {
     /// Canonical path to the visited file, if known.
     pub file_truename: Option<String>,
 
-    /// Last known on-disk modification time for the visited file.
-    visited_file_modtime: Option<FileModTime>,
+    /// The visited file's time and size as the buffer last read or wrote
+    /// it.
+    visited_file_modtime: VisitedModtime,
 
     /// BVAR (b, undo_list), `buffer-undo-list' itself: t while no undo is
     /// kept, otherwise the list undo.c's record_* functions push onto.
@@ -869,12 +904,15 @@ impl RopeCharCache {
 /// GNU's `(t . TIME)' first-change undo entry: TIME is the visited
 /// file's modtime, which `primitive-undo' compares against
 /// `visited-file-modtime' to restore the unmodified state.
-fn undo_first_change_marker(modtime: Option<FileModTime>) -> Value {
-    let Some(duration) =
-        modtime.and_then(|value| value.modified.duration_since(std::time::UNIX_EPOCH).ok())
-    else {
-        // `visited-file-modtime' returns the integer 0 when there is no
-        // recorded timestamp, so GNU records the dotted pair (t . 0).
+fn undo_first_change_marker(modtime: ModtimeStamp) -> Value {
+    // buffer_visited_file_modtime: the integer flag 0 for an unknown time
+    // and -1 for a file that did not exist, so (t . 0) and (t . -1).
+    let time = match modtime {
+        ModtimeStamp::Unknown => return Value::cons(Value::T, Value::Integer(0)),
+        ModtimeStamp::Nonexistent => return Value::cons(Value::T, Value::Integer(-1)),
+        ModtimeStamp::Time(time) => time,
+    };
+    let Ok(duration) = time.duration_since(std::time::UNIX_EPOCH) else {
         return Value::cons(Value::T, Value::Integer(0));
     };
     let seconds = duration.as_secs() as i64;
@@ -908,7 +946,7 @@ pub(crate) struct BufferImage {
     pub(crate) zv: usize,
     pub(crate) file: Option<String>,
     pub(crate) file_truename: Option<String>,
-    pub(crate) visited_file_modtime: Option<FileModTime>,
+    pub(crate) visited_file_modtime: VisitedModtime,
     pub(crate) undo_list: Value,
     pub(crate) keymap: Value,
     pub(crate) intervals: Option<Intervals>,
@@ -1101,7 +1139,7 @@ impl Buffer {
             zv: 1, // empty buffer: zv = 1
             file: None,
             file_truename: None,
-            visited_file_modtime: None,
+            visited_file_modtime: VisitedModtime::UNKNOWN,
             undo_list: Value::Nil,
             keymap: Value::Nil,
             point_before_last_command_or_undo: None,
@@ -1137,7 +1175,7 @@ impl Buffer {
             zv: len + 1,
             file: None,
             file_truename: None,
-            visited_file_modtime: None,
+            visited_file_modtime: VisitedModtime::UNKNOWN,
             undo_list: Value::Nil,
             keymap: Value::Nil,
             point_before_last_command_or_undo: None,
@@ -3526,11 +3564,11 @@ impl Buffer {
         }
     }
 
-    pub fn visited_file_modtime(&self) -> Option<FileModTime> {
+    pub fn visited_file_modtime(&self) -> VisitedModtime {
         self.visited_file_modtime
     }
 
-    pub fn set_visited_file_modtime(&mut self, modtime: Option<FileModTime>) {
+    pub fn set_visited_file_modtime(&mut self, modtime: VisitedModtime) {
         self.visited_file_modtime = modtime;
     }
 
@@ -3735,7 +3773,7 @@ impl Buffer {
         if self.undo_recording_disabled() {
             return;
         }
-        self.push_undo(undo_first_change_marker(self.visited_file_modtime));
+        self.push_undo(undo_first_change_marker(self.visited_file_modtime.stamp));
     }
 
     /// undo.c:Fundo_boundary's change to the list, for a list that is not

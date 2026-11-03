@@ -6594,32 +6594,39 @@ define_dispatch!(
             "set-window-buffer" => {
                 need_arg_range(name, args, 2, 3)?;
                 let keep_margins = args.get(2).is_some_and(Value::is_truthy);
-                let window = if args[0].is_nil() {
-                    interp.selected_window_value()
-                } else {
-                    args[0]
-                };
-                let Some(window_id) = window_record_id_from_value(interp, &window) else {
-                    return Err(LispError::WrongTypeArgument("windowp".into(), window));
-                };
-                // window.c:Fset_window_buffer: Fget_buffer, CHECK_BUFFER,
-                // then the buffer's liveness.
+                // window.c:Fset_window_buffer: decode_live_window, then
+                // Fget_buffer, CHECK_BUFFER and the buffer's liveness.
+                let window_id = live_window_id_or_selected(interp, args.first())?;
+                let window = interp.record_value(window_id);
                 let buffer = interp
                     .get_buffer(&args[1])?
                     .ok_or_else(|| LispError::WrongTypeArgument("bufferp".into(), Value::Nil))?;
                 let buffer_id = interp
                     .live_buffer_id(buffer)
                     .ok_or_else(|| LispError::Signal("Attempt to display deleted buffer".into()))?;
-                let changes_buffer =
-                    window_buffer_id(interp, &window).is_some_and(|previous| previous != buffer_id);
+                let previous = window_buffer_id(interp, &window);
+                let changes_buffer = previous.is_some_and(|previous| previous != buffer_id);
                 if changes_buffer {
                     if matches!(
                         window_slot_value(interp, window_id, WINDOW_DEDICATED_SLOT).kind(),
                         Kind::T
                     ) {
-                        return Err(LispError::Signal(
-                            "Window is strongly dedicated to its buffer".into(),
-                        ));
+                        // error ("Window is dedicated to `%s'", ...), its
+                        // quotes requoted as doprnt requotes them.
+                        let (open, close) =
+                            match crate::lisp::primitives::values::effective_text_quoting_style(
+                                interp,
+                            ) {
+                                "curve" => ('\u{2018}', '\u{2019}'),
+                                "straight" => ('\'', '\''),
+                                _ => ('`', '\''),
+                            };
+                        let name = previous
+                            .and_then(|id| interp.get_buffer_by_id(id).map(|b| b.name.clone()))
+                            .unwrap_or_default();
+                        return Err(LispError::Signal(format!(
+                            "Window is dedicated to {open}{name}{close}"
+                        )));
                     }
                     set_window_slot_value(interp, window_id, WINDOW_DEDICATED_SLOT, Value::Nil)?;
                     if let Ok(record_window_buffer) =

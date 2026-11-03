@@ -579,12 +579,17 @@ define_dispatch!(
                     .lookup_var("buffer-file-name", env)
                     .unwrap_or(Value::Nil))
             }
-            "visited-file-modtime" => Ok(interp
-                .buffer
-                .borrow()
-                .visited_file_modtime()
-                .and_then(|modtime| system_time_list_value(modtime.modified).ok())
-                .unwrap_or(Value::Integer(0))),
+            "visited-file-modtime" => {
+                need_args(name, args, 0)?;
+                // buffer_visited_file_modtime: the flag 0 for an unknown
+                // time and -1 for a file that did not exist.
+                let stamp = interp.buffer.borrow().visited_file_modtime().stamp;
+                match stamp {
+                    crate::buffer::ModtimeStamp::Unknown => Ok(Value::Integer(0)),
+                    crate::buffer::ModtimeStamp::Nonexistent => Ok(Value::Integer(-1)),
+                    crate::buffer::ModtimeStamp::Time(time) => system_time_list_value(time),
+                }
+            }
             "verify-visited-file-modtime" => {
                 need_arg_range(name, args, 0, 1)?;
                 // fileio.c: decode_buffer, so a killed buffer's file and
@@ -597,36 +602,90 @@ define_dispatch!(
                 let Some(path) = buffer.file.as_deref() else {
                     return Ok(Value::T);
                 };
-                let current = file_modtime(interp, env, path)?;
                 let visited = buffer.visited_file_modtime();
-                // GNU's unknown timestamp sentinel means there is nothing to
-                // verify, so the file is considered unchanged.
-                if visited.is_none() {
+                if visited.stamp == crate::buffer::ModtimeStamp::Unknown {
                     return Ok(Value::T);
                 }
+                // The file's time, or time_error_value's for the failure,
+                // and its size.
+                let (stamp, size) = match stat_visited_modtime(interp, env, path)? {
+                    Ok(current) => (current.stamp, current.size),
+                    Err(error) => (time_error_value(&error), -1),
+                };
                 // Tramp reports remote modification times with one-second
                 // resolution; a same-second rewrite looks unchanged.
-                let unchanged = if remote_visit {
-                    modtimes_equal_whole_seconds(&visited, &current)
-                } else {
-                    visited == current
+                let same_time = match (visited.stamp, stamp) {
+                    (
+                        crate::buffer::ModtimeStamp::Time(visited),
+                        crate::buffer::ModtimeStamp::Time(current),
+                    ) if remote_visit => modtimes_equal_whole_seconds(
+                        &Some(crate::buffer::FileModTime { modified: visited }),
+                        &Some(crate::buffer::FileModTime { modified: current }),
+                    ),
+                    (visited, current) => visited == current,
                 };
-                Ok(if unchanged { Value::T } else { Value::Nil })
+                Ok(if same_time && (visited.size < 0 || size == visited.size) {
+                    Value::T
+                } else {
+                    Value::Nil
+                })
             }
             "set-visited-file-modtime" => {
                 if args.len() > 1 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let modtime = match args.first().map(|v| v.kind()) {
-                    None | Some(Kind::Nil) => {
-                        if let Some(path) = interp.buffer.borrow().file.clone() {
-                            file_modtime(interp, env, &path)?
-                        } else {
-                            None
+                // fileio.c:Fset_visited_file_modtime: a FLAG of 0 or -1
+                // or a time, of unknown size; or else the visited file's
+                // status, which an indirect buffer does not have.
+                let time_flag = args.first().copied().unwrap_or(Value::Nil);
+                let modtime = if !time_flag.is_nil() {
+                    let stamp = match time_flag.kind() {
+                        Kind::Integer(flag) => match flag {
+                            0 => crate::buffer::ModtimeStamp::Unknown,
+                            -1 => crate::buffer::ModtimeStamp::Nonexistent,
+                            // check_integer_range (TIME_FLAG, -1, 0).
+                            _ => {
+                                return Err(LispError::SignalValue(Value::list([
+                                    Value::symbol("args-out-of-range"),
+                                    time_flag,
+                                    Value::Integer(-1),
+                                    Value::Integer(0),
+                                ])));
+                            }
+                        },
+                        _ => crate::buffer::ModtimeStamp::Time(
+                            file_modtime_from_value(interp, &time_flag)?.modified,
+                        ),
+                    };
+                    crate::buffer::VisitedModtime { stamp, size: -1 }
+                } else if interp.buffer_base_id(interp.current_buffer_id()).is_some() {
+                    return Err(LispError::Signal(
+                        "An indirect buffer does not have a visited file".into(),
+                    ));
+                } else {
+                    let file = interp
+                        .lookup_var("buffer-file-name", env)
+                        .unwrap_or(Value::Nil);
+                    let filename = super::call(interp, "expand-file-name", &[file], env)?;
+                    let path = string_text(&filename)?;
+                    match stat_visited_modtime(interp, env, &path)? {
+                        Ok(modtime) => modtime,
+                        // file_attribute_errno: a missing file leaves the
+                        // recorded time as it was.
+                        Err(error)
+                            if time_error_value(&error)
+                                == crate::buffer::ModtimeStamp::Nonexistent =>
+                        {
+                            return Ok(Value::Nil);
+                        }
+                        Err(error) => {
+                            return Err(LispError::SignalValue(file_operation_error_value(
+                                "Getting attributes",
+                                &error,
+                                &path,
+                            )));
                         }
                     }
-                    Some(Kind::Integer(0)) => None,
-                    Some(value) => Some(file_modtime_from_value(interp, &value.value())?),
                 };
                 interp.buffer.borrow_mut().set_visited_file_modtime(modtime);
                 Ok(Value::Nil)

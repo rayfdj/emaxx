@@ -17298,6 +17298,37 @@ fn commandp_reads_autoloads_closures_and_lambda_bodies_as_fcommandp() {
 }
 
 #[test]
+fn visited_file_modtime_and_dedicated_windows_as_fileio_c_and_window_c() {
+    // buffer.h's modtime is a time or a sentinel, unknown (0) or a file
+    // that did not exist (-1), with the size it had: set-visited-file-
+    // modtime takes a flag of 0 or -1 or a time, or else the visited
+    // file's status (none in an indirect buffer; a missing file changes
+    // nothing), verify-visited-file-modtime compares the status as
+    // time_error_value reads a failure, a visit of a missing file
+    // records -1, and the first change's undo entry is (t . -1).
+    // Fset_window_buffer decodes a live window and names the buffer a
+    // strongly dedicated window is dedicated to.
+    let program = r#"
+        (list
+         (condition-case e (with-temp-buffer (set-visited-file-modtime)) (error e))
+         (with-temp-buffer (setq buffer-file-name "/nonexistent/emaxx-vfm") (list (set-visited-file-modtime) (visited-file-modtime)))
+         (with-temp-buffer (setq buffer-file-name "/etc/passwd") (set-visited-file-modtime) (list (consp (visited-file-modtime)) (verify-visited-file-modtime)))
+         (with-temp-buffer (set-visited-file-modtime -1) (visited-file-modtime))
+         (condition-case e (with-temp-buffer (set-visited-file-modtime 1)) (error e))
+         (with-temp-buffer (set-visited-file-modtime -1) (setq buffer-file-name "/nonexistent/emaxx-vfm") (verify-visited-file-modtime))
+         (with-temp-buffer (set-visited-file-modtime '(1 . 2)) (visited-file-modtime))
+         (let ((b (get-buffer-create "emaxx-vfm-base"))) (with-current-buffer (make-indirect-buffer b "emaxx-vfm-ind") (list (condition-case e (set-visited-file-modtime) (error e)) (set-visited-file-modtime 0) (visited-file-modtime))))
+         (with-current-buffer (get-buffer-create "emaxx-vfm-u") (condition-case nil (insert-file-contents "/nonexistent/emaxx-vfm" t) (error nil)) (insert "a") (list (visited-file-modtime) buffer-undo-list))
+         (progn (delete-other-windows) (let ((w (split-window))) (set-window-buffer w (get-buffer-create "emaxx-ded")) (set-window-dedicated-p w t) (prog1 (condition-case e (set-window-buffer w "*Messages*") (error e)) (delete-window w))))
+         (condition-case e (set-window-buffer 5 "*Messages*") (error e)))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        r#"((wrong-type-argument stringp nil) (nil 0) (t t) -1 (args-out-of-range 1 -1 0) t (0 0 500000 0) ((error "An indirect buffer does not have a visited file") nil 0) (-1 ((1 . 2) (t . -1))) (error "Window is dedicated to `emaxx-ded'") (wrong-type-argument window-live-p 5))"#,
+        "visited file modtime",
+    );
+}
+
+#[test]
 fn tty_color_primitives_follow_xfaces_c() {
     // xfaces.c on a tty frame: color-gray-p and color-supported-p go
     // through tty_defined_color (Lisp `tty-color-desc'), color-distance
