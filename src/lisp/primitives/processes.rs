@@ -4079,13 +4079,15 @@ fn serial_data_bits(value: &Value) -> Result<serialport::DataBits, LispError> {
     }
 }
 
-fn serial_parity(value: &Value) -> Result<serialport::Parity, LispError> {
+fn serial_parity(interp: &Interpreter, value: &Value) -> Result<serialport::Parity, LispError> {
     match value.kind() {
         Kind::Nil => Ok(serialport::Parity::None),
         Kind::Symbol(symbol) if symbol == "even" => Ok(serialport::Parity::Even),
         Kind::Symbol(symbol) if symbol == "odd" => Ok(serialport::Parity::Odd),
-        _ => Err(LispError::Signal(
-            ":parity must be nil (no parity), `even', or `odd'".into(),
+        _ => Err(crate::lisp::primitives::values::doprnt_error(
+            interp,
+            ":parity must be nil (no parity), `even', or `odd'",
+            &[],
         )),
     }
 }
@@ -4100,13 +4102,18 @@ fn serial_stop_bits(value: &Value) -> Result<serialport::StopBits, LispError> {
     }
 }
 
-fn serial_flow_control(value: &Value) -> Result<serialport::FlowControl, LispError> {
+fn serial_flow_control(
+    interp: &Interpreter,
+    value: &Value,
+) -> Result<serialport::FlowControl, LispError> {
     match value.kind() {
         Kind::Nil => Ok(serialport::FlowControl::None),
         Kind::Symbol(symbol) if symbol == "hw" => Ok(serialport::FlowControl::Hardware),
         Kind::Symbol(symbol) if symbol == "sw" => Ok(serialport::FlowControl::Software),
-        _ => Err(LispError::Signal(
-            ":flowcontrol must be nil (no flowcontrol), `hw', or `sw'".into(),
+        _ => Err(crate::lisp::primitives::values::doprnt_error(
+            interp,
+            ":flowcontrol must be nil (no flowcontrol), `hw', or `sw'",
+            &[],
         )),
     }
 }
@@ -4120,6 +4127,7 @@ struct SerialConfiguration {
 }
 
 fn serial_configuration(
+    interp: &Interpreter,
     updates: &[Value],
     stored_contact: &Value,
 ) -> Result<(SerialConfiguration, Value), LispError> {
@@ -4142,9 +4150,9 @@ fn serial_configuration(
     let config = SerialConfiguration {
         speed,
         data_bits: serial_data_bits(&bytesize)?,
-        parity: serial_parity(&parity)?,
+        parity: serial_parity(interp, &parity)?,
         stop_bits: serial_stop_bits(&stopbits)?,
-        flow_control: serial_flow_control(&flowcontrol)?,
+        flow_control: serial_flow_control(interp, &flowcontrol)?,
     };
     plist_items_put(&mut contact_items, ":speed", Value::Integer(speed.into()));
     plist_items_put(&mut contact_items, ":bytesize", bytesize);
@@ -4347,7 +4355,7 @@ pub(crate) fn serial_process_configure(
     if contact_plist_get(&stored_contact, ":speed").is_nil() {
         return Ok(Value::Nil);
     }
-    let (configuration, contact) = serial_configuration(args, &stored_contact)?;
+    let (configuration, contact) = serial_configuration(interp, args, &stored_contact)?;
     #[cfg(unix)]
     configure_serial_descriptor(interp.serial_process_fd(process_id)?, &configuration)?;
     interp.set_process_contact_plist(process_id, contact)?;
@@ -4380,7 +4388,7 @@ pub(crate) fn make_serial_process(
     let serial = open_serial_port(&port_name)?;
     let contact = Value::list(args.iter().cloned());
     let contact = if speed.is_some() {
-        let (configuration, contact) = serial_configuration(args, &contact)?;
+        let (configuration, contact) = serial_configuration(interp, args, &contact)?;
         #[cfg(unix)]
         {
             use std::os::fd::AsRawFd;

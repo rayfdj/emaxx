@@ -1127,10 +1127,11 @@ impl Interpreter {
             ));
         };
         if !self.category_docstring(table, category).is_nil() {
-            return Err(LispError::Signal(format!(
+            return Err(crate::lisp::primitives::values::doprnt_error(
+                self,
                 "Category `{}' is already defined",
-                char::from_u32(category).unwrap_or('?')
-            )));
+                &[&char::from_u32(category).unwrap_or('?')],
+            ));
         }
         docs.set((category - 32) as usize, doc);
         Ok(())

@@ -1722,8 +1722,10 @@ impl Interpreter {
         self.lisp_eval_depth += 1;
         if self.lisp_eval_depth_exceeded() {
             self.lisp_eval_depth -= 1;
-            return Err(LispError::Signal(
-                "Lisp nesting exceeds `max-lisp-eval-depth'".into(),
+            return Err(crate::lisp::primitives::values::doprnt_error(
+                self,
+                "Lisp nesting exceeds `max-lisp-eval-depth'",
+                &[],
             ));
         }
         Ok(())

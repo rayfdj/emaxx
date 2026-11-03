@@ -600,8 +600,10 @@ pub(crate) fn parse_interactive_string(
     loop {
         match rest.chars().next() {
             Some('+') => {
-                return Err(LispError::Signal(
-                    "`+' is not used in `interactive' for ordinary commands".into(),
+                return Err(crate::lisp::primitives::values::doprnt_error(
+                    interp,
+                    "`+' is not used in `interactive' for ordinary commands",
+                    &[],
                 ));
             }
             Some('*') => {
@@ -689,7 +691,7 @@ pub(crate) fn parse_interactive_string(
     for line in lines {
         let mut chars = line.chars();
         let Some(code) = chars.next() else {
-            return Err(invalid_interactive_control_letter('\n'));
+            return Err(invalid_interactive_control_letter(interp, '\n'));
         };
         // Codes that read nothing from the terminal mark their argument.
         let mut vary: i8 = 0;
@@ -976,7 +978,7 @@ pub(crate) fn parse_interactive_string(
                     vary = -1;
                 }
             }
-            _ => return Err(invalid_interactive_control_letter(code)),
+            _ => return Err(invalid_interactive_control_letter(interp, code)),
         }
         if seen.is_nil()
             && let Some(Kind::StringObject(_)) = values.last().map(|v| v.kind())
@@ -2013,14 +2015,16 @@ pub(crate) fn is_declare_form(form: &Value) -> bool {
     )
 }
 
-pub(crate) fn invalid_interactive_control_letter(ch: char) -> LispError {
+pub(crate) fn invalid_interactive_control_letter(interp: &Interpreter, ch: char) -> LispError {
     let code = raw_byte_from_regex_char(ch)
         .map(u32::from)
         .unwrap_or(ch as u32);
     let display = char::from_u32(code).unwrap_or(ch);
-    LispError::Signal(format!(
-        "Invalid control letter `{display}' (#o{code:03o}, #x{code:04x}) in interactive calling string"
-    ))
+    crate::lisp::primitives::values::doprnt_error(
+        interp,
+        "Invalid control letter `{}' (#o{}, #x{}) in interactive calling string",
+        &[&display, &format!("{:03o}", code), &format!("{:04x}", code)],
+    )
 }
 
 #[inline]

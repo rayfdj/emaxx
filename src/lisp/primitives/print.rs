@@ -1797,8 +1797,10 @@ pub(crate) fn md5_source_bytes(
         *source
     } else if matches!(source.kind(), Kind::Symbol(name) if name == "iv-auto") {
         let Kind::Integer(length @ 0..) = start.kind() else {
-            return Err(LispError::Signal(
-                "Without a length, `iv-auto' can't be used; see ELisp manual".into(),
+            return Err(crate::lisp::primitives::values::doprnt_error(
+                interp,
+                "Without a length, `iv-auto' can't be used; see ELisp manual",
+                &[],
             ));
         };
         return crate::lisp::primitives::text::iv_auto_bytes(length as usize);

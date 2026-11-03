@@ -1472,8 +1472,10 @@ fn call_expand_file_name_handler(
     if handled.is_string() {
         Ok(handled)
     } else {
-        Err(LispError::Signal(
-            "Invalid handler in `file-name-handler-alist'".into(),
+        Err(crate::lisp::primitives::values::doprnt_error(
+            interp,
+            "Invalid handler in `file-name-handler-alist'",
+            &[],
         ))
     }
 }
@@ -2901,16 +2903,20 @@ pub(crate) fn dispatch_file_name_handler(
             | "substitute-in-file-name"
                 if string_like(&result).is_none() =>
             {
-                return Err(LispError::Signal(
-                    "Invalid handler in `file-name-handler-alist'".into(),
+                return Err(crate::lisp::primitives::values::doprnt_error(
+                    interp,
+                    "Invalid handler in `file-name-handler-alist'",
+                    &[],
                 ));
             }
             // Fget_file_buffer: only a buffer.
             "get-file-buffer" if !matches!(result.kind(), Kind::Buffer(_)) => Value::Nil,
             // Ffile_system_info: a list or nothing.
             "file-system-info" if !result.is_nil() && result.cons_values().is_none() => {
-                return Err(LispError::Signal(
-                    "Invalid handler in `file-name-handler-alist'".into(),
+                return Err(crate::lisp::primitives::values::doprnt_error(
+                    interp,
+                    "Invalid handler in `file-name-handler-alist'",
+                    &[],
                 ));
             }
             _ => result,

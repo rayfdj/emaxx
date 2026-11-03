@@ -927,6 +927,7 @@ pub(crate) fn buffer_byte_to_position_boundary(
 }
 
 pub(crate) fn char_table_range_spec(
+    interp: &Interpreter,
     value: &Value,
     name: &str,
 ) -> Result<Option<(u32, u32)>, LispError> {
@@ -943,9 +944,11 @@ pub(crate) fn char_table_range_spec(
             character(cell.car.get())?,
             character(cell.cdr.get())?,
         ))),
-        _ => Err(LispError::Signal(format!(
-            "Invalid RANGE argument to `{name}'"
-        ))),
+        _ => Err(crate::lisp::primitives::values::doprnt_error(
+            interp,
+            "Invalid RANGE argument to `{}'",
+            &[&name],
+        )),
     }
 }
 

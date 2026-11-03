@@ -586,8 +586,10 @@ pub(crate) fn recenter_selected_window(
 ) -> Result<(), LispError> {
     let window_id = interp.selected_window_id();
     if interp.selected_window_buffer_id() != interp.current_buffer_id() {
-        return Err(LispError::Signal(
-            "`recenter'ing a window that does not display current-buffer.".into(),
+        return Err(crate::lisp::primitives::values::doprnt_error(
+            interp,
+            "`recenter'ing a window that does not display current-buffer.",
+            &[],
         ));
     }
     let mut center = false;

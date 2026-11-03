@@ -1311,7 +1311,7 @@ define_dispatch!(
                 let Kind::CharTable(id) = args[0].kind() else {
                     return Err(LispError::WrongTypeArgument("char-table-p".into(), args[0]));
                 };
-                match char_table_range_spec(&args[1], name)? {
+                match char_table_range_spec(interp, &args[1], name)? {
                     None => Ok(id.default()),
                     Some((start, end)) if matches!(args[1].kind(), Kind::Cons(_)) => {
                         Ok(id.range_value(start, end))
@@ -1328,7 +1328,7 @@ define_dispatch!(
                 if args[1].eq_value(Value::T) {
                     id.set_all(args[2]);
                 } else {
-                    let range = char_table_range_spec(&args[1], name)?;
+                    let range = char_table_range_spec(interp, &args[1], name)?;
                     match range {
                         None => id.set_default(args[2]),
                         Some((start, end)) => id.set_range(start, end, args[2]),
@@ -1491,8 +1491,10 @@ define_dispatch!(
                 };
                 let string = string.borrow();
                 if string.is_multibyte() {
-                    return Err(LispError::Signal(
-                        "Multibyte string in `make-category-set'".into(),
+                    return Err(crate::lisp::primitives::values::doprnt_error(
+                        interp,
+                        "Multibyte string in `make-category-set'",
+                        &[],
                     ));
                 }
                 let mut bits = [false; 128];

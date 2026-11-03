@@ -2867,7 +2867,11 @@ fn split_window_tree(
         )?;
         let fits = window_resize_check(interp, parent, horflag);
         if !fits {
-            return Err(LispError::Signal("Window sizes don't fit".into()));
+            return Err(crate::lisp::primitives::values::doprnt_error(
+                interp,
+                "Window sizes don't fit",
+                &[],
+            ));
         }
         set_window_slot_value(
             interp,
@@ -2880,8 +2884,10 @@ fn split_window_tree(
     } else if pixel_size + window_new_pixel(interp, old_id)
         != window_pixel_size(interp, old_id, horflag)
     {
-        return Err(LispError::Signal(
-            "Sum of sizes of old and new window don't fit".into(),
+        return Err(crate::lisp::primitives::values::doprnt_error(
+            interp,
+            "Sum of sizes of old and new window don't fit",
+            &[],
         ));
     }
 
@@ -3198,8 +3204,10 @@ fn delete_other_windows_from_tree(
         return Ok(Value::Nil);
     }
     if window_is_minibuffer(interp, window_id) {
-        return Err(LispError::Signal(
-            "Can't expand minibuffer to full frame".into(),
+        return Err(crate::lisp::primitives::values::doprnt_error(
+            interp,
+            "Can't expand minibuffer to full frame",
+            &[],
         ));
     }
 
@@ -6356,8 +6364,10 @@ define_dispatch!(
                 let frame = super::frames::decode_live_frame(interp, args.first(), true)?;
                 let window = live_window_id_or_selected(interp, args.get(1))?;
                 if interp.window_frame_id(window) != Some(frame) {
-                    return Err(LispError::Signal(
-                        "In `set-frame-selected-window', WINDOW is not on FRAME".into(),
+                    return Err(crate::lisp::primitives::values::doprnt_error(
+                        interp,
+                        "In `set-frame-selected-window', WINDOW is not on FRAME",
+                        &[],
                     ));
                 }
                 if frame == interp.selected_frame_id {
@@ -6635,22 +6645,14 @@ define_dispatch!(
                         window_slot_value(interp, window_id, WINDOW_DEDICATED_SLOT).kind(),
                         Kind::T
                     ) {
-                        // error ("Window is dedicated to `%s'", ...), its
-                        // quotes requoted as doprnt requotes them.
-                        let (open, close) =
-                            match crate::lisp::primitives::values::effective_text_quoting_style(
-                                interp,
-                            ) {
-                                "curve" => ('\u{2018}', '\u{2019}'),
-                                "straight" => ('\'', '\''),
-                                _ => ('`', '\''),
-                            };
                         let name = previous
                             .and_then(|id| interp.get_buffer_by_id(id).map(|b| b.name.clone()))
                             .unwrap_or_default();
-                        return Err(LispError::Signal(format!(
-                            "Window is dedicated to {open}{name}{close}"
-                        )));
+                        return Err(crate::lisp::primitives::values::doprnt_error(
+                            interp,
+                            "Window is dedicated to `{}'",
+                            &[&name],
+                        ));
                     }
                     set_window_slot_value(interp, window_id, WINDOW_DEDICATED_SLOT, Value::Nil)?;
                     if let Ok(record_window_buffer) =

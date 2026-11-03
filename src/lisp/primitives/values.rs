@@ -2670,6 +2670,47 @@ pub(crate) fn locale_uses_utf8() -> bool {
     })
 }
 
+/// The characters doprnt.c:490 puts for a format's grave accent and
+/// apostrophe under the effective `text-quoting-style'.
+pub(crate) fn doprnt_quote_pair(interp: &Interpreter) -> (char, char) {
+    match effective_text_quoting_style(interp) {
+        "curve" => ('\u{2018}', '\u{2019}'),
+        "straight" => ('\'', '\''),
+        _ => ('`', '\''),
+    }
+}
+
+/// eval.c:error, through verror and vformat_string to doprnt: FORMAT's
+/// own grave accents and apostrophes requoted as `text-quoting-style'
+/// has them (curve: U+2018 and U+2019, straight: apostrophes, grave: as
+/// written), each `{}' replaced by the next of ARGS as it is, unrequoted,
+/// as doprnt copies a `%s' argument.
+pub(crate) fn doprnt_error(
+    interp: &Interpreter,
+    format: &str,
+    args: &[&dyn std::fmt::Display],
+) -> LispError {
+    use std::fmt::Write;
+    let (open, close) = doprnt_quote_pair(interp);
+    let mut message = String::with_capacity(format.len());
+    let mut args = args.iter();
+    let mut chars = format.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '{' if chars.peek() == Some(&'}') => {
+                chars.next();
+                if let Some(arg) = args.next() {
+                    let _ = write!(message, "{arg}");
+                }
+            }
+            '`' => message.push(open),
+            '\'' => message.push(close),
+            c => message.push(c),
+        }
+    }
+    LispError::Signal(message)
+}
+
 /// GNU `doc.c:Ftext_quoting_style' collapses the Lisp variable to one of
 /// three effective styles.  A nil variable consults
 /// `default_to_grave_quoting_style' (doc.c:653), whose first test is the

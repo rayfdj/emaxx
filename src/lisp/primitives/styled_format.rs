@@ -988,8 +988,10 @@ pub(crate) fn styled_format(
         if !(matches!(arg.kind(), Kind::Integer(_))
             || (matches!(arg.kind(), Kind::BigInteger(_) | Kind::Float(_)) && conversion != b'c'))
         {
-            return Err(LispError::Signal(
-                "Format specifier doesn't match argument type".into(),
+            return Err(crate::lisp::primitives::values::doprnt_error(
+                interp,
+                "Format specifier doesn't match argument type",
+                &[],
             ));
         }
 

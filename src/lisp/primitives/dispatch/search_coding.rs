@@ -43,8 +43,12 @@ fn replacement_case_action(interp: &Interpreter, matched: &str) -> Option<CaseAc
     }
 }
 
-fn invalid_backslash() -> LispError {
-    LispError::Signal("Invalid use of `\\' in replacement text".into())
+fn invalid_backslash(interp: &Interpreter) -> LispError {
+    crate::lisp::primitives::values::doprnt_error(
+        interp,
+        "Invalid use of `\\' in replacement text",
+        &[],
+    )
 }
 
 /// search.c Freplace_match.
@@ -74,8 +78,10 @@ fn replace_match(
     // whether or not the regexp had the group.
     let num_regs = interp.search_regs_num_regs;
     let Some(regs) = interp.last_match_data.clone().filter(|_| num_regs > 0) else {
-        return Err(LispError::Signal(
-            "`replace-match' called before any match found".into(),
+        return Err(crate::lisp::primitives::values::doprnt_error(
+            interp,
+            "`replace-match' called before any match found",
+            &[],
         ));
     };
     let sub = match subexp {
@@ -168,7 +174,7 @@ fn replace_match(
                 let mut delbackslash = false;
                 if c == i64::from(b'\\') {
                     let Some(&c) = codes.get(pos) else {
-                        return Err(invalid_backslash());
+                        return Err(invalid_backslash(interp));
                     };
                     pos += 1;
                     match u8::try_from(c).map(char::from) {
@@ -183,7 +189,7 @@ fn replace_match(
                         }
                         Ok('\\') => delbackslash = true,
                         Ok('?') => {}
-                        _ => return Err(invalid_backslash()),
+                        _ => return Err(invalid_backslash(interp)),
                     }
                 }
                 if let Some((start, end)) = substitution {
@@ -259,7 +265,7 @@ fn replace_match(
             }
             really_changed = true;
             let Some(&next) = codes.get(pos) else {
-                return Err(invalid_backslash());
+                return Err(invalid_backslash(interp));
             };
             pos += 1;
             let c = to_buffer(next as u32, true);
@@ -273,7 +279,7 @@ fn replace_match(
                     substed.push(c);
                     None
                 }
-                _ => return Err(invalid_backslash()),
+                _ => return Err(invalid_backslash(interp)),
             };
             if let Some((start, end)) = index.and_then(group) {
                 substed.extend(buffer_region_codes(interp, start, end));
@@ -911,9 +917,10 @@ define_dispatch!(
                 let multibyte = interp.buffer.borrow().is_multibyte();
                 let (fromc, toc) = if multibyte {
                     if emacs_multibyte_char_len(fromc)? != emacs_multibyte_char_len(toc)? {
-                        return Err(LispError::Signal(
-                            "Characters in `subst-char-in-region' have different byte-lengths"
-                                .into(),
+                        return Err(crate::lisp::primitives::values::doprnt_error(
+                            interp,
+                            "Characters in `subst-char-in-region' have different byte-lengths",
+                            &[],
                         ));
                     }
                     (fromc, toc)

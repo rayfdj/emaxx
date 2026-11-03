@@ -390,11 +390,7 @@ impl Interpreter {
     /// The quote characters `error' will requote a message with, per the
     /// effective `text-quoting-style' (doc.c:679, doprnt.c:490).
     fn effective_quote_pair(&self) -> (char, char) {
-        match crate::lisp::primitives::values::effective_text_quoting_style(self) {
-            "curve" => ('\u{2018}', '\u{2019}'),
-            "straight" => ('\'', '\''),
-            _ => ('`', '\''),
-        }
+        crate::lisp::primitives::values::doprnt_quote_pair(self)
     }
 
     fn with_require_nesting<T>(

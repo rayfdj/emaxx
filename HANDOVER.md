@@ -13609,6 +13609,35 @@ setup_process_coding_systems's check now refuses). A 13-form
   give GNU's results. Local validation: the grouped gate's 3,493
   library tests, the integration targets and clippy with `--all-targets
   --all-features -D warnings' pass.
+- **Round 281: C error messages requoted as doprnt requotes them.**
+  GNU's `error' runs its format through verror, vformat_string and
+  doprnt, which turns the format's own grave accents and apostrophes
+  into the quotes of the effective `text-quoting-style' (curve: U+2018
+  and U+2019, straight: apostrophes, grave: as written) and copies a
+  `%s' or `%c' argument as it is. Emaxx's C-level messages kept the
+  grave accents and apostrophes they were written with, so under
+  `curve', the default in a UTF-8 locale, `define-category' said
+  "Category `Z' is already defined" where GNU says "Category ‘Z’ is
+  already defined", and likewise `char-table-range', `define-key' of
+  [keymap], `replace-match', `subst-char-in-region',
+  `set-buffer-multibyte' in an indirect buffer,
+  `find-operation-coding-system', the ISO charset functions,
+  `call-interactively' with a "+" or bad control letter,
+  `set-fontset-font', `recenter', the frame and display checks, serial
+  process parameters, a `handler-bind' with trailing conditions, the
+  file-name-handler check and others. The frozen run's LANG=C makes the
+  style grave, which is why it never showed. A doprnt_error helper
+  requotes only the literal format, its `{}' arguments copied as they
+  are, and 58 messages in 29 files go through it; the `require' nesting
+  errors and set-window-buffer's dedicated-window error, which picked
+  their quote pairs themselves, take the helper's. xfaces.c's warning
+  for a nil :foreground, :distant-foreground or :background is
+  add_to_log's, so `format-message' formats it (Emaxx wrote it with its
+  grave quotes). A probe of 30 forms under each style in a C.UTF-8
+  locale and a contract of 15 messages under the three styles bound
+  match GNU. Local validation: the grouped gate's 3,494 library
+  tests, the integration targets and clippy with `--all-targets
+  --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -15670,6 +15699,18 @@ ert-test-run-tests-batch-expensive, which prints a backtrace after the
 file's earlier tests: in the release build the whole file runs in 9.9 s
 against GNU's 12.3 s here and that test in 9.1 s against 11.5, so the
 frozen run's excess there is the gate build's checks.
+
+**On `78a575d`** (round 280): the full Rust gate (run 41686546748)
+passed; the frozen run (run 41686551678) passed at its first attempt,
+7,928 of 7,928 outcomes matching. Setup 85.9 s against 71.7 s (1.198),
+test bodies 307.2 s against 283.5 s (1.084), in all 1.101, on a runner
+slower again for both (GNU's setup 71.7 s against 66.2 and 60.7 in the
+last two runs); setup has a per-file median of 133 ms against 114. The
+widest body gaps are ert-tests (45,950 ms against 41,010), tramp-tests
+(23,280 against 20,150), comp-tests (20,050 against 17,350), mule-tests
+(3,140 against 2,020) and semantic-utest-ia (4,080 against 3,090), the
+same files as at round 279, where ert-tests' gap was shown to be the
+gate build's checks.
 
 **Findings recorded, not fixed:**
 - **Allocations outside the Lisp object makers still abort when the

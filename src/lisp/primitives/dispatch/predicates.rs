@@ -959,8 +959,10 @@ pub(crate) fn command_p(
             .with(|property| interp.get_symbol_property_of(&symbol, property))
             .is_some_and(|form| !form.is_nil())
         {
-            return Err(LispError::Signal(
-                "Found an 'interactive-form' property!".into(),
+            return Err(crate::lisp::primitives::values::doprnt_error(
+                interp,
+                "Found an 'interactive-form' property!",
+                &[],
             ));
         }
         link = interp

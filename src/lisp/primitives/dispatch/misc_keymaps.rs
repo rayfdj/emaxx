@@ -1137,8 +1137,10 @@ define_dispatch!(
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
                 if args.len().is_multiple_of(2) {
-                    return Err(LispError::Signal(
-                        "Trailing CONDITIONS without HANDLER in `handler-bind`".into(),
+                    return Err(crate::lisp::primitives::values::doprnt_error(
+                        interp,
+                        "Trailing CONDITIONS without HANDLER in `handler-bind`",
+                        &[],
                     ));
                 }
                 let mut active = Vec::with_capacity(args.len() / 2);

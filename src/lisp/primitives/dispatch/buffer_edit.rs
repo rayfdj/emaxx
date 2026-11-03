@@ -837,8 +837,10 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 let enabled = args[0].is_truthy();
                 if interp.buffer_base_id(interp.current_buffer_id()).is_some() {
-                    return Err(LispError::Signal(
-                        "Cannot do `set-buffer-multibyte' on an indirect buffer".into(),
+                    return Err(crate::lisp::primitives::values::doprnt_error(
+                        interp,
+                        "Cannot do `set-buffer-multibyte' on an indirect buffer",
+                        &[],
                     ));
                 }
                 if enabled == interp.buffer.borrow().is_multibyte() {

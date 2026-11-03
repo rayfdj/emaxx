@@ -632,7 +632,7 @@ define_dispatch!(
                         return Err(wrong_type_argument("stringp", *xrm));
                     }
                     super::frames::validate_x_resource_name(interp, env)?;
-                    Err(super::frames::display_cannot_be_opened(&args[0]))
+                    Err(super::frames::display_cannot_be_opened(interp, &args[0]))
                 }
                 // The Nextstep implementation ignores the optional resource and
                 // must-succeed arguments.  Emaxx deliberately does not launch a

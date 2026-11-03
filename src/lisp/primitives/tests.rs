@@ -1315,6 +1315,56 @@ fn file_attributes_and_quoted_names_are_dired_c_and_fileio_c() {
 }
 
 #[test]
+fn c_error_messages_are_requoted_as_doprnt() {
+    // eval.c:error goes through verror and vformat_string to doprnt, which
+    // turns the format's own grave accents and apostrophes into the quotes
+    // of the effective `text-quoting-style' and copies a `%s' or `%c'
+    // argument as it is.  The styles are bound, so the locale's default
+    // does not matter.
+    assert_oracle_contract_matches_interpreter(
+        r##"(let ((forms '((let ((tb (make-category-table)))
+                 (define-category ?Z "zz" tb)
+                 (define-category ?Z "zz" tb))
+               (char-table-range (make-char-table 'zz) "x")
+               (set-char-table-range (make-char-table 'zz) "x" 1)
+               (define-key (make-sparse-keymap) [keymap] 'ignore)
+               (progn (string-match "a" "a") (replace-match "\\q" nil nil "a"))
+               (with-temp-buffer (insert "a") (subst-char-in-region 1 2 ?a ?é))
+               (with-temp-buffer
+                 (let ((ind (make-indirect-buffer (current-buffer) "zz-ind")))
+                   (unwind-protect
+                       (with-current-buffer ind (set-buffer-multibyte nil))
+                     (kill-buffer ind))))
+               (find-operation-coding-system 'write-region 1 2)
+               (find-operation-coding-system 'open-network-stream "x" nil "h" 'bad)
+               (iso-charset 1 94 ?/)
+               (call-interactively (lambda (x) (interactive "+p") x))
+               (call-interactively (lambda (x) (interactive "Qfoo") x))
+               (set-fontset-font "fontset-zz-none" 'ascii "x")
+               (with-temp-buffer (recenter 1))
+               (let ((w (selected-window))
+                     (old (window-buffer)))
+                 (set-window-buffer w (get-buffer-create "zz-a"))
+                 (set-window-dedicated-p w t)
+                 (unwind-protect
+                     (set-window-buffer w (get-buffer-create "zz-b"))
+                   (set-window-dedicated-p w nil)
+                   (set-window-buffer w old)))))
+      (out nil))
+  (dolist (style '(curve straight grave))
+    (let ((text-quoting-style style))
+      (push (cons style
+                  (mapcar (lambda (form)
+                            (condition-case e (progn (eval form t) 'ok) (error e)))
+                          forms))
+            out)))
+  (nreverse out))"##,
+        r##"((curve (error "Category ‘Z’ is already defined") (error "Invalid RANGE argument to ‘char-table-range’") (error "Invalid RANGE argument to ‘set-char-table-range’") (error "‘keymap’ is reserved for embedded parent maps") (error "Invalid use of ‘\\’ in replacement text") (error "Characters in ‘subst-char-in-region’ have different byte-lengths") (error "Cannot do ‘set-buffer-multibyte’ on an indirect buffer") (error "Too few arguments for operation ‘write-region’") (error "Invalid argument 4 of operation ‘open-network-stream’") (error "Invalid FINAL-CHAR ‘/’, it should be ‘0’..‘~’") (error "‘+’ is not used in ‘interactive’ for ordinary commands") (error "Invalid control letter ‘Q’ (#o121, #x0051) in interactive calling string") (error "Fontset ‘fontset-zz-none’ does not exist") (error "‘recenter’ing a window that does not display current-buffer.") (error "Window is dedicated to ‘zz-a’")) (straight (error "Category 'Z' is already defined") (error "Invalid RANGE argument to 'char-table-range'") (error "Invalid RANGE argument to 'set-char-table-range'") (error "'keymap' is reserved for embedded parent maps") (error "Invalid use of '\\' in replacement text") (error "Characters in 'subst-char-in-region' have different byte-lengths") (error "Cannot do 'set-buffer-multibyte' on an indirect buffer") (error "Too few arguments for operation 'write-region'") (error "Invalid argument 4 of operation 'open-network-stream'") (error "Invalid FINAL-CHAR '/', it should be '0'..'~'") (error "'+' is not used in 'interactive' for ordinary commands") (error "Invalid control letter 'Q' (#o121, #x0051) in interactive calling string") (error "Fontset 'fontset-zz-none' does not exist") (error "'recenter'ing a window that does not display current-buffer.") (error "Window is dedicated to 'zz-a'")) (grave (error "Category `Z' is already defined") (error "Invalid RANGE argument to `char-table-range'") (error "Invalid RANGE argument to `set-char-table-range'") (error "`keymap' is reserved for embedded parent maps") (error "Invalid use of `\\' in replacement text") (error "Characters in `subst-char-in-region' have different byte-lengths") (error "Cannot do `set-buffer-multibyte' on an indirect buffer") (error "Too few arguments for operation `write-region'") (error "Invalid argument 4 of operation `open-network-stream'") (error "Invalid FINAL-CHAR `/', it should be `0'..`~'") (error "`+' is not used in `interactive' for ordinary commands") (error "Invalid control letter `Q' (#o121, #x0051) in interactive calling string") (error "Fontset `fontset-zz-none' does not exist") (error "`recenter'ing a window that does not display current-buffer.") (error "Window is dedicated to `zz-a'")))"##,
+        "C error messages through doprnt's quoting",
+    );
+}
+
+#[test]
 fn file_readable_p_tests_access_without_opening_a_fifo() {
     // fileio.c:Ffile_readable_p is faccessat (R_OK): a FIFO with no
     // writer is readable without the open that would wait for one.

@@ -1194,10 +1194,11 @@ define_dispatch!(
                 if (flags & LOCALIZED != 0 && flags & PER_BUFFER == 0)
                     || (alias.cell().has_c_slot() && interp.is_localized_at_startup_in_gnu(&alias))
                 {
-                    return Err(LispError::Signal(format!(
+                    return Err(crate::lisp::primitives::values::doprnt_error(
+                        interp,
                         "Don't know how to make a buffer-local variable an alias: {}",
-                        visible(&alias)
-                    )));
+                        &[&visible(&alias)],
+                    ));
                 }
                 if flags & FORWARDED != 0 {
                     return Err(LispError::Signal(format!(
@@ -1206,10 +1207,11 @@ define_dispatch!(
                     )));
                 }
                 if flags & LOCALIZED != 0 {
-                    return Err(LispError::Signal(format!(
+                    return Err(crate::lisp::primitives::values::doprnt_error(
+                        interp,
                         "Don't know how to make a buffer-local variable an alias: {}",
-                        visible(&alias)
-                    )));
+                        &[&visible(&alias)],
+                    ));
                 }
                 // https://lists.gnu.org/r/emacs-devel/2008-04/msg00834.html
                 let alias_value = interp.symbol_value_cell_symbol(&alias).ok();
@@ -1273,10 +1275,11 @@ define_dispatch!(
                     }
                 }
                 if interp.is_let_bound_special(&alias) {
-                    return Err(LispError::Signal(format!(
+                    return Err(crate::lisp::primitives::values::doprnt_error(
+                        interp,
                         "Don't know how to make a let-bound variable an alias: {}",
-                        visible(&alias)
-                    )));
+                        &[&visible(&alias)],
+                    ));
                 }
                 interp.notify_variable_watchers(
                     &alias,

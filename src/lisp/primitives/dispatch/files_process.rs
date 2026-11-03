@@ -2539,9 +2539,11 @@ define_dispatch!(
                 need_arg_range(name, args, 1, 3)?;
                 let host = string_text(&args[0])?;
                 if !host.is_ascii() {
-                    return Err(LispError::Signal(format!(
-                        "Non-ASCII hostname {host} detected, please use `puny-encode-domain'"
-                    )));
+                    return Err(crate::lisp::primitives::values::doprnt_error(
+                        interp,
+                        "Non-ASCII hostname {} detected, please use `puny-encode-domain'",
+                        &[&host],
+                    ));
                 }
                 let family = AddressFamily::parse(args.get(1))?;
                 let numeric = match args.get(2).map(|v| v.kind()) {
@@ -3105,10 +3107,11 @@ define_dispatch!(
                             };
                             super::call(interp, "kill-buffer", &[value], env)?;
                             if let Some(survivor) = interp.get_buffer_by_id(other) {
-                                return Err(LispError::Signal(format!(
+                                return Err(crate::lisp::primitives::values::doprnt_error(
+                                    interp,
                                     "Unable to kill buffer whose indirect buffer `{}' cannot be killed",
-                                    survivor.name
-                                )));
+                                    &[&survivor.name],
+                                ));
                             }
                         }
                         if !interp.has_buffer_id(id) {

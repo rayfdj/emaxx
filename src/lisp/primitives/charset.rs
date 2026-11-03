@@ -442,7 +442,11 @@ pub(crate) fn unify_charset(
     if info.as_ref().is_none_or(|info| info.has_direct_map) || offset.is_none_or(|o| o < 0x11_0000)
     {
         let shown = charset.symbol_str().unwrap_or("nil").to_string();
-        return Err(LispError::Signal(format!("Can't unify charset: {shown}")));
+        return Err(crate::lisp::primitives::values::doprnt_error(
+            interp,
+            "Can't unify charset: {}",
+            &[&shown],
+        ));
     }
     if let Some(map) = unify_map.filter(|map| !map.is_nil()) {
         if !map.is_string() && !is_vector_value(map) {
@@ -460,6 +464,7 @@ pub(crate) fn unify_charset(
 
 /// check_iso_charset_parameter: whether the set is of 96 characters.
 fn check_iso_charset_parameter(
+    interp: &Interpreter,
     dimension: &Value,
     chars: &Value,
     final_char: &Value,
@@ -480,9 +485,11 @@ fn check_iso_charset_parameter(
     }
     if !(u32::from(b'0')..=u32::from(b'~')).contains(&final_char) {
         let shown = char::from_u32(final_char).unwrap_or('\u{FFFD}');
-        return Err(LispError::Signal(format!(
-            "Invalid FINAL-CHAR `{shown}', it should be `0'..`~'"
-        )));
+        return Err(crate::lisp::primitives::values::doprnt_error(
+            interp,
+            "Invalid FINAL-CHAR `{}', it should be `0'..`~'",
+            &[&shown],
+        ));
     }
     Ok((dimension, chars_96, final_char))
 }
@@ -494,7 +501,7 @@ pub(crate) fn get_unused_iso_final_char(
     chars: &Value,
 ) -> Result<Value, LispError> {
     let (dimension, chars_96, _) =
-        check_iso_charset_parameter(dimension, chars, &Value::Integer(i64::from(b'0')))?;
+        check_iso_charset_parameter(interp, dimension, chars, &Value::Integer(i64::from(b'0')))?;
     let chars = if chars_96 { 96 } else { 94 };
     Ok((u32::from(b'0')..=u32::from(b'?'))
         .find(|&final_char| interp.iso_charset(dimension, chars, final_char).is_none())
@@ -510,7 +517,7 @@ pub(crate) fn declare_equiv_charset(
 ) -> Result<Value, LispError> {
     let charset = check_charset_get_id(interp, &args[3])?;
     let (dimension, chars_96, final_char) =
-        check_iso_charset_parameter(&args[0], &args[1], &args[2])?;
+        check_iso_charset_parameter(interp, &args[0], &args[1], &args[2])?;
     interp.declare_iso_charset(
         dimension,
         if chars_96 { 96 } else { 94 },
@@ -523,7 +530,7 @@ pub(crate) fn declare_equiv_charset(
 /// Fiso_charset.
 pub(crate) fn iso_charset(interp: &Interpreter, args: &[Value]) -> Result<Value, LispError> {
     let (dimension, chars_96, final_char) =
-        check_iso_charset_parameter(&args[0], &args[1], &args[2])?;
+        check_iso_charset_parameter(interp, &args[0], &args[1], &args[2])?;
     Ok(interp
         .iso_charset(dimension, if chars_96 { 96 } else { 94 }, final_char)
         .map_or(Value::Nil, |name| Value::symbol(&name)))
