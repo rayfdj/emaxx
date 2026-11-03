@@ -144,6 +144,7 @@ pub(crate) use generated_gnu_c_primitives_linux::{
 };
 mod fields;
 pub(crate) mod font;
+pub(crate) mod fontset;
 mod hash_insert;
 mod hooks_overlays;
 pub(crate) mod image;

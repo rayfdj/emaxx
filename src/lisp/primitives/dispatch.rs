@@ -510,3 +510,12 @@ pub(crate) fn mark_thread_local_roots(mark: &mut dyn FnMut(&Value)) {
     display::mark_echo_area_roots(mark);
     misc_keymaps::mark_semantic_cache_roots(mark);
 }
+
+/// decode_live_frame for the primitives outside dispatch: nil the
+/// selected frame, else a live frame.
+pub(crate) fn decode_live_frame(
+    interp: &Interpreter,
+    value: Option<&Value>,
+) -> Result<crate::lisp::types::FrameRef, LispError> {
+    frames::decode_live_frame(interp, value, true)
+}

@@ -1387,7 +1387,7 @@ fn font_parse_xlfd_1(
 
 /// font_parse_xlfd: NAME as an XLFD, retried with the dashes beyond 14
 /// taken into the family.
-fn font_parse_xlfd(
+pub(crate) fn font_parse_xlfd(
     interp: &mut Interpreter,
     name: &[u8],
     font: &Value,
@@ -2263,15 +2263,9 @@ pub(crate) fn font_face_attributes(
     env: &mut Env,
 ) -> Result<Value, LispError> {
     let font = if font.is_string() {
-        // fs_query_fontset's fontset-alias-alist lookups; the fontset it
-        // finds is replaced by the name's spec, as GNU's is.
-        let name = super::call(interp, "downcase", &[*font], env)?;
-        let aliases = interp
-            .symbol_value_symbol(&SymbolName::intern_str("fontset-alias-alist"))
-            .unwrap_or(Value::Nil);
-        if super::call(interp, "rassoc", &[name, aliases], env)?.is_nil() {
-            super::call(interp, "assoc", &[name, aliases], env)?;
-        }
+        // GNU looks the fontset up, then parses NAME itself, the fontset's
+        // ASCII font unused.
+        super::fontset::fs_query_fontset(interp, font, 0, env)?;
         let spec = font_spec_from_name(interp, font, env)?;
         if font_kind(interp, &spec).is_none() {
             return Err(signal_error("Invalid font name", *font));

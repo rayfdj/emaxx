@@ -13000,6 +13000,50 @@ setup_process_coding_systems's check now refuses). A 13-form
   nil signals (wrong-type-argument font-entity nil). Local validation:
   the grouped gate's 3,473 library tests, the integration targets
   and clippy with `--all-targets --all-features -D warnings' pass.
+- **Round 268: fontset.c's base fontsets.** Vfontset_table is the dumped
+  root Fontsets, a vector of fontsets by id whose slot 0 is the default
+  fontset `-*-*-*-*-*-*-*-*-*-*-*-*-fontset-default', and a fontset is a
+  char-table of purpose `fontset' (FONTSET_ID, FONTSET_NAME,
+  FONTSET_ASCII, FONTSET_BASE and FONTSET_FALLBACK in its extra slots)
+  whose element for a character is a vector of font_defs [FONT-SPEC
+  ENCODING REPERTORY]; the Rust fontset records, their mapping targets
+  and the font pattern lists they kept are gone. `set-fontset-font' is
+  Fset_fontset_font: find_font_encoding over `font-encoding-alist' gives
+  a font_def's encoding and repertory charsets (ascii when no entry
+  matches), a script's ranges come from char-table `char-script-table'
+  as map_char_table hands them to accumulate_script_ranges, a charset's
+  from map_charset_chars through the set_fontset_font callback, which
+  places the script ranges below each charset range and keeps an
+  ASCII-preserving call off ASCII, and FONTSET_ADD replaces, appends
+  (`append') or prepends (any other ADD) over each run of equal
+  elements, the fallback slot for a nil CHARACTERS; `latin', an
+  ASCII-compatible charset and a range from 0 change the fontset's ASCII
+  font unless an existing one is appended to, a symbol that is neither
+  script nor charset (t and keywords too) is "Invalid script or charset
+  name". `fontset-font' walks the fontset's element and fallback, then
+  the default fontset's, reading each font_def's encoding as its
+  repertory as GNU does, so a font whose encoding charset lacks the
+  character is skipped and a nil font_def ends the walk. `new-fontset'
+  is Fnew_fontset: the name downcased and looked up as a pattern,
+  font_parse_xlfd's "Fontset name must be in XLFD format", the
+  `fontset-*' registry check, the (NAME . SHORT-NAME) alias pushed on
+  `fontset-alias-alist' (its let-bound value when it is let-bound), the
+  ASCII font name font_dynamic_unparse_xlfd makes of the name with
+  registry iso8859-1, an existing fontset's characters cleared but not
+  its fallback, and FONTLIST's specs appended. `fontset-list' lists the
+  base fontsets newest first, and `font-face-attributes' of a name looks
+  its fontset up first as Ffont_face_attributes does. fs_query_fontset,
+  fontset_pattern_regexp and check_fontset_name move to the new
+  fontset.rs, CHAR_CHARSET_P is the charset's ascii_compatible_p or
+  encode_char, and coding.rs's charset_ascii_compatible_p is shared with
+  make-char. A battery of 71 fontset operations in one process (scripts,
+  charsets with their ASCII parts, ranges, prepends and appends,
+  fallbacks, encodings outside the BMP, new-fontset's checks, aliases
+  and re-creation) matches GNU, as do round 267's batteries and the
+  display sweep but for the items GNU's batch build crashes on. Local
+  validation: the grouped gate's 3,474 library tests, the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -14862,6 +14906,18 @@ ms against 10,483), tramp-tests (15,459 against 14,385), ert-tests
 (27,796 against 27,133, the gap of 7.7 s under round 265's runner down
 to 0.7 s), mule-tests (1,738 against 1,155) and semantic-utest-ia (2,404
 against 1,876).
+
+**On `bc60515`** (round 267): the full Rust gate (run 41576593874)
+passed, and frozen (run 41576597096) matched all 7,928 outcomes at the
+first attempt. Setup 55.8 s against 47.7 s (1.170), test bodies 233.8 s
+against 222.2 s (1.052), in all 1.068. Per file, the setup is 16 ms over
+GNU's on average (8.1 s over 519 files, a median of 87 ms against 77),
+comp-tests' the most over (1,335 against 1,145) before electric-tests'
+(509 against 339) and mhtml-mode-tests' (240 against 144), and the
+widest body gaps are comp-tests (12,563 ms against 10,910),
+semantic-utest-ia (2,581 against 1,705), tramp-tests (15,597 against
+14,758), mule-tests (1,867 against 1,076) and ert-tests (27,948 against
+27,494).
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

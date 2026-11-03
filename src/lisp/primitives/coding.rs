@@ -197,6 +197,26 @@ pub(crate) fn check_charset<'a>(
     Err(LispError::WrongTypeArgument("charsetp".into(), *charset))
 }
 
+/// struct charset's ascii_compatible_p: its `:ascii-compatible-p', the
+/// C-defined ascii, iso-8859-1, unicode and emacs ones compatible.
+fn charset_info_ascii_compatible_p(info: &CharsetInfo, canonical: &str) -> bool {
+    info.ascii_compatible_p.unwrap_or(matches!(
+        canonical,
+        "ascii" | "iso-8859-1" | "unicode" | "emacs"
+    ))
+}
+
+/// CHARSET's ascii_compatible_p.
+pub(crate) fn charset_ascii_compatible_p(interp: &Interpreter, charset: &str) -> bool {
+    interp
+        .charset_canonical_name(charset)
+        .and_then(|canonical| {
+            charset_info(interp, &canonical)
+                .map(|info| charset_info_ascii_compatible_p(&info, &canonical))
+        })
+        .unwrap_or(false)
+}
+
 pub(crate) fn make_charset_character(
     interp: &Interpreter,
     charset: &Value,
@@ -215,11 +235,7 @@ pub(crate) fn make_charset_character(
     let dimension = info.dimension as usize;
     let first = positions.first().unwrap_or(&Value::Nil);
     let mut code = if first.is_nil() {
-        let ascii_compatible = info.ascii_compatible_p.unwrap_or(matches!(
-            canonical.as_str(),
-            "ascii" | "iso-8859-1" | "unicode" | "emacs"
-        ));
-        if ascii_compatible {
+        if charset_info_ascii_compatible_p(&info, &canonical) {
             0
         } else {
             info.code_bounds

@@ -685,42 +685,9 @@ impl Interpreter {
                 Value::vector(tables.each().into_iter().map(Value::CharTable))
             }),
         ));
-        // fontset.c: Vfontset_table; each fontset's mappings.
-        groups.push((
-            RootSlot::Fontsets,
-            Value::list(self.fontset_states.iter().map(|fontset| {
-                Value::vector([
-                    Value::string(&fontset.name),
-                    Value::list(fontset.mappings.iter().map(|mapping| {
-                        let target = match &mapping.target {
-                            FontsetTargetState::Character(code) => {
-                                Value::list([Value::symbol("character"), Value::Integer(*code)])
-                            }
-                            FontsetTargetState::Range(from, to) => Value::list([
-                                Value::symbol("range"),
-                                Value::Integer(*from),
-                                Value::Integer(*to),
-                            ]),
-                            FontsetTargetState::Script(script) => {
-                                Value::list([Value::symbol("script"), Value::string(script)])
-                            }
-                            FontsetTargetState::Fallback => {
-                                Value::list([Value::symbol("fallback")])
-                            }
-                        };
-                        let patterns =
-                            Value::list(mapping.patterns.iter().map(|pattern| match pattern {
-                                Some(pattern) => pair(
-                                    opt_string(pattern.family.as_deref()),
-                                    opt_string(pattern.registry.as_deref()),
-                                ),
-                                None => Value::Nil,
-                            }));
-                        Value::vector([target, patterns])
-                    })),
-                ])
-            })),
-        ));
+        // fontset.c: the staticpro'd Vfontset_table, its char-tables with
+        // their font_def vectors.
+        groups.push((RootSlot::Fontsets, self.fontset_table));
         groups.push((
             RootSlot::FontSelectionOrder,
             Value::vector(
@@ -1175,63 +1142,8 @@ mod install {
                     self.font_style_table = *value;
                 }
                 RootSlot::Fontsets => {
-                    let mut fontsets = Vec::new();
-                    for entry in expect_list(value, "fontsets")? {
-                        let fields = expect_vector(&entry, "fontset")?;
-                        if fields.len() != 2 {
-                            return Err("fontset: two fields expected".into());
-                        }
-                        let mut mappings = Vec::new();
-                        for mapping in expect_list(&fields[1], "fontset mappings")? {
-                            let mapping = expect_vector(&mapping, "fontset mapping")?;
-                            if mapping.len() != 2 {
-                                return Err("fontset mapping: two fields expected".into());
-                            }
-                            let target = expect_list(&mapping[0], "fontset target")?;
-                            let kind = target
-                                .first()
-                                .map(|kind| expect_symbol(kind, "fontset target kind"))
-                                .transpose()?
-                                .unwrap_or_default();
-                            let target = match (kind.as_str(), target.len()) {
-                                ("character", 2) => FontsetTargetState::Character(expect_int(
-                                    &target[1],
-                                    "character",
-                                )?),
-                                ("range", 3) => FontsetTargetState::Range(
-                                    expect_int(&target[1], "range start")?,
-                                    expect_int(&target[2], "range end")?,
-                                ),
-                                ("script", 2) => {
-                                    FontsetTargetState::Script(expect_string(&target[1], "script")?)
-                                }
-                                ("fallback", 1) => FontsetTargetState::Fallback,
-                                _ => {
-                                    return Err(format!("fontset target: unknown form {target:?}"));
-                                }
-                            };
-                            let mut patterns = Vec::new();
-                            for pattern in expect_list(&mapping[1], "fontset patterns")? {
-                                patterns.push(if pattern.is_nil() {
-                                    None
-                                } else {
-                                    let (family, registry) = expect_pair(&pattern, "font pattern")?;
-                                    Some(FontPatternState {
-                                        family: opt_of(&family, |v| expect_string(v, "family"))?,
-                                        registry: opt_of(&registry, |v| {
-                                            expect_string(v, "registry")
-                                        })?,
-                                    })
-                                });
-                            }
-                            mappings.push(FontsetMappingState { target, patterns });
-                        }
-                        fontsets.push(FontsetState {
-                            name: expect_string(&fields[0], "fontset name")?,
-                            mappings,
-                        });
-                    }
-                    self.fontset_states = fontsets;
+                    expect_vector(value, "fontset table")?;
+                    self.fontset_table = *value;
                 }
                 RootSlot::FontSelectionOrder => {
                     let order = expect_vector(value, "font selection order")?;

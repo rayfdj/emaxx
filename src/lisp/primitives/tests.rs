@@ -7360,7 +7360,9 @@ fn native_fontset_registry_family_matches_gnu() {
     let expected_printed = "((\"-*-*-*-*-*-*-*-*-*-*-*-*-fontset-default\") error error \"-*-*-*-*-*-*-*-*-*-*-*-*-fontset-emaxx-native\" (\"Greek\" . \"iso10646-1\") nil nil nil nil nil nil (\"Zero\" . \"iso10646-1\") ((\"Zero\" . \"iso10646-1\") (\"One\" . \"iso10646-1\") (\"Two\" . \"iso10646-1\") (\"Fallback\" . \"iso10646-1\")) ((\"Range\" . \"iso10646-1\") (\"Fallback\" . \"iso10646-1\")) ((\"Fallback\" . \"iso10646-1\")) (\"-*-*-*-*-*-*-*-*-*-*-*-*-fontset-emaxx-native\" \"-*-*-*-*-*-*-*-*-*-*-*-*-fontset-default\") error error \"-*-*-*-*-*-*-*-*-*-*-*-*-fontset-emaxx-native\" ((\"Fallback\" . \"iso10646-1\")) (\"-*-*-*-*-*-*-*-*-*-*-*-*-fontset-emaxx-native\" \"-*-*-*-*-*-*-*-*-*-*-*-*-fontset-default\"))";
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected_printed);
 
-    let mut interp = Interpreter::new();
+    // fontset.c reads char-script-table and font-encoding-alist, which
+    // the image's characters.el and fontset.el set.
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
@@ -8099,10 +8101,97 @@ fn font_unparse_match_face_attributes_and_fontset_checks_match_gnu() {
   (lambda () (set-fontset-font t "x" "Foo"))
   (lambda () (set-fontset-font t 233 5))
   (lambda () (set-fontset-font t 233 "-x"))
-  (lambda () (set-fontset-font t 233 '("Bar-Foo" . "jisx0208")))
+  (lambda () (progn (set-fontset-font t 233 '("Bar-Foo" . "jisx0208")) (fontset-font t 233)))
   (lambda () (set-fontset-font t 233 "Foo" 5))))"###,
         r###"("-*-*-*-*-*-*-*-*-*-*-*-*-jisx0208*-*" "-*-*-*-*-*-*-*-*-*-*-*-*-jisx0208*-*" "-*-*-*-*-*-*-*-125-96-96-d-70-*-*" "-*-*-semibold-*-semicondensed-*-*-*-*-*-*-*-*-*" "-*-*-*-*-*-*-*-*-*-*-*-*-*-*" "-*-*-*-*-*-*-*-122-*-*-*-*-*-*" nil 327 "-*" "---*-*-*-*-*-*-*-*-*-*-*-*" "Foo" (E (wrong-type-argument symbolp 5)) #<font-spec nil nil nil nil nil nil nil nil nil nil nil nil ((:name . "Bar-12"))> #<font-spec x nil nil nil nil nil nil nil nil nil nil nil nil> #<font-spec nil nil nil nil nil nil nil nil nil nil nil nil ((5 . 1))> #<font-spec nil nil nil nil nil nil nil nil nil nil nil nil ((:a . 1) (:b . 2) (:lang . ja))> nil t nil nil t nil nil t (:family "Foo" :height 120 :weight semi-bold :slant italic :width condensed) (:family "Foo" :height 120 :weight bold :slant italic) (E (error "Invalid font name" "-x")) (E (error "Invalid font object" 5)) (E (wrong-type-argument frame-live-p 5)) (E (wrong-type-argument fixnump a)) (E (wrong-type-argument font-spec 5)) (E (wrong-type-argument frame-live-p 5)) (E (wrong-type-argument stringp 5)) (E (error "Window system frame should be used")) (E (wrong-type-argument font-entity #<font-spec nil nil nil nil nil nil nil nil nil nil nil nil nil>)) 197032487473358528 (#<font-spec nil nil nil nil nil nil roman nil nil nil nil nil nil> "-*-Foo-*-roman-*-*-*-*-*-*-*-*-*-*") (E (error "Can't use fontsets in non-GUI frames")) (E (error "Fontset `nosuch' does not exist")) (E (error "Can't set a font for partial ASCII range")) (E (error "Can't set ASCII font to nil")) (E (error "Invalid script or charset name: nosuch")) (E (error "Invalid second argument for setting a font in a fontset")) (E (font "Invalid font-spec" 5)) (E (error "Invalid font name: -x")) nil (E (wrong-type-argument frame-live-p 5)))"###,
         "font_unparse_match_face_attributes_and_fontset_checks_match_gnu",
+    );
+}
+
+#[test]
+fn fontset_table_char_tables_match_fontset_c() {
+    // fontset.c's base fontsets as char-tables of font_defs: FONTSET_ADD
+    // replacing, appending and prepending over runs, script ranges from
+    // char-script-table, charset targets through map_charset_chars with
+    // their ASCII part, find_font_encoding's encodings read back as
+    // Ffontset_font's repertory, the fallback slot, the default fontset
+    // under a base one, and Fnew_fontset's XLFD checks and aliases.
+    assert_oracle_contract_matches_interpreter(
+        r###"(mapcar (lambda (thunk) (condition-case e (funcall thunk) (t (list 'E e))))
+ (list
+  (lambda () (fontset-list))
+  (lambda () (fontset-font t ?a t))
+  (lambda () (fontset-font "fontset-default" #x4e00 t))
+  (lambda () (progn (set-fontset-font t 'thai '(nil . "tis620-0")) (list (fontset-font t #xe01 t) (fontset-font t #xe5b t) (fontset-font t #xe7f t))))
+  (lambda () (progn (set-fontset-font t 'thai '("Foo" . "iso10646-1") nil 'append) (fontset-font t #xe01 t)))
+  (lambda () (progn (set-fontset-font t 'thai '("Bar" . "iso10646-1") nil 'prepend) (fontset-font t #xe01 t)))
+  (lambda () (progn (set-fontset-font t 'thai "Baz") (fontset-font t #xe01 t)))
+  (lambda () (progn (set-fontset-font t 'han '("Han" . "gb2312.1980-0")) (list (fontset-font t #x4e00 t) (fontset-font t #x4e02 t) (fontset-font t #x3400 t))))
+  (lambda () (progn (set-fontset-font t 'iso-8859-2 '("C" . "iso8859-2")) (list (fontset-font t #x104 t) (fontset-font t #xe9 t) (fontset-font t ?a t))))
+  (lambda () (progn (set-fontset-font t 'latin '(nil . "iso8859-1")) (list (fontset-font t ?a t) (fontset-font t #xe9 t) (fontset-font t #x104 t) (fontset-font t #x1e00 t))))
+  (lambda () (progn (set-fontset-font t '(#x2000 . #x2100) '("R" . "iso10646-1")) (set-fontset-font t '(#x2050 . #x2200) '("S" . "iso10646-1") nil 'append) (list (fontset-font t #x2000 t) (fontset-font t #x2080 t) (fontset-font t #x2150 t))))
+  (lambda () (progn (set-fontset-font t nil '("F" . "iso10646-1")) (set-fontset-font t nil '("G" . "iso10646-1") nil 'prepend) (list (fontset-font t #x3000 t) (fontset-font t #x2080 t))))
+  (lambda () (progn (set-fontset-font t #x3000 nil) (fontset-font t #x3000 t)))
+  (lambda () (progn (set-fontset-font t #x3001 '("Unk" . "nosuch-registry")) (fontset-font t #x3001 t)))
+  (lambda () (set-fontset-font t ?A "Foo"))
+  (lambda () (set-fontset-font t '(0 . #x7e) "Foo"))
+  (lambda () (set-fontset-font t '(#x41 . #x100) "Foo"))
+  (lambda () (set-fontset-font t '(0 . #x7f) nil))
+  (lambda () (set-fontset-font t 'ascii nil))
+  (lambda () (set-fontset-font t 'nosuch "Foo"))
+  (lambda () (set-fontset-font t "str" "Foo"))
+  (lambda () (set-fontset-font t #x100 [1 2]))
+  (lambda () (set-fontset-font t '(#x100 . 1.5) "Foo"))
+  (lambda () (set-fontset-font t '(1.5 . #x100) "Foo"))
+  (lambda () (set-fontset-font nil #x100 "Foo"))
+  (lambda () (set-fontset-font "nosuch" #x100 "Foo"))
+  (lambda () (set-fontset-font t #x100 "Foo" 5))
+  (lambda () (set-fontset-font 5 #x100 "Foo"))
+  (lambda () (set-fontset-font t #x100 "Foo-12:weight=bold"))
+  (lambda () (fontset-font t #x100 t))
+  (lambda () (set-fontset-font t #x100 (font-spec :family "Spec" :registry "iso10646-1" :weight 'bold)))
+  (lambda () (fontset-font t #x100 t))
+  (lambda () (new-fontset "-foo-bar-medium-r-normal--12-*-*-*-*-*-fontset-test" '((latin "Foo" ("FooB" . "iso10646-1")) (han ("Bar" . "gb2312.1980-0")) (thai . "Th"))))
+  (lambda () fontset-alias-alist)
+  (lambda () (fontset-list))
+  (lambda () (list (fontset-font "fontset-test" ?a t) (fontset-font "fontset-test" #xe9 t) (fontset-font "fontset-test" #x4e00 t) (fontset-font "fontset-test" #xe01 t) (fontset-font "fontset-test" #x3000 t)))
+  (lambda () (fontset-font "-foo-bar-*-*-*-*-*-*-*-*-*-*-fontset-test" ?a t))
+  (lambda () (fontset-font "-FOO-bar-medium-r-normal--12-*-*-*-*-*-fontset-test" ?a))
+  (lambda () (fontset-font "*fontset-te?t" ?a))
+  (lambda () (fontset-font "fontset-te*" ?a))
+  (lambda () (new-fontset "-FOO-bar-medium-r-normal--12-*-*-*-*-*-fontset-test" '((greek ("Gr" . "iso10646-1")))))
+  (lambda () (list (fontset-list) (length fontset-alias-alist) (fontset-font "fontset-test" ?a t) (fontset-font "fontset-test" #x3b1 t)))
+  (lambda () (font-face-attributes "fontset-test"))
+  (lambda () (new-fontset "nosuch" nil))
+  (lambda () (new-fontset "-a-b-c-d-e-f-1-*-*-*-*-*-iso8859-1" nil))
+  (lambda () (new-fontset "-a-b-medium-r-normal--1-*-*-*-*-*-fontset-" nil))
+  (lambda () (new-fontset "-a-b-medium-r-normal--1-*-*-*-*-*-fontset-z" 5))
+  (lambda () (new-fontset "-a-b-medium-r-normal--1-*-*-*-*-*-fontset-y" '((nosuch "x"))))
+  (lambda () (list (fontset-list) (length fontset-alias-alist)))
+  (lambda () (new-fontset 5 nil))
+  (lambda () (fontset-font t 5.0))
+  (lambda () (fontset-font t -1))
+  (lambda () (fontset-font nil ?a))
+  (lambda () (fontset-font 5 ?a))
+  (lambda () (fontset-font "nosuch" ?a))
+  (lambda () (query-fontset "fontset-test"))
+  (lambda () (fontset-info "fontset-test"))
+  (lambda () (let ((fontset-alias-alist nil)) (new-fontset "-q-r-medium-r-normal--1-*-*-*-*-*-fontset-let" nil) fontset-alias-alist))
+  (lambda () (list (length fontset-alias-alist) (fontset-list)))
+  (lambda () (fontset-font "fontset-let" ?a))
+  (lambda () (fontset-font "-q-r-medium-r-normal--1-*-*-*-*-*-fontset-let" ?a))
+  (lambda () (set-fontset-font t t "Foo"))
+  (lambda () (set-fontset-font t :kw "Foo"))
+  (lambda () (progn (set-fontset-font t 'ethiopic '("E" . "iso10646-1")) (list (fontset-font t #x1200 t) (fontset-font t #x2d80 t) (fontset-font t #xab01 t) (fontset-font t #x1380 t))))
+  (lambda () (progn (set-fontset-font t 'lao '(nil . "mulelao-1") nil 'append) (list (fontset-font t #xe81 t) (fontset-font t #xeff t))))
+  (lambda () (progn (set-fontset-font t 'tibetan '("T" . "iso10646-1") nil 'prepend) (list (fontset-font t #xf00 t) (fontset-font t #xf40 t) (fontset-font t #xfff t))))
+  (lambda () (progn (set-fontset-font t 'symbol '("Sym" . "iso10646-1")) (list (fontset-font t #x2190 t) (fontset-font t #x2200 t))))
+  (lambda () (progn (set-fontset-font t 'unicode-bmp '("U" . "iso10646-1") nil 'append) (list (fontset-font t #x4e00 t) (fontset-font t #x10000 t) (fontset-font t ?b t))))
+  (lambda () (progn (set-fontset-font t 'ascii '("Asc" . "iso8859-1") nil 'append) (fontset-font t ?b t)))
+  (lambda () (progn (set-fontset-font t '(0 . #x7f) '("Asc2" . "iso8859-1")) (list (fontset-font t ?b t) (fontset-font t #x80 t))))
+  (lambda () (progn (new-fontset "-x-y-medium-r-normal--1-*-*-*-*-*-fontset-re" nil) (set-fontset-font "fontset-re" #x100 '("Q" . "iso10646-1")) (new-fontset "fontset-re" '((greek "Gk"))) (list (fontset-font "fontset-re" #x100 t) (fontset-list))))))"###,
+        r###"(("-*-*-*-*-*-*-*-*-*-*-*-*-fontset-default") nil nil (((nil . "tis620-0")) ((nil . "tis620-0")) nil) ((nil . "tis620-0") ("Foo" . "iso10646-1")) (("Bar" . "iso10646-1") (nil . "tis620-0") ("Foo" . "iso10646-1")) nil ((("Han" . "gb2312.1980-0")) nil nil) ((("C" . "iso8859-2")) (("C" . "iso8859-2")) (("C" . "iso8859-2"))) (((nil . "iso8859-1")) ((nil . "iso8859-1")) nil nil) ((("R" . "iso10646-1")) (("R" . "iso10646-1") ("S" . "iso10646-1")) (("S" . "iso10646-1"))) ((("G" . "iso10646-1") ("F" . "iso10646-1")) (("R" . "iso10646-1") ("S" . "iso10646-1") ("G" . "iso10646-1") ("F" . "iso10646-1"))) nil (("G" . "iso10646-1") ("F" . "iso10646-1")) (E (error "Can't set a font for partial ASCII range")) (E (error "Can't set a font for partial ASCII range")) (E (error "Can't set a font for partial ASCII range")) (E (error "Can't set ASCII font to nil")) (E (error "Can't set ASCII font to nil")) (E (error "Invalid script or charset name: nosuch")) (E (error "Invalid second argument for setting a font in a fontset")) (E (font "Invalid font-spec" [1 2])) (E (wrong-type-argument characterp 1.5)) (E (wrong-type-argument characterp 1.5)) (E (error "Can't use fontsets in non-GUI frames")) (E (error "Fontset `nosuch' does not exist")) (E (wrong-type-argument frame-live-p 5)) (E (wrong-type-argument stringp 5)) nil (("G" . "iso10646-1") ("F" . "iso10646-1")) nil (("Spec" . "iso10646-1") ("G" . "iso10646-1") ("F" . "iso10646-1")) "-foo-bar-medium-r-normal--12-*-*-*-*-*-fontset-test" (("-foo-bar-medium-r-normal--12-*-*-*-*-*-fontset-test" . "fontset-test") ("-*-*-*-*-*-*-*-*-*-*-*-*-fontset-default" . "fontset-default")) ("-foo-bar-medium-r-normal--12-*-*-*-*-*-fontset-test" "-*-*-*-*-*-*-*-*-*-*-*-*-fontset-default") ((("Foo") ("FooB" . "iso10646-1") (nil . "iso8859-1") ("G" . "iso10646-1") ("F" . "iso10646-1")) (("FooB" . "iso10646-1") (nil . "iso8859-1") ("G" . "iso10646-1") ("F" . "iso10646-1")) (("Bar" . "gb2312.1980-0") ("Han" . "gb2312.1980-0") ("G" . "iso10646-1") ("F" . "iso10646-1")) (("G" . "iso10646-1") ("F" . "iso10646-1")) nil) (("Foo") ("FooB" . "iso10646-1") (nil . "iso8859-1") ("G" . "iso10646-1") ("F" . "iso10646-1")) ("Foo") ("Foo") (E (error "Fontset `fontset-te*' does not exist")) "-foo-bar-medium-r-normal--12-*-*-*-*-*-fontset-test" (("-foo-bar-medium-r-normal--12-*-*-*-*-*-fontset-test" "-*-*-*-*-*-*-*-*-*-*-*-*-fontset-default") 2 ((nil . "iso8859-1") (nil . "iso8859-1") ("G" . "iso10646-1") ("F" . "iso10646-1")) (("Gr" . "iso10646-1") ("G" . "iso10646-1") ("F" . "iso10646-1"))) (:family "fontset-test") (E (error "Fontset name must be in XLFD format")) (E (error "Fontset name must be in XLFD format")) (E (error "Registry field of fontset name must be \"fontset-*\"")) (E (wrong-type-argument listp 5)) (E (error "Invalid script or charset name: nosuch")) (("-a-b-medium-r-normal--1-*-*-*-*-*-fontset-y" "-a-b-medium-r-normal--1-*-*-*-*-*-fontset-z" "-foo-bar-medium-r-normal--12-*-*-*-*-*-fontset-test" "-*-*-*-*-*-*-*-*-*-*-*-*-fontset-default") 4) (E (wrong-type-argument stringp 5)) (E (wrong-type-argument characterp 5.0)) (E (wrong-type-argument characterp -1)) (E (error "Can't use fontsets in non-GUI frames")) (E (wrong-type-argument stringp 5)) (E (error "Fontset `nosuch' does not exist")) (E (error "Window system is not in use or not initialized")) (E (error "Window system is not in use or not initialized")) (("-q-r-medium-r-normal--1-*-*-*-*-*-fontset-let" . "fontset-let")) (4 ("-q-r-medium-r-normal--1-*-*-*-*-*-fontset-let" "-a-b-medium-r-normal--1-*-*-*-*-*-fontset-y" "-a-b-medium-r-normal--1-*-*-*-*-*-fontset-z" "-foo-bar-medium-r-normal--12-*-*-*-*-*-fontset-test" "-*-*-*-*-*-*-*-*-*-*-*-*-fontset-default")) (E (error "Fontset `fontset-let' does not exist")) (nil . "iso8859-1") (E (error "Invalid script or charset name: t")) (E (error "Invalid script or charset name: :kw")) ((("E" . "iso10646-1") ("G" . "iso10646-1") ("F" . "iso10646-1")) (("E" . "iso10646-1") ("G" . "iso10646-1") ("F" . "iso10646-1")) (("E" . "iso10646-1") ("G" . "iso10646-1") ("F" . "iso10646-1")) (("E" . "iso10646-1") ("G" . "iso10646-1") ("F" . "iso10646-1"))) (((nil . "mulelao-1") ("G" . "iso10646-1") ("F" . "iso10646-1")) (("G" . "iso10646-1") ("F" . "iso10646-1"))) ((("T" . "iso10646-1") ("G" . "iso10646-1") ("F" . "iso10646-1")) (("T" . "iso10646-1") ("G" . "iso10646-1") ("F" . "iso10646-1")) (("T" . "iso10646-1") ("G" . "iso10646-1") ("F" . "iso10646-1"))) ((("Sym" . "iso10646-1") ("G" . "iso10646-1") ("F" . "iso10646-1")) (("Sym" . "iso10646-1") ("G" . "iso10646-1") ("F" . "iso10646-1"))) ((("Han" . "gb2312.1980-0") ("U" . "iso10646-1") ("G" . "iso10646-1") ("F" . "iso10646-1")) nil ((nil . "iso8859-1") ("G" . "iso10646-1") ("F" . "iso10646-1"))) ((nil . "iso8859-1") ("G" . "iso10646-1") ("F" . "iso10646-1")) ((("Asc2" . "iso8859-1") ("G" . "iso10646-1") ("F" . "iso10646-1")) (("C" . "iso8859-2") ("U" . "iso10646-1") ("G" . "iso10646-1") ("F" . "iso10646-1"))) ((("Spec" . "iso10646-1") ("U" . "iso10646-1") ("Spec" . "iso10646-1") ("U" . "iso10646-1") ("G" . "iso10646-1") ("F" . "iso10646-1")) ("-x-y-medium-r-normal--1-*-*-*-*-*-fontset-re" "-q-r-medium-r-normal--1-*-*-*-*-*-fontset-let" "-a-b-medium-r-normal--1-*-*-*-*-*-fontset-y" "-a-b-medium-r-normal--1-*-*-*-*-*-fontset-z" "-foo-bar-medium-r-normal--12-*-*-*-*-*-fontset-test" "-*-*-*-*-*-*-*-*-*-*-*-*-fontset-default")))"###,
+        "fontset_table_char_tables_match_fontset_c",
     );
 }
 

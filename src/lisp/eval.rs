@@ -2719,32 +2719,6 @@ pub(crate) struct CompositionIndex {
 
 pub(crate) const LFACE_VECTOR_SIZE: usize = 20;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct FontPatternState {
-    pub(crate) family: Option<String>,
-    pub(crate) registry: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum FontsetTargetState {
-    Character(i64),
-    Range(i64, i64),
-    Script(String),
-    Fallback,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct FontsetMappingState {
-    pub(crate) target: FontsetTargetState,
-    pub(crate) patterns: Vec<Option<FontPatternState>>,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct FontsetState {
-    pub(crate) name: String,
-    pub(crate) mappings: Vec<FontsetMappingState>,
-}
-
 #[derive(Clone, Debug)]
 pub(crate) struct FrameState {
     pub(crate) terminal: Option<crate::lisp::types::TerminalRef>,
@@ -4507,6 +4481,7 @@ impl Interpreter {
         mark(&self.where_is_cache);
         mark(&self.where_is_cache_keymaps);
         mark(&self.font_style_table);
+        mark(&self.fontset_table);
         mark(&Value::CharTable(self.standard_syntax_table_id));
         for table in self.standard_category_table_id.into_iter().chain(
             self.standard_case_tables
@@ -4966,6 +4941,7 @@ impl Interpreter {
             clone.where_is_cache = Value::Nil;
             clone.where_is_cache_keymaps = Value::T;
             clone.font_style_table = c.copy(&clone.font_style_table);
+            clone.fontset_table = c.copy(&clone.fontset_table);
             clone.standard_syntax_table_id = copy_table(c, clone.standard_syntax_table_id);
             clone.standard_category_table_id = clone
                 .standard_category_table_id
@@ -5784,7 +5760,13 @@ pub struct InterpreterState {
     pub(crate) alternative_font_family_alist: Value,
     pub(crate) alternative_font_registry_alist: Value,
     pub(crate) tty_suppress_bold_inverse_default_colors: bool,
-    pub(crate) fontset_states: Vec<FontsetState>,
+    /// fontset.c's staticpro'd Vfontset_table: the fontsets by id, each a
+    /// char-table of purpose `fontset' (FONTSET_ID, FONTSET_NAME,
+    /// FONTSET_ASCII, FONTSET_BASE, FONTSET_FRAME, FONTSET_NOFONT_FACE,
+    /// FONTSET_DEFAULT and FONTSET_FALLBACK in its extra slots), the
+    /// default fontset at id 0; nil until the purpose's extra slots are
+    /// known at construction.
+    pub(crate) fontset_table: Value,
     pub(crate) fringe_bitmap_states: Vec<FringeBitmapState>,
     pub(crate) composition_states: Vec<CompositionState>,
     pub(crate) composition_index: CompositionIndex,
@@ -6507,10 +6489,7 @@ impl Interpreter {
             alternative_font_family_alist: Value::Nil,
             alternative_font_registry_alist: Value::Nil,
             tty_suppress_bold_inverse_default_colors: false,
-            fontset_states: vec![FontsetState {
-                name: "-*-*-*-*-*-*-*-*-*-*-*-*-fontset-default".into(),
-                mappings: Vec::new(),
-            }],
+            fontset_table: Value::Nil,
             fringe_bitmap_states,
             composition_states: Vec::new(),
             composition_index: CompositionIndex::default(),
@@ -6587,6 +6566,9 @@ impl Interpreter {
         ] {
             interp.put_symbol_property(purpose, "char-table-extra-slots", Value::Integer(extras));
         }
+        // fontset.c:syms_of_fontset: Vfontset_table with the default
+        // fontset at id 0.
+        interp.fontset_table = crate::lisp::primitives::fontset::make_fontset_table(&mut interp);
 
         interp.register_state_as_root();
         for (name, plist) in builtin_symbol_properties() {
