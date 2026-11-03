@@ -17260,6 +17260,44 @@ fn commandp_follows_fcommandp_order_and_property_error() {
 }
 
 #[test]
+fn commandp_reads_autoloads_closures_and_lambda_bodies_as_fcommandp() {
+    // eval.c Fcommandp: an autoload is a command by its fourth element
+    // alone (a `keymap' TYPE is not), read with Fcar/Fcdr so an improper
+    // one signals; a `lambda' list answers by Fassq of `interactive' in
+    // its body, which signals on an improper body it reaches the end of;
+    // a closure is a command when it has an interactive slot, and one
+    // whose docstring slot holds no docstring asks `interactive-form'.
+    let program = r#"
+        (list
+         (progn (autoload 'emaxx-cmd-kmap "x" nil nil 'keymap) (commandp 'emaxx-cmd-kmap))
+         (progn (autoload 'emaxx-cmd-int "x" nil 'foo) (commandp 'emaxx-cmd-int))
+         (condition-case e (commandp '(autoload . 5)) (error e))
+         (condition-case e (commandp '(autoload "f" . 5)) (error e))
+         (condition-case e (commandp '(lambda () . 5)) (error e))
+         (condition-case e (commandp '(lambda (x) (interactive) . 5)) (error e))
+         (condition-case e (commandp '(lambda x . 5)) (error e))
+         (commandp '(lambda () 1 (interactive)))
+         (commandp '(lambda (interactive)))
+         (commandp '(lambda () (interactive . 3)))
+         (commandp (make-byte-code nil "\300\207" [1] 1 nil nil))
+         (commandp (make-byte-code nil "\300\207" [1] 1 nil))
+         (commandp (make-byte-code nil "\300\207" [1] 1 '("f" . 3)))
+         (commandp (make-byte-code nil "\300\207" [1] 1 'emaxx-sym))
+         (commandp (make-interpreted-closure nil '(1) nil nil '(interactive)))
+         (commandp (record 'foo))
+         (progn (defun emaxx-cmd-adv () 1)
+                (advice-add 'emaxx-cmd-adv :around #'ignore)
+                (commandp 'emaxx-cmd-adv)))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "(nil t (wrong-type-argument listp 5) (wrong-type-argument listp 5) \
+         (wrong-type-argument listp 5) t (wrong-type-argument listp 5) t nil t t nil nil nil t \
+         nil t)",
+        "commandp kinds",
+    );
+}
+
+#[test]
 fn tty_color_primitives_follow_xfaces_c() {
     // xfaces.c on a tty frame: color-gray-p and color-supported-p go
     // through tty_defined_color (Lisp `tty-color-desc'), color-distance

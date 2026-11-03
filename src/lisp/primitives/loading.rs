@@ -34,12 +34,6 @@ pub(crate) fn autoload_is_macro(interp: &Interpreter, symbol: Option<&str>, valu
     })
 }
 
-pub(crate) fn autoload_command_p(value: &Value) -> bool {
-    autoload_parts(value).is_some_and(|(_, interactive, kind)| {
-        interactive.is_truthy() || matches!(kind.kind(), Kind::Symbol(symbol) if symbol == "keymap")
-    })
-}
-
 // The arguments an interactive spec produced, with the command-history
 // entry a string spec's call records once the reading bindings are gone.
 pub(crate) struct InteractiveArgs {

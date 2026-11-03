@@ -391,6 +391,8 @@ const KEY_NAMES: &[&str] = &[
     "minor-mode-map-alist",
     "emulation-mode-map-alists",
     "overriding-local-map",
+    "interactive",
+    "interactive-form",
 ];
 
 struct Symbols {

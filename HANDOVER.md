@@ -12731,6 +12731,37 @@ setup_process_coding_systems's check now refuses). A 13-form
   tests as GNU's. Local validation: the grouped gate's 3,464
   library tests (run with round 263's), the integration targets and
   clippy with `--all-targets --all-features -D warnings' pass.
+- **Round 263: `commandp' as eval.c.** Fcommandp indirects FUNCTION (a
+  void function cell is nil) and answers by the kind of what it finds: a
+  subr with an interactive spec, a closure long enough to have an
+  element at CLOSURE_INTERACTIVE and a module function with an
+  interactive form are commands; strings and vectors are keyboard macros
+  unless FOR-CALL-INTERACTIVELY; an autoload is a command by its fourth
+  element alone, read with Fcar and Fcdr so that an improper one
+  signals; any other list is one when it is a `lambda' with an
+  `interactive' entry anywhere in its body, found by Fassq, which
+  signals at an improper end it reaches; a subr, closure, module
+  function or autoload that is no command then walks FUNCTION's symbol
+  chain, where an `interactive-form' property is an error; and a closure
+  whose docstring slot holds no docstring (VALID_DOCSTRING_P: a string,
+  a fixnum or a string and fixnum pair), an OClosure, asks
+  `interactive-form'. Emaxx counted an autoload of type `keymap' as a
+  command, copied a lambda's body into a list and so answered nil for an
+  improper one (`(lambda (x) (interactive) . 5)' is a command in GNU,
+  `(lambda () . 5)' signals), looked the function, the property and
+  `oclosure-interactive-form' up by name, built every closure's
+  interactive form to see whether it had one, and asked `oclosure-type'
+  by a Lisp call before asking `oclosure-interactive-form' of the
+  closures it recognized. In a walk of the obarray a call now costs 215
+  instructions more than `identity''s, GNU's 132. The battery
+  (r264/cmdp.txt, 63 forms: subrs, autoloads of each type, improper
+  autoloads and lambdas, `interactive' anywhere in a body, closures and
+  byte code by their slot count and docstring kind, OClosures, advised
+  functions, aliases carrying the property, `t' given a function,
+  symbols with position, records, char-tables and bool-vectors) matches
+  GNU. Local validation: the grouped gate's 3,464 library tests
+  (run together with round 262's), the integration targets and clippy
+  with `--all-targets --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's

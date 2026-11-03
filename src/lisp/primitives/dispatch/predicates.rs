@@ -282,106 +282,12 @@ define_dispatch!(
             }
             "commandp" => {
                 need_arg_range(name, args, 1, 2)?;
-                // eval.c Fcommandp, in its order: indirect the function (a
-                // void symbol is nil at once); keyboard macros answer by
-                // FOR-CALL-INTERACTIVELY; a primitive, closure or module
-                // function with its own interactive spec answers t and one
-                // without falls through; an autoload's fourth element
-                // answers t and otherwise falls through; any other list is a
-                // `lambda' whose body is searched for `interactive' and
-                // answers there.  Whatever fell through then walks the
-                // symbol chain, where an `interactive-form' property is an
-                // error ("Found an 'interactive-form' property!"), and an
-                // OClosure finally asks its generic `interactive-form'.
-                let for_call_interactively = args.get(1).is_some_and(Value::is_truthy);
-                let Some(function) = resolve_callable(interp, &args[0], env)
-                    .ok()
-                    .filter(|function| !function.is_nil())
-                else {
-                    return Ok(Value::Nil);
-                };
-                if matches!(function.kind(), Kind::StringObject(_)) || is_vector_value(&function) {
-                    return Ok(if for_call_interactively {
-                        Value::Nil
-                    } else {
-                        Value::T
-                    });
-                }
-                match function.kind() {
-                    Kind::BuiltinFunc(builtin) => {
-                        if generated_builtin_arities::generated_builtin_command_p(&builtin) {
-                            return Ok(Value::T);
-                        }
-                    }
-                    Kind::NativeFunction(function) => {
-                        // eval.c:Fcommandp tests the actual subr interactive field.
-                        if function.interactive().is_truthy() {
-                            return Ok(Value::T);
-                        }
-                    }
-                    Kind::Cons(_) => {
-                        if autoload_parts(&function).is_some() {
-                            if autoload_command_p(&function) {
-                                return Ok(Value::T);
-                            }
-                        } else {
-                            let is_lambda = matches!(
-                                function.car().map(|v| v.kind()),
-                                Ok(Kind::Symbol(head)) if head == "lambda"
-                            );
-                            let body = function
-                                .cdr()
-                                .and_then(|rest| rest.cdr())
-                                .unwrap_or(Value::Nil);
-                            let interactive = body.to_vec().unwrap_or_default().into_iter().any(
-                                |form| {
-                                    matches!(form.car().map(|v| v.kind()), Ok(Kind::Symbol(head)) if head == "interactive")
-                                },
-                            );
-                            return Ok(if is_lambda && interactive {
-                                Value::T
-                            } else {
-                                Value::Nil
-                            });
-                        }
-                    }
-                    Kind::Closure(_) | Kind::Record(_) => {
-                        if callable_interactive_form_items(interp, &function).is_some() {
-                            return Ok(Value::T);
-                        }
-                    }
-                    _ => return Ok(Value::Nil),
-                }
-                let mut link = args[0];
-                while let Kind::Symbol(symbol) = link.kind() {
-                    if interp
-                        .get_symbol_property(&symbol, "interactive-form")
-                        .is_some_and(|form| !form.is_nil())
-                    {
-                        return Err(LispError::Signal(
-                            "Found an 'interactive-form' property!".into(),
-                        ));
-                    }
-                    link = interp
-                        .logical_function_binding(&symbol, env)
-                        .unwrap_or(Value::Nil);
-                }
-                // OClosures may get their interactive form from the
-                // `oclosure-interactive-form' generic (like GNU's commandp).
-                if interp.has_lisp_function("oclosure-interactive-form")
-                    && super::misc_keymaps::value_is_oclosure(interp, &function, env)
-                    && interp
-                        .call_function_value(
-                            Value::Symbol("oclosure-interactive-form".into()),
-                            Some("oclosure-interactive-form"),
-                            std::slice::from_ref(&function),
-                            env,
-                        )?
-                        .is_truthy()
-                {
-                    return Ok(Value::T);
-                }
-                Ok(Value::Nil)
+                command_p(
+                    interp,
+                    args[0],
+                    args.get(1).is_some_and(Value::is_truthy),
+                    env,
+                )
             }
             "boundp" => {
                 need_args(name, args, 1)?;
@@ -917,4 +823,158 @@ pub(super) fn direct_listp(
     } else {
         Value::Nil
     })
+}
+
+/// lisp.h:VALID_DOCSTRING_P: a docstring slot holding a string, a file
+/// offset, or a (FILE . OFFSET) pair.
+fn valid_docstring_p(doc: &Value) -> bool {
+    doc.fixnum().is_some()
+        || doc.is_string()
+        || doc
+            .cons_ref()
+            .is_some_and(|cell| cell.car.get().is_string() && cell.cdr.get().fixnum().is_some())
+}
+
+/// eval.c:Fcommandp.  FUNCTION's indirect function answers by its kind: a
+/// subr, a closure long enough for an interactive slot, or a module
+/// function with an interactive form is a command; strings and vectors
+/// are keyboard macros unless FOR-CALL-INTERACTIVELY; an autoload with a
+/// non-nil fourth element is one; any other list is a command when it is
+/// a `lambda' whose body has an `interactive' entry (Fassq), and nothing
+/// else is.  A subr, closure, module function or autoload that is no
+/// command then walks FUNCTION's symbol chain, where an
+/// `interactive-form' property is an error, and a closure whose docstring
+/// slot holds no docstring (an OClosure) asks `interactive-form'.
+pub(crate) fn command_p(
+    interp: &mut Interpreter,
+    function: Value,
+    for_call_interactively: bool,
+    env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    // SYMBOLP takes a symbol with position as its bare symbol while
+    // `symbols-with-pos-enabled'.
+    let function = if matches!(function.kind(), Kind::SymbolWithPos(_))
+        && symbols_with_pos_enabled(interp, env)
+    {
+        symbol_with_pos_parts(interp, &function).map_or(function, |(symbol, _)| symbol)
+    } else {
+        function
+    };
+    // `t' is a symbol whose function cell `fset' may fill.
+    let chain_symbol = |value: Value| match value.kind() {
+        Kind::Symbol(symbol) => Some(symbol),
+        Kind::T => Some(crate::lisp::types::symbols::builtin_boolean(true)),
+        _ => None,
+    };
+    // data.c:indirect_function: a void cell ends the chain at nil.
+    let fun = match chain_symbol(function) {
+        Some(symbol) => interp
+            .lookup_function_symbol(&symbol, env)
+            .unwrap_or(Value::Nil),
+        None => function,
+    };
+    let mut genfun = false;
+    match fun.kind() {
+        Kind::Nil => return Ok(Value::Nil),
+        Kind::BuiltinFunc(builtin) => {
+            if generated_builtin_arities::generated_builtin_command_p(&builtin) {
+                return Ok(Value::T);
+            }
+        }
+        Kind::NativeFunction(subr) => {
+            if subr.interactive().is_truthy() {
+                return Ok(Value::T);
+            }
+        }
+        Kind::Closure(closure) => {
+            // PVSIZE > CLOSURE_INTERACTIVE, else an invalid docstring at
+            // CLOSURE_DOC_STRING marks an OClosure.
+            if closure.public_len() > 5 {
+                return Ok(Value::T);
+            }
+            if let Some(doc) = closure.documentation() {
+                genfun = !(doc.is_nil() || valid_docstring_p(&doc));
+            }
+        }
+        Kind::Record(id) => {
+            let Some(record) = interp
+                .find_record(id)
+                .filter(|record| record.kind == crate::lisp::eval::RecordKind::ModuleFunction)
+            else {
+                return Ok(Value::Nil);
+            };
+            if record.slots.get(1).is_some_and(|form| !form.is_nil()) {
+                return Ok(Value::T);
+            }
+        }
+        Kind::StringObject(_) | Kind::Vector(_) => {
+            return Ok(if for_call_interactively {
+                Value::Nil
+            } else {
+                Value::T
+            });
+        }
+        Kind::Cons(cell) => {
+            let funcar = cell.car.get();
+            let is_head = |head: &str| {
+                matches!(funcar.kind(), Kind::Symbol(symbol) if symbol == head)
+                    || (matches!(funcar.kind(), Kind::SymbolWithPos(_))
+                        && matches!(
+                            symbol_with_pos_parts(interp, &funcar).map(|(symbol, _)| symbol.kind()),
+                            Some(Kind::Symbol(symbol)) if symbol == head
+                        )
+                        && symbols_with_pos_enabled(interp, env))
+            };
+            if is_head("autoload") {
+                // Fcar (Fcdr (Fcdr (XCDR (fun)))).
+                if cell.cdr.get().cdr()?.cdr()?.car()?.is_truthy() {
+                    return Ok(Value::T);
+                }
+            } else {
+                if !is_head("lambda") {
+                    return Ok(Value::Nil);
+                }
+                let body = cell
+                    .cdr
+                    .get()
+                    .cons_ref()
+                    .map_or(Value::Nil, |rest| rest.cdr.get());
+                let interactive = Value::Symbol(cached_symbol!("interactive").with(Clone::clone));
+                return Ok(
+                    if super::lists::direct_assq(interp, &[interactive, body], env)?.is_nil() {
+                        Value::Nil
+                    } else {
+                        Value::T
+                    },
+                );
+            }
+        }
+        _ => return Ok(Value::Nil),
+    }
+    // An `interactive-form' property anywhere on the symbol chain is an
+    // error, as the function-documentation property analogue.
+    let mut link = function;
+    while let Some(symbol) = chain_symbol(link) {
+        if cached_symbol!("interactive-form")
+            .with(|property| interp.get_symbol_property_of(&symbol, property))
+            .is_some_and(|form| !form.is_nil())
+        {
+            return Err(LispError::Signal(
+                "Found an 'interactive-form' property!".into(),
+            ));
+        }
+        link = interp
+            .raw_function_binding_symbol(&symbol, env)
+            .unwrap_or(Value::Nil);
+    }
+    if !genfun {
+        return Ok(Value::Nil);
+    }
+    let iform = interp.call_function_value(
+        Value::Symbol(cached_symbol!("interactive-form").with(Clone::clone)),
+        Some("interactive-form"),
+        std::slice::from_ref(&fun),
+        env,
+    )?;
+    Ok(if iform.is_nil() { Value::Nil } else { Value::T })
 }
