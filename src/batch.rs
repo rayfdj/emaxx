@@ -1191,6 +1191,19 @@ pub(crate) fn initialize_initial_frame_faces(interpreter: &mut Interpreter) -> R
             Ok(())
         };
     }
+    // pdumper records no frames: the restored process's initial frame is
+    // a new one from make_initial_frame, whose parameters are make_frame's
+    // (minibuffer . t).  pdumper_load makes it before `--batch' is seen,
+    // so its init_frame_faces realizes the basic faces: `default' as a
+    // text frame's, with the unspecified colors that keep the colors out
+    // of its parameters, and the eighteen others; the rest of `face-list'
+    // follows them as the call below makes them.
+    let frame = interpreter.selected_frame_id;
+    frame.borrow_mut().param_alist =
+        Value::list([Value::cons(Value::symbol("minibuffer"), Value::T)]);
+    interpreter.reset_frame_face_hash_table(frame);
+    lisp::primitives::realize_basic_faces(interpreter, frame)
+        .map_err(|error| format!("realize the initial frame's faces: {error}"))?;
     interpreter
         .call_function_value(
             Value::symbol("tty-set-up-initial-frame-faces"),

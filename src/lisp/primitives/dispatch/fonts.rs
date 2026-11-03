@@ -6,14 +6,14 @@ use crate::lisp::primitives::window::{window_buffer_id, window_record_id_from_va
 use crate::lisp::types::Kind;
 
 const FONT_TYPE_INDEX: usize = 0;
-const FONT_FOUNDRY_INDEX: usize = 1;
-const FONT_FAMILY_INDEX: usize = 2;
+pub(super) const FONT_FOUNDRY_INDEX: usize = 1;
+pub(super) const FONT_FAMILY_INDEX: usize = 2;
 const FONT_ADSTYLE_INDEX: usize = 3;
 const FONT_REGISTRY_INDEX: usize = 4;
 pub(super) const FONT_WEIGHT_INDEX: usize = 5;
 pub(super) const FONT_SLANT_INDEX: usize = 6;
 pub(super) const FONT_WIDTH_INDEX: usize = 7;
-const FONT_SIZE_INDEX: usize = 8;
+pub(super) const FONT_SIZE_INDEX: usize = 8;
 const FONT_DPI_INDEX: usize = 9;
 const FONT_SPACING_INDEX: usize = 10;
 const FONT_AVGWIDTH_INDEX: usize = 11;
@@ -412,6 +412,151 @@ fn make_font_spec(args: &[Value]) -> Result<Vec<Value>, LispError> {
         index += 2;
     }
     Ok(slots)
+}
+
+/// font.c:copy_font_spec: a font-spec of FONT's properties but its type,
+/// its extra alist copied without a `:font-entity' entry.
+pub(super) fn copy_font_spec(interp: &mut Interpreter, font: &Value) -> Result<Value, LispError> {
+    let slots = font_record(interp, font)
+        .map_err(|_| wrong_type_argument("font", *font))?
+        .slots
+        .clone();
+    let slot = |index: usize| slots.get(index).copied().unwrap_or(Value::Nil);
+    let mut copy = vec![Value::Nil; FONT_SPEC_SIZE];
+    for (index, value) in copy
+        .iter_mut()
+        .enumerate()
+        .take(FONT_EXTRA_INDEX)
+        .skip(FONT_FOUNDRY_INDEX)
+    {
+        *value = slot(index);
+    }
+    // Fcopy_alist, then the walk that unlinks each `:font-entity' cell
+    // from the cell before it, which leaves one after an unlinked cell.
+    let mut entries = Vec::new();
+    let mut tail = slot(FONT_EXTRA_INDEX);
+    while let Some((entry, rest)) = tail.cons_values() {
+        entries.push(
+            entry
+                .cons_values()
+                .map_or(entry, |(key, value)| Value::cons(key, value)),
+        );
+        tail = rest;
+    }
+    let is_entity = |entry: &Value| {
+        entry.cons_values().is_some_and(
+            |(key, _)| matches!(key.kind(), Kind::Symbol(symbol) if symbol == ":font-entity"),
+        )
+    };
+    let mut kept: Vec<Value> = Vec::with_capacity(entries.len());
+    let mut prev_dropped = false;
+    for entry in entries {
+        if is_entity(&entry) && !prev_dropped {
+            prev_dropped = true;
+            continue;
+        }
+        prev_dropped = false;
+        kept.push(entry);
+    }
+    copy[FONT_EXTRA_INDEX] = Value::list(kept);
+    Ok(interp.create_pseudovector(crate::lisp::eval::RecordKind::Font, "font-spec", copy))
+}
+
+/// font.c:font_clear_prop: the font in the lface ATTRS made a copy with
+/// PROP and the properties that go with it cleared, its `:name' gone.
+pub(super) fn font_clear_prop(
+    interp: &mut Interpreter,
+    attrs: &mut [Value],
+    prop: usize,
+) -> Result<(), LispError> {
+    const LFACE_FONT_INDEX: usize = 15;
+    let mut font = attrs[LFACE_FONT_INDEX];
+    if font_record(interp, &font).is_err() {
+        return Ok(());
+    }
+    if !font_property(interp, &font, ":name")?.is_nil() {
+        font = copy_font_spec(interp, &font)?;
+        // font_put_extra (FONT, :name, Qunbound): the entry unlinked.
+        let record = font_record_mut(interp, &font);
+        let mut kept = Vec::new();
+        let mut tail = record.slots[FONT_EXTRA_INDEX];
+        while let Some((entry, rest)) = tail.cons_values() {
+            if !entry.cons_values().is_some_and(
+                |(key, _)| matches!(key.kind(), Kind::Symbol(symbol) if symbol == ":name"),
+            ) {
+                kept.push(entry);
+            }
+            tail = rest;
+        }
+        record.slots[FONT_EXTRA_INDEX] = Value::list(kept);
+    }
+    let slot = font_record(interp, &font)?
+        .slots
+        .get(prop)
+        .copied()
+        .unwrap_or(Value::Nil);
+    if slot.is_nil()
+        && !matches!(
+            prop,
+            FONT_FAMILY_INDEX | FONT_FOUNDRY_INDEX | FONT_WIDTH_INDEX | FONT_SIZE_INDEX
+        )
+    {
+        return Ok(());
+    }
+    if font.eq_value(attrs[LFACE_FONT_INDEX]) {
+        font = copy_font_spec(interp, &font)?;
+    }
+    let cleared: &[usize] = match prop {
+        FONT_FAMILY_INDEX => &[
+            FONT_FAMILY_INDEX,
+            FONT_FOUNDRY_INDEX,
+            FONT_WIDTH_INDEX,
+            FONT_ADSTYLE_INDEX,
+            FONT_REGISTRY_INDEX,
+            FONT_SIZE_INDEX,
+            FONT_DPI_INDEX,
+            FONT_SPACING_INDEX,
+            FONT_AVGWIDTH_INDEX,
+        ],
+        FONT_FOUNDRY_INDEX => &[
+            FONT_FOUNDRY_INDEX,
+            FONT_ADSTYLE_INDEX,
+            FONT_REGISTRY_INDEX,
+            FONT_SIZE_INDEX,
+            FONT_DPI_INDEX,
+            FONT_SPACING_INDEX,
+            FONT_AVGWIDTH_INDEX,
+        ],
+        FONT_SIZE_INDEX => &[
+            FONT_SIZE_INDEX,
+            FONT_DPI_INDEX,
+            FONT_SPACING_INDEX,
+            FONT_AVGWIDTH_INDEX,
+        ],
+        FONT_WIDTH_INDEX => &[FONT_WIDTH_INDEX, FONT_AVGWIDTH_INDEX],
+        _ => std::slice::from_ref(&prop),
+    };
+    let record = font_record_mut(interp, &font);
+    for &index in cleared {
+        record.slots[index] = Value::Nil;
+    }
+    attrs[LFACE_FONT_INDEX] = font;
+    Ok(())
+}
+
+/// The record of FONT, known to be a live font with every slot.
+fn font_record_mut<'a>(
+    interp: &'a mut Interpreter,
+    font: &Value,
+) -> &'a mut crate::lisp::eval::RecordState {
+    let Kind::Record(id) = font.kind() else {
+        unreachable!("a font is a record");
+    };
+    let record = interp.find_record_mut(id).expect("a live font record");
+    if record.slots.len() < FONT_SPEC_SIZE {
+        record.slots.resize(FONT_SPEC_SIZE, Value::Nil);
+    }
+    record
 }
 
 fn font_property(interp: &Interpreter, font: &Value, key: &str) -> Result<Value, LispError> {
@@ -975,7 +1120,13 @@ define_dispatch!(
                     let position = position_from_value(interp, &args[0])?;
                     let (begin, end) = interp.buffer.borrow().restriction();
                     if !(begin..end).contains(&position) {
-                        return Err(args_out_of_range(args[0], args[0]));
+                        // args_out_of_range_3 (POSITION, BEGV, ZV).
+                        return Err(LispError::SignalValue(Value::list([
+                            Value::symbol("args-out-of-range"),
+                            args[0],
+                            Value::Integer(begin as i64),
+                            Value::Integer(end as i64),
+                        ])));
                     }
                 }
                 Ok(Value::Nil)
@@ -1041,8 +1192,11 @@ define_dispatch!(
                 need_args(name, args, 0)?;
                 Ok(Value::Nil)
             }
+            // font.c: decode_live_frame; a terminal frame's drivers list no
+            // families and it has no display name list.
             "font-family-list" | "frame-font-cache" => {
                 need_arg_range(name, args, 0, 1)?;
+                super::frames::decode_live_frame(interp, args.first(), true)?;
                 Ok(Value::Nil)
             }
             "clear-font-cache" => {

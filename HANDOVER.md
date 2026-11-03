@@ -12881,6 +12881,70 @@ setup_process_coding_systems's check now refuses). A 13-form
   changes (the ALSA device boxed in its driver, `then_some') the
   modtime, file-attribute and time tests and clippy with `--all-targets
   --all-features -D warnings' pass.
+- **Round 266: face, image, color and initial-frame primitives as
+  xfaces.c, image.c and a restored process make them.**
+  resolve_face_name now returns an object that is no symbol as it is, so
+  `face-font', `internal-lisp-face-empty-p',
+  `internal-lisp-face-equal-p', `internal-get-lisp-face-attribute' and
+  their kin signal lface_from_face_name's "Invalid face" with it instead
+  of `symbolp', and "Invalid face", "Invalid face attribute name" and
+  the other face errors carry signal_error's data (nil names no object).
+  `internal-get-lisp-face-attribute' decodes FRAME, finds the face and
+  only then checks SYMBOL and KEYWORD, knowing neither :bold nor
+  :italic; `internal-set-lisp-face-attribute-from-resource' checks its
+  symbols and string, converts the string for its attribute
+  (`string-to-number' for :height, whose error carries the number,
+  face_boolean_x_resource_value, interned styles, the read of :box and
+  :inherit) and calls `internal-set-lisp-face-attribute', which decodes
+  FRAME; `face-font' with a FRAME other than t finds the frame's
+  realized face (a remapped one through `face-remapping-alist') and
+  answers nil, as a text frame has no font; `face-attribute-relative-p'
+  and `merge-face-attribute' compare with :height without CHECK_SYMBOL,
+  `internal-lisp-face-p' decodes FRAME first, and
+  `internal-lisp-face-equal-p' looks each face up after resolving it.
+  `face-attributes-as-vector' is merge_face_ref ported whole: named
+  merge points against circular inheritance and remapping,
+  get_lface_attributes' remapping, `:filtered' references and
+  evaluate_face_filter, the color pairs, the attribute plist with each
+  attribute's checks, lists merged from the back, merge_face_vectors
+  with inheritance, font_clear_prop on a :font spec and `reset'
+  attributes taken from the default face, every bad reference logged by
+  add_to_log (now format-message into *Messages*). Fbitmap_spec_p walks
+  its list as xfaces.c does. image.c's valid_image_p is ported for the X
+  build's types (svg, png, gif, tiff, jpeg, xpm, webp, xbm, pbm):
+  parse_image_spec over each keyword table, xbm_image_p's bits (a vector
+  of strings or bool-vectors, a string or a bool-vector, for
+  `:data-width', `:data-height' and `:stride') or text (xbm_scan's
+  #defines, check_image_size against `max-image-size'), and xpm's color
+  symbols; `imagep', `image-flush', `image-size', `image-mask-p' and
+  `image-metadata' use it ("Invalid image specification",
+  decode_window_system_frame's errors for a valid spec, nil metadata for
+  an invalid one) and `clear-image-cache' decodes its frame.
+  `color-distance' decodes its frame before the colors and signals
+  "Invalid color" with signal_error's data, `window-system' checks
+  FRAMEP, `image-transforms-p' decodes its frame, `init-image-library'
+  answers nil for a type that is no symbol, `font-family-list' and
+  `frame-font-cache' decode their frame, `font-at''s range error is
+  args_out_of_range_3, and font objects print as `#<font-spec',
+  `#<font-entity' and `#<font-object' as print.c prints them. pdumper
+  records no frames: at init_display the restored process's initial
+  frame is make_initial_frame's, whose parameters are (minibuffer . t)
+  and whose init_frame_faces, run before `--batch' is read, realizes the
+  default face (with the unspecified colors that keep the colors out of
+  the parameters) and the eighteen basic faces, after which
+  `tty-set-up-initial-frame-faces' adds the rest; F1's face table now
+  lists them in GNU's order and `frame-parameters' lists the colors
+  where Fframe_parameters adds them. The display sweep (153 frame,
+  terminal, font, fontset, image and face primitives, each argument as
+  nil, 5, a string, the terminal, the frame and a window) matches GNU
+  but for the font primitives, font.c's font-spec model (styles stored
+  as numbers, `:name' parsed as an XLFD or fontconfig name, CHECK_FONT's
+  `font' and `font-spec' predicates), the next round's work, and
+  `menu-bar-menu-at-x-y', which GNU's X build crashes on; batteries of
+  face, `face-attributes-as-vector' (with its log), image specification,
+  bitmap and initial-frame forms match GNU. Local validation: the
+  grouped gate's 3470 library tests, the integration targets and
+  clippy with `--all-targets --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -14716,6 +14780,20 @@ are ert-tests (46,154 ms against 40,697), comp-tests (18,335 against
 15,839), tramp-tests (21,350 against 19,868), mule-tests (3,031 against
 1,960) and semantic-utest-ia (4,115 against 3,196), the gate build's as
 before.
+
+**On `8b6c2c6`** (round 265): the full Rust gate (run 41565665270)
+passed, and frozen (run 41565668671) matched all 7,928 outcomes at the
+first attempt, tramp-tests' `tramp-test10-write-region-file-precious-flag`
+among them again. Setup 87.8 s against 70.6 s (1.244), test bodies 308.0 s
+against 277.6 s (1.109), in all 1.126. Per file, the setup is 33 ms over
+GNU's on average (17.2 s over 519 files, a median of 137 ms against 112),
+comp-tests' the most (2,327 against 1,913) before electric-tests' (937
+against 548), and the widest body gaps are ert-tests (46,193 ms against
+38,459; GNU's own 2.2 s under round 264's run), tramp-tests (22,408 against
+19,977), comp-tests (19,175 against 17,203), semantic-utest-ia (4,337
+against 2,862) and mule-tests (3,228 against 2,049), the gate build's as
+before; Emaxx's bodies rose most in tramp-tests, vc-tests and comp-tests,
+whose GNU bodies rose with them.
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

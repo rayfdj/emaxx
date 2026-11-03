@@ -18,6 +18,7 @@ mod files_process;
 mod fonts;
 mod frames;
 pub(crate) use frames::frame_display_parameter;
+pub(crate) use frames::realize_basic_faces;
 pub(crate) mod gnutls;
 mod gui_actions;
 pub(super) mod lists;

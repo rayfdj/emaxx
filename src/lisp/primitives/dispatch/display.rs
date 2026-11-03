@@ -1,4 +1,5 @@
 use super::*;
+use crate::lisp::primitives::image::valid_image_p;
 use crate::lisp::primitives::processes::wait_pumping_processes;
 use crate::lisp::types::Kind;
 use crate::lisp::types::LispErrorKind;
@@ -452,6 +453,25 @@ pub(crate) fn log_message_text(interp: &mut Interpreter, text: &str, env: &Env) 
     log_message_dolog(interp, text, true, env);
 }
 
+/// xdisp.c:add_to_log: FORMAT with ARGS made a message by
+/// `format-message' and logged in *Messages* as a line of its own,
+/// never shown.
+pub(crate) fn add_to_log(
+    interp: &mut Interpreter,
+    format: &str,
+    args: &[Value],
+    env: &mut Env,
+) -> Result<(), LispError> {
+    let mut message_args = Vec::with_capacity(args.len() + 1);
+    message_args.push(Value::string(format));
+    message_args.extend_from_slice(args);
+    let message = super::call(interp, "format-message", &message_args, env)?;
+    if let Some(text) = string_like(&message) {
+        log_message_text(interp, &text.text, env);
+    }
+    Ok(())
+}
+
 /// xdisp.c message_log_maybe_newline: end the log line printing left open.
 pub(crate) fn message_log_maybe_newline(interp: &mut Interpreter, env: &Env) {
     if MESSAGE_LOG_NEED_NEWLINE.with(std::cell::Cell::get) {
@@ -787,45 +807,6 @@ pub(crate) fn string_face_spans(value: &Value) -> EchoSpans {
             (!face.is_nil()).then_some((start, end, face))
         })
         .collect()
-}
-
-fn valid_image_spec(interp: &Interpreter, spec: &Value, env: &Env) -> bool {
-    let Ok(items) = spec.to_vec() else {
-        return false;
-    };
-    if !matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(head)) if head == "image")
-        || items.len() < 5
-        || (items.len() - 1) % 2 != 0
-    {
-        return false;
-    }
-    let mut properties = std::collections::HashMap::new();
-    for pair in items[1..].as_chunks::<2>().0 {
-        let Ok(key) = pair[0].as_symbol() else {
-            return false;
-        };
-        if !key.starts_with(':') || properties.insert(key, &pair[1]).is_some() {
-            return false;
-        }
-    }
-    let Some(Kind::Symbol(image_type)) = properties.get(":type").copied().map(|v| v.kind()) else {
-        return false;
-    };
-    let type_supported = interp
-        .lookup_var("image-types", env)
-        .and_then(|types| types.to_vec().ok())
-        .is_some_and(|types| {
-            types
-                .iter()
-                .any(|value| matches!(value.kind(), Kind::Symbol(name) if name == image_type))
-        });
-    let file = properties.get(":file").copied();
-    let data = properties.get(":data").copied();
-    type_supported
-        && matches!(
-            (file.map(|v| v.kind()), data.map(|v| v.kind())),
-            (Some(Kind::StringObject(_)), None) | (None, Some(Kind::StringObject(_)))
-        )
 }
 
 fn current_bidi_paragraph_direction_value(interp: &Interpreter, env: &Env) -> Value {
@@ -4915,9 +4896,14 @@ define_dispatch!(
             }
 
             // ── Display stubs ──
+            // frame.c:Fwindow_system: Fframep of FRAME (nil for the selected
+            // frame), nil for a terminal frame's t.
             "window-system" => {
                 need_arg_range(name, args, 0, 1)?;
-                Ok(Value::Nil)
+                match args.first().map(|frame| frame.kind()) {
+                    None | Some(Kind::Nil | Kind::Frame(_)) => Ok(Value::Nil),
+                    Some(frame) => Err(wrong_type_argument("framep", frame.value())),
+                }
             }
             "tty-type" => {
                 need_arg_range(name, args, 0, 1)?;
@@ -5093,7 +5079,7 @@ define_dispatch!(
             }
             "imagep" => {
                 need_args(name, args, 1)?;
-                Ok(if valid_image_spec(interp, &args[0], env) {
+                Ok(if valid_image_p(interp, &args[0], env) {
                     Value::T
                 } else {
                     Value::Nil
@@ -5107,12 +5093,13 @@ define_dispatch!(
                     }
                     return Ok(Value::Nil);
                 }
+                // FILTER nil or a frame names the frame whose cache to
+                // clear, which must be a window system's.
                 let filter = args.first().cloned().unwrap_or(Value::Nil);
-                if filter.is_nil()
-                    || matches!(filter.kind(), Kind::Frame(id) if interp.frame_is_live(id))
-                {
-                    return Err(LispError::Signal(
-                        "Window system frame should be used".into(),
+                if filter.is_nil() || matches!(filter.kind(), Kind::Frame(_)) {
+                    return Err(super::frames::window_system_frame_error(
+                        interp,
+                        Some(&filter),
                     ));
                 }
                 Ok(Value::Nil)
@@ -5124,27 +5111,53 @@ define_dispatch!(
             }
             "image-flush" => {
                 need_arg_range(name, args, 1, 2)?;
-                if !valid_image_spec(interp, &args[0], env) {
+                if !valid_image_p(interp, &args[0], env) {
                     return Err(LispError::Signal("Invalid image specification".into()));
                 }
+                // FRAME t flushes the window system frames, none here.
                 if matches!(args.get(1).map(|v| v.kind()), Some(Kind::T)) {
                     return Ok(Value::Nil);
                 }
-                Err(LispError::Signal(
-                    "Window system frame should be used".into(),
+                Err(super::frames::window_system_frame_error(
+                    interp,
+                    args.get(1),
                 ))
             }
+            // image.c: decode_live_frame; no transforms off a window system.
             "image-transforms-p" => {
                 need_arg_range(name, args, 0, 1)?;
+                decode_live_frame(interp, args.first(), true)?;
                 Ok(Value::Nil)
             }
-            "image-size" | "image-mask-p" | "image-metadata" => Err(LispError::Signal(
-                "Images are unavailable on a nongraphical display".into(),
-            )),
+            // image.c: a valid spec is looked up on the window system
+            // frame FRAME names; any other is invalid but for
+            // `image-metadata', which has none to give.
+            "image-size" | "image-mask-p" | "image-metadata" => {
+                if name == "image-size" {
+                    need_arg_range(name, args, 1, 3)?;
+                } else {
+                    need_arg_range(name, args, 1, 2)?;
+                }
+                if valid_image_p(interp, &args[0], env) {
+                    let frame = if name == "image-size" {
+                        args.get(2)
+                    } else {
+                        args.get(1)
+                    };
+                    Err(super::frames::window_system_frame_error(interp, frame))
+                } else if name == "image-metadata" {
+                    Ok(Value::Nil)
+                } else {
+                    Err(LispError::Signal("Invalid image specification".into()))
+                }
+            }
 
             "init-image-library" => {
                 need_args(name, args, 1)?;
-                let image_type = args[0].as_symbol()?;
+                // lookup_image_type compares TYPE with each type's symbol.
+                let Ok(image_type) = args[0].as_symbol() else {
+                    return Ok(Value::Nil);
+                };
                 Ok(
                     if matches!(
                         image_type,
@@ -6245,6 +6258,8 @@ define_dispatch!(
             }
             "color-distance" => {
                 need_arg_range(name, args, 2, 4)?;
+                // FRAME is decoded before either color is read.
+                super::frames::decode_live_frame(interp, args.get(2), true)?;
                 // xfaces.c Fcolor_distance: a (R G B) list of fixnums
                 // (parse_rgb_list, stored into unsigned shorts) or a string
                 // through the tty frame's defined_color_hook; anything else
@@ -6270,13 +6285,7 @@ define_dispatch!(
                             None => None,
                         },
                     };
-                    rgb.ok_or_else(|| {
-                        LispError::SignalValue(Value::list([
-                            Value::symbol("error"),
-                            Value::string("Invalid color"),
-                            *value,
-                        ]))
-                    })
+                    rgb.ok_or_else(|| signal_error("Invalid color", *value))
                 };
                 let left = color(&args[0])?;
                 let right = color(&args[1])?;

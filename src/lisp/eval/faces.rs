@@ -4,11 +4,7 @@ use crate::lisp::types::{FrameRef, HashTableRef, Kind};
 
 /// signal_error ("Invalid face", FACE).
 pub(crate) fn invalid_face_error(face: Value) -> LispError {
-    LispError::SignalValue(Value::list([
-        Value::symbol("error"),
-        Value::string("Invalid face"),
-        face,
-    ]))
+    crate::lisp::primitives::signal_error("Invalid face", face)
 }
 
 impl Interpreter {
@@ -184,6 +180,14 @@ impl Interpreter {
         let table = crate::lisp::json::make_hash_table(self, "eq", Vec::new());
         frame.borrow_mut().face_hash_table = Some(table);
         table
+    }
+
+    /// FRAME's face definitions replaced by an empty table, as a frame
+    /// make_frame makes starts with.
+    pub(crate) fn reset_frame_face_hash_table(&mut self, frame: FrameRef) {
+        let table = crate::lisp::json::make_hash_table(self, "eq", Vec::new());
+        frame.borrow_mut().face_hash_table = Some(table);
+        self.face_change_count = self.face_change_count.wrapping_add(1);
     }
 
     pub(crate) fn face_definitions_generation(&self) -> u64 {

@@ -1200,10 +1200,7 @@ define_dispatch!(
             }
             "reconsider-frame-fonts" => {
                 need_args(name, args, 1)?;
-                decode_live_frame(interp, args.first(), false)?;
-                Err(LispError::Signal(
-                    "Window system frame should be used".into(),
-                ))
+                Err(window_system_frame_error(interp, args.first()))
             }
             "x-get-resource" => {
                 need_arg_range(name, args, 2, 4)?;

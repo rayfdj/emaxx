@@ -145,6 +145,7 @@ pub(crate) use generated_gnu_c_primitives_linux::{
 mod fields;
 mod hash_insert;
 mod hooks_overlays;
+pub(crate) mod image;
 mod insdel;
 mod interactive;
 mod invisibility;
@@ -184,6 +185,7 @@ pub(crate) use completion::*;
 pub(crate) use dispatch::display::log_message_text;
 pub(crate) use dispatch::display::prin1_to_string;
 pub(crate) use dispatch::gnutls::{AsyncGnuTlsProgress, progress_async_gnutls};
+pub(crate) use dispatch::realize_basic_faces;
 pub(crate) use dispatch::{
     CHECK_ALL, CHECK_BORDER, CHECK_HEAD, StringCompositions, update_compositions,
 };

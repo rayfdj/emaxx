@@ -17362,6 +17362,138 @@ fn visited_file_modtime_and_dedicated_windows_as_fileio_c_and_window_c() {
 }
 
 #[test]
+fn face_primitives_check_their_arguments_as_xfaces_c() {
+    // xfaces.c: internal-get-lisp-face-attribute decodes FRAME, finds the face
+    // ("Invalid face", a face named by no symbol among them) before it
+    // checks SYMBOL and KEYWORD, and knows neither :bold nor :italic; the
+    // X resource setter converts the string for its attribute and calls
+    // internal-set-lisp-face-attribute; face-font finds the frame's face,
+    // which a text frame realizes with no font; font-at's range error is
+    // args_out_of_range_3.
+    let program = r###"
+(list
+ (condition-case e (internal-get-lisp-face-attribute 'default :bold) (error e))
+ (internal-get-lisp-face-attribute 'default :reverse-video)
+ (condition-case e (internal-get-lisp-face-attribute 'default nil) (error e))
+ (condition-case e (internal-get-lisp-face-attribute 5 :family) (error e))
+ (condition-case e (internal-get-lisp-face-attribute nil :family) (error e))
+ (condition-case e (internal-get-lisp-face-attribute "default" :family t) (error e))
+ (condition-case e (internal-get-lisp-face-attribute 'default :family 5) (error e))
+ (condition-case e (internal-set-lisp-face-attribute-from-resource 'default :height "abc") (error e))
+ (condition-case e (internal-set-lisp-face-attribute-from-resource 'default :height "1.5") (error e))
+ (condition-case e (internal-set-lisp-face-attribute-from-resource 'default :bold "maybe") (error e))
+ (internal-set-lisp-face-attribute-from-resource 'default :underline "red")
+ (condition-case e (internal-set-lisp-face-attribute-from-resource 'default :weight "bold" 5) (error e))
+ (condition-case e (internal-set-lisp-face-attribute-from-resource "default" :weight "bold") (error e))
+ (condition-case e (internal-set-lisp-face-attribute-from-resource 'default :weight 5) (error e))
+ (condition-case e (internal-set-lisp-face-attribute-from-resource 'default nil "x") (error e))
+ (condition-case e (face-font 5) (error e))
+ (condition-case e (face-font nil) (error e))
+ (condition-case e (face-font 'default 5) (error e))
+ (condition-case e (face-font 'nosuch t) (error e))
+ (face-font 'default nil)
+ (let ((face-remapping-alist '((nosuchface bold)))) (face-font 'nosuchface))
+ (condition-case e (internal-lisp-face-empty-p 5) (error e))
+ (condition-case e (internal-lisp-face-equal-p 5 'default) (error e))
+ (condition-case e (internal-merge-in-global-face 5 nil) (error e))
+ (condition-case e (font-at 5 nil "abc") (error e)))"###;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        r###"((error "Invalid face attribute name" :bold) nil (error "Invalid face attribute name") (error "Invalid face" 5) (error "Invalid face") (wrong-type-argument symbolp "default") (wrong-type-argument frame-live-p 5) (error "Invalid face height from X resource" 0) (error "Invalid face height from X resource" 1.5) (error "Invalid face attribute value from X resource" "maybe") default (wrong-type-argument frame-live-p 5) (wrong-type-argument symbolp "default") (wrong-type-argument stringp 5) (error "Invalid face attribute name") (error "Invalid face" 5) (error "Invalid face") (wrong-type-argument frame-live-p 5) (error "Invalid face" nosuch) nil nil (error "Invalid face" 5) (error "Invalid face" 5) (wrong-type-argument frame-live-p nil) (args-out-of-range "abc" 5))"###,
+        "face primitives",
+    );
+}
+
+#[test]
+fn face_attributes_as_vector_merges_as_merge_face_ref() {
+    // xfaces.c:merge_face_ref on the selected frame: a plist, a face name
+    // (remapped, with a remap of a face to itself its own definition), a
+    // list of faces, a color pair or a :filtered reference merged into an
+    // unspecified vector, each bad reference logged by add_to_log.
+    let program = r###"
+(list
+ (face-attributes-as-vector 5)
+ (face-attributes-as-vector '(:foreground "red" :weight bold))
+ (face-attributes-as-vector '(:height 1.5 :height 2))
+ (face-attributes-as-vector '(bold italic))
+ (face-attributes-as-vector '(foreground-color . "red"))
+ (face-attributes-as-vector '(background-color . 5))
+ (face-attributes-as-vector '(:inherit bold :foreground "red"))
+ (face-attributes-as-vector '(:box t :weight nosuch))
+ (face-attributes-as-vector '(:filtered (:window foo bar) bold))
+ (face-attributes-as-vector '(:filtered nil bold))
+ (face-attributes-as-vector '(:filtered 5 bold))
+ (face-attributes-as-vector '(:filtered nil))
+ (face-attributes-as-vector 'mode-line)
+ (let ((face-remapping-alist '((bold italic)))) (face-attributes-as-vector 'bold))
+ (let ((face-remapping-alist '((bold . bold)))) (face-attributes-as-vector 'bold))
+ (with-current-buffer "*Messages*" (let ((s (buffer-string))) (substring s (string-search "Invalid face reference: 5" s)))))"###;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        r###"([unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified] [unspecified unspecified unspecified unspecified unspecified bold unspecified unspecified unspecified "red" unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified] [unspecified unspecified unspecified unspecified 2 unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified] [unspecified unspecified unspecified unspecified unspecified bold italic unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified nil unspecified unspecified unspecified] [unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified "red" unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified] [unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified] [unspecified unspecified unspecified unspecified unspecified bold unspecified unspecified unspecified "red" unspecified unspecified unspecified unspecified unspecified unspecified nil unspecified unspecified unspecified] [unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified 1 unspecified unspecified unspecified unspecified unspecified] [unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified] [unspecified unspecified unspecified unspecified unspecified bold unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified nil unspecified unspecified unspecified] [unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified] [unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified] [unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified t unspecified unspecified unspecified unspecified unspecified unspecified unspecified nil unspecified unspecified unspecified] [unspecified unspecified unspecified unspecified unspecified unspecified italic unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified nil unspecified unspecified unspecified] [unspecified unspecified unspecified unspecified unspecified bold unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified unspecified nil unspecified unspecified unspecified] "Invalid face reference: 5
+Invalid face color 5
+Invalid face attribute :weight nosuch
+Invalid face filter 5
+Invalid face ref (:filtered nil)
+")"###,
+        "face-attributes-as-vector",
+    );
+}
+
+#[test]
+fn image_specifications_as_valid_image_p() {
+    // image.c:valid_image_p: parse_image_spec over each image type's keyword
+    // table, xbm's bits or text (xbm_file_p's #defines within max-image-size),
+    // xpm's color symbols; image-size and image-mask-p signal for an invalid
+    // spec and decode_window_system_frame for a valid one, image-metadata
+    // answers nil for an invalid one; Fbitmap_spec_p as xfaces.c's.
+    let program = r###"
+(list
+ (mapcar #'imagep '((image :type png :file "x") (image :type png) (image :type png :file "x" :data "y")
+   (image :type png :file "x" :foo 3) (image :file "x" :type png) (image :type png :file "x" :file "y")
+   (image :type nosuch :file "x") (image :type xbm :data-width 8 :data-height 2 :data "ab")
+   (image :type xbm :data-width 8 :data-height 3 :data "ab") (image :type xbm :width 8 :height 2 :data "ab")
+   (image :type xbm :data "#define foo_width 8\n#define foo_height 2\n")
+   (image :type xbm :data "#define foo_width 8\n#define foo_height 2")
+   (image :type xbm :data "/* c */ #define foo_width 0x8\n#define foo_height 02\n")
+   (image :type xbm :data-width 8 :data-height 2 :stride 16 :data "abc")
+   (image :type xpm :data "x" :color-symbols (("a" . 5))) (image :type png :file "x" :ascent 101)
+   (image :type png :file "x" :margin (1 . 2)) (image :type png :file "x" . 5) (image 5 6 :type png :file "x")
+   (image :type tiff :file "x" :index -1) (image :type svg :data "x" :css 5)))
+ (let ((max-image-size 4)) (imagep '(image :type xbm :data "#define foo_width 8\n#define foo_height 2\n")))
+ (condition-case e (image-size '(image :type png :file "x")) (error e))
+ (condition-case e (image-size 5) (error e))
+ (condition-case e (image-size '(image :type png :file "x") nil 5) (error e))
+ (condition-case e (image-mask-p 5) (error e))
+ (image-metadata 5)
+ (condition-case e (image-metadata '(image :type png :file "x")) (error e))
+ (image-flush '(image :type png :file "x") t)
+ (condition-case e (image-flush '(image :type png :file "x") 5) (error e))
+ (condition-case e (clear-image-cache (selected-frame)) (error e))
+ (clear-image-cache 5)
+ (mapcar #'bitmap-spec-p '((8 1 "a" . 5) (8 1 . "a") (8 2 "a") (16 1 "ab") (8 1 a) (9 2 "abc") (8 1 "é") (0 1 "a"))))"###;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        r###"((t nil nil t t nil nil t nil nil t nil t nil nil nil t nil nil nil nil) nil (error "Window system frame should be used") (error "Invalid image specification") (wrong-type-argument frame-live-p 5) (error "Invalid image specification") nil (error "Window system frame should be used") nil (wrong-type-argument frame-live-p 5) (error "Window system frame should be used") nil (t nil nil t nil nil t nil))"###,
+        "image specifications",
+    );
+}
+
+#[test]
+fn initial_frame_faces_and_parameters_are_a_restored_frames() {
+    // pdumper records no frames: init_display sets up a new initial frame,
+    // whose faces come default first, then the basic faces, then the rest,
+    // and whose parameters are the ones startup stores in it.
+    let program = r###"
+(let (keys) (maphash (lambda (k _v) (push k keys)) (frame--face-hash-table)) (list (seq-take (nreverse keys) 21) (mapcar #'car (frame-parameters))))"###;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        r###"((default mode-line-active mode-line-inactive tool-bar fringe header-line scroll-bar border cursor mouse menu vertical-border window-divider window-divider-first-pixel window-divider-last-pixel internal-border child-frame-border tab-bar tab-line bold italic) (tab-bar-lines menu-bar-lines buried-buffer-list buffer-list unsplittable modeline width height name font background-color foreground-color cursor-color scroll-bar-background scroll-bar-foreground background-mode display-type minibuffer))"###,
+        "initial frame",
+    );
+}
+
+#[test]
 fn tty_color_primitives_follow_xfaces_c() {
     // xfaces.c on a tty frame: color-gray-p and color-supported-p go
     // through tty_defined_color (Lisp `tty-color-desc'), color-distance

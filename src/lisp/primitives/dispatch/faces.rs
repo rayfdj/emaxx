@@ -1,19 +1,30 @@
 use super::*;
 use crate::lisp::eval::LFACE_VECTOR_SIZE;
-use crate::lisp::reader::Reader;
 use crate::lisp::types::Kind;
 
 /// xfaces.c:resolve_face_name (FACE, true): a string names the symbol it
-/// interns; the `face-alias' chain is followed to its last symbol, the hare
-/// two links to the tortoise's one, and a chain that comes round again
-/// signals `circular-list' with the face.
+/// interns, and nil or any other object that is no symbol comes back
+/// as it is; a symbol's `face-alias' chain is followed to its last
+/// symbol, the hare two links to the tortoise's one, and a chain that
+/// comes round again signals `circular-list' with the face.
 fn resolve_face_name(interp: &mut Interpreter, value: &Value) -> Result<Value, LispError> {
+    resolve_face_name_1(interp, value, true)
+}
+
+/// resolve_face_name (FACE, SIGNAL): a circular alias chain `default'
+/// when not SIGNAL.
+fn resolve_face_name_1(
+    interp: &mut Interpreter,
+    value: &Value,
+    signal: bool,
+) -> Result<Value, LispError> {
     let face = match value.kind() {
         Kind::Symbol(symbol) => Value::Symbol(symbol),
+        Kind::T => Value::T,
         Kind::StringObject(_) => Value::Symbol(crate::lisp::types::SymbolName::intern_str(
             &string_text(value)?,
         )),
-        _ => return Err(wrong_type_argument("symbolp", *value)),
+        _ => return Ok(*value),
     };
     let property = cached_symbol!("face-alias").with(|symbol| Value::Symbol(*symbol));
     // Fget (SYMBOL, Qface_alias), and whether it is a symbol other than nil.
@@ -36,6 +47,9 @@ fn resolve_face_name(interp: &mut Interpreter, value: &Value) -> Result<Value, L
         hare = next;
         tortoise = super::misc::direct_get(interp, &[tortoise, property], &mut Env::new())?;
         if hare.eq_value(tortoise) {
+            if !signal {
+                return Ok(Value::symbol("default"));
+            }
             return Err(LispError::SignalValue(Value::list([
                 cached_symbol!("circular-list").with(|symbol| Value::Symbol(*symbol)),
                 face,
@@ -58,23 +72,12 @@ fn face_vector(items: impl IntoIterator<Item = Value>) -> Value {
     Value::vector(items)
 }
 
-fn unspecified_face_vector() -> Value {
-    face_vector(std::iter::repeat_n(
-        Value::symbol("unspecified"),
-        LFACE_VECTOR_SIZE,
-    ))
-}
-
 fn face_target_is_global(frame: Option<&Value>) -> bool {
     matches!(frame.map(|v| v.kind()), Some(Kind::T))
 }
 
 fn face_attribute_error(attribute: &Value) -> LispError {
-    LispError::SignalValue(Value::list([
-        Value::symbol("error"),
-        Value::string("Invalid face attribute name"),
-        *attribute,
-    ]))
+    signal_error("Invalid face attribute name", *attribute)
 }
 
 use crate::lisp::eval::invalid_face_error;
@@ -99,15 +102,469 @@ fn unspecified_face_value(value: &Value) -> bool {
     )
 }
 
-/// eval.c:signal_error (S, ARG): `error' with S and ARG's elements when
-/// ARG is a proper list, else with S and ARG.
-fn face_signal_error(message: &str, arg: Value) -> LispError {
-    let data = if arg.to_vec().is_ok() {
-        Value::cons(Value::string(message), arg)
-    } else {
-        Value::list([Value::string(message), arg])
+/// xfaces.c:named_merge_point_kind.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum NamedMergePointKind {
+    Normal,
+    Remap,
+}
+
+/// The named merge points a merge has passed, innermost last.
+type NamedMergePoints = Vec<(Value, NamedMergePointKind)>;
+
+/// A face's Lisp attribute vector being merged.
+type LfaceAttrs = [Value; LFACE_VECTOR_SIZE];
+
+const LFACE_FAMILY_INDEX: usize = 1;
+const LFACE_FOUNDRY_INDEX: usize = 2;
+const LFACE_SWIDTH_INDEX: usize = 3;
+const LFACE_HEIGHT_INDEX: usize = 4;
+const LFACE_WEIGHT_INDEX: usize = 5;
+const LFACE_SLANT_INDEX: usize = 6;
+const LFACE_UNDERLINE_INDEX: usize = 7;
+const LFACE_INVERSE_INDEX: usize = 8;
+const LFACE_FOREGROUND_INDEX: usize = 9;
+const LFACE_BACKGROUND_INDEX: usize = 10;
+const LFACE_STIPPLE_INDEX: usize = 11;
+const LFACE_OVERLINE_INDEX: usize = 12;
+const LFACE_STRIKE_THROUGH_INDEX: usize = 13;
+const LFACE_BOX_INDEX: usize = 14;
+const LFACE_FONT_INDEX: usize = 15;
+const LFACE_INHERIT_INDEX: usize = 16;
+const LFACE_DISTANT_FOREGROUND_INDEX: usize = 18;
+const LFACE_EXTEND_INDEX: usize = 19;
+
+/// UNSPECIFIEDP.
+fn unspecifiedp(value: &Value) -> bool {
+    matches!(value.kind(), Kind::Symbol(symbol) if symbol == "unspecified")
+}
+
+/// xfaces.c:push_named_merge_point: whether FACE_NAME may be merged as
+/// KIND below POINTS, pushed on them when it may.  The same kind of
+/// merge of the same face again is circular; a remap of it hides any
+/// normal merge further out.
+fn push_named_merge_point(
+    points: &mut NamedMergePoints,
+    face_name: Value,
+    kind: NamedMergePointKind,
+) -> bool {
+    for &(prev, prev_kind) in points.iter().rev() {
+        if prev.eq_value(face_name) {
+            if prev_kind == kind {
+                return false;
+            } else if prev_kind == NamedMergePointKind::Remap {
+                break;
+            }
+        }
+    }
+    points.push((face_name, kind));
+    true
+}
+
+/// xfaces.c:get_lface_attributes_no_remap: FACE_NAME's definition on
+/// FRAME copied to ATTRS; none is "Invalid face" when SIGNAL.
+fn get_lface_attributes_no_remap(
+    interp: &Interpreter,
+    frame: crate::lisp::types::FrameRef,
+    face_name: Value,
+    attrs: &mut LfaceAttrs,
+    signal: bool,
+) -> Result<bool, LispError> {
+    let Some(lface) = interp.lisp_face_vector_on(face_name, Some(frame)) else {
+        return if signal {
+            Err(invalid_face_error(face_name))
+        } else {
+            Ok(false)
+        };
     };
-    LispError::SignalValue(Value::cons(Value::symbol("error"), data))
+    for (index, attr) in attrs.iter_mut().enumerate() {
+        *attr = vector_slot_value(&lface, index)?;
+    }
+    Ok(true)
+}
+
+/// xfaces.c:get_lface_attributes: FACE_NAME resolved, then its
+/// `face-remapping-alist' remapping merged into ATTRS made unspecified,
+/// or its own definition on FRAME.
+fn get_lface_attributes(
+    interp: &mut Interpreter,
+    frame: crate::lisp::types::FrameRef,
+    face_name: Value,
+    attrs: &mut LfaceAttrs,
+    signal: bool,
+    points: &mut NamedMergePoints,
+    env: &mut Env,
+) -> Result<bool, LispError> {
+    let face_name = resolve_face_name_1(interp, &face_name, signal)?;
+    // assq_no_quit (FACE_NAME, Vface_remapping_alist).
+    let mut tail = interp
+        .lookup_var("face-remapping-alist", env)
+        .unwrap_or(Value::Nil);
+    let mut remapping = None;
+    while let Some((element, rest)) = tail.cons_values() {
+        if let Some((key, remap)) = element.cons_values()
+            && key.eq_value(face_name)
+        {
+            remapping = Some(remap);
+            break;
+        }
+        tail = rest;
+    }
+    if let Some(remap) = remapping
+        && push_named_merge_point(points, face_name, NamedMergePointKind::Remap)
+    {
+        attrs[1..].fill(Value::symbol("unspecified"));
+        let merged = merge_face_ref(interp, frame, remap, attrs, signal, points, env);
+        points.pop();
+        return merged;
+    }
+    get_lface_attributes_no_remap(interp, frame, face_name, attrs, signal)
+}
+
+/// xfaces.c:merge_face_vectors: what FROM inherits merged into TO, then
+/// FROM's own specified attributes (a relative height merged with TO's),
+/// each clearing the font property it overrides; TO inherits nothing.
+/// Only a window-system frame's definitions hold a font spec, so a text
+/// frame's merge never meets one in FROM.
+fn merge_face_vectors(
+    interp: &mut Interpreter,
+    frame: crate::lisp::types::FrameRef,
+    from: &LfaceAttrs,
+    to: &mut LfaceAttrs,
+    points: &mut NamedMergePoints,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    let inherit = from[LFACE_INHERIT_INDEX];
+    if !unspecifiedp(&inherit) && !inherit.is_nil() {
+        merge_face_ref(interp, frame, inherit, to, false, points, env)?;
+    }
+    for index in 1..LFACE_VECTOR_SIZE {
+        if unspecifiedp(&from[index]) {
+            continue;
+        }
+        if index == LFACE_HEIGHT_INDEX && !matches!(from[index].kind(), Kind::Integer(_)) {
+            to[index] = merge_face_heights(interp, from[index], to[index], to[index], env)?;
+            super::fonts::font_clear_prop(interp, to, super::fonts::FONT_SIZE_INDEX)?;
+        } else if index != LFACE_FONT_INDEX && !to[index].eq_value(from[index]) {
+            to[index] = from[index];
+            if (LFACE_FAMILY_INDEX..=LFACE_SLANT_INDEX).contains(&index) {
+                let prop = match index {
+                    LFACE_FAMILY_INDEX => super::fonts::FONT_FAMILY_INDEX,
+                    LFACE_FOUNDRY_INDEX => super::fonts::FONT_FOUNDRY_INDEX,
+                    LFACE_SWIDTH_INDEX => super::fonts::FONT_WIDTH_INDEX,
+                    LFACE_HEIGHT_INDEX => super::fonts::FONT_SIZE_INDEX,
+                    LFACE_WEIGHT_INDEX => super::fonts::FONT_WEIGHT_INDEX,
+                    _ => super::fonts::FONT_SLANT_INDEX,
+                };
+                super::fonts::font_clear_prop(interp, to, prop)?;
+            }
+        }
+    }
+    to[LFACE_INHERIT_INDEX] = Value::Nil;
+    Ok(())
+}
+
+/// xfaces.c:merge_named_face: FACE_NAME's attributes on FRAME, its
+/// `reset' ones the default face's, merged into TO unless the merge is
+/// circular.
+fn merge_named_face(
+    interp: &mut Interpreter,
+    frame: crate::lisp::types::FrameRef,
+    face_name: Value,
+    to: &mut LfaceAttrs,
+    points: &mut NamedMergePoints,
+    env: &mut Env,
+) -> Result<bool, LispError> {
+    if !push_named_merge_point(points, face_name, NamedMergePointKind::Normal) {
+        return Ok(false);
+    }
+    let merged = (|| {
+        let mut from: LfaceAttrs = std::array::from_fn(|_| Value::symbol("unspecified"));
+        let ok = get_lface_attributes(interp, frame, face_name, &mut from, false, points, env)?;
+        if ok && !face_name.eq_value(Value::symbol("default")) {
+            // FACE_FROM_ID (F, DEFAULT_FACE_ID)->lface.
+            let default = Value::symbol("default");
+            let deflt = match interp.lisp_face_vector_on(default, Some(frame)) {
+                Some(lface) => lface,
+                None => {
+                    super::frames::realize_basic_faces(interp, frame)?;
+                    interp
+                        .lisp_face_vector_on(default, Some(frame))
+                        .ok_or_else(|| invalid_face_error(default))?
+                }
+            };
+            for (index, attr) in from.iter_mut().enumerate().skip(1) {
+                if matches!(attr.kind(), Kind::Symbol(symbol) if symbol == "reset") {
+                    *attr = vector_slot_value(&deflt, index)?;
+                }
+            }
+        }
+        if ok {
+            merge_face_vectors(interp, frame, &from, to, points, env)?;
+        }
+        Ok(ok)
+    })();
+    points.pop();
+    merged
+}
+
+/// xfaces.c:evaluate_face_filter with no window: nil matches, as every
+/// filter does under `face-filters-always-match'; a (:window PARAMETER
+/// VALUE) filter has no window's parameter to match, and anything else
+/// is invalid.
+fn evaluate_face_filter(
+    interp: &mut Interpreter,
+    filter: Value,
+    ok: &mut bool,
+    err_msgs: bool,
+    env: &mut Env,
+) -> Result<bool, LispError> {
+    if filter.is_nil() {
+        return Ok(true);
+    }
+    if interp
+        .lookup_var("face-filters-always-match", env)
+        .is_some_and(|value| value.is_truthy())
+    {
+        return Ok(true);
+    }
+    let well_formed = filter.cons_values().and_then(|(head, rest)| {
+        matches!(head.kind(), Kind::Symbol(symbol) if symbol == ":window").then_some(())?;
+        let (_parameter, rest) = rest.cons_values()?;
+        let (_value, rest) = rest.cons_values()?;
+        rest.is_nil().then_some(())
+    });
+    if well_formed.is_some() {
+        return Ok(false);
+    }
+    if err_msgs {
+        super::display::add_to_log(interp, "Invalid face filter %S", &[filter], env)?;
+    }
+    *ok = false;
+    Ok(false)
+}
+
+/// xfaces.c:filter_face_ref: a (:filtered FILTER FACE-REF) reference
+/// is FACE-REF where FILTER matches, else nil; any other is itself.
+fn filter_face_ref(
+    interp: &mut Interpreter,
+    face_ref: Value,
+    ok: &mut bool,
+    err_msgs: bool,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let Some((head, rest)) = face_ref.cons_values() else {
+        return Ok(face_ref);
+    };
+    if !matches!(head.kind(), Kind::Symbol(symbol) if symbol == ":filtered") {
+        return Ok(face_ref);
+    }
+    let parts = rest.cons_values().and_then(|(filter, rest)| {
+        let (filtered, rest) = rest.cons_values()?;
+        rest.is_nil().then_some((filter, filtered))
+    });
+    if let Some((filter, filtered)) = parts {
+        return Ok(
+            if evaluate_face_filter(interp, filter, ok, err_msgs, env)? {
+                filtered
+            } else {
+                Value::Nil
+            },
+        );
+    }
+    if err_msgs {
+        super::display::add_to_log(interp, "Invalid face ref %S", &[face_ref], env)?;
+    }
+    *ok = false;
+    Ok(Value::Nil)
+}
+
+/// xfaces.c:merge_face_ref with no window and no attribute filter:
+/// FACE_REF, a face name, a (foreground-color . COLOR) or
+/// (background-color . COLOR) pair, a face attribute plist or a list of
+/// face references (the earlier ones first in precedence), merged into
+/// TO.  A bad reference is logged, when ERR_MSGS, and the merge goes on;
+/// the result is whether all was well.
+fn merge_face_ref(
+    interp: &mut Interpreter,
+    frame: crate::lisp::types::FrameRef,
+    face_ref: Value,
+    to: &mut LfaceAttrs,
+    err_msgs: bool,
+    points: &mut NamedMergePoints,
+    env: &mut Env,
+) -> Result<bool, LispError> {
+    let mut ok = true;
+    let mut face_ref = face_ref;
+    let mut filtered = face_ref;
+    loop {
+        face_ref = filtered;
+        filtered = filter_face_ref(interp, face_ref, &mut ok, err_msgs, env)?;
+        if !(ok && !face_ref.eq_value(filtered)) {
+            break;
+        }
+    }
+    if !ok {
+        return Ok(false);
+    }
+    if face_ref.is_nil() {
+        return Ok(true);
+    }
+    let Some((first, rest)) = face_ref.cons_values() else {
+        // FACE_REF ought to be a face name.
+        let ok = merge_named_face(interp, frame, face_ref, to, points, env)?;
+        if !ok && err_msgs {
+            super::display::add_to_log(interp, "Invalid face reference: %s", &[face_ref], env)?;
+        }
+        return Ok(ok);
+    };
+    let symbol_is =
+        |value: &Value, name: &str| matches!(value.kind(), Kind::Symbol(symbol) if symbol == name);
+    if symbol_is(&first, "foreground-color") || symbol_is(&first, "background-color") {
+        if rest.is_string() {
+            let index = if symbol_is(&first, "foreground-color") {
+                LFACE_FOREGROUND_INDEX
+            } else {
+                LFACE_BACKGROUND_INDEX
+            };
+            to[index] = rest;
+        } else {
+            if err_msgs {
+                super::display::add_to_log(interp, "Invalid face color %S", &[rest], env)?;
+            }
+            ok = false;
+        }
+    } else if matches!(first.kind(), Kind::Symbol(symbol) if symbol.starts_with(':')) {
+        // The property list form.
+        let mut plist = face_ref;
+        while let Some((keyword, tail)) = plist.cons_values()
+            && let Some((value, next)) = tail.cons_values()
+        {
+            let is = |name: &str| symbol_is(&keyword, name);
+            let t_or_nil = matches!(value.kind(), Kind::T | Kind::Nil);
+            let mut err = false;
+            let mut set = |to: &mut LfaceAttrs, index: usize, valid: bool| {
+                if valid {
+                    to[index] = value;
+                } else {
+                    err = true;
+                }
+                valid
+            };
+            // Specifying `unspecified' is a no-op.
+            if unspecifiedp(&value) {
+            } else if is(":family") || is(":foundry") {
+                let (index, prop) = if is(":family") {
+                    (LFACE_FAMILY_INDEX, super::fonts::FONT_FAMILY_INDEX)
+                } else {
+                    (LFACE_FOUNDRY_INDEX, super::fonts::FONT_FOUNDRY_INDEX)
+                };
+                if set(to, index, value.is_string()) {
+                    super::fonts::font_clear_prop(interp, to, prop)?;
+                }
+            } else if is(":height") {
+                let height =
+                    merge_face_heights(interp, value, to[LFACE_HEIGHT_INDEX], Value::Nil, env)?;
+                if height.is_nil() {
+                    err = true;
+                } else {
+                    to[LFACE_HEIGHT_INDEX] = height;
+                    super::fonts::font_clear_prop(interp, to, super::fonts::FONT_SIZE_INDEX)?;
+                }
+            } else if is(":weight") || is(":slant") || is(":width") {
+                let (index, prop) = if is(":weight") {
+                    (LFACE_WEIGHT_INDEX, super::fonts::FONT_WEIGHT_INDEX)
+                } else if is(":slant") {
+                    (LFACE_SLANT_INDEX, super::fonts::FONT_SLANT_INDEX)
+                } else {
+                    (LFACE_SWIDTH_INDEX, super::fonts::FONT_WIDTH_INDEX)
+                };
+                // SYMBOLP and FONT_*_NAME_NUMERIC (VALUE) >= 0.
+                let name = match value.kind() {
+                    Kind::Nil => Some("nil"),
+                    Kind::T => Some("t"),
+                    _ => value.symbol_str(),
+                };
+                let valid = name.is_some_and(|name| super::fonts::valid_style_name(prop, name));
+                if set(to, index, valid) {
+                    super::fonts::font_clear_prop(interp, to, prop)?;
+                }
+            } else if is(":underline") {
+                set(
+                    to,
+                    LFACE_UNDERLINE_INDEX,
+                    t_or_nil || value.is_string() || matches!(value.kind(), Kind::Cons(_)),
+                );
+            } else if is(":overline") || is(":strike-through") {
+                let index = if is(":overline") {
+                    LFACE_OVERLINE_INDEX
+                } else {
+                    LFACE_STRIKE_THROUGH_INDEX
+                };
+                set(to, index, t_or_nil || value.is_string());
+            } else if is(":box") {
+                let value = if matches!(value.kind(), Kind::T) {
+                    Value::Integer(1)
+                } else {
+                    value
+                };
+                if matches!(value.kind(), Kind::Integer(width) if width != 0)
+                    || value.is_string()
+                    || matches!(value.kind(), Kind::Cons(_) | Kind::Nil)
+                {
+                    to[LFACE_BOX_INDEX] = value;
+                } else {
+                    err = true;
+                }
+            } else if is(":inverse-video") || is(":reverse-video") {
+                set(to, LFACE_INVERSE_INDEX, t_or_nil);
+            } else if is(":foreground") {
+                set(to, LFACE_FOREGROUND_INDEX, value.is_string());
+            } else if is(":distant-foreground") {
+                set(to, LFACE_DISTANT_FOREGROUND_INDEX, value.is_string());
+            } else if is(":background") {
+                set(to, LFACE_BACKGROUND_INDEX, value.is_string());
+            } else if is(":stipple") {
+                set(
+                    to,
+                    LFACE_STIPPLE_INDEX,
+                    value.is_nil() || bitmap_spec_p(&value),
+                );
+            } else if is(":font") {
+                let valid = font_value_p(interp, &value);
+                set(to, LFACE_FONT_INDEX, valid);
+            } else if is(":inherit") {
+                // Just like a face reference.
+                if !merge_face_ref(interp, frame, value, to, err_msgs, points, env)? {
+                    err = true;
+                }
+            } else if is(":extend") {
+                set(to, LFACE_EXTEND_INDEX, t_or_nil);
+            } else {
+                err = true;
+            }
+            if err {
+                super::display::add_to_log(
+                    interp,
+                    "Invalid face attribute %S %S",
+                    &[keyword, value],
+                    env,
+                )?;
+                ok = false;
+            }
+            plist = next;
+        }
+    } else {
+        // A list of face references: those at the front take
+        // precedence, so the merge goes from the end backwards.
+        if !rest.is_nil() {
+            ok = merge_face_ref(interp, frame, rest, to, err_msgs, points, env)?;
+        }
+        if !merge_face_ref(interp, frame, first, to, err_msgs, points, env)? {
+            ok = false;
+        }
+    }
+    Ok(ok)
 }
 
 /// xfaces.c:merge_face_heights: FROM, an absolute height, a scale of TO
@@ -179,7 +636,7 @@ fn checked_face_attribute(
     match attribute {
         ":family" | ":foundry" => {
             if !special && check_string(value)?.is_empty() {
-                return Err(face_signal_error(
+                return Err(signal_error(
                     if attribute == ":family" {
                         "Invalid face family"
                     } else {
@@ -194,7 +651,7 @@ fn checked_face_attribute(
                 if face.eq_value(Value::symbol("default")) {
                     // The default face must have an absolute size.
                     if !matches!(value.kind(), Kind::Integer(height) if height > 0) {
-                        return Err(face_signal_error(
+                        return Err(signal_error(
                             "Default face height not absolute and positive",
                             value,
                         ));
@@ -204,7 +661,7 @@ fn checked_face_attribute(
                     let test =
                         merge_face_heights(interp, value, Value::Integer(10), Value::Nil, env)?;
                     if !matches!(test.kind(), Kind::Integer(height) if height > 0) {
-                        return Err(face_signal_error(
+                        return Err(signal_error(
                             "Face height does not produce a positive integer",
                             value,
                         ));
@@ -225,7 +682,7 @@ fn checked_face_attribute(
                     _ => "nil",
                 });
                 if !super::fonts::valid_style_name(style, name) {
-                    return Err(face_signal_error(message, value));
+                    return Err(signal_error(message, value));
                 }
             }
         }
@@ -235,7 +692,7 @@ fn checked_face_attribute(
                 || (value.is_string() && !string_text(&value)?.is_empty())
                 || (matches!(value.kind(), Kind::Cons(_)) && underline_plist_valid(value)?);
             if !valid {
-                return Err(face_signal_error("Invalid face underline", value));
+                return Err(signal_error("Invalid face underline", value));
             }
         }
         ":overline" | ":strike-through" => {
@@ -243,7 +700,7 @@ fn checked_face_attribute(
                 && ((matches!(value.kind(), Kind::Symbol(_)))
                     || (value.is_string() && string_text(&value)?.is_empty()))
             {
-                return Err(face_signal_error(
+                return Err(signal_error(
                     if attribute == ":overline" {
                         "Invalid face overline"
                     } else {
@@ -272,14 +729,14 @@ fn checked_face_attribute(
                     _ => false,
                 };
             if !valid {
-                return Err(face_signal_error("Invalid face box", value));
+                return Err(signal_error("Invalid face box", value));
             }
         }
         ":inverse-video" | ":reverse-video" | ":extend" => {
             if !special {
                 check_symbol(value)?;
                 if !matches!(value.kind(), Kind::Nil | Kind::T) {
-                    return Err(face_signal_error(
+                    return Err(signal_error(
                         if attribute == ":extend" {
                             "Invalid extend face attribute value"
                         } else {
@@ -301,7 +758,7 @@ fn checked_face_attribute(
                 value = Value::symbol("unspecified");
             }
             if !special_face_value(&value) && check_string(value)?.is_empty() {
-                return Err(face_signal_error(
+                return Err(signal_error(
                     match attribute {
                         ":foreground" => "Empty foreground color value",
                         ":background" => "Empty background color value",
@@ -313,7 +770,7 @@ fn checked_face_attribute(
         }
         ":stipple" => {
             if !special && !value.is_nil() && !bitmap_spec_p(&value) {
-                return Err(face_signal_error("Invalid stipple attribute", value));
+                return Err(signal_error("Invalid stipple attribute", value));
             }
         }
         ":font" => {
@@ -324,7 +781,7 @@ fn checked_face_attribute(
             }
             if !special {
                 if !value.is_string() && !font_value_p(interp, &value) {
-                    return Err(face_signal_error("Invalid font or font-spec", value));
+                    return Err(signal_error("Invalid font or font-spec", value));
                 }
                 return Ok(None);
             }
@@ -336,7 +793,7 @@ fn checked_face_attribute(
             if !is("reset") {
                 let fontset = super::call(interp, "query-fontset", &[value, Value::Nil], env)?;
                 if fontset.is_nil() {
-                    return Err(face_signal_error("Invalid fontset name", value));
+                    return Err(signal_error("Invalid fontset name", value));
                 }
                 value = fontset;
             }
@@ -354,7 +811,7 @@ fn checked_face_attribute(
                 tail = Value::Nil;
             }
             if !tail.is_nil() {
-                return Err(face_signal_error("Invalid face inheritance", value));
+                return Err(signal_error("Invalid face inheritance", value));
             }
         }
         ":bold" => {
@@ -368,7 +825,7 @@ fn checked_face_attribute(
             }
         }
         _ => {
-            return Err(face_signal_error(
+            return Err(signal_error(
                 "Invalid face attribute name",
                 Value::symbol(attribute),
             ));
@@ -444,171 +901,6 @@ fn box_plist_valid(value: Value) -> Result<bool, LispError> {
         tail = rest;
     }
     Ok(tail.is_nil())
-}
-
-fn valid_named_value(value: &Value, choices: &[&str]) -> bool {
-    special_face_value(value)
-        || matches!(value.kind(), Kind::Symbol(symbol) if choices.contains(&symbol.as_str()))
-}
-
-fn valid_inherit_value(value: &Value) -> bool {
-    matches!(value.kind(), Kind::Nil | Kind::Symbol(_))
-        || value.to_vec().is_ok_and(|items| {
-            items
-                .iter()
-                .all(|item| matches!(item.kind(), Kind::Symbol(_)))
-        })
-}
-
-fn normalize_face_attribute_value(
-    attribute: &str,
-    value: &Value,
-) -> Result<(usize, Value), LispError> {
-    let index = face_attribute_index(attribute)
-        .ok_or_else(|| face_attribute_error(&Value::symbol(attribute)))?;
-    let normalized = match attribute {
-        ":bold" => {
-            if matches!(value.kind(), Kind::Symbol(symbol) if symbol == "reset") {
-                *value
-            } else if value.is_nil() {
-                Value::symbol("normal")
-            } else {
-                Value::symbol("bold")
-            }
-        }
-        ":italic" => {
-            if matches!(value.kind(), Kind::Symbol(symbol) if symbol == "reset") {
-                *value
-            } else if value.is_nil() {
-                Value::symbol("normal")
-            } else {
-                Value::symbol("italic")
-            }
-        }
-        _ if special_face_value(value) => *value,
-        ":family" | ":foundry" => {
-            let text = string_text(value)?;
-            if text.is_empty() {
-                return Err(LispError::Signal("Invalid face family".into()));
-            }
-            *value
-        }
-        ":height" => match value.kind() {
-            Kind::Integer(height) if height > 0 => *value,
-            Kind::Float(scale) if scale.is_finite() && scale.get() > 0.0 => *value,
-            Kind::Closure(_) | Kind::BuiltinFunc(_) | Kind::Symbol(_) => *value,
-            _ => return Err(LispError::Signal("Invalid face height".into())),
-        },
-        ":weight" => {
-            if !valid_named_value(
-                value,
-                &[
-                    "ultra-light",
-                    "extra-light",
-                    "light",
-                    "semi-light",
-                    "normal",
-                    "regular",
-                    "medium",
-                    "semi-bold",
-                    "bold",
-                    "extra-bold",
-                    "ultra-bold",
-                ],
-            ) {
-                return Err(LispError::Signal("Invalid face weight".into()));
-            }
-            *value
-        }
-        ":slant" => {
-            if !valid_named_value(
-                value,
-                &[
-                    "normal",
-                    "italic",
-                    "oblique",
-                    "reverse-italic",
-                    "reverse-oblique",
-                ],
-            ) {
-                return Err(LispError::Signal("Invalid face slant".into()));
-            }
-            *value
-        }
-        ":width" => {
-            if !valid_named_value(
-                value,
-                &[
-                    "ultra-condensed",
-                    "extra-condensed",
-                    "condensed",
-                    "semi-condensed",
-                    "normal",
-                    "semi-expanded",
-                    "expanded",
-                    "extra-expanded",
-                    "ultra-expanded",
-                ],
-            ) {
-                return Err(LispError::Signal("Invalid face width".into()));
-            }
-            *value
-        }
-        ":underline" => {
-            if !(matches!(value.kind(), Kind::Nil | Kind::T | Kind::Cons(..)) || value.is_string())
-            {
-                return Err(LispError::Signal("Invalid face underline".into()));
-            }
-            *value
-        }
-        ":overline" | ":strike-through" => {
-            if !(matches!(value.kind(), Kind::Nil | Kind::T) || value.is_string()) {
-                return Err(LispError::Signal("Invalid face line attribute".into()));
-            }
-            *value
-        }
-        ":inverse-video" | ":reverse-video" | ":extend" => {
-            if !matches!(value.kind(), Kind::Nil | Kind::T) {
-                return Err(LispError::Signal("Invalid boolean face attribute".into()));
-            }
-            *value
-        }
-        ":foreground" | ":distant-foreground" | ":background" => {
-            if value.is_nil() {
-                Value::symbol("unspecified")
-            } else {
-                let text = string_text(value)?;
-                if text.is_empty() {
-                    return Err(LispError::Signal("Empty face color value".into()));
-                }
-                *value
-            }
-        }
-        ":stipple" => *value,
-        ":box" => {
-            if !(matches!(
-                value.kind(),
-                Kind::Nil | Kind::T | Kind::Integer(_) | Kind::Cons(..)
-            ) || value.is_string())
-            {
-                return Err(LispError::Signal("Invalid face box".into()));
-            }
-            if matches!(value.kind(), Kind::T) {
-                Value::Integer(1)
-            } else {
-                *value
-            }
-        }
-        ":font" | ":fontset" => *value,
-        ":inherit" => {
-            if !valid_inherit_value(value) {
-                return Err(LispError::Signal("Invalid face inheritance".into()));
-            }
-            *value
-        }
-        _ => return Err(face_attribute_error(&Value::symbol(attribute))),
-    };
-    Ok((index, normalized))
 }
 
 pub(super) fn set_face_attribute(
@@ -728,25 +1020,35 @@ fn face_vectors_equal(
     Ok(true)
 }
 
+/// xfaces.c:Fbitmap_spec_p: a string (a file name), or (WIDTH HEIGHT
+/// DATA ...) with WIDTH and HEIGHT positive ints and the string DATA
+/// holding HEIGHT rows of WIDTH bits.
 fn bitmap_spec_p(value: &Value) -> bool {
     if value.is_string() {
         return true;
     }
-    let Ok(items) = value.to_vec() else {
+    let Some((width, rest)) = value.cons_values() else {
         return false;
     };
-    let kinds = items.iter().map(|v| v.kind()).collect::<Vec<_>>();
-    let [Kind::Integer(width), Kind::Integer(height), data, ..] = kinds.as_slice() else {
-        return false;
+    let (height, data) = match rest.cons_values() {
+        Some((height, rest)) => (
+            height,
+            rest.cons_values().map_or(Value::Nil, |(data, _)| data),
+        ),
+        None => (Value::Nil, Value::Nil),
     };
-    if *width <= 0 || *height <= 0 {
+    let positive_int = |value: &Value| matches!(value.kind(), Kind::Integer(n) if (1..=i64::from(i32::MAX)).contains(&n));
+    if !data.is_string() || !positive_int(&width) || !positive_int(&height) {
         return false;
     }
-    let Some(data) = string_like(&data.value()) else {
+    let (Kind::Integer(width), Kind::Integer(height)) = (width.kind(), height.kind()) else {
         return false;
     };
-    let bytes_per_row = (*width as usize).div_ceil(8);
-    (*height as usize) <= data.text.len() / bytes_per_row
+    let bytes_per_row = (width + 7) / 8;
+    let sbytes = string_like(&data)
+        .and_then(|text| text.byte_len().ok())
+        .unwrap_or(0) as i64;
+    height <= sbytes / bytes_per_row
 }
 
 fn transform_font_alist(value: &Value, registry: bool) -> Result<Value, LispError> {
@@ -768,42 +1070,66 @@ fn transform_font_alist(value: &Value, registry: bool) -> Result<Value, LispErro
     Ok(Value::list(result))
 }
 
-fn parse_resource_boolean(value: &str, signal: bool) -> Result<Option<Value>, LispError> {
-    match value.to_ascii_lowercase().as_str() {
-        "on" | "true" => Ok(Some(Value::T)),
-        "off" | "false" => Ok(Some(Value::Nil)),
-        "unspecified" => Ok(Some(Value::symbol("unspecified"))),
-        _ if signal => Err(LispError::Signal(
-            "Invalid face attribute value from X resource".into(),
-        )),
-        _ => Ok(None),
-    }
+/// xfaces.c:face_boolean_x_resource_value: VALUE's "on"/"true" t,
+/// "off"/"false" nil, "unspecified" `unspecified', compared without
+/// case; anything else 0, or an error when SIGNAL.
+fn face_boolean_x_resource_value(value: &Value, signal: bool) -> Result<Value, LispError> {
+    let text = string_text(value)?;
+    Ok(
+        if text.eq_ignore_ascii_case("on") || text.eq_ignore_ascii_case("true") {
+            Value::T
+        } else if text.eq_ignore_ascii_case("off") || text.eq_ignore_ascii_case("false") {
+            Value::Nil
+        } else if text.eq_ignore_ascii_case("unspecified") {
+            Value::symbol("unspecified")
+        } else if signal {
+            return Err(signal_error(
+                "Invalid face attribute value from X resource",
+                *value,
+            ));
+        } else {
+            Value::Integer(0)
+        },
+    )
 }
 
-fn resource_face_value(attribute: &str, text: &str) -> Result<Value, LispError> {
-    if text.eq_ignore_ascii_case("unspecified") {
+/// Finternal_set_lisp_face_attribute_from_resource's conversion of the
+/// resource string VALUE for ATTRIBUTE.
+fn resource_face_value(
+    interp: &mut Interpreter,
+    attribute: &str,
+    value: Value,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    if string_text(&value)?.eq_ignore_ascii_case("unspecified") {
         return Ok(Value::symbol("unspecified"));
     }
-    match attribute {
-        ":height" => text
-            .parse::<i64>()
-            .ok()
-            .filter(|value| *value > 0)
-            .map(Value::Integer)
-            .ok_or_else(|| LispError::Signal("Invalid face height from X resource".into())),
-        ":bold" | ":italic" | ":inverse-video" | ":reverse-video" | ":extend" => {
-            parse_resource_boolean(text, true)?
-                .ok_or_else(|| LispError::Signal("Invalid face resource value".into()))
+    Ok(match attribute {
+        ":height" => {
+            let height = super::call(interp, "string-to-number", &[value], env)?;
+            if !matches!(height.kind(), Kind::Integer(height) if height > 0) {
+                return Err(signal_error("Invalid face height from X resource", height));
+            }
+            height
         }
-        ":weight" | ":slant" | ":width" => Ok(Value::symbol(text)),
+        ":bold" | ":italic" | ":reverse-video" | ":inverse-video" | ":extend" => {
+            face_boolean_x_resource_value(&value, true)?
+        }
+        ":weight" | ":slant" | ":width" => Value::symbol(&string_text(&value)?),
         ":underline" | ":overline" | ":strike-through" => {
-            Ok(parse_resource_boolean(text, false)?.unwrap_or_else(|| Value::string(text)))
+            // A boolean result says VALUE names no color.
+            let boolean = face_boolean_x_resource_value(&value, false)?;
+            if matches!(boolean.kind(), Kind::Symbol(_) | Kind::Nil | Kind::T) {
+                boolean
+            } else {
+                value
+            }
         }
-        ":box" | ":inherit" => Reader::new(text)
-            .read()?
-            .ok_or_else(|| LispError::Signal("Invalid face resource value".into())),
-        _ => Ok(Value::string(text)),
-    }
+        ":box" | ":inherit" => super::call(interp, "read-from-string", &[value], env)?
+            .car_if_list()
+            .ok_or_else(|| wrong_type_argument("listp", value))?,
+        _ => value,
+    })
 }
 
 fn load_color_file(filename: &str) -> Value {
@@ -909,12 +1235,17 @@ define_dispatch!(
                 };
                 interp.make_lisp_face_on(face, target, true)
             }
+            // xfaces.c: resolve_face_name, then CHECK_LIVE_FRAME of a
+            // non-nil FRAME, then the face's Lisp vector (none for a name
+            // that is no symbol).
             "internal-lisp-face-p" => {
                 need_arg_range(name, args, 1, 2)?;
-                if !matches!(args[0].kind(), Kind::Symbol(_) | Kind::StringObject(_)) {
-                    return Ok(Value::Nil);
-                }
-                let face = resolve_face_name(interp, &args[0])?;
+                let named = matches!(args[0].kind(), Kind::Symbol(_) | Kind::StringObject(_));
+                let face = if named {
+                    Some(resolve_face_name(interp, &args[0])?)
+                } else {
+                    None
+                };
                 let target = match args.get(1).map(|v| v.kind()) {
                     None | Some(Kind::Nil) => None,
                     Some(frame) => Some(frames::decode_live_frame(
@@ -922,6 +1253,9 @@ define_dispatch!(
                         Some(&frame.value()),
                         true,
                     )?),
+                };
+                let Some(face) = face else {
+                    return Ok(Value::Nil);
                 };
                 Ok(interp
                     .lisp_face_vector_on(face, target)
@@ -978,27 +1312,32 @@ define_dispatch!(
                     set_face_attribute_on(interp, face, attribute, &args[2], Some(frame), env)
                 }
             }
+            // xfaces.c: CHECK_SYMBOL FACE and ATTR, CHECK_STRING VALUE,
+            // the string converted for ATTR, then
+            // Finternal_set_lisp_face_attribute.
             "internal-set-lisp-face-attribute-from-resource" => {
                 need_arg_range(name, args, 3, 4)?;
-                let face = resolve_face_name(interp, &args[0])?;
-                let attribute = args[1].as_symbol()?;
-                let text = string_text(&args[2])?;
-                let value = resource_face_value(attribute, &text)?;
-                set_face_attribute(
+                let face = face_symbol(&args[0])?;
+                let attribute = face_symbol(&args[1])?;
+                if !matches!(args[2].kind(), Kind::StringObject(_)) {
+                    return Err(wrong_type_argument("stringp", args[2]));
+                }
+                let value = resource_face_value(interp, attribute.as_symbol()?, args[2], env)?;
+                let frame = args.get(3).copied().unwrap_or(Value::Nil);
+                super::call(
                     interp,
-                    face,
-                    attribute,
-                    &value,
-                    face_target_is_global(args.get(3)),
+                    "internal-set-lisp-face-attribute",
+                    &[face, attribute, value, frame],
                     env,
                 )
             }
+            // xfaces.c: ATTRIBUTE is only compared with :height.
             "face-attribute-relative-p" => {
                 need_args(name, args, 2)?;
-                let attribute = args[0].as_symbol()?;
+                let height = args[0] == Value::symbol(":height");
                 Ok(
                     if unspecified_face_value(&args[1])
-                        || (attribute == ":height" && !matches!(args[1].kind(), Kind::Integer(_)))
+                        || (height && !matches!(args[1].kind(), Kind::Integer(_)))
                     {
                         Value::T
                     } else {
@@ -1008,30 +1347,37 @@ define_dispatch!(
             }
             "merge-face-attribute" => {
                 need_args(name, args, 3)?;
-                let attribute = args[0].as_symbol()?;
                 if unspecified_face_value(&args[1]) {
                     Ok(args[2])
-                } else if attribute == ":height" {
+                } else if args[0] == Value::symbol(":height") {
                     merge_face_heights(interp, args[1], args[2], args[1], env)
                 } else {
                     Ok(args[1])
                 }
             }
+            // xfaces.c: FRAME decoded unless t, the face's vector found
+            // ("Invalid face"), then CHECK_SYMBOL of SYMBOL and KEYWORD.
             "internal-get-lisp-face-attribute" => {
                 need_arg_range(name, args, 2, 3)?;
-                let face = resolve_face_name(interp, &args[0])?;
-                let attribute = args[1].as_symbol()?;
-                let index = face_attribute_index(attribute)
-                    .ok_or_else(|| face_attribute_error(&args[1]))?;
                 let target = if face_target_is_global(args.get(2)) {
                     None
                 } else {
                     Some(frames::decode_live_frame(interp, args.get(2), true)?)
                 };
-                let value = interp
+                let face = resolve_face_name(interp, &args[0])?;
+                let vector = interp
                     .lisp_face_vector_on(face, target)
-                    .and_then(|vector| vector_slot_value(&vector, index).ok())
                     .ok_or_else(|| invalid_face_error(face))?;
+                face_symbol(&args[0])?;
+                let attribute = face_symbol(&args[1])?;
+                // The attribute names its keyword ladder knows: neither
+                // :bold nor :italic.
+                let index = match attribute.as_symbol()? {
+                    ":bold" | ":italic" => None,
+                    keyword => face_attribute_index(keyword),
+                }
+                .ok_or_else(|| face_attribute_error(&attribute))?;
+                let value = vector_slot_value(&vector, index)?;
                 Ok(
                     if matches!(value.kind(), Kind::Symbol(symbol) if symbol == ":ignore-defface") {
                         Value::symbol("unspecified")
@@ -1078,10 +1424,37 @@ define_dispatch!(
                 }
                 Ok(Value::Nil)
             }
+            // xfaces.c: FRAME t asks the global definition, any other
+            // the live frame's realized face, whose font a frame with no
+            // window system lacks.
             "face-font" => {
                 need_arg_range(name, args, 1, 3)?;
+                if !matches!(args.get(1).map(|v| v.kind()), Some(Kind::T)) {
+                    let frame = frames::decode_live_frame(interp, args.get(1), true)?;
+                    // lookup_named_face: get_lface_attributes, a face that
+                    // `face-remapping-alist' names merged from its remapping
+                    // (whose bad references only reach the log), any other
+                    // the frame's own definition.
+                    let face = resolve_face_name(interp, &args[0])?;
+                    let mut tail = interp
+                        .lookup_var("face-remapping-alist", env)
+                        .unwrap_or(Value::Nil);
+                    while let Some((element, rest)) = tail.cons_values() {
+                        if element
+                            .cons_values()
+                            .is_some_and(|(key, _)| key.eq_value(face))
+                        {
+                            return Ok(Value::Nil);
+                        }
+                        tail = rest;
+                    }
+                    interp
+                        .lisp_face_vector_on(face, Some(frame))
+                        .ok_or_else(|| invalid_face_error(face))?;
+                    return Ok(Value::Nil);
+                }
                 let face = resolve_face_name(interp, &args[0])?;
-                if matches!(args.get(1).map(|v| v.kind()), Some(Kind::T)) {
+                {
                     let vector = interp
                         .lisp_face_vector(face, true)
                         .ok_or_else(|| invalid_face_error(face))?;
@@ -1097,8 +1470,6 @@ define_dispatch!(
                         result.insert(0, Value::symbol("italic"));
                     }
                     Ok(Value::list(result))
-                } else {
-                    Ok(Value::Nil)
                 }
             }
             "internal-lisp-face-equal-p" => {
@@ -1109,10 +1480,10 @@ define_dispatch!(
                     Some(frames::decode_live_frame(interp, args.get(2), true)?)
                 };
                 let left_name = resolve_face_name(interp, &args[0])?;
-                let right_name = resolve_face_name(interp, &args[1])?;
                 let left = interp
                     .lisp_face_vector_on(left_name, target)
                     .ok_or_else(|| invalid_face_error(left_name))?;
+                let right_name = resolve_face_name(interp, &args[1])?;
                 let right = interp
                     .lisp_face_vector_on(right_name, target)
                     .ok_or_else(|| invalid_face_error(right_name))?;
@@ -1143,19 +1514,22 @@ define_dispatch!(
                 }
                 Ok(Value::T)
             }
+            // xfaces.c: PLIST merged as a face reference on the selected
+            // frame into a vector of unspecified attributes.
             "face-attributes-as-vector" => {
                 need_args(name, args, 1)?;
-                let vector = unspecified_face_vector();
-                let values = args[0].to_vec()?;
-                if !values.len().is_multiple_of(2) {
-                    return Err(LispError::Signal("Invalid face attribute list".into()));
-                }
-                for pair in values.as_chunks::<2>().0 {
-                    let attribute = pair[0].as_symbol()?;
-                    let (index, value) = normalize_face_attribute_value(attribute, &pair[1])?;
-                    aset_vector_value(&vector, index, value)?;
-                }
-                Ok(vector)
+                let mut lface: LfaceAttrs = std::array::from_fn(|_| Value::symbol("unspecified"));
+                let frame = interp.selected_frame_id;
+                merge_face_ref(
+                    interp,
+                    frame,
+                    args[0],
+                    &mut lface,
+                    true,
+                    &mut Vec::new(),
+                    env,
+                )?;
+                Ok(face_vector(lface))
             }
             "internal-set-font-selection-order" => {
                 need_args(name, args, 1)?;
