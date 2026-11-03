@@ -1087,6 +1087,41 @@ fn glyph_strings_come_from_composite_c_work_vectors_and_cache() {
 }
 
 #[test]
+fn failed_lisp_allocations_signal_memory_signal_data_as_alloc_c() {
+    // alloc.c's memory_full: a vector, bool-vector, hash table, string or
+    // format buffer the system will not give signals the
+    // `memory-signal-data' object itself, and `memory-full' stays nil
+    // while a SPARE_MEMORY block can still be had.  A count past
+    // VECTOR_ELTS_MAX or most-positive-fixnum reaches memory_full
+    // (SIZE_MAX) before any allocation; string_overflow,
+    // buffer_overflow, allocate_record and vconcat's sequencep check keep
+    // their own errors.  The sizes are past any address space, so that
+    // no allocation succeeds however the kernel overcommits.  (A buffer
+    // gap reaches memory_full too, but insert-char grows it 4000 bytes
+    // at a time, so only under a memory limit; and a hash table of a size
+    // whose arrays fit in a ptrdiff_t charges them to the consing count
+    // before failing, which other tests' collections would see.)
+    assert_oracle_contract_matches_interpreter(
+        r##"(list (mapcar (lambda (f) (condition-case e (progn (funcall f) 'ok) (error (if (eq e memory-signal-data) 'memory-signal-data e)))) (list (lambda () (make-vector most-positive-fixnum nil)) (lambda () (make-vector (expt 2 50) nil)) (lambda () (make-string most-positive-fixnum ?a)) (lambda () (make-string (expt 2 50) ?a)) (lambda () (make-string most-positive-fixnum ?é)) (lambda () (make-bool-vector most-positive-fixnum nil)) (lambda () (make-bool-vector (expt 2 55) nil)) (lambda () (make-hash-table :size most-positive-fixnum)) (lambda () (make-record 'foo (expt 2 40) nil)) (lambda () (with-temp-buffer (insert-char ?a most-positive-fixnum))) (lambda () (format "%2000000000000000d" 1)) (lambda () (vconcat [1] 5)))) memory-full)"##,
+        r##"((memory-signal-data memory-signal-data memory-signal-data memory-signal-data (error "Maximum string size exceeded") memory-signal-data memory-signal-data memory-signal-data (error "Attempt to allocate a record of 1099511627777 slots; max is 4095") (error "Maximum buffer size exceeded") memory-signal-data (wrong-type-argument sequencep 5)) nil)"##,
+        "failed allocations reach memory_full",
+    );
+}
+
+#[test]
+fn insert_char_inserts_its_repetitions_in_chunks_as_finsert_char() {
+    // Finsert_char builds a string of at most 4000 bytes of whole
+    // characters and inserts it, change hooks and all, while more than a
+    // string's worth is left, then the rest: each chunk is an insertion
+    // of its own.
+    assert_oracle_contract_matches_interpreter(
+        r##"(mapcar (lambda (spec) (with-temp-buffer (unless (car spec) (set-buffer-multibyte nil)) (let (log) (add-hook 'after-change-functions (lambda (b e l) (push (list b e l) log)) nil t) (add-hook 'before-change-functions (lambda (b e) (push (list 'before b e) log)) nil t) (insert-char (cadr spec) (nth 2 spec) (nth 3 spec)) (list (buffer-size) (nreverse log))))) '((t ?a 9001 nil) (t ?é 4500 nil) (t ?日 2000 t) (nil ?a 4001 nil) (t ?a 4000 nil) (t ?\U0001F600 1001 nil)))"##,
+        r##"((9001 ((before 1 1) (1 4001 0) (before 4001 4001) (4001 8001 0) (before 8001 8001) (8001 9002 0))) (4500 ((before 1 1) (1 2001 0) (before 2001 2001) (2001 4001 0) (before 4001 4001) (4001 4501 0))) (2000 ((before 1 1) (1 1334 0) (before 1334 1334) (1334 2001 0))) (4001 ((before 1 1) (1 4001 0) (before 4001 4001) (4001 4002 0))) (4000 ((before 1 1) (1 4001 0))) (1001 ((before 1 1) (1 1001 0) (before 1001 1001) (1001 1002 0))))"##,
+        "insert-char chunks",
+    );
+}
+
+#[test]
 fn batch_vertical_motion_and_compute_motion_lay_text_out_as_indent_c() {
     // indent.c vmotion and compute_motion: noninteractively vertical-motion
     // continues lines at the buffer's tab-width, not 8; hidden lines of

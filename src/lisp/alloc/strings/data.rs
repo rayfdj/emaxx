@@ -68,7 +68,7 @@ unsafe fn new_block(bytes: usize) -> Result<*mut Block, StringError> {
     // SAFETY: a nonzero aligned allocation; initialized fields precede data.
     let raw = unsafe { alloc(layout) };
     if raw.is_null() {
-        return Err(StringError::AllocationFailed);
+        return Err(StringError::AllocationFailed(bytes));
     }
     let block = raw.cast::<Block>();
     unsafe {

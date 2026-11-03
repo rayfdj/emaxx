@@ -642,12 +642,13 @@ impl<'a> JsonParser<'a> {
                 // make_hash_table of the members' count, duplicates
                 // included.
                 let table = crate::lisp::primitives::hash_table_from_test(
+                    self.interp,
+                    &self.env,
                     test,
                     members.len() / 2,
                     0,
                     Value::Nil,
-                )
-                .expect("an `equal' table");
+                )?;
                 let Kind::HashTable(hash) = table.kind() else {
                     unreachable!()
                 };

@@ -421,7 +421,7 @@ pub(crate) fn make_temp_file_internal(
 }
 
 /// buffer.h BUF_BYTES_MAX: the most bytes a buffer holds.
-const BUF_BYTES_MAX: i64 = (1 << 61) - 2;
+pub(crate) const BUF_BYTES_MAX: i64 = (1 << 61) - 2;
 /// fileio.c READ_BUF_SIZE (MAX_ALLOCA): the guess for a pipe or a
 /// /proc file whose size reads as zero.
 const READ_BUF_SIZE: i64 = 16 * 1024;

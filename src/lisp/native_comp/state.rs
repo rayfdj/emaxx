@@ -87,6 +87,10 @@ impl NativeCompilerState {
         self.runtime.bump_consing_until_gc(threshold, percentage);
     }
 
+    pub(crate) fn lower_consing_until_gc(&mut self, limit: i64) {
+        self.runtime.lower_consing_until_gc(limit);
+    }
+
     pub(crate) fn version() -> Option<(i32, i32, i32)> {
         gccjit::version()
     }

@@ -64,18 +64,77 @@ struct Arrays {
     next: Box<[Cell<i32>]>,
 }
 
+/// Why fns.c:make_hash_table could not make a table of a size: an array
+/// hash_table_alloc_bytes could not allocate, or an index
+/// compute_hash_index_bits finds too large ("Hash table too large").
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum HashTableFailure {
+    Allocation(AllocationFailed),
+    TooLarge,
+}
+
+/// COUNT cells, the Ith INIT (I), in storage allocated without aborting.
+fn try_cells<T>(
+    count: usize,
+    mut init: impl FnMut(usize) -> T,
+) -> Result<Box<[Cell<T>]>, AllocationFailed> {
+    let bytes = count
+        .checked_mul(std::mem::size_of::<T>())
+        .ok_or(AllocationFailed(usize::MAX))?;
+    let mut cells = Vec::new();
+    cells
+        .try_reserve_exact(count)
+        .map_err(|_| AllocationFailed(bytes))?;
+    cells.extend((0..count).map(|index| Cell::new(init(index))));
+    Ok(cells.into_boxed_slice())
+}
+
 impl Arrays {
     fn new(size: usize) -> Self {
-        assert!(size > 0 && size <= i32::MAX as usize / 2);
-        let indices = crate::lisp::eval::gnu_hash_table_index_slots(size);
-        Self {
-            index: (0..indices).map(|_| Cell::new(-1)).collect(),
-            hash: (0..size).map(|_| Cell::new(0)).collect(),
-            entries: (0..2 * size).map(|_| Cell::new(UNUSED_KEY)).collect(),
-            next: (0..size)
-                .map(|i| Cell::new(if i + 1 == size { -1 } else { (i + 1) as i32 }))
-                .collect(),
+        match Self::try_new(size, |_| {}) {
+            Ok(arrays) => arrays,
+            Err(failure) => panic!("hash table storage of {size}: {failure:?}"),
         }
+    }
+
+    /// fns.c:make_hash_table's arrays in its order: key_and_value, hash
+    /// and next (each a hash_table_alloc_bytes, whose tally_consing
+    /// CHARGE is given the bytes before the xmalloc that reaches
+    /// memory_full when it fails), then compute_hash_index_bits's bound,
+    /// then the index.
+    fn try_new(size: usize, mut charge: impl FnMut(usize)) -> Result<Self, HashTableFailure> {
+        debug_assert!(size > 0);
+        // hash_table_alloc_bytes' tally_consing of a byte count the
+        // ptrdiff_t product can hold; past that GNU's product overflows,
+        // and nothing sensible is charged.
+        let mut charge_array = |count: usize, width: usize| {
+            if let Some(bytes) = count
+                .checked_mul(width)
+                .filter(|bytes| *bytes <= isize::MAX as usize)
+            {
+                charge(bytes);
+            }
+        };
+        charge_array(size, 2 * std::mem::size_of::<Value>());
+        let entries = try_cells(size.saturating_mul(2), |_| UNUSED_KEY)
+            .map_err(HashTableFailure::Allocation)?;
+        charge_array(size, std::mem::size_of::<u32>());
+        let hash = try_cells(size, |_| 0u32).map_err(HashTableFailure::Allocation)?;
+        charge_array(size, std::mem::size_of::<i32>());
+        let next = try_cells(size, |i| if i + 1 == size { -1 } else { (i + 1) as i32 })
+            .map_err(HashTableFailure::Allocation)?;
+        if size > i32::MAX as usize / 2 {
+            return Err(HashTableFailure::TooLarge);
+        }
+        let indices = crate::lisp::eval::gnu_hash_table_index_slots(size);
+        charge_array(indices, std::mem::size_of::<i32>());
+        let index = try_cells(indices, |_| -1).map_err(HashTableFailure::Allocation)?;
+        Ok(Self {
+            index,
+            hash,
+            entries,
+            next,
+        })
     }
 }
 
@@ -86,7 +145,23 @@ pub struct HashTableRef(NonNull<LispHashTable>);
 impl HashTableRef {
     /// Descriptors are immutable and belong to the process-lifetime pool.
     pub(crate) fn new(test: &'static HashTableTest, size: usize, flags: u8) -> Self {
-        let arrays = (size > 0).then(|| Arrays::new(size));
+        Self::try_new(test, size, flags).expect("hash table storage")
+    }
+
+    /// fns.c:make_hash_table, or why it could not be made.
+    pub(crate) fn try_new(
+        test: &'static HashTableTest,
+        size: usize,
+        flags: u8,
+    ) -> Result<Self, HashTableFailure> {
+        let arrays = if size > 0 {
+            Some(Arrays::try_new(
+                size,
+                crate::lisp::native_comp::note_lisp_allocation,
+            )?)
+        } else {
+            None
+        };
         let bytes = std::mem::size_of::<LispHashTable>();
         let raw = allocate_vectorlike(bytes).cast::<LispHashTable>();
         // SAFETY: fresh suitably aligned vector allocation of BYTES.
@@ -118,17 +193,16 @@ impl HashTableRef {
             result.install(arrays);
             result.object().next_free.set(0);
         }
-        // GNU charges the 72 header/payload bytes. Word-aligned allocation
-        // now uses that same physical footprint, with arrays owned separately.
-        crate::lisp::native_comp::note_lisp_allocation(
-            bytes + crate::lisp::eval::gnu_hash_table_storage_bytes(size),
-        );
+        // GNU charges the 72 header/payload bytes (the arrays were charged
+        // as each was asked for). Word-aligned allocation now uses that
+        // same physical footprint, with arrays owned separately.
+        crate::lisp::native_comp::note_lisp_allocation(bytes);
         raise(
             &LIVE_ARRAY_BYTES,
             crate::lisp::eval::gnu_hash_table_storage_bytes(size),
         );
         unsafe { census_on_allocate(raw.cast()) };
-        result
+        Ok(result)
     }
 
     /// # Safety

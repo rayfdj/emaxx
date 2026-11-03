@@ -2707,6 +2707,13 @@ impl Buffer {
         )
     }
 
+    /// insert_1_both's make_gap for an insertion of BYTES bytes:
+    /// Err with the text's new size when enlarge_buffer_text cannot have
+    /// it.
+    pub(crate) fn try_reserve_insertion(&mut self, bytes: usize) -> Result<(), usize> {
+        self.text.borrow_mut().text.try_reserve_gap(bytes)
+    }
+
     /// `insert' with the properties PROPS gives the text and the
     /// variables VARS that its stickiness reads.
     pub(crate) fn insert_with(

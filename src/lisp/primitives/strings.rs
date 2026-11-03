@@ -1,22 +1,64 @@
 use super::*;
 use crate::lisp::types::{Kind, PropertyKey, PropertyName};
 
-/// alloc.c:memory_full signals with the existing Vmemory_signal_data. Rust
-/// storage builders have no interpreter, so resolve their typed failure at
-/// the primitive body, including generated direct and native dispatch.
+/// alloc.c's `SPARE_MEMORY': a failed request larger than this, with this
+/// much still to be had, is only a large request.
+const SPARE_MEMORY: usize = 1 << 14;
+
+/// alloc.c:memory_full: NBYTES could not be allocated.  Unless the request
+/// was larger than SPARE_MEMORY and that much can still be allocated,
+/// memory is full: `memory-full' becomes t and the next collection is due
+/// within a cons block's worth of consing (with the system malloc there
+/// is no spare memory to release).  Either way the signal is the current
+/// `memory-signal-data', its car the error symbol (xsignal (Qnil, ...)).
+pub(crate) fn memory_full(interp: &mut Interpreter, env: &Env, nbytes: usize) -> LispError {
+    let mut enough_free_memory = false;
+    if SPARE_MEMORY < nbytes {
+        let layout =
+            std::alloc::Layout::from_size_align(SPARE_MEMORY, 16).expect("spare memory layout");
+        // SAFETY: a non-zero layout, the block freed at once.
+        let probe = unsafe { std::alloc::alloc(layout) };
+        if !probe.is_null() {
+            // SAFETY: allocated just above with this layout.
+            unsafe { std::alloc::dealloc(probe, layout) };
+            enough_free_memory = true;
+        }
+    }
+    if !enough_free_memory {
+        interp.set_symbol_value_cell("memory-full", Value::T);
+        crate::lisp::native_comp::lower_consing_until_gc(
+            interp,
+            crate::lisp::native_comp::MEMORY_FULL_CONS_THRESHOLD,
+        );
+    }
+    LispError::SignalValue(
+        interp
+            .lookup_var("memory-signal-data", env)
+            .unwrap_or(Value::Nil),
+    )
+}
+
+/// alloc.c:memory_full for a vector allocator's failure.
+pub(crate) fn allocation_error(
+    interp: &mut Interpreter,
+    env: &Env,
+    failed: crate::lisp::alloc::vectors::AllocationFailed,
+) -> LispError {
+    memory_full(interp, env, failed.0)
+}
+
+/// alloc.c:memory_full for a failed string allocation. Rust storage
+/// builders have no interpreter, so their typed failure is resolved at the
+/// primitive body, including generated direct and native dispatch.
 pub(crate) fn string_storage_error(
-    interp: &Interpreter,
+    interp: &mut Interpreter,
     env: &Env,
     error: crate::lisp::types::string_data::StringError,
 ) -> LispError {
     use crate::lisp::types::string_data::StringError;
     match error {
         StringError::Condition(error) => error,
-        StringError::AllocationFailed => LispError::SignalValue(
-            interp
-                .lookup_var("memory-signal-data", env)
-                .unwrap_or(Value::Nil),
-        ),
+        StringError::AllocationFailed(nbytes) => memory_full(interp, env, nbytes),
     }
 }
 
@@ -922,7 +964,7 @@ pub(crate) fn string_like_value(text: String, props: Option<crate::intervals::In
 /// bytes are its characters (unibyte, or multibyte ASCII) gives a unibyte
 /// one, any other a multibyte one of the same bytes.
 pub(crate) fn reverse_string_value(
-    interp: &Interpreter,
+    interp: &mut Interpreter,
     env: &Env,
     value: &Value,
 ) -> Result<Value, LispError> {
@@ -961,7 +1003,7 @@ pub(crate) fn reverse_string_value(
 }
 
 pub(crate) fn reverse_sequence_value(
-    interp: &Interpreter,
+    interp: &mut Interpreter,
     env: &Env,
     value: &Value,
 ) -> Result<Value, LispError> {
@@ -989,7 +1031,7 @@ pub(crate) fn reverse_sequence_value(
 }
 
 pub(crate) fn nreverse_sequence_value(
-    interp: &Interpreter,
+    interp: &mut Interpreter,
     env: &Env,
     value: &Value,
 ) -> Result<Value, LispError> {

@@ -876,7 +876,7 @@ define_dispatch!(
                     }
                     index += 1;
                 }
-                hash_table_from_test(descriptor, capacity, weak, purecopy)
+                hash_table_from_test(interp, env, descriptor, capacity, weak, purecopy)
             }
             "hash-table-p" => {
                 need_args(name, args, 1)?;

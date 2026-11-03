@@ -950,9 +950,24 @@ pub(crate) fn garbage_collection_maybe_due(interpreter: &mut Interpreter, factor
         .garbage_collection_maybe_due(factor)
 }
 
+/// alloc.c's `Vmemory_full' as `consing_threshold' reads it: noted each
+/// time the GC variables are read for a retuning, which is when the
+/// threshold is next computed.
+static MEMORY_FULL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// alloc.c's `memory_full_cons_threshold': sizeof (struct cons_block) with
+/// BLOCK_ALIGN 1 << 15, its 2,030 conses, 32 mark words and the link.
+pub(crate) const MEMORY_FULL_CONS_THRESHOLD: i64 = 32_744;
+
 /// The `gc-cons-threshold' and `gc-cons-percentage' values alloc.c reads
 /// when it retunes the consing counter.
 pub(crate) fn gc_tuning(interpreter: &Interpreter, environment: &Env) -> (i64, Option<f64>) {
+    MEMORY_FULL.store(
+        interpreter
+            .lookup_var("memory-full", environment)
+            .is_some_and(|value| !value.is_nil()),
+        std::sync::atomic::Ordering::Relaxed,
+    );
     let threshold = interpreter
         .lookup_var("gc-cons-threshold", environment)
         .and_then(|value| value.integer_value())
@@ -1016,6 +1031,15 @@ pub(crate) fn bump_consing_until_gc(
         interpreter
             .native_compiler
             .bump_consing_until_gc(threshold, percentage);
+    }
+}
+
+/// alloc.c:memory_full's `consing_until_gc = min (consing_until_gc,
+/// memory_full_cons_threshold)', on the active native heap or the
+/// interpreter's.
+pub(crate) fn lower_consing_until_gc(interpreter: &mut Interpreter, limit: i64) {
+    if with_current_runtime(|runtime| runtime.lower_consing_until_gc(limit)).is_none() {
+        interpreter.native_compiler.lower_consing_until_gc(limit);
     }
 }
 
@@ -1585,6 +1609,10 @@ impl NativeRuntime {
 
     pub(crate) fn bump_consing_until_gc(&mut self, threshold: i64, percentage: Option<f64>) {
         self.heap.bump_consing_until_gc(threshold, percentage);
+    }
+
+    pub(crate) fn lower_consing_until_gc(&mut self, limit: i64) {
+        self.heap.lower_consing_until_gc(limit);
     }
 
     pub(crate) fn garbage_collection_finished(
@@ -5549,8 +5577,13 @@ impl NativeGcState {
         self.consing_until_gc < 0
     }
 
-    /// alloc.c:consing_threshold, for the ordinary (non-memory-full) path.
+    /// alloc.c:consing_threshold: a cons block's worth while memory is
+    /// full, else THRESHOLD (at least a tenth of the default) or, larger,
+    /// PERCENTAGE of what is live.
     fn consing_threshold(&self, threshold: i64, percentage: Option<f64>, since_gc: i64) -> i64 {
+        if MEMORY_FULL.load(std::sync::atomic::Ordering::Relaxed) {
+            return MEMORY_FULL_CONS_THRESHOLD;
+        }
         let mut threshold = threshold.max(NATIVE_GC_MINIMUM_THRESHOLD);
         if let Some(percentage) = percentage {
             let total = percentage * (self.live_bytes as f64 + since_gc as f64);
@@ -5635,6 +5668,12 @@ impl NativeHeap {
     fn bump_consing_until_gc(&mut self, threshold: i64, percentage: Option<f64>) {
         self.gc.synchronize_allocations();
         self.gc.bump_consing_until_gc(threshold, percentage);
+    }
+
+    fn lower_consing_until_gc(&mut self, limit: i64) {
+        self.gc.synchronize_allocations();
+        self.gc.consing_until_gc = self.gc.consing_until_gc.min(limit);
+        self.gc.publish_trigger();
     }
 
     fn collection_might_be_due(&mut self) -> bool {
@@ -12598,7 +12637,7 @@ mod tests {
         )
         .expect("define a custom test");
         let table = crate::lisp::primitives::make_hash_table_value(
-            &interpreter,
+            &mut interpreter,
             name,
             8,
             Value::Nil,
@@ -12645,7 +12684,7 @@ mod tests {
         )
         .expect("redefine the test");
         let failing = crate::lisp::primitives::make_hash_table_value(
-            &interpreter,
+            &mut interpreter,
             name,
             8,
             Value::Nil,

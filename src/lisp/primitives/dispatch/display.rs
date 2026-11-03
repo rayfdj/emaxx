@@ -7503,7 +7503,7 @@ pub(crate) fn single_key_description(
 /// keymap.c Ftext_char_description: "^C" for a control character, the
 /// character itself otherwise.
 fn text_char_description(
-    interp: &Interpreter,
+    interp: &mut Interpreter,
     character: &Value,
     env: &Env,
 ) -> Result<Value, LispError> {

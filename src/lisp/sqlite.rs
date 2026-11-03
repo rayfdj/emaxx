@@ -128,7 +128,7 @@ fn sqlite_signal(condition: &str, data: Value) -> LispError {
 
 /// build_string: a C string's bytes, multibyte when they are multibyte
 /// text (make_string).
-fn build_string(interp: &Interpreter, env: &Env, bytes: &[u8]) -> Result<Value, LispError> {
+fn build_string(interp: &mut Interpreter, env: &Env, bytes: &[u8]) -> Result<Value, LispError> {
     StringObjectRef::from_c_bytes(bytes)
         .map(Value::StringObject)
         .map_err(|error| string_storage_error(interp, env, error))
@@ -148,7 +148,7 @@ unsafe fn c_bytes<'a>(pointer: *const c_char) -> &'a [u8] {
 }
 
 /// sqlite3_errmsg (DB) as build_string makes it.
-fn errmsg(interp: &Interpreter, env: &Env, db: *mut ffi::sqlite3) -> Result<Value, LispError> {
+fn errmsg(interp: &mut Interpreter, env: &Env, db: *mut ffi::sqlite3) -> Result<Value, LispError> {
     // SAFETY: DB is an open connection; its message lives until its next
     // call, and is copied here.
     build_string(interp, env, unsafe { c_bytes(ffi::sqlite3_errmsg(db)) })
@@ -469,7 +469,7 @@ fn row_to_value(
 
 /// sqlite_prepare_errdata: (ERRSTR ERRMSG ERRCODE EXTENDED-ERRCODE).
 fn sqlite_prepare_errdata(
-    interp: &Interpreter,
+    interp: &mut Interpreter,
     env: &Env,
     code: c_int,
     sdb: *mut ffi::sqlite3,
@@ -581,7 +581,7 @@ fn sqlite_execute(
 
 /// column_names: STMT's column names, a list of strings.
 fn column_names(
-    interp: &Interpreter,
+    interp: &mut Interpreter,
     env: &Env,
     stmt: *mut ffi::sqlite3_stmt,
 ) -> Result<Value, LispError> {

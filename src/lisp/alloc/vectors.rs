@@ -547,25 +547,45 @@ fn allocate_vector_from_block(nbytes: usize) -> *mut VectorHeader {
     vector
 }
 
+/// alloc.c's lisp_malloc failing: the bytes it was asked for, which
+/// memory_full receives (`SIZE_MAX' for a request no size can express).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct AllocationFailed(pub(crate) usize);
+
+/// alloc.c's `VECTOR_ELTS_MAX': the most slots a vector can have, its
+/// bytes (the header and the large-vector link before them) within
+/// PTRDIFF_MAX and its length a fixnum.
+pub(crate) const VECTOR_ELTS_MAX: usize = {
+    let words = (isize::MAX as usize - HEADER_SIZE - WORD_SIZE) / WORD_SIZE;
+    let fixnum = ((1_i64 << 61) - 1) as usize;
+    if words < fixnum { words } else { fixnum }
+};
+
 /// alloc.c's `allocate_vectorlike': NBYTES of storage (the header
 /// included) from a block, or on its own past `VBLOCK_BYTES_MAX'.  The
 /// header is the caller's to write.
 fn allocate_vectorlike(nbytes: usize) -> *mut VectorHeader {
-    // alloc.c:allocate_vectorlike: `vector_cells_consed += len', the words
-    // after the header that were asked for, before block rounding.
-    super::counters::tally(
-        &super::counters::VECTOR_CELLS_CONSED,
-        (nbytes.saturating_sub(HEADER_SIZE) / WORD_SIZE) as i64,
-    );
+    try_allocate_vectorlike(nbytes).expect("out of memory for a vector")
+}
+
+/// alloc.c:allocate_vectorlike, which on a failed lisp_malloc reaches
+/// memory_full before anything is counted.
+fn try_allocate_vectorlike(nbytes: usize) -> Result<*mut VectorHeader, AllocationFailed> {
+    let asked = nbytes;
     let nbytes = vroundup(nbytes).max(VBLOCK_BYTES_MIN);
-    if nbytes <= VBLOCK_BYTES_MAX {
+    let vector = if nbytes <= VBLOCK_BYTES_MAX {
         allocate_vector_from_block(nbytes)
     } else {
-        let layout = std::alloc::Layout::from_size_align(nbytes + LARGE_MARK_BYTES, ROUNDUP_SIZE)
-            .expect("large vector layout");
+        let failed = AllocationFailed(nbytes.saturating_add(LARGE_MARK_BYTES));
+        let layout = nbytes
+            .checked_add(LARGE_MARK_BYTES)
+            .and_then(|bytes| std::alloc::Layout::from_size_align(bytes, ROUNDUP_SIZE).ok())
+            .ok_or(failed)?;
         // SAFETY: a non-zero layout.
         let vector = unsafe { std::alloc::alloc(layout) };
-        assert!(!vector.is_null(), "out of memory for a vector");
+        if vector.is_null() {
+            return Err(failed);
+        }
         // SAFETY: the reserved tail is aligned for MarkBit and is not part
         // of the Lisp-visible header or payload.
         unsafe {
@@ -580,7 +600,14 @@ fn allocate_vectorlike(nbytes: usize) -> *mut VectorHeader {
             BlockKind::LargeVector,
         );
         vector.cast()
-    }
+    };
+    // alloc.c:allocate_vectorlike: `vector_cells_consed += len', the words
+    // after the header that were asked for, before block rounding.
+    super::counters::tally(
+        &super::counters::VECTOR_CELLS_CONSED,
+        (asked.saturating_sub(HEADER_SIZE) / WORD_SIZE) as i64,
+    );
+    Ok(vector)
 }
 
 fn free_large_vector(header: *mut VectorHeader, nbytes: usize) {
@@ -971,11 +998,22 @@ impl VectorRef {
     /// alloc.c's `make_vector' of LEN slots, each VALUE, written in
     /// place (no vector of the slots to move from).
     pub(crate) fn filled(len: usize, value: Value) -> Self {
+        Self::try_filled(len, value).expect("out of memory for a vector")
+    }
+
+    /// alloc.c:allocate_clear_vector's `make_vector': LEN slots each
+    /// VALUE, or what memory_full is to be given -- SIZE_MAX for more
+    /// than VECTOR_ELTS_MAX slots, else the bytes lisp_malloc could not
+    /// find.
+    pub(crate) fn try_filled(len: usize, value: Value) -> Result<Self, AllocationFailed> {
         if len == 0 {
             // SAFETY: the leaked header.
-            return Self(unsafe { NonNull::new_unchecked(zero_vector()) });
+            return Ok(Self(unsafe { NonNull::new_unchecked(zero_vector()) }));
         }
-        let header = allocate_vectorlike(HEADER_SIZE + len * std::mem::size_of::<Value>());
+        if len > VECTOR_ELTS_MAX {
+            return Err(AllocationFailed(usize::MAX));
+        }
+        let header = try_allocate_vectorlike(HEADER_SIZE + len * std::mem::size_of::<Value>())?;
         // SAFETY: fresh storage of the size asked for, each slot written
         // before the header is published.
         unsafe {
@@ -991,7 +1029,7 @@ impl VectorRef {
         raise(&LIVE_VECTORS, 1);
         raise(&LIVE_VECTOR_SLOTS, len + 1);
         // SAFETY: a fresh, non-null header.
-        Self(unsafe { NonNull::new_unchecked(header) })
+        Ok(Self(unsafe { NonNull::new_unchecked(header) }))
     }
 
     pub(crate) fn shallow_copy(&self) -> Self {

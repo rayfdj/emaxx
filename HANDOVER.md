@@ -13426,6 +13426,44 @@ setup_process_coding_systems's check now refuses). A 13-form
   again once the inventory listed the glyph-string state), the
   integration targets and clippy with `--all-targets --all-features -D
   warnings' pass.
+- **Round 277: alloc.c's memory_full.** A Lisp allocation the system
+  refuses now signals as GNU's memory_full does, where Emaxx aborted:
+  `make-vector', `vconcat', `make-bool-vector', `make-hash-table'
+  (key_and_value, hash and next allocated in fns.c's order, each charged
+  to the consing count before its xmalloc when its byte count fits a
+  ptrdiff_t, as GNU's overflowing product does not, then "Hash table too
+  large" past compute_hash_index_bits' bound, then the index),
+  `make-string' and the other string makers, the buffer gap
+  insert_1_both makes room in (enlarge_buffer_text's failed xrealloc,
+  after the before-change hooks) and `format''s buffer for a field width
+  or precision. A count past VECTOR_ELTS_MAX, or for `vconcat' a total
+  length past most-positive-fixnum, reaches memory_full (SIZE_MAX)
+  before anything is allocated. memory_full signals the current
+  `memory-signal-data' object itself. Unless the request was larger than
+  SPARE_MEMORY (16 KB) and that much can still be had, memory is short:
+  `memory-full' becomes t, consing_until_gc drops to
+  memory_full_cons_threshold (32,744 bytes), and while `memory-full'
+  stays t each collection is due again within that much consing (a
+  system-malloc build has no spare memory to release). `insert-char'
+  inserts as Finsert_char does: BUF_BYTES_MAX / LEN < COUNT is "Maximum
+  buffer size exceeded", and the copies go in as strings of at most
+  4,000 bytes of whole characters, each an insertion with its own change
+  hooks, so 9,001 copies of `a' run before-change-functions and
+  after-change-functions three times. `vconcat' adds up its arguments'
+  Flength before the one vector is made. A charge of
+  most-positive-fixnum's arrays had saturated the process's allocation
+  counter in the first gate run and stopped every later collection in
+  the test process; sizes past a ptrdiff_t are no longer charged.
+  Eighteen allocation cases under a 6 GB address-space limit (vectors,
+  bool-vectors, hash tables, strings, records, buffers, `format',
+  `concat') give GNU's error and `memory-full' value, and contracts for
+  sizes no address space holds and for insert-char's chunks match GNU.
+  Local validation: the grouped gate's 3,490 library tests (the a-l
+  primitives group run again with the charge fixed), the integration
+  targets (the cli target run again outside nohup, under which GNU's
+  child in batch_exit_terminates_owned_children_like_gnu inherited an
+  ignored SIGHUP and outlived it) and clippy with `--all-targets
+  --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -15418,7 +15456,40 @@ icalendar-import-rrule 101 to 134 ms against 92 to 130 under three time
 zones, with the same system calls as GNU's but for 5,408 stat calls
 against 505; it is to be watched on the next head.
 
+**On `228731d`** (round 276): the full Rust gate (run 41646986654) and
+the frozen run (run 41646992706) passed at their first attempts, 7,928
+of 7,928 outcomes matching. Setup 66.9 s against 56.4 s (1.187), test
+bodies 260.9 s against 244.6 s (1.067), in all 1.097. Per file, setup
+has a median of 102 ms against 88, electric-tests' the most over (694
+against 420) before comp-tests' (1,595 against 1,373) and textsec-tests'
+(327 against 225). The widest body gaps are ert-tests (36,320 ms against
+32,700), comp-tests (14,310 against 12,890), tramp-tests (17,980 against
+16,780), semantic-utest-ia (3,230 against 2,220) and mule-tests (2,400
+against 1,540). icalendar-tests is back at 490 against 350,
+icalendar-import-rrule 107 ms against 72 and
+icalendar-import-non-recurring 40 against 24, so round 275's 2,230 was
+that run's alone; the 5,408 stat calls against GNU's 505 in its import
+tests remain to be looked at.
+
 **Findings recorded, not fixed:**
+- **Allocations outside the Lisp object makers still abort when the
+  system refuses them (round 277).** GNU's lisp_align_malloc and xmalloc
+  reach memory_full, which signals, for every block and buffer; in Emaxx
+  the vector, bool-vector, hash-table, string, buffer-gap and `format'
+  allocations signal as GNU's do, but a new cons, float, symbol,
+  interval, marker or small-vector block, and the host's own vectors and
+  strings, abort the process. Their callers have no error path, and a
+  native frame cannot be unwound past; the blocks are 16 to 32 KB, so
+  this is met only when the process is all but out of memory.
+- **A fatal signal waits for a quit check (round 277).** GNU's SIGTERM,
+  SIGHUP and (in batch) SIGINT handler runs Fkill_emacs at once, inside
+  a system call if need be; Emaxx's records the signal for the next quit
+  check, and its handler is installed with SA_RESTART, so a system call
+  that blocks (an `insert-file-contents' of a FIFO with no writer) is
+  restarted and never reaches one. `timeout' ends GNU there with its
+  SIGTERM; Emaxx goes on until a second signal, which takes the default
+  action. The blocking calls are to be made interruptible and to run the
+  pending signal, as emacs_open and emacs_read run maybe_quit on EINTR.
 - **An insertion's stickiness reads `text-property-default-nonsticky'
   without signalling (round 174).** In GNU,
   adjust_intervals_for_insertion and merge_properties_sticky look each
