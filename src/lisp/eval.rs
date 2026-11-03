@@ -2755,6 +2755,20 @@ pub(crate) struct CompositionIndex {
     pub(crate) indexed: usize,
 }
 
+/// composite.c's glyph-strings for automatic composition: gstring_work,
+/// the vector `composition-get-gstring' fills and returns when nothing is
+/// cached for the header, kept from call to call (its glyph vectors
+/// reused); gstring_work_headers, the headers it reuses for one to eight
+/// characters; and gstring_hash_table, the glyph-strings cached by their
+/// headers (`equal'), a glyph-string's id its place in the table.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct GstringCache {
+    pub(crate) work: Option<Value>,
+    pub(crate) work_headers: Vec<Value>,
+    pub(crate) entries: Vec<(Value, Value)>,
+    pub(crate) by_hash: HashMap<u32, Vec<usize>>,
+}
+
 pub(crate) const LFACE_VECTOR_SIZE: usize = 20;
 
 #[derive(Clone, Debug)]
@@ -4651,6 +4665,16 @@ impl Interpreter {
         for composition in &self.composition_states {
             mark(&composition.components);
         }
+        if let Some(work) = &self.gstrings.work {
+            mark(work);
+        }
+        for header in &self.gstrings.work_headers {
+            mark(header);
+        }
+        for (header, gstring) in &self.gstrings.entries {
+            mark(header);
+            mark(gstring);
+        }
         for test in &self.ert_tests {
             mark(&test.body);
         }
@@ -5130,6 +5154,16 @@ impl Interpreter {
                 composition.components = c.copy(&composition.components.clone());
             }
             clone.composition_index = CompositionIndex::default();
+            if let Some(work) = &mut clone.gstrings.work {
+                *work = c.copy(&work.clone());
+            }
+            for header in &mut clone.gstrings.work_headers {
+                *header = c.copy(&header.clone());
+            }
+            for (header, gstring) in &mut clone.gstrings.entries {
+                *header = c.copy(&header.clone());
+                *gstring = c.copy(&gstring.clone());
+            }
             for test in &mut clone.ert_tests {
                 test.body = c.copy(&test.body.clone());
             }
@@ -5834,6 +5868,7 @@ pub struct InterpreterState {
     pub(crate) fringe_bitmap_states: Vec<FringeBitmapState>,
     pub(crate) composition_states: Vec<CompositionState>,
     pub(crate) composition_index: CompositionIndex,
+    pub(crate) gstrings: GstringCache,
     /// Raw etc/DOC byte offsets installed in built-in subroutine objects by
     /// `Snarf-documentation`, keyed by the canonical native function name.
     pub(crate) builtin_doc_offsets: HashMap<String, i64>,
@@ -6613,6 +6648,7 @@ impl Interpreter {
             fringe_bitmap_states,
             composition_states: Vec::new(),
             composition_index: CompositionIndex::default(),
+            gstrings: GstringCache::default(),
             builtin_doc_offsets: HashMap::new(),
             syntax_code_objects,
             unicode_menu_case_table: Value::Nil,

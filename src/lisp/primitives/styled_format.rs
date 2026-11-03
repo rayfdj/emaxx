@@ -140,7 +140,7 @@ fn copy_text(buf: &mut Vec<u8>, bytes: &[u8], from_multibyte: bool, to_multibyte
 /// the large requests a field width or precision makes.
 #[inline]
 fn reserve(
-    interp: &Interpreter,
+    interp: &mut Interpreter,
     env: &Env,
     buf: &mut Vec<u8>,
     additional: usize,
@@ -153,18 +153,14 @@ fn reserve(
 
 #[inline(never)]
 fn reserve_large(
-    interp: &Interpreter,
+    interp: &mut Interpreter,
     env: &Env,
     buf: &mut Vec<u8>,
     additional: usize,
 ) -> Result<(), LispError> {
-    buf.try_reserve(additional).map_err(|_| {
-        string_storage_error(
-            interp,
-            env,
-            crate::lisp::types::string_data::StringError::AllocationFailed,
-        )
-    })
+    let nbytes = buf.len().saturating_add(additional);
+    buf.try_reserve(additional)
+        .map_err(|_| memory_full(interp, env, nbytes))
 }
 
 /// The columns, characters and bytes lisp_string_width reports.

@@ -63,6 +63,24 @@ impl GapData {
         self.gap_char = at_char;
     }
 
+    /// make_gap_larger's enlarge_buffer_text for a gap of NEEDED bytes:
+    /// the room reserved, or, when xrealloc would fail, the text's new
+    /// size, which memory_full receives.
+    fn try_make_gap(&mut self, needed: usize) -> Result<(), usize> {
+        let gap = self.gap_end - self.gap_start;
+        if gap >= needed {
+            return Ok(());
+        }
+        let added = needed - gap + GAP_BYTES_DFL;
+        let new_nbytes = self
+            .bytes
+            .len()
+            .checked_add(added)
+            .and_then(|bytes| bytes.checked_add(1))
+            .ok_or(usize::MAX)?;
+        self.bytes.try_reserve(added).map_err(|_| new_nbytes)
+    }
+
     /// make_gap_larger: a gap of at least NEEDED bytes, grown by what the
     /// insertion needs and GAP_BYTES_DFL (the vector's own growth keeps
     /// the reallocations few, as GNU leaves them to realloc).
@@ -431,6 +449,16 @@ impl GapText {
     #[inline]
     fn data_mut(&mut self) -> &mut GapData {
         Rc::make_mut(&mut self.data)
+    }
+
+    /// insert_1_both's make_gap for an insertion of NEEDED bytes, without
+    /// aborting: Err with the text's new size when the room cannot be
+    /// had, as enlarge_buffer_text hands it to memory_full.
+    pub(crate) fn try_reserve_gap(&mut self, needed: usize) -> Result<(), usize> {
+        if self.data.gap_end - self.data.gap_start >= needed {
+            return Ok(());
+        }
+        self.data_mut().try_make_gap(needed)
     }
 
     /// insert_1_both's move of the gap and copy: TEXT, of CHARS

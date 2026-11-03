@@ -139,7 +139,11 @@ impl PrintOutput {
         self.text_parts().0
     }
 
-    pub(crate) fn into_value(self, interp: &Interpreter, env: &Env) -> Result<Value, LispError> {
+    pub(crate) fn into_value(
+        self,
+        interp: &mut Interpreter,
+        env: &Env,
+    ) -> Result<Value, LispError> {
         // Every ASCII byte is a character of its own.
         let characters = if self.bytes.is_ascii() {
             self.bytes.len()

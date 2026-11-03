@@ -174,17 +174,6 @@ impl Interpreter {
         self.buffer.borrow_mut().file = file;
     }
 
-    pub(crate) fn buffer_remote_prefix(&self, buffer_id: u64) -> Option<String> {
-        self.get_buffer_by_id(buffer_id)
-            .and_then(|buffer| {
-                buffer
-                    .file
-                    .as_deref()
-                    .and_then(primitives::parse_remote_file_name)
-            })
-            .map(|remote| remote.prefix)
-    }
-
     /// Whether `buffer_local_hook' has one, without its copy.
     pub(crate) fn has_buffer_local_hook(&self, buffer_id: u64, hook_name: &str) -> bool {
         self.buffer_local_hooks

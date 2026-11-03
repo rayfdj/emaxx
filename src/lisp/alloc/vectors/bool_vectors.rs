@@ -28,9 +28,21 @@ pub struct BoolVectorRef(NonNull<VectorHeader>);
 impl BoolVectorRef {
     /// alloc.c's `make_uninit_bool_vector' with every bit clear.
     pub(crate) fn new(nbits: usize) -> Self {
+        Self::try_new(nbits).expect("out of memory for a bool vector")
+    }
+
+    /// alloc.c's `make_uninit_bool_vector', or what memory_full is to be
+    /// given: SIZE_MAX when the length and the words take more slots than
+    /// a vector can have, else the bytes allocate_vectorlike could not
+    /// find.
+    pub(crate) fn try_new(nbits: usize) -> Result<Self, AllocationFailed> {
+        let needed_elements = bool_vector_words(nbits) + 1;
+        if needed_elements > VECTOR_ELTS_MAX {
+            return Err(AllocationFailed(usize::MAX));
+        }
         let nbytes = BOOL_HEADER_SIZE + bool_vector_words(nbits) * WORD_SIZE;
+        let header = try_allocate_vectorlike(nbytes)?;
         crate::lisp::native_comp::note_lisp_allocation(nbytes);
-        let header = allocate_vectorlike(nbytes);
         // SAFETY: fresh storage for the header, the length and the words;
         // the length, which gives the footprint the mark's place depends
         // on, is written before the mark.
@@ -44,15 +56,16 @@ impl BoolVectorRef {
                 .mark_bit()
                 .mark(super::super::super::types::current_mark_epoch());
             census_on_allocate(header);
-            Self(NonNull::new_unchecked(header))
+            Ok(Self(NonNull::new_unchecked(header)))
         }
     }
 
-    /// Fmake_bool_vector: NBITS bits, each INIT.
-    pub(crate) fn filled(nbits: usize, init: bool) -> Self {
-        let vector = Self::new(nbits);
+    /// Fmake_bool_vector: NBITS bits, each INIT, or what memory_full is
+    /// to be given.
+    pub(crate) fn try_filled(nbits: usize, init: bool) -> Result<Self, AllocationFailed> {
+        let vector = Self::try_new(nbits)?;
         vector.fill(init);
-        vector
+        Ok(vector)
     }
 
     /// Fbool_vector: a bit for each of BITS.

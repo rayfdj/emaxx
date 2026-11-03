@@ -99,24 +99,32 @@ pub(crate) fn hash_table_test_descriptor(
     }))
 }
 
+/// fns.c:make_hash_table of DESCRIPTOR, CAPACITY entries, WEAK and
+/// PURECOPY: memory_full when an array cannot be allocated, "Hash table
+/// too large" when its index would be.
 pub(crate) fn hash_table_from_test(
+    interp: &mut Interpreter,
+    env: &Env,
     descriptor: &'static crate::lisp::alloc::vectors::hash_tables::HashTableTest,
     capacity: usize,
     weak: u8,
     purecopy: Value,
 ) -> Result<Value, LispError> {
-    if capacity > i32::MAX as usize / 2 {
-        return Err(LispError::Signal("Hash table too large".into()));
-    }
-    Ok(Value::HashTable(crate::lisp::types::HashTableRef::new(
+    use crate::lisp::alloc::vectors::hash_tables::HashTableFailure;
+    crate::lisp::types::HashTableRef::try_new(
         descriptor,
         capacity,
         weak | if purecopy.is_truthy() { 1 << 5 } else { 0 },
-    )))
+    )
+    .map(Value::HashTable)
+    .map_err(|failure| match failure {
+        HashTableFailure::Allocation(failed) => allocation_error(interp, env, failed),
+        HashTableFailure::TooLarge => LispError::Signal("Hash table too large".into()),
+    })
 }
 
 pub(crate) fn make_hash_table_value(
-    interp: &Interpreter,
+    interp: &mut Interpreter,
     test: Value,
     capacity: usize,
     weakness: Value,
@@ -125,7 +133,7 @@ pub(crate) fn make_hash_table_value(
 ) -> Result<Value, LispError> {
     let descriptor = hash_table_test_descriptor(interp, test, env)?;
     let weak = hash_table_weakness(interp, weakness, env)?;
-    hash_table_from_test(descriptor, capacity, weak, purecopy)
+    hash_table_from_test(interp, env, descriptor, capacity, weak, purecopy)
 }
 
 pub(crate) fn call_hash_table_test_function(
@@ -595,13 +603,52 @@ pub(crate) fn insert_char_impl(
         return Ok(Value::Nil);
     }
     let multibyte = interp.buffer.borrow().is_multibyte();
-    let mut text = String::new();
-    let mut extended_chars = Vec::new();
-    for offset in 0..count as usize {
-        push_buffer_character(&mut text, &mut extended_chars, offset, ch, multibyte);
+    // The bytes of the character's form in the buffer (CHAR_STRING's in a
+    // multibyte one, one in a unibyte one), COUNT copies within
+    // BUF_BYTES_MAX or a buffer_overflow; then a STRINGLEN-byte string of
+    // copies (under 4000 bytes, whole characters) inserted while more
+    // than that remains, and the rest last, each an `insert' of its own
+    // with its change hooks.
+    let len = if multibyte { char_string_length(ch) } else { 1 };
+    if crate::lisp::primitives::file_io::BUF_BYTES_MAX / (len as i64) < count {
+        return Err(crate::lisp::primitives::file_io::buffer_overflow());
     }
-    insert_text_with_hooks(interp, &text, None, &extended_chars, inherit, false, env)?;
+    let copies = |chars: usize| {
+        let mut text = String::new();
+        let mut extended_chars = Vec::new();
+        for offset in 0..chars {
+            push_buffer_character(&mut text, &mut extended_chars, offset, ch, multibyte);
+        }
+        (text, extended_chars)
+    };
+    let mut n = count as usize * len;
+    let stringlen = n.min(4000 - 4000 % len);
+    let (text, extended_chars) = copies(stringlen / len);
+    while n > stringlen {
+        interp.maybe_quit(env)?;
+        insert_text_with_hooks(interp, &text, None, &extended_chars, inherit, false, env)?;
+        n -= stringlen;
+    }
+    if n == stringlen {
+        insert_text_with_hooks(interp, &text, None, &extended_chars, inherit, false, env)?;
+    } else {
+        let (rest, rest_extended) = copies(n / len);
+        insert_text_with_hooks(interp, &rest, None, &rest_extended, inherit, false, env)?;
+    }
     Ok(Value::Nil)
+}
+
+/// character.h CHAR_STRING's length: the bytes of character C in a
+/// multibyte buffer (a raw byte's two).
+fn char_string_length(c: u32) -> usize {
+    match c {
+        0..=0x7F => 1,
+        0x80..=0x7FF => 2,
+        0x800..=0xFFFF => 3,
+        0x1_0000..=0x1F_FFFF => 4,
+        0x20_0000..=0x3F_FF7F => 5,
+        _ => 2,
+    }
 }
 
 pub(crate) fn insert_text_with_hooks(
@@ -1015,7 +1062,7 @@ fn insert_text_and_signal(
     }
     let point = interp.buffer.borrow().point();
     // insdel.c inserts at point as the before-change hooks left it.
-    let inserted = modify_current_buffer(interp, point, point, false, env, |interp, _, _| {
+    let inserted = modify_current_buffer(interp, point, point, false, env, |interp, _, env| {
         let start = interp.buffer.borrow().point();
         // insdel.c:copy_text: a unibyte buffer takes each character's byte.
         let unibyte_copy = if interp.buffer.borrow().is_multibyte() {
@@ -1068,6 +1115,12 @@ fn insert_text_and_signal(
                 }
             }
         };
+        // insert_1_both's make_gap, after the before-change hooks: the
+        // failed xrealloc of enlarge_buffer_text reaches memory_full.
+        let reserved = interp.buffer.borrow_mut().try_reserve_insertion(text.len());
+        if let Err(nbytes) = reserved {
+            return Err(memory_full(interp, env, nbytes));
+        }
         interp.insert_current_buffer_with(text, source, before_markers);
         interp.set_inserted_extended_chars(start, extended_chars);
         let inserted = text.chars().count();

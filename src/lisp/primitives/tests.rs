@@ -1057,6 +1057,316 @@ fn decoders_translate_through_decode_translation_tables_as_produce_chars() {
 }
 
 #[test]
+fn loops_before_a_class_charset_compare_bitmaps_as_mutually_exclusive_charset() {
+    // regex-emacs.c:mutually_exclusive_charset reads `p2[1]' as the size of
+    // the charset after a loop; in a unibyte pattern a charset with a class
+    // keeps its range-table flag there, so the comparison runs on past that
+    // charset's bitmap, through the operations after it and beyond the end
+    // of the compiled pattern.
+    assert_oracle_contract_matches_interpreter(
+        r##"(let ((case-fold-search nil)) (list (list (string-match "[ab]+\\(^[[:digit:]x]?\\)*?[[:space:]]?" "\nabbééé_") (match-data t)) (list (string-match "[ab]+[[:space:]]" "abab ab") (match-data t)) (list (string-match "[^c]*[[:alpha:]]" "abcd") (match-data t)) (let ((case-fold-search t)) (list (string-match "[^ab]+[[:digit:]x]" "cc1x") (match-data t))) (list (string-match "[a-z]*?[[:space:]]?b" "zz b") (match-data t))))"##,
+        r##"((1 (1 4)) (0 (0 5)) (0 (0 3)) (0 (0 4)) (0 (0 4)))"##,
+        "loop charsets",
+    );
+}
+
+#[test]
+fn glyph_strings_come_from_composite_c_work_vectors_and_cache() {
+    // composition-get-gstring fills composite.c's one gstring_work vector
+    // and, for up to eight characters, the work header of that length, so
+    // successive calls return the same objects; compute-motion's
+    // composition_reseat_it puts the automatic compositions it makes in
+    // gstring_hash_table under an ID, and a later composition-get-gstring
+    // of the same header returns that cached gstring until
+    // clear-composition-cache empties the table.
+    assert_oracle_contract_matches_interpreter(
+        r##"(with-temp-buffer (insert "e\u0301xa\u0308\u0323b") (let* ((g1 (composition-get-gstring 1 3 (selected-frame) nil)) (g1c (copy-sequence g1)) (g2 (composition-get-gstring 4 7 (selected-frame) nil)) (out (list (list g1c (eq g1 g2) (eq (aref g1 0) (aref g2 0)))))) (push (find-composition 1 nil nil t) out) (push (compute-motion 1 '(0 . 0) 8 nil nil nil nil) out) (push (composition-get-gstring 1 3 (selected-frame) nil) out) (push (find-composition 4 nil nil t) out) (let ((g3 (composition-get-gstring 4 7 (selected-frame) nil))) (push (list g3 (eq g3 g2)) out)) (clear-composition-cache) (push (composition-get-gstring 1 3 (selected-frame) nil) out) (push (composition-get-gstring 0 2 nil "a\u0308\u0323") out) (nreverse out)))"##,
+        r##"(([[us-ascii 97 776] nil [0 0 97 97 1 0 1 1 0 nil] [1 1 776 776 0 0 0 1 0 nil] nil nil nil nil nil nil] t t) nil (8 4 0 3 nil) [[us-ascii 101 769] 0 [0 0 101 101 1 0 1 1 0 nil] [1 1 769 769 1 0 0 1 0 nil]] nil ([[us-ascii 97 776 803] 1 [0 0 97 97 1 0 1 1 0 nil] [1 1 776 776 1 0 0 1 0 nil] [2 2 803 803 1 0 0 1 0 nil]] nil) [[us-ascii 97 776] nil [0 0 97 97 1 0 1 1 0 nil] [1 1 776 776 0 0 0 1 0 nil] nil nil nil nil nil nil] [[us-ascii 97 776] nil [0 0 97 97 1 0 1 1 0 nil] [1 1 776 776 0 0 0 1 0 nil] nil nil nil nil nil nil])"##,
+        "glyph strings",
+    );
+}
+
+#[test]
+fn failed_lisp_allocations_signal_memory_signal_data_as_alloc_c() {
+    // alloc.c's memory_full: a vector, bool-vector, hash table, string or
+    // format buffer the system will not give signals the
+    // `memory-signal-data' object itself, and `memory-full' stays nil
+    // while a SPARE_MEMORY block can still be had.  A count past
+    // VECTOR_ELTS_MAX or most-positive-fixnum reaches memory_full
+    // (SIZE_MAX) before any allocation; string_overflow,
+    // buffer_overflow, allocate_record and vconcat's sequencep check keep
+    // their own errors.  The sizes are past any address space, so that
+    // no allocation succeeds however the kernel overcommits.  (A buffer
+    // gap reaches memory_full too, but insert-char grows it 4000 bytes
+    // at a time, so only under a memory limit; and a hash table of a size
+    // whose arrays fit in a ptrdiff_t charges them to the consing count
+    // before failing, which other tests' collections would see.)
+    assert_oracle_contract_matches_interpreter(
+        r##"(list (mapcar (lambda (f) (condition-case e (progn (funcall f) 'ok) (error (if (eq e memory-signal-data) 'memory-signal-data e)))) (list (lambda () (make-vector most-positive-fixnum nil)) (lambda () (make-vector (expt 2 50) nil)) (lambda () (make-string most-positive-fixnum ?a)) (lambda () (make-string (expt 2 50) ?a)) (lambda () (make-string most-positive-fixnum ?é)) (lambda () (make-bool-vector most-positive-fixnum nil)) (lambda () (make-bool-vector (expt 2 55) nil)) (lambda () (make-hash-table :size most-positive-fixnum)) (lambda () (make-record 'foo (expt 2 40) nil)) (lambda () (with-temp-buffer (insert-char ?a most-positive-fixnum))) (lambda () (format "%2000000000000000d" 1)) (lambda () (vconcat [1] 5)))) memory-full)"##,
+        r##"((memory-signal-data memory-signal-data memory-signal-data memory-signal-data (error "Maximum string size exceeded") memory-signal-data memory-signal-data memory-signal-data (error "Attempt to allocate a record of 1099511627777 slots; max is 4095") (error "Maximum buffer size exceeded") memory-signal-data (wrong-type-argument sequencep 5)) nil)"##,
+        "failed allocations reach memory_full",
+    );
+}
+
+#[test]
+fn file_predicates_expand_and_test_access_as_fileio_c() {
+    // fileio.c: the predicates expand their name (lexically, so a
+    // symlink's `..' is the name's), check_file_access's faccessat for
+    // file-exists-p, file-readable-p and file-executable-p, W_OK and the
+    // directory's W_OK | X_OK for file-writable-p, file_directory_p's
+    // O_PATH open, readlinkat for file-symlink-p, and for
+    // file-directory-p and file-regular-p expand_and_dir_to_file's
+    // directory-file-name, so a regular file's "f/" is a regular file.
+    assert_oracle_contract_matches_interpreter(
+        r##"(let* ((dir (make-temp-file "zz-r277" t)) (default-directory (file-name-as-directory dir))) (unwind-protect (progn (write-region "x" nil "f" nil 0) (make-directory "d") (make-symbolic-link "d" "ld") (make-symbolic-link "f" "lf") (make-symbolic-link "nowhere" "dang") (make-symbolic-link "/" "lx") (list (file-symlink-p "ld") (file-symlink-p "dang") (let ((p (concat default-directory "lx/../f"))) (list (car (file-attributes p)) (and (file-modes p) t) (file-newer-than-file-p p "nonexist"))) (mapcar (lambda (p) (mapcar (lambda (f) (and (funcall f p) t)) '(file-exists-p file-readable-p file-executable-p file-directory-p file-accessible-directory-p file-regular-p file-symlink-p))) (list "f" "f/" "d/" "ld" "ld/" "lf/" "dang" "dang/" "nonexist" "nonexist/x" "" (concat default-directory "lx/../f") (concat default-directory "lx/../d/"))))) (delete-file "lx") (delete-directory dir t)))"##,
+        r##"("d" "nowhere" (nil t t) ((t t nil nil nil t nil) (nil nil nil nil nil t nil) (t t t t t nil nil) (t t t t t nil t) (t t t t t nil nil) (nil nil nil nil nil t nil) (nil nil nil nil nil nil t) (nil nil nil nil nil nil nil) (nil nil nil nil nil nil nil) (nil nil nil nil nil nil nil) (t t t t t nil nil) (t t nil nil nil t nil) (t t t t t nil nil)))"##,
+        "fileio.c file predicates",
+    );
+}
+
+#[test]
+fn file_primitives_expand_their_names_before_the_handler_lookup_as_fileio_c() {
+    // fileio.c, dired.c, buffer.c and filelock.c: each primitive expands
+    // its names (Fexpand_file_name with a nil default, expand_and_dir_to_file,
+    // expand_cp_target, or against the buffer's directory) through the
+    // `expand-file-name' handler before it looks for a handler of its own
+    // operation, which then receives the expanded names with every
+    // argument the primitive declares; the lock operations search FILE as
+    // given, the visited-modtime pair the buffer's file name, and the
+    // internal deletions and `make-directory-internal' expand without a
+    // lookup of their own.
+    assert_oracle_contract_matches_interpreter(
+        r##"(progn
+  (defvar zz-pre-log nil)
+  (defun zz-pre-handler (op &rest args)
+    (push (cons op (mapcar (lambda (a) (if (stringp a) (substring-no-properties a) a)) args)) zz-pre-log)
+    (if (memq op '(expand-file-name file-name-directory file-name-nondirectory file-name-as-directory directory-file-name unhandled-file-name-directory))
+        (let ((inhibit-file-name-handlers '(zz-pre-handler)) (inhibit-file-name-operation op)) (apply op args))))
+  (let ((out nil)
+        (file-name-handler-alist (cons '("\\`/zz:" . zz-pre-handler) file-name-handler-alist)))
+    (dolist (dir '("/tmp/" "/zz:/d/"))
+      (let ((a (if (equal dir "/tmp/") "/zz:/a/./b/../c/" "rel/./x/"))
+            (b (if (equal dir "/tmp/") "/zz:/q//r" "other")))
+        (dolist (form `((access-file ,a "m") (access-file ,a 5) (add-name-to-file ,a ,b) (copy-file ,a ,b) (delete-directory-internal ,a) (delete-file-internal ,a)
+                        (directory-files ,a) (directory-files-and-attributes ,a) (file-accessible-directory-p ,a) (file-acl ,a) (file-attributes ,a) (file-attributes ,a 'string) (file-attributes 5)
+                        (file-directory-p ,a) (file-executable-p ,a) (file-exists-p ,a) (file-locked-p ,a) (file-modes ,a) (file-name-all-completions "f" ,a)
+                        (file-name-case-insensitive-p ,a) (file-name-completion "f" ,a) (file-newer-than-file-p ,a ,b) (file-readable-p ,a) (file-regular-p ,a)
+                        (file-selinux-context ,a) (file-symlink-p ,a) (file-system-info ,a) (file-writable-p ,a) (insert-file-contents ,a) (lock-file ,a)
+                        (make-directory-internal ,a) (make-symbolic-link "tgt" ,a) (rename-file ,a ,b) (set-file-acl ,a nil) (set-file-modes ,a 420)
+                        (set-file-selinux-context ,a nil) (set-file-times ,a) (unlock-file ,a) (write-region "x" nil ,a) (write-region "x" nil ,b nil ,a)
+                        (unhandled-file-name-directory ,a) (get-file-buffer ,a) (file-truename ,a)))
+          (setq zz-pre-log nil)
+          (with-temp-buffer
+            (setq default-directory dir)
+            (condition-case e (eval form t) (error (push (list 'error (car e)) zz-pre-log))))
+          (push (cons (car form) (reverse zz-pre-log)) out))))
+    (with-temp-buffer
+      (setq zz-pre-log nil)
+      (setq buffer-file-name "/zz:/v/f")
+      (set-visited-file-modtime)
+      (set-visited-file-modtime '(0 1))
+      (verify-visited-file-modtime)
+      (push (cons 'modtime (reverse zz-pre-log)) out)
+      (setq buffer-file-name nil))
+    (nreverse out)))"##,
+        r##"((access-file (expand-file-name "/zz:/a/./b/../c/" nil) (access-file "/zz:/a/c/" "m")) (access-file (expand-file-name "/zz:/a/./b/../c/" nil) (error wrong-type-argument)) (add-name-to-file (expand-file-name "/zz:/a/./b/../c/" nil) (expand-file-name "/zz:/q//r" nil) (add-name-to-file "/zz:/a/c/" "/zz:/q/r" nil)) (copy-file (expand-file-name "/zz:/a/./b/../c/" nil) (expand-file-name "/zz:/q//r" nil) (copy-file "/zz:/a/c/" "/zz:/q/r" nil nil nil nil)) (delete-directory-internal (expand-file-name "/zz:/a/./b/../c/" nil) (directory-file-name "/zz:/a/c/") (error file-missing)) (delete-file-internal (expand-file-name "/zz:/a/./b/../c/" nil)) (directory-files (expand-file-name "/zz:/a/./b/../c/" nil) (directory-files "/zz:/a/c/" nil nil nil nil)) (directory-files-and-attributes (expand-file-name "/zz:/a/./b/../c/" nil) (directory-files-and-attributes "/zz:/a/c/" nil nil nil nil nil)) (file-accessible-directory-p (expand-file-name "/zz:/a/./b/../c/" nil) (file-accessible-directory-p "/zz:/a/c/")) (file-acl (expand-file-name "/zz:/a/./b/../c/" nil) (directory-file-name "/zz:/a/c/") (file-acl "/zz:/a/c")) (file-attributes (expand-file-name "/zz:/a/./b/../c/" nil) (file-attributes "/zz:/a/c/")) (file-attributes (expand-file-name "/zz:/a/./b/../c/" nil) (file-attributes "/zz:/a/c/" string)) (file-attributes) (file-directory-p (expand-file-name "/zz:/a/./b/../c/" nil) (directory-file-name "/zz:/a/c/") (file-directory-p "/zz:/a/c")) (file-executable-p (expand-file-name "/zz:/a/./b/../c/" nil) (file-executable-p "/zz:/a/c/")) (file-exists-p (expand-file-name "/zz:/a/./b/../c/" nil) (file-exists-p "/zz:/a/c/")) (file-locked-p (file-locked-p "/zz:/a/./b/../c/")) (file-modes (expand-file-name "/zz:/a/./b/../c/" nil) (directory-file-name "/zz:/a/c/") (file-modes "/zz:/a/c" nil)) (file-name-all-completions (expand-file-name "/zz:/a/./b/../c/" nil) (file-name-all-completions "f" "/zz:/a/c/")) (file-name-case-insensitive-p (expand-file-name "/zz:/a/./b/../c/" nil) (file-name-case-insensitive-p "/zz:/a/c/")) (file-name-completion (expand-file-name "/zz:/a/./b/../c/" nil) (file-name-completion "f" "/zz:/a/c/" nil)) (file-newer-than-file-p (expand-file-name "/zz:/a/./b/../c/" nil) (directory-file-name "/zz:/a/c/") (expand-file-name "/zz:/q//r" nil) (file-newer-than-file-p "/zz:/a/c" "/zz:/q/r")) (file-readable-p (expand-file-name "/zz:/a/./b/../c/" nil) (file-readable-p "/zz:/a/c/")) (file-regular-p (expand-file-name "/zz:/a/./b/../c/" nil) (directory-file-name "/zz:/a/c/") (file-regular-p "/zz:/a/c")) (file-selinux-context (expand-file-name "/zz:/a/./b/../c/" nil) (directory-file-name "/zz:/a/c/") (file-selinux-context "/zz:/a/c")) (file-symlink-p (expand-file-name "/zz:/a/./b/../c/" nil) (file-symlink-p "/zz:/a/c/")) (file-system-info (expand-file-name "/zz:/a/./b/../c/" nil) (file-system-info "/zz:/a/c/")) (file-writable-p (expand-file-name "/zz:/a/./b/../c/" nil) (file-writable-p "/zz:/a/c/")) (insert-file-contents (expand-file-name "/zz:/a/./b/../c/" nil) (insert-file-contents "/zz:/a/c/" nil nil nil nil)) (lock-file (lock-file "/zz:/a/./b/../c/")) (make-directory-internal (expand-file-name "/zz:/a/./b/../c/" nil) (error file-missing)) (make-symbolic-link (expand-file-name "tgt" "/zz:/a/./b/../c/") (make-symbolic-link "tgt" "/zz:/a/c/tgt" nil)) (rename-file (expand-file-name "/zz:/a/./b/../c/" nil) (directory-file-name "/zz:/a/c/") (expand-file-name "/zz:/q//r" nil) (rename-file "/zz:/a/c/" "/zz:/q/r" nil)) (set-file-acl (expand-file-name "/zz:/a/./b/../c/" "/tmp/") (set-file-acl "/zz:/a/c/" nil)) (set-file-modes (expand-file-name "/zz:/a/./b/../c/" "/tmp/") (set-file-modes "/zz:/a/c/" 420 nil)) (set-file-selinux-context (expand-file-name "/zz:/a/./b/../c/" "/tmp/") (set-file-selinux-context "/zz:/a/c/" nil)) (set-file-times (expand-file-name "/zz:/a/./b/../c/" "/tmp/") (set-file-times "/zz:/a/c/" nil nil)) (unlock-file (unlock-file "/zz:/a/./b/../c/")) (write-region (expand-file-name "/zz:/a/./b/../c/" nil) (write-region "x" nil "/zz:/a/c/" nil nil "/zz:/a/c/" nil)) (write-region (expand-file-name "/zz:/q//r" nil) (expand-file-name "/zz:/a/./b/../c/" nil) (write-region "x" nil "/zz:/q/r" nil "/zz:/a/./b/../c/" "/zz:/a/c/" nil)) (unhandled-file-name-directory (unhandled-file-name-directory "/zz:/a/./b/../c/") (file-name-as-directory "/zz:/a/./b/../c/")) (get-file-buffer (expand-file-name "/zz:/a/./b/../c/" nil) (get-file-buffer "/zz:/a/c/")) (file-truename (file-truename "/zz:/a/./b/../c/")) (access-file (expand-file-name "rel/./x/" "/zz:/d/") (access-file "/zz:/d/rel/x/" "m")) (access-file (expand-file-name "rel/./x/" "/zz:/d/") (error wrong-type-argument)) (add-name-to-file (expand-file-name "rel/./x/" "/zz:/d/") (expand-file-name "other" "/zz:/d/") (add-name-to-file "/zz:/d/rel/x/" "/zz:/d/other" nil)) (copy-file (expand-file-name "rel/./x/" "/zz:/d/") (expand-file-name "other" "/zz:/d/") (copy-file "/zz:/d/rel/x/" "/zz:/d/other" nil nil nil nil)) (delete-directory-internal (expand-file-name "rel/./x/" "/zz:/d/") (directory-file-name "/zz:/d/rel/x/") (error file-missing)) (delete-file-internal (expand-file-name "rel/./x/" "/zz:/d/")) (directory-files (expand-file-name "rel/./x/" "/zz:/d/") (directory-files "/zz:/d/rel/x/" nil nil nil nil)) (directory-files-and-attributes (expand-file-name "rel/./x/" "/zz:/d/") (directory-files-and-attributes "/zz:/d/rel/x/" nil nil nil nil nil)) (file-accessible-directory-p (expand-file-name "rel/./x/" "/zz:/d/") (file-accessible-directory-p "/zz:/d/rel/x/")) (file-acl (expand-file-name "rel/./x/" "/zz:/d/") (directory-file-name "/zz:/d/rel/x/") (file-acl "/zz:/d/rel/x")) (file-attributes (expand-file-name "rel/./x/" "/zz:/d/") (file-attributes "/zz:/d/rel/x/")) (file-attributes (expand-file-name "rel/./x/" "/zz:/d/") (file-attributes "/zz:/d/rel/x/" string)) (file-attributes) (file-directory-p (expand-file-name "rel/./x/" "/zz:/d/") (directory-file-name "/zz:/d/rel/x/") (file-directory-p "/zz:/d/rel/x")) (file-executable-p (expand-file-name "rel/./x/" "/zz:/d/") (file-executable-p "/zz:/d/rel/x/")) (file-exists-p (expand-file-name "rel/./x/" "/zz:/d/") (file-exists-p "/zz:/d/rel/x/")) (file-locked-p (expand-file-name "rel/./x/" "/zz:/d/") (make-lock-file-name "/zz:/d/rel/x/")) (file-modes (expand-file-name "rel/./x/" "/zz:/d/") (directory-file-name "/zz:/d/rel/x/") (file-modes "/zz:/d/rel/x" nil)) (file-name-all-completions (expand-file-name "rel/./x/" "/zz:/d/") (file-name-all-completions "f" "/zz:/d/rel/x/")) (file-name-case-insensitive-p (expand-file-name "rel/./x/" "/zz:/d/") (file-name-case-insensitive-p "/zz:/d/rel/x/")) (file-name-completion (expand-file-name "rel/./x/" "/zz:/d/") (file-name-completion "f" "/zz:/d/rel/x/" nil)) (file-newer-than-file-p (expand-file-name "rel/./x/" "/zz:/d/") (directory-file-name "/zz:/d/rel/x/") (expand-file-name "other" "/zz:/d/") (file-newer-than-file-p "/zz:/d/rel/x" "/zz:/d/other")) (file-readable-p (expand-file-name "rel/./x/" "/zz:/d/") (file-readable-p "/zz:/d/rel/x/")) (file-regular-p (expand-file-name "rel/./x/" "/zz:/d/") (directory-file-name "/zz:/d/rel/x/") (file-regular-p "/zz:/d/rel/x")) (file-selinux-context (expand-file-name "rel/./x/" "/zz:/d/") (directory-file-name "/zz:/d/rel/x/") (file-selinux-context "/zz:/d/rel/x")) (file-symlink-p (expand-file-name "rel/./x/" "/zz:/d/") (file-symlink-p "/zz:/d/rel/x/")) (file-system-info (expand-file-name "rel/./x/" "/zz:/d/") (file-system-info "/zz:/d/rel/x/")) (file-writable-p (expand-file-name "rel/./x/" "/zz:/d/") (file-writable-p "/zz:/d/rel/x/")) (insert-file-contents (expand-file-name "rel/./x/" "/zz:/d/") (insert-file-contents "/zz:/d/rel/x/" nil nil nil nil)) (lock-file (expand-file-name "rel/./x/" "/zz:/d/") (make-lock-file-name "/zz:/d/rel/x/")) (make-directory-internal (expand-file-name "rel/./x/" "/zz:/d/") (error file-missing)) (make-symbolic-link (expand-file-name "rel/./x/" "/zz:/d/") (expand-file-name "tgt" "/zz:/d/rel/x/") (make-symbolic-link "tgt" "/zz:/d/rel/x/tgt" nil)) (rename-file (expand-file-name "rel/./x/" "/zz:/d/") (directory-file-name "/zz:/d/rel/x/") (expand-file-name "other" "/zz:/d/") (rename-file "/zz:/d/rel/x/" "/zz:/d/other" nil)) (set-file-acl (expand-file-name "rel/./x/" "/zz:/d/") (set-file-acl "/zz:/d/rel/x/" nil)) (set-file-modes (expand-file-name "rel/./x/" "/zz:/d/") (set-file-modes "/zz:/d/rel/x/" 420 nil)) (set-file-selinux-context (expand-file-name "rel/./x/" "/zz:/d/") (set-file-selinux-context "/zz:/d/rel/x/" nil)) (set-file-times (expand-file-name "rel/./x/" "/zz:/d/") (set-file-times "/zz:/d/rel/x/" nil nil)) (unlock-file (expand-file-name "rel/./x/" "/zz:/d/") (make-lock-file-name "/zz:/d/rel/x/")) (write-region (expand-file-name "rel/./x/" "/zz:/d/") (write-region "x" nil "/zz:/d/rel/x/" nil nil "/zz:/d/rel/x/" nil)) (write-region (expand-file-name "other" "/zz:/d/") (expand-file-name "rel/./x/" "/zz:/d/") (write-region "x" nil "/zz:/d/other" nil "rel/./x/" "/zz:/d/rel/x/" nil)) (unhandled-file-name-directory) (get-file-buffer (expand-file-name "rel/./x/" "/zz:/d/") (get-file-buffer "/zz:/d/rel/x/")) (file-truename (expand-file-name "rel/./x/" "/zz:/d/") (file-name-case-insensitive-p "/zz:/d/rel/x/") (expand-file-name "rel/./" "/zz:/d/") (file-name-case-insensitive-p "/zz:/d/rel/") (expand-file-name "rel/" "/zz:/d/") (file-name-case-insensitive-p "/zz:/d/rel/") (directory-file-name "/zz:/d/") (expand-file-name "/zz:/d/" nil) (file-name-case-insensitive-p "/zz:/d/") (file-truename "/zz:/d") (error wrong-type-argument)) (modtime (expand-file-name "/zz:/v/f" nil) (set-visited-file-modtime nil) (verify-visited-file-modtime nil)))"##,
+        "file-name handler preambles",
+    );
+    // The checks that come before the expansion or between it and the
+    // lookup, write-region's MUSTBENEW and VISIT, and the name
+    // transformers' handler values: `file-name-directory' takes a
+    // non-string as nil, the others signal.
+    assert_oracle_contract_matches_interpreter(
+        r##"(progn
+  (defvar zz-edge-log nil)
+  (defun zz-edge-handler (op &rest args)
+    (push (cons op args) zz-edge-log)
+    (cond ((eq op 'expand-file-name)
+           (let ((inhibit-file-name-handlers '(zz-edge-handler)) (inhibit-file-name-operation op)) (apply op args)))
+          ((eq op 'file-name-directory) 7)))
+  (let ((file-name-handler-alist (cons '("\\`/zz:" . zz-edge-handler) file-name-handler-alist))
+        (out nil))
+    (dolist (form '((file-attributes nil) (file-attributes 7 'string) (set-file-modes "/zz:/x" "bad") (set-file-times "/zz:/x" 'bad)
+                    (with-temp-buffer (insert "abc") (write-region 1 1000 "/zz:/x"))
+                    (with-temp-buffer (insert "abc") (write-region 1 2 "/zz:/x" nil nil nil 'excl))
+                    (with-temp-buffer (insert "abc") (write-region "s" nil "/zz:/x" nil t))
+                    (with-temp-buffer (insert "abc") (list (write-region "s" nil "/zz:/x" nil "/zz:/v/../w") buffer-file-name (buffer-modified-p)))
+                    (file-newer-than-file-p "/zz:/a" 5) (file-name-completion 5 "/zz:/d/") (file-name-all-completions "x" 5)
+                    (access-file 5 "x") (copy-file "/zz:/a" 5) (rename-file "/zz:/a/" "/zz:/b/") (make-symbolic-link "/:/t" "/zz:/d/" 1)
+                    (file-name-directory "/zz:/a/b") (file-name-nondirectory "/zz:/a/b") (directory-file-name "/zz:/a/") (file-name-as-directory "/zz:/a") (substitute-in-file-name "/zz:/a")
+                    (get-file-buffer "/zz:/x") (file-system-info "/zz:/x") (lock-file 5) (verify-visited-file-modtime 5)
+                    (with-temp-buffer (set-visited-file-modtime))))
+      (setq zz-edge-log nil)
+      (let ((r (condition-case e (eval form t) (error (list 'error (car e) (let ((d (cadr e))) (and (or (stringp d) (symbolp d)) d)))))))
+        (push (list (car form) r (reverse zz-edge-log)) out)))
+    (nreverse out)))"##,
+        r##"((file-attributes nil nil) (file-attributes nil nil) (set-file-modes (error wrong-type-argument fixnump) nil) (set-file-times (error error "Invalid time specification") nil) (with-temp-buffer (error args-out-of-range nil) nil) (with-temp-buffer nil ((expand-file-name "/zz:/x" nil) (write-region 1 2 "/zz:/x" nil nil "/zz:/x" excl))) (with-temp-buffer nil ((expand-file-name "/zz:/x" nil) (write-region "s" nil "/zz:/x" nil t "/zz:/x" nil))) (with-temp-buffer (nil "/zz:/w" nil) ((expand-file-name "/zz:/x" nil) (expand-file-name "/zz:/v/../w" nil) (write-region "s" nil "/zz:/x" nil "/zz:/v/../w" "/zz:/w" nil))) (file-newer-than-file-p (error wrong-type-argument stringp) nil) (file-name-completion nil ((expand-file-name "/zz:/d/" nil) (file-name-completion 5 "/zz:/d/" nil))) (file-name-all-completions (error wrong-type-argument stringp) nil) (access-file (error wrong-type-argument stringp) nil) (copy-file (error wrong-type-argument stringp) ((expand-file-name "/zz:/a" nil))) (rename-file (error error "Invalid handler in `file-name-handler-alist'") ((expand-file-name "/zz:/a/" nil) (directory-file-name "/zz:/a/"))) (make-symbolic-link nil ((expand-file-name "t" "/zz:/d/") (make-symbolic-link "/t" "/zz:/d/t" 1))) (file-name-directory nil ((file-name-directory "/zz:/a/b"))) (file-name-nondirectory (error error "Invalid handler in `file-name-handler-alist'") ((file-name-nondirectory "/zz:/a/b"))) (directory-file-name (error error "Invalid handler in `file-name-handler-alist'") ((directory-file-name "/zz:/a/"))) (file-name-as-directory (error error "Invalid handler in `file-name-handler-alist'") ((file-name-as-directory "/zz:/a"))) (substitute-in-file-name (error error "Invalid handler in `file-name-handler-alist'") ((substitute-in-file-name "/zz:/a"))) (get-file-buffer nil ((expand-file-name "/zz:/x" nil) (get-file-buffer "/zz:/x"))) (file-system-info nil ((expand-file-name "/zz:/x" nil) (file-system-info "/zz:/x"))) (lock-file (error wrong-type-argument stringp) nil) (verify-visited-file-modtime (error wrong-type-argument bufferp) nil) (with-temp-buffer (error wrong-type-argument stringp) nil))"##,
+        "file-name handler preamble checks",
+    );
+}
+
+#[test]
+fn file_attributes_and_quoted_names_are_dired_c_and_fileio_c() {
+    // dired.c:file_attributes: element 9 is t, an ID-FORMAT other than nil
+    // and `integer' names the owner and group, a name whose directory is
+    // not one has no attributes, and directory-files-and-attributes reads
+    // each entry's attributes in the directory it lists, an error naming
+    // the directory's `directory-file-name'.
+    assert_oracle_contract_matches_interpreter(
+        r##"(let* ((dir (file-truename (make-temp-file "zz-fa" t)))
+       (f (expand-file-name "f" dir))
+       (out nil))
+  (unwind-protect
+      (progn
+        (write-region "abc" nil f nil 'silent)
+        (set-file-modes f #o640)
+        (make-directory (expand-file-name "d" dir))
+        (make-symbolic-link "f" (expand-file-name "s" dir))
+        (make-symbolic-link "nowhere" (expand-file-name "dangling" dir))
+        (dolist (form `((nth 9 (file-attributes ,f))
+                        (stringp (nth 2 (file-attributes ,f t)))
+                        (stringp (nth 3 (file-attributes ,f 'foo)))
+                        (integerp (nth 2 (file-attributes ,f 'integer)))
+                        (integerp (nth 3 (file-attributes ,f)))
+                        (car (file-attributes ,(expand-file-name "s" dir)))
+                        (car (file-attributes ,(expand-file-name "dangling" dir)))
+                        (car (file-attributes ,(expand-file-name "d" dir)))
+                        (nth 1 (file-attributes ,f))
+                        (nth 7 (file-attributes ,f))
+                        (nth 8 (file-attributes ,f))
+                        (file-attributes ,(concat f "/x"))
+                        (file-attributes ,(expand-file-name "nope" dir))
+                        (file-attributes ,(expand-file-name "nope/x" dir))
+                        (mapcar (lambda (e) (list (car e) (cadr e) (nth 10 e))) (directory-files-and-attributes ,dir nil "^[^.]"))
+                        (mapcar (lambda (e) (list (car e) (stringp (nth 3 e)))) (directory-files-and-attributes ,dir nil "^f" nil 'string))
+                        (mapcar #'car (directory-files-and-attributes ,dir t "^[fs]"))
+                        (length (directory-files-and-attributes ,dir nil "^[^.]" nil nil 2))
+                        (directory-files-and-attributes ,(expand-file-name "nope" dir))
+                        (directory-files-and-attributes ,(expand-file-name "nope/" dir))
+                        (directory-files ,(expand-file-name "nope/" dir))
+                        (directory-files ,f)
+                        (directory-files-and-attributes ,dir nil nil nil nil -1)
+                        (directory-files-and-attributes ,dir nil 5)
+                        (let ((default-directory ,(file-name-as-directory dir))) (mapcar #'car (directory-files-and-attributes "." nil "^f")))
+                        (let ((default-directory ,(file-name-as-directory dir))) (mapcar #'car (directory-files-and-attributes "." t "^f")))
+                        (let ((default-directory ,(file-name-as-directory dir))) (car (file-attributes "f")))
+                        (equal (file-attributes ,f) (cdr (assoc "f" (directory-files-and-attributes ,dir))))))
+          (push (condition-case e (eval form t) (error (list 'error e))) out)))
+    (delete-directory dir t))
+  (car (read-from-string (replace-regexp-in-string (regexp-quote dir) "TMP" (prin1-to-string (nreverse out))))))"##,
+        r##"(t t t t t "f" "nowhere" t 1 3 "-rw-r-----" nil nil nil (("d" t t) ("dangling" "nowhere" t) ("f" nil t) ("s" "f" t)) (("f" t)) ("TMP/f" "TMP/s") 2 (error (file-missing "Opening directory" "No such file or directory" "TMP/nope")) (error (file-missing "Opening directory" "No such file or directory" "TMP/nope")) (error (file-missing "Opening directory" "No such file or directory" "TMP/nope")) (error (file-error "Opening directory" "Not a directory" "TMP/f")) (error (wrong-type-argument wholenump -1)) (error (wrong-type-argument stringp 5)) ("f") ("TMP/f") nil t)"##,
+        "file-attributes as dired.c",
+    );
+    // fileio.c hands a `/:' quoted name to the system as it is, so without
+    // file-name-non-special no file primitive finds it; only callproc.c
+    // and process.c remove the quote (remove_slash_colon), from the
+    // program, INFILE, the output and stderr files and the child's
+    // directory.  Remote names are the handlers' too.
+    assert_oracle_contract_matches_interpreter(
+        r##"(let* ((dir (file-truename (make-temp-file "zz-sq" t)))
+       (q (concat "/:" dir))
+       (out nil))
+  (unwind-protect
+      (progn
+        (write-region "abc" nil (expand-file-name "f" dir) nil 'silent)
+        (make-directory (expand-file-name "d" dir))
+        (dolist (handlers '(default nil))
+          (let ((file-name-handler-alist (if (eq handlers 'default) file-name-handler-alist nil)))
+            (dolist (form
+                     `((file-exists-p ,(concat q "/f"))
+                       (file-readable-p ,(concat q "/f"))
+                       (file-directory-p ,(concat q "/d"))
+                       (file-regular-p ,(concat q "/f"))
+                       (integerp (file-modes ,(concat q "/f")))
+                       (file-newer-than-file-p ,(concat q "/f") ,(concat q "/d"))
+                       (car (file-attributes ,(concat q "/f")))
+                       (length (directory-files ,(concat q "/")))
+                       (sort (file-name-all-completions "" ,(concat q "/")) #'string<)
+                       (with-temp-buffer (insert-file-contents ,(concat q "/f")) (buffer-string))
+                       (progn (write-region "x" nil ,(concat q "/w") nil 'silent) (file-exists-p ,(concat dir "/w")))
+                       (progn (copy-file ,(concat dir "/f") ,(concat q "/c")) (file-exists-p ,(concat dir "/c")))
+                       (progn (rename-file ,(concat q "/c") ,(concat q "/r")) (file-exists-p ,(concat dir "/r")))
+                       (progn (add-name-to-file ,(concat q "/f") ,(concat q "/h")) (file-exists-p ,(concat dir "/h")))
+                       (progn (make-symbolic-link "f" ,(concat q "/s")) (file-symlink-p ,(concat dir "/s")))
+                       (progn (set-file-modes ,(concat q "/f") #o600) (file-modes ,(concat dir "/f")))
+                       (progn (set-file-times ,(concat q "/f") 0) (file-attribute-modification-time (file-attributes ,(concat dir "/f"))))
+                       (progn (make-directory-internal ,(concat q "/m")) (file-directory-p ,(concat dir "/m")))
+                       (progn (delete-file-internal ,(concat q "/f")) (file-exists-p ,(concat dir "/f")))
+                       (let ((default-directory ,(concat q "/"))) (file-exists-p "d"))
+                       (let ((default-directory ,(concat q "/"))) (call-process "true"))
+                       (call-process "/:/bin/true")
+                       (with-temp-buffer (call-process "cat" ,(concat q "/d/../f") t) (buffer-string))
+                       (with-temp-buffer (let ((default-directory ,(concat q "/"))) (call-process "cat" "f" t)) (buffer-string))
+                       (with-temp-buffer (call-process "true" nil '(:file ,(concat q "/o"))) (file-exists-p ,(concat dir "/o")))
+                       (with-temp-buffer (let ((default-directory ,(concat q "/"))) (process-file "true")))
+                       (file-exists-p "/mock::/etc/passwd")
+                       (file-exists-p "/ssh:x@y:/etc/passwd")))
+              (push (condition-case e (eval form t) (error (list 'error (car e)))) out))
+            (dolist (n '("w" "c" "r" "h" "s" "m" "o"))
+              (ignore-errors (delete-file (expand-file-name n dir)))
+              (ignore-errors (delete-directory (expand-file-name n dir))))
+            (unless (file-exists-p (expand-file-name "f" dir))
+              (write-region "abc" nil (expand-file-name "f" dir) nil 'silent)))))
+    (delete-directory dir t))
+  (car (read-from-string (replace-regexp-in-string (regexp-quote dir) "TMP" (prin1-to-string (nreverse out))))))"##,
+        r##"(t t t t t nil nil 4 ("../" "./" "d/" "f") "abc" t t t t "f" 384 (0 0 0 0) (error file-missing) t t 0 0 "abc" "abc" t 0 (error user-error) (error file-error) nil nil nil nil nil nil nil (error file-missing) (error file-missing) (error file-missing) (error file-missing) (error file-missing) (error file-missing) (error file-missing) (error file-missing) (error file-missing) (error file-missing) (error file-missing) t nil 0 0 "abc" "abc" t 0 nil nil)"##,
+        "quoted names without handlers",
+    );
+}
+
+#[test]
+fn file_readable_p_tests_access_without_opening_a_fifo() {
+    // fileio.c:Ffile_readable_p is faccessat (R_OK): a FIFO with no
+    // writer is readable without the open that would wait for one.
+    let dir = std::env::temp_dir().join(format!("emaxx-fifo-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("make the FIFO's directory");
+    let fifo = dir.join("fifo");
+    let name = std::ffi::CString::new(fifo.to_str().expect("UTF-8 temp name")).expect("no NUL");
+    // SAFETY: NAME is a valid NUL-terminated path for the call.
+    assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0, "mkfifo");
+    let program = format!(
+        "(let ((f {:?})) (list (file-exists-p f) (file-readable-p f) (file-writable-p f) (file-regular-p f) (file-directory-p f)))",
+        fifo.to_str().expect("UTF-8 temp name")
+    );
+    assert_interpreter_prints(&program, "(t t t nil nil)", "file predicates of a FIFO");
+    std::fs::remove_dir_all(&dir).expect("remove the FIFO's directory");
+}
+
+#[test]
+fn insert_char_inserts_its_repetitions_in_chunks_as_finsert_char() {
+    // Finsert_char builds a string of at most 4000 bytes of whole
+    // characters and inserts it, change hooks and all, while more than a
+    // string's worth is left, then the rest: each chunk is an insertion
+    // of its own.
+    assert_oracle_contract_matches_interpreter(
+        r##"(mapcar (lambda (spec) (with-temp-buffer (unless (car spec) (set-buffer-multibyte nil)) (let (log) (add-hook 'after-change-functions (lambda (b e l) (push (list b e l) log)) nil t) (add-hook 'before-change-functions (lambda (b e) (push (list 'before b e) log)) nil t) (insert-char (cadr spec) (nth 2 spec) (nth 3 spec)) (list (buffer-size) (nreverse log))))) '((t ?a 9001 nil) (t ?é 4500 nil) (t ?日 2000 t) (nil ?a 4001 nil) (t ?a 4000 nil) (t ?\U0001F600 1001 nil)))"##,
+        r##"((9001 ((before 1 1) (1 4001 0) (before 4001 4001) (4001 8001 0) (before 8001 8001) (8001 9002 0))) (4500 ((before 1 1) (1 2001 0) (before 2001 2001) (2001 4001 0) (before 4001 4001) (4001 4501 0))) (2000 ((before 1 1) (1 1334 0) (before 1334 1334) (1334 2001 0))) (4001 ((before 1 1) (1 4001 0) (before 4001 4001) (4001 4002 0))) (4000 ((before 1 1) (1 4001 0))) (1001 ((before 1 1) (1 1001 0) (before 1001 1001) (1001 1002 0))))"##,
+        "insert-char chunks",
+    );
+}
+
+#[test]
+fn batch_vertical_motion_and_compute_motion_lay_text_out_as_indent_c() {
+    // indent.c vmotion and compute_motion: noninteractively vertical-motion
+    // continues lines at the buffer's tab-width, not 8; hidden lines of
+    // selective display are skipped going up; a static composition takes
+    // its width; an overlay's before-string counts its columns; and an
+    // automatic composition steps a glyph cluster at a time, so after
+    // invisible text inside one its last cluster takes the next character.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list
+  (with-temp-buffer (insert (make-string 15 ?\t) " text\n") (setq tab-width 2) (goto-char 12) (list (vertical-motion 0) (point) (progn (goto-char 1) (vertical-motion 1)) (point)))
+  (with-temp-buffer (insert (make-string 15 ?\t) " text\n") (goto-char 12) (list (vertical-motion 0) (point) (vertical-motion -1) (point)))
+  (with-temp-buffer (insert "abcdef") (compose-region 2 4 ?X) (mapcar (lambda (to) (compute-motion 1 '(0 . 0) to nil nil nil nil)) '(2 3 4 7)))
+  (with-temp-buffer (insert "abcdef") (setq tab-width 3) (overlay-put (make-overlay 3 4) 'before-string "\t") (compute-motion 1 '(0 . 0) 5 nil nil nil nil))
+  (with-temp-buffer (insert "ab\u0301 xyz") (put-text-property 3 4 'invisible t) (mapcar (lambda (to) (car (cdr (compute-motion 1 '(0 . 0) to nil nil nil nil)))) '(2 3 4 5 6)))
+  (with-temp-buffer (insert "a\tb\n  x\n    y\nz") (setq selective-display 2) (goto-char (point-max)) (list (vertical-motion -1) (point) (vertical-motion -1) (point))))"##,
+        r##"((0 1 1 22) (0 11 -1 1) ((2 1 0 1 nil) (2 1 0 1 nil) (4 2 0 2 nil) (7 5 0 4 nil)) (5 7 0 7 nil) (1 2 2 2 3) (-1 1 0 1))"##,
+        "batch vmotion and compute_motion",
+    );
+}
+
+#[test]
 fn looking_at_does_not_create_or_assign_unrelated_lisp_variables() {
     assert_oracle_contract_matches_interpreter(
         r#"(with-temp-buffer
@@ -34489,6 +34799,20 @@ fn file_reads_detected_as_utf_8_insert_their_bytes_as_decode_coding_gap() {
         r##"(let ((f (make-temp-file "zz-r238"))) (unwind-protect (mapcar (lambda (c) (with-temp-buffer (set-buffer-multibyte nil) (insert (cdr c)) (let ((coding-system-for-write 'binary)) (write-region nil nil f nil 0))) (with-temp-buffer (let ((coding-system-for-read (car c))) (insert-file-contents f)) (list (append (buffer-string) nil) last-coding-system-used))) (list (cons nil "a\300\200b") (cons nil "a\301\277b\r\n") (cons nil "a\340\201\201b") (cons nil "a\355\240\200b") (cons nil "a\364\220\200\200b") (cons nil "a\367\277\277\277b") (cons nil "a\356\202\200b\303\251") (cons 'utf-8-auto "\357\273\277ab\303\251") (cons 'prefer-utf-8 "x\300\201\r\ny") (cons nil "\357\273\277ab\300\200"))) (delete-file f)))"##,
         r##"(((97 4194176 98) utf-8) ((97 4194303 98 10) utf-8-dos) ((97 65 98) utf-8) ((97 55296 98) utf-8) ((97 1114112 98) utf-8) ((97 2097151 98) utf-8) ((97 57472 98 233) utf-8) ((97 98 233) utf-8-with-signature) ((120 4194177 10 121) utf-8-dos) ((97 98 4194240 4194176) utf-8-with-signature))"##,
         "file reads detected as utf-8",
+    );
+}
+
+#[test]
+fn file_reads_detect_before_the_last_block_as_decode_coding_gap() {
+    // decode_coding_gap runs detect_coding before it sets
+    // CODING_MODE_LAST_BLOCK, so a detector reaching the end of the file
+    // inside a character takes the text, as decode-coding-string's last
+    // block does not: emacs-mule (ahead of shift-jis in the priorities)
+    // and utf-8 accept a sequence the end cuts short.
+    assert_oracle_contract_matches_interpreter(
+        r##"(let ((f (make-temp-file "zz-r276"))) (unwind-protect (mapcar (lambda (s) (with-temp-buffer (set-buffer-multibyte nil) (insert s) (let ((coding-system-for-write 'binary)) (write-region nil nil f nil 0))) (list (progn (decode-coding-string s 'undecided) last-coding-system-used) (with-temp-buffer (insert-file-contents f) (list (append (buffer-string) nil) last-coding-system-used)))) (list "\254\346\227\245" "\254\r\346\227\245" "a\200\362\244" "x\201" "\346\227" "\346\227\245")) (delete-file f)))"##,
+        r##"((japanese-shift-jis ((4194220 4194278 4194199 4194213) emacs-mule)) (japanese-shift-jis-mac ((4194220 10 4194278 4194199 4194213) emacs-mule-mac)) (raw-text ((97 4194176 4194290 4194212) emacs-mule)) (raw-text ((120 4194177) utf-8)) (japanese-shift-jis ((4194278 4194199) utf-8)) (utf-8 ((26085) utf-8)))"##,
+        "file reads detected before the last block",
     );
 }
 

@@ -30,6 +30,10 @@ pub(crate) const ROOTS_RESET_AFTER_LOAD: &[(&str, &str)] = &[
         "keymap.c's staticpro'd where_is_cache is a memo of where_is_internal for menu-less lookups, used only while Fequal finds the keymaps it was built for in where_is_cache_keymaps and flushed by every store_in_keymap and Fset_keymap_parent; the image starts without one and the next such lookup rebuilds it",
     ),
     (
+        "gstrings",
+        "composite.c's staticpro'd gstring_hash_table, gstring_work and gstring_work_headers: loadup composes no text, so the dumped table is empty (a session's first cached glyph-string gets id 0) and the work vectors hold nothing a call reads before refilling them; the image starts them fresh, as syms_of_composite makes them",
+    ),
+    (
         "where_is_cache_keymaps",
         "the keymaps where_is_cache was built for (t while none is complete); reset with where_is_cache",
     ),

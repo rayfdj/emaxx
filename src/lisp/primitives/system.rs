@@ -1458,13 +1458,14 @@ fn call_expand_file_name_handler(
     name: Value,
     default_directory: Value,
 ) -> Result<Value, LispError> {
-    let function = match handler.kind() {
-        Kind::Symbol(symbol) => interp.lookup_function(&symbol, env)?,
-        other => other.value(),
+    // call3 (handler, ...): Ffuncall, which loads an autoloaded handler.
+    let (function, original_name) = match handler.kind() {
+        Kind::Symbol(symbol) => (interp.lookup_function(&symbol, env)?, Some(symbol)),
+        other => (other.value(), None),
     };
-    let handled = call_function_value(
-        interp,
-        &function,
+    let handled = interp.call_function_value(
+        function,
+        original_name.as_ref().map(|name| name.as_str()),
         &[expand_file_name_operation(), name, default_directory],
         env,
     )?;
@@ -1683,9 +1684,8 @@ pub(crate) fn expand_file_name_runtime(
     }
     // Fexpand_file_name substitutes the current buffer's `default-directory'
     // for a nil DEFAULT-DIRECTORY before anything else.  Callers that pass
-    // None (the copy family's expand_cp_target, visited-name bookkeeping)
-    // must therefore resolve a relative NAME against that Lisp value, never
-    // against the process working directory.
+    // None must therefore resolve a relative NAME against that Lisp value,
+    // never against the process working directory.
     let current_directory;
     let base = match base {
         Some(base) => Some(base),
@@ -1724,47 +1724,17 @@ pub(crate) fn expand_file_name_runtime(
         None
     };
     if let Some(handler) = handler {
-        let function = match handler.kind() {
-            Kind::Symbol(symbol) => interp.lookup_function(&symbol, env)?,
-            other => other.value(),
-        };
-        let handled = call_function_value(
+        let handled = call_expand_file_name_handler(
             interp,
-            &function,
-            &[
-                Value::Symbol("expand-file-name".into()),
-                Value::String(path.to_string().into()),
-                base.map(|value| Value::String(value.to_string().into()))
-                    .unwrap_or(Value::Nil),
-            ],
             env,
+            handler,
+            Value::String(path.to_string().into()),
+            base.map(|value| Value::String(value.to_string().into()))
+                .unwrap_or(Value::Nil),
         )?;
         return string_text(&handled);
     }
     Ok(expand_file_name_in_env(interp, env, path, base))
-}
-
-pub(crate) fn resolve_file_name_in_env(interp: &Interpreter, env: &Env, path: &str) -> String {
-    // `/:` quotes a local name so Lisp file-name handlers are bypassed.  Keep
-    // the marker in lexical file-name operations, but remove it at the one
-    // boundary where a name becomes a host path.
-    if let Some(unquoted) = unquote_local_file_name(path) {
-        return expand_file_name_in_env(interp, env, &unquoted, None);
-    }
-    if let Some(remote) = parse_remote_file_name(path) {
-        return resolved_remote_localname_in_env(interp, env, &remote);
-    }
-    if Path::new(path).is_absolute() {
-        return path.to_string();
-    }
-    let base = interp
-        .lookup_var("default-directory", env)
-        .and_then(|value| string_like(&value).map(|string| string.text));
-    let base = base
-        .as_deref()
-        .and_then(|base| unquote_local_file_name(base).or_else(|| Some(base.to_string())));
-    let expanded = expand_file_name_in_env(interp, env, path, base.as_deref());
-    unquote_local_file_name(&expanded).unwrap_or(expanded)
 }
 
 /// The canonical name files.el records in `buffer-file-truename', for
@@ -1836,9 +1806,10 @@ pub(crate) fn canonical_file_name(
     render(&candidate)
 }
 
-pub(crate) fn unquote_local_file_name(path: &str) -> Option<String> {
-    path.strip_prefix("/:")
-        .map(|rest| if rest.is_empty() { "/" } else { rest }.to_string())
+/// process.c:remove_slash_colon: NAME without the "/:" that quotes it,
+/// for the names callproc.c and process.c hand to the system.
+pub(crate) fn remove_slash_colon(name: &str) -> String {
+    name.strip_prefix("/:").unwrap_or(name).to_string()
 }
 
 pub(crate) fn expand_file_name_in_env(
@@ -1857,21 +1828,6 @@ pub(crate) fn expand_file_name_in_env(
         None
     };
     expand_file_name_with_home(path, base, home.as_deref())
-}
-
-pub(crate) fn resolved_remote_localname_in_env(
-    interp: &Interpreter,
-    env: &Env,
-    remote: &RemoteFileNameParts,
-) -> String {
-    if remote.method == "mock" {
-        let home = lisp_environment_string(interp, env, "HOME");
-        let localname =
-            unquote_local_file_name(&remote.localname).unwrap_or_else(|| remote.localname.clone());
-        expand_home_prefix_with_home(&localname, home.as_deref())
-    } else {
-        remote.localname.clone()
-    }
 }
 
 pub(crate) fn lisp_environment_string(
@@ -1972,32 +1928,6 @@ pub(crate) fn substitute_in_file_name(
     }
     super::make_specified_string(xnm[start..].to_vec(), multibyte)
         .map_err(|error| LispError::Signal(error.to_string()))
-}
-
-pub(crate) fn expand_home_prefix_with_home(path: &str, home: Option<&str>) -> String {
-    if path == "~" {
-        return home.unwrap_or(path).to_string();
-    }
-    if let Some(suffix) = path.strip_prefix("~/")
-        && let Some(home) = home
-    {
-        return PathBuf::from(home).join(suffix).display().to_string();
-    }
-    if let Some(rest) = path.strip_prefix('~') {
-        let (user, suffix) = rest
-            .split_once('/')
-            .map(|(user, suffix)| (user, Some(suffix)))
-            .unwrap_or((rest, None));
-        // fileio.c:Fexpand_file_name's `~user/': that user's passwd home
-        // directory; a name without one is kept as it is.
-        if let Some(home) = user_home_directory(user) {
-            return suffix.map_or_else(
-                || home.clone(),
-                |suffix| PathBuf::from(&home).join(suffix).display().to_string(),
-            );
-        }
-    }
-    path.to_string()
 }
 
 /// fileio.c:user_homedir: the absolute home directory of the passwd
@@ -2421,7 +2351,6 @@ enum DefaultDirectorySource {
 #[derive(Clone, Copy)]
 enum BufferFileSource {
     Current,
-    ArgumentOrCurrent,
 }
 
 /// One authoritative description of the file-name arguments and implicit
@@ -2498,7 +2427,6 @@ pub(crate) fn file_name_handler_operation(operation: &str) -> Option<FileNameHan
         | "file-directory-p"
         | "file-executable-p"
         | "file-exists-p"
-        | "file-locked-p"
         | "file-local-copy"
         | "file-modes"
         | "file-name-case-insensitive-p"
@@ -2514,7 +2442,6 @@ pub(crate) fn file_name_handler_operation(operation: &str) -> Option<FileNameHan
         | "get-file-buffer"
         | "insert-directory"
         | "insert-file-contents"
-        | "lock-file"
         | "make-directory"
         | "make-nearby-temp-file"
         | "make-temp-file"
@@ -2522,21 +2449,64 @@ pub(crate) fn file_name_handler_operation(operation: &str) -> Option<FileNameHan
         | "set-file-modes"
         | "set-file-selinux-context"
         | "set-file-times"
-        | "unlock-file"
         | "vc-registered" => FileNameHandlerOperation::new(&[0], RelativeArgument),
+        // filelock.c's Flock_file, Funlock_file and Ffile_locked_p search
+        // FILE as given; their bodies expand it.
+        "file-locked-p" | "lock-file" | "unlock-file" => FileNameHandlerOperation::new(&[0], Never),
         "list-system-processes"
         | "memory-info"
         | "process-attributes"
         | "shell-command"
         | "temporary-file-directory" => FileNameHandlerOperation::new(&[], Always),
-        "make-auto-save-file-name" | "set-visited-file-modtime" => {
+        "make-auto-save-file-name" => {
             FileNameHandlerOperation::new(&[], Always).with_buffer_file(BufferFileSource::Current)
         }
-        "verify-visited-file-modtime" => FileNameHandlerOperation::new(&[], Always)
-            .with_buffer_file(BufferFileSource::ArgumentOrCurrent),
+        // Their preambles search the buffer's visited file name.
+        "set-visited-file-modtime" | "verify-visited-file-modtime" => {
+            FileNameHandlerOperation::new(&[], Never)
+        }
         _ => return None,
     };
     Some(specification)
+}
+
+/// CHECK_STRING.
+fn check_string(value: Value) -> Result<Value, LispError> {
+    if value.is_string() {
+        Ok(value)
+    } else {
+        Err(LispError::WrongTypeArgument("stringp".into(), value))
+    }
+}
+
+/// Fexpand_file_name (NAME, Qnil).
+fn expand_file_name_nil(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    name: Value,
+) -> Result<Value, LispError> {
+    fexpand_file_name(interp, env, name, Value::Nil)
+}
+
+/// fileio.c expand_and_dir_to_file: the expanded name without its final
+/// slash, which Fdirectory_file_name removes (a handler's name cannot be
+/// cut short lexically).
+pub(crate) fn expand_and_dir_to_file(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    filename: Value,
+) -> Result<Value, LispError> {
+    let absname = expand_file_name_nil(interp, env, filename)?;
+    if let Kind::StringObject(state) = absname.kind() {
+        let ends_in_slash = {
+            let state = state.borrow();
+            state.len() > 1 && state.bytes().last() == Some(&b'/')
+        };
+        if ends_in_slash {
+            return super::call(interp, "directory-file-name", &[absname], env);
+        }
+    }
+    Ok(absname)
 }
 
 /// fileio.c expand_cp_target: a directory-name NEWNAME resolves to
@@ -2544,62 +2514,318 @@ pub(crate) fn file_name_handler_operation(operation: &str) -> Option<FileNameHan
 fn expand_cp_target(
     interp: &mut Interpreter,
     env: &mut Env,
-    file: &str,
-    newname: &str,
-) -> Result<String, LispError> {
-    if directory_name_p(newname) {
-        expand_file_name_runtime(interp, env, &file_name_nondirectory(file), Some(newname))
+    file: Value,
+    newname: Value,
+) -> Result<Value, LispError> {
+    // Fdirectory_name_p.
+    let Some((bytes, _)) = lisp_string_bytes(&newname) else {
+        return Err(LispError::WrongTypeArgument("stringp".into(), newname));
+    };
+    if bytes.last() == Some(&b'/') {
+        let nondirectory = super::call(interp, "file-name-nondirectory", &[file], env)?;
+        fexpand_file_name(interp, env, nondirectory, newname)
     } else {
-        expand_file_name_runtime(interp, env, newname, None)
+        expand_file_name_nil(interp, env, newname)
     }
 }
 
-fn normalize_copy_family_args(
+/// ARGS with the nils of the optional arguments the caller left out: a C
+/// primitive calls its handler with every argument it declares.
+fn with_omitted_arguments(operation: &str, args: &[Value]) -> Vec<Value> {
+    let mut args = args.to_vec();
+    if let Some((_, maximum)) = super::generated_builtin_arities::generated_builtin_arity(operation)
+        && let Ok(maximum) = usize::try_from(maximum)
+        && args.len() < maximum
+    {
+        args.resize(maximum, Value::Nil);
+    }
+    args
+}
+
+/// What a C file primitive does with its file names before it calls
+/// Ffind_file_name_handler: the arguments its handler receives, those its
+/// own body then runs on, and the names searched for a handler, in order.
+struct FilePreamble {
+    handler_args: Vec<Value>,
+    native_args: Vec<Value>,
+    lookups: Vec<Value>,
+    /// Fwrite_region's VISIT_FILE, the name a handled visit records.
+    visit_file: Option<Value>,
+}
+
+impl FilePreamble {
+    fn new(operation: &str, args: Vec<Value>, lookups: Vec<Value>) -> Self {
+        Self {
+            handler_args: with_omitted_arguments(operation, &args),
+            native_args: args,
+            lookups,
+            visit_file: None,
+        }
+    }
+}
+
+enum PreambleOutcome {
+    Names(FilePreamble),
+    /// The primitive's value, settled before any handler lookup.
+    Value(Value),
+}
+
+/// The fileio.c, dired.c and buffer.c bodies up to their handler lookup.
+/// Each expands its names (through `expand-file-name' handlers) before it
+/// searches for a handler of its own operation, and both the handler and
+/// the native body then see the expanded names.  None for an operation
+/// whose lookup takes its names as they are.
+fn file_primitive_preamble(
     interp: &mut Interpreter,
     env: &mut Env,
     operation: &str,
     args: &[Value],
-) -> Result<Option<Vec<Value>>, LispError> {
-    let (expand_first, basename_source_is_dir_stripped) = match operation {
-        "copy-file" | "add-name-to-file" => (true, false),
-        "rename-file" => (true, true),
-        "make-symbolic-link" => (false, false),
+) -> Result<Option<PreambleOutcome>, LispError> {
+    let mut args = args.to_vec();
+    let preamble = match operation {
+        "directory-files"
+        | "directory-files-and-attributes"
+        | "file-accessible-directory-p"
+        | "file-executable-p"
+        | "file-exists-p"
+        | "file-name-case-insensitive-p"
+        | "file-readable-p"
+        | "file-symlink-p"
+        | "file-system-info"
+        | "file-writable-p"
+        | "get-file-buffer"
+        | "insert-file-contents" => {
+            args[0] = expand_file_name_nil(interp, env, args[0])?;
+            let lookups = vec![args[0]];
+            FilePreamble::new(operation, args, lookups)
+        }
+        // Faccess_file: CHECK_STRING of STRING after the expansion, and
+        // its error names FILENAME as given, which the body receives
+        // after the two arguments.
+        "access-file" => {
+            let filename = check_string(args[0])?;
+            let absname = expand_file_name_nil(interp, env, filename)?;
+            let string = check_string(args[1])?;
+            FilePreamble {
+                handler_args: vec![absname, string],
+                native_args: vec![absname, string, filename],
+                lookups: vec![absname],
+                visit_file: None,
+            }
+        }
+        // Ffile_attributes expands under internal_condition_case_2 with
+        // Qt: a name expand-file-name refuses, or turns into a non-string,
+        // has no attributes; and a nil ID-FORMAT is not passed on.
+        "file-attributes" => {
+            let handlers =
+                interp.push_internal_condition_case(crate::lisp::eval::InternalHandlers::All);
+            let expanded = expand_file_name_nil(interp, env, args[0]);
+            interp.pop_handler_bindings(handlers);
+            match expanded {
+                Ok(filename) if filename.is_string() => args[0] = filename,
+                Ok(_) => return Ok(Some(PreambleOutcome::Value(Value::Nil))),
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        crate::lisp::types::LispErrorKind::Throw(_, _)
+                            | crate::lisp::types::LispErrorKind::Terminate(_)
+                    ) =>
+                {
+                    return Err(error);
+                }
+                Err(_) => return Ok(Some(PreambleOutcome::Value(Value::Nil))),
+            }
+            let id_format = args.get(1).copied().unwrap_or(Value::Nil);
+            let handler_args = if id_format.is_nil() {
+                vec![args[0]]
+            } else {
+                vec![args[0], id_format]
+            };
+            FilePreamble {
+                handler_args,
+                lookups: vec![args[0]],
+                native_args: args,
+                visit_file: None,
+            }
+        }
+        "file-acl"
+        | "file-directory-p"
+        | "file-modes"
+        | "file-regular-p"
+        | "file-selinux-context" => {
+            args[0] = expand_and_dir_to_file(interp, env, args[0])?;
+            let lookups = vec![args[0]];
+            FilePreamble::new(operation, args, lookups)
+        }
+        "file-newer-than-file-p" => {
+            check_string(args[0])?;
+            check_string(args[1])?;
+            args[0] = expand_and_dir_to_file(interp, env, args[0])?;
+            args[1] = expand_and_dir_to_file(interp, env, args[1])?;
+            let lookups = vec![args[0], args[1]];
+            FilePreamble::new(operation, args, lookups)
+        }
+        // Expanded against BVAR (current_buffer, directory), after the
+        // checks that come first: Fset_file_modes' CHECK_FIXNUM (MODE),
+        // Fset_file_times' lisp_time_argument (TIMESTAMP).
+        "set-file-acl" | "set-file-modes" | "set-file-selinux-context" | "set-file-times" => {
+            if operation == "set-file-modes" && !matches!(args[1].kind(), Kind::Integer(_)) {
+                return Err(LispError::WrongTypeArgument("fixnump".into(), args[1]));
+            }
+            if operation == "set-file-times"
+                && let Some(timestamp) = args.get(1).filter(|timestamp| timestamp.is_truthy())
+            {
+                super::file_io::file_modtime_from_value(interp, timestamp)?;
+            }
+            let directory = interp
+                .lookup_var("default-directory", env)
+                .unwrap_or(Value::Nil);
+            args[0] = fexpand_file_name(interp, env, args[0], directory)?;
+            let lookups = vec![args[0]];
+            FilePreamble::new(operation, args, lookups)
+        }
+        // DIRECTORY expanded and searched, then FILE as it is.
+        "file-name-all-completions" | "file-name-completion" => {
+            args[1] = expand_file_name_nil(interp, env, args[1])?;
+            let lookups = vec![args[1], args[0]];
+            FilePreamble::new(operation, args, lookups)
+        }
+        // Fcopy_file and Fadd_name_to_file expand FILE and run
+        // expand_cp_target; Frename_file feeds it (directory-file-name
+        // FILE).  Both names are searched.
+        "add-name-to-file" | "copy-file" | "rename-file" => {
+            args[0] = expand_file_name_nil(interp, env, args[0])?;
+            let basename_source = if operation == "rename-file" {
+                super::call(interp, "directory-file-name", &[args[0]], env)?
+            } else {
+                args[0]
+            };
+            args[1] = expand_cp_target(interp, env, basename_source, args[1])?;
+            let lookups = vec![args[0], args[1]];
+            FilePreamble::new(operation, args, lookups)
+        }
+        // Fmake_symbolic_link keeps TARGET as given, so that links to
+        // relative names stay possible; only an interactive call (a fixnum
+        // OK-IF-ALREADY-EXISTS) expands a leading `~' or drops a `/:'
+        // quote.  Only LINKNAME is searched.
+        "make-symbolic-link" => {
+            let mut target = check_string(args[0])?;
+            if matches!(args.get(2).map(|flag| flag.kind()), Some(Kind::Integer(_))) {
+                let bytes = lisp_string_bytes(&target).map(|(bytes, _)| bytes);
+                match bytes.as_deref() {
+                    Some([b'~', ..]) => target = expand_file_name_nil(interp, env, target)?,
+                    Some([b'/', b':', ..]) => {
+                        target = super::call(
+                            interp,
+                            "substring-no-properties",
+                            &[target, Value::Integer(2)],
+                            env,
+                        )?;
+                    }
+                    _ => {}
+                }
+            }
+            args[0] = target;
+            args[1] = expand_cp_target(interp, env, target, args[1])?;
+            let lookups = vec![args[1]];
+            FilePreamble::new(operation, args, lookups)
+        }
+        // Fwrite_region up to its lookup: the visiting check, the region,
+        // FILENAME expanded, the MUSTBENEW query, VISIT_FILE and the
+        // default LOCKNAME; FILENAME is searched, then VISIT as given.
+        // The body, past the query, runs as for a nil non-`excl'
+        // MUSTBENEW.
+        "write-region" => {
+            args.resize(7, Value::Nil);
+            let visit = args[4];
+            let visiting = matches!(visit.kind(), Kind::T) || visit.is_string();
+            if visiting && interp.buffer_base_id(interp.current_buffer_id()).is_some() {
+                return Err(LispError::Signal(
+                    "Cannot do file visiting in an indirect buffer".into(),
+                ));
+            }
+            if !args[0].is_nil() && !args[0].is_string() {
+                super::file_io::validate_write_region(interp, args[0], args[1])?;
+            }
+            args[2] = expand_file_name_nil(interp, env, args[2])?;
+            let mut native_args = args.clone();
+            let mustbenew = args[6];
+            if mustbenew.is_truthy() && mustbenew.symbol_str() != Some("excl") {
+                let filename = string_text(&args[2])?;
+                super::file_io::barf_or_query_if_file_exists(
+                    interp,
+                    env,
+                    &filename,
+                    false,
+                    "overwrite",
+                    true,
+                    true,
+                )?;
+                native_args[6] = Value::Nil;
+            }
+            let visit_file = if visit.is_string() {
+                expand_file_name_nil(interp, env, visit)?
+            } else {
+                args[2]
+            };
+            if args[5].is_nil() {
+                args[5] = visit_file;
+                native_args[5] = visit_file;
+            }
+            let mut lookups = vec![args[2]];
+            if visit.is_string() {
+                lookups.push(visit);
+            }
+            FilePreamble {
+                handler_args: args,
+                native_args,
+                lookups,
+                visit_file: Some(visit_file),
+            }
+        }
+        // Fverify_visited_file_modtime searches the buffer's file name as
+        // it is, once the buffer has one and a known modtime.
+        "verify-visited-file-modtime" => {
+            let buffer = interp.decode_buffer(args.first())?;
+            let file = {
+                let buffer = buffer.borrow();
+                buffer.file.clone().filter(|_| {
+                    buffer.visited_file_modtime().stamp != crate::buffer::ModtimeStamp::Unknown
+                })
+            };
+            let lookups = file.iter().map(|file| Value::string(file)).collect();
+            FilePreamble::new(operation, args, lookups)
+        }
+        // Fset_visited_file_modtime without TIME-FLAG, in a buffer that is
+        // not indirect, expands the buffer's file name and searches it;
+        // the body receives that name after TIME-FLAG.
+        "set-visited-file-modtime" => {
+            let time_flag = args.first().copied().unwrap_or(Value::Nil);
+            if time_flag.is_truthy() || interp.buffer_base_id(interp.current_buffer_id()).is_some()
+            {
+                FilePreamble::new(operation, args, Vec::new())
+            } else {
+                let file = interp
+                    .lookup_var("buffer-file-name", env)
+                    .unwrap_or(Value::Nil);
+                let filename = expand_file_name_nil(interp, env, file)?;
+                FilePreamble {
+                    handler_args: vec![Value::Nil],
+                    native_args: vec![Value::Nil, filename],
+                    lookups: vec![filename],
+                    visit_file: None,
+                }
+            }
+        }
         _ => return Ok(None),
     };
-    let (Some(first), Some(second)) = (args.first(), args.get(1)) else {
-        return Ok(None);
-    };
-    let (Some(first_text), Some(second_text)) = (string_like(first), string_like(second)) else {
-        return Ok(None);
-    };
-    // Fmake_symbolic_link keeps TARGET verbatim so links to relative names
-    // stay possible; only the interactive path (a fixnum
-    // OK-IF-ALREADY-EXISTS) expands a leading `~' or drops a `/:' quote.
-    let interactive_symlink = operation == "make-symbolic-link"
-        && matches!(args.get(2).map(|v| v.kind()), Some(Kind::Integer(_)));
-    let file = if expand_first || (interactive_symlink && first_text.text.starts_with('~')) {
-        expand_file_name_runtime(interp, env, &first_text.text, None)?
-    } else if interactive_symlink && first_text.text.starts_with("/:") {
-        first_text.text[2..].to_string()
-    } else {
-        first_text.text.clone()
-    };
-    let basename_source = if basename_source_is_dir_stripped {
-        directory_file_name(&file)
-    } else {
-        file.clone()
-    };
-    let newname = expand_cp_target(interp, env, &basename_source, &second_text.text)?;
-    let mut normalized = args.to_vec();
-    normalized[0] = Value::string(&file);
-    normalized[1] = Value::string(&newname);
-    Ok(Some(normalized))
+    Ok(Some(PreambleOutcome::Names(preamble)))
 }
 
 /// Outcome of the file-name-handler choke point: either a handler produced
-/// the operation's value, or the native primitive must run -- with the
-/// fileio.c-normalized arguments when the operation is one that expands
-/// its names before the handler lookup.
+/// the operation's value, or the native primitive must run -- on the
+/// arguments its preamble expanded, for a primitive that expands its names
+/// before the handler lookup.
 pub(crate) enum FileNameDispatch {
     Handled(Value),
     Native(Option<Vec<Value>>),
@@ -2612,12 +2838,6 @@ pub(crate) fn dispatch_file_name_handler(
     specification: FileNameHandlerOperation,
     args: &[Value],
 ) -> Result<FileNameDispatch, LispError> {
-    // fileio.c normalizes the copy-family arguments BEFORE the handler
-    // lookup, so a Lisp handler (Tramp) receives the already-joined
-    // target: Fcopy_file and Fadd_name_to_file expand FILE and run
-    // expand_cp_target (a directory NEWNAME becomes NEWNAME/basename);
-    // Frename_file feeds directory-file-name FILE to expand_cp_target;
-    // Fmake_symbolic_link leaves TARGET verbatim and joins only LINKNAME.
     // Finsert_file_contents checks the buffer before it looks for a
     // handler.
     let empty_undo_list_p = if operation == "insert-file-contents" {
@@ -2625,48 +2845,21 @@ pub(crate) fn dispatch_file_name_handler(
     } else {
         false
     };
-    let normalized = normalize_copy_family_args(interp, env, operation, args)?;
-    let args = normalized.as_deref().unwrap_or(args);
-    let mut candidates = specification
-        .string_indices
-        .iter()
-        .filter_map(|index| args.get(*index))
-        .filter_map(string_like)
-        .map(|string| string.text)
-        .collect::<Vec<_>>();
-
-    let uses_implicit_default_directory = match specification.default_directory {
-        DefaultDirectorySource::Never => false,
-        DefaultDirectorySource::RelativeArgument => {
-            candidates.iter().any(|file| !file_name_absolute_p(file))
-        }
-        DefaultDirectorySource::Always => true,
+    let preamble = match file_primitive_preamble(interp, env, operation, args)? {
+        Some(PreambleOutcome::Value(value)) => return Ok(FileNameDispatch::Handled(value)),
+        Some(PreambleOutcome::Names(preamble)) => Some(preamble),
+        None => None,
     };
-    if uses_implicit_default_directory
-        && let Some(directory) = interp.lookup_var("default-directory", env)
-        && let Some(directory) = string_like(&directory)
-    {
-        candidates.push(directory.text);
-    }
+    let candidates = match &preamble {
+        Some(preamble) => preamble.lookups.clone(),
+        None => file_name_handler_candidates(interp, env, specification, args),
+    };
 
-    if let Some(buffer_file) = specification.buffer_file {
-        let buffer_id = match buffer_file {
-            BufferFileSource::Current => interp.current_buffer_id(),
-            BufferFileSource::ArgumentOrCurrent => args
-                .first()
-                .filter(|buffer| buffer.is_truthy())
-                .and_then(|buffer| interp.resolve_buffer_id(buffer).ok())
-                .unwrap_or_else(|| interp.current_buffer_id()),
-        };
-        if let Some(file) = interp
-            .get_buffer_by_id(buffer_id)
-            .and_then(|buffer| buffer.file.clone())
-        {
-            candidates.push(file);
-        }
-    }
-
-    for file in candidates {
+    for candidate in candidates {
+        // Ffind_file_name_handler: CHECK_STRING.
+        let file = string_like(&candidate)
+            .map(|string| string.text)
+            .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), candidate))?;
         let Some(handler) = find_file_name_handler(interp, env, &file, Value::symbol(operation))?
         else {
             continue;
@@ -2678,27 +2871,50 @@ pub(crate) fn dispatch_file_name_handler(
             }
             function => (function.value(), None),
         };
-        let mut handler_args = std::iter::once(Value::Symbol(operation.into()))
-            .chain(args.iter().cloned())
+        let handler_args = match &preamble {
+            Some(preamble) => preamble.handler_args.clone(),
+            None => with_omitted_arguments(operation, args),
+        };
+        let handler_args = std::iter::once(Value::Symbol(operation.into()))
+            .chain(handler_args)
             .collect::<Vec<_>>();
-        if operation == "verify-visited-file-modtime" && args.is_empty() {
-            handler_args.push(Value::Nil);
-        }
         let result = interp.call_function_value(
             function,
             original_name.as_ref().map(|name| name.as_str()),
             &handler_args,
             env,
         )?;
-        // Funhandled_file_name_directory accepts only a string from the
-        // handler; every other return value means the directory is not
-        // directly usable and becomes nil.
-        let result =
-            if operation == "unhandled-file-name-directory" && string_like(&result).is_none() {
+        let args = &handler_args[1..];
+        let result = match operation {
+            // Funhandled_file_name_directory and Ffile_name_directory
+            // accept only a string from the handler; every other value
+            // means there is no usable directory.
+            "file-name-directory" | "unhandled-file-name-directory"
+                if string_like(&result).is_none() =>
+            {
                 Value::Nil
-            } else {
-                result
-            };
+            }
+            // The other name transformers require a string.
+            "directory-file-name"
+            | "file-name-as-directory"
+            | "file-name-nondirectory"
+            | "substitute-in-file-name"
+                if string_like(&result).is_none() =>
+            {
+                return Err(LispError::Signal(
+                    "Invalid handler in `file-name-handler-alist'".into(),
+                ));
+            }
+            // Fget_file_buffer: only a buffer.
+            "get-file-buffer" if !matches!(result.kind(), Kind::Buffer(_)) => Value::Nil,
+            // Ffile_system_info: a list or nothing.
+            "file-system-info" if !result.is_nil() && result.cons_values().is_none() => {
+                return Err(LispError::Signal(
+                    "Invalid handler in `file-name-handler-alist'".into(),
+                ));
+            }
+            _ => result,
+        };
         if operation == "insert-file-contents" {
             // The count in the handler's value when it is one, then the
             // visit's record: an undo list emptied for an empty one, the
@@ -2725,32 +2941,63 @@ pub(crate) fn dispatch_file_name_handler(
             }
             finish_insert_file_contents(interp, env, inserted, &args[1..], empty_undo_list_p)?;
         }
-        if operation == "write-region"
-            && let Some(visit) = args.get(4)
-            && (matches!(visit.kind(), Kind::T) || string_like(visit).is_some())
+        if let Some(visit_file) = preamble.as_ref().and_then(|preamble| preamble.visit_file)
+            && (matches!(args[4].kind(), Kind::T) || args[4].is_string())
         {
-            // GNU's native write-region retains responsibility for the
-            // VISIT postconditions even when a Lisp file-name handler writes
-            // the bytes.  Handlers such as jka-compr update the visited
-            // modtime, then rely on this outer primitive boundary to record
-            // the visited name and mark the source buffer saved.
-            let visited_name = if matches!(visit.kind(), Kind::T) {
-                args.get(2)
-                    .and_then(string_like)
-                    .map(|name| name.text)
-                    .ok_or_else(|| LispError::TypeError("string".into(), "non-string".into()))?
-            } else {
-                string_like(visit)
-                    .map(|name| name.text)
-                    .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *visit))?
-            };
-            interp.buffer.borrow_mut().file =
-                Some(expand_file_name_runtime(interp, env, &visited_name, None)?);
+            // Fwrite_region keeps the VISIT postconditions even when a
+            // handler writes the bytes: jka-compr's updates the visited
+            // modtime and relies on this boundary to record VISIT_FILE
+            // and mark the buffer saved.
+            interp.buffer.borrow_mut().file = Some(string_text(&visit_file)?);
             super::file_io::record_visit_saved(interp);
         }
         return Ok(FileNameDispatch::Handled(result));
     }
-    Ok(FileNameDispatch::Native(normalized))
+    Ok(FileNameDispatch::Native(
+        preamble.map(|preamble| preamble.native_args),
+    ))
+}
+
+/// The names an operation without a preamble is searched by: its file
+/// arguments as given, then the implicit default directory and visited
+/// file its specification names.
+fn file_name_handler_candidates(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    specification: FileNameHandlerOperation,
+    args: &[Value],
+) -> Vec<Value> {
+    let mut candidates = specification
+        .string_indices
+        .iter()
+        .filter_map(|index| args.get(*index).copied())
+        .filter(|arg| string_like(arg).is_some())
+        .collect::<Vec<_>>();
+    let uses_implicit_default_directory = match specification.default_directory {
+        DefaultDirectorySource::Never => false,
+        DefaultDirectorySource::RelativeArgument => candidates
+            .iter()
+            .any(|file| string_like(file).is_some_and(|file| !file_name_absolute_p(&file.text))),
+        DefaultDirectorySource::Always => true,
+    };
+    if uses_implicit_default_directory
+        && let Some(directory) = interp.lookup_var("default-directory", env)
+        && string_like(&directory).is_some()
+    {
+        candidates.push(directory);
+    }
+    if let Some(buffer_file) = specification.buffer_file {
+        let buffer_id = match buffer_file {
+            BufferFileSource::Current => interp.current_buffer_id(),
+        };
+        if let Some(file) = interp
+            .get_buffer_by_id(buffer_id)
+            .and_then(|buffer| buffer.file.clone())
+        {
+            candidates.push(Value::string(&file));
+        }
+    }
+    candidates
 }
 
 /// dired.c's open_directory and read_dirent loop: DIRECTORY's entry
@@ -2819,14 +3066,25 @@ pub(crate) fn read_directory_entries(
     result.map(|()| names)
 }
 
+/// dired.c:directory_files_internal over DIRECTORY, a name its caller
+/// expanded: DIRECTORY's `directory-file-name' opened (an error names
+/// that), each name read DECODE_FILE'd and matched, up to COUNT matches
+/// kept in the order read, and a FULL name DIRECTORY's text and the
+/// name's (concatenated bytes, so without the name's text properties),
+/// multibyte when either is.  With ATTRS, the ID-FORMAT of
+/// `directory-files-and-attributes': each entry is (NAME . ATTRIBUTES),
+/// file_attributes of the name in the directory read, and a name whose
+/// attributes are nil (gone since it was read) is left out.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn directory_files(
     interp: &mut Interpreter,
-    directory: &str,
+    directory: Value,
     full: bool,
     matcher: Option<&Value>,
     nosort: bool,
     count: Option<usize>,
-    env: &Env,
+    attrs: Option<Value>,
+    env: &mut Env,
 ) -> Result<Value, LispError> {
     use std::os::unix::ffi::OsStrExt;
     if let Some(matcher) = matcher
@@ -2834,15 +3092,18 @@ pub(crate) fn directory_files(
     {
         return Err(LispError::WrongTypeArgument("stringp".into(), *matcher));
     }
-    let directory = resolve_file_name_in_env(interp, env, directory);
-    let names = read_directory_names(&host_file_name(interp, env, &directory)?)
-        .map_err(|(step, error)| file_operation_error(step, &error, &directory))?;
-    // dired.c directory_files_internal: each name read is DECODE_FILE'd
-    // and matched, up to COUNT matches are kept in the order read, and a
-    // FULL name is the directory's text and the name's (concatenated
-    // bytes, so without the name's text properties), multibyte when
-    // either is.
-    let prefix = file_name_as_directory(&directory);
+    let dirfilename = super::call(interp, "directory-file-name", &[directory], env)?;
+    let host_directory = host_file_name(interp, env, &string_text(&dirfilename)?)?;
+    let directory_text = string_text(&directory)?;
+    let names = read_directory_names(&host_directory).map_err(|(step, error)| {
+        let file = if step == "Opening directory" {
+            dirfilename
+        } else {
+            directory
+        };
+        super::file_io::report_file_errno(step, file, &error)
+    })?;
+    let prefix = file_name_as_directory(&directory_text);
     let directory_multibyte = prefix
         .chars()
         .any(|ch| !is_raw_byte_regex_char(ch) && (ch as u32) > 0x7f);
@@ -2870,23 +3131,44 @@ pub(crate) fn directory_files(
         {
             continue;
         }
-        let name = if full {
+        let attributes = match attrs {
+            Some(id_format) => {
+                let attributes = super::dispatch::file_attributes(
+                    interp,
+                    env,
+                    &host_directory.join(&host_name),
+                    name,
+                    id_format,
+                )?;
+                if attributes.is_nil() {
+                    continue;
+                }
+                Some(attributes)
+            }
+            None => None,
+        };
+        let finalname = if full {
             let multibyte =
                 directory_multibyte || string_like(&name).is_some_and(|string| string.multibyte);
             make_shared_string_value_with_multibyte(format!("{prefix}{text}"), None, multibyte)
         } else {
             name
         };
-        entries.push((text, name));
+        let entry = match attributes {
+            Some(attributes) => Value::cons(finalname, attributes),
+            None => finalname,
+        };
+        entries.push((text, entry));
     }
     // The list is consed up in reading order, so NOSORT gives it last
-    // read first; otherwise it is sorted with string-lessp.
+    // read first; otherwise it is sorted with string-lessp, or with
+    // file-attributes-lessp (string-lessp of the names) for ATTRS.
     if nosort {
         entries.reverse();
     } else {
         entries.sort_by(|left, right| left.0.cmp(&right.0));
     }
-    Ok(Value::list(entries.into_iter().map(|(_, name)| name)))
+    Ok(Value::list(entries.into_iter().map(|(_, entry)| entry)))
 }
 
 pub(crate) fn default_charset_plist(name: &str, interp: &Interpreter) -> Option<Value> {
@@ -2977,10 +3259,6 @@ pub(crate) fn path_to_directory_string(path: &Path) -> String {
     rendered
 }
 
-pub(crate) fn file_readable_p(path: &Path) -> bool {
-    fs::File::open(path).is_ok()
-}
-
 /// fileio.c:file_accessible_directory_p on POSIX: check DIR/./ with
 /// faccessat(F_OK, AT_EACCESS). Search permission, not read permission,
 /// permits opening children. This internal path does not invoke Lisp handlers.
@@ -3056,26 +3334,6 @@ pub(crate) fn file_writable_p(path: &Path) -> bool {
             Ok(metadata) => !metadata.permissions().readonly(),
             Err(_) => path.parent().is_some_and(Path::is_dir),
         }
-    }
-}
-
-/// fileio.c Ffile_executable_p is `file_access_p (name, X_OK)': a plain
-/// `faccessat' with AT_EACCESS, so a searchable directory is executable too.
-pub(crate) fn file_executable_p(path: &Path) -> bool {
-    #[cfg(unix)]
-    {
-        use std::os::unix::ffi::OsStrExt;
-        let Ok(path) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
-            return false;
-        };
-        // SAFETY: `path' is a valid NUL-terminated string for the call.
-        let status =
-            unsafe { libc::faccessat(libc::AT_FDCWD, path.as_ptr(), libc::X_OK, libc::AT_EACCESS) };
-        status == 0
-    }
-    #[cfg(not(unix))]
-    {
-        fs::metadata(path).is_ok()
     }
 }
 

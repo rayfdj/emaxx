@@ -13292,6 +13292,323 @@ setup_process_coding_systems's check now refuses). A 13-form
   GNU. Local validation: the grouped gate's 3,484 library tests,
   the integration targets and clippy with `--all-targets --all-features
   -D warnings' pass.
+- **Round 274: the dumping process's GC and undo settings, and the regex
+  optimizer's charset comparison, as GNU's.** A sweep of every face and
+  every customizable variable's `standard-value' against the oracle
+  found `gc-cons-percentage' recorded as (1.0) and `undo-outer-limit' as
+  (nil): emacs.c sets gc-cons-percentage to 1.0 only when
+  `noninteractive && initialized', and clears undo-outer-limit only in
+  an initialized batch session, so in the dumping process (`--temacs')
+  they are 0.1 and 24000000 while loadup runs and cus-start records
+  those as the standard values; the batch startup now tells the dumping
+  process from a session. A regex fuzz (20,000 patterns and strings,
+  case folded and not) found a panic: mutually_exclusive_charset takes
+  `p2[1]' as the bitmap size of the charset after a loop, which in a
+  unibyte pattern keeps the range-table flag of a charset with a class,
+  so GNU's comparison reads on past that charset's bitmap, through the
+  operations after it and past the end of the compiled pattern into the
+  buffer's spare bytes; Emaxx's reads are now bounded, the bytes past
+  the pattern reading as zeros, and the optimizer reaches GNU's verdicts
+  on every fuzzed pattern. Fuzzes of the reader (20,000 strings of
+  reader tokens), the printer (12,000 objects under every print-*
+  variable), string functions (15,000 calls of splitting, trimming,
+  searching, casing, conversion, padding and format), arithmetic (18,000
+  operations over fixnums, bignums and floats), sexp scanning (9,000
+  scans in four modes), buffer editing with markers, text properties and
+  undo (2,000 edit sequences), time conversion and formatting, keymaps,
+  sxhash of symbol-free objects, JSON parsing and serialization, base64
+  and secure hashes, `sort' (an inconsistent predicate included),
+  char-table ranges under map-char-table and replace-match match GNU
+  throughout. Two findings are GNU's own: transpose-regions over
+  intervals crashed the oracle in copy_intervals (the editing fuzz
+  leaves it out), and Fget_pos_property never fills the sortvec of its
+  first candidate overlay, so whether a later overlay displaces it
+  depends on stale stack bytes (a user-space address in a fresh process,
+  which keeps the first; the sortvec a preceding get-char-property left,
+  which ranks them as compare_overlays does); Emaxx keeps
+  compare_overlays' order, and 37 of 1,049 fuzzed calls answer
+  differently. Contracts for the regex comparison and the dumping
+  process's values match GNU. Local validation: the grouped gate's
+  3,485 library tests, the integration targets and clippy with
+  `--all-targets --all-features -D warnings' pass.
+- **Round 275: noninteractive `vertical-motion' and `compute-motion' as
+  indent.c's vmotion and compute_motion.** A fuzz of the indentation
+  commands (3,600 edit sequences of current-column, move-to-column,
+  indent-to, indent-rigidly, tabify and untabify, forward-line,
+  line-number-at-pos and vertical-motion under varied tab-width,
+  indent-tabs-mode and invisibility) found vertical-motion answering
+  differently: noninteractively it laid screen lines out with tabs eight
+  columns wide whatever `tab-width' said. Fvertical_motion's batch path
+  is now vmotion, upward a line at a time past the lines selective
+  display or an invisible newline hides and then compute_motion down
+  from the start of point's line, with the current buffer shown in the
+  window meanwhile (the line-based scrolling and move-to-window-line
+  that call it follow); and `compute-motion' is compute_motion itself:
+  tab stops at the buffer's tab-width with HSCROLL and TAB-OFFSET,
+  control characters by ctl-arrow, the window's display table (its glyph
+  vectors, and the invis vector selective display's ellipsis takes),
+  multibyte widths from char-width-table, selective display's hidden
+  lines and ^M, the window's overlay before- and after-strings by their
+  widths, invisible text skipped as skip_invisible skips it, truncation
+  and continuation at the margin with a wide character moved whole, and
+  compositions: a static one takes its width and an automatic one is
+  stepped a glyph cluster at a time by its characters' widths, through
+  the stops composition_compute_stop_pos finds and the reseats
+  composition_reseat_it makes, so after invisible text inside a
+  composition its last cluster takes the next character as GNU's does.
+  One GNU quirk is not reproduced: there the byte position then advances
+  by the composed characters' bytes rather than the buffer's, so later
+  characters are read from the wrong bytes until the next
+  resynchronization; Emaxx goes on reading characters. With the port
+  1,600 random buffers under 12 vertical motions and 6 compute-motion
+  calls each match GNU but for one buffer that meets that quirk, and the
+  indentation fuzz matches throughout. Fuzzes of text-property queries
+  (3,600 sequences of the next and previous property-change family,
+  text-property-any and -not-all, add-face-text-property,
+  alter-text-property and text-property-search), coding systems (2,000
+  encodings, decodings and detections over 37 coding systems), words,
+  comments and syntax-table scanning (1,600 buffers under five comment
+  and fence styles), file names (2,400 calls of expand-file-name,
+  substitute-in-file-name, the file-name- family and
+  abbreviate-file-name) and narrowing (2,400 sequences of narrowing,
+  widening, edits, searches, line motion and markers within
+  restrictions) match GNU throughout. A contract for the batch motions
+  matches GNU. Local validation: the grouped gate's 3486 library
+  tests, the integration targets (cli after one rerun: its GNU oracle's
+  `sleep' child outlived the five-second check while a release build
+  ran) and clippy with `--all-targets --all-features -D warnings' pass.
+- **Round 276: composite.c's glyph-string work vectors and cache, and
+  file reads detected before the last block.** `composition-get-gstring'
+  now fills composite.c's gstring_work, one vector kept from call to
+  call with its glyph vectors reused, and for one to eight characters
+  the work header of that length, so successive calls return the same
+  objects as GNU's; the glyph-strings composition_reseat_it makes for
+  automatic compositions (compute-motion's, round 275) go into
+  gstring_hash_table under the id composition_gstring_put_cache gives
+  them, a later `composition-get-gstring', `font-shape-gstring' or
+  autocmp_chars of the same header returns the cached one, and
+  `clear-composition-cache' makes a new table and clears the face cache.
+  The image does not carry them, as the inventory of roots now records:
+  loadup composes no text, so GNU's dumped table is empty (a session's
+  first cached glyph-string gets id 0) and its work vectors hold nothing
+  a call reads before refilling them. A fuzz of file input and output
+  (900 writes under 21 coding systems, each read back literally and
+  under a random `coding-system-for-read') found three files GNU reads
+  as emacs-mule and Emaxx as japanese-shift-jis: decode_coding_gap runs
+  detect_coding before it sets CODING_MODE_LAST_BLOCK, so a detector
+  that reaches the end of the file inside a character takes the text
+  there, where decode-coding-string's last block rejects it, and Emaxx's
+  emacs-mule detector rejected a sequence the end cut short whatever the
+  block. Its reads past the end now go to no_more_source as
+  ONE_MORE_BYTE's do; with that the file fuzz matches GNU throughout.
+  Fuzzes of overlays (400 buffers under 25 random operations each:
+  overlays made with either advance, moved, deleted and removed,
+  insertions before markers, deletions, narrowing, transposition and
+  substitution, with overlays-at, overlays-in, the overlay- and
+  char-property-change family and get-char-property-and-overlay), of
+  format-mode-line (1,500 random constructs over %-specs with widths,
+  :eval, :propertize, conditionals, widths and conses, in buffers
+  modified, read-only or narrowed) and of string widths (3,000 strings
+  of tabs, controls, raw bytes, combining, wide, zero-width and emoji
+  characters, invisible and display text, under string-width,
+  char-width, truncate-string-to-width, string-pad, string-limit and
+  column motion) match GNU, but for the get-pos-property artifact
+  recorded at round 274, which one overlay buffer meets. In the width
+  fuzz string-limit with a coding system, after the cases before it,
+  loops without end in string-glyph-split on a thumbs-up and its
+  skin-tone modifier in GNU and Emaxx alike (alone that call returns at
+  once); there GNU's memory_full signals `memory-signal-data' and the
+  run goes on, where Emaxx aborts, as it does for any allocation that
+  fails ((make-vector (expt 2 32) nil) signals in GNU too): a gap to
+  port. Contracts for the glyph-string objects and cache and for file
+  reads detected before the last block match GNU. Local validation: the
+  grouped gate's 3,488 library tests (the lightweight group run
+  again once the inventory listed the glyph-string state), the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass.
+- **Round 277: alloc.c's memory_full.** A Lisp allocation the system
+  refuses now signals as GNU's memory_full does, where Emaxx aborted:
+  `make-vector', `vconcat', `make-bool-vector', `make-hash-table'
+  (key_and_value, hash and next allocated in fns.c's order, each charged
+  to the consing count before its xmalloc when its byte count fits a
+  ptrdiff_t, as GNU's overflowing product does not, then "Hash table too
+  large" past compute_hash_index_bits' bound, then the index),
+  `make-string' and the other string makers, the buffer gap
+  insert_1_both makes room in (enlarge_buffer_text's failed xrealloc,
+  after the before-change hooks) and `format''s buffer for a field width
+  or precision. A count past VECTOR_ELTS_MAX, or for `vconcat' a total
+  length past most-positive-fixnum, reaches memory_full (SIZE_MAX)
+  before anything is allocated. memory_full signals the current
+  `memory-signal-data' object itself. Unless the request was larger than
+  SPARE_MEMORY (16 KB) and that much can still be had, memory is short:
+  `memory-full' becomes t, consing_until_gc drops to
+  memory_full_cons_threshold (32,744 bytes), and while `memory-full'
+  stays t each collection is due again within that much consing (a
+  system-malloc build has no spare memory to release). `insert-char'
+  inserts as Finsert_char does: BUF_BYTES_MAX / LEN < COUNT is "Maximum
+  buffer size exceeded", and the copies go in as strings of at most
+  4,000 bytes of whole characters, each an insertion with its own change
+  hooks, so 9,001 copies of `a' run before-change-functions and
+  after-change-functions three times. `vconcat' adds up its arguments'
+  Flength before the one vector is made. A charge of
+  most-positive-fixnum's arrays had saturated the process's allocation
+  counter in the first gate run and stopped every later collection in
+  the test process; sizes past a ptrdiff_t are no longer charged.
+  Eighteen allocation cases under a 6 GB address-space limit (vectors,
+  bool-vectors, hash tables, strings, records, buffers, `format',
+  `concat') give GNU's error and `memory-full' value, and contracts for
+  sizes no address space holds and for insert-char's chunks match GNU.
+  Local validation: the grouped gate's 3,490 library tests (the a-l
+  primitives group run again with the charge fixed), the integration
+  targets (the cli target run again outside nohup, under which GNU's
+  child in batch_exit_terminates_owned_children_like_gnu inherited an
+  ignored SIGHUP and outlived it) and clippy with `--all-targets
+  --all-features -D warnings' pass.
+- **Round 278: fileio.c's file predicates, absolute names read
+  lexically, and fatal signals during a blocked system call.**
+  `file-exists-p', `file-readable-p' and `file-executable-p' are
+  check_file_access: the expanded name ENCODE_FILE'd and faccessat with
+  F_OK, R_OK or X_OK under AT_EACCESS; `file-readable-p' used to open
+  the file, which on a FIFO with no writer waited for ever.
+  `file-directory-p' is file_directory_p's O_PATH | O_DIRECTORY open,
+  `file-symlink-p' readlinkat alone, `file-accessible-directory-p' and
+  `file-symlink-p' check that the name is a string, `access-file' checks
+  both its arguments, and `file-directory-p' and `file-regular-p' read
+  expand_and_dir_to_file's name, so a regular file's "f/" is a regular
+  file to `file-regular-p' as in GNU, which stats that name's internal
+  bytes rather than its ENCODE_FILE'd ones. The file primitives' names
+  are Fexpand_file_name's: an absolute name's `.', `..' and doubled
+  slashes were handed to the system as they were, so a symlink's `..'
+  went to the link target's parent ("DIR/link-to-root/../f" was "/f");
+  they now read lexically, for the predicates, `file-attributes',
+  `file-modes', `file-newer-than-file-p' and the rest. A SIGTERM, SIGHUP
+  or batch SIGINT that interrupts an open, read or write of
+  `insert-file-contents' or `write-region' (one of a FIFO no other
+  process has opened) now ends Emacs through `kill-emacs', status and
+  hook as GNU's handler gives them, where Emaxx waited on until a second
+  signal: the handlers no longer restart an interrupted call, and
+  emacs_open, emacs_read_quit and emacs_write_quit run maybe_quit on
+  EINTR (and emacs_read_quit before each read), which runs the pending
+  signal; the finding recorded at round 277 is retired. In
+  icalendar-import-rrule, whose stat calls the CI record of round 276
+  notes, Emaxx's newfstatat calls fall from 2,857 to 667 (GNU's 278, the
+  rest a test diary's six stats against five and NSS lookups) and its
+  faccessat2 calls rise from 233 to 1,737 (GNU's 1,765). Contracts for
+  the predicates over files, directories, symlinks dangling and not,
+  "f/" names and lexical `..' match GNU, as does a FIFO's
+  `file-readable-p'; the CLI test of SIGTERM covers a blocked FIFO open
+  for reading and for writing. Local validation: the grouped gate's
+  3,492 library tests (the process contract of round 256 after one
+  rerun alone, its GNU oracle's process timing having disagreed under
+  load), the integration targets and clippy with `--all-targets
+  --all-features -D warnings' pass.
+- **Round 279: the file primitives expand their names before the handler
+  lookup, as fileio.c does.** Each C file primitive now runs its own
+  preamble at the file-name-handler choke point, through the
+  `expand-file-name' handler and in GNU's order, before it searches for
+  a handler of its own operation, and the handler and the native body
+  both receive the expanded names. `access-file', `directory-files',
+  `directory-files-and-attributes', `file-accessible-directory-p',
+  `file-attributes', `file-executable-p', `file-exists-p',
+  `file-name-case-insensitive-p', `file-readable-p', `file-symlink-p',
+  `file-system-info', `file-writable-p', `get-file-buffer' and
+  `insert-file-contents' expand with a nil default; `file-acl',
+  `file-directory-p', `file-modes', `file-regular-p',
+  `file-selinux-context' and both names of `file-newer-than-file-p' take
+  expand_and_dir_to_file's name, whose final slash Fdirectory_file_name
+  removes; the `set-file-' family expands against the buffer's directory
+  after its own checks; the completion pair expands DIRECTORY and
+  searches it before FILE; `copy-file' and `add-name-to-file' run
+  expand_cp_target on the expanded FILE, and `rename-file' on its
+  `directory-file-name', with `file-name-nondirectory' through its
+  handler, where Emaxx had used "/tmp/" as their default; and
+  `write-region' validates the region, expands FILENAME, asks about
+  MUSTBENEW, expands VISIT and defaults LOCKNAME to it before searching
+  FILENAME and then VISIT as given, recording that VISIT_FILE after a
+  handled visit. Emaxx used to hand the handler the names as given, a
+  relative one found through `default-directory'. A handler receives
+  every argument the primitive declares, `file-attributes'' its
+  ID-FORMAT only when non-nil; `get-file-buffer' keeps only a buffer
+  from its handler, and a `file-system-info' handler's value other than
+  a list is an error. `lock-file', `unlock-file' and `file-locked-p'
+  search FILE as given (their bodies expand it and ask
+  `make-lock-file-name'), `set-visited-file-modtime' the expanded
+  visited name and `verify-visited-file-modtime' that name as it is,
+  neither of them `default-directory' any more; `delete-file-internal',
+  `delete-directory-internal' (through `directory-file-name') and
+  `make-directory-internal' expand through the handler, and
+  `unhandled-file-name-directory' ends in `file-name-as-directory',
+  which may have one. The `expand-file-name' handler is now called as
+  Ffuncall calls it, so an autoloaded handler is loaded by that call,
+  which for these primitives is now the handler's first; a test whose
+  autoloaded handler answered nil for `expand-file-name', which GNU
+  rejects as an invalid handler after loading it, now has that handler
+  pass the operation on. `directory-file-name',
+  `file-name-as-directory', `file-name-nondirectory' and
+  `substitute-in-file-name' signal for a handler's value that is not a
+  string, and `file-name-directory' takes it as nil. A contract of 89
+  operations' handler traces under an absolute handled name and under a
+  handled `default-directory' matches GNU, as does one of the checks
+  before and between the expansions, write-region's MUSTBENEW and VISIT,
+  and the name transformers' handler values. The frozen run's one
+  failure on the round 278 head,
+  files-tests-file-name-non-special-make-directory, passes again:
+  `file-directory-p' of "dir" under a `/:' quoted `default-directory'
+  searches the expanded "/:.../dir" and reaches file-name-non-special,
+  as in GNU. Local validation: the grouped gate's 3,493 library
+  tests, the integration targets and clippy with `--all-targets
+  --all-features -D warnings' pass.
+- **Round 280: no `/:' unquoting or Tramp emulation below Lisp, and
+  file-attributes as dired.c.** GNU's C file primitives hand a `/:'
+  quoted name to the system as it is: only file-name-non-special, a Lisp
+  handler, removes the quote, and only callproc.c and process.c call
+  remove_slash_colon, on the program, INFILE, the output and stderr
+  files and the child's working directory (lread.c's openp and
+  make-symbolic-link's interactive TARGET keep theirs). Emaxx's native
+  bodies resolved every name through resolve_file_name_in_env, which
+  dropped a `/:' from the name and from `default-directory' and read a
+  "/mock::" name as the local file: with `file-name-handler-alist' nil,
+  `file-modes', `directory-files', `insert-file-contents',
+  `write-region', `copy-file', `rename-file', `add-name-to-file',
+  `make-symbolic-link', `set-file-modes', `set-file-times', `file-acl'
+  and `file-system-info' all found "/:/tmp/f", where GNU signals
+  file-missing or answers nil. The native bodies now take the names
+  their round 279 preamble expanded, and resolve_file_name_in_env, the
+  "/mock::" reading, the remote-buffer test of `kqueue-add-watch' and
+  the whole-second modtime comparison `verify-visited-file-modtime' made
+  for a remotely visited buffer are gone: those are Tramp's, through its
+  handler. `call-process' expands INFILE against get_current_directory's
+  name (through the `expand-file-name' handler) and a stderr file with a
+  nil default, an output file against the buffer's directory, removing a
+  `/:' from each, and the child's directory is expand_and_dir_to_file of
+  `unhandled-file-name-directory' without its `/:', so a quoted
+  `default-directory' without handlers runs the child where GNU does
+  (Emaxx signalled file-missing). `make-process' asks
+  `file-directory-p', which may have a handler, of an absolute program
+  and expands what openp found through `expand-file-name'.
+  `file-attributes' and `directory-files-and-attributes' share dired.c's
+  file_attributes: element 9 is t (Emaxx's was nil); an ID-FORMAT other
+  than nil and `integer' gives the owner and group names,
+  DECODE_SYSTEM'd, a number when the id has none (Emaxx named them only
+  for `string', and a uid without a name as a string of digits); a name
+  whose directory is not a directory has no attributes, and any other
+  failure is a `file-error' "Getting attributes" naming the file (Emaxx
+  signalled the Rust error text); a link that stops being one before
+  readlink has none; inode and device numbers past
+  `most-positive-fixnum' are bignums. `directory-files-and-attributes'
+  is directory_files_internal with attributes, each entry's read in the
+  directory it lists rather than through a `file-attributes' call with
+  its own handler lookup, an entry that has none left out without
+  counting towards COUNT, and the opening error, as for
+  `directory-files', names the directory's `directory-file-name'. A
+  contract of file-attributes and directory-files-and-attributes cases
+  and one of 28 operations on a `/:' quoted directory with and without
+  handlers, including `call-process' and `process-file', match GNU, and
+  tramp-tests, files-tests, filenotify-tests, dired-tests, fileio-tests,
+  callproc-tests, files-x-tests, tramp-archive-tests and process-tests
+  give GNU's results. Local validation: the grouped gate's 3,493
+  library tests, the integration targets and clippy with `--all-targets
+  --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -15235,7 +15552,135 @@ comp-tests (17,927 against 14,873), tramp-tests (21,957 against 19,554),
 semantic-utest-ia (4,134 against 2,744) and mule-tests (3,264 against
 2,024).
 
+**On `f1e2e33`** (round 273): the full Rust gate (run 41616141230)
+passed, and frozen (run 41616145874) matched all 7,928 outcomes at the
+first attempt. Setup 50.0 s against 42.2 s (1.183), test bodies 226.2 s
+against 215.8 s (1.048), in all 1.054, on a much faster runner than
+round 272's (GNU's own setup median 66 ms against 104). Per file, the
+setup is 15 ms over GNU's on average (7.7 s over 519 files, a median of
+76 ms against 66), ntlm-tests' the most over (605 against 188) before
+comp-tests' (1,313 against 1,093) and electric-tests' (458 against
+305), and the widest body gaps are comp-tests (12,056 ms against
+10,365), ert-tests (27,141 against 25,621), semantic-utest-ia (2,433
+against 1,504), mule-tests (1,759 against 1,052) and package-tests
+(6,387 against 5,704).
+
+**On `e46e5c3`** (round 274): the full Rust gate (run 41625480401)
+passed. Frozen (run 41625484563) failed at both attempts on the GNU
+oracle's eglot rust-analyzer timeout alone
+(`eglot-test-rust-completion-exit-function` failed for the oracle and
+passed for Emaxx), every other outcome matching, 7,927 of 7,928. On the
+first attempt's slower runner (GNU's own setup median 95 ms against
+round 273's 66), setup 75.2 s against 62.5 s (1.203), test bodies 278.7
+s against 264.8 s (1.053), in all 1.074; the second attempt's were
+1.356, 1.065 and 1.120 (GNU's median 81 ms). Per file, the first
+attempt's setup is 24.5 ms over GNU's on average (12.7 s over 519
+files, a median of 112 ms against 95), electric-tests' the most over
+(797 against 524) before comp-tests' (1,911 against 1,672) and
+gnus-icalendar-tests' (589 against 472), and the widest body gaps are
+ert-tests (39,267 ms against 36,990), comp-tests (16,384 against
+14,172), tramp-tests (19,000 against 17,258), mule-tests (2,826 against
+1,840) and semantic-utest-ia (3,767 against 2,821).
+
+**On `c2b249e`** (round 275): the full Rust gate (run 41640340867) and
+the frozen run (run 41640355006) passed at their first attempts, 7,928
+of 7,928 outcomes matching. Setup 65.9 s against 55.1 s (1.196), test
+bodies 262.8 s against 244.6 s (1.074), in all 1.106. Per file, setup is
+20.8 ms over GNU's on average (10.8 s over 519 files, a median of 100 ms
+against 86), electric-tests' the most over (711 against 427) before
+comp-tests' (1,596 against 1,395) and textsec-tests' (328 against 211).
+The widest body gaps are ert-tests (36,330 ms against 33,810),
+comp-tests (14,620 against 12,440), icalendar-tests (2,230 against 360),
+tramp-tests (17,610 against 16,030) and mule-tests (2,480 against
+1,530). icalendar-tests' gap is this run's alone: round 274's frozen run
+had it at 550 against 410, its time lies in the import tests run one
+after another (icalendar-import-rrule 1,178 ms against 73,
+icalendar-import-non-recurring 300 against 26), and locally with the
+round 276 build the file takes 533 ms against GNU's 448 and
+icalendar-import-rrule 101 to 134 ms against 92 to 130 under three time
+zones, with the same system calls as GNU's but for 5,408 stat calls
+against 505; it is to be watched on the next head.
+
+**On `228731d`** (round 276): the full Rust gate (run 41646986654) and
+the frozen run (run 41646992706) passed at their first attempts, 7,928
+of 7,928 outcomes matching. Setup 66.9 s against 56.4 s (1.187), test
+bodies 260.9 s against 244.6 s (1.067), in all 1.097. Per file, setup
+has a median of 102 ms against 88, electric-tests' the most over (694
+against 420) before comp-tests' (1,595 against 1,373) and textsec-tests'
+(327 against 225). The widest body gaps are ert-tests (36,320 ms against
+32,700), comp-tests (14,310 against 12,890), tramp-tests (17,980 against
+16,780), semantic-utest-ia (3,230 against 2,220) and mule-tests (2,400
+against 1,540). icalendar-tests is back at 490 against 350,
+icalendar-import-rrule 107 ms against 72 and
+icalendar-import-non-recurring 40 against 24, so round 275's 2,230 was
+that run's alone; the 5,408 stat calls against GNU's 505 in its import
+tests remain to be looked at.
+
+**On `795e841`** (round 277): the full Rust gate (run 41660685496) and
+the frozen run (run 41660692717) passed at their first attempts, 7,928
+of 7,928 outcomes matching. Setup 65.7 s against 55.1 s (1.192), test
+bodies 258.5 s against 242.0 s (1.068), in all 1.101. Per file, setup
+has a median of 100 ms against 86, electric-tests' the most over (682
+against 408) before comp-tests' (1,574 against 1,381) and textsec-tests'
+(328 against 212). The widest body gaps are ert-tests (35,710 ms against
+33,750), comp-tests (14,310 against 12,340), tramp-tests (17,060 against
+15,730), semantic-utest-ia (2,960 against 2,040), mule-tests (2,410
+against 1,590) and bytecomp-tests (1,480 against 760), whose
+bytecomp-test--with-suppressed-warnings took 480 ms against 71 and
+test-byte-comp-macro-expansion-eval-when-compile 214 against 2 in this
+run alone: round 276's run gave them 82 and 2, and the whole file
+locally takes 1.40 s against 1.45, those two 118 and 3 ms against 122
+and 2. icalendar-import-rrule took 106 ms against 76 and
+icalendar-import-non-recurring 39 against 24.
+
+**On `fe5a486`** (round 278): the full Rust gate (run 41667735365)
+passed; the frozen run (run 41667740471) failed at its first attempt,
+7,927 of 7,928 outcomes matching:
+files-tests-file-name-non-special-make-directory failed in Emaxx,
+`(file-directory-p "dir")` returning nil with `default-directory' a `/:'
+quoted directory. Round 278 had file-directory-p read
+expand_and_dir_to_file's name ENCODE_FILE'd, as fileio.c does, in place
+of resolve_file_name_in_env's name, which drops a `/:' quote from
+`default-directory' (GNU's C never does); the handler lookup still read
+the unexpanded "dir", so file-name-non-special, which GNU finds on the
+expanded "/:/.../dir", was never called and the quoted name reached the
+system. Round 279's preamble expands the name before the lookup, as
+Ffile_directory_p does, and the test passes again, alone and in the
+whole file (115 of 116 expected, one skipped, as GNU). The rerun was not
+spent on a real failure. Setup 79.3 s against 60.7 s (1.306), test
+bodies 291.7 s against 258.6 s (1.128), in all 1.146; setup has a
+per-file median of 120 ms against 94, against round 277's run's 100 and
+86, with GNU's own setup 10% slower too. The widest body gaps are
+ert-tests (44,310 ms against 35,730), comp-tests (17,440 against
+14,100), tramp-tests (19,350 against 17,070), mule-tests (3,430 against
+1,920) and semantic-utest-ia (4,050 against 2,620).
+
+**On `67744d2`** (round 279): the full Rust gate (run 41676078700)
+passed; the frozen run (run 41676085072) passed at its first attempt,
+7,928 of 7,928 outcomes matching,
+files-tests-file-name-non-special-make-directory among them again. Setup
+82.4 s against 66.2 s (1.245), test bodies 302.2 s against 269.9 s
+(1.120), in all 1.124, on a runner slower again for both (GNU's setup
+66.2 s against 60.7 and 55.1 in the last two runs); setup has a per-file
+median of 124 ms against 103. The widest body gaps are ert-tests (46,540
+ms against 38,120), tramp-tests (22,390 against 19,020), comp-tests
+(17,660 against 14,940), semantic-utest-ia (4,110 against 2,590) and
+mule-tests (3,330 against 2,060). ert-tests' gap is its
+ert-test-run-tests-batch-expensive, which prints a backtrace after the
+file's earlier tests: in the release build the whole file runs in 9.9 s
+against GNU's 12.3 s here and that test in 9.1 s against 11.5, so the
+frozen run's excess there is the gate build's checks.
+
 **Findings recorded, not fixed:**
+- **Allocations outside the Lisp object makers still abort when the
+  system refuses them (round 277).** GNU's lisp_align_malloc and xmalloc
+  reach memory_full, which signals, for every block and buffer; in Emaxx
+  the vector, bool-vector, hash-table, string, buffer-gap and `format'
+  allocations signal as GNU's do, but a new cons, float, symbol,
+  interval, marker or small-vector block, and the host's own vectors and
+  strings, abort the process. Their callers have no error path, and a
+  native frame cannot be unwound past; the blocks are 16 to 32 KB, so
+  this is met only when the process is all but out of memory.
 - **An insertion's stickiness reads `text-property-default-nonsticky'
   without signalling (round 174).** In GNU,
   adjust_intervals_for_insertion and merge_properties_sticky look each

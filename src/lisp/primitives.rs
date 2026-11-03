@@ -164,6 +164,7 @@ pub(crate) mod fontset;
 mod hash_insert;
 mod hooks_overlays;
 pub(crate) mod image;
+pub(crate) mod indent_motion;
 mod insdel;
 mod interactive;
 mod invisibility;

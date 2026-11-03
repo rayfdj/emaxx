@@ -2242,22 +2242,93 @@ fn display_motion_width(
     character.width().unwrap_or(0) as i64
 }
 
+/// indent.c Fcompute_motion: its arguments checked in GNU's order, then
+/// compute_motion from FROM at FROMPOS to TO or TOPOS (by default the
+/// window's text area: its height in lines and its width less the
+/// continuation glyph's column) in WINDOW, which also chooses the display
+/// table and the overlays that count.
 fn compute_motion_value(
     interp: &mut Interpreter,
     env: &mut Env,
     args: &[Value],
 ) -> Result<Value, LispError> {
-    let motion = display_motion(interp, env, args, false)?;
-    Ok(Value::list([
-        Value::Integer(motion.position as i64),
-        Value::Integer(motion.hpos),
-        Value::Integer(motion.vpos),
-        Value::Integer(motion.previous_hpos),
-        if motion.continued {
-            Value::T
-        } else {
-            Value::Nil
+    let from = crate::lisp::primitives::textprop::fixnum_coerce_marker(interp, &args[0])?;
+    let (fromhpos, fromvpos) = motion_pair(&args[1])?;
+    let to = crate::lisp::primitives::textprop::fixnum_coerce_marker(interp, &args[2])?;
+    let topos = if args[3].is_nil() {
+        None
+    } else {
+        Some(motion_pair(&args[3])?)
+    };
+    let width = if args[4].is_nil() {
+        -1
+    } else {
+        args[4].as_fixnum()?
+    };
+    let (hscroll, tab_offset) = if args[5].is_nil() {
+        (0, 0)
+    } else {
+        let (hscroll, tab_offset) = motion_pair(&args[5])?;
+        if hscroll < 0 || !(0..=i64::from(i32::MAX)).contains(&tab_offset) {
+            return Err(LispError::SignalValue(Value::list([
+                Value::symbol("args-out-of-range"),
+                Value::Integer(hscroll),
+                Value::Integer(tab_offset),
+            ])));
+        }
+        (hscroll, tab_offset)
+    };
+    let window = live_motion_window(interp, &args[6])?;
+    let from = checked_motion_position(interp, from)?;
+    let to = checked_motion_position(interp, to)?;
+    let window_id =
+        window_record_id_from_value(interp, &window).unwrap_or_else(|| interp.selected_window_id());
+    let contents = crate::lisp::primitives::window_buffer_id(interp, &window)
+        .unwrap_or_else(|| interp.current_buffer_id());
+    let (tohpos, tovpos) = match topos {
+        Some(topos) => topos,
+        None => {
+            let body_width = super::call(
+                interp,
+                "window-body-width",
+                std::slice::from_ref(&window),
+                env,
+            )?
+            .as_integer()?;
+            let body_height = super::call(
+                interp,
+                "window-body-height",
+                std::slice::from_ref(&window),
+                env,
+            )?
+            .as_integer()?;
+            (body_width - 1, body_height)
+        }
+    };
+    let pos = crate::lisp::primitives::indent_motion::compute_motion(
+        interp,
+        env,
+        from,
+        fromvpos,
+        fromhpos,
+        false,
+        to,
+        tovpos,
+        tohpos,
+        width,
+        hscroll,
+        tab_offset,
+        crate::lisp::primitives::indent_motion::MotionWindow {
+            id: window_id,
+            contents,
         },
+    );
+    Ok(Value::list([
+        Value::Integer(pos.bufpos as i64),
+        Value::Integer(pos.hpos),
+        Value::Integer(pos.vpos),
+        Value::Integer(pos.prevhpos),
+        if pos.contin { Value::T } else { Value::Nil },
     ]))
 }
 
@@ -2265,8 +2336,6 @@ pub(super) struct DisplayMotion {
     pub(super) position: usize,
     pub(super) hpos: i64,
     pub(super) vpos: i64,
-    previous_hpos: i64,
-    continued: bool,
 }
 
 // dispnew.c:buffer_posn_from_coords stops on the glyph containing the
@@ -2349,9 +2418,6 @@ pub(super) fn display_motion(
     let left_margin = if hscroll > 0 { 1 - hscroll } else { 0 };
 
     let mut position = from;
-    let mut previous_hpos = 0;
-    let mut continuation_hpos = None;
-    let mut consumed_character_at_limit = false;
     loop {
         let next_character = interp.buffer.borrow().char_at(position);
 
@@ -2369,16 +2435,10 @@ pub(super) fn display_motion(
                     position += 1;
                 }
                 hpos = width;
-                previous_hpos = width;
-                consumed_character_at_limit = false;
             } else {
-                let origin = hpos;
                 vpos += 1;
                 hpos = left_margin;
                 tab_offset += width;
-                previous_hpos = 0;
-                continuation_hpos = Some(origin);
-                consumed_character_at_limit = false;
             }
         }
 
@@ -2391,7 +2451,6 @@ pub(super) fn display_motion(
         let Some(character) = interp.buffer.borrow().char_at(position) else {
             break;
         };
-        previous_hpos = hpos;
         if character == '\n' {
             if stop_on_glyph && vpos == target_vpos {
                 break;
@@ -2400,8 +2459,6 @@ pub(super) fn display_motion(
             vpos += 1;
             hpos = left_margin;
             tab_offset = 0;
-            continuation_hpos = None;
-            consumed_character_at_limit = true;
             continue;
         }
 
@@ -2420,17 +2477,13 @@ pub(super) fn display_motion(
             && hpos > left_margin
             && hpos + character_width > width
         {
-            let origin = hpos;
             vpos += 1;
             hpos = left_margin;
             tab_offset += width;
-            continuation_hpos = Some(origin);
         }
 
-        previous_hpos = hpos;
         hpos += character_width;
         position += 1;
-        consumed_character_at_limit = true;
         if hpos > width {
             if truncates {
                 while position < to
@@ -2443,35 +2496,18 @@ pub(super) fn display_motion(
                     position += 1;
                 }
                 hpos = width;
-                previous_hpos = width;
-                consumed_character_at_limit = false;
             } else {
-                let origin = previous_hpos;
                 hpos -= width;
                 vpos += 1;
                 tab_offset += width;
-                previous_hpos = 0;
-                continuation_hpos = Some(origin);
             }
         }
     }
 
-    if position == to && to < interp.buffer.borrow().point_max() && consumed_character_at_limit {
-        previous_hpos = hpos;
-        continuation_hpos = None;
-    }
-    let continued = continuation_hpos.is_some() && previous_hpos == 0;
-    let previous_hpos = if continued {
-        continuation_hpos.unwrap_or(previous_hpos)
-    } else {
-        previous_hpos
-    };
     Ok(DisplayMotion {
         position,
         hpos,
         vpos,
-        previous_hpos,
-        continued,
     })
 }
 
@@ -2575,55 +2611,24 @@ pub(crate) fn visual_vertical_motion(
         interp.buffer.borrow_mut().goto_char(target);
         return Ok(moved);
     }
-    let point_min = interp.buffer.borrow().point_min();
-    let point_max = interp.buffer.borrow().point_max();
+    // Noninteractively, indent.c vmotion from point, with the current
+    // buffer shown in WINDOW meanwhile (Fvertical_motion's
+    // restore_window_buffer leaves nothing else changed); a cons LINES's
+    // goal column has no part in it.
+    let _ = goal_col;
     let point = interp.buffer.borrow().point();
-    let (mut bol, mut eol) = visual_line_bounds(interp, point);
-    let mut starts = screen_row_starts(interp, env, window_id, bol, eol);
-    let mut index = row_index_of(&starts, point);
-    let mut moved = 0i64;
-    let mut exhausted_forward = false;
-    while moved < n {
-        if index + 1 < starts.len() {
-            index += 1;
-            moved += 1;
-        } else if eol < point_max {
-            let (next_bol, next_eol) = visual_line_bounds(interp, eol + 1);
-            bol = next_bol;
-            eol = next_eol;
-            starts = screen_row_starts(interp, env, window_id, bol, eol);
-            index = 0;
-            moved += 1;
-        } else {
-            exhausted_forward = true;
-            break;
-        }
-    }
-    while moved > n {
-        if index > 0 {
-            index -= 1;
-            moved -= 1;
-        } else if bol > point_min {
-            let (prev_bol, prev_eol) = visual_line_bounds(interp, bol - 1);
-            bol = prev_bol;
-            eol = prev_eol;
-            starts = screen_row_starts(interp, env, window_id, bol, eol);
-            index = starts.len().saturating_sub(1);
-            moved -= 1;
-        } else {
-            break;
-        }
-    }
-    // GNU's batch path (vmotion) ignores a cons LINES's goal column:
-    // point lands at the start of the target screen line (or buffer end
-    // on overshoot).
-    let target = if exhausted_forward {
-        point_max
-    } else {
-        starts[index]
-    };
-    interp.buffer.borrow_mut().goto_char(target);
-    Ok(moved)
+    let pos = crate::lisp::primitives::indent_motion::vmotion(
+        interp,
+        env,
+        point,
+        n,
+        crate::lisp::primitives::indent_motion::MotionWindow {
+            id: window_id,
+            contents: interp.current_buffer_id(),
+        },
+    );
+    interp.buffer.borrow_mut().goto_char(pos.bufpos);
+    Ok(pos.vpos)
 }
 
 /// The `goto-char' primitive, callable directly (a subr's function pointer).

@@ -102,14 +102,13 @@ pub(crate) fn locate_program_for_exec(
     make_process: bool,
 ) -> Result<String, LispError> {
     if make_process && program.starts_with('/') {
-        if fs::metadata(host_file_name(interp, env, program)?)
-            .is_ok_and(|metadata| metadata.is_dir())
-        {
+        // Ffile_directory_p, which may have a handler.
+        if call(interp, "file-directory-p", &[Value::string(program)], env)?.is_truthy() {
             return Err(LispError::Signal(
                 "Specified program for new process is a directory".into(),
             ));
         }
-        return Ok(unquote_local_file_name(program).unwrap_or_else(|| program.to_string()));
+        return Ok(remove_slash_colon(program));
     }
     let exec_path = interp.lookup_var("exec-path", env).unwrap_or(Value::Nil);
     let exec_suffixes = interp
@@ -130,13 +129,14 @@ pub(crate) fn locate_program_for_exec(
             program,
         )));
     }
-    let found = string_text(&found)?;
-    let found = unquote_local_file_name(&found).unwrap_or(found);
-    Ok(if make_process {
-        expand_file_name_in_env(interp, env, &found, None)
+    // Fmake_process expands openp's answer (Fexpand_file_name, which may
+    // have a handler); both then remove a "/:".
+    let found = if make_process {
+        string_text(&fexpand_file_name(interp, env, found, Value::Nil)?)?
     } else {
-        found
-    })
+        string_text(&found)?
+    };
+    Ok(remove_slash_colon(&found))
 }
 
 /// A spawn failure is what GNU's parent sees from `emacs_spawn' and reports
@@ -756,24 +756,33 @@ pub(crate) fn call_process(
         output_file,
         error_file,
     } = process_destination(args.get(2).unwrap_or(&Value::Nil));
+    // callproc.c: a stderr FILE Fexpand_file_name'd with a nil default,
+    // an output FILE against the buffer's directory, each without a
+    // "/:".
     let error_path = if error_file.is_nil() || error_file == Value::T {
         None
     } else {
-        Some(resolve_file_name_in_env(
-            interp,
-            env,
-            &string_text(&error_file)?,
-        ))
+        let file = fexpand_file_name(interp, env, error_file, Value::Nil)?;
+        Some(remove_slash_colon(&string_text(&file)?))
     };
     let output_path = match output_file {
-        Some(file) => Some(resolve_file_name_in_env(interp, env, &string_text(&file)?)),
+        Some(file) => {
+            let directory = interp
+                .lookup_var("default-directory", env)
+                .unwrap_or(Value::Nil);
+            let file = fexpand_file_name(interp, env, file, directory)?;
+            if !file.is_string() {
+                return Err(LispError::WrongTypeArgument("stringp".into(), file));
+            }
+            Some(remove_slash_colon(&string_text(&file)?))
+        }
         None => None,
     };
     let no_wait = matches!(buffer.kind(), Kind::Integer(_));
     if !(buffer.is_nil() || buffer == Value::T || no_wait) {
         buffer = call(interp, "get-buffer-create", &[buffer], env)?;
     }
-    let directory = process_current_directory(interp, env)?;
+    let directory = process_current_directory(interp, env, true)?;
     let program = locate_program_for_exec(interp, env, &program, false)?;
     let program = host_file_name(interp, env, &program)?.into_os_string();
     let discard_output = no_wait || (buffer.is_nil() && output_path.is_none());
@@ -1078,7 +1087,7 @@ pub(crate) fn configure_external_command(
     env: &mut Env,
     command: &mut Command,
 ) -> Result<ChildEnvironment, LispError> {
-    let directory = process_current_directory(interp, env)?;
+    let directory = process_current_directory(interp, env, true)?;
     let environment = child_environment(interp, env, directory)?;
     set_command_environment(command, &environment);
     Ok(environment)
@@ -1086,11 +1095,14 @@ pub(crate) fn configure_external_command(
 
 /// callproc.c get_current_directory: the directory `default-directory'
 /// names, as `unhandled-file-name-directory' answers it ("~" for its nil),
-/// expanded and checked to be one; None when `default-directory' names
-/// none, which leaves a child in this process's directory.
+/// through expand_and_dir_to_file and checked, without a "/:", to be one;
+/// that name without its "/:" when ENCODE (the child's directory), else as
+/// expanded.  None when `default-directory' names none, which leaves a
+/// child in this process's directory.
 pub(crate) fn process_current_directory(
     interp: &mut Interpreter,
     env: &mut Env,
+    encode: bool,
 ) -> Result<Option<String>, LispError> {
     let Some(default_directory) = interp
         .lookup_var("default-directory", env)
@@ -1114,12 +1126,16 @@ pub(crate) fn process_current_directory(
         env,
     )?;
     // A handler returns nil when its logical directory cannot be a host
-    // cwd.  GNU falls back to HOME, then expands the result without
-    // sending it back through remote-name resolution.
-    let unhandled = string_like(&unhandled)
-        .map(|directory| directory.text)
-        .unwrap_or_else(|| "~".into());
-    let directory = expand_file_name_in_env(interp, env, &unhandled, None);
+    // cwd; GNU falls back to "~".
+    let unhandled = if unhandled.is_nil() {
+        Value::string("~")
+    } else {
+        unhandled
+    };
+    let expanded = string_text(&super::system::expand_and_dir_to_file(
+        interp, env, unhandled,
+    )?)?;
+    let directory = remove_slash_colon(&expanded);
     let metadata = fs::metadata(host_file_name(interp, env, &directory)?).map_err(|error| {
         LispError::SignalValue(file_operation_error_value(
             "Setting current directory",
@@ -1135,7 +1151,7 @@ pub(crate) fn process_current_directory(
             &default_directory,
         )));
     }
-    Ok(Some(directory))
+    Ok(Some(if encode { directory } else { expanded }))
 }
 
 /// make_environment_block for a child starting in DIRECTORY (this

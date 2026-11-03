@@ -9,8 +9,7 @@ pub(crate) fn stat_visited_modtime(
     env: &Env,
     path: &str,
 ) -> Result<Result<crate::buffer::VisitedModtime, std::io::Error>, LispError> {
-    let local_path = unquote_local_file_name(path).unwrap_or_else(|| path.to_string());
-    let host = host_file_name(interp, env, &local_path)?;
+    let host = host_file_name(interp, env, path)?;
     Ok(fs::metadata(host).and_then(|metadata| {
         Ok(crate::buffer::VisitedModtime {
             stamp: crate::buffer::ModtimeStamp::Time(metadata.modified()?),
@@ -28,24 +27,6 @@ pub(crate) fn time_error_value(error: &std::io::Error) -> crate::buffer::Modtime
     } else {
         crate::buffer::ModtimeStamp::Unknown
     }
-}
-
-/// Compare modification times at whole-second resolution, like `stat'
-/// output read over a Tramp connection.
-pub(crate) fn modtimes_equal_whole_seconds(
-    left: &Option<crate::buffer::FileModTime>,
-    right: &Option<crate::buffer::FileModTime>,
-) -> bool {
-    fn whole_seconds(modtime: &Option<crate::buffer::FileModTime>) -> Option<u64> {
-        modtime.as_ref().map(|modtime| {
-            modtime
-                .modified
-                .duration_since(UNIX_EPOCH)
-                .map(|duration| duration.as_secs())
-                .unwrap_or(0)
-        })
-    }
-    whole_seconds(left) == whole_seconds(right)
 }
 
 // GNU `file-attributes' time fields are (HIGH LOW USEC PSEC) lists.
@@ -309,6 +290,33 @@ pub(crate) fn file_operation_error_value_without_file(
     ])
 }
 
+/// fileio.c:report_file_errno with the Lisp file name FILE as given:
+/// get_file_errno_data's `(CONDITION MESSAGE ERRSTRING FILE)', EEXIST's
+/// `file-already-exists' without MESSAGE.
+pub(crate) fn report_file_errno(message: &str, file: Value, error: &std::io::Error) -> LispError {
+    let condition = file_error_condition(error);
+    let mut data = vec![Value::symbol(condition)];
+    if condition != "file-already-exists" {
+        data.push(Value::string(message));
+    }
+    data.push(Value::String(errno_text(error).into()));
+    data.push(file);
+    LispError::SignalValue(Value::list(data))
+}
+
+/// fileio.c:file_metadata_errno: nil for ENOENT, ENOTDIR (and no error),
+/// otherwise report_file_errno (ACTION, FILE, ERR).
+pub(crate) fn file_metadata_errno(
+    action: &str,
+    file: Value,
+    error: &std::io::Error,
+) -> Result<Value, LispError> {
+    match error.raw_os_error() {
+        Some(0 | libc::ENOENT | libc::ENOTDIR) => Ok(Value::Nil),
+        _ => Err(report_file_errno(action, file, error)),
+    }
+}
+
 pub(crate) fn file_operation_error(message: &str, error: &std::io::Error, path: &str) -> LispError {
     LispError::SignalValue(file_operation_error_value(message, error, path))
 }
@@ -421,7 +429,7 @@ pub(crate) fn make_temp_file_internal(
 }
 
 /// buffer.h BUF_BYTES_MAX: the most bytes a buffer holds.
-const BUF_BYTES_MAX: i64 = (1 << 61) - 2;
+pub(crate) const BUF_BYTES_MAX: i64 = (1 << 61) - 2;
 /// fileio.c READ_BUF_SIZE (MAX_ALLOCA): the guess for a pipe or a
 /// /proc file whose size reads as zero.
 const READ_BUF_SIZE: i64 = 16 * 1024;
@@ -470,6 +478,96 @@ pub(crate) struct InsertFileSource {
     pub(crate) end: i64,
     pub(crate) size: i64,
     pub(crate) total: i64,
+}
+
+/// sysdep.c:emacs_open: HOST opened with FLAGS and O_CLOEXEC (MODE for a
+/// file it creates), an open a signal interrupts tried again after
+/// maybe_quit, which runs a pending fatal signal.  The outer error is the
+/// quit's, the inner the open's.
+pub(crate) fn emacs_open(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    host: &std::path::Path,
+    flags: libc::c_int,
+    mode: libc::mode_t,
+) -> Result<std::io::Result<fs::File>, LispError> {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::io::FromRawFd;
+    let Ok(name) = std::ffi::CString::new(host.as_os_str().as_bytes()) else {
+        return Ok(Err(std::io::Error::from_raw_os_error(libc::EINVAL)));
+    };
+    loop {
+        // SAFETY: NAME is a valid NUL-terminated string for the call.
+        let fd = unsafe {
+            libc::open(
+                name.as_ptr(),
+                flags | libc::O_CLOEXEC,
+                libc::c_uint::from(mode),
+            )
+        };
+        if fd >= 0 {
+            // SAFETY: FD was just opened and is owned by nothing else.
+            return Ok(Ok(unsafe { fs::File::from_raw_fd(fd) }));
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() != ErrorKind::Interrupted {
+            return Ok(Err(error));
+        }
+        interp.maybe_quit(env)?;
+    }
+}
+
+/// sysdep.c:emacs_read_quit: maybe_quit, then a read of at most WANT
+/// bytes from FILE onto the end of BYTES, an interrupted read tried again
+/// after maybe_quit.  The outer error is the quit's, the inner the
+/// read's; zero is the end of the file.
+fn emacs_read_quit(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    file: &fs::File,
+    bytes: &mut Vec<u8>,
+    want: usize,
+) -> Result<std::io::Result<usize>, LispError> {
+    use std::os::unix::io::AsRawFd;
+    bytes.reserve(want);
+    loop {
+        interp.maybe_quit(env)?;
+        let spare = bytes.spare_capacity_mut();
+        let room = want.min(spare.len());
+        // SAFETY: SPARE has room for ROOM bytes, which the read fills
+        // before they are counted as the vector's.
+        let read = unsafe { libc::read(file.as_raw_fd(), spare.as_mut_ptr().cast(), room) };
+        if read >= 0 {
+            let read = read as usize;
+            // SAFETY: the read initialized READ bytes of the spare room.
+            unsafe { bytes.set_len(bytes.len() + read) };
+            return Ok(Ok(read));
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() != ErrorKind::Interrupted {
+            return Ok(Err(error));
+        }
+    }
+}
+
+/// sysdep.c:emacs_full_write with maybe_quit (emacs_write_quit): BYTES
+/// written to FILE, a write a signal interrupts tried again after
+/// maybe_quit.  The outer error is the quit's, the inner the write's.
+pub(crate) fn emacs_write_quit(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    file: &mut fs::File,
+    mut bytes: &[u8],
+) -> Result<std::io::Result<()>, LispError> {
+    while !bytes.is_empty() {
+        match file.write(bytes) {
+            Ok(0) => return Ok(Err(ErrorKind::WriteZero.into())),
+            Ok(written) => bytes = &bytes[written..],
+            Err(error) if error.kind() == ErrorKind::Interrupted => interp.maybe_quit(env)?,
+            Err(error) => return Ok(Err(error)),
+        }
+    }
+    Ok(Ok(()))
 }
 
 /// What the read loop got: the bytes, and the error a failed read ended
@@ -563,7 +661,13 @@ impl InsertFileSource {
     /// The read loop, from BEG (lseek'd to for a nonzero BEG or REPLACE):
     /// at most TOTAL bytes of a seekable file or with END given, else to
     /// the end of the file.
-    pub(crate) fn read(mut self, path: &str, replace: bool) -> Result<InsertFileRead, LispError> {
+    pub(crate) fn read(
+        mut self,
+        interp: &mut Interpreter,
+        env: &mut Env,
+        path: &str,
+        replace: bool,
+    ) -> Result<InsertFileRead, LispError> {
         use std::io::{Seek, SeekFrom};
         if self.beg != 0 || replace {
             self.file
@@ -587,10 +691,9 @@ impl InsertFileSource {
             if want == 0 {
                 break;
             }
-            // emacs_read_quit of WANT bytes, an EINTR read again, into
-            // the room past the bytes read, which std's File reads into
-            // without filling it first.
-            match (&*self.file).take(want as u64).read_to_end(&mut bytes) {
+            // emacs_read_quit of WANT bytes into the room past the bytes
+            // read.
+            match emacs_read_quit(interp, env, &self.file, &mut bytes, want)? {
                 Ok(0) => break,
                 Ok(_) => {}
                 Err(error) => {
@@ -808,6 +911,28 @@ pub(crate) fn write_region_value(
     write_region_value_with_logical_path(interp, args, &logical_path, None, env)
 }
 
+/// editfns.c validate_region of write-region's START and END: the two
+/// positions in order, within the accessible portion.
+pub(crate) fn validate_write_region(
+    interp: &Interpreter,
+    start: Value,
+    end: Value,
+) -> Result<(usize, usize), LispError> {
+    let from = position_from_value(interp, &start)?;
+    let to = position_from_value(interp, &end)?;
+    let (from, to) = (from.min(to), from.max(to));
+    let buffer = interp.buffer.borrow();
+    if from < buffer.point_min() || to > buffer.point_max() {
+        return Err(LispError::SignalValue(Value::list([
+            Value::symbol("args-out-of-range"),
+            Value::Buffer(interp.buffer),
+            start,
+            end,
+        ])));
+    }
+    Ok((from, to))
+}
+
 pub(crate) fn write_region_value_with_logical_path(
     interp: &mut Interpreter,
     args: &[Value],
@@ -819,23 +944,12 @@ pub(crate) fn write_region_value_with_logical_path(
     let mut normalized = [Value::Nil; 7];
     normalized[..args.len()].copy_from_slice(args);
     if !args[0].is_nil() && !matches!(args[0].kind(), Kind::StringObject(_)) {
-        let start = position_from_value(interp, &args[0])?;
-        let end = position_from_value(interp, &args[1])?;
-        if start.min(end) < interp.buffer.borrow().point_min()
-            || start.max(end) > interp.buffer.borrow().point_max()
-        {
-            return Err(LispError::SignalValue(Value::list([
-                Value::symbol("args-out-of-range"),
-                Value::Buffer(interp.buffer),
-                args[0],
-                args[1],
-            ])));
-        }
-        normalized[0] = Value::Integer(start.min(end) as i64);
-        normalized[1] = Value::Integer(start.max(end) as i64);
+        let (start, end) = validate_write_region(interp, args[0], args[1])?;
+        normalized[0] = Value::Integer(start as i64);
+        normalized[1] = Value::Integer(end as i64);
     }
-    let requested_path = string_text(&args[2])?;
-    let path = resolve_file_name_in_env(interp, env, &requested_path);
+    // FILENAME, as the preamble expanded it.
+    let path = string_text(&args[2])?;
     let existed_before_write = fs::symlink_metadata(host_file_name(interp, env, &path)?).is_ok();
     if normalized[6].is_truthy() && normalized[6].symbol_str() != Some("excl") {
         barf_or_query_if_file_exists(interp, env, logical_path, false, "overwrite", true, true)?;
@@ -1073,12 +1187,10 @@ fn write_region_with_coding(
     // file is open, after the lock is given back).
     let mut opened = false;
     let write_result = (|| {
-        use std::os::unix::fs::OpenOptionsExt;
         use std::os::unix::io::IntoRawFd;
         if let Some(file) = descriptor.as_deref_mut() {
             opened = true;
-            return file
-                .write_all(&bytes)
+            return emacs_write_quit(interp, env, file, &bytes)?
                 .map_err(|error| file_operation_error("Write error", &error, path));
         }
         let exclusive = args[6].symbol_str() == Some("excl");
@@ -1096,25 +1208,26 @@ fn write_region_with_coding(
         } else {
             None
         };
-        let mut options = fs::OpenOptions::new();
-        options.write(true).create(true).mode(mode);
+        // write_region's open_flags: O_WRONLY | O_CREAT, then O_EXCL for
+        // `excl', nothing for an APPEND, else O_TRUNC; O_APPEND for an
+        // APPEND that is not an offset.
+        let mut flags = libc::O_WRONLY | libc::O_CREAT;
         if exclusive {
-            options.create_new(true);
+            flags |= libc::O_EXCL;
         } else if args[3].is_nil() {
-            options.truncate(true);
+            flags |= libc::O_TRUNC;
         }
         if offset.is_none() && args[3].is_truthy() {
-            options.append(true);
+            flags |= libc::O_APPEND;
         }
-        let mut file = options
-            .open(&host)
+        let mut file = emacs_open(interp, env, &host, flags, mode)?
             .map_err(|error| file_operation_error("Opening output file", &error, path))?;
         opened = true;
         if let Some(offset) = offset {
             file.seek(SeekFrom::Start(offset as u64))
                 .map_err(|error| file_operation_error("Lseek error", &error, path))?;
         }
-        file.write_all(&bytes)
+        emacs_write_quit(interp, env, &mut file, &bytes)?
             .map_err(|error| file_operation_error("Write error", &error, path))?;
         // NFS can report a write failure at the close.
         let fd = file.into_raw_fd();
@@ -2210,7 +2323,8 @@ pub(crate) fn insert_file_contents(
         let buffer = interp.buffer.borrow();
         buffer.undo_list().is_nil() && buffer.size_total() == 0
     };
-    let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
+    // FILENAME, as the preamble expanded it.
+    let path = string_text(&args[0])?;
     let arg = |index: usize| args.get(index).copied().filter(|value| !value.is_nil());
     let visit = arg(1).is_some();
     let replace_arg = arg(4);
@@ -2242,12 +2356,20 @@ pub(crate) fn insert_file_contents(
         args.get(4).copied().unwrap_or(Value::Nil),
     ];
     let mut open_failure = crate::buffer::ModtimeStamp::Unknown;
-    let file = match host_file_name(interp, env, &path).and_then(|host| {
-        fs::File::open(host).map_err(|error| {
-            open_failure = time_error_value(&error);
-            LispError::SignalValue(file_input_error_value(&error, &path))
-        })
-    }) {
+    // fileio.c:Finsert_file_contents' emacs_open (O_RDONLY).
+    let opened = match host_file_name(interp, env, &path) {
+        Ok(host) => match emacs_open(interp, env, &host, libc::O_RDONLY, 0)? {
+            Ok(file) => Ok(file),
+            Err(error) => {
+                open_failure = time_error_value(&error);
+                Err(LispError::SignalValue(file_input_error_value(
+                    &error, &path,
+                )))
+            }
+        },
+        Err(error) => Err(error),
+    };
+    let file = match opened {
         Ok(file) => file,
         Err(error) if !visit => return Err(error),
         Err(error) => {
@@ -2333,7 +2455,7 @@ pub(crate) fn insert_file_contents(
         // Qunbound) by erasing the accessible portion and inserting.
         let replace = replace_arg.is_some() && regular;
         let (coding_used, inserted_chars) = if replace {
-            let read = source.read(&path, true)?;
+            let read = source.read(interp, env, &path, true)?;
             if let Some(error) = read.error {
                 return Err(file_operation_error("Read error", &error, &path));
             }
@@ -2474,7 +2596,7 @@ fn insert_file_bytes(
             crate::lisp::primitives::delete_region_with_hooks(interp, begv, zv, env)?;
         }
         source.check_gap(interp.buffer.borrow().size_total())?;
-        let read = source.read(path, false)?;
+        let read = source.read(interp, env, path, false)?;
         if read.bytes.is_empty() {
             if we_locked_file && let Some(truename) = interp.lookup_var("buffer-file-truename", env)
             {

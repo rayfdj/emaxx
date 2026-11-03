@@ -921,22 +921,6 @@ fn file_expand_wildcards_returns_existing_matches() {
 }
 
 #[test]
-fn remote_visit_policy_is_typed_and_derived_from_buffer_identity() {
-    let mut interp = Interpreter::new();
-    let buffer_id = interp.current_buffer_id();
-
-    assert_eq!(interp.buffer_remote_prefix(buffer_id), None);
-    interp.set_current_buffer_file_name(Some("/ssh:user@host:/tmp/file".into()));
-    assert_eq!(
-        interp.buffer_remote_prefix(buffer_id).as_deref(),
-        Some("/ssh:user@host:")
-    );
-
-    interp.set_current_buffer_file_name(Some("/tmp/file".into()));
-    assert_eq!(interp.buffer_remote_prefix(buffer_id), None);
-}
-
-#[test]
 fn with_no_warnings_is_one_ordinary_callable_function() {
     assert_eq!(
         eval_str_with_upstream_batch_feature(

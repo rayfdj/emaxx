@@ -53,7 +53,14 @@ define_dispatch!(
                 let Kind::Integer(length @ 0..) = args[0].kind() else {
                     return Err(LispError::WrongTypeArgument("wholenump".into(), args[0]));
                 };
-                Ok(Value::vector(std::iter::repeat_n(args[1], length as usize)))
+                // allocate_clear_vector: memory_full past VECTOR_ELTS_MAX
+                // slots or when lisp_malloc finds no room.
+                let vector = crate::lisp::types::VectorRef::try_filled(length as usize, args[1])
+                    .map_err(|failed| allocation_error(interp, env, failed))?;
+                if length > 0 {
+                    crate::lisp::native_comp::note_lisp_allocation((length as usize + 1) * 8);
+                }
+                Ok(Value::Vector(vector))
             }
             // alloc.c:Fmake_bool_vector: CHECK_FIXNAT, then the bits filled.
             "make-bool-vector" => {
@@ -61,9 +68,11 @@ define_dispatch!(
                 let Kind::Integer(length @ 0..) = args[0].kind() else {
                     return Err(LispError::WrongTypeArgument("wholenump".into(), args[0]));
                 };
-                Ok(Value::BoolVector(
-                    crate::lisp::types::BoolVectorRef::filled(length as usize, args[1].is_truthy()),
-                ))
+                // make_uninit_bool_vector: memory_full when its slots exceed
+                // a vector's or cannot be allocated.
+                crate::lisp::types::BoolVectorRef::try_filled(length as usize, args[1].is_truthy())
+                    .map(Value::BoolVector)
+                    .map_err(|failed| allocation_error(interp, env, failed))
             }
             "bool-vector" => Ok(make_bool_vector_value(args.iter().map(Value::is_truthy))),
             "make-keymap" => {
@@ -85,10 +94,13 @@ define_dispatch!(
                 ))
             }
             "vconcat" => {
-                let mut items = Vec::new();
+                // fns.c:concat_to_vector: each argument's type checked
+                // (lists, vectors, strings, closures and bool-vectors, else
+                // `sequencep') and its Flength added up, memory_full
+                // (SIZE_MAX) past MOST_POSITIVE_FIXNUM; then the one vector
+                // of that many slots, then the contents copied in.
+                let mut result_len = 0usize;
                 for value in args {
-                    // fns.c:concat_to_vector takes lists, vectors, strings,
-                    // closures and bool-vectors, anything else `sequencep'.
                     if !matches!(
                         value.kind(),
                         Kind::Nil
@@ -100,14 +112,32 @@ define_dispatch!(
                     ) {
                         return Err(LispError::WrongTypeArgument("sequencep".into(), *value));
                     }
-                    // A closure gives its slots, as AREF reads them.
-                    if let Kind::Closure(lambda) = value.kind() {
-                        items.extend(lambda.slots());
-                        continue;
+                    let length = sequence_length_value(value)?;
+                    result_len = result_len.saturating_add(length as usize);
+                    if result_len
+                        > crate::lisp::primitives::numeric_time::MOST_POSITIVE_FIXNUM as usize
+                    {
+                        return Err(memory_full(interp, env, usize::MAX));
                     }
-                    items.extend(sequence_values(value)?);
                 }
-                Ok(Value::vector(items))
+                let vector = crate::lisp::types::VectorRef::try_filled(result_len, Value::Nil)
+                    .map_err(|failed| allocation_error(interp, env, failed))?;
+                if result_len > 0 {
+                    crate::lisp::native_comp::note_lisp_allocation((result_len + 1) * 8);
+                }
+                let mut index = 0;
+                for value in args {
+                    // A closure gives its slots, as AREF reads them.
+                    let items = match value.kind() {
+                        Kind::Closure(lambda) => lambda.slots().collect::<Vec<_>>(),
+                        _ => sequence_values(value)?,
+                    };
+                    for item in items {
+                        vector.set(index, item);
+                        index += 1;
+                    }
+                }
+                Ok(Value::Vector(vector))
             }
             "copy-keymap" => {
                 need_args(name, args, 1)?;
