@@ -324,6 +324,174 @@ pub(crate) fn cons_to_signed(value: &Value, min: i64, max: i64) -> Result<i64, L
         })
 }
 
+/// fileio.c's ACL calls through libacl, which GNU's build links
+/// (`-lacl', USE_ACL and HAVE_ACL_SET_FILE), loaded when first needed; a
+/// host without the library answers as a build without USE_ACL does.
+#[cfg(target_os = "linux")]
+pub(crate) mod acl {
+    use std::ffi::{CStr, c_char, c_int, c_uint, c_void};
+    use std::sync::OnceLock;
+
+    /// <sys/acl.h>'s ACL_TYPE_ACCESS, which GNU also takes as
+    /// ACL_TYPE_EXTENDED where the host has none.
+    pub(crate) const ACL_TYPE_ACCESS: c_uint = 0x8000;
+
+    pub(crate) type Acl = *mut c_void;
+
+    type AclGetFile = unsafe extern "C" fn(*const c_char, c_uint) -> Acl;
+    type AclToText = unsafe extern "C" fn(Acl, *mut isize) -> *mut c_char;
+    type AclFromText = unsafe extern "C" fn(*const c_char) -> Acl;
+    type AclSetFile = unsafe extern "C" fn(*const c_char, c_uint, Acl) -> c_int;
+    type AclFree = unsafe extern "C" fn(*mut c_void) -> c_int;
+
+    pub(crate) struct Libacl {
+        pub(crate) get_file: AclGetFile,
+        pub(crate) to_text: AclToText,
+        pub(crate) from_text: AclFromText,
+        pub(crate) set_file: AclSetFile,
+        pub(crate) free: AclFree,
+    }
+
+    pub(crate) fn libacl() -> Option<&'static Libacl> {
+        static LIBACL: OnceLock<Option<Libacl>> = OnceLock::new();
+        LIBACL
+            .get_or_init(|| {
+                // SAFETY: dlopen and dlsym take NUL-terminated names; each
+                // symbol is libacl's function of the signature it is
+                // transmuted to (<sys/acl.h>), and the handle is never
+                // closed, so the functions stay mapped.
+                unsafe {
+                    let handle =
+                        libc::dlopen(c"libacl.so.1".as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL);
+                    if handle.is_null() {
+                        return None;
+                    }
+                    let symbol = |name: &CStr| {
+                        let address = libc::dlsym(handle, name.as_ptr());
+                        (!address.is_null()).then_some(address)
+                    };
+                    Some(Libacl {
+                        get_file: std::mem::transmute::<*mut c_void, AclGetFile>(symbol(
+                            c"acl_get_file",
+                        )?),
+                        to_text: std::mem::transmute::<*mut c_void, AclToText>(symbol(
+                            c"acl_to_text",
+                        )?),
+                        from_text: std::mem::transmute::<*mut c_void, AclFromText>(symbol(
+                            c"acl_from_text",
+                        )?),
+                        set_file: std::mem::transmute::<*mut c_void, AclSetFile>(symbol(
+                            c"acl_set_file",
+                        )?),
+                        free: std::mem::transmute::<*mut c_void, AclFree>(symbol(c"acl_free")?),
+                    })
+                }
+            })
+            .as_ref()
+    }
+
+    /// libattr's attr_copy_fd and attr_copy_action, which GNU's build
+    /// links for gnulib's qcopy_acl (QCOPY_ACL_LIB, USE_XATTR).
+    type AttrCopyAction = unsafe extern "C" fn(*const c_char, *mut c_void) -> c_int;
+    type AttrCopyFd = unsafe extern "C" fn(
+        *const c_char,
+        c_int,
+        *const c_char,
+        c_int,
+        Option<AttrCopyAction>,
+        *mut c_void,
+    ) -> c_int;
+
+    struct Libattr {
+        copy_fd: AttrCopyFd,
+        copy_action: AttrCopyAction,
+    }
+
+    fn libattr() -> Option<&'static Libattr> {
+        static LIBATTR: OnceLock<Option<Libattr>> = OnceLock::new();
+        LIBATTR
+            .get_or_init(|| {
+                // SAFETY: as for libacl: NUL-terminated names, libattr's
+                // own signatures (<attr/libattr.h>), a handle never closed.
+                unsafe {
+                    let handle =
+                        libc::dlopen(c"libattr.so.1".as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL);
+                    if handle.is_null() {
+                        return None;
+                    }
+                    let symbol = |name: &CStr| {
+                        let address = libc::dlsym(handle, name.as_ptr());
+                        (!address.is_null()).then_some(address)
+                    };
+                    Some(Libattr {
+                        copy_fd: std::mem::transmute::<*mut c_void, AttrCopyFd>(symbol(
+                            c"attr_copy_fd",
+                        )?),
+                        copy_action: std::mem::transmute::<*mut c_void, AttrCopyAction>(symbol(
+                            c"attr_copy_action",
+                        )?),
+                    })
+                }
+            })
+            .as_ref()
+    }
+
+    /// <attr/libattr.h>'s ATTR_ACTION_PERMISSIONS.
+    const ATTR_ACTION_PERMISSIONS: c_int = 2;
+
+    /// qcopy-acl.c's is_attr_permissions: the attributes /etc/xattr.conf
+    /// marks `permissions' (the POSIX and NFSv4 ACLs).
+    unsafe extern "C" fn is_attr_permissions(name: *const c_char, ctx: *mut c_void) -> c_int {
+        match libattr() {
+            // SAFETY: NAME is the attribute name attr_copy_fd passes.
+            Some(libattr) => {
+                c_int::from(unsafe { (libattr.copy_action)(name, ctx) } == ATTR_ACTION_PERMISSIONS)
+            }
+            None => 0,
+        }
+    }
+
+    /// gnulib's qcopy_acl with USE_XATTR: DEST_DESC's mode set to MODE,
+    /// then SOURCE_DESC's permission attributes copied onto it; -1 with
+    /// errno set when either fails.
+    pub(crate) fn qcopy_acl(
+        src_name: &CStr,
+        source_desc: c_int,
+        dst_name: &CStr,
+        dest_desc: c_int,
+        mode: libc::mode_t,
+    ) -> c_int {
+        // SAFETY: fchmod and attr_copy_fd on the caller's open descriptors,
+        // with the NUL-terminated names attr_copy_fd only reports.
+        unsafe {
+            let ret = libc::fchmod(dest_desc, mode);
+            if ret != 0 {
+                return ret;
+            }
+            match libattr() {
+                Some(libattr) => (libattr.copy_fd)(
+                    src_name.as_ptr(),
+                    source_desc,
+                    dst_name.as_ptr(),
+                    dest_desc,
+                    Some(is_attr_permissions),
+                    std::ptr::null_mut(),
+                ),
+                None => 0,
+            }
+        }
+    }
+
+    /// gnulib's acl_errno_valid: whether ERRNUM is an error rather than
+    /// a file system or host without ACLs.
+    pub(crate) fn acl_errno_valid(errnum: i32) -> bool {
+        !matches!(
+            errnum,
+            libc::EBUSY | libc::EINVAL | libc::ENOSYS | libc::EOPNOTSUPP
+        )
+    }
+}
+
 /// CONS_TO_INTEGER of a uid_t or gid_t: the user and group primitives.
 pub(crate) fn legacy_unsigned_id(value: &Value) -> Result<u32, LispError> {
     cons_to_unsigned(value, u64::from(u32::MAX)).map(|id| id as u32)

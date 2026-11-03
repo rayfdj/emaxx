@@ -1266,19 +1266,103 @@ define_dispatch!(
                 };
                 Ok(if newer { Value::T } else { Value::Nil })
             }
-            // This macOS build has no SELinux support, and Emaxx does not expose
-            // a host ACL API yet.  Keep GNU's platform-degraded return values on
-            // the native side of the boundary.
             "file-acl" => {
                 need_args(name, args, 1)?;
-                let _ = string_text(&args[0])?;
+                // fileio.c:Ffile_acl: expand_and_dir_to_file, ENCODE_FILE,
+                // acl_get_file and acl_to_text.
+                let absname = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
+                let path = host_file_name(interp, env, &absname)?;
+                #[cfg(target_os = "linux")]
+                if let Some(libacl) = crate::lisp::primitives::system::acl::libacl() {
+                    use crate::lisp::primitives::system::acl::{ACL_TYPE_ACCESS, acl_errno_valid};
+                    let Some(path) = c_file_name(&path) else {
+                        return Ok(Value::Nil);
+                    };
+                    // SAFETY: PATH is NUL-terminated; the ACL and its text
+                    // are libacl's, freed once each with acl_free.
+                    unsafe {
+                        let acl = (libacl.get_file)(path.as_ptr(), ACL_TYPE_ACCESS);
+                        if acl.is_null() {
+                            let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+                            if errno == libc::ENOENT
+                                || errno == libc::ENOTDIR
+                                || !acl_errno_valid(errno)
+                            {
+                                return Ok(Value::Nil);
+                            }
+                            return Err(file_operation_error(
+                                "Getting ACLs",
+                                &std::io::Error::from_raw_os_error(errno),
+                                &absname,
+                            ));
+                        }
+                        let text = (libacl.to_text)(acl, std::ptr::null_mut());
+                        if text.is_null() {
+                            let error = std::io::Error::last_os_error();
+                            (libacl.free)(acl);
+                            return Err(file_operation_error("Getting ACLs", &error, &absname));
+                        }
+                        let bytes = std::ffi::CStr::from_ptr(text).to_bytes().to_vec();
+                        (libacl.free)(text.cast());
+                        (libacl.free)(acl);
+                        return crate::lisp::primitives::strings::make_string(bytes)
+                            .map_err(|error| LispError::Signal(error.to_string()));
+                    }
+                }
+                let _ = path;
                 Ok(Value::Nil)
             }
             "set-file-acl" => {
                 need_args(name, args, 2)?;
-                let _ = string_text(&args[0])?;
+                // fileio.c:Fset_file_acl: a string ACL through acl_from_text
+                // and acl_set_file; t when it is set, nil otherwise.
+                let absname = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
+                #[cfg(target_os = "linux")]
+                if let Kind::StringObject(acl_string) = args[1].kind()
+                    && let Some(libacl) = crate::lisp::primitives::system::acl::libacl()
+                {
+                    use crate::lisp::primitives::system::acl::{ACL_TYPE_ACCESS, acl_errno_valid};
+                    // SSDATA: the string's bytes up to a NUL.
+                    let mut text = acl_string.borrow().bytes().to_vec();
+                    if let Some(nul) = text.iter().position(|byte| *byte == 0) {
+                        text.truncate(nul);
+                    }
+                    let text = std::ffi::CString::new(text).expect("no NUL is left");
+                    // SAFETY: TEXT and PATH are NUL-terminated; the ACL is
+                    // libacl's, freed once with acl_free.
+                    unsafe {
+                        let acl = (libacl.from_text)(text.as_ptr());
+                        if acl.is_null() {
+                            let error = std::io::Error::last_os_error();
+                            if acl_errno_valid(error.raw_os_error().unwrap_or(0)) {
+                                return Err(file_operation_error(
+                                    "Converting ACL",
+                                    &error,
+                                    &absname,
+                                ));
+                            }
+                            return Ok(Value::Nil);
+                        }
+                        let path = host_file_name(interp, env, &absname)?;
+                        let failed = match c_file_name(&path) {
+                            Some(path) => {
+                                (libacl.set_file)(path.as_ptr(), ACL_TYPE_ACCESS, acl) != 0
+                            }
+                            None => true,
+                        };
+                        let error = std::io::Error::last_os_error();
+                        (libacl.free)(acl);
+                        if failed && acl_errno_valid(error.raw_os_error().unwrap_or(0)) {
+                            return Err(file_operation_error("Setting ACL", &error, &absname));
+                        }
+                        return Ok(if failed { Value::Nil } else { Value::T });
+                    }
+                }
+                let _ = absname;
                 Ok(Value::Nil)
             }
+            // This build has no SELinux support: GNU's answers without
+            // HAVE_LIBSELINUX enabled.
             "file-selinux-context" => {
                 need_args(name, args, 1)?;
                 let _ = string_text(&args[0])?;
@@ -1463,11 +1547,33 @@ define_dispatch!(
                         }
                     }
                 }
-                // qcopy_acl of a file with no ACL beyond its mode sets the
-                // mode; otherwise a new file gets the default permissions
-                // its creation mask did not give it.
+                // qcopy_acl: the mode, then the file's ACL attributes.
+                #[cfg(target_os = "linux")]
+                if preserve_permissions {
+                    let (Some(src_name), Some(dst_name)) =
+                        (c_file_name(&host_file), c_file_name(&host_newname))
+                    else {
+                        unreachable!("c_file_name stops at a NUL")
+                    };
+                    if crate::lisp::primitives::system::acl::qcopy_acl(
+                        &src_name,
+                        ifd,
+                        &dst_name,
+                        ofd,
+                        preserved_permissions as libc::mode_t,
+                    ) != 0
+                    {
+                        return Err(file_operation_error(
+                            "Copying permissions to",
+                            &std::io::Error::last_os_error(),
+                            &newname,
+                        ));
+                    }
+                }
+                // Otherwise a new file gets the default permissions its
+                // creation mask did not give it.
                 let chmod = if preserve_permissions {
-                    Some(preserved_permissions)
+                    cfg!(not(target_os = "linux")).then_some(preserved_permissions)
                 } else if already_exists || (new_mask & !realmask) == default_permissions {
                     None
                 } else {
@@ -3756,6 +3862,18 @@ fn signal_names_value() -> Value {
             .map(|value| Value::String(value.into()))
             .collect::<Vec<_>>(),
     )
+}
+
+/// SSDATA of an encoded file name for a C call: its bytes up to a NUL.
+#[cfg(target_os = "linux")]
+fn c_file_name(path: &std::path::Path) -> Option<std::ffi::CString> {
+    use std::os::unix::ffi::OsStrExt;
+    let bytes = path.as_os_str().as_bytes();
+    let end = bytes
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(bytes.len());
+    std::ffi::CString::new(&bytes[..end]).ok()
 }
 
 /// process.c:Finternal_default_signal_process's PROCESS: a string names

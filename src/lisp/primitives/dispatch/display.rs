@@ -6111,7 +6111,10 @@ define_dispatch!(
             }
             "move-point-visually" => {
                 need_args(name, args, 1)?;
-                let direction = args[0].as_integer()?;
+                // xdisp.c:Fmove_point_visually: CHECK_FIXNUM.
+                let Kind::Integer(direction) = args[0].kind() else {
+                    return Err(wrong_type_argument("fixnump", args[0]));
+                };
                 with_selected_window_buffer(interp, |interp| {
                     let right = direction > 0;
                     let right_to_left = matches!(

@@ -13214,6 +13214,34 @@ setup_process_coding_systems's check now refuses). A 13-form
   against 5.8 GB. Local validation: the grouped gate's 3,478
   library tests, the integration targets and clippy with `--all-targets
   --all-features -D warnings' pass.
+- **Round 272: file ACLs through libacl and libattr, as GNU's build
+  links them.** The oracle is built with USE_ACL and HAVE_ACL_SET_FILE
+  (`-lacl') and gnulib's qcopy_acl with USE_XATTR (`-lattr'), where
+  Emaxx answered `file-acl' and `set-file-acl' with nil and `copy-file'
+  copied only the mode. The libraries are loaded when first needed
+  (libacl.so.1 and libattr.so.1; a host without them answers as a build
+  without ACLs does): `file-acl' is Ffile_acl, acl_get_file of the
+  access ACL and acl_to_text (the mode's three entries for a file
+  without an extended ACL, names and `#effective:' comments as libacl
+  writes them), nil for ENOENT, ENOTDIR or an errno gnulib's
+  acl_errno_valid passes over (EBUSY, EINVAL, ENOSYS, EOPNOTSUPP),
+  "Getting ACLs" otherwise; `set-file-acl' is Fset_file_acl,
+  acl_from_text of a string's bytes up to a NUL and acl_set_file, t when
+  set, nil for a non-string or an unconvertible text, "Converting ACL"
+  and "Setting ACL" errors past acl_errno_valid; and `copy-file' with
+  PRESERVE-PERMISSIONS is qcopy_acl, fchmod and then attr_copy_fd of the
+  attributes /etc/xattr.conf marks `permissions' (qcopy-acl.c's
+  is_attr_permissions), so a copy keeps its source's extended ACL and
+  mask. `move-point-visually' checks its argument with CHECK_FIXNUM. The
+  native-file test that took `file-acl' for nil now expects the mode's
+  three entries, and the libacl and libattr symbols are transmuted to
+  named function types. A contract of 17 ACL operations (the mode's ACL,
+  a directory's, missing files, a set ACL and its mode, invalid and
+  non-string texts, a named-user entry with its mask, short-form text, a
+  preserved copy, a mask narrowed by `set-file-modes') matches GNU.
+  Local validation: the grouped gate's 3,479 library tests, the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -15130,6 +15158,19 @@ widest body gaps are ert-tests (38,949 ms against 36,450), comp-tests
 semantic-utest-ia (3,758 against 2,771) and mule-tests (2,788 against
 1,802). icalendar-tests' body, 3,374 ms against 415 at round 269, is
 back to 560 against 409.
+
+**On `a5dd910`** (round 271): the full Rust gate (run 41597365157)
+passed, and frozen (run 41597368742) matched all 7,928 outcomes at the
+first attempt. Setup 88.3 s against 71.2 s (1.239), test bodies 308.9 s
+against 277.0 s (1.115), in all 1.134, on a slower runner than round
+270's (GNU's own setup median 109 ms against 94). Per file, the setup is
+33 ms over GNU's on average (17.0 s over 519 files, a median of 132 ms
+against 109), electric-tests' the most over (1,005 against 587) before
+comp-tests' (2,189 against 1,884) and x-dnd-tests' (967 against 789),
+and the widest body gaps are ert-tests (46,890 ms against 38,285),
+comp-tests (19,297 against 16,464), tramp-tests (22,176 against 20,182),
+semantic-utest-ia (4,409 against 2,800) and mule-tests (3,287 against
+2,040).
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

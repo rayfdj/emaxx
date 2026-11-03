@@ -8483,6 +8483,48 @@ fn process_ids_and_signal_codes_convert_as_process_c() {
     );
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn file_acls_go_through_libacl_and_libattr_as_fileio_c() {
+    // fileio.c:Ffile_acl and Fset_file_acl through libacl (acl_get_file,
+    // acl_to_text, acl_from_text, acl_set_file and gnulib's
+    // acl_errno_valid), and Fcopy_file's PRESERVE-PERMISSIONS through
+    // gnulib's qcopy_acl, which copies the permission attributes with
+    // libattr's attr_copy_fd.  Each ACL's text is split at its newlines
+    // and tabs.
+    assert_oracle_contract_matches_interpreter(
+        r###"(progn (defalias 'zz-acl-lines (lambda (x) (cond ((stringp x) (cons 'A (split-string x "[\n\t]" t))) ((consp x) (cons (zz-acl-lines (car x)) (zz-acl-lines (cdr x)))) (t x))))
+(let* ((dir (make-temp-file "acl" t)) (f (expand-file-name "f" dir)) (g (expand-file-name "g" dir)))
+  (unwind-protect
+      (progn
+        (write-region "x" nil f) (set-file-modes f #o640)
+        (mapcar (lambda (thunk) (zz-acl-lines (condition-case e (funcall thunk) (error (list 'E (car e) (cadr e))))))
+                (list
+                 (lambda () (file-acl f))
+                 (lambda () (equal (file-acl (file-name-as-directory dir)) (file-acl dir)))
+                 (lambda () (stringp (file-acl dir)))
+                 (lambda () (file-acl (expand-file-name "nonexistent" dir)))
+                 (lambda () (file-acl (expand-file-name "f/x" dir)))
+                 (lambda () (list (set-file-acl f "user::rwx\ngroup::r--\nother::r--\n") (format "%o" (file-modes f)) (file-acl f)))
+                 (lambda () (set-file-acl f "garbage"))
+                 (lambda () (set-file-acl f 5))
+                 (lambda () (set-file-acl f nil))
+                 (lambda () (set-file-acl (expand-file-name "nonexistent" dir) "user::rw-\ngroup::r--\nother::---\n"))
+                 (lambda () (list (set-file-acl f "user::rw-\nuser:root:r--\ngroup::r--\nmask::r--\nother::---\n") (format "%o" (file-modes f)) (file-acl f)))
+                 (lambda () (list (set-file-acl f "u::rw,u:0:rwx,g::r,m::rw,o::-") (file-acl f)))
+                 (lambda () (progn (copy-file f g nil nil nil t) (list (file-acl g) (format "%o" (file-modes g)))))
+                 (lambda () (progn (set-file-modes f #o600) (file-acl f)))
+                 (lambda () (multibyte-string-p (file-acl f)))
+                 (lambda () (file-acl 5))
+                 (lambda () (file-acl "/:/nonexistent-zz"))
+                 )))
+    (delete-directory dir t)))
+)"###,
+        r###"((A "user::rw-" "group::r--" "other::---") t t nil nil (t (A "744") (A "user::rwx" "group::r--" "other::r--")) nil nil nil (E file-missing (A "Setting ACL")) (t (A "640") (A "user::rw-" "user:root:r--" "group::r--" "mask::r--" "other::---")) (t (A "user::rw-" "user:root:rwx" "#effective:rw-" "group::r--" "mask::rw-" "other::---")) ((A "user::rw-" "user:root:rwx" "#effective:rw-" "group::r--" "mask::rw-" "other::---") (A "660")) (A "user::rw-" "user:root:rwx" "#effective:---" "group::r--" "#effective:---" "mask::---" "other::---") nil (E wrong-type-argument stringp) nil)"###,
+        "file ACLs",
+    );
+}
+
 #[test]
 fn load_average_is_getloadavg() {
     // fns.c:Fload_average: getloadavg(3)'s averages (glibc reads them from
