@@ -953,6 +953,109 @@ fn always_local_slots_are_each_buffers_own_like_buffer_c() {
     );
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn x_terminal_variables_start_as_xterm_c_sets_them_and_scroll_bar_el_binds_by_them() {
+    // xterm.c: `x-toolkit-scroll-bars' is nil without
+    // USE_TOOLKIT_SCROLL_BARS (the Linux oracle has no X toolkit) and
+    // `x-use-underline-position-properties' starts true.  Loadup's
+    // scroll-bar.el reads the first to put the non-toolkit scroll-bar
+    // commands in the global map.
+    assert_oracle_contract_matches_interpreter(
+        "(list x-toolkit-scroll-bars x-use-underline-position-properties \
+           x-underline-at-descent-line \
+           (lookup-key global-map [vertical-scroll-bar]) \
+           (lookup-key global-map [horizontal-scroll-bar]))",
+        "(nil t nil (keymap (wheel-right . mwheel-scroll) (wheel-left . mwheel-scroll) \
+         (wheel-up . mwheel-scroll) (wheel-down . mwheel-scroll) (mouse-7 . mwheel-scroll) \
+         (mouse-6 . mwheel-scroll) (mouse-5 . mwheel-scroll) (mouse-4 . mwheel-scroll) \
+         (drag-mouse-3 . scroll-bar-scroll-down) (mouse-3 . scroll-bar-scroll-down) \
+         (down-mouse-2 . scroll-bar-drag) (drag-mouse-1 . scroll-bar-scroll-up) \
+         (mouse-1 . scroll-bar-scroll-up) (C-mouse-2 . mouse-split-window-vertically)) \
+         (keymap (wheel-right . mwheel-scroll) (wheel-left . mwheel-scroll) \
+         (wheel-up . mwheel-scroll) (wheel-down . mwheel-scroll) (mouse-7 . mwheel-scroll) \
+         (mouse-6 . mwheel-scroll) (mouse-5 . mwheel-scroll) (mouse-4 . mwheel-scroll) \
+         (C-mouse-2 . mouse-split-window-horizontally)))",
+        "x terminal variables",
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn build_files_is_the_builds_buildobj_list_for_help_c_file_name() {
+    // doc.c:Fsnarf_documentation conses `build-files' from buildobj.h,
+    // the objects this configuration compiled, not DOC's S records, which
+    // also name msdos, w32, ns, haiku and android files; help-fns.el's
+    // `help-C-file-name' takes the first DOC entry whose file is on it.
+    assert_oracle_contract_matches_interpreter(
+        "(list (length build-files) (car build-files) (car (last build-files)) \
+           (member \"dosfns.o\" build-files) \
+           (progn (require 'help-fns) \
+                  (help-C-file-name (symbol-function 'file-system-info) 'subr)) \
+           (help-C-file-name 'x-toolkit-scroll-bars 'var) \
+           (secure-hash 'md5 (mapconcat #'identity build-files \" \")))",
+        "(95 \"dispnew.o\" \"lastfile.o\" nil \"src/fileio.c\" \"src/xterm.c\" \
+         \"c83a77a053851428da4f8a8dfd78ec6f\")",
+        "build-files",
+    );
+}
+
+#[test]
+fn charset_maps_decode_by_their_last_entry_and_pass_ascii_through_as_charset_h() {
+    // charset.h's DECODE_CHAR and ENCODE_CHAR give an ASCII code of an
+    // ASCII-compatible charset as itself, mapped or not (MIK.map starts at
+    // #x20), so decode_coding_charset's `charset' run covers it;
+    // load_charset_map's decoder vector takes the last entry of a code a
+    // map lists twice (stdenc.map's #x20, #x2D) and the encoder table the
+    // first of a character; map_char_table_for_charset hands its function
+    // one RANGE cons, refilled for each run; eucjp-ms decodes through its
+    // `:decode-translation-table'.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list (decode-char 'mik 5) (encode-char 5 'mik) (decode-char 'adobe-standard-encoding 32) (decode-char 'adobe-standard-encoding 45) (encode-char #xa0 'adobe-standard-encoding) (object-intervals (decode-coding-string (unibyte-string 5 ?a #x80) 'mik)) (let (l) (map-charset-chars (lambda (r _) (push r l)) 'mik) (list (length l) (car l) (eq (car l) (car (last l))))) (let (l) (map-charset-chars (lambda (r _) (push (cons (car r) (cdr r)) l)) 'mik nil #x80 #x90) l) (let (l) (map-charset-chars (lambda (r _) (push r l)) 'latin-iso8859-1) (list l (eq (car l) (cadr l)))) (let ((s (decode-coding-string (unibyte-string #xad #xae #xad #xa1) 'eucjp-ms))) (list (append s nil) (object-intervals s))))"##,
+        r##"(5 5 32 45 32 ((0 3 (charset mik))) (55 (nil . 9632) t) ((1040 . 1056)) (((160 . 255)) nil) ((9325 9312) ((0 2 (charset japanese-jisx0208)))))"##,
+        "charset maps",
+    );
+}
+
+#[test]
+fn decoders_translate_through_decode_translation_tables_as_produce_chars() {
+    // coding.c:produce_chars passes each decoded character through
+    // get_translation_table's tables (the coding's, then
+    // `standard-translation-table-for-decode'): a character entry
+    // replaces it, a vector's characters stand for it and an alist of
+    // sequences replaces the first it matches; raw-text's characters at
+    // source and code_convert_string's ASCII fast path are not
+    // translated.  produce_annotation puts each `charset' run where the
+    // decoder counted it, so a translation that shortened the text makes
+    // Fput_text_property signal past the work buffer's end, and in a
+    // buffer covers what follows the decoded text.
+    assert_oracle_contract_matches_interpreter(
+        r##"(let* ((seq (make-translation-table-from-alist '(([?a ?b] . ?Z) ([?q ?r ?s] . [?1 ?2]))))
+       (one (let ((table (make-translation-table '((?a . ?b))))) (aset table ?c [?x ?y]) (aset table ?d []) table)))
+  (define-translation-table 'zz-r273-seq seq)
+  (define-translation-table 'zz-r273-one one)
+  (define-coding-system 'zz-r273-seq "seq" :coding-type 'charset :mnemonic ?z :charset-list '(iso-8859-1) :decode-translation-table 'zz-r273-seq)
+  (define-coding-system 'zz-r273-one "one" :coding-type 'charset :mnemonic ?z :charset-list '(iso-8859-1) :decode-translation-table 'zz-r273-one)
+  (define-coding-system 'zz-r273-utf "utf" :coding-type 'utf-8 :mnemonic ?z :decode-translation-table '(zz-r273-one zz-r273-seq))
+  (define-coding-system 'zz-r273-raw "raw" :coding-type 'raw-text :mnemonic ?z :decode-translation-table 'zz-r273-one)
+  (mapcar (lambda (f) (condition-case e (let ((r (funcall f))) (cond ((stringp r) (list (append r nil) (object-intervals r))) ((and (consp r) (stringp (cadr r))) (list (car r) (append (cadr r) nil) (object-intervals (cadr r)))) (t r))) (error e)))
+          (list (lambda () (decode-coding-string "abcdabcd" 'zz-r273-one))
+                (lambda () (decode-coding-string (unibyte-string ?c ?d #xe9) 'zz-r273-one))
+                (lambda () (decode-coding-string (unibyte-string #xe9 ?c) 'zz-r273-one))
+                (lambda () (decode-coding-string (unibyte-string ?a ?b #xe9) 'zz-r273-seq))
+                (lambda () (decode-coding-string (unibyte-string #xe9 ?q ?r ?s ?q ?r) 'zz-r273-seq))
+                (lambda () (decode-coding-string (unibyte-string ?a ?b ?c ?q ?r ?s #xe9) 'zz-r273-utf))
+                (lambda () (decode-coding-string (unibyte-string ?a ?c #xe9) 'zz-r273-raw))
+                (lambda () (let ((enable-character-translation nil)) (decode-coding-string (unibyte-string ?c #xe9) 'zz-r273-one)))
+                (lambda () (let ((standard-translation-table-for-decode one)) (decode-coding-string (unibyte-string ?a ?c #xe9) 'latin-1)))
+                (lambda () (with-temp-buffer (insert "123ab" (unibyte-string #xe9)) (list (condition-case e (decode-coding-region 4 7 'zz-r273-seq) (error e)) (buffer-string))))
+                (lambda () (with-temp-buffer (insert "123ab" (unibyte-string #xe9) "XYZ") (list (decode-coding-region 4 7 'zz-r273-seq) (buffer-string))))
+                (lambda () (with-temp-buffer (insert "123" (unibyte-string #xe9) "c") (list (decode-coding-region 4 6 'zz-r273-one) (buffer-string)))))))"##,
+        r##"(((97 98 99 100 97 98 99 100) nil) ((120 121 233) ((0 3 (charset iso-8859-1)))) ((233 120 121) ((0 2 (charset iso-8859-1)) (2 3 nil))) (args-out-of-range 1 4) (args-out-of-range 1 7) ((98 98 120 121 49 50 4194281) nil) ((97 99 4194281) nil) ((99 233) ((0 2 (charset iso-8859-1)))) ((98 120 121 233) ((0 3 (charset iso-8859-1)) (3 4 nil))) ((args-out-of-range 4 7) (49 50 51 90 233) nil) (2 (49 50 51 90 233 88 89 90) ((0 3 nil) (3 6 (charset iso-8859-1)) (6 8 nil))) (3 (49 50 51 233 120 121) ((0 3 nil) (3 5 (charset iso-8859-1)) (5 6 nil))))"##,
+        "decode translation",
+    );
+}
+
 #[test]
 fn looking_at_does_not_create_or_assign_unrelated_lisp_variables() {
     assert_oracle_contract_matches_interpreter(
@@ -18513,6 +18616,21 @@ fn unify_charset_validates_and_deunifies_like_charset_c() {
         .eval(&form, &mut crate::lisp::types::Env::new())
         .expect("evaluate unify-charset program");
     assert_eq!(result.to_string(), expected);
+}
+
+#[test]
+fn deunifiers_load_when_charsets_are_walked_or_encoded_but_not_while_dumping() {
+    // charset.c:load_charset (CHARSET, 2) makes a unified charset's
+    // deunifier for map_charset_chars and encode_char, not decode_char;
+    // while loadup sets `inhibit-load-charset-map' the table goes to
+    // temp_charset_work instead, so characters.el's walks over gb2312,
+    // big5 and cns11643-1 leave the dumped charsets without one, and
+    // Funify_charset still checks a new map argument.
+    assert_oracle_contract_matches_interpreter(
+        r#"(list (progn (map-charset-chars 'ignore 'japanese-jisx0212) (condition-case e (unify-charset 'japanese-jisx0212 42) (error e))) (progn (decode-char 'chinese-gb2312 #x3021) (condition-case e (unify-charset 'chinese-gb2312 42) (error e))) (progn (encode-char #x4e00 'chinese-gbk) (condition-case e (unify-charset 'chinese-gbk 42) (error e))) (condition-case e (unify-charset 'big5 42) (error e)) (condition-case e (unify-charset 'chinese-cns11643-1 42) (error e)))"#,
+        r#"(nil (error "Bad unify-map" 42) nil (error "Bad unify-map" 42) (error "Bad unify-map" 42))"#,
+        "deunifiers",
+    );
 }
 
 #[test]

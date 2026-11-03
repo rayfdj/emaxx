@@ -1309,6 +1309,37 @@ define_dispatch!(
                                     layout,
                                     env,
                                 )?;
+                                // produce_annotation's Fput_text_property of
+                                // a range a translation left past the call's
+                                // text: over what follows it in the buffer,
+                                // args-out-of-range past its end.
+                                if let Some((from, to, charset)) = buffer_decode
+                                    .as_ref()
+                                    .and_then(|decode| decode.overrun.clone())
+                                {
+                                    let (from, to) = (start + from, start + to);
+                                    if to > interp.buffer.borrow().point_max() {
+                                        return Err(LispError::SignalValue(Value::list([
+                                            Value::symbol("args-out-of-range"),
+                                            Value::Integer(from as i64),
+                                            Value::Integer(to as i64),
+                                        ])));
+                                    }
+                                    if let Some(charset) = charset {
+                                        let plist = Value::list([
+                                            Value::symbol("charset"),
+                                            Value::symbol(&charset),
+                                        ]);
+                                        crate::lisp::primitives::textprop::add_text_properties(
+                                            interp,
+                                            &Value::Integer(from as i64),
+                                            &Value::Integer(to as i64),
+                                            plist,
+                                            Value::Nil,
+                                            env,
+                                        )?;
+                                    }
+                                }
                                 Ok((
                                     Some(
                                         AfterChange::new(start, old_length, transformed_length)

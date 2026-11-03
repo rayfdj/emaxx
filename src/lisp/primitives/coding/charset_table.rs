@@ -57,8 +57,9 @@ enum MapSource {
 }
 
 /// A charset's mapping (load_charset_map): its pairs in the map's order,
-/// the character of each code and the code of each character, the first
-/// pair for either winning.
+/// the character of each code, which the decoder vector takes from the
+/// last pair naming the code, and the code of each character, which the
+/// encoder char-table takes from the first pair naming the character.
 pub(crate) struct CharsetMap {
     pub(crate) entries: Vec<(u32, u32)>,
     decoder: HashMap<u32, u32, FnvBuildHasher>,
@@ -72,7 +73,7 @@ impl CharsetMap {
         let mut encoder =
             HashMap::with_capacity_and_hasher(entries.len(), FnvBuildHasher::default());
         for &(code, character) in &entries {
-            decoder.entry(code).or_insert(character);
+            decoder.insert(code, character);
             encoder.entry(character).or_insert(code);
         }
         CharsetMap {
@@ -407,8 +408,12 @@ impl CharsetInfo {
     }
 
     /// DECODE_CHAR: the character CODE is in this charset, None for a code
-    /// that is none of its characters.
+    /// that is none of its characters.  An ASCII code of an
+    /// ASCII-compatible charset is that character, mapped or not.
     pub(crate) fn decode(&self, interp: &Interpreter, code: u32) -> Option<u32> {
+        if code < 0x80 && self.ascii_compatible_p == Some(true) {
+            return Some(code);
+        }
         match self.builtin {
             CharsetBuiltin::Ascii => return (code <= 0x7f).then_some(code),
             CharsetBuiltin::Iso8859_1 => return (code <= 0xff).then_some(code),
@@ -452,8 +457,12 @@ impl CharsetInfo {
     }
 
     /// ENCODE_CHAR for an actual Emacs character number: its code in this
-    /// charset, None when it is no character of it.
+    /// charset, None when it is no character of it.  An ASCII character of
+    /// an ASCII-compatible charset is its own code.
     pub(crate) fn encode(&self, interp: &Interpreter, character: u32) -> Option<u32> {
+        if character < 0x80 && self.ascii_compatible_p == Some(true) {
+            return Some(character);
+        }
         match self.builtin {
             CharsetBuiltin::Ascii => return (character <= 0x7f).then_some(character),
             CharsetBuiltin::Iso8859_1 => return (character <= 0xff).then_some(character),
@@ -468,13 +477,9 @@ impl CharsetInfo {
             }
             CharsetBuiltin::None => {}
         }
-        if self.unified
-            && let Some(def) = interp.charset_def_value(&self.name)
-        {
-            // encode_char: a unified charset's deunifier is loaded first,
-            // into its attributes.
-            let _ =
-                crate::lisp::primitives::coding::aset_vector_value(&def, DEF_DEUNIFIER, Value::T);
+        if self.unified {
+            // encode_char: a unified charset's deunifier is loaded first.
+            load_deunifier(interp, &self.name);
         }
         if character > MAX_5_BYTE_CHAR {
             // A raw byte belongs to no map, superset or offset charset.
@@ -504,6 +509,31 @@ impl CharsetInfo {
         // within the code space (latin-iso8859-1 spans 96 codes; a
         // character past them is not its member).
         self.index_to_code(index)
+    }
+}
+
+/// load_charset (CHARSET, 2) for the unified charset NAME: its deunifier
+/// goes into its attributes, unless `inhibit-load-charset-map' (which
+/// loadup sets while dumping) sends the table to temp_charset_work, so
+/// that the dumped charset has none.
+pub(crate) fn load_deunifier(interp: &Interpreter, name: &str) {
+    let Some(def) = interp.charset_def_value(name) else {
+        return;
+    };
+    let crate::lisp::types::Kind::Vector(slots) = def.kind() else {
+        return;
+    };
+    if slots
+        .get(DEF_DEUNIFIER)
+        .is_none_or(|deunifier| !deunifier.is_nil())
+    {
+        return;
+    }
+    let inhibited = interp
+        .lookup_var("inhibit-load-charset-map", &crate::lisp::types::Env::new())
+        .is_some_and(|value| !value.is_nil());
+    if !inhibited {
+        slots.set(DEF_DEUNIFIER, Value::T);
     }
 }
 

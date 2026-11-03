@@ -13242,6 +13242,56 @@ setup_process_coding_systems's check now refuses). A 13-form
   Local validation: the grouped gate's 3,479 library tests, the
   integration targets and clippy with `--all-targets --all-features -D
   warnings' pass.
+- **Round 273: startup variables, `build-files', charset maps and decode
+  translation as GNU's.** A sweep of every default-bound variable's
+  startup value against the oracle (X-only and build-path values aside)
+  found `x-toolkit-scroll-bars' t and
+  `x-use-underline-position-properties' nil, nsterm.m's values, where
+  the Linux oracle has xterm.c's nil (no X toolkit) and t; loadup's
+  scroll-bar.el reads the first to choose the scroll-bar bindings, so
+  the global map held `scroll-bar-toolkit-scroll' where GNU binds
+  `scroll-bar-scroll-up', `scroll-bar-drag' and
+  `scroll-bar-scroll-down'. `build-files' was every S record of DOC, the
+  msdos, w32, ns, haiku and android files among them, where doc.c conses
+  buildobj.h, the objects the build compiled, before it opens DOC, so
+  `help-C-file-name' put `file-system-info' in dosfns.c; the oracle's
+  list is generated (generated_gnu_build_files_linux.rs) and taken while
+  `build-files' is nil. A sweep of every coding system's encoding and
+  decoding found three charset differences. DECODE_CHAR and ENCODE_CHAR
+  give an ASCII code of an ASCII-compatible charset as itself, mapped or
+  not (MIK.map starts at #x20, so `mik' decoded control bytes outside
+  its `charset' run and `(decode-char 'mik 5)' was nil).
+  load_charset_map's decoder vector takes the last entry of a code a map
+  lists twice (stdenc.map's #x20 is U+00A0 and then U+0020) and the
+  encoder table the first entry of a character. And the decoders now
+  translate through `:decode-translation-table' and
+  `standard-translation-table-for-decode', which Emaxx applied only when
+  encoding (eucjp-ms's NEC row decoded to its private characters):
+  produce_chars is ported a decoder call at a time,
+  LOOKUP_TRANSLATION_TABLE's character entries along a list of tables,
+  get_translation's vectors and sequence alists (an annotation datum
+  ending a sequence, the charbuf's end carrying one over to the next
+  call), with none for raw-text's characters at source;
+  produce_annotation's runs stay where the decoder counted them, so a
+  translation that shortens a call's text signals args-out-of-range past
+  the work buffer's end and, in a region, puts the run on the text after
+  it, as GNU does. `map-charset-chars' hands its function
+  map_char_table_for_charset's one RANGE cons, refilled for each run,
+  and a narrowed walk tests each character's ENCODE_CHAR. Walks and
+  ENCODE_CHAR load a unified charset's deunifier, as map_charset_chars
+  and encode_char do, except while loadup sets
+  `inhibit-load-charset-map', when load_charset fills temp_charset_work
+  instead, so after characters.el's walks the image's gb2312, big5,
+  cns11643-1 and jisx0208 still have none and `unify-charset' checks a
+  new map argument for them as GNU's does. Sweeps of nine char tables
+  (syntax, case, category, width, script, printable, glyphless,
+  composition, auto-fill), 20 char-code properties and ten per-character
+  functions over every character match GNU, as does the coding sweep
+  now. Contracts for the X variables and scroll-bar maps, `build-files',
+  the charset maps, the deunifier loads and 12 translation cases match
+  GNU. Local validation: the grouped gate's 3,484 library tests,
+  the integration targets and clippy with `--all-targets --all-features
+  -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -15171,6 +15221,19 @@ and the widest body gaps are ert-tests (46,890 ms against 38,285),
 comp-tests (19,297 against 16,464), tramp-tests (22,176 against 20,182),
 semantic-utest-ia (4,409 against 2,800) and mule-tests (3,287 against
 2,040).
+
+**On `f01d05d`** (round 272): the full Rust gate (run 41602941387)
+passed, and frozen (run 41602945683) matched all 7,928 outcomes at the
+first attempt. Setup 84.2 s against 67.5 s (1.249), test bodies 300.6 s
+against 270.5 s (1.111), in all 1.120 (GNU's own setup median 104 ms
+against 109 on round 271's runner). Per file, the setup is 32 ms over
+GNU's on average (16.8 s over 519 files, a median of 125 ms against
+104), electric-tests' the most over (934 against 533) before
+comp-tests' (2,055 against 1,770) and x-dnd-tests' (867 against 720),
+and the widest body gaps are ert-tests (45,436 ms against 37,759),
+comp-tests (17,927 against 14,873), tramp-tests (21,957 against 19,554),
+semantic-utest-ia (4,134 against 2,744) and mule-tests (3,264 against
+2,024).
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

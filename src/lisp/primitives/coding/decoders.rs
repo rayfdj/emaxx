@@ -1362,6 +1362,223 @@ pub(super) fn ccl_call<S: Units + ?Sized>(
     })
 }
 
+/// LOOKUP_TRANSLATION_TABLE: the entry of TABLE (a char-table or a list
+/// of them) for *C.  A character entry replaces *C (a list going on to
+/// the next table with it) and leaves nil; another non-nil entry ends the
+/// search and is returned.
+fn lookup_translation_table(table: Value, c: &mut u32) -> Value {
+    let character = |value: Value| {
+        value
+            .integer_value()
+            .filter(|code| (0..=i64::from(MAX_CHAR)).contains(code))
+            .map(|code| code as u32)
+    };
+    match table.kind() {
+        Kind::CharTable(chartab) => {
+            let trans = chartab.get(*c);
+            match character(trans) {
+                Some(code) => {
+                    *c = code;
+                    Value::Nil
+                }
+                None => trans,
+            }
+        }
+        Kind::Cons(_) => {
+            let mut trans = Value::Nil;
+            let mut tail = table;
+            while let Some((head, rest)) = tail.cons_values() {
+                if let Kind::CharTable(chartab) = head.kind() {
+                    trans = chartab.get(*c);
+                    if let Some(code) = character(trans) {
+                        *c = code;
+                        trans = Value::Nil;
+                    } else if !trans.is_nil() {
+                        break;
+                    }
+                }
+                tail = rest;
+            }
+            trans
+        }
+        _ => Value::Nil,
+    }
+}
+
+/// What get_translation makes of a non-character entry.
+enum Translation {
+    /// The value, replacing this many characters.
+    Value(Value, usize),
+    /// Qt: the source ran out before an entry's sequence was matched.
+    Incomplete,
+    /// Qnil: no entry's sequence matched.
+    None,
+}
+
+/// coding.c get_translation over the charbuf from the character at
+/// CODES[AT]: a fixnum or vector replaces that character; an alist of
+/// (FROM-VECTOR . TO) gives the TO of the first FROM the charbuf holds
+/// there.  MARKERS are the charbuf positions an annotation datum
+/// precedes, which no FROM matches; the charbuf's end before a FROM is
+/// done is Qt.
+fn get_translation(trans: Value, codes: &[u32], at: usize, markers: &[usize]) -> Translation {
+    if trans.integer_value().is_some() || matches!(trans.kind(), Kind::Vector(_)) {
+        return Translation::Value(trans, 1);
+    }
+    let mut tail = trans;
+    while let Some((entry, rest)) = tail.cons_values() {
+        tail = rest;
+        let Some((from, to)) = entry.cons_values() else {
+            continue;
+        };
+        let Kind::Vector(from) = from.kind() else {
+            continue;
+        };
+        let len = from.len();
+        let mut matched = 0;
+        for (i, item) in from.slots().enumerate() {
+            let q = at + i;
+            if i > 0 && markers.binary_search(&q).is_ok() {
+                break;
+            }
+            if q == codes.len() {
+                return Translation::Incomplete;
+            }
+            if item.integer_value() != Some(i64::from(codes[q])) {
+                break;
+            }
+            matched += 1;
+        }
+        if matched == len {
+            return Translation::Value(to, len);
+        }
+    }
+    Translation::None
+}
+
+/// produce_chars' translation of the characters from the FROM'th (text
+/// from byte FROM_BYTE) on, which the decoder put in its charbuf after
+/// any carried over from the call before: each character through
+/// LOOKUP_TRANSLATION_TABLE and, for another entry, get_translation,
+/// whose fixnum replaces it, whose vector's characters stand for it, and
+/// whose Qt stops the scan unless LAST_BLOCK, the rest carried over to
+/// the next call.  Returns where the carried characters start.
+fn produce_translated(
+    out: &mut DecodedText,
+    table: Value,
+    from: (usize, usize),
+    last_block: bool,
+) -> Option<(usize, usize)> {
+    let (from_char, from_byte) = from;
+    let codes = out.codes_from(from_char, from_byte);
+    // The annotation data among these characters: a `charset' run's after
+    // its last character, a composition's before its first.
+    let mut markers: Vec<usize> = out
+        .charsets
+        .iter()
+        .rev()
+        .take_while(|(_, end, _)| *end > from_char)
+        .map(|(_, end, _)| end - from_char)
+        .chain(
+            out.compositions
+                .iter()
+                .rev()
+                .take_while(|composition| composition.start >= from_char)
+                .map(|composition| composition.start - from_char),
+        )
+        .collect();
+    markers.sort_unstable();
+    markers.dedup();
+    let mut produced = Vec::with_capacity(codes.len());
+    let mut i = 0;
+    let mut carried = None;
+    while i < codes.len() {
+        let mut c = codes[i];
+        let mut from_nchars = 1;
+        let trans = lookup_translation_table(table, &mut c);
+        if trans.is_nil() {
+            produced.push(c);
+            i += 1;
+            continue;
+        }
+        match get_translation(trans, &codes, i, &markers) {
+            Translation::Value(value, nchars) => {
+                from_nchars = nchars;
+                if let Some(code) = value
+                    .integer_value()
+                    .filter(|code| (0..=i64::from(MAX_CHAR)).contains(code))
+                {
+                    produced.push(code as u32);
+                } else if let Kind::Vector(items) = value.kind() {
+                    produced.extend(
+                        items
+                            .slots()
+                            .filter_map(|item| item.integer_value())
+                            .filter(|code| (0..=i64::from(MAX_CHAR)).contains(code))
+                            .map(|code| code as u32),
+                    );
+                } else {
+                    produced.push(c);
+                }
+            }
+            Translation::Incomplete if !last_block => {
+                carried = Some(i);
+                break;
+            }
+            Translation::Incomplete | Translation::None => produced.push(c),
+        }
+        i += from_nchars;
+    }
+    out.truncate_chars(from_char, from_byte);
+    for &code in &produced {
+        out.push_code(code);
+    }
+    let carried_at = (out.char_count(), out.text.len());
+    let start = carried?;
+    for &code in &codes[start..] {
+        out.push_code(code);
+    }
+    Some(carried_at)
+}
+
+/// The first of this call's annotations, in produce_annotation's order
+/// (those after the first ANNOTATED `charset' runs and compositions),
+/// whose range ends past the PRODUCED characters, where a translation
+/// made the call's text shorter than the decoder counted it; with the
+/// `charset' runs and compositions put on the text before it.
+type Overrun = ((usize, usize, Option<String>), (usize, usize));
+
+fn annotation_overrun(
+    out: &DecodedText,
+    annotated: (usize, usize),
+    produced: usize,
+) -> Option<Overrun> {
+    let (mut runs, mut compositions) = (0, 0);
+    for annotation in annotations(&out.charsets, &out.compositions) {
+        match annotation {
+            Annotation::Charset(start, end, charset) => {
+                if runs >= annotated.0 && end > produced {
+                    return Some((
+                        (start, end, Some(charset.to_string())),
+                        (runs, compositions),
+                    ));
+                }
+                runs += 1;
+            }
+            Annotation::Composition(composition) => {
+                if compositions >= annotated.1 && composition.end > produced {
+                    return Some((
+                        (composition.start, composition.end, None),
+                        (runs, compositions),
+                    ));
+                }
+                compositions += 1;
+            }
+        }
+    }
+    None
+}
+
 /// A coding system's decoder, set up once for decode_coding's calls.
 enum Decoder {
     Utf8 { bom: bool },
@@ -1433,12 +1650,24 @@ pub(super) fn decode_units<S: Units + ?Sized>(
     block: &mut DecodeBlock,
 ) -> Result<DecodedText, LispError> {
     let mut decoder = Decoder::new(interp, canonical);
+    // decode_coding's get_translation_table, which produce_chars applies
+    // to every decoder's charbuf but decode_coding_raw_text's characters
+    // at source.
+    let table = if matches!(decoder, Decoder::RawText) {
+        Value::Nil
+    } else {
+        decode_translation_table(interp, canonical)
+    };
     // A unit decodes to a character of at least a byte.
     let mut out = DecodedText::with_capacity(src.len());
     let eol_dos = block.eol_dos;
     let mut consumed = 0;
+    // The characters produce_chars carried over to the next call.
+    let mut carried: Option<(usize, usize)> = None;
     loop {
-        let before = out.char_count();
+        let before = carried.map_or(out.char_count(), |(chars, _)| chars);
+        let from = carried.take().unwrap_or((out.char_count(), out.text.len()));
+        let annotated = (out.charsets.len(), out.compositions.len());
         let end = match &mut decoder {
             Decoder::Utf8 { bom } => utf_8_call(src, consumed, *bom, eol_dos, block.spec, &mut out),
             Decoder::Utf16 {
@@ -1471,9 +1700,29 @@ pub(super) fn decode_units<S: Units + ?Sized>(
             Decoder::Ccl(ccl) => ccl_call(interp, src, consumed, ccl, block.last, &mut out)?,
             Decoder::RawText => raw_text_call(src, consumed, eol_dos, &mut out),
         };
+        if !table.is_nil() {
+            carried = produce_translated(&mut out, table, from, false);
+        }
         // produce_chars inserts what the call produced.
-        if out.char_count() > before {
-            out.chunks.push(out.char_count() - before);
+        let produced = carried.map_or(out.char_count(), |(chars, _)| chars);
+        if produced > before {
+            out.chunks.push(produced - before);
+        }
+        if !table.is_nil()
+            && let Some((overrun, (runs, compositions))) =
+                annotation_overrun(&out, annotated, produced)
+        {
+            // produce_annotation's Fput_text_property signals, the
+            // annotations after it never put on the text, and what the
+            // decoder carried over is never produced.
+            if let Some((chars, bytes)) = carried.take() {
+                out.truncate_chars(chars, bytes);
+            }
+            out.charsets.truncate(runs);
+            out.compositions.truncate(compositions);
+            out.overrun = Some(overrun);
+            block.consumed = src.len();
+            return Ok(out);
         }
         match end {
             CallEnd::Full(at) if at < src.len() => consumed = at,
@@ -1482,6 +1731,13 @@ pub(super) fn decode_units<S: Units + ?Sized>(
                 consumed = at;
                 break;
             }
+        }
+    }
+    // decode_coding's last produce_chars of what was carried over.
+    if let Some(from) = carried {
+        produce_translated(&mut out, table, from, true);
+        if out.char_count() > from.0 {
+            out.chunks.push(out.char_count() - from.0);
         }
     }
     if block.last {

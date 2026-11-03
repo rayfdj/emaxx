@@ -6993,7 +6993,19 @@ impl Interpreter {
             ("x-resource-name", Value::Nil),
             ("x-show-tooltip-timeout", Value::Integer(5)),
             ("x-stretch-cursor", Value::Nil),
-            ("x-toolkit-scroll-bars", Value::T),
+            // xterm.c: the toolkit's name under USE_TOOLKIT_SCROLL_BARS,
+            // else nil, which the Linux oracle (built without an X
+            // toolkit) has and scroll-bar.el reads to choose the
+            // scroll-bar bindings it puts in the global map; nsterm.m
+            // sets t.
+            (
+                "x-toolkit-scroll-bars",
+                if cfg!(target_os = "macos") {
+                    Value::T
+                } else {
+                    Value::Nil
+                },
+            ),
             ("xft-ignore-color-fonts", Value::T),
         ] {
             interp.define_special_variable(name, value);
@@ -7799,9 +7811,15 @@ impl Interpreter {
             ("word-wrap-by-category", Value::Nil),
             ("words-include-escapes", Value::Nil),
             ("x-underline-at-descent-line", Value::Nil),
-            // DEFVAR_BOOL with no explicit assignment: C-false, and the oracle
-            // agrees (nil); the tty branch's t was a transcription slip.
-            ("x-use-underline-position-properties", Value::Nil),
+            // xterm.c sets this DEFVAR_BOOL true and nsterm.m false.
+            (
+                "x-use-underline-position-properties",
+                if cfg!(target_os = "macos") {
+                    Value::Nil
+                } else {
+                    Value::T
+                },
+            ),
             ("yes-or-no-prompt", Value::String("(yes or no) ".into())),
             // syntax.c: forward-comment's backward scan anchors its
             // recovery parse through `syntax-ppss' by default, and the

@@ -2031,6 +2031,18 @@ fn snarf_documentation(
         .ok_or_else(|| wrong_type_argument("stringp", directory))?
         .text;
     let path = directory + &string_text(filename)?;
+    // doc.c: `build-files' is nil until the first snarf, which conses it
+    // from buildobj.h before opening the file.
+    let build_files_unset = interp
+        .lookup_var("build-files", env)
+        .is_none_or(|value| value.is_nil());
+    if build_files_unset && let Some(names) = crate::lisp::primitives::gnu_build_files() {
+        interp.set_variable(
+            "build-files",
+            Value::list(names.iter().map(|name| Value::String((*name).into()))),
+            env,
+        );
+    }
     let bytes = std::fs::read(&path).map_err(|error| {
         crate::lisp::primitives::file_io::file_operation_error(
             "Opening doc string file",
@@ -2040,20 +2052,20 @@ fn snarf_documentation(
     })?;
     let entries = parse_doc_file_entries(&bytes)?;
     interp.set_variable("internal-doc-file-name", *filename, env);
-    // GNU's help-fns.el validates C source markers against the native object
-    // inventory in `build-files'.  DOC already carries that inventory as S
-    // records, so derive it from this parse instead of maintaining a second
-    // hard-coded list which can drift with the selected GNU tree.
-    interp.set_variable(
-        "build-files",
-        Value::list(
-            entries
-                .iter()
-                .filter(|entry| entry.kind == b'S')
-                .map(|entry| Value::String(entry.name.clone().into())),
-        ),
-        env,
-    );
+    if build_files_unset && crate::lisp::primitives::gnu_build_files().is_none() {
+        // No oracle's buildobj.h is recorded for this platform: DOC's S
+        // records, which name every file make-docfile read, stand in.
+        interp.set_variable(
+            "build-files",
+            Value::list(
+                entries
+                    .iter()
+                    .filter(|entry| entry.kind == b'S')
+                    .map(|entry| Value::String(entry.name.clone().into())),
+            ),
+            env,
+        );
+    }
     let delayed = interp
         .lookup_var("custom-delayed-init-variables", env)
         .and_then(|value| value.to_vec().ok())
@@ -2349,6 +2361,18 @@ fn parse_doc_file(bytes: &[u8]) -> std::collections::HashMap<String, String> {
         map.entry(name).or_insert(doc);
     }
     map
+}
+
+/// fns.c:Fget of the bare symbol SYMBOL's PROPERTY, as C calls it:
+/// `overriding-plist-environment' first, then the symbol's plist.
+pub(in crate::lisp::primitives) fn bare_symbol_get(
+    interp: &Interpreter,
+    symbol: &str,
+    property: &str,
+) -> Value {
+    overriding_plist_property(interp, &crate::lisp::types::Env::new(), symbol, property)
+        .or_else(|| interp.get_symbol_property(symbol, property))
+        .unwrap_or(Value::Nil)
 }
 
 /// The `get' primitive, callable directly (a subr's function pointer).

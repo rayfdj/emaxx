@@ -1299,17 +1299,34 @@ define_dispatch!(
                     Some(to) => code(to).min(max_code),
                     None => max_code,
                 };
-                let ranges = crate::lisp::primitives::coding::map_charset_char_ranges(
+                use crate::lisp::primitives::coding::CharsetRanges;
+                let segments = crate::lisp::primitives::coding::map_charset_char_segments(
                     interp, &charset, from, to,
                 )
                 .unwrap_or_default();
-                for (start, end) in ranges {
-                    call_function_value(
-                        interp,
-                        &function,
-                        &[Value::cons(Value::Integer(start), Value::Integer(end)), arg],
-                        env,
-                    )?;
+                for segment in segments {
+                    match segment {
+                        // map_char_table_for_charset's one RANGE cons, its car
+                        // set at a run's first character, its cdr at the run's
+                        // end, and its car nil again after each call.
+                        CharsetRanges::Walk(ranges) => {
+                            let range = Value::cons(Value::Nil, Value::Nil);
+                            for (start, end) in ranges {
+                                range.set_car(Value::Integer(start))?;
+                                range.set_cdr(Value::Integer(end))?;
+                                call_function_value(interp, &function, &[range, arg], env)?;
+                                range.set_car(Value::Nil)?;
+                            }
+                        }
+                        CharsetRanges::Offset(start, end) => {
+                            call_function_value(
+                                interp,
+                                &function,
+                                &[Value::cons(Value::Integer(start), Value::Integer(end)), arg],
+                                env,
+                            )?;
+                        }
+                    }
                 }
                 Ok(Value::Nil)
             }

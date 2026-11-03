@@ -91,6 +91,21 @@ pub(crate) fn gnu_c_forwarded_variables() -> &'static [&'static str] {
 }
 
 #[cfg(target_os = "linux")]
+pub(crate) mod generated_gnu_build_files_linux;
+/// The contracted oracle's buildobj.h, the objects its build compiled, in
+/// order; None off Linux, where no oracle has been probed for it.
+pub(crate) fn gnu_build_files() -> Option<&'static [&'static str]> {
+    #[cfg(target_os = "linux")]
+    {
+        Some(generated_gnu_build_files_linux::GNU_BUILD_FILES)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
+}
+
+#[cfg(target_os = "linux")]
 pub(crate) mod generated_gnu_byte_boolean_vars_linux;
 /// The contracted oracle's `byte-boolean-vars' at `-Q --batch', in its
 /// order; empty off Linux, where no oracle has been probed for it.

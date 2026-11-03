@@ -2143,6 +2143,12 @@ pub(crate) struct DecodedText {
     chars: usize,
     pub(crate) chunks: Vec<usize>,
     pub(crate) eol: Option<Box<EolConversion>>,
+    /// The first annotation produce_annotation could not put on its call's
+    /// text: a translation made the text shorter than the characters the
+    /// decoder counted, and Fput_text_property's range (START END, with
+    /// the `charset' run's charset, or none for a composition) runs past
+    /// what was produced.  decode_coding stops there.
+    pub(crate) overrun: Option<(usize, usize, Option<String>)>,
 }
 
 /// produce_composition's COMPONENTS for compose_text: nil for a relative
@@ -2347,6 +2353,42 @@ impl DecodedText {
             }
         }
         self.chars += 1;
+    }
+
+    /// The codes of the characters from the FROM_CHAR'th on, whose text
+    /// starts at byte FROM_BYTE.
+    pub(crate) fn codes_from(&self, from_char: usize, from_byte: usize) -> Vec<u32> {
+        let first = self
+            .extended
+            .partition_point(|&(index, _)| index < from_char);
+        let mut extended = self.extended[first..].iter().peekable();
+        self.text[from_byte..]
+            .chars()
+            .enumerate()
+            .map(|(offset, ch)| {
+                if let Some(&&(index, code)) = extended.peek()
+                    && index == from_char + offset
+                {
+                    extended.next();
+                    return code;
+                }
+                match raw_byte_from_regex_char(ch) {
+                    Some(byte) => RAW_BYTE8_BASE + u32::from(byte),
+                    None => ch as u32,
+                }
+            })
+            .collect()
+    }
+
+    /// Drop the characters from the FROM_CHAR'th on, whose text starts at
+    /// byte FROM_BYTE.
+    pub(crate) fn truncate_chars(&mut self, from_char: usize, from_byte: usize) {
+        self.text.truncate(from_byte);
+        let keep = self
+            .extended
+            .partition_point(|&(index, _)| index < from_char);
+        self.extended.truncate(keep);
+        self.chars = from_char;
     }
 
     /// Store BYTE as a decoder's invalid octet: ASCII as itself, any other
@@ -2611,6 +2653,63 @@ pub(crate) fn charset_valids(interp: &Interpreter, coding: &str) -> CharsetValid
         attrs.derived.slots(epoch).valids = Some(valids.clone());
     }
     valids
+}
+
+/// coding.c:get_translation_table (ATTRS, false, ...): the table, or
+/// list of tables, produce_chars translates a decoder's characters
+/// through, nil for none.  None while `enable-character-translation' is
+/// nil; else the coding's `:decode-translation-table' (a symbol for its
+/// `translation-table' property, a list whose symbols are, or a table),
+/// with `standard-translation-table-for-decode' after it when that is a
+/// char-table, or the standard table alone.
+pub(crate) fn decode_translation_table(interp: &Interpreter, coding: &str) -> Value {
+    let env = Env::new();
+    if interp
+        .lookup_var("enable-character-translation", &env)
+        .is_none_or(|value| value.is_nil())
+    {
+        return Value::Nil;
+    }
+    let standard = interp
+        .lookup_var("standard-translation-table-for-decode", &env)
+        .unwrap_or(Value::Nil);
+    let table = coding_attr(interp, coding, ":decode-translation-table").unwrap_or(Value::Nil);
+    if table.is_nil() {
+        return standard;
+    }
+    let resolve = |value: Value| match value.kind() {
+        Kind::Symbol(name) => {
+            dispatch::misc::bare_symbol_get(interp, name.as_str(), "translation-table")
+        }
+        Kind::T => dispatch::misc::bare_symbol_get(interp, "t", "translation-table"),
+        _ => value,
+    };
+    let table = if table.cons_values().is_some() {
+        // Fcopy_sequence, its symbols replaced by their tables.
+        let mut items = Vec::new();
+        let mut tail = table;
+        while let Some((head, rest)) = tail.cons_values() {
+            items.push(resolve(head));
+            tail = rest;
+        }
+        Value::list(items)
+    } else {
+        resolve(table)
+    };
+    if matches!(standard.kind(), Kind::CharTable(_)) {
+        if table.cons_values().is_some() {
+            let mut items = Vec::new();
+            let mut tail = table;
+            while let Some((head, rest)) = tail.cons_values() {
+                items.push(head);
+                tail = rest;
+            }
+            items.push(standard);
+            return Value::list(items);
+        }
+        return Value::list([table, standard]);
+    }
+    table
 }
 
 /// coding.c:get_translation_table for decoding, as far as whether there
@@ -4096,6 +4195,7 @@ fn decode_coding_parts(
             coding: "no-conversion".into(),
             post_read: Value::Nil,
             layout: None,
+            overrun: None,
         });
     };
     let canonical = interp
@@ -4133,6 +4233,7 @@ fn decode_coding_parts(
             coding: coding.into(),
             post_read: Value::Nil,
             layout: None,
+            overrun: None,
         });
     }
     let CodingDecode {
@@ -4150,6 +4251,18 @@ fn decode_coding_parts(
         coding,
         dst_multibyte,
     )?;
+    let overrun = decoded.overrun.take();
+    if dst_multibyte.is_none()
+        && let Some((from, to, _)) = overrun
+    {
+        // produce_charset's Fput_text_property in the work buffer, which
+        // holds the characters produced from BEG.
+        return Err(LispError::SignalValue(Value::list([
+            Value::symbol("args-out-of-range"),
+            Value::Integer(from as i64 + 1),
+            Value::Integer(to as i64 + 1),
+        ])));
+    }
     // produce_annotation's `charset' properties of the decoded text.
     let layout = decoded.take_layout();
     let charset_props = decoded_annotation_props(&mut decoded);
@@ -4177,6 +4290,7 @@ fn decode_coding_parts(
             coding: actual_coding,
             post_read,
             layout,
+            overrun,
         });
     }
     // A string destination: decode_coding_object decodes into the work
@@ -4198,6 +4312,7 @@ fn decode_coding_parts(
         coding: actual_coding,
         post_read: Value::Nil,
         layout: None,
+        overrun: None,
     })
 }
 
@@ -4210,6 +4325,9 @@ pub(crate) struct BufferDecode {
     /// How decode_coding puts the text into the buffer, when it takes
     /// more than one insertion (see `DecodedText::layout').
     pub(crate) layout: Option<DecodeLayout>,
+    /// `DecodedText::overrun', which the caller puts on the buffer once
+    /// the text is in it.
+    pub(crate) overrun: Option<(usize, usize, Option<String>)>,
 }
 
 /// decode_coding_object into a buffer destination: VALUE decoded with
@@ -4277,18 +4395,47 @@ fn push_sorted_char_ranges(chars: &mut Vec<u32>, ranges: &mut Vec<(i64, i64)>) {
 
 /// charset.c:map_charset_chars: the ranges of characters, in the order
 /// the C hands them to the function, for CHARSET's codes FROM to TO
-/// (unsigned as the C's; FROM may exceed TO).  A subset narrows to its
-/// parent's window, a superset visits each parent past its offset, a
-/// mapped or unified charset's table gives its runs of characters, and
-/// an offset charset's codes give one range, however FROM and TO lie.
+/// (unsigned as the C's; FROM may exceed TO).
 pub(crate) fn map_charset_char_ranges(
     interp: &Interpreter,
     charset: &str,
     from: u32,
     to: u32,
 ) -> Option<Vec<(i64, i64)>> {
+    Some(
+        map_charset_char_segments(interp, charset, from, to)?
+            .into_iter()
+            .flat_map(|segment| match segment {
+                CharsetRanges::Walk(ranges) => ranges,
+                CharsetRanges::Offset(start, end) => vec![(start, end)],
+            })
+            .collect(),
+    )
+}
+
+/// What map_charset_chars hands its function: the runs of a
+/// map_char_table_for_charset walk, all in the one cons that walk makes
+/// and refills for each, or an offset charset's range in a cons of its
+/// own.
+pub(crate) enum CharsetRanges {
+    Walk(Vec<(i64, i64)>),
+    Offset(i64, i64),
+}
+
+/// charset.c:map_charset_chars over CHARSET's codes FROM to TO: a subset
+/// narrows to its parent's window, a superset visits each parent past its
+/// offset, a mapped charset's encoder table (a unified one's deunifier)
+/// gives its runs of characters, those whose ENCODE_CHAR lies in FROM..TO
+/// when they narrow the code space, and an offset charset's codes give
+/// one range, however FROM and TO lie.
+pub(crate) fn map_charset_char_segments(
+    interp: &Interpreter,
+    charset: &str,
+    from: u32,
+    to: u32,
+) -> Option<Vec<CharsetRanges>> {
     let canonical = interp.charset_canonical_name(charset)?;
-    let mut ranges = Vec::new();
+    let mut segments = Vec::new();
 
     if let Some((child, min, max, offset)) = charset_subset(interp, &canonical) {
         let offset = offset as u32;
@@ -4300,7 +4447,7 @@ pub(crate) fn map_charset_char_ranges(
         if to > max as u32 {
             to = max as u32;
         }
-        return map_charset_char_ranges(interp, &child, from, to);
+        return map_charset_char_segments(interp, &child, from, to);
     }
     if let Some(children) = charset_superset(interp, &canonical) {
         for (child, offset) in children {
@@ -4316,34 +4463,54 @@ pub(crate) fn map_charset_char_ranges(
             if this_to > child_max {
                 this_to = child_max;
             }
-            ranges.extend(map_charset_char_ranges(interp, &child, this_from, this_to)?);
+            segments.extend(map_charset_char_segments(
+                interp, &child, this_from, this_to,
+            )?);
         }
-        return Some(ranges);
+        return Some(segments);
     }
 
     let info = charset_info(interp, &canonical)?;
     let offset = info.code_offset;
     let has_direct_map = info.has_direct_map;
     let unified = info.unified && offset.is_some();
+    let partial = info
+        .code_bounds
+        .is_some_and(|(min_code, max_code)| from > min_code || to < max_code);
+    if unified {
+        // map_charset_chars loads a unified charset's deunifier to walk it.
+        charset_table::load_deunifier(interp, &canonical);
+    }
     if (has_direct_map || unified)
         && let Some(map) = info.map(interp)
     {
-        // map_char_table_for_charset: the runs of characters whose codes
-        // lie in FROM..TO.
+        // map_char_table_for_charset: the runs of the table's characters,
+        // a narrowed walk passing over each whose code ENCODE_CHAR gives
+        // lies outside FROM..TO.
         let mut chars: Vec<u32> = map
             .entries
             .iter()
-            .filter(|(code, _)| (from..=to).contains(code))
             .map(|(_, character)| *character)
+            .filter(|&character| {
+                !partial
+                    || info
+                        .encode(interp, character)
+                        .is_some_and(|code| (from..=to).contains(&code))
+            })
             .collect();
+        let mut ranges = Vec::new();
         push_sorted_char_ranges(&mut chars, &mut ranges);
+        segments.push(CharsetRanges::Walk(ranges));
     }
     if let Some(offset) = offset.filter(|_| !has_direct_map) {
         let from_index = info.code_point_to_index_c(from)?;
         let to_index = info.code_point_to_index_c(to)?;
         // The C's int sums.
         let char_of = |index: i64| i64::from((index as i32).wrapping_add(offset as i32));
-        ranges.push((char_of(from_index), char_of(to_index)));
+        segments.push(CharsetRanges::Offset(
+            char_of(from_index),
+            char_of(to_index),
+        ));
     }
-    Some(ranges)
+    Some(segments)
 }
