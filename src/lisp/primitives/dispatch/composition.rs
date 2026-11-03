@@ -2,10 +2,6 @@ use super::*;
 use crate::lisp::types::LispErrorKind;
 use crate::lisp::types::{Kind, PropertyName};
 
-fn vector_value(items: impl IntoIterator<Item = Value>) -> Value {
-    Value::vector(items)
-}
-
 fn args_out_of_range(values: impl IntoIterator<Item = Value>) -> LispError {
     LispError::SignalValue(Value::list(
         std::iter::once(Value::symbol("args-out-of-range")).chain(values),
@@ -488,51 +484,6 @@ impl StringCompositions {
     }
 }
 
-/// composite.c composition_gstring_p: GSTRING is a vector of a header
-/// (a font object, a coding system or nil, then natural numbers), an id
-/// that is nil or a natural number, and glyph vectors up to the first nil.
-fn composition_gstring_p(interp: &mut Interpreter, env: &mut Env, gstring: &Value) -> bool {
-    if !is_vector_value(gstring) {
-        return false;
-    }
-    let Ok(items) = vector_items(gstring) else {
-        return false;
-    };
-    if items.len() < 2 || !is_vector_value(&items[0]) {
-        return false;
-    }
-    let Ok(header) = vector_items(&items[0]) else {
-        return false;
-    };
-    if header.len() < 2 {
-        return false;
-    }
-    let font = header[0];
-    if !font.is_nil()
-        && !crate::lisp::primitives::coding_system_p(interp, &font)
-        && !super::call(interp, "fontp", &[font, Value::symbol("font-object")], env)
-            .is_ok_and(|value| !value.is_nil())
-    {
-        return false;
-    }
-    let natnum = |value: &Value| matches!(value.kind(), Kind::Integer(n) if n >= 0);
-    if !header[1..].iter().all(natnum) {
-        return false;
-    }
-    if !items[1].is_nil() && !natnum(&items[1]) {
-        return false;
-    }
-    for glyph in &items[2..] {
-        if glyph.is_nil() {
-            break;
-        }
-        if !is_vector_value(glyph) || !vector_items(glyph).is_ok_and(|glyph| glyph.len() == 10) {
-            return false;
-        }
-    }
-    true
-}
-
 /// What a composition iterator is stepping over: a static composition's
 /// characters and width, or an automatic composition's glyph-string with
 /// its glyph count and the glyph cluster [FROM, TO) to deliver next.
@@ -721,13 +672,20 @@ impl CompositionIterator {
                 }
                 let gstring = autocmp_chars(interp, env, &items, charpos, endpos, &Value::Nil)
                     .unwrap_or(Value::Nil);
-                if composition_gstring_p(interp, env, &gstring) {
+                if super::fonts::composition_gstring_parts(interp, &gstring).is_some() {
                     lgstring = gstring;
                     break;
                 }
                 // Perhaps the font lacks the characters: try another rule.
             }
             if !lgstring.is_nil() {
+                if vector_items(&lgstring)
+                    .ok()
+                    .and_then(|items| items.get(1).copied())
+                    .is_none_or(|id| id.is_nil())
+                {
+                    lgstring = gstring_put_cache(interp, &lgstring, None);
+                }
                 let glyphs = vector_items(&lgstring).unwrap_or_default();
                 let nglyphs = glyphs[2..]
                     .iter()
@@ -1073,30 +1031,6 @@ pub(crate) fn update_compositions(
     Ok(())
 }
 
-fn composition_chars(
-    interp: &Interpreter,
-    string: &Value,
-    start: usize,
-    end: usize,
-) -> Result<Vec<char>, LispError> {
-    let text = if string.is_nil() {
-        interp
-            .buffer
-            .borrow()
-            .buffer_substring(start, end)
-            .map_err(|error| LispError::Signal(error.to_string()))?
-    } else {
-        string_like(string)
-            .ok_or_else(|| wrong_type_argument("stringp", *string))?
-            .text
-            .chars()
-            .skip(start)
-            .take(end - start)
-            .collect()
-    };
-    Ok(text.chars().collect())
-}
-
 fn char_table_id_from_var(
     interp: &Interpreter,
     env: &Env,
@@ -1239,12 +1173,9 @@ fn autocmp_chars_inner(
     // pipeline is the frame itself (autocmp_chars: font_object =
     // win->frame; the window-system font_range branch is compiled out).
     let font_object = interp.selected_frame_value();
-    // GNU fetches the glyph-string here to check for a cached shaped ID.
-    // Emaxx never registers shaped glyph-strings in a cache, so the ID is
-    // always nil and control continues to `auto-composition-function'
-    // exactly as GNU does on a cache miss; only the fetch's own validation
-    // (unibyte text, invalid region) remains observable.
-    get_glyph_string(
+    // A glyph-string cached for these characters is the composition;
+    // otherwise `auto-composition-function' composes them.
+    let lgstring = get_glyph_string(
         interp,
         env,
         &[
@@ -1254,6 +1185,13 @@ fn autocmp_chars_inner(
             *string,
         ],
     )?;
+    if vector_items(&lgstring)
+        .ok()
+        .and_then(|items| items.get(1).copied())
+        .is_some_and(|id| !id.is_nil())
+    {
+        return Ok(lgstring);
+    }
     let function = interp
         .lookup_var("auto-composition-function", env)
         .unwrap_or(Value::Nil);
@@ -1467,59 +1405,6 @@ fn terminal_font(interp: &Interpreter, value: &Value) -> Result<Value, LispError
     }
 }
 
-/// fill_gstring_body reads the fontless glyph width from
-/// `char-width-table' (XFIXNAT (CHAR_TABLE_REF (Vchar_width_table, c))),
-/// not from any host notion of display width.
-fn char_width_table_width(interp: &Interpreter, env: &Env, character: char) -> i64 {
-    char_table_id_from_var(interp, env, "char-width-table")
-        .and_then(|id| interp.char_table_get(id, character as u32))
-        .and_then(|value| value.integer_value())
-        .unwrap_or(0)
-        .max(0)
-}
-
-fn glyph_string(
-    interp: &Interpreter,
-    env: &Env,
-    chars: &[char],
-    font: Value,
-    compose_cluster: bool,
-) -> Value {
-    let header = vector_value(
-        std::iter::once(font).chain(
-            chars
-                .iter()
-                .map(|character| Value::Integer(*character as i64)),
-        ),
-    );
-    let cluster_end = chars.len().saturating_sub(1) as i64;
-    let glyphs = chars.iter().enumerate().map(|(index, character)| {
-        let width = char_width_table_width(interp, env, *character);
-        let from = if compose_cluster { 0 } else { index as i64 };
-        let to = if compose_cluster {
-            cluster_end
-        } else {
-            index as i64
-        };
-        vector_value([
-            Value::Integer(from),
-            Value::Integer(to),
-            Value::Integer(*character as i64),
-            Value::Integer(*character as i64),
-            Value::Integer(width),
-            Value::Integer(0),
-            Value::Integer(width),
-            Value::Integer(1),
-            Value::Integer(0),
-            Value::Nil,
-        ])
-    });
-    let mut body = vec![header, Value::Nil];
-    body.extend(glyphs);
-    body.resize(body.len().max(10), Value::Nil);
-    vector_value(body)
-}
-
 fn find_composition_internal(
     interp: &mut Interpreter,
     env: &mut Env,
@@ -1627,26 +1512,191 @@ fn find_composition_internal(
     ])))
 }
 
-fn get_glyph_string(interp: &Interpreter, env: &Env, args: &[Value]) -> Result<Value, LispError> {
+/// ASET of a vector VECTOR's slot INDEX.
+fn aset(vector: &Value, index: usize, value: Value) {
+    if let Kind::Vector(slots) = vector.kind()
+        && index < slots.len()
+    {
+        slots.set(index, value);
+    }
+}
+
+fn nil_vector(len: usize) -> Value {
+    Value::vector(std::iter::repeat_n(Value::Nil, len))
+}
+
+/// composite.c fill_gstring_header: FONT_OBJECT and the character CODES,
+/// in the header kept for their count when it is eight or fewer.
+fn fill_gstring_header(interp: &mut Interpreter, font_object: Value, codes: &[i64]) -> Value {
+    let len = codes.len();
+    let header = if len <= 8 {
+        if interp.gstrings.work_headers.is_empty() {
+            interp.gstrings.work_headers = (0..8).map(|i| nil_vector(i + 2)).collect();
+        }
+        interp.gstrings.work_headers[len - 1]
+    } else {
+        nil_vector(len + 1)
+    };
+    aset(&header, 0, font_object);
+    for (i, code) in codes.iter().enumerate() {
+        aset(&header, i + 1, Value::Integer(*code));
+    }
+    header
+}
+
+/// composite.c fill_gstring_body: a glyph of each character of GSTRING's
+/// header, the glyph vectors it holds reused, with no font a character's
+/// `char-width-table' width; the slots after them nil.
+fn fill_gstring_body(interp: &Interpreter, env: &Env, gstring: &Value, codes: &[i64]) {
+    let slots = vector_items(gstring).unwrap_or_default();
+    for (i, code) in codes.iter().enumerate() {
+        let mut glyph = slots.get(i + 2).copied().unwrap_or(Value::Nil);
+        if !is_vector_value(&glyph) || vector_items(&glyph).map_or(0, |items| items.len()) < 10 {
+            glyph = nil_vector(10);
+            aset(gstring, i + 2, glyph);
+        }
+        let width = char_table_id_from_var(interp, env, "char-width-table")
+            .and_then(|id| interp.char_table_get(id, *code as u32))
+            .and_then(|value| value.integer_value())
+            .unwrap_or(0);
+        for (slot, value) in [
+            Value::Integer(i as i64),
+            Value::Integer(i as i64),
+            Value::Integer(*code),
+            Value::Integer(*code),
+            Value::Integer(width),
+            Value::Integer(0),
+            Value::Integer(width),
+            Value::Integer(1),
+            Value::Integer(0),
+            Value::Nil,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            aset(&glyph, slot, value);
+        }
+    }
+    for i in codes.len() + 2..slots.len() {
+        aset(gstring, i, Value::Nil);
+    }
+}
+
+/// composite.c composition_gstring_lookup_cache: the glyph-string cached
+/// for HEADER (`equal'), if any.
+pub(super) fn gstring_lookup_cache(
+    interp: &Interpreter,
+    header: &Value,
+) -> Result<Option<Value>, LispError> {
+    use crate::lisp::eval::RuntimeHashTest;
+    let hash = standard_hash_code(interp, RuntimeHashTest::Equal, header);
+    let Some(ids) = interp.gstrings.by_hash.get(&hash).cloned() else {
+        return Ok(None);
+    };
+    for id in ids {
+        let (key, gstring) = interp.gstrings.entries[id];
+        if key.word() == header.word() || values_equal(interp, &key, header)? {
+            return Ok(Some(gstring));
+        }
+    }
+    Ok(None)
+}
+
+/// composite.c composition_gstring_put_cache: a copy of GSTRING with its
+/// first LEN glyphs (by default those before the first nil), its header
+/// and glyphs copied, cached under the header and given the id it is
+/// cached as.
+pub(super) fn gstring_put_cache(
+    interp: &mut Interpreter,
+    gstring: &Value,
+    len: Option<usize>,
+) -> Value {
+    use crate::lisp::eval::RuntimeHashTest;
+    let items = vector_items(gstring).unwrap_or_default();
+    let header = items.first().copied().unwrap_or(Value::Nil);
+    let hash = standard_hash_code(interp, RuntimeHashTest::Equal, &header);
+    let len = len.unwrap_or_else(|| {
+        items
+            .iter()
+            .skip(2)
+            .take_while(|glyph| !glyph.is_nil())
+            .count()
+    });
+    let copy_of = |value: &Value| {
+        if is_vector_value(value) {
+            Value::vector(vector_items(value).unwrap_or_default())
+        } else {
+            *value
+        }
+    };
+    let header_copy = copy_of(&header);
+    let copy = Value::vector(
+        [header_copy, Value::Nil]
+            .into_iter()
+            .chain((0..len).map(|i| copy_of(items.get(i + 2).unwrap_or(&Value::Nil)))),
+    );
+    let id = interp.gstrings.entries.len();
+    interp.gstrings.entries.push((header_copy, copy));
+    interp.gstrings.by_hash.entry(hash).or_default().push(id);
+    aset(&copy, 1, Value::Integer(id as i64));
+    copy
+}
+
+/// composite.c Fcomposition_get_gstring: the glyph-string of FROM..TO of
+/// the current buffer or STRING for FONT-OBJECT (on a character terminal
+/// its terminal's coding system): the one cached for that header, else
+/// gstring_work refilled -- the same vector each time, its glyph vectors
+/// reused, enlarged only when the characters outgrow it.
+fn get_glyph_string(
+    interp: &mut Interpreter,
+    env: &Env,
+    args: &[Value],
+) -> Result<Value, LispError> {
     let font = terminal_font(interp, &args[2])?;
-    let chars = if args[3].is_nil() {
+    let codes: Vec<i64> = if args[3].is_nil() {
         // composite.c: a unibyte buffer cannot be shaped, checked before
         // validate_region.
         if !interp.buffer.borrow().is_multibyte() {
             return Err(LispError::Signal("Attempt to shape unibyte text".into()));
         }
         let (start, end) = checked_buffer_region(interp, &args[0], &args[1])?;
-        composition_chars(interp, &Value::Nil, start, end)?
+        crate::lisp::primitives::buffer_text_codes(interp, start, end)
+            .into_iter()
+            .map(i64::from)
+            .collect()
     } else {
         let (start, end) = checked_string_region(&args[3], &args[0], &args[1])?;
-        composition_chars(interp, &args[3], start, end)?
+        let Kind::StringObject(state) = args[3].kind() else {
+            return Err(wrong_type_argument("stringp", args[3]));
+        };
+        let state = state.borrow();
+        // A unibyte string shapes only when it is all ASCII.
+        if !state.is_multibyte() && state.bytes().iter().any(|byte| !byte.is_ascii()) {
+            return Err(LispError::Signal("Attempt to shape unibyte text".into()));
+        }
+        let mut offset = state.byte_offset(start).unwrap_or(0);
+        (start..end)
+            .map_while(|_| state.character_advance(&mut offset))
+            .collect()
     };
-    if chars.is_empty() {
+    if codes.is_empty() {
         return Err(LispError::Signal(
             "Attempt to shape zero-length text".into(),
         ));
     }
-    Ok(glyph_string(interp, env, &chars, font, false))
+    let header = fill_gstring_header(interp, font, &codes);
+    if let Some(cached) = gstring_lookup_cache(interp, &header)? {
+        return Ok(cached);
+    }
+    let mut work = interp.gstrings.work.unwrap_or_else(|| nil_vector(10));
+    if vector_items(&work).map_or(0, |items| items.len().saturating_sub(2)) < codes.len() {
+        work = nil_vector(codes.len() + 2);
+    }
+    interp.gstrings.work = Some(work);
+    aset(&work, 0, header);
+    aset(&work, 1, Value::Nil);
+    fill_gstring_body(interp, env, &work, &codes);
+    Ok(work)
 }
 
 fn sort_rules(rules: &Value) -> Result<Value, LispError> {
@@ -1682,8 +1732,12 @@ define_dispatch!(
     ) -> Result<Value, LispError> {
         match name {
             "clear-composition-cache" => {
+                // A new gstring_hash_table; then Fclear_face_cache (Qt) to
+                // force the display glyphs to be rebuilt.
                 need_args(name, args, 0)?;
-                Ok(Value::Nil)
+                interp.gstrings.entries.clear();
+                interp.gstrings.by_hash.clear();
+                super::call(interp, "clear-face-cache", &[Value::T], env)
             }
             "compose-region-internal" => {
                 need_arg_range(name, args, 2, 4)?;

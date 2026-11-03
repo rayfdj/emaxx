@@ -510,11 +510,12 @@ fn detect_emacs_mule(
     let mut p = head_ascii;
     let mut found = 0;
     info.checked |= MASK_EMACS_MULE;
-    let src_base;
-    loop {
-        let base = p;
+    // ONE_MORE_BYTE past the end goes to no_more_source with the start
+    // of the character being read as src_base.
+    let mut src_base;
+    'chars: loop {
+        src_base = p;
         let Some(mut_c) = units.get(p) else {
-            src_base = base;
             break;
         };
         p += 1;
@@ -529,9 +530,7 @@ fn detect_emacs_mule(
                 let src_start = p;
                 loop {
                     let Some(next) = units.get(p) else {
-                        // ONE_MORE_BYTE inside the composition scan.
-                        info.rejected |= MASK_EMACS_MULE;
-                        return false;
+                        break 'chars;
                     };
                     p += 1;
                     c = next;
@@ -558,8 +557,7 @@ fn detect_emacs_mule(
             let mut more_bytes = layout.lengths[c as usize].saturating_sub(1);
             while more_bytes > 0 {
                 let Some(next) = units.get(p) else {
-                    info.rejected |= MASK_EMACS_MULE;
-                    return false;
+                    break 'chars;
                 };
                 p += 1;
                 if next < 0xA0 {

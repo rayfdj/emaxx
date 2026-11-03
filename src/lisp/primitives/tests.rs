@@ -1071,6 +1071,22 @@ fn loops_before_a_class_charset_compare_bitmaps_as_mutually_exclusive_charset() 
 }
 
 #[test]
+fn glyph_strings_come_from_composite_c_work_vectors_and_cache() {
+    // composition-get-gstring fills composite.c's one gstring_work vector
+    // and, for up to eight characters, the work header of that length, so
+    // successive calls return the same objects; compute-motion's
+    // composition_reseat_it puts the automatic compositions it makes in
+    // gstring_hash_table under an ID, and a later composition-get-gstring
+    // of the same header returns that cached gstring until
+    // clear-composition-cache empties the table.
+    assert_oracle_contract_matches_interpreter(
+        r##"(with-temp-buffer (insert "e\u0301xa\u0308\u0323b") (let* ((g1 (composition-get-gstring 1 3 (selected-frame) nil)) (g1c (copy-sequence g1)) (g2 (composition-get-gstring 4 7 (selected-frame) nil)) (out (list (list g1c (eq g1 g2) (eq (aref g1 0) (aref g2 0)))))) (push (find-composition 1 nil nil t) out) (push (compute-motion 1 '(0 . 0) 8 nil nil nil nil) out) (push (composition-get-gstring 1 3 (selected-frame) nil) out) (push (find-composition 4 nil nil t) out) (let ((g3 (composition-get-gstring 4 7 (selected-frame) nil))) (push (list g3 (eq g3 g2)) out)) (clear-composition-cache) (push (composition-get-gstring 1 3 (selected-frame) nil) out) (push (composition-get-gstring 0 2 nil "a\u0308\u0323") out) (nreverse out)))"##,
+        r##"(([[us-ascii 97 776] nil [0 0 97 97 1 0 1 1 0 nil] [1 1 776 776 0 0 0 1 0 nil] nil nil nil nil nil nil] t t) nil (8 4 0 3 nil) [[us-ascii 101 769] 0 [0 0 101 101 1 0 1 1 0 nil] [1 1 769 769 1 0 0 1 0 nil]] nil ([[us-ascii 97 776 803] 1 [0 0 97 97 1 0 1 1 0 nil] [1 1 776 776 1 0 0 1 0 nil] [2 2 803 803 1 0 0 1 0 nil]] nil) [[us-ascii 97 776] nil [0 0 97 97 1 0 1 1 0 nil] [1 1 776 776 0 0 0 1 0 nil] nil nil nil nil nil nil] [[us-ascii 97 776] nil [0 0 97 97 1 0 1 1 0 nil] [1 1 776 776 0 0 0 1 0 nil] nil nil nil nil nil nil])"##,
+        "glyph strings",
+    );
+}
+
+#[test]
 fn batch_vertical_motion_and_compute_motion_lay_text_out_as_indent_c() {
     // indent.c vmotion and compute_motion: noninteractively vertical-motion
     // continues lines at the buffer's tab-width, not 8; hidden lines of
@@ -34524,6 +34540,20 @@ fn file_reads_detected_as_utf_8_insert_their_bytes_as_decode_coding_gap() {
         r##"(let ((f (make-temp-file "zz-r238"))) (unwind-protect (mapcar (lambda (c) (with-temp-buffer (set-buffer-multibyte nil) (insert (cdr c)) (let ((coding-system-for-write 'binary)) (write-region nil nil f nil 0))) (with-temp-buffer (let ((coding-system-for-read (car c))) (insert-file-contents f)) (list (append (buffer-string) nil) last-coding-system-used))) (list (cons nil "a\300\200b") (cons nil "a\301\277b\r\n") (cons nil "a\340\201\201b") (cons nil "a\355\240\200b") (cons nil "a\364\220\200\200b") (cons nil "a\367\277\277\277b") (cons nil "a\356\202\200b\303\251") (cons 'utf-8-auto "\357\273\277ab\303\251") (cons 'prefer-utf-8 "x\300\201\r\ny") (cons nil "\357\273\277ab\300\200"))) (delete-file f)))"##,
         r##"(((97 4194176 98) utf-8) ((97 4194303 98 10) utf-8-dos) ((97 65 98) utf-8) ((97 55296 98) utf-8) ((97 1114112 98) utf-8) ((97 2097151 98) utf-8) ((97 57472 98 233) utf-8) ((97 98 233) utf-8-with-signature) ((120 4194177 10 121) utf-8-dos) ((97 98 4194240 4194176) utf-8-with-signature))"##,
         "file reads detected as utf-8",
+    );
+}
+
+#[test]
+fn file_reads_detect_before_the_last_block_as_decode_coding_gap() {
+    // decode_coding_gap runs detect_coding before it sets
+    // CODING_MODE_LAST_BLOCK, so a detector reaching the end of the file
+    // inside a character takes the text, as decode-coding-string's last
+    // block does not: emacs-mule (ahead of shift-jis in the priorities)
+    // and utf-8 accept a sequence the end cuts short.
+    assert_oracle_contract_matches_interpreter(
+        r##"(let ((f (make-temp-file "zz-r276"))) (unwind-protect (mapcar (lambda (s) (with-temp-buffer (set-buffer-multibyte nil) (insert s) (let ((coding-system-for-write 'binary)) (write-region nil nil f nil 0))) (list (progn (decode-coding-string s 'undecided) last-coding-system-used) (with-temp-buffer (insert-file-contents f) (list (append (buffer-string) nil) last-coding-system-used)))) (list "\254\346\227\245" "\254\r\346\227\245" "a\200\362\244" "x\201" "\346\227" "\346\227\245")) (delete-file f)))"##,
+        r##"((japanese-shift-jis ((4194220 4194278 4194199 4194213) emacs-mule)) (japanese-shift-jis-mac ((4194220 10 4194278 4194199 4194213) emacs-mule-mac)) (raw-text ((97 4194176 4194290 4194212) emacs-mule)) (raw-text ((120 4194177) utf-8)) (japanese-shift-jis ((4194278 4194199) utf-8)) (utf-8 ((26085) utf-8)))"##,
+        "file reads detected before the last block",
     );
 }
 

@@ -13377,6 +13377,55 @@ setup_process_coding_systems's check now refuses). A 13-form
   tests, the integration targets (cli after one rerun: its GNU oracle's
   `sleep' child outlived the five-second check while a release build
   ran) and clippy with `--all-targets --all-features -D warnings' pass.
+- **Round 276: composite.c's glyph-string work vectors and cache, and
+  file reads detected before the last block.** `composition-get-gstring'
+  now fills composite.c's gstring_work, one vector kept from call to
+  call with its glyph vectors reused, and for one to eight characters
+  the work header of that length, so successive calls return the same
+  objects as GNU's; the glyph-strings composition_reseat_it makes for
+  automatic compositions (compute-motion's, round 275) go into
+  gstring_hash_table under the id composition_gstring_put_cache gives
+  them, a later `composition-get-gstring', `font-shape-gstring' or
+  autocmp_chars of the same header returns the cached one, and
+  `clear-composition-cache' makes a new table and clears the face cache.
+  The image does not carry them, as the inventory of roots now records:
+  loadup composes no text, so GNU's dumped table is empty (a session's
+  first cached glyph-string gets id 0) and its work vectors hold nothing
+  a call reads before refilling them. A fuzz of file input and output
+  (900 writes under 21 coding systems, each read back literally and
+  under a random `coding-system-for-read') found three files GNU reads
+  as emacs-mule and Emaxx as japanese-shift-jis: decode_coding_gap runs
+  detect_coding before it sets CODING_MODE_LAST_BLOCK, so a detector
+  that reaches the end of the file inside a character takes the text
+  there, where decode-coding-string's last block rejects it, and Emaxx's
+  emacs-mule detector rejected a sequence the end cut short whatever the
+  block. Its reads past the end now go to no_more_source as
+  ONE_MORE_BYTE's do; with that the file fuzz matches GNU throughout.
+  Fuzzes of overlays (400 buffers under 25 random operations each:
+  overlays made with either advance, moved, deleted and removed,
+  insertions before markers, deletions, narrowing, transposition and
+  substitution, with overlays-at, overlays-in, the overlay- and
+  char-property-change family and get-char-property-and-overlay), of
+  format-mode-line (1,500 random constructs over %-specs with widths,
+  :eval, :propertize, conditionals, widths and conses, in buffers
+  modified, read-only or narrowed) and of string widths (3,000 strings
+  of tabs, controls, raw bytes, combining, wide, zero-width and emoji
+  characters, invisible and display text, under string-width,
+  char-width, truncate-string-to-width, string-pad, string-limit and
+  column motion) match GNU, but for the get-pos-property artifact
+  recorded at round 274, which one overlay buffer meets. In the width
+  fuzz string-limit with a coding system, after the cases before it,
+  loops without end in string-glyph-split on a thumbs-up and its
+  skin-tone modifier in GNU and Emaxx alike (alone that call returns at
+  once); there GNU's memory_full signals `memory-signal-data' and the
+  run goes on, where Emaxx aborts, as it does for any allocation that
+  fails ((make-vector (expt 2 32) nil) signals in GNU too): a gap to
+  port. Contracts for the glyph-string objects and cache and for file
+  reads detected before the last block match GNU. Local validation: the
+  grouped gate's 3,488 library tests (the lightweight group run
+  again once the inventory listed the glyph-string state), the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -15349,6 +15398,25 @@ gnus-icalendar-tests' (589 against 472), and the widest body gaps are
 ert-tests (39,267 ms against 36,990), comp-tests (16,384 against
 14,172), tramp-tests (19,000 against 17,258), mule-tests (2,826 against
 1,840) and semantic-utest-ia (3,767 against 2,821).
+
+**On `c2b249e`** (round 275): the full Rust gate (run 41640340867) and
+the frozen run (run 41640355006) passed at their first attempts, 7,928
+of 7,928 outcomes matching. Setup 65.9 s against 55.1 s (1.196), test
+bodies 262.8 s against 244.6 s (1.074), in all 1.106. Per file, setup is
+20.8 ms over GNU's on average (10.8 s over 519 files, a median of 100 ms
+against 86), electric-tests' the most over (711 against 427) before
+comp-tests' (1,596 against 1,395) and textsec-tests' (328 against 211).
+The widest body gaps are ert-tests (36,330 ms against 33,810),
+comp-tests (14,620 against 12,440), icalendar-tests (2,230 against 360),
+tramp-tests (17,610 against 16,030) and mule-tests (2,480 against
+1,530). icalendar-tests' gap is this run's alone: round 274's frozen run
+had it at 550 against 410, its time lies in the import tests run one
+after another (icalendar-import-rrule 1,178 ms against 73,
+icalendar-import-non-recurring 300 against 26), and locally with the
+round 276 build the file takes 533 ms against GNU's 448 and
+icalendar-import-rrule 101 to 134 ms against 92 to 130 under three time
+zones, with the same system calls as GNU's but for 5,408 stat calls
+against 505; it is to be watched on the next head.
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

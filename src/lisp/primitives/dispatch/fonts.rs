@@ -34,7 +34,10 @@ fn invalid_glyph_string(gstring: &Value) -> LispError {
     LispError::SignalValue(Value::list(data))
 }
 
-fn composition_gstring_parts(interp: &Interpreter, gstring: &Value) -> Option<(Value, Value)> {
+pub(super) fn composition_gstring_parts(
+    interp: &Interpreter,
+    gstring: &Value,
+) -> Option<(Value, Value)> {
     if !is_vector_value(gstring) {
         return None;
     }
@@ -270,6 +273,13 @@ define_dispatch!(
                     .ok_or_else(|| invalid_glyph_string(&args[0]))?;
                 if !id.is_nil() {
                     return Ok(args[0]);
+                }
+                let header = vector_items(&args[0])
+                    .ok()
+                    .and_then(|items| items.first().copied())
+                    .unwrap_or(Value::Nil);
+                if let Some(cached) = super::composition::gstring_lookup_cache(interp, &header)? {
+                    return Ok(cached);
                 }
                 font::check_font_object(interp, &font)?;
                 Err(window_system_frame_required())
