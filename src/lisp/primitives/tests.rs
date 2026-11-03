@@ -1109,6 +1109,40 @@ fn failed_lisp_allocations_signal_memory_signal_data_as_alloc_c() {
 }
 
 #[test]
+fn file_predicates_expand_and_test_access_as_fileio_c() {
+    // fileio.c: the predicates expand their name (lexically, so a
+    // symlink's `..' is the name's), check_file_access's faccessat for
+    // file-exists-p, file-readable-p and file-executable-p, W_OK and the
+    // directory's W_OK | X_OK for file-writable-p, file_directory_p's
+    // O_PATH open, readlinkat for file-symlink-p, and for
+    // file-directory-p and file-regular-p expand_and_dir_to_file's
+    // directory-file-name, so a regular file's "f/" is a regular file.
+    assert_oracle_contract_matches_interpreter(
+        r##"(let* ((dir (make-temp-file "zz-r277" t)) (default-directory (file-name-as-directory dir))) (unwind-protect (progn (write-region "x" nil "f" nil 0) (make-directory "d") (make-symbolic-link "d" "ld") (make-symbolic-link "f" "lf") (make-symbolic-link "nowhere" "dang") (make-symbolic-link "/" "lx") (list (file-symlink-p "ld") (file-symlink-p "dang") (let ((p (concat default-directory "lx/../f"))) (list (car (file-attributes p)) (and (file-modes p) t) (file-newer-than-file-p p "nonexist"))) (mapcar (lambda (p) (mapcar (lambda (f) (and (funcall f p) t)) '(file-exists-p file-readable-p file-executable-p file-directory-p file-accessible-directory-p file-regular-p file-symlink-p))) (list "f" "f/" "d/" "ld" "ld/" "lf/" "dang" "dang/" "nonexist" "nonexist/x" "" (concat default-directory "lx/../f") (concat default-directory "lx/../d/"))))) (delete-file "lx") (delete-directory dir t)))"##,
+        r##"("d" "nowhere" (nil t t) ((t t nil nil nil t nil) (nil nil nil nil nil t nil) (t t t t t nil nil) (t t t t t nil t) (t t t t t nil nil) (nil nil nil nil nil t nil) (nil nil nil nil nil nil t) (nil nil nil nil nil nil nil) (nil nil nil nil nil nil nil) (nil nil nil nil nil nil nil) (t t t t t nil nil) (t t nil nil nil t nil) (t t t t t nil nil)))"##,
+        "fileio.c file predicates",
+    );
+}
+
+#[test]
+fn file_readable_p_tests_access_without_opening_a_fifo() {
+    // fileio.c:Ffile_readable_p is faccessat (R_OK): a FIFO with no
+    // writer is readable without the open that would wait for one.
+    let dir = std::env::temp_dir().join(format!("emaxx-fifo-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("make the FIFO's directory");
+    let fifo = dir.join("fifo");
+    let name = std::ffi::CString::new(fifo.to_str().expect("UTF-8 temp name")).expect("no NUL");
+    // SAFETY: NAME is a valid NUL-terminated path for the call.
+    assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0, "mkfifo");
+    let program = format!(
+        "(let ((f {:?})) (list (file-exists-p f) (file-readable-p f) (file-writable-p f) (file-regular-p f) (file-directory-p f)))",
+        fifo.to_str().expect("UTF-8 temp name")
+    );
+    assert_interpreter_prints(&program, "(t t t nil nil)", "file predicates of a FIFO");
+    std::fs::remove_dir_all(&dir).expect("remove the FIFO's directory");
+}
+
+#[test]
 fn insert_char_inserts_its_repetitions_in_chunks_as_finsert_char() {
     // Finsert_char builds a string of at most 4000 bytes of whole
     // characters and inserts it, change hooks and all, while more than a

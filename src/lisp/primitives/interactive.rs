@@ -90,6 +90,18 @@ pub(crate) fn install_fatal_signal_handlers(noninteractive: bool) {
         if let Err(error) = registered {
             panic!("install the fatal signal handlers: {error}");
         }
+        // GNU's handler acts inside an interrupted system call; this one
+        // returns, so a slow call it interrupts must fail with EINTR rather
+        // than restart, for emacs_open's, emacs_read_quit's and
+        // emacs_write_quit's maybe_quit and the waits' passes to run it.
+        // SAFETY: rewrites only the flags of the action just installed.
+        unsafe {
+            let mut action: libc::sigaction = std::mem::zeroed();
+            if libc::sigaction(signal, std::ptr::null(), &mut action) == 0 {
+                action.sa_flags &= !libc::SA_RESTART;
+                libc::sigaction(signal, &action, std::ptr::null_mut());
+            }
+        }
     }
 }
 

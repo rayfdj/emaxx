@@ -13464,6 +13464,44 @@ setup_process_coding_systems's check now refuses). A 13-form
   child in batch_exit_terminates_owned_children_like_gnu inherited an
   ignored SIGHUP and outlived it) and clippy with `--all-targets
   --all-features -D warnings' pass.
+- **Round 278: fileio.c's file predicates, absolute names read
+  lexically, and fatal signals during a blocked system call.**
+  `file-exists-p', `file-readable-p' and `file-executable-p' are
+  check_file_access: the expanded name ENCODE_FILE'd and faccessat with
+  F_OK, R_OK or X_OK under AT_EACCESS; `file-readable-p' used to open
+  the file, which on a FIFO with no writer waited for ever.
+  `file-directory-p' is file_directory_p's O_PATH | O_DIRECTORY open,
+  `file-symlink-p' readlinkat alone, `file-accessible-directory-p' and
+  `file-symlink-p' check that the name is a string, `access-file' checks
+  both its arguments, and `file-directory-p' and `file-regular-p' read
+  expand_and_dir_to_file's name, so a regular file's "f/" is a regular
+  file to `file-regular-p' as in GNU, which stats that name's internal
+  bytes rather than its ENCODE_FILE'd ones. The file primitives' names
+  are Fexpand_file_name's: an absolute name's `.', `..' and doubled
+  slashes were handed to the system as they were, so a symlink's `..'
+  went to the link target's parent ("DIR/link-to-root/../f" was "/f");
+  they now read lexically, for the predicates, `file-attributes',
+  `file-modes', `file-newer-than-file-p' and the rest. A SIGTERM, SIGHUP
+  or batch SIGINT that interrupts an open, read or write of
+  `insert-file-contents' or `write-region' (one of a FIFO no other
+  process has opened) now ends Emacs through `kill-emacs', status and
+  hook as GNU's handler gives them, where Emaxx waited on until a second
+  signal: the handlers no longer restart an interrupted call, and
+  emacs_open, emacs_read_quit and emacs_write_quit run maybe_quit on
+  EINTR (and emacs_read_quit before each read), which runs the pending
+  signal; the finding recorded at round 277 is retired. In
+  icalendar-import-rrule, whose stat calls the CI record of round 276
+  notes, Emaxx's newfstatat calls fall from 2,857 to 667 (GNU's 278, the
+  rest a test diary's six stats against five and NSS lookups) and its
+  faccessat2 calls rise from 233 to 1,737 (GNU's 1,765). Contracts for
+  the predicates over files, directories, symlinks dangling and not,
+  "f/" names and lexical `..' match GNU, as does a FIFO's
+  `file-readable-p'; the CLI test of SIGTERM covers a blocked FIFO open
+  for reading and for writing. Local validation: the grouped gate's
+  3,492 library tests (the process contract of round 256 after one
+  rerun alone, its GNU oracle's process timing having disagreed under
+  load), the integration targets and clippy with `--all-targets
+  --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -15471,6 +15509,23 @@ icalendar-import-non-recurring 40 against 24, so round 275's 2,230 was
 that run's alone; the 5,408 stat calls against GNU's 505 in its import
 tests remain to be looked at.
 
+**On `795e841`** (round 277): the full Rust gate (run 41660685496) and
+the frozen run (run 41660692717) passed at their first attempts, 7,928
+of 7,928 outcomes matching. Setup 65.7 s against 55.1 s (1.192), test
+bodies 258.5 s against 242.0 s (1.068), in all 1.101. Per file, setup
+has a median of 100 ms against 86, electric-tests' the most over (682
+against 408) before comp-tests' (1,574 against 1,381) and textsec-tests'
+(328 against 212). The widest body gaps are ert-tests (35,710 ms against
+33,750), comp-tests (14,310 against 12,340), tramp-tests (17,060 against
+15,730), semantic-utest-ia (2,960 against 2,040), mule-tests (2,410
+against 1,590) and bytecomp-tests (1,480 against 760), whose
+bytecomp-test--with-suppressed-warnings took 480 ms against 71 and
+test-byte-comp-macro-expansion-eval-when-compile 214 against 2 in this
+run alone: round 276's run gave them 82 and 2, and the whole file
+locally takes 1.40 s against 1.45, those two 118 and 3 ms against 122
+and 2. icalendar-import-rrule took 106 ms against 76 and
+icalendar-import-non-recurring 39 against 24.
+
 **Findings recorded, not fixed:**
 - **Allocations outside the Lisp object makers still abort when the
   system refuses them (round 277).** GNU's lisp_align_malloc and xmalloc
@@ -15481,15 +15536,6 @@ tests remain to be looked at.
   strings, abort the process. Their callers have no error path, and a
   native frame cannot be unwound past; the blocks are 16 to 32 KB, so
   this is met only when the process is all but out of memory.
-- **A fatal signal waits for a quit check (round 277).** GNU's SIGTERM,
-  SIGHUP and (in batch) SIGINT handler runs Fkill_emacs at once, inside
-  a system call if need be; Emaxx's records the signal for the next quit
-  check, and its handler is installed with SA_RESTART, so a system call
-  that blocks (an `insert-file-contents' of a FIFO with no writer) is
-  restarted and never reaches one. `timeout' ends GNU there with its
-  SIGTERM; Emaxx goes on until a second signal, which takes the default
-  action. The blocking calls are to be made interruptible and to run the
-  pending signal, as emacs_open and emacs_read run maybe_quit on EINTR.
 - **An insertion's stickiness reads `text-property-default-nonsticky'
   without signalling (round 174).** In GNU,
   adjust_intervals_for_insertion and merge_properties_sticky look each

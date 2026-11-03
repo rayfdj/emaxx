@@ -1754,7 +1754,13 @@ pub(crate) fn resolve_file_name_in_env(interp: &Interpreter, env: &Env, path: &s
     if let Some(remote) = parse_remote_file_name(path) {
         return resolved_remote_localname_in_env(interp, env, &remote);
     }
+    // Fexpand_file_name's lexical reading of an absolute name's `.' and
+    // `..' (a symlink's `..' is the name's parent, not the link target's)
+    // and doubled slashes; other absolute names expand to themselves.
     if Path::new(path).is_absolute() {
+        if path.contains("/.") || path.contains("//") {
+            return expand_file_name_in_env(interp, env, path, None);
+        }
         return path.to_string();
     }
     let base = interp
@@ -2977,10 +2983,6 @@ pub(crate) fn path_to_directory_string(path: &Path) -> String {
     rendered
 }
 
-pub(crate) fn file_readable_p(path: &Path) -> bool {
-    fs::File::open(path).is_ok()
-}
-
 /// fileio.c:file_accessible_directory_p on POSIX: check DIR/./ with
 /// faccessat(F_OK, AT_EACCESS). Search permission, not read permission,
 /// permits opening children. This internal path does not invoke Lisp handlers.
@@ -3056,26 +3058,6 @@ pub(crate) fn file_writable_p(path: &Path) -> bool {
             Ok(metadata) => !metadata.permissions().readonly(),
             Err(_) => path.parent().is_some_and(Path::is_dir),
         }
-    }
-}
-
-/// fileio.c Ffile_executable_p is `file_access_p (name, X_OK)': a plain
-/// `faccessat' with AT_EACCESS, so a searchable directory is executable too.
-pub(crate) fn file_executable_p(path: &Path) -> bool {
-    #[cfg(unix)]
-    {
-        use std::os::unix::ffi::OsStrExt;
-        let Ok(path) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
-            return false;
-        };
-        // SAFETY: `path' is a valid NUL-terminated string for the call.
-        let status =
-            unsafe { libc::faccessat(libc::AT_FDCWD, path.as_ptr(), libc::X_OK, libc::AT_EACCESS) };
-        status == 0
-    }
-    #[cfg(not(unix))]
-    {
-        fs::metadata(path).is_ok()
     }
 }
 

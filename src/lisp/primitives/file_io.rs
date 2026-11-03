@@ -472,6 +472,96 @@ pub(crate) struct InsertFileSource {
     pub(crate) total: i64,
 }
 
+/// sysdep.c:emacs_open: HOST opened with FLAGS and O_CLOEXEC (MODE for a
+/// file it creates), an open a signal interrupts tried again after
+/// maybe_quit, which runs a pending fatal signal.  The outer error is the
+/// quit's, the inner the open's.
+pub(crate) fn emacs_open(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    host: &std::path::Path,
+    flags: libc::c_int,
+    mode: libc::mode_t,
+) -> Result<std::io::Result<fs::File>, LispError> {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::io::FromRawFd;
+    let Ok(name) = std::ffi::CString::new(host.as_os_str().as_bytes()) else {
+        return Ok(Err(std::io::Error::from_raw_os_error(libc::EINVAL)));
+    };
+    loop {
+        // SAFETY: NAME is a valid NUL-terminated string for the call.
+        let fd = unsafe {
+            libc::open(
+                name.as_ptr(),
+                flags | libc::O_CLOEXEC,
+                libc::c_uint::from(mode),
+            )
+        };
+        if fd >= 0 {
+            // SAFETY: FD was just opened and is owned by nothing else.
+            return Ok(Ok(unsafe { fs::File::from_raw_fd(fd) }));
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() != ErrorKind::Interrupted {
+            return Ok(Err(error));
+        }
+        interp.maybe_quit(env)?;
+    }
+}
+
+/// sysdep.c:emacs_read_quit: maybe_quit, then a read of at most WANT
+/// bytes from FILE onto the end of BYTES, an interrupted read tried again
+/// after maybe_quit.  The outer error is the quit's, the inner the
+/// read's; zero is the end of the file.
+fn emacs_read_quit(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    file: &fs::File,
+    bytes: &mut Vec<u8>,
+    want: usize,
+) -> Result<std::io::Result<usize>, LispError> {
+    use std::os::unix::io::AsRawFd;
+    bytes.reserve(want);
+    loop {
+        interp.maybe_quit(env)?;
+        let spare = bytes.spare_capacity_mut();
+        let room = want.min(spare.len());
+        // SAFETY: SPARE has room for ROOM bytes, which the read fills
+        // before they are counted as the vector's.
+        let read = unsafe { libc::read(file.as_raw_fd(), spare.as_mut_ptr().cast(), room) };
+        if read >= 0 {
+            let read = read as usize;
+            // SAFETY: the read initialized READ bytes of the spare room.
+            unsafe { bytes.set_len(bytes.len() + read) };
+            return Ok(Ok(read));
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() != ErrorKind::Interrupted {
+            return Ok(Err(error));
+        }
+    }
+}
+
+/// sysdep.c:emacs_full_write with maybe_quit (emacs_write_quit): BYTES
+/// written to FILE, a write a signal interrupts tried again after
+/// maybe_quit.  The outer error is the quit's, the inner the write's.
+pub(crate) fn emacs_write_quit(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    file: &mut fs::File,
+    mut bytes: &[u8],
+) -> Result<std::io::Result<()>, LispError> {
+    while !bytes.is_empty() {
+        match file.write(bytes) {
+            Ok(0) => return Ok(Err(ErrorKind::WriteZero.into())),
+            Ok(written) => bytes = &bytes[written..],
+            Err(error) if error.kind() == ErrorKind::Interrupted => interp.maybe_quit(env)?,
+            Err(error) => return Ok(Err(error)),
+        }
+    }
+    Ok(Ok(()))
+}
+
 /// What the read loop got: the bytes, and the error a failed read ended
 /// it with.
 pub(crate) struct InsertFileRead {
@@ -563,7 +653,13 @@ impl InsertFileSource {
     /// The read loop, from BEG (lseek'd to for a nonzero BEG or REPLACE):
     /// at most TOTAL bytes of a seekable file or with END given, else to
     /// the end of the file.
-    pub(crate) fn read(mut self, path: &str, replace: bool) -> Result<InsertFileRead, LispError> {
+    pub(crate) fn read(
+        mut self,
+        interp: &mut Interpreter,
+        env: &mut Env,
+        path: &str,
+        replace: bool,
+    ) -> Result<InsertFileRead, LispError> {
         use std::io::{Seek, SeekFrom};
         if self.beg != 0 || replace {
             self.file
@@ -587,10 +683,9 @@ impl InsertFileSource {
             if want == 0 {
                 break;
             }
-            // emacs_read_quit of WANT bytes, an EINTR read again, into
-            // the room past the bytes read, which std's File reads into
-            // without filling it first.
-            match (&*self.file).take(want as u64).read_to_end(&mut bytes) {
+            // emacs_read_quit of WANT bytes into the room past the bytes
+            // read.
+            match emacs_read_quit(interp, env, &self.file, &mut bytes, want)? {
                 Ok(0) => break,
                 Ok(_) => {}
                 Err(error) => {
@@ -1073,12 +1168,10 @@ fn write_region_with_coding(
     // file is open, after the lock is given back).
     let mut opened = false;
     let write_result = (|| {
-        use std::os::unix::fs::OpenOptionsExt;
         use std::os::unix::io::IntoRawFd;
         if let Some(file) = descriptor.as_deref_mut() {
             opened = true;
-            return file
-                .write_all(&bytes)
+            return emacs_write_quit(interp, env, file, &bytes)?
                 .map_err(|error| file_operation_error("Write error", &error, path));
         }
         let exclusive = args[6].symbol_str() == Some("excl");
@@ -1096,25 +1189,26 @@ fn write_region_with_coding(
         } else {
             None
         };
-        let mut options = fs::OpenOptions::new();
-        options.write(true).create(true).mode(mode);
+        // write_region's open_flags: O_WRONLY | O_CREAT, then O_EXCL for
+        // `excl', nothing for an APPEND, else O_TRUNC; O_APPEND for an
+        // APPEND that is not an offset.
+        let mut flags = libc::O_WRONLY | libc::O_CREAT;
         if exclusive {
-            options.create_new(true);
+            flags |= libc::O_EXCL;
         } else if args[3].is_nil() {
-            options.truncate(true);
+            flags |= libc::O_TRUNC;
         }
         if offset.is_none() && args[3].is_truthy() {
-            options.append(true);
+            flags |= libc::O_APPEND;
         }
-        let mut file = options
-            .open(&host)
+        let mut file = emacs_open(interp, env, &host, flags, mode)?
             .map_err(|error| file_operation_error("Opening output file", &error, path))?;
         opened = true;
         if let Some(offset) = offset {
             file.seek(SeekFrom::Start(offset as u64))
                 .map_err(|error| file_operation_error("Lseek error", &error, path))?;
         }
-        file.write_all(&bytes)
+        emacs_write_quit(interp, env, &mut file, &bytes)?
             .map_err(|error| file_operation_error("Write error", &error, path))?;
         // NFS can report a write failure at the close.
         let fd = file.into_raw_fd();
@@ -2242,12 +2336,20 @@ pub(crate) fn insert_file_contents(
         args.get(4).copied().unwrap_or(Value::Nil),
     ];
     let mut open_failure = crate::buffer::ModtimeStamp::Unknown;
-    let file = match host_file_name(interp, env, &path).and_then(|host| {
-        fs::File::open(host).map_err(|error| {
-            open_failure = time_error_value(&error);
-            LispError::SignalValue(file_input_error_value(&error, &path))
-        })
-    }) {
+    // fileio.c:Finsert_file_contents' emacs_open (O_RDONLY).
+    let opened = match host_file_name(interp, env, &path) {
+        Ok(host) => match emacs_open(interp, env, &host, libc::O_RDONLY, 0)? {
+            Ok(file) => Ok(file),
+            Err(error) => {
+                open_failure = time_error_value(&error);
+                Err(LispError::SignalValue(file_input_error_value(
+                    &error, &path,
+                )))
+            }
+        },
+        Err(error) => Err(error),
+    };
+    let file = match opened {
         Ok(file) => file,
         Err(error) if !visit => return Err(error),
         Err(error) => {
@@ -2333,7 +2435,7 @@ pub(crate) fn insert_file_contents(
         // Qunbound) by erasing the accessible portion and inserting.
         let replace = replace_arg.is_some() && regular;
         let (coding_used, inserted_chars) = if replace {
-            let read = source.read(&path, true)?;
+            let read = source.read(interp, env, &path, true)?;
             if let Some(error) = read.error {
                 return Err(file_operation_error("Read error", &error, &path));
             }
@@ -2474,7 +2576,7 @@ fn insert_file_bytes(
             crate::lisp::primitives::delete_region_with_hooks(interp, begv, zv, env)?;
         }
         source.check_gap(interp.buffer.borrow().size_total())?;
-        let read = source.read(path, false)?;
+        let read = source.read(interp, env, path, false)?;
         if read.bytes.is_empty() {
             if we_locked_file && let Some(truename) = interp.lookup_var("buffer-file-truename", env)
             {

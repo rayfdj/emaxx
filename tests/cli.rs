@@ -798,17 +798,33 @@ fn batch_top_level_error_kills_emacs_through_its_hook_and_unlocks_files() {
 
 /// sysdep.c:init_signals and emacs.c:terminate_due_to_signal: SIGTERM ends
 /// a batch Emacs through `kill-emacs' with the signal's number, from an
-/// interpreted loop as from a wait, `call-process''s among them: the hook
+/// interpreted loop as from a wait, `call-process''s among them, and from
+/// an open of a FIFO no other process has opened (emacs_open's): the hook
 /// runs, standard output is flushed, and the status is 15.
 #[test]
 fn batch_sigterm_kills_emacs_through_its_hook() {
     use std::io::BufRead;
+    let fifos = unique_temp_path("emaxx-cli-fifos");
+    std::fs::create_dir_all(&fifos).unwrap();
+    for name in ["read", "write"] {
+        let path = std::ffi::CString::new(fifos.join(name).to_str().unwrap()).unwrap();
+        // SAFETY: PATH is a valid NUL-terminated name for the call.
+        assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0, "mkfifo");
+    }
     for body in [
-        "(while t)",
-        "(sleep-for 60)",
+        "(while t)".to_string(),
+        "(sleep-for 60)".to_string(),
         // call_process's wait for the child, and its read of the output.
-        "(call-process \"sleep\" nil nil nil \"10\")",
-        "(call-process \"sleep\" nil t nil \"10\")",
+        "(call-process \"sleep\" nil nil nil \"10\")".to_string(),
+        "(call-process \"sleep\" nil t nil \"10\")".to_string(),
+        format!(
+            "(insert-file-contents {:?})",
+            fifos.join("read").to_str().unwrap()
+        ),
+        format!(
+            "(write-region \"x\" nil {:?})",
+            fifos.join("write").to_str().unwrap()
+        ),
     ] {
         let mut child = Command::new(common::emaxx(false))
             .args([
@@ -843,6 +859,7 @@ fn batch_sigterm_kills_emacs_through_its_hook() {
         assert_eq!(String::from_utf8_lossy(&output.stdout), "out", "{body}");
         assert_eq!(rest, "hook ran\n", "{body}");
     }
+    std::fs::remove_dir_all(&fifos).unwrap();
 }
 
 #[test]

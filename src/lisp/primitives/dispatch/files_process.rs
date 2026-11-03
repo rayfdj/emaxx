@@ -1027,83 +1027,86 @@ define_dispatch!(
                     .collect::<Result<Vec<_>, LispError>>()?;
                 Ok(Value::list(entries))
             }
-            "file-directory-p" | "file-accessible-directory-p" => {
+            // fileio.c:Ffile_directory_p: file_directory_p of the name
+            // expand_and_dir_to_file makes, ENCODE_FILE'd.
+            "file-directory-p" => {
                 need_args(name, args, 1)?;
-                let requested = string_text(&args[0])?;
-                let path = resolve_file_name_in_env(interp, env, &requested);
-                let host = host_file_name(interp, env, &path)?;
-                let directory = if name == "file-directory-p" {
-                    fs::metadata(&host).is_ok_and(|metadata| metadata.is_dir())
-                } else {
-                    accessible_directory(host.as_os_str().as_encoded_bytes()).is_ok()
-                };
-                Ok(if directory { Value::T } else { Value::Nil })
+                let absname = expand_and_dir_to_file(interp, env, args[0])?;
+                let host = encoded_file_name(interp, env, &absname)?;
+                Ok(lisp_truth(file_directory_p(interp, env, &host)?))
             }
-            "file-readable-p" => {
+            // fileio.c:Ffile_accessible_directory_p: CHECK_STRING, the
+            // expanded name ENCODE_FILE'd, file_accessible_directory_p.
+            "file-accessible-directory-p" => {
                 need_args(name, args, 1)?;
-                let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
-                Ok(if file_readable_p(&host_file_name(interp, env, &path)?) {
-                    Value::T
-                } else {
-                    Value::Nil
-                })
+                if !matches!(args[0].kind(), Kind::StringObject(_)) {
+                    return Err(wrong_type_argument("stringp", args[0]));
+                }
+                let absname =
+                    crate::lisp::primitives::fexpand_file_name(interp, env, args[0], Value::Nil)?;
+                let host = encoded_file_name(interp, env, &absname)?;
+                Ok(lisp_truth(
+                    accessible_directory(host.as_os_str().as_encoded_bytes()).is_ok(),
+                ))
+            }
+            // fileio.c:check_file_access: the expanded name ENCODE_FILE'd
+            // and file_access_p's faccessat (AMODE, AT_EACCESS).
+            "file-exists-p" | "file-readable-p" | "file-executable-p" => {
+                need_args(name, args, 1)?;
+                let amode = match name {
+                    "file-exists-p" => libc::F_OK,
+                    "file-readable-p" => libc::R_OK,
+                    _ => libc::X_OK,
+                };
+                let absname =
+                    crate::lisp::primitives::fexpand_file_name(interp, env, args[0], Value::Nil)?;
+                let host = encoded_file_name(interp, env, &absname)?;
+                Ok(lisp_truth(file_access_p(&host, amode).is_ok()))
             }
             "access-file" => {
                 need_args(name, args, 2)?;
-                // fileio.c:Faccess_file: faccessat (R_OK, AT_EACCESS), and
-                // on failure report_file_error (STRING, FILENAME) with its
-                // errno.
+                // fileio.c:Faccess_file: CHECK_STRING, the expanded name,
+                // CHECK_STRING of STRING, then faccessat (R_OK,
+                // AT_EACCESS) of the ENCODE_FILE'd name, and on failure
+                // report_file_error (STRING, FILENAME) with its errno.
+                if !matches!(args[0].kind(), Kind::StringObject(_)) {
+                    return Err(wrong_type_argument("stringp", args[0]));
+                }
                 let requested = string_text(&args[0])?;
-                let path = resolve_file_name_in_env(interp, env, &requested);
+                let absname =
+                    crate::lisp::primitives::fexpand_file_name(interp, env, args[0], Value::Nil)?;
+                if !matches!(args[1].kind(), Kind::StringObject(_)) {
+                    return Err(wrong_type_argument("stringp", args[1]));
+                }
                 let message = string_text(&args[1])?;
-                let host = host_file_name(interp, env, &path)?;
+                let host = encoded_file_name(interp, env, &absname)?;
                 match faccessat_errno(&host, libc::R_OK) {
                     Ok(()) => Ok(Value::Nil),
                     Err(error) => Err(file_operation_error(&message, &error, &requested)),
                 }
             }
+            // fileio.c:Ffile_regular_p: an fstatat of the name
+            // expand_and_dir_to_file makes, which GNU passes as its
+            // SSDATA, not ENCODE_FILE'd.
             "file-regular-p" => {
                 need_args(name, args, 1)?;
-                let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
-                Ok(
-                    if fs::metadata(host_file_name(interp, env, &path)?)
-                        .map(|metadata| metadata.is_file())
-                        .unwrap_or(false)
-                    {
-                        Value::T
-                    } else {
-                        Value::Nil
-                    },
-                )
+                let absname = expand_and_dir_to_file(interp, env, args[0])?;
+                let (bytes, _) = file_name_bytes(&absname)?;
+                let regular = std::ffi::CString::new(bytes).is_ok_and(|name| {
+                    use std::os::unix::ffi::OsStrExt;
+                    fs::metadata(std::ffi::OsStr::from_bytes(name.as_bytes()))
+                        .is_ok_and(|metadata| metadata.is_file())
+                });
+                Ok(lisp_truth(regular))
             }
+            // fileio.c:Ffile_writable_p: W_OK on the expanded name, and
+            // for one that does not exist W_OK | X_OK on its directory.
             "file-writable-p" => {
                 need_args(name, args, 1)?;
-                let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
-                Ok(if file_writable_p(&host_file_name(interp, env, &path)?) {
-                    Value::T
-                } else {
-                    Value::Nil
-                })
-            }
-            "file-exists-p" => {
-                need_args(name, args, 1)?;
-                let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
-                Ok(
-                    if fs::metadata(host_file_name(interp, env, &path)?).is_ok() {
-                        Value::T
-                    } else {
-                        Value::Nil
-                    },
-                )
-            }
-            "file-executable-p" => {
-                need_args(name, args, 1)?;
-                let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
-                Ok(if file_executable_p(&host_file_name(interp, env, &path)?) {
-                    Value::T
-                } else {
-                    Value::Nil
-                })
+                let absname =
+                    crate::lisp::primitives::fexpand_file_name(interp, env, args[0], Value::Nil)?;
+                let host = encoded_file_name(interp, env, &absname)?;
+                Ok(lisp_truth(file_writable_p(&host)))
             }
             "file-attributes" => {
                 need_arg_range(name, args, 1, 3)?;
@@ -2183,18 +2186,20 @@ define_dispatch!(
                     Ok(Value::Nil)
                 }
             }
+            // fileio.c:Ffile_symlink_p: CHECK_STRING, the expanded name
+            // ENCODE_FILE'd, and emacs_readlinkat: the link's contents
+            // DECODE_FILE'd, nil when readlinkat fails.
             "file-symlink-p" => {
                 need_args(name, args, 1)?;
-                let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
-                let path = host_file_name(interp, env, &path)?;
-                // fileio.c emacs_readlinkat: the link's contents DECODE_FILE'd.
-                let target = fs::symlink_metadata(&path)
-                    .ok()
-                    .filter(|metadata| metadata.file_type().is_symlink())
-                    .and_then(|_| fs::read_link(&path).ok());
-                match target {
-                    Some(target) => decode_host_file_name(interp, env, &target),
-                    None => Ok(Value::Nil),
+                if !matches!(args[0].kind(), Kind::StringObject(_)) {
+                    return Err(wrong_type_argument("stringp", args[0]));
+                }
+                let absname =
+                    crate::lisp::primitives::fexpand_file_name(interp, env, args[0], Value::Nil)?;
+                let host = encoded_file_name(interp, env, &absname)?;
+                match fs::read_link(&host) {
+                    Ok(target) => decode_host_file_name(interp, env, &target),
+                    Err(_) => Ok(Value::Nil),
                 }
             }
             "make-symbolic-link" => {
@@ -4587,6 +4592,88 @@ fn file_name_completion_1(
         ],
         env,
     )
+}
+
+fn lisp_truth(value: bool) -> Value {
+    if value { Value::T } else { Value::Nil }
+}
+
+/// fileio.c:expand_and_dir_to_file: FILENAME expanded, and a final slash
+/// that is not the whole name removed by Fdirectory_file_name.
+fn expand_and_dir_to_file(
+    interp: &mut Interpreter,
+    env: &mut crate::lisp::types::Env,
+    filename: Value,
+) -> Result<Value, LispError> {
+    let absname = crate::lisp::primitives::fexpand_file_name(interp, env, filename, Value::Nil)?;
+    let (bytes, _) = file_name_bytes(&absname)?;
+    let chars = match absname.kind() {
+        Kind::StringObject(state) => state.borrow().len(),
+        _ => bytes.len(),
+    };
+    if chars > 1 && bytes.last() == Some(&b'/') {
+        return super::call(interp, "directory-file-name", &[absname], env);
+    }
+    Ok(absname)
+}
+
+/// ENCODE_FILE of the Lisp file name NAME, as a host path.
+fn encoded_file_name(
+    interp: &Interpreter,
+    env: &crate::lisp::types::Env,
+    name: &Value,
+) -> Result<std::path::PathBuf, LispError> {
+    host_file_name(interp, env, &string_text(name)?)
+}
+
+/// fileio.c:file_access_p: faccessat (AT_FDCWD, FILE, AMODE, AT_EACCESS).
+fn file_access_p(file: &std::path::Path, amode: libc::c_int) -> std::io::Result<()> {
+    faccessat_errno(file, amode)
+}
+
+/// fileio.c:file_directory_p on GNU/Linux: an O_PATH | O_DIRECTORY open
+/// of FILE (emacs_openat, which retries an interrupted open after
+/// maybe_quit); only a kernel without O_PATH (EINVAL) falls back on
+/// file_accessible_directory_p, and when that is refused (EACCES) on an
+/// fstatat.
+fn file_directory_p(
+    interp: &mut Interpreter,
+    env: &mut crate::lisp::types::Env,
+    file: &std::path::Path,
+) -> Result<bool, LispError> {
+    use std::os::unix::ffi::OsStrExt;
+    let Ok(name) = std::ffi::CString::new(file.as_os_str().as_bytes()) else {
+        return Ok(false);
+    };
+    loop {
+        // SAFETY: `name' is a valid NUL-terminated string for the call.
+        let fd = unsafe {
+            libc::openat(
+                libc::AT_FDCWD,
+                name.as_ptr(),
+                libc::O_PATH | libc::O_CLOEXEC | libc::O_DIRECTORY,
+            )
+        };
+        if fd >= 0 {
+            // SAFETY: FD was opened just above and is closed once.
+            unsafe { libc::close(fd) };
+            return Ok(true);
+        }
+        match std::io::Error::last_os_error().raw_os_error() {
+            Some(libc::EINTR) => interp.maybe_quit(env)?,
+            Some(libc::EINVAL) => break,
+            _ => return Ok(false),
+        }
+    }
+    match accessible_directory(file.as_os_str().as_encoded_bytes()) {
+        Ok(()) => return Ok(true),
+        Err(error) if error.raw_os_error() != Some(libc::EACCES) => return Ok(false),
+        Err(_) => {}
+    }
+    Ok(match fs::metadata(file) {
+        Ok(metadata) => metadata.is_dir(),
+        Err(error) => error.raw_os_error() == Some(libc::EOVERFLOW),
+    })
 }
 
 /// faccessat (AT_FDCWD, HOST, MODE, AT_EACCESS), its errno on failure.
