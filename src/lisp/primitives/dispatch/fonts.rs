@@ -1035,6 +1035,12 @@ define_dispatch!(
                     "Window system frame should be used".into(),
                 ))
             }
+            // xsettings.c: the fonts the XSETTINGS manager or GSettings
+            // gave, read when an X display opens; Emaxx opens none.
+            "font-get-system-font" | "font-get-system-normal-font" => {
+                need_args(name, args, 0)?;
+                Ok(Value::Nil)
+            }
             "font-family-list" | "frame-font-cache" => {
                 need_arg_range(name, args, 0, 1)?;
                 Ok(Value::Nil)

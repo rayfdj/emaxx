@@ -265,7 +265,7 @@ define_dispatch_modules! {
     Terminals => terminals => terminals::call(interp, name, args, env),
     Treesit => treesit => treesit::call(interp, name, args, env),
     Gnutls => gnutls => gnutls::call(interp, name, args),
-    GuiActions => gui_actions => gui_actions::call(interp, name, args),
+    GuiActions => gui_actions => gui_actions::call(interp, name, args, env),
     Comp => comp => comp::call(interp, name, args, env),
     Predicates => predicates => predicates::call(interp, name, args, env),
     Lists => lists => lists::call(interp, name, args, env),

@@ -1193,16 +1193,19 @@ define_dispatch!(
                 interp.tty_suppress_bold_inverse_default_colors = args[0].is_truthy();
                 Ok(args[0])
             }
+            // xfaces.c:Fx_family_fonts decodes FRAME before FAMILY; a
+            // terminal frame's font drivers list no entities.
             "x-family-fonts" => {
                 need_arg_range(name, args, 0, 2)?;
+                super::frames::decode_live_frame(interp, args.get(1), true)?;
                 if let Some(family) = args.first().filter(|value| !value.is_nil()) {
                     string_text(family)?;
                 }
                 Ok(Value::Nil)
             }
+            // xfaces.c:Fx_list_fonts: check_window_system (NULL) first.
             "x-list-fonts" => {
                 need_arg_range(name, args, 1, 5)?;
-                string_text(&args[0])?;
                 Err(LispError::Signal(
                     "Window system is not in use or not initialized".into(),
                 ))

@@ -1348,6 +1348,12 @@ define_dispatch!(
                 // GNU 30.2 data.c:Ffmakunbound uses CHECK_SYMBOL/XSYMBOL and
                 // returns its original symbol argument.
                 let symbol = checked_symbol_identity(interp, &args[0], env)?;
+                if args[0].is_nil() || args[0] == Value::T {
+                    return Err(LispError::SignalValue(Value::list([
+                        Value::symbol("setting-constant"),
+                        args[0],
+                    ])));
+                }
                 // GNU voids the function cell outright; shadowed stale entries
                 // (repeated defuns push duplicates) must not resurface.
                 interp.set_function_binding_symbol(&symbol, None);

@@ -160,6 +160,7 @@ mod purecopy;
 mod regexp;
 mod search;
 mod sequences;
+mod sound;
 mod strftime;
 mod strings;
 mod styled_format;

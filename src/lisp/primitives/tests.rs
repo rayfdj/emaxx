@@ -6091,6 +6091,36 @@ fn every_claimed_gnu_c_primitive_mirror_has_an_exact_native_surface_contract() {
     );
 }
 
+/// The contracted Linux build's manifest adds the X, session-manager and
+/// glibc primitives the cross-platform one lacks: each has a native route
+/// and GNU's arity and command identity.
+#[cfg(target_os = "linux")]
+#[test]
+fn every_linux_gnu_c_primitive_has_a_native_route_and_gnu_metadata() {
+    use super::generated_gnu_c_primitives_linux::GNU_C_PRIMITIVES;
+
+    let mut issues = Vec::new();
+    for contract in GNU_C_PRIMITIVES {
+        let Some(arity) = contract.arity else {
+            continue;
+        };
+        if !has_dispatch_handler(contract.name) && !is_special_form_name(contract.name) {
+            issues.push(format!(
+                "{} [{}]: no native route",
+                contract.name, contract.origins
+            ));
+        }
+        if generated_builtin_arities::generated_builtin_arity(contract.name) != Some(arity) {
+            issues.push(format!("{} [{}]: arity", contract.name, contract.origins));
+        }
+        if generated_builtin_arities::generated_builtin_command_p(contract.name) != contract.command
+        {
+            issues.push(format!("{} [{}]: command", contract.name, contract.origins));
+        }
+    }
+    assert!(issues.is_empty(), "{}", issues.join("\n"));
+}
+
 #[test]
 fn every_literal_native_dispatch_arm_is_owned_by_gnu_c() {
     let quoted_name =
@@ -17307,7 +17337,8 @@ fn visited_file_modtime_and_dedicated_windows_as_fileio_c_and_window_c() {
     // time_error_value reads a failure, a visit of a missing file
     // records -1, and the first change's undo entry is (t . -1).
     // Fset_window_buffer decodes a live window and names the buffer a
-    // strongly dedicated window is dedicated to.
+    // strongly dedicated window is dedicated to.  A time before the epoch
+    // (Tramp's `tramp-time-doesnt-exist') is a time like any other.
     let program = r#"
         (list
          (condition-case e (with-temp-buffer (set-visited-file-modtime)) (error e))
@@ -17320,10 +17351,12 @@ fn visited_file_modtime_and_dedicated_windows_as_fileio_c_and_window_c() {
          (let ((b (get-buffer-create "emaxx-vfm-base"))) (with-current-buffer (make-indirect-buffer b "emaxx-vfm-ind") (list (condition-case e (set-visited-file-modtime) (error e)) (set-visited-file-modtime 0) (visited-file-modtime))))
          (with-current-buffer (get-buffer-create "emaxx-vfm-u") (condition-case nil (insert-file-contents "/nonexistent/emaxx-vfm" t) (error nil)) (insert "a") (list (visited-file-modtime) buffer-undo-list))
          (progn (delete-other-windows) (let ((w (split-window))) (set-window-buffer w (get-buffer-create "emaxx-ded")) (set-window-dedicated-p w t) (prog1 (condition-case e (set-window-buffer w "*Messages*") (error e)) (delete-window w))))
-         (condition-case e (set-window-buffer 5 "*Messages*") (error e)))"#;
+         (condition-case e (set-window-buffer 5 "*Messages*") (error e))
+         (with-temp-buffer (set-visited-file-modtime '(-1 65535)) (visited-file-modtime))
+         (with-temp-buffer (set-visited-file-modtime '(-1 65535 999999)) (setq buffer-undo-list nil) (insert "a") (list (visited-file-modtime) buffer-undo-list)))"#;
     assert_oracle_contract_matches_interpreter(
         program,
-        r#"((wrong-type-argument stringp nil) (nil 0) (t t) -1 (args-out-of-range 1 -1 0) t (0 0 500000 0) ((error "An indirect buffer does not have a visited file") nil 0) (-1 ((1 . 2) (t . -1))) (error "Window is dedicated to `emaxx-ded'") (wrong-type-argument window-live-p 5))"#,
+        r#"((wrong-type-argument stringp nil) (nil 0) (t t) -1 (args-out-of-range 1 -1 0) t (0 0 500000 0) ((error "An indirect buffer does not have a visited file") nil 0) (-1 ((1 . 2) (t . -1))) (error "Window is dedicated to `emaxx-ded'") (wrong-type-argument window-live-p 5) (-1 65535 0 0) ((-1 65535 999999 0) ((1 . 2) (t -1 65535 999999 0))))"#,
         "visited file modtime",
     );
 }
@@ -25147,15 +25180,35 @@ fn native_display_connection_management_stops_at_the_headless_backend() {
     .read()
     .expect("headless display connection boundary should parse")
     .expect("headless display connection boundary should contain a form");
-    let unavailable = Value::list([
-        Value::symbol("error"),
-        Value::string("Window system is not in use or not initialized"),
-    ]);
-    assert_eq!(
-        interp
-            .eval(&boundary, &mut env)
-            .expect("headless display connection errors should be catchable"),
-        Value::list(std::iter::repeat_n(unavailable, 6))
+    let actual = interp
+        .eval(&boundary, &mut env)
+        .expect("headless display connection errors should be catchable");
+    // The contracted X build: x_term_init cannot open the display, the
+    // resource string is checked first, and check_x_display_info names
+    // each designator's error.
+    #[cfg(target_os = "linux")]
+    let expected = Reader::new(
+        r#"((error "Display display can't be opened")
+            (wrong-type-argument stringp 42)
+            (error "X windows are not in use or not initialized")
+            (error "Window system frame should be used")
+            (error "Terminal 0 is not an X display")
+            (error "Display missing can't be opened"))"#,
+    )
+    .read()
+    .expect("X display boundary should parse")
+    .expect("X display boundary should exist");
+    #[cfg(not(target_os = "linux"))]
+    let expected = Value::list(std::iter::repeat_n(
+        Value::list([
+            Value::symbol("error"),
+            Value::string("Window system is not in use or not initialized"),
+        ]),
+        6,
+    ));
+    assert!(
+        values_equal(&interp, &actual, &expected).expect("equal"),
+        "display connection boundary differs:\nactual: {actual:?}\nexpected: {expected:?}"
     );
 }
 

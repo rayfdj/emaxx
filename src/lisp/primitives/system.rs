@@ -215,52 +215,62 @@ pub(crate) fn user_full_name_from_login(login: &str) -> Option<String> {
         .then(|| std::env::var("NAME").unwrap_or_else(|_| login.to_string()))
 }
 
-/// Decode the legacy unsigned-ID representation accepted by GNU's
-/// CONS_TO_INTEGER boundary: an integer, an integral float, or the obsolete
-/// high/low cons form.  User and group primitives share this one contract.
-pub(crate) fn legacy_unsigned_id(value: &Value) -> Result<u32, LispError> {
-    fn integer_part(value: &Value) -> Option<u64> {
+/// data.c's cons_to_unsigned, CONS_TO_INTEGER's unsigned case: an integer,
+/// an integral float, or the obsolete (HIGH MIDDLE . LOW) / (HIGH . LOW)
+/// cons forms, none above MAX.
+pub(crate) fn cons_to_unsigned(value: &Value, max: u64) -> Result<u64, LispError> {
+    // integer_to_uintmax, and FIXNATP for the cons parts.
+    fn uintmax(value: &Value) -> Option<u64> {
         match value.kind() {
             Kind::Integer(value) => u64::try_from(value).ok(),
             Kind::BigInteger(value) => value.to_u64(),
             _ => None,
         }
     }
+    fn fixnat(value: &Value) -> Option<u64> {
+        match value.kind() {
+            Kind::Integer(value) => u64::try_from(value).ok(),
+            _ => None,
+        }
+    }
 
     let decoded = match value.kind() {
-        Kind::Integer(_) | Kind::BigInteger(_) => integer_part(value),
-        Kind::Float(value)
-            if value.is_finite()
-                && value.get() >= 0.0
-                && value.get() <= f64::from(u32::MAX)
-                && value.fract() == 0.0 =>
-        {
-            Some(value.get() as u64)
+        Kind::Float(float) => {
+            let d = float.get();
+            // `d < 1.0 + max' in double, then `val = d; valid = val == d'.
+            (d >= 0.0 && d < 1.0 + max as f64)
+                .then_some(d as u64)
+                .filter(|val| *val as f64 == d)
         }
-        Kind::Cons(_) => (|| {
-            let (high, rest) = value.cons_values().expect("matched cons");
-            let high = integer_part(&high)?;
-            if let Some((middle, low)) = rest.cons_values()
-                && high <= u64::from(u32::MAX) >> 40
-                && integer_part(&middle).is_some_and(|part| part < 1 << 24)
-                && integer_part(&low).is_some_and(|part| part < 1 << 16)
+        _ => (|| {
+            let Some((high, rest)) = value.cons_values() else {
+                return uintmax(value);
+            };
+            let top = uintmax(&high)?;
+            if top <= u64::MAX >> 24 >> 16
+                && let Some((middle, low)) = rest.cons_values()
+                && let Some(middle) = fixnat(&middle).filter(|part| *part < 1 << 24)
+                && let Some(low) = fixnat(&low).filter(|part| *part < 1 << 16)
             {
-                Some((high << 40) | (integer_part(&middle)? << 16) | integer_part(&low)?)
-            } else {
-                let low = rest.cons_values().map_or(rest, |(car, _)| car);
-                (high <= u64::from(u32::MAX) >> 16)
-                    .then(|| integer_part(&low).filter(|part| *part < 1 << 16))
-                    .flatten()
-                    .map(|low| (high << 16) | low)
+                return Some(top << 24 << 16 | middle << 16 | low);
             }
+            if top > u64::MAX >> 16 {
+                return None;
+            }
+            let low = rest.cons_values().map_or(rest, |(car, _)| car);
+            fixnat(&low)
+                .filter(|part| *part < 1 << 16)
+                .map(|low| top << 16 | low)
         })(),
-        _ => None,
     };
-    decoded
-        .and_then(|value| u32::try_from(value).ok())
-        .ok_or_else(|| {
-            LispError::Signal("Not an in-range integer, integral float, or cons of integers".into())
-        })
+    decoded.filter(|val| *val <= max).ok_or_else(|| {
+        LispError::Signal("Not an in-range integer, integral float, or cons of integers".into())
+    })
+}
+
+/// CONS_TO_INTEGER of a uid_t or gid_t: the user and group primitives.
+pub(crate) fn legacy_unsigned_id(value: &Value) -> Result<u32, LispError> {
+    cons_to_unsigned(value, u64::from(u32::MAX)).map(|id| id as u32)
 }
 
 #[cfg(unix)]

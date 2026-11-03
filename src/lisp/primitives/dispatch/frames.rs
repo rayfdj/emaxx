@@ -637,6 +637,128 @@ pub(super) fn window_system_unavailable() -> LispError {
     LispError::Signal("Window system is not in use or not initialized".into())
 }
 
+/// frame.c's decode_window_system_frame: a live frame, nil for the
+/// selected one, that check_window_system then requires to be on a window
+/// system.  Every Emaxx frame is a terminal frame, so this is the error.
+pub(super) fn window_system_frame_error(interp: &Interpreter, frame: Option<&Value>) -> LispError {
+    match decode_live_frame(interp, frame, true) {
+        Err(error) => error,
+        Ok(_) => LispError::Signal("Window system frame should be used".into()),
+    }
+}
+
+/// xfns.c's check_x_display_info, for the contracted X build with no X
+/// display open (Emaxx opens none): nil names the selected frame's or the
+/// first display, a live terminal must be an X one, a string is a display
+/// to open (x_display_info_for_name), and anything else names a frame.
+#[cfg(target_os = "linux")]
+pub(super) fn check_x_display_info(
+    interp: &mut Interpreter,
+    object: Option<&Value>,
+    env: &mut Env,
+) -> LispError {
+    let object = object.copied().unwrap_or(Value::Nil);
+    match object.kind() {
+        Kind::Nil => LispError::Signal("X windows are not in use or not initialized".into()),
+        Kind::Terminal(_) => match interp.decode_terminal(&object) {
+            Some(terminal) => {
+                LispError::Signal(format!("Terminal {} is not an X display", terminal.id))
+            }
+            None => wrong_type_argument("terminal-live-p", object),
+        },
+        _ if object.is_string() => {
+            // x_display_info_for_name: no display has the name, so the
+            // resource name is reset and the display opened afresh.
+            let invocation_name = interp
+                .lookup_var("invocation-name", env)
+                .unwrap_or(Value::Nil);
+            interp.set_c_variable("x-resource-name", invocation_name);
+            if let Err(error) = validate_x_resource_name(interp, env) {
+                return error;
+            }
+            display_cannot_be_opened(&object)
+        }
+        _ => window_system_frame_error(interp, Some(&object)),
+    }
+}
+
+/// The other contracted hosts keep the window-system boundary error.
+#[cfg(not(target_os = "linux"))]
+pub(super) fn check_x_display_info(
+    _interp: &mut Interpreter,
+    _object: Option<&Value>,
+    _env: &mut Env,
+) -> LispError {
+    window_system_unavailable()
+}
+
+/// xterm.c's x_term_init when x_display_ok cannot open DISPLAY_NAME,
+/// which for Emaxx is every display.
+#[cfg(target_os = "linux")]
+pub(super) fn display_cannot_be_opened(display_name: &Value) -> LispError {
+    match string_text(display_name) {
+        Ok(name) => LispError::Signal(format!("Display {name} can't be opened")),
+        Err(error) => error,
+    }
+}
+
+/// xfns.c's validate_x_resource_name: `x-resource-class' defaults to
+/// "Emacs"; a resource name with anything but letters, digits, `-' and `_'
+/// becomes "emacs" when fewer than two of its characters are valid (or it
+/// is too long for GNU's alloca), else a copy with those replaced by `_'.
+#[cfg(target_os = "linux")]
+pub(super) fn validate_x_resource_name(
+    interp: &mut Interpreter,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    // lisp.h's MAX_ALLOCA, less sizeof ".customization".
+    const LONGEST_NAME: usize = 16 * 1024 - ".customization".len() - 1;
+    let valid = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_';
+    if !interp
+        .lookup_var("x-resource-class", env)
+        .is_some_and(|class| class.is_string())
+    {
+        interp.set_c_variable("x-resource-class", Value::string("Emacs"));
+    }
+    let name = interp
+        .lookup_var("x-resource-name", env)
+        .unwrap_or(Value::Nil);
+    let (good, bad, len) = if name.is_string() {
+        let text = string_text(&name)?;
+        let good = text.chars().filter(|c| valid(*c)).count();
+        let len = string_like(&name)
+            .ok_or_else(|| wrong_type_argument("stringp", name))?
+            .byte_len()?;
+        (good, len - good, len)
+    } else {
+        (0, 5, 0)
+    };
+    if bad == 0 {
+        return Ok(());
+    }
+    if good < 2 || len > LONGEST_NAME {
+        interp.set_c_variable("x-resource-name", Value::string("emacs"));
+        return Ok(());
+    }
+    let copy = super::call(interp, "copy-sequence", &[name], env)?;
+    for (index, c) in string_text(&name)?.chars().enumerate() {
+        if !valid(c) {
+            super::call(
+                interp,
+                "aset",
+                &[
+                    copy,
+                    Value::Integer(index as i64),
+                    Value::Integer('_' as i64),
+                ],
+                env,
+            )?;
+        }
+    }
+    interp.set_c_variable("x-resource-name", copy);
+    Ok(())
+}
+
 define_dispatch!(
     pub(super) fn call(
         interp: &mut Interpreter,
@@ -939,10 +1061,7 @@ define_dispatch!(
             }
             "x-focus-frame" => {
                 need_arg_range(name, args, 1, 2)?;
-                decode_live_frame(interp, args.first(), false)?;
-                Err(LispError::Signal(
-                    "Window system frame should be used".into(),
-                ))
+                Err(window_system_frame_error(interp, args.first()))
             }
             // Fx_uses_old_gtk_dialog: t only for a GTK file dialog on a
             // window-system frame.
@@ -964,13 +1083,82 @@ define_dispatch!(
             | "x-server-max-request-size"
             | "x-server-vendor"
             | "x-server-version"
-            | "xw-display-color-p" => {
+            | "xw-display-color-p"
+            | "x-display-monitor-attributes-list"
+            | "x-frame-list-z-order"
+            | "x-get-modifier-masks" => {
                 need_arg_range(name, args, 0, 1)?;
-                Err(window_system_unavailable())
+                Err(check_x_display_info(interp, args.first(), env))
+            }
+            // The display check comes before every other argument's.
+            "x-synchronize" | "x-display-set-last-user-time" => {
+                need_arg_range(name, args, 1, 2)?;
+                Err(check_x_display_info(interp, args.get(1), env))
+            }
+            "x-translate-coordinates" => {
+                need_arg_range(name, args, 1, 6)?;
+                Err(check_x_display_info(interp, args.first(), env))
             }
             "xw-color-defined-p" | "xw-color-values" => {
                 need_arg_range(name, args, 1, 2)?;
-                Err(window_system_unavailable())
+                Err(window_system_frame_error(interp, args.get(1)))
+            }
+            // The contracted build has XKB, whose path decodes the frame.
+            "x-backspace-delete-keys-p" | "x-wm-set-size-hint" => {
+                need_arg_range(name, args, 0, 1)?;
+                Err(window_system_frame_error(interp, args.first()))
+            }
+            // xfns.c:Fx_export_frames decodes each of FRAMES (a frame or nil
+            // stands for a list of it) before reading TYPE.
+            "x-export-frames" => {
+                need_arg_range(name, args, 0, 2)?;
+                let frames = args.first().copied().unwrap_or(Value::Nil);
+                let first = frames.cons_values().map_or(frames, |(car, _)| car);
+                Err(window_system_frame_error(interp, Some(&first)))
+            }
+            // frame_geometry answers nil for a frame not on X.
+            "x-frame-geometry" => {
+                need_arg_range(name, args, 0, 1)?;
+                decode_live_frame(interp, args.first(), true)?;
+                Ok(Value::Nil)
+            }
+            "x-frame-edges" => {
+                need_arg_range(name, args, 0, 2)?;
+                decode_live_frame(interp, args.first(), true)?;
+                Ok(Value::Nil)
+            }
+            // FRAME_X_DOUBLE_BUFFERED_P of a terminal frame (which GNU reads
+            // through its absent X output) is false.
+            "x-double-buffered-p" => {
+                need_arg_range(name, args, 0, 1)?;
+                decode_live_frame(interp, args.first(), true)?;
+                Ok(Value::Nil)
+            }
+            // A terminal frame has no outer window to restack.
+            "x-frame-restack" => {
+                need_arg_range(name, args, 2, 3)?;
+                decode_live_frame(interp, args.first(), true)?;
+                decode_live_frame(interp, args.get(1), true)?;
+                Err(LispError::Signal("Cannot restack frames".into()))
+            }
+            // The selected frame is not on X: nil before any argument check.
+            "x-mouse-absolute-pixel-position" => {
+                need_args(name, args, 0)?;
+                Ok(Value::Nil)
+            }
+            "x-set-mouse-absolute-pixel-position" => {
+                need_args(name, args, 2)?;
+                Ok(Value::Nil)
+            }
+            // GTK input contexts belong to X displays' focus frames.
+            "x-internal-focus-input-context" => {
+                need_args(name, args, 1)?;
+                Ok(Value::Nil)
+            }
+            // The contracted build lacks XInput 2.
+            "x-server-input-extension-version" => {
+                need_arg_range(name, args, 0, 1)?;
+                Ok(Value::Nil)
             }
             "frame-after-make-frame" => {
                 need_args(name, args, 2)?;

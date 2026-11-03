@@ -538,6 +538,23 @@ define_dispatch!(
             }
 
             // ── Misc ──
+            // xsmfns.c:Fhandle_save_session: with no session manager
+            // interaction pending, an event (_ t ...) kills Emacs.
+            "play-sound-internal" => {
+                need_args(name, args, 1)?;
+                super::super::sound::play_sound_internal(interp, args[0], env)
+            }
+            "handle-save-session" => {
+                need_args(name, args, 1)?;
+                let kill = args[0]
+                    .cons_values()
+                    .and_then(|(_, rest)| rest.cons_values())
+                    .is_some_and(|(flag, _)| flag == Value::T);
+                if kill {
+                    super::call(interp, "kill-emacs", &[Value::Nil, Value::Nil], env)?;
+                }
+                Ok(Value::Nil)
+            }
             "kill-emacs" => {
                 need_arg_range(name, args, 0, 2)?;
 

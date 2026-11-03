@@ -6128,6 +6128,18 @@ define_dispatch!(
                 // glyph matrix.  The cache-free headless renderer never does.
                 Ok(Value::Nil)
             }
+            // xsettings.c:Ftool_bar_get_system_style: a known `tool-bar-style',
+            // else the system's (none without a display), else `image'.
+            "tool-bar-get-system-style" => {
+                need_args(name, args, 0)?;
+                let style = interp
+                    .lookup_var("tool-bar-style", env)
+                    .unwrap_or(Value::Nil);
+                let known = ["image", "text", "both", "both-horiz", "text-image-horiz"]
+                    .iter()
+                    .any(|known| style == Value::symbol(known));
+                Ok(if known { style } else { Value::symbol("image") })
+            }
             "tab-bar-height" | "tool-bar-height" => {
                 need_arg_range(name, args, 0, 2)?;
                 decode_live_frame(interp, args.first(), true)?;

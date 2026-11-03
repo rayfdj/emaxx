@@ -1130,10 +1130,11 @@ define_dispatch!(
                 Ok(Value::Integer(position_indentation(interp, env, bol) as i64))
             }
             "indent-to" => {
+                // indent.c Findent_to: CHECK_FIXNUM both COLUMN and MINIMUM.
                 need_arg_range(name, args, 1, 2)?;
-                let target = args[0].as_integer()?;
+                let target = syntax_scan::check_fixnum(&args[0])?;
                 let minimum = match args.get(1) {
-                    Some(value) if !value.is_nil() => value.as_integer()?,
+                    Some(value) if !value.is_nil() => syntax_scan::check_fixnum(value)?,
                     _ => 0,
                 };
                 indent_to(interp, target, minimum, env).map(Value::Integer)

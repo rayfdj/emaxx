@@ -1528,6 +1528,28 @@ define_dispatch!(
                 let _ = crate::lisp::native_comp::garbage_collect_now(interp, env)?;
                 Ok(Value::T)
             }
+            // alloc.c: glibc's malloc_info on stderr and malloc_trim, the
+            // host allocator being glibc's malloc.
+            "malloc-info" => {
+                need_args(name, args, 0)?;
+                malloc_info()?;
+                Ok(Value::Nil)
+            }
+            "malloc-trim" => {
+                need_arg_range(name, args, 0, 1)?;
+                let pad = match args.first().filter(|pad| !pad.is_nil()) {
+                    Some(pad) => match pad.kind() {
+                        Kind::Integer(pad) if pad >= 0 => pad,
+                        _ => return Err(wrong_type_argument("wholenump", *pad)),
+                    },
+                    None => 0,
+                };
+                Ok(if malloc_trim(pad) {
+                    Value::T
+                } else {
+                    Value::Nil
+                })
+            }
             "memory-use-counts" => {
                 need_args(name, args, 0)?;
                 // alloc.c:Fmemory_use_counts: `make_int' of each counter, in
@@ -1876,4 +1898,58 @@ fn permanent_hook_elements(
         tail = cell.cdr.get();
     }
     Ok(Value::list(kept))
+}
+
+/// alloc.c:Fmalloc_info's malloc_info (0, stderr).
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn malloc_info() -> Result<(), LispError> {
+    // A stream of its own on standard error's descriptor, closed after.
+    // SAFETY: dup and fdopen are given a valid descriptor and mode; the
+    // stream is closed exactly once, with the duplicate it owns.
+    let failed = unsafe {
+        let fd = libc::dup(libc::STDERR_FILENO);
+        let stream = if fd < 0 {
+            std::ptr::null_mut()
+        } else {
+            libc::fdopen(fd, c"w".as_ptr())
+        };
+        if stream.is_null() {
+            if fd >= 0 {
+                libc::close(fd);
+            }
+            true
+        } else {
+            let failed = libc::malloc_info(0, stream) != 0;
+            libc::fclose(stream);
+            failed
+        }
+    };
+    if failed {
+        // sysdep.c's emacs_strerror is strerror's text.
+        let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+        // SAFETY: strerror returns a NUL-terminated message for any errno.
+        let message = unsafe { std::ffi::CStr::from_ptr(libc::strerror(errno)) };
+        return Err(LispError::Signal(format!(
+            "malloc_info failed: {}",
+            message.to_string_lossy()
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+fn malloc_info() -> Result<(), LispError> {
+    Ok(())
+}
+
+/// alloc.c:Fmalloc_trim: malloc_trim's 1 means memory went back.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn malloc_trim(pad: i64) -> bool {
+    // SAFETY: malloc_trim takes any padding and only releases free memory.
+    unsafe { libc::malloc_trim(pad as libc::size_t) == 1 }
+}
+
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+fn malloc_trim(_pad: i64) -> bool {
+    false
 }

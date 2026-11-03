@@ -1564,6 +1564,19 @@ pub(crate) fn locate_file_search(
     ))
 }
 
+/// lread.c:openp with no suffixes or predicate (sound.c's sound files):
+/// the file opened, or the errno of the search.
+pub(crate) fn openp_file(
+    interp: &mut Interpreter,
+    file: &Value,
+    path: &Value,
+    env: &mut Env,
+) -> Result<Result<crate::file_system::File, i32>, LispError> {
+    let (found, errno) =
+        search::openp_search(interp, file, path, &Value::Nil, &Value::Nil, false, env)?;
+    Ok(found.and_then(|found| found.file).ok_or(errno))
+}
+
 /// openp's access check for a fixnum predicate: `faccessat' with the mask
 /// and AT_EACCESS, then an accessible directory counts as EISDIR rather
 /// than a match.  The error is the errno openp records.

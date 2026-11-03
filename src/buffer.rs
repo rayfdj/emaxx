@@ -912,11 +912,7 @@ fn undo_first_change_marker(modtime: ModtimeStamp) -> Value {
         ModtimeStamp::Nonexistent => return Value::cons(Value::T, Value::Integer(-1)),
         ModtimeStamp::Time(time) => time,
     };
-    let Ok(duration) = time.duration_since(std::time::UNIX_EPOCH) else {
-        return Value::cons(Value::T, Value::Integer(0));
-    };
-    let seconds = duration.as_secs() as i64;
-    let nanoseconds = duration.subsec_nanos() as i64;
+    let (seconds, nanoseconds) = crate::lisp::primitives::system_time_seconds_nanos(time);
     Value::list([
         Value::T,
         Value::Integer(seconds >> 16),

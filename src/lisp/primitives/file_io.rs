@@ -49,14 +49,33 @@ pub(crate) fn modtimes_equal_whole_seconds(
 }
 
 // GNU `file-attributes' time fields are (HIGH LOW USEC PSEC) lists.
+/// timefns.c:make_lisp_time of TIME's timespec, one before the epoch
+/// too (Tramp's `tramp-time-doesnt-exist' is (-1 65535)).
 pub(crate) fn system_time_list_value(time: SystemTime) -> Result<Value, LispError> {
-    let duration = time
-        .duration_since(UNIX_EPOCH)
-        .map_err(|error| LispError::Signal(error.to_string()))?;
-    Ok(unix_time_list_value(
-        duration.as_secs() as i64,
-        duration.subsec_nanos() as i64,
-    ))
+    let (seconds, nanoseconds) = system_time_seconds_nanos(time);
+    Ok(unix_time_list_value(seconds, nanoseconds))
+}
+
+/// TIME as a timespec's floored seconds and the nanoseconds within them.
+pub(crate) fn system_time_seconds_nanos(time: SystemTime) -> (i64, i64) {
+    match time.duration_since(UNIX_EPOCH) {
+        Ok(duration) => (
+            duration.as_secs() as i64,
+            i64::from(duration.subsec_nanos()),
+        ),
+        Err(before) => {
+            let duration = before.duration();
+            let (mut seconds, mut nanoseconds) = (
+                -(duration.as_secs() as i64),
+                -(i64::from(duration.subsec_nanos())),
+            );
+            if nanoseconds < 0 {
+                seconds -= 1;
+                nanoseconds += 1_000_000_000;
+            }
+            (seconds, nanoseconds)
+        }
+    }
 }
 
 pub(crate) fn unix_time_list_value(seconds: i64, nanoseconds: i64) -> Value {
@@ -98,26 +117,10 @@ pub(crate) fn file_modtime_from_value(
 /// nanoseconds within them, as utimensat takes them.
 #[cfg(unix)]
 fn system_time_to_timespec(time: SystemTime) -> libc::timespec {
-    match time.duration_since(UNIX_EPOCH) {
-        Ok(duration) => libc::timespec {
-            tv_sec: duration.as_secs() as libc::time_t,
-            tv_nsec: duration.subsec_nanos() as libc::c_long,
-        },
-        Err(before) => {
-            let duration = before.duration();
-            let (mut seconds, mut nanoseconds) = (
-                -(duration.as_secs() as i64),
-                -(i64::from(duration.subsec_nanos())),
-            );
-            if nanoseconds < 0 {
-                seconds -= 1;
-                nanoseconds += 1_000_000_000;
-            }
-            libc::timespec {
-                tv_sec: seconds as libc::time_t,
-                tv_nsec: nanoseconds as libc::c_long,
-            }
-        }
+    let (seconds, nanoseconds) = system_time_seconds_nanos(time);
+    libc::timespec {
+        tv_sec: seconds as libc::time_t,
+        tv_nsec: nanoseconds as libc::c_long,
     }
 }
 

@@ -12800,6 +12800,87 @@ setup_process_coding_systems's check now refuses). A 13-form
   time-stamp-tests pass as many tests as GNU's. Local validation: the
   grouped gate's 3,465 library tests, the integration targets and
   clippy with `--all-targets --all-features -D warnings' pass.
+- **Round 265: the Linux build's GNU C primitives that had no body, X
+  display checks as the X build makes them, and sound.c.** Thirty-three
+  primitives of the contracted Linux build were bound as subrs whose
+  call signalled Emaxx's own "Unknown function" (a scan calling each
+  subr with one argument too many, which reaches the arity check only
+  once a body exists): xselect.c's selection calls, xfns.c's frame and
+  display queries, xsettings.c's `font-get-system-font',
+  `font-get-system-normal-font' and `tool-bar-get-system-style',
+  xsmfns.c's `handle-save-session', alloc.c's `malloc-info' and
+  `malloc-trim', and sound.c's `play-sound-internal'. Each now does what
+  GNU's X build does with no X display open: frame_for_x_selection finds
+  no X frame (after decoding a terminal designator), so
+  `x-selection-exists-p' and `x-selection-owner-p' answer nil after
+  CHECK_SYMBOL, `x-disown-selection-internal' answers nil,
+  `x-get-selection-internal' checks both symbols and MULTIPLE before "X
+  selection unavailable for this frame", and `x-get-local-selection'
+  checks its four-element VALUE, its name and its timestamp
+  (cons_to_unsigned, now ported whole, which also corrects the uid and
+  gid primitives' (HIGH MIDDLE . LOW) form) before the frame;
+  frame_geometry answers nil for `x-frame-geometry' and `x-frame-edges',
+  `x-mouse-absolute-pixel-position' and
+  `x-set-mouse-absolute-pixel-position' return before any argument
+  check, and the XInput 2 query answers nil as the contracted build
+  lacks it. Where GNU's X build reads a terminal frame's absent X output
+  and crashes (`x-double-buffered-p', `x-frame-restack' of two live
+  frames, `x-own-selection-internal' given a non-frame), Emaxx answers
+  nil, "Cannot restack frames" and the selection error. `malloc-info'
+  and `malloc-trim' call glibc's, the host allocator being glibc's
+  malloc, and `handle-save-session' kills Emacs for a (_ t ...) event as
+  Fhandle_save_session does. check_x_display_info is ported for the X
+  display queries (`x-display-pixel-width' and its fourteen siblings,
+  `x-close-connection', `x-synchronize', `x-translate-coordinates',
+  `x-send-client-message', `x-create-frame''s `terminal' or `display'
+  parameter): nil is "X windows are not in use or not initialized", a
+  live terminal "Terminal N is not an X display", a string a display
+  x_term_init cannot open ("Display NAME can't be opened", after
+  x_display_info_for_name resets `x-resource-name' to `invocation-name'
+  and validate_x_resource_name replaces its invalid characters or falls
+  back to "emacs"), and anything else decode_window_system_frame's
+  `frame-live-p' or "Window system frame should be used";
+  `x-open-connection' checks its resource string and validates the
+  resource name before the same display error, `xw-color-defined-p',
+  `xw-color-values' and `x-focus-frame' decode their frame as
+  decode_window_system_frame does (nil for the selected frame),
+  `x-list-fonts' calls check_window_system before CHECK_STRING and
+  `x-family-fonts' decodes its frame before its family; Emaxx's earlier
+  "Window system is not in use or not initialized" for all of these
+  remains on the other contracted hosts. `play-sound-internal' is
+  sound.c's: parse_sound's specification, openp in `data-directory', the
+  RIFF-WAVE and Sun audio headers ("Unknown sound format"),
+  `play-sound-functions', then ALSA through libasound, loaded on first
+  use as GNU's build links it, or else the Voxware device, with each
+  driver's format choice, configuration, playback and error texts.
+  compat/generate_builtin_arities.el now reads the Linux manifest too,
+  so these primitives carry GNU's arities and interactive forms
+  (`malloc-info' and `malloc-trim' are commands, `handle-save-session'
+  reads an event), and a test holds every primitive of the Linux
+  manifest to a native route and GNU's metadata. `indent-to' checks both
+  arguments as fixnums and `fmakunbound' refuses nil and t as data.c
+  does. A visited file's time before the epoch, which Tramp records for
+  a file that does not exist as `tramp-time-doesnt-exist', (-1 65535),
+  is made a Lisp time as make_lisp_time makes it, as is the first
+  change's undo entry for it: round 264's `visited-file-modtime' passed
+  on the Rust conversion's "second time provided was later than self",
+  which failed tramp-tests'
+  `tramp-test10-write-region-file-precious-flag' on the round 264 head.
+  The batteries (r265: every `x-' C primitive with each argument as nil,
+  5, a string, the terminal, the frame and a window, 670 calls;
+  `play-sound-internal' over valid and invalid specifications, files,
+  data and devices; and 124 forms of narrowing, fields, editfns, special
+  forms, arithmetic, formatting, lists and strings) match GNU but
+  `malloc-trim''s second call, whose answer depends on the heap. The
+  same sweep over the 153 frame, terminal, font, fontset, image and face
+  primitives finds argument checks out of GNU's order and error data GNU
+  does not give in about forty of them (`color-distance', `face-font',
+  `font-get', `image-size' among them), the next round's work. Local
+  validation: the grouped gate's 3,466 library tests and the
+  integration targets pass, and after the time fix and clippy's two
+  changes (the ALSA device boxed in its driver, `then_some') the
+  modtime, file-attribute and time tests and clippy with `--all-targets
+  --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -14615,6 +14696,26 @@ against 1,140), and the widest body gaps are comp-tests (12,489 ms against
 10,310), ert-tests (27,532 against 26,324), mule-tests (1,933 against
 1,195), tramp-tests (15,182 against 14,492) and semantic-utest-ia (2,436
 against 1,748), the gate build's as before.
+
+**On `486ec2c`** (round 264): the full Rust gate (run 41559530811)
+passed. Frozen (run 41559543126) matched 7,926 of the 7,928 outcomes.
+eglot-tests' `eglot-test-rust-completion-exit-function` failed in the GNU
+oracle on its jsonrpc timeout (the known oracle flake), and
+tramp-tests' `tramp-test10-write-region-file-precious-flag` failed in
+Emaxx with "second time provided was later than self": Tramp records a
+file that does not exist as `tramp-time-doesnt-exist`, (-1 65535), a
+second before the epoch, and round 264's `visited-file-modtime` handed
+the conversion's error on where the old one had answered 0. Round 265
+converts such a time as make_lisp_time does, so the frozen run is not
+rerun. Setup 85.2 s against 71.9 s (1.185), test bodies 301.4 s against
+282.3 s (1.067), in all 1.083, on a slower runner than round 263's. Per
+file, the setup is 26 ms over GNU's on average (13.3 s over 519 files, a
+median of 128 ms against 112), electric-tests' the most (893 against
+576) before comp-tests' (2,034 against 1,814), and the widest body gaps
+are ert-tests (46,154 ms against 40,697), comp-tests (18,335 against
+15,839), tramp-tests (21,350 against 19,868), mule-tests (3,031 against
+1,960) and semantic-utest-ia (4,115 against 3,196), the gate build's as
+before.
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'
