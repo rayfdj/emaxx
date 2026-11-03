@@ -268,6 +268,62 @@ pub(crate) fn cons_to_unsigned(value: &Value, max: u64) -> Result<u64, LispError
     })
 }
 
+/// data.c's cons_to_signed, CONS_TO_INTEGER's signed case: an integer,
+/// an integral float, or the obsolete (HIGH MIDDLE . LOW) / (HIGH . LOW)
+/// cons forms, from MIN to MAX.
+pub(crate) fn cons_to_signed(value: &Value, min: i64, max: i64) -> Result<i64, LispError> {
+    // integer_to_intmax, and FIXNATP for the cons parts.
+    fn intmax(value: &Value) -> Option<i64> {
+        match value.kind() {
+            Kind::Integer(value) => Some(value),
+            Kind::BigInteger(value) => value.to_i64(),
+            _ => None,
+        }
+    }
+    fn fixnat(value: &Value) -> Option<i64> {
+        match value.kind() {
+            Kind::Integer(value) if value >= 0 => Some(value),
+            _ => None,
+        }
+    }
+
+    let decoded = match value.kind() {
+        Kind::Float(float) => {
+            let d = float.get();
+            // `d >= min && d < 1.0 + max' in double, then `val = d;
+            // valid = val == d'.
+            (d >= min as f64 && d < 1.0 + max as f64)
+                .then_some(d as i64)
+                .filter(|val| *val as f64 == d)
+        }
+        _ => (|| {
+            let Some((high, rest)) = value.cons_values() else {
+                return intmax(value);
+            };
+            let top = intmax(&high)?;
+            if (i64::MIN >> 24 >> 16..=i64::MAX >> 24 >> 16).contains(&top)
+                && let Some((middle, low)) = rest.cons_values()
+                && let Some(middle) = fixnat(&middle).filter(|part| *part < 1 << 24)
+                && let Some(low) = fixnat(&low).filter(|part| *part < 1 << 16)
+            {
+                return Some(top << 24 << 16 | middle << 16 | low);
+            }
+            if !(i64::MIN >> 16..=i64::MAX >> 16).contains(&top) {
+                return None;
+            }
+            let low = rest.cons_values().map_or(rest, |(car, _)| car);
+            fixnat(&low)
+                .filter(|part| *part < 1 << 16)
+                .map(|low| top << 16 | low)
+        })(),
+    };
+    decoded
+        .filter(|val| (min..=max).contains(val))
+        .ok_or_else(|| {
+            LispError::Signal("Not an in-range integer, integral float, or cons of integers".into())
+        })
+}
+
 /// CONS_TO_INTEGER of a uid_t or gid_t: the user and group primitives.
 pub(crate) fn legacy_unsigned_id(value: &Value) -> Result<u32, LispError> {
     cons_to_unsigned(value, u64::from(u32::MAX)).map(|id| id as u32)

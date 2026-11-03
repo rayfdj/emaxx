@@ -13175,6 +13175,45 @@ setup_process_coding_systems's check now refuses). A 13-form
   reads a null charset and crashes. Local validation: the grouped gate's
   3,476 library tests, the integration targets and clippy with
   `--all-targets --all-features -D warnings' pass.
+- **Round 271: process ids, signal codes and load averages as process.c,
+  sysdep.c and fns.c take them.** `load-average' is Fload_average: the
+  averages getloadavg(3) reports (glibc's from sysinfo(2), in steps of
+  1/2048, where the sysinfo crate read /proc/loadavg's two decimals),
+  each a float or `double_to_integer' of 100 times it, as many as it
+  has, and "load-average not implemented for this operating system" when
+  it has none. `process-attributes' checks its argument as
+  system_process_attributes does, CHECK_NUMBER and then CONS_TO_INTEGER
+  into a pid_t, so a non-number signals `numberp', an integral float
+  names its pid and a fraction or out-of-range number signals "Not an
+  in-range integer, integral float, or cons of integers" (data.c's
+  cons_to_signed, ported beside cons_to_unsigned). `signal-process''s
+  default, Finternal_default_signal_process, reads a string that names
+  no process with lread.c's string_to_number (ported for base 10 with
+  the length it spans), so "1e3" and "+5" are pids and " 5" or "99x"
+  give nil; any other non-number goes through get_process; a number
+  through CONS_TO_INTEGER; a fixnum signal code through
+  check_integer_range (`args-out-of-range' past int) and a symbol
+  through abbr_to_signal and gnulib's str2signum (digits only from a
+  leading digit and up to SIGNUM_BOUND, so `SIG99' and `+5' are
+  undefined; names of 20 bytes or more none), where the code had read
+  any integer and parsed a leading sign. A contract of 48 such calls
+  matches GNU, and batteries over chartab.c, casetab.c, fns.c,
+  editfns.c, textprop.c and overlays, data.c and floatfns.c, keymap.c
+  and doc.c, callint.c, macros.c and keyboard.c, buffer.c and marker.c,
+  window.c and frame.c, lread.c's reader, search.c and the regex engine,
+  composite.c and character.c, and sysdep.c match it apart from object
+  addresses, host values and the X build's features (the oracle is built
+  --with-x, so its menu bar's tool bar entry is the move-toolbar
+  submenu). The frozen run's widest per-test gap,
+  `ert-test-run-tests-batch-expensive' (44.6 s against GNU's 37.1 s at
+  round 269), is the gate build under memory pressure rather than a
+  slower path: the runner is loaded as source, so the backtrace the test
+  prints holds its macro-expanded forms, and here the whole file under
+  the gate build takes 53.71 s against GNU's 53.85 s (the test alone
+  8.98 s in the release build against 11.15 s), at a peak of 7.0 GB
+  against 5.8 GB. Local validation: the grouped gate's 3,478
+  library tests, the integration targets and clippy with `--all-targets
+  --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -15078,6 +15117,19 @@ icalendar-tests' gap does not reproduce with the round 270 tree: its
 gate build runs the file's tests under the runner here in 775 ms against
 GNU's 580 (`icalendar-export-alarms', 833 ms against 23 in the run, in
 64 against 52).
+
+**On `9be6898`** (round 270): the full Rust gate (run 41592719776)
+passed, and frozen (run 41592722745) matched all 7,928 outcomes at the
+first attempt. Setup 74.3 s against 61.7 s (1.204), test bodies 277.0 s
+against 259.7 s (1.066), in all 1.082. Per file, the setup is 24 ms over
+GNU's on average (12.6 s over 519 files, a median of 111 ms against 94),
+electric-tests' the most over (776 against 518) before comp-tests'
+(1,883 against 1,682) and textsec-tests' (375 against 252), and the
+widest body gaps are ert-tests (38,949 ms against 36,450), comp-tests
+(16,147 against 13,960), tramp-tests (18,587 against 17,166),
+semantic-utest-ia (3,758 against 2,771) and mule-tests (2,788 against
+1,802). icalendar-tests' body, 3,374 ms against 415 at round 269, is
+back to 560 against 409.
 
 **Findings recorded, not fixed:**
 - **An insertion's stickiness reads `text-property-default-nonsticky'

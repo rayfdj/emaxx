@@ -8418,6 +8418,103 @@ fn charset_definitions_and_primitives_match_charset_c() {
 }
 
 #[test]
+fn process_ids_and_signal_codes_convert_as_process_c() {
+    // process.c:Finternal_default_signal_process: a string read with
+    // lread.c's string_to_number as the whole of its text, a number
+    // through CONS_TO_INTEGER's pid_t, a fixnum signal code through
+    // check_integer_range and a symbol through abbr_to_signal and gnulib's
+    // str2signum; sysdep.c:system_process_attributes' CHECK_NUMBER and
+    // CONS_TO_INTEGER; fns.c:Fload_average's arity.  The signals go to a
+    // pid no process has, so only their checks are observed.
+    assert_oracle_contract_matches_interpreter(
+        r###"(mapcar (lambda (f) (condition-case e (funcall f) (error (list 'E e))))
+ (list
+  (lambda () (process-attributes 1.5))
+  (lambda () (process-attributes '(0 . 1)))
+  (lambda () (process-attributes (expt 2 40)))
+  (lambda () (process-attributes 'a))
+  (lambda () (with-temp-buffer (process-attributes (point-marker))))
+  (lambda () (process-attributes -5))
+  (lambda () (process-attributes 2147483647.0))
+  (lambda () (signal-process 2147483647.0 0))
+  (lambda () (signal-process 1.5 0))
+  (lambda () (signal-process (expt 2 40) 0))
+  (lambda () (signal-process -2147483649 0))
+  (lambda () (signal-process '(1 . 2) 0))
+  (lambda () (signal-process "2.147483647e9" 0))
+  (lambda () (signal-process "2147483647" 0))
+  (lambda () (signal-process "+2147483647" 0))
+  (lambda () (signal-process "2147483647." 0))
+  (lambda () (signal-process " 2147483647" 0))
+  (lambda () (signal-process "abc" 0))
+  (lambda () (signal-process "99x" 0))
+  (lambda () (signal-process "" 0))
+  (lambda () (signal-process "1.5" 0))
+  (lambda () (signal-process "21474836470" 0))
+  (lambda () (signal-process 'foo 0))
+  (lambda () (signal-process 2147483647 (expt 2 40)))
+  (lambda () (signal-process 2147483647 -1))
+  (lambda () (signal-process 2147483647 (expt 2 70)))
+  (lambda () (signal-process 2147483647 1.0))
+  (lambda () (signal-process 2147483647 "INT"))
+  (lambda () (signal-process 2147483647 'SIG99))
+  (lambda () (signal-process 2147483647 'SIG64))
+  (lambda () (signal-process 2147483647 (intern "+5")))
+  (lambda () (signal-process 2147483647 (intern "05x")))
+  (lambda () (signal-process 2147483647 'sigfoo))
+  (lambda () (signal-process 2147483647 'aaaaaaaaaaaaaaaaaaaaaaaaa))
+  (lambda () (signal-process 2147483647 (intern "0000000000000000000000")))
+  (lambda () (signal-process 2147483647 (intern "000000000000000000")))
+  (lambda () (signal-process 2147483647 'rtmin+1))
+  (lambda () (signal-process 2147483647 'RTMAX-99))
+  (lambda () (signal-process 2147483647 'exit))
+  (lambda () (signal-process 2147483647 'SIGcld))
+  (lambda () (signal-process 2147483647 'iot))
+  (lambda () (internal-default-signal-process 2147483647 0))
+  (lambda () (with-temp-buffer (internal-default-signal-process nil 0)))
+  (lambda () (internal-default-signal-process 'a 0))
+  (lambda () (length (load-average)))
+  (lambda () (mapcar #'integerp (load-average)))
+  (lambda () (mapcar #'floatp (load-average t)))
+  (lambda () (load-average 1 2))
+  ))"###,
+        r###"((E (error "Not an in-range integer, integral float, or cons of integers")) (E (wrong-type-argument numberp (0 . 1))) (E (error "Not an in-range integer, integral float, or cons of integers")) (E (wrong-type-argument numberp a)) (E (wrong-type-argument numberp #<marker in no buffer>)) nil nil -1 (E (error "Not an in-range integer, integral float, or cons of integers")) (E (error "Not an in-range integer, integral float, or cons of integers")) (E (error "Not an in-range integer, integral float, or cons of integers")) (E (wrong-type-argument processp (1 . 2))) -1 -1 -1 -1 nil nil nil nil (E (error "Not an in-range integer, integral float, or cons of integers")) (E (error "Not an in-range integer, integral float, or cons of integers")) (E (wrong-type-argument processp foo)) (E (args-out-of-range 1099511627776 -2147483648 2147483647)) -1 (E (wrong-type-argument symbolp 1180591620717411303424)) (E (wrong-type-argument symbolp 1.0)) (E (wrong-type-argument symbolp "INT")) (E (error "Undefined signal name SIG99")) -1 (E (error "Undefined signal name +5")) (E (error "Undefined signal name 05x")) (E (error "Undefined signal name sigfoo")) (E (error "Undefined signal name aaaaaaaaaaaaaaaaaaaaaaaaa")) (E (error "Undefined signal name 0000000000000000000000")) -1 -1 (E (error "Undefined signal name RTMAX-99")) -1 -1 -1 -1 (E (error "Buffer  *temp* has no process")) (E (wrong-type-argument processp a)) 3 (t t t) (t t t) (E (wrong-number-of-arguments load-average 2)))"###,
+        "process ids and signal codes",
+    );
+}
+
+#[test]
+fn load_average_is_getloadavg() {
+    // fns.c:Fload_average: getloadavg(3)'s averages (glibc reads them from
+    // sysinfo(2)), each as a float or 100 times it truncated.
+    let mut interp = Interpreter::new();
+    let mut env = Env::new();
+    let read = || {
+        let mut loads = [0.0f64; 3];
+        // SAFETY: LOADS has room for the three averages asked for.
+        let count = unsafe { libc::getloadavg(loads.as_mut_ptr(), 3) };
+        assert_eq!(count, 3);
+        loads.to_vec()
+    };
+    let before = read();
+    let mut list = call_via_lisp(&mut interp, "load-average", &[Value::T], &mut env)
+        .expect("load-average with floats");
+    let after = read();
+    let mut floats = Vec::new();
+    while let Some((car, cdr)) = list.cons_values() {
+        match car.kind() {
+            Kind::Float(float) => floats.push(float.get()),
+            _ => panic!("load-average gave {car:?}"),
+        }
+        list = cdr;
+    }
+    assert!(
+        floats == before || floats == after,
+        "{floats:?} is neither {before:?} nor {after:?}"
+    );
+}
+
+#[test]
 fn coding_system_objects_match_coding_c() {
     // coding.c: Vcoding_system_hash_table's specs [ATTRS ALIASES
     // EOL-TYPE] and the attribute vectors a system's subsidiaries and

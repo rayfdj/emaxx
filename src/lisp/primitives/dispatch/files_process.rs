@@ -2251,7 +2251,20 @@ define_dispatch!(
             }
             "process-attributes" => {
                 need_args(name, args, 1)?;
-                Ok(process_attributes_value(args[0].as_integer()?))
+                // sysdep.c:system_process_attributes: CHECK_NUMBER, then
+                // CONS_TO_INTEGER into a pid_t.
+                if !matches!(
+                    args[0].kind(),
+                    Kind::Integer(_) | Kind::BigInteger(_) | Kind::Float(_)
+                ) {
+                    return Err(LispError::WrongTypeArgument("numberp".into(), args[0]));
+                }
+                let pid = crate::lisp::primitives::system::cons_to_signed(
+                    &args[0],
+                    i64::from(i32::MIN),
+                    i64::from(i32::MAX),
+                )?;
+                Ok(process_attributes_value(pid))
             }
             "list-system-processes" => {
                 need_args(name, args, 0)?;
@@ -2708,7 +2721,7 @@ define_dispatch!(
                     let Some(pid) = signal_process_target_pid(interp, &args[0])? else {
                         return Ok(Value::Nil);
                     };
-                    let signal = process_signal_number(&args[1])?;
+                    let signal = process_signal_code(&args[1])?;
                     // SAFETY: `kill' does not dereference pointers; PID and signal
                     // are validated Lisp integers or known platform constants.
                     Ok(Value::Integer(i64::from(unsafe {
@@ -3552,37 +3565,60 @@ fn make_process_value(
     Ok(process)
 }
 
+/// process.c:Finternal_default_signal_process's SIGCODE: a fixnum in
+/// int's range, else a symbol abbr_to_signal knows.
 #[cfg(unix)]
-fn process_signal_number(value: &Value) -> Result<i32, LispError> {
-    if let Ok(number) = value.as_integer() {
-        return i32::try_from(number)
-            .map_err(|_| LispError::Signal("Signal number is out of range".into()));
+fn process_signal_code(value: &Value) -> Result<i32, LispError> {
+    if let Kind::Integer(number) = value.kind() {
+        // check_integer_range (sigcode, INT_MIN, INT_MAX).
+        return i32::try_from(number).map_err(|_| {
+            LispError::SignalValue(Value::list([
+                Value::symbol("args-out-of-range"),
+                *value,
+                Value::Integer(i64::from(i32::MIN)),
+                Value::Integer(i64::from(i32::MAX)),
+            ]))
+        });
     }
-    // process.c:abbr_to_signal: a `SIG' or `sig' prefix dropped, the rest
-    // upcased; the error names the symbol as it is.
     let symbol_name = value.as_symbol()?;
-    let name = symbol_name
+    abbr_to_signal(symbol_name)
+        .ok_or_else(|| LispError::Signal(format!("Undefined signal name {symbol_name}")))
+}
+
+/// process.c:abbr_to_signal: NAME less a `SIG' or `sig' prefix, upcased
+/// into a 20-byte buffer (a longer name is no signal), as gnulib's
+/// str2signum reads it: decimal digits up to SIGNUM_BOUND, a name in its
+/// table, or RTMIN+N / RTMAX-N.
+#[cfg(unix)]
+fn abbr_to_signal(name: &str) -> Option<i32> {
+    let name = name
         .strip_prefix("SIG")
-        .or_else(|| symbol_name.strip_prefix("sig"))
-        .unwrap_or(symbol_name)
-        .to_ascii_uppercase();
-    let abbreviation = name.as_str();
-    if let Ok(number) = abbreviation.parse::<i32>() {
-        return Ok(number);
+        .or_else(|| name.strip_prefix("sig"))
+        .unwrap_or(name);
+    if name.len() >= 20 {
+        return None;
+    }
+    let signame = name.to_ascii_uppercase();
+    if signame.starts_with(|ch: char| ch.is_ascii_digit()) {
+        // strtol, all of it, at most SIGNUM_BOUND (NSIG - 1).
+        let digits = signame.bytes().all(|byte| byte.is_ascii_digit());
+        let number = signame.parse::<i64>().ok().filter(|_| digits)?;
+        return (number <= i64::from(SIGNUM_BOUND)).then_some(number as i32);
     }
     if let Some((number, _)) = named_signal_candidates()
         .into_iter()
-        .find(|(_, candidate)| *candidate == abbreviation)
+        .find(|(_, candidate)| *candidate == signame)
     {
-        return Ok(number);
+        return Some(number);
     }
-    if let Some(number) = realtime_signal_number(abbreviation) {
-        return Ok(number);
-    }
-    Err(LispError::Signal(format!(
-        "Undefined signal name {symbol_name}"
-    )))
+    realtime_signal_number(&signame)
 }
+
+/// gnulib sig2str.h's SIGNUM_BOUND: NSIG - 1.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+const SIGNUM_BOUND: i32 = 64;
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+const SIGNUM_BOUND: i32 = 31;
 
 #[cfg(unix)]
 fn named_signal_candidates() -> Vec<(i32, &'static str)> {
@@ -3722,32 +3758,56 @@ fn signal_names_value() -> Value {
     )
 }
 
+/// process.c:Finternal_default_signal_process's PROCESS: a string names
+/// a process, else is read as a number, whose whole text it must be (nil
+/// otherwise); any other non-number is get_process's.  A number is
+/// CONS_TO_INTEGER's pid_t; a process with no pid of its own cannot be
+/// signalled.
 #[cfg(unix)]
 fn signal_process_target_pid(
     interp: &mut Interpreter,
     target: &Value,
 ) -> Result<Option<libc::pid_t>, LispError> {
-    if let Some(name) = string_like(target) {
-        if let Some(process_id) = interp.find_process_id_by_name(&name.text) {
-            let pid = interp
-                .process_os_id(process_id)
-                .ok_or_else(|| LispError::Signal(format!("Cannot signal process {}", name.text)))?;
-            return Ok(Some(pid as libc::pid_t));
-        }
-        return Ok(name.text.parse::<libc::pid_t>().ok());
+    let numberp = |value: &Value| {
+        matches!(
+            value.kind(),
+            Kind::Integer(_) | Kind::BigInteger(_) | Kind::Float(_)
+        )
+    };
+    let mut process = *target;
+    if let Kind::StringObject(string) = target.kind() {
+        let found = string_like(target)
+            .and_then(|name| interp.find_process_id_by_name(&name.text))
+            .map(|id| interp.record_value(id));
+        process = match found {
+            Some(found) => found,
+            None => {
+                let bytes = string.borrow().bytes().to_vec();
+                match crate::lisp::primitives::numeric_time::string_to_number_prefix(&bytes) {
+                    (Some(number), len) if len == bytes.len() => number,
+                    _ => return Ok(None),
+                }
+            }
+        };
+    } else if !numberp(&process) {
+        process = get_process(interp, Some(&process))?;
     }
-    if let Ok(pid) = target.as_integer() {
-        return i32::try_from(pid)
-            .map(Some)
-            .map_err(|_| LispError::Signal("Process id is out of range".into()));
+    if numberp(&process) {
+        let pid = crate::lisp::primitives::system::cons_to_signed(
+            &process,
+            i64::from(libc::pid_t::MIN),
+            i64::from(libc::pid_t::MAX),
+        )?;
+        return Ok(Some(pid as libc::pid_t));
     }
-    let process = get_process(interp, Some(target))?;
     let process_id = interp.resolve_process_id(&process)?;
-    let name = interp.process_name(process_id).unwrap_or_default();
-    interp
-        .process_os_id(process_id)
-        .map(|pid| Some(pid as libc::pid_t))
-        .ok_or_else(|| LispError::Signal(format!("Cannot signal process {name}")))
+    match interp.process_os_id(process_id) {
+        Some(pid) if pid > 0 => Ok(Some(pid as libc::pid_t)),
+        _ => {
+            let name = interp.process_name(process_id).unwrap_or_default();
+            Err(LispError::Signal(format!("Cannot signal process {name}")))
+        }
+    }
 }
 
 /// GNU dired.c formats slot 8 of `file-attributes' with filemodestring
