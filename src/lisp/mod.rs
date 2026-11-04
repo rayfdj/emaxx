@@ -539,6 +539,12 @@ pub fn install_fatal_signal_handlers(noninteractive: bool) {
 /// process.c:init_process_emacs's soft RLIMIT_NOFILE at FD_SETSIZE for
 /// the process itself, which children made through a pty get back.
 #[cfg(unix)]
+/// emacs.c:main's init_atimer: the timerfd, the SIGALRM timer and its
+/// handler.
+pub fn init_atimer() {
+    primitives::atimer::init_atimer();
+}
+
 pub fn init_process_nofile_limit() {
     primitives::init_process_nofile_limit();
 }

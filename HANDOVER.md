@@ -13845,6 +13845,57 @@ setup_process_coding_systems's check now refuses). A 13-form
   Emaxx counts every sample as discarded. Local validation: the grouped
   gate's 3,499 library tests, the integration targets and clippy
   with `--all-targets --all-features -D warnings' pass.
+- **Round 287: atimer.c.** GNU's init_atimer makes a timerfd (unless
+  EMACS_IGNORE_TIMERFD is set; descriptor 3 of a batch session) and a
+  timer_create POSIX timer that sends SIGALRM, and catches SIGALRM with
+  handle_alarm_signal, which only sets keyboard.c's pending_signals.
+  start_atimer keeps the atimers sorted by expiration and set_alarm arms
+  both clocks for the first (setitimer's ITIMER_REAL without them, or a
+  raise at once for one overdue); maybe_quit's probably_quit runs
+  process_pending_signals whenever pending_signals is set, as
+  wait_reading_process_output does at the top of each pass, and its
+  do_pending_atimers runs each ripe atimer, puts a continuous one back
+  for its next time and arms the alarm for the first left. eval.c's
+  `funcall-with-delayed-message' starts a relative atimer of its timeout
+  (Gnulib's dtotimespec: the seconds truncated toward zero, the
+  nanoseconds rounded up, NaN and out-of-range values clipped to
+  time_t's extremes) over a copy of the message (xstrdup of its bytes,
+  so up to the first NUL, and build_string, so multibyte as make_string
+  decides), calls the function and cancels the atimer however the call
+  ends; the atimer's message3 shows the message (on standard error and
+  in *Messages* in batch) at the first quit check after the timeout, in
+  a busy loop or in a `sleep-for'. Emaxx had no atimers:
+  `funcall-with-delayed-message' timed the call and, when it had
+  outlasted the timeout, rewrote *Messages* to put the message before
+  whatever the call had logged there, never showing it, and copied the
+  message as decoded text. Now as atimer.c: the SIGALRM handler and the
+  fatal-signal handlers set one pending flag, which maybe_quit's fast
+  check reads beside the quit flag (GNU's `!NILP (Vquit_flag) ||
+  pending_signals'); probably_quit takes it, runs a pending fatal
+  signal's terminate_due_to_signal, then the quit (which leaves
+  pending_signals set, as GNU's does) or process_pending_signals with
+  collection inhibited; the process wait runs the same at the top of
+  each pass, and an atimer's message is a collection root
+  (mark_atimers). process.c's child_signal_init now opens the
+  child-signal pipe at the first create_process or call_process (and
+  signals "Creating pipe for child signal" when it cannot), where Emaxx
+  opened it at its first wait, so a `sleep-for' in a session without
+  children leaves Emaxx's descriptors as GNU leaves its own, GLib's
+  eventfd aside (Findings). The pending flag replaces the fatal-signal
+  flag in the checks, so the byte-code and interpreted `fib' run takes
+  434.03M instructions against round 286's 434.04M (callgrind, release
+  build), and an empty batch run 134.415M against 134.404M
+  (init_atimer). A command-line comparison of a call that finishes
+  before its timeout, calls that outlast it in a busy loop and in
+  `sleep-for', zero and negative timeouts, the argument errors, a
+  function's value, a message with a NUL, raw bytes or `%', throws
+  through the call and descriptor 3 matches GNU, as does eval-tests.el's
+  `eval-tests/funcall-with-delayed-message' (26 of 26 in both); a unit
+  test pins dtotimespec to Gnulib's results. Local validation: the
+  grouped gate's 3,499 library tests (the dtotimespec test run on
+  its own after them, with Gnulib's rounding ported in place of a
+  floor), the integration targets and clippy with `--all-targets
+  --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -15981,6 +16032,16 @@ second attempt's widest body gaps are ert-tests (46,850 ms against
 19,430), simple-tests (5,530 against 4,340), semantic-utest-ia (3,850
 against 2,670) and mule-tests (3,130 against 1,990).
 
+**On `7f96556`** (round 286): the full Rust gate (run 41754319950)
+passed; the frozen run (run 41754323758) passed at its first attempt,
+7,928 of 7,928 outcomes matching. Setup 61.4 s against 51.0 s (1.202),
+test bodies 252.8 s against 234.2 s (1.079), in all 1.110, with a
+per-file setup median of 92 ms against 79. The widest body gaps are
+tramp-tests (17,410 ms against 14,890), comp-tests (13,850 against
+11,730), ert-tests (33,550 against 31,630), semantic-utest-ia (3,060
+against 2,090), mule-tests (2,420 against 1,520) and package-tests
+(6,230 against 5,670).
+
 **Findings recorded, not fixed:**
 - **What a fatal signal does in GNU that it does not in Emaxx (rounds
   115 and 285).** A fault the kernel raises in Emaxx's own code (a
@@ -16081,10 +16142,16 @@ against 2,670) and mule-tests (3,130 against 1,990).
   instructions in process against GNU's 3.30G, and neither runs
   libgccjit for them: the gap is the instructions per cycle the setup
   finding below measures, not work Emaxx does that GNU does not.
-- **What undo.c does that Emaxx's undo list does not (rounds 166, 247
-  and 284).** compact_buffer's gap shrinking. (Round 247 runs its
-  truncate_undo_list at every collection; round 284 made record_point
-  consult `undo-inhibit-record-point'.)
+- **What undo.c does that Emaxx's undo list does not (rounds 166, 247,
+  284 and 287).** Nothing left: round 247 runs compact_buffer's
+  truncate_undo_list at every collection and round 284 made record_point
+  consult `undo-inhibit-record-point'. compact_buffer's gap shrinking is
+  make_gap with a negative size, which shrinks only under
+  USE_MMAP_FOR_BUFFERS, REL_ALLOC or DOUG_LEA_MALLOC; the oracle's glibc
+  build has none of them, so its gaps never shrink at a collection, and
+  `gap-size' and `gap-position' around collections (after an insertion,
+  a deletion that leaves a 92K gap, an `erase-buffer') match it in Emaxx
+  (round 287).
 - **undo-tests' million insertions (rounds 165, 175).** Most of
   undo-tests is `undo-test4''s interpreted `dotimes' of 1,048,576
   `insert's at the end of the buffer. At round 165 the release build ran
@@ -16185,16 +16252,21 @@ against 2,670) and mule-tests (3,130 against 1,990).
   overflow checks and the other debug assertions, spread thin. They
   are the gate's safety nets and stay; a frozen run of the release
   build would time what a user runs, which is the project's call.
-- **Process descriptors (rounds 119, 160 and 284).** As in GNU, a pipe
-  process holds its two pipes from the start and every process channel
-  at or above FD_SETSIZE (1024) is EMFILE (both make 255 pipe processes
-  before "Creating pipe" fails with "Too many open files"), the soft
-  RLIMIT_NOFILE is FD_SETSIZE for the process itself and its posix_spawn
-  children, and a pty child gets the limit the process started with. One
-  descriptor differs: atimer.c's init_atimer holds a timerfd (descriptor
-  3 in a batch session) beside the timer_create SIGALRM timer, where
-  Emaxx holds neither, so Emaxx's later descriptors are numbered one
-  lower and one more fits under the limit.
+- **Process descriptors (rounds 119, 160, 284 and 287).** As in GNU, a
+  pipe process holds its two pipes from the start and every process
+  channel at or above FD_SETSIZE (1024) is EMFILE (both make 255 pipe
+  processes before "Creating pipe" fails with "Too many open files"),
+  the soft RLIMIT_NOFILE is FD_SETSIZE for the process itself and its
+  posix_spawn children, a pty child gets the limit the process started
+  with, atimer.c's init_atimer holds its timerfd at descriptor 3 of a
+  batch session, and child_signal_init opens the child-signal pipe at
+  the first create_process or call_process (Emaxx opened it at its first
+  wait until round 287). One descriptor differs: the oracle is a
+  HAVE_GLIB build, whose waits go through xgselect.c's xg_select, and
+  its first g_main_context_default opens GLib's wakeup eventfd, which
+  Emaxx, without GLib, never holds; after a first wait GNU makes 254
+  pipe processes and Emaxx still 255, and Emaxx's later descriptors are
+  numbered one lower.
 - **The frozen run times the gate profile (round 112).** The frozen
   workflow's harness builds the Emaxx it runs with `--profile gate'
   (thin LTO, 16 codegen units, debug assertions and overflow checks;

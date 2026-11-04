@@ -112,7 +112,8 @@ const THREAD_FATAL_SIGNALS: [libc::c_int; 7] = [
 /// which runs it.  The faults (SIGILL, SIGTRAP, SIGFPE, SIGABRT, SIGBUS,
 /// SIGSEGV, SIGSYS) cannot be returned to and end Emacs in their handler,
 /// on a stack of their own as init_sigsegv's.  SIGPROF is ignored until a
-/// profiler takes it, and atimer.c:init_atimer catches SIGALRM.
+/// profiler takes it (atimer.c:init_atimer, which runs next, catches
+/// SIGALRM).
 pub(crate) fn install_fatal_signal_handlers(noninteractive: bool) {
     #[cfg(unix)]
     {
@@ -134,7 +135,6 @@ pub(crate) fn install_fatal_signal_handlers(noninteractive: bool) {
         unsafe {
             libc::signal(libc::SIGPROF, libc::SIG_IGN);
         }
-        install_alarm_handler(noninteractive);
         // emacs.c:main's emacs_backtrace (-1): `backtrace' loads what it
         // needs now, not in a handler.
         emacs_backtrace(-1);
@@ -164,14 +164,17 @@ fn install_process_fatal_handler(signal: libc::c_int) {
     // second signal, signal-hook's async-signal-safe default action.
     let registered = unsafe {
         signal_hook::low_level::register(signal, move || {
-            if let Err(previous) = PENDING_FATAL_SIGNAL.compare_exchange(
+            match PENDING_FATAL_SIGNAL.compare_exchange(
                 0,
                 signal,
                 UserSignalOrdering::Relaxed,
                 UserSignalOrdering::Relaxed,
-            ) && previous > 0
-            {
-                let _ = signal_hook::low_level::emulate_default_handler(signal);
+            ) {
+                Ok(_) => super::atimer::note_pending_signal(),
+                Err(previous) if previous > 0 => {
+                    let _ = signal_hook::low_level::emulate_default_handler(signal);
+                }
+                Err(_) => {}
             }
         })
     };
@@ -275,7 +278,10 @@ extern "C" fn deliver_fatal_thread_signal(
                 UserSignalOrdering::Relaxed,
                 UserSignalOrdering::Relaxed,
             ) {
-                Ok(_) => return,
+                Ok(_) => {
+                    super::atimer::note_pending_signal();
+                    return;
+                }
                 Err(previous) if previous < 0 => return,
                 Err(_) => {}
             }
@@ -288,21 +294,6 @@ extern "C" fn deliver_fatal_thread_signal(
             emacs_backtrace(40);
         }
         raise_unblocked(signal);
-    }
-}
-
-/// atimer.c:init_atimer's handle_alarm_signal, which with no atimer
-/// pending does nothing, so SIGALRM does not end Emacs.
-#[cfg(unix)]
-fn install_alarm_handler(noninteractive: bool) {
-    extern "C" fn handle_alarm_signal(_signal: libc::c_int) {}
-    // SAFETY: the handler does nothing.
-    unsafe {
-        let mut action: libc::sigaction = std::mem::zeroed();
-        libc::sigemptyset(&mut action.sa_mask);
-        action.sa_sigaction = handle_alarm_signal as *const () as usize;
-        action.sa_flags = emacs_sigaction_flags(noninteractive);
-        libc::sigaction(libc::SIGALRM, &action, std::ptr::null_mut());
     }
 }
 

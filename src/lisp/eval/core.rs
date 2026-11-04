@@ -1470,7 +1470,7 @@ impl Interpreter {
         if let Some(closure) = function.closure_ref() {
             if !closure.is_bytecode()
                 || !self.plain_bcall_entry(name)
-                || primitives::fatal_signal_pending()
+                || primitives::atimer::signals_pending()
                 || !crate::lisp::native_comp::collection_cannot_be_due(self)
             {
                 return None;
@@ -1482,7 +1482,7 @@ impl Interpreter {
             return Some(result);
         }
         let callee = self.plain_bcall_callee(func, function)?;
-        if primitives::fatal_signal_pending()
+        if primitives::atimer::signals_pending()
             || !crate::lisp::native_comp::collection_cannot_be_due(self)
         {
             return None;
@@ -1740,25 +1740,42 @@ impl Interpreter {
         // lisp.h:maybe_quit first reads Vquit_flag directly and returns on
         // the overwhelmingly common nil case.  These are eval.c's forwarded
         // cells, not symbol-name lookups.
-        if self.quit_flag_is_nil() && !primitives::fatal_signal_pending() {
+        if self.quit_flag_is_nil() && !primitives::atimer::signals_pending() {
             return Ok(());
         }
-        self.process_quit_flag(env)
+        self.probably_quit(env)
     }
 
-    /// eval.c:process_quit_flag, reached only with a non-nil quit-flag.
+    /// eval.c:probably_quit: a fatal signal's terminate_due_to_signal (whose
+    /// handler here left it to this check), then process_quit_flag for a
+    /// quit not inhibited, else process_pending_signals for what the
+    /// handlers left (`pending_signals', which a quit leaves set).
     #[cold]
-    fn process_quit_flag(&mut self, env: &mut Env) -> Result<(), LispError> {
+    fn probably_quit(&mut self, env: &mut Env) -> Result<(), LispError> {
+        let pending = primitives::atimer::take_pending_signals();
         if primitives::fatal_signal_pending() {
             primitives::run_pending_fatal_signal(self, env)?;
-            if self.quit_flag_is_nil() {
-                return Ok(());
+        }
+        if !self.quit_flag_is_nil() && !self.inhibit_quit_is_truthy() {
+            if pending {
+                primitives::atimer::note_pending_signal();
             }
+            return self.process_quit_flag(env);
         }
+        if pending {
+            // probably_quit's inhibit_garbage_collection around it.
+            self.inhibit_garbage_collection();
+            primitives::atimer::process_pending_signals(self, env);
+            self.allow_garbage_collection();
+        }
+        Ok(())
+    }
+
+    /// eval.c:process_quit_flag, reached only with a non-nil quit-flag
+    /// that `inhibit-quit' does not hold back.
+    #[cold]
+    fn process_quit_flag(&mut self, env: &mut Env) -> Result<(), LispError> {
         let flag = self.quit_flag_value();
-        if self.inhibit_quit_is_truthy() {
-            return Ok(());
-        }
 
         // process_quit_flag writes Vquit_flag, not a possibly detached plain
         // Lisp binding with the same name.

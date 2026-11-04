@@ -598,6 +598,41 @@ fn profiler_is_profiler_c_s() {
     );
 }
 
+#[test]
+#[cfg(target_os = "linux")]
+fn atimer_is_atimer_c_s() {
+    // atimer.c and keyboard.c: `funcall-with-delayed-message' starts a
+    // relative atimer whose expiry only marks a pending signal; the next
+    // maybe_quit, in a busy loop or in `sleep-for''s wait, shows the
+    // message (on standard error and in *Messages* in batch).  A call
+    // finishing first cancels it; a zero or negative timeout expires at
+    // once.  init_atimer leaves its timerfd at descriptor 3.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r#"(progn
+  (dolist (params '((5 0.05) (0.05 1.5) (0 0.3) (-1 0.3)))
+    (let ((timeout (nth 0 params)) (work-time (nth 1 params)))
+      (with-current-buffer "*Messages*"
+        (let ((inhibit-read-only t)) (erase-buffer))
+        (let ((stop (+ (float-time) work-time)))
+          (funcall-with-delayed-message timeout "timed out"
+            (lambda () (while (< (float-time) stop)) (message "finished"))))
+        (princ (format "%S %S\n" params (string-trim (buffer-string)))))))
+  (princ (format "%S\n" (condition-case e (funcall-with-delayed-message "x" "m" #'ignore) (error e))))
+  (princ (format "%S\n" (condition-case e (funcall-with-delayed-message 1 'm #'ignore) (error e))))
+  (princ (format "%S\n" (condition-case e (funcall-with-delayed-message 1 "m" 'no-such-fn) (error e))))
+  (princ (format "%S\n" (funcall-with-delayed-message 5 "m" (lambda () 42))))
+  (funcall-with-delayed-message 0.05 "during sleep" (lambda () (sleep-for 1.5)))
+  (princ (format "%S\n" (file-symlink-p "/proc/self/fd/3"))))"#,
+        ],
+    );
+}
+
 /// One batch run of BINARY on PROGRAM in a fresh directory holding
 /// `f.txt', with no core files and with each of IGNORED inherited ignored:
 /// its standard output, the first line of its standard error, its exit

@@ -44,37 +44,77 @@ fn configure_emacs_spawn(command: &mut Command, controlling_pty: bool) {
 /// process.c's child_signal_read_fd: the pipe handle_child_signal writes a
 /// byte to, which wait_reading_process_output selects on beside the
 /// processes' channels, so a SIGCHLD arriving before or during the select
-/// ends the wait.  catch_child_signal installs the handler before the
-/// first child is made; the first spawn does it here (None when the pipe
-/// or the handler cannot be had, leaving the waits to their timeouts).
+/// ends the wait.  -1 (None) until child_signal_init makes it.
+#[cfg(unix)]
+static CHILD_SIGNAL_READ_FD: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
+
+/// The child signal pipe's read end, once child_signal_init has made it.
 #[cfg(unix)]
 pub(crate) fn child_signal_read_fd() -> Option<std::os::fd::RawFd> {
-    static CHILD_SIGNAL_READ_FD: OnceLock<Option<std::os::fd::RawFd>> = OnceLock::new();
-    *CHILD_SIGNAL_READ_FD.get_or_init(|| {
-        use std::os::fd::{FromRawFd, OwnedFd};
-        let mut fds = [-1; 2];
-        // SAFETY: PIPE writes exactly two descriptors to FDS, each owned at
-        // once below.
-        if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
-            return None;
+    let fd = CHILD_SIGNAL_READ_FD.load(std::sync::atomic::Ordering::Acquire);
+    (fd >= 0).then_some(fd)
+}
+
+/// process.c:child_signal_init, which create_process and call_process run
+/// before their first child: the pipe, both ends non-blocking, its read
+/// end within an fd_set, and SIGCHLD's handler writing to it.  "We leave
+/// the file descriptors open until the Emacs process exits."
+#[cfg(unix)]
+pub(crate) fn child_signal_init() -> Result<(), LispError> {
+    use std::os::fd::{AsRawFd, IntoRawFd};
+    static INIT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _held = INIT.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if child_signal_read_fd().is_some() {
+        return Ok(()); // "already done"
+    }
+    let (reader, writer) = emacs_pipe().map_err(|error| {
+        LispError::SignalValue(file_operation_error_value_without_file(
+            "Creating pipe for child signal",
+            &error,
+        ))
+    })?;
+    if FD_SETSIZE <= reader.as_raw_fd() {
+        // "Since we need to `pselect' on the read end, it has to fit
+        // into an `fd_set'."
+        return Err(fd_setsize_error("Creating pipe for child signal"));
+    }
+    for fd in [reader.as_raw_fd(), writer.as_raw_fd()] {
+        // SAFETY: FD is one of the two live descriptors above.
+        if unsafe { libc::fcntl(fd, libc::F_SETFL, libc::O_NONBLOCK) } != 0 {
+            emacs_perror("fcntl", &std::io::Error::last_os_error());
         }
-        let reader = unsafe { OwnedFd::from_raw_fd(fds[0]) };
-        let writer = unsafe { OwnedFd::from_raw_fd(fds[1]) };
-        for fd in fds {
-            // SAFETY: FD is one of the two live descriptors above.
-            let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
-            if flags == -1
-                || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } == -1
-                || unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } == -1
-            {
-                return None;
-            }
+    }
+    // signal-hook's pipe handler is handle_child_signal's
+    // child_signal_notify: one non-blocking write, its errors ignored.
+    match signal_hook::low_level::pipe::register(libc::SIGCHLD, writer) {
+        Ok(_) => {
+            CHILD_SIGNAL_READ_FD.store(reader.into_raw_fd(), std::sync::atomic::Ordering::Release);
         }
-        // signal-hook's pipe handler is child_signal_notify: one
-        // non-blocking write, its errors ignored.
-        signal_hook::low_level::pipe::register(libc::SIGCHLD, writer).ok()?;
-        Some(std::os::fd::IntoRawFd::into_raw_fd(reader))
-    })
+        Err(error) => emacs_perror("sigaction", &error),
+    }
+    Ok(())
+}
+
+/// sysdep.c:emacs_perror: "COMMAND: MESSAGE: strerror (errno)" on standard
+/// error in one write, ERROR's errno standing for errno.
+#[cfg(unix)]
+fn emacs_perror(message: &str, error: &std::io::Error) {
+    use std::io::Write;
+    use std::os::unix::ffi::OsStrExt;
+    let errno = error.raw_os_error().unwrap_or(0);
+    // SAFETY: strerror returns a NUL-terminated string valid until the
+    // next call on this thread, copied at once.
+    let error_string = unsafe { std::ffi::CStr::from_ptr(libc::strerror(errno)) }
+        .to_bytes()
+        .to_vec();
+    let command = std::env::args_os().next().unwrap_or_else(|| "emacs".into());
+    let mut line = command.as_bytes().to_vec();
+    line.extend_from_slice(b": ");
+    line.extend_from_slice(message.as_bytes());
+    line.extend_from_slice(b": ");
+    line.extend_from_slice(&error_string);
+    line.push(b'\n');
+    let _ = std::io::stderr().write_all(&line);
 }
 
 /// process.c:child_signal_read: empty the child signal pipe once the wait
@@ -830,7 +870,7 @@ pub(crate) fn call_process(
     };
     let environment = child_environment(interp, env, directory)?;
     #[cfg(unix)]
-    let _ = child_signal_read_fd();
+    child_signal_init()?;
     let mut child = spawn_call_process(
         &program,
         &argv,
@@ -1229,7 +1269,7 @@ pub(crate) fn spawn_persistent_process(
     crate::test_support::mark_process_test();
 
     #[cfg(unix)]
-    let _ = child_signal_read_fd();
+    child_signal_init()?;
     let mut command = Command::new(program);
     add_command_arguments(&mut command, argv);
     let (environment, directory) = configure_external_command(interp, env, &mut command)?;
@@ -4582,9 +4622,11 @@ pub(crate) fn wait_pumping_processes(
     let mut timer_check_at = Some(std::time::Instant::now());
     loop {
         // A fatal signal ends the wait as GNU's handler, run in the middle
-        // of the select, does.
-        if crate::lisp::primitives::fatal_signal_pending() {
-            crate::lisp::primitives::run_pending_fatal_signal(interp, env)?;
+        // of the select, does; the other pending signals (a ripe atimer's
+        // SIGALRM) are processed as wait_reading_process_output's maybe_quit
+        // or process_pending_signals processes them at each iteration.
+        if crate::lisp::primitives::atimer::signals_pending() {
+            crate::lisp::primitives::atimer::process_pending_signals_in_wait(interp, env)?;
         }
         let mut progressed = pump_external_process_output_for(interp, env, only_process_id)?;
         progressed |= pump_connection_processes_for(interp, env, only_process_id)?;

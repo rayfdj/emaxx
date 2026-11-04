@@ -379,17 +379,24 @@ pub(crate) fn message3(
         {
             return Ok(());
         }
-        set_message(interp, message, env)
+        message3_nolog(interp, message, env)
     })
 }
 
 /// xdisp.c:message3_nolog: MESSAGE in the echo area, neither logged nor
-/// withheld by `inhibit-message'.
+/// withheld by `inhibit-message'; on the initial frame (a batch session's)
+/// written to standard error (message_to_stderr).
 pub(crate) fn message3_nolog(
     interp: &mut Interpreter,
     message: Value,
     env: &mut Env,
 ) -> Result<(), LispError> {
+    if interp
+        .forwarded_c_value("noninteractive", &Env::new())
+        .is_some_and(|value| value.is_truthy())
+    {
+        return message_to_stderr(interp, Some(&message), env);
+    }
     interp.with_lisp_stack_roots(&message, |interp| set_message(interp, message, env))
 }
 

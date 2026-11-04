@@ -1051,39 +1051,9 @@ define_dispatch!(
 
             "funcall-with-delayed-message" => {
                 need_args(name, args, 3)?;
-                let timeout = extract_float(interp, &args[0])?;
-                let delayed = string_text(&args[1])?;
-                let callback = resolve_callable(interp, &args[2], env)?;
-                let buffer_id = interp
-                    .find_buffer("*Messages*")
-                    .map(|(id, _)| id)
-                    .unwrap_or_else(|| interp.create_buffer("*Messages*").0);
-                let before = interp
-                    .get_buffer_by_id(buffer_id)
-                    .map(|buffer| buffer.buffer_string())
-                    .unwrap_or_default();
-                let start = Instant::now();
-                let result = interp.call_function_value(callback, None, &[], env)?;
-                let elapsed = start.elapsed().as_secs_f64();
-                if elapsed >= timeout
-                    && let Some(mut buffer) = interp.get_buffer_by_id_mut(buffer_id)
-                {
-                    let current = buffer.buffer_string();
-                    let suffix = current
-                        .strip_prefix(&before)
-                        .map(str::to_string)
-                        .unwrap_or(current);
-                    let rewritten = if suffix.is_empty() {
-                        format!("{delayed}\n")
-                    } else {
-                        format!("{delayed}\n{suffix}")
-                    };
-                    let end = buffer.point_max();
-                    let _ = buffer.delete_region(1, end);
-                    buffer.goto_char(1);
-                    buffer.insert(&(before + &rewritten));
-                }
-                Ok(result)
+                crate::lisp::primitives::atimer::funcall_with_delayed_message(
+                    interp, args[0], args[1], args[2], env,
+                )
             }
             "handler-bind-1" => {
                 if args.is_empty() {

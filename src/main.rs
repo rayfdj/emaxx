@@ -549,6 +549,7 @@ fn try_main() -> Result<u8, String> {
         ..Default::default()
     };
     emaxx::lisp::install_fatal_signal_handlers(noninteractive);
+    emaxx::lisp::init_atimer();
     #[cfg(unix)]
     emaxx::lisp::init_process_nofile_limit();
     if noninteractive {

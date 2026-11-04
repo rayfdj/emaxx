@@ -4468,6 +4468,7 @@ impl Interpreter {
         };
         self.globals.mark_symbol_roots(&mut mark);
         crate::lisp::primitives::profiler::mark_profiler(&mut mark);
+        crate::lisp::primitives::atimer::mark_atimers(&mut mark);
         // The obarray's entries are the process's interned symbols, a root
         // of every collection (`mark_interned_symbol_roots'); the
         // enumeration of every symbol a table of this state keys by was
