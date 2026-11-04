@@ -798,23 +798,8 @@ fn read_symbol_shorthands_value(shorthands: &[(String, String)]) -> types::Value
 pub(crate) fn read_source_forms(
     source: &str,
 ) -> Result<alloc::RootedVec<types::Value>, types::LispError> {
-    read_source_forms_with_unescaped_literals(source).map(|(forms, _)| forms)
-}
-
-#[cfg(test)]
-pub(crate) fn read_source_forms_with_unescaped_literals(
-    source: &str,
-) -> Result<(alloc::RootedVec<types::Value>, types::Value), types::LispError> {
     let settings = source_settings(source)?;
-    let mut reader =
-        reader::Reader::with_symbol_shorthands(source, settings.read_symbol_shorthands);
-    let forms = reader.read_all()?;
-    let literals = types::Value::list(
-        reader
-            .unescaped_character_literals()
-            .map(types::Value::Integer),
-    );
-    Ok((forms, literals))
+    reader::Reader::with_symbol_shorthands(source, settings.read_symbol_shorthands).read_all()
 }
 
 pub(crate) fn load_file_strict(
@@ -894,7 +879,7 @@ pub(crate) fn read_next_load_input_form(
     env: &mut types::Env,
 ) -> Result<Option<types::Value>, types::LispError> {
     let shorthands = primitives::read_symbol_shorthands_in_env(interp, env)?;
-    let (value, needs_materialization, unescaped) = {
+    let (value, needs_materialization) = {
         let mut context = eval::LispReadContext::current(interp, env);
         let (reader, base) = match input {
             LoadInput::Text(source) => (
@@ -911,15 +896,8 @@ pub(crate) fn read_next_load_input_form(
         let value = reader.read();
         *offset = base + reader.position();
         let value = value?;
-        (
-            value,
-            reader.emitted_reader_forms(),
-            reader.unescaped_character_literals().collect::<Vec<_>>(),
-        )
+        (value, reader.emitted_reader_forms())
     };
-    if !unescaped.is_empty() {
-        primitives::record_unescaped_character_literals(interp, unescaped, env);
-    }
     match value {
         Some(value) if needs_materialization => interp
             .materialize_read_object_literals(value, env)

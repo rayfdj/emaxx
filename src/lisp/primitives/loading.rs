@@ -1046,7 +1046,7 @@ fn read_next_eval_form(
     env: &mut Env,
 ) -> Result<Option<Value>, LispError> {
     let shorthands = read_symbol_shorthands_in_env(interp, env)?;
-    let (value, consumed, needs_materialization, unescaped) = {
+    let (value, consumed, needs_materialization) = {
         let mut context = crate::lisp::eval::LispReadContext::current(interp, env);
         let reader = match source.input_from(*offset) {
             LispReaderInput::Encoded(bytes, multibyte) => {
@@ -1068,17 +1068,9 @@ fn read_next_eval_form(
                 return Err(error);
             }
         };
-        (
-            value,
-            reader.position(),
-            reader.emitted_reader_forms(),
-            reader.unescaped_character_literals().collect::<Vec<_>>(),
-        )
+        (value, reader.position(), reader.emitted_reader_forms())
     };
     *offset += consumed;
-    if !unescaped.is_empty() {
-        record_unescaped_character_literals(interp, unescaped, env);
-    }
     value
         .map(|value| {
             if needs_materialization {
@@ -1439,36 +1431,31 @@ fn record_native_source(
     Ok(())
 }
 
-/// lread.c read_char_literal conses every unescaped `?)'-style literal
-/// onto `lread--unescaped-character-literals', which `load' binds to nil
-/// around a file and warns about as it unwinds
-/// (load_warn_unescaped_character_literals).  The eval-buffer path
-/// `load-with-code-conversion' takes reads with its own reader, so its
-/// literals are added here.
-pub(crate) fn record_unescaped_character_literals(
+/// lread.c:read_char_literal's record of an unescaped `(', `)', `[', `]',
+/// `"' or `;' literal CHARACTER as the reader reads it: CHECK_LIST of
+/// `lread--unescaped-character-literals', which `load' binds to nil around
+/// a file and warns about as it unwinds
+/// (load_warn_unescaped_character_literals), and the character consed
+/// onto it unless Fmemq finds it there, by a C assignment.
+pub(crate) fn note_unescaped_character_literal(
     interp: &mut Interpreter,
-    literals: impl IntoIterator<Item = i64>,
+    character: u8,
     env: &mut Env,
-) {
-    let mut items = interp
-        .lookup_var("lread--unescaped-character-literals", env)
-        .and_then(|value| value.to_vec().ok())
-        .unwrap_or_default();
-    let mut changed = false;
-    for literal in literals {
-        let literal = Value::Integer(literal);
-        if !items.contains(&literal) {
-            items.insert(0, literal);
-            changed = true;
-        }
+) -> Result<(), LispError> {
+    let literals = interp
+        .symbol_value_key(cached_symbol!("lread--unescaped-character-literals"))
+        .unwrap_or(Value::Nil);
+    if !literals.is_nil() && !literals.is_cons() {
+        return Err(LispError::WrongTypeArgument("listp".into(), literals));
     }
-    if changed {
-        interp.set_variable(
+    let character = Value::Integer(i64::from(character));
+    if dispatch::lists::direct_memq(interp, &[character, literals], env)?.is_nil() {
+        interp.set_c_variable(
             "lread--unescaped-character-literals",
-            Value::list(items),
-            env,
+            Value::cons(character, literals),
         );
     }
+    Ok(())
 }
 
 pub(crate) fn read_symbol_shorthands_in_env(

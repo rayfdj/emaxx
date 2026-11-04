@@ -1140,6 +1140,78 @@ fn matcher_backtracks_and_folds_as_regex_emacs() {
     );
 }
 
+#[test]
+fn unescaped_character_literals_are_recorded_as_read_char_literal() {
+    // read_char_literal conses each unescaped `(', `)', `[', `]', `"' or
+    // `;' onto `lread--unescaped-character-literals' as it reads it, after
+    // CHECK_LIST and unless Fmemq finds it, by a C assignment: in reading
+    // order, before a later character fails the read, onto the list it
+    // found, seen by a function stream mid-read, in the current buffer's
+    // binding; and `load' warns of a file's as it unwinds, even when the
+    // file's read fails.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r#"(progn
+  (let ((lread--unescaped-character-literals nil) (out nil))
+    (push (condition-case e (read-from-string "`?]_") (error e)) out)
+    (push lread--unescaped-character-literals out)
+    (push (condition-case e (read-from-string "(?; ?[x") (error e)) out)
+    (push lread--unescaped-character-literals out)
+    (with-temp-buffer
+      (insert "(?( . ?\")")
+      (goto-char 1)
+      (push (condition-case e (read (current-buffer)) (error e)) out)
+      (push lread--unescaped-character-literals out)
+      (insert " ?)")
+      (goto-char (point-max))
+      (insert " ?]a")
+      (let ((m (copy-marker 10)))
+        (push (condition-case e (read m) (error e)) out)
+        (push (marker-position m) out)))
+    (push lread--unescaped-character-literals out)
+    (let ((chars (string-to-list "?;z")))
+      (push (condition-case e
+                (read (lambda (&optional ch) (if ch (push ch chars) (pop chars))))
+              (error e))
+            out))
+    (push lread--unescaped-character-literals out)
+    (print (nreverse out)))
+  (let* ((tail (list 40)) (lread--unescaped-character-literals tail) (seen nil)
+         (chars (string-to-list "(?) ?( ?[ ?\\( ?))")))
+    (print (list (read-from-string "?) ?(") lread--unescaped-character-literals
+                 (eq (cdr lread--unescaped-character-literals) tail)))
+    (setq lread--unescaped-character-literals nil)
+    (print (list (read (lambda (&optional ch)
+                         (if ch (push ch chars)
+                           (push lread--unescaped-character-literals seen)
+                           (pop chars))))
+                 (nreverse seen))))
+  (dolist (v '(5 "x" (1 . 2) (41 . 2) (1 2 . 3)))
+    (let ((lread--unescaped-character-literals v))
+      (print (list v (condition-case e (read-from-string "(?) . ") (error e))
+                   lread--unescaped-character-literals))))
+  (let ((lread--unescaped-character-literals nil))
+    (read-from-string "?;")
+    (with-temp-buffer
+      (setq-local lread--unescaped-character-literals (list 1))
+      (read-from-string "?[")
+      (print (list lread--unescaped-character-literals
+                   (default-value 'lread--unescaped-character-literals))))
+    (print lread--unescaped-character-literals))
+  (with-temp-file "lit-a.el" (insert "(setq lit-a '(?( ?] ?\\[))\n"))
+  (with-temp-file "lit-b.el" (insert "(setq lit-b '(?; ?\" . \n"))
+  (print (list (load (expand-file-name "lit-a.el") nil t t) (symbol-value 'lit-a)))
+  (print (condition-case e (load (expand-file-name "lit-b.el") nil t t) (error e)))
+  (print lread--unescaped-character-literals))"#,
+        ],
+    );
+}
+
 /// One batch run of BINARY on PROGRAM in a fresh directory holding
 /// `f.txt', with no core files and with each of IGNORED inherited ignored:
 /// its standard output, the first line of its standard error, its exit

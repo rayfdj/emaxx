@@ -355,6 +355,7 @@ const KEY_NAMES: &[&str] = &[
     "circular-list",
     "obarray",
     "read-symbol-shorthands",
+    "lread--unescaped-character-literals",
     "identity",
     "case-symbols-as-words",
     "face--new-frame-defaults",

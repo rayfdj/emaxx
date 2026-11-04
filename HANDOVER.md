@@ -14200,7 +14200,7 @@ setup_process_coding_systems's check now refuses). A 13-form
   deletion and point motion under the same exits print GNU's points,
   bounds and texts; a command-line comparison runs forty programs of the
   first kind, generated in Lisp from one `random' seed. Local
-  validation: the grouped gate's 3,501 library tests, the
+  validation: the grouped gate's 3,502 library tests, the
   integration targets and clippy with `--all-targets --all-features -D
   warnings' pass. The primitives group's first run failed
   `stderr_pipe_process_and_status_notify_as_process_c' once, on the
@@ -14208,6 +14208,33 @@ setup_process_coding_systems's check now refuses). A 13-form
   gate's filter kept no assertion text (the local gate now keeps each
   group's whole output), and the test passed alone 15 times, 12 of them
   beside four busy loops, and in its whole group again, 473 of 473.
+- **Round 298: the reader records an unescaped character literal as
+  read_char_literal does.** lread.c:read_char_literal, on reading an
+  unescaped `?(', `?)', `?[', `?]', `?"' or `?;', checks that
+  `lread--unescaped-character-literals' is a list (CHECK_LIST) and
+  conses the character onto it unless Fmemq finds it there, by a C
+  assignment, before it reads on. The reader kept the characters in a
+  sorted set and the `read' entry points merged them into the variable
+  after a read that succeeded: a read failing after a literal recorded
+  none, so a `load' whose read failed warned of nothing; the characters
+  arrived in code order, `(40 34)' where GNU has `(34 40)'; the merge
+  rebuilt the list, and a value that was not a list was replaced rather
+  than signalled about, a dotted one too; a function stream saw no
+  literal until the read ended; and a byte-code object's string, read by
+  a reader of its own, lost its literals. The reader now asks its read
+  context (`ReadContext::unescaped_character_literal') at each literal,
+  and the context does read_char_literal's check, Fmemq and C assignment
+  of the current binding at once; the merges after a read are gone. A
+  command-line comparison reads literals before invalid syntax from
+  strings, buffers, markers and function streams, into an existing list
+  (whose tail is the old list), into non-lists and dotted lists, in a
+  buffer-local binding, and loads a file whose read fails after two
+  literals; a unit test reads literals beside an escaped one, one in a
+  string and one in a comment. 3,600 generated strings of reader syntax,
+  six new seeds of the round's fuzzer, print GNU's `read-from-string'
+  results. Local validation: the grouped gate's 3,502 library
+  tests, the integration targets and clippy with `--all-targets
+  --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -16485,6 +16512,21 @@ against 98. The widest body gaps are tramp-tests (20,621 ms against
 17,446), ert-tests (39,674 against 36,950), comp-tests (17,064 against
 14,582), semantic-utest-ia (3,781 against 2,689) and mule-tests (2,811
 against 1,833, the ratio of round 294's 2,334 against 1,489).
+
+**On `4c7b549`** (round 297): the full Rust gate (run 41818430634)
+passed; the frozen run (run 41818435912) passed at its first attempt,
+7,928 of 7,928 outcomes matching. Setup 65.2 s against 54.8 s (1.190),
+test bodies 266.4 s against 246.0 s (1.083), in all 1.116, with a
+per-file setup median of 98 ms against 84. The widest body gaps are
+ert-tests (36,759 ms against 33,120), tramp-tests (19,394 against
+16,472), comp-tests (14,786 against 12,486), semantic-utest-ia (3,042
+against 2,214) and mule-tests (2,334 against 1,551). icalendar-tests'
+bodies took 1,098 ms against 371 (round 296's 647 against 412), two
+tests, `icalendar-export-weekly-by-day' (213 ms against 7) and
+`icalendar-import-bug-6766' (113 against 5), holding most of it; the
+file is no slower locally, where the gate builds of rounds 296 and 297
+run its tests in 1.00 to 1.18 s and 0.96 to 1.13 s over two runs each
+(GNU in 0.56 to 0.66).
 
 **Findings recorded, not fixed:**
 - **Found, not fixed (GNU faults):** transpose-regions with unequal

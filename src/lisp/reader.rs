@@ -8,7 +8,7 @@ pub(crate) use input::ReaderStream;
 
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use unicode_names2::character as unicode_character;
 
@@ -125,6 +125,10 @@ pub(crate) trait ReadContext {
     fn read_circle(&mut self) -> bool {
         true
     }
+    /// read_char_literal's record of an unescaped `(', `)', `[', `]', `"'
+    /// or `;' CHARACTER on `lread--unescaped-character-literals', as it is
+    /// read.
+    fn unescaped_character_literal(&mut self, character: u8) -> Result<(), LispError>;
 }
 
 /// One of lread.c's saved_strings: the bytes `#@' skipped in a file while
@@ -469,7 +473,6 @@ pub struct Reader<'a> {
     symbol_shorthands: Vec<(String, String)>,
     context: Option<&'a mut dyn ReadContext>,
     backquote_depth: usize,
-    unescaped_character_literals: BTreeSet<u8>,
     /// read0's LOCATE_SYMS: allocate a symbol-with-position for each
     /// occurrence except the canonical nil symbol.
     locate_symbols: bool,
@@ -537,7 +540,6 @@ impl<'a> Reader<'a> {
             // GNU's reader always encodes quote shorthands with the raw
             // `\``/`\,'/`\,@' symbols; pcase.el's pattern expanders are
             // registered under those names.
-            unescaped_character_literals: BTreeSet::new(),
             emitted_reader_forms: false,
             read_objects_map: HashMap::default(),
             read_objects_completed: HashSet::default(),
@@ -818,13 +820,6 @@ impl<'a> Reader<'a> {
         Ok(Value::ReaderForm(
             crate::lisp::alloc::VectorlikeRef::allocate(form),
         ))
-    }
-
-    pub(crate) fn unescaped_character_literals(&self) -> impl Iterator<Item = i64> + '_ {
-        self.unescaped_character_literals
-            .iter()
-            .copied()
-            .map(i64::from)
     }
 
     fn peek(&mut self) -> Result<Option<u8>, LispError> {
@@ -1672,8 +1667,10 @@ impl<'a> Reader<'a> {
             }
             Some(ch) if ch < 0x80 => {
                 self.advance()?;
-                if matches!(ch, b'(' | b')' | b'[' | b']' | b'"' | b';') {
-                    self.unescaped_character_literals.insert(ch);
+                if matches!(ch, b'(' | b')' | b'[' | b']' | b'"' | b';')
+                    && let Some(context) = self.read_context()
+                {
+                    context.unescaped_character_literal(ch)?;
                 }
                 Ok(Some(Value::Integer(ch as i64)))
             }
@@ -2911,16 +2908,6 @@ mod tests {
                 Err(LispErrorKind::ReadError(message)) if message == expected
             ));
         }
-    }
-
-    #[test]
-    fn reader_tracks_only_actual_unescaped_character_literals() {
-        let mut reader = Reader::new("?) ?\\( \"?[\" ; ?] in comment\n?;");
-        reader.read_all().unwrap();
-        assert_eq!(
-            reader.unescaped_character_literals().collect::<Vec<_>>(),
-            [41, 59]
-        );
     }
 
     #[test]

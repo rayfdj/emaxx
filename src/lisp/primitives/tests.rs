@@ -5234,6 +5234,19 @@ fn load_warns_about_unescaped_character_literals_on_the_eval_buffer_path() {
 }
 
 #[test]
+fn reader_records_only_actual_unescaped_character_literals() {
+    // read_char_literal records a literal `?)' or `?;', not an escaped
+    // `?\(', nor `?[' in a string or `?]' in a comment.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((lread--unescaped-character-literals nil))
+             (read-from-string "(?) ?\\( \"?[\" ; ?] in comment\n?;)")
+             lread--unescaped-character-literals)"#,
+        "(59 41)",
+        "unescaped character literals outside strings and comments",
+    );
+}
+
+#[test]
 fn sqlite_values_are_a_list_or_a_vector() {
     // sqlite.c bind_values walks VALUES as a vector (AREF) or a list
     // (XCAR/XCDR); Fsqlite_execute and Fsqlite_select signal `sqlite-error'

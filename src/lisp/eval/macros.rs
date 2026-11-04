@@ -78,6 +78,10 @@ impl crate::lisp::reader::ReadContext for LispReadContext<'_> {
     fn read_circle(&mut self) -> bool {
         self.interp.read_circle(self.env)
     }
+
+    fn unescaped_character_literal(&mut self, character: u8) -> Result<(), LispError> {
+        crate::lisp::primitives::note_unescaped_character_literal(self.interp, character, self.env)
+    }
 }
 
 impl Interpreter {
