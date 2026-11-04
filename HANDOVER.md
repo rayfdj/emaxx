@@ -14153,6 +14153,28 @@ setup_process_coding_systems's check now refuses). A 13-form
   interpreted and byte-compiled. Local validation: the grouped gate's
   3,501 library tests, the integration targets and clippy with
   `--all-targets --all-features -D warnings' pass.
+- **Round 296: a regexp call's setup in fewer steps.** `(looking-at
+  "x")' at a failing position took 1,489 instructions a call (GNU's
+  1,129) and `(string-match "x" STRING)' 1,628 (GNU's 1,418), the
+  matching itself cheaper than GNU's and the excess in the call's setup.
+  The match environment, 136 bytes, was moved out to be dropped once the
+  match was done (`drop(menv)', a memcpy and the drop at every
+  looking-at, string-match, re-search, fast_string_match and
+  fast_looking_at); it now ends with the block that made it and is
+  dropped where it lies. The buffer snapshot borrowed the buffer's text
+  once for each of its reads (the shared bytes, the region's extended
+  characters, the modification tick); `Buffer::match_view' reads them
+  under one borrow, as looking_at_1 takes BEGV, ZV, PT and their bytes.
+  The matcher's text and its object computed the accessible range and
+  point's offset each, and now share them. `looking-at' takes 1,385
+  instructions and `string-match' 1,593; `re-search-forward' of a
+  missing string 2,226 against 2,244 (GNU's 2,553). A battery of 880
+  looking-at, re-search-forward, re-search-backward, narrowed and
+  string-match results over multibyte, unibyte, raw-byte and CJK text,
+  with and without case folding and with the gap inside the text,
+  matches GNU's. Local validation: the grouped gate's 3,501 library
+  tests, the integration targets and clippy with `--all-targets
+  --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -16404,6 +16426,22 @@ build the frozen run times, its cost is the liveness assertion on each
 cons of `char-code-property-alist''s walk (round 131's record), not the
 decoding.
 
+**On `105750d`** (round 295): the full Rust gate (run 41805197972)
+passed; the frozen run (run 41805202467) differed at its first attempt
+only in eglot-tests, where the oracle's
+`eglot-test-rust-completion-exit-function' failed with a jsonrpc-error
+and Emaxx's passed, and passed at its second, 7,928 of 7,928 outcomes
+matching. Setup 67.3 s against 50.1 s (1.342), test bodies 253.0 s
+against 232.0 s (1.091), in all 1.140, with a per-file setup median of
+104 ms against 78 (round 294's 92 against 79). The widest body gaps are
+comp-tests (14,898 ms against 11,134), ert-tests (33,183 against
+31,291), tramp-tests (16,967 against 15,220), semantic-utest-ia (3,187
+against 2,043) and simple-tests (3,569 against 2,508, round 294's 2,693
+against 2,757). Neither rise is the round's: the gate builds of rounds
+294 and 296, built as the frozen run builds them, start with `-l ert' in
+418.1M and 416.6M instructions and run simple-tests in 5.043G and
+5.019G.
+
 **Findings recorded, not fixed:**
 - **Found, not fixed (GNU faults):** transpose-regions with unequal
   regions and a middle region of multibyte text moves the middle by its
@@ -16458,18 +16496,21 @@ decoding.
   bound to a non-list. There is no more of GNU's to follow: an insertion
   into propertized text with the variable bound to 5 makes GNU 30.2 die
   of a segmentation fault (round 256).
-- **A call of `looking-at' costs about 350 instructions more than GNU's
-  around the match (rounds 174 to 176).** `(looking-at "x")' at a
-  failing position costs 1,462 instructions against GNU's 1,116: the
-  buffer snapshot the matcher reads apart from the buffer (about 120:
-  the gap buffer's bytes shared, its positions and the matcher's text
-  and object made from them, where GNU takes BEGV_ADDR and the gap's
-  sizes), reading `case-fold-search' and `parse-sexp-lookup-properties'
-  through their loaded bindings (about 70, where GNU reads a buffer slot
-  and a C variable), the canonicalization table's cache (37), the
-  pooled match state (43), the pattern cell's release (34) and the match
-  environment's drop (21). In format-tests' 709,311 calls that is about
-  250M of its 0.28G excess.
+- **A call of `looking-at' costs about 250 instructions more than GNU's
+  around the match (rounds 174 to 176 and 296).** `(looking-at "x")' at
+  a failing position costs 1,385 instructions against GNU's 1,129: the
+  buffer snapshot the matcher reads apart from the buffer (78 to take
+  it, the gap buffer's bytes shared and its positions read under one
+  borrow, and about 60 more for the matcher's text and object made from
+  them, where GNU takes BEGV_ADDR and the gap's sizes), reading
+  `case-fold-search' and `parse-sexp-lookup-properties' through their
+  loaded bindings (34 each, where GNU reads a buffer slot and a C
+  variable), the canonicalization table's cache (37), the pooled match
+  state (43) and the match environment's drop (21); the pattern cell's
+  release (34) is cheaper than GNU's unbind_to of its frozen pattern
+  (140). `string-match''s own setup takes 276 instructions against
+  string_match_1's 87, spread over the string's text and the argument
+  checks.
 - **`make-symbol' costs about 690 instructions (round 173).** The name
   is copied out of its string and the uninterned symbol registered under
   a counter in the symbol tables, where GNU's Fmake_symbol allocates the
