@@ -719,14 +719,21 @@ pub(crate) fn bool_vector_arg(
 /// Element read for the VM's Baref: bytecode.c's fast case, a vector or a
 /// record (its type in slot zero, as PVSIZE counts it), and the string case
 /// of the Faref it calls otherwise, which in range runs no Lisp and cannot
-/// signal.  Char-tables, closures, and out-of-range accesses return None so
-/// the caller takes the full `aref' path and preserves GNU's exact error
-/// behavior.
+/// signal, as its CHAR_TABLE_REF of a char-table at a character index
+/// cannot.  Closures, bool-vectors and out-of-range accesses return None
+/// so the caller takes the full `aref' path and preserves GNU's exact
+/// error behavior.
+#[inline]
 pub(crate) fn vector_aref_fast(value: &Value, index: usize) -> Option<Value> {
     match value.kind() {
         Kind::Vector(vector) => vector.get(index),
         Kind::LispRecord(record) => record.get(index),
         Kind::StringObject(state) => state.borrow().character_at(index).map(Value::Integer),
+        Kind::CharTable(table)
+            if index <= crate::lisp::alloc::vectors::char_tables::CHAR_TABLE_MAX_CHAR as usize =>
+        {
+            Some(table.get(index as u32))
+        }
         _ => None,
     }
 }

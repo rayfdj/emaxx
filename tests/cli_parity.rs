@@ -920,6 +920,69 @@ fn arithmetic_is_data_c_arith_driver() {
 }
 
 #[test]
+fn ash_is_data_c_fash() {
+    // data.c:Fash: a bignum COUNT keeps 0 and sends the rest to -1, 0 or
+    // `overflow-error' by its sign; a fixnum one shifts right in a machine
+    // integer and left through emacs_mpz_mul_2exp, whose limb limit
+    // refuses a count past it even for 0.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r#"(progn
+  (dolist (v (list 0 1 -1 7 -7 most-positive-fixnum most-negative-fixnum (1+ most-positive-fixnum) (- (expt 2 70))))
+    (print (mapcar (lambda (s) (condition-case e (ash v s) (error e)))
+                   (list 0 1 -1 2 61 62 63 64 65 -61 -62 -63 -64 -65 200 -200 most-negative-fixnum
+                         (1+ most-positive-fixnum) (1- most-negative-fixnum)))))
+  (print (mapcar (lambda (s) (condition-case e (ash 0 s) (error e)))
+                 (list 137438953407 137438953408 most-positive-fixnum (- 137438953408))))
+  (print (mapcar (lambda (s) (condition-case e (ash 1 s) (error e)))
+                 (list 137438953408 most-positive-fixnum)))
+  (print (list (condition-case e (ash 1.0 1) (error e)) (condition-case e (ash 1 1.0) (error e))
+               (condition-case e (ash (point-marker) 1) (error e)))))"#,
+        ],
+    );
+}
+
+#[test]
+fn aref_of_a_char_table_is_char_table_ref() {
+    // data.c:Faref's CHECK_CHARACTER and CHAR_TABLE_REF, interpreted, from
+    // byte code and through get-char-code-property's native code: a
+    // table's own ranges, its parent's values, a Unicode property table's
+    // compressed entries, and indices that are no character.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r#"(let* ((parent (make-char-table 'ct-test 'from-parent))
+       (table (make-char-table 'ct-test))
+       (uni (unicode-property-table-internal 'general-category))
+       (compiled (byte-compile (lambda (tb c) (condition-case e (aref tb c) (error e)))))
+       (chars (list ?a #x7f #x80 #x3042 #x10000 #x10ffff #x3fff80 #x3fffff -1 #x400000)))
+  (set-char-table-parent table parent)
+  (set-char-table-range table '(#x3000 . #x30ff) 'kana)
+  (aset table ?b 'bee)
+  (set-char-table-range parent '(#x10000 . #x10fff) nil)
+  (print (mapcar (lambda (c) (condition-case e (aref table c) (error e))) chars))
+  (print (mapcar (lambda (c) (funcall compiled table c)) chars))
+  (print (mapcar (lambda (c) (funcall compiled uni c)) chars))
+  (print (mapcar (lambda (c) (condition-case e (get-char-code-property c 'general-category) (error e)))
+                 (list ?a #x3042 #x1f600 #xe000 #x10ffff)))
+  (print (mapcar (lambda (c) (condition-case e (get-char-code-property c 'name) (error e)))
+                 (list ?a #x3042 #x1f600 #xac00 #x4e00)))
+  (print (list (funcall compiled (make-char-table 'x 0) ?z) (funcall compiled (make-char-table 'x) #x2000)
+               (condition-case e (aref table 'x) (error e)) (condition-case e (aref table 1.0) (error e)))))"#,
+        ],
+    );
+}
+
+#[test]
 fn matcher_backtracks_and_folds_as_regex_emacs() {
     // re_match_2_internal's failure stack (failure points, saved
     // registers, `\{n,m\}' counters) and a case-folded EXACTN over ASCII

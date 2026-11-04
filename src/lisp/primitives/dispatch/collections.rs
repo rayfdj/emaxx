@@ -896,6 +896,13 @@ define_dispatch!(
                         .map(Value::Integer)
                         .ok_or_else(|| args_out_of_range(&args[0], &args[1]));
                 }
+                if let Kind::CharTable(table) = args[0].kind() {
+                    // data.c:Faref: CHECK_CHARACTER, then CHAR_TABLE_REF.
+                    if !(0..=0x3f_ffff).contains(&raw_idx) {
+                        return Err(LispError::WrongTypeArgument("characterp".into(), args[1]));
+                    }
+                    return Ok(table.get(raw_idx as u32));
+                }
                 let literal = record_literal_items(&args[0]);
                 // data.c:Faref exposes records and closures, but not the
                 // other pseudovectors kept in our internal Record storage.
@@ -904,18 +911,10 @@ define_dispatch!(
                     && !is_vector_value(&args[0])
                     && !matches!(
                         args[0].kind(),
-                        Kind::Closure(_)
-                            | Kind::CharTable(_)
-                            | Kind::LispRecord(_)
-                            | Kind::BoolVector(_)
+                        Kind::Closure(_) | Kind::LispRecord(_) | Kind::BoolVector(_)
                     )
                 {
                     return Err(LispError::WrongTypeArgument("arrayp".into(), args[0]));
-                }
-                if matches!(args[0].kind(), Kind::CharTable(_))
-                    && !(0..=0x3f_ffff).contains(&raw_idx)
-                {
-                    return Err(LispError::WrongTypeArgument("characterp".into(), args[1]));
                 }
                 if raw_idx < 0 {
                     return Err(args_out_of_range(&args[0], &args[1]));
@@ -929,10 +928,6 @@ define_dispatch!(
                     Kind::Closure(lambda) => lambda
                         .get(idx)
                         .ok_or_else(|| args_out_of_range(&args[0], &args[1])),
-                    Kind::CharTable(id) => {
-                        let key = raw_idx as u32;
-                        Ok(id.get(key))
-                    }
                     Kind::LispRecord(record) => record
                         .get(idx)
                         .ok_or_else(|| args_out_of_range(&args[0], &args[1])),

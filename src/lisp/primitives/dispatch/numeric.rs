@@ -1143,9 +1143,8 @@ fn fixnum_ash(value: i64, shift: i64) -> Option<i64> {
     if shift <= 0 {
         return Some(value >> shift.unsigned_abs().min(63));
     }
-    if value == 0 {
-        return Some(0);
-    }
+    // A zero shifted far still goes through emacs_mpz_mul_2exp, whose
+    // limb limit refuses a count past it whatever the value.
     if shift >= 63 {
         return None;
     }

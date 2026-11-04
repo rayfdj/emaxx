@@ -14088,6 +14088,35 @@ setup_process_coding_systems's check now refuses). A 13-form
   run, on whatever the byte held. Local validation: the grouped gate's
   3,501 library tests, the integration targets and clippy with
   `--all-targets --all-features -D warnings' pass.
+- **Round 294: `ash' as data.c's Fash, char-table reads as
+  chartab.c's.** `(ash 0 COUNT)' with a fixnum COUNT of 63 or more
+  returned 0 at once, where Fash takes every left shift through
+  emacs_mpz_mul_2exp, whose limb limit refuses a COUNT past it whatever
+  the value: `(ash 0 137438953408)' and `(ash 0 most-positive-fixnum)'
+  now signal `overflow-error' as in GNU, while `(ash 0 137438953407)'
+  stays 0. A char-table read past ASCII asked UNIPROP_TABLE_P (a symbol
+  key's lookup) at every call and descended the subtables by a recursive
+  call holding uniprop_table_uncompress inline; it now asks only at a
+  compressed entry, walks the levels in a loop and keeps the
+  uncompression out of line, and the VM's Baref reads a char-table at a
+  character index in place, as native code's `aref' did, which now also
+  reads a string in place; `aref' itself checks a char-table's index
+  before its other cases, as Faref does. unidata-gen's name decoder,
+  once its 128-character block is decoded, takes 895 instructions a
+  character against 1,316 (GNU's 923); `ucs-names' 1,100M instructions
+  against 1,110M (GNU's 1,047M); print-tests 2.164G against 2.176G and
+  textsec-tests 2.269G against 2.298G (GNU's 1.962G and 2.023G). The
+  rest of those two files' gap is in loading them from source:
+  print-tests.el loads in 1.52G instructions against 1.40G, and in 1.38G
+  against 1.16G without the collections (149M against 241M), spread over
+  `ucs-names' (the reader's `\N{...}' names, 969M against 837M),
+  `macroexp--expand-all' (177M against 147M) and the calls below them;
+  `cl-generic-define-method''s apparent doubling there is two
+  collections that began inside it. Command-line comparisons cover `ash'
+  and `aref' of char-tables interpreted, from byte code and through
+  native code. Local validation: the grouped gate's 3,501 library
+  tests, the integration targets and clippy with `--all-targets
+  --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -16309,6 +16338,20 @@ takes 4.59G instructions in release builds of rounds 287 and 292 alike
 against GNU's 4.90G, and 6.52G in the gate profile the frozen run
 builds: the two runs' 1.04 and 1.20 both sit under that profile's 1.33,
 the runner deciding how much of it shows.
+
+**On `d94c164`** (round 293): the full Rust gate (run 41784550672)
+passed; the frozen run (run 41784560126) passed at its first attempt,
+7,928 of 7,928 outcomes matching. Setup 85.8 s against 69.9 s (1.228),
+test bodies 309.7 s against 274.7 s (1.128), in all 1.136, with a
+per-file setup median of 130 ms against 109, on a runner slower again
+than round 292's (GNU's own setup 69.9 s against 61.1 and its bodies
+274.7 s against 263.1). The widest body gaps are ert-tests (46,750 ms
+against 38,050, its expensive batch test as in round 292's record),
+tramp-tests (23,440 against 19,660), comp-tests (17,900 against 14,720),
+semantic-utest-ia (4,500 against 3,180) and mule-tests (3,220 against
+2,020). semantic-utest-ia, whose `looking-at' calls round 293 cut, came
+to 1.41 times GNU's time against round 292's 1.57 on the same file, its
+doublens test 1,218 ms against 789.
 
 **Findings recorded, not fixed:**
 - **Found, not fixed (GNU faults):** transpose-regions with unequal

@@ -3167,26 +3167,16 @@ pub(super) extern "C" fn direct_native_type_of(value: NativeWord) -> NativeWord 
 }
 
 /// data.c:Faref's AREF of a vector or a record at a fixnum index within
-/// it, and its CHAR_TABLE_REF of a char-table at a character, read in
-/// place; any other array or index takes the subr's own path.
+/// it, its character of a string and its CHAR_TABLE_REF of a char-table
+/// at a character, read in place as the VM's Baref reads them; any other
+/// array or index takes the subr's own path.
 pub(super) extern "C" fn direct_native_aref(array: NativeWord, index: NativeWord) -> NativeWord {
-    if let Some(index) = decode_fixnum(index) {
-        let slot = usize::try_from(index).ok();
+    if let Some(slot) = decode_fixnum(index).and_then(|index| usize::try_from(index).ok())
         // SAFETY: the caller's argument word is live.
-        let value = match unsafe { Value::from_word(array) }.kind() {
-            Kind::Vector(vector) => slot.and_then(|slot| vector.get(slot)),
-            Kind::LispRecord(record) => slot.and_then(|slot| record.get(slot)),
-            Kind::CharTable(table) => u32::try_from(index)
-                .ok()
-                .filter(|&character| {
-                    character <= crate::lisp::alloc::vectors::char_tables::CHAR_TABLE_MAX_CHAR
-                })
-                .map(|character| table.get(character)),
-            _ => None,
-        };
-        if let Some(value) = value {
-            return value.word();
-        }
+        && let Some(value) =
+            crate::lisp::primitives::vector_aref_fast(&unsafe { Value::from_word(array) }, slot)
+    {
+        return value.word();
     }
     invoke_subr(subr_index(&AREF_SUBR_INDEX, "aref"), &[array, index])
 }
