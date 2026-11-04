@@ -14308,6 +14308,42 @@ setup_process_coding_systems's check now refuses). A 13-form
   validation: the grouped gate's 3,502 library tests, the
   integration targets and clippy with `--all-targets --all-features -D
   warnings' pass.
+- **Round 301: `defvar' as eval.c's defvar, and a void default as
+  buffer_local_value finds it.** eval.c:defvar asks Fdefault_boundp
+  first; then Finternal__define_uninitialized_variable refuses a symbol
+  that an interpreter environment an inner binding saved binds lexically
+  (lexbound_p, "Defining as dynamic an already lexical var"), declares
+  the symbol as given special, puts its documentation on it and attaches
+  it to the load history; and the value becomes the default when the
+  default is void, or, when lets of the symbol as given bind it, the
+  value the outermost of them saved when that saved none (an alias finds
+  none, a binding recording the variable it names). `defvar-1', which
+  byte code calls, tested the current value, so a buffer-local one kept
+  the default void, stored with a plain set, never reached a let's saved
+  top-level value, and skipped the lexical check and the load history;
+  the special form counted a let's binding as one after `makunbound' had
+  voided it, dropping the value, stored an alias's value into a let of
+  its base, and put an alias's documentation on its base. Both are now
+  one `defvar_symbol', and the `internal--define-uninitialized-variable'
+  primitive is its definition step. data.c:buffer_local_value of a
+  buffer without a binding of a localized variable is Fdefault_value,
+  void when the default is; Emaxx fell back to the variable's current
+  value, so another buffer's lookup answered the current buffer's
+  binding. Generated programs of let, setq, set-default, makunbound,
+  make-local-variable, kill-local-variable, kill-all-local-variables,
+  defvar, set-default-toplevel-value and an alias over two buffers under
+  nonlocal exits, 1,500 of them interpreted and byte-compiled, print
+  GNU's values, defaults, top-level values, localness and
+  buffer-local-variables and its messages, where 24 of them (35 runs)
+  had differed; a command-line comparison runs the probes and a hundred
+  such programs generated in Lisp. Fuzzes of case conversion and
+  character widths over eighteen Unicode ranges, arithmetic and number
+  conversion (6,000 cases), strings and hash tables (5,300), buffer
+  editing with text properties, markers, overlays and undo (400
+  sequences), the printer under its variables (3,000) and syntax
+  scanning in five modes (2,500) print GNU's results. Local validation:
+  the grouped gate's 3,502 library tests, the integration targets
+  and clippy with `--all-targets --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -16633,6 +16669,19 @@ instructions and GNU in 21.25G, the gate build in 31.43G, most of the
 excess in the interpreter's cons walks (`eval_sub' 6.15G against the
 release build's 2.54G, `direct_assq_family' 3.37G against 1.06G), each
 dereference asserting its cell is allocated.
+
+**On `8094b53`** (round 300): the full Rust gate (run 41839950969)
+passed; the frozen run (run 41839955907) passed at its first attempt,
+7,928 of 7,928 outcomes matching, on a runner as slow as round 298's
+(the oracle's bodies 267.4 s against 250.1 at round 299). Setup 79.2 s
+against 64.3 s (1.233), test bodies 297.6 s against 267.4 s (1.113), in
+all 1.115, with a per-file setup median of 119 ms against 100. The
+widest body gaps are ert-tests (45,617 ms against 37,988), tramp-tests
+(22,607 against 19,064), comp-tests (17,151 against 14,639),
+semantic-utest-ia (3,928 against 2,570) and mule-tests (3,153 against
+1,984). `ert-test-run-tests-batch-expensive' is 1.20 again on this
+runner, as on round 298's, and 1.075 to 1.10 on the faster ones of
+rounds 297 and 299.
 
 **Findings recorded, not fixed:**
 - **Found, not fixed (GNU faults):** transpose-regions with unequal

@@ -602,9 +602,7 @@ define_dispatch!(
                     } else if let Some(value) = killed {
                         (!matches!(value.kind(), Kind::Unbound)).then_some(value)
                     } else {
-                        interp
-                            .default_value_symbol(&symbol)?
-                            .or_else(|| interp.symbol_value_cell_symbol(&symbol).ok())
+                        default_value_here(interp, &symbol)?
                     };
                     return value.ok_or_else(|| {
                         LispError::SignalValue(Value::list([
@@ -630,9 +628,7 @@ define_dispatch!(
                 } else {
                     match interp.buffer_local_binding_symbol(buffer_id, &symbol) {
                         Some(local) => local,
-                        None => interp
-                            .default_value_symbol(&symbol)?
-                            .or_else(|| interp.symbol_value_cell_symbol(&symbol).ok()),
+                        None => default_value_here(interp, &symbol)?,
                     }
                 };
                 value.ok_or_else(|| {
@@ -1835,4 +1831,19 @@ pub(super) fn check_may_be_buffer_local(
         "Symbol {} may not be buffer-local",
         &[&crate::lisp::types::visible_symbol_name(variable)],
     ))
+}
+
+/// data.c:buffer_local_value's Fdefault_value of SYMBOL (no alias) for a
+/// buffer without a binding of it: a localized variable's default, void
+/// when that is (the current buffer's own binding must not answer), and
+/// any other's value as its cell holds it.
+fn default_value_here(
+    interp: &Interpreter,
+    symbol: &crate::lisp::types::SymbolName,
+) -> Result<Option<Value>, LispError> {
+    Ok(match interp.default_value_symbol(symbol)? {
+        Some(value) => Some(value),
+        None if interp.symbol_redirect(symbol) == crate::lisp::eval::Redirect::Localized => None,
+        None => interp.symbol_value_cell_symbol(symbol).ok(),
+    })
 }

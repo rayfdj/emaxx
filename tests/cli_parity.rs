@@ -1287,6 +1287,107 @@ fn variable_watchers_hear_stores_as_data_c_tells_them() {
     }
 }
 
+#[test]
+fn defvar_and_buffer_local_value_are_eval_c_and_data_c_s() {
+    // eval.c:defvar asks Fdefault_boundp first, then
+    // Finternal__define_uninitialized_variable refuses a symbol an
+    // environment an inner binding saved binds lexically (lexbound_p),
+    // and the value goes to the default when it is void or to the value
+    // the outermost let of the symbol as given saved when that is void;
+    // `defvar-1', byte code's, is the same.  buffer_local_value of a
+    // buffer without a binding is the default, void when that is.  A
+    // hundred programs generated in Lisp from one `random' seed mix
+    // let, setq, set-default, makunbound, make-local-variable,
+    // kill-local-variable, kill-all-local-variables, defvar,
+    // set-default-toplevel-value and an alias over two buffers with
+    // nonlocal exits, interpreted and byte-compiled, printing values,
+    // defaults, top-level values, localness and buffer-local-variables.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r#"(progn
+(print (condition-case e (let ((zq1 1)) (defvar zq1 2) zq1) (error e)))
+(print (condition-case e (let ((zq2 1)) (let ((y 2)) (defvar zq2 3)) zq2) (error e)))
+(print (condition-case e (let ((zq3 1)) (let ((y 2)) (internal--define-uninitialized-variable 'zq3)) zq3) (error e)))
+(defvar zq4) (makunbound 'zq4)
+(print (list (let ((zq4 5)) (defvar-1 'zq4 7 "doc") zq4) (symbol-value 'zq4) (get 'zq4 'variable-documentation)))
+(with-temp-buffer (setq-local zq5 1) (defvar-1 'zq5 9 nil) (print (list zq5 (default-value 'zq5) (special-variable-p 'zq5))))
+(defvar zq6 'a0) (makunbound 'zq6)
+(print (list (let ((zq6 5)) (defvar zq6 8) zq6) (symbol-value 'zq6)))
+(defvar zq7 'a) (defvaralias 'zq7-al 'zq7) (makunbound 'zq7)
+(print (list (let ((zq7 1)) (defvar zq7-al 2) zq7) (boundp 'zq7) (get 'zq7-al 'variable-documentation)))
+(defvar zq8 'a0) (get-buffer-create "zq-2")
+(with-temp-buffer (makunbound 'zq8) (make-local-variable 'zq8) (setq zq8 'y)
+  (print (list (condition-case e (buffer-local-value 'zq8 (get-buffer "zq-2")) (error e))
+               (condition-case e (default-value 'zq8) (error e)))))
+(let ((zq9 1)) (makunbound 'zq9) (defvar zq9 3) (print (list zq9 (default-boundp 'zq9))))
+(random "var-fuzz")
+(defvar vz-a 'a0) (defvar vz-b 'b0) (defvar-local vz-c 'c0) (defvar vz-p 'p0)
+(put 'vz-p 'permanent-local t)
+(defvaralias 'vz-al 'vz-a)
+(get-buffer-create "vz1") (get-buffer-create "vz2")
+(defun vz-state ()
+  (list (buffer-name)
+        (mapcar (lambda (v) (if (boundp v) (symbol-value v) 'UNBOUND)) '(vz-a vz-b vz-c vz-p vz-al))
+        (mapcar (lambda (v) (condition-case nil (default-value v) (void-variable 'VOID))) '(vz-a vz-c vz-p))
+        (mapcar (lambda (v) (condition-case nil (default-toplevel-value v) (void-variable 'VOID))) '(vz-a vz-c))
+        (mapcar (lambda (v) (local-variable-p v)) '(vz-a vz-b vz-c vz-p vz-al))
+        (seq-filter (lambda (c) (memq (car-safe c) '(vz-a vz-b vz-c vz-p))) (buffer-local-variables))
+        (condition-case e (buffer-local-value 'vz-a (get-buffer "vz2")) (error (car e)))))
+(defun vz-stmt (r d)
+  (let* ((k (random (if (< d 3) 22 14)))
+         (v (nth (random 5) '(vz-a vz-b vz-c vz-p vz-al)))
+         (x (nth (random 5) '('x 'y 1 2 nil))))
+    (cond
+     ((= k 0) `(setq ,v ,x))
+     ((= k 1) `(set-default ',v ,x))
+     ((= k 2) `(make-local-variable ',v))
+     ((= k 3) `(kill-local-variable ',v))
+     ((= k 4) `(makunbound ',v))
+     ((= k 5) `(set-buffer ,(nth (random 2) '("vz1" "vz2"))))
+     ((= k 6) `(vz-log (vz-state)))
+     ((= k 7) `(kill-all-local-variables))
+     ((= k 8) `(set-default-toplevel-value ',v ,x))
+     ((= k 9) `(setq-local ,v ,x))
+     ((= k 10) `(vz-log (list 'special (special-variable-p ',v) (boundp ',v) (default-boundp ',v))))
+     ((= k 11) `(vz-log (list 'locus (variable-binding-locus ',v))))
+     ((= k 12) `(defvar ,v ,x))
+     ((= k 13) `(vz-log (list 'ifset (local-variable-if-set-p ',v))))
+     (t (let ((body (let (l) (dotimes (_ (1+ (random 3))) (push (vz-stmt r (1+ d)) l)) l)))
+          (nth (- k 14)
+               `((let ((,v ,x)) ,@body)
+                 (let ((,v ,x) (vz-b 'lb)) ,@body)
+                 (with-current-buffer ,(nth (random 2) '("vz1" "vz2")) ,@body)
+                 (unwind-protect (progn ,@body) (vz-log (vz-state)))
+                 (catch 'vz (progn ,@body (throw 'vz nil)))
+                 (condition-case e (progn ,@body (error "vz")) (error (vz-log (list 'caught (cadr e)))))
+                 (save-current-buffer ,@body)
+                 (let* ((,v ,x)) (setq ,v 'inner) ,@body))))))))
+(defvar vz-out nil)
+(defun vz-log (x) (push x vz-out))
+(defun vz-reset ()
+  (dolist (b '("vz1" "vz2")) (with-current-buffer b (kill-all-local-variables) (kill-local-variable 'vz-p)))
+  (set-buffer "vz1")
+  (setq-default vz-a 'a0 vz-b 'b0 vz-c 'c0 vz-p 'p0)
+  (setq vz-out nil))
+(dotimes (i 100)
+  (let ((form `(progn ,@(let (l) (dotimes (_ (+ 3 (random 6))) (push (vz-stmt nil 0) l)) l) (vz-log (vz-state)))))
+    (dolist (compiled '(nil t))
+      (vz-reset)
+      (condition-case e
+          (if compiled (funcall (byte-compile `(lambda () ,form))) (eval form t))
+        (error (vz-log (list 'err (car e)))))
+      (prin1 (list i compiled (nreverse vz-out))) (terpri)
+      (set-buffer "vz1"))))
+)"#,
+        ],
+    );
+}
+
 /// One batch run of BINARY on PROGRAM in a fresh directory holding
 /// `f.txt', with no core files and with each of IGNORED inherited ignored:
 /// its standard output, the first line of its standard error, its exit

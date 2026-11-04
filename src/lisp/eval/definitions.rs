@@ -82,13 +82,16 @@ impl Interpreter {
         // The local specialness is recorded as a frame marker scoped to the
         // current activation so `let's in the SAME scope bind dynamically.
         if nargs > 1 {
-            self.mark_special_variable(&resolved);
-            let doc = list_nth(args, 2);
-            if !doc.is_nil() {
-                let doc = crate::lisp::primitives::purecopy_value(self, &doc, env)?;
-                self.put_symbol_property(&resolved, "variable-documentation", doc);
-            }
-            self.record_definition_in_load_history("defvar", &resolved);
+            // eval.c:defvar (SYM, EXP, DOC, true), EXP evaluated only if
+            // it is wanted.
+            let init = list_nth(args, 1);
+            self.defvar_symbol(
+                &SymbolName::intern_str(&name),
+                list_nth(args, 2),
+                |interp, env| interp.eval(&init, env),
+                env,
+            )?;
+            return Ok(name_value);
         } else if self.interpreter_environment_is_lexical(env) {
             // GNU eval.c prepends the bare symbol to the current interpreter
             // environment.  At file top level that environment is the
@@ -96,16 +99,87 @@ impl Interpreter {
             // process-wide special-variable declaration.
             self.push_local_special_declaration(&resolved, env);
         }
-        // Bare `defvar` declarations mark a variable special without binding it.
-        // GNU skips the init form only when a REAL default binding exists.
-        // The lazily synthesized builtin fallback table must not count:
-        // treating it as a binding silently discarded the init forms of
-        // genuinely loaded GNU defvars (mode-line-modes, user-emacs-directory).
-        if !self.global_default_binding_exists(&resolved) && nargs > 1 {
-            let val = self.eval(&list_nth(args, 1), env)?;
-            self.set_default_toplevel_value(&resolved, val);
-        }
         Ok(name_value)
+    }
+
+    /// eval.c:defvar of SYMBOL as given: whether its variable's default is
+    /// bound, asked first (Fdefault_boundp follows an alias); SYMBOL
+    /// defined as a dynamic variable with DOC
+    /// (`define_uninitialized_variable'); then INIT's value, got only when
+    /// wanted, made the default of a variable that had none, or, for one
+    /// bound only by lets of SYMBOL itself (a binding records the variable
+    /// an alias names, so an alias finds none), the value the outermost of
+    /// them saved when it saved none.
+    pub(crate) fn defvar_symbol(
+        &mut self,
+        symbol: &SymbolName,
+        doc: Value,
+        init: impl FnOnce(&mut Self, &mut Env) -> Result<Value, LispError>,
+        env: &mut Env,
+    ) -> Result<(), LispError> {
+        // Fdefault_boundp: the default cell as it is now, a let's binding
+        // of it included; the lazily synthesized builtin fallback table
+        // does not count, or the init forms of genuinely loaded GNU
+        // defvars (mode-line-modes, user-emacs-directory) were discarded.
+        let resolved = self.resolve_variable_symbol(symbol)?;
+        let bound = self.global_value(resolved.as_str()).is_some();
+        self.define_uninitialized_variable(symbol, doc, env)?;
+        if !bound {
+            let value = init(self, env)?;
+            crate::lisp::primitives::call(
+                self,
+                "set-default",
+                &[Value::Symbol(*symbol), value],
+                env,
+            )?;
+        } else if self
+            .active_global_toplevel_value(symbol.as_str())
+            .is_some_and(|previous| previous.is_none())
+        {
+            // default_toplevel_binding's saved Qunbound: a let shadows the
+            // global unboundness.
+            let value = init(self, env)?;
+            self.set_active_global_toplevel_value(symbol.as_str(), Some(value));
+        }
+        Ok(())
+    }
+
+    /// eval.c:Finternal__define_uninitialized_variable: SYMBOL refused
+    /// when an interpreter environment an inner binding saved binds it
+    /// lexically (`lexbound_p'), then declared special, DOC put as its
+    /// documentation, and the definition attached to the load history.
+    pub(crate) fn define_uninitialized_variable(
+        &mut self,
+        symbol: &SymbolName,
+        doc: Value,
+        env: &mut Env,
+    ) -> Result<(), LispError> {
+        if !self.is_special_variable_symbol(symbol) && self.lexbound_p(symbol, env) {
+            return Err(LispError::SignalValue(Value::list([
+                Value::symbol("error"),
+                Value::string("Defining as dynamic an already lexical var"),
+                Value::Symbol(*symbol),
+            ])));
+        }
+        self.mark_special_variable_symbol(symbol);
+        if !doc.is_nil() {
+            let doc = crate::lisp::primitives::purecopy_value(self, &doc, env)?;
+            self.put_symbol_property(symbol.as_str(), "variable-documentation", doc);
+        }
+        self.record_definition_in_load_history("defvar", symbol.as_str());
+        Ok(())
+    }
+
+    /// eval.c:lexbound_p: whether an interpreter environment that an inner
+    /// let, call or load replaced, and so saved, binds SYMBOL.  Each such
+    /// replacement is a frame of ENV above the one it replaced; the frame
+    /// on top is the environment in effect.
+    fn lexbound_p(&self, symbol: &SymbolName, env: &Env) -> bool {
+        let saved = env.len().saturating_sub(1);
+        env.iter().take(saved).any(|frame| {
+            crate::lisp::types::assq_binding(frame.environment(), symbol)
+                .is_ok_and(|binding| binding.is_some())
+        })
     }
 
     pub(super) fn sf_defconst(&mut self, args: &Value, env: &mut Env) -> Result<Value, LispError> {

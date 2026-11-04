@@ -1357,33 +1357,29 @@ define_dispatch!(
             "internal--define-uninitialized-variable" => {
                 // GNU: (SYMBOL &optional DOC) — cus-start.el passes one arg.
                 need_arg_range(name, args, 1, 2)?;
-                let symbol = args[0].as_symbol()?;
-                interp.mark_special_variable(symbol);
-                // eval.c:Finternal__define_uninitialized_variable attaches
-                // the symbol to the load history (`defcustom' reaches it
-                // through custom-declare-variable).
-                interp.record_definition_in_load_history("defvar", symbol);
-                if let Some(doc) = args.get(1).filter(|value| !value.is_nil()) {
-                    let doc = purecopy_value(interp, doc, env)?;
-                    interp.put_symbol_property(symbol, "variable-documentation", doc);
-                }
+                let symbol = checked_symbol_identity(interp, &args[0], env)?;
+                interp.define_uninitialized_variable(
+                    &symbol,
+                    args.get(1).copied().unwrap_or(Value::Nil),
+                    env,
+                )?;
                 Ok(Value::Nil)
             }
             "defvar-1" => {
+                // eval.c:Fdefvar_1: CHECK_SYMBOL, then defvar (SYM,
+                // INITVALUE, DOCSTRING, false).
                 if args.len() < 2 || args.len() > 3 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let symbol = args[0].as_symbol()?;
-                let symbol_name = symbol.to_string();
-                interp.mark_special_variable(symbol);
-                if let Some(doc) = args.get(2).filter(|value| !value.is_nil()) {
-                    let doc = purecopy_value(interp, doc, env)?;
-                    interp.put_symbol_property(&symbol_name, "variable-documentation", doc);
-                }
-                if interp.lookup_var(&symbol_name, env).is_none() {
-                    interp.set_variable(&symbol_name, args[1], &mut crate::lisp::types::Env::new());
-                }
-                Ok(Value::Symbol(symbol_name.into()))
+                let symbol = checked_symbol_identity(interp, &args[0], env)?;
+                let init = args[1];
+                interp.defvar_symbol(
+                    &symbol,
+                    args.get(2).copied().unwrap_or(Value::Nil),
+                    |_, _| Ok(init),
+                    env,
+                )?;
+                Ok(args[0])
             }
             "defconst-1" => {
                 if args.len() < 2 || args.len() > 3 {
